@@ -35,7 +35,10 @@ def _disabled(login_ok: bool = False) -> ContractResult:
 def _load_contract() -> dict[str, Any]:
     path = Path(os.environ.get("TGTO_CONTRACT_PATH", DEFAULT_CONTRACT_PATH))
     with path.open(encoding="utf-8") as contract_file:
-        return json.load(contract_file)
+        contract = json.load(contract_file)
+    if not isinstance(contract, dict):
+        raise TypeError("TgtoDrive contract root must be an object")
+    return contract
 
 
 def _safe_api_path(value: object, *, allow_query: bool = False) -> bool:
@@ -87,13 +90,16 @@ def _valid_check(check: object) -> bool:
     return (
         isinstance(accepted, list)
         and bool(accepted)
-        and all(isinstance(status, int) for status in accepted)
+        and all(type(status) is int and 100 <= status <= 599 for status in accepted)
     )
 
 
 async def run_contract_check() -> ContractResult:
     """Verify login and safe GET checks without submitting a remote task."""
-    contract = _load_contract()
+    try:
+        contract = _load_contract()
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return _disabled()
     base_url = os.environ.get("TGTO_BASE_URL")
     username = os.environ.get("TGTO_WEB_USER")
     password = os.environ.get("TGTO_WEB_PASSWORD")
@@ -112,7 +118,12 @@ async def run_contract_check() -> ContractResult:
         async with httpx.AsyncClient(base_url=base_url, timeout=10.0) as client:
             response = await client.post(login["path"], json=payload)
             success_field = login.get("success_field", "success")
-            login_ok = response.is_success and response.json().get(success_field) is True
+            response_data = response.json()
+            login_ok = (
+                response.is_success
+                and isinstance(response_data, dict)
+                and response_data.get(success_field) is True
+            )
             if not login_ok:
                 return _disabled()
 
