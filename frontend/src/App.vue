@@ -12,7 +12,7 @@ import {
   type BrowseView,
 } from "./router";
 import { mediaKey, mediaTypeOf } from "./media";
-import { inspectionProgress as getInspectionProgress, inspectionState as getInspectionBatchState, mergeInspectionResult, pollInspectionBatch } from "./inspection";
+import { finalizeInspectionResources, inspectionProgress as getInspectionProgress, inspectionState as getInspectionBatchState, mergeInspectionResult, pollInspectionBatch } from "./inspection";
 import type { HomeCatalogResponse, MovieMetadata, ResourceSummary, SearchResponse, TaskResponse } from "./types";
 import CollectionView from "./views/CollectionView.vue";
 import HomeView from "./views/HomeView.vue";
@@ -158,7 +158,7 @@ async function loadPopular(page = 1) {
 async function performSearch(updateUrl: boolean, page = 1) {
   const searchQuery = query.value.trim();
   if (!searchQuery) return;
-  resetInspection();
+  invalidateDetailRequest();
   activeView.value = "search";
   previousView.value = "search";
   result.value = null;
@@ -206,7 +206,7 @@ async function loadView(view: BrowseView) {
 }
 
 async function selectView(view: Exclude<BrowseView, "search">) {
-  resetInspection();
+  invalidateDetailRequest();
   result.value = null;
   error.value = "";
   activeView.value = view;
@@ -228,6 +228,12 @@ function resetInspection() {
   inspectionTotal.value = 0;
   inspectionFailed.value = 0;
   inspectionError.value = null;
+}
+
+function invalidateDetailRequest() {
+  searchRequestId += 1;
+  loading.value = false;
+  resetInspection();
 }
 
 async function loadResources(
@@ -281,7 +287,7 @@ async function selectSeason(seasonNumber: number | null) {
 }
 
 async function returnToBrowse() {
-  resetInspection();
+  invalidateDetailRequest();
   result.value = null;
   const view = previousView.value === "search" ? "search" : previousView.value;
   activeView.value = view;
@@ -365,6 +371,14 @@ function setInspectionStatus(resourceIds: string[], status: string) {
   };
 }
 
+function finalizeInspection(resourceIds: string[], status: "failed" | "timeout") {
+  if (!result.value) return;
+  result.value = {
+    ...result.value,
+    results: finalizeInspectionResources(result.value.results, resourceIds, status),
+  };
+}
+
 function inspectionErrorFor(state: "partial" | "failed", failed: number): string {
   if (state === "failed") return "检测失败";
   return failed > 0 ? `部分失败：${failed} 条磁力检测失败` : "部分失败";
@@ -392,20 +406,23 @@ async function inspectCurrentPage() {
     applyInspectionResponse(started);
     const startedState = getInspectionBatchState(started);
     if (startedState === "completed" || startedState === "partial" || startedState === "failed") {
+      if (startedState !== "completed") finalizeInspection(resourceIds, "failed");
       inspectionState.value = startedState;
       if (startedState !== "completed") inspectionError.value = inspectionErrorFor(startedState, inspectionFailed.value);
       return;
     }
     const pollState = await pollInspectionBatch(
-      (batchId) => api.getInspection(batchId),
+      (batchId, signal) => api.getInspection(batchId, signal),
       started.batch_id,
       {
         isCurrent: () => runId === inspectionRunId,
         onResponse: applyInspectionResponse,
       },
     );
+    if (runId !== inspectionRunId) return;
     if (pollState === "stale") return;
     if (pollState === "timeout") {
+      finalizeInspection(resourceIds, "timeout");
       inspectionState.value = "timeout";
       inspectionError.value = "检测超时，可重试";
       return;
@@ -413,11 +430,13 @@ async function inspectCurrentPage() {
     if (pollState === "completed") {
       inspectionState.value = "completed";
     } else if (pollState === "partial" || pollState === "failed") {
+      finalizeInspection(resourceIds, "failed");
       inspectionState.value = pollState;
       inspectionError.value = inspectionErrorFor(pollState, inspectionFailed.value);
     }
   } catch (exception) {
     if (runId !== inspectionRunId) return;
+    finalizeInspection(resourceIds, "failed");
     inspectionState.value = "failed";
     inspectionError.value = exception instanceof ApiError ? exception.message : "检测失败，可重试";
   }
@@ -439,7 +458,7 @@ function ensurePolling() {
 }
 
 async function syncRoute() {
-  resetInspection();
+  invalidateDetailRequest();
   result.value = null;
   await initializeWorkspace();
 }
@@ -462,7 +481,7 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
-  resetInspection();
+  invalidateDetailRequest();
   if (pollTimer !== undefined) window.clearInterval(pollTimer);
   window.removeEventListener("popstate", syncRoute);
 });

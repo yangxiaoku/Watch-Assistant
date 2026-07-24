@@ -37,4 +37,17 @@ describe("ApiClient season and inspection requests", () => {
     expect(JSON.parse(fetchMock.mock.calls[0][1].body as string)).toEqual({ resource_ids: ["magnet-1", "magnet-2"] });
     expect(fetchMock.mock.calls[1][0]).toBe("/api/v1/resources/inspect/batch-1");
   });
+
+  it("passes an AbortSignal to inspection GET requests", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ batch_id: "batch-1", status: "running", submitted_count: 1, completed_count: 0, results: [] }), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const api = new ApiClient();
+    const controller = new AbortController();
+
+    await api.getInspection("batch-1", controller.signal);
+
+    expect(fetchMock.mock.calls[0][1].signal).toBe(controller.signal);
+  });
 });

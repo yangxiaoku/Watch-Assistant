@@ -124,6 +124,7 @@ test("restores TV seasons and inspects only the first 30 magnets", async ({ page
   const tvWithSeasons = {
     ...show,
     seasons: [
+      { season_number: 0, name: "特别篇", episode_count: 1, air_date: "2010-01-01", poster_path: null },
       { season_number: 1, name: "第 1 季", episode_count: 10, air_date: "2011-04-17", poster_path: null },
       { season_number: 2, name: "第 2 季", episode_count: 10, air_date: "2012-04-01", poster_path: null },
     ],
@@ -136,8 +137,8 @@ test("restores TV seasons and inspects only the first 30 magnets", async ({ page
     seeders: index,
     source: "plugin:test",
     captured_at: "2026-07-24T10:00:00Z",
-    rank_score: 0.9 - index / 100,
-    relevance_score: index === 0 ? 0.95 : null,
+    rank_score: 90 - index,
+    relevance_score: index === 0 ? 95 : null,
     completeness_score: null,
   }));
 
@@ -147,10 +148,18 @@ test("restores TV seasons and inspects only the first 30 magnets", async ({ page
   await page.route("**/api/v1/auth/me", (route) =>
     route.fulfill({ json: { authenticated: true, via_bearer: false, csrf_token: "csrf-test" } }),
   );
-  await page.route("**/api/v1/search", (route) => {
+  await page.route("**/api/v1/media/discover?**", (route) =>
+    route.fulfill({ json: { results: [movie], page: 1, total_pages: 1, total_results: 1 } }),
+  );
+  let delayNextSearch = false;
+  await page.route("**/api/v1/search", async (route) => {
     const request = route.request().postDataJSON() as Record<string, unknown>;
     searchRequests.push(request);
     const selected = request.media_type === "tv";
+    if (delayNextSearch) {
+      delayNextSearch = false;
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
     return route.fulfill({
       json: {
         movie: selected ? tvWithSeasons : movie,
@@ -185,77 +194,42 @@ test("restores TV seasons and inspects only the first 30 magnets", async ({ page
     });
   });
   let inspectGetCount = 0;
-  await page.route("**/api/v1/resources/inspect/*", (route) =>
-    (() => {
-      inspectGetCount += 1;
-      const failedBatch = inspectPostCount > 1;
-      return route.fulfill({
-        json: {
-          batch_id: `batch-${inspectPostCount}`,
-          status: failedBatch ? "failed" : "partial",
-          submitted_count: 30,
-          completed_count: failedBatch ? 0 : 2,
-          results: failedBatch ? [{
-            resource_id: "magnet-0",
-            infohash: "hash-0",
-            status: "failed",
-            total_size_bytes: 0,
-            file_count: 0,
-            video_file_count: 0,
-            video_size_bytes: 0,
-            subtitle_count: 0,
-            sample_count: 0,
-            largest_video_name: null,
-            content_summary: null,
-            error_code: "INSPECT_FAILED",
-          }] : [
-            {
-              resource_id: "magnet-0",
-              infohash: "hash-0",
-              status: "verified",
-              total_size_bytes: 1073741824,
-              file_count: 3,
-              video_file_count: 1,
-              video_size_bytes: 1000000000,
-              subtitle_count: 2,
-              sample_count: 1,
-              largest_video_name: "episode.mkv",
-              content_summary: "verified",
-              error_code: null,
-            },
-            {
-              resource_id: "magnet-1",
-              infohash: "hash-1",
-              status: "unsupported",
-              total_size_bytes: 0,
-              file_count: 0,
-              video_file_count: 0,
-              video_size_bytes: 0,
-              subtitle_count: 0,
-              sample_count: 0,
-              largest_video_name: null,
-              content_summary: null,
-              error_code: "UNSUPPORTED",
-            },
-            {
-              resource_id: "magnet-2",
-              infohash: "hash-2",
-              status: "timeout",
-              total_size_bytes: 0,
-              file_count: 0,
-              video_file_count: 0,
-              video_size_bytes: 0,
-              subtitle_count: 0,
-              sample_count: 0,
-              largest_video_name: null,
-              content_summary: null,
-              error_code: "TIMEOUT",
-            },
-          ],
-        },
-      });
-    })(),
-  );
+  const inspectionResult = (resourceId: string, status: "verified" | "unsupported" | "timeout" | "failed", index: number) => ({
+    resource_id: resourceId,
+    infohash: status === "unsupported" ? null : `hash-${resourceId}`,
+    status,
+    total_size_bytes: status === "verified" ? (index === 0 ? 1073741824 : 900000000 + index) : 0,
+    file_count: status === "verified" ? 3 : 0,
+    video_file_count: status === "verified" ? 1 : 0,
+    video_size_bytes: status === "verified" ? 1000000000 : 0,
+    subtitle_count: status === "verified" ? 2 : 0,
+    sample_count: status === "verified" ? 1 : 0,
+    largest_video_name: status === "verified" ? "episode.mkv" : null,
+    content_summary: status === "verified" ? "verified" : null,
+    error_code: status === "verified" ? null : status.toUpperCase(),
+  });
+  await page.route("**/api/v1/resources/inspect/*", (route) => {
+    inspectGetCount += 1;
+    const failedBatch = inspectPostCount > 1;
+    const partialResults = resources.slice(0, 30).map((item, index) => inspectionResult(
+      item.resource_id,
+      index === 1 ? "unsupported" : index === 2 ? "timeout" : "verified",
+      index,
+    ));
+    const runningResults = partialResults.slice(0, 2);
+    const results = failedBatch
+      ? resources.slice(0, 30).map((item, index) => inspectionResult(item.resource_id, "failed", index))
+      : inspectGetCount === 1 ? runningResults : partialResults;
+    return route.fulfill({
+      json: {
+        batch_id: `batch-${inspectPostCount}`,
+        status: failedBatch ? "failed" : inspectGetCount === 1 ? "running" : "partial",
+        submitted_count: 30,
+        completed_count: failedBatch || inspectGetCount > 1 ? 30 : 2,
+        results,
+      },
+    });
+  });
 
   await page.goto("/tv/1399?season=2");
   await expect(page.locator("#season-select")).toHaveValue("2");
@@ -283,8 +257,9 @@ test("restores TV seasons and inspects only the first 30 magnets", async ({ page
   await expect.poll(() => inspectPostCount).toBe(1);
   expect(inspectedIds).toHaveLength(30);
   expect(inspectedIds.every((id) => id.startsWith("magnet-"))).toBe(true);
-  await expect(page.getByRole("status")).toContainText("部分失败");
   await expect(page.getByRole("status")).toContainText("2 / 30");
+  await expect(page.getByRole("status")).toContainText("部分失败");
+  await expect(page.getByRole("status")).toContainText("30 / 30");
   await expect(page.locator(".resource-table tbody tr").first()).toContainText("1.0 GB");
   await expect(page.locator(".resource-table tbody tr").nth(0)).toContainText("已检测");
   await expect(page.locator(".resource-table tbody tr").nth(1)).toContainText("无法检测");
@@ -296,5 +271,11 @@ test("restores TV seasons and inspects only the first 30 magnets", async ({ page
   await expect.poll(() => inspectPostCount).toBe(2);
   await expect(page.getByRole("status")).toContainText("检测失败");
   await expect(page.getByRole("status")).not.toContainText("本页磁力检测完成");
+
+  delayNextSearch = true;
+  await page.getByRole("button", { name: "刷新资源" }).click();
+  await page.getByRole("button", { name: "电影", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "电影库" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "权力的游戏" })).toHaveCount(0);
   expect(await page.evaluate(() => document.body.scrollWidth <= window.innerWidth)).toBe(true);
 });

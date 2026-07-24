@@ -50,9 +50,12 @@ export function inspectionStatusLabel(status: InspectionResultStatus): string {
 }
 
 export function mergeInspectionResult(resource: ResourceSummary, result: InspectionResult): ResourceSummary {
+  if (result.status !== "verified") {
+    return { ...resource, inspection_status: result.status };
+  }
   return {
     ...resource,
-    ...(result.status === "verified" ? { size_bytes: result.total_size_bytes } : {}),
+    size_bytes: result.total_size_bytes,
     video_file_count: result.video_file_count,
     subtitle_count: result.subtitle_count,
     sample_count: result.sample_count,
@@ -60,8 +63,20 @@ export function mergeInspectionResult(resource: ResourceSummary, result: Inspect
   };
 }
 
+export function finalizeInspectionResources(
+  resources: ResourceSummary[],
+  resourceIds: string[],
+  status: "failed" | "timeout",
+): ResourceSummary[] {
+  const ids = new Set(resourceIds);
+  return resources.map((resource) => ids.has(resource.resource_id)
+    && (resource.inspection_status === "running" || resource.inspection_status === "queued")
+    ? { ...resource, inspection_status: status }
+    : resource);
+}
+
 export async function pollInspectionBatch(
-  getInspection: (batchId: string) => Promise<InspectionBatchResponse>,
+  getInspection: (batchId: string, signal: AbortSignal) => Promise<InspectionBatchResponse>,
   batchId: string,
   options: InspectionPollOptions,
 ): Promise<InspectionPollState> {
@@ -72,15 +87,29 @@ export async function pollInspectionBatch(
 
   while (now() < deadline) {
     if (!options.isCurrent()) return "stale";
-    const response = await getInspection(batchId);
+    const remaining = deadline - now();
+    const controller = new AbortController();
+    const abortTimer = setTimeout(() => controller.abort(), remaining);
+    let response: InspectionBatchResponse;
+    try {
+      response = await getInspection(batchId, controller.signal);
+    } catch (error) {
+      if (controller.signal.aborted) {
+        return options.isCurrent() ? "timeout" : "stale";
+      }
+      throw error;
+    } finally {
+      clearTimeout(abortTimer);
+    }
     if (!options.isCurrent()) return "stale";
     options.onResponse(response);
+    if (!options.isCurrent()) return "stale";
     if (response.status === "completed" || response.status === "partial" || response.status === "failed") {
       return response.status;
     }
-    const remaining = deadline - now();
-    if (remaining <= 0) break;
-    await sleep(Math.min(intervalMs, remaining));
+    const sleepRemaining = deadline - now();
+    if (sleepRemaining <= 0) break;
+    await sleep(Math.min(intervalMs, sleepRemaining));
   }
-  return "timeout";
+  return options.isCurrent() ? "timeout" : "stale";
 }

@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  INSPECTION_TIMEOUT_MS,
+  finalizeInspectionResources,
   inspectionProgress,
   inspectionResultEnded,
   inspectionState,
@@ -58,10 +60,32 @@ describe("inspection contract", () => {
   it("only merges verified size and preserves an unreturned resource", () => {
     const verified = mergeInspectionResult(resource, { ...emptyResult("resource-1", "verified"), total_size_bytes: 1073741824, video_file_count: 1, subtitle_count: 2, sample_count: 1 });
     const unsupported = mergeInspectionResult({ ...resource, resource_id: "resource-2", size_bytes: null }, emptyResult("resource-2", "unsupported"));
+    const failed = mergeInspectionResult({ ...resource, resource_id: "resource-3", size_bytes: null }, emptyResult("resource-3", "failed"));
 
     expect(verified).toMatchObject({ size_bytes: 1073741824, video_file_count: 1, subtitle_count: 2, sample_count: 1, inspection_status: "verified" });
     expect(unsupported.size_bytes).toBeNull();
+    expect(unsupported.video_file_count).toBeUndefined();
+    expect(unsupported.subtitle_count).toBeUndefined();
+    expect(unsupported.sample_count).toBeUndefined();
+    expect(failed.size_bytes).toBeNull();
+    expect(failed.video_file_count).toBeUndefined();
     expect(resource.inspection_status).toBeUndefined();
+  });
+
+  it("does not leave target rows running after failed or timeout exits", () => {
+    const resources: ResourceSummary[] = [
+      { ...resource, resource_id: "running", inspection_status: "running" },
+      { ...resource, resource_id: "queued", inspection_status: "queued" },
+      { ...resource, resource_id: "verified", inspection_status: "verified" },
+      { ...resource, resource_id: "unsupported", inspection_status: "unsupported" },
+      { ...resource, resource_id: "failed", inspection_status: "failed" },
+    ];
+
+    const failed = finalizeInspectionResources(resources, resources.map((item) => item.resource_id), "failed");
+    const timeout = finalizeInspectionResources(resources, resources.map((item) => item.resource_id), "timeout");
+    expect(inspectionState(batch({ status: "failed", results: [] }))).toBe("failed");
+    expect(failed.map((item) => item.inspection_status)).toEqual(["failed", "failed", "verified", "unsupported", "failed"]);
+    expect(timeout.map((item) => item.inspection_status)).toEqual(["timeout", "timeout", "verified", "unsupported", "failed"]);
   });
 
   it("maps result statuses and keeps failed batches failed", () => {
@@ -108,5 +132,61 @@ describe("inspection contract", () => {
     current = false;
     await vi.advanceTimersByTimeAsync(1_500);
     await expect(pending).resolves.toBe("stale");
+  });
+
+  it("aborts a never-resolving GET at the deadline", async () => {
+    vi.useFakeTimers();
+    let signal: AbortSignal | undefined;
+    const getInspection = vi.fn((_batchId: string, requestSignal: AbortSignal) => {
+      signal = requestSignal;
+      return new Promise<InspectionBatchResponse>((_resolve, reject) => {
+        requestSignal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+      });
+    });
+    const pending = pollInspectionBatch(getInspection, "batch-1", {
+      isCurrent: () => true,
+      onResponse: () => undefined,
+    });
+
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(INSPECTION_TIMEOUT_MS);
+    await expect(pending).resolves.toBe("timeout");
+    expect(signal?.aborted).toBe(true);
+  });
+
+  it("returns stale when sleep crosses the deadline after a batch expires", async () => {
+    let current = true;
+    let now = 0;
+    const result = await pollInspectionBatch(
+      async () => batch(),
+      "batch-1",
+      {
+        isCurrent: () => current,
+        onResponse: () => undefined,
+        now: () => now,
+        timeoutMs: 100,
+        sleep: async (milliseconds) => {
+          now += milliseconds;
+          current = false;
+        },
+      },
+    );
+
+    expect(result).toBe("stale");
+  });
+
+  it("lets App turn a network error into failed terminal rows", async () => {
+    const getInspection = vi.fn().mockRejectedValue(new Error("network"));
+    await expect(pollInspectionBatch(getInspection, "batch-1", {
+      isCurrent: () => true,
+      onResponse: () => undefined,
+    })).rejects.toThrow("network");
+
+    const finalized = finalizeInspectionResources(
+      [{ ...resource, inspection_status: "running" }],
+      [resource.resource_id],
+      "failed",
+    );
+    expect(finalized[0].inspection_status).toBe("failed");
   });
 });

@@ -67,4 +67,35 @@ describe("MovieView seasons", () => {
 
     expect(wrapper.find("#season-select").exists()).toBe(false);
   });
+
+  it("only shows season zero when it is present in metadata", () => {
+    const withoutZero = mount(MovieView, {
+      props: {
+        result: response("tv"),
+        mediaType: "tv",
+        seasonNumber: 0,
+        pushingId: null,
+        pushSupported: true,
+        favorite: false,
+      },
+    });
+    expect(withoutZero.find('option[value="0"]').exists()).toBe(false);
+
+    const withZero = response("tv");
+    withZero.movie.seasons = [
+      { season_number: 0, name: "特别篇", episode_count: 1, air_date: "2010-01-01", poster_path: null },
+      ...withZero.movie.seasons,
+    ];
+    const withZeroWrapper = mount(MovieView, {
+      props: {
+        result: withZero,
+        mediaType: "tv",
+        seasonNumber: 0,
+        pushingId: null,
+        pushSupported: true,
+        favorite: false,
+      },
+    });
+    expect(withZeroWrapper.get('option[value="0"]').text()).toContain("特别篇");
+  });
 });

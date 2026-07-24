@@ -60,8 +60,8 @@ export class ApiClient {
     });
   }
 
-  async getInspection(batchId: string): Promise<InspectionBatchResponse> {
-    return this.request<InspectionBatchResponse>(`/api/v1/resources/inspect/${encodeURIComponent(batchId)}`);
+  async getInspection(batchId: string, signal?: AbortSignal): Promise<InspectionBatchResponse> {
+    return this.request<InspectionBatchResponse>(`/api/v1/resources/inspect/${encodeURIComponent(batchId)}`, { signal });
   }
 
   async popularMovies(page = 1): Promise<MovieCollectionResponse> {

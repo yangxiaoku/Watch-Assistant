@@ -83,7 +83,7 @@ export interface SearchResponse {
 
 export interface InspectionResult {
   resource_id: string;
-  infohash: string;
+  infohash: string | null;
   status: InspectionResultStatus;
   total_size_bytes: number;
   file_count: number;

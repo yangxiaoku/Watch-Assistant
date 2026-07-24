@@ -51,7 +51,6 @@ function posterUrl(path: string | null): string | null {
       <label for="season-select">季度</label>
       <select id="season-select" :value="seasonNumber ?? ''" @change="onSeasonChange">
         <option value="">全部季度</option>
-        <option v-if="seasonNumber === 0 && !seasons.some((season) => season.season_number === 0)" value="0">第 0 季</option>
         <option v-for="season in seasons" :key="season.season_number" :value="season.season_number">
           {{ season.name || `第 ${season.season_number} 季` }} · {{ season.episode_count }} 集
         </option>
