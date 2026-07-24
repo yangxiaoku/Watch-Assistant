@@ -36,7 +36,9 @@ docker compose up -d --build
 curl http://127.0.0.1:8000/api/v1/health
 ```
 
-访问 `http://服务器地址:8000/`。构建后的用户脚本位于容器内 Web 根目录，可从 `http://服务器地址:8000/watch-assistant.user.js` 获取。
+访问 `http://服务器地址:8115/`。构建后的用户脚本位于容器内 Web 根目录，可从 `http://服务器地址:8115/watch-assistant.user.js` 获取。
+
+服务器的 `8000` 端口已被占用时，可按 `.env.example` 使用 `8115`。若 Docker Hub 不可达，可以使用 `deploy/watch-assistant.service` 以 Python venv 运行；对应环境变量模板是 `deploy/watch-assistant.env.example`。
 
 ## HTTPS
 

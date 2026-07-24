@@ -52,7 +52,8 @@ def create_app(
                 settings.encryption_key.get_secret_value()
             )
             runtime_tmdb = tmdb_client or TmdbClient(
-                settings.tmdb_api_key.get_secret_value()
+                settings.tmdb_api_key.get_secret_value(),
+                base_url=settings.tmdb_base_url,
             )
             runtime_pansou = pansou_client or PanSouClient(settings.pansou_base_url)
             await initialize_database(runtime_database.engine)

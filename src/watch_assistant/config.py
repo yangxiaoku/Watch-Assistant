@@ -25,6 +25,11 @@ class Settings(BaseSettings):
         min_length=1, validation_alias="SCRIPT_TOKEN_HASH"
     )
     pansou_base_url: str = Field(min_length=1, validation_alias="PANSOU_BASE_URL")
+    tmdb_base_url: str = Field(
+        default="https://api.themoviedb.org/3",
+        min_length=1,
+        validation_alias="TMDB_BASE_URL",
+    )
     tgto_base_url: str = Field(min_length=1, validation_alias="TGTO_BASE_URL")
     tgto_contract_path: Path = Field(
         default=Path("config/tgto-contract.json"),

@@ -11,6 +11,7 @@ services:
     environment:
       DATABASE_URL: sqlite+aiosqlite:////data/watch-assistant.db
       PANSOU_BASE_URL: http://pansou-app:80
+      TMDB_BASE_URL: ${TMDB_BASE_URL:-https://api.themoviedb.org/3}
       TGTO_BASE_URL: http://TgtoDrive:12366
       TGTO_CONTRACT_PATH: /app/config/tgto-contract.json
       COOKIE_SECURE: ${COOKIE_SECURE:-false}

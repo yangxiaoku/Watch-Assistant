@@ -39,6 +39,25 @@ def test_missing_setting_names_the_required_environment_variable(monkeypatch):
         Settings(_env_file=None)
 
 
+def test_tmdb_base_url_can_use_network_reachable_alias(monkeypatch):
+    required = {
+        "DATABASE_URL": "sqlite+aiosqlite:///test.db",
+        "ENCRYPTION_KEY": "test-key",
+        "TMDB_API_KEY": "tmdb-key",
+        "WEB_PASSWORD_HASH": "web-hash",
+        "SCRIPT_TOKEN_HASH": "script-hash",
+        "PANSOU_BASE_URL": "http://pansou.test",
+        "TGTO_BASE_URL": "http://tgto.test",
+        "TMDB_BASE_URL": "https://api.tmdb.org/3",
+    }
+    for name, value in required.items():
+        monkeypatch.setenv(name, value)
+
+    settings = Settings(_env_file=None)
+
+    assert settings.tmdb_base_url == "https://api.tmdb.org/3"
+
+
 @pytest.mark.asyncio
 async def test_cleanup_keeps_resource_referenced_by_uncertain_task(tmp_path):
     database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'watch.db'}")
