@@ -38,15 +38,18 @@ class PanSouClient:
         if not isinstance(payload, dict) or payload.get("code") != 0:
             raise PanSouError("Unexpected PanSou response shape")
         data = payload.get("data")
-        if not isinstance(data, dict) or not isinstance(
-            data.get("merged_by_type"), dict
-        ):
+        if not isinstance(data, dict):
+            raise PanSouError("Unexpected PanSou response shape")
+        merged_by_type = data.get("merged_by_type")
+        if merged_by_type is None and data.get("total") == 0:
+            merged_by_type = {}
+        if not isinstance(merged_by_type, dict):
             raise PanSouError("Unexpected PanSou response shape")
         if not all(
-            isinstance(items, list) for items in data["merged_by_type"].values()
+            isinstance(items, list) for items in merged_by_type.values()
         ):
             raise PanSouError("Unexpected PanSou response shape")
-        return data
+        return {**data, "merged_by_type": merged_by_type}
 
     async def aclose(self) -> None:
         if self._owns_client:

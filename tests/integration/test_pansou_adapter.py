@@ -54,6 +54,22 @@ async def test_pansou_rejects_unexpected_response_shape():
 
 
 @respx.mock
+async def test_pansou_accepts_empty_result_without_merged_groups():
+    respx.get("http://pansou.test/api/search").mock(
+        return_value=httpx.Response(
+            200,
+            json={"code": 0, "message": "success", "data": {"total": 0}},
+        )
+    )
+    client = PanSouClient("http://pansou.test")
+
+    result = await client.search("No results")
+    await client.aclose()
+
+    assert result == {"total": 0, "merged_by_type": {}}
+
+
+@respx.mock
 async def test_tmdb_client_extracts_movie_metadata():
     respx.get("https://api.themoviedb.org/3/movie/123").mock(
         return_value=httpx.Response(
