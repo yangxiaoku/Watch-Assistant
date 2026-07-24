@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "watch-assistant"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "aiosqlite",
+    "cryptography",
+    "fastapi",
+    "httpx",
+    "pydantic-settings",
+    "pwdlib[argon2]",
+    "python-multipart",
+    "sqlalchemy",
+    "uvicorn",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "respx",
+    "ruff",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
+[tool.setuptools.packages.find]
+where = ["src"]

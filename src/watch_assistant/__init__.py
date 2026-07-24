@@ -1,0 +1,1 @@
+"""Watch Assistant package."""
