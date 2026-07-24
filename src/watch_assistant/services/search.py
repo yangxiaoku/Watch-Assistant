@@ -15,6 +15,8 @@ from watch_assistant.crypto import SecretCrypto
 from watch_assistant.models import Resource, SearchCache
 from watch_assistant.schemas import (
     HomeCatalogResponse,
+    MediaType,
+    MovieCollectionResponse,
     MovieMetadata,
     ResourceSummary,
     SearchResponse,
@@ -29,8 +31,10 @@ class SearchUnavailable(RuntimeError):
     pass
 
 
-def make_cache_key(tmdb_id: int) -> str:
-    return f"tmdb:{tmdb_id}:queries:v1"
+def make_cache_key(
+    tmdb_id: int, media_type: MediaType = MediaType.MOVIE
+) -> str:
+    return f"tmdb:{media_type.value}:{tmdb_id}:queries:v2"
 
 
 class SearchService:
@@ -52,36 +56,81 @@ class SearchService:
     async def get_movie(self, tmdb_id: int) -> MovieMetadata:
         return await self._tmdb.get_movie(tmdb_id)
 
+    async def get_media(
+        self, tmdb_id: int, media_type: MediaType
+    ) -> MovieMetadata:
+        return await self._tmdb.get_media(tmdb_id, media_type)
+
     async def get_popular(self) -> list[MovieMetadata]:
         return await self._tmdb.get_popular()
 
     async def get_home_catalog(self) -> HomeCatalogResponse:
-        popular, now_playing, upcoming, top_rated = await asyncio.gather(
+        (
+            popular,
+            now_playing,
+            upcoming,
+            top_rated,
+            tv_popular,
+            tv_on_the_air,
+            tv_top_rated,
+        ) = await asyncio.gather(
             self._tmdb.get_feed("popular"),
             self._tmdb.get_feed("now_playing"),
             self._tmdb.get_feed("upcoming"),
             self._tmdb.get_feed("top_rated"),
+            self._tmdb.get_feed("popular", MediaType.TV),
+            self._tmdb.get_feed("on_the_air", MediaType.TV),
+            self._tmdb.get_feed("top_rated", MediaType.TV),
         )
         return HomeCatalogResponse(
             popular=popular,
             now_playing=now_playing,
             upcoming=upcoming,
             top_rated=top_rated,
+            tv_popular=tv_popular,
+            tv_on_the_air=tv_on_the_air,
+            tv_top_rated=tv_top_rated,
         )
 
-    async def discover_movies(
-        self, *, genre_id: int | None, year: int | None, sort: str
-    ) -> list[MovieMetadata]:
-        return await self._tmdb.discover_movies(
-            genre_id=genre_id, year=year, sort=sort
+    async def discover_media(
+        self,
+        *,
+        media_type: MediaType,
+        genre_id: int | None,
+        year: int | None,
+        sort: str,
+        page: int,
+    ) -> MovieCollectionResponse:
+        return await self._tmdb.discover_media(
+            media_type=media_type,
+            genre_id=genre_id,
+            year=year,
+            sort=sort,
+            page=page,
         )
+
+    async def get_popular_page(
+        self, page: int
+    ) -> MovieCollectionResponse:
+        return await self._tmdb.get_feed_page("popular", page=page)
 
     async def search_movies(self, query: str) -> list[MovieMetadata]:
         return await self._tmdb.search_movies(query)
 
-    async def search(self, tmdb_id: int, *, refresh: bool = False) -> SearchResponse:
-        movie = await self.get_movie(tmdb_id)
-        cache_key = make_cache_key(tmdb_id)
+    async def search_media(
+        self, query: str, page: int
+    ) -> MovieCollectionResponse:
+        return await self._tmdb.search_media(query, page=page)
+
+    async def search(
+        self,
+        tmdb_id: int,
+        *,
+        media_type: MediaType = MediaType.MOVIE,
+        refresh: bool = False,
+    ) -> SearchResponse:
+        movie = await self.get_media(tmdb_id, media_type)
+        cache_key = make_cache_key(tmdb_id, media_type)
         now = datetime.now(UTC)
         async with self._session_factory() as session:
             cache = await session.get(SearchCache, cache_key)

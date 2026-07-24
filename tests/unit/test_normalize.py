@@ -86,7 +86,7 @@ def test_115_results_require_configured_domain_and_dedupe_by_share_id(
     assert shares[0].seeders == 8
 
 
-def test_tmdb_queries_are_unique_and_limited_to_two():
+def test_tmdb_queries_include_title_and_year_fallbacks():
     movie = MovieMetadata(
         tmdb_id=123,
         title="盗梦空间",
@@ -94,7 +94,12 @@ def test_tmdb_queries_are_unique_and_limited_to_two():
         release_year=2010,
     )
 
-    assert build_search_queries(movie) == ["盗梦空间 2010", "Inception 2010"]
+    assert build_search_queries(movie) == [
+        "盗梦空间",
+        "盗梦空间 2010",
+        "Inception",
+        "Inception 2010",
+    ]
 
     duplicate_title = movie.model_copy(update={"original_title": " 盗梦空间 "})
-    assert build_search_queries(duplicate_title) == ["盗梦空间 2010"]
+    assert build_search_queries(duplicate_title) == ["盗梦空间", "盗梦空间 2010"]

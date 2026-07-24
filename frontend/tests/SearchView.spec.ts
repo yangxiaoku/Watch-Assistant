@@ -20,7 +20,10 @@ describe("SearchView", () => {
         loading: false,
         movies: [movie],
         heading: "搜索结果",
-        favoriteIds: new Set<number>(),
+        favoriteIds: new Set<string>(),
+        page: 1,
+        totalPages: 3,
+        totalResults: 55,
       },
     });
 
@@ -28,5 +31,7 @@ describe("SearchView", () => {
 
     expect(wrapper.get("h1").text()).toBe("搜索结果");
     expect(wrapper.emitted("open")?.[0]).toEqual([movie]);
+    await wrapper.get('button[aria-label="下一页"]').trigger("click");
+    expect(wrapper.emitted("page")?.[0]).toEqual([2]);
   });
 });

@@ -1,16 +1,17 @@
 <script setup lang="ts">
-import { Clock3, Film, Flame, Heart, Home, LoaderCircle, LogIn, PanelRight, Search, X } from "@lucide/vue";
+import { Clock3, Film, Flame, Heart, Home, LoaderCircle, LogIn, PanelRight, Search, Tv, X } from "@lucide/vue";
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { ApiClient, ApiError } from "./api";
 import TaskDrawer from "./components/TaskDrawer.vue";
 import {
   extractBrowseView,
-  extractMovieId,
-  navigateToMovie,
+  extractMediaRoute,
+  navigateToMedia,
   navigateToSearch,
   navigateToView,
   type BrowseView,
 } from "./router";
+import { mediaKey, mediaTypeOf } from "./media";
 import type { HomeCatalogResponse, MovieMetadata, ResourceSummary, SearchResponse, TaskResponse } from "./types";
 import CollectionView from "./views/CollectionView.vue";
 import HomeView from "./views/HomeView.vue";
@@ -36,6 +37,9 @@ const previousView = ref<BrowseView>("home");
 const genreId = ref<number | undefined>();
 const year = ref<number | undefined>();
 const sort = ref<"popular" | "rating" | "release">("popular");
+const currentPage = ref(1);
+const totalPages = ref(1);
+const totalResults = ref(0);
 const favorites = ref<MovieMetadata[]>(readStoredMovies(FAVORITES_KEY));
 const history = ref<MovieMetadata[]>(readStoredMovies(HISTORY_KEY));
 const tasks = ref<TaskResponse[]>([]);
@@ -44,13 +48,14 @@ const drawerOpen = ref(false);
 const pushSupported = ref(true);
 let pollTimer: number | undefined;
 
-const favoriteIds = computed(() => new Set(favorites.value.map((movie) => movie.tmdb_id)));
-const detailFavorite = computed(() => result.value ? favoriteIds.value.has(result.value.movie.tmdb_id) : false);
+const favoriteIds = computed(() => new Set(favorites.value.map(mediaKey)));
+const detailFavorite = computed(() => result.value ? favoriteIds.value.has(mediaKey(result.value.movie)) : false);
 const hasActiveTasks = computed(() => tasks.value.some((task) => task.state === "queued" || task.state === "submitting"));
 
 const navItems = [
   { view: "home" as const, label: "首页", icon: Home },
   { view: "movies" as const, label: "电影", icon: Film },
+  { view: "tv" as const, label: "剧集", icon: Tv },
   { view: "popular" as const, label: "热门", icon: Flame },
 ];
 
@@ -70,14 +75,15 @@ function storeMovies(key: string, movies: MovieMetadata[]) {
 }
 
 function toggleFavorite(movie: MovieMetadata) {
-  favorites.value = favoriteIds.value.has(movie.tmdb_id)
-    ? favorites.value.filter((item) => item.tmdb_id !== movie.tmdb_id)
+  const key = mediaKey(movie);
+  favorites.value = favoriteIds.value.has(key)
+    ? favorites.value.filter((item) => mediaKey(item) !== key)
     : [movie, ...favorites.value].slice(0, 100);
   storeMovies(FAVORITES_KEY, favorites.value);
 }
 
 function recordHistory(movie: MovieMetadata) {
-  history.value = [movie, ...history.value.filter((item) => item.tmdb_id !== movie.tmdb_id)].slice(0, 50);
+  history.value = [movie, ...history.value.filter((item) => mediaKey(item) !== mediaKey(movie))].slice(0, 50);
   storeMovies(HISTORY_KEY, history.value);
 }
 
@@ -94,26 +100,42 @@ async function loadHome() {
   }
 }
 
-async function loadDiscover(filters = { genreId: genreId.value, year: year.value, sort: sort.value }) {
+async function loadDiscover(
+  filters = { genreId: genreId.value, year: year.value, sort: sort.value },
+  page = 1,
+) {
   genreId.value = filters.genreId;
   year.value = filters.year;
   sort.value = filters.sort;
   catalogLoading.value = true;
+  currentPage.value = page;
   error.value = "";
   try {
-    catalogMovies.value = (await api.discoverMovies(filters)).results;
+    const response = await api.discoverMedia(
+      activeView.value === "tv" ? "tv" : "movie",
+      { ...filters, page },
+    );
+    catalogMovies.value = response.results;
+    currentPage.value = response.page;
+    totalPages.value = response.total_pages;
+    totalResults.value = response.total_results;
   } catch (exception) {
-    error.value = exception instanceof ApiError ? exception.message : "电影目录加载失败，请稍后重试";
+    const label = activeView.value === "tv" ? "剧集" : "电影";
+    error.value = exception instanceof ApiError ? exception.message : `${label}目录加载失败，请稍后重试`;
   } finally {
     catalogLoading.value = false;
   }
 }
 
-async function loadPopular() {
+async function loadPopular(page = 1) {
   catalogLoading.value = true;
   error.value = "";
   try {
-    catalogMovies.value = homeCatalog.value?.popular ?? (await api.popularMovies()).results;
+    const response = await api.popularMovies(page);
+    catalogMovies.value = response.results;
+    currentPage.value = response.page;
+    totalPages.value = response.total_pages;
+    totalResults.value = response.total_results;
     catalogHeading.value = "本周热门";
   } catch (exception) {
     error.value = exception instanceof ApiError ? exception.message : "热门电影加载失败，请稍后重试";
@@ -122,7 +144,7 @@ async function loadPopular() {
   }
 }
 
-async function performSearch(updateUrl: boolean) {
+async function performSearch(updateUrl: boolean, page = 1) {
   const searchQuery = query.value.trim();
   if (!searchQuery) return;
   activeView.value = "search";
@@ -133,9 +155,13 @@ async function performSearch(updateUrl: boolean) {
   error.value = "";
   catalogHeading.value = `“${searchQuery}”的搜索结果`;
   try {
-    catalogMovies.value = (await api.searchMovies(searchQuery)).results;
+    const response = await api.searchMedia(searchQuery, page);
+    catalogMovies.value = response.results;
+    currentPage.value = response.page;
+    totalPages.value = response.total_pages;
+    totalResults.value = response.total_results;
   } catch (exception) {
-    error.value = exception instanceof ApiError ? exception.message : "电影搜索失败，请稍后重试";
+    error.value = exception instanceof ApiError ? exception.message : "影视搜索失败，请稍后重试";
   } finally {
     catalogLoading.value = false;
   }
@@ -145,9 +171,24 @@ async function searchMovies() {
   await performSearch(true);
 }
 
+async function loadPage(page: number) {
+  if (activeView.value === "movies" || activeView.value === "tv") {
+    await loadDiscover(
+      { genreId: genreId.value, year: year.value, sort: sort.value },
+      page,
+    );
+  } else if (activeView.value === "popular") {
+    await loadPopular(page);
+  } else if (activeView.value === "search") {
+    await performSearch(false, page);
+  }
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
 async function loadView(view: BrowseView) {
   if (view === "home") await loadHome();
   if (view === "movies") await loadDiscover();
+  if (view === "tv") await loadDiscover();
   if (view === "popular") await loadPopular();
   if (view === "search") await performSearch(false);
 }
@@ -156,16 +197,22 @@ async function selectView(view: Exclude<BrowseView, "search">) {
   result.value = null;
   error.value = "";
   activeView.value = view;
+  currentPage.value = 1;
+  if (view === "movies" || view === "tv") {
+    genreId.value = undefined;
+    year.value = undefined;
+    sort.value = "popular";
+  }
   previousView.value = view;
   navigateToView(view);
   await loadView(view);
 }
 
-async function loadResources(id: number, refresh = false) {
+async function loadResources(id: number, mediaType: "movie" | "tv", refresh = false) {
   loading.value = true;
   error.value = "";
   try {
-    result.value = await api.search(id, refresh);
+    result.value = await api.search(id, mediaType, refresh);
     recordHistory(result.value.movie);
   } catch (exception) {
     error.value = exception instanceof ApiError ? exception.message : "资源搜索失败，请稍后重试";
@@ -178,8 +225,9 @@ async function openMovie(movie: MovieMetadata) {
   previousView.value = activeView.value;
   recordHistory(movie);
   result.value = null;
-  navigateToMovie(movie.tmdb_id);
-  await loadResources(movie.tmdb_id);
+  const mediaType = mediaTypeOf(movie);
+  navigateToMedia(mediaType, movie.tmdb_id);
+  await loadResources(movie.tmdb_id, mediaType);
 }
 
 async function returnToBrowse() {
@@ -195,9 +243,9 @@ async function returnToBrowse() {
 }
 
 async function initializeWorkspace() {
-  const movieId = extractMovieId(window.location.pathname);
-  if (movieId !== null) {
-    await loadResources(movieId);
+  const mediaRoute = extractMediaRoute(window.location.pathname);
+  if (mediaRoute !== null) {
+    await loadResources(mediaRoute.tmdbId, mediaRoute.mediaType);
     return;
   }
   activeView.value = extractBrowseView(window.location.pathname);
@@ -287,7 +335,7 @@ onBeforeUnmount(() => {
         <nav class="primary-nav" aria-label="主导航">
           <button v-for="item in navItems" :key="item.view" type="button" :class="{ active: activeView === item.view && !result }" @click="selectView(item.view)"><component :is="item.icon" :size="16" />{{ item.label }}</button>
         </nav>
-        <form class="top-search" role="search" @submit.prevent="searchMovies"><Search :size="17" /><input v-model="query" type="search" aria-label="搜索电影" placeholder="搜索电影名称" /><button type="submit" aria-label="提交搜索" title="搜索"><Search :size="17" /></button></form>
+        <form class="top-search" role="search" @submit.prevent="searchMovies"><Search :size="17" /><input v-model="query" type="search" aria-label="搜索电影或电视剧" placeholder="搜索电影或电视剧" /><button type="submit" aria-label="提交搜索" title="搜索"><Search :size="17" /></button></form>
         <div class="topbar-actions">
           <button type="button" :class="{ active: activeView === 'favorites' && !result }" @click="selectView('favorites')"><Heart :size="17" />收藏</button>
           <button type="button" :class="{ active: activeView === 'history' && !result }" @click="selectView('history')"><Clock3 :size="17" />记录</button>
@@ -303,13 +351,13 @@ onBeforeUnmount(() => {
       <p v-if="error" class="error-strip"><X :size="16" />{{ error }}</p>
       <template v-if="!result && !loading">
         <HomeView v-if="activeView === 'home'" :catalog="homeCatalog" :loading="catalogLoading" :favorite-ids="favoriteIds" @open="openMovie" @favorite="toggleFavorite" @navigate="selectView" />
-        <LibraryView v-else-if="activeView === 'movies'" :movies="catalogMovies" :loading="catalogLoading" :favorite-ids="favoriteIds" :genre-id="genreId" :year="year" :sort="sort" @open="openMovie" @favorite="toggleFavorite" @filters="loadDiscover" />
+        <LibraryView v-else-if="activeView === 'movies' || activeView === 'tv'" :movies="catalogMovies" :loading="catalogLoading" :favorite-ids="favoriteIds" :genre-id="genreId" :year="year" :sort="sort" :media-type="activeView" :page="currentPage" :total-pages="totalPages" :total-results="totalResults" @open="openMovie" @favorite="toggleFavorite" @filters="loadDiscover" @page="loadPage" />
         <CollectionView v-else-if="activeView === 'favorites' || activeView === 'history'" :mode="activeView" :movies="activeView === 'favorites' ? favorites : history" :favorite-ids="favoriteIds" @open="openMovie" @favorite="toggleFavorite" />
-        <SearchView v-else v-model="query" :loading="catalogLoading" :movies="catalogMovies" :heading="catalogHeading" :favorite-ids="favoriteIds" @search="searchMovies" @reset="selectView('home')" @open="openMovie" @favorite="toggleFavorite" />
+        <SearchView v-else v-model="query" :loading="catalogLoading" :movies="catalogMovies" :heading="catalogHeading" :favorite-ids="favoriteIds" :page="currentPage" :total-pages="totalPages" :total-results="totalResults" @search="searchMovies" @reset="selectView('home')" @open="openMovie" @favorite="toggleFavorite" @page="loadPage" />
       </template>
       <section v-else-if="loading && !result" class="detail-loading"><LoaderCircle class="spin" :size="24" /><strong>正在聚合资源</strong><span>正在查询 PanSou 的磁力与 115 分享结果</span></section>
       <p v-if="!pushSupported && result" class="warning-strip">TgtoDrive 推送契约尚未验证，推送按钮已禁用。</p>
-      <section v-if="result" class="detail-workspace"><MovieView :result="result" :pushing-id="pushingId" :push-supported="pushSupported" :favorite="detailFavorite" @push="push" @favorite="toggleFavorite(result.movie)" @refresh="loadResources(result.movie.tmdb_id, true)" @back="returnToBrowse" /></section>
+      <section v-if="result" class="detail-workspace"><MovieView :result="result" :pushing-id="pushingId" :push-supported="pushSupported" :favorite="detailFavorite" @push="push" @favorite="toggleFavorite(result.movie)" @refresh="loadResources(result.movie.tmdb_id, mediaTypeOf(result.movie), true)" @back="returnToBrowse" /></section>
     </template>
     <TaskDrawer :tasks="tasks" :open="drawerOpen" @close="drawerOpen = false" />
   </main>

@@ -1,17 +1,27 @@
-"""TMDB movie metadata adapter."""
+"""TMDB movie and television metadata adapter."""
 
 import re
 
 import httpx
 
-from watch_assistant.schemas import MovieMetadata
+from watch_assistant.schemas import MediaType, MovieCollectionResponse, MovieMetadata
 
 TMDB_BASE_URL = "https://api.themoviedb.org/3"
-MOVIE_FEEDS = {"popular", "now_playing", "upcoming", "top_rated"}
+MEDIA_FEEDS = {
+    MediaType.MOVIE: {"popular", "now_playing", "upcoming", "top_rated"},
+    MediaType.TV: {"popular", "on_the_air", "airing_today", "top_rated"},
+}
 DISCOVER_SORTS = {
-    "popular": "popularity.desc",
-    "rating": "vote_average.desc",
-    "release": "primary_release_date.desc",
+    MediaType.MOVIE: {
+        "popular": "popularity.desc",
+        "rating": "vote_average.desc",
+        "release": "primary_release_date.desc",
+    },
+    MediaType.TV: {
+        "popular": "popularity.desc",
+        "rating": "vote_average.desc",
+        "release": "first_air_date.desc",
+    },
 }
 
 
@@ -34,17 +44,68 @@ class TmdbClient:
         self._client = client or httpx.AsyncClient(base_url=base_url.rstrip("/"))
 
     async def get_movie(self, tmdb_id: int) -> MovieMetadata:
-        payload = await self._get(f"/movie/{tmdb_id}")
-        return _parse_movie(payload, tmdb_id=tmdb_id)
+        return await self.get_media(tmdb_id, MediaType.MOVIE)
+
+    async def get_media(
+        self, tmdb_id: int, media_type: MediaType
+    ) -> MovieMetadata:
+        payload = await self._get(f"/{media_type.value}/{tmdb_id}")
+        return _parse_media(payload, tmdb_id=tmdb_id, media_type=media_type)
 
     async def get_popular(self) -> list[MovieMetadata]:
         return await self.get_feed("popular")
 
-    async def get_feed(self, feed: str) -> list[MovieMetadata]:
-        if feed not in MOVIE_FEEDS:
-            raise ValueError("Unsupported movie feed")
-        payload = await self._get(f"/movie/{feed}", params={"page": 1})
-        return _parse_movie_collection(payload)
+    async def get_feed(
+        self, feed: str, media_type: MediaType = MediaType.MOVIE
+    ) -> list[MovieMetadata]:
+        return (await self.get_feed_page(feed, media_type=media_type)).results
+
+    async def get_feed_page(
+        self,
+        feed: str,
+        *,
+        media_type: MediaType = MediaType.MOVIE,
+        page: int = 1,
+    ) -> MovieCollectionResponse:
+        if feed not in MEDIA_FEEDS[media_type]:
+            raise ValueError("Unsupported media feed")
+        payload = await self._get(
+            f"/{media_type.value}/{feed}", params={"page": page}
+        )
+        return _parse_media_collection(payload, media_type=media_type)
+
+    async def discover_media(
+        self,
+        *,
+        media_type: MediaType,
+        genre_id: int | None = None,
+        year: int | None = None,
+        sort: str = "popular",
+        page: int = 1,
+    ) -> MovieCollectionResponse:
+        if sort not in DISCOVER_SORTS[media_type]:
+            raise ValueError("Unsupported media sort")
+        params: dict[str, str | int] = {
+            "page": page,
+            "sort_by": DISCOVER_SORTS[media_type][sort],
+            "include_adult": "false",
+            "include_video": "false",
+        }
+        if genre_id is not None:
+            params["with_genres"] = genre_id
+        if year is not None:
+            year_field = (
+                "primary_release_year"
+                if media_type == MediaType.MOVIE
+                else "first_air_date_year"
+            )
+            params[year_field] = year
+        if sort == "rating":
+            params["vote_count.gte"] = 200
+        payload = await self._get(
+            f"/discover/{media_type.value}", params=params
+        )
+        return _parse_media_collection(payload, media_type=media_type)
 
     async def discover_movies(
         self,
@@ -52,29 +113,33 @@ class TmdbClient:
         genre_id: int | None = None,
         year: int | None = None,
         sort: str = "popular",
+        page: int = 1,
     ) -> list[MovieMetadata]:
-        if sort not in DISCOVER_SORTS:
-            raise ValueError("Unsupported movie sort")
-        params: dict[str, str | int] = {
-            "page": 1,
-            "sort_by": DISCOVER_SORTS[sort],
-            "include_adult": "false",
-            "include_video": "false",
-        }
-        if genre_id is not None:
-            params["with_genres"] = genre_id
-        if year is not None:
-            params["primary_release_year"] = year
-        if sort == "rating":
-            params["vote_count.gte"] = 200
-        payload = await self._get("/discover/movie", params=params)
-        return _parse_movie_collection(payload)
+        return (
+            await self.discover_media(
+                media_type=MediaType.MOVIE,
+                genre_id=genre_id,
+                year=year,
+                sort=sort,
+                page=page,
+            )
+        ).results
 
     async def search_movies(self, query: str) -> list[MovieMetadata]:
         payload = await self._get(
             "/search/movie", params={"query": query, "page": 1}
         )
-        return _parse_movie_collection(payload)
+        return _parse_media_collection(
+            payload, media_type=MediaType.MOVIE
+        ).results
+
+    async def search_media(
+        self, query: str, *, page: int = 1
+    ) -> MovieCollectionResponse:
+        payload = await self._get(
+            "/search/multi", params={"query": query, "page": page}
+        )
+        return _parse_multi_collection(payload)
 
     async def _get(
         self, path: str, *, params: dict[str, str | int] | None = None
@@ -106,29 +171,73 @@ class TmdbClient:
             await self._client.aclose()
 
 
-def _parse_movie_collection(payload: dict) -> list[MovieMetadata]:
+def _parse_media_collection(
+    payload: dict, *, media_type: MediaType
+) -> MovieCollectionResponse:
     results = payload.get("results")
     if not isinstance(results, list):
         raise TmdbError("Unexpected TMDB response shape")
-    movies: list[MovieMetadata] = []
+    items: list[MovieMetadata] = []
     for item in results:
         if not isinstance(item, dict) or not isinstance(item.get("id"), int):
             continue
         try:
-            movies.append(_parse_movie(item, tmdb_id=item["id"]))
+            items.append(
+                _parse_media(item, tmdb_id=item["id"], media_type=media_type)
+            )
         except TmdbError:
             continue
-    return movies
+    return MovieCollectionResponse(
+        results=items,
+        page=_positive_int(payload.get("page"), 1),
+        total_pages=min(_positive_int(payload.get("total_pages"), 1), 500),
+        total_results=_nonnegative_int(payload.get("total_results"), len(items)),
+    )
 
 
-def _parse_movie(payload: dict, *, tmdb_id: int) -> MovieMetadata:
-    title = payload.get("title")
+def _parse_multi_collection(payload: dict) -> MovieCollectionResponse:
+    results = payload.get("results")
+    if not isinstance(results, list):
+        raise TmdbError("Unexpected TMDB response shape")
+    items: list[MovieMetadata] = []
+    for item in results:
+        if not isinstance(item, dict) or not isinstance(item.get("id"), int):
+            continue
+        try:
+            media_type = MediaType(item.get("media_type"))
+        except ValueError:
+            continue
+        try:
+            items.append(
+                _parse_media(item, tmdb_id=item["id"], media_type=media_type)
+            )
+        except TmdbError:
+            continue
+    return MovieCollectionResponse(
+        results=items,
+        page=_positive_int(payload.get("page"), 1),
+        total_pages=min(_positive_int(payload.get("total_pages"), 1), 500),
+        total_results=_nonnegative_int(payload.get("total_results"), len(items)),
+    )
+
+
+def _parse_media(
+    payload: dict, *, tmdb_id: int, media_type: MediaType
+) -> MovieMetadata:
+    title_field = "title" if media_type == MediaType.MOVIE else "name"
+    original_field = (
+        "original_title" if media_type == MediaType.MOVIE else "original_name"
+    )
+    date_field = (
+        "release_date" if media_type == MediaType.MOVIE else "first_air_date"
+    )
+    title = payload.get(title_field)
     if not isinstance(title, str) or not title.strip():
         raise TmdbError("Unexpected TMDB response shape")
-    original_title = payload.get("original_title")
+    original_title = payload.get(original_field)
     if not isinstance(original_title, str):
         original_title = None
-    release_date = payload.get("release_date")
+    release_date = payload.get(date_field)
     release_year = None
     if isinstance(release_date, str) and re.match(r"^\d{4}-", release_date):
         release_year = int(release_date[:4])
@@ -138,6 +247,7 @@ def _parse_movie(payload: dict, *, tmdb_id: int) -> MovieMetadata:
 
     return MovieMetadata(
         tmdb_id=tmdb_id,
+        media_type=media_type,
         title=title.strip(),
         original_title=original_title.strip() if original_title else None,
         release_year=release_year,
@@ -169,22 +279,27 @@ def _parse_genre_ids(payload: dict) -> list[int]:
     return []
 
 
-def build_search_queries(movie: MovieMetadata) -> list[str]:
+def _positive_int(value: object, fallback: int) -> int:
+    return value if isinstance(value, int) and value > 0 else fallback
+
+
+def _nonnegative_int(value: object, fallback: int) -> int:
+    return value if isinstance(value, int) and value >= 0 else fallback
+
+
+def build_search_queries(media: MovieMetadata) -> list[str]:
     queries: list[str] = []
     seen: set[str] = set()
-    for candidate in (movie.title, movie.original_title):
+    for candidate in (media.title, media.original_title):
         if not candidate:
             continue
         normalized_title = " ".join(candidate.split())
-        query = (
-            f"{normalized_title} {movie.release_year}"
-            if movie.release_year is not None
-            else normalized_title
-        )
-        key = query.casefold()
-        if key not in seen:
-            seen.add(key)
-            queries.append(query)
-        if len(queries) == 2:
-            break
-    return queries
+        variants = [normalized_title]
+        if media.release_year is not None:
+            variants.append(f"{normalized_title} {media.release_year}")
+        for query in variants:
+            key = query.casefold()
+            if key not in seen:
+                seen.add(key)
+                queries.append(query)
+    return queries[:4]

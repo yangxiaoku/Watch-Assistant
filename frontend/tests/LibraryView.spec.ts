@@ -9,8 +9,12 @@ describe("LibraryView", () => {
       props: {
         movies: [],
         loading: false,
-        favoriteIds: new Set<number>(),
+        favoriteIds: new Set<string>(),
         sort: "popular",
+        mediaType: "movie",
+        page: 1,
+        totalPages: 1,
+        totalResults: 0,
       },
     });
 

@@ -1,13 +1,14 @@
 <script setup lang="ts">
 import { ChevronRight } from "@lucide/vue";
 import MovieCard from "./MovieCard.vue";
+import { mediaKey } from "../media";
 import type { MovieMetadata } from "../types";
 
 defineProps<{
   title: string;
   eyebrow: string;
   movies: MovieMetadata[];
-  favoriteIds: Set<number>;
+  favoriteIds: Set<string>;
   actionLabel?: string;
 }>();
 defineEmits<{
@@ -24,7 +25,7 @@ defineEmits<{
       <button v-if="actionLabel" class="text-button" type="button" @click="$emit('action')">{{ actionLabel }}<ChevronRight :size="16" /></button>
     </header>
     <div class="movie-row">
-      <MovieCard v-for="movie in movies.slice(0, 12)" :key="movie.tmdb_id" :movie="movie" :favorite="favoriteIds.has(movie.tmdb_id)" @open="$emit('open', $event)" @favorite="$emit('favorite', $event)" />
+      <MovieCard v-for="movie in movies.slice(0, 12)" :key="mediaKey(movie)" :movie="movie" :favorite="favoriteIds.has(mediaKey(movie))" @open="$emit('open', $event)" @favorite="$emit('favorite', $event)" />
     </div>
   </section>
 </template>

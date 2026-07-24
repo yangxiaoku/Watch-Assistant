@@ -9,6 +9,7 @@ export type TaskState =
 
 export interface MovieMetadata {
   tmdb_id: number;
+  media_type?: "movie" | "tv";
   title: string;
   original_title: string | null;
   release_year: number | null;
@@ -21,6 +22,9 @@ export interface MovieMetadata {
 
 export interface MovieCollectionResponse {
   results: MovieMetadata[];
+  page: number;
+  total_pages: number;
+  total_results: number;
 }
 
 export interface HomeCatalogResponse {
@@ -28,6 +32,9 @@ export interface HomeCatalogResponse {
   now_playing: MovieMetadata[];
   upcoming: MovieMetadata[];
   top_rated: MovieMetadata[];
+  tv_popular: MovieMetadata[];
+  tv_on_the_air: MovieMetadata[];
+  tv_top_rated: MovieMetadata[];
 }
 
 export interface ResourceSummary {

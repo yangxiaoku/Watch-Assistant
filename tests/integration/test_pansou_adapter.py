@@ -4,6 +4,7 @@ import respx
 
 from watch_assistant.adapters.pansou import PanSouClient, PanSouError
 from watch_assistant.adapters.tmdb import TmdbClient
+from watch_assistant.schemas import MediaType
 
 
 @respx.mock
@@ -125,3 +126,51 @@ async def test_tmdb_client_returns_popular_movies():
     assert route.called
     assert movies[0].tmdb_id == 550
     assert movies[0].vote_average == 8.4
+
+
+@respx.mock
+async def test_tmdb_client_parses_tv_and_multi_search_pagination():
+    respx.get("https://api.themoviedb.org/3/tv/1399").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": 1399,
+                "name": "权力的游戏",
+                "original_name": "Game of Thrones",
+                "first_air_date": "2011-04-17",
+                "genres": [{"id": 10765}],
+            },
+        )
+    )
+    respx.get("https://api.themoviedb.org/3/search/multi").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "page": 2,
+                "total_pages": 8,
+                "total_results": 150,
+                "results": [
+                    {
+                        "id": 1399,
+                        "media_type": "tv",
+                        "name": "权力的游戏",
+                        "first_air_date": "2011-04-17",
+                    },
+                    {"id": 1, "media_type": "person", "name": "演员"},
+                ],
+            },
+        )
+    )
+    client = TmdbClient("tmdb-secret")
+
+    show = await client.get_media(1399, MediaType.TV)
+    results = await client.search_media("权力的游戏", page=2)
+    await client.aclose()
+
+    assert show.title == "权力的游戏"
+    assert show.original_title == "Game of Thrones"
+    assert show.release_year == 2011
+    assert show.media_type == MediaType.TV
+    assert results.page == 2
+    assert results.total_pages == 8
+    assert [item.tmdb_id for item in results.results] == [1399]

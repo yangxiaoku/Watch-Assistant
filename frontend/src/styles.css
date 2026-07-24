@@ -77,6 +77,7 @@ input { outline: none; }
 .movie-card:hover .poster-frame { border-color: #68a0ff; transform: translateY(-2px); }
 .movie-card:focus-visible, .favorite-button:focus-visible { outline: 2px solid #68a0ff; outline-offset: 3px; }
 .rating { position: absolute; right: 7px; bottom: 7px; display: inline-flex; align-items: center; gap: 4px; padding: 5px 7px; color: #11141a; background: #f3ce68; border-radius: 3px; font-size: 10px; font-weight: 850; }
+.media-badge { position: absolute; left: 7px; bottom: 7px; padding: 5px 7px; color: #f4f5f7; background: #3668bc; border-radius: 3px; font-size: 10px; font-weight: 800; }
 .favorite-button { position: absolute; z-index: 1; top: 7px; right: 7px; width: 30px; height: 30px; padding: 0; }
 .movie-card-copy { display: block; padding-top: 9px; }
 .movie-card-copy strong, .movie-card-copy small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -108,6 +109,12 @@ input { outline: none; }
 .collection-empty, .empty-state { display: grid; min-height: 270px; place-items: center; align-content: center; gap: 10px; color: #6f7580; text-align: center; border: 1px dashed #35383e; }
 .collection-empty strong { color: #d5d7dc; }
 .collection-empty span { color: #7f848d; font-size: 12px; }
+.pagination { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin-top: 28px; padding: 16px 0; border-top: 1px solid #2b2d32; }
+.pagination > span { color: #858a94; font-size: 12px; }
+.pagination > div { display: flex; align-items: center; gap: 5px; }
+.pagination button { display: grid; width: 34px; height: 34px; padding: 0; place-items: center; color: #bcc0c8; background: #202328; border: 1px solid #343840; border-radius: 4px; }
+.pagination button:hover:not(:disabled) { color: #fff; border-color: #68a0ff; }
+.pagination strong { display: grid; min-width: 34px; height: 34px; place-items: center; color: #10141a; background: #68a0ff; border-radius: 4px; font-size: 12px; }
 
 .primary-button, .secondary-button, .push-button { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 40px; padding: 0 14px; border-radius: 4px; font-weight: 750; white-space: nowrap; }
 .primary-button { color: #10141a; background: #68a0ff; border: 0; }
@@ -216,6 +223,7 @@ input { outline: none; }
   .filter-row > strong { display: block; margin-bottom: 7px; }
   .filter-options { flex-wrap: nowrap; padding-bottom: 4px; overflow-x: auto; }
   .filter-options button { flex: 0 0 auto; }
+  .pagination { align-items: flex-start; flex-direction: column; }
   .search-heading { display: block; }
   .search-heading .secondary-button { margin-top: 16px; }
   .detail-actions { padding-top: 20px; }

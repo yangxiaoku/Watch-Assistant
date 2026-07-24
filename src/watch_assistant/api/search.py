@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from watch_assistant.adapters.tmdb import TmdbError
 from watch_assistant.schemas import (
     HomeCatalogResponse,
+    MediaType,
     MovieCollectionResponse,
     MovieMetadata,
     SearchRequest,
@@ -41,12 +42,15 @@ async def discover_movies(
     genre_id: int | None = Query(default=None, ge=1),
     year: int | None = Query(default=None, ge=1900, le=2100),
     sort: Literal["popular", "rating", "release"] = "popular",
+    page: int = Query(default=1, ge=1, le=500),
 ) -> MovieCollectionResponse:
     try:
-        return MovieCollectionResponse(
-            results=await service.discover_movies(
-                genre_id=genre_id, year=year, sort=sort
-            )
+        return await service.discover_media(
+            media_type=MediaType.MOVIE,
+            genre_id=genre_id,
+            year=year,
+            sort=sort,
+            page=page,
         )
     except TmdbError as exc:
         raise HTTPException(status_code=502, detail="tmdb_unavailable") from exc
@@ -55,9 +59,10 @@ async def discover_movies(
 @router.get("/movies/popular", response_model=MovieCollectionResponse)
 async def get_popular_movies(
     service: SearchServiceDependency,
+    page: int = Query(default=1, ge=1, le=500),
 ) -> MovieCollectionResponse:
     try:
-        return MovieCollectionResponse(results=await service.get_popular())
+        return await service.get_popular_page(page)
     except TmdbError as exc:
         raise HTTPException(status_code=502, detail="tmdb_unavailable") from exc
 
@@ -69,6 +74,51 @@ async def search_movies(
 ) -> MovieCollectionResponse:
     try:
         return MovieCollectionResponse(results=await service.search_movies(query))
+    except TmdbError as exc:
+        raise HTTPException(status_code=502, detail="tmdb_unavailable") from exc
+
+
+@router.get("/media/search", response_model=MovieCollectionResponse)
+async def search_media(
+    service: SearchServiceDependency,
+    query: str = Query(min_length=1, max_length=100),
+    page: int = Query(default=1, ge=1, le=500),
+) -> MovieCollectionResponse:
+    try:
+        return await service.search_media(query, page)
+    except TmdbError as exc:
+        raise HTTPException(status_code=502, detail="tmdb_unavailable") from exc
+
+
+@router.get("/media/discover", response_model=MovieCollectionResponse)
+async def discover_media(
+    service: SearchServiceDependency,
+    media_type: MediaType,
+    genre_id: int | None = Query(default=None, ge=1),
+    year: int | None = Query(default=None, ge=1900, le=2100),
+    sort: Literal["popular", "rating", "release"] = "popular",
+    page: int = Query(default=1, ge=1, le=500),
+) -> MovieCollectionResponse:
+    try:
+        return await service.discover_media(
+            media_type=media_type,
+            genre_id=genre_id,
+            year=year,
+            sort=sort,
+            page=page,
+        )
+    except TmdbError as exc:
+        raise HTTPException(status_code=502, detail="tmdb_unavailable") from exc
+
+
+@router.get("/media/{media_type}/{tmdb_id}", response_model=MovieMetadata)
+async def get_media(
+    media_type: MediaType,
+    tmdb_id: int,
+    service: SearchServiceDependency,
+) -> MovieMetadata:
+    try:
+        return await service.get_media(tmdb_id, media_type)
     except TmdbError as exc:
         raise HTTPException(status_code=502, detail="tmdb_unavailable") from exc
 
@@ -89,7 +139,11 @@ async def search(
     service: SearchServiceDependency,
 ) -> SearchResponse:
     try:
-        return await service.search(request.tmdb_id, refresh=request.refresh)
+        return await service.search(
+            request.tmdb_id,
+            media_type=request.media_type,
+            refresh=request.refresh,
+        )
     except TmdbError as exc:
         raise HTTPException(status_code=502, detail="tmdb_unavailable") from exc
     except SearchUnavailable as exc:

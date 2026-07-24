@@ -2,17 +2,18 @@
 import { ArrowRight, Heart, Play, Star } from "@lucide/vue";
 import { computed } from "vue";
 import MovieRow from "../components/MovieRow.vue";
+import { mediaKey } from "../media";
 import type { HomeCatalogResponse, MovieMetadata } from "../types";
 
 const props = defineProps<{
   catalog: HomeCatalogResponse | null;
   loading: boolean;
-  favoriteIds: Set<number>;
+  favoriteIds: Set<string>;
 }>();
 defineEmits<{
   open: [movie: MovieMetadata];
   favorite: [movie: MovieMetadata];
-  navigate: [view: "movies" | "popular"];
+  navigate: [view: "movies" | "tv" | "popular"];
 }>();
 
 const hero = computed(() => props.catalog?.popular.find((movie) => movie.backdrop_path) ?? props.catalog?.popular[0] ?? null);
@@ -49,15 +50,17 @@ function posterUrl(path: string | null): string | null {
           <span><strong>{{ movie.title }}</strong><small>{{ movie.original_title }}</small><em><Star :size="12" fill="currentColor" />{{ movie.vote_average?.toFixed(1) ?? '暂无评分' }} · {{ movie.release_year ?? '年份未知' }}</em></span>
         </button>
       </aside>
-      <button class="hero-favorite" type="button" :class="{ active: favoriteIds.has(hero.tmdb_id) }" :aria-label="favoriteIds.has(hero.tmdb_id) ? `取消收藏 ${hero.title}` : `收藏 ${hero.title}`" @click.stop="$emit('favorite', hero)">
-        <Heart :size="18" :fill="favoriteIds.has(hero.tmdb_id) ? 'currentColor' : 'none'" />
+      <button class="hero-favorite" type="button" :class="{ active: favoriteIds.has(mediaKey(hero)) }" :aria-label="favoriteIds.has(mediaKey(hero)) ? `取消收藏 ${hero.title}` : `收藏 ${hero.title}`" @click.stop="$emit('favorite', hero)">
+        <Heart :size="18" :fill="favoriteIds.has(mediaKey(hero)) ? 'currentColor' : 'none'" />
       </button>
     </section>
 
     <MovieRow title="正在热映" eyebrow="NOW PLAYING" :movies="catalog.now_playing" :favorite-ids="favoriteIds" action-label="全部电影" @open="$emit('open', $event)" @favorite="$emit('favorite', $event)" @action="$emit('navigate', 'movies')" />
     <MovieRow title="本周热门" eyebrow="TRENDING NOW" :movies="catalog.popular" :favorite-ids="favoriteIds" action-label="查看热门" @open="$emit('open', $event)" @favorite="$emit('favorite', $event)" @action="$emit('navigate', 'popular')" />
+    <MovieRow title="热播剧集" eyebrow="TV ON THE AIR" :movies="catalog.tv_on_the_air" :favorite-ids="favoriteIds" action-label="全部剧集" @open="$emit('open', $event)" @favorite="$emit('favorite', $event)" @action="$emit('navigate', 'tv')" />
     <MovieRow title="即将上映" eyebrow="COMING SOON" :movies="catalog.upcoming" :favorite-ids="favoriteIds" @open="$emit('open', $event)" @favorite="$emit('favorite', $event)" />
     <MovieRow title="高分佳片" eyebrow="TOP RATED" :movies="catalog.top_rated" :favorite-ids="favoriteIds" @open="$emit('open', $event)" @favorite="$emit('favorite', $event)" />
+    <MovieRow title="高分剧集" eyebrow="TOP RATED TV" :movies="catalog.tv_top_rated" :favorite-ids="favoriteIds" @open="$emit('open', $event)" @favorite="$emit('favorite', $event)" />
   </div>
   <div v-else class="empty-state">首页内容暂时不可用</div>
 </template>

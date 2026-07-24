@@ -17,6 +17,7 @@ function posterUrl(path: string | null): string | null {
         <img v-if="posterUrl(movie.poster_path)" :src="posterUrl(movie.poster_path)!" :alt="`${movie.title} 海报`" loading="lazy" />
         <span v-else class="poster-fallback"><Film :size="30" /></span>
         <span v-if="movie.vote_average" class="rating"><Star :size="12" fill="currentColor" />{{ movie.vote_average.toFixed(1) }}</span>
+        <span v-if="movie.media_type === 'tv'" class="media-badge">剧集</span>
       </span>
       <span class="movie-card-copy"><strong>{{ movie.title }}</strong><small>{{ movie.release_year ?? '年份未知' }}<template v-if="movie.original_title"> · {{ movie.original_title }}</template></small></span>
     </button>

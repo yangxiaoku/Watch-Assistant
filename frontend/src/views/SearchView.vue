@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { SearchX } from "@lucide/vue";
 import MovieCard from "../components/MovieCard.vue";
+import PaginationBar from "../components/PaginationBar.vue";
+import { mediaKey } from "../media";
 import type { MovieMetadata } from "../types";
 
 defineProps<{
@@ -8,7 +10,10 @@ defineProps<{
   loading: boolean;
   movies: MovieMetadata[];
   heading: string;
-  favoriteIds: Set<number>;
+  favoriteIds: Set<string>;
+  page: number;
+  totalPages: number;
+  totalResults: number;
 }>();
 defineEmits<{
   "update:modelValue": [value: string];
@@ -16,6 +21,7 @@ defineEmits<{
   reset: [];
   open: [movie: MovieMetadata];
   favorite: [movie: MovieMetadata];
+  page: [page: number];
 }>();
 </script>
 
@@ -29,8 +35,9 @@ defineEmits<{
       <div v-for="index in 12" :key="index" class="movie-skeleton"><span /></div>
     </div>
     <div v-else-if="movies.length" class="movie-grid">
-      <MovieCard v-for="movie in movies" :key="movie.tmdb_id" :movie="movie" :favorite="favoriteIds.has(movie.tmdb_id)" @open="$emit('open', $event)" @favorite="$emit('favorite', $event)" />
+      <MovieCard v-for="movie in movies" :key="mediaKey(movie)" :movie="movie" :favorite="favoriteIds.has(mediaKey(movie))" @open="$emit('open', $event)" @favorite="$emit('favorite', $event)" />
     </div>
-    <div v-else class="collection-empty"><SearchX :size="30" /><strong>没有找到相关电影</strong><span>尝试使用更简短的中文名或英文原名。</span></div>
+    <div v-else class="collection-empty"><SearchX :size="30" /><strong>没有找到相关影视</strong><span>尝试使用更简短的中文名或英文原名。</span></div>
+    <PaginationBar :page="page" :total-pages="totalPages" :total-results="totalResults" @page="$emit('page', $event)" />
   </section>
 </template>

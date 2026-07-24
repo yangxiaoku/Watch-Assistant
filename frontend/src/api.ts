@@ -36,35 +36,44 @@ export class ApiClient {
     return this.request("/api/v1/health");
   }
 
-  async search(tmdbId: number, refresh = false): Promise<SearchResponse> {
+  async search(
+    tmdbId: number,
+    mediaType: "movie" | "tv" = "movie",
+    refresh = false,
+  ): Promise<SearchResponse> {
     return this.request<SearchResponse>("/api/v1/search", {
       method: "POST",
-      body: JSON.stringify({ tmdb_id: tmdbId, refresh }),
+      body: JSON.stringify({ tmdb_id: tmdbId, media_type: mediaType, refresh }),
     });
   }
 
-  async popularMovies(): Promise<MovieCollectionResponse> {
-    return this.request<MovieCollectionResponse>("/api/v1/movies/popular");
+  async popularMovies(page = 1): Promise<MovieCollectionResponse> {
+    return this.request<MovieCollectionResponse>(`/api/v1/movies/popular?page=${page}`);
   }
 
   async homeCatalog(): Promise<HomeCatalogResponse> {
     return this.request<HomeCatalogResponse>("/api/v1/movies/home");
   }
 
-  async discoverMovies(filters: {
+  async discoverMedia(mediaType: "movie" | "tv", filters: {
     genreId?: number;
     year?: number;
     sort: "popular" | "rating" | "release";
+    page?: number;
   }): Promise<MovieCollectionResponse> {
-    const params = new URLSearchParams({ sort: filters.sort });
+    const params = new URLSearchParams({
+      media_type: mediaType,
+      sort: filters.sort,
+      page: String(filters.page ?? 1),
+    });
     if (filters.genreId) params.set("genre_id", String(filters.genreId));
     if (filters.year) params.set("year", String(filters.year));
-    return this.request<MovieCollectionResponse>(`/api/v1/movies/discover?${params}`);
+    return this.request<MovieCollectionResponse>(`/api/v1/media/discover?${params}`);
   }
 
-  async searchMovies(query: string): Promise<MovieCollectionResponse> {
-    const params = new URLSearchParams({ query });
-    return this.request<MovieCollectionResponse>(`/api/v1/movies/search?${params}`);
+  async searchMedia(query: string, page = 1): Promise<MovieCollectionResponse> {
+    const params = new URLSearchParams({ query, page: String(page) });
+    return this.request<MovieCollectionResponse>(`/api/v1/media/search?${params}`);
   }
 
   async createTask(resourceId: string, force = false): Promise<TaskResponse> {

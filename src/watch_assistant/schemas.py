@@ -12,6 +12,11 @@ class ResourceKind(StrEnum):
     SHARE = "115_share"
 
 
+class MediaType(StrEnum):
+    MOVIE = "movie"
+    TV = "tv"
+
+
 class TaskAction(StrEnum):
     OFFLINE_DOWNLOAD = "offline_download"
     SAVE_SHARE = "save_share"
@@ -37,6 +42,7 @@ class SubmissionResult(BaseModel):
 
 class MovieMetadata(BaseModel):
     tmdb_id: int
+    media_type: MediaType = MediaType.MOVIE
     title: str
     original_title: str | None = None
     release_year: int | None = None
@@ -49,6 +55,9 @@ class MovieMetadata(BaseModel):
 
 class MovieCollectionResponse(BaseModel):
     results: list[MovieMetadata]
+    page: int = 1
+    total_pages: int = 1
+    total_results: int = 0
 
 
 class HomeCatalogResponse(BaseModel):
@@ -56,6 +65,9 @@ class HomeCatalogResponse(BaseModel):
     now_playing: list[MovieMetadata]
     upcoming: list[MovieMetadata]
     top_rated: list[MovieMetadata]
+    tv_popular: list[MovieMetadata]
+    tv_on_the_air: list[MovieMetadata]
+    tv_top_rated: list[MovieMetadata]
 
 
 class NormalizedResource(BaseModel):
@@ -85,6 +97,7 @@ class SearchRequest(BaseModel):
     model_config = {"extra": "forbid"}
 
     tmdb_id: PositiveInt
+    media_type: MediaType = MediaType.MOVIE
     refresh: bool = False
 
 
