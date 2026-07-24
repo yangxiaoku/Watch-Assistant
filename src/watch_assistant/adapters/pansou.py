@@ -61,9 +61,7 @@ class PanSouClient:
             merged_by_type = {}
         if not isinstance(merged_by_type, dict):
             raise PanSouError("Unexpected PanSou response shape")
-        if not all(
-            isinstance(items, list) for items in merged_by_type.values()
-        ):
+        if not all(isinstance(items, list) for items in merged_by_type.values()):
             raise PanSouError("Unexpected PanSou response shape")
         return {**data, "merged_by_type": merged_by_type}
 
@@ -106,10 +104,7 @@ class PanSouClient:
             if not all(isinstance(result, dict) for result in results):
                 raise PanSouError("Unexpected PanSou link check response shape")
             try:
-                states.extend(
-                    LinkCheckState(result["state"])
-                    for result in results
-                )
+                states.extend(LinkCheckState(result["state"]) for result in results)
             except (KeyError, ValueError) as exc:
                 raise PanSouError(
                     "Unexpected PanSou link check response shape"

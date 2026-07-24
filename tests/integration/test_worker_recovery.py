@@ -19,15 +19,11 @@ class FakeAdapter:
     async def submit_magnet(self, url: str) -> SubmissionResult:
         self.submissions += 1
         assert url.startswith("magnet:")
-        return SubmissionResult(
-            status=RemoteStatus.ACCEPTED, remote_ref="remote-123"
-        )
+        return SubmissionResult(status=RemoteStatus.ACCEPTED, remote_ref="remote-123")
 
     async def save_share(self, url: str, password: str | None) -> SubmissionResult:
         self.submissions += 1
-        return SubmissionResult(
-            status=RemoteStatus.ACCEPTED, remote_ref="remote-share"
-        )
+        return SubmissionResult(status=RemoteStatus.ACCEPTED, remote_ref="remote-share")
 
     async def get_status(self, remote_ref: str):
         return self.remote_status

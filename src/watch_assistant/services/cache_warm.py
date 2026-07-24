@@ -40,11 +40,13 @@ class CacheWarmer:
         *,
         timezone_name: str = "Asia/Hong_Kong",
         retry_delays: tuple[float, ...] = (1800, 3600, 7200),
+        concurrency: int = 3,
     ) -> None:
         self._search = search_service
         self._session_factory = session_factory
         self._timezone = ZoneInfo(timezone_name)
         self._retry_delays = retry_delays
+        self._concurrency = max(1, concurrency)
         self._run_lock = asyncio.Lock()
 
     @property
@@ -53,9 +55,7 @@ class CacheWarmer:
 
     def next_run_at(self) -> datetime:
         now = datetime.now(UTC)
-        return now + timedelta(
-            seconds=seconds_until_next_midnight(now, self._timezone)
-        )
+        return now + timedelta(seconds=seconds_until_next_midnight(now, self._timezone))
 
     async def run_forever(self, stop_event: asyncio.Event) -> None:
         while not stop_event.is_set():
@@ -79,9 +79,7 @@ class CacheWarmer:
             failed_identities = {
                 (item.media_type, item.tmdb_id) for item in failed_media
             }
-            selected = [
-                item for item in media if _identity(item) in failed_identities
-            ]
+            selected = [item for item in media if _identity(item) in failed_identities]
             await self._record_started(len(selected))
             failed = await self._warm_media(selected)
             run = WarmRun(
@@ -103,9 +101,7 @@ class CacheWarmer:
         pending: list[MovieMetadata] = []
         skipped = 0
         for item in media:
-            if await self._search.has_cache_since(
-                item.tmdb_id, item.media_type, since
-            ):
+            if await self._search.has_cache_since(item.tmdb_id, item.media_type, since):
                 skipped += 1
             else:
                 pending.append(item)
@@ -161,25 +157,43 @@ class CacheWarmer:
                 extra={"failure_count": len(failed)},
             )
 
-    async def _warm_media(
-        self, media: list[MovieMetadata]
-    ) -> list[MovieMetadata]:
+    async def _warm_media(self, media: list[MovieMetadata]) -> list[MovieMetadata]:
         failed: list[MovieMetadata] = []
+        queue: asyncio.Queue[MovieMetadata] = asyncio.Queue()
         for item in media:
-            try:
-                refreshed = await self._search.warm_media(item)
-            except Exception:
-                logger.exception(
-                    "cache warm media failed",
-                    extra={
-                        "media_type": item.media_type.value,
-                        "tmdb_id": item.tmdb_id,
-                    },
-                )
-                refreshed = False
-            if not refreshed:
-                failed.append(item)
-        return failed
+            queue.put_nowait(item)
+
+        async def worker() -> None:
+            while True:
+                try:
+                    item = queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    return
+                try:
+                    try:
+                        refreshed = await self._search.warm_media(item)
+                    except Exception:
+                        logger.exception(
+                            "cache warm media failed",
+                            extra={
+                                "media_type": item.media_type.value,
+                                "tmdb_id": item.tmdb_id,
+                            },
+                        )
+                        refreshed = False
+                    if not refreshed:
+                        failed.append(item)
+                finally:
+                    queue.task_done()
+
+        workers = [
+            asyncio.create_task(worker())
+            for _ in range(min(self._concurrency, len(media)))
+        ]
+        if workers:
+            await asyncio.gather(*workers)
+        failed_ids = {_identity(item) for item in failed}
+        return [item for item in media if _identity(item) in failed_ids]
 
     async def _catalog_and_watches(
         self, catalog: HomeCatalogResponse

@@ -8,6 +8,8 @@
 - 首页展示 TMDB 电影和电视剧榜单，支持分类浏览、分页和混合片名搜索。
 - PanSou 同时查询中文名、中文名加年份、英文名和英文名加年份，完整合并并按 infohash 去重。
 - 磁力 BTIH 与名称资料校验、缺失 `dn` 自动补全、语义排序、备用标题回退和部分上游失败保护。
+- 校验后稳定排序并只缓存/返回最高 30 条磁力；115 分享不计入上限，结果附带三项 0-100 评分。
+- 电视剧详情包含季度元数据，指定季度追加四个季度查询并使用独立 v4 缓存；预热只处理全部季度。
 - 24 小时新鲜缓存、7 天故障回退，以及香港时间每天零点对七个首页榜单进行预热和失败重试。
 - 持续复查暂时无资源的电影或电视剧，并根据语义误匹配与 115 失效记录降低不可靠来源排序。
 - Web 密码会话、用户脚本独立 Bearer Token、CSRF 与限流。
@@ -41,7 +43,7 @@ curl http://127.0.0.1:8000/api/v1/health
 
 访问 `http://服务器地址:8115/`。构建后的用户脚本位于容器内 Web 根目录，可从 `http://服务器地址:8115/watch-assistant.user.js` 获取。
 
-缓存预热默认启用，时区为 `Asia/Hong_Kong`。可通过 `CACHE_WARM_ENABLED=false` 临时关闭，或用 `CACHE_WARM_TIMEZONE` 调整零点所在时区。
+缓存预热默认启用，时区为 `Asia/Hong_Kong`。可通过 `CACHE_WARM_ENABLED=false` 临时关闭，或用 `CACHE_WARM_TIMEZONE` 调整零点所在时区。PanSou 请求并发默认 6、媒体预热并发默认 3，可分别通过 `PANSOU_MAX_CONCURRENCY` 和 `CACHE_WARM_CONCURRENCY` 调整。
 
 认证后的维护接口包括 `GET /api/v1/cache/status`、`POST /api/v1/cache/retry`、`GET /api/v1/watchlist` 和 `GET /api/v1/sources/reliability`。它们用于查看预热状态、重试失败媒体、检查无资源观察列表和来源可靠性，不返回资源链接或密码。
 
@@ -76,9 +78,9 @@ npm --prefix frontend run build
 
 ## 验收记录
 
-2026-07-24：
+2026-07-25（后端分支）：
 
-- Python：`134 passed, 1 skipped`；跳过项是明确的 TgtoDrive `supported:false` 实际契约测试。
+- Python：`141 passed, 1 skipped`；跳过项是明确的 TgtoDrive `supported:false` 实际契约测试。
 - Ruff：通过。
 - Vitest：`8 passed`。
 - Playwright：桌面与移动端 `2 passed`。

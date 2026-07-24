@@ -12,9 +12,7 @@ from watch_assistant.schemas import NormalizedResource, ResourceKind
 HEX_INFOHASH = re.compile(r"[0-9A-Fa-f]{40}")
 BASE32_INFOHASH = re.compile(r"[A-Z2-7a-z2-7]{32}")
 SHARE_PATH = re.compile(r"/(?:s|share)/([A-Za-z0-9_-]+)(?:/|$)")
-SIZE_VALUE = re.compile(
-    r"^\s*(\d+(?:\.\d+)?)\s*(B|KB|MB|GB|TB)\s*$", re.IGNORECASE
-)
+SIZE_VALUE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*(B|KB|MB|GB|TB)\s*$", re.IGNORECASE)
 SIZE_MULTIPLIERS = {
     "B": 1,
     "KB": 1024,
@@ -53,8 +51,8 @@ def normalize_pansou(
                 ordered_keys.append(resource.canonical_key)
                 resources_by_key[resource.canonical_key] = resource
             else:
-                resources_by_key[resource.canonical_key] = (
-                    merge_normalized_resources(existing, resource)
+                resources_by_key[resource.canonical_key] = merge_normalized_resources(
+                    existing, resource
                 )
     return [resources_by_key[key] for key in ordered_keys]
 

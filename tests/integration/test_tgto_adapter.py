@@ -34,7 +34,9 @@ def _contract():
             "path_template": "/api/tasks/{remote_reference}",
             "status_field": "status",
         },
-        "checks": [{"method": "GET", "path": "/api/tasks/metadata", "accept_status": [200]}],
+        "checks": [
+            {"method": "GET", "path": "/api/tasks/metadata", "accept_status": [200]}
+        ],
     }
 
 

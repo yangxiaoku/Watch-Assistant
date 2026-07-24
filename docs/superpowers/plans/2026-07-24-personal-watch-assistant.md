@@ -138,9 +138,15 @@ def test_secret_round_trip(crypto):
     token = "magnet:?xt=urn:btih:ABC"
     assert crypto.decrypt(crypto.encrypt(token)) == token
 
+
 def test_task_states_are_explicit():
     assert {s.value for s in TaskState} == {
-        "queued", "submitting", "accepted", "needs_auth", "failed", "uncertain"
+        "queued",
+        "submitting",
+        "accepted",
+        "needs_auth",
+        "failed",
+        "uncertain",
     }
 ```
 
@@ -245,6 +251,7 @@ def test_submitting_without_remote_confirmation_becomes_uncertain():
     recover_after_restart(task, remote_status=None)
     assert task.state == TaskState.UNCERTAIN
 
+
 def test_duplicate_resource_reuses_recent_task():
     existing = make_task(state=TaskState.ACCEPTED, age_hours=2)
     assert choose_existing_task([existing], resource_id=existing.resource_id)
@@ -263,11 +270,13 @@ def recover_after_restart(task: Task, remote_status: RemoteStatus | None) -> Non
     else:
         task.state = TaskState.UNCERTAIN
 
+
 def choose_existing_task(tasks: Sequence[Task], resource_id: str) -> Task | None:
     cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
     reusable = {TaskState.QUEUED, TaskState.SUBMITTING, TaskState.ACCEPTED}
     candidates = [
-        task for task in tasks
+        task
+        for task in tasks
         if task.resource_id == resource_id
         and task.state in reusable
         and task.created_at >= cutoff
@@ -341,8 +350,11 @@ async def test_invalid_web_password_returns_401(client):
     response = await client.post("/api/v1/auth/login", json={"password": "wrong"})
     assert response.status_code == 401
 
+
 async def test_script_token_cannot_be_used_as_cookie(client):
-    response = await client.get("/api/v1/tasks", headers={"Authorization": "Bearer bad"})
+    response = await client.get(
+        "/api/v1/tasks", headers={"Authorization": "Bearer bad"}
+    )
     assert response.status_code == 401
 ```
 

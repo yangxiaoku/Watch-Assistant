@@ -40,6 +40,14 @@ class SubmissionResult(BaseModel):
         return self.status == RemoteStatus.ACCEPTED
 
 
+class SeasonMetadata(BaseModel):
+    season_number: int
+    name: str
+    episode_count: int
+    air_date: str | None = None
+    poster_path: str | None = None
+
+
 class MovieMetadata(BaseModel):
     tmdb_id: int
     media_type: MediaType = MediaType.MOVIE
@@ -51,6 +59,7 @@ class MovieMetadata(BaseModel):
     backdrop_path: str | None = None
     genre_ids: list[int] = Field(default_factory=list)
     vote_average: float | None = None
+    seasons: list[SeasonMetadata] = Field(default_factory=list)
 
 
 class MovieCollectionResponse(BaseModel):
@@ -91,6 +100,9 @@ class ResourceSummary(BaseModel):
     seeders: int | None
     source: str
     captured_at: datetime
+    rank_score: int = Field(default=0, ge=0, le=100)
+    relevance_score: int = Field(default=0, ge=0, le=100)
+    completeness_score: int = Field(default=0, ge=0, le=100)
 
 
 class SearchRequest(BaseModel):
@@ -98,6 +110,7 @@ class SearchRequest(BaseModel):
 
     tmdb_id: PositiveInt
     media_type: MediaType = MediaType.MOVIE
+    season_number: int | None = Field(default=None, ge=0)
     refresh: bool = False
 
 
@@ -107,6 +120,7 @@ class SearchResponse(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     cached: bool = False
     cache_age_seconds: int | None = None
+    selected_season: int | None = Field(default=None, ge=0)
 
 
 class MediaIdentity(BaseModel):

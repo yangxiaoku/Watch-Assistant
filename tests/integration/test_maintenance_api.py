@@ -27,10 +27,7 @@ async def test_maintenance_preserves_media_type_for_watches_and_retries(tmp_path
     database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'maintenance.db'}")
     await initialize_database(database.engine)
     now = datetime.now(UTC)
-    failed = (
-        '[{"media_type":"movie","tmdb_id":303},'
-        '{"media_type":"tv","tmdb_id":303}]'
-    )
+    failed = '[{"media_type":"movie","tmdb_id":303},{"media_type":"tv","tmdb_id":303}]'
     async with database.session_factory() as session:
         session.add_all(
             [

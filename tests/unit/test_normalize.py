@@ -105,9 +105,7 @@ def test_malformed_share_url_does_not_abort_other_results():
 
     resources = normalize_pansou(data, share_domains=("115.com",))
 
-    assert [resource.canonical_key for resource in resources] == [
-        "share:115.com:good"
-    ]
+    assert [resource.canonical_key for resource in resources] == ["share:115.com:good"]
 
 
 @pytest.mark.parametrize(
@@ -221,9 +219,7 @@ def test_magnet_without_display_information_is_filtered():
     ],
 )
 def test_tv_episode_and_alias_labels_are_not_filtered(label):
-    data = _magnet_data(
-        {"url": f"magnet:?xt=urn:btih:{1:040x}", "note": label}
-    )
+    data = _magnet_data({"url": f"magnet:?xt=urn:btih:{1:040x}", "note": label})
 
     assert normalize_pansou(data)[0].name == label
 

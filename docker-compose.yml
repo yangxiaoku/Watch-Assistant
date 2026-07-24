@@ -17,6 +17,8 @@ services:
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
       CACHE_WARM_ENABLED: ${CACHE_WARM_ENABLED:-true}
       CACHE_WARM_TIMEZONE: ${CACHE_WARM_TIMEZONE:-Asia/Hong_Kong}
+      PANSOU_MAX_CONCURRENCY: ${PANSOU_MAX_CONCURRENCY:-6}
+      CACHE_WARM_CONCURRENCY: ${CACHE_WARM_CONCURRENCY:-3}
     secrets:
       - encryption_key
       - tmdb_api_key

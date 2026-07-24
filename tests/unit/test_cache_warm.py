@@ -1,6 +1,7 @@
 import asyncio
 import json
 from datetime import UTC, datetime
+from time import monotonic
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
@@ -84,9 +85,7 @@ async def test_cache_warmer_uses_all_sections_and_composite_media_identity(tmp_p
     assert (MediaType.MOVIE, 1) not in search.warmed
     async with database.session_factory() as session:
         state = await session.scalar(select(CacheWarmState))
-    assert json.loads(state.failed_ids_json) == [
-        {"media_type": "tv", "tmdb_id": 3}
-    ]
+    assert json.loads(state.failed_ids_json) == [{"media_type": "tv", "tmdb_id": 3}]
     await database.engine.dispose()
 
 
@@ -110,9 +109,7 @@ async def test_retry_failed_selects_exact_media_identity(tmp_path):
     search = FakeSearchService()
     warmer = CacheWarmer(search, database.session_factory, retry_delays=())
 
-    run = await warmer.retry_failed(
-        [MediaIdentity(media_type=MediaType.TV, tmdb_id=1)]
-    )
+    run = await warmer.retry_failed([MediaIdentity(media_type=MediaType.TV, tmdb_id=1)])
 
     assert run.total == 1
     assert search.warmed == [(MediaType.TV, 1)]
@@ -125,9 +122,7 @@ async def test_cache_warmer_retries_only_failed_media(tmp_path):
     search = FakeSearchService()
     warmer = CacheWarmer(search, database.session_factory, retry_delays=(0,))
 
-    await warmer._warm_with_retries(
-        datetime(2026, 7, 24, tzinfo=UTC), asyncio.Event()
-    )
+    await warmer._warm_with_retries(datetime(2026, 7, 24, tzinfo=UTC), asyncio.Event())
 
     assert search.warmed.count((MediaType.TV, 3)) == 2
     assert search.warmed.count((MediaType.MOVIE, 2)) == 1
@@ -149,11 +144,71 @@ async def test_cache_warmer_stops_without_waiting_until_midnight(tmp_path):
     await database.engine.dispose()
 
 
+async def test_cache_warmer_uses_bounded_concurrency_and_continues_failures(tmp_path):
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'parallel.db'}")
+    await initialize_database(database.engine)
+
+    class DelayedSearchService:
+        def __init__(self) -> None:
+            self.active = 0
+            self.max_active = 0
+            self.warmed: list[int] = []
+
+        async def get_home_catalog(self) -> HomeCatalogResponse:
+            return HomeCatalogResponse(
+                popular=[
+                    _media(index, MediaType.MOVIE, f"movie {index}")
+                    for index in range(1, 10)
+                ],
+                now_playing=[],
+                upcoming=[],
+                top_rated=[],
+                tv_popular=[],
+                tv_on_the_air=[],
+                tv_top_rated=[],
+            )
+
+        async def has_cache_since(
+            self, tmdb_id: int, media_type: MediaType, since: datetime
+        ) -> bool:
+            return False
+
+        async def list_active_watches(self) -> list[MovieMetadata]:
+            return []
+
+        async def warm_media(self, media: MovieMetadata) -> bool:
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+            self.warmed.append(media.tmdb_id)
+            await asyncio.sleep(0.03)
+            self.active -= 1
+            if media.tmdb_id == 4:
+                raise RuntimeError("database write failed")
+            return media.tmdb_id != 5
+
+    search = DelayedSearchService()
+    warmer = CacheWarmer(
+        search,
+        database.session_factory,
+        retry_delays=(),
+        concurrency=3,
+    )
+    started = monotonic()
+
+    run = await warmer.warm_once(since=datetime(2026, 7, 24, tzinfo=UTC))
+
+    elapsed = monotonic() - started
+    assert search.max_active == 3
+    assert len(search.warmed) == 9
+    assert run.failed == 2
+    assert {item.tmdb_id for item in run.failed_media} == {4, 5}
+    assert elapsed < 0.2
+    await database.engine.dispose()
+
+
 def test_midnight_helpers_use_hong_kong_timezone():
     timezone = ZoneInfo("Asia/Hong_Kong")
     now = datetime(2026, 7, 24, 15, 30, tzinfo=UTC)
 
-    assert local_midnight(now, timezone) == datetime(
-        2026, 7, 23, 16, 0, tzinfo=UTC
-    )
+    assert local_midnight(now, timezone) == datetime(2026, 7, 23, 16, 0, tzinfo=UTC)
     assert seconds_until_next_midnight(now, timezone) == 1800

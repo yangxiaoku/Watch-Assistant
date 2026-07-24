@@ -130,8 +130,10 @@ async def run_contract_check() -> ContractResult:
             if contract.get("supported") is not True:
                 return _disabled(login_ok=True)
             checks = contract.get("checks")
-            if not isinstance(checks, list) or not checks or not all(
-                _valid_check(check) for check in checks
+            if (
+                not isinstance(checks, list)
+                or not checks
+                or not all(_valid_check(check) for check in checks)
             ):
                 return _disabled(login_ok=True)
             if not _valid_submit(contract.get("submit")):
