@@ -10,3 +10,30 @@ export function navigateToMovie(tmdbId: number): void {
 export function navigateHome(): void {
   window.history.pushState({}, "", "/");
 }
+
+export type BrowseView = "home" | "movies" | "popular" | "favorites" | "history" | "search";
+
+const VIEW_PATHS: Record<Exclude<BrowseView, "search">, string> = {
+  home: "/",
+  movies: "/movies",
+  popular: "/popular",
+  favorites: "/favorites",
+  history: "/history",
+};
+
+export function navigateToView(view: Exclude<BrowseView, "search">): void {
+  window.history.pushState({}, "", VIEW_PATHS[view]);
+}
+
+export function navigateToSearch(query: string): void {
+  window.history.pushState({}, "", `/search?q=${encodeURIComponent(query)}`);
+}
+
+export function extractBrowseView(path: string): BrowseView {
+  if (path === "/movies") return "movies";
+  if (path === "/popular") return "popular";
+  if (path === "/favorites") return "favorites";
+  if (path === "/history") return "history";
+  if (path === "/search") return "search";
+  return "home";
+}

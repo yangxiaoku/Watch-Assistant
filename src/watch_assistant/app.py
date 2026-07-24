@@ -121,6 +121,14 @@ def create_app(
         async def frontend_movie_route(frontend_path: str) -> FileResponse:
             return FileResponse(index_path)
 
+        @application.get("/movies", include_in_schema=False)
+        @application.get("/popular", include_in_schema=False)
+        @application.get("/favorites", include_in_schema=False)
+        @application.get("/history", include_in_schema=False)
+        @application.get("/search", include_in_schema=False)
+        async def frontend_browse_route() -> FileResponse:
+            return FileResponse(index_path)
+
         application.mount(
             "/", StaticFiles(directory=static_path, html=True), name="frontend"
         )

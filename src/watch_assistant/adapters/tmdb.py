@@ -7,6 +7,12 @@ import httpx
 from watch_assistant.schemas import MovieMetadata
 
 TMDB_BASE_URL = "https://api.themoviedb.org/3"
+MOVIE_FEEDS = {"popular", "now_playing", "upcoming", "top_rated"}
+DISCOVER_SORTS = {
+    "popular": "popularity.desc",
+    "rating": "vote_average.desc",
+    "release": "primary_release_date.desc",
+}
 
 
 class TmdbError(RuntimeError):
@@ -32,7 +38,36 @@ class TmdbClient:
         return _parse_movie(payload, tmdb_id=tmdb_id)
 
     async def get_popular(self) -> list[MovieMetadata]:
-        payload = await self._get("/movie/popular", params={"page": 1})
+        return await self.get_feed("popular")
+
+    async def get_feed(self, feed: str) -> list[MovieMetadata]:
+        if feed not in MOVIE_FEEDS:
+            raise ValueError("Unsupported movie feed")
+        payload = await self._get(f"/movie/{feed}", params={"page": 1})
+        return _parse_movie_collection(payload)
+
+    async def discover_movies(
+        self,
+        *,
+        genre_id: int | None = None,
+        year: int | None = None,
+        sort: str = "popular",
+    ) -> list[MovieMetadata]:
+        if sort not in DISCOVER_SORTS:
+            raise ValueError("Unsupported movie sort")
+        params: dict[str, str | int] = {
+            "page": 1,
+            "sort_by": DISCOVER_SORTS[sort],
+            "include_adult": "false",
+            "include_video": "false",
+        }
+        if genre_id is not None:
+            params["with_genres"] = genre_id
+        if year is not None:
+            params["primary_release_year"] = year
+        if sort == "rating":
+            params["vote_count.gte"] = 200
+        payload = await self._get("/discover/movie", params=params)
         return _parse_movie_collection(payload)
 
     async def search_movies(self, query: str) -> list[MovieMetadata]:
@@ -112,8 +147,26 @@ def _parse_movie(payload: dict, *, tmdb_id: int) -> MovieMetadata:
         poster_path=payload.get("poster_path")
         if isinstance(payload.get("poster_path"), str)
         else None,
+        backdrop_path=payload.get("backdrop_path")
+        if isinstance(payload.get("backdrop_path"), str)
+        else None,
+        genre_ids=_parse_genre_ids(payload),
         vote_average=vote_average,
     )
+
+
+def _parse_genre_ids(payload: dict) -> list[int]:
+    genre_ids = payload.get("genre_ids")
+    if isinstance(genre_ids, list):
+        return [item for item in genre_ids if isinstance(item, int)]
+    genres = payload.get("genres")
+    if isinstance(genres, list):
+        return [
+            item["id"]
+            for item in genres
+            if isinstance(item, dict) and isinstance(item.get("id"), int)
+        ]
+    return []
 
 
 def build_search_queries(movie: MovieMetadata) -> list[str]:

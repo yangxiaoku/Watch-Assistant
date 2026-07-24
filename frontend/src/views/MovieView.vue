@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { ArrowLeft, Film, RefreshCw, Star } from "@lucide/vue";
+import { ArrowLeft, Film, Heart, RefreshCw, Star } from "@lucide/vue";
 import ResourceTable from "../components/ResourceTable.vue";
 import type { ResourceSummary, SearchResponse } from "../types";
 
-defineProps<{ result: SearchResponse; pushingId: string | null; pushSupported: boolean }>();
-defineEmits<{ push: [resource: ResourceSummary]; refresh: []; back: [] }>();
+defineProps<{ result: SearchResponse; pushingId: string | null; pushSupported: boolean; favorite: boolean }>();
+defineEmits<{ push: [resource: ResourceSummary]; refresh: []; back: []; favorite: [] }>();
 
 function posterUrl(path: string | null): string | null {
   return path ? `https://image.tmdb.org/t/p/w500${path}` : null;
@@ -13,7 +13,7 @@ function posterUrl(path: string | null): string | null {
 
 <template>
   <section class="movie-view">
-    <div class="detail-actions"><button class="back-button" type="button" @click="$emit('back')"><ArrowLeft :size="17" />返回热门</button><button class="secondary-button" type="button" @click="$emit('refresh')"><RefreshCw :size="16" />刷新资源</button></div>
+    <div class="detail-actions"><button class="back-button" type="button" @click="$emit('back')"><ArrowLeft :size="17" />返回浏览</button><div class="detail-action-group"><button class="secondary-button" :class="{ active: favorite }" type="button" @click="$emit('favorite')"><Heart :size="16" :fill="favorite ? 'currentColor' : 'none'" />{{ favorite ? '已收藏' : '收藏' }}</button><button class="secondary-button" type="button" @click="$emit('refresh')"><RefreshCw :size="16" />刷新资源</button></div></div>
     <header class="movie-profile">
       <div class="detail-poster">
         <img v-if="posterUrl(result.movie.poster_path)" :src="posterUrl(result.movie.poster_path)!" :alt="`${result.movie.title} 海报`" />

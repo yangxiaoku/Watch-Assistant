@@ -19,13 +19,14 @@ describe("SearchView", () => {
         modelValue: "",
         loading: false,
         movies: [movie],
-        heading: "当前热门",
+        heading: "搜索结果",
+        favoriteIds: new Set<number>(),
       },
     });
 
     await wrapper.get('button[aria-label="查看 盗梦空间"]').trigger("click");
 
-    expect(wrapper.get("h2").text()).toBe("当前热门");
+    expect(wrapper.get("h1").text()).toBe("搜索结果");
     expect(wrapper.emitted("open")?.[0]).toEqual([movie]);
   });
 });

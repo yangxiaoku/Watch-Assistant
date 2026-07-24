@@ -81,6 +81,8 @@ async def test_tmdb_client_extracts_movie_metadata():
                 "release_date": "2010-07-16",
                 "overview": "Dreams within dreams.",
                 "poster_path": "/poster.jpg",
+                "backdrop_path": "/backdrop.jpg",
+                "genres": [{"id": 878, "name": "科幻"}],
             },
         )
     )
@@ -92,6 +94,8 @@ async def test_tmdb_client_extracts_movie_metadata():
     assert movie.tmdb_id == 123
     assert movie.release_year == 2010
     assert movie.original_title == "Inception"
+    assert movie.backdrop_path == "/backdrop.jpg"
+    assert movie.genre_ids == [878]
 
 
 @respx.mock

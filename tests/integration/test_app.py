@@ -20,10 +20,13 @@ async def test_movie_deep_link_serves_spa_without_masking_missing_assets(
         transport=httpx.ASGITransport(app=app), base_url="http://app.test"
     ) as client:
         deep_link = await client.get("/movie/27205")
+        browse_link = await client.get("/favorites")
         missing_asset = await client.get("/assets/missing.js")
 
     assert deep_link.status_code == 200
     assert "Watch Assistant" in deep_link.text
+    assert browse_link.status_code == 200
+    assert "Watch Assistant" in browse_link.text
     assert missing_asset.status_code == 404
 
 

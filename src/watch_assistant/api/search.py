@@ -1,11 +1,12 @@
 """Movie and PanSou search routes."""
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from watch_assistant.adapters.tmdb import TmdbError
 from watch_assistant.schemas import (
+    HomeCatalogResponse,
     MovieCollectionResponse,
     MovieMetadata,
     SearchRequest,
@@ -22,6 +23,33 @@ def get_search_service(request: Request) -> SearchService:
 
 
 SearchServiceDependency = Annotated[SearchService, Depends(get_search_service)]
+
+
+@router.get("/movies/home", response_model=HomeCatalogResponse)
+async def get_home_catalog(
+    service: SearchServiceDependency,
+) -> HomeCatalogResponse:
+    try:
+        return await service.get_home_catalog()
+    except TmdbError as exc:
+        raise HTTPException(status_code=502, detail="tmdb_unavailable") from exc
+
+
+@router.get("/movies/discover", response_model=MovieCollectionResponse)
+async def discover_movies(
+    service: SearchServiceDependency,
+    genre_id: int | None = Query(default=None, ge=1),
+    year: int | None = Query(default=None, ge=1900, le=2100),
+    sort: Literal["popular", "rating", "release"] = "popular",
+) -> MovieCollectionResponse:
+    try:
+        return MovieCollectionResponse(
+            results=await service.discover_movies(
+                genre_id=genre_id, year=year, sort=sort
+            )
+        )
+    except TmdbError as exc:
+        raise HTTPException(status_code=502, detail="tmdb_unavailable") from exc
 
 
 @router.get("/movies/popular", response_model=MovieCollectionResponse)

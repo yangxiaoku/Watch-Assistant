@@ -1,5 +1,17 @@
 import { expect, test } from "@playwright/test";
 
+const movie = {
+  tmdb_id: 27205,
+  title: "盗梦空间",
+  original_title: "Inception",
+  release_year: 2010,
+  overview: "梦境中的梦境。",
+  poster_path: null,
+  backdrop_path: null,
+  genre_ids: [878],
+  vote_average: 8.4,
+};
+
 test("login, popular browsing, and resource detail remain usable", async ({ page }) => {
   let authenticated = false;
   await page.route("**/api/v1/health", (route) =>
@@ -16,20 +28,13 @@ test("login, popular browsing, and resource detail remain usable", async ({ page
     authenticated = true;
     return route.fulfill({ json: { csrf_token: "csrf-test" } });
   });
-  await page.route("**/api/v1/movies/popular", (route) =>
+  await page.route("**/api/v1/movies/home", (route) =>
     route.fulfill({
       json: {
-        results: [
-          {
-            tmdb_id: 27205,
-            title: "盗梦空间",
-            original_title: "Inception",
-            release_year: 2010,
-            overview: "梦境中的梦境。",
-            poster_path: null,
-            vote_average: 8.4,
-          },
-        ],
+        popular: [movie],
+        now_playing: [movie],
+        upcoming: [movie],
+        top_rated: [movie],
       },
     }),
   );
@@ -67,10 +72,10 @@ test("login, popular browsing, and resource detail remain usable", async ({ page
   await expect(page.getByRole("heading", { name: "进入观影工作台" })).toBeVisible();
   await page.getByLabel("Web 密码").fill("test-password");
   await page.getByRole("button", { name: "登录" }).click();
-  await expect(page.getByRole("heading", { name: "当前热门" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "正在热映" })).toBeVisible();
   await page.reload();
-  await expect(page.getByRole("heading", { name: "当前热门" })).toBeVisible();
-  await page.getByRole("button", { name: "查看 盗梦空间" }).click();
+  await expect(page.getByRole("heading", { name: "正在热映" })).toBeVisible();
+  await page.locator(".feature-hero").click();
 
   await expect(page.getByRole("heading", { name: "盗梦空间" })).toBeVisible();
   await expect(page).toHaveURL(/\/movie\/27205$/);

@@ -14,6 +14,7 @@ from watch_assistant.adapters.tmdb import TmdbClient, build_search_queries
 from watch_assistant.crypto import SecretCrypto
 from watch_assistant.models import Resource, SearchCache
 from watch_assistant.schemas import (
+    HomeCatalogResponse,
     MovieMetadata,
     ResourceSummary,
     SearchResponse,
@@ -53,6 +54,27 @@ class SearchService:
 
     async def get_popular(self) -> list[MovieMetadata]:
         return await self._tmdb.get_popular()
+
+    async def get_home_catalog(self) -> HomeCatalogResponse:
+        popular, now_playing, upcoming, top_rated = await asyncio.gather(
+            self._tmdb.get_feed("popular"),
+            self._tmdb.get_feed("now_playing"),
+            self._tmdb.get_feed("upcoming"),
+            self._tmdb.get_feed("top_rated"),
+        )
+        return HomeCatalogResponse(
+            popular=popular,
+            now_playing=now_playing,
+            upcoming=upcoming,
+            top_rated=top_rated,
+        )
+
+    async def discover_movies(
+        self, *, genre_id: int | None, year: int | None, sort: str
+    ) -> list[MovieMetadata]:
+        return await self._tmdb.discover_movies(
+            genre_id=genre_id, year=year, sort=sort
+        )
 
     async def search_movies(self, query: str) -> list[MovieMetadata]:
         return await self._tmdb.search_movies(query)

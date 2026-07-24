@@ -233,3 +233,59 @@ async def test_movie_title_search_endpoint(tmp_path):
     assert response.json()["results"][0]["tmdb_id"] == 27205
     assert route.called
     await _close(client, database, tmdb, pansou)
+
+
+@pytest.mark.integration
+@respx.mock
+async def test_home_catalog_returns_real_tmdb_sections(tmp_path):
+    for index, feed in enumerate(("popular", "now_playing", "upcoming", "top_rated")):
+        respx.get(f"https://api.themoviedb.org/3/movie/{feed}").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "results": [
+                        {
+                            "id": 100 + index,
+                            "title": feed,
+                            "backdrop_path": f"/{feed}.jpg",
+                            "genre_ids": [18],
+                        }
+                    ]
+                },
+            )
+        )
+    client, database, tmdb, pansou = await _make_client(tmp_path)
+
+    response = await client.get("/api/v1/movies/home")
+
+    assert response.status_code == 200
+    assert set(response.json()) == {"popular", "now_playing", "upcoming", "top_rated"}
+    assert response.json()["popular"][0]["backdrop_path"] == "/popular.jpg"
+    assert response.json()["top_rated"][0]["genre_ids"] == [18]
+    await _close(client, database, tmdb, pansou)
+
+
+@pytest.mark.integration
+@respx.mock
+async def test_discover_movies_forwards_filters_to_tmdb(tmp_path):
+    route = respx.get("https://api.themoviedb.org/3/discover/movie").mock(
+        return_value=httpx.Response(
+            200,
+            json={"results": [{"id": 680, "title": "低俗小说"}]},
+        )
+    )
+    client, database, tmdb, pansou = await _make_client(tmp_path)
+
+    response = await client.get(
+        "/api/v1/movies/discover",
+        params={"genre_id": 80, "year": 1994, "sort": "rating"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["results"][0]["tmdb_id"] == 680
+    request = route.calls.last.request
+    assert request.url.params["with_genres"] == "80"
+    assert request.url.params["primary_release_year"] == "1994"
+    assert request.url.params["sort_by"] == "vote_average.desc"
+    assert request.url.params["vote_count.gte"] == "200"
+    await _close(client, database, tmdb, pansou)

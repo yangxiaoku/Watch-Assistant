@@ -42,11 +42,20 @@ class MovieMetadata(BaseModel):
     release_year: int | None = None
     overview: str | None = None
     poster_path: str | None = None
+    backdrop_path: str | None = None
+    genre_ids: list[int] = Field(default_factory=list)
     vote_average: float | None = None
 
 
 class MovieCollectionResponse(BaseModel):
     results: list[MovieMetadata]
+
+
+class HomeCatalogResponse(BaseModel):
+    popular: list[MovieMetadata]
+    now_playing: list[MovieMetadata]
+    upcoming: list[MovieMetadata]
+    top_rated: list[MovieMetadata]
 
 
 class NormalizedResource(BaseModel):

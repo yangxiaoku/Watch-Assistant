@@ -1,4 +1,9 @@
-import type { MovieCollectionResponse, SearchResponse, TaskResponse } from "./types";
+import type {
+  HomeCatalogResponse,
+  MovieCollectionResponse,
+  SearchResponse,
+  TaskResponse,
+} from "./types";
 
 export class ApiError extends Error {
   constructor(
@@ -40,6 +45,21 @@ export class ApiClient {
 
   async popularMovies(): Promise<MovieCollectionResponse> {
     return this.request<MovieCollectionResponse>("/api/v1/movies/popular");
+  }
+
+  async homeCatalog(): Promise<HomeCatalogResponse> {
+    return this.request<HomeCatalogResponse>("/api/v1/movies/home");
+  }
+
+  async discoverMovies(filters: {
+    genreId?: number;
+    year?: number;
+    sort: "popular" | "rating" | "release";
+  }): Promise<MovieCollectionResponse> {
+    const params = new URLSearchParams({ sort: filters.sort });
+    if (filters.genreId) params.set("genre_id", String(filters.genreId));
+    if (filters.year) params.set("year", String(filters.year));
+    return this.request<MovieCollectionResponse>(`/api/v1/movies/discover?${params}`);
   }
 
   async searchMovies(query: string): Promise<MovieCollectionResponse> {

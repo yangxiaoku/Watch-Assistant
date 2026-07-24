@@ -14,11 +14,20 @@ export interface MovieMetadata {
   release_year: number | null;
   overview: string | null;
   poster_path: string | null;
+  backdrop_path?: string | null;
+  genre_ids?: number[];
   vote_average: number | null;
 }
 
 export interface MovieCollectionResponse {
   results: MovieMetadata[];
+}
+
+export interface HomeCatalogResponse {
+  popular: MovieMetadata[];
+  now_playing: MovieMetadata[];
+  upcoming: MovieMetadata[];
+  top_rated: MovieMetadata[];
 }
 
 export interface ResourceSummary {
