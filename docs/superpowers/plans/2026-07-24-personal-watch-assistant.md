@@ -63,7 +63,7 @@ Expected: `1 passed`.
 
 - [ ] **Step 4: Add the frontend package**
 
-Pin Vue 3, TypeScript, Vite, `lucide-vue-next`, Vitest, `@vue/test-utils`, and Playwright. Add scripts `dev`, `build`, `test`, and `test:e2e`.
+Pin Vue 3, TypeScript, Vite, `@lucide/vue`, Vitest, `@vue/test-utils`, and Playwright. Add scripts `dev`, `build`, `test`, and `test:e2e`.
 
 - [ ] **Step 5: Commit**
 
