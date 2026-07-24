@@ -55,9 +55,7 @@ class CacheWarmer:
 
     def next_run_at(self) -> datetime:
         now = datetime.now(UTC)
-        return now + timedelta(
-            seconds=seconds_until_next_midnight(now, self._timezone)
-        )
+        return now + timedelta(seconds=seconds_until_next_midnight(now, self._timezone))
 
     async def run_forever(self, stop_event: asyncio.Event) -> None:
         while not stop_event.is_set():
@@ -81,9 +79,7 @@ class CacheWarmer:
             failed_identities = {
                 (item.media_type, item.tmdb_id) for item in failed_media
             }
-            selected = [
-                item for item in media if _identity(item) in failed_identities
-            ]
+            selected = [item for item in media if _identity(item) in failed_identities]
             await self._record_started(len(selected))
             failed = await self._warm_media(selected)
             run = WarmRun(
@@ -105,9 +101,7 @@ class CacheWarmer:
         pending: list[MovieMetadata] = []
         skipped = 0
         for item in media:
-            if await self._search.has_cache_since(
-                item.tmdb_id, item.media_type, since
-            ):
+            if await self._search.has_cache_since(item.tmdb_id, item.media_type, since):
                 skipped += 1
             else:
                 pending.append(item)
@@ -163,9 +157,7 @@ class CacheWarmer:
                 extra={"failure_count": len(failed)},
             )
 
-    async def _warm_media(
-        self, media: list[MovieMetadata]
-    ) -> list[MovieMetadata]:
+    async def _warm_media(self, media: list[MovieMetadata]) -> list[MovieMetadata]:
         failed: list[MovieMetadata] = []
         queue: asyncio.Queue[MovieMetadata] = asyncio.Queue()
         for item in media:

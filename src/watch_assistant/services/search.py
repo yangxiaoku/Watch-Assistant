@@ -81,9 +81,7 @@ class SearchService:
     async def get_movie(self, tmdb_id: int) -> MovieMetadata:
         return await self._tmdb.get_movie(tmdb_id)
 
-    async def get_media(
-        self, tmdb_id: int, media_type: MediaType
-    ) -> MovieMetadata:
+    async def get_media(self, tmdb_id: int, media_type: MediaType) -> MovieMetadata:
         return await self._tmdb.get_media(tmdb_id, media_type)
 
     async def get_popular(self) -> list[MovieMetadata]:
@@ -134,17 +132,13 @@ class SearchService:
             page=page,
         )
 
-    async def get_popular_page(
-        self, page: int
-    ) -> MovieCollectionResponse:
+    async def get_popular_page(self, page: int) -> MovieCollectionResponse:
         return await self._tmdb.get_feed_page("popular", page=page)
 
     async def search_movies(self, query: str) -> list[MovieMetadata]:
         return await self._tmdb.search_movies(query)
 
-    async def search_media(
-        self, query: str, page: int
-    ) -> MovieCollectionResponse:
+    async def search_media(self, query: str, page: int) -> MovieCollectionResponse:
         return await self._tmdb.search_media(query, page=page)
 
     async def search(
@@ -160,11 +154,8 @@ class SearchService:
         media = await self.get_media(tmdb_id, media_type)
         if media.media_type != MediaType.TV and season_number is not None:
             raise InvalidSeasonRequest("season_requires_tv")
-        if (
-            season_number is not None
-            and not any(
-                season.season_number == season_number for season in media.seasons
-            )
+        if season_number is not None and not any(
+            season.season_number == season_number for season in media.seasons
         ):
             raise InvalidSeasonRequest("season_not_found")
         lock_key = (media.media_type, media.tmdb_id)
@@ -474,15 +465,11 @@ class SearchService:
         for addition in additions:
             existing = merged.get(addition.canonical_key)
             merged[addition.canonical_key] = (
-                addition
-                if existing is None
-                else _merge_normalized(existing, addition)
+                addition if existing is None else _merge_normalized(existing, addition)
             )
         return list(merged.values())
 
-    async def _alternative_titles(
-        self, media: MovieMetadata
-    ) -> tuple[str, ...] | None:
+    async def _alternative_titles(self, media: MovieMetadata) -> tuple[str, ...] | None:
         try:
             titles = await self._tmdb.get_alternative_titles(
                 media.tmdb_id, media.media_type
@@ -490,9 +477,7 @@ class SearchService:
         except TmdbError:
             return None
         excluded = {
-            item.casefold()
-            for item in (media.title, media.original_title)
-            if item
+            item.casefold() for item in (media.title, media.original_title) if item
         }
         return tuple(title for title in titles if title.casefold() not in excluded)
 
@@ -520,12 +505,14 @@ class SearchService:
                 [LinkCheckItem(item.url, item.password) for item in shares]
             )
         except PanSouError:
-            magnets = [
-                item for item in candidates if item.kind == ResourceKind.MAGNET
-            ]
-            return magnets, list(cached_shares.values()), [], [], [
-                "link_check_inconclusive"
-            ]
+            magnets = [item for item in candidates if item.kind == ResourceKind.MAGNET]
+            return (
+                magnets,
+                list(cached_shares.values()),
+                [],
+                [],
+                ["link_check_inconclusive"],
+            )
 
         states_by_key = {
             item.canonical_key: state
@@ -549,9 +536,7 @@ class SearchService:
         warnings = ["link_check_inconclusive"] if inconclusive else []
         return accepted, preserved, shares, states, warnings
 
-    async def _load_source_penalties(
-        self, session: AsyncSession
-    ) -> dict[str, int]:
+    async def _load_source_penalties(self, session: AsyncSession) -> dict[str, int]:
         rows = await session.scalars(select(SourceReliability))
         return {item.source: source_penalty(item) for item in rows}
 
@@ -644,9 +629,7 @@ class SearchService:
         has_resources: bool,
         now: datetime,
     ) -> bool:
-        watch = await session.get(
-            MovieWatch, (media.media_type, media.tmdb_id)
-        )
+        watch = await session.get(MovieWatch, (media.media_type, media.tmdb_id))
         if has_resources:
             if watch is None or not watch.active:
                 return False
@@ -689,9 +672,7 @@ class SearchService:
         )
         by_id = {resource.id: resource for resource in rows}
         resources = [
-            by_id[resource_id]
-            for resource_id in resource_ids
-            if resource_id in by_id
+            by_id[resource_id] for resource_id in resource_ids if resource_id in by_id
         ]
         return resources, _complete_score_snapshot(resources, score_snapshot)
 
@@ -701,9 +682,9 @@ class SearchService:
         expires_at = now + STALE_CACHE_AGE
         values = []
         for resource in resources:
-            resource_id = "res_" + sha256(
-                resource.canonical_key.encode()
-            ).hexdigest()[:24]
+            resource_id = (
+                "res_" + sha256(resource.canonical_key.encode()).hexdigest()[:24]
+            )
             values.append(
                 {
                     "id": resource_id,
@@ -801,9 +782,7 @@ class SearchService:
                     seeders=item.seeders,
                     source=item.source,
                     captured_at=_as_utc(item.captured_at),
-                    rank_score=_snapshot_score(
-                        score_snapshot, item.id, "rank_score"
-                    ),
+                    rank_score=_snapshot_score(score_snapshot, item.id, "rank_score"),
                     relevance_score=_snapshot_score(
                         score_snapshot, item.id, "relevance_score"
                     ),
@@ -865,9 +844,7 @@ def _fallback_queries(
     alternative_titles: tuple[str, ...],
     season_number: int | None = None,
 ) -> list[str]:
-    existing = {
-        item.casefold() for item in build_search_queries(media, season_number)
-    }
+    existing = {item.casefold() for item in build_search_queries(media, season_number)}
     queries: list[str] = []
     for title in alternative_titles:
         normalized = " ".join(title.split())
@@ -892,9 +869,7 @@ def _limit_magnet_resources(
     ]
 
 
-def _selected_season(
-    media: MovieMetadata, season_number: int | None
-) -> int | None:
+def _selected_season(media: MovieMetadata, season_number: int | None) -> int | None:
     return season_number if media.media_type == MediaType.TV else None
 
 

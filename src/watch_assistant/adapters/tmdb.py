@@ -52,9 +52,7 @@ class TmdbClient:
     async def get_movie(self, tmdb_id: int) -> MovieMetadata:
         return await self.get_media(tmdb_id, MediaType.MOVIE)
 
-    async def get_media(
-        self, tmdb_id: int, media_type: MediaType
-    ) -> MovieMetadata:
+    async def get_media(self, tmdb_id: int, media_type: MediaType) -> MovieMetadata:
         payload = await self._get(f"/{media_type.value}/{tmdb_id}")
         return _parse_media(payload, tmdb_id=tmdb_id, media_type=media_type)
 
@@ -75,9 +73,7 @@ class TmdbClient:
     ) -> MovieCollectionResponse:
         if feed not in MEDIA_FEEDS[media_type]:
             raise ValueError("Unsupported media feed")
-        payload = await self._get(
-            f"/{media_type.value}/{feed}", params={"page": page}
-        )
+        payload = await self._get(f"/{media_type.value}/{feed}", params={"page": page})
         return _parse_media_collection(payload, media_type=media_type)
 
     async def discover_media(
@@ -108,9 +104,7 @@ class TmdbClient:
             params[year_field] = year
         if sort == "rating":
             params["vote_count.gte"] = 200
-        payload = await self._get(
-            f"/discover/{media_type.value}", params=params
-        )
+        payload = await self._get(f"/discover/{media_type.value}", params=params)
         return _parse_media_collection(payload, media_type=media_type)
 
     async def discover_movies(
@@ -132,12 +126,8 @@ class TmdbClient:
         ).results
 
     async def search_movies(self, query: str) -> list[MovieMetadata]:
-        payload = await self._get(
-            "/search/movie", params={"query": query, "page": 1}
-        )
-        return _parse_media_collection(
-            payload, media_type=MediaType.MOVIE
-        ).results
+        payload = await self._get("/search/movie", params={"query": query, "page": 1})
+        return _parse_media_collection(payload, media_type=MediaType.MOVIE).results
 
     async def search_media(
         self, query: str, *, page: int = 1
@@ -152,9 +142,7 @@ class TmdbClient:
         tmdb_id: int,
         media_type: MediaType = MediaType.MOVIE,
     ) -> list[str]:
-        payload = await self._get(
-            f"/{media_type.value}/{tmdb_id}/alternative_titles"
-        )
+        payload = await self._get(f"/{media_type.value}/{tmdb_id}/alternative_titles")
         key = "titles" if media_type == MediaType.MOVIE else "results"
         titles = payload.get(key)
         if not isinstance(titles, list):
@@ -167,9 +155,9 @@ class TmdbClient:
             region = item.get("iso_3166_1")
             if not isinstance(title, str) or not title.strip():
                 continue
-            by_region.setdefault(
-                region if isinstance(region, str) else "", []
-            ).append(title.strip())
+            by_region.setdefault(region if isinstance(region, str) else "", []).append(
+                title.strip()
+            )
         ordered: list[str] = []
         seen: set[str] = set()
         for region in (*ALTERNATIVE_TITLE_REGIONS, *by_region):
@@ -281,9 +269,7 @@ def _parse_media(
     original_field = (
         "original_title" if media_type == MediaType.MOVIE else "original_name"
     )
-    date_field = (
-        "release_date" if media_type == MediaType.MOVIE else "first_air_date"
-    )
+    date_field = "release_date" if media_type == MediaType.MOVIE else "first_air_date"
     title = payload.get(title_field)
     if not isinstance(title, str) or not title.strip():
         raise TmdbError("Unexpected TMDB response shape")
@@ -405,7 +391,10 @@ def build_search_queries(
     if media.media_type == MediaType.TV and season_number is not None:
         season = f"{season_number:02d}"
         for title, variants in (
-            (media.title, (f"{media.title} 第{season_number}季", f"{media.title} S{season}")),
+            (
+                media.title,
+                (f"{media.title} 第{season_number}季", f"{media.title} S{season}"),
+            ),
             (
                 media.original_title,
                 (

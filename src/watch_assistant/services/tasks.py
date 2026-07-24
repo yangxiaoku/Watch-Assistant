@@ -21,9 +21,7 @@ class InvalidRetryState(ValueError):
     pass
 
 
-def recover_after_restart(
-    task: Task, remote_status: RemoteStatus | None
-) -> None:
+def recover_after_restart(task: Task, remote_status: RemoteStatus | None) -> None:
     task.lease_owner = None
     task.lease_expires_at = None
     task.updated_at = datetime.now(UTC)
@@ -69,34 +67,34 @@ class TaskService:
 
     async def create(self, resource_id: str, *, force: bool = False):
         async with self._create_lock, self._session_factory() as session:
-                resource = await session.get(Resource, resource_id)
-                if resource is None:
-                    raise ResourceNotFound(resource_id)
-                if not force:
-                    existing_tasks = await session.scalars(
-                        select(Task).where(Task.resource_id == resource_id)
-                    )
-                    existing = choose_existing_task(existing_tasks, resource_id)
-                    if existing is not None:
-                        return existing, True
+            resource = await session.get(Resource, resource_id)
+            if resource is None:
+                raise ResourceNotFound(resource_id)
+            if not force:
+                existing_tasks = await session.scalars(
+                    select(Task).where(Task.resource_id == resource_id)
+                )
+                existing = choose_existing_task(existing_tasks, resource_id)
+                if existing is not None:
+                    return existing, True
 
-                action = (
-                    TaskAction.OFFLINE_DOWNLOAD
-                    if resource.kind.value == "magnet"
-                    else TaskAction.SAVE_SHARE
-                )
-                task = Task(
-                    id="task_" + uuid4().hex,
-                    resource_id=resource.id,
-                    action=action,
-                    encrypted_url_snapshot=resource.encrypted_url,
-                    encrypted_password_snapshot=resource.encrypted_password,
-                    state=TaskState.QUEUED,
-                    attempts=0,
-                )
-                session.add(task)
-                await session.commit()
-                return task, False
+            action = (
+                TaskAction.OFFLINE_DOWNLOAD
+                if resource.kind.value == "magnet"
+                else TaskAction.SAVE_SHARE
+            )
+            task = Task(
+                id="task_" + uuid4().hex,
+                resource_id=resource.id,
+                action=action,
+                encrypted_url_snapshot=resource.encrypted_url,
+                encrypted_password_snapshot=resource.encrypted_password,
+                state=TaskState.QUEUED,
+                attempts=0,
+            )
+            session.add(task)
+            await session.commit()
+            return task, False
 
     async def get(self, task_id: str) -> Task | None:
         async with self._session_factory() as session:

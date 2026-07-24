@@ -35,9 +35,7 @@ class TgtoDriveClient:
     async def submit_magnet(self, url: str) -> SubmissionResult:
         return await self._submit(url, None)
 
-    async def save_share(
-        self, url: str, password: str | None
-    ) -> SubmissionResult:
+    async def save_share(self, url: str, password: str | None) -> SubmissionResult:
         return await self._submit(url, password)
 
     async def get_status(self, remote_ref: str) -> RemoteStatus | None:
@@ -53,9 +51,7 @@ class TgtoDriveClient:
             return login_status
         try:
             response = await self._client.get(
-                template.replace(
-                    "{remote_reference}", quote(remote_ref, safe="")
-                ),
+                template.replace("{remote_reference}", quote(remote_ref, safe="")),
                 timeout=self._timeout,
             )
             if response.status_code in {401, 403}:
@@ -76,9 +72,7 @@ class TgtoDriveClient:
         if self._owns_client:
             await self._client.aclose()
 
-    async def _submit(
-        self, url: str, password: str | None
-    ) -> SubmissionResult:
+    async def _submit(self, url: str, password: str | None) -> SubmissionResult:
         self._require_supported()
         login_status = await self._login_status()
         if login_status is not None:
@@ -128,7 +122,9 @@ class TgtoDriveClient:
                 error_code="missing_remote_reference",
                 error_message="remote reference was not returned",
             )
-        return SubmissionResult(status=RemoteStatus.ACCEPTED, remote_ref=str(remote_ref))
+        return SubmissionResult(
+            status=RemoteStatus.ACCEPTED, remote_ref=str(remote_ref)
+        )
 
     async def _login_status(self) -> RemoteStatus | None:
         if self._logged_in:
@@ -150,9 +146,10 @@ class TgtoDriveClient:
             body = response.json()
         except (httpx.HTTPError, ValueError):
             return RemoteStatus.UNCERTAIN
-        self._logged_in = isinstance(body, dict) and body.get(
-            login.get("success_field", "success")
-        ) is True
+        self._logged_in = (
+            isinstance(body, dict)
+            and body.get(login.get("success_field", "success")) is True
+        )
         return None if self._logged_in else RemoteStatus.NEEDS_AUTH
 
     def _require_supported(self) -> None:

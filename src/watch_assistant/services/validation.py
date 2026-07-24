@@ -18,8 +18,7 @@ EPISODE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 COLLECTION_PATTERN = re.compile(
-    r"全集|全季|全剧|全系列|全\s*\d+\s*集|"
-    r"complete\s+(?:series|collection|season)",
+    r"全剧|全系列|complete\s+(?:series|collection)",
     re.IGNORECASE,
 )
 MEDIA_PATTERN = re.compile(
@@ -82,16 +81,10 @@ def validate_and_rank_resources(
 
     matches.sort(
         key=lambda item: (
-        -item.rank_score,
+            -item.rank_score,
+            -int(item.resource.seeders if item.resource.seeders is not None else -1),
             -int(
-                item.resource.seeders
-                if item.resource.seeders is not None
-                else -1
-            ),
-            -int(
-                item.resource.size_bytes
-                if item.resource.size_bytes is not None
-                else -1
+                item.resource.size_bytes if item.resource.size_bytes is not None else -1
             ),
             -item.resource.captured_at.timestamp(),
             item.resource.canonical_key,
@@ -127,9 +120,9 @@ def _match_score(
 ) -> int | None:
     normalized_name = _normalize(resource_name)
     compact_name = normalized_name.replace(" ", "")
-    has_episode_marker = EPISODE_PATTERN.search(
-        unicodedata.normalize("NFKC", resource_name)
-    ) is not None
+    has_episode_marker = (
+        EPISODE_PATTERN.search(unicodedata.normalize("NFKC", resource_name)) is not None
+    )
     if media.media_type == MediaType.MOVIE and has_episode_marker:
         return None
 
@@ -216,13 +209,7 @@ def _relevance_score(
         for alias in alternative_titles
     )
     title_score = (
-        45
-        if title_match
-        else 40
-        if original_match
-        else 35
-        if alternative_match
-        else 0
+        45 if title_match else 40 if original_match else 35 if alternative_match else 0
     )
     years = {int(value) for value in YEAR_PATTERN.findall(normalized_name)}
     target_year = _target_year(media, season_number)
@@ -279,7 +266,10 @@ def _target_year(media: MovieMetadata, season_number: int | None) -> int | None:
                 continue
             if season.air_date and re.match(r"^\d{4}-", season.air_date):
                 return int(season.air_date[:4])
-    return media.release_year
+        return None
+    if media.media_type == MediaType.MOVIE:
+        return media.release_year
+    return None
 
 
 def _alias_matches(alias: str, normalized_name: str, compact_name: str) -> bool:
@@ -313,11 +303,12 @@ def _contains_cjk(value: str) -> bool:
 
 def _season_numbers(value: str) -> set[int]:
     normalized = unicodedata.normalize("NFKC", value).casefold()
+    season_text = re.sub(r"complete\s+season\s*\d+", "", normalized)
     numbers: set[int] = set()
     for match in re.finditer(
         r"(?<![a-z0-9])s(?:eason)?\s*0*(\d+)(?!\d)|"
         r"第\s*0*(\d+)\s*季",
-        normalized,
+        season_text,
     ):
         value = match.group(1) or match.group(2)
         if value is not None:
@@ -326,11 +317,7 @@ def _season_numbers(value: str) -> set[int]:
         r"(?<![a-z0-9])s(?:eason)?\s*0*(\d+)\s*[-~到至]\s*"
         r"(?:s(?:eason)?\s*)?0*(\d+)|"
         r"第\s*0*(\d+)\s*季?\s*[-~到至]\s*第?\s*0*(\d+)\s*季",
-        normalized,
+        season_text,
     ):
-        numbers.update(
-            int(item)
-            for item in match.groups()
-            if item is not None
-        )
+        numbers.update(int(item) for item in match.groups() if item is not None)
     return numbers

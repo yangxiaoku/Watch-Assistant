@@ -61,7 +61,9 @@ def _write_contract(
     path.write_text(json.dumps(contract), encoding="utf-8")
 
 
-def _configure_environment(monkeypatch: pytest.MonkeyPatch, contract_path: Path) -> None:
+def _configure_environment(
+    monkeypatch: pytest.MonkeyPatch, contract_path: Path
+) -> None:
     monkeypatch.setenv("TGTO_BASE_URL", BASE_URL)
     monkeypatch.setenv("TGTO_WEB_USER", "contract-user")
     monkeypatch.setenv("TGTO_WEB_PASSWORD", "contract-password")
@@ -170,9 +172,7 @@ async def test_submit_requires_remote_reference_field(tmp_path, monkeypatch):
     respx.post(f"{BASE_URL}/api/login").mock(
         return_value=httpx.Response(200, json={"success": True})
     )
-    respx.get(f"{BASE_URL}/api/tasks/metadata").mock(
-        return_value=httpx.Response(200)
-    )
+    respx.get(f"{BASE_URL}/api/tasks/metadata").mock(return_value=httpx.Response(200))
 
     result = await run_contract_check()
 
@@ -201,9 +201,7 @@ async def test_status_requires_safe_remote_reference_template(
     respx.post(f"{BASE_URL}/api/login").mock(
         return_value=httpx.Response(200, json={"success": True})
     )
-    respx.get(f"{BASE_URL}/api/tasks/metadata").mock(
-        return_value=httpx.Response(200)
-    )
+    respx.get(f"{BASE_URL}/api/tasks/metadata").mock(return_value=httpx.Response(200))
 
     result = await run_contract_check()
 
@@ -242,9 +240,7 @@ async def test_login_failure_disables_supported_routes(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("contract_text", ["{broken", "[]"])
-async def test_invalid_contract_data_fails_closed(
-    tmp_path, monkeypatch, contract_text
-):
+async def test_invalid_contract_data_fails_closed(tmp_path, monkeypatch, contract_text):
     contract_path = tmp_path / "contract.json"
     contract_path.write_text(contract_text, encoding="utf-8")
     _configure_environment(monkeypatch, contract_path)
@@ -259,9 +255,7 @@ async def test_login_json_array_fails_closed(tmp_path, monkeypatch):
     contract_path = tmp_path / "contract.json"
     _write_contract(contract_path, supported=True)
     _configure_environment(monkeypatch, contract_path)
-    respx.post(f"{BASE_URL}/api/login").mock(
-        return_value=httpx.Response(200, json=[])
-    )
+    respx.post(f"{BASE_URL}/api/login").mock(return_value=httpx.Response(200, json=[]))
 
     result = await run_contract_check()
 
@@ -270,9 +264,7 @@ async def test_login_json_array_fails_closed(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("accept_status", [[True], [99], [600]])
 @respx.mock
-async def test_invalid_accept_status_fails_closed(
-    tmp_path, monkeypatch, accept_status
-):
+async def test_invalid_accept_status_fails_closed(tmp_path, monkeypatch, accept_status):
     contract_path = tmp_path / "contract.json"
     _write_contract(contract_path, supported=True)
     contract = json.loads(contract_path.read_text(encoding="utf-8"))
@@ -296,9 +288,7 @@ async def test_missing_status_route_enables_uncertain_fallback(tmp_path, monkeyp
     respx.post(f"{BASE_URL}/api/login").mock(
         return_value=httpx.Response(200, json={"success": True})
     )
-    respx.get(f"{BASE_URL}/api/tasks/metadata").mock(
-        return_value=httpx.Response(200)
-    )
+    respx.get(f"{BASE_URL}/api/tasks/metadata").mock(return_value=httpx.Response(200))
 
     result = await run_contract_check()
 

@@ -36,9 +36,7 @@ def get_cache_warmer(request: Request) -> CacheWarmer:
     return warmer
 
 
-MaintenanceDependency = Annotated[
-    MaintenanceService, Depends(get_maintenance_service)
-]
+MaintenanceDependency = Annotated[MaintenanceService, Depends(get_maintenance_service)]
 CacheWarmerDependency = Annotated[CacheWarmer, Depends(get_cache_warmer)]
 
 

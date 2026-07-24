@@ -77,13 +77,9 @@ async def test_invalid_web_password_returns_401(tmp_path):
 @pytest.mark.integration
 async def test_cookie_session_requires_csrf_for_writes(tmp_path):
     client, database, tmdb, pansou = await _make_auth_client(tmp_path)
-    login = await client.post(
-        "/api/v1/auth/login", json={"password": WEB_PASSWORD}
-    )
+    login = await client.post("/api/v1/auth/login", json={"password": WEB_PASSWORD})
 
-    missing_csrf = await client.post(
-        "/api/v1/tasks", json={"resource_id": "res_auth"}
-    )
+    missing_csrf = await client.post("/api/v1/tasks", json={"resource_id": "res_auth"})
     accepted = await client.post(
         "/api/v1/tasks",
         json={"resource_id": "res_auth"},

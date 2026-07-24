@@ -85,9 +85,7 @@ async def test_cache_warmer_uses_all_sections_and_composite_media_identity(tmp_p
     assert (MediaType.MOVIE, 1) not in search.warmed
     async with database.session_factory() as session:
         state = await session.scalar(select(CacheWarmState))
-    assert json.loads(state.failed_ids_json) == [
-        {"media_type": "tv", "tmdb_id": 3}
-    ]
+    assert json.loads(state.failed_ids_json) == [{"media_type": "tv", "tmdb_id": 3}]
     await database.engine.dispose()
 
 
@@ -111,9 +109,7 @@ async def test_retry_failed_selects_exact_media_identity(tmp_path):
     search = FakeSearchService()
     warmer = CacheWarmer(search, database.session_factory, retry_delays=())
 
-    run = await warmer.retry_failed(
-        [MediaIdentity(media_type=MediaType.TV, tmdb_id=1)]
-    )
+    run = await warmer.retry_failed([MediaIdentity(media_type=MediaType.TV, tmdb_id=1)])
 
     assert run.total == 1
     assert search.warmed == [(MediaType.TV, 1)]
@@ -126,9 +122,7 @@ async def test_cache_warmer_retries_only_failed_media(tmp_path):
     search = FakeSearchService()
     warmer = CacheWarmer(search, database.session_factory, retry_delays=(0,))
 
-    await warmer._warm_with_retries(
-        datetime(2026, 7, 24, tzinfo=UTC), asyncio.Event()
-    )
+    await warmer._warm_with_retries(datetime(2026, 7, 24, tzinfo=UTC), asyncio.Event())
 
     assert search.warmed.count((MediaType.TV, 3)) == 2
     assert search.warmed.count((MediaType.MOVIE, 2)) == 1
@@ -216,7 +210,5 @@ def test_midnight_helpers_use_hong_kong_timezone():
     timezone = ZoneInfo("Asia/Hong_Kong")
     now = datetime(2026, 7, 24, 15, 30, tzinfo=UTC)
 
-    assert local_midnight(now, timezone) == datetime(
-        2026, 7, 23, 16, 0, tzinfo=UTC
-    )
+    assert local_midnight(now, timezone) == datetime(2026, 7, 23, 16, 0, tzinfo=UTC)
     assert seconds_until_next_midnight(now, timezone) == 1800

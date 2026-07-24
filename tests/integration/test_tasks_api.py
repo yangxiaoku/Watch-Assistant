@@ -69,9 +69,7 @@ async def test_task_api_reuses_duplicate_and_rejects_arbitrary_url(tmp_path):
 @pytest.mark.integration
 async def test_retry_is_blocked_when_push_is_unsupported(tmp_path):
     client, database, tmdb, pansou, app = await _make_task_client(tmp_path)
-    created = await client.post(
-        "/api/v1/tasks", json={"resource_id": "res_task_api"}
-    )
+    created = await client.post("/api/v1/tasks", json={"resource_id": "res_task_api"})
     task_id = created.json()["id"]
     async with database.session_factory() as session:
         task = await session.get(Task, task_id)

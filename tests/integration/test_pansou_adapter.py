@@ -18,7 +18,9 @@ from watch_assistant.schemas import MediaType, MovieMetadata
 
 @respx.mock
 async def test_pansou_client_returns_merged_result_shape():
-    route = respx.get("http://pansou.test/api/search", params={"kw": "Inception 2010"}).mock(
+    route = respx.get(
+        "http://pansou.test/api/search", params={"kw": "Inception 2010"}
+    ).mock(
         return_value=httpx.Response(
             200,
             json={

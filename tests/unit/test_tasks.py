@@ -33,7 +33,9 @@ def test_recovery_uses_confirmed_remote_status():
 def test_duplicate_resource_reuses_recent_task():
     existing = make_task(state=TaskState.ACCEPTED, age_hours=2)
 
-    assert choose_existing_task([existing], resource_id=existing.resource_id) is existing
+    assert (
+        choose_existing_task([existing], resource_id=existing.resource_id) is existing
+    )
     assert (
         choose_existing_task(
             [make_task(state=TaskState.FAILED, age_hours=2)],

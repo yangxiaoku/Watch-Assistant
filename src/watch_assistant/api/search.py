@@ -128,9 +128,7 @@ async def get_media(
 
 
 @router.get("/movies/{tmdb_id}", response_model=MovieMetadata)
-async def get_movie(
-    tmdb_id: int, service: SearchServiceDependency
-) -> MovieMetadata:
+async def get_movie(tmdb_id: int, service: SearchServiceDependency) -> MovieMetadata:
     try:
         return await service.get_movie(tmdb_id)
     except TmdbError as exc:

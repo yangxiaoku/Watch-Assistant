@@ -13,7 +13,9 @@ async def test_movie_deep_link_serves_spa_without_masking_missing_assets(
 ):
     frontend_dir = tmp_path / "dist"
     frontend_dir.mkdir()
-    (frontend_dir / "index.html").write_text("<h1>Watch Assistant</h1>", encoding="utf-8")
+    (frontend_dir / "index.html").write_text(
+        "<h1>Watch Assistant</h1>", encoding="utf-8"
+    )
     app = create_app(frontend_dir=frontend_dir)
 
     async with httpx.AsyncClient(

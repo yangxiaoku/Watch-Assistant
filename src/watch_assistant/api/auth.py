@@ -23,9 +23,7 @@ def get_security_manager(request: Request) -> SecurityManager:
     return manager
 
 
-SecurityManagerDependency = Annotated[
-    SecurityManager, Depends(get_security_manager)
-]
+SecurityManagerDependency = Annotated[SecurityManager, Depends(get_security_manager)]
 
 
 @router.post("/login", response_model=AuthLoginResponse)
