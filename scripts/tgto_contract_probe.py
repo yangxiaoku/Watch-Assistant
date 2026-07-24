@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+from collections.abc import Iterable
 
 import httpx
 
@@ -17,25 +18,56 @@ OPAQUE_TOKEN = re.compile(
     r"|[A-Za-z0-9_-]{20,}(?:\.[A-Za-z0-9_-]{8,})+"
     r")"
 )
+UUID_SEGMENT = re.compile(
+    r"[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-"
+    r"[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}"
+)
+CREDENTIAL_MARKERS = frozenset(
+    {
+        "auth",
+        "authorization",
+        "cookie",
+        "password",
+        "secret",
+        "session",
+        "token",
+    }
+)
 
 
-def _safe_static_prefix(candidate: str) -> str | None:
+def _safe_static_prefix(
+    candidate: str,
+    forbidden_values: tuple[str, ...],
+) -> str | None:
     safe_segments = []
     for segment in candidate.split("/")[2:]:
-        if not SAFE_SEGMENT.fullmatch(segment) or OPAQUE_TOKEN.fullmatch(segment):
+        proposed_path = "/api/" + "/".join([*safe_segments, segment])
+        if (
+            not SAFE_SEGMENT.fullmatch(segment)
+            or OPAQUE_TOKEN.fullmatch(segment)
+            or UUID_SEGMENT.fullmatch(segment)
+            or any(value in proposed_path for value in forbidden_values)
+        ):
             break
         safe_segments.append(segment)
+        if segment.casefold() in CREDENTIAL_MARKERS:
+            break
     if not safe_segments:
         return None
     return "/api/" + "/".join(safe_segments)
 
 
-def extract_api_paths(script: str) -> list[str]:
+def extract_api_paths(
+    script: str,
+    *,
+    forbidden_values: Iterable[str] = (),
+) -> list[str]:
     """Return unique API paths with query strings intentionally removed."""
+    forbidden = tuple(value for value in forbidden_values if value)
     paths = {
         path
         for candidate in API_PATH.findall(script)
-        if (path := _safe_static_prefix(candidate)) is not None
+        if (path := _safe_static_prefix(candidate, forbidden)) is not None
     }
     return sorted(paths)
 
@@ -57,7 +89,10 @@ async def probe_routes() -> None:
 
         script_response = await client.get("/static/script.js")
         print(f"{script_response.status_code} /static/script.js")
-        for path in extract_api_paths(script_response.text):
+        for path in extract_api_paths(
+            script_response.text,
+            forbidden_values=(username, password),
+        ):
             print(path)
 
 

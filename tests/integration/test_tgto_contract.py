@@ -253,7 +253,14 @@ async def test_probe_output_redacts_credentials_and_query_values(monkeypatch, ca
     respx.get(f"{BASE_URL}/static/script.js").mock(
         return_value=httpx.Response(
             200,
-            text='fetch("/api/tasks?token=response-secret"); fetch("/api/status/1")',
+            text=(
+                'fetch("/api/debug/sensitive-user"); '
+                'fetch("/api/debug/sensitive-password"); '
+                'fetch("/api/session/550e8400-e29b-41d4-a716-446655440000"); '
+                'fetch("/api/token/abc123"); '
+                'fetch("/api/tasks?token=response-secret"); '
+                'fetch("/api/status/1")'
+            ),
         )
     )
 
@@ -264,8 +271,13 @@ async def test_probe_output_redacts_credentials_and_query_values(monkeypatch, ca
     assert "200 /static/script.js" in output
     assert "/api/tasks" in output
     assert "/api/status/1" in output
+    assert "/api/debug" in output
+    assert "/api/session" in output
+    assert "/api/token" in output
     assert "sensitive-user" not in output
     assert "sensitive-password" not in output
+    assert "550e8400-e29b-41d4-a716-446655440000" not in output
+    assert "abc123" not in output
     assert "response-secret" not in output
 
 
@@ -298,3 +310,32 @@ def test_extract_api_paths_stops_before_unsafe_source_values():
     assert "superSecretBearerValue" not in output
     assert "query-secret" not in output
     assert "fragment-secret" not in output
+
+
+def test_extract_api_paths_blocks_explicit_forbidden_values():
+    paths = extract_api_paths(
+        'fetch("/api/debug/current-user"); '
+        'fetch("/api/debug/current-password"); '
+        'fetch("/api/safe/status")',
+        forbidden_values=("current-user", "current-password"),
+    )
+
+    assert paths == ["/api/debug", "/api/safe/status"]
+
+
+@pytest.mark.parametrize(
+    "marker",
+    [
+        "auth",
+        "authorization",
+        "cookie",
+        "password",
+        "secret",
+        "session",
+        "token",
+    ],
+)
+def test_extract_api_paths_stops_after_credential_marker(marker):
+    paths = extract_api_paths(f'fetch("/api/{marker}/short-value")')
+
+    assert paths == [f"/api/{marker}"]
