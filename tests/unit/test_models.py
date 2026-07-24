@@ -7,6 +7,7 @@ from sqlalchemy import select, text
 from watch_assistant.config import Settings
 from watch_assistant.db import cleanup_expired, create_database, initialize_database
 from watch_assistant.models import Resource, SearchCache, Task, TaskState
+from watch_assistant.schemas import ResourceKind
 
 
 def test_task_states_are_explicit():
@@ -74,7 +75,7 @@ async def test_cleanup_keeps_resource_referenced_by_uncertain_task(tmp_path):
                 ),
                 Resource(
                     id="res_terminal",
-                    kind="share",
+                    kind=ResourceKind.SHARE,
                     canonical_key="share:terminal",
                     encrypted_url="encrypted-terminal",
                     name="Terminal",
