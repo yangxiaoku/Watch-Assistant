@@ -5,6 +5,7 @@ from watch_assistant.schemas import (
     MovieMetadata,
     NormalizedResource,
     ResourceKind,
+    SeasonMetadata,
 )
 from watch_assistant.services.validation import validate_and_rank_resources
 
@@ -14,6 +15,8 @@ def _resource(
     *,
     kind: ResourceKind = ResourceKind.MAGNET,
     source: str = "test",
+    seeders: int | None = None,
+    size_bytes: int | None = None,
 ) -> NormalizedResource:
     return NormalizedResource(
         kind=kind,
@@ -22,6 +25,8 @@ def _resource(
         url="magnet:?xt=urn:btih:abcdef0123456789abcdef0123456789abcdef01",
         source=source,
         captured_at=datetime(2026, 7, 24, tzinfo=UTC),
+        seeders=seeders,
+        size_bytes=size_bytes,
     )
 
 
@@ -48,6 +53,17 @@ def test_validation_rejects_keyword_collision_and_ranks_quality():
     assert rejected == 1
 
 
+def test_validation_rejects_complete_collection_for_movie():
+    movie = MovieMetadata(tmdb_id=27205, title="Inception", release_year=2010)
+
+    resources, rejected = validate_and_rank_resources(
+        movie, [_resource("Inception 2010 Complete Series 1080p")]
+    )
+
+    assert resources == []
+    assert rejected == 1
+
+
 def test_validation_keeps_tv_seasons_but_rejects_them_for_movies():
     show = MovieMetadata(
         tmdb_id=1399,
@@ -57,7 +73,7 @@ def test_validation_keeps_tv_seasons_but_rejects_them_for_movies():
     )
     movie = show.model_copy(update={"media_type": MediaType.MOVIE})
     candidates = [
-        _resource("Game of Thrones S08E01 2019 1080p"),
+        _resource("Game of Thrones S08E01 2011 1080p"),
         _resource("Game of Thrones Season 2 1080p"),
     ]
 
@@ -82,6 +98,10 @@ def test_validation_filters_other_tv_seasons_when_one_is_selected():
         _resource("Game of Thrones Season 1 2011 1080p"),
         _resource("Game of Thrones 第3季 2013 1080p"),
         _resource("Game of Thrones complete collection 1080p"),
+        _resource("Game of Thrones S02-S03 2012 1080p"),
+        _resource("Game of Thrones Season 2-3 2012 1080p"),
+        _resource("Game of Thrones S02 全集 2012 1080p"),
+        _resource("Game of Thrones 2012 1080p"),
     ]
 
     resources, rejected = validate_and_rank_resources(
@@ -90,9 +110,85 @@ def test_validation_filters_other_tv_seasons_when_one_is_selected():
 
     assert [item.name for item in resources] == [
         "Game of Thrones S02E01 2012 1080p",
-        "Game of Thrones complete collection 1080p",
     ]
-    assert rejected == 2
+    assert rejected == 7
+
+
+def test_validation_ranks_exact_year_above_adjacent_and_missing_year():
+    movie = MovieMetadata(tmdb_id=1, title="The Matrix", release_year=1999)
+    resources, rejected = validate_and_rank_resources(
+        movie,
+        [
+            _resource("The Matrix 2000 1080p"),
+            _resource("The Matrix 1080p"),
+            _resource("The Matrix 1999 1080p"),
+        ],
+    )
+
+    assert [item.name for item in resources] == [
+        "The Matrix 1999 1080p",
+        "The Matrix 2000 1080p",
+        "The Matrix 1080p",
+    ]
+    assert rejected == 0
+
+
+def test_validation_uses_selected_season_air_year_for_ranking():
+    show = MovieMetadata(
+        tmdb_id=1399,
+        media_type=MediaType.TV,
+        title="The Show",
+        release_year=2010,
+        seasons=[
+            SeasonMetadata(
+                season_number=2,
+                name="Season 2",
+                episode_count=10,
+                air_date="2012-04-01",
+            )
+        ],
+    )
+    resources, rejected = validate_and_rank_resources(
+        show,
+        [
+            _resource("The Show Season 2 2011 1080p"),
+            _resource("The Show Season 2 1080p"),
+            _resource("The Show Season 2 2012 1080p"),
+        ],
+        season_number=2,
+    )
+
+    assert [item.name for item in resources] == [
+        "The Show Season 2 2012 1080p",
+        "The Show Season 2 2011 1080p",
+        "The Show Season 2 1080p",
+    ]
+    assert rejected == 0
+
+
+def test_validation_scores_zero_seeders_and_size_below_valid_data():
+    movie = MovieMetadata(tmdb_id=2, title="A Long Movie", release_year=2026)
+    resources, rejected = validate_and_rank_resources(
+        movie,
+        [
+            _resource(
+                "A Long Movie 2026 1080p",
+                seeders=0,
+                size_bytes=0,
+            ),
+            _resource(
+                "A Long Movie 2026 1080p",
+                seeders=20,
+                size_bytes=2 * 1024**3,
+            ).model_copy(update={"canonical_key": "magnet:valid"}),
+        ],
+    )
+
+    assert resources[0].canonical_key == "magnet:valid"
+    assert resources[0].metadata["completeness_score"] > resources[1].metadata[
+        "completeness_score"
+    ]
+    assert rejected == 0
 
 
 def test_validation_records_bounded_scores():

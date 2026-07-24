@@ -8,7 +8,11 @@ from watch_assistant.adapters.pansou import (
     PanSouClient,
     PanSouError,
 )
-from watch_assistant.adapters.tmdb import TmdbClient, build_search_queries
+from watch_assistant.adapters.tmdb import (
+    TmdbClient,
+    _parse_media,
+    build_search_queries,
+)
 from watch_assistant.schemas import MediaType, MovieMetadata
 
 
@@ -263,6 +267,39 @@ async def test_tmdb_client_parses_tv_and_multi_search_pagination():
     assert results.page == 2
     assert results.total_pages == 8
     assert [item.tmdb_id for item in results.results] == [1399]
+
+
+def test_tmdb_season_parser_filters_invalid_values_and_stably_deduplicates():
+    show = _parse_media(
+        {
+            "name": "示例剧",
+            "original_name": "Example Show",
+            "seasons": [
+                {"season_number": 2, "name": "  "},
+                {"season_number": True, "name": "bad bool"},
+                {"season_number": -1, "name": "bad negative"},
+                {
+                    "season_number": 0,
+                    "name": " Specials ",
+                    "episode_count": 2,
+                },
+                {
+                    "season_number": 2,
+                    "name": "duplicate should be ignored",
+                    "episode_count": 99,
+                },
+                {"season_number": 3, "name": "Season 3", "episode_count": True},
+            ],
+        },
+        tmdb_id=1,
+        media_type=MediaType.TV,
+    )
+
+    assert [season.season_number for season in show.seasons] == [0, 2, 3]
+    assert show.seasons[0].name == "Specials"
+    assert show.seasons[1].name == "Season 2"
+    assert show.seasons[1].episode_count == 0
+    assert show.seasons[2].episode_count == 0
 
 
 def test_build_search_queries_appends_four_selected_tv_season_queries():

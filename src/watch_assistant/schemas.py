@@ -120,7 +120,7 @@ class SearchResponse(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     cached: bool = False
     cache_age_seconds: int | None = None
-    selected_season: SeasonMetadata | None = None
+    selected_season: int | None = Field(default=None, ge=0)
 
 
 class MediaIdentity(BaseModel):

@@ -1,6 +1,6 @@
 import asyncio
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -20,6 +20,7 @@ from watch_assistant.models import (
     SearchCache,
     SourceReliability,
 )
+from watch_assistant.schemas import MovieMetadata
 
 TMDB_RESPONSE = {
     "id": 12345,
@@ -157,6 +158,12 @@ async def test_search_returns_only_top_30_magnets_and_keeps_shares(tmp_path):
     assert len(first.json()["results"]) == 31
     assert sum(item["kind"] == "magnet" for item in first.json()["results"]) == 30
     assert sum(item["kind"] == "115_share" for item in first.json()["results"]) == 1
+    assert [
+        item["name"] for item in first.json()["results"] if item["kind"] == "magnet"
+    ] == [
+        f"Inception 2010 1080p release-{index}"
+        for index in range(100, 70, -1)
+    ]
     assert all(
         0 <= item[field] <= 100
         for item in first.json()["results"]
@@ -324,7 +331,7 @@ async def test_force_refresh_removes_bad_115_share(tmp_path):
             },
             {"results": [{"iso_3166_1": "TW", "title": "Power Game"}]},
             "Power Game",
-            "Power Game S08 2019 1080p",
+                "Power Game S08 2011 1080p",
         ),
     ],
 )
@@ -764,7 +771,7 @@ async def test_tv_resource_search_falls_back_to_title_without_year(tmp_path):
         if query == "权力的游戏":
             response = _pansou_response()
             response["data"]["merged_by_type"]["magnet"][0]["note"] = (
-                "权力的游戏 S08 2019 2160p"
+                    "权力的游戏 S08 2011 2160p"
             )
             response["data"]["merged_by_type"]["115"][0]["note"] = (
                 "权力的游戏 全8季 BluRay"
@@ -872,7 +879,7 @@ async def test_tv_season_search_filters_other_seasons_and_is_cache_isolated(tmp_
     )
 
     assert selected.status_code == 200
-    assert selected.json()["selected_season"]["season_number"] == 2
+    assert selected.json()["selected_season"] == 2
     assert len(selected.json()["results"]) == 1
     assert "S02" in selected.json()["results"][0]["name"]
     assert all_seasons.status_code == 200
@@ -892,6 +899,274 @@ async def test_tv_season_search_filters_other_seasons_and_is_cache_isolated(tmp_
     assert keys == {
         "tmdb:tv:1399:queries:v4",
         "tmdb:tv:1399:season:2:queries:v4",
+    }
+    await _close(client, database, tmdb, pansou)
+
+
+@pytest.mark.integration
+@respx.mock
+async def test_missing_tv_season_returns_422_without_pansou_or_cache(tmp_path):
+    tv_id = 1401
+    respx.get(f"https://api.themoviedb.org/3/tv/{tv_id}").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": tv_id,
+                "name": "示例剧",
+                "first_air_date": "2020-01-01",
+                "seasons": [{"season_number": 1, "name": "Season 1"}],
+            },
+        )
+    )
+    pansou_route = respx.get("http://pansou.test/api/search").mock(
+        return_value=httpx.Response(200, json=_empty_pansou_response())
+    )
+    client, database, tmdb, pansou = await _make_client(tmp_path)
+
+    response = await client.post(
+        "/api/v1/search",
+        json={"tmdb_id": tv_id, "media_type": "tv", "season_number": 2},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "season_not_found"
+    assert not pansou_route.called
+    async with database.session_factory() as session:
+        assert await session.scalar(select(SearchCache)) is None
+    await _close(client, database, tmdb, pansou)
+
+
+@pytest.mark.integration
+@respx.mock
+async def test_tv_season_zero_requires_tmdb_specials_and_can_search(tmp_path):
+    tv_id = 1402
+    respx.get(f"https://api.themoviedb.org/3/tv/{tv_id}").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": tv_id,
+                "name": "示例剧",
+                "first_air_date": "2020-01-01",
+                "seasons": [
+                    {"season_number": 0, "name": "Specials"},
+                ],
+            },
+        )
+    )
+    respx.get(
+        f"https://api.themoviedb.org/3/tv/{tv_id}/alternative_titles"
+    ).mock(return_value=httpx.Response(200, json={"results": []}))
+    pansou_route = respx.get("http://pansou.test/api/search").mock(
+        return_value=httpx.Response(200, json=_empty_pansou_response())
+    )
+    client, database, tmdb, pansou = await _make_client(tmp_path)
+
+    response = await client.post(
+        "/api/v1/search",
+        json={"tmdb_id": tv_id, "media_type": "tv", "season_number": 0},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["selected_season"] == 0
+    assert pansou_route.call_count == 4
+    await _close(client, database, tmdb, pansou)
+
+
+@pytest.mark.integration
+@respx.mock
+async def test_tv_season_zero_is_rejected_when_tmdb_has_no_specials(tmp_path):
+    tv_id = 1403
+    respx.get(f"https://api.themoviedb.org/3/tv/{tv_id}").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": tv_id,
+                "name": "示例剧",
+                "first_air_date": "2020-01-01",
+                "seasons": [{"season_number": 1, "name": "Season 1"}],
+            },
+        )
+    )
+    pansou_route = respx.get("http://pansou.test/api/search").mock(
+        return_value=httpx.Response(200, json=_empty_pansou_response())
+    )
+    client, database, tmdb, pansou = await _make_client(tmp_path)
+
+    response = await client.post(
+        "/api/v1/search",
+        json={"tmdb_id": tv_id, "media_type": "tv", "season_number": 0},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "season_not_found"
+    assert not pansou_route.called
+    await _close(client, database, tmdb, pansou)
+
+
+@pytest.mark.integration
+@respx.mock
+async def test_cache_snapshot_preserves_context_order_and_scores(tmp_path):
+    _mock_tmdb()
+    client, database, tmdb, pansou = await _make_client(tmp_path)
+    now = datetime.now(UTC)
+    resources = [
+        Resource(
+            id="res_shared",
+            kind="magnet",
+            canonical_key="magnet:shared",
+            encrypted_url="cipher-shared",
+            name="Shared",
+            source="test",
+            captured_at=now,
+            expires_at=now + timedelta(days=7),
+            metadata_json=json.dumps(
+                {"rank_score": 5, "relevance_score": 5, "completeness_score": 5}
+            ),
+        ),
+        Resource(
+            id="res_other",
+            kind="magnet",
+            canonical_key="magnet:other",
+            encrypted_url="cipher-other",
+            name="Other",
+            source="test",
+            captured_at=now,
+            expires_at=now + timedelta(days=7),
+            metadata_json=json.dumps(
+                {"rank_score": 95, "relevance_score": 95, "completeness_score": 95}
+            ),
+        ),
+    ]
+    cache_a = SearchCache(
+        cache_key="context-a",
+        resource_ids_json=json.dumps(
+            {
+                "version": 1,
+                "resources": [
+                    {
+                        "resource_id": "res_shared",
+                        "rank_score": 90,
+                        "relevance_score": 80,
+                        "completeness_score": 70,
+                    },
+                    {
+                        "resource_id": "res_other",
+                        "rank_score": 60,
+                        "relevance_score": 50,
+                        "completeness_score": 40,
+                    },
+                ],
+            }
+        ),
+        fetched_at=now,
+        expires_at=now + timedelta(days=7),
+    )
+    cache_b = SearchCache(
+        cache_key="context-b",
+        resource_ids_json=json.dumps(
+            {
+                "version": 1,
+                "resources": [
+                    {
+                        "resource_id": "res_other",
+                        "rank_score": 95,
+                        "relevance_score": 95,
+                        "completeness_score": 95,
+                    },
+                    {
+                        "resource_id": "res_shared",
+                        "rank_score": 10,
+                        "relevance_score": 10,
+                        "completeness_score": 10,
+                    },
+                ],
+            }
+        ),
+        fetched_at=now,
+        expires_at=now + timedelta(days=7),
+    )
+    async with database.session_factory() as session:
+        session.add_all([*resources, cache_a, cache_b])
+        await session.commit()
+
+    service = client._transport.app.state.search_service
+    async with database.session_factory() as session:
+        loaded, scores = await service._load_cached_resources(
+            session, await session.get(SearchCache, "context-a")
+        )
+
+    assert [item.id for item in loaded] == ["res_shared", "res_other"]
+    assert scores["res_shared"] == {
+        "rank_score": 90,
+        "relevance_score": 80,
+        "completeness_score": 70,
+    }
+    await _close(client, database, tmdb, pansou)
+
+
+@pytest.mark.integration
+@respx.mock
+async def test_concurrent_warm_with_delayed_share_checks_avoids_sqlite_lock(
+    tmp_path,
+):
+    def search_response(request: httpx.Request) -> httpx.Response:
+        query = request.url.params["kw"]
+        title = "Movie A" if query.startswith("Movie A") else "Movie B"
+        infohash = "a" * 40 if title == "Movie A" else "b" * 40
+        code = "a" if title == "Movie A" else "b"
+        return httpx.Response(
+            200,
+            json={
+                "code": 0,
+                "data": {
+                    "total": 2,
+                    "merged_by_type": {
+                        "magnet": [
+                            {
+                                "url": f"magnet:?xt=urn:btih:{infohash}",
+                                "note": f"{title} 2020 1080p",
+                                "source": f"plugin:{code}",
+                            }
+                        ],
+                        "115": [
+                            {
+                                "url": f"https://115.com/s/{code}",
+                                "note": f"{title} 2020 BluRay",
+                                "source": f"plugin:{code}",
+                            }
+                        ],
+                    },
+                },
+            },
+        )
+
+    respx.get("http://pansou.test/api/search").mock(side_effect=search_response)
+
+    async def delayed_link_check(_request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(0.05)
+        return httpx.Response(200, json={"results": [{"state": "ok"}]})
+
+    respx.post("http://pansou.test/api/check/links").mock(
+        side_effect=delayed_link_check
+    )
+    client, database, tmdb, pansou = await _make_client(tmp_path)
+    service = client._transport.app.state.search_service
+
+    results = await asyncio.gather(
+        service.warm_media(
+            MovieMetadata(tmdb_id=1501, title="Movie A", release_year=2020)
+        ),
+        service.warm_media(
+            MovieMetadata(tmdb_id=1502, title="Movie B", release_year=2020)
+        ),
+    )
+
+    assert results == [True, True]
+    async with database.session_factory() as session:
+        caches = list(await session.scalars(select(SearchCache)))
+    assert {item.cache_key for item in caches} == {
+        "tmdb:movie:1501:queries:v4",
+        "tmdb:movie:1502:queries:v4",
     }
     await _close(client, database, tmdb, pansou)
 

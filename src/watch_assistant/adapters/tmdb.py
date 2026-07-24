@@ -325,31 +325,41 @@ def _parse_seasons(payload: dict, media_type: MediaType) -> list[SeasonMetadata]
     seasons = payload.get("seasons")
     if not isinstance(seasons, list):
         return []
-    parsed: list[SeasonMetadata] = []
+    by_number: dict[int, SeasonMetadata] = {}
     for item in seasons:
-        if not isinstance(item, dict) or not isinstance(item.get("season_number"), int):
+        season_number = item.get("season_number") if isinstance(item, dict) else None
+        if (
+            not isinstance(season_number, int)
+            or isinstance(season_number, bool)
+            or season_number < 0
+        ):
             continue
-        parsed.append(
+        raw_name = item.get("name")
+        name = raw_name.strip() if isinstance(raw_name, str) else ""
+        if not name:
+            name = f"Season {season_number}"
+        episode_count = item.get("episode_count")
+        if (
+            not isinstance(episode_count, int)
+            or isinstance(episode_count, bool)
+            or episode_count < 0
+        ):
+            episode_count = 0
+        by_number.setdefault(
+            season_number,
             SeasonMetadata(
-                season_number=item["season_number"],
-                name=item.get("name")
-                if isinstance(item.get("name"), str)
-                else f"Season {item['season_number']}",
-                episode_count=(
-                    item["episode_count"]
-                    if isinstance(item.get("episode_count"), int)
-                    and item["episode_count"] >= 0
-                    else 0
-                ),
+                season_number=season_number,
+                name=name,
+                episode_count=episode_count,
                 air_date=item.get("air_date")
                 if isinstance(item.get("air_date"), str)
                 else None,
                 poster_path=item.get("poster_path")
                 if isinstance(item.get("poster_path"), str)
                 else None,
-            )
+            ),
         )
-    return parsed
+    return [by_number[number] for number in sorted(by_number)]
 
 
 def _parse_genre_ids(payload: dict) -> list[int]:

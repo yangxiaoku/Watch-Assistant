@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 
@@ -27,7 +28,6 @@ from watch_assistant.schemas import (
     ResourceKind,
     ResourceSummary,
     SearchResponse,
-    SeasonMetadata,
 )
 from watch_assistant.services.normalize import (
     merge_normalized_resources,
@@ -160,6 +160,13 @@ class SearchService:
         media = await self.get_media(tmdb_id, media_type)
         if media.media_type != MediaType.TV and season_number is not None:
             raise InvalidSeasonRequest("season_requires_tv")
+        if (
+            season_number is not None
+            and not any(
+                season.season_number == season_number for season in media.seasons
+            )
+        ):
+            raise InvalidSeasonRequest("season_not_found")
         lock_key = (media.media_type, media.tmdb_id)
         lock = self._search_locks.setdefault(lock_key, asyncio.Lock())
         async with lock:
@@ -230,11 +237,13 @@ class SearchService:
             cache = await session.get(SearchCache, cache_key)
             cache_age = _age(cache.fetched_at, now) if cache else None
             cache_usable = cache is not None and cache_age <= STALE_CACHE_AGE
-            cached_resources = (
-                await self._load_cached_resources(session, cache)
-                if cache_usable and cache is not None
-                else []
-            )
+            cached_resources: list[Resource] = []
+            cached_scores: dict[str, dict[str, int]] = {}
+            if cache_usable and cache is not None:
+                cached_resources, cached_scores = await self._load_cached_resources(
+                    session, cache
+                )
+            penalties = await self._load_source_penalties(session)
             if (
                 cache is not None
                 and cache_usable
@@ -249,150 +258,140 @@ class SearchService:
                     cached=True,
                     warnings=_stored_warnings(cache),
                     selected_season=_selected_season(media, season_number),
+                    score_snapshot=cached_scores,
                 )
 
-            queries = build_search_queries(media, season_number)
-            query_results = await asyncio.gather(
-                *(self._query_pansou(query) for query in queries),
-                return_exceptions=True,
-            )
-            successful = [
-                (query, result)
-                for query, result in zip(queries, query_results, strict=True)
-                if isinstance(result, dict)
-            ]
-            warnings = [
-                f"pansou_query_failed:{index + 1}"
-                for index, result in enumerate(query_results)
-                if isinstance(result, Exception)
-            ]
-            if not successful:
-                if cache_usable and cache is not None:
-                    return self._response(
-                        media,
-                        cached_resources,
-                        now,
-                        cache,
-                        cached=True,
-                        warnings=_merge_warnings(warnings, ["stale_cache"]),
-                        selected_season=_selected_season(media, season_number),
-                    )
-                raise SearchUnavailable("pansou_unavailable")
-
-            complete = len(successful) == len(query_results)
-            normalized = self._normalize_results(successful, now)
-            penalties = await self._load_source_penalties(session)
-            alternative_titles: tuple[str, ...] = ()
-            candidates, rejected = validate_and_rank_resources(
-                media,
-                normalized,
-                source_penalties=penalties,
-                season_number=season_number,
-            )
-            if rejected:
-                warnings.append("resource_mismatch_filtered")
-
-            if complete and not candidates:
-                resolved_titles = await self._alternative_titles(media)
-                if resolved_titles is None:
-                    complete = False
-                else:
-                    fallback_queries = _fallback_queries(
-                        media, resolved_titles, season_number
-                    )
-                    alternative_titles = tuple(fallback_queries)
-                    if fallback_queries:
-                        fallback_results = await asyncio.gather(
-                            *(
-                                self._query_pansou(query)
-                                for query in fallback_queries
-                            ),
-                            return_exceptions=True,
-                        )
-                        fallback_successful = [
-                            (query, result)
-                            for query, result in zip(
-                                fallback_queries,
-                                fallback_results,
-                                strict=True,
-                            )
-                            if isinstance(result, dict)
-                        ]
-                        complete = len(fallback_successful) == len(
-                            fallback_results
-                        )
-                        if fallback_successful:
-                            additions = self._normalize_results(
-                                fallback_successful, now
-                            )
-                            normalized = self._merge_normalized_results(
-                                normalized, additions
-                            )
-                            candidates, rejected = validate_and_rank_resources(
-                                media,
-                                normalized,
-                                alternative_titles=alternative_titles,
-                                source_penalties=penalties,
-                                season_number=season_number,
-                            )
-                            warnings = [
-                                item
-                                for item in warnings
-                                if item != "resource_mismatch_filtered"
-                            ]
-                            if rejected:
-                                warnings.append("resource_mismatch_filtered")
-                            if candidates:
-                                warnings.append("alternative_titles_used")
-
-            candidates = _limit_magnet_resources(candidates)
-
-            if not complete and not candidates:
-                warnings = _merge_warnings(warnings, ["partial_upstream"])
-                if cache_usable and cache is not None:
-                    return self._response(
-                        media,
-                        cached_resources,
-                        now,
-                        cache,
-                        cached=True,
-                        warnings=_merge_warnings(warnings, ["stale_cache"]),
-                        selected_season=_selected_season(media, season_number),
-                    )
+        queries = build_search_queries(media, season_number)
+        query_results = await asyncio.gather(
+            *(self._query_pansou(query) for query in queries),
+            return_exceptions=True,
+        )
+        successful = [
+            (query, result)
+            for query, result in zip(queries, query_results, strict=True)
+            if isinstance(result, dict)
+        ]
+        warnings = [
+            f"pansou_query_failed:{index + 1}"
+            for index, result in enumerate(query_results)
+            if isinstance(result, Exception)
+        ]
+        if not successful:
+            if cache_usable and cache is not None:
                 return self._response(
                     media,
-                    [],
+                    cached_resources,
                     now,
-                    None,
-                    cached=False,
-                    warnings=warnings,
+                    cache,
+                    cached=True,
+                    warnings=_merge_warnings(warnings, ["stale_cache"]),
                     selected_season=_selected_season(media, season_number),
+                    score_snapshot=cached_scores,
                 )
+            raise SearchUnavailable("pansou_unavailable")
 
-            if not complete:
-                warnings = _merge_warnings(warnings, ["partial_upstream"])
-                if cache_usable and cache is not None:
-                    return self._response(
-                        media,
-                        cached_resources,
-                        now,
-                        cache,
-                        cached=True,
-                        warnings=_merge_warnings(warnings, ["stale_cache"]),
-                        selected_season=_selected_season(media, season_number),
+        complete = len(successful) == len(query_results)
+        normalized = self._normalize_results(successful, now)
+        alternative_titles: tuple[str, ...] = ()
+        candidates, rejected = validate_and_rank_resources(
+            media,
+            normalized,
+            source_penalties=penalties,
+            season_number=season_number,
+        )
+        if rejected:
+            warnings.append("resource_mismatch_filtered")
+
+        if complete and not candidates:
+            resolved_titles = await self._alternative_titles(media)
+            if resolved_titles is None:
+                complete = False
+            else:
+                fallback_queries = _fallback_queries(
+                    media, resolved_titles, season_number
+                )
+                alternative_titles = tuple(fallback_queries)
+                if fallback_queries:
+                    fallback_results = await asyncio.gather(
+                        *(self._query_pansou(query) for query in fallback_queries),
+                        return_exceptions=True,
                     )
+                    fallback_successful = [
+                        (query, result)
+                        for query, result in zip(
+                            fallback_queries, fallback_results, strict=True
+                        )
+                        if isinstance(result, dict)
+                    ]
+                    complete = len(fallback_successful) == len(fallback_results)
+                    if fallback_successful:
+                        normalized = self._merge_normalized_results(
+                            normalized,
+                            self._normalize_results(fallback_successful, now),
+                        )
+                        candidates, rejected = validate_and_rank_resources(
+                            media,
+                            normalized,
+                            alternative_titles=alternative_titles,
+                            source_penalties=penalties,
+                            season_number=season_number,
+                        )
+                        warnings = [
+                            item
+                            for item in warnings
+                            if item != "resource_mismatch_filtered"
+                        ]
+                        if rejected:
+                            warnings.append("resource_mismatch_filtered")
+                        if candidates:
+                            warnings.append("alternative_titles_used")
+
+        candidates = _limit_magnet_resources(candidates)
+
+        if not complete:
+            warnings = _merge_warnings(warnings, ["partial_upstream"])
+            if cache_usable and cache is not None:
+                return self._response(
+                    media,
+                    cached_resources,
+                    now,
+                    cache,
+                    cached=True,
+                    warnings=_merge_warnings(warnings, ["stale_cache"]),
+                    selected_season=_selected_season(media, season_number),
+                    score_snapshot=cached_scores,
+                )
+            async with self._session_factory() as session:
                 resources = await self._persist_resources(session, candidates, now)
                 await session.commit()
-                return self._response(
-                    media,
-                    resources,
-                    now,
-                    None,
-                    cached=False,
-                    warnings=warnings,
-                    selected_season=_selected_season(media, season_number),
-                )
+            return self._response(
+                media,
+                resources,
+                now,
+                None,
+                cached=False,
+                warnings=warnings,
+                selected_season=_selected_season(media, season_number),
+                score_snapshot=_resource_score_snapshot(resources),
+            )
 
+        preserved: list[Resource] = []
+        checked_shares: list[NormalizedResource] = []
+        link_states: list[LinkCheckState] = []
+        if verify_links:
+            (
+                candidates,
+                preserved,
+                checked_shares,
+                link_states,
+                link_warnings,
+            ) = await self._verify_shares(
+                candidates,
+                cached_resources,
+            )
+            warnings = _merge_warnings(warnings, link_warnings)
+
+        async with self._session_factory() as session:
             await self._record_validation_outcomes(
                 session,
                 media,
@@ -401,16 +400,10 @@ class SearchService:
                 now,
                 season_number,
             )
-            preserved: list[Resource] = []
-            if verify_links:
-                candidates, preserved, link_warnings = await self._verify_shares(
-                    session,
-                    candidates,
-                    cached_resources,
-                    now,
+            if checked_shares:
+                await self._record_link_outcomes(
+                    session, checked_shares, link_states, now
                 )
-                warnings = _merge_warnings(warnings, link_warnings)
-
             resources = await self._persist_resources(session, candidates, now)
             resources = _dedupe_resources([*resources, *preserved])
             found_new = False
@@ -425,7 +418,14 @@ class SearchService:
                 warnings = _merge_warnings(warnings, ["watching_for_resources"])
             elif found_new:
                 warnings = _merge_warnings(warnings, ["new_resources_found"])
-            await self._persist_cache(session, cache_key, resources, warnings, now)
+            score_snapshot = _resource_score_snapshot(resources)
+            for preserved_resource in preserved:
+                preserved_scores = cached_scores.get(preserved_resource.id)
+                if preserved_scores:
+                    score_snapshot[preserved_resource.id] = dict(preserved_scores)
+            await self._persist_cache(
+                session, cache_key, resources, score_snapshot, warnings, now
+            )
             await session.commit()
             cache = await session.get(SearchCache, cache_key)
             return self._response(
@@ -436,6 +436,7 @@ class SearchService:
                 cached=False,
                 warnings=warnings,
                 selected_season=_selected_season(media, season_number),
+                score_snapshot=score_snapshot,
             )
 
     async def _query_pansou(self, query: str) -> dict:
@@ -497,14 +498,18 @@ class SearchService:
 
     async def _verify_shares(
         self,
-        session: AsyncSession,
         candidates: list[NormalizedResource],
         cached_resources: list[Resource],
-        now: datetime,
-    ) -> tuple[list[NormalizedResource], list[Resource], list[str]]:
+    ) -> tuple[
+        list[NormalizedResource],
+        list[Resource],
+        list[NormalizedResource],
+        list[LinkCheckState],
+        list[str],
+    ]:
         shares = [item for item in candidates if item.kind == ResourceKind.SHARE]
         if not shares:
-            return candidates, [], []
+            return candidates, [], [], [], []
         cached_shares = {
             item.canonical_key: item
             for item in cached_resources
@@ -518,11 +523,10 @@ class SearchService:
             magnets = [
                 item for item in candidates if item.kind == ResourceKind.MAGNET
             ]
-            return magnets, list(cached_shares.values()), [
+            return magnets, list(cached_shares.values()), [], [], [
                 "link_check_inconclusive"
             ]
 
-        await self._record_link_outcomes(session, shares, states, now)
         states_by_key = {
             item.canonical_key: state
             for item, state in zip(shares, states, strict=True)
@@ -543,7 +547,7 @@ class SearchService:
                 if cached is not None:
                     preserved.append(cached)
         warnings = ["link_check_inconclusive"] if inconclusive else []
-        return accepted, preserved, warnings
+        return accepted, preserved, shares, states, warnings
 
     async def _load_source_penalties(
         self, session: AsyncSession
@@ -674,24 +678,22 @@ class SearchService:
 
     async def _load_cached_resources(
         self, session: AsyncSession, cache: SearchCache
-    ) -> list[Resource]:
-        try:
-            resource_ids = json.loads(cache.resource_ids_json)
-        except json.JSONDecodeError:
-            return []
-        if not isinstance(resource_ids, list) or not all(
-            isinstance(resource_id, str) for resource_id in resource_ids
-        ):
-            return []
+    ) -> tuple[list[Resource], dict[str, dict[str, int]]]:
+        resource_ids, score_snapshot = _decode_resource_snapshot(
+            cache.resource_ids_json
+        )
+        if not resource_ids:
+            return [], score_snapshot
         rows = await session.scalars(
             select(Resource).where(Resource.id.in_(resource_ids))
         )
         by_id = {resource.id: resource for resource in rows}
-        return [
+        resources = [
             by_id[resource_id]
             for resource_id in resource_ids
             if resource_id in by_id
         ]
+        return resources, _complete_score_snapshot(resources, score_snapshot)
 
     async def _persist_resources(self, session, resources, now):
         if not resources:
@@ -738,10 +740,28 @@ class SearchService:
         by_key = {resource.canonical_key: resource for resource in rows}
         return [by_key[key] for key in canonical_keys]
 
-    async def _persist_cache(self, session, cache_key, resources, warnings, now):
+    async def _persist_cache(
+        self,
+        session,
+        cache_key,
+        resources,
+        score_snapshot,
+        warnings,
+        now,
+    ):
+        snapshot = {
+            "version": 1,
+            "resources": [
+                {
+                    "resource_id": item.id,
+                    **score_snapshot.get(item.id, {}),
+                }
+                for item in resources
+            ],
+        }
         values = {
             "cache_key": cache_key,
-            "resource_ids_json": json.dumps([item.id for item in resources]),
+            "resource_ids_json": json.dumps(snapshot),
             "warnings_json": json.dumps(warnings),
             "fetched_at": now,
             "expires_at": now + STALE_CACHE_AGE,
@@ -767,7 +787,8 @@ class SearchService:
         *,
         cached: bool,
         warnings: list[str] | None = None,
-        selected_season: SeasonMetadata | None = None,
+        selected_season: int | None = None,
+        score_snapshot: Mapping[str, Mapping[str, int]] | None = None,
     ) -> SearchResponse:
         return SearchResponse(
             movie=movie,
@@ -780,10 +801,14 @@ class SearchService:
                     seeders=item.seeders,
                     source=item.source,
                     captured_at=_as_utc(item.captured_at),
-                    rank_score=_resource_score(item, "rank_score"),
-                    relevance_score=_resource_score(item, "relevance_score"),
-                    completeness_score=_resource_score(
-                        item, "completeness_score"
+                    rank_score=_snapshot_score(
+                        score_snapshot, item.id, "rank_score"
+                    ),
+                    relevance_score=_snapshot_score(
+                        score_snapshot, item.id, "relevance_score"
+                    ),
+                    completeness_score=_snapshot_score(
+                        score_snapshot, item.id, "completeness_score"
                     ),
                 )
                 for item in resources
@@ -869,25 +894,88 @@ def _limit_magnet_resources(
 
 def _selected_season(
     media: MovieMetadata, season_number: int | None
-) -> SeasonMetadata | None:
-    if season_number is None or media.media_type != MediaType.TV:
-        return None
-    for season in media.seasons:
-        if season.season_number == season_number:
-            return season
-    return SeasonMetadata(
-        season_number=season_number,
-        name=f"Season {season_number}",
-        episode_count=0,
-    )
+) -> int | None:
+    return season_number if media.media_type == MediaType.TV else None
 
 
-def _resource_score(resource: Resource, name: str) -> int:
+def _decode_resource_snapshot(
+    value: str,
+) -> tuple[list[str], dict[str, dict[str, int]]]:
+    try:
+        payload = json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        return [], {}
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, str)], {}
+    if not isinstance(payload, dict) or not isinstance(payload.get("resources"), list):
+        return [], {}
+    resource_ids: list[str] = []
+    scores: dict[str, dict[str, int]] = {}
+    for item in payload["resources"]:
+        if not isinstance(item, dict) or not isinstance(item.get("resource_id"), str):
+            continue
+        resource_id = item["resource_id"]
+        resource_ids.append(resource_id)
+        scores[resource_id] = {
+            key: item[key]
+            for key in ("rank_score", "relevance_score", "completeness_score")
+            if isinstance(item.get(key), int) and 0 <= item[key] <= 100
+        }
+    return resource_ids, scores
+
+
+def _resource_score_snapshot(
+    resources: list[Resource],
+) -> dict[str, dict[str, int]]:
+    result: dict[str, dict[str, int]] = {}
+    for resource in resources:
+        values = _resource_metadata_scores(resource)
+        result[resource.id] = {
+            key: values.get(key, 0)
+            for key in ("rank_score", "relevance_score", "completeness_score")
+        }
+    return result
+
+
+def _complete_score_snapshot(
+    resources: list[Resource],
+    snapshot: Mapping[str, Mapping[str, int]],
+) -> dict[str, dict[str, int]]:
+    completed: dict[str, dict[str, int]] = {}
+    for resource in resources:
+        values = dict(snapshot.get(resource.id, {}))
+        if len(values) < 3:
+            metadata_scores = _resource_metadata_scores(resource)
+            for key, value in metadata_scores.items():
+                values.setdefault(key, value)
+        completed[resource.id] = {
+            key: values.get(key, 0)
+            for key in ("rank_score", "relevance_score", "completeness_score")
+        }
+    return completed
+
+
+def _resource_metadata_scores(resource: Resource) -> dict[str, int]:
     try:
         metadata = json.loads(resource.metadata_json)
-    except json.JSONDecodeError:
-        return 0
-    value = metadata.get(name) if isinstance(metadata, dict) else None
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    if not isinstance(metadata, dict):
+        return {}
+    scores = {
+        key: metadata[key]
+        for key in ("rank_score", "relevance_score", "completeness_score")
+        if isinstance(metadata.get(key), int) and 0 <= metadata[key] <= 100
+    }
+    return scores if len(scores) == 3 else {}
+
+
+def _snapshot_score(
+    snapshot: Mapping[str, Mapping[str, int]] | None,
+    resource_id: str,
+    key: str,
+) -> int:
+    value = (snapshot or {}).get(resource_id, {}).get(key, 0)
     return value if isinstance(value, int) and 0 <= value <= 100 else 0
 
 

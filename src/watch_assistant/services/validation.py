@@ -13,7 +13,13 @@ EPISODE_PATTERN = re.compile(
     r"(?<![a-z0-9])e\d{1,3}(?!\d)|"
     r"(?<![a-z0-9])season\s*\d+(?!\d)|"
     r"(?<![a-z0-9])episode\s*\d+(?!\d)|"
+    r"全集|全季|全剧|全系列|complete\s+(?:series|collection|season)|"
     r"\u7b2c\s*\d+\s*[\u5b63\u96c6]|\u66f4\u65b0\u81f3\s*\d*\s*\u96c6?|\u5168\s*\d+\s*\u96c6",
+    re.IGNORECASE,
+)
+COLLECTION_PATTERN = re.compile(
+    r"全集|全季|全剧|全系列|全\s*\d+\s*集|"
+    r"complete\s+(?:series|collection|season)",
     re.IGNORECASE,
 )
 MEDIA_PATTERN = re.compile(
@@ -131,8 +137,10 @@ def _match_score(
     if (
         media.media_type == MediaType.TV
         and season_number is not None
-        and season_numbers
-        and season_number not in season_numbers
+        and (
+            season_numbers != {season_number}
+            or COLLECTION_PATTERN.search(normalized_name) is not None
+        )
     ):
         return None
 
@@ -151,9 +159,10 @@ def _match_score(
     years = {int(value) for value in YEAR_PATTERN.findall(normalized_name)}
     year_score = 0
     has_matching_year = False
-    if media.release_year is not None and years:
-        closest = min(abs(year - media.release_year) for year in years)
-        if closest > 1 and media.media_type == MediaType.MOVIE:
+    target_year = _target_year(media, season_number)
+    if target_year is not None and years:
+        closest = min(abs(year - target_year) for year in years)
+        if closest > 1:
             return None
         if closest <= 1:
             has_matching_year = True
@@ -206,18 +215,29 @@ def _relevance_score(
         _alias_matches(alias, normalized_name, compact_name)
         for alias in alternative_titles
     )
-    score = 100 if title_match else 90 if original_match else 85 if alternative_match else 0
+    title_score = (
+        45
+        if title_match
+        else 40
+        if original_match
+        else 35
+        if alternative_match
+        else 0
+    )
     years = {int(value) for value in YEAR_PATTERN.findall(normalized_name)}
-    if media.release_year is not None and years:
-        closest = min(abs(year - media.release_year) for year in years)
-        score += 30 if closest == 0 else 20 if closest == 1 else 0
-    if (
-        media.media_type == MediaType.TV
+    target_year = _target_year(media, season_number)
+    year_score = 0
+    if target_year is not None and years:
+        closest = min(abs(year - target_year) for year in years)
+        year_score = 35 if closest == 0 else 25 if closest == 1 else 0
+    season_score = (
+        20
+        if media.media_type == MediaType.TV
         and season_number is not None
-        and season_number in _season_numbers(resource_name)
-    ):
-        score += 10
-    return max(0, min(100, score))
+        and _season_numbers(resource_name) == {season_number}
+        else 0
+    )
+    return max(0, min(100, title_score + year_score + season_score))
 
 
 def _completeness_score(name: str, resource: NormalizedResource) -> int:
@@ -236,9 +256,30 @@ def _completeness_score(name: str, resource: NormalizedResource) -> int:
         source = 20
     else:
         source = 10
-    seeders = 20 if resource.seeders is not None else 0
-    size = 15 if resource.size_bytes is not None else 0
+    if resource.seeders is None:
+        seeders = 0
+    elif resource.seeders <= 0:
+        seeders = 1
+    elif resource.seeders <= 5:
+        seeders = 8
+    elif resource.seeders <= 20:
+        seeders = 15
+    elif resource.seeders <= 100:
+        seeders = 22
+    else:
+        seeders = 25
+    size = 15 if resource.size_bytes is not None and resource.size_bytes > 0 else 0
     return max(0, min(100, resolution + source + seeders + size))
+
+
+def _target_year(media: MovieMetadata, season_number: int | None) -> int | None:
+    if media.media_type == MediaType.TV and season_number is not None:
+        for season in media.seasons:
+            if season.season_number != season_number:
+                continue
+            if season.air_date and re.match(r"^\d{4}-", season.air_date):
+                return int(season.air_date[:4])
+    return media.release_year
 
 
 def _alias_matches(alias: str, normalized_name: str, compact_name: str) -> bool:
@@ -281,4 +322,15 @@ def _season_numbers(value: str) -> set[int]:
         value = match.group(1) or match.group(2)
         if value is not None:
             numbers.add(int(value))
+    for match in re.finditer(
+        r"(?<![a-z0-9])s(?:eason)?\s*0*(\d+)\s*[-~到至]\s*"
+        r"(?:s(?:eason)?\s*)?0*(\d+)|"
+        r"第\s*0*(\d+)\s*季?\s*[-~到至]\s*第?\s*0*(\d+)\s*季",
+        normalized,
+    ):
+        numbers.update(
+            int(item)
+            for item in match.groups()
+            if item is not None
+        )
     return numbers
