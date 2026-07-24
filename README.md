@@ -78,7 +78,7 @@ npm --prefix frontend run build
 
 2026-07-24：
 
-- Python：`133 passed, 1 skipped`；跳过项是明确的 TgtoDrive `supported:false` 实际契约测试。
+- Python：`134 passed, 1 skipped`；跳过项是明确的 TgtoDrive `supported:false` 实际契约测试。
 - Ruff：通过。
 - Vitest：`8 passed`。
 - Playwright：桌面与移动端 `2 passed`。

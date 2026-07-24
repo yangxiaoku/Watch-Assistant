@@ -93,6 +93,23 @@ def test_115_results_require_configured_domain_and_dedupe_by_share_id(
     assert shares[0].seeders == 8
 
 
+def test_malformed_share_url_does_not_abort_other_results():
+    data = {
+        "merged_by_type": {
+            "115": [
+                {"url": "https://[invalid/s/bad", "note": "Invalid"},
+                {"url": "https://115.com/s/good", "note": "Valid"},
+            ]
+        }
+    }
+
+    resources = normalize_pansou(data, share_domains=("115.com",))
+
+    assert [resource.canonical_key for resource in resources] == [
+        "share:115.com:good"
+    ]
+
+
 @pytest.mark.parametrize(
     ("url", "canonical_key"),
     [

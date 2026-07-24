@@ -231,7 +231,10 @@ def _resource_richness(resource: NormalizedResource) -> tuple[int, int, int, int
 
 
 def _share_key(url: str, allowed_domains: tuple[str, ...]) -> str | None:
-    parsed = urlsplit(url)
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return None
     if parsed.scheme.casefold() not in {"http", "https"} or not parsed.hostname:
         return None
     host = parsed.hostname.casefold().rstrip(".")
