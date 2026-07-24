@@ -63,3 +63,18 @@ python -m ruff check src tests scripts
 npm --prefix frontend test -- --run
 npm --prefix frontend run build
 ```
+
+## 验收记录
+
+2026-07-24：
+
+- Python：`65 passed, 1 skipped`；跳过项是明确的 TgtoDrive `supported:false` 实际契约测试。
+- Ruff：通过。
+- Vitest：`5 passed`。
+- Playwright：桌面与移动端 `2 passed`。
+- Vite：成功生成 Web 资源和 `watch-assistant.user.js`。
+- Compose：在 `192.168.6.236` 的 Docker Compose v5.1.2 上执行 `config --quiet` 通过。
+- 浏览器：1440×900 与 390×844 均无横向溢出，控制台无错误。
+- PanSou：只读搜索返回 `code=0`，确认 `data.merged_by_type` 含磁力结果。
+- TgtoDrive：没有稳定 submit/status 契约，未提交测试磁力或 115 分享，真实推送保持禁用。
+- 镜像构建：服务器访问 `registry-1.docker.io:443` 超时，无法拉取 `node:24-alpine` 和 `python:3.12-slim`，因此没有部署镜像摘要。
