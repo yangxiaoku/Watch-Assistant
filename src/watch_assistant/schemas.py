@@ -42,6 +42,11 @@ class MovieMetadata(BaseModel):
     release_year: int | None = None
     overview: str | None = None
     poster_path: str | None = None
+    vote_average: float | None = None
+
+
+class MovieCollectionResponse(BaseModel):
+    results: list[MovieMetadata]
 
 
 class NormalizedResource(BaseModel):

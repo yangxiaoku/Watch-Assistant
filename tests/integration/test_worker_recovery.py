@@ -107,3 +107,51 @@ async def test_expired_submitting_task_without_remote_ref_becomes_uncertain(tmp_
     assert stored.state == TaskState.UNCERTAIN
     assert adapter.submissions == 0
     await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_local_decryption_failure_is_failed_without_submission(tmp_path):
+    database = await _database(tmp_path)
+    crypto = SecretCrypto(Fernet.generate_key().decode("ascii"))
+    await _add_resource(database, crypto)
+    service = TaskService(database.session_factory)
+    task, _ = await service.create("res_magnet")
+    async with database.session_factory() as session:
+        stored = await session.get(Task, task.id)
+        stored.encrypted_url_snapshot = "not-valid-ciphertext"
+        await session.commit()
+
+    adapter = FakeAdapter()
+    worker = TaskWorker(database.session_factory, crypto, adapter, owner="test-worker")
+    await worker.run_once()
+    stored = await service.get(task.id)
+
+    assert stored.state == TaskState.FAILED
+    assert stored.error_code == "local_decryption_failed"
+    assert adapter.submissions == 0
+    await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_recovery_preserves_confirmed_remote_failure(tmp_path):
+    database = await _database(tmp_path)
+    crypto = SecretCrypto(Fernet.generate_key().decode("ascii"))
+    await _add_resource(database, crypto)
+    service = TaskService(database.session_factory)
+    task, _ = await service.create("res_magnet")
+    async with database.session_factory() as session:
+        stored = await session.get(Task, task.id)
+        stored.state = TaskState.SUBMITTING
+        stored.remote_ref = "remote-failed"
+        stored.lease_owner = "dead-worker"
+        stored.lease_expires_at = datetime.now(UTC) - timedelta(minutes=1)
+        await session.commit()
+
+    adapter = FakeAdapter()
+    adapter.remote_status = RemoteStatus.FAILED
+    worker = TaskWorker(database.session_factory, crypto, adapter, owner="new-worker")
+    await worker.recover_expired()
+    stored = await service.get(task.id)
+
+    assert stored.state == TaskState.FAILED
+    await database.engine.dispose()

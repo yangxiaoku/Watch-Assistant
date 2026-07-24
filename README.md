@@ -1,10 +1,11 @@
 # Watch Assistant
 
-轻量自托管的个人观影辅助工具。它通过 TMDB 电影 ID 查询电影信息，聚合 PanSou 的磁力与 115 分享结果，并把敏感链接加密保存在本机 SQLite 中。
+轻量自托管的个人观影辅助工具。它展示 TMDB 热门电影并支持片名搜索，进入详情后聚合 PanSou 的磁力与 115 分享结果，并把敏感链接加密保存在本机 SQLite 中。
 
 ## 当前能力
 
 - 独立 Vue Web 工作台与 TMDB 用户脚本。
+- 首页展示 TMDB 当前热门电影，支持按片名搜索并点击进入资源聚合详情。
 - PanSou 双查询、去重、30 分钟新鲜缓存和 24 小时故障回退。
 - Web 密码会话、用户脚本独立 Bearer Token、CSRF 与限流。
 - SQLite WAL、Fernet 敏感字段加密和保留期清理。
@@ -68,9 +69,9 @@ npm --prefix frontend run build
 
 2026-07-24：
 
-- Python：`65 passed, 1 skipped`；跳过项是明确的 TgtoDrive `supported:false` 实际契约测试。
+- Python：`74 passed, 1 skipped`；跳过项是明确的 TgtoDrive `supported:false` 实际契约测试。
 - Ruff：通过。
-- Vitest：`5 passed`。
+- Vitest：`6 passed`。
 - Playwright：桌面与移动端 `2 passed`。
 - Vite：成功生成 Web 资源和 `watch-assistant.user.js`。
 - Compose：在 `192.168.6.236` 的 Docker Compose v5.1.2 上执行 `config --quiet` 通过。

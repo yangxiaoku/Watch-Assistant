@@ -27,12 +27,11 @@ def recover_after_restart(
     task.lease_owner = None
     task.lease_expires_at = None
     task.updated_at = datetime.now(UTC)
-    if remote_status == RemoteStatus.ACCEPTED:
-        task.state = TaskState.ACCEPTED
-    elif remote_status == RemoteStatus.NEEDS_AUTH:
-        task.state = TaskState.NEEDS_AUTH
-    else:
-        task.state = TaskState.UNCERTAIN
+    task.state = (
+        TaskState(remote_status.value)
+        if remote_status is not None
+        else TaskState.UNCERTAIN
+    )
 
 
 def choose_existing_task(tasks, resource_id: str) -> Task | None:

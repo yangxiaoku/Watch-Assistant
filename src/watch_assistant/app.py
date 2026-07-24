@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.responses import FileResponse
 from starlette.staticfiles import StaticFiles
 
 from watch_assistant.adapters.pansou import PanSouClient
@@ -36,7 +37,16 @@ def create_app(
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         owned: list[object] = []
         if not hasattr(application.state, "search_service"):
-            settings = Settings(_secrets_dir="/run/secrets")
+            secrets_dir = Path("/run/secrets")
+            settings = Settings(
+                _secrets_dir=secrets_dir if secrets_dir.is_dir() else None
+            )
+            contract = load_tgto_contract(settings.tgto_contract_path)
+            if contract.get("supported") is True:
+                raise RuntimeError(
+                    "TgtoDrive contract is marked supported, but no production worker "
+                    "is configured"
+                )
             runtime_database = database or create_database(settings.database_url)
             runtime_crypto = crypto or SecretCrypto(
                 settings.encryption_key.get_secret_value()
@@ -59,8 +69,7 @@ def create_app(
                 script_token_hash=settings.script_token_hash.get_secret_value(),
                 cookie_secure=settings.cookie_secure,
             )
-            contract = load_tgto_contract(settings.tgto_contract_path)
-            application.state.push_supported = contract.get("supported") is True
+            application.state.push_supported = False
             application.state.database = runtime_database
             owned = [runtime_database, runtime_tmdb, runtime_pansou]
         try:
@@ -105,7 +114,15 @@ def create_app(
         os.environ.get("FRONTEND_DIST_DIR", "frontend/dist")
     )
     if static_path.is_dir():
-        application.mount("/", StaticFiles(directory=static_path, html=True), name="frontend")
+        index_path = static_path / "index.html"
+
+        @application.get("/movie/{frontend_path:path}", include_in_schema=False)
+        async def frontend_movie_route(frontend_path: str) -> FileResponse:
+            return FileResponse(index_path)
+
+        application.mount(
+            "/", StaticFiles(directory=static_path, html=True), name="frontend"
+        )
     return application
 
 

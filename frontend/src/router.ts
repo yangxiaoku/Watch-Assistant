@@ -5,5 +5,8 @@ export function extractMovieId(path: string): number | null {
 
 export function navigateToMovie(tmdbId: number): void {
   window.history.pushState({}, "", `/movie/${tmdbId}`);
-  window.dispatchEvent(new PopStateEvent("popstate"));
+}
+
+export function navigateHome(): void {
+  window.history.pushState({}, "", "/");
 }

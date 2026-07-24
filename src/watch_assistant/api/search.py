@@ -2,10 +2,15 @@
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from watch_assistant.adapters.tmdb import TmdbError
-from watch_assistant.schemas import MovieMetadata, SearchRequest, SearchResponse
+from watch_assistant.schemas import (
+    MovieCollectionResponse,
+    MovieMetadata,
+    SearchRequest,
+    SearchResponse,
+)
 from watch_assistant.security import require_api_auth
 from watch_assistant.services.search import SearchService, SearchUnavailable
 
@@ -17,6 +22,27 @@ def get_search_service(request: Request) -> SearchService:
 
 
 SearchServiceDependency = Annotated[SearchService, Depends(get_search_service)]
+
+
+@router.get("/movies/popular", response_model=MovieCollectionResponse)
+async def get_popular_movies(
+    service: SearchServiceDependency,
+) -> MovieCollectionResponse:
+    try:
+        return MovieCollectionResponse(results=await service.get_popular())
+    except TmdbError as exc:
+        raise HTTPException(status_code=502, detail="tmdb_unavailable") from exc
+
+
+@router.get("/movies/search", response_model=MovieCollectionResponse)
+async def search_movies(
+    service: SearchServiceDependency,
+    query: str = Query(min_length=1, max_length=100),
+) -> MovieCollectionResponse:
+    try:
+        return MovieCollectionResponse(results=await service.search_movies(query))
+    except TmdbError as exc:
+        raise HTTPException(status_code=502, detail="tmdb_unavailable") from exc
 
 
 @router.get("/movies/{tmdb_id}", response_model=MovieMetadata)

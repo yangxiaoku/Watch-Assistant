@@ -52,16 +52,24 @@ class TaskWorker:
                     if task.encrypted_password_snapshot
                     else None
                 )
-                if task.action == TaskAction.OFFLINE_DOWNLOAD:
-                    result = await self._adapter.submit_magnet(url)
-                else:
-                    result = await self._adapter.save_share(url, password)
-            except Exception:  # noqa: BLE001 - adapter boundary is fail-closed
+            except Exception:  # noqa: BLE001 - failure occurred before remote submission
                 result = SubmissionResult(
-                    status=RemoteStatus.UNCERTAIN,
-                    error_code="adapter_error",
-                    error_message="submission outcome is uncertain",
+                    status=RemoteStatus.FAILED,
+                    error_code="local_decryption_failed",
+                    error_message="stored submission data could not be decrypted",
                 )
+            else:
+                try:
+                    if task.action == TaskAction.OFFLINE_DOWNLOAD:
+                        result = await self._adapter.submit_magnet(url)
+                    else:
+                        result = await self._adapter.save_share(url, password)
+                except Exception:  # noqa: BLE001 - remote outcome may be ambiguous
+                    result = SubmissionResult(
+                        status=RemoteStatus.UNCERTAIN,
+                        error_code="adapter_error",
+                        error_message="submission outcome is uncertain",
+                    )
 
             task.state = TaskState(result.status.value)
             task.remote_ref = result.remote_ref

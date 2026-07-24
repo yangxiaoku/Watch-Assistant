@@ -76,3 +76,32 @@ async def test_tmdb_client_extracts_movie_metadata():
     assert movie.tmdb_id == 123
     assert movie.release_year == 2010
     assert movie.original_title == "Inception"
+
+
+@respx.mock
+async def test_tmdb_client_returns_popular_movies():
+    route = respx.get("https://api.themoviedb.org/3/movie/popular").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "results": [
+                    {
+                        "id": 550,
+                        "title": "搏击俱乐部",
+                        "original_title": "Fight Club",
+                        "release_date": "1999-10-15",
+                        "poster_path": "/fight-club.jpg",
+                        "vote_average": 8.4,
+                    }
+                ]
+            },
+        )
+    )
+    client = TmdbClient("tmdb-secret")
+
+    movies = await client.get_popular()
+    await client.aclose()
+
+    assert route.called
+    assert movies[0].tmdb_id == 550
+    assert movies[0].vote_average == 8.4

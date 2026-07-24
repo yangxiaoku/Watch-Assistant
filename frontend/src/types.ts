@@ -14,6 +14,11 @@ export interface MovieMetadata {
   release_year: number | null;
   overview: string | null;
   poster_path: string | null;
+  vote_average: number | null;
+}
+
+export interface MovieCollectionResponse {
+  results: MovieMetadata[];
 }
 
 export interface ResourceSummary {

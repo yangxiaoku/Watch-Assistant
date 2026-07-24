@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-test("login and search remain usable without horizontal overflow", async ({ page }) => {
+test("login, popular browsing, and resource detail remain usable", async ({ page }) => {
   await page.route("**/api/v1/health", (route) =>
     route.fulfill({ json: { status: "ok", push_supported: false } }),
   );
@@ -9,6 +9,23 @@ test("login and search remain usable without horizontal overflow", async ({ page
   );
   await page.route("**/api/v1/auth/login", (route) =>
     route.fulfill({ json: { csrf_token: "csrf-test" } }),
+  );
+  await page.route("**/api/v1/movies/popular", (route) =>
+    route.fulfill({
+      json: {
+        results: [
+          {
+            tmdb_id: 27205,
+            title: "盗梦空间",
+            original_title: "Inception",
+            release_year: 2010,
+            overview: "梦境中的梦境。",
+            poster_path: null,
+            vote_average: 8.4,
+          },
+        ],
+      },
+    }),
   );
   await page.route("**/api/v1/search", (route) =>
     route.fulfill({
@@ -43,10 +60,11 @@ test("login and search remain usable without horizontal overflow", async ({ page
   await expect(page.getByRole("heading", { name: "进入观影工作台" })).toBeVisible();
   await page.getByLabel("Web 密码").fill("test-password");
   await page.getByRole("button", { name: "登录" }).click();
-  await page.getByLabel("TMDB 电影 ID").fill("27205");
-  await page.getByRole("button", { name: "搜索资源" }).click();
+  await expect(page.getByRole("heading", { name: "当前热门" })).toBeVisible();
+  await page.getByRole("button", { name: "查看 盗梦空间" }).click();
 
   await expect(page.getByRole("heading", { name: "盗梦空间" })).toBeVisible();
+  await expect(page).toHaveURL(/\/movie\/27205$/);
   await expect(page.locator("tbody tr").filter({ hasText: "Inception 2010 2160p" })).toContainText(
     "未知",
   );

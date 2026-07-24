@@ -22,6 +22,11 @@ def get_task_service(request: Request) -> TaskService:
 TaskServiceDependency = Annotated[TaskService, Depends(get_task_service)]
 
 
+def ensure_push_supported(request: Request) -> None:
+    if getattr(request.app.state, "push_supported", True) is not True:
+        raise HTTPException(status_code=503, detail="push_unsupported")
+
+
 @router.post(
     "/tasks", response_model=TaskResponse, status_code=status.HTTP_202_ACCEPTED
 )
@@ -30,8 +35,7 @@ async def create_task(
     raw_request: Request,
     service: TaskServiceDependency,
 ) -> TaskResponse:
-    if getattr(raw_request.app.state, "push_supported", True) is not True:
-        raise HTTPException(status_code=503, detail="push_unsupported")
+    ensure_push_supported(raw_request)
     try:
         task, _reused = await service.create(request.resource_id, force=request.force)
     except ResourceNotFound as exc:
@@ -53,7 +57,10 @@ async def list_tasks(service: TaskServiceDependency) -> list[TaskResponse]:
 
 
 @router.post("/tasks/{task_id}/retry", response_model=TaskResponse)
-async def retry_task(task_id: str, service: TaskServiceDependency) -> TaskResponse:
+async def retry_task(
+    task_id: str, raw_request: Request, service: TaskServiceDependency
+) -> TaskResponse:
+    ensure_push_supported(raw_request)
     try:
         return await service.retry(task_id)
     except ResourceNotFound as exc:

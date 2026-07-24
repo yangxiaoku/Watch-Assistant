@@ -51,6 +51,12 @@ class SearchService:
     async def get_movie(self, tmdb_id: int) -> MovieMetadata:
         return await self._tmdb.get_movie(tmdb_id)
 
+    async def get_popular(self) -> list[MovieMetadata]:
+        return await self._tmdb.get_popular()
+
+    async def search_movies(self, query: str) -> list[MovieMetadata]:
+        return await self._tmdb.search_movies(query)
+
     async def search(self, tmdb_id: int, *, refresh: bool = False) -> SearchResponse:
         movie = await self.get_movie(tmdb_id)
         cache_key = make_cache_key(tmdb_id)
@@ -153,11 +159,12 @@ class SearchService:
                 index_elements=[Resource.canonical_key], set_=update_columns
             )
         )
+        canonical_keys = [item["canonical_key"] for item in values]
         rows = await session.scalars(
-            select(Resource).where(Resource.id.in_([item["id"] for item in values]))
+            select(Resource).where(Resource.canonical_key.in_(canonical_keys))
         )
-        by_id = {resource.id: resource for resource in rows}
-        return [by_id[item["id"]] for item in values]
+        by_key = {resource.canonical_key: resource for resource in rows}
+        return [by_key[key] for key in canonical_keys]
 
     async def _persist_cache(self, session, cache_key, resources, warnings, now):
         values = {

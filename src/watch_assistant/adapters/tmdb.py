@@ -28,10 +28,30 @@ class TmdbClient:
         self._client = client or httpx.AsyncClient(base_url=base_url.rstrip("/"))
 
     async def get_movie(self, tmdb_id: int) -> MovieMetadata:
+        payload = await self._get(f"/movie/{tmdb_id}")
+        return _parse_movie(payload, tmdb_id=tmdb_id)
+
+    async def get_popular(self) -> list[MovieMetadata]:
+        payload = await self._get("/movie/popular", params={"page": 1})
+        return _parse_movie_collection(payload)
+
+    async def search_movies(self, query: str) -> list[MovieMetadata]:
+        payload = await self._get(
+            "/search/movie", params={"query": query, "page": 1}
+        )
+        return _parse_movie_collection(payload)
+
+    async def _get(
+        self, path: str, *, params: dict[str, str | int] | None = None
+    ) -> dict:
         try:
             response = await self._client.get(
-                f"/movie/{tmdb_id}",
-                params={"api_key": self._api_key, "language": "zh-CN"},
+                path,
+                params={
+                    "api_key": self._api_key,
+                    "language": "zh-CN",
+                    **(params or {}),
+                },
                 timeout=self._timeout,
             )
             response.raise_for_status()
@@ -44,34 +64,56 @@ class TmdbClient:
             raise TmdbError("Unexpected TMDB response shape") from exc
         if not isinstance(payload, dict):
             raise TmdbError("Unexpected TMDB response shape")
-
-        title = payload.get("title")
-        if not isinstance(title, str) or not title.strip():
-            raise TmdbError("Unexpected TMDB response shape")
-        original_title = payload.get("original_title")
-        if not isinstance(original_title, str):
-            original_title = None
-        release_date = payload.get("release_date")
-        release_year = None
-        if isinstance(release_date, str) and re.match(r"^\d{4}-", release_date):
-            release_year = int(release_date[:4])
-
-        return MovieMetadata(
-            tmdb_id=tmdb_id,
-            title=title.strip(),
-            original_title=original_title.strip() if original_title else None,
-            release_year=release_year,
-            overview=payload.get("overview")
-            if isinstance(payload.get("overview"), str)
-            else None,
-            poster_path=payload.get("poster_path")
-            if isinstance(payload.get("poster_path"), str)
-            else None,
-        )
+        return payload
 
     async def aclose(self) -> None:
         if self._owns_client:
             await self._client.aclose()
+
+
+def _parse_movie_collection(payload: dict) -> list[MovieMetadata]:
+    results = payload.get("results")
+    if not isinstance(results, list):
+        raise TmdbError("Unexpected TMDB response shape")
+    movies: list[MovieMetadata] = []
+    for item in results:
+        if not isinstance(item, dict) or not isinstance(item.get("id"), int):
+            continue
+        try:
+            movies.append(_parse_movie(item, tmdb_id=item["id"]))
+        except TmdbError:
+            continue
+    return movies
+
+
+def _parse_movie(payload: dict, *, tmdb_id: int) -> MovieMetadata:
+    title = payload.get("title")
+    if not isinstance(title, str) or not title.strip():
+        raise TmdbError("Unexpected TMDB response shape")
+    original_title = payload.get("original_title")
+    if not isinstance(original_title, str):
+        original_title = None
+    release_date = payload.get("release_date")
+    release_year = None
+    if isinstance(release_date, str) and re.match(r"^\d{4}-", release_date):
+        release_year = int(release_date[:4])
+    vote_average = payload.get("vote_average")
+    if not isinstance(vote_average, (int, float)):
+        vote_average = None
+
+    return MovieMetadata(
+        tmdb_id=tmdb_id,
+        title=title.strip(),
+        original_title=original_title.strip() if original_title else None,
+        release_year=release_year,
+        overview=payload.get("overview")
+        if isinstance(payload.get("overview"), str)
+        else None,
+        poster_path=payload.get("poster_path")
+        if isinstance(payload.get("poster_path"), str)
+        else None,
+        vote_average=vote_average,
+    )
 
 
 def build_search_queries(movie: MovieMetadata) -> list[str]:

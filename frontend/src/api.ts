@@ -1,4 +1,4 @@
-import type { SearchResponse, TaskResponse } from "./types";
+import type { MovieCollectionResponse, SearchResponse, TaskResponse } from "./types";
 
 export class ApiError extends Error {
   constructor(
@@ -33,6 +33,15 @@ export class ApiClient {
       method: "POST",
       body: JSON.stringify({ tmdb_id: tmdbId, refresh }),
     });
+  }
+
+  async popularMovies(): Promise<MovieCollectionResponse> {
+    return this.request<MovieCollectionResponse>("/api/v1/movies/popular");
+  }
+
+  async searchMovies(query: string): Promise<MovieCollectionResponse> {
+    const params = new URLSearchParams({ query });
+    return this.request<MovieCollectionResponse>(`/api/v1/movies/search?${params}`);
   }
 
   async createTask(resourceId: string, force = false): Promise<TaskResponse> {

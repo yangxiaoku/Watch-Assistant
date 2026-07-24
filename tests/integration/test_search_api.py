@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
@@ -149,4 +150,86 @@ async def test_search_returns_502_when_pansou_fails_without_cache(tmp_path):
 
     assert response.status_code == 502
     assert response.json()["detail"] == "pansou_unavailable"
+    await _close(client, database, tmdb, pansou)
+
+
+@pytest.mark.integration
+@respx.mock
+async def test_search_reuses_existing_canonical_resource_id(tmp_path):
+    _mock_tmdb()
+    respx.get("http://pansou.test/api/search").mock(
+        return_value=httpx.Response(200, json=_pansou_response())
+    )
+    client, database, tmdb, pansou = await _make_client(tmp_path)
+    async with database.session_factory() as session:
+        session.add(
+            Resource(
+                id="res_legacy",
+                kind="magnet",
+                canonical_key=(
+                    "magnet:abcdef0123456789abcdef0123456789abcdef01"
+                ),
+                encrypted_url="legacy-ciphertext",
+                name="Legacy name",
+                source="legacy",
+                captured_at=datetime.now(UTC),
+                expires_at=datetime.now(UTC),
+            )
+        )
+        await session.commit()
+
+    response = await client.post("/api/v1/search", json={"tmdb_id": 12345})
+
+    assert response.status_code == 200
+    magnet = next(item for item in response.json()["results"] if item["kind"] == "magnet")
+    assert magnet["resource_id"] == "res_legacy"
+    await _close(client, database, tmdb, pansou)
+
+
+@pytest.mark.integration
+@respx.mock
+async def test_popular_movies_endpoint_returns_browse_catalog(tmp_path):
+    respx.get("https://api.themoviedb.org/3/movie/popular").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "results": [
+                    {
+                        "id": 550,
+                        "title": "搏击俱乐部",
+                        "original_title": "Fight Club",
+                        "release_date": "1999-10-15",
+                        "poster_path": "/fight-club.jpg",
+                        "vote_average": 8.4,
+                    }
+                ]
+            },
+        )
+    )
+    client, database, tmdb, pansou = await _make_client(tmp_path)
+
+    response = await client.get("/api/v1/movies/popular")
+
+    assert response.status_code == 200
+    assert response.json()["results"][0]["tmdb_id"] == 550
+    assert response.json()["results"][0]["vote_average"] == 8.4
+    await _close(client, database, tmdb, pansou)
+
+
+@pytest.mark.integration
+@respx.mock
+async def test_movie_title_search_endpoint(tmp_path):
+    route = respx.get("https://api.themoviedb.org/3/search/movie").mock(
+        return_value=httpx.Response(
+            200,
+            json={"results": [{"id": 27205, "title": "盗梦空间"}]},
+        )
+    )
+    client, database, tmdb, pansou = await _make_client(tmp_path)
+
+    response = await client.get("/api/v1/movies/search", params={"query": "盗梦空间"})
+
+    assert response.status_code == 200
+    assert response.json()["results"][0]["tmdb_id"] == 27205
+    assert route.called
     await _close(client, database, tmdb, pansou)
