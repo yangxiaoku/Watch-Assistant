@@ -22,8 +22,9 @@ describe("ResourceTable", () => {
 
     expect(wrapper.text()).toContain("未知");
     expect(wrapper.text()).toContain("plugin:thepiratebay");
-    expect(wrapper.text()).toContain("综合 未知");
+    expect(wrapper.text()).not.toContain("综合 未知");
     expect(wrapper.text()).not.toContain("综合 0.0");
+    expect(wrapper.findAll(".quality-metrics")).toHaveLength(0);
   });
 
   it("keeps shares, caps magnets at 30, and sorts ties stably", async () => {

@@ -1,4 +1,6 @@
 export type ResourceKind = "magnet" | "115_share";
+export type InspectionResultStatus = "verified" | "timeout" | "failed" | "unsupported";
+export type InspectionBatchStatus = "queued" | "running" | "completed" | "partial" | "failed";
 export type TaskState =
   | "queued"
   | "submitting"
@@ -57,7 +59,7 @@ export interface ResourceSummary {
   rank_score?: number | null;
   relevance_score?: number | null;
   completeness_score?: number | null;
-  inspection_status?: string | null;
+  inspection_status?: InspectionResultStatus | "running" | "queued" | null;
   video_file_count?: number | null;
   subtitle_count?: number | null;
   sample_count?: number | null;
@@ -81,27 +83,25 @@ export interface SearchResponse {
 
 export interface InspectionResult {
   resource_id: string;
-  size_bytes?: number | null;
-  video_file_count?: number | null;
-  subtitle_count?: number | null;
-  sample_count?: number | null;
-  inspection_status?: string | null;
-  status?: string | null;
+  infohash: string;
+  status: InspectionResultStatus;
+  total_size_bytes: number;
+  file_count: number;
+  video_file_count: number;
+  video_size_bytes: number;
+  subtitle_count: number;
+  sample_count: number;
+  largest_video_name: string | null;
+  content_summary: string | null;
+  error_code: string | null;
 }
 
 export interface InspectionBatchResponse {
   batch_id: string;
-  status?: string;
-  completed?: number;
-  total?: number;
-  failed?: number;
-  progress?: {
-    completed?: number;
-    total?: number;
-    failed?: number;
-  };
-  results?: InspectionResult[];
-  resources?: InspectionResult[];
+  status: InspectionBatchStatus;
+  submitted_count: number;
+  completed_count: number;
+  results: InspectionResult[];
 }
 
 export interface HealthResponse {

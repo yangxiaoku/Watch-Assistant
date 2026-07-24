@@ -25,8 +25,8 @@ describe("ApiClient season and inspection requests", () => {
 
   it("uses the inspection batch POST and GET endpoints", async () => {
     const fetchMock = vi.fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify({ batch_id: "batch-1" }), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ batch_id: "batch-1", status: "completed" }), { status: 200 }));
+      .mockResolvedValueOnce(new Response(JSON.stringify({ batch_id: "batch-1", status: "queued", submitted_count: 2, completed_count: 0, results: [] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ batch_id: "batch-1", status: "completed", submitted_count: 2, completed_count: 2, results: [] }), { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
     const api = new ApiClient();
 

@@ -174,29 +174,87 @@ test("restores TV seasons and inspects only the first 30 magnets", async ({ page
     inspectPostCount += 1;
     const body = route.request().postDataJSON() as { resource_ids: string[] };
     inspectedIds = body.resource_ids;
-    return route.fulfill({ json: { batch_id: `batch-${inspectPostCount}`, status: "queued" } });
-  });
-  await page.route("**/api/v1/resources/inspect/*", (route) =>
-    route.fulfill({
+    return route.fulfill({
       json: {
-        batch_id: "batch-1",
-        status: "partial",
-        completed: 2,
-        total: 30,
-        failed: 1,
-        results: [
-          {
-            resource_id: "magnet-0",
-            size_bytes: 1073741824,
-            video_file_count: 1,
-            subtitle_count: 2,
-            sample_count: 1,
-            inspection_status: "completed",
-          },
-          { resource_id: "magnet-1", inspection_status: "failed" },
-        ],
+        batch_id: `batch-${inspectPostCount}`,
+        status: "queued",
+        submitted_count: 30,
+        completed_count: 0,
+        results: [],
       },
-    }),
+    });
+  });
+  let inspectGetCount = 0;
+  await page.route("**/api/v1/resources/inspect/*", (route) =>
+    (() => {
+      inspectGetCount += 1;
+      const failedBatch = inspectPostCount > 1;
+      return route.fulfill({
+        json: {
+          batch_id: `batch-${inspectPostCount}`,
+          status: failedBatch ? "failed" : "partial",
+          submitted_count: 30,
+          completed_count: failedBatch ? 0 : 2,
+          results: failedBatch ? [{
+            resource_id: "magnet-0",
+            infohash: "hash-0",
+            status: "failed",
+            total_size_bytes: 0,
+            file_count: 0,
+            video_file_count: 0,
+            video_size_bytes: 0,
+            subtitle_count: 0,
+            sample_count: 0,
+            largest_video_name: null,
+            content_summary: null,
+            error_code: "INSPECT_FAILED",
+          }] : [
+            {
+              resource_id: "magnet-0",
+              infohash: "hash-0",
+              status: "verified",
+              total_size_bytes: 1073741824,
+              file_count: 3,
+              video_file_count: 1,
+              video_size_bytes: 1000000000,
+              subtitle_count: 2,
+              sample_count: 1,
+              largest_video_name: "episode.mkv",
+              content_summary: "verified",
+              error_code: null,
+            },
+            {
+              resource_id: "magnet-1",
+              infohash: "hash-1",
+              status: "unsupported",
+              total_size_bytes: 0,
+              file_count: 0,
+              video_file_count: 0,
+              video_size_bytes: 0,
+              subtitle_count: 0,
+              sample_count: 0,
+              largest_video_name: null,
+              content_summary: null,
+              error_code: "UNSUPPORTED",
+            },
+            {
+              resource_id: "magnet-2",
+              infohash: "hash-2",
+              status: "timeout",
+              total_size_bytes: 0,
+              file_count: 0,
+              video_file_count: 0,
+              video_size_bytes: 0,
+              subtitle_count: 0,
+              sample_count: 0,
+              largest_video_name: null,
+              content_summary: null,
+              error_code: "TIMEOUT",
+            },
+          ],
+        },
+      });
+    })(),
   );
 
   await page.goto("/tv/1399?season=2");
@@ -211,6 +269,10 @@ test("restores TV seasons and inspects only the first 30 magnets", async ({ page
   await expect(page).toHaveURL(/\/tv\/1399\?season=1$/);
   await expect.poll(() => searchRequests.at(-1)?.season_number).toBe(1);
 
+  await page.goto("/tv/1399?season=0");
+  await expect(page.locator("#season-select")).toHaveValue("0");
+  expect(searchRequests.at(-1)?.season_number).toBe(0);
+
   await page.goto("/movie/27205?season=2");
   await expect(page.getByRole("heading", { name: "盗梦空间" })).toBeVisible();
   await expect(page.locator("#season-select")).toHaveCount(0);
@@ -221,12 +283,18 @@ test("restores TV seasons and inspects only the first 30 magnets", async ({ page
   await expect.poll(() => inspectPostCount).toBe(1);
   expect(inspectedIds).toHaveLength(30);
   expect(inspectedIds.every((id) => id.startsWith("magnet-"))).toBe(true);
-  await expect(page.getByRole("status")).toContainText("部分磁力检测失败");
+  await expect(page.getByRole("status")).toContainText("部分失败");
+  await expect(page.getByRole("status")).toContainText("2 / 30");
   await expect(page.locator(".resource-table tbody tr").first()).toContainText("1.0 GB");
+  await expect(page.locator(".resource-table tbody tr").nth(0)).toContainText("已检测");
+  await expect(page.locator(".resource-table tbody tr").nth(1)).toContainText("无法检测");
+  await expect(page.locator(".resource-table tbody tr").nth(2).locator("td").nth(2)).toContainText("未知");
   await expect(shareResource).toBeVisible();
 
   await page.screenshot({ path: testInfo.outputPath("season-quality.png"), fullPage: true });
   await page.getByRole("button", { name: "检测本页磁力" }).click();
   await expect.poll(() => inspectPostCount).toBe(2);
+  await expect(page.getByRole("status")).toContainText("检测失败");
+  await expect(page.getByRole("status")).not.toContainText("本页磁力检测完成");
   expect(await page.evaluate(() => document.body.scrollWidth <= window.innerWidth)).toBe(true);
 });

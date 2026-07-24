@@ -3,6 +3,7 @@ import { computed, ref } from "vue";
 import { LoaderCircle, Magnet, PackageOpen, ScanSearch } from "@lucide/vue";
 
 import PushButton from "./PushButton.vue";
+import { inspectionStatusLabel } from "../inspection";
 import type { ResourceKind, ResourceSummary } from "../types";
 
 const props = defineProps<{
@@ -13,6 +14,7 @@ const props = defineProps<{
   inspectionState?: "idle" | "running" | "completed" | "partial" | "failed" | "timeout";
   inspectionCompleted?: number;
   inspectionTotal?: number;
+  inspectionFailed?: number;
   inspectionError?: string | null;
 }>();
 const emit = defineEmits<{ push: [resource: ResourceSummary]; inspect: [] }>();
@@ -67,18 +69,16 @@ function formatCount(value: number | null | undefined): string {
   return value === null || value === undefined ? "未知" : String(value);
 }
 
-function inspectionLabel(value: string | null | undefined): string {
+function inspectionLabel(value: ResourceSummary["inspection_status"]): string {
   if (!value) return "";
-  const labels: Record<string, string> = {
-    queued: "排队中",
-    inspecting: "检测中",
-    running: "检测中",
-    completed: "已检测",
-    partial: "部分完成",
-    failed: "检测失败",
-    timeout: "检测超时",
-  };
-  return labels[value.toLowerCase()] ?? value;
+  if (value === "running" || value === "queued") return "检测中";
+  return inspectionStatusLabel(value);
+}
+
+function hasQuality(resource: ResourceSummary): boolean {
+  return resource.rank_score !== null && resource.rank_score !== undefined
+    || resource.relevance_score !== null && resource.relevance_score !== undefined
+    || resource.completeness_score !== null && resource.completeness_score !== undefined;
 }
 
 function formatDate(value: string): string {
@@ -130,9 +130,9 @@ function formatDate(value: string): string {
     <p v-if="inspectionState === 'running'" class="inspection-progress" role="status">
       正在检测 {{ inspectionCompleted ?? 0 }} / {{ inspectionTotal ?? 0 }} 条磁力
     </p>
-    <p v-else-if="inspectionState === 'completed'" class="inspection-progress success" role="status">本页磁力检测完成</p>
+    <p v-else-if="inspectionState === 'completed'" class="inspection-progress success" role="status">本页磁力检测完成 · 已完成 {{ inspectionCompleted ?? 0 }} / {{ inspectionTotal ?? 0 }}<span v-if="inspectionFailed"> · 失败 {{ inspectionFailed }} 条</span></p>
     <p v-else-if="inspectionState === 'partial' || inspectionState === 'timeout' || inspectionState === 'failed'" class="inspection-progress warning" role="status">
-      {{ inspectionError ?? (inspectionState === 'timeout' ? '检测超时，可重试' : inspectionState === 'partial' ? '部分磁力检测失败，可重试' : '检测失败，可重试') }}
+      {{ inspectionError ?? (inspectionState === 'timeout' ? '检测超时，可重试' : inspectionState === 'partial' ? `部分失败：${inspectionFailed ?? 0} 条磁力检测失败` : '检测失败，可重试') }} · 已完成 {{ inspectionCompleted ?? 0 }} / {{ inspectionTotal ?? 0 }}
     </p>
 
     <div v-if="filteredResources.length" class="resource-table-wrap">
@@ -146,7 +146,7 @@ function formatDate(value: string): string {
             <td><span class="kind-label">{{ resource.kind === 'magnet' ? '磁力' : '115 分享' }}</span></td>
             <td class="numeric">{{ formatSize(resource.size_bytes) }}</td>
             <td class="numeric">{{ resource.seeders ?? '未知' }}</td>
-            <td class="quality-cell"><div class="quality-metrics"><span>综合 {{ formatScore(resource.rank_score) }}</span><span>相关 {{ formatScore(resource.relevance_score) }}</span><span>完整 {{ formatScore(resource.completeness_score) }}</span></div><small v-if="resource.inspection_status">{{ inspectionLabel(resource.inspection_status) }} · 视频 {{ formatCount(resource.video_file_count) }} · 字幕 {{ formatCount(resource.subtitle_count) }} · 样本 {{ formatCount(resource.sample_count) }}</small></td>
+            <td class="quality-cell"><div v-if="hasQuality(resource)" class="quality-metrics"><span>综合 {{ formatScore(resource.rank_score) }}</span><span>相关 {{ formatScore(resource.relevance_score) }}</span><span>完整 {{ formatScore(resource.completeness_score) }}</span></div><small v-if="resource.inspection_status">{{ inspectionLabel(resource.inspection_status) }} · 视频 {{ formatCount(resource.video_file_count) }} · 字幕 {{ formatCount(resource.subtitle_count) }} · 样本 {{ formatCount(resource.sample_count) }}</small></td>
             <td><strong>{{ resource.source }}</strong><small>{{ formatDate(resource.captured_at) }}</small></td>
             <td class="action-cell"><PushButton :busy="pushingId === resource.resource_id" :disabled="pushSupported === false" @push="emit('push', resource)" /></td>
           </tr>
@@ -160,7 +160,7 @@ function formatDate(value: string): string {
         <div class="card-heading"><span class="kind-label">{{ resource.kind === 'magnet' ? '磁力' : '115 分享' }}</span><span>{{ resource.source }}</span></div>
         <h3>{{ resource.name }}</h3>
         <dl><div><dt>大小</dt><dd>{{ formatSize(resource.size_bytes) }}</dd></div><div><dt>做种</dt><dd>{{ resource.seeders ?? '未知' }}</dd></div><div><dt>抓取</dt><dd>{{ formatDate(resource.captured_at) }}</dd></div></dl>
-        <div class="quality-metrics"><span>综合 {{ formatScore(resource.rank_score) }}</span><span>相关 {{ formatScore(resource.relevance_score) }}</span><span>完整 {{ formatScore(resource.completeness_score) }}</span></div>
+        <div v-if="hasQuality(resource)" class="quality-metrics"><span>综合 {{ formatScore(resource.rank_score) }}</span><span>相关 {{ formatScore(resource.relevance_score) }}</span><span>完整 {{ formatScore(resource.completeness_score) }}</span></div>
         <p v-if="resource.inspection_status" class="inspection-details">{{ inspectionLabel(resource.inspection_status) }} · 视频 {{ formatCount(resource.video_file_count) }} · 字幕 {{ formatCount(resource.subtitle_count) }} · 样本 {{ formatCount(resource.sample_count) }}</p>
         <PushButton :busy="pushingId === resource.resource_id" :disabled="pushSupported === false" @push="emit('push', resource)" />
       </article>

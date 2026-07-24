@@ -15,6 +15,7 @@ const props = defineProps<{
   inspectionState?: "idle" | "running" | "completed" | "partial" | "failed" | "timeout";
   inspectionCompleted?: number;
   inspectionTotal?: number;
+  inspectionFailed?: number;
   inspectionError?: string | null;
 }>();
 const emit = defineEmits<{ push: [resource: ResourceSummary]; refresh: []; back: []; favorite: []; season: [seasonNumber: number | null]; inspect: [] }>();
@@ -50,12 +51,13 @@ function posterUrl(path: string | null): string | null {
       <label for="season-select">季度</label>
       <select id="season-select" :value="seasonNumber ?? ''" @change="onSeasonChange">
         <option value="">全部季度</option>
+        <option v-if="seasonNumber === 0 && !seasons.some((season) => season.season_number === 0)" value="0">第 0 季</option>
         <option v-for="season in seasons" :key="season.season_number" :value="season.season_number">
           {{ season.name || `第 ${season.season_number} 季` }} · {{ season.episode_count }} 集
         </option>
       </select>
     </div>
     <div v-if="result.warnings.length" class="warning-strip">{{ result.warnings.join(' · ') }}</div>
-    <ResourceTable :resources="result.results" :pushing-id="pushingId" :push-supported="pushSupported" :inspection-supported="inspectionSupported" :inspection-state="inspectionState" :inspection-completed="inspectionCompleted" :inspection-total="inspectionTotal" :inspection-error="inspectionError" @push="$emit('push', $event)" @inspect="$emit('inspect')" />
+    <ResourceTable :resources="result.results" :pushing-id="pushingId" :push-supported="pushSupported" :inspection-supported="inspectionSupported" :inspection-state="inspectionState" :inspection-completed="inspectionCompleted" :inspection-total="inspectionTotal" :inspection-failed="inspectionFailed" :inspection-error="inspectionError" @push="$emit('push', $event)" @inspect="$emit('inspect')" />
   </section>
 </template>

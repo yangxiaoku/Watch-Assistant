@@ -18,11 +18,12 @@ export function extractMediaRoute(path: string): MediaRoute | null {
   const match = pathname.match(/^\/(movie|tv)\/(\d+)(?:-|\/|$)/);
   if (!match) return null;
   const mediaType = match[1] as "movie" | "tv";
-  const season = Number(new URLSearchParams(query).get("season"));
+  const rawSeason = new URLSearchParams(query).get("season");
+  const season = rawSeason === null ? null : Number(rawSeason);
   return {
     mediaType,
     tmdbId: Number(match[2]),
-    ...(mediaType === "tv" && Number.isInteger(season) && season > 0 ? { seasonNumber: season } : {}),
+    ...(mediaType === "tv" && rawSeason !== null && /^\d+$/.test(rawSeason) && Number.isInteger(season) && season >= 0 ? { seasonNumber: season } : {}),
   };
 }
 

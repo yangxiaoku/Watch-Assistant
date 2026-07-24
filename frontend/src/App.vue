@@ -12,7 +12,8 @@ import {
   type BrowseView,
 } from "./router";
 import { mediaKey, mediaTypeOf } from "./media";
-import type { HomeCatalogResponse, InspectionBatchResponse, InspectionResult, MovieMetadata, ResourceSummary, SearchResponse, TaskResponse } from "./types";
+import { inspectionProgress as getInspectionProgress, inspectionState as getInspectionBatchState, mergeInspectionResult, pollInspectionBatch } from "./inspection";
+import type { HomeCatalogResponse, MovieMetadata, ResourceSummary, SearchResponse, TaskResponse } from "./types";
 import CollectionView from "./views/CollectionView.vue";
 import HomeView from "./views/HomeView.vue";
 import LibraryView from "./views/LibraryView.vue";
@@ -52,6 +53,7 @@ const detailMediaType = ref<"movie" | "tv">("movie");
 const inspectionState = ref<"idle" | "running" | "completed" | "partial" | "failed" | "timeout">("idle");
 const inspectionCompleted = ref(0);
 const inspectionTotal = ref(0);
+const inspectionFailed = ref(0);
 const inspectionError = ref<string | null>(null);
 let searchRequestId = 0;
 let inspectionRunId = 0;
@@ -156,6 +158,7 @@ async function loadPopular(page = 1) {
 async function performSearch(updateUrl: boolean, page = 1) {
   const searchQuery = query.value.trim();
   if (!searchQuery) return;
+  resetInspection();
   activeView.value = "search";
   previousView.value = "search";
   result.value = null;
@@ -203,6 +206,7 @@ async function loadView(view: BrowseView) {
 }
 
 async function selectView(view: Exclude<BrowseView, "search">) {
+  resetInspection();
   result.value = null;
   error.value = "";
   activeView.value = view;
@@ -222,6 +226,7 @@ function resetInspection() {
   inspectionState.value = "idle";
   inspectionCompleted.value = 0;
   inspectionTotal.value = 0;
+  inspectionFailed.value = 0;
   inspectionError.value = null;
 }
 
@@ -276,6 +281,7 @@ async function selectSeason(seasonNumber: number | null) {
 }
 
 async function returnToBrowse() {
+  resetInspection();
   result.value = null;
   const view = previousView.value === "search" ? "search" : previousView.value;
   activeView.value = view;
@@ -331,45 +337,19 @@ async function push(resource: ResourceSummary) {
   }
 }
 
-function inspectionItems(response: InspectionBatchResponse): InspectionResult[] {
-  return response.results ?? response.resources ?? [];
-}
-
-function inspectionProgress(response: InspectionBatchResponse, fallbackTotal: number): { completed: number; total: number; failed: number } {
-  const items = inspectionItems(response);
-  const completed = response.completed ?? response.progress?.completed ?? items.filter((item) => {
-    const status = (item.inspection_status ?? item.status ?? "").toLowerCase();
-    return ["completed", "complete", "done", "failed", "error", "timeout", "timed_out"].includes(status);
-  }).length;
-  return {
-    completed: Math.min(completed, response.total ?? response.progress?.total ?? fallbackTotal),
-    total: response.total ?? response.progress?.total ?? fallbackTotal,
-    failed: response.failed ?? response.progress?.failed ?? items.filter((item) => ["failed", "error", "timeout", "timed_out"].includes((item.inspection_status ?? item.status ?? "").toLowerCase())).length,
-  };
-}
-
-function inspectionIsTerminal(response: InspectionBatchResponse, progress: { completed: number; total: number; failed: number }): boolean {
-  const status = (response.status ?? "").toLowerCase();
-  return ["completed", "complete", "done", "partial", "failed", "error", "timeout", "timed_out", "cancelled"].includes(status)
-    || (progress.total > 0 && progress.completed >= progress.total);
-}
-
-function mergeInspectionResults(items: InspectionResult[]) {
-  if (!result.value || !items.length) return;
-  const byId = new Map(items.map((item) => [item.resource_id, item]));
+function applyInspectionResponse(response: Parameters<typeof getInspectionProgress>[0]) {
+  if (!result.value) return;
+  const progress = getInspectionProgress(response);
+  inspectionCompleted.value = progress.completed;
+  inspectionTotal.value = progress.submitted;
+  inspectionFailed.value = progress.failed;
+  const byId = new Map(response.results.map((item) => [item.resource_id, item]));
   result.value = {
     ...result.value,
     results: result.value.results.map((resource) => {
       const item = byId.get(resource.resource_id);
       if (!item) return resource;
-      const merged = { ...resource };
-      if (Object.prototype.hasOwnProperty.call(item, "size_bytes")) merged.size_bytes = item.size_bytes ?? null;
-      if (Object.prototype.hasOwnProperty.call(item, "video_file_count")) merged.video_file_count = item.video_file_count ?? null;
-      if (Object.prototype.hasOwnProperty.call(item, "subtitle_count")) merged.subtitle_count = item.subtitle_count ?? null;
-      if (Object.prototype.hasOwnProperty.call(item, "sample_count")) merged.sample_count = item.sample_count ?? null;
-      if (Object.prototype.hasOwnProperty.call(item, "inspection_status")) merged.inspection_status = item.inspection_status ?? null;
-      else if (Object.prototype.hasOwnProperty.call(item, "status")) merged.inspection_status = item.status ?? null;
-      return merged;
+      return mergeInspectionResult(resource, item);
     }),
   };
 }
@@ -380,16 +360,14 @@ function setInspectionStatus(resourceIds: string[], status: string) {
   result.value = {
     ...result.value,
     results: result.value.results.map((resource) => ids.has(resource.resource_id)
-      ? { ...resource, inspection_status: status }
+      ? { ...resource, inspection_status: status as "running" }
       : resource),
   };
 }
 
-function inspectionStateFrom(response: InspectionBatchResponse, progress: { completed: number; total: number; failed: number }): "completed" | "partial" | "failed" {
-  const status = (response.status ?? "").toLowerCase();
-  if (status === "timeout" || status === "timed_out" || progress.failed > 0 && progress.completed < progress.total) return "partial";
-  if (["failed", "error", "cancelled"].includes(status) && progress.completed === 0) return "failed";
-  return progress.failed > 0 ? "partial" : "completed";
+function inspectionErrorFor(state: "partial" | "failed", failed: number): string {
+  if (state === "failed") return "检测失败";
+  return failed > 0 ? `部分失败：${failed} 条磁力检测失败` : "部分失败";
 }
 
 async function inspectCurrentPage() {
@@ -403,31 +381,41 @@ async function inspectCurrentPage() {
   const runId = ++inspectionRunId;
   inspectionState.value = "running";
   inspectionCompleted.value = 0;
-  inspectionTotal.value = resourceIds.length;
+  inspectionTotal.value = 0;
+  inspectionFailed.value = 0;
   inspectionError.value = null;
-  setInspectionStatus(resourceIds, "queued");
+  setInspectionStatus(resourceIds, "running");
 
   try {
     const started = await api.inspectResources(resourceIds);
     if (runId !== inspectionRunId) return;
-    for (let attempt = 0; attempt < 90; attempt += 1) {
-      const response = attempt === 0 && inspectionIsTerminal(started, inspectionProgress(started, resourceIds.length))
-        ? started
-        : await api.getInspection(started.batch_id);
-      if (runId !== inspectionRunId) return;
-      const progress = inspectionProgress(response, resourceIds.length);
-      inspectionCompleted.value = progress.completed;
-      inspectionTotal.value = progress.total;
-      mergeInspectionResults(inspectionItems(response));
-      if (inspectionIsTerminal(response, progress)) {
-        inspectionState.value = inspectionStateFrom(response, progress);
-        if (inspectionState.value !== "completed") inspectionError.value = "部分磁力检测失败，可重试";
-        return;
-      }
-      await new Promise((resolve) => window.setTimeout(resolve, 800));
+    applyInspectionResponse(started);
+    const startedState = getInspectionBatchState(started);
+    if (startedState === "completed" || startedState === "partial" || startedState === "failed") {
+      inspectionState.value = startedState;
+      if (startedState !== "completed") inspectionError.value = inspectionErrorFor(startedState, inspectionFailed.value);
+      return;
     }
-    inspectionState.value = "timeout";
-    inspectionError.value = "检测超时，可重试";
+    const pollState = await pollInspectionBatch(
+      (batchId) => api.getInspection(batchId),
+      started.batch_id,
+      {
+        isCurrent: () => runId === inspectionRunId,
+        onResponse: applyInspectionResponse,
+      },
+    );
+    if (pollState === "stale") return;
+    if (pollState === "timeout") {
+      inspectionState.value = "timeout";
+      inspectionError.value = "检测超时，可重试";
+      return;
+    }
+    if (pollState === "completed") {
+      inspectionState.value = "completed";
+    } else if (pollState === "partial" || pollState === "failed") {
+      inspectionState.value = pollState;
+      inspectionError.value = inspectionErrorFor(pollState, inspectionFailed.value);
+    }
   } catch (exception) {
     if (runId !== inspectionRunId) return;
     inspectionState.value = "failed";
@@ -451,6 +439,7 @@ function ensurePolling() {
 }
 
 async function syncRoute() {
+  resetInspection();
   result.value = null;
   await initializeWorkspace();
 }
@@ -473,6 +462,7 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  resetInspection();
   if (pollTimer !== undefined) window.clearInterval(pollTimer);
   window.removeEventListener("popstate", syncRoute);
 });
@@ -508,7 +498,7 @@ onBeforeUnmount(() => {
       </template>
       <section v-else-if="loading && !result" class="detail-loading"><LoaderCircle class="spin" :size="24" /><strong>正在聚合资源</strong><span>正在查询 PanSou 的磁力与 115 分享结果</span></section>
       <p v-if="!pushSupported && result" class="warning-strip">TgtoDrive 推送契约尚未验证，推送按钮已禁用。</p>
-      <section v-if="result" class="detail-workspace"><MovieView :result="result" :media-type="detailMediaType" :season-number="selectedSeason" :pushing-id="pushingId" :push-supported="pushSupported" :favorite="detailFavorite" :inspection-supported="inspectionSupported" :inspection-state="inspectionState" :inspection-completed="inspectionCompleted" :inspection-total="inspectionTotal" :inspection-error="inspectionError" @push="push" @favorite="toggleFavorite(result.movie)" @refresh="loadResources(result.movie.tmdb_id, detailMediaType, true)" @season="selectSeason" @inspect="inspectCurrentPage" @back="returnToBrowse" /></section>
+      <section v-if="result" class="detail-workspace"><MovieView :result="result" :media-type="detailMediaType" :season-number="selectedSeason" :pushing-id="pushingId" :push-supported="pushSupported" :favorite="detailFavorite" :inspection-supported="inspectionSupported" :inspection-state="inspectionState" :inspection-completed="inspectionCompleted" :inspection-total="inspectionTotal" :inspection-failed="inspectionFailed" :inspection-error="inspectionError" @push="push" @favorite="toggleFavorite(result.movie)" @refresh="loadResources(result.movie.tmdb_id, detailMediaType, true)" @season="selectSeason" @inspect="inspectCurrentPage" @back="returnToBrowse" /></section>
     </template>
     <TaskDrawer :tasks="tasks" :open="drawerOpen" @close="drawerOpen = false" />
   </main>
