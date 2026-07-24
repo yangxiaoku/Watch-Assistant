@@ -11,7 +11,16 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-from watch_assistant.models import Base, Resource, SearchCache, Task, TaskState
+from watch_assistant.models import (
+    Base,
+    InspectionBatch,
+    InspectionItem,
+    Resource,
+    SearchCache,
+    Task,
+    TaskState,
+)
+from watch_assistant.schemas import InspectionBatchStatus, InspectionItemStatus
 
 
 @dataclass(frozen=True)
@@ -25,6 +34,7 @@ class CleanupResult:
     resources_deleted: int
     tasks_deleted: int
     cache_entries_deleted: int
+    inspection_batches_deleted: int
 
 
 PROTECTED_TASK_STATES = (
@@ -75,19 +85,34 @@ async def cleanup_expired(
     protected_resource_ids = select(Task.resource_id).where(
         Task.resource_id.is_not(None), Task.state.in_(PROTECTED_TASK_STATES)
     )
+    protected_inspection_resource_ids = select(InspectionItem.resource_id).join(
+        InspectionBatch
+    ).where(
+        InspectionBatch.status.in_(
+            (InspectionBatchStatus.QUEUED, InspectionBatchStatus.RUNNING)
+        ),
+        InspectionItem.status.in_(
+            (InspectionItemStatus.QUEUED, InspectionItemStatus.RUNNING)
+        ),
+    )
     resource_result = await session.execute(
         delete(Resource).where(
             Resource.created_at < resource_cutoff,
             Resource.expires_at <= current_time,
             Resource.id.not_in(protected_resource_ids),
+            Resource.id.not_in(protected_inspection_resource_ids),
         )
     )
     cache_result = await session.execute(
         delete(SearchCache).where(SearchCache.expires_at <= current_time)
+    )
+    inspection_result = await session.execute(
+        delete(InspectionBatch).where(InspectionBatch.expires_at <= current_time)
     )
 
     return CleanupResult(
         resources_deleted=resource_result.rowcount or 0,
         tasks_deleted=task_result.rowcount or 0,
         cache_entries_deleted=cache_result.rowcount or 0,
+        inspection_batches_deleted=inspection_result.rowcount or 0,
     )

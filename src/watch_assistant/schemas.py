@@ -12,6 +12,23 @@ class ResourceKind(StrEnum):
     SHARE = "115_share"
 
 
+class InspectionBatchStatus(StrEnum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    PARTIAL = "partial"
+    FAILED = "failed"
+
+
+class InspectionItemStatus(StrEnum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    VERIFIED = "verified"
+    TIMEOUT = "timeout"
+    FAILED = "failed"
+    UNSUPPORTED = "unsupported"
+
+
 class MediaType(StrEnum):
     MOVIE = "movie"
     TV = "tv"
@@ -175,6 +192,41 @@ class TaskCreateRequest(BaseModel):
 
     resource_id: str = Field(min_length=1, max_length=40)
     force: bool = False
+
+
+class InspectionStartRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    resource_ids: list[str] = Field(min_length=1, max_length=30)
+
+    def model_post_init(self, _context: Any) -> None:
+        if any(not resource_id or len(resource_id) > 40 for resource_id in self.resource_ids):
+            raise ValueError("invalid_resource_id")
+        if len(set(self.resource_ids)) != len(self.resource_ids):
+            raise ValueError("duplicate_resource_id")
+
+
+class InspectionResultResponse(BaseModel):
+    resource_id: str
+    infohash: str | None
+    status: InspectionItemStatus
+    total_size_bytes: int
+    file_count: int
+    video_file_count: int
+    video_size_bytes: int
+    subtitle_count: int
+    sample_count: int
+    largest_video_name: str | None
+    content_summary: str | None
+    error_code: str | None
+
+
+class InspectionBatchResponse(BaseModel):
+    batch_id: str
+    status: InspectionBatchStatus
+    submitted_count: int
+    completed_count: int
+    results: list[InspectionResultResponse] = Field(default_factory=list)
 
 
 class TaskResponse(BaseModel):

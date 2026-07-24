@@ -191,6 +191,23 @@ async def test_login_failure_returns_stable_error_without_magnet_details():
 
 
 @respx.mock
+async def test_login_accepts_qbittorrent_5_empty_204_response():
+    respx.post(f"{BASE_URL}/api/v2/auth/login").mock(
+        return_value=httpx.Response(
+            204,
+            headers={"set-cookie": "SID=test-session; Path=/; HttpOnly"},
+        )
+    )
+    respx.get(f"{BASE_URL}/api/v2/app/version").mock(
+        return_value=httpx.Response(200, text="v5.2.3")
+    )
+    client = QbittorrentClient(BASE_URL, "user", "password")
+
+    await client.ensure_available()
+    await client.aclose()
+
+
+@respx.mock
 async def test_inspects_batch_of_30_and_maintains_login_cookie():
     fake = FakeQbittorrent()
     fake.install()

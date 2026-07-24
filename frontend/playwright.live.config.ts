@@ -2,14 +2,14 @@ import { defineConfig } from "@playwright/test";
 
 export default defineConfig({
   testDir: "./e2e",
-  testIgnore: "**/live-api.spec.ts",
+  testMatch: "live-api.spec.ts",
   webServer: {
-    command: "npm run dev -- --host 127.0.0.1 --port 4175",
-    url: "http://127.0.0.1:4175",
-    reuseExistingServer: true,
+    command: "node e2e/live-server.mjs",
+    url: "http://127.0.0.1:4176/api/v1/health",
+    reuseExistingServer: false,
   },
   use: {
-    baseURL: "http://127.0.0.1:4175",
+    baseURL: "http://127.0.0.1:4176",
   },
   projects: [
     { name: "desktop", use: { viewport: { width: 1440, height: 900 } } },

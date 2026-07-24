@@ -58,6 +58,30 @@ def test_tmdb_base_url_can_use_network_reachable_alias(monkeypatch):
     assert settings.tmdb_base_url == "https://api.tmdb.org/3"
 
 
+def test_inspection_settings_load_qb_credentials_from_a_secret_directory(
+    tmp_path, monkeypatch
+):
+    required = {
+        "DATABASE_URL": "sqlite+aiosqlite:///test.db",
+        "ENCRYPTION_KEY": "test-key",
+        "TMDB_API_KEY": "tmdb-key",
+        "WEB_PASSWORD_HASH": "web-hash",
+        "SCRIPT_TOKEN_HASH": "script-hash",
+        "PANSOU_BASE_URL": "http://pansou.test",
+        "TGTO_BASE_URL": "http://tgto.test",
+        "INSPECTION_ENABLED": "true",
+        "QBITTORRENT_BASE_URL": "http://172.20.0.4:8080",
+    }
+    for name, value in required.items():
+        monkeypatch.setenv(name, value)
+    (tmp_path / "qbittorrent_username").write_text("inspector", encoding="utf-8")
+    (tmp_path / "qbittorrent_password").write_text("test-password", encoding="utf-8")
+
+    settings = Settings(_env_file=None, _secrets_dir=tmp_path)
+
+    assert settings.inspection_configured is True
+
+
 @pytest.mark.asyncio
 async def test_cleanup_keeps_resource_referenced_by_uncertain_task(tmp_path):
     database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'watch.db'}")

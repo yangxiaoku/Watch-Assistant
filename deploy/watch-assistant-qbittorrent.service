@@ -1,0 +1,17 @@
+[Unit]
+Description=Watch Assistant isolated qBittorrent inspector
+After=docker.service network-online.target
+Wants=network-online.target
+PartOf=watch-assistant.service
+Before=watch-assistant.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/watch-assistant/current
+EnvironmentFile=/etc/watch-assistant-inspection.env
+ExecStart=/usr/bin/docker compose --env-file /etc/watch-assistant-inspection.env -f /opt/watch-assistant/current/deploy/qbittorrent-inspection-compose.yml up -d --pull never
+ExecStop=/usr/bin/docker compose --env-file /etc/watch-assistant-inspection.env -f /opt/watch-assistant/current/deploy/qbittorrent-inspection-compose.yml stop
+
+[Install]
+WantedBy=multi-user.target

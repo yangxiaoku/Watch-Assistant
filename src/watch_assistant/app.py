@@ -11,8 +11,10 @@ from fastapi.responses import FileResponse
 from starlette.staticfiles import StaticFiles
 
 from watch_assistant.adapters.pansou import PanSouClient
+from watch_assistant.adapters.qbittorrent import QbittorrentClient
 from watch_assistant.adapters.tmdb import TmdbClient
 from watch_assistant.api.auth import router as auth_router
+from watch_assistant.api.inspection import router as inspection_router
 from watch_assistant.api.maintenance import router as maintenance_router
 from watch_assistant.api.search import router as search_router
 from watch_assistant.api.tasks import router as tasks_router
@@ -21,6 +23,7 @@ from watch_assistant.crypto import SecretCrypto
 from watch_assistant.db import Database, create_database, initialize_database
 from watch_assistant.security import SecurityManager
 from watch_assistant.services.cache_warm import CacheWarmer
+from watch_assistant.services.inspection import InspectionService, InspectionWorker
 from watch_assistant.services.maintenance import MaintenanceService
 from watch_assistant.services.search import SearchService
 from watch_assistant.services.tasks import TaskService
@@ -35,6 +38,7 @@ def create_app(
     security_manager: SecurityManager | None = None,
     share_domains: tuple[str, ...] = ("115.com", "115cdn.com"),
     push_supported: bool | None = None,
+    qbittorrent_client: QbittorrentClient | None = None,
     frontend_dir: Path | None = None,
 ) -> FastAPI:
     @asynccontextmanager
@@ -42,8 +46,11 @@ def create_app(
         owned: list[object] = []
         warm_stop: asyncio.Event | None = None
         warm_task: asyncio.Task[None] | None = None
+        inspection_stop: asyncio.Event | None = None
+        inspection_task: asyncio.Task[None] | None = None
         if not hasattr(application.state, "search_service"):
-            secrets_dir = Path("/run/secrets")
+            credentials_directory = os.environ.get("CREDENTIALS_DIRECTORY")
+            secrets_dir = Path(credentials_directory or "/run/secrets")
             settings = Settings(
                 _secrets_dir=secrets_dir if secrets_dir.is_dir() else None
             )
@@ -85,6 +92,25 @@ def create_app(
             application.state.push_supported = False
             application.state.database = runtime_database
             owned = [runtime_database, runtime_tmdb, runtime_pansou]
+            inspection_client = qbittorrent_client
+            if inspection_client is None and settings.inspection_configured:
+                inspection_client = QbittorrentClient(
+                    settings.qbittorrent_base_url,
+                    settings.qbittorrent_username.get_secret_value(),
+                    settings.qbittorrent_password.get_secret_value(),
+                )
+                owned.append(inspection_client)
+            application.state.inspection_supported = inspection_client is not None
+            if inspection_client is not None:
+                application.state.inspection_client = inspection_client
+                application.state.inspection_service = InspectionService(
+                    runtime_database.session_factory
+                )
+                application.state.inspection_worker = InspectionWorker(
+                    runtime_database.session_factory,
+                    runtime_crypto,
+                    inspection_client,
+                )
             if settings.cache_warm_enabled:
                 warmer = CacheWarmer(
                     application.state.search_service,
@@ -98,14 +124,33 @@ def create_app(
                     name="watch-assistant-cache-warmer",
                 )
                 application.state.cache_warmer = warmer
+        worker = getattr(application.state, "inspection_worker", None)
+        if worker is not None:
+            inspection_stop = asyncio.Event()
+            inspection_task = asyncio.create_task(
+                worker.run_forever(inspection_stop),
+                name="watch-assistant-inspection-worker",
+            )
         try:
             yield
         finally:
+            if inspection_task is not None and inspection_stop is not None:
+                inspection_stop.set()
+                inspection_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await inspection_task
             if warm_task is not None and warm_stop is not None:
                 warm_stop.set()
                 warm_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await warm_task
+            inspection_client = getattr(application.state, "inspection_client", None)
+            if (
+                inspection_client is not None
+                and inspection_client not in owned
+                and hasattr(inspection_client, "aclose")
+            ):
+                await inspection_client.aclose()
             for resource in owned:
                 if isinstance(resource, Database):
                     await resource.engine.dispose()
@@ -126,6 +171,15 @@ def create_app(
         application.state.maintenance_service = MaintenanceService(
             database.session_factory
         )
+        application.state.inspection_supported = qbittorrent_client is not None
+        if qbittorrent_client is not None:
+            application.state.inspection_client = qbittorrent_client
+            application.state.inspection_service = InspectionService(database.session_factory)
+            application.state.inspection_worker = InspectionWorker(
+                database.session_factory,
+                crypto,
+                qbittorrent_client,
+            )
         if security_manager is not None:
             application.state.security_manager = security_manager
         application.state.push_supported = (
@@ -137,12 +191,16 @@ def create_app(
         return {
             "status": "ok",
             "push_supported": getattr(application.state, "push_supported", False),
+            "inspection_supported": getattr(
+                application.state, "inspection_supported", False
+            ),
         }
 
     application.include_router(search_router)
     application.include_router(tasks_router)
     application.include_router(auth_router)
     application.include_router(maintenance_router)
+    application.include_router(inspection_router)
     static_path = frontend_dir or Path(
         os.environ.get("FRONTEND_DIST_DIR", "frontend/dist")
     )

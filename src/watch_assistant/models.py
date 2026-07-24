@@ -15,7 +15,13 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
-from watch_assistant.schemas import MediaType, ResourceKind, TaskAction
+from watch_assistant.schemas import (
+    InspectionBatchStatus,
+    InspectionItemStatus,
+    MediaType,
+    ResourceKind,
+    TaskAction,
+)
 
 
 def utc_now() -> datetime:
@@ -61,6 +67,61 @@ class Resource(Base):
     )
 
     tasks: Mapped[list["Task"]] = relationship(back_populates="resource")
+    inspection_items: Mapped[list["InspectionItem"]] = relationship(
+        back_populates="resource"
+    )
+
+
+class InspectionBatch(Base):
+    __tablename__ = "inspection_batches"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    status: Mapped[InspectionBatchStatus] = mapped_column(
+        Enum(InspectionBatchStatus, values_callable=enum_values, native_enum=False),
+        default=InspectionBatchStatus.QUEUED,
+        index=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now, index=True
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+    items: Mapped[list["InspectionItem"]] = relationship(
+        back_populates="batch", cascade="all, delete-orphan"
+    )
+
+
+class InspectionItem(Base):
+    __tablename__ = "inspection_items"
+
+    batch_id: Mapped[str] = mapped_column(
+        ForeignKey("inspection_batches.id", ondelete="CASCADE"), primary_key=True
+    )
+    resource_id: Mapped[str] = mapped_column(
+        ForeignKey("resources.id", ondelete="RESTRICT"), primary_key=True
+    )
+    position: Mapped[int] = mapped_column(Integer)
+    status: Mapped[InspectionItemStatus] = mapped_column(
+        Enum(InspectionItemStatus, values_callable=enum_values, native_enum=False),
+        default=InspectionItemStatus.QUEUED,
+        index=True,
+    )
+    infohash: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    total_size_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
+    file_count: Mapped[int] = mapped_column(Integer, default=0)
+    video_file_count: Mapped[int] = mapped_column(Integer, default=0)
+    video_size_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
+    subtitle_count: Mapped[int] = mapped_column(Integer, default=0)
+    sample_count: Mapped[int] = mapped_column(Integer, default=0)
+    largest_video_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    content_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
+
+    batch: Mapped[InspectionBatch] = relationship(back_populates="items")
+    resource: Mapped[Resource] = relationship(back_populates="inspection_items")
 
 
 class SearchCache(Base):

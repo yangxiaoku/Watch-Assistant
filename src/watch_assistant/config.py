@@ -50,6 +50,26 @@ class Settings(BaseSettings):
     cache_warm_concurrency: int = Field(
         default=3, ge=1, le=16, validation_alias="CACHE_WARM_CONCURRENCY"
     )
+    inspection_enabled: bool = Field(
+        default=False, validation_alias="INSPECTION_ENABLED"
+    )
+    qbittorrent_base_url: str = Field(
+        default="", validation_alias="QBITTORRENT_BASE_URL"
+    )
+    qbittorrent_username: SecretStr = Field(
+        default=SecretStr(""), validation_alias="QBITTORRENT_USERNAME"
+    )
+    qbittorrent_password: SecretStr = Field(
+        default=SecretStr(""), validation_alias="QBITTORRENT_PASSWORD"
+    )
+
+    @property
+    def inspection_configured(self) -> bool:
+        return self.inspection_enabled and bool(
+            self.qbittorrent_base_url
+            and self.qbittorrent_username.get_secret_value()
+            and self.qbittorrent_password.get_secret_value()
+        )
 
 
 def load_tgto_contract(path: Path | str) -> dict[str, Any]:

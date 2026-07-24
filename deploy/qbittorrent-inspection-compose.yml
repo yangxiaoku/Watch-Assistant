@@ -1,0 +1,30 @@
+services:
+  watch-assistant-qbittorrent:
+    image: lscr.io/linuxserver/qbittorrent:5.2.3_v2.0.13-ls469@sha256:1a4641fa759dee784708ed277ece10adbbc5810ebb8bb9fdfe1cf00031f5ab2b
+    pull_policy: never
+    container_name: watch-assistant-qbittorrent
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      TZ: Asia/Hong_Kong
+      WEBUI_PORT: 8080
+      TORRENTING_PORT: 6881
+    volumes:
+      - ${QBITTORRENT_CONFIG_DIR}:/config
+    tmpfs:
+      - /downloads:rw,noexec,nosuid,size=512m,mode=1777
+      - /tmp:rw,noexec,nosuid,size=32m,mode=1777
+      - /run:rw,exec,nosuid,size=16m,mode=1777
+    mem_limit: 512m
+    pids_limit: 256
+    stop_grace_period: 30s
+    networks:
+      existing_services:
+        ipv4_address: ${QBITTORRENT_IP}
+
+networks:
+  existing_services:
+    external: true
+    name: ${EXTERNAL_NETWORK:-pansou_default}

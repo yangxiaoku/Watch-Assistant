@@ -178,6 +178,10 @@ class QbittorrentClient:
         if self._owns_client:
             await self._client.aclose()
 
+    async def ensure_available(self) -> None:
+        """Verify the isolated qBittorrent dependency before a batch starts."""
+        await self._login()
+
     async def _login(self) -> None:
         async with self._login_lock:
             if self._logged_in:
@@ -194,7 +198,10 @@ class QbittorrentClient:
                 raise _ApiError("authentication_failed")
             if response.status_code >= 400:
                 raise _ApiError("login_unavailable")
-            if response.text.strip() != "Ok.":
+            if not (
+                response.text.strip() == "Ok."
+                or (response.status_code == 204 and not response.content)
+            ):
                 raise _ApiError("malformed_response")
 
             try:

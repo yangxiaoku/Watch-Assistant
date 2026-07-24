@@ -1,0 +1,54 @@
+"""Authenticated magnet inspection batch routes."""
+
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+
+from watch_assistant.schemas import InspectionBatchResponse, InspectionStartRequest
+from watch_assistant.security import require_api_auth
+from watch_assistant.services.inspection import (
+    InspectionBatchNotFound,
+    InspectionResourceInvalid,
+    InspectionService,
+)
+
+router = APIRouter(prefix="/api/v1", dependencies=[Depends(require_api_auth)])
+
+
+def get_inspection_service(request: Request) -> InspectionService:
+    if getattr(request.app.state, "inspection_supported", False) is not True:
+        raise HTTPException(status_code=503, detail="inspection_unsupported")
+    service = getattr(request.app.state, "inspection_service", None)
+    if service is None:
+        raise HTTPException(status_code=503, detail="inspection_unsupported")
+    return service
+
+
+InspectionServiceDependency = Annotated[InspectionService, Depends(get_inspection_service)]
+
+
+@router.post(
+    "/resources/inspect",
+    response_model=InspectionBatchResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def start_inspection(
+    payload: InspectionStartRequest,
+    service: InspectionServiceDependency,
+) -> InspectionBatchResponse:
+    try:
+        return await service.create(payload.resource_ids)
+    except InspectionResourceInvalid as exc:
+        raise HTTPException(status_code=422, detail="resource_not_inspectable") from exc
+
+
+@router.get(
+    "/resources/inspect/{batch_id}", response_model=InspectionBatchResponse
+)
+async def get_inspection(
+    batch_id: str, service: InspectionServiceDependency
+) -> InspectionBatchResponse:
+    try:
+        return await service.get(batch_id)
+    except InspectionBatchNotFound as exc:
+        raise HTTPException(status_code=404, detail="inspection_not_found") from exc
