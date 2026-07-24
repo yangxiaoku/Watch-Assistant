@@ -15,11 +15,25 @@ not echo magnets or trackers. `largest_video_name` is a basename, not a torrent
 path.
 
 Each call creates a random `wa-inspect-<uuid>` marker and submits it as both the
-tag and category with `stopCondition=MetadataReceived`. Work is bounded to four
-concurrent items by default and each item has a 60-second metadata deadline.
-The adapter checks for an existing hash before adding it. Cleanup queries or
-deletes only the exact hash carrying the current call's tag. A pre-existing
-torrent is returned as `unsupported/existing_torrent` and is never deleted.
+tag and category with `stopCondition=MetadataReceived`. After authentication,
+the adapter calls `GET /api/v2/app/version` and accepts only parseable versions
+at or above `v4.5.0`; an unavailable, malformed, or older version is rejected
+as `unsupported/incompatible_qbittorrent` before `torrents/add` is called.
+The concurrency semaphore belongs to the client instance, so simultaneous
+`inspect()` calls share one global limit of four by default. An instance-level
+hash mutex serializes exists/add/poll/cleanup for the same infohash. Its
+protected reference count removes the lock entry after the final waiter exits.
+Each item has a 60-second metadata deadline. The adapter checks for an existing
+hash before adding it. Cleanup queries or deletes only the exact hash carrying
+the current call's tag. A pre-existing torrent is returned as
+`unsupported/existing_torrent` and is never deleted. If an inspect task is
+cancelled after add was attempted, cleanup runs under the hash mutex through a
+shielded task and the cancellation is re-raised only after cleanup completes.
+
+Only `pausedDL` and `stoppedDL` are accepted as metadata-complete states and
+cause `torrents/files` to be read. `metaDL` continues polling. Any other state,
+including `downloading`, `forcedDL`, `error`, `missingFiles`, and `unknown`, is
+cleaned immediately and returned as `failed/metadata_stop_failed`.
 
 ## Proposed HTTP API
 
@@ -29,12 +43,12 @@ torrent is returned as `unsupported/existing_torrent` and is never deleted.
 
 ```json
 {
-  "resource_ids": [101, 102]
+  "resource_ids": ["res_abcd", "res_efgh"]
 }
 ```
 
-`resource_ids` is required, contains 1 to 30 unique positive resource IDs, and
-preserves request order. The API resolves resource IDs to magnets internally;
+`resource_ids` is required and contains 1 to 30 unique strings. The API resolves
+resource IDs to magnets internally and preserves request order;
 clients must not submit magnets. Authorization and resource ownership checks
 reuse the future resource API policy and occur before the batch is queued.
 
@@ -98,6 +112,7 @@ exception messages or tracebacks. Frozen adapter error codes are:
 - `authentication_failed`
 - `login_unavailable`
 - `existing_torrent`
+- `incompatible_qbittorrent`
 - `metadata_stop_unsupported`
 - `ownership_conflict`
 - `metadata_timeout`

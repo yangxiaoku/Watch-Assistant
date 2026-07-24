@@ -1,3 +1,4 @@
+import asyncio
 from dataclasses import asdict
 from urllib.parse import parse_qs
 
@@ -25,18 +26,34 @@ class FakeQbittorrent:
         metadata_received: bool = True,
         files: list[dict[str, object]] | None = None,
         delete_status: int = 200,
+        version: str = "v5.0.0",
+        state: str | None = None,
+        info_delay: float = 0,
+        add_delay: float = 0,
     ) -> None:
         self.existing = {value.casefold() for value in (existing or set())}
         self.metadata_received = metadata_received
         self.files = files or [{"name": "Movie.mkv", "size": 100}]
         self.delete_status = delete_status
+        self.version = version
+        self.state = state
+        self.info_delay = info_delay
+        self.add_delay = add_delay
         self.added: dict[str, str] = {}
         self.add_calls = 0
         self.delete_calls = 0
+        self.files_calls = 0
+        self.active_checks = 0
+        self.max_active_checks = 0
+        self.active_adds = 0
+        self.max_active_adds = 0
         self.cookie_seen = False
+        self.add_seen = asyncio.Event()
+        self.delete_seen = asyncio.Event()
 
     def install(self) -> None:
         respx.post(f"{BASE_URL}/api/v2/auth/login").mock(side_effect=self._login)
+        respx.get(f"{BASE_URL}/api/v2/app/version").mock(side_effect=self._version)
         respx.get(f"{BASE_URL}/api/v2/torrents/info").mock(side_effect=self._info)
         respx.post(f"{BASE_URL}/api/v2/torrents/add").mock(side_effect=self._add)
         respx.get(f"{BASE_URL}/api/v2/torrents/files").mock(side_effect=self._files)
@@ -51,63 +68,84 @@ class FakeQbittorrent:
             headers={"set-cookie": "SID=test-session; Path=/; HttpOnly"},
         )
 
-    def _info(self, request: httpx.Request) -> httpx.Response:
-        self.cookie_seen = (
-            self.cookie_seen or "SID=test-session" in request.headers.get("cookie", "")
-        )
-        infohash = request.url.params.get("hashes")
-        tag = request.url.params.get("tag")
-        if infohash:
-            normalized = infohash.casefold()
-            if normalized in self.existing:
+    def _version(self, request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=self.version)
+
+    async def _info(self, request: httpx.Request) -> httpx.Response:
+        self.active_checks += 1
+        self.max_active_checks = max(self.max_active_checks, self.active_checks)
+        try:
+            if self.info_delay:
+                await asyncio.sleep(self.info_delay)
+            self.cookie_seen = (
+                self.cookie_seen
+                or "SID=test-session" in request.headers.get("cookie", "")
+            )
+            infohash = request.url.params.get("hashes")
+            tag = request.url.params.get("tag")
+            if infohash:
+                normalized = infohash.casefold()
+                if normalized in self.existing:
+                    return httpx.Response(
+                        200,
+                        json=[
+                            {
+                                "hash": normalized,
+                                "state": "downloading",
+                                "tags": "personal",
+                            }
+                        ],
+                    )
+                marker = self.added.get(normalized)
+                if marker:
+                    return httpx.Response(
+                        200,
+                        json=[
+                            {
+                                "hash": normalized,
+                                "state": self.state
+                                or (
+                                    "stoppedDL" if self.metadata_received else "metaDL"
+                                ),
+                                "tags": marker,
+                            }
+                        ],
+                    )
+                return httpx.Response(200, json=[])
+            if tag:
                 return httpx.Response(
                     200,
                     json=[
-                        {
-                            "hash": normalized,
-                            "state": "downloading",
-                            "tags": "personal",
-                        }
-                    ],
-                )
-            marker = self.added.get(normalized)
-            if marker:
-                return httpx.Response(
-                    200,
-                    json=[
-                        {
-                            "hash": normalized,
-                            "state": "stoppedDL"
-                            if self.metadata_received
-                            else "metaDL",
-                            "tags": marker,
-                        }
+                        {"hash": added_hash, "state": "stoppedDL", "tags": marker}
+                        for added_hash, marker in self.added.items()
+                        if marker == tag
                     ],
                 )
             return httpx.Response(200, json=[])
-        if tag:
-            return httpx.Response(
-                200,
-                json=[
-                    {"hash": infohash, "state": "stoppedDL", "tags": marker}
-                    for infohash, marker in self.added.items()
-                    if marker == tag
-                ],
-            )
-        return httpx.Response(200, json=[])
+        finally:
+            self.active_checks -= 1
 
-    def _add(self, request: httpx.Request) -> httpx.Response:
-        form = parse_qs(request.content.decode())
-        magnet = form["urls"][0]
-        infohash = magnet.split("urn:btih:", 1)[1].split("&", 1)[0].casefold()
-        marker = form["tags"][0]
-        assert form["category"] == [marker]
-        assert form["stopCondition"] == ["MetadataReceived"]
-        self.add_calls += 1
-        self.added[infohash] = marker
-        return httpx.Response(200, text="Ok.")
+    async def _add(self, request: httpx.Request) -> httpx.Response:
+        self.active_adds += 1
+        self.max_active_adds = max(self.max_active_adds, self.active_adds)
+        try:
+            if self.add_delay:
+                await asyncio.sleep(self.add_delay)
+            form = parse_qs(request.content.decode())
+            magnet = form["urls"][0]
+            infohash = magnet.split("urn:btih:", 1)[1].split("&", 1)[0].casefold()
+            marker = form["tags"][0]
+            assert form["category"] == [marker]
+            assert form["stopCondition"] == ["MetadataReceived"]
+            self.add_calls += 1
+            self.added[infohash] = marker
+            self.add_seen.set()
+            return httpx.Response(200, text="Ok.")
+        finally:
+            self.active_adds -= 1
 
     def _files(self, request: httpx.Request) -> httpx.Response:
+        self.files_calls += 1
         assert request.url.params.get("hash") in self.added
         return httpx.Response(200, json=self.files)
 
@@ -120,6 +158,7 @@ class FakeQbittorrent:
         if self.delete_status >= 400:
             return httpx.Response(self.delete_status, text="Fails.")
         self.added.pop(infohash)
+        self.delete_seen.set()
         return httpx.Response(200, text="Ok.")
 
 
@@ -154,6 +193,139 @@ async def test_inspects_batch_of_30_and_maintains_login_cookie():
     assert fake.add_calls == 30
     assert fake.delete_calls == 30
     assert fake.cookie_seen is True
+
+
+@respx.mock
+async def test_qbittorrent_4_4_5_is_rejected_before_add():
+    fake = FakeQbittorrent(version="v4.4.5")
+    fake.install()
+    client = QbittorrentClient(BASE_URL, "user", "password")
+
+    result = (await client.inspect([_magnet("9" * 40)]))[0]
+    await client.aclose()
+
+    assert result.status == InspectionStatus.UNSUPPORTED
+    assert result.error_code == "incompatible_qbittorrent"
+    assert fake.add_calls == 0
+
+
+@pytest.mark.parametrize("version", ["v4.5.0", "v5.0.0", "v5.1.2"])
+@respx.mock
+async def test_supported_qbittorrent_versions_can_inspect(version: str):
+    fake = FakeQbittorrent(version=version)
+    fake.install()
+    client = QbittorrentClient(BASE_URL, "user", "password", poll_interval=0)
+
+    result = (await client.inspect([_magnet("8" * 40)]))[0]
+    await client.aclose()
+
+    assert result.status == InspectionStatus.VERIFIED
+    assert fake.add_calls == 1
+
+
+@respx.mock
+async def test_unavailable_version_endpoint_is_incompatible_before_add():
+    fake = FakeQbittorrent()
+    fake.install()
+    respx.get(f"{BASE_URL}/api/v2/app/version").mock(
+        return_value=httpx.Response(503, text="unavailable")
+    )
+    client = QbittorrentClient(BASE_URL, "user", "password")
+
+    result = (await client.inspect([_magnet("7" * 40)]))[0]
+    await client.aclose()
+
+    assert result.status == InspectionStatus.UNSUPPORTED
+    assert result.error_code == "incompatible_qbittorrent"
+    assert fake.add_calls == 0
+
+
+@respx.mock
+async def test_unparseable_version_is_incompatible_before_add():
+    fake = FakeQbittorrent(version="qBittorrent development build")
+    fake.install()
+    client = QbittorrentClient(BASE_URL, "user", "password")
+
+    result = (await client.inspect([_magnet("0" * 40)]))[0]
+    await client.aclose()
+
+    assert result.status == InspectionStatus.UNSUPPORTED
+    assert result.error_code == "incompatible_qbittorrent"
+    assert fake.add_calls == 0
+
+
+@respx.mock
+async def test_instance_semaphore_limits_concurrent_batches():
+    fake = FakeQbittorrent(info_delay=0.01)
+    fake.install()
+    client = QbittorrentClient(
+        BASE_URL, "user", "password", concurrency=2, poll_interval=0
+    )
+
+    await asyncio.gather(
+        client.inspect([_magnet(f"{index:040x}") for index in range(1, 4)]),
+        client.inspect([_magnet(f"{index:040x}") for index in range(4, 7)]),
+    )
+    await client.aclose()
+
+    assert fake.max_active_checks <= 2
+    assert fake.max_active_checks == 2
+
+
+@respx.mock
+async def test_same_hash_is_serialized_across_batches_and_lock_table_is_reclaimed():
+    fake = FakeQbittorrent(add_delay=0.01)
+    fake.install()
+    client = QbittorrentClient(BASE_URL, "user", "password", poll_interval=0)
+    magnet = _magnet("6" * 40)
+
+    results = await asyncio.gather(client.inspect([magnet]), client.inspect([magnet]))
+    await client.aclose()
+
+    assert [batch[0].status for batch in results] == [
+        InspectionStatus.VERIFIED,
+        InspectionStatus.VERIFIED,
+    ]
+    assert fake.max_active_adds == 1
+    assert fake.delete_calls == 2
+    assert client._hash_locks == {}
+
+
+@respx.mock
+async def test_cancelled_inspect_finishes_shielded_cleanup_and_reraises():
+    fake = FakeQbittorrent(metadata_received=False)
+    fake.install()
+    client = QbittorrentClient(
+        BASE_URL, "user", "password", item_timeout=60, poll_interval=0.01
+    )
+    task = asyncio.create_task(client.inspect([_magnet("5" * 40)]))
+
+    await asyncio.wait_for(fake.add_seen.wait(), timeout=1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await client.aclose()
+
+    assert fake.delete_seen.is_set()
+    assert fake.added == {}
+    assert client._hash_locks == {}
+
+
+@pytest.mark.parametrize(
+    "state", ["downloading", "forcedDL", "error", "missingFiles", "unknown"]
+)
+@respx.mock
+async def test_non_stopped_states_fail_without_reading_files(state: str):
+    fake = FakeQbittorrent(state=state)
+    fake.install()
+    client = QbittorrentClient(BASE_URL, "user", "password", poll_interval=0)
+
+    result = (await client.inspect([_magnet("4" * 40)]))[0]
+    await client.aclose()
+
+    assert result.status == InspectionStatus.FAILED
+    assert result.error_code == "metadata_stop_failed"
+    assert fake.files_calls == 0
 
 
 @respx.mock
@@ -270,6 +442,9 @@ async def test_malformed_api_response_returns_stable_error():
             text="Ok.",
             headers={"set-cookie": "SID=test-session; Path=/"},
         )
+    )
+    respx.get(f"{BASE_URL}/api/v2/app/version").mock(
+        return_value=httpx.Response(200, text="v5.0.0")
     )
     respx.get(f"{BASE_URL}/api/v2/torrents/info").mock(
         return_value=httpx.Response(200, json={"unexpected": "object"})

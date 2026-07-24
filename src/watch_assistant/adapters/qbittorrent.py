@@ -7,6 +7,7 @@ import re
 import time
 import uuid
 from collections.abc import Sequence
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import PurePosixPath
@@ -21,6 +22,8 @@ SUSPICIOUS_EXTENSIONS = {".bat", ".cmd", ".com", ".exe", ".msi", ".scr"}
 SUSPICIOUS_NAME = re.compile(
     r"(?:^|[/._\-\s])(sample|trailer|proof)(?:[/._\-\s]|$)", re.IGNORECASE
 )
+VERSION_PATTERN = re.compile(r"^\s*v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?\s*$")
+MINIMUM_QBITTORRENT_VERSION = (4, 5, 0)
 
 
 class InspectionStatus(StrEnum):
@@ -49,6 +52,12 @@ class QbittorrentInspectionResult:
 class _Magnet:
     uri: str
     infohash: str
+
+
+@dataclass
+class _HashLockState:
+    lock: asyncio.Lock
+    users: int = 0
 
 
 class _ApiError(RuntimeError):
@@ -89,6 +98,10 @@ class QbittorrentClient:
         self._owns_client = client is None
         self._client = client or httpx.AsyncClient(base_url=base_url.rstrip("/"))
         self._logged_in = False
+        self._login_lock = asyncio.Lock()
+        self._semaphore = asyncio.Semaphore(concurrency)
+        self._hash_table_lock = asyncio.Lock()
+        self._hash_locks: dict[str, _HashLockState] = {}
 
     async def inspect(
         self, magnets: Sequence[str]
@@ -120,6 +133,19 @@ class QbittorrentClient:
 
         try:
             await self._login()
+        except _UnsupportedError as exc:
+            return [
+                (
+                    QbittorrentInspectionResult(
+                        infohash=entry.infohash,
+                        status=InspectionStatus.UNSUPPORTED,
+                        error_code=exc.code,
+                    )
+                    if isinstance(entry, _Magnet)
+                    else entry
+                )
+                for entry in entries
+            ]
         except _ApiError as exc:
             return [
                 (
@@ -135,10 +161,9 @@ class QbittorrentClient:
             ]
 
         batch_marker = f"wa-inspect-{uuid.uuid4().hex}"
-        semaphore = asyncio.Semaphore(self._concurrency)
 
         async def run(item: _Magnet) -> QbittorrentInspectionResult:
-            async with semaphore:
+            async with self._semaphore:
                 return await self._inspect_one(item, batch_marker)
 
         inspected = await asyncio.gather(*(run(item) for item in parsed))
@@ -153,93 +178,128 @@ class QbittorrentClient:
             await self._client.aclose()
 
     async def _login(self) -> None:
-        if self._logged_in:
-            return
-        try:
-            response = await self._client.post(
-                "/api/v2/auth/login",
-                data={"username": self._username, "password": self._password},
-                timeout=self._request_timeout,
-            )
-        except httpx.HTTPError as exc:
-            raise _ApiError("login_unavailable") from exc
-        if response.status_code in {401, 403} or response.text.strip() == "Fails.":
-            raise _ApiError("authentication_failed")
-        if response.status_code >= 400:
-            raise _ApiError("login_unavailable")
-        if response.text.strip() != "Ok.":
-            raise _ApiError("malformed_response")
-        self._logged_in = True
+        async with self._login_lock:
+            if self._logged_in:
+                return
+            try:
+                response = await self._client.post(
+                    "/api/v2/auth/login",
+                    data={"username": self._username, "password": self._password},
+                    timeout=self._request_timeout,
+                )
+            except httpx.HTTPError as exc:
+                raise _ApiError("login_unavailable") from exc
+            if response.status_code in {401, 403} or response.text.strip() == "Fails.":
+                raise _ApiError("authentication_failed")
+            if response.status_code >= 400:
+                raise _ApiError("login_unavailable")
+            if response.text.strip() != "Ok.":
+                raise _ApiError("malformed_response")
+
+            try:
+                version_response = await self._client.get(
+                    "/api/v2/app/version", timeout=self._request_timeout
+                )
+                version_response.raise_for_status()
+            except httpx.HTTPError as exc:
+                raise _UnsupportedError("incompatible_qbittorrent") from exc
+            version = _parse_version(version_response.text)
+            if version is None or version < MINIMUM_QBITTORRENT_VERSION:
+                raise _UnsupportedError("incompatible_qbittorrent")
+            self._logged_in = True
 
     async def _inspect_one(
         self, item: _Magnet, batch_marker: str
     ) -> QbittorrentInspectionResult:
         result: QbittorrentInspectionResult | None = None
         add_attempted = False
-        try:
-            if await self._torrent_exists(item.infohash):
+        cancelled = False
+        async with self._hash_guard(item.infohash):
+            try:
+                if await self._torrent_exists(item.infohash):
+                    result = QbittorrentInspectionResult(
+                        infohash=item.infohash,
+                        status=InspectionStatus.UNSUPPORTED,
+                        error_code="existing_torrent",
+                    )
+                else:
+                    add_attempted = True
+                    await self._add(item.uri, batch_marker)
+                    deadline = time.monotonic() + self._item_timeout
+                    while result is None:
+                        torrents = await self._torrent_info(hashes=item.infohash)
+                        torrent = _matching_torrent(torrents, item.infohash)
+                        if torrent is not None:
+                            if not _has_tag(torrent, batch_marker):
+                                result = QbittorrentInspectionResult(
+                                    infohash=item.infohash,
+                                    status=InspectionStatus.FAILED,
+                                    error_code="ownership_conflict",
+                                )
+                                break
+                            state = torrent.get("state")
+                            if not isinstance(state, str):
+                                raise _ApiError("malformed_response")
+                            normalized_state = state.casefold()
+                            if normalized_state == "metadl":
+                                pass
+                            elif normalized_state in {"pauseddl", "stoppeddl"}:
+                                files = await self._torrent_files(item.infohash)
+                                result = _summarize(item.infohash, files)
+                                break
+                            else:
+                                result = QbittorrentInspectionResult(
+                                    infohash=item.infohash,
+                                    status=InspectionStatus.FAILED,
+                                    error_code="metadata_stop_failed",
+                                )
+                                break
+                        if time.monotonic() >= deadline:
+                            result = QbittorrentInspectionResult(
+                                infohash=item.infohash,
+                                status=InspectionStatus.TIMEOUT,
+                                error_code="metadata_timeout",
+                            )
+                            break
+                        await asyncio.sleep(
+                            min(
+                                self._poll_interval,
+                                max(0.0, deadline - time.monotonic()),
+                            )
+                        )
+            except asyncio.CancelledError:
+                cancelled = True
+            except _UnsupportedError as exc:
                 result = QbittorrentInspectionResult(
                     infohash=item.infohash,
                     status=InspectionStatus.UNSUPPORTED,
-                    error_code="existing_torrent",
+                    error_code=exc.code,
                 )
-            else:
-                add_attempted = True
-                await self._add(item.uri, batch_marker)
-                deadline = time.monotonic() + self._item_timeout
-                while result is None:
-                    torrents = await self._torrent_info(hashes=item.infohash)
-                    torrent = _matching_torrent(torrents, item.infohash)
-                    if torrent is not None:
-                        if not _has_tag(torrent, batch_marker):
-                            result = QbittorrentInspectionResult(
+            except _ApiError as exc:
+                result = QbittorrentInspectionResult(
+                    infohash=item.infohash,
+                    status=InspectionStatus.FAILED,
+                    error_code=exc.code,
+                )
+            finally:
+                if add_attempted:
+                    try:
+                        await self._shielded_cleanup(item.infohash, batch_marker)
+                    except _ApiError:
+                        result = replace(
+                            result
+                            or QbittorrentInspectionResult(
                                 infohash=item.infohash,
                                 status=InspectionStatus.FAILED,
-                                error_code="ownership_conflict",
-                            )
-                            break
-                        state = torrent.get("state")
-                        if not isinstance(state, str):
-                            raise _ApiError("malformed_response")
-                        if state.casefold() != "metadl":
-                            files = await self._torrent_files(item.infohash)
-                            result = _summarize(item.infohash, files)
-                            break
-                    if time.monotonic() >= deadline:
-                        result = QbittorrentInspectionResult(
-                            infohash=item.infohash,
-                            status=InspectionStatus.TIMEOUT,
-                            error_code="metadata_timeout",
+                            ),
+                            status=InspectionStatus.FAILED,
+                            error_code="cleanup_failed",
                         )
-                        break
-                    await asyncio.sleep(
-                        min(self._poll_interval, max(0.0, deadline - time.monotonic()))
-                    )
-        except _UnsupportedError as exc:
-            result = QbittorrentInspectionResult(
-                infohash=item.infohash,
-                status=InspectionStatus.UNSUPPORTED,
-                error_code=exc.code,
-            )
-        except _ApiError as exc:
-            result = QbittorrentInspectionResult(
-                infohash=item.infohash,
-                status=InspectionStatus.FAILED,
-                error_code=exc.code,
-            )
-        if add_attempted:
-            try:
-                await self._cleanup(item.infohash, batch_marker)
-            except _ApiError:
-                result = replace(
-                    result
-                    or QbittorrentInspectionResult(
-                        infohash=item.infohash,
-                        status=InspectionStatus.FAILED,
-                    ),
-                    status=InspectionStatus.FAILED,
-                    error_code="cleanup_failed",
-                )
+                current_task = asyncio.current_task()
+                if current_task is not None and current_task.cancelling():
+                    cancelled = True
+        if cancelled:
+            raise asyncio.CancelledError
         return result or QbittorrentInspectionResult(
             infohash=item.infohash,
             status=InspectionStatus.FAILED,
@@ -249,6 +309,34 @@ class QbittorrentClient:
     async def _torrent_exists(self, infohash: str) -> bool:
         torrents = await self._torrent_info(hashes=infohash)
         return _matching_torrent(torrents, infohash) is not None
+
+    @asynccontextmanager
+    async def _hash_guard(self, infohash: str):
+        async with self._hash_table_lock:
+            state = self._hash_locks.get(infohash)
+            if state is None:
+                state = _HashLockState(lock=asyncio.Lock())
+                self._hash_locks[infohash] = state
+            state.users += 1
+        try:
+            async with state.lock:
+                yield
+        finally:
+            async with self._hash_table_lock:
+                state.users -= 1
+                if state.users == 0 and self._hash_locks.get(infohash) is state:
+                    del self._hash_locks[infohash]
+
+    async def _shielded_cleanup(self, infohash: str, marker: str) -> None:
+        cleanup_task = asyncio.create_task(self._cleanup(infohash, marker))
+        while True:
+            try:
+                await asyncio.shield(cleanup_task)
+                return
+            except asyncio.CancelledError:
+                if cleanup_task.done():
+                    cleanup_task.result()
+                    return
 
     async def _add(self, magnet: str, marker: str) -> None:
         try:
@@ -345,6 +433,13 @@ def _extract_infohash(uri: object) -> str | None:
             except (binascii.Error, ValueError):
                 return None
     return None
+
+
+def _parse_version(value: str) -> tuple[int, int, int] | None:
+    match = VERSION_PATTERN.fullmatch(value)
+    if match is None:
+        return None
+    return tuple(int(part) for part in match.groups())
 
 
 def _matching_torrent(
