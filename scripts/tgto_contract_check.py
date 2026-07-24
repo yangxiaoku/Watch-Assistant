@@ -4,15 +4,20 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
 DEFAULT_CONTRACT_PATH = (
     Path(__file__).resolve().parents[1] / "config" / "tgto-contract.json"
 )
+SAFE_PATH = re.compile(r"/api/[A-Za-z0-9._~/{}/-]+")
+SAFE_QUERY = re.compile(r"[A-Za-z0-9._~{}=&-]+")
+REFERENCE_PLACEHOLDER = "{remote_reference}"
 
 
 @dataclass(frozen=True)
@@ -33,12 +38,56 @@ def _load_contract() -> dict[str, Any]:
         return json.load(contract_file)
 
 
+def _safe_api_path(value: object, *, allow_query: bool = False) -> bool:
+    if not isinstance(value, str) or "\\" in value or "://" in value:
+        return False
+    parsed = urlsplit(value)
+    if parsed.scheme or parsed.netloc or parsed.fragment:
+        return False
+    if not SAFE_PATH.fullmatch(parsed.path):
+        return False
+    if any(segment in {"", ".", ".."} for segment in parsed.path.split("/")[2:]):
+        return False
+    return not parsed.query or (
+        allow_query and SAFE_QUERY.fullmatch(parsed.query) is not None
+    )
+
+
 def _valid_route(route: object, method: str, path_key: str) -> bool:
     if not isinstance(route, dict):
         return False
     path = route.get(path_key)
-    return route.get("method") == method and isinstance(path, str) and path.startswith(
-        "/api/"
+    return route.get("method") == method and _safe_api_path(path)
+
+
+def _valid_submit(route: object) -> bool:
+    if not _valid_route(route, "POST", "path"):
+        return False
+    reference_field = route.get("remote_reference_field")
+    return isinstance(reference_field, str) and bool(reference_field.strip())
+
+
+def _valid_status(route: object) -> bool:
+    if not isinstance(route, dict) or route.get("method") != "GET":
+        return False
+    template = route.get("path_template")
+    if not isinstance(template, str) or template.count(REFERENCE_PLACEHOLDER) != 1:
+        return False
+    if "{" in template.replace(REFERENCE_PLACEHOLDER, ""):
+        return False
+    if "}" in template.replace(REFERENCE_PLACEHOLDER, ""):
+        return False
+    return _safe_api_path(template, allow_query=True)
+
+
+def _valid_check(check: object) -> bool:
+    if not _valid_route(check, "GET", "path"):
+        return False
+    accepted = check.get("accept_status")
+    return (
+        isinstance(accepted, list)
+        and bool(accepted)
+        and all(isinstance(status, int) for status in accepted)
     )
 
 
@@ -67,26 +116,26 @@ async def run_contract_check() -> ContractResult:
             if not login_ok:
                 return _disabled()
 
-            checks_ok = True
-            for check in contract.get("checks", []):
-                if not _valid_route(check, "GET", "path"):
-                    checks_ok = False
-                    break
+            if contract.get("supported") is not True:
+                return _disabled(login_ok=True)
+            checks = contract.get("checks")
+            if not isinstance(checks, list) or not checks or not all(
+                _valid_check(check) for check in checks
+            ):
+                return _disabled(login_ok=True)
+            if not _valid_submit(contract.get("submit")):
+                return _disabled(login_ok=True)
+
+            for check in checks:
                 check_response = await client.get(check["path"])
-                accepted = check.get("accept_status", [200])
+                accepted = check["accept_status"]
                 if check_response.status_code not in accepted:
-                    checks_ok = False
-                    break
+                    return _disabled(login_ok=True)
     except (httpx.HTTPError, json.JSONDecodeError, ValueError):
         return _disabled()
 
-    contract_supported = contract.get("supported") is True and checks_ok
-    submit_supported = contract_supported and _valid_route(
-        contract.get("submit"), "POST", "path"
-    )
-    status_supported = contract_supported and _valid_route(
-        contract.get("status"), "GET", "path_template"
-    )
+    submit_supported = True
+    status_supported = _valid_status(contract.get("status"))
     return ContractResult(
         login_ok=True,
         submit_supported=submit_supported,

@@ -9,11 +9,35 @@ import re
 import httpx
 
 API_PATH = re.compile(r"/api/[A-Za-z0-9][A-Za-z0-9._~!$&()*+,;=:@%/{}/-]*")
+SAFE_SEGMENT = re.compile(r"[A-Za-z0-9._~-]+")
+OPAQUE_TOKEN = re.compile(
+    r"(?:"
+    r"[A-Fa-f0-9]{24,}"
+    r"|(?=[A-Za-z0-9_-]{24,}$)(?=.*[A-Z])(?=.*[a-z])(?=.*\d)[A-Za-z0-9_-]+"
+    r"|[A-Za-z0-9_-]{20,}(?:\.[A-Za-z0-9_-]{8,})+"
+    r")"
+)
+
+
+def _safe_static_prefix(candidate: str) -> str | None:
+    safe_segments = []
+    for segment in candidate.split("/")[2:]:
+        if not SAFE_SEGMENT.fullmatch(segment) or OPAQUE_TOKEN.fullmatch(segment):
+            break
+        safe_segments.append(segment)
+    if not safe_segments:
+        return None
+    return "/api/" + "/".join(safe_segments)
 
 
 def extract_api_paths(script: str) -> list[str]:
     """Return unique API paths with query strings intentionally removed."""
-    return sorted(set(API_PATH.findall(script)))
+    paths = {
+        path
+        for candidate in API_PATH.findall(script)
+        if (path := _safe_static_prefix(candidate)) is not None
+    }
+    return sorted(paths)
 
 
 async def probe_routes() -> None:

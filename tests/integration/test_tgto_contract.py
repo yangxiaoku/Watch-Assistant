@@ -7,7 +7,7 @@ import pytest
 import respx
 
 from scripts.tgto_contract_check import ContractResult, run_contract_check
-from scripts.tgto_contract_probe import probe_routes
+from scripts.tgto_contract_probe import extract_api_paths, probe_routes
 
 BASE_URL = "http://tgto.test"
 
@@ -122,6 +122,93 @@ async def test_unsupported_contract_keeps_push_disabled(tmp_path, monkeypatch):
 
 
 @respx.mock
+async def test_unsupported_flag_overrides_complete_route_declarations(
+    tmp_path, monkeypatch
+):
+    contract_path = tmp_path / "contract.json"
+    _write_contract(contract_path, supported=True)
+    contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    contract["supported"] = False
+    contract_path.write_text(json.dumps(contract), encoding="utf-8")
+    _configure_environment(monkeypatch, contract_path)
+    respx.post(f"{BASE_URL}/api/login").mock(
+        return_value=httpx.Response(200, json={"success": True})
+    )
+
+    result = await run_contract_check()
+
+    assert result == ContractResult(True, False, False, False)
+
+
+@respx.mock
+async def test_submit_requires_remote_reference_field(tmp_path, monkeypatch):
+    contract_path = tmp_path / "contract.json"
+    _write_contract(contract_path, supported=True)
+    contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    del contract["submit"]["remote_reference_field"]
+    contract_path.write_text(json.dumps(contract), encoding="utf-8")
+    _configure_environment(monkeypatch, contract_path)
+    respx.post(f"{BASE_URL}/api/login").mock(
+        return_value=httpx.Response(200, json={"success": True})
+    )
+    respx.get(f"{BASE_URL}/api/tasks/metadata").mock(
+        return_value=httpx.Response(200)
+    )
+
+    result = await run_contract_check()
+
+    assert result == ContractResult(True, False, False, False)
+
+
+@pytest.mark.parametrize(
+    "path_template",
+    [
+        "/api/tasks/status",
+        "/api/proxy/https://source.example/{remote_reference}",
+        "/api/../admin/{remote_reference}",
+        "/api//tasks/{remote_reference}",
+    ],
+)
+@respx.mock
+async def test_status_requires_safe_remote_reference_template(
+    tmp_path, monkeypatch, path_template
+):
+    contract_path = tmp_path / "contract.json"
+    _write_contract(contract_path, supported=True)
+    contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    contract["status"]["path_template"] = path_template
+    contract_path.write_text(json.dumps(contract), encoding="utf-8")
+    _configure_environment(monkeypatch, contract_path)
+    respx.post(f"{BASE_URL}/api/login").mock(
+        return_value=httpx.Response(200, json={"success": True})
+    )
+    respx.get(f"{BASE_URL}/api/tasks/metadata").mock(
+        return_value=httpx.Response(200)
+    )
+
+    result = await run_contract_check()
+
+    assert result == ContractResult(True, True, False, True)
+
+
+@respx.mock
+async def test_supported_contract_requires_harmless_check(tmp_path, monkeypatch):
+    contract_path = tmp_path / "contract.json"
+    _write_contract(contract_path, supported=True)
+    contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    contract["checks"] = []
+    contract_path.write_text(json.dumps(contract), encoding="utf-8")
+    _configure_environment(monkeypatch, contract_path)
+    respx.post(f"{BASE_URL}/api/login").mock(
+        return_value=httpx.Response(200, json={"success": True})
+    )
+
+    result = await run_contract_check()
+
+    assert result == ContractResult(True, False, False, False)
+
+
+@respx.mock
 async def test_login_failure_disables_supported_routes(tmp_path, monkeypatch):
     contract_path = tmp_path / "contract.json"
     _write_contract(contract_path, supported=True)
@@ -180,3 +267,34 @@ async def test_probe_output_redacts_credentials_and_query_values(monkeypatch, ca
     assert "sensitive-user" not in output
     assert "sensitive-password" not in output
     assert "response-secret" not in output
+
+
+def test_extract_api_paths_stops_before_unsafe_source_values():
+    script = (
+        'fetch("/api/proxy/https://source.example/item") '
+        'fetch("/api/files/private%2Ftoken") '
+        'fetch("/api/auth/eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.signature") '
+        'fetch("/api/download/0123456789abcdef0123456789abcdef") '
+        'fetch("/api/session/superSecretBearerValue123456789") '
+        'fetch("/api/tasks?token=query-secret") '
+        'fetch("/api/status/1#fragment-secret")'
+    )
+    paths = extract_api_paths(script)
+
+    assert paths == [
+        "/api/auth",
+        "/api/download",
+        "/api/files",
+        "/api/proxy",
+        "/api/session",
+        "/api/status/1",
+        "/api/tasks",
+    ]
+    output = "\n".join(paths)
+    assert "source.example" not in output
+    assert "%" not in output
+    assert "eyJ" not in output
+    assert "0123456789abcdef" not in output
+    assert "superSecretBearerValue" not in output
+    assert "query-secret" not in output
+    assert "fragment-secret" not in output
