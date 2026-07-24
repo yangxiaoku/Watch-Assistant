@@ -2,7 +2,12 @@ import httpx
 import pytest
 import respx
 
-from watch_assistant.adapters.pansou import PanSouClient, PanSouError
+from watch_assistant.adapters.pansou import (
+    LinkCheckItem,
+    LinkCheckState,
+    PanSouClient,
+    PanSouError,
+)
 from watch_assistant.adapters.tmdb import TmdbClient
 from watch_assistant.schemas import MediaType
 
@@ -68,6 +73,77 @@ async def test_pansou_accepts_empty_result_without_merged_groups():
     await client.aclose()
 
     assert result == {"total": 0, "merged_by_type": {}}
+
+
+@respx.mock
+async def test_pansou_checks_115_links_in_batches():
+    route = respx.post("http://pansou.test/api/check/links").mock(
+        side_effect=[
+            httpx.Response(
+                200,
+                json={"results": [{"state": "ok"}, {"state": "bad"}]},
+            ),
+            httpx.Response(
+                200,
+                json={
+                    "results": [
+                        {"state": "locked"},
+                        {"state": "unsupported"},
+                    ]
+                },
+            ),
+        ]
+    )
+    client = PanSouClient("http://pansou.test")
+
+    states = await client.check_links(
+        [
+            LinkCheckItem("https://115.com/s/one", "a"),
+            LinkCheckItem("https://115.com/s/two", "b"),
+            LinkCheckItem("https://115.com/s/three", None),
+            LinkCheckItem("https://115.com/s/four", None),
+        ],
+        batch_size=2,
+    )
+    await client.aclose()
+
+    assert states == [
+        LinkCheckState.OK,
+        LinkCheckState.BAD,
+        LinkCheckState.LOCKED,
+        LinkCheckState.UNSUPPORTED,
+    ]
+    assert route.call_count == 2
+    assert b'"disk_type":"115"' in route.calls[0].request.content
+    assert b'"password":"a"' in route.calls[0].request.content
+
+
+@respx.mock
+async def test_pansou_link_check_failure_redacts_link_details():
+    respx.post("http://pansou.test/api/check/links").mock(
+        side_effect=httpx.ReadTimeout("https://115.com/s/secret")
+    )
+    client = PanSouClient("http://pansou.test")
+
+    with pytest.raises(PanSouError, match="link check failed") as error:
+        await client.check_links(
+            [LinkCheckItem("https://115.com/s/secret", "password")]
+        )
+    await client.aclose()
+
+    assert "secret" not in str(error.value)
+
+
+@respx.mock
+async def test_pansou_rejects_malformed_link_check_rows():
+    respx.post("http://pansou.test/api/check/links").mock(
+        return_value=httpx.Response(200, json={"results": ["not-an-object"]})
+    )
+    client = PanSouClient("http://pansou.test")
+
+    with pytest.raises(PanSouError, match="response shape"):
+        await client.check_links([LinkCheckItem("https://115.com/s/one", None)])
+    await client.aclose()
 
 
 @respx.mock
@@ -174,3 +250,38 @@ async def test_tmdb_client_parses_tv_and_multi_search_pagination():
     assert results.page == 2
     assert results.total_pages == 8
     assert [item.tmdb_id for item in results.results] == [1399]
+
+
+@respx.mock
+async def test_tmdb_client_prioritizes_movie_and_tv_alternative_titles():
+    respx.get("https://api.themoviedb.org/3/movie/278/alternative_titles").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "titles": [
+                    {"iso_3166_1": "US", "title": "Shawshank"},
+                    {"iso_3166_1": "HK", "title": "Moonlight Flight"},
+                    {"iso_3166_1": "CN", "title": "Redemption"},
+                ]
+            },
+        )
+    )
+    respx.get("https://api.themoviedb.org/3/tv/1399/alternative_titles").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "results": [
+                    {"iso_3166_1": "US", "title": "Thrones"},
+                    {"iso_3166_1": "TW", "title": "Power Game"},
+                ]
+            },
+        )
+    )
+    client = TmdbClient("tmdb-secret")
+
+    movie_titles = await client.get_alternative_titles(278, MediaType.MOVIE)
+    tv_titles = await client.get_alternative_titles(1399, MediaType.TV)
+    await client.aclose()
+
+    assert movie_titles == ["Redemption", "Moonlight Flight", "Shawshank"]
+    assert tv_titles == ["Power Game", "Thrones"]

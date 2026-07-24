@@ -1,12 +1,15 @@
 # Watch Assistant
 
-轻量自托管的个人观影辅助工具。它展示 TMDB 热门电影并支持片名搜索，进入详情后聚合 PanSou 的磁力与 115 分享结果，并把敏感链接加密保存在本机 SQLite 中。
+轻量自托管的个人观影辅助工具。它展示 TMDB 热门电影和电视剧并支持片名搜索，进入详情后聚合 PanSou 的磁力与 115 分享结果，并把敏感链接加密保存在本机 SQLite 中。
 
 ## 当前能力
 
 - 独立 Vue Web 工作台与 TMDB 用户脚本。
-- 首页展示 TMDB 当前热门电影，支持按片名搜索并点击进入资源聚合详情。
-- PanSou 双查询、去重、30 分钟新鲜缓存和 24 小时故障回退。
+- 首页展示 TMDB 电影和电视剧榜单，支持分类浏览、分页和混合片名搜索。
+- PanSou 同时查询中文名、中文名加年份、英文名和英文名加年份，完整合并并按 infohash 去重。
+- 磁力 BTIH 与名称资料校验、缺失 `dn` 自动补全、语义排序、备用标题回退和部分上游失败保护。
+- 24 小时新鲜缓存、7 天故障回退，以及香港时间每天零点对七个首页榜单进行预热和失败重试。
+- 持续复查暂时无资源的电影或电视剧，并根据语义误匹配与 115 失效记录降低不可靠来源排序。
 - Web 密码会话、用户脚本独立 Bearer Token、CSRF 与限流。
 - SQLite WAL、Fernet 敏感字段加密和保留期清理。
 - 持久任务状态机与崩溃后的 `uncertain` 防重复提交。
@@ -37,6 +40,10 @@ curl http://127.0.0.1:8000/api/v1/health
 ```
 
 访问 `http://服务器地址:8115/`。构建后的用户脚本位于容器内 Web 根目录，可从 `http://服务器地址:8115/watch-assistant.user.js` 获取。
+
+缓存预热默认启用，时区为 `Asia/Hong_Kong`。可通过 `CACHE_WARM_ENABLED=false` 临时关闭，或用 `CACHE_WARM_TIMEZONE` 调整零点所在时区。
+
+认证后的维护接口包括 `GET /api/v1/cache/status`、`POST /api/v1/cache/retry`、`GET /api/v1/watchlist` 和 `GET /api/v1/sources/reliability`。它们用于查看预热状态、重试失败媒体、检查无资源观察列表和来源可靠性，不返回资源链接或密码。
 
 服务器的 `8000` 端口已被占用时，可按 `.env.example` 使用 `8115`。若 Docker Hub 不可达，可以使用 `deploy/watch-assistant.service` 以 Python venv 运行；对应环境变量模板是 `deploy/watch-assistant.env.example`。
 
@@ -71,9 +78,9 @@ npm --prefix frontend run build
 
 2026-07-24：
 
-- Python：`74 passed, 1 skipped`；跳过项是明确的 TgtoDrive `supported:false` 实际契约测试。
+- Python：`133 passed, 1 skipped`；跳过项是明确的 TgtoDrive `supported:false` 实际契约测试。
 - Ruff：通过。
-- Vitest：`6 passed`。
+- Vitest：`8 passed`。
 - Playwright：桌面与移动端 `2 passed`。
 - Vite：成功生成 Web 资源和 `watch-assistant.user.js`。
 - Compose：在 `192.168.6.236` 的 Docker Compose v5.1.2 上执行 `config --quiet` 通过。

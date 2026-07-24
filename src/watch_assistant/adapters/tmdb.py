@@ -7,6 +7,7 @@ import httpx
 from watch_assistant.schemas import MediaType, MovieCollectionResponse, MovieMetadata
 
 TMDB_BASE_URL = "https://api.themoviedb.org/3"
+ALTERNATIVE_TITLE_REGIONS = ("CN", "HK", "TW")
 MEDIA_FEEDS = {
     MediaType.MOVIE: {"popular", "now_playing", "upcoming", "top_rated"},
     MediaType.TV: {"popular", "on_the_air", "airing_today", "top_rated"},
@@ -140,6 +141,39 @@ class TmdbClient:
             "/search/multi", params={"query": query, "page": page}
         )
         return _parse_multi_collection(payload)
+
+    async def get_alternative_titles(
+        self,
+        tmdb_id: int,
+        media_type: MediaType = MediaType.MOVIE,
+    ) -> list[str]:
+        payload = await self._get(
+            f"/{media_type.value}/{tmdb_id}/alternative_titles"
+        )
+        key = "titles" if media_type == MediaType.MOVIE else "results"
+        titles = payload.get(key)
+        if not isinstance(titles, list):
+            raise TmdbError("Unexpected TMDB response shape")
+        by_region: dict[str, list[str]] = {}
+        for item in titles:
+            if not isinstance(item, dict):
+                continue
+            title = item.get("title")
+            region = item.get("iso_3166_1")
+            if not isinstance(title, str) or not title.strip():
+                continue
+            by_region.setdefault(
+                region if isinstance(region, str) else "", []
+            ).append(title.strip())
+        ordered: list[str] = []
+        seen: set[str] = set()
+        for region in (*ALTERNATIVE_TITLE_REGIONS, *by_region):
+            for title in by_region.get(region, []):
+                key = title.casefold()
+                if key not in seen:
+                    seen.add(key)
+                    ordered.append(title)
+        return ordered
 
     async def _get(
         self, path: str, *, params: dict[str, str | int] | None = None

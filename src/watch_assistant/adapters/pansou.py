@@ -1,5 +1,7 @@
-"""PanSou search adapter."""
+"""PanSou search and share-link validation adapter."""
 
+from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any
 
 import httpx
@@ -7,6 +9,20 @@ import httpx
 
 class PanSouError(RuntimeError):
     pass
+
+
+class LinkCheckState(StrEnum):
+    OK = "ok"
+    BAD = "bad"
+    LOCKED = "locked"
+    UNSUPPORTED = "unsupported"
+    UNCERTAIN = "uncertain"
+
+
+@dataclass(frozen=True)
+class LinkCheckItem:
+    url: str
+    password: str | None
 
 
 class PanSouClient:
@@ -50,6 +66,57 @@ class PanSouClient:
         ):
             raise PanSouError("Unexpected PanSou response shape")
         return {**data, "merged_by_type": merged_by_type}
+
+    async def check_links(
+        self,
+        items: list[LinkCheckItem],
+        *,
+        batch_size: int = 10,
+    ) -> list[LinkCheckState]:
+        states: list[LinkCheckState] = []
+        for offset in range(0, len(items), batch_size):
+            batch = items[offset : offset + batch_size]
+            payload = {
+                "items": [
+                    {
+                        "disk_type": "115",
+                        "url": item.url,
+                        **(
+                            {"password": item.password}
+                            if item.password is not None
+                            else {}
+                        ),
+                    }
+                    for item in batch
+                ]
+            }
+            try:
+                response = await self._client.post(
+                    "/api/check/links",
+                    json=payload,
+                    timeout=max(self._timeout, len(batch) * 12.0),
+                )
+                response.raise_for_status()
+                body = response.json()
+            except (httpx.HTTPError, ValueError) as exc:
+                raise PanSouError("PanSou link check failed") from exc
+            results = body.get("results") if isinstance(body, dict) else None
+            if not isinstance(results, list) or len(results) != len(batch):
+                raise PanSouError("Unexpected PanSou link check response shape")
+            if not all(isinstance(result, dict) for result in results):
+                raise PanSouError("Unexpected PanSou link check response shape")
+            try:
+                states.extend(
+                    LinkCheckState(result["state"])
+                    for result in results
+                )
+            except (KeyError, ValueError) as exc:
+                raise PanSouError(
+                    "Unexpected PanSou link check response shape"
+                ) from exc
+            if len(states) != offset + len(batch):
+                raise PanSouError("Unexpected PanSou link check response shape")
+        return states
 
     async def aclose(self) -> None:
         if self._owns_client:

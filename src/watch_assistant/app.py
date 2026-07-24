@@ -1,8 +1,9 @@
 """FastAPI application factory."""
 
+import asyncio
 import os
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -12,12 +13,15 @@ from starlette.staticfiles import StaticFiles
 from watch_assistant.adapters.pansou import PanSouClient
 from watch_assistant.adapters.tmdb import TmdbClient
 from watch_assistant.api.auth import router as auth_router
+from watch_assistant.api.maintenance import router as maintenance_router
 from watch_assistant.api.search import router as search_router
 from watch_assistant.api.tasks import router as tasks_router
 from watch_assistant.config import Settings, load_tgto_contract
 from watch_assistant.crypto import SecretCrypto
 from watch_assistant.db import Database, create_database, initialize_database
 from watch_assistant.security import SecurityManager
+from watch_assistant.services.cache_warm import CacheWarmer
+from watch_assistant.services.maintenance import MaintenanceService
 from watch_assistant.services.search import SearchService
 from watch_assistant.services.tasks import TaskService
 
@@ -36,6 +40,8 @@ def create_app(
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         owned: list[object] = []
+        warm_stop: asyncio.Event | None = None
+        warm_task: asyncio.Task[None] | None = None
         if not hasattr(application.state, "search_service"):
             secrets_dir = Path("/run/secrets")
             settings = Settings(
@@ -65,6 +71,9 @@ def create_app(
                 share_domains=share_domains,
             )
             application.state.task_service = TaskService(runtime_database.session_factory)
+            application.state.maintenance_service = MaintenanceService(
+                runtime_database.session_factory
+            )
             application.state.security_manager = security_manager or SecurityManager(
                 web_password_hash=settings.web_password_hash.get_secret_value(),
                 script_token_hash=settings.script_token_hash.get_secret_value(),
@@ -73,9 +82,26 @@ def create_app(
             application.state.push_supported = False
             application.state.database = runtime_database
             owned = [runtime_database, runtime_tmdb, runtime_pansou]
+            if settings.cache_warm_enabled:
+                warmer = CacheWarmer(
+                    application.state.search_service,
+                    runtime_database.session_factory,
+                    timezone_name=settings.cache_warm_timezone,
+                )
+                warm_stop = asyncio.Event()
+                warm_task = asyncio.create_task(
+                    warmer.run_forever(warm_stop),
+                    name="watch-assistant-cache-warmer",
+                )
+                application.state.cache_warmer = warmer
         try:
             yield
         finally:
+            if warm_task is not None and warm_stop is not None:
+                warm_stop.set()
+                warm_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await warm_task
             for resource in owned:
                 if isinstance(resource, Database):
                     await resource.engine.dispose()
@@ -93,6 +119,9 @@ def create_app(
             share_domains=share_domains,
         )
         application.state.task_service = TaskService(database.session_factory)
+        application.state.maintenance_service = MaintenanceService(
+            database.session_factory
+        )
         if security_manager is not None:
             application.state.security_manager = security_manager
         application.state.push_supported = (
@@ -111,6 +140,7 @@ def create_app(
     application.include_router(search_router)
     application.include_router(tasks_router)
     application.include_router(auth_router)
+    application.include_router(maintenance_router)
     static_path = frontend_dir or Path(
         os.environ.get("FRONTEND_DIST_DIR", "frontend/dist")
     )

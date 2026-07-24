@@ -109,6 +109,53 @@ class SearchResponse(BaseModel):
     cache_age_seconds: int | None = None
 
 
+class MediaIdentity(BaseModel):
+    model_config = {"frozen": True}
+
+    media_type: MediaType
+    tmdb_id: PositiveInt
+
+
+class CacheWarmStatusResponse(BaseModel):
+    running: bool
+    last_started_at: datetime | None
+    last_completed_at: datetime | None
+    next_run_at: datetime
+    total_count: int
+    success_count: int
+    failure_count: int
+    skipped_count: int
+    failed_media: list[MediaIdentity] = Field(default_factory=list)
+
+
+class CacheRetryResponse(BaseModel):
+    scheduled: bool
+    count: int
+
+
+class MovieWatchSummary(BaseModel):
+    model_config = {"from_attributes": True}
+
+    media_type: MediaType
+    tmdb_id: int
+    title: str
+    original_title: str | None
+    release_year: int | None
+    active: bool
+    first_empty_at: datetime
+    last_checked_at: datetime
+    found_at: datetime | None
+
+
+class SourceReliabilitySummary(BaseModel):
+    source: str
+    accepted_count: int
+    rejected_count: int
+    link_ok_count: int
+    link_bad_count: int
+    penalty: int
+
+
 class TaskCreateRequest(BaseModel):
     model_config = {"extra": "forbid"}
 

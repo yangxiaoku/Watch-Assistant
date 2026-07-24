@@ -1,3 +1,4 @@
+import asyncio
 import json
 from datetime import UTC, datetime
 from pathlib import Path
@@ -13,7 +14,12 @@ from watch_assistant.adapters.tmdb import TmdbClient
 from watch_assistant.app import create_app
 from watch_assistant.crypto import SecretCrypto
 from watch_assistant.db import create_database, initialize_database
-from watch_assistant.models import Resource, SearchCache
+from watch_assistant.models import (
+    MovieWatch,
+    Resource,
+    SearchCache,
+    SourceReliability,
+)
 
 TMDB_RESPONSE = {
     "id": 12345,
@@ -87,6 +93,10 @@ def _pansou_response():
     }
 
 
+def _empty_pansou_response():
+    return {"code": 0, "data": {"total": 0, "merged_by_type": {}}}
+
+
 @pytest.mark.integration
 @respx.mock
 async def test_search_persists_encrypted_resources_and_returns_only_ids(tmp_path):
@@ -135,6 +145,332 @@ async def test_search_uses_stale_cache_when_pansou_fails(tmp_path):
     assert response.status_code == 200
     assert response.json()["cached"] is True
     assert "stale_cache" in response.json()["warnings"]
+    await _close(client, database, tmdb, pansou)
+
+
+@pytest.mark.integration
+@respx.mock
+async def test_partial_positive_refresh_preserves_existing_cache(tmp_path):
+    _mock_tmdb()
+    route = respx.get("http://pansou.test/api/search").mock(
+        return_value=httpx.Response(200, json=_pansou_response())
+    )
+    client, database, tmdb, pansou = await _make_client(tmp_path)
+    first = await client.post("/api/v1/search", json={"tmdb_id": 12345})
+    calls = 0
+
+    def partial_response(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(
+                200,
+                json={
+                    "code": 0,
+                    "data": {
+                        "total": 1,
+                        "merged_by_type": {
+                            "magnet": [
+                                {
+                                    "url": (
+                                        "magnet:?xt=urn:btih:"
+                                        "1111111111111111111111111111111111111111"
+                                    ),
+                                    "note": "Inception 2010 1080p",
+                                    "source": "plugin:partial",
+                                }
+                            ]
+                        },
+                    },
+                },
+            )
+        raise httpx.ReadTimeout("one query failed")
+
+    route.side_effect = partial_response
+
+    refreshed = await client.post(
+        "/api/v1/search", json={"tmdb_id": 12345, "refresh": True}
+    )
+
+    assert first.status_code == 200
+    assert refreshed.status_code == 200
+    assert refreshed.json()["cached"] is True
+    assert len(refreshed.json()["results"]) == 2
+    assert "partial_upstream" in refreshed.json()["warnings"]
+    assert "stale_cache" in refreshed.json()["warnings"]
+    await _close(client, database, tmdb, pansou)
+
+
+@pytest.mark.integration
+@respx.mock
+async def test_concurrent_searches_share_one_four_query_refresh(tmp_path):
+    _mock_tmdb()
+    route = respx.get("http://pansou.test/api/search").mock(
+        return_value=httpx.Response(200, json=_pansou_response())
+    )
+    client, database, tmdb, pansou = await _make_client(tmp_path)
+
+    responses = await asyncio.gather(
+        client.post("/api/v1/search", json={"tmdb_id": 12345}),
+        client.post("/api/v1/search", json={"tmdb_id": 12345}),
+    )
+
+    assert all(response.status_code == 200 for response in responses)
+    assert route.call_count == 4
+    assert sorted(response.json()["cached"] for response in responses) == [
+        False,
+        True,
+    ]
+    await _close(client, database, tmdb, pansou)
+
+
+@pytest.mark.integration
+@respx.mock
+async def test_force_refresh_removes_bad_115_share(tmp_path):
+    _mock_tmdb()
+    respx.get("http://pansou.test/api/search").mock(
+        return_value=httpx.Response(200, json=_pansou_response())
+    )
+    check_route = respx.post("http://pansou.test/api/check/links").mock(
+        return_value=httpx.Response(200, json={"results": [{"state": "bad"}]})
+    )
+    client, database, tmdb, pansou = await _make_client(tmp_path)
+    await client.post("/api/v1/search", json={"tmdb_id": 12345})
+
+    response = await client.post(
+        "/api/v1/search", json={"tmdb_id": 12345, "refresh": True}
+    )
+
+    assert response.status_code == 200
+    assert check_route.called
+    assert {item["kind"] for item in response.json()["results"]} == {"magnet"}
+    await _close(client, database, tmdb, pansou)
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("media_type", "tmdb_id", "metadata", "alternatives", "alias", "note"),
+    [
+        (
+            "movie",
+            278,
+            {
+                "id": 278,
+                "title": "Shawshank",
+                "original_title": "The Shawshank Redemption",
+                "release_date": "1994-09-23",
+            },
+            {"titles": [{"iso_3166_1": "HK", "title": "Moonlight Flight"}]},
+            "Moonlight Flight",
+            "Moonlight Flight 1994 1080p",
+        ),
+        (
+            "tv",
+            1399,
+            {
+                "id": 1399,
+                "name": "Thrones",
+                "original_name": "Game of Thrones",
+                "first_air_date": "2011-04-17",
+            },
+            {"results": [{"iso_3166_1": "TW", "title": "Power Game"}]},
+            "Power Game",
+            "Power Game S08 2019 1080p",
+        ),
+    ],
+)
+@respx.mock
+async def test_search_uses_media_alternatives_only_after_zero_candidates(
+    tmp_path, media_type, tmdb_id, metadata, alternatives, alias, note
+):
+    respx.get(
+        f"https://api.themoviedb.org/3/{media_type}/{tmdb_id}"
+    ).mock(return_value=httpx.Response(200, json=metadata))
+    alternative_route = respx.get(
+        f"https://api.themoviedb.org/3/{media_type}/{tmdb_id}/alternative_titles"
+    ).mock(return_value=httpx.Response(200, json=alternatives))
+
+    def pansou_response(request: httpx.Request) -> httpx.Response:
+        if request.url.params["kw"] != alias:
+            return httpx.Response(200, json=_empty_pansou_response())
+        payload = {
+            "code": 0,
+            "data": {
+                "total": 1,
+                "merged_by_type": {
+                    "magnet": [
+                        {"url": MAGNET, "note": note, "source": "plugin:alias"}
+                    ]
+                },
+            },
+        }
+        return httpx.Response(200, json=payload)
+
+    route = respx.get("http://pansou.test/api/search").mock(
+        side_effect=pansou_response
+    )
+    client, database, tmdb, pansou = await _make_client(tmp_path)
+
+    response = await client.post(
+        "/api/v1/search",
+        json={"tmdb_id": tmdb_id, "media_type": media_type},
+    )
+
+    assert response.status_code == 200
+    assert alternative_route.called
+    assert route.call_count == 5
+    assert len(response.json()["results"]) == 1
+    assert "alternative_titles_used" in response.json()["warnings"]
+    await _close(client, database, tmdb, pansou)
+
+
+@pytest.mark.integration
+@respx.mock
+async def test_tv_empty_watch_uses_composite_key_and_closes_when_found(tmp_path):
+    respx.get("https://api.themoviedb.org/3/tv/12345").mock(
+        return_value=httpx.Response(
+            200,
+            json={"id": 12345, "name": "Lost", "first_air_date": "2004-09-22"},
+        )
+    )
+    respx.get(
+        "https://api.themoviedb.org/3/tv/12345/alternative_titles"
+    ).mock(return_value=httpx.Response(200, json={"results": []}))
+    route = respx.get("http://pansou.test/api/search").mock(
+        return_value=httpx.Response(200, json=_empty_pansou_response())
+    )
+    client, database, tmdb, pansou = await _make_client(tmp_path)
+
+    empty = await client.post(
+        "/api/v1/search", json={"tmdb_id": 12345, "media_type": "tv"}
+    )
+    async with database.session_factory() as session:
+        watch = await session.get(MovieWatch, ("tv", 12345))
+        assert watch is not None and watch.active is True
+
+    found_payload = {
+        "code": 0,
+        "data": {
+            "total": 1,
+            "merged_by_type": {
+                "magnet": [
+                    {"url": MAGNET, "note": "Lost S01E01", "source": "plugin:tv"}
+                ]
+            },
+        },
+    }
+    route.return_value = httpx.Response(200, json=found_payload)
+    found = await client.post(
+        "/api/v1/search",
+        json={"tmdb_id": 12345, "media_type": "tv", "refresh": True},
+    )
+
+    assert "watching_for_resources" in empty.json()["warnings"]
+    assert "new_resources_found" in found.json()["warnings"]
+    async with database.session_factory() as session:
+        watch = await session.get(MovieWatch, ("tv", 12345))
+        assert watch is not None and watch.active is False
+        assert watch.found_at is not None
+    await _close(client, database, tmdb, pansou)
+
+
+@pytest.mark.integration
+@respx.mock
+async def test_same_tmdb_id_uses_distinct_movie_and_tv_search_locks(tmp_path):
+    _mock_tmdb()
+    respx.get("https://api.themoviedb.org/3/tv/12345").mock(
+        return_value=httpx.Response(
+            200,
+            json={"id": 12345, "name": "Lost", "first_air_date": "2004-09-22"},
+        )
+    )
+
+    def pansou_response(request: httpx.Request) -> httpx.Response:
+        note = (
+            "Lost S01E01"
+            if "Lost" in request.url.params["kw"]
+            else "Inception 2010 1080p"
+        )
+        payload = _pansou_response()
+        payload["data"]["merged_by_type"] = {
+            "magnet": [
+                {"url": MAGNET, "note": note, "source": "plugin:media"}
+            ]
+        }
+        return httpx.Response(200, json=payload)
+
+    respx.get("http://pansou.test/api/search").mock(side_effect=pansou_response)
+    client, database, tmdb, pansou = await _make_client(tmp_path)
+
+    responses = await asyncio.gather(
+        client.post(
+            "/api/v1/search", json={"tmdb_id": 12345, "media_type": "movie"}
+        ),
+        client.post(
+            "/api/v1/search", json={"tmdb_id": 12345, "media_type": "tv"}
+        ),
+    )
+
+    service = client._transport.app.state.search_service
+    assert all(response.status_code == 200 for response in responses)
+    assert set(service._search_locks) == {("movie", 12345), ("tv", 12345)}
+    await _close(client, database, tmdb, pansou)
+
+
+@pytest.mark.integration
+@respx.mock
+async def test_source_reliability_is_recorded_and_affects_ranking(tmp_path):
+    _mock_tmdb()
+    payload = {
+        "code": 0,
+        "data": {
+            "total": 2,
+            "merged_by_type": {
+                "magnet": [
+                    {
+                        "url": MAGNET,
+                        "note": "Inception 2010 2160p",
+                        "source": "plugin:bad",
+                    },
+                    {
+                        "url": (
+                            "magnet:?xt=urn:btih:"
+                            "1111111111111111111111111111111111111111"
+                        ),
+                        "note": "Inception 2010 1080p",
+                        "source": "plugin:good",
+                    },
+                ]
+            },
+        },
+    }
+    respx.get("http://pansou.test/api/search").mock(
+        return_value=httpx.Response(200, json=payload)
+    )
+    client, database, tmdb, pansou = await _make_client(tmp_path)
+    async with database.session_factory() as session:
+        session.add(
+            SourceReliability(
+                source="plugin:bad",
+                accepted_count=1,
+                rejected_count=9,
+                link_ok_count=0,
+                link_bad_count=0,
+            )
+        )
+        await session.commit()
+
+    response = await client.post("/api/v1/search", json={"tmdb_id": 12345})
+
+    assert [item["source"] for item in response.json()["results"]] == [
+        "plugin:good",
+        "plugin:bad",
+    ]
+    async with database.session_factory() as session:
+        bad = await session.get(SourceReliability, "plugin:bad")
+        good = await session.get(SourceReliability, "plugin:good")
+    assert bad.accepted_count == 2
+    assert good.accepted_count == 1
     await _close(client, database, tmdb, pansou)
 
 
@@ -377,7 +713,14 @@ async def test_tv_resource_search_falls_back_to_title_without_year(tmp_path):
     def pansou_response(request: httpx.Request) -> httpx.Response:
         query = request.url.params["kw"]
         if query == "权力的游戏":
-            return httpx.Response(200, json=_pansou_response())
+            response = _pansou_response()
+            response["data"]["merged_by_type"]["magnet"][0]["note"] = (
+                "权力的游戏 S08 2019 2160p"
+            )
+            response["data"]["merged_by_type"]["115"][0]["note"] = (
+                "权力的游戏 全8季 BluRay"
+            )
+            return httpx.Response(200, json=response)
         return httpx.Response(
             200,
             json={"code": 0, "data": {"total": 0}},
@@ -459,7 +802,7 @@ async def test_resource_search_merges_all_queries_and_keeps_richer_duplicate(tmp
                             },
                             {
                                 "url": second_magnet,
-                                "note": "Inception extras",
+                                "note": "Inception extras 2010",
                                 "source": "plugin:en-year",
                             },
                         ]
@@ -481,7 +824,7 @@ async def test_resource_search_merges_all_queries_and_keeps_richer_duplicate(tmp
     assert response.status_code == 200
     body = response.json()
     assert len(body["results"]) == 2
-    assert body["warnings"] == ["pansou_query_failed:3"]
+    assert body["warnings"] == ["pansou_query_failed:3", "partial_upstream"]
     assert route.call_count == 4
     assert {call.request.url.params["kw"] for call in route.calls} == {
         "盗梦空间",
@@ -500,4 +843,6 @@ async def test_resource_search_merges_all_queries_and_keeps_richer_duplicate(tmp
     metadata = json.loads(duplicate.metadata_json)
     assert metadata["search_queries"] == ["盗梦空间 2010", "Inception 2010"]
     assert metadata["sources"] == ["plugin:zh-year", "plugin:en-year"]
+    async with database.session_factory() as session:
+        assert await session.scalar(select(SearchCache)) is None
     await _close(client, database, tmdb, pansou)

@@ -114,6 +114,8 @@ class SecurityManager:
             return
         if path == "/api/v1/search":
             bucket, limit = "search", 30
+        elif path == "/api/v1/cache/retry":
+            bucket, limit = "maintenance", 2
         elif path.startswith("/api/v1/tasks"):
             bucket, limit = "push", self.push_limit
         else:

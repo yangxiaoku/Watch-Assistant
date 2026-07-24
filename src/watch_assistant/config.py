@@ -36,6 +36,14 @@ class Settings(BaseSettings):
         validation_alias="TGTO_CONTRACT_PATH",
     )
     cookie_secure: bool = Field(default=False, validation_alias="COOKIE_SECURE")
+    cache_warm_enabled: bool = Field(
+        default=True, validation_alias="CACHE_WARM_ENABLED"
+    )
+    cache_warm_timezone: str = Field(
+        default="Asia/Hong_Kong",
+        min_length=1,
+        validation_alias="CACHE_WARM_TIMEZONE",
+    )
 
 
 def load_tgto_contract(path: Path | str) -> dict[str, Any]:

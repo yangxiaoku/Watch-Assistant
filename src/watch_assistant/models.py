@@ -3,10 +3,19 @@
 from datetime import UTC, datetime
 from enum import StrEnum
 
-from sqlalchemy import BigInteger, DateTime, Enum, ForeignKey, Integer, String, Text
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
-from watch_assistant.schemas import ResourceKind, TaskAction
+from watch_assistant.schemas import MediaType, ResourceKind, TaskAction
 
 
 def utc_now() -> datetime:
@@ -62,6 +71,58 @@ class SearchCache(Base):
     warnings_json: Mapped[str] = mapped_column(Text, default="[]")
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
+class CacheWarmState(Base):
+    __tablename__ = "cache_warm_state"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    last_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    total_count: Mapped[int] = mapped_column(Integer, default=0)
+    success_count: Mapped[int] = mapped_column(Integer, default=0)
+    failure_count: Mapped[int] = mapped_column(Integer, default=0)
+    skipped_count: Mapped[int] = mapped_column(Integer, default=0)
+    failed_ids_json: Mapped[str] = mapped_column(Text, default="[]")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+
+
+class MovieWatch(Base):
+    __tablename__ = "movie_watches"
+
+    media_type: Mapped[MediaType] = mapped_column(
+        Enum(MediaType, values_callable=enum_values, native_enum=False),
+        primary_key=True,
+    )
+    tmdb_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    title: Mapped[str] = mapped_column(Text)
+    original_title: Mapped[str | None] = mapped_column(Text, nullable=True)
+    release_year: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    first_empty_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    last_checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    found_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+class SourceReliability(Base):
+    __tablename__ = "source_reliability"
+
+    source: Mapped[str] = mapped_column(String(100), primary_key=True)
+    accepted_count: Mapped[int] = mapped_column(Integer, default=0)
+    rejected_count: Mapped[int] = mapped_column(Integer, default=0)
+    link_ok_count: Mapped[int] = mapped_column(Integer, default=0)
+    link_bad_count: Mapped[int] = mapped_column(Integer, default=0)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
 
 
 class Task(Base):
