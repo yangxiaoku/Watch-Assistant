@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { LogIn, LogOut, PanelRight, X } from "@lucide/vue";
+import { LogIn, PanelRight, X } from "@lucide/vue";
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { ApiClient, ApiError } from "./api";
 import SearchView from "./views/SearchView.vue";
