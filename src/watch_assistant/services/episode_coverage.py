@@ -51,7 +51,7 @@ _SEASON_RANGES = (
 
 _EPISODE_SEQUENCE = (
     r"0*\d{1,3}(?!\d)"
-    r"(?:\s*[-~]\s*(?:e\s*)?0*\d+(?!\d)|"
+    r"(?:\s*集?\s*[-~到至]\s*第?\s*(?:e\s*)?0*\d+(?!\d)|"
     r"\s*e\s*0*\d{1,3}(?!\d))*"
 )
 _COMPACT_EPISODES = re.compile(
@@ -105,12 +105,13 @@ def analyze_episode_coverage(
         basename = _normalize_basename(file_name)
         if not basename:
             continue
-        detected_seasons.update(_detected_seasons(basename))
-        seasoned, had_seasoned_syntax = _seasoned_episodes(basename)
+        parse_value = _normalize_parse_value(basename)
+        detected_seasons.update(_detected_seasons(parse_value))
+        seasoned, had_seasoned_syntax = _seasoned_episodes(parse_value)
         records.extend(seasoned)
-        if not had_seasoned_syntax:
+        if selected_season is not None and not had_seasoned_syntax:
             records.extend(
-                (None, episode) for episode in _unseasoned_episodes(basename)
+                (None, episode) for episode in _unseasoned_episodes(parse_value)
             )
             stem = basename.rsplit(".", 1)[0]
             if _NUMBERED_STEM.fullmatch(stem.strip()):
@@ -156,15 +157,24 @@ def _normalize_basename(value: str) -> str:
     return unicodedata.normalize("NFKC", basename).casefold()
 
 
+def _normalize_parse_value(value: str) -> str:
+    return value.replace(".", " ").replace("_", " ")
+
+
 def _detected_seasons(value: str) -> set[int]:
+    ranges = [match for pattern in _SEASON_RANGES for match in pattern.finditer(value)]
     seasons = {
         int(match.group(1))
         for pattern in _SEASON_MARKERS
         for match in pattern.finditer(value)
+        if not any(
+            range_match.start() <= match.start() < range_match.end()
+            for range_match in ranges
+        )
     }
-    for pattern in _SEASON_RANGES:
-        for match in pattern.finditer(value):
-            seasons.update(int(item) for item in match.groups())
+    for match in ranges:
+        start, end = (int(item) for item in match.groups())
+        seasons.update(_expand_range(start, end))
     return seasons
 
 
@@ -198,6 +208,7 @@ def _unseasoned_episodes(value: str) -> list[int]:
 
 def _expand_episode_sequence(value: str) -> list[int]:
     value = value.replace("第", "").replace("集", "")
+    value = re.sub(r"[到至]", "-", value)
     for range_match in re.finditer(r"[-~]\s*(?:e\s*)?0*(\d+)", value, re.IGNORECASE):
         if len(range_match.group(1).lstrip("0")) > 3:
             return []
