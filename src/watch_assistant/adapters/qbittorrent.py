@@ -22,7 +22,8 @@ SUSPICIOUS_EXTENSIONS = {".bat", ".cmd", ".com", ".exe", ".msi", ".scr"}
 SUSPICIOUS_NAME = re.compile(
     r"(?:^|[/._\-\s])(sample|trailer|proof)(?:[/._\-\s]|$)", re.IGNORECASE
 )
-VERSION_PATTERN = re.compile(r"^\s*v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?\s*$")
+VERSION_PATTERN = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)$")
+MAX_VERSION_COMPONENT_DIGITS = 3
 MINIMUM_QBITTORRENT_VERSION = (4, 5, 0)
 
 
@@ -224,7 +225,7 @@ class QbittorrentClient:
                     )
                 else:
                     add_attempted = True
-                    await self._add(item.uri, batch_marker)
+                    await self._shielded_add(item.uri, batch_marker)
                     deadline = time.monotonic() + self._item_timeout
                     while result is None:
                         torrents = await self._torrent_info(hashes=item.infohash)
@@ -298,6 +299,9 @@ class QbittorrentClient:
                 current_task = asyncio.current_task()
                 if current_task is not None and current_task.cancelling():
                     cancelled = True
+        current_task = asyncio.current_task()
+        if current_task is not None and current_task.cancelling():
+            cancelled = True
         if cancelled:
             raise asyncio.CancelledError
         return result or QbittorrentInspectionResult(
@@ -322,10 +326,26 @@ class QbittorrentClient:
             async with state.lock:
                 yield
         finally:
-            async with self._hash_table_lock:
-                state.users -= 1
-                if state.users == 0 and self._hash_locks.get(infohash) is state:
-                    del self._hash_locks[infohash]
+            await self._shielded_hash_release(infohash, state)
+
+    async def _shielded_hash_release(
+        self, infohash: str, state: _HashLockState
+    ) -> None:
+        release_task = asyncio.create_task(self._release_hash(infohash, state))
+        while True:
+            try:
+                await asyncio.shield(release_task)
+                return
+            except asyncio.CancelledError:
+                if release_task.done():
+                    release_task.result()
+                    return
+
+    async def _release_hash(self, infohash: str, state: _HashLockState) -> None:
+        async with self._hash_table_lock:
+            state.users -= 1
+            if state.users == 0 and self._hash_locks.get(infohash) is state:
+                del self._hash_locks[infohash]
 
     async def _shielded_cleanup(self, infohash: str, marker: str) -> None:
         cleanup_task = asyncio.create_task(self._cleanup(infohash, marker))
@@ -337,6 +357,18 @@ class QbittorrentClient:
                 if cleanup_task.done():
                     cleanup_task.result()
                     return
+
+    async def _shielded_add(self, magnet: str, marker: str) -> None:
+        add_task = asyncio.create_task(self._add(magnet, marker))
+        cancelled = False
+        while not add_task.done():
+            try:
+                await asyncio.shield(add_task)
+            except asyncio.CancelledError:
+                cancelled = True
+        add_task.result()
+        if cancelled:
+            raise asyncio.CancelledError
 
     async def _add(self, magnet: str, marker: str) -> None:
         try:
@@ -436,10 +468,16 @@ def _extract_infohash(uri: object) -> str | None:
 
 
 def _parse_version(value: str) -> tuple[int, int, int] | None:
-    match = VERSION_PATTERN.fullmatch(value)
+    match = VERSION_PATTERN.fullmatch(value.strip())
     if match is None:
         return None
-    return tuple(int(part) for part in match.groups())
+    parts = match.groups()
+    if any(len(part) > MAX_VERSION_COMPONENT_DIGITS for part in parts):
+        return None
+    try:
+        return tuple(int(part) for part in parts)
+    except ValueError:
+        return None
 
 
 def _matching_torrent(

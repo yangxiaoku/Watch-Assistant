@@ -30,6 +30,8 @@ class FakeQbittorrent:
         state: str | None = None,
         info_delay: float = 0,
         add_delay: float = 0,
+        add_release: asyncio.Event | None = None,
+        delete_release: asyncio.Event | None = None,
     ) -> None:
         self.existing = {value.casefold() for value in (existing or set())}
         self.metadata_received = metadata_received
@@ -39,6 +41,8 @@ class FakeQbittorrent:
         self.state = state
         self.info_delay = info_delay
         self.add_delay = add_delay
+        self.add_release = add_release
+        self.delete_release = delete_release
         self.added: dict[str, str] = {}
         self.add_calls = 0
         self.delete_calls = 0
@@ -48,7 +52,9 @@ class FakeQbittorrent:
         self.active_adds = 0
         self.max_active_adds = 0
         self.cookie_seen = False
+        self.add_started = asyncio.Event()
         self.add_seen = asyncio.Event()
+        self.delete_started = asyncio.Event()
         self.delete_seen = asyncio.Event()
 
     def install(self) -> None:
@@ -129,8 +135,11 @@ class FakeQbittorrent:
         self.active_adds += 1
         self.max_active_adds = max(self.max_active_adds, self.active_adds)
         try:
+            self.add_started.set()
             if self.add_delay:
                 await asyncio.sleep(self.add_delay)
+            if self.add_release is not None:
+                await self.add_release.wait()
             form = parse_qs(request.content.decode())
             magnet = form["urls"][0]
             infohash = magnet.split("urn:btih:", 1)[1].split("&", 1)[0].casefold()
@@ -149,12 +158,15 @@ class FakeQbittorrent:
         assert request.url.params.get("hash") in self.added
         return httpx.Response(200, json=self.files)
 
-    def _delete(self, request: httpx.Request) -> httpx.Response:
+    async def _delete(self, request: httpx.Request) -> httpx.Response:
         form = parse_qs(request.content.decode())
         infohash = form["hashes"][0]
         assert form["deleteFiles"] == ["true"]
         assert infohash in self.added
         self.delete_calls += 1
+        self.delete_started.set()
+        if self.delete_release is not None:
+            await self.delete_release.wait()
         if self.delete_status >= 400:
             return httpx.Response(self.delete_status, text="Fails.")
         self.added.pop(infohash)
@@ -255,6 +267,34 @@ async def test_unparseable_version_is_incompatible_before_add():
 
 
 @respx.mock
+async def test_release_candidate_version_is_incompatible_before_add():
+    fake = FakeQbittorrent(version="v4.5.0-rc1")
+    fake.install()
+    client = QbittorrentClient(BASE_URL, "user", "password")
+
+    result = (await client.inspect([_magnet("3" * 40)]))[0]
+    await client.aclose()
+
+    assert result.status == InspectionStatus.UNSUPPORTED
+    assert result.error_code == "incompatible_qbittorrent"
+    assert fake.add_calls == 0
+
+
+@respx.mock
+async def test_overlong_version_returns_incompatible_without_leaking_value_error():
+    fake = FakeQbittorrent(version=f"v{'9' * 10_000}.0.0")
+    fake.install()
+    client = QbittorrentClient(BASE_URL, "user", "password")
+
+    result = (await client.inspect([_magnet("2" * 40)]))[0]
+    await client.aclose()
+
+    assert result.status == InspectionStatus.UNSUPPORTED
+    assert result.error_code == "incompatible_qbittorrent"
+    assert fake.add_calls == 0
+
+
+@respx.mock
 async def test_instance_semaphore_limits_concurrent_batches():
     fake = FakeQbittorrent(info_delay=0.01)
     fake.install()
@@ -292,6 +332,31 @@ async def test_same_hash_is_serialized_across_batches_and_lock_table_is_reclaime
 
 
 @respx.mock
+async def test_cancelled_before_add_response_still_cleans_added_torrent():
+    add_release = asyncio.Event()
+    fake = FakeQbittorrent(metadata_received=False, add_release=add_release)
+    fake.install()
+    client = QbittorrentClient(BASE_URL, "user", "password", poll_interval=0)
+    task = asyncio.create_task(client.inspect([_magnet("2" * 40)]))
+
+    await asyncio.wait_for(fake.add_started.wait(), timeout=1)
+    task.cancel()
+    await asyncio.sleep(0)
+    assert not task.done()
+    task.cancel()
+    add_release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await client.aclose()
+
+    assert fake.add_calls == 1
+    assert fake.delete_calls == 1
+    assert fake.added == {}
+    assert client._hash_locks == {}
+
+
+@respx.mock
 async def test_cancelled_inspect_finishes_shielded_cleanup_and_reraises():
     fake = FakeQbittorrent(metadata_received=False)
     fake.install()
@@ -307,6 +372,27 @@ async def test_cancelled_inspect_finishes_shielded_cleanup_and_reraises():
     await client.aclose()
 
     assert fake.delete_seen.is_set()
+    assert fake.added == {}
+    assert client._hash_locks == {}
+
+
+@respx.mock
+async def test_repeated_cancel_during_cleanup_releases_hash_lock_table():
+    delete_release = asyncio.Event()
+    fake = FakeQbittorrent(delete_release=delete_release)
+    fake.install()
+    client = QbittorrentClient(BASE_URL, "user", "password", poll_interval=0)
+    task = asyncio.create_task(client.inspect([_magnet("1" * 40)]))
+
+    await asyncio.wait_for(fake.delete_started.wait(), timeout=1)
+    task.cancel()
+    task.cancel()
+    delete_release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await client.aclose()
+
     assert fake.added == {}
     assert client._hash_locks == {}
 

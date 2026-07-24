@@ -58,7 +58,9 @@ Accepted response (`202`):
 {
   "batch_id": "01K...",
   "status": "queued",
-  "submitted_count": 2
+  "submitted_count": 2,
+  "completed_count": 0,
+  "results": []
 }
 ```
 
@@ -78,7 +80,7 @@ not partially queued.
   "completed_count": 2,
   "results": [
     {
-      "resource_id": 101,
+      "resource_id": "res_abcd",
       "infohash": "0123456789abcdef0123456789abcdef01234567",
       "status": "verified",
       "total_size_bytes": 7516192768,
@@ -95,14 +97,21 @@ not partially queued.
 }
 ```
 
-Batch statuses are:
+In each result, `resource_id` is a `string` using the `res_...` namespace and
+`infohash` is `string | null`; it is `null` when no normalized BTIH hash was
+available (for example, an invalid magnet).
+
+Batch statuses are mutually exclusive and are selected in this priority order
+once all item work has reached a terminal state:
 
 - `queued`: accepted but no worker has claimed the batch.
 - `running`: at least one item is in progress.
+- `failed`: a batch-level dependency failed before item processing could start;
+  this takes priority over every item-derived status. Otherwise, it is used
+  when no item is `verified` or `unsupported`.
 - `completed`: every item is `verified` or `unsupported`.
-- `partial`: processing ended with a mix of successful and unsuccessful items.
-- `failed`: no item was successfully inspected, or a batch-level dependency
-  failed before item processing could start.
+- `partial`: at least one item is `verified` or `unsupported` and at least one
+  item is `timeout` or `failed`.
 
 Item statuses are `verified`, `timeout`, `failed`, and `unsupported`. Every
 non-`verified` item has a stable `error_code`; user-facing code must not expose
@@ -114,6 +123,7 @@ exception messages or tracebacks. Frozen adapter error codes are:
 - `existing_torrent`
 - `incompatible_qbittorrent`
 - `metadata_stop_unsupported`
+- `metadata_stop_failed`
 - `ownership_conflict`
 - `metadata_timeout`
 - `api_unavailable`
