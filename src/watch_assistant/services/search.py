@@ -21,7 +21,10 @@ from watch_assistant.schemas import (
     ResourceSummary,
     SearchResponse,
 )
-from watch_assistant.services.normalize import normalize_pansou
+from watch_assistant.services.normalize import (
+    merge_normalized_resources,
+    normalize_pansou,
+)
 
 FRESH_CACHE_AGE = timedelta(minutes=30)
 STALE_CACHE_AGE = timedelta(hours=24)
@@ -34,7 +37,7 @@ class SearchUnavailable(RuntimeError):
 def make_cache_key(
     tmdb_id: int, media_type: MediaType = MediaType.MOVIE
 ) -> str:
-    return f"tmdb:{media_type.value}:{tmdb_id}:queries:v2"
+    return f"tmdb:{media_type.value}:{tmdb_id}:queries:v3"
 
 
 class SearchService:
@@ -138,11 +141,16 @@ class SearchService:
                 resources = await self._load_cached_resources(session, cache)
                 return self._response(movie, resources, now, cache, cached=True)
 
+            queries = build_search_queries(movie)
             query_results = await asyncio.gather(
-                *(self._pansou.search(query) for query in build_search_queries(movie)),
+                *(self._pansou.search(query) for query in queries),
                 return_exceptions=True,
             )
-            successful = [result for result in query_results if isinstance(result, dict)]
+            successful = [
+                (query, result)
+                for query, result in zip(queries, query_results, strict=True)
+                if isinstance(result, dict)
+            ]
             warnings = [
                 f"pansou_query_failed:{index + 1}"
                 for index, result in enumerate(query_results)
@@ -158,17 +166,31 @@ class SearchService:
                     return response
                 raise SearchUnavailable("pansou_unavailable")
 
-            normalized = []
-            seen: set[str] = set()
-            for result in successful:
+            normalized_by_key = {}
+            for query, result in successful:
                 for resource in normalize_pansou(
                     result,
                     share_domains=self._share_domains,
                     captured_at=now,
                 ):
-                    if resource.canonical_key not in seen:
-                        seen.add(resource.canonical_key)
-                        normalized.append(resource)
+                    resource.metadata["search_queries"] = [query]
+                    resource.metadata["sources"] = [resource.source]
+                    existing = normalized_by_key.get(resource.canonical_key)
+                    if existing is None:
+                        normalized_by_key[resource.canonical_key] = resource
+                        continue
+
+                    matched_queries = list(existing.metadata["search_queries"])
+                    if query not in matched_queries:
+                        matched_queries.append(query)
+                    sources = list(existing.metadata["sources"])
+                    if resource.source not in sources:
+                        sources.append(resource.source)
+                    merged = merge_normalized_resources(existing, resource)
+                    merged.metadata["search_queries"] = matched_queries
+                    merged.metadata["sources"] = sources
+                    normalized_by_key[resource.canonical_key] = merged
+            normalized = list(normalized_by_key.values())
             resources = await self._persist_resources(session, normalized, now)
             await self._persist_cache(session, cache_key, resources, warnings, now)
             await session.commit()

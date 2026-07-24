@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -404,5 +405,99 @@ async def test_tv_resource_search_falls_back_to_title_without_year(tmp_path):
     }
     async with database.session_factory() as session:
         cache = await session.scalar(select(SearchCache))
-    assert cache.cache_key == "tmdb:tv:1399:queries:v2"
+    assert cache.cache_key == "tmdb:tv:1399:queries:v3"
+    await _close(client, database, tmdb, pansou)
+
+
+@pytest.mark.integration
+@respx.mock
+async def test_resource_search_merges_all_queries_and_keeps_richer_duplicate(tmp_path):
+    _mock_tmdb()
+    richer_magnet = f"{MAGNET}&dn=Inception.2010.2160p&tr=https://tracker.test/announce"
+    second_magnet = "magnet:?xt=urn:btih:1234567890abcdef1234567890abcdef12345678"
+
+    def pansou_response(request: httpx.Request) -> httpx.Response:
+        query = request.url.params["kw"]
+        if query == "盗梦空间":
+            return httpx.Response(200, json={"code": 0, "data": {"total": 0}})
+        if query == "盗梦空间 2010":
+            return httpx.Response(
+                200,
+                json={
+                    "code": 0,
+                    "data": {
+                        "total": 1,
+                        "merged_by_type": {
+                            "magnet": [
+                                {
+                                    "url": MAGNET,
+                                    "note": "Inception",
+                                    "source": "plugin:zh-year",
+                                }
+                            ]
+                        },
+                    },
+                },
+            )
+        if query == "Inception":
+            raise httpx.ReadTimeout("one query failed")
+        return httpx.Response(
+            200,
+            json={
+                "code": 0,
+                "data": {
+                    "total": 2,
+                    "merged_by_type": {
+                        "magnet": [
+                            {
+                                "url": richer_magnet,
+                                "name": "Inception 2010 2160p BluRay",
+                                "note": "Inception 2010 2160p",
+                                "source": "plugin:en-year",
+                                "size": "12 GB",
+                                "seeders": 42,
+                            },
+                            {
+                                "url": second_magnet,
+                                "note": "Inception extras",
+                                "source": "plugin:en-year",
+                            },
+                        ]
+                    },
+                },
+            },
+        )
+
+    route = respx.get("http://pansou.test/api/search").mock(
+        side_effect=pansou_response
+    )
+    client, database, tmdb, pansou = await _make_client(tmp_path)
+
+    response = await client.post(
+        "/api/v1/search",
+        json={"tmdb_id": 12345, "refresh": True},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["results"]) == 2
+    assert body["warnings"] == ["pansou_query_failed:3"]
+    assert route.call_count == 4
+    assert {call.request.url.params["kw"] for call in route.calls} == {
+        "盗梦空间",
+        "盗梦空间 2010",
+        "Inception",
+        "Inception 2010",
+    }
+    richer = next(item for item in body["results"] if item["seeders"] == 42)
+    assert richer["name"] == "Inception 2010 2160p BluRay"
+    assert richer["size_bytes"] == 12 * 1024**3
+    assert richer["source"] == "plugin:en-year"
+
+    async with database.session_factory() as session:
+        stored = list(await session.scalars(select(Resource)))
+    duplicate = next(item for item in stored if item.seeders == 42)
+    metadata = json.loads(duplicate.metadata_json)
+    assert metadata["search_queries"] == ["盗梦空间 2010", "Inception 2010"]
+    assert metadata["sources"] == ["plugin:zh-year", "plugin:en-year"]
     await _close(client, database, tmdb, pansou)
