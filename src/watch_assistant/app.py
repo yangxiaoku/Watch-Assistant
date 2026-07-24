@@ -1,0 +1,76 @@
+"""FastAPI application factory."""
+
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI
+
+from watch_assistant.adapters.pansou import PanSouClient
+from watch_assistant.adapters.tmdb import TmdbClient
+from watch_assistant.api.search import router as search_router
+from watch_assistant.config import Settings
+from watch_assistant.crypto import SecretCrypto
+from watch_assistant.db import Database, create_database, initialize_database
+from watch_assistant.services.search import SearchService
+
+
+def create_app(
+    *,
+    database: Database | None = None,
+    crypto: SecretCrypto | None = None,
+    tmdb_client: TmdbClient | None = None,
+    pansou_client: PanSouClient | None = None,
+    share_domains: tuple[str, ...] = ("115.com", "115cdn.com"),
+) -> FastAPI:
+    @asynccontextmanager
+    async def lifespan(application: FastAPI) -> AsyncIterator[None]:
+        owned: list[object] = []
+        if not hasattr(application.state, "search_service"):
+            settings = Settings()
+            runtime_database = database or create_database(settings.database_url)
+            runtime_crypto = crypto or SecretCrypto(
+                settings.encryption_key.get_secret_value()
+            )
+            runtime_tmdb = tmdb_client or TmdbClient(
+                settings.tmdb_api_key.get_secret_value()
+            )
+            runtime_pansou = pansou_client or PanSouClient(settings.pansou_base_url)
+            await initialize_database(runtime_database.engine)
+            application.state.search_service = SearchService(
+                runtime_database.session_factory,
+                tmdb_client=runtime_tmdb,
+                pansou_client=runtime_pansou,
+                crypto=runtime_crypto,
+                share_domains=share_domains,
+            )
+            application.state.database = runtime_database
+            owned = [runtime_database, runtime_tmdb, runtime_pansou]
+        try:
+            yield
+        finally:
+            for resource in owned:
+                if isinstance(resource, Database):
+                    await resource.engine.dispose()
+                elif hasattr(resource, "aclose"):
+                    await resource.aclose()
+
+    application = FastAPI(title="Watch Assistant", lifespan=lifespan)
+    if database and crypto and tmdb_client and pansou_client:
+        application.state.database = database
+        application.state.search_service = SearchService(
+            database.session_factory,
+            tmdb_client=tmdb_client,
+            pansou_client=pansou_client,
+            crypto=crypto,
+            share_domains=share_domains,
+        )
+
+    @application.get("/api/v1/health")
+    async def health() -> dict[str, str]:
+        return {"status": "ok"}
+
+    application.include_router(search_router)
+    return application
+
+
+app = create_app()

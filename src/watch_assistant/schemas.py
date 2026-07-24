@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PositiveInt
 
 
 class ResourceKind(StrEnum):
@@ -37,3 +37,26 @@ class NormalizedResource(BaseModel):
     source: str
     captured_at: datetime
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ResourceSummary(BaseModel):
+    resource_id: str
+    kind: ResourceKind
+    name: str
+    size_bytes: int | None
+    seeders: int | None
+    source: str
+    captured_at: datetime
+
+
+class SearchRequest(BaseModel):
+    tmdb_id: PositiveInt
+    refresh: bool = False
+
+
+class SearchResponse(BaseModel):
+    movie: MovieMetadata
+    results: list[ResourceSummary]
+    warnings: list[str] = Field(default_factory=list)
+    cached: bool = False
+    cache_age_seconds: int | None = None
