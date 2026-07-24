@@ -1,5 +1,9 @@
 """Runtime configuration loaded from environment variables."""
 
+import json
+from pathlib import Path
+from typing import Any
+
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -20,3 +24,15 @@ class Settings(BaseSettings):
     )
     pansou_base_url: str = Field(min_length=1, validation_alias="PANSOU_BASE_URL")
     tgto_base_url: str = Field(min_length=1, validation_alias="TGTO_BASE_URL")
+    tgto_contract_path: Path = Field(
+        default=Path("config/tgto-contract.json"),
+        validation_alias="TGTO_CONTRACT_PATH",
+    )
+
+
+def load_tgto_contract(path: Path | str) -> dict[str, Any]:
+    with Path(path).open(encoding="utf-8") as contract_file:
+        contract = json.load(contract_file)
+    if not isinstance(contract, dict):
+        raise TypeError("TgtoDrive contract root must be an object")
+    return contract
