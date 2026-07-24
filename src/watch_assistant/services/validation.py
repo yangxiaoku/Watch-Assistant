@@ -303,21 +303,21 @@ def _contains_cjk(value: str) -> bool:
 
 def _season_numbers(value: str) -> set[int]:
     normalized = unicodedata.normalize("NFKC", value).casefold()
-    season_text = re.sub(r"complete\s+season\s*\d+", "", normalized)
     numbers: set[int] = set()
     for match in re.finditer(
-        r"(?<![a-z0-9])s(?:eason)?\s*0*(\d+)(?!\d)|"
-        r"第\s*0*(\d+)\s*季",
-        season_text,
+        r"(?<![a-z0-9])s(?:eason)?s?\s*0*(\d{1,3})(?!\d)|"
+        r"第\s*0*(\d{1,3})(?!\d)\s*季",
+        normalized,
     ):
         value = match.group(1) or match.group(2)
         if value is not None:
             numbers.add(int(value))
     for match in re.finditer(
-        r"(?<![a-z0-9])s(?:eason)?\s*0*(\d+)\s*[-~到至]\s*"
-        r"(?:s(?:eason)?\s*)?0*(\d+)|"
-        r"第\s*0*(\d+)\s*季?\s*[-~到至]\s*第?\s*0*(\d+)\s*季",
-        season_text,
+        r"(?<![a-z0-9])s(?:eason)?s?\s*0*(\d{1,3})(?!\d)\s*[-~到至]\s*"
+        r"(?:s(?:eason)?s?\s*)?0*(\d{1,3})(?!\d)|"
+        r"第\s*0*(\d{1,3})(?!\d)\s*季?\s*[-~到至]\s*"
+        r"第?\s*0*(\d{1,3})(?!\d)\s*季",
+        normalized,
     ):
         numbers.update(int(item) for item in match.groups() if item is not None)
     return numbers

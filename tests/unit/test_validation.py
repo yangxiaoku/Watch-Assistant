@@ -7,7 +7,10 @@ from watch_assistant.schemas import (
     ResourceKind,
     SeasonMetadata,
 )
-from watch_assistant.services.validation import validate_and_rank_resources
+from watch_assistant.services.validation import (
+    _season_numbers,
+    validate_and_rank_resources,
+)
 
 
 def _resource(
@@ -103,8 +106,11 @@ def test_validation_filters_other_tv_seasons_when_one_is_selected():
         _resource("Game of Thrones S02 全集 2012 1080p"),
         _resource("Game of Thrones S02 全季 2012 1080p"),
         _resource("Game of Thrones S02 Complete Season 2012 1080p"),
+        _resource("Game of Thrones S02 Full Season 2012 1080p"),
         _resource("Game of Thrones S02 Complete Series 2012 1080p"),
         _resource("Game of Thrones S02 Complete Collection 2012 1080p"),
+        _resource("Game of Thrones S02 Seasons 1-3 2012 1080p"),
+        _resource("Game of Thrones S02 Seasons 2-3 2012 1080p"),
         _resource("Game of Thrones 2012 1080p"),
     ]
 
@@ -115,8 +121,21 @@ def test_validation_filters_other_tv_seasons_when_one_is_selected():
         "Game of Thrones S02 全集 2012 1080p",
         "Game of Thrones S02 全季 2012 1080p",
         "Game of Thrones S02 Complete Season 2012 1080p",
+        "Game of Thrones S02 Full Season 2012 1080p",
     }
-    assert rejected == 8
+    assert rejected == 10
+
+
+def test_season_numbers_do_not_treat_years_as_seasons():
+    assert _season_numbers("Complete Season 2 2012 1080p") == {2}
+    assert _season_numbers("S02 Complete Season 2012 1080p") == {2}
+    assert _season_numbers("S02 Full Season 2012 1080p") == {2}
+    assert _season_numbers("Seasons 1-3 2012 1080p") == {1, 3}
+    assert _season_numbers("S02 Seasons 1-3 2012 1080p") == {1, 2, 3}
+    assert _season_numbers("S02 Seasons 2-3 2012 1080p") == {2, 3}
+    assert _season_numbers("S02-S03 2012 1080p") == {2, 3}
+    assert _season_numbers("Season 2-3 2012 1080p") == {2, 3}
+    assert _season_numbers("第2季至第3季 2012 1080p") == {2, 3}
 
 
 def test_validation_keeps_later_tv_season_in_all_seasons_search():
