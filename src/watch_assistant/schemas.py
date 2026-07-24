@@ -103,3 +103,13 @@ class TaskResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     submitted_at: datetime | None
+
+
+class AuthLoginRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    password: str = Field(min_length=1)
+
+
+class AuthLoginResponse(BaseModel):
+    csrf_token: str

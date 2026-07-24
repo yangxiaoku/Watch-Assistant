@@ -7,11 +7,13 @@ from fastapi import FastAPI
 
 from watch_assistant.adapters.pansou import PanSouClient
 from watch_assistant.adapters.tmdb import TmdbClient
+from watch_assistant.api.auth import router as auth_router
 from watch_assistant.api.search import router as search_router
 from watch_assistant.api.tasks import router as tasks_router
 from watch_assistant.config import Settings
 from watch_assistant.crypto import SecretCrypto
 from watch_assistant.db import Database, create_database, initialize_database
+from watch_assistant.security import SecurityManager
 from watch_assistant.services.search import SearchService
 from watch_assistant.services.tasks import TaskService
 
@@ -22,6 +24,7 @@ def create_app(
     crypto: SecretCrypto | None = None,
     tmdb_client: TmdbClient | None = None,
     pansou_client: PanSouClient | None = None,
+    security_manager: SecurityManager | None = None,
     share_domains: tuple[str, ...] = ("115.com", "115cdn.com"),
 ) -> FastAPI:
     @asynccontextmanager
@@ -46,6 +49,10 @@ def create_app(
                 share_domains=share_domains,
             )
             application.state.task_service = TaskService(runtime_database.session_factory)
+            application.state.security_manager = security_manager or SecurityManager(
+                web_password_hash=settings.web_password_hash.get_secret_value(),
+                script_token_hash=settings.script_token_hash.get_secret_value(),
+            )
             application.state.database = runtime_database
             owned = [runtime_database, runtime_tmdb, runtime_pansou]
         try:
@@ -68,6 +75,8 @@ def create_app(
             share_domains=share_domains,
         )
         application.state.task_service = TaskService(database.session_factory)
+        if security_manager is not None:
+            application.state.security_manager = security_manager
 
     @application.get("/api/v1/health")
     async def health() -> dict[str, str]:
@@ -75,6 +84,7 @@ def create_app(
 
     application.include_router(search_router)
     application.include_router(tasks_router)
+    application.include_router(auth_router)
     return application
 
 

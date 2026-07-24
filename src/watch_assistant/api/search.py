@@ -6,9 +6,10 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from watch_assistant.adapters.tmdb import TmdbError
 from watch_assistant.schemas import MovieMetadata, SearchRequest, SearchResponse
+from watch_assistant.security import require_api_auth
 from watch_assistant.services.search import SearchService, SearchUnavailable
 
-router = APIRouter(prefix="/api/v1")
+router = APIRouter(prefix="/api/v1", dependencies=[Depends(require_api_auth)])
 
 
 def get_search_service(request: Request) -> SearchService:

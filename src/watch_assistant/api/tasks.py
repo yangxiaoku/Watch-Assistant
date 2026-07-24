@@ -5,13 +5,14 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from watch_assistant.schemas import TaskCreateRequest, TaskResponse
+from watch_assistant.security import require_api_auth
 from watch_assistant.services.tasks import (
     InvalidRetryState,
     ResourceNotFound,
     TaskService,
 )
 
-router = APIRouter(prefix="/api/v1")
+router = APIRouter(prefix="/api/v1", dependencies=[Depends(require_api_auth)])
 
 
 def get_task_service(request: Request) -> TaskService:
