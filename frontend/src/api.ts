@@ -1,6 +1,9 @@
 import type {
+  HealthResponse,
   HomeCatalogResponse,
+  InspectionBatchResponse,
   MovieCollectionResponse,
+  SearchRequest,
   SearchResponse,
   TaskResponse,
 } from "./types";
@@ -32,19 +35,33 @@ export class ApiClient {
     this.csrfToken = response.csrf_token;
   }
 
-  async health(): Promise<{ status: string; push_supported: boolean }> {
-    return this.request("/api/v1/health");
+  async health(): Promise<HealthResponse> {
+    return this.request<HealthResponse>("/api/v1/health");
   }
 
   async search(
     tmdbId: number,
     mediaType: "movie" | "tv" = "movie",
     refresh = false,
+    seasonNumber?: number,
   ): Promise<SearchResponse> {
+    const body: SearchRequest = { tmdb_id: tmdbId, media_type: mediaType, refresh };
+    if (mediaType === "tv" && seasonNumber !== undefined) body.season_number = seasonNumber;
     return this.request<SearchResponse>("/api/v1/search", {
       method: "POST",
-      body: JSON.stringify({ tmdb_id: tmdbId, media_type: mediaType, refresh }),
+      body: JSON.stringify(body),
     });
+  }
+
+  async inspectResources(resourceIds: string[]): Promise<InspectionBatchResponse> {
+    return this.request<InspectionBatchResponse>("/api/v1/resources/inspect", {
+      method: "POST",
+      body: JSON.stringify({ resource_ids: resourceIds }),
+    });
+  }
+
+  async getInspection(batchId: string): Promise<InspectionBatchResponse> {
+    return this.request<InspectionBatchResponse>(`/api/v1/resources/inspect/${encodeURIComponent(batchId)}`);
   }
 
   async popularMovies(page = 1): Promise<MovieCollectionResponse> {

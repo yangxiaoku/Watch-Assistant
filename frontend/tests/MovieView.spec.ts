@@ -1,0 +1,70 @@
+import { mount } from "@vue/test-utils";
+import { describe, expect, it } from "vitest";
+
+import MovieView from "../src/views/MovieView.vue";
+
+const resource = {
+  resource_id: "res_1",
+  kind: "magnet" as const,
+  name: "Show S01",
+  size_bytes: null,
+  seeders: null,
+  source: "test",
+  captured_at: "2026-07-24T10:00:00Z",
+};
+
+function response(mediaType: "movie" | "tv") {
+  return {
+    movie: {
+      tmdb_id: 1399,
+      media_type: mediaType,
+      title: "权力的游戏",
+      original_title: "Game of Thrones",
+      release_year: 2011,
+      overview: null,
+      poster_path: null,
+      vote_average: 8.2,
+      seasons: [
+        { season_number: 1, name: "第 1 季", episode_count: 10, air_date: "2011-04-17", poster_path: null },
+        { season_number: 2, name: "第 2 季", episode_count: 10, air_date: "2012-04-01", poster_path: null },
+      ],
+    },
+    results: [resource],
+    warnings: [],
+    cached: false,
+    cache_age_seconds: null,
+  };
+}
+
+describe("MovieView seasons", () => {
+  it("shows all seasons and emits the selected season", async () => {
+    const wrapper = mount(MovieView, {
+      props: {
+        result: response("tv"),
+        mediaType: "tv",
+        seasonNumber: null,
+        pushingId: null,
+        pushSupported: true,
+        favorite: false,
+      },
+    });
+
+    expect(wrapper.get("#season-select").findAll("option")).toHaveLength(3);
+    await wrapper.get("#season-select").setValue("2");
+    expect(wrapper.emitted("season")).toEqual([[2]]);
+  });
+
+  it("does not render a season control for movies", () => {
+    const wrapper = mount(MovieView, {
+      props: {
+        result: response("movie"),
+        mediaType: "movie",
+        pushingId: null,
+        pushSupported: true,
+        favorite: false,
+      },
+    });
+
+    expect(wrapper.find("#season-select").exists()).toBe(false);
+  });
+});

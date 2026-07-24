@@ -116,3 +116,117 @@ test("login, popular browsing, and resource detail remain usable", async ({ page
   await page.getByRole("button", { name: "下一页" }).click();
   await expect(page.getByText("第 2 / 3 页 · 共 60 条")).toBeVisible();
 });
+
+test("restores TV seasons and inspects only the first 30 magnets", async ({ page }, testInfo) => {
+  const searchRequests: Array<Record<string, unknown>> = [];
+  let inspectPostCount = 0;
+  let inspectedIds: string[] = [];
+  const tvWithSeasons = {
+    ...show,
+    seasons: [
+      { season_number: 1, name: "第 1 季", episode_count: 10, air_date: "2011-04-17", poster_path: null },
+      { season_number: 2, name: "第 2 季", episode_count: 10, air_date: "2012-04-01", poster_path: null },
+    ],
+  };
+  const resources = Array.from({ length: 31 }, (_, index) => ({
+    resource_id: `magnet-${index}`,
+    kind: "magnet",
+    name: `权力的游戏 S01E${String(index + 1).padStart(2, "0")}`,
+    size_bytes: null,
+    seeders: index,
+    source: "plugin:test",
+    captured_at: "2026-07-24T10:00:00Z",
+    rank_score: 0.9 - index / 100,
+    relevance_score: index === 0 ? 0.95 : null,
+    completeness_score: null,
+  }));
+
+  await page.route("**/api/v1/health", (route) =>
+    route.fulfill({ json: { status: "ok", push_supported: false, inspection_supported: true } }),
+  );
+  await page.route("**/api/v1/auth/me", (route) =>
+    route.fulfill({ json: { authenticated: true, via_bearer: false, csrf_token: "csrf-test" } }),
+  );
+  await page.route("**/api/v1/search", (route) => {
+    const request = route.request().postDataJSON() as Record<string, unknown>;
+    searchRequests.push(request);
+    const selected = request.media_type === "tv";
+    return route.fulfill({
+      json: {
+        movie: selected ? tvWithSeasons : movie,
+        results: selected ? [...resources, {
+          resource_id: "share-1",
+          kind: "115_share",
+          name: "115 分享资源",
+          size_bytes: null,
+          seeders: null,
+          source: "share:test",
+          captured_at: "2026-07-24T10:00:00Z",
+        }] : [],
+        warnings: [],
+        cached: false,
+        cache_age_seconds: null,
+        selected_season: selected ? (request.season_number ?? null) : undefined,
+      },
+    });
+  });
+  await page.route("**/api/v1/resources/inspect", (route) => {
+    inspectPostCount += 1;
+    const body = route.request().postDataJSON() as { resource_ids: string[] };
+    inspectedIds = body.resource_ids;
+    return route.fulfill({ json: { batch_id: `batch-${inspectPostCount}`, status: "queued" } });
+  });
+  await page.route("**/api/v1/resources/inspect/*", (route) =>
+    route.fulfill({
+      json: {
+        batch_id: "batch-1",
+        status: "partial",
+        completed: 2,
+        total: 30,
+        failed: 1,
+        results: [
+          {
+            resource_id: "magnet-0",
+            size_bytes: 1073741824,
+            video_file_count: 1,
+            subtitle_count: 2,
+            sample_count: 1,
+            inspection_status: "completed",
+          },
+          { resource_id: "magnet-1", inspection_status: "failed" },
+        ],
+      },
+    }),
+  );
+
+  await page.goto("/tv/1399?season=2");
+  await expect(page.locator("#season-select")).toHaveValue("2");
+  await expect(page.locator(".resource-table tbody tr")).toHaveCount(31);
+  const shareResource = testInfo.project.name === "mobile"
+    ? page.locator(".resource-cards").getByText("115 分享资源")
+    : page.locator(".resource-table").getByText("115 分享资源");
+  await expect(shareResource).toBeVisible();
+
+  await page.locator("#season-select").selectOption("1");
+  await expect(page).toHaveURL(/\/tv\/1399\?season=1$/);
+  await expect.poll(() => searchRequests.at(-1)?.season_number).toBe(1);
+
+  await page.goto("/movie/27205?season=2");
+  await expect(page.getByRole("heading", { name: "盗梦空间" })).toBeVisible();
+  await expect(page.locator("#season-select")).toHaveCount(0);
+  expect(searchRequests.at(-1)?.season_number).toBeUndefined();
+
+  await page.goto("/tv/1399?season=2");
+  await page.getByRole("button", { name: "检测本页磁力" }).click();
+  await expect.poll(() => inspectPostCount).toBe(1);
+  expect(inspectedIds).toHaveLength(30);
+  expect(inspectedIds.every((id) => id.startsWith("magnet-"))).toBe(true);
+  await expect(page.getByRole("status")).toContainText("部分磁力检测失败");
+  await expect(page.locator(".resource-table tbody tr").first()).toContainText("1.0 GB");
+  await expect(shareResource).toBeVisible();
+
+  await page.screenshot({ path: testInfo.outputPath("season-quality.png"), fullPage: true });
+  await page.getByRole("button", { name: "检测本页磁力" }).click();
+  await expect.poll(() => inspectPostCount).toBe(2);
+  expect(await page.evaluate(() => document.body.scrollWidth <= window.innerWidth)).toBe(true);
+});

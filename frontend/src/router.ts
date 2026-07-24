@@ -10,17 +10,25 @@ export function navigateToMovie(tmdbId: number): void {
 export interface MediaRoute {
   mediaType: "movie" | "tv";
   tmdbId: number;
+  seasonNumber?: number;
 }
 
 export function extractMediaRoute(path: string): MediaRoute | null {
-  const match = path.match(/^\/(movie|tv)\/(\d+)(?:-|\/|$)/);
-  return match
-    ? { mediaType: match[1] as "movie" | "tv", tmdbId: Number(match[2]) }
-    : null;
+  const [pathname, query = ""] = path.split("?", 2);
+  const match = pathname.match(/^\/(movie|tv)\/(\d+)(?:-|\/|$)/);
+  if (!match) return null;
+  const mediaType = match[1] as "movie" | "tv";
+  const season = Number(new URLSearchParams(query).get("season"));
+  return {
+    mediaType,
+    tmdbId: Number(match[2]),
+    ...(mediaType === "tv" && Number.isInteger(season) && season > 0 ? { seasonNumber: season } : {}),
+  };
 }
 
-export function navigateToMedia(mediaType: "movie" | "tv", tmdbId: number): void {
-  window.history.pushState({}, "", `/${mediaType}/${tmdbId}`);
+export function navigateToMedia(mediaType: "movie" | "tv", tmdbId: number, seasonNumber?: number): void {
+  const query = mediaType === "tv" && seasonNumber !== undefined ? `?season=${seasonNumber}` : "";
+  window.history.pushState({}, "", `/${mediaType}/${tmdbId}${query}`);
 }
 
 export function navigateHome(): void {

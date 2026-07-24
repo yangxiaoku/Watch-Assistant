@@ -12,7 +12,7 @@ import {
   type BrowseView,
 } from "./router";
 import { mediaKey, mediaTypeOf } from "./media";
-import type { HomeCatalogResponse, MovieMetadata, ResourceSummary, SearchResponse, TaskResponse } from "./types";
+import type { HomeCatalogResponse, InspectionBatchResponse, InspectionResult, MovieMetadata, ResourceSummary, SearchResponse, TaskResponse } from "./types";
 import CollectionView from "./views/CollectionView.vue";
 import HomeView from "./views/HomeView.vue";
 import LibraryView from "./views/LibraryView.vue";
@@ -46,6 +46,15 @@ const tasks = ref<TaskResponse[]>([]);
 const pushingId = ref<string | null>(null);
 const drawerOpen = ref(false);
 const pushSupported = ref(true);
+const inspectionSupported = ref(false);
+const selectedSeason = ref<number | null>(null);
+const detailMediaType = ref<"movie" | "tv">("movie");
+const inspectionState = ref<"idle" | "running" | "completed" | "partial" | "failed" | "timeout">("idle");
+const inspectionCompleted = ref(0);
+const inspectionTotal = ref(0);
+const inspectionError = ref<string | null>(null);
+let searchRequestId = 0;
+let inspectionRunId = 0;
 let pollTimer: number | undefined;
 
 const favoriteIds = computed(() => new Set(favorites.value.map(mediaKey)));
@@ -208,16 +217,43 @@ async function selectView(view: Exclude<BrowseView, "search">) {
   await loadView(view);
 }
 
-async function loadResources(id: number, mediaType: "movie" | "tv", refresh = false) {
+function resetInspection() {
+  inspectionRunId += 1;
+  inspectionState.value = "idle";
+  inspectionCompleted.value = 0;
+  inspectionTotal.value = 0;
+  inspectionError.value = null;
+}
+
+async function loadResources(
+  id: number,
+  mediaType: "movie" | "tv",
+  refresh = false,
+  seasonNumber: number | null = selectedSeason.value,
+  clearResult = false,
+) {
+  const requestId = ++searchRequestId;
+  resetInspection();
+  detailMediaType.value = mediaType;
+  if (clearResult) result.value = null;
   loading.value = true;
   error.value = "";
   try {
-    result.value = await api.search(id, mediaType, refresh);
-    recordHistory(result.value.movie);
+    const response = await api.search(id, mediaType, refresh, mediaType === "tv" ? seasonNumber ?? undefined : undefined);
+    if (requestId !== searchRequestId) return;
+    result.value = response;
+    selectedSeason.value = mediaType === "tv"
+      ? Object.prototype.hasOwnProperty.call(response, "selected_season")
+        ? response.selected_season ?? null
+        : seasonNumber
+      : null;
+    recordHistory(response.movie);
   } catch (exception) {
-    error.value = exception instanceof ApiError ? exception.message : "资源搜索失败，请稍后重试";
+    if (requestId === searchRequestId) {
+      error.value = exception instanceof ApiError ? exception.message : "资源搜索失败，请稍后重试";
+    }
   } finally {
-    loading.value = false;
+    if (requestId === searchRequestId) loading.value = false;
   }
 }
 
@@ -225,9 +261,18 @@ async function openMovie(movie: MovieMetadata) {
   previousView.value = activeView.value;
   recordHistory(movie);
   result.value = null;
+  selectedSeason.value = null;
   const mediaType = mediaTypeOf(movie);
   navigateToMedia(mediaType, movie.tmdb_id);
-  await loadResources(movie.tmdb_id, mediaType);
+  await loadResources(movie.tmdb_id, mediaType, false, null, true);
+}
+
+async function selectSeason(seasonNumber: number | null) {
+  if (!result.value || detailMediaType.value !== "tv") return;
+  const movie = result.value.movie;
+  selectedSeason.value = seasonNumber;
+  navigateToMedia("tv", movie.tmdb_id, seasonNumber ?? undefined);
+  await loadResources(movie.tmdb_id, "tv", false, seasonNumber, true);
 }
 
 async function returnToBrowse() {
@@ -243,9 +288,10 @@ async function returnToBrowse() {
 }
 
 async function initializeWorkspace() {
-  const mediaRoute = extractMediaRoute(window.location.pathname);
+  const mediaRoute = extractMediaRoute(window.location.pathname + window.location.search);
   if (mediaRoute !== null) {
-    await loadResources(mediaRoute.tmdbId, mediaRoute.mediaType);
+    selectedSeason.value = mediaRoute.mediaType === "tv" ? mediaRoute.seasonNumber ?? null : null;
+    await loadResources(mediaRoute.tmdbId, mediaRoute.mediaType, false, selectedSeason.value, true);
     return;
   }
   activeView.value = extractBrowseView(window.location.pathname);
@@ -285,6 +331,110 @@ async function push(resource: ResourceSummary) {
   }
 }
 
+function inspectionItems(response: InspectionBatchResponse): InspectionResult[] {
+  return response.results ?? response.resources ?? [];
+}
+
+function inspectionProgress(response: InspectionBatchResponse, fallbackTotal: number): { completed: number; total: number; failed: number } {
+  const items = inspectionItems(response);
+  const completed = response.completed ?? response.progress?.completed ?? items.filter((item) => {
+    const status = (item.inspection_status ?? item.status ?? "").toLowerCase();
+    return ["completed", "complete", "done", "failed", "error", "timeout", "timed_out"].includes(status);
+  }).length;
+  return {
+    completed: Math.min(completed, response.total ?? response.progress?.total ?? fallbackTotal),
+    total: response.total ?? response.progress?.total ?? fallbackTotal,
+    failed: response.failed ?? response.progress?.failed ?? items.filter((item) => ["failed", "error", "timeout", "timed_out"].includes((item.inspection_status ?? item.status ?? "").toLowerCase())).length,
+  };
+}
+
+function inspectionIsTerminal(response: InspectionBatchResponse, progress: { completed: number; total: number; failed: number }): boolean {
+  const status = (response.status ?? "").toLowerCase();
+  return ["completed", "complete", "done", "partial", "failed", "error", "timeout", "timed_out", "cancelled"].includes(status)
+    || (progress.total > 0 && progress.completed >= progress.total);
+}
+
+function mergeInspectionResults(items: InspectionResult[]) {
+  if (!result.value || !items.length) return;
+  const byId = new Map(items.map((item) => [item.resource_id, item]));
+  result.value = {
+    ...result.value,
+    results: result.value.results.map((resource) => {
+      const item = byId.get(resource.resource_id);
+      if (!item) return resource;
+      const merged = { ...resource };
+      if (Object.prototype.hasOwnProperty.call(item, "size_bytes")) merged.size_bytes = item.size_bytes ?? null;
+      if (Object.prototype.hasOwnProperty.call(item, "video_file_count")) merged.video_file_count = item.video_file_count ?? null;
+      if (Object.prototype.hasOwnProperty.call(item, "subtitle_count")) merged.subtitle_count = item.subtitle_count ?? null;
+      if (Object.prototype.hasOwnProperty.call(item, "sample_count")) merged.sample_count = item.sample_count ?? null;
+      if (Object.prototype.hasOwnProperty.call(item, "inspection_status")) merged.inspection_status = item.inspection_status ?? null;
+      else if (Object.prototype.hasOwnProperty.call(item, "status")) merged.inspection_status = item.status ?? null;
+      return merged;
+    }),
+  };
+}
+
+function setInspectionStatus(resourceIds: string[], status: string) {
+  if (!result.value) return;
+  const ids = new Set(resourceIds);
+  result.value = {
+    ...result.value,
+    results: result.value.results.map((resource) => ids.has(resource.resource_id)
+      ? { ...resource, inspection_status: status }
+      : resource),
+  };
+}
+
+function inspectionStateFrom(response: InspectionBatchResponse, progress: { completed: number; total: number; failed: number }): "completed" | "partial" | "failed" {
+  const status = (response.status ?? "").toLowerCase();
+  if (status === "timeout" || status === "timed_out" || progress.failed > 0 && progress.completed < progress.total) return "partial";
+  if (["failed", "error", "cancelled"].includes(status) && progress.completed === 0) return "failed";
+  return progress.failed > 0 ? "partial" : "completed";
+}
+
+async function inspectCurrentPage() {
+  if (!result.value || !inspectionSupported.value || inspectionState.value === "running") return;
+  const resourceIds = result.value.results
+    .filter((resource) => resource.kind === "magnet")
+    .slice(0, 30)
+    .map((resource) => resource.resource_id);
+  if (!resourceIds.length) return;
+
+  const runId = ++inspectionRunId;
+  inspectionState.value = "running";
+  inspectionCompleted.value = 0;
+  inspectionTotal.value = resourceIds.length;
+  inspectionError.value = null;
+  setInspectionStatus(resourceIds, "queued");
+
+  try {
+    const started = await api.inspectResources(resourceIds);
+    if (runId !== inspectionRunId) return;
+    for (let attempt = 0; attempt < 90; attempt += 1) {
+      const response = attempt === 0 && inspectionIsTerminal(started, inspectionProgress(started, resourceIds.length))
+        ? started
+        : await api.getInspection(started.batch_id);
+      if (runId !== inspectionRunId) return;
+      const progress = inspectionProgress(response, resourceIds.length);
+      inspectionCompleted.value = progress.completed;
+      inspectionTotal.value = progress.total;
+      mergeInspectionResults(inspectionItems(response));
+      if (inspectionIsTerminal(response, progress)) {
+        inspectionState.value = inspectionStateFrom(response, progress);
+        if (inspectionState.value !== "completed") inspectionError.value = "部分磁力检测失败，可重试";
+        return;
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, 800));
+    }
+    inspectionState.value = "timeout";
+    inspectionError.value = "检测超时，可重试";
+  } catch (exception) {
+    if (runId !== inspectionRunId) return;
+    inspectionState.value = "failed";
+    inspectionError.value = exception instanceof ApiError ? exception.message : "检测失败，可重试";
+  }
+}
+
 function ensurePolling() {
   if (pollTimer !== undefined) return;
   pollTimer = window.setInterval(async () => {
@@ -310,6 +460,7 @@ onMounted(async () => {
     const health = await api.health();
     if (typeof health.push_supported !== "boolean") throw new Error("invalid health response");
     pushSupported.value = health.push_supported;
+    inspectionSupported.value = health.inspection_supported === true;
     await api.me();
     authenticated.value = true;
   } catch {
@@ -357,7 +508,7 @@ onBeforeUnmount(() => {
       </template>
       <section v-else-if="loading && !result" class="detail-loading"><LoaderCircle class="spin" :size="24" /><strong>正在聚合资源</strong><span>正在查询 PanSou 的磁力与 115 分享结果</span></section>
       <p v-if="!pushSupported && result" class="warning-strip">TgtoDrive 推送契约尚未验证，推送按钮已禁用。</p>
-      <section v-if="result" class="detail-workspace"><MovieView :result="result" :pushing-id="pushingId" :push-supported="pushSupported" :favorite="detailFavorite" @push="push" @favorite="toggleFavorite(result.movie)" @refresh="loadResources(result.movie.tmdb_id, mediaTypeOf(result.movie), true)" @back="returnToBrowse" /></section>
+      <section v-if="result" class="detail-workspace"><MovieView :result="result" :media-type="detailMediaType" :season-number="selectedSeason" :pushing-id="pushingId" :push-supported="pushSupported" :favorite="detailFavorite" :inspection-supported="inspectionSupported" :inspection-state="inspectionState" :inspection-completed="inspectionCompleted" :inspection-total="inspectionTotal" :inspection-error="inspectionError" @push="push" @favorite="toggleFavorite(result.movie)" @refresh="loadResources(result.movie.tmdb_id, detailMediaType, true)" @season="selectSeason" @inspect="inspectCurrentPage" @back="returnToBrowse" /></section>
     </template>
     <TaskDrawer :tasks="tasks" :open="drawerOpen" @close="drawerOpen = false" />
   </main>

@@ -18,6 +18,15 @@ export interface MovieMetadata {
   backdrop_path?: string | null;
   genre_ids?: number[];
   vote_average: number | null;
+  seasons?: SeasonMetadata[];
+}
+
+export interface SeasonMetadata {
+  season_number: number;
+  name: string;
+  episode_count: number;
+  air_date: string | null;
+  poster_path: string | null;
 }
 
 export interface MovieCollectionResponse {
@@ -45,6 +54,20 @@ export interface ResourceSummary {
   seeders: number | null;
   source: string;
   captured_at: string;
+  rank_score?: number | null;
+  relevance_score?: number | null;
+  completeness_score?: number | null;
+  inspection_status?: string | null;
+  video_file_count?: number | null;
+  subtitle_count?: number | null;
+  sample_count?: number | null;
+}
+
+export interface SearchRequest {
+  tmdb_id: number;
+  media_type: "movie" | "tv";
+  refresh: boolean;
+  season_number?: number;
 }
 
 export interface SearchResponse {
@@ -53,6 +76,38 @@ export interface SearchResponse {
   warnings: string[];
   cached: boolean;
   cache_age_seconds: number | null;
+  selected_season?: number | null;
+}
+
+export interface InspectionResult {
+  resource_id: string;
+  size_bytes?: number | null;
+  video_file_count?: number | null;
+  subtitle_count?: number | null;
+  sample_count?: number | null;
+  inspection_status?: string | null;
+  status?: string | null;
+}
+
+export interface InspectionBatchResponse {
+  batch_id: string;
+  status?: string;
+  completed?: number;
+  total?: number;
+  failed?: number;
+  progress?: {
+    completed?: number;
+    total?: number;
+    failed?: number;
+  };
+  results?: InspectionResult[];
+  resources?: InspectionResult[];
+}
+
+export interface HealthResponse {
+  status: string;
+  push_supported: boolean;
+  inspection_supported?: boolean;
 }
 
 export interface TaskResponse {
