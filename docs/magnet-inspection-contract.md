@@ -92,6 +92,20 @@ not partially queued.
       "largest_video_name": "Movie.2026.2160p.mkv",
       "content_summary": "2 video(s), 2 subtitle(s), 1 suspicious file(s)",
       "error_code": null
+    },
+    {
+      "resource_id": "res_efgh",
+      "infohash": "abcdefabcdefabcdefabcdefabcdefabcdefabcd",
+      "status": "timeout",
+      "total_size_bytes": 0,
+      "file_count": 0,
+      "video_file_count": 0,
+      "video_size_bytes": 0,
+      "subtitle_count": 0,
+      "sample_count": 0,
+      "largest_video_name": null,
+      "content_summary": null,
+      "error_code": "metadata_timeout"
     }
   ]
 }
@@ -100,6 +114,16 @@ not partially queued.
 In each result, `resource_id` is a `string` using the `res_...` namespace and
 `infohash` is `string | null`; it is `null` when no normalized BTIH hash was
 available (for example, an invalid magnet).
+
+Frozen result invariants:
+
+- `results` is cumulative and remains ordered by the original `resource_ids`
+  request order.
+- `completed_count == results.length`.
+- In the terminal `completed` or `partial` states,
+  `completed_count == submitted_count`.
+- A batch-level dependency failure may short-circuit item processing with
+  `status: "failed"`, `completed_count: 0`, and `results: []`.
 
 Batch statuses are mutually exclusive and are selected in this priority order
 once all item work has reached a terminal state:
