@@ -1,15 +1,21 @@
 import { expect, test } from "@playwright/test";
 
 test("login, popular browsing, and resource detail remain usable", async ({ page }) => {
+  let authenticated = false;
   await page.route("**/api/v1/health", (route) =>
     route.fulfill({ json: { status: "ok", push_supported: false } }),
   );
   await page.route("**/api/v1/auth/me", (route) =>
-    route.fulfill({ status: 401, json: { detail: "unauthorized" } }),
+    authenticated
+      ? route.fulfill({
+          json: { authenticated: true, via_bearer: false, csrf_token: "csrf-test" },
+        })
+      : route.fulfill({ status: 401, json: { detail: "unauthorized" } }),
   );
-  await page.route("**/api/v1/auth/login", (route) =>
-    route.fulfill({ json: { csrf_token: "csrf-test" } }),
-  );
+  await page.route("**/api/v1/auth/login", (route) => {
+    authenticated = true;
+    return route.fulfill({ json: { csrf_token: "csrf-test" } });
+  });
   await page.route("**/api/v1/movies/popular", (route) =>
     route.fulfill({
       json: {
@@ -27,8 +33,9 @@ test("login, popular browsing, and resource detail remain usable", async ({ page
       },
     }),
   );
-  await page.route("**/api/v1/search", (route) =>
-    route.fulfill({
+  await page.route("**/api/v1/search", (route) => {
+    expect(route.request().headers()["x-csrf-token"]).toBe("csrf-test");
+    return route.fulfill({
       json: {
         movie: {
           tmdb_id: 27205,
@@ -53,13 +60,15 @@ test("login, popular browsing, and resource detail remain usable", async ({ page
         cached: false,
         cache_age_seconds: 0,
       },
-    }),
-  );
+    });
+  });
 
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "进入观影工作台" })).toBeVisible();
   await page.getByLabel("Web 密码").fill("test-password");
   await page.getByRole("button", { name: "登录" }).click();
+  await expect(page.getByRole("heading", { name: "当前热门" })).toBeVisible();
+  await page.reload();
   await expect(page.getByRole("heading", { name: "当前热门" })).toBeVisible();
   await page.getByRole("button", { name: "查看 盗梦空间" }).click();
 

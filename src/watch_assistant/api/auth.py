@@ -59,5 +59,9 @@ async def logout(
 
 
 @router.get("/me")
-async def me(context: AuthDependency) -> dict[str, str | bool]:
-    return {"authenticated": True, "via_bearer": context.via_bearer}
+async def me(context: AuthDependency) -> dict[str, str | bool | None]:
+    return {
+        "authenticated": True,
+        "via_bearer": context.via_bearer,
+        "csrf_token": context.csrf_token,
+    }

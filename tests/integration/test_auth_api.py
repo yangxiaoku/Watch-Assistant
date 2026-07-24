@@ -93,6 +93,8 @@ async def test_cookie_session_requires_csrf_for_writes(tmp_path):
     assert login.status_code == 200
     assert "HttpOnly" in login.headers["set-cookie"]
     assert "SameSite=lax" in login.headers["set-cookie"]
+    me = await client.get("/api/v1/auth/me")
+    assert me.json()["csrf_token"] == login.json()["csrf_token"]
     assert missing_csrf.status_code == 403
     assert accepted.status_code == 202
     await _close(client, database, tmdb, pansou)

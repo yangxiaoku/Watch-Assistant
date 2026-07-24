@@ -21,7 +21,10 @@ export class ApiClient {
   }
 
   async me(): Promise<void> {
-    await this.request("/api/v1/auth/me");
+    const response = await this.request<{ csrf_token: string | null }>(
+      "/api/v1/auth/me",
+    );
+    this.csrfToken = response.csrf_token;
   }
 
   async health(): Promise<{ status: string; push_supported: boolean }> {
