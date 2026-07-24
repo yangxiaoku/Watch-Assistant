@@ -1,10 +1,11 @@
 """Normalize and deduplicate PanSou resources."""
 
 import base64
+import binascii
 import re
 from datetime import UTC, datetime
 from typing import Any
-from urllib.parse import parse_qsl, urlsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from watch_assistant.schemas import NormalizedResource, ResourceKind
 
@@ -21,6 +22,7 @@ SIZE_MULTIPLIERS = {
     "GB": 1024**3,
     "TB": 1024**4,
 }
+LABEL_PRIORITY = {"dn": 1, "note": 2, "name": 3}
 
 
 def normalize_pansou(
@@ -34,8 +36,8 @@ def normalize_pansou(
         return []
     fallback_time = captured_at or datetime.now(UTC)
     domains = tuple(_normalize_domain(domain) for domain in share_domains)
-    resources: list[NormalizedResource] = []
-    seen: set[str] = set()
+    ordered_keys: list[str] = []
+    resources_by_key: dict[str, NormalizedResource] = {}
 
     for category, items in merged.items():
         if not isinstance(items, list):
@@ -44,11 +46,17 @@ def normalize_pansou(
             if not isinstance(item, dict):
                 continue
             resource = _normalize_item(item, str(category), domains, fallback_time)
-            if resource is None or resource.canonical_key in seen:
+            if resource is None:
                 continue
-            seen.add(resource.canonical_key)
-            resources.append(resource)
-    return resources
+            existing = resources_by_key.get(resource.canonical_key)
+            if existing is None:
+                ordered_keys.append(resource.canonical_key)
+                resources_by_key[resource.canonical_key] = resource
+            else:
+                resources_by_key[resource.canonical_key] = (
+                    merge_normalized_resources(existing, resource)
+                )
+    return [resources_by_key[key] for key in ordered_keys]
 
 
 def _normalize_item(
@@ -61,24 +69,37 @@ def _normalize_item(
     if not isinstance(url, str) or not url.strip():
         return None
     url = url.strip()
-    magnet_key = _magnet_key(url)
-    share_key = None if magnet_key else _share_key(url, share_domains)
-    if magnet_key:
+    magnet = _parse_magnet(url)
+    share_key = None if magnet else _share_key(url, share_domains)
+    if magnet:
         kind = ResourceKind.MAGNET
-        canonical_key = magnet_key
+        canonical_key, magnet_dn = magnet
     elif share_key:
         kind = ResourceKind.SHARE
         canonical_key = share_key
+        magnet_dn = None
     else:
         return None
 
     note = item.get("note") if isinstance(item.get("note"), str) else ""
+    if kind == ResourceKind.MAGNET:
+        label = _select_magnet_label(item, note, magnet_dn)
+        if label is None:
+            return None
+        name, label_source = label
+        if magnet_dn is None:
+            url = _add_magnet_dn(url, name)
+    else:
+        name = note.strip() or "PanSou resource"
+        label_source = None
     source = item.get("source") if isinstance(item.get("source"), str) else "PanSou"
     raw_datetime = item.get("datetime")
     password = item.get("password")
     if not isinstance(password, str) or not password:
         password = None
     metadata: dict[str, Any] = {"category": category}
+    if label_source:
+        metadata["label_source"] = label_source
     if note:
         metadata["note"] = note
     if isinstance(raw_datetime, str):
@@ -89,7 +110,7 @@ def _normalize_item(
     return NormalizedResource(
         kind=kind,
         canonical_key=canonical_key,
-        name=note.strip() or "PanSou resource",
+        name=name,
         url=url,
         password=password,
         size_bytes=_parse_size(item.get("size")),
@@ -100,22 +121,113 @@ def _normalize_item(
     )
 
 
-def _magnet_key(url: str) -> str | None:
-    if urlsplit(url).scheme.casefold() != "magnet":
+def _parse_magnet(url: str) -> tuple[str, str | None] | None:
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
         return None
-    for key, value in parse_qsl(urlsplit(url).query, keep_blank_values=False):
-        if key.casefold() != "xt" or not value.casefold().startswith("urn:btih:"):
+    if (
+        parsed.scheme.casefold() != "magnet"
+        or parsed.netloc
+        or parsed.path
+        or parsed.fragment
+        or not parsed.query
+    ):
+        return None
+    canonical_key = None
+    display_name = None
+    for key, value in parse_qsl(parsed.query, keep_blank_values=False):
+        normalized_key = key.casefold()
+        if normalized_key == "dn" and display_name is None and value.strip():
+            display_name = value.strip()
+        if normalized_key != "xt" or not value.casefold().startswith("urn:btih:"):
             continue
         infohash = value[9:]
         if HEX_INFOHASH.fullmatch(infohash):
-            return f"magnet:{infohash.casefold()}"
-        if BASE32_INFOHASH.fullmatch(infohash):
+            decoded = infohash.casefold()
+        elif BASE32_INFOHASH.fullmatch(infohash):
             try:
                 decoded = base64.b32decode(infohash.upper()).hex()
-            except ValueError:
-                return None
-            return f"magnet:{decoded}"
+            except (binascii.Error, ValueError):
+                continue
+        else:
+            continue
+        if decoded != "0" * 40:
+            canonical_key = f"magnet:{decoded}"
+    if canonical_key is None:
+        return None
+    return canonical_key, display_name
+
+
+def _select_magnet_label(
+    item: dict[str, Any],
+    note: str,
+    magnet_dn: str | None,
+) -> tuple[str, str] | None:
+    candidates = (
+        ("name", item.get("name")),
+        ("note", note),
+        ("dn", magnet_dn),
+    )
+    for source, candidate in candidates:
+        if not isinstance(candidate, str):
+            continue
+        label = candidate.strip()
+        if _is_displayable_label(label):
+            return label, source
     return None
+
+
+def _is_displayable_label(label: str) -> bool:
+    if not label or not any(character.isalnum() for character in label):
+        return False
+    folded = label.casefold()
+    if folded.startswith(("magnet:", "urn:btih:")):
+        return False
+    return not HEX_INFOHASH.fullmatch(label) and not BASE32_INFOHASH.fullmatch(label)
+
+
+def _add_magnet_dn(url: str, name: str) -> str:
+    parsed = urlsplit(url)
+    query = f"{parsed.query}&{urlencode({'dn': name})}"
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, query, ""))
+
+
+def merge_normalized_resources(
+    existing: NormalizedResource,
+    candidate: NormalizedResource,
+) -> NormalizedResource:
+    """Choose the richer duplicate and fill its missing optional fields."""
+    if _resource_richness(candidate) > _resource_richness(existing):
+        base, other = candidate, existing
+    else:
+        base, other = existing, candidate
+    metadata = {**other.metadata, **base.metadata}
+    return base.model_copy(
+        update={
+            "password": base.password or other.password,
+            "size_bytes": (
+                base.size_bytes if base.size_bytes is not None else other.size_bytes
+            ),
+            "seeders": base.seeders if base.seeders is not None else other.seeders,
+            "metadata": metadata,
+        }
+    )
+
+
+def _resource_richness(resource: NormalizedResource) -> tuple[int, int, int, int, int]:
+    optional_fields = sum(
+        value is not None
+        for value in (resource.password, resource.size_bytes, resource.seeders)
+    )
+    label_priority = LABEL_PRIORITY.get(resource.metadata.get("label_source"), 0)
+    return (
+        label_priority,
+        optional_fields,
+        len(resource.metadata),
+        len(resource.name),
+        len(resource.url),
+    )
 
 
 def _share_key(url: str, allowed_domains: tuple[str, ...]) -> str | None:
