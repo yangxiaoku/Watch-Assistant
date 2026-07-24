@@ -35,6 +35,7 @@ PanSou 当前磁力结果缺少文件大小和做种数字段，因此缺失值�
 - PanSou 容器 `ghcr.io/fish2018/pansou-web:latest`，宿主机端口 `8787`，容器内 HTTP 端口 `80`。
 - TgtoDrive 容器 `walkingd/tgto123:latest`，宿主机端口 `8090`，容器内服务端口 `12366`。
 - TgtoDrive 容器存在 115 Token、115 磁力离线目录和分享转存相关配置。
+- TMDB API Key 由新服务端保存，不下放到浏览器。
 - Docker 网络可用于让新服务直接访问两个现有容器。
 
 PanSou 已验证接口：
@@ -142,6 +143,9 @@ queued -> submitting -> accepted
 ## 8. 自建 API
 
 ```text
+POST /api/v1/auth/login
+POST /api/v1/auth/logout
+GET  /api/v1/auth/me
 GET  /api/v1/health
 GET  /api/v1/movies/{tmdb_id}
 POST /api/v1/search
@@ -164,6 +168,8 @@ POST /api/v1/tasks
 ```
 
 任务接口不接受任意 URL、分享密码或远程任务 ID。
+
+Web 登录接口只设置会话 Cookie；用户脚本使用单独的 Bearer Token，不复用 Web 会话。
 
 ## 9. TgtoDrive 适配器
 
@@ -205,9 +211,11 @@ get_status(remote_ref) -> RemoteStatus
 - 写操作要求 CSRF Token 或自定义请求头。
 - 搜索和推送分别限流：30 次/分钟和 10 次/分钟。
 - 115 密码和磁力原文应用层加密，密钥由 Docker Secret 或权限为 600 的环境文件提供。
+- TMDB API Key、115 密钥、Web 登录密码和用户脚本 Token 均属于服务端秘密，禁止写入前端构建产物。
 - 日志禁止记录分享密码、完整磁力链接和 Token。
 - 只访问配置中的 PanSou、TgtoDrive 和 TMDB 地址，禁止 SSRF 到任意目标。
 - 115 分享链接推送前使用 PanSou `/api/check/links`；磁力不伪造有效性结果。
+- Tailscale HTTPS 是推荐访问方式；若允许局域网 HTTP，Cookie 不设置 `Secure`，并在页面明确提示连接未加密。
 
 ## 12. 数据库
 
@@ -222,8 +230,10 @@ metadata_json, created_at
 ### search_cache
 
 ```text
-cache_key, response_json, fetched_at, expires_at
+cache_key, resource_ids_json, warnings_json, fetched_at, expires_at
 ```
+
+缓存只保存资源 ID、非敏感展示字段和警告，不保存明文磁力链接或分享密码。`resources` 至少保留 30 天；仍被非终态任务引用的资源不得清理，终态任务历史保留 90 天。
 
 ### tasks
 
@@ -243,6 +253,7 @@ created_at, updated_at, submitted_at
 - 缺失字段显示“未知”。
 - URL 类型校验和任务状态转换。
 - 幂等窗口与 `force` 行为。
+- 缓存中不出现明文磁力链接、分享密码或 TMDB API Key。
 
 集成测试：
 
@@ -253,6 +264,7 @@ created_at, updated_at, submitted_at
 端到端测试：
 
 - 独立 Web 的搜索、筛选、推送和任务历史。
+- Web 登录、登出、过期会话和无效 Bearer Token。
 - TMDB fixture 页面上的用户脚本注入和 SPA 路由切换。
 - 桌面与移动视图。
 
