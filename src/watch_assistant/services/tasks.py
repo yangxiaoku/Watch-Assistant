@@ -1,0 +1,126 @@
+"""Task creation, idempotency, and state transitions."""
+
+import asyncio
+from datetime import UTC, datetime, timedelta
+from uuid import uuid4
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from watch_assistant.models import Resource, Task, TaskState
+from watch_assistant.schemas import RemoteStatus, TaskAction
+
+REUSABLE_STATES = (TaskState.QUEUED, TaskState.SUBMITTING, TaskState.ACCEPTED)
+
+
+class ResourceNotFound(LookupError):
+    pass
+
+
+class InvalidRetryState(ValueError):
+    pass
+
+
+def recover_after_restart(
+    task: Task, remote_status: RemoteStatus | None
+) -> None:
+    task.lease_owner = None
+    task.lease_expires_at = None
+    task.updated_at = datetime.now(UTC)
+    if remote_status == RemoteStatus.ACCEPTED:
+        task.state = TaskState.ACCEPTED
+    elif remote_status == RemoteStatus.NEEDS_AUTH:
+        task.state = TaskState.NEEDS_AUTH
+    else:
+        task.state = TaskState.UNCERTAIN
+
+
+def choose_existing_task(tasks, resource_id: str) -> Task | None:
+    cutoff = datetime.now(UTC) - timedelta(hours=24)
+    candidates = [
+        task
+        for task in tasks
+        if task.resource_id == resource_id
+        and task.state in REUSABLE_STATES
+        and _as_utc(task.created_at) >= cutoff
+    ]
+    return max(candidates, key=lambda task: _as_utc(task.created_at), default=None)
+
+
+def prepare_manual_retry(task: Task) -> None:
+    if task.state not in {
+        TaskState.FAILED,
+        TaskState.NEEDS_AUTH,
+        TaskState.UNCERTAIN,
+    }:
+        raise InvalidRetryState("task is not retryable")
+    task.state = TaskState.QUEUED
+    task.remote_ref = None
+    task.error_code = None
+    task.error_message = None
+    task.lease_owner = None
+    task.lease_expires_at = None
+    task.updated_at = datetime.now(UTC)
+
+
+class TaskService:
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+        self._session_factory = session_factory
+        self._create_lock = asyncio.Lock()
+
+    async def create(self, resource_id: str, *, force: bool = False):
+        async with self._create_lock, self._session_factory() as session:
+                resource = await session.get(Resource, resource_id)
+                if resource is None:
+                    raise ResourceNotFound(resource_id)
+                if not force:
+                    existing_tasks = await session.scalars(
+                        select(Task).where(Task.resource_id == resource_id)
+                    )
+                    existing = choose_existing_task(existing_tasks, resource_id)
+                    if existing is not None:
+                        return existing, True
+
+                action = (
+                    TaskAction.OFFLINE_DOWNLOAD
+                    if resource.kind.value == "magnet"
+                    else TaskAction.SAVE_SHARE
+                )
+                task = Task(
+                    id="task_" + uuid4().hex,
+                    resource_id=resource.id,
+                    action=action,
+                    encrypted_url_snapshot=resource.encrypted_url,
+                    encrypted_password_snapshot=resource.encrypted_password,
+                    state=TaskState.QUEUED,
+                    attempts=0,
+                )
+                session.add(task)
+                await session.commit()
+                return task, False
+
+    async def get(self, task_id: str) -> Task | None:
+        async with self._session_factory() as session:
+            return await session.get(Task, task_id)
+
+    async def list_recent(self, limit: int = 50) -> list[Task]:
+        async with self._session_factory() as session:
+            rows = await session.scalars(
+                select(Task).order_by(Task.created_at.desc()).limit(limit)
+            )
+            return list(rows)
+
+    async def retry(self, task_id: str) -> Task:
+        async with self._session_factory() as session:
+            task = await session.get(Task, task_id)
+            if task is None:
+                raise ResourceNotFound(task_id)
+            prepare_manual_retry(task)
+            await session.commit()
+            return task
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)

@@ -17,6 +17,24 @@ class TaskAction(StrEnum):
     SAVE_SHARE = "save_share"
 
 
+class RemoteStatus(StrEnum):
+    ACCEPTED = "accepted"
+    NEEDS_AUTH = "needs_auth"
+    FAILED = "failed"
+    UNCERTAIN = "uncertain"
+
+
+class SubmissionResult(BaseModel):
+    status: RemoteStatus
+    remote_ref: str | None = None
+    error_code: str | None = None
+    error_message: str | None = None
+
+    @property
+    def accepted(self) -> bool:
+        return self.status == RemoteStatus.ACCEPTED
+
+
 class MovieMetadata(BaseModel):
     tmdb_id: int
     title: str
@@ -50,6 +68,8 @@ class ResourceSummary(BaseModel):
 
 
 class SearchRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
     tmdb_id: PositiveInt
     refresh: bool = False
 
@@ -60,3 +80,26 @@ class SearchResponse(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     cached: bool = False
     cache_age_seconds: int | None = None
+
+
+class TaskCreateRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    resource_id: str = Field(min_length=1, max_length=40)
+    force: bool = False
+
+
+class TaskResponse(BaseModel):
+    model_config = {"from_attributes": True}
+
+    id: str
+    resource_id: str | None
+    action: TaskAction
+    state: str
+    attempts: int
+    remote_ref: str | None
+    error_code: str | None
+    error_message: str | None
+    created_at: datetime
+    updated_at: datetime
+    submitted_at: datetime | None

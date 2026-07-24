@@ -8,10 +8,12 @@ from fastapi import FastAPI
 from watch_assistant.adapters.pansou import PanSouClient
 from watch_assistant.adapters.tmdb import TmdbClient
 from watch_assistant.api.search import router as search_router
+from watch_assistant.api.tasks import router as tasks_router
 from watch_assistant.config import Settings
 from watch_assistant.crypto import SecretCrypto
 from watch_assistant.db import Database, create_database, initialize_database
 from watch_assistant.services.search import SearchService
+from watch_assistant.services.tasks import TaskService
 
 
 def create_app(
@@ -43,6 +45,7 @@ def create_app(
                 crypto=runtime_crypto,
                 share_domains=share_domains,
             )
+            application.state.task_service = TaskService(runtime_database.session_factory)
             application.state.database = runtime_database
             owned = [runtime_database, runtime_tmdb, runtime_pansou]
         try:
@@ -64,12 +67,14 @@ def create_app(
             crypto=crypto,
             share_domains=share_domains,
         )
+        application.state.task_service = TaskService(database.session_factory)
 
     @application.get("/api/v1/health")
     async def health() -> dict[str, str]:
         return {"status": "ok"}
 
     application.include_router(search_router)
+    application.include_router(tasks_router)
     return application
 
 
