@@ -128,6 +128,55 @@ async def test_search_persists_encrypted_resources_and_returns_only_ids(tmp_path
 
 @pytest.mark.integration
 @respx.mock
+async def test_search_returns_only_top_30_magnets_and_keeps_shares(tmp_path):
+    _mock_tmdb()
+    magnets = [
+        {
+            "url": f"magnet:?xt=urn:btih:{index:040x}",
+            "note": f"Inception 2010 1080p release-{index}",
+            "source": "plugin:bulk",
+            "seeders": index,
+            "size": "4 GB",
+        }
+        for index in range(1, 101)
+    ]
+    payload = _pansou_response()
+    payload["data"]["merged_by_type"] = {
+        "magnet": magnets,
+        "115": [payload["data"]["merged_by_type"]["115"][0]],
+    }
+    respx.get("http://pansou.test/api/search").mock(
+        return_value=httpx.Response(200, json=payload)
+    )
+    client, database, tmdb, pansou = await _make_client(tmp_path)
+
+    first = await client.post("/api/v1/search", json={"tmdb_id": 12345})
+    second = await client.post("/api/v1/search", json={"tmdb_id": 12345})
+
+    assert first.status_code == 200
+    assert len(first.json()["results"]) == 31
+    assert sum(item["kind"] == "magnet" for item in first.json()["results"]) == 30
+    assert sum(item["kind"] == "115_share" for item in first.json()["results"]) == 1
+    assert all(
+        0 <= item[field] <= 100
+        for item in first.json()["results"]
+        for field in ("rank_score", "relevance_score", "completeness_score")
+    )
+    assert [item["resource_id"] for item in first.json()["results"]] == [
+        item["resource_id"] for item in second.json()["results"]
+    ]
+    assert [
+        (item["rank_score"], item["relevance_score"], item["completeness_score"])
+        for item in first.json()["results"]
+    ] == [
+        (item["rank_score"], item["relevance_score"], item["completeness_score"])
+        for item in second.json()["results"]
+    ]
+    await _close(client, database, tmdb, pansou)
+
+
+@pytest.mark.integration
+@respx.mock
 async def test_search_uses_stale_cache_when_pansou_fails(tmp_path):
     _mock_tmdb()
     pansou_route = respx.get("http://pansou.test/api/search").mock(
@@ -748,7 +797,120 @@ async def test_tv_resource_search_falls_back_to_title_without_year(tmp_path):
     }
     async with database.session_factory() as session:
         cache = await session.scalar(select(SearchCache))
-    assert cache.cache_key == "tmdb:tv:1399:queries:v3"
+    assert cache.cache_key == "tmdb:tv:1399:queries:v4"
+    await _close(client, database, tmdb, pansou)
+
+
+@pytest.mark.integration
+@respx.mock
+async def test_tv_season_search_filters_other_seasons_and_is_cache_isolated(tmp_path):
+    tv_id = 1399
+    respx.get(f"https://api.themoviedb.org/3/tv/{tv_id}").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": tv_id,
+                "name": "权力的游戏",
+                "original_name": "Game of Thrones",
+                "first_air_date": "2011-04-17",
+                "seasons": [
+                    {
+                        "season_number": 2,
+                        "name": "Season 2",
+                        "episode_count": 10,
+                        "air_date": "2012-04-01",
+                        "poster_path": "/s2.jpg",
+                    }
+                ],
+            },
+        )
+    )
+    respx.get(
+        f"https://api.themoviedb.org/3/tv/{tv_id}/alternative_titles"
+    ).mock(return_value=httpx.Response(200, json={"results": []}))
+
+    def pansou_response(request: httpx.Request) -> httpx.Response:
+        query = request.url.params["kw"]
+        if query == "权力的游戏 第2季":
+            entries = [
+                ("1111111111111111111111111111111111111111", "S02E01"),
+                ("2222222222222222222222222222222222222222", "S01E01"),
+                ("3333333333333333333333333333333333333333", "S03E01"),
+            ]
+            return httpx.Response(
+                200,
+                json={
+                    "code": 0,
+                    "data": {
+                        "total": 3,
+                        "merged_by_type": {
+                            "magnet": [
+                                {
+                                    "url": f"magnet:?xt=urn:btih:{infohash}",
+                                    "note": f"权力的游戏 {marker} 2012 1080p",
+                                    "source": "plugin:season",
+                                }
+                                for infohash, marker in entries
+                            ]
+                        },
+                    },
+                },
+            )
+        return httpx.Response(200, json=_empty_pansou_response())
+
+    route = respx.get("http://pansou.test/api/search").mock(
+        side_effect=pansou_response
+    )
+    client, database, tmdb, pansou = await _make_client(tmp_path)
+
+    selected = await client.post(
+        "/api/v1/search",
+        json={"tmdb_id": tv_id, "media_type": "tv", "season_number": 2},
+    )
+    all_seasons = await client.post(
+        "/api/v1/search", json={"tmdb_id": tv_id, "media_type": "tv"}
+    )
+
+    assert selected.status_code == 200
+    assert selected.json()["selected_season"]["season_number"] == 2
+    assert len(selected.json()["results"]) == 1
+    assert "S02" in selected.json()["results"][0]["name"]
+    assert all_seasons.status_code == 200
+    assert all_seasons.json()["selected_season"] is None
+    assert {call.request.url.params["kw"] for call in route.calls} == {
+        "权力的游戏",
+        "权力的游戏 2011",
+        "Game of Thrones",
+        "Game of Thrones 2011",
+        "权力的游戏 第2季",
+        "权力的游戏 S02",
+        "Game of Thrones Season 2",
+        "Game of Thrones S02",
+    }
+    async with database.session_factory() as session:
+        keys = {item.cache_key for item in await session.scalars(select(SearchCache))}
+    assert keys == {
+        "tmdb:tv:1399:queries:v4",
+        "tmdb:tv:1399:season:2:queries:v4",
+    }
+    await _close(client, database, tmdb, pansou)
+
+
+@pytest.mark.integration
+@respx.mock
+async def test_movie_rejects_season_request(tmp_path):
+    _mock_tmdb()
+    client, database, tmdb, pansou = await _make_client(tmp_path)
+
+    response = await client.post(
+        "/api/v1/search", json={"tmdb_id": 12345, "season_number": 1}
+    )
+    negative = await client.post(
+        "/api/v1/search", json={"tmdb_id": 12345, "season_number": -1}
+    )
+
+    assert response.status_code == 422
+    assert negative.status_code == 422
     await _close(client, database, tmdb, pansou)
 
 

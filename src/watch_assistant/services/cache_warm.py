@@ -40,11 +40,13 @@ class CacheWarmer:
         *,
         timezone_name: str = "Asia/Hong_Kong",
         retry_delays: tuple[float, ...] = (1800, 3600, 7200),
+        concurrency: int = 3,
     ) -> None:
         self._search = search_service
         self._session_factory = session_factory
         self._timezone = ZoneInfo(timezone_name)
         self._retry_delays = retry_delays
+        self._concurrency = max(1, concurrency)
         self._run_lock = asyncio.Lock()
 
     @property
@@ -165,21 +167,41 @@ class CacheWarmer:
         self, media: list[MovieMetadata]
     ) -> list[MovieMetadata]:
         failed: list[MovieMetadata] = []
+        queue: asyncio.Queue[MovieMetadata] = asyncio.Queue()
         for item in media:
-            try:
-                refreshed = await self._search.warm_media(item)
-            except Exception:
-                logger.exception(
-                    "cache warm media failed",
-                    extra={
-                        "media_type": item.media_type.value,
-                        "tmdb_id": item.tmdb_id,
-                    },
-                )
-                refreshed = False
-            if not refreshed:
-                failed.append(item)
-        return failed
+            queue.put_nowait(item)
+
+        async def worker() -> None:
+            while True:
+                try:
+                    item = queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    return
+                try:
+                    try:
+                        refreshed = await self._search.warm_media(item)
+                    except Exception:
+                        logger.exception(
+                            "cache warm media failed",
+                            extra={
+                                "media_type": item.media_type.value,
+                                "tmdb_id": item.tmdb_id,
+                            },
+                        )
+                        refreshed = False
+                    if not refreshed:
+                        failed.append(item)
+                finally:
+                    queue.task_done()
+
+        workers = [
+            asyncio.create_task(worker())
+            for _ in range(min(self._concurrency, len(media)))
+        ]
+        if workers:
+            await asyncio.gather(*workers)
+        failed_ids = {_identity(item) for item in failed}
+        return [item for item in media if _identity(item) in failed_ids]
 
     async def _catalog_and_watches(
         self, catalog: HomeCatalogResponse

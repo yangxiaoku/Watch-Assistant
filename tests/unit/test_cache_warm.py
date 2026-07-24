@@ -1,6 +1,7 @@
 import asyncio
 import json
 from datetime import UTC, datetime
+from time import monotonic
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
@@ -146,6 +147,68 @@ async def test_cache_warmer_stops_without_waiting_until_midnight(tmp_path):
 
     await asyncio.wait_for(warmer.run_forever(stop_event), timeout=1)
 
+    await database.engine.dispose()
+
+
+async def test_cache_warmer_uses_bounded_concurrency_and_continues_failures(tmp_path):
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'parallel.db'}")
+    await initialize_database(database.engine)
+
+    class DelayedSearchService:
+        def __init__(self) -> None:
+            self.active = 0
+            self.max_active = 0
+            self.warmed: list[int] = []
+
+        async def get_home_catalog(self) -> HomeCatalogResponse:
+            return HomeCatalogResponse(
+                popular=[
+                    _media(index, MediaType.MOVIE, f"movie {index}")
+                    for index in range(1, 10)
+                ],
+                now_playing=[],
+                upcoming=[],
+                top_rated=[],
+                tv_popular=[],
+                tv_on_the_air=[],
+                tv_top_rated=[],
+            )
+
+        async def has_cache_since(
+            self, tmdb_id: int, media_type: MediaType, since: datetime
+        ) -> bool:
+            return False
+
+        async def list_active_watches(self) -> list[MovieMetadata]:
+            return []
+
+        async def warm_media(self, media: MovieMetadata) -> bool:
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+            self.warmed.append(media.tmdb_id)
+            await asyncio.sleep(0.03)
+            self.active -= 1
+            if media.tmdb_id == 4:
+                raise RuntimeError("database write failed")
+            return media.tmdb_id != 5
+
+    search = DelayedSearchService()
+    warmer = CacheWarmer(
+        search,
+        database.session_factory,
+        retry_delays=(),
+        concurrency=3,
+    )
+    started = monotonic()
+
+    run = await warmer.warm_once(since=datetime(2026, 7, 24, tzinfo=UTC))
+
+    elapsed = monotonic() - started
+    assert search.max_active == 3
+    assert len(search.warmed) == 9
+    assert run.failed == 2
+    assert {item.tmdb_id for item in run.failed_media} == {4, 5}
+    assert elapsed < 0.2
     await database.engine.dispose()
 
 

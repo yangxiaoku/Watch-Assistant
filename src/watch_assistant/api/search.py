@@ -14,7 +14,11 @@ from watch_assistant.schemas import (
     SearchResponse,
 )
 from watch_assistant.security import require_api_auth
-from watch_assistant.services.search import SearchService, SearchUnavailable
+from watch_assistant.services.search import (
+    InvalidSeasonRequest,
+    SearchService,
+    SearchUnavailable,
+)
 
 router = APIRouter(prefix="/api/v1", dependencies=[Depends(require_api_auth)])
 
@@ -143,8 +147,11 @@ async def search(
             request.tmdb_id,
             media_type=request.media_type,
             refresh=request.refresh,
+            season_number=request.season_number,
         )
     except TmdbError as exc:
         raise HTTPException(status_code=502, detail="tmdb_unavailable") from exc
     except SearchUnavailable as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except InvalidSeasonRequest as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc

@@ -70,6 +70,46 @@ def test_validation_keeps_tv_seasons_but_rejects_them_for_movies():
     assert movie_rejected == 2
 
 
+def test_validation_filters_other_tv_seasons_when_one_is_selected():
+    show = MovieMetadata(
+        tmdb_id=1399,
+        media_type=MediaType.TV,
+        title="Game of Thrones",
+        release_year=2011,
+    )
+    candidates = [
+        _resource("Game of Thrones S02E01 2012 1080p"),
+        _resource("Game of Thrones Season 1 2011 1080p"),
+        _resource("Game of Thrones 第3季 2013 1080p"),
+        _resource("Game of Thrones complete collection 1080p"),
+    ]
+
+    resources, rejected = validate_and_rank_resources(
+        show, candidates, season_number=2
+    )
+
+    assert [item.name for item in resources] == [
+        "Game of Thrones S02E01 2012 1080p",
+        "Game of Thrones complete collection 1080p",
+    ]
+    assert rejected == 2
+
+
+def test_validation_records_bounded_scores():
+    movie = MovieMetadata(tmdb_id=7, title="Scored Movie", release_year=2026)
+    resources, _ = validate_and_rank_resources(
+        movie,
+        [_resource("Scored Movie 2026 2160p BluRay")],
+    )
+
+    scores = resources[0].metadata
+    assert all(0 <= scores[key] <= 100 for key in (
+        "rank_score",
+        "relevance_score",
+        "completeness_score",
+    ))
+
+
 def test_validation_uses_episode_marker_to_disambiguate_short_tv_title():
     show = MovieMetadata(
         tmdb_id=4607,

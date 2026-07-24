@@ -8,8 +8,8 @@ from watch_assistant.adapters.pansou import (
     PanSouClient,
     PanSouError,
 )
-from watch_assistant.adapters.tmdb import TmdbClient
-from watch_assistant.schemas import MediaType
+from watch_assistant.adapters.tmdb import TmdbClient, build_search_queries
+from watch_assistant.schemas import MediaType, MovieMetadata
 
 
 @respx.mock
@@ -189,6 +189,7 @@ async def test_tmdb_client_returns_popular_movies():
                         "release_date": "1999-10-15",
                         "poster_path": "/fight-club.jpg",
                         "vote_average": 8.4,
+                        "seasons": [{"season_number": 1}],
                     }
                 ]
             },
@@ -202,6 +203,7 @@ async def test_tmdb_client_returns_popular_movies():
     assert route.called
     assert movies[0].tmdb_id == 550
     assert movies[0].vote_average == 8.4
+    assert movies[0].seasons == []
 
 
 @respx.mock
@@ -215,6 +217,15 @@ async def test_tmdb_client_parses_tv_and_multi_search_pagination():
                 "original_name": "Game of Thrones",
                 "first_air_date": "2011-04-17",
                 "genres": [{"id": 10765}],
+                "seasons": [
+                    {
+                        "season_number": 2,
+                        "name": "Season 2",
+                        "episode_count": 10,
+                        "air_date": "2012-01-01",
+                        "poster_path": "/season-2.jpg",
+                    }
+                ],
             },
         )
     )
@@ -247,9 +258,36 @@ async def test_tmdb_client_parses_tv_and_multi_search_pagination():
     assert show.original_title == "Game of Thrones"
     assert show.release_year == 2011
     assert show.media_type == MediaType.TV
+    assert show.seasons[0].season_number == 2
+    assert show.seasons[0].episode_count == 10
     assert results.page == 2
     assert results.total_pages == 8
     assert [item.tmdb_id for item in results.results] == [1399]
+
+
+def test_build_search_queries_appends_four_selected_tv_season_queries():
+    show = MovieMetadata(
+        tmdb_id=1399,
+        media_type=MediaType.TV,
+        title="权力的游戏",
+        original_title="Game of Thrones",
+        release_year=2011,
+    )
+
+    queries = build_search_queries(show, season_number=2)
+
+    assert queries[:4] == [
+        "权力的游戏",
+        "权力的游戏 2011",
+        "Game of Thrones",
+        "Game of Thrones 2011",
+    ]
+    assert queries[4:] == [
+        "权力的游戏 第2季",
+        "权力的游戏 S02",
+        "Game of Thrones Season 2",
+        "Game of Thrones S02",
+    ]
 
 
 @respx.mock

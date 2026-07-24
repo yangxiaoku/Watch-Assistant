@@ -44,6 +44,12 @@ class Settings(BaseSettings):
         min_length=1,
         validation_alias="CACHE_WARM_TIMEZONE",
     )
+    pansou_max_concurrency: int = Field(
+        default=6, ge=1, le=32, validation_alias="PANSOU_MAX_CONCURRENCY"
+    )
+    cache_warm_concurrency: int = Field(
+        default=3, ge=1, le=16, validation_alias="CACHE_WARM_CONCURRENCY"
+    )
 
 
 def load_tgto_contract(path: Path | str) -> dict[str, Any]:

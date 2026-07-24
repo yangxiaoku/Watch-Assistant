@@ -27,6 +27,7 @@ from watch_assistant.schemas import (
     ResourceKind,
     ResourceSummary,
     SearchResponse,
+    SeasonMetadata,
 )
 from watch_assistant.services.normalize import (
     merge_normalized_resources,
@@ -45,10 +46,17 @@ class SearchUnavailable(RuntimeError):
     pass
 
 
+class InvalidSeasonRequest(ValueError):
+    pass
+
+
 def make_cache_key(
-    tmdb_id: int, media_type: MediaType = MediaType.MOVIE
+    tmdb_id: int,
+    media_type: MediaType = MediaType.MOVIE,
+    season_number: int | None = None,
 ) -> str:
-    return f"tmdb:{media_type.value}:{tmdb_id}:queries:v3"
+    season = "" if season_number is None else f":season:{season_number}"
+    return f"tmdb:{media_type.value}:{tmdb_id}{season}:queries:v4"
 
 
 class SearchService:
@@ -60,13 +68,14 @@ class SearchService:
         pansou_client: PanSouClient,
         crypto: SecretCrypto,
         share_domains: tuple[str, ...] = ("115.com", "115cdn.com"),
+        pansou_max_concurrency: int = 6,
     ) -> None:
         self._session_factory = session_factory
         self._tmdb = tmdb_client
         self._pansou = pansou_client
         self._crypto = crypto
         self._share_domains = share_domains
-        self._pansou_limit = asyncio.Semaphore(2)
+        self._pansou_limit = asyncio.Semaphore(max(1, pansou_max_concurrency))
         self._search_locks: dict[tuple[MediaType, int], asyncio.Lock] = {}
 
     async def get_movie(self, tmdb_id: int) -> MovieMetadata:
@@ -144,8 +153,13 @@ class SearchService:
         *,
         media_type: MediaType = MediaType.MOVIE,
         refresh: bool = False,
+        season_number: int | None = None,
     ) -> SearchResponse:
+        if season_number is not None and media_type != MediaType.TV:
+            raise InvalidSeasonRequest("season_requires_tv")
         media = await self.get_media(tmdb_id, media_type)
+        if media.media_type != MediaType.TV and season_number is not None:
+            raise InvalidSeasonRequest("season_requires_tv")
         lock_key = (media.media_type, media.tmdb_id)
         lock = self._search_locks.setdefault(lock_key, asyncio.Lock())
         async with lock:
@@ -153,6 +167,7 @@ class SearchService:
                 media,
                 refresh=refresh,
                 verify_links=refresh,
+                season_number=season_number,
             )
 
     async def warm_media(self, media: MovieMetadata) -> bool:
@@ -164,6 +179,7 @@ class SearchService:
                     media,
                     refresh=True,
                     verify_links=True,
+                    season_number=None,
                 )
             except SearchUnavailable:
                 return False
@@ -174,10 +190,11 @@ class SearchService:
         tmdb_id: int,
         media_type: MediaType,
         since: datetime,
+        season_number: int | None = None,
     ) -> bool:
         async with self._session_factory() as session:
             cache = await session.get(
-                SearchCache, make_cache_key(tmdb_id, media_type)
+                SearchCache, make_cache_key(tmdb_id, media_type, season_number)
             )
             return bool(cache and _as_utc(cache.fetched_at) >= _as_utc(since))
 
@@ -205,8 +222,9 @@ class SearchService:
         *,
         refresh: bool,
         verify_links: bool,
+        season_number: int | None,
     ) -> SearchResponse:
-        cache_key = make_cache_key(media.tmdb_id, media.media_type)
+        cache_key = make_cache_key(media.tmdb_id, media.media_type, season_number)
         now = datetime.now(UTC)
         async with self._session_factory() as session:
             cache = await session.get(SearchCache, cache_key)
@@ -230,9 +248,10 @@ class SearchService:
                     cache,
                     cached=True,
                     warnings=_stored_warnings(cache),
+                    selected_season=_selected_season(media, season_number),
                 )
 
-            queries = build_search_queries(media)
+            queries = build_search_queries(media, season_number)
             query_results = await asyncio.gather(
                 *(self._query_pansou(query) for query in queries),
                 return_exceptions=True,
@@ -256,6 +275,7 @@ class SearchService:
                         cache,
                         cached=True,
                         warnings=_merge_warnings(warnings, ["stale_cache"]),
+                        selected_season=_selected_season(media, season_number),
                     )
                 raise SearchUnavailable("pansou_unavailable")
 
@@ -267,6 +287,7 @@ class SearchService:
                 media,
                 normalized,
                 source_penalties=penalties,
+                season_number=season_number,
             )
             if rejected:
                 warnings.append("resource_mismatch_filtered")
@@ -276,7 +297,9 @@ class SearchService:
                 if resolved_titles is None:
                     complete = False
                 else:
-                    fallback_queries = _fallback_queries(media, resolved_titles)
+                    fallback_queries = _fallback_queries(
+                        media, resolved_titles, season_number
+                    )
                     alternative_titles = tuple(fallback_queries)
                     if fallback_queries:
                         fallback_results = await asyncio.gather(
@@ -310,6 +333,7 @@ class SearchService:
                                 normalized,
                                 alternative_titles=alternative_titles,
                                 source_penalties=penalties,
+                                season_number=season_number,
                             )
                             warnings = [
                                 item
@@ -321,6 +345,8 @@ class SearchService:
                             if candidates:
                                 warnings.append("alternative_titles_used")
 
+            candidates = _limit_magnet_resources(candidates)
+
             if not complete and not candidates:
                 warnings = _merge_warnings(warnings, ["partial_upstream"])
                 if cache_usable and cache is not None:
@@ -331,6 +357,7 @@ class SearchService:
                         cache,
                         cached=True,
                         warnings=_merge_warnings(warnings, ["stale_cache"]),
+                        selected_season=_selected_season(media, season_number),
                     )
                 return self._response(
                     media,
@@ -339,6 +366,7 @@ class SearchService:
                     None,
                     cached=False,
                     warnings=warnings,
+                    selected_season=_selected_season(media, season_number),
                 )
 
             if not complete:
@@ -351,6 +379,7 @@ class SearchService:
                         cache,
                         cached=True,
                         warnings=_merge_warnings(warnings, ["stale_cache"]),
+                        selected_season=_selected_season(media, season_number),
                     )
                 resources = await self._persist_resources(session, candidates, now)
                 await session.commit()
@@ -361,6 +390,7 @@ class SearchService:
                     None,
                     cached=False,
                     warnings=warnings,
+                    selected_season=_selected_season(media, season_number),
                 )
 
             await self._record_validation_outcomes(
@@ -369,6 +399,7 @@ class SearchService:
                 normalized,
                 alternative_titles,
                 now,
+                season_number,
             )
             preserved: list[Resource] = []
             if verify_links:
@@ -382,12 +413,14 @@ class SearchService:
 
             resources = await self._persist_resources(session, candidates, now)
             resources = _dedupe_resources([*resources, *preserved])
-            found_new = await self._update_movie_watch(
-                session,
-                media,
-                has_resources=bool(resources),
-                now=now,
-            )
+            found_new = False
+            if season_number is None:
+                found_new = await self._update_movie_watch(
+                    session,
+                    media,
+                    has_resources=bool(resources),
+                    now=now,
+                )
             if not resources:
                 warnings = _merge_warnings(warnings, ["watching_for_resources"])
             elif found_new:
@@ -396,7 +429,13 @@ class SearchService:
             await session.commit()
             cache = await session.get(SearchCache, cache_key)
             return self._response(
-                media, resources, now, cache, cached=False, warnings=warnings
+                media,
+                resources,
+                now,
+                cache,
+                cached=False,
+                warnings=warnings,
+                selected_season=_selected_season(media, season_number),
             )
 
     async def _query_pansou(self, query: str) -> dict:
@@ -519,6 +558,7 @@ class SearchService:
         resources: list[NormalizedResource],
         alternative_titles: tuple[str, ...],
         now: datetime,
+        season_number: int | None,
     ) -> None:
         counts: dict[str, list[int]] = {}
         for resource in resources:
@@ -527,6 +567,7 @@ class SearchService:
                 media,
                 resource.name,
                 alternative_titles=alternative_titles,
+                season_number=season_number,
             ):
                 values[0] += 1
             else:
@@ -719,13 +760,14 @@ class SearchService:
 
     @staticmethod
     def _response(
-        movie,
-        resources,
-        now,
-        cache,
+        movie: MovieMetadata,
+        resources: list[Resource],
+        now: datetime,
+        cache: SearchCache | None,
         *,
-        cached,
-        warnings=None,
+        cached: bool,
+        warnings: list[str] | None = None,
+        selected_season: SeasonMetadata | None = None,
     ) -> SearchResponse:
         return SearchResponse(
             movie=movie,
@@ -738,6 +780,11 @@ class SearchService:
                     seeders=item.seeders,
                     source=item.source,
                     captured_at=_as_utc(item.captured_at),
+                    rank_score=_resource_score(item, "rank_score"),
+                    relevance_score=_resource_score(item, "relevance_score"),
+                    completeness_score=_resource_score(
+                        item, "completeness_score"
+                    ),
                 )
                 for item in resources
             ],
@@ -748,6 +795,7 @@ class SearchService:
                 if cache
                 else None
             ),
+            selected_season=selected_season,
         )
 
 
@@ -790,8 +838,11 @@ def _dedupe_resources(resources: list[Resource]) -> list[Resource]:
 def _fallback_queries(
     media: MovieMetadata,
     alternative_titles: tuple[str, ...],
+    season_number: int | None = None,
 ) -> list[str]:
-    existing = {item.casefold() for item in build_search_queries(media)}
+    existing = {
+        item.casefold() for item in build_search_queries(media, season_number)
+    }
     queries: list[str] = []
     for title in alternative_titles:
         normalized = " ".join(title.split())
@@ -802,6 +853,42 @@ def _fallback_queries(
         if len(queries) == 2:
             break
     return queries
+
+
+def _limit_magnet_resources(
+    resources: list[NormalizedResource], limit: int = 30
+) -> list[NormalizedResource]:
+    magnets = [item for item in resources if item.kind == ResourceKind.MAGNET]
+    allowed = {item.canonical_key for item in magnets[:limit]}
+    return [
+        item
+        for item in resources
+        if item.kind == ResourceKind.SHARE or item.canonical_key in allowed
+    ]
+
+
+def _selected_season(
+    media: MovieMetadata, season_number: int | None
+) -> SeasonMetadata | None:
+    if season_number is None or media.media_type != MediaType.TV:
+        return None
+    for season in media.seasons:
+        if season.season_number == season_number:
+            return season
+    return SeasonMetadata(
+        season_number=season_number,
+        name=f"Season {season_number}",
+        episode_count=0,
+    )
+
+
+def _resource_score(resource: Resource, name: str) -> int:
+    try:
+        metadata = json.loads(resource.metadata_json)
+    except json.JSONDecodeError:
+        return 0
+    value = metadata.get(name) if isinstance(metadata, dict) else None
+    return value if isinstance(value, int) and 0 <= value <= 100 else 0
 
 
 def source_penalty(source: SourceReliability) -> int:

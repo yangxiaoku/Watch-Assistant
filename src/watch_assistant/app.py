@@ -69,6 +69,7 @@ def create_app(
                 pansou_client=runtime_pansou,
                 crypto=runtime_crypto,
                 share_domains=share_domains,
+                pansou_max_concurrency=settings.pansou_max_concurrency,
             )
             application.state.task_service = TaskService(runtime_database.session_factory)
             application.state.maintenance_service = MaintenanceService(
@@ -87,6 +88,7 @@ def create_app(
                     application.state.search_service,
                     runtime_database.session_factory,
                     timezone_name=settings.cache_warm_timezone,
+                    concurrency=settings.cache_warm_concurrency,
                 )
                 warm_stop = asyncio.Event()
                 warm_task = asyncio.create_task(

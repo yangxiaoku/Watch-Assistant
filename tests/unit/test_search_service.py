@@ -10,8 +10,11 @@ from watch_assistant.services.search import (
 
 
 def test_cache_key_is_versioned_by_movie_id():
-    assert make_cache_key(12345) == "tmdb:movie:12345:queries:v3"
-    assert make_cache_key(12345, MediaType.TV) == "tmdb:tv:12345:queries:v3"
+    assert make_cache_key(12345) == "tmdb:movie:12345:queries:v4"
+    assert make_cache_key(12345, MediaType.TV) == "tmdb:tv:12345:queries:v4"
+    assert make_cache_key(12345, MediaType.TV, 2) == (
+        "tmdb:tv:12345:season:2:queries:v4"
+    )
 
 
 def test_source_penalty_requires_ten_observations():
