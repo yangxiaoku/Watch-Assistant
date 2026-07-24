@@ -1,16 +1,19 @@
 """FastAPI application factory."""
 
+import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
+from starlette.staticfiles import StaticFiles
 
 from watch_assistant.adapters.pansou import PanSouClient
 from watch_assistant.adapters.tmdb import TmdbClient
 from watch_assistant.api.auth import router as auth_router
 from watch_assistant.api.search import router as search_router
 from watch_assistant.api.tasks import router as tasks_router
-from watch_assistant.config import Settings
+from watch_assistant.config import Settings, load_tgto_contract
 from watch_assistant.crypto import SecretCrypto
 from watch_assistant.db import Database, create_database, initialize_database
 from watch_assistant.security import SecurityManager
@@ -26,12 +29,14 @@ def create_app(
     pansou_client: PanSouClient | None = None,
     security_manager: SecurityManager | None = None,
     share_domains: tuple[str, ...] = ("115.com", "115cdn.com"),
+    push_supported: bool | None = None,
+    frontend_dir: Path | None = None,
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         owned: list[object] = []
         if not hasattr(application.state, "search_service"):
-            settings = Settings()
+            settings = Settings(_secrets_dir="/run/secrets")
             runtime_database = database or create_database(settings.database_url)
             runtime_crypto = crypto or SecretCrypto(
                 settings.encryption_key.get_secret_value()
@@ -52,7 +57,10 @@ def create_app(
             application.state.security_manager = security_manager or SecurityManager(
                 web_password_hash=settings.web_password_hash.get_secret_value(),
                 script_token_hash=settings.script_token_hash.get_secret_value(),
+                cookie_secure=settings.cookie_secure,
             )
+            contract = load_tgto_contract(settings.tgto_contract_path)
+            application.state.push_supported = contract.get("supported") is True
             application.state.database = runtime_database
             owned = [runtime_database, runtime_tmdb, runtime_pansou]
         try:
@@ -77,14 +85,27 @@ def create_app(
         application.state.task_service = TaskService(database.session_factory)
         if security_manager is not None:
             application.state.security_manager = security_manager
+        application.state.push_supported = (
+            True if push_supported is None else push_supported
+        )
 
     @application.get("/api/v1/health")
-    async def health() -> dict[str, str]:
-        return {"status": "ok"}
+    async def health() -> dict[str, str | bool]:
+        return {
+            "status": "ok",
+            "push_supported": getattr(
+                application.state, "push_supported", False
+            ),
+        }
 
     application.include_router(search_router)
     application.include_router(tasks_router)
     application.include_router(auth_router)
+    static_path = frontend_dir or Path(
+        os.environ.get("FRONTEND_DIST_DIR", "frontend/dist")
+    )
+    if static_path.is_dir():
+        application.mount("/", StaticFiles(directory=static_path, html=True), name="frontend")
     return application
 
 

@@ -24,6 +24,10 @@ export class ApiClient {
     await this.request("/api/v1/auth/me");
   }
 
+  async health(): Promise<{ status: string; push_supported: boolean }> {
+    return this.request("/api/v1/health");
+  }
+
   async search(tmdbId: number, refresh = false): Promise<SearchResponse> {
     return this.request<SearchResponse>("/api/v1/search", {
       method: "POST",

@@ -3,7 +3,7 @@ import { RefreshCw } from "@lucide/vue";
 import ResourceTable from "../components/ResourceTable.vue";
 import type { ResourceSummary, SearchResponse } from "../types";
 
-defineProps<{ result: SearchResponse; pushingId: string | null }>();
+defineProps<{ result: SearchResponse; pushingId: string | null; pushSupported: boolean }>();
 defineEmits<{ push: [resource: ResourceSummary]; refresh: [] }>();
 </script>
 
@@ -15,6 +15,6 @@ defineEmits<{ push: [resource: ResourceSummary]; refresh: [] }>();
     </header>
     <p v-if="result.movie.overview" class="movie-overview">{{ result.movie.overview }}</p>
     <div v-if="result.warnings.length" class="warning-strip">{{ result.warnings.join(' · ') }}</div>
-    <ResourceTable :resources="result.results" :pushing-id="pushingId" @push="$emit('push', $event)" />
+    <ResourceTable :resources="result.results" :pushing-id="pushingId" :push-supported="pushSupported" @push="$emit('push', $event)" />
   </section>
 </template>

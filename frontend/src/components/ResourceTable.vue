@@ -8,6 +8,7 @@ import type { ResourceKind, ResourceSummary } from "../types";
 const props = defineProps<{
   resources: ResourceSummary[];
   pushingId?: string | null;
+  pushSupported?: boolean;
 }>();
 const emit = defineEmits<{ push: [resource: ResourceSummary] }>();
 const filter = ref<"all" | ResourceKind>("all");
@@ -66,7 +67,7 @@ function formatDate(value: string): string {
             <td class="numeric">{{ formatSize(resource.size_bytes) }}</td>
             <td class="numeric">{{ resource.seeders ?? '未知' }}</td>
             <td><strong>{{ resource.source }}</strong><small>{{ formatDate(resource.captured_at) }}</small></td>
-            <td class="action-cell"><PushButton :busy="pushingId === resource.resource_id" @push="emit('push', resource)" /></td>
+            <td class="action-cell"><PushButton :busy="pushingId === resource.resource_id" :disabled="pushSupported === false" @push="emit('push', resource)" /></td>
           </tr>
         </tbody>
       </table>
@@ -78,7 +79,7 @@ function formatDate(value: string): string {
         <div class="card-heading"><span class="kind-label">{{ resource.kind === 'magnet' ? '磁力' : '115 分享' }}</span><span>{{ resource.source }}</span></div>
         <h3>{{ resource.name }}</h3>
         <dl><div><dt>大小</dt><dd>{{ formatSize(resource.size_bytes) }}</dd></div><div><dt>做种</dt><dd>{{ resource.seeders ?? '未知' }}</dd></div><div><dt>抓取</dt><dd>{{ formatDate(resource.captured_at) }}</dd></div></dl>
-        <PushButton :busy="pushingId === resource.resource_id" @push="emit('push', resource)" />
+        <PushButton :busy="pushingId === resource.resource_id" :disabled="pushSupported === false" @push="emit('push', resource)" />
       </article>
     </div>
   </section>

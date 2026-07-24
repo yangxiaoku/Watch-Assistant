@@ -10,7 +10,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        extra="ignore", case_sensitive=False, populate_by_name=True
+        extra="ignore",
+        case_sensitive=False,
+        populate_by_name=True,
     )
 
     database_url: str = Field(min_length=1, validation_alias="DATABASE_URL")
@@ -28,6 +30,7 @@ class Settings(BaseSettings):
         default=Path("config/tgto-contract.json"),
         validation_alias="TGTO_CONTRACT_PATH",
     )
+    cookie_secure: bool = Field(default=False, validation_alias="COOKIE_SECURE")
 
 
 def load_tgto_contract(path: Path | str) -> dict[str, Any]:

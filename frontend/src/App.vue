@@ -17,6 +17,7 @@ const result = ref<SearchResponse | null>(null);
 const tasks = ref<TaskResponse[]>([]);
 const pushingId = ref<string | null>(null);
 const drawerOpen = ref(false);
+const pushSupported = ref(true);
 let pollTimer: number | undefined;
 
 const hasActiveTasks = computed(() => tasks.value.some((task) => task.state === "queued" || task.state === "submitting"));
@@ -50,6 +51,10 @@ async function search(refresh = false) {
 }
 
 async function push(resource: ResourceSummary) {
+  if (!pushSupported.value) {
+    error.value = "TgtoDrive 尚未提供稳定推送接口，当前已安全禁用真实推送。";
+    return;
+  }
   pushingId.value = resource.resource_id;
   error.value = "";
   try {
@@ -81,6 +86,8 @@ function ensurePolling() {
 
 onMounted(async () => {
   try {
+    const health = await api.health();
+    pushSupported.value = health.push_supported;
     await api.me();
     authenticated.value = true;
   } catch {
@@ -97,7 +104,8 @@ onBeforeUnmount(() => { if (pollTimer !== undefined) window.clearInterval(pollTi
     <template v-else>
       <SearchView v-model="tmdbId" :loading="loading" @search="search()" />
       <p v-if="error" class="error-strip"><X :size="16" />{{ error }}</p>
-      <MovieView v-if="result" :result="result" :pushing-id="pushingId" @push="push" @refresh="search(true)" />
+      <p v-if="!pushSupported" class="warning-strip">TgtoDrive 推送契约尚未验证，推送按钮已禁用。</p>
+      <MovieView v-if="result" :result="result" :pushing-id="pushingId" :push-supported="pushSupported" @push="push" @refresh="search(true)" />
       <section v-else class="empty-workspace"><p>等待一次搜索</p><span>结果会在这里按来源和类型展开。</span></section>
     </template>
     <TaskDrawer :tasks="tasks" :open="drawerOpen" @close="drawerOpen = false" />

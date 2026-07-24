@@ -26,8 +26,12 @@ TaskServiceDependency = Annotated[TaskService, Depends(get_task_service)]
     "/tasks", response_model=TaskResponse, status_code=status.HTTP_202_ACCEPTED
 )
 async def create_task(
-    request: TaskCreateRequest, service: TaskServiceDependency
+    request: TaskCreateRequest,
+    raw_request: Request,
+    service: TaskServiceDependency,
 ) -> TaskResponse:
+    if getattr(raw_request.app.state, "push_supported", True) is not True:
+        raise HTTPException(status_code=503, detail="push_unsupported")
     try:
         task, _reused = await service.create(request.resource_id, force=request.force)
     except ResourceNotFound as exc:

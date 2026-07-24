@@ -1,0 +1,50 @@
+services:
+  watch-assistant:
+    build:
+      context: .
+    image: watch-assistant:local
+    container_name: watch-assistant
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      DATABASE_URL: sqlite+aiosqlite:////data/watch-assistant.db
+      PANSOU_BASE_URL: http://pansou-app:80
+      TGTO_BASE_URL: http://TgtoDrive:12366
+      TGTO_CONTRACT_PATH: /app/config/tgto-contract.json
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+    secrets:
+      - encryption_key
+      - tmdb_api_key
+      - web_password_hash
+      - script_token_hash
+    volumes:
+      - ${DATA_DIR:-./data}:/data
+    tmpfs:
+      - /tmp:size=32m,noexec,nosuid
+    ports:
+      - ${WATCH_ASSISTANT_PORT:-8000}:8000
+    networks:
+      - existing_services
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+secrets:
+  encryption_key:
+    file: ${ENCRYPTION_KEY_FILE:-./secrets/encryption_key}
+  tmdb_api_key:
+    file: ${TMDB_API_KEY_FILE:-./secrets/tmdb_api_key}
+  web_password_hash:
+    file: ${WEB_PASSWORD_HASH_FILE:-./secrets/web_password_hash}
+  script_token_hash:
+    file: ${SCRIPT_TOKEN_HASH_FILE:-./secrets/script_token_hash}
+
+networks:
+  existing_services:
+    external: true
+    name: ${EXTERNAL_NETWORK:-pansou_default}
