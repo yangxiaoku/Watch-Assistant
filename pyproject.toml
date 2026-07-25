@@ -11,6 +11,7 @@ dependencies = [
     "cryptography==49.0.0",
     "fastapi==0.136.1",
     "httpx==0.28.1",
+    "p115client==0.0.9.6.5.1",
     "pydantic-settings==2.14.2",
     "pwdlib[argon2]==0.3.0",
     "python-multipart==0.0.27",
