@@ -16,7 +16,12 @@ from watch_assistant.adapters.tmdb import TmdbClient
 from watch_assistant.app import create_app
 from watch_assistant.crypto import SecretCrypto
 from watch_assistant.db import create_database, initialize_database
-from watch_assistant.models import InspectionBatch, InspectionItem, Resource
+from watch_assistant.models import (
+    InspectionBatch,
+    InspectionItem,
+    MagnetMetadataCache,
+    Resource,
+)
 from watch_assistant.schemas import (
     InspectionBatchStatus,
     InspectionItemStatus,
@@ -114,7 +119,7 @@ async def _make_app(
                 Resource(
                     id=resource_id,
                     kind=ResourceKind.MAGNET,
-                    canonical_key=f"magnet:{resource_id}",
+                    canonical_key=f"magnet:{magnet.split('btih:', 1)[1].split('&', 1)[0]}",
                     encrypted_url=crypto.encrypt(magnet),
                     name=resource_id,
                     source="test",
@@ -169,7 +174,9 @@ async def _close(http_client, database, tmdb, pansou):
 
 
 @pytest.mark.integration
-async def test_inspection_post_requires_auth_csrf_and_rejects_the_entire_batch(tmp_path):
+async def test_inspection_post_requires_auth_csrf_and_rejects_the_entire_batch(
+    tmp_path,
+):
     fake = FakeInspectionClient({})
     app, client, database, tmdb, pansou, _crypto, _magnets = await _make_app(
         tmp_path, client=fake, authenticated=True
@@ -212,7 +219,10 @@ async def test_inspection_post_requires_auth_csrf_and_rejects_the_entire_batch(t
     assert unauthorized.status_code == 401
     assert login.status_code == 200
     assert missing_csrf.status_code == 403
-    assert all(response.status_code == 422 for response in (duplicate, too_many, unknown, share, raw_magnet))
+    assert all(
+        response.status_code == 422
+        for response in (duplicate, too_many, unknown, share, raw_magnet)
+    )
     async with database.session_factory() as session:
         assert list(await session.scalars(select(InspectionBatch))) == []
     assert app.state.inspection_supported is True
@@ -224,8 +234,15 @@ async def test_inspection_response_is_queued_then_cumulative_and_ordered(tmp_pat
     fake = FakeInspectionClient(
         {
             _magnet("a"): _result("a" * 40, InspectionStatus.VERIFIED, total_size=11),
-            _magnet("b"): _result("b" * 40, InspectionStatus.UNSUPPORTED, error_code="existing_torrent"),
-            _magnet("c"): _result("c" * 40, InspectionStatus.TIMEOUT, error_code="metadata_timeout", total_size=999),
+            _magnet("b"): _result(
+                "b" * 40, InspectionStatus.UNSUPPORTED, error_code="existing_torrent"
+            ),
+            _magnet("c"): _result(
+                "c" * 40,
+                InspectionStatus.TIMEOUT,
+                error_code="metadata_timeout",
+                total_size=999,
+            ),
         },
         blocked_magnets={_magnet("c")},
     )
@@ -236,7 +253,9 @@ async def test_inspection_response_is_queued_then_cumulative_and_ordered(tmp_pat
     accepted = await client.post(
         "/api/v1/resources/inspect", json={"resource_ids": ["res_c", "res_a", "res_b"]}
     )
-    initial = await client.get(f"/api/v1/resources/inspect/{accepted.json()['batch_id']}")
+    initial = await client.get(
+        f"/api/v1/resources/inspect/{accepted.json()['batch_id']}"
+    )
     worker_task = asyncio.create_task(app.state.inspection_worker.run_once())
     await asyncio.wait_for(fake.started.wait(), timeout=1)
     cumulative = None
@@ -261,7 +280,9 @@ async def test_inspection_response_is_queued_then_cumulative_and_ordered(tmp_pat
     }
     assert initial.json()["completed_count"] == 0
     assert cumulative is not None
-    assert cumulative.json()["completed_count"] == len(cumulative.json()["results"]) == 2
+    assert (
+        cumulative.json()["completed_count"] == len(cumulative.json()["results"]) == 2
+    )
     assert [item["resource_id"] for item in cumulative.json()["results"]] == [
         "res_a",
         "res_b",
@@ -275,7 +296,17 @@ async def test_inspection_response_is_queued_then_cumulative_and_ordered(tmp_pat
     ]
     timeout = final.json()["results"][0]
     assert timeout["status"] == "timeout"
-    assert {key: timeout[key] for key in ("total_size_bytes", "file_count", "video_file_count", "video_size_bytes", "subtitle_count", "sample_count")} == {
+    assert {
+        key: timeout[key]
+        for key in (
+            "total_size_bytes",
+            "file_count",
+            "video_file_count",
+            "video_size_bytes",
+            "subtitle_count",
+            "sample_count",
+        )
+    } == {
         "total_size_bytes": 0,
         "file_count": 0,
         "video_file_count": 0,
@@ -289,26 +320,196 @@ async def test_inspection_response_is_queued_then_cumulative_and_ordered(tmp_pat
 
 
 @pytest.mark.integration
+async def test_verified_infohash_cache_is_reused_after_service_rebuild(tmp_path):
+    magnet = _magnet("a")
+    fake = FakeInspectionClient(
+        {magnet: _result("a" * 40, InspectionStatus.VERIFIED, total_size=11)}
+    )
+    _app, client, database, tmdb, pansou, crypto, _magnets = await _make_app(
+        tmp_path, client=fake
+    )
+    service = InspectionService(database.session_factory)
+    worker = InspectionWorker(database.session_factory, crypto, fake)
+
+    first = await service.create(["res_a"])
+    assert first.status == InspectionBatchStatus.QUEUED
+    assert await worker.run_once()
+    assert len(fake.magnets) == 1
+
+    rebuilt_service = InspectionService(database.session_factory)
+    second = await rebuilt_service.create(["res_a"])
+
+    assert second.status == InspectionBatchStatus.COMPLETED
+    assert second.submitted_count == second.completed_count == 1
+    assert second.results[0].status == InspectionItemStatus.VERIFIED
+    assert second.results[0].total_size_bytes == 11
+    assert len(fake.magnets) == 1
+    async with database.session_factory() as session:
+        cache = await session.get(MagnetMetadataCache, "a" * 40)
+        columns = await session.execute(
+            text("PRAGMA table_info(magnet_metadata_cache)")
+        )
+        column_names = {row[1] for row in columns}
+    assert cache is not None
+    assert {"magnet", "tracker", "path"}.isdisjoint(column_names)
+    await _close(client, database, tmdb, pansou)
+
+
+@pytest.mark.integration
+async def test_mixed_infohash_cache_hit_preserves_order_and_counts(tmp_path):
+    fake = FakeInspectionClient(
+        {
+            _magnet("a"): _result("a" * 40, InspectionStatus.VERIFIED, total_size=11),
+            _magnet("b"): _result("b" * 40, InspectionStatus.VERIFIED, total_size=22),
+        }
+    )
+    _app, client, database, tmdb, pansou, crypto, _magnets = await _make_app(
+        tmp_path, client=fake
+    )
+    service = InspectionService(database.session_factory)
+    worker = InspectionWorker(database.session_factory, crypto, fake)
+
+    await service.create(["res_a"])
+    assert await worker.run_once()
+    mixed = await service.create(["res_a", "res_b"])
+
+    assert mixed.status == InspectionBatchStatus.QUEUED
+    assert mixed.submitted_count == 2
+    assert mixed.completed_count == 1
+    assert [item.resource_id for item in mixed.results] == ["res_a"]
+
+    assert await worker.run_once()
+    final = await service.get(mixed.batch_id)
+    assert final.status == InspectionBatchStatus.COMPLETED
+    assert final.submitted_count == final.completed_count == 2
+    assert [item.resource_id for item in final.results] == ["res_a", "res_b"]
+    assert len(fake.magnets) == 2
+    await _close(client, database, tmdb, pansou)
+
+
+@pytest.mark.integration
+async def test_schema_version_mismatch_forces_redetection(tmp_path):
+    magnet = _magnet("a")
+    fake = FakeInspectionClient(
+        {magnet: _result("a" * 40, InspectionStatus.VERIFIED, total_size=11)}
+    )
+    _app, client, database, tmdb, pansou, crypto, _magnets = await _make_app(
+        tmp_path, client=fake
+    )
+    service = InspectionService(database.session_factory)
+    worker = InspectionWorker(database.session_factory, crypto, fake)
+    await service.create(["res_a"])
+    assert await worker.run_once()
+    async with database.session_factory() as session:
+        cache = await session.get(MagnetMetadataCache, "a" * 40)
+        cache.schema_version = 999
+        await session.commit()
+
+    second = await service.create(["res_a"])
+    assert second.status == InspectionBatchStatus.QUEUED
+    assert await worker.run_once()
+    assert len(fake.magnets) == 2
+    await _close(client, database, tmdb, pansou)
+
+
+@pytest.mark.integration
+async def test_timeout_cache_is_valid_for_30_minutes_then_retries(tmp_path):
+    magnet = _magnet("c")
+    fake = FakeInspectionClient(
+        {
+            magnet: _result(
+                "c" * 40,
+                InspectionStatus.TIMEOUT,
+                error_code="metadata_timeout",
+            )
+        }
+    )
+    _app, client, database, tmdb, pansou, crypto, _magnets = await _make_app(
+        tmp_path, client=fake
+    )
+    service = InspectionService(database.session_factory)
+    worker = InspectionWorker(database.session_factory, crypto, fake)
+    await service.create(["res_c"])
+    assert await worker.run_once()
+    assert len(fake.magnets) == 1
+
+    cached = await service.create(["res_c"])
+    assert cached.status == InspectionBatchStatus.FAILED
+    assert cached.completed_count == 1
+    assert cached.results[0].status == InspectionItemStatus.TIMEOUT
+    assert len(fake.magnets) == 1
+    async with database.session_factory() as session:
+        cache = await session.get(MagnetMetadataCache, "c" * 40)
+        assert cache.expires_at - cache.updated_at >= timedelta(minutes=29)
+        cache.updated_at = datetime.now(UTC) - timedelta(minutes=31)
+        await session.commit()
+
+    expired = await service.create(["res_c"])
+    assert expired.status == InspectionBatchStatus.QUEUED
+    assert await worker.run_once()
+    assert len(fake.magnets) == 2
+    await _close(client, database, tmdb, pansou)
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("status", "error_code"),
+    [
+        (InspectionStatus.FAILED, "api_unavailable"),
+        (InspectionStatus.UNSUPPORTED, "invalid_magnet"),
+    ],
+)
+async def test_non_timeout_results_are_not_cached(tmp_path, status, error_code):
+    magnet = _magnet("a")
+    fake = FakeInspectionClient(
+        {magnet: _result("a" * 40, status, error_code=error_code)}
+    )
+    _app, client, database, tmdb, pansou, crypto, _magnets = await _make_app(
+        tmp_path, client=fake
+    )
+    service = InspectionService(database.session_factory)
+    worker = InspectionWorker(database.session_factory, crypto, fake)
+    await service.create(["res_a"])
+    assert await worker.run_once()
+    async with database.session_factory() as session:
+        assert await session.get(MagnetMetadataCache, "a" * 40) is None
+
+    second = await service.create(["res_a"])
+    assert second.status == InspectionBatchStatus.QUEUED
+    assert await worker.run_once()
+    assert len(fake.magnets) == 2
+    await _close(client, database, tmdb, pansou)
+
+
+@pytest.mark.integration
 @pytest.mark.parametrize(
     ("results", "expected_status"),
     [
         (
             [
                 _result("a" * 40, InspectionStatus.VERIFIED, total_size=10),
-                _result("b" * 40, InspectionStatus.UNSUPPORTED, error_code="invalid_magnet"),
+                _result(
+                    "b" * 40, InspectionStatus.UNSUPPORTED, error_code="invalid_magnet"
+                ),
             ],
             "completed",
         ),
         (
             [
-                _result("a" * 40, InspectionStatus.FAILED, error_code="api_unavailable"),
-                _result("b" * 40, InspectionStatus.TIMEOUT, error_code="metadata_timeout"),
+                _result(
+                    "a" * 40, InspectionStatus.FAILED, error_code="api_unavailable"
+                ),
+                _result(
+                    "b" * 40, InspectionStatus.TIMEOUT, error_code="metadata_timeout"
+                ),
             ],
             "failed",
         ),
     ],
 )
-async def test_terminal_priority_for_item_derived_results(tmp_path, results, expected_status):
+async def test_terminal_priority_for_item_derived_results(
+    tmp_path, results, expected_status
+):
     fake = FakeInspectionClient({_magnet("a"): results[0], _magnet("b"): results[1]})
     app, client, database, tmdb, pansou, _crypto, _magnets = await _make_app(
         tmp_path, client=fake
@@ -317,7 +518,9 @@ async def test_terminal_priority_for_item_derived_results(tmp_path, results, exp
         "/api/v1/resources/inspect", json={"resource_ids": ["res_a", "res_b"]}
     )
     assert await app.state.inspection_worker.run_once()
-    response = await client.get(f"/api/v1/resources/inspect/{accepted.json()['batch_id']}")
+    response = await client.get(
+        f"/api/v1/resources/inspect/{accepted.json()['batch_id']}"
+    )
 
     assert response.json()["status"] == expected_status
     assert response.json()["completed_count"] == response.json()["submitted_count"] == 2
@@ -336,7 +539,9 @@ async def test_dependency_failure_is_a_batch_failure_without_results(tmp_path):
     )
 
     assert await app.state.inspection_worker.run_once()
-    response = await client.get(f"/api/v1/resources/inspect/{accepted.json()['batch_id']}")
+    response = await client.get(
+        f"/api/v1/resources/inspect/{accepted.json()['batch_id']}"
+    )
 
     assert response.json() == {
         "batch_id": accepted.json()["batch_id"],
@@ -403,7 +608,9 @@ async def test_worker_recovers_only_unfinished_items_and_cleans_up_on_cancel(tmp
 
 
 @pytest.mark.integration
-async def test_inspection_tables_and_logs_do_not_contain_plaintext_magnets(tmp_path, caplog):
+async def test_inspection_tables_and_logs_do_not_contain_plaintext_magnets(
+    tmp_path, caplog
+):
     magnet = _magnet("a")
     fake = FakeInspectionClient(
         {magnet: _result("a" * 40, InspectionStatus.VERIFIED, total_size=10)}
@@ -418,7 +625,9 @@ async def test_inspection_tables_and_logs_do_not_contain_plaintext_magnets(tmp_p
     assert await app.state.inspection_worker.run_once()
     async with database.session_factory() as session:
         rows = await session.execute(
-            text("SELECT * FROM inspection_batches JOIN inspection_items ON inspection_batches.id = inspection_items.batch_id")
+            text(
+                "SELECT * FROM inspection_batches JOIN inspection_items ON inspection_batches.id = inspection_items.batch_id"
+            )
         )
         stored = "\n".join(str(row) for row in rows)
 
