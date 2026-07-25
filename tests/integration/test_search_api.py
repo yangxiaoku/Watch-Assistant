@@ -210,6 +210,10 @@ async def test_resource_snapshot_paginates_all_magnets_and_preserves_legacy_limi
 
     legacy = await client.post("/api/v1/search", json={"tmdb_id": 12345})
     calls_before_page = respx.calls.call_count
+    default_page = await client.get(
+        "/api/v1/media/movie/12345/resources",
+        params={"page": 1, "page_size": 100},
+    )
     pages = [
         await client.get(
             "/api/v1/media/movie/12345/resources",
@@ -221,6 +225,7 @@ async def test_resource_snapshot_paginates_all_magnets_and_preserves_legacy_limi
 
     assert legacy.status_code == 200
     assert sum(item["kind"] == "magnet" for item in legacy.json()["results"]) == 30
+    assert default_page.status_code == 200
     assert all(page.status_code == 200 for page in pages), [page.text for page in pages]
     assert [len(page.json()["items"]) for page in pages] == [100, 100, 100, 100, 100, 1]
     assert page_one.json()["total"] == 501
@@ -233,6 +238,15 @@ async def test_resource_snapshot_paginates_all_magnets_and_preserves_legacy_limi
         "720p": 0,
         "subtitle": 0,
     }
+    assert [
+        item["resource_id"]
+        for item in default_page.json()["items"]
+        if item["kind"] == "magnet"
+    ][:30] == [
+        item["resource_id"]
+        for item in legacy.json()["results"]
+        if item["kind"] == "magnet"
+    ]
     all_items = [item for page in pages for item in page.json()["items"]]
     assert len({item["resource_id"] for item in all_items}) == 501
     assert [item["seeders"] for item in page_one.json()["items"]] == list(

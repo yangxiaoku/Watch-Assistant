@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 
 from watch_assistant.models import Resource, SourceReliability
@@ -13,6 +13,7 @@ from watch_assistant.services.search import (
     SearchService,
     _limit_magnet_resources,
     _quality_matches,
+    _resource_facets,
     _resource_sort_key,
     make_cache_key,
     source_penalty,
@@ -78,6 +79,47 @@ def test_snapshot_magnet_limit_keeps_shares_and_quality_tokens_are_bounded():
     assert not _quality_matches("Movie 2010 x264", "4k")
 
 
+def test_quality_tags_match_resource_table_tokens_without_false_positives():
+    for name, quality in (
+        ("Film UHD", "4k"),
+        ("Film 2160p", "4k"),
+        ("Film SUB", "subtitle"),
+        ("Film CHS", "subtitle"),
+        ("Film CHT", "subtitle"),
+        ("Film 简中", "subtitle"),
+        ("Film 繁中", "subtitle"),
+        ("Film 双语", "subtitle"),
+    ):
+        assert _quality_matches(name, quality)
+    for name in ("subscribe", "subset", "submarine", "21080p", "720px", "14k"):
+        assert not _quality_matches(name, "4k")
+        assert not _quality_matches(name, "1080p")
+        assert not _quality_matches(name, "720p")
+        assert not _quality_matches(name, "subtitle")
+
+    assert _resource_facets(
+        [
+            Resource(
+                id="res_quality",
+                kind=ResourceKind.MAGNET,
+                canonical_key="magnet:quality",
+                encrypted_url="encrypted",
+                name="Film UHD CHS",
+                source="test",
+                captured_at=datetime.now(UTC),
+                expires_at=datetime.now(UTC),
+            )
+        ]
+    ) == {
+        "magnet": 1,
+        "share": 0,
+        "4k": 1,
+        "1080p": 0,
+        "720p": 0,
+        "subtitle": 1,
+    }
+
+
 def test_resource_sort_options_are_stable_and_use_resource_id_tie_breaker():
     now = datetime.now(UTC)
     first = Resource(
@@ -132,10 +174,80 @@ def test_resource_sort_options_are_stable_and_use_resource_id_tie_breaker():
         )
 
     tied_scores = {resource_id: {"rank_score": 1} for resource_id in ("res_a", "res_b")}
+    tied_first = Resource(
+        id=first.id,
+        kind=first.kind,
+        canonical_key=first.canonical_key,
+        encrypted_url=first.encrypted_url,
+        name=first.name,
+        size_bytes=200,
+        seeders=5,
+        source=first.source,
+        captured_at=first.captured_at,
+        expires_at=first.expires_at,
+    )
+    tied_second = Resource(
+        id=second.id,
+        kind=second.kind,
+        canonical_key=second.canonical_key,
+        encrypted_url=second.encrypted_url,
+        name=second.name,
+        size_bytes=200,
+        seeders=5,
+        source=second.source,
+        captured_at=second.captured_at,
+        expires_at=second.expires_at,
+    )
     assert sorted(
-        (second, first),
+        (tied_second, tied_first),
         key=lambda item: _resource_sort_key(item, tied_scores, "comprehensive"),
-    ) == [first, second]
+    ) == [tied_first, tied_second]
+
+
+def test_comprehensive_sort_uses_seeders_size_and_capture_time_before_id():
+    now = datetime.now(UTC)
+    resources = []
+    for resource_id, seeders, size, captured_at in (
+        ("res_a", 4, 100, now - timedelta(minutes=2)),
+        ("res_b", 8, 100, now - timedelta(minutes=2)),
+        ("res_c", 8, 200, now - timedelta(minutes=2)),
+        ("res_d", 8, 200, now),
+    ):
+        resources.append(
+            Resource(
+                id=resource_id,
+                kind=ResourceKind.MAGNET,
+                canonical_key=f"magnet:{resource_id}",
+                encrypted_url="encrypted",
+                name="Movie 1080p",
+                size_bytes=size,
+                seeders=seeders,
+                source="test",
+                captured_at=captured_at,
+                expires_at=now,
+            )
+        )
+    scores = {
+        resource.id: {
+            "rank_score": 80,
+            "relevance_score": 20,
+            "completeness_score": 20,
+        }
+        for resource in resources
+    }
+    expected = [resources[3], resources[2], resources[1], resources[0]]
+
+    for sort in ("comprehensive", "relevance", "completeness"):
+        assert (
+            sorted(resources, key=lambda item: _resource_sort_key(item, scores, sort))
+            == expected
+        )
+
+    for sort in ("size", "seeders"):
+        assert (
+            sorted(resources, key=lambda item: _resource_sort_key(item, scores, sort))
+            == expected
+        )
 
 
 async def test_warm_media_reports_partial_upstream_as_failure():

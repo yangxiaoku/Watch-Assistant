@@ -828,11 +828,20 @@ class SearchService:
         selected_season: int | None = None,
         score_snapshot: Mapping[str, Mapping[str, int]] | None = None,
     ) -> SearchResponse:
-        visible_resources = _limit_magnet_resources(resources, LEGACY_MAGNET_LIMIT)
+        response_scores = _complete_score_snapshot(resources, score_snapshot or {})
+        ordered_resources = sorted(
+            resources,
+            key=lambda resource: _resource_sort_key(
+                resource, response_scores, "comprehensive"
+            ),
+        )
+        visible_resources = _limit_magnet_resources(
+            ordered_resources, LEGACY_MAGNET_LIMIT
+        )
         return SearchResponse(
             movie=movie,
             results=[
-                _resource_summary(item, score_snapshot) for item in visible_resources
+                _resource_summary(item, response_scores) for item in visible_resources
             ],
             warnings=warnings or [],
             cached=cached,
@@ -974,22 +983,33 @@ def _resource_facets(resources: list[Resource]) -> dict[str, int]:
             facets["magnet"] += 1
         elif resource.kind == ResourceKind.SHARE:
             facets["share"] += 1
-        for quality in ("4k", "1080p", "720p", "subtitle"):
-            if _quality_matches(resource.name, quality):
-                facets[quality] += 1
+        for quality in _quality_tags(resource.name):
+            facets[quality] += 1
     return facets
 
 
-def _quality_matches(name: str, quality: str) -> bool:
+_QUALITY_PATTERNS = {
+    "4k": re.compile(r"(?<![a-z0-9])(?:4k|2160p|uhd)(?![a-z0-9])"),
+    "1080p": re.compile(r"(?<![a-z0-9])1080p(?![a-z0-9])"),
+    "720p": re.compile(r"(?<![a-z0-9])720p(?![a-z0-9])"),
+    "subtitle": re.compile(
+        r"(?<![a-z0-9])(?:sub|subtitles?|chs|cht)(?![a-z0-9])"
+        r"|字幕|简中|繁中|双语"
+    ),
+}
+
+
+def _quality_tags(name: str) -> frozenset[str]:
     value = name.casefold()
-    patterns = {
-        "4k": r"(?<![a-z0-9])(?:4k|2160p)(?![a-z0-9])",
-        "1080p": r"(?<![a-z0-9])1080p(?![a-z0-9])",
-        "720p": r"(?<![a-z0-9])720p(?![a-z0-9])",
-        "subtitle": r"(?<![a-z0-9])(?:subtitle|subtitles|字幕)(?![a-z0-9])",
-    }
-    pattern = patterns.get(quality)
-    return pattern is not None and re.search(pattern, value) is not None
+    return frozenset(
+        quality
+        for quality, pattern in _QUALITY_PATTERNS.items()
+        if pattern.search(value) is not None
+    )
+
+
+def _quality_matches(name: str, quality: str) -> bool:
+    return quality in _quality_tags(name)
 
 
 def _resource_sort_key(
@@ -998,24 +1018,37 @@ def _resource_sort_key(
     sort: str,
 ) -> tuple[object, ...]:
     resource_scores = scores.get(resource.id, {})
+    comprehensive = _comprehensive_sort_key(resource, resource_scores)
+    if sort == "comprehensive":
+        return comprehensive
     if sort == "relevance":
-        return (-resource_scores.get("relevance_score", 0), resource.id)
+        return (-resource_scores.get("relevance_score", 0), *comprehensive)
     if sort == "completeness":
-        return (-resource_scores.get("completeness_score", 0), resource.id)
+        return (-resource_scores.get("completeness_score", 0), *comprehensive)
     if sort == "size":
-        return _descending_optional(resource.size_bytes, resource.id)
+        return (*_optional_descending(resource.size_bytes), *comprehensive)
     if sort == "seeders":
-        return _descending_optional(resource.seeders, resource.id)
+        return (*_optional_descending(resource.seeders), *comprehensive)
+    return comprehensive
+
+
+def _comprehensive_sort_key(
+    resource: Resource,
+    scores: Mapping[str, int],
+) -> tuple[object, ...]:
     return (
-        -resource_scores.get("rank_score", 0),
+        -scores.get("rank_score", 0),
+        *_optional_descending(resource.seeders),
+        *_optional_descending(resource.size_bytes),
+        -_as_utc(resource.captured_at).timestamp(),
         resource.id,
     )
 
 
-def _descending_optional(value: int | None, resource_id: str) -> tuple[object, ...]:
+def _optional_descending(value: int | None) -> tuple[int, int]:
     if value is None or value < 0:
-        return (1, 0, resource_id)
-    return (0, -value, resource_id)
+        return (1, 0)
+    return (0, -value)
 
 
 def _selected_season(media: MovieMetadata, season_number: int | None) -> int | None:
