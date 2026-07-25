@@ -645,7 +645,18 @@ function changeResourceQuery(value: string) {
   if (resourceQueryTimer !== undefined) window.clearTimeout(resourceQueryTimer);
   invalidateResourceRequest();
   resourceQueryTimer = window.setTimeout(() => {
-    changeResourceFilter({ query: value.trim() });
+    const nextQuery = value.trim();
+    if (nextQuery === resourceQuery.value) {
+      pendingResourceRoute = null;
+      if (resourceResponse.value) {
+        resourceLoading.value = false;
+        resourceError.value = "";
+      } else {
+        void loadResourcePage(currentResourceRoute(), "replace");
+      }
+    } else {
+      changeResourceFilter({ query: nextQuery });
+    }
     resourceQueryTimer = undefined;
   }, 250);
 }

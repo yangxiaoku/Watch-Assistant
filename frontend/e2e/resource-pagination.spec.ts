@@ -119,6 +119,60 @@ test("sends backend filters and ignores a stale delayed response", async ({ page
   await expect(page.locator(".resource-title").first()).not.toContainText("query-old");
 });
 
+test("retries the current resource route after canceling a pending initial page", async ({ page }) => {
+  const requests: URL[] = [];
+  let releaseInitial!: () => void;
+  const initialGate = new Promise<void>((resolve) => { releaseInitial = resolve; });
+  await mockShell(page);
+  await page.route("**/api/v1/media/movie/27205/resources**", async (route) => {
+    requests.push(new URL(route.request().url()));
+    if (requests.length === 1) await initialGate;
+    try {
+      await route.fulfill({ json: pageResponse(1) });
+    } catch {
+      // The initial request is expected to be aborted by the query edit.
+    }
+  });
+
+  await page.goto("/movie/27205");
+  await expect(page.locator(".resource-surface")).toHaveAttribute("aria-busy", "true");
+  const input = page.getByLabel("资源名称搜索");
+  await input.fill("temporary");
+  await page.waitForTimeout(80);
+  await input.fill("");
+  await expect(input).toHaveValue("");
+  await expect.poll(() => requests.length).toBe(2);
+  await expect(page).not.toHaveURL(/resource_query=temporary/);
+  await expect(page.locator(".resource-surface")).toHaveAttribute("aria-busy", "false");
+  await expect(page.getByRole("button", { name: "下一页" }).first()).not.toBeDisabled();
+  await expect(page.locator(".resource-title").first()).toContainText("page 1");
+  expect(requests.every((request) => request.searchParams.get("query") !== "temporary")).toBe(true);
+  releaseInitial();
+  await page.waitForTimeout(30);
+});
+
+test("does not refetch when a canceled draft returns to an existing page response", async ({ page }) => {
+  let requestCount = 0;
+  await mockShell(page);
+  await page.route("**/api/v1/media/movie/27205/resources**", (route) => {
+    requestCount += 1;
+    return route.fulfill({ json: pageResponse(1) });
+  });
+
+  await page.goto("/movie/27205");
+  await expect.poll(() => requestCount).toBe(1);
+  const input = page.getByLabel("资源名称搜索");
+  await input.fill("temporary");
+  await page.waitForTimeout(80);
+  await input.fill("");
+  await expect(input).toHaveValue("");
+  await page.waitForTimeout(320);
+  expect(requestCount).toBe(1);
+  await expect(page).not.toHaveURL(/resource_query=temporary/);
+  await expect(page.locator(".resource-surface")).toHaveAttribute("aria-busy", "false");
+  await expect(page.locator(".resource-title").first()).toContainText("page 1");
+});
+
 test("falls back to the POST result when the resource snapshot is missing", async ({ page }) => {
   await mockShell(page);
   await page.route("**/api/v1/media/movie/27205/resources**", (route) => route.fulfill({ status: 404, json: { detail: "resource_snapshot_not_found" } }));
