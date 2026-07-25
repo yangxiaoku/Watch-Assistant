@@ -48,7 +48,14 @@ const emit = defineEmits<{
 
 const queryDraft = ref(props.resourceQuery ?? "");
 watch(() => props.resourceQuery, (value) => { queryDraft.value = value ?? ""; });
-watch(() => props.resourceError, () => { queryDraft.value = props.resourceQuery ?? ""; });
+watch(() => props.resourceError, (value) => { if (value) queryDraft.value = props.resourceQuery ?? ""; });
+
+function updateQuery(event: Event): void {
+  const target = event.target;
+  if (!(target instanceof HTMLInputElement)) return;
+  queryDraft.value = target.value;
+  emit("query", queryDraft.value);
+}
 
 const facets = computed(() => props.facets ?? { magnet: 0, share: 0, "4k": 0, "1080p": 0, "720p": 0, subtitle: 0 });
 const total = computed(() => props.total ?? props.resources.length);
@@ -143,7 +150,7 @@ function pageRequest(target: number) {
           <button type="button" :class="{ active: kind === 'magnet' }" @click="emit('kind', 'magnet')"><Magnet :size="14" />磁力 <span>{{ kindCounts.magnet }}</span></button>
           <button type="button" :class="{ active: kind === '115_share' }" @click="emit('kind', '115_share')"><PackageOpen :size="14" />115 分享 <span>{{ kindCounts.share }}</span></button>
         </div>
-        <label class="resource-name-search"><Search :size="15" /><span class="sr-only">搜索资源名称</span><input :value="queryDraft" type="search" aria-label="资源名称搜索" placeholder="搜索资源名称" @input="emit('query', ($event.target as HTMLInputElement).value)" /></label>
+        <label class="resource-name-search"><Search :size="15" /><span class="sr-only">搜索资源名称</span><input :value="queryDraft" type="search" aria-label="资源名称搜索" placeholder="搜索资源名称" @input="updateQuery" /></label>
         <label class="sort-control">排序<select :value="sort" aria-label="资源排序" @change="emit('sort', ($event.target as HTMLSelectElement).value as ResourceSort)"><option value="comprehensive">综合</option><option value="relevance">相关度</option><option value="completeness">完整度</option><option value="size">大小</option><option value="seeders">做种</option></select></label>
         <label class="sort-control">每页<select :value="pageSize" aria-label="资源每页数量" @change="emit('pageSize', Number(($event.target as HTMLSelectElement).value) as 25 | 50 | 100)"><option :value="25">25</option><option :value="50">50</option><option :value="100">100</option></select></label>
         <button v-if="inspectionSupported && inspectionMoreAvailable && inspectionState !== 'running'" type="button" class="secondary-button inspection-more-button" @click="emit('inspectMore')"><ScanSearch :size="15" />检测更多</button>

@@ -76,8 +76,16 @@ export function mediaRoutePath(mediaType: "movie" | "tv", tmdbId: number, season
 
 export function navigateToMedia(mediaType: "movie" | "tv", tmdbId: number, seasonNumber?: number, resources?: MediaResourceRouteState, replace = false): void {
   const path = mediaRoutePath(mediaType, tmdbId, seasonNumber, resources);
-  if (replace) window.history.replaceState({}, "", path);
-  else window.history.pushState({}, "", path);
+  const currentState = window.history.state ?? {};
+  if (replace) {
+    window.history.replaceState(currentState, "", path);
+    return;
+  }
+  const currentBackDelta = Number.isInteger(currentState.catalogBackDelta) ? currentState.catalogBackDelta : 0;
+  window.history.pushState({
+    ...currentState,
+    ...(currentState.catalogDetailEntry ? { catalogBackDelta: currentBackDelta + 1 } : {}),
+  }, "", path);
 }
 
 export function navigateHome(): void {
@@ -112,8 +120,9 @@ const VIEW_PATHS: Record<Exclude<BrowseView, "search">, string> = {
   settings: "/settings",
 };
 
-export function navigateToView(view: Exclude<BrowseView, "search">): void {
-  window.history.pushState({}, "", VIEW_PATHS[view]);
+export function navigateToView(view: Exclude<BrowseView, "search">, replace = false): void {
+  if (replace) window.history.replaceState({}, "", VIEW_PATHS[view]);
+  else window.history.pushState({}, "", VIEW_PATHS[view]);
 }
 
 export function parseCatalogRoute(path: string): CatalogRoute | null {

@@ -18,7 +18,7 @@ import {
 } from "./router";
 import { mediaKey, mediaTypeOf } from "./media";
 import { canPushResource, NO_PUSH_CAPABILITIES, resolvePushCapabilities, submitPushResource, type PushCapabilities } from "./push";
-import { finalizeInspectionResources, inspectionProgress as getInspectionProgress, inspectionResultEnded, inspectionState as getInspectionBatchState, mergeInspectionResult, nextInspectionResourceIds, pollInspectionBatch } from "./inspection";
+import { finalizeInspectionResources, inspectionProgress as getInspectionProgress, inspectionResultEnded, inspectionState as getInspectionBatchState, MAX_INSPECTABLE_MAGNETS, mergeInspectionResult, nextInspectionResourceIds, pollInspectionBatch } from "./inspection";
 import type { HomeCatalogResponse, MovieMetadata, ResourceFacets, ResourcePageResponse, ResourceQuality, ResourceSort, ResourceSummary, SearchResponse, TaskResponse } from "./types";
 import CollectionView from "./views/CollectionView.vue";
 import HomeView from "./views/HomeView.vue";
@@ -66,6 +66,7 @@ const inspectionError = ref<string | null>(null);
 const inspectionProcessedIds = ref<Set<string>>(new Set());
 const inspectionInFlightIds = ref<Set<string>>(new Set());
 const inspectionRetryIds = ref<Set<string>>(new Set());
+const inspectionSeenIds = ref<Set<string>>(new Set());
 const inspectionResults = ref<Map<string, import("./types").InspectionResult>>(new Map());
 const inspectionStatusOverrides = ref<Map<string, ResourceSummary["inspection_status"]>>(new Map());
 const inspectionAutoRequestId = ref<number | null>(null);
@@ -139,7 +140,8 @@ function currentResourceRoute(): ResourceRouteState {
 
 function applyResourceRoute(route: Partial<ResourceRouteState> = {}) {
   const defaults = defaultResourceRoute();
-  resourcePage.value = Number.isInteger(route.page) && (route.page ?? 0) >= 1 ? route.page! : defaults.page;
+  const requestedPage = Number.isInteger(route.page) && (route.page ?? 0) >= 1 ? route.page! : defaults.page;
+  resourcePage.value = Math.min(Math.max(1, resourceTotalPages.value), requestedPage);
   resourceKind.value = route.kind ?? defaults.kind;
   resourceQuality.value = route.quality ?? defaults.quality;
   resourceQuery.value = (route.query ?? defaults.query).trim();
@@ -171,11 +173,12 @@ function clearResourcePagination() {
   }
 }
 
-function applyResourceResponse(response: ResourcePageResponse) {
+function applyResourceResponse(response: ResourcePageResponse, requestedPage = 1) {
   if (resourceResponse.value && resourceResponse.value.snapshot_revision !== response.snapshot_revision) resourceCache.clear();
   const safeTotalPages = Math.max(1, Math.min(500, Math.trunc(response.total_pages) || 1));
   resourceResponse.value = response;
-  resourcePage.value = Math.max(1, Math.min(safeTotalPages, Math.trunc(response.page) || 1));
+  const responsePage = Math.trunc(response.page) || requestedPage;
+  resourcePage.value = response.total === 0 ? 1 : Math.max(1, Math.min(safeTotalPages, responsePage));
   resourcePageSize.value = response.page_size;
   resourceTotal.value = response.total;
   resourceTotalPages.value = safeTotalPages;
@@ -328,17 +331,19 @@ async function requestCatalog(route: CatalogRoute, historyMode: "push" | "replac
   }
 }
 function inspectionBatchIds(limit = 8, retriesOnly = false): string[] {
-  if (!result.value) return [];
+  if (!result.value || !resourceItems.value.length) return [];
   const unavailableIds = new Set([...inspectionProcessedIds.value, ...inspectionInFlightIds.value]);
   const candidates = nextInspectionResourceIds(
-    result.value.results,
+    resourceItems.value,
     unavailableIds,
     30,
   );
   const eligible = retriesOnly
     ? candidates.filter((resourceId) => inspectionRetryIds.value.has(resourceId))
     : candidates.filter((resourceId) => !inspectionRetryIds.value.has(resourceId));
-  return eligible.slice(0, limit);
+  if (retriesOnly) return eligible.slice(0, limit);
+  const remainingNewIds = Math.max(0, MAX_INSPECTABLE_MAGNETS - inspectionSeenIds.value.size);
+  return eligible.filter((resourceId) => !inspectionSeenIds.value.has(resourceId)).slice(0, Math.min(limit, remainingNewIds));
 }
 
 const inspectionRetryAvailable = computed(() => inspectionBatchIds(8, true).length > 0);
@@ -467,6 +472,7 @@ function resetInspection() {
   inspectionProcessedIds.value = new Set();
   inspectionInFlightIds.value = new Set();
   inspectionRetryIds.value = new Set();
+  inspectionSeenIds.value = new Set();
   inspectionResults.value = new Map();
   inspectionStatusOverrides.value = new Map();
   inspectionAutoRequestId.value = null;
@@ -523,11 +529,12 @@ async function loadResourcePage(route: ResourceRouteState, historyMode: "push" |
   resourceError.value = "";
   if (cached) {
     if (!isCurrent()) return;
-    applyResourceResponse(cached);
+    applyResourceResponse(cached, safeRoute.page);
     applyResourceRoute(safeRoute);
     pendingResourceRoute = null;
     resourceLoading.value = false;
     if (historyMode !== "none") navigateToMedia(detailMediaType.value, result.value.movie.tmdb_id, detailMediaType.value === "tv" ? selectedSeason.value ?? undefined : undefined, safeRoute, historyMode === "replace");
+    startAutomaticInspection(searchId);
     return;
   }
   try {
@@ -541,21 +548,22 @@ async function loadResourcePage(route: ResourceRouteState, historyMode: "push" |
       pageSize: safeRoute.pageSize,
     }, controller.signal);
     if (!isCurrent()) return;
-    const actualPage = Math.max(1, Math.min(500, Math.trunc(response.page) || 1));
     const actualTotalPages = Math.max(1, Math.min(500, Math.trunc(response.total_pages) || 1));
-    if (actualPage !== safeRoute.page && !correctionAttempted) {
-      resourceLoading.value = false;
-      await loadResourcePage({ ...safeRoute, page: actualPage }, historyMode === "none" ? "replace" : historyMode, true);
+    const legalPage = response.total === 0 ? 1 : actualTotalPages;
+    if (safeRoute.page > legalPage && !correctionAttempted) {
+      await loadResourcePage({ ...safeRoute, page: legalPage }, "replace", true);
       return;
     }
+    const actualPage = response.total === 0 ? 1 : Math.max(1, Math.min(actualTotalPages, Math.trunc(response.page) || safeRoute.page));
     resourceCache.set(resourceCacheKey({ ...safeRoute, page: actualPage }, response.snapshot_revision), response);
     while (resourceCache.size > 20) resourceCache.delete(resourceCache.keys().next().value as string);
-    applyResourceResponse(response);
+    applyResourceResponse(response, actualPage);
     applyResourceRoute({ ...safeRoute, page: actualPage });
     pendingResourceRoute = null;
     resourcePage.value = actualPage;
     resourceLoading.value = false;
     if (historyMode !== "none") navigateToMedia(detailMediaType.value, result.value.movie.tmdb_id, detailMediaType.value === "tv" ? selectedSeason.value ?? undefined : undefined, { ...safeRoute, page: actualPage }, historyMode === "replace");
+    startAutomaticInspection(searchId);
   } catch (exception) {
     if (!isCurrent()) return;
     resourceLoading.value = false;
@@ -565,6 +573,7 @@ async function loadResourcePage(route: ResourceRouteState, historyMode: "push" |
       resourceError.value = "资源分页暂不可用，当前显示搜索快照结果";
       resourcePage.value = 1;
       resourceTotalPages.value = 1;
+      startAutomaticInspection(searchId);
       return;
     }
     pendingResourceRoute = null;
@@ -629,7 +638,6 @@ async function loadResources(
     beginResourceSnapshot(response.results);
     recordHistory(response.movie);
     void loadResourcePage(initialResourceRoute, "none");
-    startAutomaticInspection(requestId);
   } catch (exception) {
     if (requestId === searchRequestId) {
       error.value = exception instanceof ApiError ? exception.message : "资源搜索失败，请稍后重试";
@@ -660,6 +668,7 @@ async function openMovie(movie: MovieMetadata) {
       catalog: catalogReturnRoute,
       catalogScrollY: catalogReturnScrollY,
       catalogDetailEntry: true,
+      catalogBackDelta: 1,
     }, "", window.location.href);
   }
   await loadResources(movie.tmdb_id, mediaType, false, null, true, defaultResourceRoute());
@@ -670,7 +679,7 @@ async function selectSeason(seasonNumber: number | null) {
   const movie = result.value.movie;
   selectedSeason.value = seasonNumber;
   const nextRoute = { ...currentResourceRoute(), page: 1, kind: "all" as const, quality: "all" as const, query: "" };
-  navigateToMedia("tv", movie.tmdb_id, seasonNumber ?? undefined, nextRoute);
+  navigateToMedia("tv", movie.tmdb_id, seasonNumber ?? undefined, nextRoute, true);
   await loadResources(movie.tmdb_id, "tv", false, seasonNumber, true, nextRoute);
 }
 
@@ -678,9 +687,12 @@ async function returnToBrowse() {
   invalidateDetailRequest();
   result.value = null;
   if (catalogReturnRoute && window.history.state?.catalogDetailEntry === true) {
+    const catalogBackDelta = Number.isInteger(window.history.state?.catalogBackDelta)
+      ? Math.max(1, window.history.state.catalogBackDelta)
+      : 1;
     catalogReturnRoute = null;
     catalogReturnScrollY = null;
-    window.history.back();
+    window.history.go(-catalogBackDelta);
     return;
   }
   const view = previousView.value === "search" ? "search" : previousView.value;
@@ -701,7 +713,7 @@ async function initializeWorkspace() {
     if (catalogRoute.view === "search" && !catalogRoute.query.trim()) {
       activeView.value = "home";
       previousView.value = "home";
-      navigateToView("home");
+      navigateToView("home", true);
       await loadHome();
       return;
     }
@@ -856,6 +868,7 @@ async function inspectBatch(resourceIds: string[], requestId: number) {
   if (!result.value || !inspectionSupported.value || requestId !== searchRequestId || inspectionState.value === "running") return;
 
   const runId = ++inspectionRunId;
+  inspectionSeenIds.value = new Set([...inspectionSeenIds.value, ...resourceIds]);
   inspectionInFlightIds.value = new Set([...inspectionInFlightIds.value, ...resourceIds]);
   inspectionState.value = "running";
   inspectionCompleted.value = 0;
@@ -935,6 +948,19 @@ function ensurePolling() {
 }
 
 async function syncRoute() {
+  const mediaRoute = extractMediaRoute(window.location.pathname + window.location.search);
+  const routeSeason = mediaRoute?.mediaType === "tv" ? mediaRoute.seasonNumber ?? null : null;
+  if (mediaRoute && result.value
+    && mediaRoute.tmdbId === result.value.movie.tmdb_id
+    && mediaRoute.mediaType === detailMediaType.value
+    && routeSeason === selectedSeason.value) {
+    selectedSeason.value = mediaRoute.mediaType === "tv" ? mediaRoute.seasonNumber ?? null : null;
+    const route = resourceRouteFromMediaRoute(mediaRoute);
+    applyResourceRoute(route);
+    pendingResourceRoute = null;
+    await loadResourcePage(route, "none");
+    return;
+  }
   invalidateDetailRequest();
   result.value = null;
   await initializeWorkspace();

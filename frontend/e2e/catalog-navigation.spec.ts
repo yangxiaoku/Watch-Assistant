@@ -268,10 +268,19 @@ test("restores a search query and page from the URL", async ({ page }) => {
 
 test("does not call search for an empty search URL or whitespace input", async ({ page }) => {
   const mocks = await installCatalogMocks(page);
+  await page.goto("/movies");
+  await expect(page.getByRole("heading", { name: "电影库" })).toBeVisible();
+  const beforeInvalidSearch = await page.evaluate(() => window.history.length);
+
   await page.goto("/search?query=%20%20");
   await expect(page).toHaveURL(/\/$/);
   await expect(page.getByRole("heading", { name: "正在热映" })).toBeVisible();
+  expect(await page.evaluate(() => window.history.length)).toBe(beforeInvalidSearch + 1);
   expect(mocks.searchRequests).toHaveLength(0);
+
+  await page.goBack();
+  await expect(page).toHaveURL(/\/movies$/);
+  await expect(page.getByRole("heading", { name: "电影库" })).toBeVisible();
 
   await page.getByLabel("搜索电影或电视剧").fill("   ");
   await page.getByRole("button", { name: "提交搜索" }).click();
