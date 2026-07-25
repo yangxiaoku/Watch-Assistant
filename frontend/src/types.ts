@@ -110,6 +110,10 @@ export interface InspectionBatchResponse {
 export interface HealthResponse {
   status: string;
   push_supported: boolean;
+  push_capabilities?: {
+    magnet: boolean;
+    share: boolean;
+  };
   inspection_supported?: boolean;
 }
 
