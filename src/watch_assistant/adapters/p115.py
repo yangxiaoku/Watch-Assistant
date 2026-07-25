@@ -13,6 +13,10 @@ from urllib.parse import parse_qs, urlsplit
 
 from watch_assistant.schemas import RemoteStatus, SubmissionResult
 from watch_assistant.services.p115_credentials import CookieProvider
+from watch_assistant.services.p115_settings import (
+    P115NeedsAuthError,
+    P115UnavailableError,
+)
 
 P115CLIENT_VERSION = "0.0.9.6.5.1"
 INFOHASH_REMOTE_REF_PREFIX = "infohash:"
@@ -210,6 +214,37 @@ class P115Adapter:
             except Exception:  # noqa: BLE001 - readiness must stay non-sensitive
                 return False
             return not missing and client is not None
+
+    async def validate_read_only(self) -> None:
+        """Check credentials with one read-only task-list request."""
+        async with self._semaphore:
+            client, missing = await self._client_for_operation()
+            if missing:
+                raise P115NeedsAuthError
+            if client is None:
+                raise P115UnavailableError
+            try:
+                method = getattr(client, "clouddownload_task_list", None)
+                if not callable(method):
+                    raise P115UnavailableError
+                response = method({"page": 1}, async_=True)
+                if not inspect.isawaitable(response):
+                    raise P115UnavailableError
+                response = await response
+            except asyncio.CancelledError:
+                raise
+            except P115UnavailableError:
+                raise
+            except Exception as error:  # noqa: BLE001 - map remote failure
+                if _auth_exception(error):
+                    raise P115NeedsAuthError from None
+                raise P115UnavailableError from None
+            if not isinstance(response, Mapping):
+                raise P115UnavailableError
+            if _response_auth(response):
+                raise P115NeedsAuthError
+            if not _response_ok(response):
+                raise P115UnavailableError
 
     async def _client_for_operation(self) -> tuple[Any, bool]:
         cookie = self._cookie_provider.load()
