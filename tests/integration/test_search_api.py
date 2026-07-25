@@ -20,7 +20,8 @@ from watch_assistant.models import (
     SearchCache,
     SourceReliability,
 )
-from watch_assistant.schemas import MovieMetadata
+from watch_assistant.schemas import MediaType, MovieMetadata, ResourceKind
+from watch_assistant.services.search import make_cache_key
 
 TMDB_RESPONSE = {
     "id": 12345,
@@ -178,6 +179,214 @@ async def test_search_returns_only_top_30_magnets_and_keeps_shares(tmp_path):
         (item["rank_score"], item["relevance_score"], item["completeness_score"])
         for item in second.json()["results"]
     ]
+    await _close(client, database, tmdb, pansou)
+
+
+@pytest.mark.integration
+@respx.mock
+async def test_resource_snapshot_paginates_all_magnets_and_preserves_legacy_limit(
+    tmp_path,
+):
+    _mock_tmdb()
+    magnets = [
+        {
+            "url": f"magnet:?xt=urn:btih:{index:040x}",
+            "note": f"Inception 2010 1080p release-{index}",
+            "source": "plugin:bulk",
+            "seeders": index,
+            "size": f"{index} GB",
+        }
+        for index in range(1, 601)
+    ]
+    payload = _pansou_response()
+    payload["data"]["merged_by_type"] = {
+        "magnet": magnets,
+        "115": [payload["data"]["merged_by_type"]["115"][0]],
+    }
+    respx.get("http://pansou.test/api/search").mock(
+        return_value=httpx.Response(200, json=payload)
+    )
+    client, database, tmdb, pansou = await _make_client(tmp_path)
+
+    legacy = await client.post("/api/v1/search", json={"tmdb_id": 12345})
+    calls_before_page = respx.calls.call_count
+    pages = [
+        await client.get(
+            "/api/v1/media/movie/12345/resources",
+            params={"page": page, "page_size": 100, "sort": "seeders"},
+        )
+        for page in range(1, 7)
+    ]
+    page_one = pages[0]
+
+    assert legacy.status_code == 200
+    assert sum(item["kind"] == "magnet" for item in legacy.json()["results"]) == 30
+    assert all(page.status_code == 200 for page in pages), [page.text for page in pages]
+    assert [len(page.json()["items"]) for page in pages] == [100, 100, 100, 100, 100, 1]
+    assert page_one.json()["total"] == 501
+    assert page_one.json()["total_pages"] == 6
+    assert page_one.json()["facets"] == {
+        "magnet": 500,
+        "share": 1,
+        "4k": 0,
+        "1080p": 500,
+        "720p": 0,
+        "subtitle": 0,
+    }
+    all_items = [item for page in pages for item in page.json()["items"]]
+    assert len({item["resource_id"] for item in all_items}) == 501
+    assert [item["seeders"] for item in page_one.json()["items"]] == list(
+        range(600, 500, -1)
+    )
+    assert page_one.json()["snapshot_revision"] == pages[1].json()["snapshot_revision"]
+    assert respx.calls.call_count == calls_before_page
+    async with database.session_factory() as session:
+        assert len(list(await session.scalars(select(Resource)))) == 501
+    await _close(client, database, tmdb, pansou)
+
+
+@pytest.mark.integration
+@respx.mock
+async def test_resource_snapshot_filters_quality_query_and_rejects_bad_parameters(
+    tmp_path,
+):
+    _mock_tmdb()
+    payload = _pansou_response()
+    payload["data"]["merged_by_type"]["magnet"] = [
+        {
+            "url": f"magnet:?xt=urn:btih:{index:040x}",
+            "note": f"Inception 2010 {quality} release-{index}",
+            "source": "plugin:filtered",
+            "seeders": index,
+        }
+        for index, quality in enumerate(("1080p", "720p", "4K"), start=1)
+    ]
+    payload["data"]["merged_by_type"]["115"] = []
+    respx.get("http://pansou.test/api/search").mock(
+        return_value=httpx.Response(200, json=payload)
+    )
+    client, _database, tmdb, pansou = await _make_client(tmp_path)
+
+    assert (
+        await client.post("/api/v1/search", json={"tmdb_id": 12345})
+    ).status_code == 200
+    filtered = await client.get(
+        "/api/v1/media/movie/12345/resources",
+        params={"kind": "magnet", "quality": "4k", "query": "release-3"},
+    )
+    invalid_page_size = await client.get(
+        "/api/v1/media/movie/12345/resources", params={"page_size": 30}
+    )
+    invalid_sort = await client.get(
+        "/api/v1/media/movie/12345/resources", params={"sort": "newest"}
+    )
+    invalid_quality = await client.get(
+        "/api/v1/media/movie/12345/resources", params={"quality": "2160p"}
+    )
+
+    assert filtered.status_code == 200
+    assert filtered.json()["total"] == 1
+    assert filtered.json()["items"][0]["name"].endswith("4K release-3")
+    assert filtered.json()["facets"]["4k"] == 1
+    assert invalid_page_size.status_code == 422
+    assert invalid_sort.status_code == 422
+    assert invalid_quality.status_code == 422
+    await _close(client, _database, tmdb, pansou)
+
+
+@pytest.mark.integration
+@respx.mock
+async def test_resource_snapshot_missing_returns_stable_error_without_upstream(
+    tmp_path,
+):
+    client, _database, tmdb, pansou = await _make_client(tmp_path)
+
+    response = await client.get("/api/v1/media/movie/12345/resources")
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "resource_snapshot_not_found"}
+    assert respx.calls.call_count == 0
+    await _close(client, _database, tmdb, pansou)
+
+
+@pytest.mark.integration
+@respx.mock
+async def test_resource_snapshot_keeps_tv_seasons_isolated(tmp_path):
+    client, database, tmdb, pansou = await _make_client(tmp_path)
+    now = datetime.now(UTC)
+    resources = [
+        Resource(
+            id="res_season_1",
+            kind=ResourceKind.MAGNET,
+            canonical_key="magnet:season-1",
+            encrypted_url="encrypted",
+            name="Inception S01 1080p",
+            source="test",
+            captured_at=now,
+            expires_at=now + timedelta(days=7),
+            metadata_json=json.dumps(
+                {"rank_score": 80, "relevance_score": 80, "completeness_score": 80}
+            ),
+        ),
+        Resource(
+            id="res_season_2",
+            kind=ResourceKind.MAGNET,
+            canonical_key="magnet:season-2",
+            encrypted_url="encrypted",
+            name="Inception S02 1080p",
+            source="test",
+            captured_at=now,
+            expires_at=now + timedelta(days=7),
+            metadata_json=json.dumps(
+                {"rank_score": 90, "relevance_score": 90, "completeness_score": 90}
+            ),
+        ),
+    ]
+    caches = [
+        SearchCache(
+            cache_key=make_cache_key(12345, MediaType.TV, season),
+            resource_ids_json=json.dumps(
+                {
+                    "version": 1,
+                    "resources": [
+                        {
+                            "resource_id": resource.id,
+                            "rank_score": resource_id,
+                            "relevance_score": resource_id,
+                            "completeness_score": resource_id,
+                        }
+                    ],
+                }
+            ),
+            warnings_json="[]",
+            fetched_at=now,
+            expires_at=now + timedelta(days=7),
+        )
+        for season, resource, resource_id in (
+            (1, resources[0], 80),
+            (2, resources[1], 90),
+        )
+    ]
+    async with database.session_factory() as session:
+        session.add_all([*resources, *caches])
+        await session.commit()
+
+    season_one = await client.get(
+        "/api/v1/media/tv/12345/resources", params={"season_number": 1}
+    )
+    season_two = await client.get(
+        "/api/v1/media/tv/12345/resources", params={"season_number": 2}
+    )
+
+    assert season_one.status_code == 200
+    assert season_two.status_code == 200
+    assert [item["name"] for item in season_one.json()["items"]] == [
+        "Inception S01 1080p"
+    ]
+    assert [item["name"] for item in season_two.json()["items"]] == [
+        "Inception S02 1080p"
+    ]
+    assert respx.calls.call_count == 0
     await _close(client, database, tmdb, pansou)
 
 

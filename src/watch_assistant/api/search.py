@@ -10,12 +10,15 @@ from watch_assistant.schemas import (
     MediaType,
     MovieCollectionResponse,
     MovieMetadata,
+    ResourceKind,
+    ResourcePageResponse,
     SearchRequest,
     SearchResponse,
 )
 from watch_assistant.security import require_api_auth
 from watch_assistant.services.search import (
     InvalidSeasonRequest,
+    ResourceSnapshotNotFound,
     SearchService,
     SearchUnavailable,
 )
@@ -125,6 +128,46 @@ async def get_media(
         return await service.get_media(tmdb_id, media_type)
     except TmdbError as exc:
         raise HTTPException(status_code=502, detail="tmdb_unavailable") from exc
+
+
+@router.get(
+    "/media/{media_type}/{tmdb_id}/resources",
+    response_model=ResourcePageResponse,
+)
+async def list_resources(
+    media_type: MediaType,
+    tmdb_id: int,
+    service: SearchServiceDependency,
+    season_number: int | None = Query(default=None, ge=0),
+    kind: ResourceKind | None = None,
+    quality: Literal["4k", "1080p", "720p", "subtitle"] | None = None,
+    query: str | None = Query(default=None, min_length=1, max_length=100),
+    sort: Literal[
+        "comprehensive", "relevance", "completeness", "size", "seeders"
+    ] = "comprehensive",
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=25, enum=[25, 50, 100]),
+) -> ResourcePageResponse:
+    if season_number is not None and media_type != MediaType.TV:
+        raise HTTPException(status_code=422, detail="season_requires_tv")
+    if page_size not in {25, 50, 100}:
+        raise HTTPException(status_code=422, detail="invalid_page_size")
+    try:
+        return await service.list_resources(
+            tmdb_id,
+            media_type=media_type,
+            season_number=season_number,
+            kind=kind,
+            quality=quality,
+            query=query,
+            sort=sort,
+            page=page,
+            page_size=page_size,
+        )
+    except ResourceSnapshotNotFound as exc:
+        raise HTTPException(
+            status_code=404, detail="resource_snapshot_not_found"
+        ) from exc
 
 
 @router.get("/movies/{tmdb_id}", response_model=MovieMetadata)

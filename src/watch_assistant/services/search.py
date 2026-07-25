@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import re
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
@@ -26,6 +27,7 @@ from watch_assistant.schemas import (
     MovieMetadata,
     NormalizedResource,
     ResourceKind,
+    ResourcePageResponse,
     ResourceSummary,
     SearchResponse,
 )
@@ -40,9 +42,15 @@ from watch_assistant.services.validation import (
 
 FRESH_CACHE_AGE = timedelta(hours=24)
 STALE_CACHE_AGE = timedelta(days=7)
+MAX_SNAPSHOT_MAGNETS = 500
+LEGACY_MAGNET_LIMIT = 30
 
 
 class SearchUnavailable(RuntimeError):
+    pass
+
+
+class ResourceSnapshotNotFound(RuntimeError):
     pass
 
 
@@ -196,6 +204,55 @@ class SearchService:
             )
             return bool(cache and _as_utc(cache.fetched_at) >= _as_utc(since))
 
+    async def list_resources(
+        self,
+        tmdb_id: int,
+        *,
+        media_type: MediaType,
+        season_number: int | None,
+        kind: ResourceKind | None,
+        quality: str | None,
+        query: str | None,
+        sort: str,
+        page: int,
+        page_size: int,
+    ) -> ResourcePageResponse:
+        async with self._session_factory() as session:
+            cache = await session.get(
+                SearchCache, make_cache_key(tmdb_id, media_type, season_number)
+            )
+            if cache is None:
+                raise ResourceSnapshotNotFound
+            resources, scores = await self._load_cached_resources(session, cache)
+
+        resources = list({resource.id: resource for resource in resources}.values())
+        facets = _resource_facets(resources)
+        normalized_query = query.casefold().strip() if query else None
+        filtered = [
+            resource
+            for resource in resources
+            if (kind is None or resource.kind == kind)
+            and (quality is None or _quality_matches(resource.name, quality))
+            and (
+                normalized_query is None or normalized_query in resource.name.casefold()
+            )
+        ]
+        filtered.sort(key=lambda resource: _resource_sort_key(resource, scores, sort))
+        total = len(filtered)
+        start = (page - 1) * page_size
+        end = start + page_size
+        return ResourcePageResponse(
+            items=[
+                _resource_summary(resource, scores) for resource in filtered[start:end]
+            ],
+            page=page,
+            page_size=page_size,
+            total=total,
+            total_pages=(total + page_size - 1) // page_size if total else 0,
+            facets=facets,
+            snapshot_revision=_as_utc(cache.fetched_at).isoformat(),
+        )
+
     async def list_active_watches(self) -> list[MovieMetadata]:
         async with self._session_factory() as session:
             rows = await session.scalars(
@@ -337,7 +394,7 @@ class SearchService:
                         if candidates:
                             warnings.append("alternative_titles_used")
 
-        candidates = _limit_magnet_resources(candidates)
+        candidates = _limit_magnet_resources(candidates, MAX_SNAPSHOT_MAGNETS)
 
         if not complete:
             warnings = _merge_warnings(warnings, ["partial_upstream"])
@@ -771,9 +828,12 @@ class SearchService:
         selected_season: int | None = None,
         score_snapshot: Mapping[str, Mapping[str, int]] | None = None,
     ) -> SearchResponse:
+        visible_resources = _limit_magnet_resources(resources, LEGACY_MAGNET_LIMIT)
         return SearchResponse(
             movie=movie,
-            results=[_resource_summary(item, score_snapshot) for item in resources],
+            results=[
+                _resource_summary(item, score_snapshot) for item in visible_resources
+            ],
             warnings=warnings or [],
             cached=cached,
             cache_age_seconds=(
@@ -889,7 +949,7 @@ def _fallback_queries(
 
 
 def _limit_magnet_resources(
-    resources: list[NormalizedResource], limit: int = 30
+    resources: list[NormalizedResource], limit: int = LEGACY_MAGNET_LIMIT
 ) -> list[NormalizedResource]:
     magnets = [item for item in resources if item.kind == ResourceKind.MAGNET]
     allowed = {item.canonical_key for item in magnets[:limit]}
@@ -898,6 +958,64 @@ def _limit_magnet_resources(
         for item in resources
         if item.kind == ResourceKind.SHARE or item.canonical_key in allowed
     ]
+
+
+def _resource_facets(resources: list[Resource]) -> dict[str, int]:
+    facets = {
+        "magnet": 0,
+        "share": 0,
+        "4k": 0,
+        "1080p": 0,
+        "720p": 0,
+        "subtitle": 0,
+    }
+    for resource in resources:
+        if resource.kind == ResourceKind.MAGNET:
+            facets["magnet"] += 1
+        elif resource.kind == ResourceKind.SHARE:
+            facets["share"] += 1
+        for quality in ("4k", "1080p", "720p", "subtitle"):
+            if _quality_matches(resource.name, quality):
+                facets[quality] += 1
+    return facets
+
+
+def _quality_matches(name: str, quality: str) -> bool:
+    value = name.casefold()
+    patterns = {
+        "4k": r"(?<![a-z0-9])(?:4k|2160p)(?![a-z0-9])",
+        "1080p": r"(?<![a-z0-9])1080p(?![a-z0-9])",
+        "720p": r"(?<![a-z0-9])720p(?![a-z0-9])",
+        "subtitle": r"(?<![a-z0-9])(?:subtitle|subtitles|字幕)(?![a-z0-9])",
+    }
+    pattern = patterns.get(quality)
+    return pattern is not None and re.search(pattern, value) is not None
+
+
+def _resource_sort_key(
+    resource: Resource,
+    scores: Mapping[str, Mapping[str, int]],
+    sort: str,
+) -> tuple[object, ...]:
+    resource_scores = scores.get(resource.id, {})
+    if sort == "relevance":
+        return (-resource_scores.get("relevance_score", 0), resource.id)
+    if sort == "completeness":
+        return (-resource_scores.get("completeness_score", 0), resource.id)
+    if sort == "size":
+        return _descending_optional(resource.size_bytes, resource.id)
+    if sort == "seeders":
+        return _descending_optional(resource.seeders, resource.id)
+    return (
+        -resource_scores.get("rank_score", 0),
+        resource.id,
+    )
+
+
+def _descending_optional(value: int | None, resource_id: str) -> tuple[object, ...]:
+    if value is None or value < 0:
+        return (1, 0, resource_id)
+    return (0, -value, resource_id)
 
 
 def _selected_season(media: MovieMetadata, season_number: int | None) -> int | None:
