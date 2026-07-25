@@ -35,6 +35,12 @@ _PLUGIN_SIZE = re.compile(
     r"(?P<number>\d+(?:\.\d+)?)\s*(?P<unit>B|KB|MB|GB|TB|KiB|MiB|GiB|TiB)\b",
     re.IGNORECASE,
 )
+_TPB_SIZE = re.compile(
+    r"(?<![\w-])Size(?:\s*[:：]\s*|\s+)"
+    r"(?P<number>\d+(?:\.\d+)?)\s*"
+    r"(?P<unit>B|KB|MB|GB|TB|KiB|MiB|GiB|TiB)\b",
+    re.IGNORECASE,
+)
 _PLUGIN_SEEDERS = re.compile(
     r"(?<![\w-])(?P<label>做种|Seeders)\s*[:：]\s*(?P<number>\d+)(?!\w)",
     re.IGNORECASE,
@@ -255,10 +261,19 @@ def _find_plugin_size(value: object, label: str) -> int | None:
         return None
     if not isinstance(value, str):
         return None
-    match = _PLUGIN_SIZE.search(value)
-    if match is None or match.group("label").casefold() != label.casefold():
-        return None
-    return _parse_size_value(f"{match.group('number')} {match.group('unit')}")
+    patterns = [_PLUGIN_SIZE]
+    if label == "文件大小":
+        patterns.append(_TPB_SIZE)
+    for pattern in patterns:
+        match = pattern.search(value)
+        if match is None:
+            continue
+        if "label" in match.groupdict() and (
+            match.group("label").casefold() != label.casefold()
+        ):
+            continue
+        return _parse_size_value(f"{match.group('number')} {match.group('unit')}")
+    return None
 
 
 def _find_plugin_seeders(value: object, label: str) -> int | None:

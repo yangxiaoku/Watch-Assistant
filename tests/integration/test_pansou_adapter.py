@@ -9,6 +9,7 @@ from watch_assistant.adapters.pansou import (
     LinkCheckState,
     PanSouClient,
     PanSouError,
+    _parse_plugin_result,
 )
 from watch_assistant.adapters.tmdb import (
     TmdbClient,
@@ -51,7 +52,7 @@ async def test_pansou_extracts_nyaa_and_tpb_plugin_metadata_by_infohash():
     nyaa_result = {
         "message_id": "nyaa-message",
         "unique_id": "nyaa-unique",
-        "channel": "nyaa",
+        "channel": "",
         "datetime": "2026-07-25T00:00:00Z",
         "title": "Nyaa Movie",
         "content": "大小: 1.5 GiB",
@@ -64,16 +65,16 @@ async def test_pansou_extracts_nyaa_and_tpb_plugin_metadata_by_infohash():
                 "work_title": "Nyaa Movie",
             }
         ],
-        "tags": "做种: 12",
+        "tags": ["做种: 12"],
         "images": [],
     }
     tpb_result = {
         "message_id": "tpb-message",
         "unique_id": "tpb-unique",
-        "channel": "tpb",
+        "channel": "",
         "datetime": "2026-07-25T00:00:00Z",
         "title": "TPB Movie",
-        "content": "文件大小: 2 TB, Seeders: 34",
+        "content": "Size 1.67\u00a0GiB, ... Seeders: 34",
         "links": [
             {
                 "type": "magnet",
@@ -83,7 +84,7 @@ async def test_pansou_extracts_nyaa_and_tpb_plugin_metadata_by_infohash():
                 "work_title": "TPB Movie",
             }
         ],
-        "tags": "",
+        "tags": [],
         "images": [],
     }
     route = respx.get("http://pansou.test/api/search").mock(
@@ -129,10 +130,40 @@ async def test_pansou_extracts_nyaa_and_tpb_plugin_metadata_by_infohash():
     assert magnets[0]["size_source"] == "pansou"
     assert magnets[0]["seeders_source"] == "pansou"
     assert magnets[0]["seeders_observed_at"]
-    assert magnets[1]["size"] == 2 * 1024**4
+    assert magnets[1]["size"] == int(1.67 * 1024**3)
     assert magnets[1]["seeders"] == 34
     assert route.calls[0].request.url.params["res"] == "all"
     assert route.call_count == 1
+
+
+@pytest.mark.parametrize(
+    ("content", "expected_size"),
+    [
+        ("文件大小: 2 GiB", 2 * 1024**3),
+        ("Size 2 GiB", 2 * 1024**3),
+        ("Size\u00a02 GiB", 2 * 1024**3),
+        ("Size: 2 GiB", 2 * 1024**3),
+        ("Some Title Size 1080p", None),
+        ("Size 2", None),
+        ("Size: -2 GiB", None),
+        ("Size 2 XB", None),
+        ("2 GiB", None),
+    ],
+)
+def test_pansou_tpb_size_labels_are_strict(content, expected_size):
+    result = {
+        "channel": "",
+        "content": f"{content}, Seeders: 34",
+        "tags": ["Seeders: 34"],
+    }
+
+    parsed = _parse_plugin_result("plugin:thepiratebay", result)
+
+    if expected_size is None:
+        assert "size" not in parsed
+    else:
+        assert parsed["size"] == expected_size
+    assert parsed["seeders"] == 34
 
 
 @respx.mock
@@ -163,7 +194,7 @@ async def test_pansou_ignores_invalid_values_and_unknown_plugin_text():
                         {
                             "message_id": "invalid-message",
                             "unique_id": "invalid-unique",
-                            "channel": "nyaa",
+                            "channel": "",
                             "datetime": "2026-07-25T00:00:00Z",
                             "title": "Invalid",
                             "content": "大小: -1 GB",
@@ -176,13 +207,13 @@ async def test_pansou_ignores_invalid_values_and_unknown_plugin_text():
                                     "work_title": "Invalid",
                                 }
                             ],
-                            "tags": "做种: -3",
+                            "tags": ["做种: -3"],
                             "images": [],
                         },
                         {
                             "message_id": "unknown-message",
                             "unique_id": "unknown-unique",
-                            "channel": "other",
+                            "channel": "",
                             "datetime": "2026-07-25T00:00:00Z",
                             "title": "Unknown",
                             "content": "大小: 99 TB, Seeders: 999",
@@ -195,7 +226,7 @@ async def test_pansou_ignores_invalid_values_and_unknown_plugin_text():
                                     "work_title": "Unknown",
                                 }
                             ],
-                            "tags": "",
+                            "tags": [],
                             "images": [],
                         },
                     ],
@@ -220,7 +251,7 @@ async def test_pansou_keeps_existing_structured_magnet_fields():
     result = {
         "message_id": "structured-message",
         "unique_id": "structured-unique",
-        "channel": "nyaa",
+        "channel": "",
         "datetime": "2026-07-25T00:00:00Z",
         "title": "Structured",
         "content": "大小: 1 GB",
@@ -233,7 +264,7 @@ async def test_pansou_keeps_existing_structured_magnet_fields():
                 "work_title": "Structured",
             }
         ],
-        "tags": "做种: 2",
+        "tags": ["做种: 2"],
         "images": [],
     }
     respx.get("http://pansou.test/api/search").mock(
@@ -313,7 +344,7 @@ async def test_pansou_keeps_existing_structured_magnet_fields():
                         }
                     ],
                     "content": "大小: 1 GB",
-                    "tags": "做种: 3",
+                    "tags": ["做种: 3"],
                 }
             ],
         },
