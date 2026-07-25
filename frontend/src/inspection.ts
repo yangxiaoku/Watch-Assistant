@@ -2,6 +2,8 @@ import type { InspectionBatchResponse, InspectionBatchStatus, InspectionResult, 
 
 export const INSPECTION_POLL_INTERVAL_MS = 1_500;
 export const INSPECTION_TIMEOUT_MS = 10 * 60 * 1_000;
+export const INSPECTION_BATCH_SIZE = 8;
+export const MAX_INSPECTABLE_MAGNETS = 30;
 
 export interface InspectionProgress {
   completed: number;
@@ -56,11 +58,34 @@ export function mergeInspectionResult(resource: ResourceSummary, result: Inspect
   return {
     ...resource,
     size_bytes: result.total_size_bytes,
+    size_source: "inspection",
     video_file_count: result.video_file_count,
     subtitle_count: result.subtitle_count,
     sample_count: result.sample_count,
     inspection_status: result.status,
   };
+}
+
+export function nextInspectionResourceIds(
+  resources: ResourceSummary[],
+  processedIds: ReadonlySet<string>,
+  limit = INSPECTION_BATCH_SIZE,
+  preferredIds: ReadonlySet<string> = new Set(),
+): string[] {
+  const candidates = resources
+    .filter((resource) => resource.kind === "magnet")
+    .slice(0, MAX_INSPECTABLE_MAGNETS)
+    .filter((resource) => !processedIds.has(resource.resource_id));
+  if (preferredIds.size) {
+    candidates.sort((left, right) => {
+      const leftPreferred = preferredIds.has(left.resource_id) ? 0 : 1;
+      const rightPreferred = preferredIds.has(right.resource_id) ? 0 : 1;
+      return leftPreferred - rightPreferred;
+    });
+  }
+  return candidates
+    .slice(0, limit)
+    .map((resource) => resource.resource_id);
 }
 
 export function finalizeInspectionResources(

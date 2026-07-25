@@ -49,8 +49,70 @@ describe("ResourceTable", () => {
     expect(wrapper.text()).toContain("115 分享");
 
     await wrapper.get('select[aria-label="资源排序"]').setValue("relevance");
-    const names = wrapper.findAll("tbody .resource-name").map((cell) => cell.text());
+    const names = wrapper.findAll("tbody .resource-title").map((cell) => cell.text());
     expect(names.slice(0, 2)).toEqual(["磁力 0", "磁力 1"]);
     expect(names).toContain("115 分享");
+  });
+
+  it("labels PanSou metrics and exposes only the secondary more action", async () => {
+    const wrapper = mount(ResourceTable, {
+      props: {
+        resources: [{ ...magnetWithoutStats, size_bytes: 1024, size_source: "pansou", seeders: 4, seeders_source: "pansou" }],
+        inspectionSupported: true,
+        inspectionState: "completed",
+        inspectionMoreAvailable: true,
+        onPush: vi.fn(),
+      },
+    });
+
+    expect(wrapper.text()).toContain("来源数据");
+    expect(wrapper.text()).toContain("检测更多");
+    expect(wrapper.text()).not.toContain("检测本页磁力");
+    await wrapper.get(".inspection-more-button").trigger("click");
+    expect(wrapper.emitted("inspectMore")).toHaveLength(1);
+  });
+
+  it("remembers the selected resource sort", async () => {
+    const wrapper = mount(ResourceTable, {
+      props: { resources: [magnetWithoutStats], onPush: vi.fn() },
+    });
+
+    await wrapper.get('select[aria-label="资源排序"]').setValue("size");
+    expect(window.localStorage.getItem("watch-assistant:resource-sort")).toBe("size");
+  });
+
+  it("filters names by inferred quality tags", async () => {
+    const wrapper = mount(ResourceTable, {
+      props: {
+        resources: [
+          { ...magnetWithoutStats, resource_id: "4k", name: "Film 2160P" },
+          { ...magnetWithoutStats, resource_id: "hd", name: "Film 1080P 字幕" },
+          { ...magnetWithoutStats, resource_id: "sd", name: "Film 720P" },
+        ],
+        onPush: vi.fn(),
+      },
+    });
+
+    expect(wrapper.get('[aria-label="资源名称标签"]').text()).toContain("4K/2160P 1");
+    await wrapper.get('[aria-label="资源名称标签"] button[aria-pressed="false"]').trigger("click");
+    expect(wrapper.findAll("tbody tr")).toHaveLength(1);
+    expect(wrapper.get(".resource-title").text()).toContain("2160P");
+  });
+
+  it("matches subtitle release tokens without matching ordinary words", async () => {
+    const subtitleNames = ["Movie.CHS.1080p", "Movie.Subtitle", "Movie.简中"];
+    const resources: ResourceSummary[] = [
+      ...subtitleNames.map((name, index) => ({ ...magnetWithoutStats, resource_id: `subtitle-${index}`, name })),
+      { ...magnetWithoutStats, resource_id: "submarine", name: "Submarine.2025" },
+      { ...magnetWithoutStats, resource_id: "substance", name: "The.Substance.2024" },
+    ];
+    const wrapper = mount(ResourceTable, {
+      props: { resources, onPush: vi.fn() },
+    });
+
+    expect(wrapper.get('[aria-label="资源名称标签"]').text()).toContain("字幕 3");
+    await wrapper.get('[aria-label="资源名称标签"] button:nth-child(5)').trigger("click");
+    expect(wrapper.findAll("tbody tr")).toHaveLength(3);
+    expect(wrapper.findAll(".resource-title").map((cell) => cell.text())).toEqual(subtitleNames);
   });
 });

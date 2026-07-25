@@ -56,6 +56,9 @@ export interface ResourceSummary {
   seeders: number | null;
   source: string;
   captured_at: string;
+  size_source?: "pansou" | "inspection" | null;
+  seeders_source?: "pansou" | null;
+  seeders_observed_at?: string | null;
   rank_score?: number | null;
   relevance_score?: number | null;
   completeness_score?: number | null;
