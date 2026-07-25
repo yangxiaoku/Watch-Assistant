@@ -1,20 +1,25 @@
 <script setup lang="ts">
 import { Clock3, Film, Flame, Heart, Home, LoaderCircle, LogIn, PanelRight, Search, Settings, Tv, X } from "@lucide/vue";
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 import { ApiClient, ApiError } from "./api";
 import TaskDrawer from "./components/TaskDrawer.vue";
 import {
   extractBrowseView,
   extractMediaRoute,
+  clampCatalogPage,
+  navigateToCatalog,
   navigateToMedia,
-  navigateToSearch,
+  mediaRoutePath,
   navigateToView,
+  parseCatalogRoute,
+  type CatalogRoute,
   type BrowseView,
+  type MediaResourceRouteState,
 } from "./router";
 import { mediaKey, mediaTypeOf } from "./media";
 import { canPushResource, NO_PUSH_CAPABILITIES, resolvePushCapabilities, submitPushResource, type PushCapabilities } from "./push";
-import { finalizeInspectionResources, inspectionProgress as getInspectionProgress, inspectionResultEnded, inspectionState as getInspectionBatchState, mergeInspectionResult, nextInspectionResourceIds, pollInspectionBatch } from "./inspection";
-import type { HomeCatalogResponse, MovieMetadata, ResourceSummary, SearchResponse, TaskResponse } from "./types";
+import { finalizeInspectionResources, inspectionProgress as getInspectionProgress, inspectionResultEnded, inspectionState as getInspectionBatchState, MAX_INSPECTABLE_MAGNETS, mergeInspectionResult, nextInspectionResourceIds, pollInspectionBatch } from "./inspection";
+import type { HomeCatalogResponse, MovieMetadata, ResourceFacets, ResourcePageResponse, ResourceQuality, ResourceSort, ResourceSummary, SearchResponse, TaskResponse } from "./types";
 import CollectionView from "./views/CollectionView.vue";
 import HomeView from "./views/HomeView.vue";
 import LibraryView from "./views/LibraryView.vue";
@@ -27,6 +32,7 @@ const HISTORY_KEY = "watch-assistant:history";
 const api = new ApiClient();
 const password = ref("");
 const query = ref("");
+const searchInput = ref("");
 const authenticated = ref(false);
 const loading = ref(false);
 const catalogLoading = ref(false);
@@ -60,26 +66,332 @@ const inspectionError = ref<string | null>(null);
 const inspectionProcessedIds = ref<Set<string>>(new Set());
 const inspectionInFlightIds = ref<Set<string>>(new Set());
 const inspectionRetryIds = ref<Set<string>>(new Set());
+const inspectionSeenIds = ref<Set<string>>(new Set());
+const inspectionResults = ref<Map<string, import("./types").InspectionResult>>(new Map());
+const inspectionStatusOverrides = ref<Map<string, ResourceSummary["inspection_status"]>>(new Map());
 const inspectionAutoRequestId = ref<number | null>(null);
+const resourceResponse = ref<ResourcePageResponse | null>(null);
+const resourceItemsFallback = ref<ResourceSummary[]>([]);
+const resourceLoading = ref(false);
+const resourceError = ref("");
+const resourcePaginationUnavailable = ref(false);
+const resourcePage = ref(1);
+const resourcePageSize = ref<25 | 50 | 100>(25);
+const resourceTotal = ref(0);
+const resourceTotalPages = ref(1);
+const resourceFacets = ref<ResourceFacets>({ magnet: 0, share: 0, "4k": 0, "1080p": 0, "720p": 0, subtitle: 0 });
+const resourceKind = ref<"all" | "magnet" | "115_share">("all");
+const resourceQuality = ref<"all" | ResourceQuality>("all");
+const resourceQuery = ref("");
+const resourceSort = ref<ResourceSort>("comprehensive");
 let searchRequestId = 0;
 let inspectionRunId = 0;
 let pollTimer: number | undefined;
+let catalogRequestId = 0;
+let resourceRequestId = 0;
+let resourceAbortController: AbortController | null = null;
+let resourceQueryTimer: number | undefined;
+let pendingResourceRoute: ResourceRouteState | null = null;
+
+interface ResourceRouteState extends MediaResourceRouteState {}
+
+const resourceCache = new Map<string, ResourcePageResponse>();
+
+interface CatalogCacheEntry {
+  movies: MovieMetadata[];
+  page: number;
+  totalPages: number;
+  totalResults: number;
+}
+
+const catalogCache = new Map<string, CatalogCacheEntry>();
+const committedCatalogRoute = ref<CatalogRoute | null>(null);
+let pendingCatalogRoute: CatalogRoute | null = null;
+let catalogReturnRoute: CatalogRoute | null = null;
+let catalogReturnScrollY: number | null = null;
 
 const favoriteIds = computed(() => new Set(favorites.value.map(mediaKey)));
 const detailFavorite = computed(() => result.value ? favoriteIds.value.has(mediaKey(result.value.movie)) : false);
 const hasActiveTasks = computed(() => tasks.value.some((task) => task.state === "queued" || task.state === "submitting"));
+const resourceItems = computed(() => {
+  const source = resourceResponse.value?.items ?? resourceItemsFallback.value;
+  return source.map((resource) => {
+    const inspection = inspectionResults.value.get(resource.resource_id);
+    if (inspection) return mergeInspectionResult(resource, inspection);
+    const status = inspectionStatusOverrides.value.get(resource.resource_id);
+    return status ? { ...resource, inspection_status: status } : resource;
+  });
+});
+
+function defaultResourceRoute(): ResourceRouteState {
+  return { page: 1, kind: "all", quality: "all", query: "", sort: "comprehensive", pageSize: 25 };
+}
+
+function currentResourceRoute(): ResourceRouteState {
+  return {
+    page: resourcePage.value,
+    kind: resourceKind.value,
+    quality: resourceQuality.value,
+    query: resourceQuery.value,
+    sort: resourceSort.value,
+    pageSize: resourcePageSize.value,
+  };
+}
+
+function applyResourceRoute(route: Partial<ResourceRouteState> = {}) {
+  const defaults = defaultResourceRoute();
+  const requestedPage = Number.isInteger(route.page) && (route.page ?? 0) >= 1 ? route.page! : defaults.page;
+  resourcePage.value = Math.min(Math.max(1, resourceTotalPages.value), requestedPage);
+  resourceKind.value = route.kind ?? defaults.kind;
+  resourceQuality.value = route.quality ?? defaults.quality;
+  resourceQuery.value = (route.query ?? defaults.query).trim();
+  resourceSort.value = route.sort ?? defaults.sort;
+  resourcePageSize.value = route.pageSize ?? defaults.pageSize;
+}
+
+function resourceCacheKey(route: ResourceRouteState, snapshotRevision?: string | null): string {
+  return [detailMediaType.value, result.value?.movie.tmdb_id ?? "", selectedSeason.value ?? "all", snapshotRevision ?? "snapshot", route.kind, route.quality, route.query.trim(), route.sort, route.page, route.pageSize].join("|");
+}
+
+function invalidateResourceRequest(): void {
+  resourceAbortController?.abort();
+  resourceAbortController = null;
+  resourceRequestId += 1;
+}
+
+function clearResourcePagination() {
+  invalidateResourceRequest();
+  resourceResponse.value = null;
+  resourceItemsFallback.value = [];
+  resourceLoading.value = false;
+  resourceError.value = "";
+  resourcePaginationUnavailable.value = false;
+  resourceTotal.value = 0;
+  resourceTotalPages.value = 1;
+  resourceFacets.value = { magnet: 0, share: 0, "4k": 0, "1080p": 0, "720p": 0, subtitle: 0 };
+  resourceCache.clear();
+  pendingResourceRoute = null;
+  if (resourceQueryTimer !== undefined) {
+    window.clearTimeout(resourceQueryTimer);
+    resourceQueryTimer = undefined;
+  }
+}
+
+function applyResourceResponse(response: ResourcePageResponse, requestedPage = 1) {
+  if (resourceResponse.value && resourceResponse.value.snapshot_revision !== response.snapshot_revision) resourceCache.clear();
+  const safeTotalPages = Math.max(1, Math.min(500, Math.trunc(response.total_pages) || 1));
+  resourceResponse.value = response;
+  const responsePage = Math.trunc(response.page) || requestedPage;
+  resourcePage.value = response.total === 0 ? 1 : Math.max(1, Math.min(safeTotalPages, responsePage));
+  resourcePageSize.value = response.page_size;
+  resourceTotal.value = response.total;
+  resourceTotalPages.value = safeTotalPages;
+  resourceFacets.value = response.facets;
+  resourcePaginationUnavailable.value = false;
+  resourceError.value = "";
+}
+
+function resourceRouteFromMediaRoute(mediaRoute: ReturnType<typeof extractMediaRoute>): ResourceRouteState {
+  return {
+    page: mediaRoute?.resourcePage ?? 1,
+    kind: mediaRoute?.resourceKind ?? "all",
+    quality: mediaRoute?.resourceQuality ?? "all",
+    query: mediaRoute?.resourceQuery ?? "",
+    sort: mediaRoute?.resourceSort ?? "comprehensive",
+    pageSize: mediaRoute?.resourcePageSize ?? 25,
+  };
+}
+
+function catalogCacheKey(route: CatalogRoute): string {
+  return [route.view, route.query.trim(), route.genreId ?? "", route.year ?? "", route.sort, route.page].join("|");
+}
+
+function normalizeCatalogRoute(route: CatalogRoute): CatalogRoute {
+  const genreId = Number.isInteger(route.genreId) && route.genreId >= 1 ? route.genreId : undefined;
+  const year = Number.isInteger(route.year) && route.year >= 1900 && route.year <= 2100 ? route.year : undefined;
+  return {
+    view: route.view,
+    query: route.query.trim(),
+    page: clampCatalogPage(route.page),
+    sort: route.sort,
+    ...(genreId !== undefined ? { genreId } : {}),
+    ...(year !== undefined ? { year } : {}),
+  };
+}
+
+interface CatalogReturnState {
+  route: CatalogRoute;
+  scrollY: number;
+  backDelta: number;
+}
+
+function readCatalogReturnState(): CatalogReturnState | null {
+  const state = window.history.state;
+  const value = state?.catalog;
+  if (state?.catalogDetailEntry !== true || !value || typeof value !== "object") return null;
+  const candidate = value as Partial<CatalogRoute>;
+  const validView = candidate.view === "movies" || candidate.view === "tv" || candidate.view === "popular" || candidate.view === "search";
+  const validSort = candidate.sort === "popular" || candidate.sort === "rating" || candidate.sort === "release";
+  const validPage = Number.isInteger(candidate.page) && candidate.page >= 1 && candidate.page <= 500;
+  const validGenre = candidate.genreId === undefined || (Number.isInteger(candidate.genreId) && candidate.genreId >= 1);
+  const validYear = candidate.year === undefined || (Number.isInteger(candidate.year) && candidate.year >= 1900 && candidate.year <= 2100);
+  const scrollY = state.catalogScrollY;
+  const backDelta = state.catalogBackDelta;
+  if (!validView || !validSort || !validPage || !validGenre || !validYear
+    || typeof scrollY !== "number" || !Number.isFinite(scrollY) || scrollY < 0
+    || !Number.isInteger(backDelta) || backDelta < 1 || backDelta > Math.max(0, window.history.length - 1)) return null;
+  const route = normalizeCatalogRoute({
+    view: candidate.view,
+    query: typeof candidate.query === "string" ? candidate.query : "",
+    page: candidate.page as number,
+    sort: candidate.sort,
+    ...(candidate.genreId !== undefined ? { genreId: candidate.genreId as number } : {}),
+    ...(candidate.year !== undefined ? { year: candidate.year as number } : {}),
+  });
+  return { route, scrollY, backDelta };
+}
+
+function restoreCatalogReturnState(): void {
+  const restored = readCatalogReturnState();
+  if (!restored) {
+    catalogReturnRoute = null;
+    catalogReturnScrollY = null;
+    return;
+  }
+  catalogReturnRoute = restored.route;
+  catalogReturnScrollY = restored.scrollY;
+  previousView.value = restored.route.view;
+}
+
+function sameCatalogRoute(left: CatalogRoute, right: CatalogRoute): boolean {
+  return left.view === right.view
+    && left.query === right.query
+    && left.page === right.page
+    && left.genreId === right.genreId
+    && left.year === right.year
+    && left.sort === right.sort;
+}
+
+function readCatalogCache(route: CatalogRoute): CatalogCacheEntry | undefined {
+  const key = catalogCacheKey(route);
+  const entry = catalogCache.get(key);
+  if (!entry) return undefined;
+  catalogCache.delete(key);
+  catalogCache.set(key, entry);
+  return entry;
+}
+
+function writeCatalogCache(route: CatalogRoute, entry: CatalogCacheEntry) {
+  const key = catalogCacheKey(route);
+  catalogCache.delete(key);
+  catalogCache.set(key, entry);
+  while (catalogCache.size > 20) catalogCache.delete(catalogCache.keys().next().value as string);
+}
+
+function applyCatalogPreview(route: CatalogRoute) {
+  activeView.value = route.view;
+  query.value = route.query;
+  searchInput.value = route.query;
+  genreId.value = route.genreId;
+  year.value = route.year;
+  sort.value = route.sort;
+  catalogHeading.value = route.view === "search" ? `“${route.query}”的搜索结果` : route.view === "popular" ? "本周热门" : "";
+}
+
+function applyCatalogData(route: CatalogRoute, entry: CatalogCacheEntry) {
+  applyCatalogPreview(route);
+  catalogMovies.value = entry.movies;
+  currentPage.value = entry.page;
+  totalPages.value = entry.totalPages;
+  totalResults.value = entry.totalResults;
+}
+
+function catalogScroll(restoreY?: number) {
+  void nextTick(() => {
+    const behavior = window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
+    if (restoreY !== undefined) {
+      window.scrollTo({ top: restoreY, behavior });
+      return;
+    }
+    document.getElementById("catalog-title")?.scrollIntoView({ behavior, block: "start" });
+  });
+}
+
+function commitCatalogRoute(route: CatalogRoute, historyMode: "push" | "replace" | "none", scrollY = 0) {
+  committedCatalogRoute.value = { ...route };
+  if (historyMode === "push") navigateToCatalog(route, false, { catalogScrollY: scrollY });
+  else if (historyMode === "replace") navigateToCatalog(route, true, { catalogScrollY: scrollY });
+  else navigateToCatalog(route, true, { ...window.history.state, catalogScrollY: window.history.state?.catalogScrollY ?? scrollY });
+}
+
+async function requestCatalog(route: CatalogRoute, historyMode: "push" | "replace" | "none", restoreY?: number) {
+  const safeRoute = normalizeCatalogRoute(route);
+  if (historyMode === "push" && committedCatalogRoute.value && sameCatalogRoute(safeRoute, committedCatalogRoute.value)) return;
+  const requestId = ++catalogRequestId;
+  pendingCatalogRoute = safeRoute;
+  const isCurrent = () => requestId === catalogRequestId && pendingCatalogRoute === safeRoute;
+  catalogLoading.value = true;
+  error.value = "";
+
+  const cached = readCatalogCache(safeRoute);
+  if (cached) {
+    if (!isCurrent()) return;
+    const committedRoute = { ...safeRoute, page: cached.page };
+    applyCatalogData(committedRoute, cached);
+    pendingCatalogRoute = null;
+    catalogLoading.value = false;
+    commitCatalogRoute(committedRoute, historyMode, restoreY ?? 0);
+    catalogScroll(restoreY);
+    return;
+  }
+
+  try {
+    const response = safeRoute.view === "search"
+      ? await api.searchMedia(safeRoute.query, safeRoute.page)
+      : safeRoute.view === "popular"
+        ? await api.popularMovies(safeRoute.page)
+        : await api.discoverMedia(safeRoute.view === "tv" ? "tv" : "movie", {
+            genreId: safeRoute.genreId,
+            year: safeRoute.year,
+            sort: safeRoute.sort,
+            page: safeRoute.page,
+          });
+    if (!isCurrent()) return;
+    const entry: CatalogCacheEntry = {
+      movies: response.results,
+      page: clampCatalogPage(Math.trunc(response.page)),
+      totalPages: clampCatalogPage(Math.trunc(response.total_pages)),
+      totalResults: response.total_results,
+    };
+    writeCatalogCache(safeRoute, entry);
+    const committedRoute = { ...safeRoute, page: entry.page };
+    if (!sameCatalogRoute(safeRoute, committedRoute)) writeCatalogCache(committedRoute, entry);
+    applyCatalogData(committedRoute, entry);
+    pendingCatalogRoute = null;
+    catalogLoading.value = false;
+    commitCatalogRoute(committedRoute, historyMode, restoreY ?? 0);
+    catalogScroll(restoreY);
+  } catch (exception) {
+    if (!isCurrent()) return;
+    pendingCatalogRoute = null;
+    catalogLoading.value = false;
+    error.value = exception instanceof ApiError ? exception.message : "目录加载失败，请稍后重试";
+  }
+}
 function inspectionBatchIds(limit = 8, retriesOnly = false): string[] {
-  if (!result.value) return [];
+  if (!result.value || !resourceItems.value.length) return [];
   const unavailableIds = new Set([...inspectionProcessedIds.value, ...inspectionInFlightIds.value]);
   const candidates = nextInspectionResourceIds(
-    result.value.results,
+    resourceItems.value,
     unavailableIds,
     30,
   );
   const eligible = retriesOnly
     ? candidates.filter((resourceId) => inspectionRetryIds.value.has(resourceId))
     : candidates.filter((resourceId) => !inspectionRetryIds.value.has(resourceId));
-  return eligible.slice(0, limit);
+  if (retriesOnly) return eligible.slice(0, limit);
+  const remainingNewIds = Math.max(0, MAX_INSPECTABLE_MAGNETS - inspectionSeenIds.value.size);
+  return eligible.filter((resourceId) => !inspectionSeenIds.value.has(resourceId)).slice(0, Math.min(limit, remainingNewIds));
 }
 
 const inspectionRetryAvailable = computed(() => inspectionBatchIds(8, true).length > 0);
@@ -140,69 +452,24 @@ async function loadHome() {
 async function loadDiscover(
   filters = { genreId: genreId.value, year: year.value, sort: sort.value },
   page = 1,
+  historyMode: "push" | "none" = "push",
+  targetView?: "movies" | "tv",
 ) {
-  genreId.value = filters.genreId;
-  year.value = filters.year;
-  sort.value = filters.sort;
-  catalogLoading.value = true;
-  currentPage.value = page;
-  error.value = "";
-  try {
-    const response = await api.discoverMedia(
-      activeView.value === "tv" ? "tv" : "movie",
-      { ...filters, page },
-    );
-    catalogMovies.value = response.results;
-    currentPage.value = response.page;
-    totalPages.value = response.total_pages;
-    totalResults.value = response.total_results;
-  } catch (exception) {
-    const label = activeView.value === "tv" ? "剧集" : "电影";
-    error.value = exception instanceof ApiError ? exception.message : `${label}目录加载失败，请稍后重试`;
-  } finally {
-    catalogLoading.value = false;
-  }
+  const view = targetView ?? (activeView.value === "tv" ? "tv" : "movies");
+  await requestCatalog({ view, query: "", page, genreId: filters.genreId, year: filters.year, sort: filters.sort }, historyMode);
 }
 
-async function loadPopular(page = 1) {
-  catalogLoading.value = true;
-  error.value = "";
-  try {
-    const response = await api.popularMovies(page);
-    catalogMovies.value = response.results;
-    currentPage.value = response.page;
-    totalPages.value = response.total_pages;
-    totalResults.value = response.total_results;
-    catalogHeading.value = "本周热门";
-  } catch (exception) {
-    error.value = exception instanceof ApiError ? exception.message : "热门电影加载失败，请稍后重试";
-  } finally {
-    catalogLoading.value = false;
-  }
+async function loadPopular(page = 1, historyMode: "push" | "none" = "push") {
+  await requestCatalog({ view: "popular", query: "", page, sort: "popular" }, historyMode);
 }
 
 async function performSearch(updateUrl: boolean, page = 1) {
-  const searchQuery = query.value.trim();
+  const searchQuery = searchInput.value.trim();
   if (!searchQuery) return;
   invalidateDetailRequest();
-  activeView.value = "search";
   previousView.value = "search";
   result.value = null;
-  if (updateUrl) navigateToSearch(searchQuery);
-  catalogLoading.value = true;
-  error.value = "";
-  catalogHeading.value = `“${searchQuery}”的搜索结果`;
-  try {
-    const response = await api.searchMedia(searchQuery, page);
-    catalogMovies.value = response.results;
-    currentPage.value = response.page;
-    totalPages.value = response.total_pages;
-    totalResults.value = response.total_results;
-  } catch (exception) {
-    error.value = exception instanceof ApiError ? exception.message : "影视搜索失败，请稍后重试";
-  } finally {
-    catalogLoading.value = false;
-  }
+  await requestCatalog({ view: "search", query: searchQuery, page, sort: "popular" }, updateUrl ? "push" : "none");
 }
 
 async function searchMovies() {
@@ -210,24 +477,17 @@ async function searchMovies() {
 }
 
 async function loadPage(page: number) {
-  if (activeView.value === "movies" || activeView.value === "tv") {
-    await loadDiscover(
-      { genreId: genreId.value, year: year.value, sort: sort.value },
-      page,
-    );
-  } else if (activeView.value === "popular") {
-    await loadPopular(page);
-  } else if (activeView.value === "search") {
-    await performSearch(false, page);
-  }
-  window.scrollTo({ top: 0, behavior: "smooth" });
+  if (catalogLoading.value) return;
+  const current = committedCatalogRoute.value;
+  if (!current) return;
+  await requestCatalog({ ...current, page }, "push");
 }
 
-async function loadView(view: BrowseView) {
+async function loadView(view: BrowseView, historyMode: "push" | "none" = "none") {
   if (view === "home") await loadHome();
-  if (view === "movies") await loadDiscover();
-  if (view === "tv") await loadDiscover();
-  if (view === "popular") await loadPopular();
+  if (view === "movies") await loadDiscover({ genreId: undefined, year: undefined, sort: "popular" }, 1, historyMode, "movies");
+  if (view === "tv") await loadDiscover({ genreId: undefined, year: undefined, sort: "popular" }, 1, historyMode, "tv");
+  if (view === "popular") await loadPopular(1, historyMode);
   if (view === "search") await performSearch(false);
 }
 
@@ -235,16 +495,19 @@ async function selectView(view: Exclude<BrowseView, "search">) {
   invalidateDetailRequest();
   result.value = null;
   error.value = "";
-  activeView.value = view;
-  currentPage.value = 1;
-  if (view === "movies" || view === "tv") {
-    genreId.value = undefined;
-    year.value = undefined;
-    sort.value = "popular";
-  }
   previousView.value = view;
-  navigateToView(view);
-  await loadView(view);
+  if (view === "movies" || view === "tv") {
+    await loadDiscover({ genreId: undefined, year: undefined, sort: "popular" }, 1, "push", view);
+  } else if (view === "popular") {
+    await loadPopular(1, "push");
+  } else {
+    committedCatalogRoute.value = null;
+    catalogReturnRoute = null;
+    catalogReturnScrollY = null;
+    activeView.value = view;
+    navigateToView(view);
+    await loadView(view);
+  }
 }
 
 function resetInspection() {
@@ -257,13 +520,150 @@ function resetInspection() {
   inspectionProcessedIds.value = new Set();
   inspectionInFlightIds.value = new Set();
   inspectionRetryIds.value = new Set();
+  inspectionSeenIds.value = new Set();
+  inspectionResults.value = new Map();
+  inspectionStatusOverrides.value = new Map();
   inspectionAutoRequestId.value = null;
 }
 
 function invalidateDetailRequest() {
   searchRequestId += 1;
+  catalogRequestId += 1;
+  pendingCatalogRoute = null;
+  catalogLoading.value = false;
   loading.value = false;
+  clearResourcePagination();
   resetInspection();
+}
+
+function beginResourceSnapshot(fallback: ResourceSummary[]) {
+  invalidateResourceRequest();
+  resourceResponse.value = null;
+  resourceItemsFallback.value = fallback;
+  resourceLoading.value = false;
+  resourceError.value = "";
+  resourcePaginationUnavailable.value = false;
+  resourceTotal.value = fallback.length;
+  resourceTotalPages.value = 1;
+  resourceFacets.value = {
+    magnet: fallback.filter((item) => item.kind === "magnet").length,
+    share: fallback.filter((item) => item.kind === "115_share").length,
+    "4k": 0,
+    "1080p": 0,
+    "720p": 0,
+    subtitle: 0,
+  };
+  resourceCache.clear();
+  pendingResourceRoute = null;
+}
+
+async function loadResourcePage(route: ResourceRouteState, historyMode: "push" | "replace" | "none" = "push", correctionAttempted = false): Promise<void> {
+  if (!result.value) return;
+  const requestId = ++resourceRequestId;
+  resourceAbortController?.abort();
+  const controller = new AbortController();
+  resourceAbortController = controller;
+  const searchId = searchRequestId;
+  const safeRoute: ResourceRouteState = {
+    ...route,
+    page: Math.max(1, Math.min(500, Math.trunc(route.page) || 1)),
+    query: route.query.trim(),
+  };
+  const isCurrent = () => requestId === resourceRequestId && searchId === searchRequestId && !controller.signal.aborted && !!result.value;
+  const cached = resourceCache.get(resourceCacheKey(safeRoute, resourceResponse.value?.snapshot_revision ?? null));
+  resourceLoading.value = true;
+  resourceError.value = "";
+  if (cached) {
+    if (!isCurrent()) return;
+    applyResourceResponse(cached, safeRoute.page);
+    applyResourceRoute(safeRoute);
+    pendingResourceRoute = null;
+    resourceLoading.value = false;
+    if (historyMode !== "none") navigateToMedia(detailMediaType.value, result.value.movie.tmdb_id, detailMediaType.value === "tv" ? selectedSeason.value ?? undefined : undefined, safeRoute, historyMode === "replace");
+    startAutomaticInspection(searchId);
+    return;
+  }
+  try {
+    const response = await api.resources(detailMediaType.value, result.value.movie.tmdb_id, {
+      seasonNumber: detailMediaType.value === "tv" ? selectedSeason.value : undefined,
+      kind: safeRoute.kind === "all" ? undefined : safeRoute.kind,
+      quality: safeRoute.quality === "all" ? undefined : safeRoute.quality,
+      query: safeRoute.query,
+      sort: safeRoute.sort,
+      page: safeRoute.page,
+      pageSize: safeRoute.pageSize,
+    }, controller.signal);
+    if (!isCurrent()) return;
+    const actualTotalPages = Math.max(1, Math.min(500, Math.trunc(response.total_pages) || 1));
+    const legalPage = response.total === 0 ? 1 : actualTotalPages;
+    if (safeRoute.page > legalPage && !correctionAttempted) {
+      await loadResourcePage({ ...safeRoute, page: legalPage }, "replace", true);
+      return;
+    }
+    const actualPage = response.total === 0 ? 1 : Math.max(1, Math.min(actualTotalPages, Math.trunc(response.page) || safeRoute.page));
+    resourceCache.set(resourceCacheKey({ ...safeRoute, page: actualPage }, response.snapshot_revision), response);
+    while (resourceCache.size > 20) resourceCache.delete(resourceCache.keys().next().value as string);
+    applyResourceResponse(response, actualPage);
+    applyResourceRoute({ ...safeRoute, page: actualPage });
+    pendingResourceRoute = null;
+    resourcePage.value = actualPage;
+    resourceLoading.value = false;
+    if (historyMode !== "none") navigateToMedia(detailMediaType.value, result.value.movie.tmdb_id, detailMediaType.value === "tv" ? selectedSeason.value ?? undefined : undefined, { ...safeRoute, page: actualPage }, historyMode === "replace");
+    startAutomaticInspection(searchId);
+  } catch (exception) {
+    if (!isCurrent()) return;
+    resourceLoading.value = false;
+    if (exception instanceof ApiError && exception.status === 404 && exception.code === "resource_snapshot_not_found") {
+      pendingResourceRoute = null;
+      resourcePaginationUnavailable.value = true;
+      resourceError.value = "资源分页暂不可用，当前显示搜索快照结果";
+      resourcePage.value = 1;
+      resourceTotalPages.value = 1;
+      startAutomaticInspection(searchId);
+      return;
+    }
+    pendingResourceRoute = null;
+    resourceError.value = exception instanceof ApiError ? exception.message : "资源分页加载失败，请重试";
+  }
+}
+
+function changeResourcePage(page: number) {
+  if (resourceLoading.value) return;
+  const target = Math.max(1, Math.min(resourceTotalPages.value, Math.trunc(page)));
+  if (target === resourcePage.value) return;
+  void loadResourcePage({ ...currentResourceRoute(), page: target });
+}
+
+function changeResourceFilter(next: Partial<ResourceRouteState>) {
+  const route = { ...(pendingResourceRoute ?? currentResourceRoute()), ...next, page: 1 };
+  if (route.kind === resourceKind.value && route.quality === resourceQuality.value && route.sort === resourceSort.value && route.pageSize === resourcePageSize.value && route.query === resourceQuery.value) return;
+  pendingResourceRoute = route;
+  void loadResourcePage(route);
+}
+
+function changeResourceQuery(value: string) {
+  if (resourceQueryTimer !== undefined) window.clearTimeout(resourceQueryTimer);
+  invalidateResourceRequest();
+  resourceQueryTimer = window.setTimeout(() => {
+    const nextQuery = value.trim();
+    if (nextQuery === resourceQuery.value) {
+      pendingResourceRoute = null;
+      if (resourceResponse.value) {
+        resourceLoading.value = false;
+        resourceError.value = "";
+      } else {
+        void loadResourcePage(currentResourceRoute(), "replace");
+      }
+    } else {
+      changeResourceFilter({ query: nextQuery });
+    }
+    resourceQueryTimer = undefined;
+  }, 250);
+}
+
+async function refreshResources() {
+  if (!result.value) return;
+  await loadResources(result.value.movie.tmdb_id, detailMediaType.value, true, selectedSeason.value, false, currentResourceRoute());
 }
 
 async function loadResources(
@@ -272,11 +672,15 @@ async function loadResources(
   refresh = false,
   seasonNumber: number | null = selectedSeason.value,
   clearResult = false,
+  initialResourceRoute: ResourceRouteState = defaultResourceRoute(),
 ) {
   const requestId = ++searchRequestId;
   resetInspection();
   detailMediaType.value = mediaType;
-  if (clearResult) result.value = null;
+  if (clearResult) {
+    result.value = null;
+    clearResourcePagination();
+  }
   loading.value = true;
   error.value = "";
   try {
@@ -288,8 +692,10 @@ async function loadResources(
         ? response.selected_season ?? null
         : seasonNumber
       : null;
+    applyResourceRoute(initialResourceRoute);
+    beginResourceSnapshot(response.results);
     recordHistory(response.movie);
-    startAutomaticInspection(requestId);
+    void loadResourcePage(initialResourceRoute, "none");
   } catch (exception) {
     if (requestId === searchRequestId) {
       error.value = exception instanceof ApiError ? exception.message : "资源搜索失败，请稍后重试";
@@ -301,45 +707,78 @@ async function loadResources(
 
 async function openMovie(movie: MovieMetadata) {
   previousView.value = activeView.value;
+  if (committedCatalogRoute.value) {
+    catalogReturnRoute = { ...committedCatalogRoute.value };
+    catalogReturnScrollY = window.scrollY;
+    window.history.replaceState({ ...window.history.state, catalog: catalogReturnRoute, catalogScrollY: catalogReturnScrollY }, "", window.location.href);
+  } else {
+    catalogReturnRoute = null;
+    catalogReturnScrollY = null;
+  }
   recordHistory(movie);
   result.value = null;
   selectedSeason.value = null;
   const mediaType = mediaTypeOf(movie);
-  navigateToMedia(mediaType, movie.tmdb_id);
-  await loadResources(movie.tmdb_id, mediaType, false, null, true);
+  navigateToMedia(mediaType, movie.tmdb_id, undefined, defaultResourceRoute());
+  if (catalogReturnRoute) {
+    window.history.replaceState({
+      ...window.history.state,
+      catalog: catalogReturnRoute,
+      catalogScrollY: catalogReturnScrollY,
+      catalogDetailEntry: true,
+      catalogBackDelta: 1,
+    }, "", window.location.href);
+  }
+  await loadResources(movie.tmdb_id, mediaType, false, null, true, defaultResourceRoute());
 }
 
 async function selectSeason(seasonNumber: number | null) {
   if (!result.value || detailMediaType.value !== "tv") return;
   const movie = result.value.movie;
   selectedSeason.value = seasonNumber;
-  navigateToMedia("tv", movie.tmdb_id, seasonNumber ?? undefined);
-  await loadResources(movie.tmdb_id, "tv", false, seasonNumber, true);
+  const nextRoute = { ...currentResourceRoute(), page: 1, kind: "all" as const, quality: "all" as const, query: "" };
+  navigateToMedia("tv", movie.tmdb_id, seasonNumber ?? undefined, nextRoute, true);
+  await loadResources(movie.tmdb_id, "tv", false, seasonNumber, true, nextRoute);
 }
 
 async function returnToBrowse() {
   invalidateDetailRequest();
   result.value = null;
+  const persistedReturnState = readCatalogReturnState();
+  if (catalogReturnRoute && persistedReturnState) {
+    catalogReturnRoute = null;
+    catalogReturnScrollY = null;
+    window.history.go(-persistedReturnState.backDelta);
+    return;
+  }
   const view = previousView.value === "search" ? "search" : previousView.value;
   activeView.value = view;
-  if (view === "search") {
-    navigateToSearch(query.value.trim());
-  } else {
-    navigateToView(view);
-  }
+  navigateToView(view);
   await loadView(view);
 }
 
 async function initializeWorkspace() {
   const mediaRoute = extractMediaRoute(window.location.pathname + window.location.search);
   if (mediaRoute !== null) {
+    restoreCatalogReturnState();
     selectedSeason.value = mediaRoute.mediaType === "tv" ? mediaRoute.seasonNumber ?? null : null;
-    await loadResources(mediaRoute.tmdbId, mediaRoute.mediaType, false, selectedSeason.value, true);
+    await loadResources(mediaRoute.tmdbId, mediaRoute.mediaType, false, selectedSeason.value, true, resourceRouteFromMediaRoute(mediaRoute));
+    return;
+  }
+  const catalogRoute = parseCatalogRoute(window.location.pathname + window.location.search);
+  if (catalogRoute) {
+    if (catalogRoute.view === "search" && !catalogRoute.query.trim()) {
+      activeView.value = "home";
+      previousView.value = "home";
+      navigateToView("home", true);
+      await loadHome();
+      return;
+    }
+    await requestCatalog(catalogRoute, "none", typeof window.history.state?.catalogScrollY === "number" ? window.history.state.catalogScrollY : undefined);
     return;
   }
   activeView.value = extractBrowseView(window.location.pathname);
   previousView.value = activeView.value;
-  if (activeView.value === "search") query.value = new URLSearchParams(window.location.search).get("q") ?? "";
   await loadView(activeView.value);
 }
 
@@ -385,6 +824,14 @@ function applyInspectionResponse(response: Parameters<typeof getInspectionProgre
   inspectionTotal.value = progress.submitted;
   inspectionFailed.value = progress.failed;
   const byId = new Map(response.results.map((item) => [item.resource_id, item]));
+  const cachedResults = new Map(inspectionResults.value);
+  const statusOverrides = new Map(inspectionStatusOverrides.value);
+  response.results.forEach((item) => {
+    cachedResults.set(item.resource_id, item);
+    if (inspectionResultEnded(item)) statusOverrides.delete(item.resource_id);
+  });
+  inspectionResults.value = cachedResults;
+  inspectionStatusOverrides.value = statusOverrides;
   result.value = {
     ...result.value,
     results: result.value.results.map((resource) => {
@@ -415,6 +862,9 @@ function applyInspectionResponse(response: Parameters<typeof getInspectionProgre
 }
 
 function setInspectionStatus(resourceIds: string[], status: string) {
+  const statusOverrides = new Map(inspectionStatusOverrides.value);
+  resourceIds.forEach((resourceId) => statusOverrides.set(resourceId, status as ResourceSummary["inspection_status"]));
+  inspectionStatusOverrides.value = statusOverrides;
   if (!result.value) return;
   const ids = new Set(resourceIds);
   result.value = {
@@ -426,6 +876,9 @@ function setInspectionStatus(resourceIds: string[], status: string) {
 }
 
 function finalizeInspection(resourceIds: string[], status: "failed" | "timeout") {
+  const statusOverrides = new Map(inspectionStatusOverrides.value);
+  resourceIds.forEach((resourceId) => statusOverrides.set(resourceId, status));
+  inspectionStatusOverrides.value = statusOverrides;
   if (!result.value) return;
   result.value = {
     ...result.value,
@@ -472,6 +925,7 @@ async function inspectBatch(resourceIds: string[], requestId: number) {
   if (!result.value || !inspectionSupported.value || requestId !== searchRequestId || inspectionState.value === "running") return;
 
   const runId = ++inspectionRunId;
+  inspectionSeenIds.value = new Set([...inspectionSeenIds.value, ...resourceIds]);
   inspectionInFlightIds.value = new Set([...inspectionInFlightIds.value, ...resourceIds]);
   inspectionState.value = "running";
   inspectionCompleted.value = 0;
@@ -551,6 +1005,19 @@ function ensurePolling() {
 }
 
 async function syncRoute() {
+  const mediaRoute = extractMediaRoute(window.location.pathname + window.location.search);
+  const routeSeason = mediaRoute?.mediaType === "tv" ? mediaRoute.seasonNumber ?? null : null;
+  if (mediaRoute && result.value
+    && mediaRoute.tmdbId === result.value.movie.tmdb_id
+    && mediaRoute.mediaType === detailMediaType.value
+    && routeSeason === selectedSeason.value) {
+    selectedSeason.value = mediaRoute.mediaType === "tv" ? mediaRoute.seasonNumber ?? null : null;
+    const route = resourceRouteFromMediaRoute(mediaRoute);
+    applyResourceRoute(route);
+    pendingResourceRoute = null;
+    await loadResourcePage(route, "none");
+    return;
+  }
   invalidateDetailRequest();
   result.value = null;
   await initializeWorkspace();
@@ -587,7 +1054,7 @@ onBeforeUnmount(() => {
         <nav class="primary-nav" aria-label="主导航">
           <button v-for="item in navItems" :key="item.view" type="button" :class="{ active: activeView === item.view && !result }" @click="selectView(item.view)"><component :is="item.icon" :size="16" />{{ item.label }}</button>
         </nav>
-        <form class="top-search" role="search" @submit.prevent="searchMovies"><Search :size="17" /><input v-model="query" type="search" aria-label="搜索电影或电视剧" placeholder="搜索电影或电视剧" /><button type="submit" aria-label="提交搜索" title="搜索"><Search :size="17" /></button></form>
+        <form class="top-search" role="search" @submit.prevent="searchMovies"><Search :size="17" /><input v-model="searchInput" type="search" aria-label="搜索电影或电视剧" placeholder="搜索电影或电视剧" /><button type="submit" aria-label="提交搜索" title="搜索"><Search :size="17" /></button></form>
         <div class="topbar-actions">
           <button type="button" :class="{ active: activeView === 'favorites' && !result }" @click="selectView('favorites')"><Heart :size="17" />收藏</button>
           <button type="button" :class="{ active: activeView === 'history' && !result }" @click="selectView('history')"><Clock3 :size="17" />记录</button>
@@ -607,12 +1074,12 @@ onBeforeUnmount(() => {
         <LibraryView v-else-if="activeView === 'movies' || activeView === 'tv'" :movies="catalogMovies" :loading="catalogLoading" :favorite-ids="favoriteIds" :genre-id="genreId" :year="year" :sort="sort" :media-type="activeView" :page="currentPage" :total-pages="totalPages" :total-results="totalResults" @open="openMovie" @favorite="toggleFavorite" @filters="loadDiscover" @page="loadPage" />
         <CollectionView v-else-if="activeView === 'favorites' || activeView === 'history'" :mode="activeView" :movies="activeView === 'favorites' ? favorites : history" :favorite-ids="favoriteIds" @open="openMovie" @favorite="toggleFavorite" />
         <SettingsView v-else-if="activeView === 'settings'" :api="api" />
-        <SearchView v-else v-model="query" :loading="catalogLoading" :movies="catalogMovies" :heading="catalogHeading" :favorite-ids="favoriteIds" :page="currentPage" :total-pages="totalPages" :total-results="totalResults" @search="searchMovies" @reset="selectView('home')" @open="openMovie" @favorite="toggleFavorite" @page="loadPage" />
+        <SearchView v-else v-model="searchInput" :loading="catalogLoading" :movies="catalogMovies" :heading="catalogHeading" :favorite-ids="favoriteIds" :page="currentPage" :total-pages="totalPages" :total-results="totalResults" @search="searchMovies" @reset="selectView('home')" @open="openMovie" @favorite="toggleFavorite" @page="loadPage" />
       </template>
       <section v-else-if="loading && !result" class="detail-loading"><LoaderCircle class="spin" :size="24" /><strong>正在聚合资源</strong><span>正在查询 PanSou 的磁力与 115 分享结果</span></section>
        <p v-if="result && !pushCapabilities.magnet && !pushCapabilities.share" class="warning-strip">115 推送当前不可用，推送按钮已禁用。</p>
        <p v-else-if="result && pushCapabilities.magnet && !pushCapabilities.share" class="warning-strip">磁力云下载可用，115 分享转存尚未验证</p>
-       <section v-if="result" class="detail-workspace"><MovieView :result="result" :media-type="detailMediaType" :season-number="selectedSeason" :pushing-id="pushingId" :push-capabilities="pushCapabilities" :favorite="detailFavorite" :inspection-supported="inspectionSupported" :inspection-state="inspectionState" :inspection-completed="inspectionCompleted" :inspection-total="inspectionTotal" :inspection-failed="inspectionFailed" :inspection-error="inspectionError" :inspection-more-available="inspectionMoreAvailable" :inspection-retry-available="inspectionRetryAvailable" @push="push" @favorite="toggleFavorite(result.movie)" @refresh="loadResources(result.movie.tmdb_id, detailMediaType, true)" @season="selectSeason" @inspect-more="inspectMore" @retry-failed="retryFailed" @back="returnToBrowse" /></section>
+       <section v-if="result" class="detail-workspace"><MovieView :result="result" :resources="resourceItems" :resource-facets="resourceFacets" :resource-total="resourceTotal" :resource-page="resourcePage" :resource-page-size="resourcePageSize" :resource-total-pages="resourceTotalPages" :resource-kind="resourceKind" :resource-quality="resourceQuality" :resource-query="resourceQuery" :resource-sort="resourceSort" :resource-loading="resourceLoading" :resource-error="resourceError" :pagination-unavailable="resourcePaginationUnavailable" :media-type="detailMediaType" :season-number="selectedSeason" :pushing-id="pushingId" :push-capabilities="pushCapabilities" :favorite="detailFavorite" :inspection-supported="inspectionSupported" :inspection-state="inspectionState" :inspection-completed="inspectionCompleted" :inspection-total="inspectionTotal" :inspection-failed="inspectionFailed" :inspection-error="inspectionError" :inspection-more-available="inspectionMoreAvailable" :inspection-retry-available="inspectionRetryAvailable" @push="push" @favorite="toggleFavorite(result.movie)" @refresh="refreshResources" @season="selectSeason" @inspect-more="inspectMore" @retry-failed="retryFailed" @retry-page="() => loadResourcePage(currentResourceRoute(), 'replace')" @page="changeResourcePage" @kind="(value) => changeResourceFilter({ kind: value })" @quality="(value) => changeResourceFilter({ quality: value })" @query="changeResourceQuery" @sort="(value) => changeResourceFilter({ sort: value })" @page-size="(value) => changeResourceFilter({ pageSize: value })" @back="returnToBrowse" /></section>
     </template>
     <TaskDrawer :tasks="tasks" :open="drawerOpen" @close="drawerOpen = false" />
   </main>

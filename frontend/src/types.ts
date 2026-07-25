@@ -84,6 +84,28 @@ export interface SearchResponse {
   selected_season?: number | null;
 }
 
+export type ResourceQuality = "4k" | "1080p" | "720p" | "subtitle";
+export type ResourceSort = "comprehensive" | "relevance" | "completeness" | "size" | "seeders";
+
+export interface ResourceFacets {
+  magnet: number;
+  share: number;
+  "4k": number;
+  "1080p": number;
+  "720p": number;
+  subtitle: number;
+}
+
+export interface ResourcePageResponse {
+  items: ResourceSummary[];
+  page: number;
+  page_size: 25 | 50 | 100;
+  total: number;
+  total_pages: number;
+  facets: ResourceFacets;
+  snapshot_revision: string;
+}
+
 export interface InspectionResult {
   resource_id: string;
   infohash: string | null;

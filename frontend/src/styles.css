@@ -105,6 +105,8 @@ input { outline: none; }
 .filter-options button.active { color: #10141a; background: #68a0ff; font-weight: 800; }
 .movie-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 26px 14px; }
 .catalog-grid { padding-bottom: 40px; }
+.catalog-results { min-width: 0; }
+.catalog-loading { min-height: 24px; margin: -22px 0 18px; color: #858a94; font-size: 12px; }
 .search-heading { align-items: center; }
 .collection-empty, .empty-state { display: grid; min-height: 270px; place-items: center; align-content: center; gap: 10px; color: #6f7580; text-align: center; border: 1px dashed #35383e; }
 .collection-empty strong { color: #d5d7dc; }
@@ -318,6 +320,16 @@ html, body, .app-shell { background: #151719; }
 .resource-filter-bar button:hover { color: #f4f5f7; background: #1e2125; }
 .resource-filter-bar button.active { color: #d4e4fa; border-bottom-color: #5c94d8; background: #1d242d; }
 .resource-table-wrap { border-top: 1px solid #3a3e45; }
+.resource-list-loading { opacity: .62; }
+.resource-loading-local { display: flex; min-height: 150px; align-items: center; justify-content: center; gap: 8px; color: #858b95; border-top: 1px solid #3a3e45; }
+.resource-page-notice, .resource-page-error { margin: 10px 0; color: #9da2ac; font-size: 12px; }
+.resource-page-error { color: #ff9c9c; }
+.resource-page-error .text-button { margin-left: 8px; color: #ffb0b0; }
+.resource-pagination { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 14px; padding-top: 12px; border-top: 1px solid #2b2e33; color: #858b95; font-size: 12px; }
+.resource-pagination > div { display: flex; gap: 5px; }
+.resource-pagination button { display: grid; width: 32px; height: 32px; padding: 0; place-items: center; color: #bcc0c8; background: #202328; border: 1px solid #343840; border-radius: 4px; }
+.resource-pagination button:hover:not(:disabled) { color: #fff; border-color: #68a0ff; }
+.resource-pagination button:disabled { cursor: not-allowed; opacity: .45; }
 .resource-table { min-width: 1080px; table-layout: fixed; }
 .resource-table th { padding: 10px 12px; color: #858b95; text-transform: none; }
 .resource-table th:nth-child(1), .resource-table td:nth-child(1) { width: 29%; }
@@ -368,6 +380,7 @@ html, body, .app-shell { background: #151719; }
   .season-bar { display: flex; min-width: 0; align-items: flex-start; flex-wrap: wrap; gap: 7px; }
   .season-bar select { min-width: 0; max-width: 100%; }
   .resource-surface { margin-top: 18px; }
+  .resource-cards { display: grid; }
   .resource-toolbar { display: block; }
   .resource-controls { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; margin-top: 12px; }
   .resource-controls .segmented { width: 100%; min-width: 0; overflow-x: auto; }
