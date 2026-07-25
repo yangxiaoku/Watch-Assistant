@@ -32,6 +32,8 @@ class FakeQbittorrent:
         add_delay: float = 0,
         add_release: asyncio.Event | None = None,
         delete_release: asyncio.Event | None = None,
+        add_response_text: str = "Ok.",
+        add_response_json: dict[str, object] | None = None,
     ) -> None:
         self.existing = {value.casefold() for value in (existing or set())}
         self.metadata_received = metadata_received
@@ -43,9 +45,13 @@ class FakeQbittorrent:
         self.add_delay = add_delay
         self.add_release = add_release
         self.delete_release = delete_release
+        self.add_response_text = add_response_text
+        self.add_response_json = add_response_json
         self.added: dict[str, str] = {}
         self.add_calls = 0
         self.delete_calls = 0
+        self.delete_tag_calls = 0
+        self.remove_category_calls = 0
         self.files_calls = 0
         self.active_checks = 0
         self.max_active_checks = 0
@@ -64,6 +70,12 @@ class FakeQbittorrent:
         respx.post(f"{BASE_URL}/api/v2/torrents/add").mock(side_effect=self._add)
         respx.get(f"{BASE_URL}/api/v2/torrents/files").mock(side_effect=self._files)
         respx.post(f"{BASE_URL}/api/v2/torrents/delete").mock(side_effect=self._delete)
+        respx.post(f"{BASE_URL}/api/v2/torrents/deleteTags").mock(
+            side_effect=self._delete_tags
+        )
+        respx.post(f"{BASE_URL}/api/v2/torrents/removeCategories").mock(
+            side_effect=self._remove_categories
+        )
 
     def _login(self, request: httpx.Request) -> httpx.Response:
         form = parse_qs(request.content.decode())
@@ -149,7 +161,9 @@ class FakeQbittorrent:
             self.add_calls += 1
             self.added[infohash] = marker
             self.add_seen.set()
-            return httpx.Response(200, text="Ok.")
+            if self.add_response_json is not None:
+                return httpx.Response(200, json=self.add_response_json)
+            return httpx.Response(200, text=self.add_response_text)
         finally:
             self.active_adds -= 1
 
@@ -171,6 +185,16 @@ class FakeQbittorrent:
             return httpx.Response(self.delete_status, text="Fails.")
         self.added.pop(infohash)
         self.delete_seen.set()
+        return httpx.Response(200, text="Ok.")
+
+    def _delete_tags(self, request: httpx.Request) -> httpx.Response:
+        assert parse_qs(request.content.decode())["tags"]
+        self.delete_tag_calls += 1
+        return httpx.Response(200, text="Ok.")
+
+    def _remove_categories(self, request: httpx.Request) -> httpx.Response:
+        assert parse_qs(request.content.decode())["categories"]
+        self.remove_category_calls += 1
         return httpx.Response(200, text="Ok.")
 
 
@@ -222,6 +246,39 @@ async def test_inspects_batch_of_30_and_maintains_login_cookie():
     assert fake.add_calls == 30
     assert fake.delete_calls == 30
     assert fake.cookie_seen is True
+
+
+@respx.mock
+async def test_add_accepts_qbittorrent_5_json_success_response():
+    fake = FakeQbittorrent(
+        add_response_json={
+            "added_torrent_ids": ["a" * 40],
+            "failure_count": 0,
+            "pending_count": 0,
+            "success_count": 1,
+        }
+    )
+    fake.install()
+    client = QbittorrentClient(BASE_URL, "user", "password", poll_interval=0)
+
+    result = (await client.inspect([_magnet("a" * 40)]))[0]
+    await client.aclose()
+
+    assert result.status == InspectionStatus.VERIFIED
+
+
+@respx.mock
+async def test_batch_marker_is_removed_after_all_items_finish():
+    fake = FakeQbittorrent()
+    fake.install()
+    client = QbittorrentClient(BASE_URL, "user", "password", poll_interval=0)
+
+    results = await client.inspect([_magnet("a" * 40), _magnet("b" * 40)])
+    await client.aclose()
+
+    assert all(result.status == InspectionStatus.VERIFIED for result in results)
+    assert fake.delete_tag_calls == 1
+    assert fake.remove_category_calls == 1
 
 
 @respx.mock
@@ -523,7 +580,7 @@ async def test_preexisting_torrent_is_never_added_or_deleted():
 
 
 @respx.mock
-async def test_cleanup_failure_is_reported_without_discarding_metadata():
+async def test_cleanup_failure_discards_untrusted_metadata():
     fake = FakeQbittorrent(delete_status=500)
     fake.install()
     client = QbittorrentClient(BASE_URL, "user", "password", poll_interval=0)
@@ -533,8 +590,10 @@ async def test_cleanup_failure_is_reported_without_discarding_metadata():
 
     assert result.status == InspectionStatus.FAILED
     assert result.error_code == "cleanup_failed"
-    assert result.file_count == 1
+    assert result.file_count == 0
     assert fake.delete_calls == 1
+    assert fake.delete_tag_calls == 0
+    assert fake.remove_category_calls == 0
 
 
 @respx.mock
@@ -551,6 +610,12 @@ async def test_malformed_api_response_returns_stable_error():
     )
     respx.get(f"{BASE_URL}/api/v2/torrents/info").mock(
         return_value=httpx.Response(200, json={"unexpected": "object"})
+    )
+    respx.post(f"{BASE_URL}/api/v2/torrents/deleteTags").mock(
+        return_value=httpx.Response(200, text="Ok.")
+    )
+    respx.post(f"{BASE_URL}/api/v2/torrents/removeCategories").mock(
+        return_value=httpx.Response(200, text="Ok.")
     )
     client = QbittorrentClient(BASE_URL, "user", "password")
 

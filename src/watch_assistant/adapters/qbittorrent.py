@@ -162,12 +162,34 @@ class QbittorrentClient:
             ]
 
         batch_marker = f"wa-inspect-{uuid.uuid4().hex}"
+        marker_used = asyncio.Event()
 
         async def run(item: _Magnet) -> QbittorrentInspectionResult:
             async with self._semaphore:
-                return await self._inspect_one(item, batch_marker)
+                return await self._inspect_one(item, batch_marker, marker_used)
 
-        inspected = await asyncio.gather(*(run(item) for item in parsed))
+        try:
+            inspected = await asyncio.gather(*(run(item) for item in parsed))
+        except asyncio.CancelledError:
+            if marker_used.is_set():
+                try:
+                    await self._shielded_marker_cleanup(batch_marker)
+                except _ApiError:
+                    pass
+            raise
+
+        if marker_used.is_set():
+            try:
+                await self._shielded_marker_cleanup(batch_marker)
+            except _ApiError:
+                inspected = [
+                    QbittorrentInspectionResult(
+                        infohash=result.infohash,
+                        status=InspectionStatus.FAILED,
+                        error_code="cleanup_failed",
+                    )
+                    for result in inspected
+                ]
         by_hash = {result.infohash: result for result in inspected}
         return [
             by_hash[entry.infohash] if isinstance(entry, _Magnet) else entry
@@ -217,7 +239,7 @@ class QbittorrentClient:
             self._logged_in = True
 
     async def _inspect_one(
-        self, item: _Magnet, batch_marker: str
+        self, item: _Magnet, batch_marker: str, marker_used: asyncio.Event
     ) -> QbittorrentInspectionResult:
         result: QbittorrentInspectionResult | None = None
         add_attempted = False
@@ -232,6 +254,7 @@ class QbittorrentClient:
                     )
                 else:
                     add_attempted = True
+                    marker_used.set()
                     await self._shielded_add(item.uri, batch_marker)
                     deadline = time.monotonic() + self._item_timeout
                     while result is None:
@@ -365,6 +388,21 @@ class QbittorrentClient:
                     cleanup_task.result()
                     return
 
+    async def _shielded_marker_cleanup(self, marker: str) -> None:
+        cleanup_task = asyncio.create_task(self._cleanup_marker_with_semaphore(marker))
+        while True:
+            try:
+                await asyncio.shield(cleanup_task)
+                return
+            except asyncio.CancelledError:
+                if cleanup_task.done():
+                    cleanup_task.result()
+                    return
+
+    async def _cleanup_marker_with_semaphore(self, marker: str) -> None:
+        async with self._semaphore:
+            await self._cleanup_marker(marker)
+
     async def _shielded_add(self, magnet: str, marker: str) -> None:
         add_task = asyncio.create_task(self._add(magnet, marker))
         cancelled = False
@@ -393,7 +431,7 @@ class QbittorrentClient:
             raise _ApiError("add_failed") from exc
         if response.status_code in {400, 404, 409} or response.text.strip() == "Fails.":
             raise _UnsupportedError("metadata_stop_unsupported")
-        if response.status_code >= 400 or response.text.strip() != "Ok.":
+        if response.status_code >= 400 or not _add_succeeded(response):
             raise _ApiError("add_failed")
 
     async def _torrent_info(self, **params: str) -> list[dict[str, Any]]:
@@ -450,6 +488,23 @@ class QbittorrentClient:
         except httpx.HTTPError as exc:
             raise _ApiError("cleanup_failed") from exc
 
+    async def _cleanup_marker(self, marker: str) -> None:
+        if await self._torrent_info(tag=marker):
+            raise _ApiError("cleanup_failed")
+        for path, data in (
+            ("/api/v2/torrents/deleteTags", {"tags": marker}),
+            ("/api/v2/torrents/removeCategories", {"categories": marker}),
+        ):
+            try:
+                response = await self._client.post(
+                    path,
+                    data=data,
+                    timeout=self._request_timeout,
+                )
+                response.raise_for_status()
+            except httpx.HTTPError as exc:
+                raise _ApiError("cleanup_failed") from exc
+
 
 def _extract_infohash(uri: object) -> str | None:
     if not isinstance(uri, str):
@@ -485,6 +540,24 @@ def _parse_version(value: str) -> tuple[int, int, int] | None:
         return tuple(int(part) for part in parts)
     except ValueError:
         return None
+
+
+def _add_succeeded(response: httpx.Response) -> bool:
+    body = response.text.strip()
+    if body in {"", "Ok."}:
+        return True
+    try:
+        payload = response.json()
+    except ValueError:
+        return False
+    return (
+        isinstance(payload, dict)
+        and payload.get("success_count") == 1
+        and payload.get("failure_count") == 0
+        and payload.get("pending_count") == 0
+        and isinstance(payload.get("added_torrent_ids"), list)
+        and len(payload["added_torrent_ids"]) == 1
+    )
 
 
 def _matching_torrent(
