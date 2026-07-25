@@ -113,17 +113,20 @@ def create_app(
                     max_concurrency=settings.p115_max_concurrency,
                 )
                 application.state.task_adapter = runtime_task_adapter
-                application.state.task_worker = TaskWorker(
-                    runtime_database.session_factory,
-                    runtime_crypto,
-                    runtime_task_adapter,
-                    owner=_worker_owner(),
-                )
-                application.state.push_capabilities = {
-                    "magnet": True,
-                    "share": False,
-                }
                 owned.append(runtime_task_adapter)
+                p115_ready = await _ensure_adapter_available(runtime_task_adapter)
+                application.state.p115_ready = p115_ready
+                if p115_ready:
+                    application.state.task_worker = TaskWorker(
+                        runtime_database.session_factory,
+                        runtime_crypto,
+                        runtime_task_adapter,
+                        owner=_worker_owner(),
+                    )
+                    application.state.push_capabilities = {
+                        "magnet": True,
+                        "share": False,
+                    }
             inspection_client = qbittorrent_client
             if inspection_client is None and settings.inspection_configured:
                 inspection_client = QbittorrentClient(
@@ -160,6 +163,18 @@ def create_app(
                     name="watch-assistant-cache-warmer",
                 )
                 application.state.cache_warmer = warmer
+        task_adapter_resource = getattr(application.state, "task_adapter", None)
+        if task_adapter_resource is not None and not hasattr(
+            application.state, "p115_ready"
+        ):
+            p115_ready = await _ensure_adapter_available(task_adapter_resource)
+            application.state.p115_ready = p115_ready
+            if not p115_ready:
+                application.state.push_capabilities = {
+                    "magnet": False,
+                    "share": False,
+                }
+                application.state.task_worker = None
         worker = getattr(application.state, "inspection_worker", None)
         if worker is not None:
             inspection_stop = asyncio.Event()
@@ -303,6 +318,16 @@ def create_app(
 
 def _worker_owner() -> str:
     return f"{socket.gethostname()}:{os.getpid()}"
+
+
+async def _ensure_adapter_available(adapter: TaskAdapter) -> bool:
+    ensure_available = getattr(adapter, "ensure_available", None)
+    if ensure_available is None:
+        return True
+    try:
+        return bool(await ensure_available())
+    except Exception:  # noqa: BLE001 - readiness must not expose adapter details
+        return False
 
 
 app = create_app()

@@ -167,6 +167,57 @@ async def test_invalid_inputs_and_missing_cookie_never_call_client(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_client_construction_failure_is_failed_and_does_not_submit(tmp_path):
+    provider, _path = _provider(tmp_path)
+    fake_calls = []
+
+    def factory(_cookie):
+        fake_calls.append(True)
+        raise PermissionError("cache directory is not writable")
+
+    adapter = P115Adapter(provider, 1, client_factory=factory)
+
+    assert await adapter.ensure_available() is False
+    result = await adapter.submit_magnet(MAGNET)
+
+    assert result.status == RemoteStatus.FAILED
+    assert result.error_code == "adapter_unavailable"
+    assert result.remote_ref is None
+    assert fake_calls == [True, True]
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
+async def test_missing_cookie_readiness_stays_needs_auth(tmp_path):
+    provider = CookieProvider(tmp_path / "missing-cookie")
+    adapter = P115Adapter(provider, 1, client_factory=lambda _cookie: FakeP115Client())
+
+    assert await adapter.ensure_available() is False
+    result = await adapter.submit_magnet(MAGNET)
+
+    assert result.status == RemoteStatus.NEEDS_AUTH
+    assert result.remote_ref is None
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
+async def test_share_client_construction_failure_is_failed_without_receive(tmp_path):
+    provider, _path = _provider(tmp_path)
+
+    def factory(_cookie):
+        raise PermissionError("cache directory is not writable")
+
+    adapter = P115Adapter(provider, 1, client_factory=factory)
+
+    result = await adapter.save_share("https://115.com/s/code", None)
+
+    assert result.status == RemoteStatus.FAILED
+    assert result.error_code == "adapter_unavailable"
+    assert result.remote_ref is None
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
 async def test_cookie_change_rebuilds_client_without_exposing_cookie(tmp_path):
     provider, path = _provider(tmp_path)
     clients = []

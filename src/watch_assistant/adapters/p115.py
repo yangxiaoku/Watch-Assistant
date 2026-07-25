@@ -105,7 +105,7 @@ class P115Adapter:
             if missing:
                 return _needs_auth()
             if client is None:
-                return _uncertain("adapter_unavailable")
+                return _failed("adapter_unavailable", "115 client unavailable")
             try:
                 response = await self._call(
                     client,
@@ -129,7 +129,7 @@ class P115Adapter:
             if missing:
                 return _needs_auth()
             if client is None:
-                return _uncertain("adapter_unavailable")
+                return _failed("adapter_unavailable", "115 client unavailable")
             try:
                 file_ids = await self._share_file_ids(client, share[0], share[1])
             except asyncio.CancelledError:
@@ -201,6 +201,15 @@ class P115Adapter:
             self._client = None
             self._cookie = None
         await self._close_client(client)
+
+    async def ensure_available(self) -> bool:
+        """Build the client without making a remote API request."""
+        async with self._semaphore:
+            try:
+                client, missing = await self._client_for_operation()
+            except Exception:  # noqa: BLE001 - readiness must stay non-sensitive
+                return False
+            return not missing and client is not None
 
     async def _client_for_operation(self) -> tuple[Any, bool]:
         cookie = self._cookie_provider.load()

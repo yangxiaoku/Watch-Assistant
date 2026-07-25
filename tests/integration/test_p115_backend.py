@@ -20,12 +20,16 @@ MAGNET = "magnet:?xt=urn:btih:" + ("a" * 40)
 
 
 class FakeTaskAdapter:
-    def __init__(self, result=RemoteStatus.ACCEPTED):
+    def __init__(self, result=RemoteStatus.ACCEPTED, *, readiness=True):
         self.result = result
+        self.readiness = readiness
         self.submit_calls = 0
         self.save_share_calls = 0
         self.status_calls = 0
         self.closed = False
+
+    async def ensure_available(self):
+        return self.readiness
 
     async def submit_magnet(self, url: str):
         self.submit_calls += 1
@@ -265,6 +269,52 @@ async def test_worker_recovers_before_run_and_closes_adapter(tmp_path):
         await asyncio.sleep(0)
         assert adapter.status_calls >= 1
     assert adapter.closed is True
+    await client.aclose()
+    await tmdb.aclose()
+    await pansou.aclose()
+    await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_readiness_failure_disables_magnet_and_worker(tmp_path):
+    adapter = FakeTaskAdapter(readiness=False)
+    app, client, database, crypto, tmdb, pansou = await _app_client(
+        tmp_path / "not-ready", adapter
+    )
+    await _add_resource(database, crypto, resource_id="not_ready", kind="magnet")
+
+    async with app.router.lifespan_context(app):
+        health = await client.get("/api/v1/health")
+        response = await client.post("/api/v1/tasks", json={"resource_id": "not_ready"})
+        assert health.json()["push_capabilities"] == {
+            "magnet": False,
+            "share": False,
+        }
+        assert response.status_code == 503
+        assert response.json()["detail"] == "push_kind_unsupported"
+        assert getattr(app.state, "task_worker", None) is None
+
+    await client.aclose()
+    await tmdb.aclose()
+    await pansou.aclose()
+    await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_readiness_success_keeps_magnet_worker_enabled(tmp_path):
+    adapter = FakeTaskAdapter(readiness=True)
+    app, client, database, _crypto, tmdb, pansou = await _app_client(
+        tmp_path / "ready", adapter
+    )
+
+    async with app.router.lifespan_context(app):
+        health = await client.get("/api/v1/health")
+        assert health.json()["push_capabilities"] == {
+            "magnet": True,
+            "share": False,
+        }
+        assert getattr(app.state, "task_worker", None) is not None
+
     await client.aclose()
     await tmdb.aclose()
     await pansou.aclose()
