@@ -13,6 +13,7 @@ class Settings(BaseSettings):
         extra="ignore",
         case_sensitive=False,
         populate_by_name=True,
+        env_ignore_empty=True,
     )
 
     database_url: str = Field(min_length=1, validation_alias="DATABASE_URL")
@@ -74,6 +75,17 @@ class Settings(BaseSettings):
         le=30,
         validation_alias="INSPECTION_REQUEST_TIMEOUT_SECONDS",
     )
+    p115_enabled: bool = Field(default=False, validation_alias="P115_ENABLED")
+    p115_cookie_path: Path = Field(
+        default=Path("/etc/watch-assistant/p115-cookie"),
+        validation_alias="P115_COOKIE_PATH",
+    )
+    p115_target_cid: int | None = Field(
+        default=None, ge=0, validation_alias="P115_TARGET_CID"
+    )
+    p115_max_concurrency: int = Field(
+        default=1, ge=1, le=4, validation_alias="P115_MAX_CONCURRENCY"
+    )
     qbittorrent_base_url: str = Field(
         default="", validation_alias="QBITTORRENT_BASE_URL"
     )
@@ -91,6 +103,10 @@ class Settings(BaseSettings):
             and self.qbittorrent_username.get_secret_value()
             and self.qbittorrent_password.get_secret_value()
         )
+
+    @property
+    def p115_configured(self) -> bool:
+        return self.p115_enabled and self.p115_target_cid is not None
 
 
 def load_tgto_contract(path: Path | str) -> dict[str, Any]:

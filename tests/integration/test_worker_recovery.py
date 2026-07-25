@@ -15,6 +15,7 @@ class FakeAdapter:
     def __init__(self):
         self.submissions = 0
         self.remote_status = None
+        self.status_lookups = 0
 
     async def submit_magnet(self, url: str) -> SubmissionResult:
         self.submissions += 1
@@ -26,6 +27,7 @@ class FakeAdapter:
         return SubmissionResult(status=RemoteStatus.ACCEPTED, remote_ref="remote-share")
 
     async def get_status(self, remote_ref: str):
+        self.status_lookups += 1
         return self.remote_status
 
 
@@ -47,6 +49,24 @@ async def _add_resource(database, crypto):
                 ),
                 name="Movie",
                 source="PanSou",
+                captured_at=datetime.now(UTC),
+                expires_at=datetime.now(UTC) + timedelta(days=30),
+            )
+        )
+        await session.commit()
+
+
+async def _add_share_resource(database, crypto):
+    async with database.session_factory() as session:
+        session.add(
+            Resource(
+                id="res_share",
+                kind="115_share",
+                canonical_key="115_share:res_share",
+                encrypted_url=crypto.encrypt("https://115.com/s/share"),
+                encrypted_password=crypto.encrypt("1234"),
+                name="Share",
+                source="test",
                 captured_at=datetime.now(UTC),
                 expires_at=datetime.now(UTC) + timedelta(days=30),
             )
@@ -150,4 +170,56 @@ async def test_recovery_preserves_confirmed_remote_failure(tmp_path):
     stored = await service.get(task.id)
 
     assert stored.state == TaskState.FAILED
+    await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_queued_share_is_failed_without_calling_share_adapter(tmp_path):
+    database = await _database(tmp_path)
+    crypto = SecretCrypto(Fernet.generate_key().decode("ascii"))
+    await _add_share_resource(database, crypto)
+    service = TaskService(database.session_factory)
+    task, _ = await service.create("res_share")
+    async with database.session_factory() as session:
+        stored = await session.get(Task, task.id)
+        stored.encrypted_url_snapshot = "not-a-cookie"
+        await session.commit()
+    adapter = FakeAdapter()
+    worker = TaskWorker(database.session_factory, crypto, adapter, owner="test-worker")
+
+    assert await worker.run_once() is True
+    stored = await service.get(task.id)
+
+    assert stored.state == TaskState.FAILED
+    assert stored.error_code == "push_kind_unsupported"
+    assert adapter.submissions == 0
+    await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_expired_share_is_failed_without_status_lookup(tmp_path):
+    database = await _database(tmp_path)
+    crypto = SecretCrypto(Fernet.generate_key().decode("ascii"))
+    await _add_share_resource(database, crypto)
+    service = TaskService(database.session_factory)
+    task, _ = await service.create("res_share")
+    async with database.session_factory() as session:
+        stored = await session.get(Task, task.id)
+        stored.state = TaskState.SUBMITTING
+        stored.remote_ref = "share-remote"
+        stored.lease_owner = "dead-worker"
+        stored.lease_expires_at = datetime.now(UTC) - timedelta(minutes=1)
+        await session.commit()
+
+    adapter = FakeAdapter()
+    adapter.remote_status = RemoteStatus.ACCEPTED
+    worker = TaskWorker(database.session_factory, crypto, adapter, owner="new-worker")
+
+    assert await worker.recover_expired() == 1
+    stored = await service.get(task.id)
+
+    assert stored.state == TaskState.FAILED
+    assert stored.error_code == "push_kind_unsupported"
+    assert adapter.submissions == 0
+    assert adapter.status_lookups == 0
     await database.engine.dispose()

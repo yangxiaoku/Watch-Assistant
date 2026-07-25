@@ -4,10 +4,11 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
-from watch_assistant.schemas import TaskCreateRequest, TaskResponse
+from watch_assistant.schemas import TaskAction, TaskCreateRequest, TaskResponse
 from watch_assistant.security import require_api_auth
 from watch_assistant.services.tasks import (
     InvalidRetryState,
+    PushKindUnsupported,
     ResourceNotFound,
     TaskService,
 )
@@ -22,9 +23,16 @@ def get_task_service(request: Request) -> TaskService:
 TaskServiceDependency = Annotated[TaskService, Depends(get_task_service)]
 
 
-def ensure_push_supported(request: Request) -> None:
-    if getattr(request.app.state, "push_supported", True) is not True:
-        raise HTTPException(status_code=503, detail="push_unsupported")
+def allowed_push_actions(request: Request) -> frozenset[TaskAction]:
+    capabilities = getattr(request.app.state, "push_capabilities", None)
+    if isinstance(capabilities, dict):
+        actions: set[TaskAction] = set()
+        if capabilities.get("magnet") is True:
+            actions.add(TaskAction.OFFLINE_DOWNLOAD)
+        if capabilities.get("share") is True:
+            actions.add(TaskAction.SAVE_SHARE)
+        return frozenset(actions)
+    return frozenset()
 
 
 @router.post(
@@ -35,11 +43,16 @@ async def create_task(
     raw_request: Request,
     service: TaskServiceDependency,
 ) -> TaskResponse:
-    ensure_push_supported(raw_request)
     try:
-        task, _reused = await service.create(request.resource_id, force=request.force)
+        task, _reused = await service.create(
+            request.resource_id,
+            force=request.force,
+            allowed_actions=allowed_push_actions(raw_request),
+        )
     except ResourceNotFound as exc:
         raise HTTPException(status_code=404, detail="resource_not_found") from exc
+    except PushKindUnsupported as exc:
+        raise HTTPException(status_code=503, detail="push_kind_unsupported") from exc
     return task
 
 
@@ -60,10 +73,13 @@ async def list_tasks(service: TaskServiceDependency) -> list[TaskResponse]:
 async def retry_task(
     task_id: str, raw_request: Request, service: TaskServiceDependency
 ) -> TaskResponse:
-    ensure_push_supported(raw_request)
     try:
-        return await service.retry(task_id)
+        return await service.retry(
+            task_id, allowed_actions=allowed_push_actions(raw_request)
+        )
     except ResourceNotFound as exc:
         raise HTTPException(status_code=404, detail="task_not_found") from exc
     except InvalidRetryState as exc:
         raise HTTPException(status_code=409, detail="task_not_retryable") from exc
+    except PushKindUnsupported as exc:
+        raise HTTPException(status_code=503, detail="push_kind_unsupported") from exc

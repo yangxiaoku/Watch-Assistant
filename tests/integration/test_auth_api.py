@@ -17,6 +17,17 @@ WEB_PASSWORD = "web-secret"
 SCRIPT_TOKEN = "script-secret"
 
 
+class FakeTaskAdapter:
+    async def submit_magnet(self, url: str):
+        raise AssertionError("task adapter should not run in auth tests")
+
+    async def save_share(self, url: str, password: str | None):
+        raise AssertionError("share adapter must not run in auth tests")
+
+    async def get_status(self, remote_ref: str):
+        return None
+
+
 async def _make_auth_client(tmp_path, *, push_limit=10):
     database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'auth.db'}")
     await initialize_database(database.engine)
@@ -50,6 +61,7 @@ async def _make_auth_client(tmp_path, *, push_limit=10):
         tmdb_client=tmdb,
         pansou_client=pansou,
         security_manager=security,
+        task_adapter=FakeTaskAdapter(),
     )
     client = httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://app.test"

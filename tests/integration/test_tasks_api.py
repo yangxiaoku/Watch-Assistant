@@ -13,6 +13,17 @@ from watch_assistant.db import create_database, initialize_database
 from watch_assistant.models import Resource, Task, TaskState
 
 
+class FakeTaskAdapter:
+    async def submit_magnet(self, url: str):
+        raise AssertionError("task adapter should not run in API tests")
+
+    async def save_share(self, url: str, password: str | None):
+        raise AssertionError("share adapter must not run in API tests")
+
+    async def get_status(self, remote_ref: str):
+        return None
+
+
 async def _make_task_client(tmp_path: Path):
     database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'tasks-api.db'}")
     await initialize_database(database.engine)
@@ -38,6 +49,7 @@ async def _make_task_client(tmp_path: Path):
         crypto=crypto,
         tmdb_client=tmdb,
         pansou_client=pansou,
+        task_adapter=FakeTaskAdapter(),
     )
     client = httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://app.test"
@@ -75,12 +87,12 @@ async def test_retry_is_blocked_when_push_is_unsupported(tmp_path):
         task = await session.get(Task, task_id)
         task.state = TaskState.FAILED
         await session.commit()
-    app.state.push_supported = False
+    app.state.push_capabilities = {"magnet": False, "share": False}
 
     response = await client.post(f"/api/v1/tasks/{task_id}/retry")
 
     assert response.status_code == 503
-    assert response.json()["detail"] == "push_unsupported"
+    assert response.json()["detail"] == "push_kind_unsupported"
     async with database.session_factory() as session:
         task = await session.get(Task, task_id)
     assert task.state == TaskState.FAILED
