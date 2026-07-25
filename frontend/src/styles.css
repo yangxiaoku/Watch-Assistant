@@ -185,15 +185,15 @@ input { outline: none; }
 .task-copy strong { color: #f4f5f7; font-size: 13px; }
 .task-copy small { margin-top: 4px; overflow: hidden; color: #7f838c; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 
-.auth-gate { width: min(430px, 100%); margin: 14vh auto 0; padding: 34px; background: #191b1f; border: 1px solid #303238; }
+.auth-gate { width: 100%; max-width: 430px; min-width: 0; margin: 14vh auto 0; padding: 34px; background: #191b1f; border: 1px solid #303238; }
 .auth-mark { display: grid; place-items: center; width: 40px; height: 40px; margin-bottom: 24px; color: #10141a; background: #68a0ff; border-radius: 4px; }
 .auth-gate h1 { margin-bottom: 12px; font-size: 34px; }
 .auth-gate > p:not(.eyebrow):not(.error-text) { color: #92959d; line-height: 1.5; }
-.auth-gate form { margin-top: 28px; }
+.auth-gate form { min-width: 0; margin-top: 28px; }
 .auth-gate label { display: block; margin-bottom: 9px; color: #a9acb4; font-size: 12px; font-weight: 700; }
-.auth-gate input { width: 100%; min-height: 44px; padding: 0 13px; color: #f4f5f7; background: #101113; border: 1px solid #3a3d44; border-radius: 4px; }
+.auth-gate input { width: 100%; min-width: 0; min-height: 44px; padding: 0 13px; color: #f4f5f7; background: #101113; border: 1px solid #3a3d44; border-radius: 4px; }
 .auth-gate input:focus { border-color: #68a0ff; box-shadow: 0 0 0 3px #68a0ff20; }
-.auth-gate .primary-button { width: 100%; margin-top: 12px; }
+.auth-gate .primary-button { width: 100%; min-width: 0; margin-top: 12px; }
 .error-text { margin: 12px 0 0; color: #ff9c9c; font-size: 13px; }
 .spin { animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
