@@ -55,7 +55,7 @@ test("routes push actions by resource capability", async ({ page }) => {
   await page.goto("/movie/27205");
   await expect(page.getByRole("heading", { name: "盗梦空间" })).toBeVisible();
   await expect(page.getByText("磁力云下载可用，115 分享转存尚未验证")).toBeVisible();
-  await expect(page.getByText("TgtoDrive 推送契约尚未验证，推送按钮已禁用。")).toHaveCount(0);
+  await expect(page.getByText("115 推送当前不可用，推送按钮已禁用。")).toHaveCount(0);
   const resourceRows = page.locator(".resource-table:visible tbody tr, .resource-cards:visible article");
   const magnetRow = resourceRows.filter({ hasText: "Inception 1080P" });
   const shareRow = resourceRows.filter({ hasText: "115 分享资源" });
