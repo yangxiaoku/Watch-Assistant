@@ -18,6 +18,17 @@ def _write_cookie(path, value=COOKIE):
         path.chmod(stat.S_IRUSR | stat.S_IWUSR)
 
 
+def _write_env(path, value=COOKIE):
+    path.write_text(
+        "UNRELATED_TOKEN=do-not-copy\n"
+        "ENV_115_COOKIES=" + value + "\nOTHER_SECRET=also-do-not-copy\n",
+        encoding="utf-8",
+        newline="",
+    )
+    if os.name != "nt":
+        path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+
+
 def test_cookie_provider_validates_and_reloads_changed_file(tmp_path):
     path = tmp_path / "tgto-cookie.txt"
     _write_cookie(path)
@@ -59,25 +70,139 @@ def test_cookie_provider_rejects_symlink_and_group_permissions(tmp_path):
 
 
 def test_sync_cookie_is_one_way_and_writes_secure_destination(tmp_path):
-    source = tmp_path / "tgto-cookie"
+    source = tmp_path / "user.env"
     destination = tmp_path / "p115-cookie"
-    _write_cookie(source)
+    _write_env(source)
 
     sync_cookie(source, destination)
 
     assert destination.read_text(encoding="ascii") == COOKIE
     if os.name != "nt":
         assert stat.S_IMODE(destination.stat().st_mode) == 0o600
-    _write_cookie(source, "UID=999_A1_456; CID=new; KID=new; SEID=new")
-    assert destination.read_text(encoding="ascii") == COOKIE
+    _write_env(source, "UID=999_A1_456; CID=new; KID=new; SEID=new")
+    sync_cookie(source, destination)
+    assert destination.read_text(encoding="ascii") == (
+        "UID=999_A1_456; CID=new; KID=new; SEID=new"
+    )
 
 
 def test_sync_cookie_does_not_modify_destination_on_invalid_source(tmp_path):
-    source = tmp_path / "bad-cookie"
+    source = tmp_path / "bad-user.env"
     destination = tmp_path / "p115-cookie"
-    source.write_text("not a cookie", encoding="ascii")
+    source.write_text("OTHER_SECRET=not a cookie\n", encoding="ascii")
     destination.write_text("keep", encoding="ascii")
 
     with pytest.raises(CookieSyncError, match="unavailable"):
         sync_cookie(source, destination)
     assert destination.read_text(encoding="ascii") == "keep"
+
+
+def test_sync_cookie_ignores_unrelated_sensitive_assignments(tmp_path):
+    source = tmp_path / "user.env"
+    destination = tmp_path / "p115-cookie"
+    _write_env(source)
+
+    sync_cookie(source, destination)
+
+    assert destination.read_text(encoding="ascii") == COOKIE
+    assert "UNRELATED" not in destination.read_text(encoding="ascii")
+    assert "OTHER_SECRET" not in destination.read_text(encoding="ascii")
+
+
+def test_sync_cookie_accepts_quoted_dotenv_assignment(tmp_path):
+    source = tmp_path / "user.env"
+    destination = tmp_path / "p115-cookie"
+    source.write_text(
+        'OTHER_SECRET="hidden"\nENV_115_COOKIES="' + COOKIE + '" # comment\n',
+        encoding="utf-8",
+    )
+    if os.name != "nt":
+        source.chmod(stat.S_IRUSR | stat.S_IWUSR)
+
+    sync_cookie(source, destination)
+
+    assert destination.read_text(encoding="ascii") == COOKIE
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "OTHER_SECRET=only-this-variable\n",
+        "ENV_115_COOKIES=" + COOKIE + "\nENV_115_COOKIES=" + COOKIE,
+        "ENV_115_COOKIES=" + COOKIE + "\x00\n",
+        'ENV_115_COOKIES="' + COOKIE + "\nnext\n",
+    ],
+)
+def test_sync_cookie_rejects_missing_or_duplicate_target(tmp_path, content):
+    source = tmp_path / "user.env"
+    destination = tmp_path / "p115-cookie"
+    source.write_text(content, encoding="utf-8", newline="")
+
+    with pytest.raises(CookieSyncError, match="unavailable"):
+        sync_cookie(source, destination)
+
+
+def test_sync_cookie_does_not_replace_unchanged_content(tmp_path, monkeypatch):
+    source = tmp_path / "user.env"
+    destination = tmp_path / "p115-cookie"
+    _write_env(source)
+    sync_cookie(source, destination)
+    original_replace = __import__("os").replace
+
+    def fail_replace(*args):
+        raise AssertionError("unchanged content should not replace")
+
+    monkeypatch.setattr("scripts.sync_tgto_cookie.os.replace", fail_replace)
+    sync_cookie(source, destination)
+    monkeypatch.setattr("scripts.sync_tgto_cookie.os.replace", original_replace)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlink privilege contract")
+def test_sync_cookie_rejects_destination_symlink(tmp_path):
+    source = tmp_path / "user.env"
+    destination = tmp_path / "p115-cookie"
+    target = tmp_path / "actual"
+    _write_env(source)
+    target.write_text("keep", encoding="ascii")
+    destination.symlink_to(target)
+
+    with pytest.raises(CookieSyncError, match="symlink"):
+        sync_cookie(source, destination)
+
+
+def test_sync_cookie_rejects_invalid_utf8_without_secret_in_error(tmp_path):
+    source = tmp_path / "user.env"
+    destination = tmp_path / "p115-cookie"
+    source.write_bytes(b"ENV_115_COOKIES=\xff\n")
+
+    with pytest.raises(CookieSyncError) as error:
+        sync_cookie(source, destination)
+    assert "ff" not in repr(error.value).casefold()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX ownership contract")
+def test_sync_cookie_applies_explicit_owner_and_group(tmp_path):
+    source = tmp_path / "user.env"
+    destination = tmp_path / "p115-cookie"
+    _write_env(source)
+
+    sync_cookie(source, destination, owner=os.getuid(), group=os.getgid())
+
+    assert destination.stat().st_uid == os.getuid()
+    assert destination.stat().st_gid == os.getgid()
+
+
+def test_sync_cookie_replace_failure_keeps_previous_file(tmp_path, monkeypatch):
+    source = tmp_path / "user.env"
+    destination = tmp_path / "p115-cookie"
+    _write_env(source)
+    destination.write_text("old", encoding="ascii")
+
+    def fail_replace(*args):
+        raise OSError("replace failed")
+
+    monkeypatch.setattr("scripts.sync_tgto_cookie.os.replace", fail_replace)
+    with pytest.raises(CookieSyncError, match="failed"):
+        sync_cookie(source, destination)
+    assert destination.read_text(encoding="ascii") == "old"
+    assert not list(tmp_path.glob(".p115-cookie-*"))

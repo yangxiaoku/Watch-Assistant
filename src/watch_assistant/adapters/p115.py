@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import inspect
 import re
 from collections.abc import Callable, Mapping
@@ -54,6 +55,10 @@ _FAILED_MARKERS = (
 )
 
 
+class _AuthFailure(Exception):
+    """Internal marker for a known authentication response."""
+
+
 class P115Adapter:
     """Serialize p115client calls and rebuild its client when credentials change."""
 
@@ -83,7 +88,8 @@ class P115Adapter:
         self._semaphore = asyncio.Semaphore(max_concurrency)
 
     async def submit_magnet(self, url: str) -> SubmissionResult:
-        if _magnet_infohash(url) is None:
+        infohash = _magnet_infohash(url)
+        if infohash is None:
             return _failed("invalid_magnet", "magnet URL is invalid")
         async with self._semaphore:
             client, missing = await self._client_for_operation()
@@ -94,14 +100,16 @@ class P115Adapter:
             try:
                 response = await self._call(
                     client,
-                    "clouddownload_task_add_urls",
-                    {"urls": url, "wp_path_id": self._target_cid},
+                    "clouddownload_task_add_url",
+                    {"url": url, "wp_path_id": self._target_cid},
                 )
             except asyncio.CancelledError:
                 raise
             except Exception as error:  # noqa: BLE001 - remote outcome is opaque
                 return _exception_result(error)
-            return _submission_result(response)
+            return _submission_result(
+                response, fallback_ref=f"{INFOHASH_REMOTE_REF_PREFIX}{infohash}"
+            )
 
     async def save_share(self, url: str, password: str | None) -> SubmissionResult:
         share = _share_target(url, password)
@@ -113,19 +121,25 @@ class P115Adapter:
                 return _needs_auth()
             if client is None:
                 return _uncertain("adapter_unavailable")
-            payload = {
-                "share_code": share[0],
-                "receive_code": share[1],
-                "file_id": "0",
-                "cid": self._target_cid,
-            }
             try:
-                response = await self._call(client, "share_receive", payload)
+                file_ids = await self._share_file_ids(client, share[0], share[1])
+                if not file_ids:
+                    return _failed("empty_share", "115 share is empty")
+                response = await self._call(
+                    client,
+                    "share_receive",
+                    {
+                        "share_code": share[0],
+                        "receive_code": share[1],
+                        "file_id": ",".join(file_ids),
+                        "cid": self._target_cid,
+                    },
+                )
             except asyncio.CancelledError:
                 raise
             except Exception as error:  # noqa: BLE001 - remote outcome is opaque
                 return _exception_result(error)
-            return _submission_result(response)
+            return _submission_result(response, allow_missing_ref=True)
 
     async def get_status(self, remote_ref: str) -> RemoteStatus | None:
         if not isinstance(remote_ref, str) or not remote_ref or len(remote_ref) > 255:
@@ -136,21 +150,31 @@ class P115Adapter:
                 return RemoteStatus.NEEDS_AUTH
             if client is None:
                 return None
-            try:
-                response = await self._call(
-                    client, "clouddownload_task_list", {"page": 1}
-                )
-            except asyncio.CancelledError:
-                raise
-            except Exception as error:  # noqa: BLE001 - status is uncertain
-                return RemoteStatus.NEEDS_AUTH if _auth_exception(error) else None
-            if _response_auth(response):
-                return RemoteStatus.NEEDS_AUTH
-            if not _response_ok(response):
+            expected_hash = _remote_infohash(remote_ref)
+            if (
+                remote_ref.startswith(INFOHASH_REMOTE_REF_PREFIX)
+                and expected_hash is None
+            ):
                 return None
-            for task in _task_records(response):
-                if _task_matches(task, remote_ref):
-                    return _task_status(task)
+            for page in range(1, 101):
+                try:
+                    response = await self._call(
+                        client, "clouddownload_task_list", {"page": page}
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as error:  # noqa: BLE001 - status is uncertain
+                    return RemoteStatus.NEEDS_AUTH if _auth_exception(error) else None
+                if _response_auth(response):
+                    return RemoteStatus.NEEDS_AUTH
+                if not isinstance(response, Mapping) or not _response_ok(response):
+                    return None
+                tasks = _task_records(response)
+                for task in tasks:
+                    if _task_matches(task, remote_ref, expected_hash):
+                        return _task_status(task)
+                if not tasks or _task_page_count(response) <= page:
+                    break
             return None
 
     async def aclose(self) -> None:
@@ -158,6 +182,32 @@ class P115Adapter:
             client = self._client
             self._client = None
             self._cookie = None
+        await self._close_client(client)
+
+    async def _client_for_operation(self) -> tuple[Any, bool]:
+        cookie = self._cookie_provider.load()
+        if not cookie:
+            async with self._client_lock:
+                old_client = self._client
+                self._client = None
+                self._cookie = None
+            await self._close_client(old_client)
+            return None, True
+        async with self._client_lock:
+            if self._client is not None and self._cookie == cookie:
+                return self._client, False
+            try:
+                client = await asyncio.to_thread(self._client_factory, cookie)
+            except Exception:  # noqa: BLE001 - client setup is intentionally opaque
+                return None, False
+            old_client = self._client
+            self._client = client
+            self._cookie = cookie
+        await self._close_client(old_client)
+        return client, False
+
+    @staticmethod
+    async def _close_client(client: Any) -> None:
         if client is None:
             return
         close = getattr(client, "close", None)
@@ -172,25 +222,46 @@ class P115Adapter:
         except Exception:  # noqa: BLE001 - cleanup must not expose credentials
             return
 
-    async def _client_for_operation(self) -> tuple[Any, bool]:
-        cookie = self._cookie_provider.load()
-        if not cookie:
-            return None, True
-        async with self._client_lock:
-            if self._client is not None and self._cookie == cookie:
-                return self._client, False
-            try:
-                client = await asyncio.to_thread(self._client_factory, cookie)
-            except Exception:  # noqa: BLE001 - client setup is intentionally opaque
-                return None, False
-            self._client = client
-            self._cookie = cookie
-            return client, False
-
     @staticmethod
     async def _call(client: Any, method_name: str, payload: Mapping[str, Any]) -> Any:
         method = getattr(client, method_name)
         return await asyncio.to_thread(method, payload)
+
+    async def _share_file_ids(
+        self, client: Any, share_code: str, receive_code: str
+    ) -> list[str]:
+        file_ids: list[str] = []
+        offset = 0
+        limit = 100
+        while offset < 1000:
+            response = await self._call(
+                client,
+                "share_snap",
+                {
+                    "share_code": share_code,
+                    "receive_code": receive_code,
+                    "cid": 0,
+                    "limit": limit,
+                    "offset": offset,
+                },
+            )
+            if _response_auth(response):
+                raise _AuthFailure
+            if not isinstance(response, Mapping) or not _response_ok(response):
+                raise RuntimeError("share listing failed")
+            records = _share_records(response)
+            for record in records:
+                item_id = _share_item_id(record)
+                if item_id is not None and item_id not in file_ids:
+                    file_ids.append(item_id)
+            if not records:
+                break
+            offset += len(records)
+            if offset >= 1000 or not _share_has_more(
+                response, len(records), limit, offset
+            ):
+                break
+        return file_ids
 
 
 P115ClientAdapter = P115Adapter
@@ -223,7 +294,12 @@ def _magnet_infohash(url: object) -> str | None:
         ):
             infohash = value[5:]
             if _BTIH_PATTERN.fullmatch(infohash):
-                return infohash.casefold()
+                if len(infohash) == 40:
+                    return infohash.casefold()
+                try:
+                    return base64.b32decode(infohash, casefold=True).hex()
+                except ValueError:
+                    return None
     return None
 
 
@@ -257,7 +333,12 @@ def _share_target(url: object, password: str | None) -> tuple[str, str] | None:
     return match.group(1), receive_code
 
 
-def _submission_result(response: object) -> SubmissionResult:
+def _submission_result(
+    response: object,
+    *,
+    fallback_ref: str | None = None,
+    allow_missing_ref: bool = False,
+) -> SubmissionResult:
     if not isinstance(response, Mapping):
         return _uncertain("invalid_response")
     if _response_auth(response):
@@ -267,12 +348,16 @@ def _submission_result(response: object) -> SubmissionResult:
         return SubmissionResult(status=RemoteStatus.ACCEPTED, remote_ref=remote_ref)
     if not _response_ok(response):
         return _failed("submit_rejected", "115 rejected the submission")
-    if remote_ref is None:
+    if remote_ref is None and fallback_ref is not None:
+        remote_ref = fallback_ref
+    if remote_ref is None and not allow_missing_ref:
         return _uncertain("missing_remote_reference")
     return SubmissionResult(status=RemoteStatus.ACCEPTED, remote_ref=remote_ref)
 
 
 def _response_ok(response: Mapping[str, Any]) -> bool:
+    if not isinstance(response, Mapping):
+        return False
     state = response.get("state")
     if state in (False, 0, "0", "false", "False"):
         return False
@@ -283,27 +368,49 @@ def _response_ok(response: Mapping[str, Any]) -> bool:
 
 
 def _response_auth(response: Mapping[str, Any]) -> bool:
-    if _contains_markers(response, _AUTH_MARKERS):
+    if not isinstance(response, Mapping):
+        return False
+    if _known_message_has_markers(response, _AUTH_MARKERS):
         return True
     return any(
         response.get(key) in _AUTH_ERRNOS
         or str(response.get(key)) in {str(value) for value in _AUTH_ERRNOS}
-        for key in ("errno", "errNo", "errcode", "errCode", "msg_code")
+        for key in (
+            "errno",
+            "errNo",
+            "errcode",
+            "errCode",
+            "code",
+            "msg_code",
+        )
     )
 
 
 def _response_idempotent(response: Mapping[str, Any]) -> bool:
-    return _contains_markers(response, _IDEMPOTENT_MARKERS)
+    return _known_message_has_markers(response, _IDEMPOTENT_MARKERS)
 
 
-def _contains_markers(value: object, markers: tuple[str, ...]) -> bool:
-    if isinstance(value, Mapping):
-        return any(_contains_markers(item, markers) for item in value.values())
-    if isinstance(value, (list, tuple)):
-        return any(_contains_markers(item, markers) for item in value)
-    if isinstance(value, str):
-        lowered = value.casefold()
-        return any(marker in lowered for marker in markers)
+def _known_message_has_markers(
+    response: Mapping[str, Any], markers: tuple[str, ...]
+) -> bool:
+    keys = (
+        "error",
+        "message",
+        "msg",
+        "error_msg",
+        "error_message",
+    )
+    candidates: list[Mapping[str, Any]] = [response]
+    data = response.get("data")
+    if isinstance(data, Mapping):
+        candidates.append(data)
+    for candidate in candidates:
+        for key in keys:
+            value = candidate.get(key)
+            if isinstance(value, str):
+                lowered = value.casefold()
+                if any(marker in lowered for marker in markers):
+                    return True
     return False
 
 
@@ -334,6 +441,28 @@ def _mapping_candidates(response: Mapping[str, Any]):
         yield from (item for item in data if isinstance(item, Mapping))
 
 
+def _remote_infohash(remote_ref: str) -> str | None:
+    if not remote_ref.startswith(INFOHASH_REMOTE_REF_PREFIX):
+        return None
+    value = remote_ref[len(INFOHASH_REMOTE_REF_PREFIX) :]
+    return value.casefold() if _INFOHASH_PATTERN.fullmatch(value) else None
+
+
+def _task_page_count(response: Mapping[str, Any]) -> int:
+    candidates: list[Mapping[str, Any]] = [response]
+    data = response.get("data")
+    if isinstance(data, Mapping):
+        candidates.append(data)
+    for candidate in candidates:
+        for key in ("page_count", "pageCount", "total_pages", "totalPages"):
+            value = candidate.get(key)
+            if isinstance(value, int) and value > 0:
+                return value
+            if isinstance(value, str) and value.isdigit() and int(value) > 0:
+                return int(value)
+    return 101
+
+
 def _task_records(response: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     data = response.get("data")
     candidates: object = data if data is not None else response.get("tasks")
@@ -348,9 +477,69 @@ def _task_records(response: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     return [item for item in candidates if isinstance(item, Mapping)]
 
 
-def _task_matches(task: Mapping[str, Any], remote_ref: str) -> bool:
+def _share_records(response: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    candidates: object = response.get("data")
+    if isinstance(candidates, Mapping):
+        for key in ("list", "items", "files", "data"):
+            nested = candidates.get(key)
+            if isinstance(nested, list):
+                candidates = nested
+                break
+    if not isinstance(candidates, list):
+        for key in ("list", "items", "files"):
+            nested = response.get(key)
+            if isinstance(nested, list):
+                candidates = nested
+                break
+    if not isinstance(candidates, list):
+        return []
+    return [item for item in candidates if isinstance(item, Mapping)]
+
+
+def _share_item_id(record: Mapping[str, Any]) -> str | None:
+    value = record.get("fid")
+    if value is None:
+        value = record.get("cid")
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        return None
+    value = str(value)
+    return value if value.isdigit() else None
+
+
+def _share_has_more(
+    response: Mapping[str, Any], returned: int, limit: int, offset: int
+) -> bool:
+    candidates: list[Mapping[str, Any]] = [response]
+    data = response.get("data")
+    if isinstance(data, Mapping):
+        candidates.append(data)
+    for candidate in candidates:
+        for key in ("has_more", "hasMore", "more"):
+            value = candidate.get(key)
+            if isinstance(value, bool):
+                return value
+        for key in ("total", "count", "total_count", "totalCount"):
+            value = candidate.get(key)
+            if isinstance(value, int) and value >= 0:
+                return offset < value
+            if isinstance(value, str) and value.isdigit():
+                return offset < int(value)
+        for key in ("next_offset", "nextOffset"):
+            value = candidate.get(key)
+            if isinstance(value, int):
+                return value > offset
+            if isinstance(value, str) and value.isdigit():
+                return int(value) > offset
+    return True
+
+
+def _task_matches(
+    task: Mapping[str, Any], remote_ref: str, expected_hash: str | None = None
+) -> bool:
     if remote_ref.startswith(INFOHASH_REMOTE_REF_PREFIX):
-        expected = remote_ref[len(INFOHASH_REMOTE_REF_PREFIX) :].casefold()
+        expected = (
+            expected_hash or remote_ref[len(INFOHASH_REMOTE_REF_PREFIX) :].casefold()
+        )
         return any(
             isinstance(task.get(key), str) and task[key].casefold() == expected
             for key in ("info_hash", "infohash", "hash")
@@ -362,13 +551,29 @@ def _task_matches(task: Mapping[str, Any], remote_ref: str) -> bool:
 
 
 def _task_status(task: Mapping[str, Any]) -> RemoteStatus:
-    if _contains_markers(task, _AUTH_MARKERS):
+    if _known_message_has_markers(task, _AUTH_MARKERS) or _field_has_markers(
+        task, ("status", "state"), _AUTH_MARKERS
+    ):
         return RemoteStatus.NEEDS_AUTH
-    if task.get("move") == -1 or task.get("status") == 2:
+    if task.get("move") in (-1, "-1"):
         return RemoteStatus.FAILED
-    if _contains_markers(task, _FAILED_MARKERS):
+    if _known_message_has_markers(task, _FAILED_MARKERS) or _field_has_markers(
+        task, ("status", "state"), _FAILED_MARKERS
+    ):
         return RemoteStatus.FAILED
     return RemoteStatus.ACCEPTED
+
+
+def _field_has_markers(
+    mapping: Mapping[str, Any], keys: tuple[str, ...], markers: tuple[str, ...]
+) -> bool:
+    for key in keys:
+        value = mapping.get(key)
+        if isinstance(value, str):
+            lowered = value.casefold()
+            if any(marker in lowered for marker in markers):
+                return True
+    return False
 
 
 def _exception_result(error: Exception) -> SubmissionResult:

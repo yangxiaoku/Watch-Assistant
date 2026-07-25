@@ -12,17 +12,31 @@ MAGNET = "magnet:?xt=urn:btih:" + ("a" * 40)
 
 
 class FakeP115Client:
-    def __init__(self, response=None, *, task_response=None):
+    def __init__(
+        self, response=None, *, task_response=None, task_pages=None, share_pages=None
+    ):
         self.response = response or {"state": True, "data": {"task_id": "task-1"}}
         self.task_response = task_response or {"state": True, "data": []}
+        self.task_pages = task_pages
+        self.task_page_calls = 0
+        self.share_pages = share_pages or [
+            {
+                "state": True,
+                "data": {
+                    "list": [{"fid": "101"}, {"cid": "202"}],
+                    "total": 2,
+                },
+            }
+        ]
         self.add_payloads = []
         self.share_payloads = []
         self.list_payloads = []
+        self.share_snap_calls = 0
         self.active = 0
         self.max_active = 0
         self.delay = 0
 
-    def clouddownload_task_add_urls(self, payload):
+    def clouddownload_task_add_url(self, payload):
         self.add_payloads.append(payload)
         self.active += 1
         self.max_active = max(self.max_active, self.active)
@@ -37,8 +51,20 @@ class FakeP115Client:
         self.share_payloads.append(payload)
         return self.response
 
+    def share_snap(self, payload):
+        self.list_payloads.append({"share_snap": payload})
+        index = self.share_snap_calls
+        self.share_snap_calls += 1
+        if index >= len(self.share_pages):
+            return {"state": True, "data": {"list": []}}
+        return self.share_pages[index]
+
     def clouddownload_task_list(self, payload):
         self.list_payloads.append(payload)
+        if self.task_pages is not None:
+            response = self.task_pages[self.task_page_calls]
+            self.task_page_calls += 1
+            return response
         return self.task_response
 
 
@@ -60,21 +86,20 @@ async def test_submit_magnet_uses_fixed_target_and_remote_task_id(tmp_path):
 
     assert result.status == RemoteStatus.ACCEPTED
     assert result.remote_ref == "task-1"
-    assert fake.add_payloads == [{"urls": MAGNET, "wp_path_id": 42}]
+    assert fake.add_payloads == [{"url": MAGNET, "wp_path_id": 42}]
     await adapter.aclose()
 
 
 @pytest.mark.asyncio
 async def test_submit_magnet_freezes_infohash_remote_ref_fallback(tmp_path):
     provider, _path = _provider(tmp_path)
-    infohash = "c" * 40
-    fake = FakeP115Client(response={"state": True, "data": {"info_hash": infohash}})
+    fake = FakeP115Client(response={"state": True, "data": {}})
     adapter = P115Adapter(provider, 42, client_factory=lambda _cookie: fake)
 
     result = await adapter.submit_magnet(MAGNET)
 
     assert result.status == RemoteStatus.ACCEPTED
-    assert result.remote_ref == INFOHASH_REMOTE_REF_PREFIX + infohash
+    assert result.remote_ref == INFOHASH_REMOTE_REF_PREFIX + "a" * 40
     await adapter.aclose()
 
 
@@ -89,11 +114,22 @@ async def test_save_share_accepts_allowed_hosts_and_cannot_override_cid(tmp_path
     )
 
     assert result.status == RemoteStatus.ACCEPTED
+    assert fake.list_payloads == [
+        {
+            "share_snap": {
+                "share_code": "share-code",
+                "receive_code": "abcd",
+                "cid": 0,
+                "limit": 100,
+                "offset": 0,
+            }
+        }
+    ]
     assert fake.share_payloads == [
         {
             "share_code": "share-code",
             "receive_code": "abcd",
-            "file_id": "0",
+            "file_id": "101,202",
             "cid": "99",
         }
     ]
@@ -190,4 +226,93 @@ async def test_adapter_serializes_calls_by_default(tmp_path):
     )
 
     assert fake.max_active == 1
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
+async def test_status_searches_later_pages_without_scanning_names(tmp_path):
+    provider, _path = _provider(tmp_path)
+    infohash = "d" * 40
+    fake = FakeP115Client(
+        task_pages=[
+            {
+                "state": True,
+                "data": [{"name": infohash, "status": 9}],
+            },
+            {
+                "state": True,
+                "data": [{"info_hash": infohash, "status": 2}],
+            },
+        ]
+    )
+    adapter = P115Adapter(provider, 1, client_factory=lambda _cookie: fake)
+
+    assert await adapter.get_status("infohash:" + infohash) == RemoteStatus.ACCEPTED
+    assert fake.list_payloads == [{"page": 1}, {"page": 2}]
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
+async def test_status_move_minus_one_is_failed_but_status_two_is_not(tmp_path):
+    provider, _path = _provider(tmp_path)
+    infohash = "e" * 40
+    fake = FakeP115Client(
+        task_response={
+            "state": True,
+            "data": [{"info_hash": infohash, "status": 2, "move": -1}],
+        }
+    )
+    adapter = P115Adapter(provider, 1, client_factory=lambda _cookie: fake)
+    assert await adapter.get_status("infohash:" + infohash) == RemoteStatus.FAILED
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
+async def test_share_listing_is_paged_and_receives_real_top_level_ids(tmp_path):
+    provider, _path = _provider(tmp_path)
+    fake = FakeP115Client(
+        response={"state": True, "data": {}},
+        share_pages=[
+            {
+                "state": True,
+                "data": {"list": [{"fid": "10"}], "has_more": True},
+            },
+            {
+                "state": True,
+                "data": {"list": [{"cid": "20"}], "has_more": False},
+            },
+        ],
+    )
+    adapter = P115Adapter(provider, 99, client_factory=lambda _cookie: fake)
+
+    result = await adapter.save_share("https://115.com/s/code", "pass")
+
+    assert result.status == RemoteStatus.ACCEPTED
+    assert result.remote_ref is None
+    assert fake.share_payloads == [
+        {"share_code": "code", "receive_code": "pass", "file_id": "10,20", "cid": 99}
+    ]
+    assert [call["share_snap"]["offset"] for call in fake.list_payloads] == [0, 1]
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
+async def test_empty_or_unauthorized_share_fails_without_receive(tmp_path):
+    provider, _path = _provider(tmp_path)
+    empty = FakeP115Client(
+        response={"state": True, "data": {}},
+        share_pages=[{"state": True, "data": {"list": []}}],
+    )
+    adapter = P115Adapter(provider, 1, client_factory=lambda _cookie: empty)
+    result = await adapter.save_share("https://115.com/s/code", None)
+    assert result.status == RemoteStatus.FAILED
+    assert result.error_code == "empty_share"
+    assert empty.share_payloads == []
+    await adapter.aclose()
+
+    unauthorized = FakeP115Client(share_pages=[{"state": False, "errno": 99}])
+    adapter = P115Adapter(provider, 1, client_factory=lambda _cookie: unauthorized)
+    result = await adapter.save_share("https://115.com/s/code", None)
+    assert result.status == RemoteStatus.NEEDS_AUTH
+    assert unauthorized.share_payloads == []
     await adapter.aclose()

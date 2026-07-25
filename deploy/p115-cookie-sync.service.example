@@ -1,0 +1,14 @@
+[Unit]
+Description=Sync the TgtoDrive 115 cookie for Watch Assistant
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/opt/watch-assistant/venv/bin/python /opt/watch-assistant/current/scripts/sync_tgto_cookie.py --source /var/lib/tgtodrive/user.env --destination /etc/watch-assistant/p115-cookie --owner watch-assistant --group watch-assistant
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/etc/watch-assistant
