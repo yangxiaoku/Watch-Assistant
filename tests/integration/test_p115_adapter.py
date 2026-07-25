@@ -13,7 +13,14 @@ MAGNET = "magnet:?xt=urn:btih:" + ("a" * 40)
 
 class FakeP115Client:
     def __init__(
-        self, response=None, *, task_response=None, task_pages=None, share_pages=None
+        self,
+        response=None,
+        *,
+        task_response=None,
+        task_pages=None,
+        share_pages=None,
+        share_error=None,
+        receive_error=None,
     ):
         self.response = response or {"state": True, "data": {"task_id": "task-1"}}
         self.task_response = task_response or {"state": True, "data": []}
@@ -28,6 +35,8 @@ class FakeP115Client:
                 },
             }
         ]
+        self.share_error = share_error
+        self.receive_error = receive_error
         self.add_payloads = []
         self.share_payloads = []
         self.list_payloads = []
@@ -49,9 +58,13 @@ class FakeP115Client:
 
     def share_receive(self, payload):
         self.share_payloads.append(payload)
+        if self.receive_error is not None:
+            raise self.receive_error
         return self.response
 
     def share_snap(self, payload):
+        if self.share_error is not None:
+            raise self.share_error
         self.list_payloads.append({"share_snap": payload})
         index = self.share_snap_calls
         self.share_snap_calls += 1
@@ -195,13 +208,28 @@ async def test_status_queries_task_list_and_supports_infohash_fallback(tmp_path)
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("response", "expected"),
+    ("response", "expected", "remote_ref"),
     [
-        ({"state": False, "errno": 99}, RemoteStatus.NEEDS_AUTH),
-        ({"state": False, "error": "无需重复接收"}, RemoteStatus.ACCEPTED),
+        ({"state": False, "errno": 99}, RemoteStatus.NEEDS_AUTH, None),
+        (
+            {"state": False, "error": "无需重复接收"},
+            RemoteStatus.ACCEPTED,
+            INFOHASH_REMOTE_REF_PREFIX + "a" * 40,
+        ),
+        (
+            {
+                "state": False,
+                "error": "already exist",
+                "data": {"task_id": "existing-task"},
+            },
+            RemoteStatus.ACCEPTED,
+            "existing-task",
+        ),
     ],
 )
-async def test_auth_and_idempotent_responses_are_mapped(tmp_path, response, expected):
+async def test_auth_and_idempotent_responses_are_mapped(
+    tmp_path, response, expected, remote_ref
+):
     provider, _path = _provider(tmp_path)
     fake = FakeP115Client(response=response)
     adapter = P115Adapter(provider, 1, client_factory=lambda _cookie: fake)
@@ -209,6 +237,7 @@ async def test_auth_and_idempotent_responses_are_mapped(tmp_path, response, expe
     result = await adapter.submit_magnet(MAGNET)
 
     assert result.status == expected
+    assert result.remote_ref == remote_ref
     await adapter.aclose()
 
 
@@ -315,4 +344,115 @@ async def test_empty_or_unauthorized_share_fails_without_receive(tmp_path):
     result = await adapter.save_share("https://115.com/s/code", None)
     assert result.status == RemoteStatus.NEEDS_AUTH
     assert unauthorized.share_payloads == []
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
+async def test_exactly_max_share_items_are_received(tmp_path):
+    provider, _path = _provider(tmp_path)
+    records = [{"fid": str(index)} for index in range(1000)]
+    fake = FakeP115Client(
+        response={"state": True, "data": {}},
+        share_pages=[{"state": True, "data": {"list": records, "total": 1000}}],
+    )
+    adapter = P115Adapter(provider, 1, client_factory=lambda _cookie: fake)
+
+    result = await adapter.save_share("https://115.com/s/code", None)
+
+    assert result.status == RemoteStatus.ACCEPTED
+    assert len(fake.share_payloads) == 1
+    assert len(fake.share_payloads[0]["file_id"].split(",")) == 1000
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "page",
+    [
+        {"state": True, "data": {"list": [{"fid": "1"}], "count": 1001}},
+        {
+            "state": True,
+            "data": {
+                "list": [{"fid": str(index)} for index in range(1000)],
+                "has_more": True,
+            },
+        },
+    ],
+)
+async def test_share_limit_failure_never_receives(tmp_path, page):
+    provider, _path = _provider(tmp_path)
+    fake = FakeP115Client(response={"state": True, "data": {}}, share_pages=[page])
+    adapter = P115Adapter(provider, 1, client_factory=lambda _cookie: fake)
+
+    result = await adapter.save_share("https://115.com/s/code", None)
+
+    assert result.status == RemoteStatus.FAILED
+    assert result.error_code == "share_too_large"
+    assert fake.share_payloads == []
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
+async def test_invalid_later_share_item_never_receives(tmp_path):
+    provider, _path = _provider(tmp_path)
+    fake = FakeP115Client(
+        share_pages=[
+            {"state": True, "data": {"list": [{"fid": "1"}], "has_more": True}},
+            {"state": True, "data": {"list": [{"name": "missing-id"}]}},
+        ]
+    )
+    adapter = P115Adapter(provider, 1, client_factory=lambda _cookie: fake)
+
+    result = await adapter.save_share("https://115.com/s/code", None)
+
+    assert result.status == RemoteStatus.FAILED
+    assert result.error_code == "malformed_share_listing"
+    assert fake.share_payloads == []
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
+async def test_nonadvancing_share_cursor_fails_without_looping(tmp_path):
+    provider, _path = _provider(tmp_path)
+    fake = FakeP115Client(
+        share_pages=[
+            {
+                "state": True,
+                "data": {
+                    "list": [{"fid": "1"}],
+                    "has_more": True,
+                    "next_offset": 0,
+                },
+            }
+        ]
+    )
+    adapter = P115Adapter(provider, 1, client_factory=lambda _cookie: fake)
+
+    result = await adapter.save_share("https://115.com/s/code", None)
+
+    assert result.status == RemoteStatus.FAILED
+    assert result.error_code == "malformed_share_listing"
+    assert fake.share_snap_calls == 1
+    assert fake.share_payloads == []
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
+async def test_share_listing_exception_is_failed_but_receive_exception_is_uncertain(
+    tmp_path,
+):
+    provider, _path = _provider(tmp_path)
+    listing = FakeP115Client(share_error=OSError("listing unavailable"))
+    adapter = P115Adapter(provider, 1, client_factory=lambda _cookie: listing)
+    result = await adapter.save_share("https://115.com/s/code", None)
+    assert result.status == RemoteStatus.FAILED
+    assert result.error_code == "share_listing_failed"
+    assert listing.share_payloads == []
+    await adapter.aclose()
+
+    receiving = FakeP115Client(receive_error=OSError("receive unavailable"))
+    adapter = P115Adapter(provider, 1, client_factory=lambda _cookie: receiving)
+    result = await adapter.save_share("https://115.com/s/code", None)
+    assert result.status == RemoteStatus.UNCERTAIN
+    assert len(receiving.share_payloads) == 1
     await adapter.aclose()

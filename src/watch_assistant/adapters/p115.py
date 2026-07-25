@@ -16,6 +16,7 @@ from watch_assistant.services.p115_credentials import CookieProvider
 
 P115CLIENT_VERSION = "0.0.9.6.5.1"
 INFOHASH_REMOTE_REF_PREFIX = "infohash:"
+MAX_SHARE_ITEMS = 1000
 _BTIH_PATTERN = re.compile(r"^(?:[0-9a-f]{40}|[a-z2-7]{32})$", re.IGNORECASE)
 _SHARE_CODE_PATTERN = re.compile(r"^/(?:s|share)/([A-Za-z0-9_-]+)/?$", re.IGNORECASE)
 _INFOHASH_PATTERN = re.compile(r"^[0-9a-f]{40}$", re.IGNORECASE)
@@ -57,6 +58,14 @@ _FAILED_MARKERS = (
 
 class _AuthFailure(Exception):
     """Internal marker for a known authentication response."""
+
+
+class _ShareListingFailure(Exception):
+    """Internal marker carrying a stable pre-receive failure code."""
+
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__(code)
 
 
 class P115Adapter:
@@ -123,8 +132,17 @@ class P115Adapter:
                 return _uncertain("adapter_unavailable")
             try:
                 file_ids = await self._share_file_ids(client, share[0], share[1])
-                if not file_ids:
-                    return _failed("empty_share", "115 share is empty")
+            except asyncio.CancelledError:
+                raise
+            except _AuthFailure:
+                return _needs_auth()
+            except _ShareListingFailure as error:
+                return _failed(error.code, "115 share listing failed")
+            except Exception:  # noqa: BLE001 - listing failure is not submission ambiguity
+                return _failed("share_listing_failed", "115 share listing failed")
+            if not file_ids:
+                return _failed("empty_share", "115 share is empty")
+            try:
                 response = await self._call(
                     client,
                     "share_receive",
@@ -233,35 +251,89 @@ class P115Adapter:
         file_ids: list[str] = []
         offset = 0
         limit = 100
-        while offset < 1000:
-            response = await self._call(
-                client,
-                "share_snap",
-                {
-                    "share_code": share_code,
-                    "receive_code": receive_code,
-                    "cid": 0,
-                    "limit": limit,
-                    "offset": offset,
-                },
-            )
+        had_explicit_more = False
+        while offset <= MAX_SHARE_ITEMS:
+            try:
+                response = await self._call(
+                    client,
+                    "share_snap",
+                    {
+                        "share_code": share_code,
+                        "receive_code": receive_code,
+                        "cid": 0,
+                        "limit": limit,
+                        "offset": offset,
+                    },
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:  # noqa: BLE001 - classify before receive
+                if _auth_exception(error):
+                    raise _AuthFailure from None
+                raise _ShareListingFailure("share_listing_failed") from None
             if _response_auth(response):
                 raise _AuthFailure
             if not isinstance(response, Mapping) or not _response_ok(response):
-                raise RuntimeError("share listing failed")
+                raise _ShareListingFailure("share_listing_failed")
+            total, has_more, next_offset = _share_page_info(response)
+            if total is not None and total > MAX_SHARE_ITEMS:
+                raise _ShareListingFailure("share_too_large")
             records = _share_records(response)
-            for record in records:
-                item_id = _share_item_id(record)
-                if item_id is not None and item_id not in file_ids:
-                    file_ids.append(item_id)
+            if records is None:
+                if total == 0:
+                    return []
+                raise _ShareListingFailure("malformed_share_listing")
             if not records:
-                break
-            offset += len(records)
-            if offset >= 1000 or not _share_has_more(
-                response, len(records), limit, offset
-            ):
-                break
-        return file_ids
+                if offset == 0:
+                    return []
+                if had_explicit_more:
+                    raise _ShareListingFailure("malformed_share_listing")
+                return file_ids
+            for record in records:
+                if not isinstance(record, Mapping):
+                    raise _ShareListingFailure("malformed_share_listing")
+                item_id = _share_item_id(record)
+                if item_id is None:
+                    raise _ShareListingFailure("malformed_share_listing")
+                if item_id not in file_ids:
+                    file_ids.append(item_id)
+            if len(file_ids) > MAX_SHARE_ITEMS:
+                raise _ShareListingFailure("share_too_large")
+            calculated_offset = offset + len(records)
+            if total is not None and calculated_offset > total:
+                raise _ShareListingFailure("malformed_share_listing")
+            if next_offset is not None:
+                if next_offset <= offset:
+                    raise _ShareListingFailure("malformed_share_listing")
+                if next_offset > MAX_SHARE_ITEMS:
+                    raise _ShareListingFailure("share_too_large")
+                next_cursor = next_offset
+                had_explicit_more = True
+            else:
+                next_cursor = calculated_offset
+                if has_more is True:
+                    had_explicit_more = True
+            known_continuation = (
+                (has_more is True)
+                or next_offset is not None
+                or (total is not None and calculated_offset < total)
+            )
+            if known_continuation:
+                had_explicit_more = True
+            continuation = known_continuation or (has_more is None and total is None)
+            if len(file_ids) == MAX_SHARE_ITEMS:
+                if known_continuation:
+                    raise _ShareListingFailure("share_too_large")
+                if total is not None or has_more is False:
+                    return file_ids
+                offset = next_cursor
+                continue
+            if not continuation:
+                return file_ids
+            if next_cursor <= offset:
+                raise _ShareListingFailure("malformed_share_listing")
+            offset = next_cursor
+        raise _ShareListingFailure("share_too_large")
 
 
 P115ClientAdapter = P115Adapter
@@ -345,6 +417,8 @@ def _submission_result(
         return _needs_auth()
     remote_ref = _remote_reference(response)
     if _response_idempotent(response):
+        if remote_ref is None:
+            remote_ref = fallback_ref
         return SubmissionResult(status=RemoteStatus.ACCEPTED, remote_ref=remote_ref)
     if not _response_ok(response):
         return _failed("submit_rejected", "115 rejected the submission")
@@ -477,23 +551,27 @@ def _task_records(response: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     return [item for item in candidates if isinstance(item, Mapping)]
 
 
-def _share_records(response: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+def _share_records(response: Mapping[str, Any]) -> list[object] | None:
     candidates: object = response.get("data")
     if isinstance(candidates, Mapping):
+        found = False
         for key in ("list", "items", "files", "data"):
-            nested = candidates.get(key)
-            if isinstance(nested, list):
-                candidates = nested
+            if key in candidates:
+                found = True
+                candidates = candidates[key]
                 break
+        if not found:
+            return None
     if not isinstance(candidates, list):
+        found = False
         for key in ("list", "items", "files"):
-            nested = response.get(key)
-            if isinstance(nested, list):
-                candidates = nested
+            if key in response:
+                found = True
+                candidates = response[key]
                 break
-    if not isinstance(candidates, list):
-        return []
-    return [item for item in candidates if isinstance(item, Mapping)]
+        if not found:
+            return None
+    return candidates if isinstance(candidates, list) else None
 
 
 def _share_item_id(record: Mapping[str, Any]) -> str | None:
@@ -506,31 +584,61 @@ def _share_item_id(record: Mapping[str, Any]) -> str | None:
     return value if value.isdigit() else None
 
 
-def _share_has_more(
-    response: Mapping[str, Any], returned: int, limit: int, offset: int
-) -> bool:
+def _share_page_info(
+    response: Mapping[str, Any],
+) -> tuple[int | None, bool | None, int | None]:
     candidates: list[Mapping[str, Any]] = [response]
     data = response.get("data")
     if isinstance(data, Mapping):
         candidates.append(data)
+    total: int | None = None
+    has_more: bool | None = None
+    next_offset: int | None = None
     for candidate in candidates:
-        for key in ("has_more", "hasMore", "more"):
-            value = candidate.get(key)
-            if isinstance(value, bool):
-                return value
         for key in ("total", "count", "total_count", "totalCount"):
-            value = candidate.get(key)
+            if key not in candidate:
+                continue
+            value = candidate[key]
+            if isinstance(value, bool):
+                raise _ShareListingFailure("malformed_share_listing")
             if isinstance(value, int) and value >= 0:
-                return offset < value
-            if isinstance(value, str) and value.isdigit():
-                return offset < int(value)
-        for key in ("next_offset", "nextOffset"):
+                parsed_total = value
+            elif isinstance(value, str) and value.isdigit():
+                parsed_total = int(value)
+            else:
+                raise _ShareListingFailure("malformed_share_listing")
+            if parsed_total > MAX_SHARE_ITEMS:
+                raise _ShareListingFailure("share_too_large")
+            if total is not None and total != parsed_total:
+                raise _ShareListingFailure("malformed_share_listing")
+            total = parsed_total
+        for key in ("has_more", "hasMore", "more"):
+            if key not in candidate:
+                continue
             value = candidate.get(key)
-            if isinstance(value, int):
-                return value > offset
-            if isinstance(value, str) and value.isdigit():
-                return int(value) > offset
-    return True
+            if not isinstance(value, bool):
+                raise _ShareListingFailure("malformed_share_listing")
+            if has_more is not None and has_more != value:
+                raise _ShareListingFailure("malformed_share_listing")
+            has_more = value
+        for key in ("next_offset", "nextOffset"):
+            if key not in candidate:
+                continue
+            value = candidate[key]
+            if isinstance(value, bool):
+                raise _ShareListingFailure("malformed_share_listing")
+            if isinstance(value, int) and value >= 0:
+                parsed_offset = value
+            elif isinstance(value, str) and value.isdigit():
+                parsed_offset = int(value)
+            elif value is not None:
+                raise _ShareListingFailure("malformed_share_listing")
+            else:
+                parsed_offset = None
+            if next_offset is not None and next_offset != parsed_offset:
+                raise _ShareListingFailure("malformed_share_listing")
+            next_offset = parsed_offset
+    return total, has_more, next_offset
 
 
 def _task_matches(

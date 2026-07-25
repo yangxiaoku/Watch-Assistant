@@ -1,5 +1,8 @@
 import os
 import stat
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
@@ -206,3 +209,59 @@ def test_sync_cookie_replace_failure_keeps_previous_file(tmp_path, monkeypatch):
         sync_cookie(source, destination)
     assert destination.read_text(encoding="ascii") == "old"
     assert not list(tmp_path.glob(".p115-cookie-*"))
+
+
+def test_systemd_cookie_sync_examples_have_import_path_and_safe_arguments():
+    root = Path(__file__).parents[2]
+    service = (root / "deploy/p115-cookie-sync.service.example").read_text()
+    timer = (root / "deploy/p115-cookie-sync.timer.example").read_text()
+
+    assert "WorkingDirectory=/opt/watch-assistant/current" in service
+    assert "Environment=PYTHONPATH=/opt/watch-assistant/current/src" in service
+    assert "Type=oneshot" in service
+    assert "User=root" in service
+    assert "Group=root" in service
+    assert "/opt/watch-assistant/venv/bin/python" in service
+    assert "--source /var/lib/tgtodrive/user.env" in service
+    assert "--destination /etc/watch-assistant/p115-cookie" in service
+    assert "--owner watch-assistant" in service
+    assert "--group watch-assistant" in service
+    assert "UMask=0077" in service
+    assert "ProtectSystem=strict" in service
+    assert "ReadWritePaths=/etc/watch-assistant" in service
+    assert "NoNewPrivileges=true" in service
+    assert "Unit=p115-cookie-sync.service" in timer
+
+
+def test_cookie_sync_runs_from_external_directory_with_explicit_pythonpath(tmp_path):
+    root = Path(__file__).parents[2]
+    source = tmp_path / "user.env"
+    destination = tmp_path / "p115-cookie"
+    secret = "UID=sync_A1_456; CID=cid; KID=kid; SEID=seid"
+    source.write_text(
+        "OTHER_SECRET=must-not-print\nENV_115_COOKIES=" + secret + "\n",
+        encoding="utf-8",
+    )
+    environment = os.environ.copy()
+    environment.pop("PYTHONPATH", None)
+    environment["PYTHONPATH"] = str(root / "src")
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(root / "scripts/sync_tgto_cookie.py"),
+            "--source",
+            str(source),
+            "--destination",
+            str(destination),
+        ],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert secret not in result.stdout + result.stderr
+    assert "must-not-print" not in result.stdout + result.stderr
+    assert destination.read_text(encoding="ascii") == secret
