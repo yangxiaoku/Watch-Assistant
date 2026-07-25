@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import socket
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
@@ -10,6 +11,7 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from starlette.staticfiles import StaticFiles
 
+from watch_assistant.adapters.p115 import P115Adapter
 from watch_assistant.adapters.pansou import PanSouClient
 from watch_assistant.adapters.qbittorrent import QbittorrentClient
 from watch_assistant.adapters.tmdb import TmdbClient
@@ -25,8 +27,10 @@ from watch_assistant.security import SecurityManager
 from watch_assistant.services.cache_warm import CacheWarmer
 from watch_assistant.services.inspection import InspectionService, InspectionWorker
 from watch_assistant.services.maintenance import MaintenanceService
+from watch_assistant.services.p115_credentials import CookieProvider
 from watch_assistant.services.search import SearchService
 from watch_assistant.services.tasks import TaskService
+from watch_assistant.worker import TaskAdapter, TaskWorker
 
 
 def create_app(
@@ -39,6 +43,7 @@ def create_app(
     share_domains: tuple[str, ...] = ("115.com", "115cdn.com"),
     push_supported: bool | None = None,
     qbittorrent_client: QbittorrentClient | None = None,
+    task_adapter: TaskAdapter | None = None,
     frontend_dir: Path | None = None,
 ) -> FastAPI:
     @asynccontextmanager
@@ -48,12 +53,16 @@ def create_app(
         warm_task: asyncio.Task[None] | None = None
         inspection_stop: asyncio.Event | None = None
         inspection_task: asyncio.Task[None] | None = None
+        task_stop: asyncio.Event | None = None
+        task_task: asyncio.Task[None] | None = None
         if not hasattr(application.state, "search_service"):
             credentials_directory = os.environ.get("CREDENTIALS_DIRECTORY")
             secrets_dir = Path(credentials_directory or "/run/secrets")
             settings = Settings(
                 _secrets_dir=secrets_dir if secrets_dir.is_dir() else None
             )
+            if settings.p115_enabled and settings.p115_target_cid is None:
+                raise RuntimeError("P115_ENABLED requires P115_TARGET_CID")
             contract = load_tgto_contract(settings.tgto_contract_path)
             if contract.get("supported") is True:
                 raise RuntimeError(
@@ -90,8 +99,31 @@ def create_app(
                 cookie_secure=settings.cookie_secure,
             )
             application.state.push_supported = False
+            application.state.push_capabilities = {
+                "magnet": False,
+                "share": False,
+            }
             application.state.database = runtime_database
             owned = [runtime_database, runtime_tmdb, runtime_pansou]
+            if settings.p115_enabled:
+                cookie_provider = CookieProvider(settings.p115_cookie_path)
+                runtime_task_adapter = task_adapter or P115Adapter(
+                    cookie_provider,
+                    settings.p115_target_cid,
+                    max_concurrency=settings.p115_max_concurrency,
+                )
+                application.state.task_adapter = runtime_task_adapter
+                application.state.task_worker = TaskWorker(
+                    runtime_database.session_factory,
+                    runtime_crypto,
+                    runtime_task_adapter,
+                    owner=_worker_owner(),
+                )
+                application.state.push_capabilities = {
+                    "magnet": True,
+                    "share": False,
+                }
+                owned.append(runtime_task_adapter)
             inspection_client = qbittorrent_client
             if inspection_client is None and settings.inspection_configured:
                 inspection_client = QbittorrentClient(
@@ -135,9 +167,22 @@ def create_app(
                 worker.run_forever(inspection_stop),
                 name="watch-assistant-inspection-worker",
             )
+        task_worker = getattr(application.state, "task_worker", None)
+        if task_worker is not None:
+            await task_worker.recover_expired()
+            task_stop = asyncio.Event()
+            task_task = asyncio.create_task(
+                task_worker.run_forever(task_stop),
+                name="watch-assistant-task-worker",
+            )
         try:
             yield
         finally:
+            if task_task is not None and task_stop is not None:
+                task_stop.set()
+                task_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task_task
             if inspection_task is not None and inspection_stop is not None:
                 inspection_stop.set()
                 inspection_task.cancel()
@@ -155,6 +200,13 @@ def create_app(
                 and hasattr(inspection_client, "aclose")
             ):
                 await inspection_client.aclose()
+            task_adapter_resource = getattr(application.state, "task_adapter", None)
+            if (
+                task_adapter_resource is not None
+                and task_adapter_resource not in owned
+                and hasattr(task_adapter_resource, "aclose")
+            ):
+                await task_adapter_resource.aclose()
             for resource in owned:
                 if isinstance(resource, Database):
                     await resource.engine.dispose()
@@ -188,15 +240,31 @@ def create_app(
             )
         if security_manager is not None:
             application.state.security_manager = security_manager
-        application.state.push_supported = (
-            True if push_supported is None else push_supported
-        )
+        application.state.push_supported = False
+        application.state.push_capabilities = {
+            "magnet": task_adapter is not None,
+            "share": False,
+        }
+        if task_adapter is not None:
+            application.state.task_adapter = task_adapter
+            application.state.task_worker = TaskWorker(
+                database.session_factory,
+                crypto,
+                task_adapter,
+                owner=_worker_owner(),
+            )
 
     @application.get("/api/v1/health")
-    async def health() -> dict[str, str | bool]:
+    async def health() -> dict[str, object]:
+        capabilities = getattr(
+            application.state,
+            "push_capabilities",
+            {"magnet": False, "share": False},
+        )
         return {
             "status": "ok",
             "push_supported": getattr(application.state, "push_supported", False),
+            "push_capabilities": capabilities,
             "inspection_supported": getattr(
                 application.state, "inspection_supported", False
             ),
@@ -231,6 +299,10 @@ def create_app(
             "/", StaticFiles(directory=static_path, html=True), name="frontend"
         )
     return application
+
+
+def _worker_owner() -> str:
+    return f"{socket.gethostname()}:{os.getpid()}"
 
 
 app = create_app()

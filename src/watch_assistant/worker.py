@@ -45,31 +45,30 @@ class TaskWorker:
             task = await session.get(Task, task_id)
             if task is None:
                 return False
-            try:
-                url = self._crypto.decrypt(task.encrypted_url_snapshot)
-                password = (
-                    self._crypto.decrypt(task.encrypted_password_snapshot)
-                    if task.encrypted_password_snapshot
-                    else None
-                )
-            except Exception:  # noqa: BLE001 - failure occurred before remote submission
+            if task.action != TaskAction.OFFLINE_DOWNLOAD:
                 result = SubmissionResult(
                     status=RemoteStatus.FAILED,
-                    error_code="local_decryption_failed",
-                    error_message="stored submission data could not be decrypted",
+                    error_code="push_kind_unsupported",
+                    error_message="share push is not supported",
                 )
             else:
                 try:
-                    if task.action == TaskAction.OFFLINE_DOWNLOAD:
-                        result = await self._adapter.submit_magnet(url)
-                    else:
-                        result = await self._adapter.save_share(url, password)
-                except Exception:  # noqa: BLE001 - remote outcome may be ambiguous
+                    url = self._crypto.decrypt(task.encrypted_url_snapshot)
+                except Exception:  # noqa: BLE001 - failure occurred before remote submission
                     result = SubmissionResult(
-                        status=RemoteStatus.UNCERTAIN,
-                        error_code="adapter_error",
-                        error_message="submission outcome is uncertain",
+                        status=RemoteStatus.FAILED,
+                        error_code="local_decryption_failed",
+                        error_message="stored submission data could not be decrypted",
                     )
+                else:
+                    try:
+                        result = await self._adapter.submit_magnet(url)
+                    except Exception:  # noqa: BLE001 - remote outcome may be ambiguous
+                        result = SubmissionResult(
+                            status=RemoteStatus.UNCERTAIN,
+                            error_code="adapter_error",
+                            error_message="submission outcome is uncertain",
+                        )
 
             task.state = TaskState(result.status.value)
             task.remote_ref = result.remote_ref
@@ -97,6 +96,15 @@ class TaskWorker:
                 )
             )
             for task in tasks:
+                if task.action != TaskAction.OFFLINE_DOWNLOAD:
+                    task.state = TaskState.FAILED
+                    task.remote_ref = None
+                    task.error_code = "push_kind_unsupported"
+                    task.error_message = "share push is not supported"
+                    task.lease_owner = None
+                    task.lease_expires_at = None
+                    task.updated_at = now
+                    continue
                 remote_status = None
                 if task.remote_ref:
                     try:

@@ -21,6 +21,10 @@ class InvalidRetryState(ValueError):
     pass
 
 
+class PushKindUnsupported(ValueError):
+    pass
+
+
 def recover_after_restart(task: Task, remote_status: RemoteStatus | None) -> None:
     task.lease_owner = None
     task.lease_expires_at = None
@@ -65,11 +69,24 @@ class TaskService:
         self._session_factory = session_factory
         self._create_lock = asyncio.Lock()
 
-    async def create(self, resource_id: str, *, force: bool = False):
+    async def create(
+        self,
+        resource_id: str,
+        *,
+        force: bool = False,
+        allowed_actions: frozenset[TaskAction] | None = None,
+    ):
         async with self._create_lock, self._session_factory() as session:
             resource = await session.get(Resource, resource_id)
             if resource is None:
                 raise ResourceNotFound(resource_id)
+            action = (
+                TaskAction.OFFLINE_DOWNLOAD
+                if resource.kind.value == "magnet"
+                else TaskAction.SAVE_SHARE
+            )
+            if allowed_actions is not None and action not in allowed_actions:
+                raise PushKindUnsupported("push kind is not supported")
             if not force:
                 existing_tasks = await session.scalars(
                     select(Task).where(Task.resource_id == resource_id)
@@ -78,11 +95,6 @@ class TaskService:
                 if existing is not None:
                     return existing, True
 
-            action = (
-                TaskAction.OFFLINE_DOWNLOAD
-                if resource.kind.value == "magnet"
-                else TaskAction.SAVE_SHARE
-            )
             task = Task(
                 id="task_" + uuid4().hex,
                 resource_id=resource.id,
@@ -107,11 +119,18 @@ class TaskService:
             )
             return list(rows)
 
-    async def retry(self, task_id: str) -> Task:
+    async def retry(
+        self,
+        task_id: str,
+        *,
+        allowed_actions: frozenset[TaskAction] | None = None,
+    ) -> Task:
         async with self._session_factory() as session:
             task = await session.get(Task, task_id)
             if task is None:
                 raise ResourceNotFound(task_id)
+            if allowed_actions is not None and task.action not in allowed_actions:
+                raise PushKindUnsupported("push kind is not supported")
             prepare_manual_retry(task)
             await session.commit()
             return task
