@@ -2,7 +2,6 @@
 Description=Watch Assistant isolated qBittorrent inspector
 After=docker.service network-online.target
 Wants=network-online.target
-PartOf=watch-assistant.service
 Before=watch-assistant.service
 
 [Service]
