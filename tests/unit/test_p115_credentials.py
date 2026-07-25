@@ -6,7 +6,11 @@ from pathlib import Path
 
 import pytest
 
-from scripts.sync_tgto_cookie import CookieSyncError, sync_cookie
+from scripts.sync_tgto_cookie import (
+    MAX_DOTENV_BYTES,
+    CookieSyncError,
+    sync_cookie,
+)
 from watch_assistant.services.p115_credentials import (
     MAX_COOKIE_BYTES,
     CookieProvider,
@@ -145,6 +149,68 @@ def test_sync_cookie_rejects_missing_or_duplicate_target(tmp_path, content):
         sync_cookie(source, destination)
 
 
+def test_sync_cookie_accepts_large_dotenv_with_cookie_at_end(tmp_path):
+    source = tmp_path / "user.env"
+    destination = tmp_path / "p115-cookie"
+    source.write_text(
+        "OTHER_SECRET=" + ("x" * (MAX_COOKIE_BYTES + 100)) + "\n"
+        "ENV_115_COOKIES=" + COOKIE + "\n",
+        encoding="utf-8",
+    )
+
+    sync_cookie(source, destination)
+
+    assert destination.read_text(encoding="ascii") == COOKIE
+    assert "OTHER_SECRET" not in destination.read_text(encoding="ascii")
+
+
+def test_sync_cookie_rejects_cookie_definitions_far_apart(tmp_path):
+    source = tmp_path / "user.env"
+    destination = tmp_path / "p115-cookie"
+    source.write_text(
+        "ENV_115_COOKIES="
+        + COOKIE
+        + "\n"
+        + ("OTHER=" + ("x" * 100) + "\n") * 200
+        + "ENV_115_COOKIES="
+        + COOKIE
+        + "\n",
+        encoding="utf-8",
+    )
+    destination.write_text("keep", encoding="ascii")
+
+    with pytest.raises(CookieSyncError, match="unavailable"):
+        sync_cookie(source, destination)
+    assert destination.read_text(encoding="ascii") == "keep"
+
+
+def test_sync_cookie_rejects_dotenv_over_limit_without_replacing(tmp_path):
+    source = tmp_path / "user.env"
+    destination = tmp_path / "p115-cookie"
+    source.write_text(
+        "OTHER_SECRET=" + ("x" * MAX_DOTENV_BYTES) + "\n"
+        "ENV_115_COOKIES=" + COOKIE + "\n",
+        encoding="utf-8",
+    )
+    destination.write_text("keep", encoding="ascii")
+
+    with pytest.raises(CookieSyncError, match="unavailable"):
+        sync_cookie(source, destination)
+    assert destination.read_text(encoding="ascii") == "keep"
+
+
+def test_sync_cookie_rejects_oversized_cookie_without_replacing(tmp_path):
+    source = tmp_path / "user.env"
+    destination = tmp_path / "p115-cookie"
+    oversized = "UID=uid; CID=cid; KID=kid; SEID=" + ("x" * MAX_COOKIE_BYTES)
+    source.write_text("ENV_115_COOKIES=" + oversized + "\n", encoding="ascii")
+    destination.write_text("keep", encoding="ascii")
+
+    with pytest.raises(CookieSyncError, match="unavailable"):
+        sync_cookie(source, destination)
+    assert destination.read_text(encoding="ascii") == "keep"
+
+
 def test_sync_cookie_does_not_replace_unchanged_content(tmp_path, monkeypatch):
     source = tmp_path / "user.env"
     destination = tmp_path / "p115-cookie"
@@ -222,12 +288,14 @@ def test_systemd_cookie_sync_examples_have_import_path_and_safe_arguments():
     assert "User=root" in service
     assert "Group=root" in service
     assert "/opt/watch-assistant/venv/bin/python" in service
-    assert "--source /var/lib/tgtodrive/user.env" in service
+    assert "--source /root/TgtoDrive-deploy/db/user.env" in service
     assert "--destination /etc/watch-assistant/p115-cookie" in service
     assert "--owner watch-assistant" in service
     assert "--group watch-assistant" in service
     assert "UMask=0077" in service
     assert "ProtectSystem=strict" in service
+    assert "ProtectHome=read-only" in service
+    assert "ReadOnlyPaths=/root/TgtoDrive-deploy/db/user.env" in service
     assert "ReadWritePaths=/etc/watch-assistant" in service
     assert "NoNewPrivileges=true" in service
     assert "Unit=p115-cookie-sync.service" in timer

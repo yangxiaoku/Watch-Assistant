@@ -297,6 +297,36 @@ async def test_status_move_minus_one_is_failed_but_status_two_is_not(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status_value", "move_value", "expected"),
+    [
+        (-1, 0, RemoteStatus.FAILED),
+        ("-1", "0", RemoteStatus.FAILED),
+        (0, 0, RemoteStatus.ACCEPTED),
+        (2, 1, RemoteStatus.ACCEPTED),
+    ],
+)
+async def test_status_mapping_uses_observed_numeric_values(
+    tmp_path, status_value, move_value, expected
+):
+    provider, _path = _provider(tmp_path)
+    infohash = "f" * 40
+    fake = FakeP115Client(
+        task_response={
+            "state": True,
+            "data": [
+                {"info_hash": infohash, "status": status_value, "move": move_value}
+            ],
+        }
+    )
+    adapter = P115Adapter(provider, 1, client_factory=lambda _cookie: fake)
+
+    assert await adapter.get_status("infohash:" + infohash) == expected
+
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
 async def test_share_listing_is_paged_and_receives_real_top_level_ids(tmp_path):
     provider, _path = _provider(tmp_path)
     fake = FakeP115Client(

@@ -14,6 +14,8 @@ from watch_assistant.services.p115_credentials import (
     normalize_cookie_text,
 )
 
+MAX_DOTENV_BYTES = 1024 * 1024
+
 
 class CookieSyncError(RuntimeError):
     pass
@@ -52,10 +54,10 @@ def _read_dotenv_cookie(path: Path) -> str:
         raise CookieSyncError("source cookie is unavailable")
     try:
         with path.open("rb") as source_file:
-            raw = source_file.read(MAX_COOKIE_BYTES + 1)
+            raw = source_file.read(MAX_DOTENV_BYTES + 1)
     except OSError:
         raise CookieSyncError("source cookie is unavailable") from None
-    if len(raw) > MAX_COOKIE_BYTES or b"\x00" in raw:
+    if len(raw) > MAX_DOTENV_BYTES or b"\x00" in raw:
         raise CookieSyncError("source cookie is unavailable")
     try:
         text = raw.decode("utf-8")
@@ -68,8 +70,10 @@ def _read_dotenv_cookie(path: Path) -> str:
             values.append(_dotenv_value(match.group(1)))
     if len(values) != 1:
         raise CookieSyncError("source cookie is unavailable")
+    if len(values[0].encode("utf-8")) > MAX_COOKIE_BYTES:
+        raise CookieSyncError("source cookie is unavailable")
     cookie = normalize_cookie_text(values[0])
-    if cookie is None:
+    if cookie is None or len(cookie.encode("ascii")) > MAX_COOKIE_BYTES:
         raise CookieSyncError("source cookie is unavailable")
     return cookie
 

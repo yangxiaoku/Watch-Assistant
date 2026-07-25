@@ -663,7 +663,7 @@ def _task_status(task: Mapping[str, Any]) -> RemoteStatus:
         task, ("status", "state"), _AUTH_MARKERS
     ):
         return RemoteStatus.NEEDS_AUTH
-    if task.get("move") in (-1, "-1"):
+    if task.get("status") in (-1, "-1") or task.get("move") in (-1, "-1"):
         return RemoteStatus.FAILED
     if _known_message_has_markers(task, _FAILED_MARKERS) or _field_has_markers(
         task, ("status", "state"), _FAILED_MARKERS
