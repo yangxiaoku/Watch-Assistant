@@ -50,4 +50,32 @@ describe("ApiClient season and inspection requests", () => {
 
     expect(fetchMock.mock.calls[0][1].signal).toBe(controller.signal);
   });
+
+  it("uses the frozen settings and logs endpoints", async () => {
+    const responses = [
+      { revision: "rev-1", version: "0.4.0", uptime_seconds: 1, database_size_bytes: null, components: [] },
+      { revision: "rev-1", level: "info", retention_days: 30, capacity_mb: 512 },
+      { revision: "rev-2", level: "warning", retention_days: 45, capacity_mb: 1024 },
+      { enabled: true, readiness: "ready", cookie_source: "file", cookie_structure: "valid", cookie_synced_at: null, capabilities: { magnet: true, share: false } },
+      { items: [], page: 1, page_size: 20, total: 0, total_pages: 1 },
+    ];
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(new Response(JSON.stringify(responses.shift()), { status: 200 })));
+    vi.stubGlobal("fetch", fetchMock);
+    const api = new ApiClient();
+
+    await api.settingsOverview();
+    await api.loggingSettings();
+    await api.updateLoggingSettings({ revision: "rev-1", level: "warning", retention_days: 45, capacity_mb: 1024 });
+    await api.p115Settings();
+    await api.logs({ level: "error", category: "system", page: 2, pageSize: 20 });
+
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "/api/v1/settings/overview",
+      "/api/v1/settings/logging",
+      "/api/v1/settings/logging",
+      "/api/v1/settings/p115",
+      "/api/v1/logs?page=2&page_size=20&level=error&category=system",
+    ]);
+    expect(JSON.parse(fetchMock.mock.calls[2][1].body as string)).toEqual({ revision: "rev-1", level: "warning", retention_days: 45, capacity_mb: 1024 });
+  });
 });

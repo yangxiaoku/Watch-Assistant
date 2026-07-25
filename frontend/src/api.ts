@@ -2,10 +2,16 @@ import type {
   HealthResponse,
   HomeCatalogResponse,
   InspectionBatchResponse,
+  LogLevel,
+  LoggingSettingsResponse,
+  LogsResponse,
   MovieCollectionResponse,
+  P115SettingsResponse,
   SearchRequest,
   SearchResponse,
+  SettingsOverviewResponse,
   TaskResponse,
+  UpdateLoggingSettingsRequest,
 } from "./types";
 
 export class ApiError extends Error {
@@ -37,6 +43,42 @@ export class ApiClient {
 
   async health(): Promise<HealthResponse> {
     return this.request<HealthResponse>("/api/v1/health");
+  }
+
+  async settingsOverview(): Promise<SettingsOverviewResponse> {
+    return this.request<SettingsOverviewResponse>("/api/v1/settings/overview");
+  }
+
+  async loggingSettings(): Promise<LoggingSettingsResponse> {
+    return this.request<LoggingSettingsResponse>("/api/v1/settings/logging");
+  }
+
+  async updateLoggingSettings(settings: UpdateLoggingSettingsRequest): Promise<LoggingSettingsResponse> {
+    return this.request<LoggingSettingsResponse>("/api/v1/settings/logging", {
+      method: "PUT",
+      body: JSON.stringify(settings),
+    });
+  }
+
+  async p115Settings(): Promise<P115SettingsResponse> {
+    return this.request<P115SettingsResponse>("/api/v1/settings/p115");
+  }
+
+  async validateP115Cookie(): Promise<P115SettingsResponse> {
+    return this.request<P115SettingsResponse>("/api/v1/settings/p115/validate", {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+  }
+
+  async logs(filters: { level?: LogLevel; category?: string; page?: number; pageSize?: number }): Promise<LogsResponse> {
+    const params = new URLSearchParams({
+      page: String(filters.page ?? 1),
+      page_size: String(filters.pageSize ?? 20),
+    });
+    if (filters.level) params.set("level", filters.level);
+    if (filters.category) params.set("category", filters.category);
+    return this.request<LogsResponse>(`/api/v1/logs?${params}`);
   }
 
   async search(

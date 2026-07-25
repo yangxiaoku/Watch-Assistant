@@ -117,6 +117,63 @@ export interface HealthResponse {
   inspection_supported?: boolean;
 }
 
+export type SettingsComponentStatus = "ok" | "degraded" | "down" | "unknown";
+export type LogLevel = "debug" | "info" | "warning" | "error";
+
+export interface SettingsOverviewResponse {
+  revision: string;
+  version: string;
+  uptime_seconds: number | null;
+  database_size_bytes: number | null;
+  components: Array<{
+    name: string;
+    status: SettingsComponentStatus;
+    detail: string | null;
+  }>;
+}
+
+export interface LoggingSettingsResponse {
+  revision: string;
+  level: LogLevel;
+  retention_days: number;
+  capacity_mb: number;
+}
+
+export interface UpdateLoggingSettingsRequest {
+  revision: string;
+  level: LogLevel;
+  retention_days: number;
+  capacity_mb: number;
+}
+
+export interface P115SettingsResponse {
+  enabled: boolean;
+  readiness: "ready" | "not_ready" | "unknown";
+  cookie_source: "file" | "environment" | "unknown";
+  cookie_structure: "valid" | "invalid" | "unknown";
+  cookie_synced_at: string | null;
+  capabilities: {
+    magnet: boolean;
+    share: boolean;
+  };
+}
+
+export interface LogEntry {
+  id: string;
+  timestamp: string;
+  level: LogLevel;
+  category: string;
+  message: string;
+}
+
+export interface LogsResponse {
+  items: LogEntry[];
+  page: number;
+  page_size: number;
+  total: number;
+  total_pages: number;
+}
+
 export interface TaskResponse {
   id: string;
   resource_id: string | null;

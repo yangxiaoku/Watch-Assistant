@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { extractMediaRoute } from "../src/router";
+import { extractBrowseView, extractMediaRoute } from "../src/router";
 
 describe("media route seasons", () => {
   it("restores a positive TV season from the URL", () => {
@@ -11,5 +11,11 @@ describe("media route seasons", () => {
 
   it("ignores season parameters on movie routes", () => {
     expect(extractMediaRoute("/movie/27205?season=2")).toEqual({ mediaType: "movie", tmdbId: 27205 });
+  });
+});
+
+describe("settings route", () => {
+  it("restores the settings view", () => {
+    expect(extractBrowseView("/settings")).toBe("settings");
   });
 });
