@@ -22,6 +22,7 @@ export class ApiError extends Error {
   constructor(
     message: string,
     readonly status: number,
+    readonly code?: string,
   ) {
     super(message);
   }
@@ -182,7 +183,10 @@ export class ApiClient {
     const response = await fetch(path, { ...init, headers, credentials: "same-origin" });
     const body = await response.json().catch(() => ({}));
     if (!response.ok) {
-      throw new ApiError(body.detail ?? "请求失败", response.status);
+      const detail = body.detail;
+      const message = typeof detail === "string" ? detail : detail?.message ?? "请求失败";
+      const code = typeof detail === "string" ? detail : detail?.code;
+      throw new ApiError(message, response.status, code);
     }
     return body as T;
   }

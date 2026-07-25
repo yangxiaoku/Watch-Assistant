@@ -559,7 +559,7 @@ async function loadResourcePage(route: ResourceRouteState, historyMode: "push" |
   } catch (exception) {
     if (!isCurrent()) return;
     resourceLoading.value = false;
-    if (exception instanceof ApiError && exception.status === 404) {
+    if (exception instanceof ApiError && exception.status === 404 && exception.code === "resource_snapshot_not_found") {
       pendingResourceRoute = null;
       resourcePaginationUnavailable.value = true;
       resourceError.value = "资源分页暂不可用，当前显示搜索快照结果";
