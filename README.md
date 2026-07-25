@@ -49,6 +49,8 @@ curl http://127.0.0.1:8000/api/v1/health
 
 服务器的 `8000` 端口已被占用时，可按 `.env.example` 使用 `8115`。若 Docker Hub 不可达，可以使用 `deploy/watch-assistant.service` 以 Python venv 运行；对应环境变量模板是 `deploy/watch-assistant.env.example`。
 
+使用 systemd 部署时，`watch-assistant.service` 可独立重启。qBittorrent sidecar 的升级或重启必须作为独立维护操作执行；不得通过重启应用隐式管理 qBittorrent 的生命周期。
+
 ## HTTPS
 
 推荐使用 Tailscale Serve：
