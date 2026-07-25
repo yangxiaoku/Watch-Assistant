@@ -370,12 +370,25 @@ class InspectionWorker:
         cache_infohash: str | None,
     ) -> None:
         status = _item_status(result)
+        result_infohash = _infohash(result.infohash)
+        if (
+            status == InspectionItemStatus.VERIFIED
+            and cache_infohash is not None
+            and result_infohash != cache_infohash
+        ):
+            status = InspectionItemStatus.FAILED
+            result = _failed_result("malformed_response")
+            item_infohash = None
+        elif status == InspectionItemStatus.TIMEOUT and cache_infohash is not None:
+            item_infohash = cache_infohash
+        else:
+            item_infohash = result_infohash or cache_infohash
         async with self._write_lock, self._session_factory() as session:
             item = await session.get(InspectionItem, (batch_id, resource_id))
             if item is None or item.status in TERMINAL_ITEM_STATUSES:
                 return
             item.status = status
-            item.infohash = _infohash(result.infohash) or cache_infohash
+            item.infohash = item_infohash
             item.error_code = (
                 None if status == InspectionItemStatus.VERIFIED else _error_code(result)
             )
@@ -458,14 +471,17 @@ def _apply_cache_to_item(
     item.error_code = (
         None if cache.status == InspectionItemStatus.VERIFIED else "metadata_timeout"
     )
-    item.total_size_bytes = cache.total_size_bytes
-    item.file_count = cache.file_count
-    item.video_file_count = cache.video_file_count
-    item.video_size_bytes = cache.video_size_bytes
-    item.subtitle_count = cache.subtitle_count
-    item.sample_count = cache.sample_count
-    item.largest_video_name = cache.largest_video_name
-    item.content_summary = cache.content_summary
+    if cache.status == InspectionItemStatus.VERIFIED:
+        item.total_size_bytes = cache.total_size_bytes
+        item.file_count = cache.file_count
+        item.video_file_count = cache.video_file_count
+        item.video_size_bytes = cache.video_size_bytes
+        item.subtitle_count = cache.subtitle_count
+        item.sample_count = cache.sample_count
+        item.largest_video_name = cache.largest_video_name
+        item.content_summary = cache.content_summary
+    else:
+        _clear_item_details(item)
 
 
 def _apply_result_to_item(
@@ -483,14 +499,18 @@ def _apply_result_to_item(
         item.largest_video_name = _basename(result.largest_video_name)
         item.content_summary = result.content_summary
     else:
-        item.total_size_bytes = 0
-        item.file_count = 0
-        item.video_file_count = 0
-        item.video_size_bytes = 0
-        item.subtitle_count = 0
-        item.sample_count = 0
-        item.largest_video_name = None
-        item.content_summary = None
+        _clear_item_details(item)
+
+
+def _clear_item_details(item: InspectionItem) -> None:
+    item.total_size_bytes = 0
+    item.file_count = 0
+    item.video_file_count = 0
+    item.video_size_bytes = 0
+    item.subtitle_count = 0
+    item.sample_count = 0
+    item.largest_video_name = None
+    item.content_summary = None
 
 
 async def _store_cache(
@@ -515,20 +535,24 @@ async def _store_cache(
         if status == InspectionItemStatus.TIMEOUT
         else None
     )
-    cache.total_size_bytes = max(0, result.total_size_bytes)
-    cache.file_count = max(0, result.file_count)
-    cache.video_file_count = max(0, result.video_file_count)
-    cache.video_size_bytes = max(0, result.video_size_bytes)
-    cache.subtitle_count = max(0, result.subtitle_count)
-    cache.sample_count = max(0, result.sample_count)
-    cache.largest_video_name = (
-        _basename(result.largest_video_name)
-        if status == InspectionItemStatus.VERIFIED
-        else None
-    )
-    cache.content_summary = (
-        result.content_summary if status == InspectionItemStatus.VERIFIED else None
-    )
+    if status == InspectionItemStatus.VERIFIED:
+        cache.total_size_bytes = max(0, result.total_size_bytes)
+        cache.file_count = max(0, result.file_count)
+        cache.video_file_count = max(0, result.video_file_count)
+        cache.video_size_bytes = max(0, result.video_size_bytes)
+        cache.subtitle_count = max(0, result.subtitle_count)
+        cache.sample_count = max(0, result.sample_count)
+        cache.largest_video_name = _basename(result.largest_video_name)
+        cache.content_summary = result.content_summary
+    else:
+        cache.total_size_bytes = 0
+        cache.file_count = 0
+        cache.video_file_count = 0
+        cache.video_size_bytes = 0
+        cache.subtitle_count = 0
+        cache.sample_count = 0
+        cache.largest_video_name = None
+        cache.content_summary = None
 
 
 def _failed_result(error_code: str) -> QbittorrentInspectionResult:

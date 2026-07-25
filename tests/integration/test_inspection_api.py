@@ -421,6 +421,7 @@ async def test_timeout_cache_is_valid_for_30_minutes_then_retries(tmp_path):
                 "c" * 40,
                 InspectionStatus.TIMEOUT,
                 error_code="metadata_timeout",
+                total_size=999,
             )
         }
     )
@@ -429,14 +430,31 @@ async def test_timeout_cache_is_valid_for_30_minutes_then_retries(tmp_path):
     )
     service = InspectionService(database.session_factory)
     worker = InspectionWorker(database.session_factory, crypto, fake)
-    await service.create(["res_c"])
+    first = await service.create(["res_c"])
     assert await worker.run_once()
     assert len(fake.magnets) == 1
+    first_result = (await service.get(first.batch_id)).results[0]
+    assert first_result.total_size_bytes == 0
+    assert first_result.file_count == 0
+    assert first_result.video_file_count == 0
+    assert first_result.video_size_bytes == 0
+    assert first_result.subtitle_count == 0
+    assert first_result.sample_count == 0
+    assert first_result.largest_video_name is None
+    assert first_result.content_summary is None
 
     cached = await service.create(["res_c"])
     assert cached.status == InspectionBatchStatus.FAILED
     assert cached.completed_count == 1
     assert cached.results[0].status == InspectionItemStatus.TIMEOUT
+    assert cached.results[0].total_size_bytes == 0
+    assert cached.results[0].file_count == 0
+    assert cached.results[0].video_file_count == 0
+    assert cached.results[0].video_size_bytes == 0
+    assert cached.results[0].subtitle_count == 0
+    assert cached.results[0].sample_count == 0
+    assert cached.results[0].largest_video_name is None
+    assert cached.results[0].content_summary is None
     assert len(fake.magnets) == 1
     async with database.session_factory() as session:
         cache = await session.get(MagnetMetadataCache, "c" * 40)
@@ -446,6 +464,93 @@ async def test_timeout_cache_is_valid_for_30_minutes_then_retries(tmp_path):
 
     expired = await service.create(["res_c"])
     assert expired.status == InspectionBatchStatus.QUEUED
+    assert await worker.run_once()
+    assert len(fake.magnets) == 2
+    await _close(client, database, tmdb, pansou)
+
+
+@pytest.mark.integration
+async def test_legacy_dirty_timeout_cache_is_cleared_on_read(tmp_path):
+    _app, client, database, tmdb, pansou, _crypto, _magnets = await _make_app(
+        tmp_path, client=FakeInspectionClient({})
+    )
+    service = InspectionService(database.session_factory)
+    now = datetime.now(UTC)
+    async with database.session_factory() as session:
+        session.add(
+            MagnetMetadataCache(
+                infohash="c" * 40,
+                status=InspectionItemStatus.TIMEOUT,
+                total_size_bytes=999,
+                file_count=3,
+                video_file_count=2,
+                video_size_bytes=888,
+                subtitle_count=4,
+                sample_count=5,
+                largest_video_name="old/movie.mkv",
+                content_summary="old summary",
+                schema_version=1,
+                updated_at=now,
+                expires_at=now + timedelta(minutes=30),
+            )
+        )
+        await session.commit()
+
+    cached = await service.create(["res_c"])
+    result = cached.results[0]
+    assert cached.status == InspectionBatchStatus.FAILED
+    assert result.status == InspectionItemStatus.TIMEOUT
+    assert result.total_size_bytes == 0
+    assert result.file_count == 0
+    assert result.video_file_count == 0
+    assert result.video_size_bytes == 0
+    assert result.subtitle_count == 0
+    assert result.sample_count == 0
+    assert result.largest_video_name is None
+    assert result.content_summary is None
+    await _close(client, database, tmdb, pansou)
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("returned_infohash", ["b" * 40, None])
+async def test_verified_infohash_mismatch_is_not_cached(tmp_path, returned_infohash):
+    magnet = _magnet("a")
+    fake = FakeInspectionClient(
+        {
+            magnet: _result(
+                returned_infohash,
+                InspectionStatus.VERIFIED,
+                total_size=999,
+            )
+        }
+    )
+    _app, client, database, tmdb, pansou, crypto, _magnets = await _make_app(
+        tmp_path, client=fake
+    )
+    service = InspectionService(database.session_factory)
+    worker = InspectionWorker(database.session_factory, crypto, fake)
+
+    first = await service.create(["res_a"])
+    assert await worker.run_once()
+    first_result = (await service.get(first.batch_id)).results[0]
+    assert first_result.status == InspectionItemStatus.FAILED
+    assert first_result.error_code == "malformed_response"
+    assert first_result.infohash is None
+    assert first_result.total_size_bytes == 0
+    assert first_result.file_count == 0
+    assert first_result.video_file_count == 0
+    assert first_result.video_size_bytes == 0
+    assert first_result.subtitle_count == 0
+    assert first_result.sample_count == 0
+    assert first_result.largest_video_name is None
+    assert first_result.content_summary is None
+    async with database.session_factory() as session:
+        assert await session.get(MagnetMetadataCache, "a" * 40) is None
+        if returned_infohash is not None:
+            assert await session.get(MagnetMetadataCache, returned_infohash) is None
+
+    second = await service.create(["res_a"])
+    assert second.status == InspectionBatchStatus.QUEUED
     assert await worker.run_once()
     assert len(fake.magnets) == 2
     await _close(client, database, tmdb, pansou)
