@@ -29,7 +29,7 @@ class EpisodeCoverage:
 _SEASON_MARKERS = (
     re.compile(r"(?<![a-z0-9])s\s*0*(\d{1,3})(?!\d)", re.IGNORECASE),
     re.compile(r"(?<![a-z0-9])seasons?\s*0*(\d{1,3})(?!\d)", re.IGNORECASE),
-    re.compile(r"(?<![a-z0-9])0*(\d{1,3})(?!\d)\s*x", re.IGNORECASE),
+    re.compile(r"(?<![a-z0-9])0*(\d{1,2})(?!\d)\s*x", re.IGNORECASE),
     re.compile(r"第\s*0*(\d{1,3})(?!\d)\s*季"),
 )
 _SEASON_RANGES = (
@@ -60,7 +60,7 @@ _COMPACT_EPISODES = re.compile(
     re.IGNORECASE,
 )
 _X_EPISODES = re.compile(
-    r"(?<![a-z0-9])0*(?P<season>\d{1,3})(?!\d)\s*x\s*"
+    r"(?<![a-z0-9])0*(?P<season>\d{1,2})(?!\d)\s*x\s*"
     rf"(?P<episodes>{_EPISODE_SEQUENCE})",
     re.IGNORECASE,
 )

@@ -17,6 +17,7 @@ from watch_assistant.services.episode_coverage import (
         ("Show.S02E01-03.mkv", (1, 2, 3)),
         ("Show.S02E01~E03.mkv", (1, 2, 3)),
         ("Show.2x01.mkv", (1,)),
+        ("Show.02x01.mkv", (1,)),
         ("Show.2x01-03.mkv", (1, 2, 3)),
         ("Show.Season 2 Episode 1.mkv", (1,)),
         ("Show.Season 2 E01.mkv", (1,)),
@@ -30,6 +31,25 @@ def test_named_formats(name: str, episodes: tuple[int, ...]):
 
     assert result.detected_seasons == (2,)
     assert result.episodes_found == episodes
+
+
+@pytest.mark.parametrize(
+    ("name", "season", "episode"),
+    [
+        ("Show.12x150.mkv", 12, 150),
+        ("Show.S100E01.mkv", 100, 1),
+        ("Show.Season 100 Episode 1.mkv", 100, 1),
+    ],
+)
+def test_unambiguous_three_digit_seasons_remain_supported(
+    name: str, season: int, episode: int
+):
+    result = analyze_episode_coverage(
+        [name], selected_season=season, expected_episode_count=None
+    )
+
+    assert result.detected_seasons == (season,)
+    assert result.episodes_found == (episode,)
 
 
 @pytest.mark.parametrize(
@@ -239,6 +259,13 @@ def test_expected_one_requires_episode_one_for_complete():
         "Show.2024.2160p.mkv",
         "Show.hash1234567890.mkv",
         "Show.2012.1080p.2160p.x264.x265.hash1234567890.mkv",
+        "Show.854x480.mkv",
+        "Show.720x576.mkv",
+        "Show.640x480.mkv",
+        "Show.480x360.mkv",
+        "Show.352x288.mkv",
+        "Show.320x240.mkv",
+        "Show.264x265.mkv",
         "Show.E2012.mkv",
         "Show.720p.mkv",
         "2024.mkv",
