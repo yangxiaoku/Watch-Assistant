@@ -15,6 +15,7 @@ from watch_assistant.models import (
     Base,
     InspectionBatch,
     InspectionItem,
+    MagnetMetadataCache,
     Resource,
     SearchCache,
     Task,
@@ -85,15 +86,17 @@ async def cleanup_expired(
     protected_resource_ids = select(Task.resource_id).where(
         Task.resource_id.is_not(None), Task.state.in_(PROTECTED_TASK_STATES)
     )
-    protected_inspection_resource_ids = select(InspectionItem.resource_id).join(
-        InspectionBatch
-    ).where(
-        InspectionBatch.status.in_(
-            (InspectionBatchStatus.QUEUED, InspectionBatchStatus.RUNNING)
-        ),
-        InspectionItem.status.in_(
-            (InspectionItemStatus.QUEUED, InspectionItemStatus.RUNNING)
-        ),
+    protected_inspection_resource_ids = (
+        select(InspectionItem.resource_id)
+        .join(InspectionBatch)
+        .where(
+            InspectionBatch.status.in_(
+                (InspectionBatchStatus.QUEUED, InspectionBatchStatus.RUNNING)
+            ),
+            InspectionItem.status.in_(
+                (InspectionItemStatus.QUEUED, InspectionItemStatus.RUNNING)
+            ),
+        )
     )
     resource_result = await session.execute(
         delete(Resource).where(
@@ -106,6 +109,12 @@ async def cleanup_expired(
     cache_result = await session.execute(
         delete(SearchCache).where(SearchCache.expires_at <= current_time)
     )
+    inspection_cache_result = await session.execute(
+        delete(MagnetMetadataCache).where(
+            MagnetMetadataCache.expires_at.is_not(None),
+            MagnetMetadataCache.expires_at <= current_time,
+        )
+    )
     inspection_result = await session.execute(
         delete(InspectionBatch).where(InspectionBatch.expires_at <= current_time)
     )
@@ -113,6 +122,7 @@ async def cleanup_expired(
     return CleanupResult(
         resources_deleted=resource_result.rowcount or 0,
         tasks_deleted=task_result.rowcount or 0,
-        cache_entries_deleted=cache_result.rowcount or 0,
+        cache_entries_deleted=(cache_result.rowcount or 0)
+        + (inspection_cache_result.rowcount or 0),
         inspection_batches_deleted=inspection_result.rowcount or 0,
     )

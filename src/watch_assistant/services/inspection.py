@@ -2,7 +2,9 @@
 
 import asyncio
 import re
+from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
+from pathlib import PurePosixPath
 from typing import Protocol
 from uuid import uuid4
 
@@ -11,7 +13,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from watch_assistant.adapters.qbittorrent import QbittorrentInspectionResult
 from watch_assistant.crypto import SecretCrypto
-from watch_assistant.models import InspectionBatch, InspectionItem, Resource
+from watch_assistant.models import (
+    InspectionBatch,
+    InspectionItem,
+    MagnetMetadataCache,
+    Resource,
+)
 from watch_assistant.schemas import (
     InspectionBatchResponse,
     InspectionBatchStatus,
@@ -48,6 +55,12 @@ KNOWN_ERROR_CODES = {
     "internal_error",
 }
 INFOHASH_PATTERN = re.compile(r"^[0-9a-f]{40}$")
+INSPECTION_CACHE_SCHEMA_VERSION = 1
+METADATA_TIMEOUT_CACHE_TTL = timedelta(minutes=30)
+CACHEABLE_ITEM_STATUSES = (
+    InspectionItemStatus.VERIFIED,
+    InspectionItemStatus.TIMEOUT,
+)
 
 
 class InspectionResourceInvalid(LookupError):
@@ -59,7 +72,9 @@ class InspectionBatchNotFound(LookupError):
 
 
 class InspectionClient(Protocol):
-    async def inspect(self, magnets: list[str]) -> list[QbittorrentInspectionResult]: ...
+    async def inspect(
+        self, magnets: list[str]
+    ) -> list[QbittorrentInspectionResult]: ...
 
 
 class InspectionService:
@@ -83,6 +98,26 @@ class InspectionService:
             ):
                 raise InspectionResourceInvalid("resource_not_inspectable")
 
+            infohash_by_resource = {
+                resource_id: _resource_infohash(by_id[resource_id].canonical_key)
+                for resource_id in resource_ids
+            }
+            infohashes = {
+                infohash
+                for infohash in infohash_by_resource.values()
+                if infohash is not None
+            }
+            cached_by_infohash = {}
+            if infohashes:
+                cached_by_infohash = {
+                    cache.infohash: cache
+                    for cache in await session.scalars(
+                        select(MagnetMetadataCache).where(
+                            MagnetMetadataCache.infohash.in_(infohashes)
+                        )
+                    )
+                }
+
             batch = InspectionBatch(
                 id="inspect_" + uuid4().hex,
                 status=InspectionBatchStatus.QUEUED,
@@ -90,23 +125,39 @@ class InspectionService:
                 updated_at=now,
                 expires_at=now + INSPECTION_RETENTION,
             )
-            session.add(batch)
-            session.add_all(
-                InspectionItem(
+            items = []
+            for position, resource_id in enumerate(resource_ids):
+                infohash = infohash_by_resource[resource_id]
+                item = InspectionItem(
                     batch_id=batch.id,
                     resource_id=resource_id,
                     position=position,
                     status=InspectionItemStatus.QUEUED,
                 )
-                for position, resource_id in enumerate(resource_ids)
-            )
+                cache = cached_by_infohash.get(infohash)
+                if (
+                    infohash is not None
+                    and cache is not None
+                    and _cache_is_valid(cache, now)
+                ):
+                    _apply_cache_to_item(item, cache, infohash)
+                items.append(item)
+            batch.status = _batch_status(item.status for item in items)
+            session.add(batch)
+            session.add_all(items)
             await session.commit()
             return InspectionBatchResponse(
                 batch_id=batch.id,
-                status=InspectionBatchStatus.QUEUED,
+                status=batch.status,
                 submitted_count=len(resource_ids),
-                completed_count=0,
-                results=[],
+                completed_count=sum(
+                    item.status in TERMINAL_ITEM_STATUSES for item in items
+                ),
+                results=[
+                    _result_response(item)
+                    for item in items
+                    if item.status in TERMINAL_ITEM_STATUSES
+                ],
             )
 
     async def get(self, batch_id: str) -> InspectionBatchResponse:
@@ -176,7 +227,9 @@ class InspectionWorker:
             await session.commit()
             return len(batches)
 
-    async def run_forever(self, stop_event: asyncio.Event, *, interval: float = 0.2) -> None:
+    async def run_forever(
+        self, stop_event: asyncio.Event, *, interval: float = 0.2
+    ) -> None:
         await self.recover_after_restart()
         while not stop_event.is_set():
             await self.run_once()
@@ -267,9 +320,10 @@ class InspectionWorker:
             return list(rows)
 
     async def _inspect_item(self, batch_id: str, resource_id: str) -> None:
-        encrypted_magnet = await self._claim_item(batch_id, resource_id)
-        if encrypted_magnet is None:
+        claim = await self._claim_item(batch_id, resource_id)
+        if claim is None:
             return
+        encrypted_magnet, cache_infohash = claim
         try:
             magnet = self._crypto.decrypt(encrypted_magnet)
         except Exception:  # noqa: BLE001 - ciphertext failures are not user-facing
@@ -277,18 +331,23 @@ class InspectionWorker:
                 batch_id,
                 resource_id,
                 _failed_result("internal_error"),
+                cache_infohash,
             )
             return
         try:
             results = await self._client.inspect([magnet])
-            result = results[0] if len(results) == 1 else _failed_result("internal_error")
+            result = (
+                results[0] if len(results) == 1 else _failed_result("internal_error")
+            )
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - adapter errors must not expose details
             result = _failed_result("internal_error")
-        await self._store_result(batch_id, resource_id, result)
+        await self._store_result(batch_id, resource_id, result, cache_infohash)
 
-    async def _claim_item(self, batch_id: str, resource_id: str) -> str | None:
+    async def _claim_item(
+        self, batch_id: str, resource_id: str
+    ) -> tuple[str, str | None] | None:
         async with self._write_lock, self._session_factory() as session:
             item = await session.get(InspectionItem, (batch_id, resource_id))
             if item is None or item.status in TERMINAL_ITEM_STATUSES:
@@ -301,42 +360,41 @@ class InspectionWorker:
                 return None
             item.status = InspectionItemStatus.RUNNING
             await session.commit()
-            return resource.encrypted_url
+            return resource.encrypted_url, _resource_infohash(resource.canonical_key)
 
     async def _store_result(
         self,
         batch_id: str,
         resource_id: str,
         result: QbittorrentInspectionResult,
+        cache_infohash: str | None,
     ) -> None:
         status = _item_status(result)
+        result_infohash = _infohash(result.infohash)
+        if (
+            status == InspectionItemStatus.VERIFIED
+            and cache_infohash is not None
+            and result_infohash != cache_infohash
+        ):
+            status = InspectionItemStatus.FAILED
+            result = _failed_result("malformed_response")
+            item_infohash = None
+        elif status == InspectionItemStatus.TIMEOUT and cache_infohash is not None:
+            item_infohash = cache_infohash
+        else:
+            item_infohash = result_infohash or cache_infohash
         async with self._write_lock, self._session_factory() as session:
             item = await session.get(InspectionItem, (batch_id, resource_id))
             if item is None or item.status in TERMINAL_ITEM_STATUSES:
                 return
             item.status = status
-            item.infohash = _infohash(result.infohash)
+            item.infohash = item_infohash
             item.error_code = (
                 None if status == InspectionItemStatus.VERIFIED else _error_code(result)
             )
-            if status == InspectionItemStatus.VERIFIED:
-                item.total_size_bytes = max(0, result.total_size_bytes)
-                item.file_count = max(0, result.file_count)
-                item.video_file_count = max(0, result.video_file_count)
-                item.video_size_bytes = max(0, result.video_size_bytes)
-                item.subtitle_count = max(0, result.subtitle_count)
-                item.sample_count = max(0, result.sample_count)
-                item.largest_video_name = result.largest_video_name
-                item.content_summary = result.content_summary
-            else:
-                item.total_size_bytes = 0
-                item.file_count = 0
-                item.video_file_count = 0
-                item.video_size_bytes = 0
-                item.subtitle_count = 0
-                item.sample_count = 0
-                item.largest_video_name = None
-                item.content_summary = None
+            _apply_result_to_item(item, result, status)
+            if cache_infohash is not None and status in CACHEABLE_ITEM_STATUSES:
+                await _store_cache(session, cache_infohash, result, status)
             await session.commit()
 
     async def _finalize_batch(self, batch_id: str) -> None:
@@ -380,6 +438,130 @@ def _result_response(item: InspectionItem) -> InspectionResultResponse:
     )
 
 
+def _batch_status(statuses: Iterable[InspectionItemStatus]) -> InspectionBatchStatus:
+    status_values = tuple(statuses)
+    if any(status not in TERMINAL_ITEM_STATUSES for status in status_values):
+        return InspectionBatchStatus.QUEUED
+    successes = sum(status in SUCCESSFUL_ITEM_STATUSES for status in status_values)
+    if successes == len(status_values):
+        return InspectionBatchStatus.COMPLETED
+    if successes:
+        return InspectionBatchStatus.PARTIAL
+    return InspectionBatchStatus.FAILED
+
+
+def _cache_is_valid(cache: MagnetMetadataCache, now: datetime) -> bool:
+    if cache.schema_version != INSPECTION_CACHE_SCHEMA_VERSION:
+        return False
+    if cache.status == InspectionItemStatus.VERIFIED:
+        return True
+    return (
+        cache.status == InspectionItemStatus.TIMEOUT
+        and _as_utc(cache.updated_at) + METADATA_TIMEOUT_CACHE_TTL > now
+    )
+
+
+def _apply_cache_to_item(
+    item: InspectionItem,
+    cache: MagnetMetadataCache,
+    infohash: str,
+) -> None:
+    item.infohash = infohash
+    item.status = cache.status
+    item.error_code = (
+        None if cache.status == InspectionItemStatus.VERIFIED else "metadata_timeout"
+    )
+    if cache.status == InspectionItemStatus.VERIFIED:
+        item.total_size_bytes = cache.total_size_bytes
+        item.file_count = cache.file_count
+        item.video_file_count = cache.video_file_count
+        item.video_size_bytes = cache.video_size_bytes
+        item.subtitle_count = cache.subtitle_count
+        item.sample_count = cache.sample_count
+        item.largest_video_name = cache.largest_video_name
+        item.content_summary = cache.content_summary
+    else:
+        _clear_item_details(item)
+
+
+def _apply_result_to_item(
+    item: InspectionItem,
+    result: QbittorrentInspectionResult,
+    status: InspectionItemStatus,
+) -> None:
+    if status == InspectionItemStatus.VERIFIED:
+        item.total_size_bytes = max(0, result.total_size_bytes)
+        item.file_count = max(0, result.file_count)
+        item.video_file_count = max(0, result.video_file_count)
+        item.video_size_bytes = max(0, result.video_size_bytes)
+        item.subtitle_count = max(0, result.subtitle_count)
+        item.sample_count = max(0, result.sample_count)
+        item.largest_video_name = _basename(result.largest_video_name)
+        item.content_summary = result.content_summary
+    else:
+        _clear_item_details(item)
+
+
+def _clear_item_details(item: InspectionItem) -> None:
+    item.total_size_bytes = 0
+    item.file_count = 0
+    item.video_file_count = 0
+    item.video_size_bytes = 0
+    item.subtitle_count = 0
+    item.sample_count = 0
+    item.largest_video_name = None
+    item.content_summary = None
+
+
+async def _store_cache(
+    session: AsyncSession,
+    infohash: str,
+    result: QbittorrentInspectionResult,
+    status: InspectionItemStatus,
+) -> None:
+    cache = await session.get(MagnetMetadataCache, infohash)
+    if (
+        status == InspectionItemStatus.TIMEOUT
+        and cache is not None
+        and cache.schema_version == INSPECTION_CACHE_SCHEMA_VERSION
+        and cache.status == InspectionItemStatus.VERIFIED
+    ):
+        return
+    if cache is None:
+        cache = MagnetMetadataCache(
+            infohash=infohash,
+            status=status,
+            schema_version=INSPECTION_CACHE_SCHEMA_VERSION,
+        )
+        session.add(cache)
+    cache.status = status
+    cache.schema_version = INSPECTION_CACHE_SCHEMA_VERSION
+    cache.updated_at = datetime.now(UTC)
+    cache.expires_at = (
+        cache.updated_at + METADATA_TIMEOUT_CACHE_TTL
+        if status == InspectionItemStatus.TIMEOUT
+        else None
+    )
+    if status == InspectionItemStatus.VERIFIED:
+        cache.total_size_bytes = max(0, result.total_size_bytes)
+        cache.file_count = max(0, result.file_count)
+        cache.video_file_count = max(0, result.video_file_count)
+        cache.video_size_bytes = max(0, result.video_size_bytes)
+        cache.subtitle_count = max(0, result.subtitle_count)
+        cache.sample_count = max(0, result.sample_count)
+        cache.largest_video_name = _basename(result.largest_video_name)
+        cache.content_summary = result.content_summary
+    else:
+        cache.total_size_bytes = 0
+        cache.file_count = 0
+        cache.video_file_count = 0
+        cache.video_size_bytes = 0
+        cache.subtitle_count = 0
+        cache.sample_count = 0
+        cache.largest_video_name = None
+        cache.content_summary = None
+
+
 def _failed_result(error_code: str) -> QbittorrentInspectionResult:
     return QbittorrentInspectionResult(
         infohash=None,
@@ -397,13 +579,31 @@ def _item_status(result: QbittorrentInspectionResult) -> InspectionItemStatus:
 
 
 def _error_code(result: QbittorrentInspectionResult) -> str:
-    return result.error_code if result.error_code in KNOWN_ERROR_CODES else "internal_error"
+    return (
+        result.error_code
+        if result.error_code in KNOWN_ERROR_CODES
+        else "internal_error"
+    )
 
 
 def _infohash(value: str | None) -> str | None:
     if isinstance(value, str) and INFOHASH_PATTERN.fullmatch(value.casefold()):
         return value.casefold()
     return None
+
+
+def _resource_infohash(canonical_key: str) -> str | None:
+    if not isinstance(canonical_key, str) or canonical_key[:7].casefold() != "magnet:":
+        return None
+    value = canonical_key[7:].casefold()
+    return value if INFOHASH_PATTERN.fullmatch(value) else None
+
+
+def _basename(value: str | None) -> str | None:
+    if not isinstance(value, str) or not value:
+        return None
+    basename = PurePosixPath(value.replace("\\", "/")).name
+    return basename or None
 
 
 def _as_utc(value: datetime) -> datetime:

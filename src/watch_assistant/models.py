@@ -124,6 +124,30 @@ class InspectionItem(Base):
     resource: Mapped[Resource] = relationship(back_populates="inspection_items")
 
 
+class MagnetMetadataCache(Base):
+    __tablename__ = "magnet_metadata_cache"
+
+    infohash: Mapped[str] = mapped_column(String(40), primary_key=True)
+    status: Mapped[InspectionItemStatus] = mapped_column(
+        Enum(InspectionItemStatus, values_callable=enum_values, native_enum=False)
+    )
+    total_size_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
+    file_count: Mapped[int] = mapped_column(Integer, default=0)
+    video_file_count: Mapped[int] = mapped_column(Integer, default=0)
+    video_size_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
+    subtitle_count: Mapped[int] = mapped_column(Integer, default=0)
+    sample_count: Mapped[int] = mapped_column(Integer, default=0)
+    largest_video_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    content_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    schema_version: Mapped[int] = mapped_column(Integer)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, index=True
+    )
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+
+
 class SearchCache(Base):
     __tablename__ = "search_cache"
 
