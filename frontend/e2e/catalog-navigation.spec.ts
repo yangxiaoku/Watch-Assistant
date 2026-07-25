@@ -270,21 +270,90 @@ test("does not call search for an empty search URL or whitespace input", async (
   const mocks = await installCatalogMocks(page);
   await page.goto("/movies");
   await expect(page.getByRole("heading", { name: "电影库" })).toBeVisible();
-  const beforeInvalidSearch = await page.evaluate(() => window.history.length);
 
-  await page.goto("/search?query=%20%20");
-  await expect(page).toHaveURL(/\/$/);
-  await expect(page.getByRole("heading", { name: "正在热映" })).toBeVisible();
-  expect(await page.evaluate(() => window.history.length)).toBe(beforeInvalidSearch + 1);
+  for (const emptyPath of ["/search", "/search?query=", "/search?query=%20%20"]) {
+    await page.evaluate((path) => window.history.pushState({}, "", path), emptyPath);
+    const invalidHistory = await page.evaluate(() => window.history.length);
+    await page.reload();
+    await expect(page).toHaveURL(/\/$/);
+    await expect(page.getByRole("heading", { name: "正在热映" })).toBeVisible();
+    expect(await page.evaluate(() => window.history.length)).toBe(invalidHistory);
+    await page.goBack();
+    await expect(page).toHaveURL(/\/movies$/);
+    await expect(page.getByRole("heading", { name: "电影库" })).toBeVisible();
+  }
+
   expect(mocks.searchRequests).toHaveLength(0);
-
-  await page.goBack();
-  await expect(page).toHaveURL(/\/movies$/);
-  await expect(page.getByRole("heading", { name: "电影库" })).toBeVisible();
 
   await page.getByLabel("搜索电影或电视剧").fill("   ");
   await page.getByRole("button", { name: "提交搜索" }).click();
   expect(mocks.searchRequests).toHaveLength(0);
+});
+
+test("replaces the season detail URL and returns to the cached catalog page", async ({ page }) => {
+  const mocks = await installCatalogMocks(page);
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  let detailSearchRequests = 0;
+  const tvMovie = {
+    ...baseMovie,
+    media_type: "tv" as const,
+    title: "剧集第 2 页 1",
+    seasons: [
+      { season_number: 1, name: "第 1 季", episode_count: 8, air_date: "2020-01-01", poster_path: null },
+      { season_number: 2, name: "第 2 季", episode_count: 8, air_date: "2021-01-01", poster_path: null },
+    ],
+  };
+  await page.unroute("**/api/v1/search");
+  await page.route("**/api/v1/search", (route) => {
+    detailSearchRequests += 1;
+    const request = route.request().postDataJSON() as { season_number?: number };
+    return route.fulfill({ json: {
+      movie: { ...tvMovie, title: request.season_number === 2 ? "剧集第 2 页 1 · 第 2 季" : tvMovie.title },
+      results: [{ resource_id: "detail-resource", kind: "magnet", name: "detail resource", size_bytes: null, seeders: null, source: "test", captured_at: "2026-07-24T10:00:00Z" }],
+      warnings: [],
+      cached: false,
+      cache_age_seconds: null,
+      selected_season: request.season_number ?? null,
+    } });
+  });
+  await page.route("**/api/v1/media/tv/*/resources**", (route) => route.fulfill({ json: {
+    items: [{ resource_id: "detail-resource", kind: "magnet", name: "detail resource", size_bytes: null, seeders: null, source: "test", captured_at: "2026-07-24T10:00:00Z" }],
+    page: 1,
+    page_size: 25,
+    total: 1,
+    total_pages: 1,
+    facets: { magnet: 1, share: 0, "4k": 0, "1080p": 0, "720p": 0, subtitle: 0 },
+    snapshot_revision: "season-history-snapshot",
+  } }));
+
+  await page.goto("/tv");
+  await page.getByRole("button", { name: "下一页" }).click();
+  await expect(page.getByText("第 2 / 3 页 · 共 60 条")).toBeVisible();
+  await page.waitForTimeout(50);
+  await page.evaluate(() => window.scrollTo({ top: 64, behavior: "auto" }));
+  const savedScroll = await page.evaluate(() => window.scrollY);
+  const catalogRequests = mocks.discoverRequests.length;
+  await page.getByRole("button", { name: /查看 剧集第 2 页/ }).first().click();
+  await expect(page.getByRole("heading", { name: "剧集第 2 页 1" })).toBeVisible();
+  const detailHistoryLength = await page.evaluate(() => window.history.length);
+
+  await page.locator("#season-select").selectOption("2");
+  await expect.poll(() => detailSearchRequests).toBe(2);
+  await expect(page).toHaveURL(/\/tv\/27205\?season=2$/);
+  expect(await page.evaluate(() => window.history.length)).toBe(detailHistoryLength);
+  await page.getByRole("button", { name: "返回浏览" }).click();
+  await expect(page).toHaveURL(/\/tv\?page=2$/);
+  await expect(page.getByText("第 2 / 3 页 · 共 60 条")).toBeVisible();
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(savedScroll);
+  expect(mocks.discoverRequests).toHaveLength(catalogRequests);
+
+  await page.goBack();
+  await expect(page).toHaveURL(/\/tv$/);
+  await page.goForward();
+  await expect(page).toHaveURL(/\/tv\?page=2$/);
+  await expect(page.getByRole("heading", { name: "剧集库" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "剧集第 2 页 1" })).toHaveCount(0);
+  expect(mocks.discoverRequests).toHaveLength(catalogRequests);
 });
 
 test("keeps committed movie content while switching to a delayed TV catalog", async ({ page }) => {

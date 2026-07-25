@@ -121,7 +121,7 @@ const VIEW_PATHS: Record<Exclude<BrowseView, "search">, string> = {
 };
 
 export function navigateToView(view: Exclude<BrowseView, "search">, replace = false): void {
-  if (replace) window.history.replaceState({}, "", VIEW_PATHS[view]);
+  if (replace) window.history.replaceState(window.history.state, "", VIEW_PATHS[view]);
   else window.history.pushState({}, "", VIEW_PATHS[view]);
 }
 

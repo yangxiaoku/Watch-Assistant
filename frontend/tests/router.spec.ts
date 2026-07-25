@@ -1,8 +1,19 @@
 import { describe, expect, it } from "vitest";
 
-import { catalogRoutePath, extractBrowseView, extractMediaRoute, mediaRoutePath, parseCatalogRoute } from "../src/router";
+import { catalogRoutePath, extractBrowseView, extractMediaRoute, mediaRoutePath, navigateToMedia, navigateToView, parseCatalogRoute } from "../src/router";
 
 describe("media route seasons", () => {
+  it("replaces a season URL while preserving detail history state", () => {
+    window.history.pushState({ catalog: { view: "tv", page: 2 }, catalogDetailEntry: true, catalogScrollY: 380 }, "", "/tv/1399");
+    const historyLength = window.history.length;
+
+    navigateToMedia("tv", 1399, 2, undefined, true);
+
+    expect(window.history.length).toBe(historyLength);
+    expect(window.location.pathname + window.location.search).toBe("/tv/1399?season=2");
+    expect(window.history.state).toMatchObject({ catalog: { view: "tv", page: 2 }, catalogDetailEntry: true, catalogScrollY: 380 });
+  });
+
   it("restores a positive TV season from the URL", () => {
     expect(extractMediaRoute("/tv/1399?season=2")).toEqual({ mediaType: "tv", tmdbId: 1399, seasonNumber: 2 });
     expect(extractMediaRoute("/tv/1399")).toEqual({ mediaType: "tv", tmdbId: 1399 });
@@ -29,6 +40,17 @@ describe("settings route", () => {
 });
 
 describe("catalog routes", () => {
+  it("replaces an invalid search route without adding history", () => {
+    window.history.pushState({ source: "catalog" }, "", "/search?query=");
+    const historyLength = window.history.length;
+
+    navigateToView("home", true);
+
+    expect(window.history.length).toBe(historyLength);
+    expect(window.location.pathname).toBe("/");
+    expect(window.history.state).toMatchObject({ source: "catalog" });
+  });
+
   it("round-trips search and catalog filters through the URL", () => {
     const route = parseCatalogRoute("/movies?page=2&genre=28&year=2024&sort=rating");
     expect(route).toEqual({ view: "movies", query: "", page: 2, genreId: 28, year: 2024, sort: "rating" });
