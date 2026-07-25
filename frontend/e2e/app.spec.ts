@@ -132,7 +132,13 @@ test("automatically inspects eight magnets and continues without duplicates", as
   const resources = Array.from({ length: 31 }, (_, index) => ({
     resource_id: `magnet-${index}`,
     kind: "magnet",
-    name: `权力的游戏 S01E${String(index + 1).padStart(2, "0")}`,
+    name: index === 0
+      ? "权力的游戏 S01E01 2160P"
+      : index === 1
+        ? "权力的游戏 S01E02 1080P 字幕"
+        : index === 2
+          ? "权力的游戏 S01E03 720P"
+          : `权力的游戏 S01E${String(index + 1).padStart(2, "0")}`,
     size_bytes: null,
     seeders: index,
     size_source: "pansou",
@@ -230,17 +236,34 @@ test("automatically inspects eight magnets and continues without duplicates", as
   await page.goto("/tv/1399?season=2");
   await expect(page.locator("#season-select")).toHaveValue("2");
   await expect(page.locator(".resource-table tbody tr")).toHaveCount(31);
-  const shareResource = testInfo.project.name === "mobile"
+  const shareResource = testInfo.project.name.startsWith("mobile")
     ? page.locator(".resource-cards").getByText("115 分享资源")
     : page.locator(".resource-table").getByText("115 分享资源");
   await expect(shareResource).toBeVisible();
   await expect.poll(() => inspectedBatches.length).toBe(1);
   expect(inspectedBatches[0]).toHaveLength(8);
   expect(inspectedBatches[0].every((id) => id.startsWith("magnet-"))).toBe(true);
+  await expect(page.getByLabel("资源名称搜索")).toBeVisible();
+  await expect(page.getByRole("group", { name: "资源名称标签" }).getByRole("button", { name: /4K\/2160P/ })).toContainText("1");
+  await expect(page.getByRole("group", { name: "资源名称标签" }).getByRole("button", { name: "字幕 1" })).toBeVisible();
+  await page.getByLabel("资源名称搜索").fill("2160P");
+  await expect(page.locator(".resource-table tbody tr")).toHaveCount(1);
+  await page.getByLabel("资源名称搜索").fill("");
+  await page.getByRole("group", { name: "资源名称标签" }).getByRole("button", { name: /全部/ }).click();
+  await page.locator('select[aria-label="资源排序"]').selectOption("seeders");
+  await expect.poll(() => page.evaluate(() => window.localStorage.getItem("watch-assistant:resource-sort"))).toBe("seeders");
+  await page.locator('select[aria-label="资源排序"]').selectOption("comprehensive");
   await expect(page.getByRole("status")).toContainText("8 / 8");
   await expect(page.locator(".resource-table tbody tr").first()).toContainText("已验证");
   await expect(page.locator(".resource-table tbody tr").first()).toContainText("已验证");
   await expect(page.getByRole("button", { name: "检测更多" })).toBeVisible();
+  expect(await page.evaluate(() => {
+    const boxes = [...document.querySelectorAll<HTMLElement>(".resource-controls > *")]
+      .filter((element) => getComputedStyle(element).display !== "none")
+      .map((element) => element.getBoundingClientRect());
+    return boxes.every((box, index) => boxes.slice(index + 1).every((other) => box.right <= other.left + 1 || other.right <= box.left + 1 || box.bottom <= other.top + 1 || other.bottom <= box.top + 1));
+  })).toBe(true);
+  expect(await page.evaluate(() => document.body.scrollWidth <= window.innerWidth)).toBe(true);
 
   await page.screenshot({ path: testInfo.outputPath("season-quality.png"), fullPage: true });
   await page.getByRole("button", { name: "检测更多" }).click();

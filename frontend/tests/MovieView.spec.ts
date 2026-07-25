@@ -37,6 +37,26 @@ function response(mediaType: "movie" | "tv") {
 }
 
 describe("MovieView seasons", () => {
+  it("keeps derived stats and the overview in separate detail regions", () => {
+    const result = response("tv");
+    result.movie.overview = "这是简介内容。";
+    const wrapper = mount(MovieView, {
+      props: {
+        result,
+        mediaType: "tv",
+        seasonNumber: null,
+        pushingId: null,
+        pushSupported: true,
+        favorite: false,
+      },
+    });
+
+    expect(wrapper.find(".detail-stats").text()).toContain("磁力");
+    expect(wrapper.find(".detail-stats").text()).toContain("115 分享");
+    expect(wrapper.find(".overview-section").text()).toContain("这是简介内容。");
+    expect(wrapper.text()).not.toContain("年份未知");
+  });
+
   it("shows all seasons and emits the selected season", async () => {
     const wrapper = mount(MovieView, {
       props: {
