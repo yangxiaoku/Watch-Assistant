@@ -11,6 +11,12 @@ export interface MediaRoute {
   mediaType: "movie" | "tv";
   tmdbId: number;
   seasonNumber?: number;
+  resourcePage?: number;
+  resourceKind?: "all" | "magnet" | "115_share";
+  resourceQuality?: "all" | "4k" | "1080p" | "720p" | "subtitle";
+  resourceQuery?: string;
+  resourceSort?: "comprehensive" | "relevance" | "completeness" | "size" | "seeders";
+  resourcePageSize?: 25 | 50 | 100;
 }
 
 export function extractMediaRoute(path: string): MediaRoute | null {
@@ -19,17 +25,59 @@ export function extractMediaRoute(path: string): MediaRoute | null {
   if (!match) return null;
   const mediaType = match[1] as "movie" | "tv";
   const rawSeason = new URLSearchParams(query).get("season");
+  const params = new URLSearchParams(query);
   const season = rawSeason === null ? null : Number(rawSeason);
+  const rawPage = Number(params.get("resource_page") ?? "1");
+  const rawPageSize = Number(params.get("resource_page_size") ?? "25");
+  const resourceKind = params.get("resource_kind");
+  const resourceQuality = params.get("resource_quality");
+  const resourceSort = params.get("resource_sort");
+  const resourcePage = Number.isInteger(rawPage) && rawPage >= 1 && rawPage <= 500 ? rawPage : 1;
+  const resourcePageSize = rawPageSize === 50 || rawPageSize === 100 ? rawPageSize : 25;
+  const hasResourceParams = ["resource_page", "resource_kind", "resource_quality", "resource_query", "resource_sort", "resource_page_size"].some((key) => params.has(key));
   return {
     mediaType,
     tmdbId: Number(match[2]),
     ...(mediaType === "tv" && rawSeason !== null && /^\d+$/.test(rawSeason) && Number.isInteger(season) && season >= 0 ? { seasonNumber: season } : {}),
+    ...(hasResourceParams ? {
+      resourcePage,
+      resourceKind: resourceKind === "magnet" || resourceKind === "115_share" ? resourceKind : "all",
+      resourceQuality: resourceQuality === "4k" || resourceQuality === "1080p" || resourceQuality === "720p" || resourceQuality === "subtitle" ? resourceQuality : "all",
+      resourceQuery: (params.get("resource_query") ?? "").trim(),
+      resourceSort: resourceSort === "relevance" || resourceSort === "completeness" || resourceSort === "size" || resourceSort === "seeders" ? resourceSort : "comprehensive",
+      resourcePageSize,
+    } : {}),
   };
 }
 
-export function navigateToMedia(mediaType: "movie" | "tv", tmdbId: number, seasonNumber?: number): void {
-  const query = mediaType === "tv" && seasonNumber !== undefined ? `?season=${seasonNumber}` : "";
-  window.history.pushState({}, "", `/${mediaType}/${tmdbId}${query}`);
+export interface MediaResourceRouteState {
+  page: number;
+  kind: "all" | "magnet" | "115_share";
+  quality: "all" | "4k" | "1080p" | "720p" | "subtitle";
+  query: string;
+  sort: "comprehensive" | "relevance" | "completeness" | "size" | "seeders";
+  pageSize: 25 | 50 | 100;
+}
+
+export function mediaRoutePath(mediaType: "movie" | "tv", tmdbId: number, seasonNumber?: number, resources?: MediaResourceRouteState): string {
+  const params = new URLSearchParams();
+  if (mediaType === "tv" && seasonNumber !== undefined) params.set("season", String(seasonNumber));
+  if (resources) {
+    if (resources.page > 1) params.set("resource_page", String(resources.page));
+    if (resources.kind !== "all") params.set("resource_kind", resources.kind);
+    if (resources.quality !== "all") params.set("resource_quality", resources.quality);
+    if (resources.query.trim()) params.set("resource_query", resources.query.trim());
+    if (resources.sort !== "comprehensive") params.set("resource_sort", resources.sort);
+    if (resources.pageSize !== 25) params.set("resource_page_size", String(resources.pageSize));
+  }
+  const query = params.toString();
+  return `/${mediaType}/${tmdbId}${query ? `?${query}` : ""}`;
+}
+
+export function navigateToMedia(mediaType: "movie" | "tv", tmdbId: number, seasonNumber?: number, resources?: MediaResourceRouteState, replace = false): void {
+  const path = mediaRoutePath(mediaType, tmdbId, seasonNumber, resources);
+  if (replace) window.history.replaceState({}, "", path);
+  else window.history.pushState({}, "", path);
 }
 
 export function navigateHome(): void {

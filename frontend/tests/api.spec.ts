@@ -5,6 +5,19 @@ import { ApiClient } from "../src/api";
 afterEach(() => vi.unstubAllGlobals());
 
 describe("ApiClient season and inspection requests", () => {
+  it("sends the frozen resource pagination query and signal", async () => {
+    const response = { items: [], page: 2, page_size: 50, total: 501, total_pages: 11, facets: { magnet: 500, share: 1, "4k": 100, "1080p": 300, "720p": 50, subtitle: 80 }, snapshot_revision: "snapshot-1" };
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(response), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const api = new ApiClient();
+    const controller = new AbortController();
+
+    await api.resources("tv", 1399, { seasonNumber: 0, kind: "magnet", quality: "1080p", query: "  show  ", sort: "relevance", page: 2, pageSize: 50 }, controller.signal);
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/v1/media/tv/1399/resources?sort=relevance&page=2&page_size=50&season_number=0&kind=magnet&quality=1080p&query=show");
+    expect(fetchMock.mock.calls[0][1].signal).toBe(controller.signal);
+  });
+
   it("sends a TV season and accepts old health responses", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ movie: {}, results: [], warnings: [], cached: false, cache_age_seconds: null }), {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { catalogRoutePath, extractBrowseView, extractMediaRoute, parseCatalogRoute } from "../src/router";
+import { catalogRoutePath, extractBrowseView, extractMediaRoute, mediaRoutePath, parseCatalogRoute } from "../src/router";
 
 describe("media route seasons", () => {
   it("restores a positive TV season from the URL", () => {
@@ -11,6 +11,14 @@ describe("media route seasons", () => {
 
   it("ignores season parameters on movie routes", () => {
     expect(extractMediaRoute("/movie/27205?season=2")).toEqual({ mediaType: "movie", tmdbId: 27205 });
+  });
+
+  it("restores resource pagination state and keeps season zero", () => {
+    expect(extractMediaRoute("/tv/1399?season=0&resource_page=3&resource_kind=magnet&resource_quality=1080p&resource_query=%20bear%20&resource_sort=size&resource_page_size=100")).toMatchObject({
+      mediaType: "tv", tmdbId: 1399, seasonNumber: 0, resourcePage: 3, resourceKind: "magnet", resourceQuality: "1080p", resourceQuery: "bear", resourceSort: "size", resourcePageSize: 100,
+    });
+    expect(extractMediaRoute("/movie/1?resource_page=501")).toMatchObject({ resourcePage: 1 });
+    expect(mediaRoutePath("tv", 1399, 0, { page: 3, kind: "magnet", quality: "1080p", query: "bear", sort: "size", pageSize: 100 })).toBe("/tv/1399?season=0&resource_page=3&resource_kind=magnet&resource_quality=1080p&resource_query=bear&resource_sort=size&resource_page_size=100");
   });
 });
 

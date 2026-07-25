@@ -11,6 +11,9 @@ import type {
   P115ValidationResponse,
   SearchRequest,
   SearchResponse,
+  ResourcePageResponse,
+  ResourceQuality,
+  ResourceSort,
   SettingsOverviewResponse,
   TaskResponse,
 } from "./types";
@@ -91,6 +94,32 @@ export class ApiClient {
       method: "POST",
       body: JSON.stringify(body),
     });
+  }
+
+  async resources(
+    mediaType: "movie" | "tv",
+    tmdbId: number,
+    filters: {
+      seasonNumber?: number | null;
+      kind?: "magnet" | "115_share";
+      quality?: ResourceQuality;
+      query?: string;
+      sort: ResourceSort;
+      page: number;
+      pageSize: 25 | 50 | 100;
+    },
+    signal?: AbortSignal,
+  ): Promise<ResourcePageResponse> {
+    const params = new URLSearchParams({
+      sort: filters.sort,
+      page: String(filters.page),
+      page_size: String(filters.pageSize),
+    });
+    if (filters.seasonNumber !== undefined && filters.seasonNumber !== null) params.set("season_number", String(filters.seasonNumber));
+    if (filters.kind) params.set("kind", filters.kind);
+    if (filters.quality) params.set("quality", filters.quality);
+    if (filters.query?.trim()) params.set("query", filters.query.trim());
+    return this.request<ResourcePageResponse>(`/api/v1/media/${mediaType}/${tmdbId}/resources?${params}`, { signal });
   }
 
   async inspectResources(resourceIds: string[]): Promise<InspectionBatchResponse> {
