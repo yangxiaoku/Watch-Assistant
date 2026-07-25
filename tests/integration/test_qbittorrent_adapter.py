@@ -34,6 +34,8 @@ class FakeQbittorrent:
         delete_release: asyncio.Event | None = None,
         add_response_text: str = "Ok.",
         add_response_json: dict[str, object] | None = None,
+        state_sequence: list[str] | None = None,
+        downloaded: int | None = None,
     ) -> None:
         self.existing = {value.casefold() for value in (existing or set())}
         self.metadata_received = metadata_received
@@ -47,7 +49,10 @@ class FakeQbittorrent:
         self.delete_release = delete_release
         self.add_response_text = add_response_text
         self.add_response_json = add_response_json
+        self.state_sequence = state_sequence
+        self.downloaded = downloaded
         self.added: dict[str, str] = {}
+        self.added_state_checks = 0
         self.add_calls = 0
         self.delete_calls = 0
         self.delete_tag_calls = 0
@@ -116,18 +121,24 @@ class FakeQbittorrent:
                     )
                 marker = self.added.get(normalized)
                 if marker:
+                    state = self.state or (
+                        "stoppedDL" if self.metadata_received else "metaDL"
+                    )
+                    if self.state_sequence is not None:
+                        state = self.state_sequence[
+                            min(self.added_state_checks, len(self.state_sequence) - 1)
+                        ]
+                    self.added_state_checks += 1
+                    row: dict[str, object] = {
+                        "hash": normalized,
+                        "state": state,
+                        "tags": marker,
+                    }
+                    if self.downloaded is not None:
+                        row["downloaded"] = self.downloaded
                     return httpx.Response(
                         200,
-                        json=[
-                            {
-                                "hash": normalized,
-                                "state": self.state
-                                or (
-                                    "stoppedDL" if self.metadata_received else "metaDL"
-                                ),
-                                "tags": marker,
-                            }
-                        ],
+                        json=[row],
                     )
                 return httpx.Response(200, json=[])
             if tag:
@@ -265,6 +276,34 @@ async def test_add_accepts_qbittorrent_5_json_success_response():
     await client.aclose()
 
     assert result.status == InspectionStatus.VERIFIED
+
+
+@respx.mock
+async def test_qbittorrent_5_startup_states_wait_for_metadata_stop():
+    fake = FakeQbittorrent(
+        state_sequence=["queuedDL", "metaDL", "checkingResumeData", "stoppedDL"]
+    )
+    fake.install()
+    client = QbittorrentClient(BASE_URL, "user", "password", poll_interval=0)
+
+    result = (await client.inspect([_magnet("a" * 40)]))[0]
+    await client.aclose()
+
+    assert result.status == InspectionStatus.VERIFIED
+
+
+@respx.mock
+async def test_downloaded_bytes_fail_before_metadata_is_read():
+    fake = FakeQbittorrent(state="queuedDL", downloaded=1)
+    fake.install()
+    client = QbittorrentClient(BASE_URL, "user", "password", poll_interval=0)
+
+    result = (await client.inspect([_magnet("a" * 40)]))[0]
+    await client.aclose()
+
+    assert result.status == InspectionStatus.FAILED
+    assert result.error_code == "metadata_stop_failed"
+    assert fake.files_calls == 0
 
 
 @respx.mock

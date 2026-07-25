@@ -272,8 +272,18 @@ class QbittorrentClient:
                             if not isinstance(state, str):
                                 raise _ApiError("malformed_response")
                             normalized_state = state.casefold()
-                            if normalized_state == "metadl":
-                                pass
+                            if normalized_state in {
+                                "checkingresumedata",
+                                "metadl",
+                                "queueddl",
+                            }:
+                                downloaded = torrent.get("downloaded")
+                                if isinstance(downloaded, int) and downloaded > 0:
+                                    result = QbittorrentInspectionResult(
+                                        infohash=item.infohash,
+                                        status=InspectionStatus.FAILED,
+                                        error_code="metadata_stop_failed",
+                                    )
                             elif normalized_state in {"pauseddl", "stoppeddl"}:
                                 files = await self._torrent_files(item.infohash)
                                 result = _summarize(item.infohash, files)
