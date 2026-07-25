@@ -46,6 +46,57 @@ class RemoteStatus(StrEnum):
     UNCERTAIN = "uncertain"
 
 
+class LoggingLevel(StrEnum):
+    ERROR = "ERROR"
+    WARNING = "WARNING"
+    INFO = "INFO"
+
+
+class LogCategory(StrEnum):
+    SYSTEM = "system"
+    SEARCH = "search"
+    CACHE = "cache"
+    INSPECTION = "inspection"
+    P115 = "p115"
+    SECURITY = "security"
+
+
+class LoggingSettingsResponse(BaseModel):
+    level: LoggingLevel
+    retention_days: int = Field(ge=1, le=90)
+    max_file_mb: int = Field(ge=1, le=50)
+    revision: int = Field(ge=0)
+
+
+class LoggingSettingsPatch(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    level: LoggingLevel | None = None
+    retention_days: int | None = Field(default=None, ge=1, le=90)
+    max_file_mb: int | None = Field(default=None, ge=1, le=50)
+    revision: int = Field(ge=0)
+
+
+class SettingsOverviewResponse(BaseModel):
+    release: str
+    uptime_seconds: int = Field(ge=0)
+    database_size_bytes: int = Field(ge=0)
+    capabilities: dict[str, bool]
+
+
+class LogItem(BaseModel):
+    id: int = Field(ge=1)
+    timestamp: datetime
+    level: LoggingLevel
+    category: LogCategory
+    message: str
+
+
+class LogsResponse(BaseModel):
+    items: list[LogItem]
+    next_cursor: int | None = Field(default=None, ge=1)
+
+
 class SubmissionResult(BaseModel):
     status: RemoteStatus
     remote_ref: str | None = None
