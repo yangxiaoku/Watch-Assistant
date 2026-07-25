@@ -99,6 +99,17 @@ class FakeInspectionClient:
         self.closed = True
 
 
+class SequencedInspectionClient(FakeInspectionClient):
+    def __init__(self, results: list[QbittorrentInspectionResult]) -> None:
+        super().__init__({})
+        self.result_sequence = results
+
+    async def inspect(self, magnets: list[str]) -> list[QbittorrentInspectionResult]:
+        self.magnets.append(magnets[0])
+        self.started.set()
+        return [self.result_sequence.pop(0)]
+
+
 async def _make_app(
     tmp_path,
     *,
@@ -408,6 +419,131 @@ async def test_schema_version_mismatch_forces_redetection(tmp_path):
     second = await service.create(["res_a"])
     assert second.status == InspectionBatchStatus.QUEUED
     assert await worker.run_once()
+    assert len(fake.magnets) == 2
+    await _close(client, database, tmdb, pansou)
+
+
+@pytest.mark.integration
+async def test_verified_cache_is_not_downgraded_by_later_timeout(tmp_path):
+    fake = SequencedInspectionClient(
+        [
+            _result("a" * 40, InspectionStatus.VERIFIED, total_size=11),
+            _result(
+                "a" * 40,
+                InspectionStatus.TIMEOUT,
+                error_code="metadata_timeout",
+                total_size=999,
+            ),
+        ]
+    )
+    _app, client, database, tmdb, pansou, crypto, _magnets = await _make_app(
+        tmp_path, client=fake
+    )
+    service = InspectionService(database.session_factory)
+    worker = InspectionWorker(database.session_factory, crypto, fake)
+
+    first = await service.create(["res_a"])
+    second = await service.create(["res_a"])
+    assert await worker.run_once()
+    assert await worker.run_once()
+
+    first_result = (await service.get(first.batch_id)).results[0]
+    second_result = (await service.get(second.batch_id)).results[0]
+    assert first_result.status == InspectionItemStatus.VERIFIED
+    assert second_result.status == InspectionItemStatus.TIMEOUT
+    assert second_result.total_size_bytes == 0
+    async with database.session_factory() as session:
+        cache = await session.get(MagnetMetadataCache, "a" * 40)
+        assert cache is not None
+        assert cache.status == InspectionItemStatus.VERIFIED
+        assert cache.total_size_bytes == 11
+
+    third = await service.create(["res_a"])
+    assert third.status == InspectionBatchStatus.COMPLETED
+    assert third.results[0].status == InspectionItemStatus.VERIFIED
+    assert len(fake.magnets) == 2
+    await _close(client, database, tmdb, pansou)
+
+
+@pytest.mark.integration
+async def test_timeout_cache_is_upgraded_by_later_verified(tmp_path):
+    fake = SequencedInspectionClient(
+        [
+            _result(
+                "a" * 40,
+                InspectionStatus.TIMEOUT,
+                error_code="metadata_timeout",
+                total_size=999,
+            ),
+            _result("a" * 40, InspectionStatus.VERIFIED, total_size=11),
+        ]
+    )
+    _app, client, database, tmdb, pansou, crypto, _magnets = await _make_app(
+        tmp_path, client=fake
+    )
+    service = InspectionService(database.session_factory)
+    worker = InspectionWorker(database.session_factory, crypto, fake)
+
+    first = await service.create(["res_a"])
+    second = await service.create(["res_a"])
+    assert await worker.run_once()
+    assert await worker.run_once()
+    assert (await service.get(first.batch_id)).results[0].status == (
+        InspectionItemStatus.TIMEOUT
+    )
+    assert (await service.get(second.batch_id)).results[0].status == (
+        InspectionItemStatus.VERIFIED
+    )
+    async with database.session_factory() as session:
+        cache = await session.get(MagnetMetadataCache, "a" * 40)
+        assert cache is not None
+        assert cache.status == InspectionItemStatus.VERIFIED
+        assert cache.total_size_bytes == 11
+    assert len(fake.magnets) == 2
+    await _close(client, database, tmdb, pansou)
+
+
+@pytest.mark.integration
+async def test_old_schema_verified_cache_can_be_replaced_by_timeout(tmp_path):
+    fake = SequencedInspectionClient(
+        [
+            _result("a" * 40, InspectionStatus.VERIFIED, total_size=11),
+            _result(
+                "a" * 40,
+                InspectionStatus.TIMEOUT,
+                error_code="metadata_timeout",
+                total_size=999,
+            ),
+        ]
+    )
+    _app, client, database, tmdb, pansou, crypto, _magnets = await _make_app(
+        tmp_path, client=fake
+    )
+    service = InspectionService(database.session_factory)
+    worker = InspectionWorker(database.session_factory, crypto, fake)
+
+    first = await service.create(["res_a"])
+    assert await worker.run_once()
+    async with database.session_factory() as session:
+        cache = await session.get(MagnetMetadataCache, "a" * 40)
+        assert cache is not None
+        cache.schema_version = 999
+        await session.commit()
+
+    second = await service.create(["res_a"])
+    assert await worker.run_once()
+    assert (await service.get(first.batch_id)).results[0].status == (
+        InspectionItemStatus.VERIFIED
+    )
+    assert (await service.get(second.batch_id)).results[0].status == (
+        InspectionItemStatus.TIMEOUT
+    )
+    async with database.session_factory() as session:
+        cache = await session.get(MagnetMetadataCache, "a" * 40)
+        assert cache is not None
+        assert cache.schema_version == 1
+        assert cache.status == InspectionItemStatus.TIMEOUT
+        assert cache.total_size_bytes == 0
     assert len(fake.magnets) == 2
     await _close(client, database, tmdb, pansou)
 

@@ -520,6 +520,13 @@ async def _store_cache(
     status: InspectionItemStatus,
 ) -> None:
     cache = await session.get(MagnetMetadataCache, infohash)
+    if (
+        status == InspectionItemStatus.TIMEOUT
+        and cache is not None
+        and cache.schema_version == INSPECTION_CACHE_SCHEMA_VERSION
+        and cache.status == InspectionItemStatus.VERIFIED
+    ):
+        return
     if cache is None:
         cache = MagnetMetadataCache(
             infohash=infohash,

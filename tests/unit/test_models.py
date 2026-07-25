@@ -6,8 +6,14 @@ from sqlalchemy import select, text
 
 from watch_assistant.config import Settings
 from watch_assistant.db import cleanup_expired, create_database, initialize_database
-from watch_assistant.models import Resource, SearchCache, Task, TaskState
-from watch_assistant.schemas import ResourceKind
+from watch_assistant.models import (
+    MagnetMetadataCache,
+    Resource,
+    SearchCache,
+    Task,
+    TaskState,
+)
+from watch_assistant.schemas import InspectionItemStatus, ResourceKind
 
 
 def test_task_states_are_explicit():
@@ -134,6 +140,27 @@ async def test_cleanup_keeps_resource_referenced_by_uncertain_task(tmp_path):
                     fetched_at=old_resource_time,
                     expires_at=old_resource_time,
                 ),
+                MagnetMetadataCache(
+                    infohash="d" * 40,
+                    status=InspectionItemStatus.TIMEOUT,
+                    schema_version=1,
+                    updated_at=old_resource_time,
+                    expires_at=old_resource_time,
+                ),
+                MagnetMetadataCache(
+                    infohash="e" * 40,
+                    status=InspectionItemStatus.VERIFIED,
+                    schema_version=1,
+                    updated_at=now,
+                    expires_at=None,
+                ),
+                MagnetMetadataCache(
+                    infohash="f" * 40,
+                    status=InspectionItemStatus.TIMEOUT,
+                    schema_version=1,
+                    updated_at=now,
+                    expires_at=now + timedelta(minutes=30),
+                ),
             ]
         )
         session.add_all(
@@ -166,6 +193,9 @@ async def test_cleanup_keeps_resource_referenced_by_uncertain_task(tmp_path):
         resource_ids = set(await session.scalars(select(Resource.id)))
         task_ids = set(await session.scalars(select(Task.id)))
         cache_keys = set(await session.scalars(select(SearchCache.cache_key)))
+        metadata_cache_infohashes = set(
+            await session.scalars(select(MagnetMetadataCache.infohash))
+        )
 
     await database.engine.dispose()
 
@@ -173,6 +203,7 @@ async def test_cleanup_keeps_resource_referenced_by_uncertain_task(tmp_path):
     assert journal_mode == "wal"
     assert task_ids == {"task_uncertain"}
     assert cache_keys == set()
+    assert metadata_cache_infohashes == {"e" * 40, "f" * 40}
     assert result.resources_deleted == 2
     assert result.tasks_deleted == 1
-    assert result.cache_entries_deleted == 1
+    assert result.cache_entries_deleted == 2
