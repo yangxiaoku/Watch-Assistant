@@ -53,4 +53,22 @@ describe("ResourceTable", () => {
     expect(names.slice(0, 2)).toEqual(["磁力 0", "磁力 1"]);
     expect(names).toContain("115 分享");
   });
+
+  it("labels PanSou metrics and exposes only the secondary more action", async () => {
+    const wrapper = mount(ResourceTable, {
+      props: {
+        resources: [{ ...magnetWithoutStats, size_bytes: 1024, size_source: "pansou", seeders: 4, seeders_source: "pansou" }],
+        inspectionSupported: true,
+        inspectionState: "completed",
+        inspectionMoreAvailable: true,
+        onPush: vi.fn(),
+      },
+    });
+
+    expect(wrapper.text()).toContain("来源数据");
+    expect(wrapper.text()).toContain("检测更多");
+    expect(wrapper.text()).not.toContain("检测本页磁力");
+    await wrapper.get(".inspection-more-button").trigger("click");
+    expect(wrapper.emitted("inspectMore")).toHaveLength(1);
+  });
 });

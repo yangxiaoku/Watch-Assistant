@@ -17,8 +17,9 @@ const props = defineProps<{
   inspectionTotal?: number;
   inspectionFailed?: number;
   inspectionError?: string | null;
+  inspectionMoreAvailable?: boolean;
 }>();
-const emit = defineEmits<{ push: [resource: ResourceSummary]; refresh: []; back: []; favorite: []; season: [seasonNumber: number | null]; inspect: [] }>();
+const emit = defineEmits<{ push: [resource: ResourceSummary]; refresh: []; back: []; favorite: []; season: [seasonNumber: number | null]; inspectMore: [] }>();
 
 const isTv = computed(() => props.mediaType === "tv" || props.result.movie.media_type === "tv");
 const seasons = computed(() => props.result.movie.seasons ?? []);
@@ -57,6 +58,6 @@ function posterUrl(path: string | null): string | null {
       </select>
     </div>
     <div v-if="result.warnings.length" class="warning-strip">{{ result.warnings.join(' · ') }}</div>
-    <ResourceTable :resources="result.results" :pushing-id="pushingId" :push-supported="pushSupported" :inspection-supported="inspectionSupported" :inspection-state="inspectionState" :inspection-completed="inspectionCompleted" :inspection-total="inspectionTotal" :inspection-failed="inspectionFailed" :inspection-error="inspectionError" @push="$emit('push', $event)" @inspect="$emit('inspect')" />
+    <ResourceTable :resources="result.results" :pushing-id="pushingId" :push-supported="pushSupported" :inspection-supported="inspectionSupported" :inspection-state="inspectionState" :inspection-completed="inspectionCompleted" :inspection-total="inspectionTotal" :inspection-failed="inspectionFailed" :inspection-error="inspectionError" :inspection-more-available="inspectionMoreAvailable" @push="$emit('push', $event)" @inspect-more="$emit('inspectMore')" />
   </section>
 </template>

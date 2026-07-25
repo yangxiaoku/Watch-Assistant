@@ -12,7 +12,7 @@ import {
   type BrowseView,
 } from "./router";
 import { mediaKey, mediaTypeOf } from "./media";
-import { finalizeInspectionResources, inspectionProgress as getInspectionProgress, inspectionState as getInspectionBatchState, mergeInspectionResult, pollInspectionBatch } from "./inspection";
+import { finalizeInspectionResources, inspectionProgress as getInspectionProgress, inspectionState as getInspectionBatchState, mergeInspectionResult, nextInspectionResourceIds, pollInspectionBatch } from "./inspection";
 import type { HomeCatalogResponse, MovieMetadata, ResourceSummary, SearchResponse, TaskResponse } from "./types";
 import CollectionView from "./views/CollectionView.vue";
 import HomeView from "./views/HomeView.vue";
@@ -55,6 +55,8 @@ const inspectionCompleted = ref(0);
 const inspectionTotal = ref(0);
 const inspectionFailed = ref(0);
 const inspectionError = ref<string | null>(null);
+const inspectionProcessedIds = ref<Set<string>>(new Set());
+const inspectionAutoRequestId = ref<number | null>(null);
 let searchRequestId = 0;
 let inspectionRunId = 0;
 let pollTimer: number | undefined;
@@ -62,6 +64,11 @@ let pollTimer: number | undefined;
 const favoriteIds = computed(() => new Set(favorites.value.map(mediaKey)));
 const detailFavorite = computed(() => result.value ? favoriteIds.value.has(mediaKey(result.value.movie)) : false);
 const hasActiveTasks = computed(() => tasks.value.some((task) => task.state === "queued" || task.state === "submitting"));
+const inspectionMoreAvailable = computed(() => {
+  if (!inspectionSupported.value || !result.value || inspectionState.value === "running") return false;
+  if (inspectionAutoRequestId.value !== searchRequestId) return false;
+  return nextInspectionResourceIds(result.value.results, inspectionProcessedIds.value, 1).length > 0;
+});
 
 const navItems = [
   { view: "home" as const, label: "首页", icon: Home },
@@ -228,6 +235,8 @@ function resetInspection() {
   inspectionTotal.value = 0;
   inspectionFailed.value = 0;
   inspectionError.value = null;
+  inspectionProcessedIds.value = new Set();
+  inspectionAutoRequestId.value = null;
 }
 
 function invalidateDetailRequest() {
@@ -259,6 +268,7 @@ async function loadResources(
         : seasonNumber
       : null;
     recordHistory(response.movie);
+    startAutomaticInspection(requestId);
   } catch (exception) {
     if (requestId === searchRequestId) {
       error.value = exception instanceof ApiError ? exception.message : "资源搜索失败，请稍后重试";
@@ -371,6 +381,10 @@ function setInspectionStatus(resourceIds: string[], status: string) {
   };
 }
 
+function markInspectionProcessed(resourceIds: string[]) {
+  inspectionProcessedIds.value = new Set([...inspectionProcessedIds.value, ...resourceIds]);
+}
+
 function finalizeInspection(resourceIds: string[], status: "failed" | "timeout") {
   if (!result.value) return;
   result.value = {
@@ -384,42 +398,48 @@ function inspectionErrorFor(state: "partial" | "failed", failed: number): string
   return failed > 0 ? `部分失败：${failed} 条磁力检测失败` : "部分失败";
 }
 
-async function inspectCurrentPage() {
-  if (!result.value || !inspectionSupported.value || inspectionState.value === "running") return;
-  const resourceIds = result.value.results
-    .filter((resource) => resource.kind === "magnet")
-    .slice(0, 30)
-    .map((resource) => resource.resource_id);
-  if (!resourceIds.length) return;
+function applyTerminalInspectionState(
+  resourceIds: string[],
+  state: "completed" | "partial" | "failed",
+) {
+  if (state !== "completed") {
+    finalizeInspection(resourceIds, "failed");
+    inspectionError.value = inspectionErrorFor(state, inspectionFailed.value);
+  }
+  inspectionState.value = state;
+}
+
+async function inspectBatch(resourceIds: string[], requestId: number) {
+  if (!result.value || !inspectionSupported.value || requestId !== searchRequestId || inspectionState.value === "running") return;
 
   const runId = ++inspectionRunId;
+  markInspectionProcessed(resourceIds);
   inspectionState.value = "running";
   inspectionCompleted.value = 0;
   inspectionTotal.value = 0;
   inspectionFailed.value = 0;
   inspectionError.value = null;
   setInspectionStatus(resourceIds, "running");
+  const isCurrent = () => requestId === searchRequestId && runId === inspectionRunId;
 
   try {
     const started = await api.inspectResources(resourceIds);
-    if (runId !== inspectionRunId) return;
+    if (!isCurrent()) return;
     applyInspectionResponse(started);
     const startedState = getInspectionBatchState(started);
     if (startedState === "completed" || startedState === "partial" || startedState === "failed") {
-      if (startedState !== "completed") finalizeInspection(resourceIds, "failed");
-      inspectionState.value = startedState;
-      if (startedState !== "completed") inspectionError.value = inspectionErrorFor(startedState, inspectionFailed.value);
+      applyTerminalInspectionState(resourceIds, startedState);
       return;
     }
     const pollState = await pollInspectionBatch(
       (batchId, signal) => api.getInspection(batchId, signal),
       started.batch_id,
       {
-        isCurrent: () => runId === inspectionRunId,
+        isCurrent,
         onResponse: applyInspectionResponse,
       },
     );
-    if (runId !== inspectionRunId) return;
+    if (!isCurrent()) return;
     if (pollState === "stale") return;
     if (pollState === "timeout") {
       finalizeInspection(resourceIds, "timeout");
@@ -427,19 +447,27 @@ async function inspectCurrentPage() {
       inspectionError.value = "检测超时，可重试";
       return;
     }
-    if (pollState === "completed") {
-      inspectionState.value = "completed";
-    } else if (pollState === "partial" || pollState === "failed") {
-      finalizeInspection(resourceIds, "failed");
-      inspectionState.value = pollState;
-      inspectionError.value = inspectionErrorFor(pollState, inspectionFailed.value);
-    }
+    if (pollState === "completed" || pollState === "partial" || pollState === "failed") applyTerminalInspectionState(resourceIds, pollState);
   } catch (exception) {
-    if (runId !== inspectionRunId) return;
+    if (!isCurrent()) return;
     finalizeInspection(resourceIds, "failed");
     inspectionState.value = "failed";
     inspectionError.value = exception instanceof ApiError ? exception.message : "检测失败，可重试";
   }
+}
+
+function startAutomaticInspection(requestId: number) {
+  if (inspectionAutoRequestId.value === requestId) return;
+  inspectionAutoRequestId.value = requestId;
+  if (!inspectionSupported.value || !result.value) return;
+  const resourceIds = nextInspectionResourceIds(result.value.results, inspectionProcessedIds.value);
+  if (resourceIds.length) void inspectBatch(resourceIds, requestId);
+}
+
+function inspectMore() {
+  if (!result.value || !inspectionMoreAvailable.value) return;
+  const resourceIds = nextInspectionResourceIds(result.value.results, inspectionProcessedIds.value);
+  if (resourceIds.length) void inspectBatch(resourceIds, searchRequestId);
 }
 
 function ensurePolling() {
@@ -517,7 +545,7 @@ onBeforeUnmount(() => {
       </template>
       <section v-else-if="loading && !result" class="detail-loading"><LoaderCircle class="spin" :size="24" /><strong>正在聚合资源</strong><span>正在查询 PanSou 的磁力与 115 分享结果</span></section>
       <p v-if="!pushSupported && result" class="warning-strip">TgtoDrive 推送契约尚未验证，推送按钮已禁用。</p>
-      <section v-if="result" class="detail-workspace"><MovieView :result="result" :media-type="detailMediaType" :season-number="selectedSeason" :pushing-id="pushingId" :push-supported="pushSupported" :favorite="detailFavorite" :inspection-supported="inspectionSupported" :inspection-state="inspectionState" :inspection-completed="inspectionCompleted" :inspection-total="inspectionTotal" :inspection-failed="inspectionFailed" :inspection-error="inspectionError" @push="push" @favorite="toggleFavorite(result.movie)" @refresh="loadResources(result.movie.tmdb_id, detailMediaType, true)" @season="selectSeason" @inspect="inspectCurrentPage" @back="returnToBrowse" /></section>
+       <section v-if="result" class="detail-workspace"><MovieView :result="result" :media-type="detailMediaType" :season-number="selectedSeason" :pushing-id="pushingId" :push-supported="pushSupported" :favorite="detailFavorite" :inspection-supported="inspectionSupported" :inspection-state="inspectionState" :inspection-completed="inspectionCompleted" :inspection-total="inspectionTotal" :inspection-failed="inspectionFailed" :inspection-error="inspectionError" :inspection-more-available="inspectionMoreAvailable" @push="push" @favorite="toggleFavorite(result.movie)" @refresh="loadResources(result.movie.tmdb_id, detailMediaType, true)" @season="selectSeason" @inspect-more="inspectMore" @back="returnToBrowse" /></section>
     </template>
     <TaskDrawer :tasks="tasks" :open="drawerOpen" @close="drawerOpen = false" />
   </main>

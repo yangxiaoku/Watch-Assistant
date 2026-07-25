@@ -117,10 +117,10 @@ test("login, popular browsing, and resource detail remain usable", async ({ page
   await expect(page.getByText("第 2 / 3 页 · 共 60 条")).toBeVisible();
 });
 
-test("restores TV seasons and inspects only the first 30 magnets", async ({ page }, testInfo) => {
+test("automatically inspects eight magnets and continues without duplicates", async ({ page }, testInfo) => {
   const searchRequests: Array<Record<string, unknown>> = [];
-  let inspectPostCount = 0;
-  let inspectedIds: string[] = [];
+  const inspectedBatches: string[][] = [];
+  let inspectGetCount = 0;
   const tvWithSeasons = {
     ...show,
     seasons: [
@@ -135,6 +135,9 @@ test("restores TV seasons and inspects only the first 30 magnets", async ({ page
     name: `权力的游戏 S01E${String(index + 1).padStart(2, "0")}`,
     size_bytes: null,
     seeders: index,
+    size_source: "pansou",
+    seeders_source: "pansou",
+    seeders_observed_at: "2026-07-24T10:00:00Z",
     source: "plugin:test",
     captured_at: "2026-07-24T10:00:00Z",
     rank_score: 90 - index,
@@ -173,27 +176,26 @@ test("restores TV seasons and inspects only the first 30 magnets", async ({ page
           captured_at: "2026-07-24T10:00:00Z",
         }] : [],
         warnings: [],
-        cached: false,
+        cached: selected ? request.season_number === 0 : false,
         cache_age_seconds: null,
         selected_season: selected ? (request.season_number ?? null) : undefined,
       },
     });
   });
   await page.route("**/api/v1/resources/inspect", (route) => {
-    inspectPostCount += 1;
     const body = route.request().postDataJSON() as { resource_ids: string[] };
-    inspectedIds = body.resource_ids;
+    inspectedBatches.push(body.resource_ids);
+    const completed = inspectedBatches.length > 1;
     return route.fulfill({
       json: {
-        batch_id: `batch-${inspectPostCount}`,
-        status: "queued",
-        submitted_count: 30,
-        completed_count: 0,
-        results: [],
+        batch_id: `batch-${inspectedBatches.length}`,
+        status: completed ? "completed" : "queued",
+        submitted_count: body.resource_ids.length,
+        completed_count: completed ? body.resource_ids.length : 0,
+        results: completed ? body.resource_ids.map((resourceId, index) => inspectionResult(resourceId, "verified", index)) : [],
       },
     });
   });
-  let inspectGetCount = 0;
   const inspectionResult = (resourceId: string, status: "verified" | "unsupported" | "timeout" | "failed", index: number) => ({
     resource_id: resourceId,
     infohash: status === "unsupported" ? null : `hash-${resourceId}`,
@@ -210,22 +212,16 @@ test("restores TV seasons and inspects only the first 30 magnets", async ({ page
   });
   await page.route("**/api/v1/resources/inspect/*", (route) => {
     inspectGetCount += 1;
-    const failedBatch = inspectPostCount > 1;
-    const partialResults = resources.slice(0, 30).map((item, index) => inspectionResult(
-      item.resource_id,
-      index === 1 ? "unsupported" : index === 2 ? "timeout" : "verified",
-      index,
-    ));
-    const runningResults = partialResults.slice(0, 2);
-    const results = failedBatch
-      ? resources.slice(0, 30).map((item, index) => inspectionResult(item.resource_id, "failed", index))
-      : inspectGetCount === 1 ? runningResults : partialResults;
+    const batchIds = inspectedBatches[0] ?? [];
+    const results = inspectGetCount === 1
+      ? batchIds.slice(0, 2).map((resourceId, index) => inspectionResult(resourceId, "verified", index))
+      : batchIds.map((resourceId, index) => inspectionResult(resourceId, "verified", index));
     return route.fulfill({
       json: {
-        batch_id: `batch-${inspectPostCount}`,
-        status: failedBatch ? "failed" : inspectGetCount === 1 ? "running" : "partial",
-        submitted_count: 30,
-        completed_count: failedBatch || inspectGetCount > 1 ? 30 : 2,
+        batch_id: "batch-1",
+        status: inspectGetCount === 1 ? "running" : "completed",
+        submitted_count: batchIds.length,
+        completed_count: inspectGetCount === 1 ? 2 : batchIds.length,
         results,
       },
     });
@@ -238,39 +234,32 @@ test("restores TV seasons and inspects only the first 30 magnets", async ({ page
     ? page.locator(".resource-cards").getByText("115 分享资源")
     : page.locator(".resource-table").getByText("115 分享资源");
   await expect(shareResource).toBeVisible();
+  await expect.poll(() => inspectedBatches.length).toBe(1);
+  expect(inspectedBatches[0]).toHaveLength(8);
+  expect(inspectedBatches[0].every((id) => id.startsWith("magnet-"))).toBe(true);
+  await expect(page.getByRole("status")).toContainText("8 / 8");
+  await expect(page.locator(".resource-table tbody tr").first()).toContainText("已验证");
+  await expect(page.locator(".resource-table tbody tr").first()).toContainText("已验证");
+  await expect(page.getByRole("button", { name: "检测更多" })).toBeVisible();
 
-  await page.locator("#season-select").selectOption("1");
-  await expect(page).toHaveURL(/\/tv\/1399\?season=1$/);
-  await expect.poll(() => searchRequests.at(-1)?.season_number).toBe(1);
+  await page.screenshot({ path: testInfo.outputPath("season-quality.png"), fullPage: true });
+  await page.getByRole("button", { name: "检测更多" }).click();
+  await expect.poll(() => inspectedBatches.length).toBe(2);
+  expect(inspectedBatches[1]).toHaveLength(8);
+  expect(inspectedBatches[1].every((id) => !inspectedBatches[0].includes(id))).toBe(true);
+  await expect(page.getByRole("status")).toContainText("8 / 8");
 
   await page.goto("/tv/1399?season=0");
   await expect(page.locator("#season-select")).toHaveValue("0");
   expect(searchRequests.at(-1)?.season_number).toBe(0);
+  await expect.poll(() => inspectedBatches.length).toBe(3);
+  expect(inspectGetCount).toBe(2);
 
   await page.goto("/movie/27205?season=2");
   await expect(page.getByRole("heading", { name: "盗梦空间" })).toBeVisible();
   await expect(page.locator("#season-select")).toHaveCount(0);
   expect(searchRequests.at(-1)?.season_number).toBeUndefined();
-
-  await page.goto("/tv/1399?season=2");
-  await page.getByRole("button", { name: "检测本页磁力" }).click();
-  await expect.poll(() => inspectPostCount).toBe(1);
-  expect(inspectedIds).toHaveLength(30);
-  expect(inspectedIds.every((id) => id.startsWith("magnet-"))).toBe(true);
-  await expect(page.getByRole("status")).toContainText("2 / 30");
-  await expect(page.getByRole("status")).toContainText("部分失败");
-  await expect(page.getByRole("status")).toContainText("30 / 30");
-  await expect(page.locator(".resource-table tbody tr").first()).toContainText("1.0 GB");
-  await expect(page.locator(".resource-table tbody tr").nth(0)).toContainText("已检测");
-  await expect(page.locator(".resource-table tbody tr").nth(1)).toContainText("无法检测");
-  await expect(page.locator(".resource-table tbody tr").nth(2).locator("td").nth(2)).toContainText("未知");
-  await expect(shareResource).toBeVisible();
-
-  await page.screenshot({ path: testInfo.outputPath("season-quality.png"), fullPage: true });
-  await page.getByRole("button", { name: "检测本页磁力" }).click();
-  await expect.poll(() => inspectPostCount).toBe(2);
-  await expect(page.getByRole("status")).toContainText("检测失败");
-  await expect(page.getByRole("status")).not.toContainText("本页磁力检测完成");
+  expect(inspectedBatches.length).toBe(3);
 
   delayNextSearch = true;
   await page.getByRole("button", { name: "刷新资源" }).click();
@@ -278,4 +267,80 @@ test("restores TV seasons and inspects only the first 30 magnets", async ({ page
   await expect(page.getByRole("heading", { name: "电影库" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "权力的游戏" })).toHaveCount(0);
   expect(await page.evaluate(() => document.body.scrollWidth <= window.innerWidth)).toBe(true);
+});
+
+test("does not start inspection when the backend disables it", async ({ page }) => {
+  let inspectPostCount = 0;
+  await page.route("**/api/v1/health", (route) =>
+    route.fulfill({ json: { status: "ok", push_supported: false, inspection_supported: false } }),
+  );
+  await page.route("**/api/v1/auth/me", (route) =>
+    route.fulfill({ json: { authenticated: true, via_bearer: false, csrf_token: "csrf-test" } }),
+  );
+  await page.route("**/api/v1/search", (route) => route.fulfill({
+    json: { movie, results: [{ resource_id: "magnet-1", kind: "magnet", name: "资源", size_bytes: null, seeders: null, source: "test", captured_at: "2026-07-24T10:00:00Z" }], warnings: [], cached: false, cache_age_seconds: null },
+  }));
+  await page.route("**/api/v1/resources/inspect", (route) => {
+    inspectPostCount += 1;
+    return route.fulfill({ status: 500, json: { detail: "must not be called" } });
+  });
+
+  await page.goto("/movie/27205");
+  await expect(page.getByRole("heading", { name: "盗梦空间" })).toBeVisible();
+  await page.waitForTimeout(100);
+  expect(inspectPostCount).toBe(0);
+  await expect(page.getByRole("button", { name: "检测更多" })).toHaveCount(0);
+});
+
+test("invalidates an automatic batch when switching seasons quickly", async ({ page }) => {
+  let inspectPostCount = 0;
+  const seasons = [
+    { season_number: 1, name: "第 1 季", episode_count: 10, air_date: "2011-04-17", poster_path: null },
+    { season_number: 2, name: "第 2 季", episode_count: 10, air_date: "2012-04-01", poster_path: null },
+  ];
+  await page.route("**/api/v1/health", (route) =>
+    route.fulfill({ json: { status: "ok", push_supported: false, inspection_supported: true } }),
+  );
+  await page.route("**/api/v1/auth/me", (route) =>
+    route.fulfill({ json: { authenticated: true, via_bearer: false, csrf_token: "csrf-test" } }),
+  );
+  await page.route("**/api/v1/search", (route) => {
+    const request = route.request().postDataJSON() as { season_number?: number };
+    const season = request.season_number ?? 1;
+    return route.fulfill({
+      json: {
+        movie: { ...show, seasons },
+        results: [{ resource_id: `season-${season}`, kind: "magnet", name: `第 ${season} 季资源`, size_bytes: null, seeders: null, source: "test", captured_at: "2026-07-24T10:00:00Z" }],
+        warnings: [],
+        cached: false,
+        cache_age_seconds: null,
+        selected_season: season,
+      },
+    });
+  });
+  await page.route("**/api/v1/resources/inspect", async (route) => {
+    inspectPostCount += 1;
+    if (inspectPostCount === 1) await new Promise((resolve) => setTimeout(resolve, 250));
+    const resourceId = (route.request().postDataJSON() as { resource_ids: string[] }).resource_ids[0];
+    return route.fulfill({
+      json: {
+        batch_id: `batch-${inspectPostCount}`,
+        status: "completed",
+        submitted_count: 1,
+        completed_count: 1,
+        results: [{ resource_id: resourceId, infohash: "hash", status: "verified", total_size_bytes: 1024, file_count: 1, video_file_count: 1, video_size_bytes: 1024, subtitle_count: 0, sample_count: 0, largest_video_name: "episode.mkv", content_summary: null, error_code: null }],
+      },
+    });
+  });
+
+  await page.goto("/tv/1399?season=2");
+  await expect.poll(() => inspectPostCount).toBe(1);
+  await page.goto("/tv/1399?season=1");
+  await expect(page.locator("#season-select")).toHaveValue("1");
+  await expect(page.locator(".resource-name:visible, .resource-card h3:visible").filter({ hasText: "第 1 季资源" })).toBeVisible();
+  await expect.poll(() => inspectPostCount).toBe(2);
+  await expect(page.getByRole("status")).toContainText("1 / 1");
+  await page.waitForTimeout(350);
+  await expect(page.locator(".resource-name:visible, .resource-card h3:visible").filter({ hasText: "第 2 季资源" })).toHaveCount(0);
+  await expect(page.locator(".resource-name:visible, .resource-card h3:visible").filter({ hasText: "第 1 季资源" })).toBeVisible();
 });

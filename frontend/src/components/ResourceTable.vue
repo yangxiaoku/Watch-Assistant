@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
-import { LoaderCircle, Magnet, PackageOpen, ScanSearch } from "@lucide/vue";
+import { Magnet, PackageOpen, ScanSearch } from "@lucide/vue";
 
 import PushButton from "./PushButton.vue";
 import { inspectionStatusLabel } from "../inspection";
@@ -16,8 +16,9 @@ const props = defineProps<{
   inspectionTotal?: number;
   inspectionFailed?: number;
   inspectionError?: string | null;
+  inspectionMoreAvailable?: boolean;
 }>();
-const emit = defineEmits<{ push: [resource: ResourceSummary]; inspect: [] }>();
+const emit = defineEmits<{ push: [resource: ResourceSummary]; inspectMore: [] }>();
 const filter = ref<"all" | ResourceKind>("all");
 const sort = ref<"comprehensive" | "relevance" | "completeness" | "size" | "seeders">("comprehensive");
 
@@ -69,6 +70,16 @@ function formatCount(value: number | null | undefined): string {
   return value === null || value === undefined ? "未知" : String(value);
 }
 
+function sizeSourceLabel(resource: ResourceSummary): string {
+  if (resource.size_source === "inspection") return "已验证";
+  if (resource.size_source === "pansou") return "来源数据";
+  return "";
+}
+
+function seedersSourceLabel(resource: ResourceSummary): string {
+  return resource.seeders_source === "pansou" ? "来源数据" : "";
+}
+
 function inspectionLabel(value: ResourceSummary["inspection_status"]): string {
   if (!value) return "";
   if (value === "running" || value === "queued") return "检测中";
@@ -115,20 +126,17 @@ function formatDate(value: string): string {
           </select>
         </label>
         <button
-          v-if="inspectionSupported"
+          v-if="inspectionSupported && inspectionMoreAvailable && inspectionState !== 'running'"
           type="button"
-          class="inspection-button"
-          :disabled="inspectionState === 'running' || !displayedResources.some((resource) => resource.kind === 'magnet')"
-          @click="emit('inspect')"
+          class="secondary-button inspection-more-button"
+          @click="emit('inspectMore')"
         >
-          <LoaderCircle v-if="inspectionState === 'running'" class="spin" :size="15" />
-          <ScanSearch v-else :size="15" />
-          {{ inspectionState === 'running' ? '检测中' : '检测本页磁力' }}
+          <ScanSearch :size="15" />检测更多
         </button>
       </div>
     </div>
     <p v-if="inspectionState === 'running'" class="inspection-progress" role="status">
-      正在检测 {{ inspectionCompleted ?? 0 }} / {{ inspectionTotal ?? 0 }} 条磁力
+      检测中 {{ inspectionCompleted ?? 0 }} / {{ inspectionTotal ?? 0 }} 条磁力<span v-if="inspectionFailed"> · 失败 {{ inspectionFailed }} 条</span>
     </p>
     <p v-else-if="inspectionState === 'completed'" class="inspection-progress success" role="status">本页磁力检测完成 · 已完成 {{ inspectionCompleted ?? 0 }} / {{ inspectionTotal ?? 0 }}<span v-if="inspectionFailed"> · 失败 {{ inspectionFailed }} 条</span></p>
     <p v-else-if="inspectionState === 'partial' || inspectionState === 'timeout' || inspectionState === 'failed'" class="inspection-progress warning" role="status">
@@ -144,8 +152,8 @@ function formatDate(value: string): string {
           <tr v-for="resource in filteredResources" :key="resource.resource_id">
             <td class="resource-name">{{ resource.name }}</td>
             <td><span class="kind-label">{{ resource.kind === 'magnet' ? '磁力' : '115 分享' }}</span></td>
-            <td class="numeric">{{ formatSize(resource.size_bytes) }}</td>
-            <td class="numeric">{{ resource.seeders ?? '未知' }}</td>
+            <td class="numeric"><span>{{ formatSize(resource.size_bytes) }}</span><small v-if="sizeSourceLabel(resource)">{{ sizeSourceLabel(resource) }}</small></td>
+            <td class="numeric"><span>{{ resource.seeders ?? '未知' }}</span><small v-if="seedersSourceLabel(resource)">{{ seedersSourceLabel(resource) }}</small></td>
             <td class="quality-cell"><div v-if="hasQuality(resource)" class="quality-metrics"><span>综合 {{ formatScore(resource.rank_score) }}</span><span>相关 {{ formatScore(resource.relevance_score) }}</span><span>完整 {{ formatScore(resource.completeness_score) }}</span></div><small v-if="resource.inspection_status">{{ inspectionLabel(resource.inspection_status) }} · 视频 {{ formatCount(resource.video_file_count) }} · 字幕 {{ formatCount(resource.subtitle_count) }} · 样本 {{ formatCount(resource.sample_count) }}</small></td>
             <td><strong>{{ resource.source }}</strong><small>{{ formatDate(resource.captured_at) }}</small></td>
             <td class="action-cell"><PushButton :busy="pushingId === resource.resource_id" :disabled="pushSupported === false" @push="emit('push', resource)" /></td>
@@ -159,7 +167,7 @@ function formatDate(value: string): string {
       <article v-for="resource in filteredResources" :key="resource.resource_id" class="resource-card">
         <div class="card-heading"><span class="kind-label">{{ resource.kind === 'magnet' ? '磁力' : '115 分享' }}</span><span>{{ resource.source }}</span></div>
         <h3>{{ resource.name }}</h3>
-        <dl><div><dt>大小</dt><dd>{{ formatSize(resource.size_bytes) }}</dd></div><div><dt>做种</dt><dd>{{ resource.seeders ?? '未知' }}</dd></div><div><dt>抓取</dt><dd>{{ formatDate(resource.captured_at) }}</dd></div></dl>
+        <dl><div><dt>大小</dt><dd>{{ formatSize(resource.size_bytes) }}<small v-if="sizeSourceLabel(resource)" class="metric-source">{{ sizeSourceLabel(resource) }}</small></dd></div><div><dt>做种</dt><dd>{{ resource.seeders ?? '未知' }}<small v-if="seedersSourceLabel(resource)" class="metric-source">{{ seedersSourceLabel(resource) }}</small></dd></div><div><dt>抓取</dt><dd>{{ formatDate(resource.captured_at) }}</dd></div></dl>
         <div v-if="hasQuality(resource)" class="quality-metrics"><span>综合 {{ formatScore(resource.rank_score) }}</span><span>相关 {{ formatScore(resource.relevance_score) }}</span><span>完整 {{ formatScore(resource.completeness_score) }}</span></div>
         <p v-if="resource.inspection_status" class="inspection-details">{{ inspectionLabel(resource.inspection_status) }} · 视频 {{ formatCount(resource.video_file_count) }} · 字幕 {{ formatCount(resource.subtitle_count) }} · 样本 {{ formatCount(resource.sample_count) }}</p>
         <PushButton :busy="pushingId === resource.resource_id" :disabled="pushSupported === false" @push="emit('push', resource)" />

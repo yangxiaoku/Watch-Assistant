@@ -8,6 +8,7 @@ import {
   inspectionState,
   inspectionStatusLabel,
   mergeInspectionResult,
+  nextInspectionResourceIds,
   pollInspectionBatch,
 } from "../src/inspection";
 import type { InspectionBatchResponse, InspectionResult, ResourceSummary } from "../src/types";
@@ -62,7 +63,7 @@ describe("inspection contract", () => {
     const unsupported = mergeInspectionResult({ ...resource, resource_id: "resource-2", size_bytes: null }, emptyResult("resource-2", "unsupported"));
     const failed = mergeInspectionResult({ ...resource, resource_id: "resource-3", size_bytes: null }, emptyResult("resource-3", "failed"));
 
-    expect(verified).toMatchObject({ size_bytes: 1073741824, video_file_count: 1, subtitle_count: 2, sample_count: 1, inspection_status: "verified" });
+    expect(verified).toMatchObject({ size_bytes: 1073741824, size_source: "inspection", video_file_count: 1, subtitle_count: 2, sample_count: 1, inspection_status: "verified" });
     expect(unsupported.size_bytes).toBeNull();
     expect(unsupported.video_file_count).toBeUndefined();
     expect(unsupported.subtitle_count).toBeUndefined();
@@ -70,6 +71,22 @@ describe("inspection contract", () => {
     expect(failed.size_bytes).toBeNull();
     expect(failed.video_file_count).toBeUndefined();
     expect(resource.inspection_status).toBeUndefined();
+  });
+
+  it("selects eight top magnets per batch without repeating processed resources", () => {
+    const resources: ResourceSummary[] = Array.from({ length: 31 }, (_, index) => ({
+      ...resource,
+      resource_id: `magnet-${index}`,
+    }));
+    resources.push({ ...resource, resource_id: "share-1", kind: "115_share" });
+
+    const first = nextInspectionResourceIds(resources, new Set());
+    const second = nextInspectionResourceIds(resources, new Set(first));
+
+    expect(first).toEqual(Array.from({ length: 8 }, (_, index) => `magnet-${index}`));
+    expect(second).toEqual(Array.from({ length: 8 }, (_, index) => `magnet-${index + 8}`));
+    expect(nextInspectionResourceIds(resources, new Set(resources.slice(0, 30).map((item) => item.resource_id)))).toEqual([]);
+    expect(nextInspectionResourceIds([], new Set())).toEqual([]);
   });
 
   it("does not leave target rows running after failed or timeout exits", () => {
