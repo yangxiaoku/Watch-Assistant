@@ -32,14 +32,14 @@ async def login(
     response: Response,
     manager: SecurityManagerDependency,
 ) -> AuthLoginResponse:
-    session_id, csrf_token = manager.login(payload.password)
+    session_id, csrf_token = await manager.login_async(payload.password)
     response.set_cookie(
         SESSION_COOKIE,
         session_id,
         httponly=True,
         secure=manager.cookie_secure,
         samesite="lax",
-        max_age=43200,
+        max_age=manager.session_ttl_seconds,
         path="/",
     )
     return AuthLoginResponse(csrf_token=csrf_token)
@@ -51,7 +51,7 @@ async def logout(
     context: AuthDependency,
     manager: SecurityManagerDependency,
 ) -> dict[str, str]:
-    manager.logout(context.session_id)
+    await manager.logout_async(context.session_id)
     response.delete_cookie(SESSION_COOKIE, path="/")
     return {"status": "ok"}
 

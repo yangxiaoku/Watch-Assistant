@@ -4,13 +4,14 @@ import httpx
 import pytest
 from cryptography.fernet import Fernet
 from pwdlib import PasswordHash
+from sqlalchemy import select
 
 from watch_assistant.adapters.pansou import PanSouClient
 from watch_assistant.adapters.tmdb import TmdbClient
 from watch_assistant.app import create_app
 from watch_assistant.crypto import SecretCrypto
 from watch_assistant.db import create_database, initialize_database
-from watch_assistant.models import Resource
+from watch_assistant.models import Resource, WebSession
 from watch_assistant.security import SecurityManager
 
 WEB_PASSWORD = "web-secret"
@@ -130,4 +131,159 @@ async def test_script_token_is_bearer_only_and_rate_limited(tmp_path):
     assert token_as_cookie.status_code == 401
     assert first.status_code == 202
     assert limited.status_code == 429
+    await _close(client, database, tmdb, pansou)
+
+
+@pytest.mark.integration
+async def test_cookie_session_survives_security_manager_rebuild(tmp_path):
+    client_a, database, tmdb, pansou = await _make_auth_client(tmp_path)
+    login = await client_a.post("/api/v1/auth/login", json={"password": WEB_PASSWORD})
+    session_id = client_a.cookies.get("watch_session")
+    csrf_token = login.json()["csrf_token"]
+    assert session_id
+    security_a = client_a._transport.app.state.security_manager
+
+    async with database.session_factory() as session:
+        stored = await session.scalar(select(WebSession))
+        assert stored is not None
+        assert session_id not in stored.session_digest
+
+    await client_a.aclose()
+    security_b = SecurityManager(
+        web_password_hash=security_a._web_password_hash,
+        script_token_hash=security_a._script_token_hash,
+    )
+    app_b = create_app(
+        database=database,
+        crypto=SecretCrypto(Fernet.generate_key().decode("ascii")),
+        tmdb_client=tmdb,
+        pansou_client=pansou,
+        security_manager=security_b,
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app_b), base_url="http://app.test"
+    ) as client_b:
+        client_b.cookies.set("watch_session", session_id)
+        me = await client_b.get("/api/v1/auth/me")
+        post = await client_b.post(
+            "/api/v1/auth/logout",
+            headers={"X-CSRF-Token": csrf_token},
+        )
+
+    assert me.status_code == 200
+    assert me.json()["csrf_token"] == csrf_token
+    assert post.status_code == 200
+    await _close(client_b, database, tmdb, pansou)
+
+
+@pytest.mark.integration
+async def test_logout_and_password_change_invalidate_persisted_session(tmp_path):
+    client_a, database, tmdb, pansou = await _make_auth_client(tmp_path)
+    login = await client_a.post("/api/v1/auth/login", json={"password": WEB_PASSWORD})
+    session_id = client_a.cookies.get("watch_session")
+    csrf_token = login.json()["csrf_token"]
+    logout = await client_a.post(
+        "/api/v1/auth/logout", headers={"X-CSRF-Token": csrf_token}
+    )
+    assert logout.status_code == 200
+    await client_a.aclose()
+
+    password_hash = PasswordHash.recommended()
+    rebuilt = SecurityManager(
+        web_password_hash=password_hash.hash(WEB_PASSWORD),
+        script_token_hash=password_hash.hash(SCRIPT_TOKEN),
+    )
+    app_b = create_app(
+        database=database,
+        crypto=SecretCrypto(Fernet.generate_key().decode("ascii")),
+        tmdb_client=tmdb,
+        pansou_client=pansou,
+        security_manager=rebuilt,
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app_b), base_url="http://app.test"
+    ) as client_b:
+        client_b.cookies.set("watch_session", session_id)
+        after_logout = await client_b.get("/api/v1/auth/me")
+    assert after_logout.status_code == 401
+
+    await _close(client_b, database, tmdb, pansou)
+
+
+@pytest.mark.integration
+async def test_expired_session_is_rejected_and_deleted(tmp_path):
+    client, database, tmdb, pansou = await _make_auth_client(tmp_path)
+    login = await client.post("/api/v1/auth/login", json={"password": WEB_PASSWORD})
+    session_id = client.cookies.get("watch_session")
+    assert login.status_code == 200
+    async with database.session_factory() as session:
+        stored = await session.scalar(select(WebSession))
+        stored.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+        await session.commit()
+
+    response = await client.get("/api/v1/auth/me")
+    assert response.status_code == 401
+    async with database.session_factory() as session:
+        assert await session.scalar(select(WebSession)) is None
+    assert session_id
+    await _close(client, database, tmdb, pansou)
+
+
+@pytest.mark.integration
+async def test_password_hash_change_invalidates_old_session(tmp_path):
+    client_a, database, tmdb, pansou = await _make_auth_client(tmp_path)
+    await client_a.post("/api/v1/auth/login", json={"password": WEB_PASSWORD})
+    session_id = client_a.cookies.get("watch_session")
+    await client_a.aclose()
+
+    password_hash = PasswordHash.recommended()
+    changed = SecurityManager(
+        web_password_hash=password_hash.hash("changed-password"),
+        script_token_hash=password_hash.hash(SCRIPT_TOKEN),
+    )
+    app_b = create_app(
+        database=database,
+        crypto=SecretCrypto(Fernet.generate_key().decode("ascii")),
+        tmdb_client=tmdb,
+        pansou_client=pansou,
+        security_manager=changed,
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app_b), base_url="http://app.test"
+    ) as client_b:
+        client_b.cookies.set("watch_session", session_id)
+        response = await client_b.get("/api/v1/auth/me")
+    assert response.status_code == 401
+    await _close(client_b, database, tmdb, pansou)
+
+
+@pytest.mark.integration
+async def test_login_does_not_set_cookie_when_session_write_fails(tmp_path):
+    client, database, tmdb, pansou = await _make_auth_client(tmp_path)
+    manager = client._transport.app.state.security_manager
+
+    class FailingSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def execute(self, _statement):
+            return None
+
+        def add(self, _record):
+            return None
+
+        async def commit(self):
+            raise OSError("database unavailable")
+
+    class FailingFactory:
+        def __call__(self):
+            return FailingSession()
+
+    manager.configure_session_store(FailingFactory())
+    response = await client.post("/api/v1/auth/login", json={"password": WEB_PASSWORD})
+    assert response.status_code == 503
+    assert "set-cookie" not in response.headers
     await _close(client, database, tmdb, pansou)

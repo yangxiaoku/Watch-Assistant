@@ -45,6 +45,16 @@ class ApplicationSettings(Base):
     )
 
 
+class WebSession(Base):
+    __tablename__ = "web_sessions"
+
+    session_digest: Mapped[str] = mapped_column(String(64), primary_key=True)
+    csrf_token: Mapped[str] = mapped_column(String(128))
+    credential_fingerprint: Mapped[str] = mapped_column(String(64), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
 class TaskState(StrEnum):
     QUEUED = "queued"
     SUBMITTING = "submitting"

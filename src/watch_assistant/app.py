@@ -6,6 +6,7 @@ import socket
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
+from datetime import timedelta
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -102,11 +103,20 @@ def create_app(
             application.state.maintenance_service = MaintenanceService(
                 runtime_database.session_factory
             )
-            application.state.security_manager = security_manager or SecurityManager(
-                web_password_hash=settings.web_password_hash.get_secret_value(),
-                script_token_hash=settings.script_token_hash.get_secret_value(),
-                cookie_secure=settings.cookie_secure,
-            )
+            if security_manager is None:
+                application.state.security_manager = SecurityManager(
+                    web_password_hash=settings.web_password_hash.get_secret_value(),
+                    script_token_hash=settings.script_token_hash.get_secret_value(),
+                    cookie_secure=settings.cookie_secure,
+                    session_factory=runtime_database.session_factory,
+                    session_ttl=timedelta(hours=settings.web_session_ttl_hours),
+                )
+            else:
+                security_manager.configure_session_store(
+                    runtime_database.session_factory,
+                    session_ttl=timedelta(hours=settings.web_session_ttl_hours),
+                )
+                application.state.security_manager = security_manager
             application.state.push_supported = False
             application.state.push_capabilities = {
                 "magnet": False,
@@ -279,6 +289,7 @@ def create_app(
                 qbittorrent_client,
             )
         if security_manager is not None:
+            security_manager.configure_session_store(database.session_factory)
             application.state.security_manager = security_manager
         application.state.push_supported = False
         application.state.push_capabilities = {

@@ -26,6 +26,18 @@ def test_inspection_settings_have_production_defaults():
     assert settings.inspection_item_timeout_seconds == 30
     assert settings.inspection_poll_interval_seconds == 0.75
     assert settings.inspection_request_timeout_seconds == 10
+    assert settings.web_session_ttl_hours == 12
+
+
+@pytest.mark.parametrize("value", [1, 720])
+def test_web_session_ttl_accepts_configured_bounds(value):
+    assert make_settings(WEB_SESSION_TTL_HOURS=value).web_session_ttl_hours == value
+
+
+@pytest.mark.parametrize("value", [0, 721])
+def test_web_session_ttl_rejects_out_of_bounds(value):
+    with pytest.raises(ValidationError):
+        make_settings(WEB_SESSION_TTL_HOURS=value)
 
 
 @pytest.mark.parametrize(

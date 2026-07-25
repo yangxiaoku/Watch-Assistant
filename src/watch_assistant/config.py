@@ -37,6 +37,9 @@ class Settings(BaseSettings):
         validation_alias="TGTO_CONTRACT_PATH",
     )
     cookie_secure: bool = Field(default=False, validation_alias="COOKIE_SECURE")
+    web_session_ttl_hours: int = Field(
+        default=12, ge=1, le=720, validation_alias="WEB_SESSION_TTL_HOURS"
+    )
     cache_warm_enabled: bool = Field(
         default=True, validation_alias="CACHE_WARM_ENABLED"
     )

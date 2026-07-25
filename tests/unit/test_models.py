@@ -12,6 +12,7 @@ from watch_assistant.models import (
     SearchCache,
     Task,
     TaskState,
+    WebSession,
 )
 from watch_assistant.schemas import InspectionItemStatus, ResourceKind
 
@@ -86,6 +87,37 @@ def test_inspection_settings_load_qb_credentials_from_a_secret_directory(
     settings = Settings(_env_file=None, _secrets_dir=tmp_path)
 
     assert settings.inspection_configured is True
+
+
+@pytest.mark.asyncio
+async def test_initialize_database_adds_web_sessions_without_losing_existing_rows(
+    tmp_path,
+):
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'watch.db'}")
+    await initialize_database(database.engine)
+    async with database.session_factory() as session:
+        session.add(
+            Resource(
+                id="res_existing",
+                kind=ResourceKind.MAGNET,
+                canonical_key="magnet:existing",
+                encrypted_url="encrypted",
+                name="Existing",
+                source="test",
+                captured_at=datetime.now(UTC),
+                expires_at=datetime.now(UTC) + timedelta(days=1),
+            )
+        )
+        await session.commit()
+
+    async with database.engine.begin() as connection:
+        await connection.exec_driver_sql("DROP TABLE web_sessions")
+    await initialize_database(database.engine)
+
+    async with database.session_factory() as session:
+        assert await session.get(Resource, "res_existing") is not None
+        assert await session.scalar(select(WebSession)) is None
+    await database.engine.dispose()
 
 
 @pytest.mark.asyncio
