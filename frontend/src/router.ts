@@ -77,12 +77,14 @@ export function parseCatalogRoute(path: string): CatalogRoute | null {
   const rawGenre = params.get("genre");
   const rawYear = params.get("year");
   const rawSort = params.get("sort");
-  const genreId = rawGenre !== null && /^\d+$/.test(rawGenre) ? Number(rawGenre) : undefined;
-  const year = rawYear !== null && /^\d{4}$/.test(rawYear) ? Number(rawYear) : undefined;
+  const parsedGenre = rawGenre !== null && /^\d+$/.test(rawGenre) ? Number(rawGenre) : undefined;
+  const genreId = parsedGenre !== undefined && parsedGenre >= 1 ? parsedGenre : undefined;
+  const parsedYear = rawYear !== null && /^\d{4}$/.test(rawYear) ? Number(rawYear) : undefined;
+  const year = parsedYear !== undefined && parsedYear >= 1900 && parsedYear <= 2100 ? parsedYear : undefined;
   const sort: CatalogSort = rawSort === "rating" || rawSort === "release" ? rawSort : "popular";
   return {
     view,
-    query: params.get("query") ?? params.get("q") ?? "",
+    query: (params.get("query") ?? params.get("q") ?? "").trim(),
     page: clampCatalogPage(rawPage),
     ...(genreId !== undefined ? { genreId } : {}),
     ...(year !== undefined ? { year } : {}),

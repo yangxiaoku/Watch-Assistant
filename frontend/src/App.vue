@@ -30,6 +30,7 @@ const HISTORY_KEY = "watch-assistant:history";
 const api = new ApiClient();
 const password = ref("");
 const query = ref("");
+const searchInput = ref("");
 const authenticated = ref(false);
 const loading = ref(false);
 const catalogLoading = ref(false);
@@ -78,6 +79,7 @@ interface CatalogCacheEntry {
 
 const catalogCache = new Map<string, CatalogCacheEntry>();
 const committedCatalogRoute = ref<CatalogRoute | null>(null);
+let pendingCatalogRoute: CatalogRoute | null = null;
 let catalogReturnRoute: CatalogRoute | null = null;
 let catalogReturnScrollY: number | null = null;
 
@@ -87,6 +89,28 @@ const hasActiveTasks = computed(() => tasks.value.some((task) => task.state === 
 
 function catalogCacheKey(route: CatalogRoute): string {
   return [route.view, route.query.trim(), route.genreId ?? "", route.year ?? "", route.sort, route.page].join("|");
+}
+
+function normalizeCatalogRoute(route: CatalogRoute): CatalogRoute {
+  const genreId = Number.isInteger(route.genreId) && route.genreId >= 1 ? route.genreId : undefined;
+  const year = Number.isInteger(route.year) && route.year >= 1900 && route.year <= 2100 ? route.year : undefined;
+  return {
+    view: route.view,
+    query: route.query.trim(),
+    page: clampCatalogPage(route.page),
+    sort: route.sort,
+    ...(genreId !== undefined ? { genreId } : {}),
+    ...(year !== undefined ? { year } : {}),
+  };
+}
+
+function sameCatalogRoute(left: CatalogRoute, right: CatalogRoute): boolean {
+  return left.view === right.view
+    && left.query === right.query
+    && left.page === right.page
+    && left.genreId === right.genreId
+    && left.year === right.year
+    && left.sort === right.sort;
 }
 
 function readCatalogCache(route: CatalogRoute): CatalogCacheEntry | undefined {
@@ -108,6 +132,7 @@ function writeCatalogCache(route: CatalogRoute, entry: CatalogCacheEntry) {
 function applyCatalogPreview(route: CatalogRoute) {
   activeView.value = route.view;
   query.value = route.query;
+  searchInput.value = route.query;
   genreId.value = route.genreId;
   year.value = route.year;
   sort.value = route.sort;
@@ -141,19 +166,22 @@ function commitCatalogRoute(route: CatalogRoute, historyMode: "push" | "replace"
 }
 
 async function requestCatalog(route: CatalogRoute, historyMode: "push" | "replace" | "none", restoreY?: number) {
-  const safeRoute = { ...route, page: clampCatalogPage(route.page) };
+  const safeRoute = normalizeCatalogRoute(route);
+  if (historyMode === "push" && committedCatalogRoute.value && sameCatalogRoute(safeRoute, committedCatalogRoute.value)) return;
   const requestId = ++catalogRequestId;
-  const previousRoute = committedCatalogRoute.value;
-  applyCatalogPreview(safeRoute);
+  pendingCatalogRoute = safeRoute;
+  const isCurrent = () => requestId === catalogRequestId && pendingCatalogRoute === safeRoute;
   catalogLoading.value = true;
   error.value = "";
 
   const cached = readCatalogCache(safeRoute);
   if (cached) {
-    if (requestId !== catalogRequestId) return;
-    applyCatalogData(safeRoute, cached);
+    if (!isCurrent()) return;
+    const committedRoute = { ...safeRoute, page: cached.page };
+    applyCatalogData(committedRoute, cached);
+    pendingCatalogRoute = null;
     catalogLoading.value = false;
-    commitCatalogRoute(safeRoute, historyMode, restoreY ?? 0);
+    commitCatalogRoute(committedRoute, historyMode, restoreY ?? 0);
     catalogScroll(restoreY);
     return;
   }
@@ -169,7 +197,7 @@ async function requestCatalog(route: CatalogRoute, historyMode: "push" | "replac
             sort: safeRoute.sort,
             page: safeRoute.page,
           });
-    if (requestId !== catalogRequestId) return;
+    if (!isCurrent()) return;
     const entry: CatalogCacheEntry = {
       movies: response.results,
       page: clampCatalogPage(Math.trunc(response.page)),
@@ -177,17 +205,18 @@ async function requestCatalog(route: CatalogRoute, historyMode: "push" | "replac
       totalResults: response.total_results,
     };
     writeCatalogCache(safeRoute, entry);
-    applyCatalogData({ ...safeRoute, page: entry.page }, entry);
+    const committedRoute = { ...safeRoute, page: entry.page };
+    if (!sameCatalogRoute(safeRoute, committedRoute)) writeCatalogCache(committedRoute, entry);
+    applyCatalogData(committedRoute, entry);
+    pendingCatalogRoute = null;
     catalogLoading.value = false;
-    commitCatalogRoute({ ...safeRoute, page: entry.page }, historyMode, restoreY ?? 0);
+    commitCatalogRoute(committedRoute, historyMode, restoreY ?? 0);
     catalogScroll(restoreY);
   } catch (exception) {
-    if (requestId !== catalogRequestId) return;
+    if (!isCurrent()) return;
+    pendingCatalogRoute = null;
     catalogLoading.value = false;
     error.value = exception instanceof ApiError ? exception.message : "目录加载失败，请稍后重试";
-    if (previousRoute) {
-      applyCatalogPreview(previousRoute);
-    }
   }
 }
 function inspectionBatchIds(limit = 8, retriesOnly = false): string[] {
@@ -263,8 +292,9 @@ async function loadDiscover(
   filters = { genreId: genreId.value, year: year.value, sort: sort.value },
   page = 1,
   historyMode: "push" | "none" = "push",
+  targetView?: "movies" | "tv",
 ) {
-  const view = activeView.value === "tv" ? "tv" : "movies";
+  const view = targetView ?? (activeView.value === "tv" ? "tv" : "movies");
   await requestCatalog({ view, query: "", page, genreId: filters.genreId, year: filters.year, sort: filters.sort }, historyMode);
 }
 
@@ -273,10 +303,9 @@ async function loadPopular(page = 1, historyMode: "push" | "none" = "push") {
 }
 
 async function performSearch(updateUrl: boolean, page = 1) {
-  const searchQuery = query.value.trim();
+  const searchQuery = searchInput.value.trim();
   if (!searchQuery) return;
   invalidateDetailRequest();
-  activeView.value = "search";
   previousView.value = "search";
   result.value = null;
   await requestCatalog({ view: "search", query: searchQuery, page, sort: "popular" }, updateUrl ? "push" : "none");
@@ -295,8 +324,8 @@ async function loadPage(page: number) {
 
 async function loadView(view: BrowseView, historyMode: "push" | "none" = "none") {
   if (view === "home") await loadHome();
-  if (view === "movies") await loadDiscover({ genreId: undefined, year: undefined, sort: "popular" }, 1, historyMode);
-  if (view === "tv") await loadDiscover({ genreId: undefined, year: undefined, sort: "popular" }, 1, historyMode);
+  if (view === "movies") await loadDiscover({ genreId: undefined, year: undefined, sort: "popular" }, 1, historyMode, "movies");
+  if (view === "tv") await loadDiscover({ genreId: undefined, year: undefined, sort: "popular" }, 1, historyMode, "tv");
   if (view === "popular") await loadPopular(1, historyMode);
   if (view === "search") await performSearch(false);
 }
@@ -307,8 +336,7 @@ async function selectView(view: Exclude<BrowseView, "search">) {
   error.value = "";
   previousView.value = view;
   if (view === "movies" || view === "tv") {
-    activeView.value = view;
-    await loadDiscover({ genreId: undefined, year: undefined, sort: "popular" }, 1, "push");
+    await loadDiscover({ genreId: undefined, year: undefined, sort: "popular" }, 1, "push", view);
   } else if (view === "popular") {
     await loadPopular(1, "push");
   } else {
@@ -337,6 +365,7 @@ function resetInspection() {
 function invalidateDetailRequest() {
   searchRequestId += 1;
   catalogRequestId += 1;
+  pendingCatalogRoute = null;
   catalogLoading.value = false;
   loading.value = false;
   resetInspection();
@@ -390,6 +419,14 @@ async function openMovie(movie: MovieMetadata) {
   selectedSeason.value = null;
   const mediaType = mediaTypeOf(movie);
   navigateToMedia(mediaType, movie.tmdb_id);
+  if (catalogReturnRoute) {
+    window.history.replaceState({
+      ...window.history.state,
+      catalog: catalogReturnRoute,
+      catalogScrollY: catalogReturnScrollY,
+      catalogDetailEntry: true,
+    }, "", window.location.href);
+  }
   await loadResources(movie.tmdb_id, mediaType, false, null, true);
 }
 
@@ -404,8 +441,10 @@ async function selectSeason(seasonNumber: number | null) {
 async function returnToBrowse() {
   invalidateDetailRequest();
   result.value = null;
-  if (catalogReturnRoute) {
-    await requestCatalog(catalogReturnRoute, "push", catalogReturnScrollY ?? undefined);
+  if (catalogReturnRoute && window.history.state?.catalogDetailEntry === true) {
+    catalogReturnRoute = null;
+    catalogReturnScrollY = null;
+    window.history.back();
     return;
   }
   const view = previousView.value === "search" ? "search" : previousView.value;
@@ -423,6 +462,13 @@ async function initializeWorkspace() {
   }
   const catalogRoute = parseCatalogRoute(window.location.pathname + window.location.search);
   if (catalogRoute) {
+    if (catalogRoute.view === "search" && !catalogRoute.query.trim()) {
+      activeView.value = "home";
+      previousView.value = "home";
+      navigateToView("home");
+      await loadHome();
+      return;
+    }
     await requestCatalog(catalogRoute, "none", typeof window.history.state?.catalogScrollY === "number" ? window.history.state.catalogScrollY : undefined);
     return;
   }
@@ -675,7 +721,7 @@ onBeforeUnmount(() => {
         <nav class="primary-nav" aria-label="主导航">
           <button v-for="item in navItems" :key="item.view" type="button" :class="{ active: activeView === item.view && !result }" @click="selectView(item.view)"><component :is="item.icon" :size="16" />{{ item.label }}</button>
         </nav>
-        <form class="top-search" role="search" @submit.prevent="searchMovies"><Search :size="17" /><input v-model="query" type="search" aria-label="搜索电影或电视剧" placeholder="搜索电影或电视剧" /><button type="submit" aria-label="提交搜索" title="搜索"><Search :size="17" /></button></form>
+        <form class="top-search" role="search" @submit.prevent="searchMovies"><Search :size="17" /><input v-model="searchInput" type="search" aria-label="搜索电影或电视剧" placeholder="搜索电影或电视剧" /><button type="submit" aria-label="提交搜索" title="搜索"><Search :size="17" /></button></form>
         <div class="topbar-actions">
           <button type="button" :class="{ active: activeView === 'favorites' && !result }" @click="selectView('favorites')"><Heart :size="17" />收藏</button>
           <button type="button" :class="{ active: activeView === 'history' && !result }" @click="selectView('history')"><Clock3 :size="17" />记录</button>
@@ -695,7 +741,7 @@ onBeforeUnmount(() => {
         <LibraryView v-else-if="activeView === 'movies' || activeView === 'tv'" :movies="catalogMovies" :loading="catalogLoading" :favorite-ids="favoriteIds" :genre-id="genreId" :year="year" :sort="sort" :media-type="activeView" :page="currentPage" :total-pages="totalPages" :total-results="totalResults" @open="openMovie" @favorite="toggleFavorite" @filters="loadDiscover" @page="loadPage" />
         <CollectionView v-else-if="activeView === 'favorites' || activeView === 'history'" :mode="activeView" :movies="activeView === 'favorites' ? favorites : history" :favorite-ids="favoriteIds" @open="openMovie" @favorite="toggleFavorite" />
         <SettingsView v-else-if="activeView === 'settings'" :api="api" />
-        <SearchView v-else v-model="query" :loading="catalogLoading" :movies="catalogMovies" :heading="catalogHeading" :favorite-ids="favoriteIds" :page="currentPage" :total-pages="totalPages" :total-results="totalResults" @search="searchMovies" @reset="selectView('home')" @open="openMovie" @favorite="toggleFavorite" @page="loadPage" />
+        <SearchView v-else v-model="searchInput" :loading="catalogLoading" :movies="catalogMovies" :heading="catalogHeading" :favorite-ids="favoriteIds" :page="currentPage" :total-pages="totalPages" :total-results="totalResults" @search="searchMovies" @reset="selectView('home')" @open="openMovie" @favorite="toggleFavorite" @page="loadPage" />
       </template>
       <section v-else-if="loading && !result" class="detail-loading"><LoaderCircle class="spin" :size="24" /><strong>正在聚合资源</strong><span>正在查询 PanSou 的磁力与 115 分享结果</span></section>
        <p v-if="result && !pushCapabilities.magnet && !pushCapabilities.share" class="warning-strip">115 推送当前不可用，推送按钮已禁用。</p>

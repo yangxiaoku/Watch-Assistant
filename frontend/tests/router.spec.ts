@@ -39,4 +39,15 @@ describe("catalog routes", () => {
     expect(parseCatalogRoute("/popular?page=0")?.page).toBe(1);
     expect(catalogRoutePath({ view: "popular", query: "", page: 501, sort: "popular" })).toBe("/popular?page=500");
   });
+
+  it("drops out-of-range filters and trims search terms", () => {
+    expect(parseCatalogRoute("/movies?genre=0&year=9999")).toEqual({
+      view: "movies",
+      query: "",
+      page: 1,
+      sort: "popular",
+    });
+    expect(parseCatalogRoute("/search?query=%20%20the%20bear%20%20")?.query).toBe("the bear");
+    expect(parseCatalogRoute("/search?query=%20%20")?.query).toBe("");
+  });
 });
