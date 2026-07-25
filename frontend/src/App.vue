@@ -219,32 +219,48 @@ function normalizeCatalogRoute(route: CatalogRoute): CatalogRoute {
   };
 }
 
-function restoreCatalogReturnState(): void {
+interface CatalogReturnState {
+  route: CatalogRoute;
+  scrollY: number;
+  backDelta: number;
+}
+
+function readCatalogReturnState(): CatalogReturnState | null {
   const state = window.history.state;
   const value = state?.catalog;
-  if (!state?.catalogDetailEntry || !value || typeof value !== "object") {
-    catalogReturnRoute = null;
-    catalogReturnScrollY = null;
-    return;
-  }
+  if (state?.catalogDetailEntry !== true || !value || typeof value !== "object") return null;
   const candidate = value as Partial<CatalogRoute>;
   const validView = candidate.view === "movies" || candidate.view === "tv" || candidate.view === "popular" || candidate.view === "search";
   const validSort = candidate.sort === "popular" || candidate.sort === "rating" || candidate.sort === "release";
-  if (!validView || !validSort || !Number.isInteger(candidate.page)) {
+  const validPage = Number.isInteger(candidate.page) && candidate.page >= 1 && candidate.page <= 500;
+  const validGenre = candidate.genreId === undefined || (Number.isInteger(candidate.genreId) && candidate.genreId >= 1);
+  const validYear = candidate.year === undefined || (Number.isInteger(candidate.year) && candidate.year >= 1900 && candidate.year <= 2100);
+  const scrollY = state.catalogScrollY;
+  const backDelta = state.catalogBackDelta;
+  if (!validView || !validSort || !validPage || !validGenre || !validYear
+    || typeof scrollY !== "number" || !Number.isFinite(scrollY) || scrollY < 0
+    || !Number.isInteger(backDelta) || backDelta < 1 || backDelta > Math.max(0, window.history.length - 1)) return null;
+  const route = normalizeCatalogRoute({
+    view: candidate.view,
+    query: typeof candidate.query === "string" ? candidate.query : "",
+    page: candidate.page as number,
+    sort: candidate.sort,
+    ...(candidate.genreId !== undefined ? { genreId: candidate.genreId as number } : {}),
+    ...(candidate.year !== undefined ? { year: candidate.year as number } : {}),
+  });
+  return { route, scrollY, backDelta };
+}
+
+function restoreCatalogReturnState(): void {
+  const restored = readCatalogReturnState();
+  if (!restored) {
     catalogReturnRoute = null;
     catalogReturnScrollY = null;
     return;
   }
-  catalogReturnRoute = normalizeCatalogRoute({
-    view: candidate.view,
-    query: typeof candidate.query === "string" ? candidate.query : "",
-    page: candidate.page,
-    sort: candidate.sort,
-    ...(Number.isInteger(candidate.genreId) ? { genreId: candidate.genreId } : {}),
-    ...(Number.isInteger(candidate.year) ? { year: candidate.year } : {}),
-  });
-  catalogReturnScrollY = typeof state.catalogScrollY === "number" ? state.catalogScrollY : null;
-  previousView.value = catalogReturnRoute.view;
+  catalogReturnRoute = restored.route;
+  catalogReturnScrollY = restored.scrollY;
+  previousView.value = restored.route.view;
 }
 
 function sameCatalogRoute(left: CatalogRoute, right: CatalogRoute): boolean {
@@ -717,13 +733,11 @@ async function selectSeason(seasonNumber: number | null) {
 async function returnToBrowse() {
   invalidateDetailRequest();
   result.value = null;
-  if (catalogReturnRoute && window.history.state?.catalogDetailEntry === true) {
-    const catalogBackDelta = Number.isInteger(window.history.state?.catalogBackDelta)
-      ? Math.max(1, window.history.state.catalogBackDelta)
-      : 1;
+  const persistedReturnState = readCatalogReturnState();
+  if (catalogReturnRoute && persistedReturnState) {
     catalogReturnRoute = null;
     catalogReturnScrollY = null;
-    window.history.go(-catalogBackDelta);
+    window.history.go(-persistedReturnState.backDelta);
     return;
   }
   const view = previousView.value === "search" ? "search" : previousView.value;

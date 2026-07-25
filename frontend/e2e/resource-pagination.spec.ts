@@ -128,6 +128,38 @@ test("falls back to the POST result when the resource snapshot is missing", asyn
   await expect(page.getByRole("button", { name: "下一页" })).toHaveCount(0);
 });
 
+test("does not fabricate a catalog return for a direct detail URL or invalid state", async ({ page }) => {
+  await mockShell(page);
+  await page.route("**/api/v1/movies/home", (route) => route.fulfill({ json: {
+    popular: [movie],
+    now_playing: [movie],
+    upcoming: [movie],
+    top_rated: [movie],
+    tv_popular: [movie],
+    tv_on_the_air: [movie],
+    tv_top_rated: [movie],
+  } }));
+  await page.route("**/api/v1/media/movie/27205/resources**", (route) => route.fulfill({ json: pageResponse(1) }));
+
+  await page.goto("/movie/27205");
+  await expect(page.getByRole("heading", { name: "盗梦空间" })).toBeVisible();
+  await page.getByRole("button", { name: "返回浏览" }).click();
+  await expect(page).toHaveURL(/\/$/);
+  await expect(page.getByRole("heading", { name: "正在热映" })).toBeVisible();
+
+  await page.goto("/movie/27205");
+  await page.evaluate(() => window.history.replaceState({
+    catalogDetailEntry: true,
+    catalog: { view: "movies", query: "", page: 0, sort: "popular" },
+    catalogScrollY: -1,
+    catalogBackDelta: 999,
+  }, "", window.location.href));
+  await expect(page.getByRole("heading", { name: "盗梦空间" })).toBeVisible();
+  await page.getByRole("button", { name: "返回浏览" }).click();
+  await expect(page).toHaveURL(/\/$/);
+  await expect(page.getByRole("heading", { name: "正在热映" })).toBeVisible();
+});
+
 test("pagination does not repeat the automatic inspection batch", async ({ page }) => {
   let inspectPostCount = 0;
   await page.route("**/api/v1/health", (route) => route.fulfill({ json: { status: "ok", push_supported: false, inspection_supported: true } }));
