@@ -12,7 +12,10 @@ from watch_assistant.services.p115_settings import (
     P115ValidationRateLimited,
 )
 
-router = APIRouter(prefix="/api/v1")
+router = APIRouter(
+    prefix="/api/v1",
+    dependencies=[Depends(require_api_auth)],
+)
 
 
 class P115CookieResponse(BaseModel):
@@ -70,9 +73,26 @@ async def require_p115_validation_access(
 
 @router.get("/settings/p115", response_model=P115SettingsResponse)
 async def get_p115_settings(
+    request: Request,
     service: P115SettingsDependency,
 ) -> P115SettingsResponse:
-    return P115SettingsResponse.model_validate(service.snapshot(), from_attributes=True)
+    state = request.app.state
+    runtime_ready = getattr(state, "p115_ready", None) is True
+    capabilities = getattr(state, "push_capabilities", None)
+    runtime_magnet_capability = (
+        type(capabilities) is dict
+        and set(capabilities) == {"magnet", "share"}
+        and type(capabilities["magnet"]) is bool
+        and type(capabilities["share"]) is bool
+        and capabilities["magnet"] is True
+    )
+    return P115SettingsResponse.model_validate(
+        service.snapshot(
+            runtime_ready=runtime_ready,
+            runtime_magnet_capability=runtime_magnet_capability,
+        ),
+        from_attributes=True,
+    )
 
 
 @router.post(

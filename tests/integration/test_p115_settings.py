@@ -1,3 +1,4 @@
+import asyncio
 from datetime import UTC, datetime
 
 import httpx
@@ -6,7 +7,7 @@ from fastapi import FastAPI
 from pwdlib import PasswordHash
 
 from watch_assistant.adapters.p115 import P115Adapter
-from watch_assistant.api.settings import router
+from watch_assistant.api.settings_p115 import router
 from watch_assistant.security import SESSION_COOKIE, SecurityManager
 from watch_assistant.services.p115_credentials import CookieProvider
 from watch_assistant.services.p115_settings import (
@@ -16,6 +17,8 @@ from watch_assistant.services.p115_settings import (
 )
 
 COOKIE = "UID=uid_A1_456; CID=cid; KID=kid; SEID=seid"
+_DEFAULT_CAPABILITIES = {"magnet": True, "share": False}
+_UNSET = object()
 
 
 def _write_cookie(path, value: str = COOKIE) -> None:
@@ -34,10 +37,20 @@ class FakeValidationAdapter:
 
 
 def _settings_app(
-    service: P115SettingsService, security: SecurityManager | None = None
+    service: P115SettingsService,
+    security: SecurityManager | None = None,
+    *,
+    p115_ready: object = True,
+    push_capabilities: object = _UNSET,
 ):
     app = FastAPI()
     app.state.p115_settings_service = service
+    if p115_ready is not None:
+        app.state.p115_ready = p115_ready
+    if push_capabilities is _UNSET:
+        app.state.push_capabilities = _DEFAULT_CAPABILITIES
+    elif push_capabilities is not None:
+        app.state.push_capabilities = push_capabilities
     if security is not None:
         app.state.security_manager = security
     app.include_router(router)
@@ -84,14 +97,130 @@ async def test_get_settings_is_local_and_redacts_cookie(tmp_path):
             "source": "tgtodrive",
             "configured": True,
             "structure_valid": True,
-            "sync_status": "success",
-            "last_sync_at": response.json()["cookie"]["last_sync_at"],
+            "sync_status": "unknown",
+            "last_sync_at": None,
         },
         "target_configured": True,
         "max_concurrency": 2,
     }
     assert COOKIE not in response.text
     assert adapter.calls == 0
+
+
+@pytest.mark.integration
+async def test_get_settings_requires_auth_and_hides_state_without_session(tmp_path):
+    path = tmp_path / "p115-cookie"
+    _write_cookie(path)
+    service = P115SettingsService(
+        enabled=True,
+        cookie_provider=CookieProvider(path),
+        cookie_path=path,
+        target_configured=True,
+        max_concurrency=1,
+    )
+    security = _security()
+    app = _settings_app(service, security)
+
+    async with await _client(app) as client:
+        anonymous = await client.get("/api/v1/settings/p115")
+        session_id, _csrf_token = security.login("web-secret")
+        client.cookies.set(SESSION_COOKIE, session_id)
+        authenticated = await client.get("/api/v1/settings/p115")
+
+    assert anonymous.status_code == 401
+    assert set(anonymous.json()) == {"detail"}
+    assert authenticated.status_code == 200
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("p115_ready", "push_capabilities", "expected_ready", "expected_magnet"),
+    [
+        (False, {"magnet": True, "share": False}, False, False),
+        (None, {"magnet": True, "share": False}, False, False),
+        (True, None, True, False),
+        (True, {"magnet": "true", "share": False}, True, False),
+        (True, {"magnet": True}, True, False),
+        (True, {"magnet": True, "share": False}, True, True),
+    ],
+)
+async def test_get_settings_uses_strict_runtime_readiness(
+    tmp_path,
+    p115_ready: object,
+    push_capabilities: object,
+    expected_ready: bool,
+    expected_magnet: bool,
+):
+    path = tmp_path / "p115-cookie"
+    _write_cookie(path)
+    service = P115SettingsService(
+        enabled=True,
+        cookie_provider=CookieProvider(path),
+        cookie_path=path,
+        target_configured=True,
+        max_concurrency=1,
+    )
+    app = _settings_app(
+        service,
+        p115_ready=p115_ready,
+        push_capabilities=push_capabilities,
+    )
+
+    async with await _client(app) as client:
+        response = await client.get("/api/v1/settings/p115")
+
+    assert response.status_code == 200
+    assert response.json()["ready"] is expected_ready
+    assert response.json()["capabilities"] == {
+        "magnet": expected_magnet,
+        "share": False,
+    }
+
+
+@pytest.mark.integration
+async def test_cookie_sync_state_requires_explicit_trusted_values(tmp_path):
+    path = tmp_path / "p115-cookie"
+    _write_cookie(path)
+    synced_at = datetime(2026, 1, 2, tzinfo=UTC)
+    service = P115SettingsService(
+        enabled=True,
+        cookie_provider=CookieProvider(path),
+        cookie_path=path,
+        target_configured=True,
+        max_concurrency=1,
+        sync_status="success",
+        last_sync_at=synced_at,
+    )
+
+    snapshot = service.snapshot(runtime_ready=True, runtime_magnet_capability=True)
+
+    assert snapshot.cookie.sync_status == "success"
+    assert snapshot.cookie.last_sync_at == synced_at
+
+
+@pytest.mark.integration
+async def test_validation_timeout_returns_unavailable_without_error_text(tmp_path):
+    path = tmp_path / "p115-cookie"
+    _write_cookie(path)
+
+    class BlockingAdapter:
+        async def validate_read_only(self) -> None:
+            await asyncio.Event().wait()
+
+    service = P115SettingsService(
+        enabled=True,
+        cookie_provider=CookieProvider(path),
+        cookie_path=path,
+        target_configured=True,
+        max_concurrency=1,
+        adapter=BlockingAdapter(),
+        validation_timeout_seconds=0.01,
+    )
+
+    result = await service.validate()
+
+    assert result.status == "unavailable"
+    assert "timeout" not in repr(result).casefold()
 
 
 @pytest.mark.integration

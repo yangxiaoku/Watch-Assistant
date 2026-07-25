@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections import deque
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -76,6 +77,7 @@ class P115SettingsService:
         last_sync_at: datetime | None = None,
         validation_limit: int = 6,
         validation_window: timedelta = timedelta(minutes=1),
+        validation_timeout_seconds: float = 10,
     ) -> None:
         if max_concurrency < 1:
             raise ValueError("max_concurrency must be positive")
@@ -83,6 +85,8 @@ class P115SettingsService:
             raise ValueError("validation_limit must be positive")
         if validation_window <= timedelta(0):
             raise ValueError("validation_window must be positive")
+        if validation_timeout_seconds <= 0:
+            raise ValueError("validation_timeout_seconds must be positive")
         if sync_status is not None and sync_status not in COOKIE_SYNC_STATUSES:
             raise ValueError("sync_status is invalid")
         self._enabled = enabled
@@ -95,15 +99,26 @@ class P115SettingsService:
         self._last_sync_at = last_sync_at
         self._validation_limit = validation_limit
         self._validation_window = validation_window
+        self._validation_timeout_seconds = validation_timeout_seconds
         self._validation_windows: dict[str, deque[datetime]] = {}
 
-    def snapshot(self) -> P115SettingsSnapshot:
+    def snapshot(
+        self, *, runtime_ready: bool, runtime_magnet_capability: bool
+    ) -> P115SettingsSnapshot:
         cookie = self._cookie_snapshot()
-        ready = self._enabled and self._target_configured and cookie.structure_valid
+        ready = (
+            self._enabled
+            and self._target_configured
+            and cookie.structure_valid
+            and runtime_ready is True
+        )
         return P115SettingsSnapshot(
             enabled=self._enabled,
             ready=ready,
-            capabilities={"magnet": ready, "share": False},
+            capabilities={
+                "magnet": ready and runtime_magnet_capability is True,
+                "share": False,
+            },
             cookie=cookie,
             target_configured=self._target_configured,
             max_concurrency=self._max_concurrency,
@@ -129,7 +144,10 @@ class P115SettingsService:
         if self._adapter is None:
             return self._validation_result("unavailable")
         try:
-            await self._adapter.validate_read_only()
+            await asyncio.wait_for(
+                self._adapter.validate_read_only(),
+                timeout=self._validation_timeout_seconds,
+            )
         except P115NeedsAuthError:
             return self._validation_result("needs_auth")
         except P115UnavailableError:
@@ -140,32 +158,25 @@ class P115SettingsService:
 
     def _cookie_snapshot(self) -> P115CookieSnapshot:
         configured = False
-        modified_at: datetime | None = None
         if self._cookie_path is not None:
             try:
-                file_stat = self._cookie_path.stat()
+                self._cookie_path.stat()
             except OSError:
                 pass
             else:
                 configured = True
-                modified_at = datetime.fromtimestamp(file_stat.st_mtime, UTC)
         try:
             structure_valid = self._cookie_provider.load() is not None
         except Exception:  # noqa: BLE001 - local credential state fails closed
             structure_valid = False
         configured = configured or structure_valid
-        if self._sync_status is not None:
-            sync_status = self._sync_status
-        elif not configured:
-            sync_status = "unknown"
-        else:
-            sync_status = "success" if structure_valid else "failed"
+        sync_status = self._sync_status or "unknown"
         return P115CookieSnapshot(
             source=P115_COOKIE_SOURCE,
             configured=configured,
             structure_valid=structure_valid,
             sync_status=sync_status,
-            last_sync_at=self._last_sync_at or modified_at,
+            last_sync_at=self._last_sync_at,
         )
 
     @staticmethod
