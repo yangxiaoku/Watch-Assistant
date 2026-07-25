@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -61,6 +62,35 @@ def test_redact_log_message_covers_share_tracker_and_length_limit():
     assert "[REDACTED_TRACKER]" in redacted
     assert len(redacted) <= 4096
     assert redacted.endswith("[TRUNCATED]")
+
+
+def test_redact_log_message_covers_share_code_variants():
+    message = (
+        "receive_code=synthetic-a receive-code: synthetic-b "
+        "access_code=synthetic-c access-code: synthetic-d "
+        "提取码：synthetic-e 提取码: synthetic-f "
+        "share_code=synthetic-g extract_code=synthetic-h"
+    )
+
+    redacted = redact_log_message(message)
+
+    for value in (
+        "synthetic-a",
+        "synthetic-b",
+        "synthetic-c",
+        "synthetic-d",
+        "synthetic-e",
+        "synthetic-f",
+        "synthetic-g",
+        "synthetic-h",
+    ):
+        assert value not in redacted
+    assert "receive_code" not in redacted
+    assert "receive-code" not in redacted
+    assert "access_code" not in redacted
+    assert "access-code" not in redacted
+    assert "提取码" not in redacted
+    assert redacted.count("[REDACTED_SHARE]") == 8
 
 
 @pytest.mark.asyncio
@@ -135,6 +165,68 @@ async def test_log_store_latest_first_cursor_and_category_filter(tmp_path: Path)
     assert [item["id"] for item in category_second] == [2]
     assert category_cursor == 4
     assert category_next is None
+
+
+def _log_record(record_id: int, timestamp: str) -> dict[str, object]:
+    return {
+        "id": record_id,
+        "timestamp": timestamp,
+        "level": "INFO",
+        "category": "system",
+        "message": f"record-{record_id}",
+    }
+
+
+@pytest.mark.asyncio
+async def test_log_store_order_ignores_mtime_and_invalid_rotations(tmp_path: Path):
+    timestamp = datetime.now(UTC).isoformat()
+    current = tmp_path / "watch-assistant.log"
+    rotated = tmp_path / "watch-assistant.log.20260726120000-10"
+    invalid = tmp_path / "watch-assistant.log.not-a-rotation"
+    current.write_text(json.dumps(_log_record(11, timestamp)) + "\n", encoding="utf-8")
+    rotated.write_text(json.dumps(_log_record(10, timestamp)) + "\n", encoding="utf-8")
+    invalid.write_text(json.dumps(_log_record(99, timestamp)) + "\n", encoding="utf-8")
+    same_mtime_ns = time.time_ns()
+    for path in (current, rotated, invalid):
+        os.utime(path, ns=(same_mtime_ns, same_mtime_ns))
+
+    store = LogStore(tmp_path)
+    await store.append(
+        level=LoggingLevel.INFO,
+        category=LogCategory.SYSTEM,
+        message="record-12",
+        retention_days=1,
+        max_file_mb=50,
+    )
+
+    items, next_cursor = await store.list(cursor=None, limit=10, category=None)
+
+    assert [item["id"] for item in items] == [12, 11, 10]
+    assert len({item["id"] for item in items}) == 3
+    assert next_cursor is None
+
+
+@pytest.mark.asyncio
+async def test_rotated_logs_sort_same_timestamp_ids_numerically(tmp_path: Path):
+    timestamp = datetime.now(UTC).isoformat()
+    same_mtime_ns = time.time_ns()
+    paths = [
+        tmp_path / f"watch-assistant.log.20260726120000-{record_id}"
+        for record_id in (9, 10, 11)
+    ]
+    for path in paths:
+        record_id = int(path.name.rsplit("-", 1)[1])
+        path.write_text(
+            json.dumps(_log_record(record_id, timestamp)) + "\n", encoding="utf-8"
+        )
+        os.utime(path, ns=(same_mtime_ns, same_mtime_ns))
+
+    items, next_cursor = await LogStore(tmp_path).list(
+        cursor=None, limit=10, category=None
+    )
+
+    assert [item["id"] for item in items] == [11, 10, 9]
+    assert next_cursor is None
 
 
 @pytest.mark.asyncio

@@ -48,8 +48,9 @@ _SHARE_URL = re.compile(
     re.IGNORECASE,
 )
 _SHARE_CODE = re.compile(
-    r"(?:\b(?:share[_ -]?code|extract[_ -]?code)\b|[\u63d0\u53d6\u7801])"
-    r"\s*[:=]?\s*[A-Za-z0-9_-]+",
+    r"(?:\b(?:share[_ -]?code|extract[_ -]?code|receive[_ -]?code|"
+    r"access[_ -]?code)\b|\u63d0\u53d6\u7801)"
+    r"\s*[:=\uFF1A]?\s*[A-Za-z0-9_-]+",
     re.IGNORECASE,
 )
 _TRACKER = re.compile(
@@ -61,6 +62,7 @@ _URL_QUERY = re.compile(r"([?&][A-Za-z0-9_.-]+=)[^&#\s]+")
 _ABSOLUTE_PATH = re.compile(
     r"(?<![\w])(?:[A-Za-z]:[\\/]|/)(?:[^\s\"']+[\\/])*[^\s\"']+"
 )
+_ROTATED_LOG = re.compile(r"^watch-assistant\.log\.(\d{14})-(\d+)$")
 
 
 class SettingsConflict(ValueError):
@@ -214,14 +216,15 @@ class LogStore:
         return records, None
 
     def _latest_id_sync(self) -> int:
+        latest_id = 0
         for path in self._log_paths_sync():
             for line in self._iter_lines_reverse_sync(path):
                 if line is None:
                     continue
                 record = self._parse_record(line)
-                if record is not None:
-                    return record["id"]
-        return 0
+                if record is not None and record["id"] > latest_id:
+                    latest_id = record["id"]
+        return latest_id
 
     @staticmethod
     def _iter_lines_reverse_sync(path: Path) -> Iterator[str | None]:
@@ -257,18 +260,28 @@ class LogStore:
             candidates = self._directory.glob("watch-assistant.log*")
         except OSError:
             return []
-        paths: list[tuple[int, str, Path]] = []
+        current: Path | None = None
+        rotated: list[tuple[str, int, Path]] = []
         try:
             for path in candidates:
                 try:
-                    if path.is_file():
-                        paths.append((path.stat().st_mtime_ns, path.name, path))
-                except OSError:
+                    if not path.is_file():
+                        continue
+                    if path.name == self._path.name:
+                        current = path
+                        continue
+                    match = _ROTATED_LOG.fullmatch(path.name)
+                    if match is None:
+                        continue
+                    rotated.append((match.group(1), int(match.group(2)), path))
+                except (OSError, ValueError):
                     continue
         except OSError:
             return []
-        paths.sort(key=lambda item: (item[0], item[1]), reverse=True)
-        return [path for _mtime, _name, path in paths]
+        rotated.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        paths = [current] if current is not None else []
+        paths.extend(path for _timestamp, _record_id, path in rotated)
+        return paths
 
     @staticmethod
     def _parse_record(line: str) -> dict[str, Any] | None:
