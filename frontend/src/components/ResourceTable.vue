@@ -19,7 +19,7 @@ const props = defineProps<{
   inspectionMoreAvailable?: boolean;
   inspectionRetryAvailable?: boolean;
 }>();
-const emit = defineEmits<{ push: [resource: ResourceSummary]; inspectMore: [] }>();
+const emit = defineEmits<{ push: [resource: ResourceSummary]; inspectMore: []; retryFailed: [] }>();
 const filter = ref<"all" | ResourceKind>("all");
 type ResourceSort = "comprehensive" | "relevance" | "completeness" | "size" | "seeders";
 type ResourceTag = "all" | "4k" | "1080p" | "720p" | "subtitle";
@@ -193,7 +193,15 @@ function formatDate(value: string): string {
           class="secondary-button inspection-more-button"
           @click="emit('inspectMore')"
         >
-          <ScanSearch :size="15" />{{ inspectionRetryAvailable ? '重试失败项' : '检测更多' }}
+          <ScanSearch :size="15" />检测更多
+        </button>
+        <button
+          v-if="inspectionSupported && inspectionRetryAvailable && inspectionState !== 'running'"
+          type="button"
+          class="secondary-button inspection-more-button"
+          @click="emit('retryFailed')"
+        >
+          <ScanSearch :size="15" />重试失败项
         </button>
       </div>
     </div>

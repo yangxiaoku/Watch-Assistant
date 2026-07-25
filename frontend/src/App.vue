@@ -72,10 +72,12 @@ function inspectionBatchIds(limit = 8, retriesOnly = false): string[] {
   const candidates = nextInspectionResourceIds(
     result.value.results,
     unavailableIds,
-    limit,
-    inspectionRetryIds.value,
+    30,
   );
-  return retriesOnly ? candidates.filter((resourceId) => inspectionRetryIds.value.has(resourceId)) : candidates;
+  const eligible = retriesOnly
+    ? candidates.filter((resourceId) => inspectionRetryIds.value.has(resourceId))
+    : candidates.filter((resourceId) => !inspectionRetryIds.value.has(resourceId));
+  return eligible.slice(0, limit);
 }
 
 const inspectionRetryAvailable = computed(() => inspectionBatchIds(8, true).length > 0);
@@ -517,7 +519,13 @@ function startAutomaticInspection(requestId: number) {
 
 function inspectMore() {
   if (!result.value || !inspectionMoreAvailable.value) return;
-  const resourceIds = inspectionBatchIds(8, inspectionRetryAvailable.value);
+  const resourceIds = inspectionBatchIds(8);
+  if (resourceIds.length) void inspectBatch(resourceIds, searchRequestId);
+}
+
+function retryFailed() {
+  if (!result.value || !inspectionRetryAvailable.value) return;
+  const resourceIds = inspectionBatchIds(8, true);
   if (resourceIds.length) void inspectBatch(resourceIds, searchRequestId);
 }
 
@@ -596,7 +604,7 @@ onBeforeUnmount(() => {
       </template>
       <section v-else-if="loading && !result" class="detail-loading"><LoaderCircle class="spin" :size="24" /><strong>正在聚合资源</strong><span>正在查询 PanSou 的磁力与 115 分享结果</span></section>
       <p v-if="!pushSupported && result" class="warning-strip">TgtoDrive 推送契约尚未验证，推送按钮已禁用。</p>
-       <section v-if="result" class="detail-workspace"><MovieView :result="result" :media-type="detailMediaType" :season-number="selectedSeason" :pushing-id="pushingId" :push-supported="pushSupported" :favorite="detailFavorite" :inspection-supported="inspectionSupported" :inspection-state="inspectionState" :inspection-completed="inspectionCompleted" :inspection-total="inspectionTotal" :inspection-failed="inspectionFailed" :inspection-error="inspectionError" :inspection-more-available="inspectionMoreAvailable" :inspection-retry-available="inspectionRetryAvailable" @push="push" @favorite="toggleFavorite(result.movie)" @refresh="loadResources(result.movie.tmdb_id, detailMediaType, true)" @season="selectSeason" @inspect-more="inspectMore" @back="returnToBrowse" /></section>
+       <section v-if="result" class="detail-workspace"><MovieView :result="result" :media-type="detailMediaType" :season-number="selectedSeason" :pushing-id="pushingId" :push-supported="pushSupported" :favorite="detailFavorite" :inspection-supported="inspectionSupported" :inspection-state="inspectionState" :inspection-completed="inspectionCompleted" :inspection-total="inspectionTotal" :inspection-failed="inspectionFailed" :inspection-error="inspectionError" :inspection-more-available="inspectionMoreAvailable" :inspection-retry-available="inspectionRetryAvailable" @push="push" @favorite="toggleFavorite(result.movie)" @refresh="loadResources(result.movie.tmdb_id, detailMediaType, true)" @season="selectSeason" @inspect-more="inspectMore" @retry-failed="retryFailed" @back="returnToBrowse" /></section>
     </template>
     <TaskDrawer :tasks="tasks" :open="drawerOpen" @close="drawerOpen = false" />
   </main>

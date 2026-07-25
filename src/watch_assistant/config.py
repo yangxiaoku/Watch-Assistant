@@ -53,6 +53,27 @@ class Settings(BaseSettings):
     inspection_enabled: bool = Field(
         default=False, validation_alias="INSPECTION_ENABLED"
     )
+    inspection_concurrency: int = Field(
+        default=8, ge=1, le=16, validation_alias="INSPECTION_CONCURRENCY"
+    )
+    inspection_item_timeout_seconds: float = Field(
+        default=30,
+        ge=5,
+        le=120,
+        validation_alias="INSPECTION_ITEM_TIMEOUT_SECONDS",
+    )
+    inspection_poll_interval_seconds: float = Field(
+        default=0.75,
+        ge=0.25,
+        le=5,
+        validation_alias="INSPECTION_POLL_INTERVAL_SECONDS",
+    )
+    inspection_request_timeout_seconds: float = Field(
+        default=10,
+        ge=1,
+        le=30,
+        validation_alias="INSPECTION_REQUEST_TIMEOUT_SECONDS",
+    )
     qbittorrent_base_url: str = Field(
         default="", validation_alias="QBITTORRENT_BASE_URL"
     )

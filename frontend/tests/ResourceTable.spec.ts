@@ -54,22 +54,26 @@ describe("ResourceTable", () => {
     expect(names).toContain("115 分享");
   });
 
-  it("labels PanSou metrics and exposes only the secondary more action", async () => {
+  it("labels PanSou metrics and keeps more and retry actions independent", async () => {
     const wrapper = mount(ResourceTable, {
       props: {
         resources: [{ ...magnetWithoutStats, size_bytes: 1024, size_source: "pansou", seeders: 4, seeders_source: "pansou" }],
         inspectionSupported: true,
         inspectionState: "completed",
         inspectionMoreAvailable: true,
+        inspectionRetryAvailable: true,
         onPush: vi.fn(),
       },
     });
 
     expect(wrapper.text()).toContain("来源数据");
     expect(wrapper.text()).toContain("检测更多");
+    expect(wrapper.text()).toContain("重试失败项");
     expect(wrapper.text()).not.toContain("检测本页磁力");
-    await wrapper.get(".inspection-more-button").trigger("click");
+    await wrapper.findAll(".inspection-more-button")[0].trigger("click");
+    await wrapper.findAll(".inspection-more-button")[1].trigger("click");
     expect(wrapper.emitted("inspectMore")).toHaveLength(1);
+    expect(wrapper.emitted("retryFailed")).toHaveLength(1);
   });
 
   it("remembers the selected resource sort", async () => {

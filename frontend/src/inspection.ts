@@ -1,6 +1,6 @@
 import type { InspectionBatchResponse, InspectionBatchStatus, InspectionResult, InspectionResultStatus, ResourceSummary } from "./types";
 
-export const INSPECTION_POLL_INTERVAL_MS = 1_500;
+export const INSPECTION_POLL_INTERVAL_MS = 1_000;
 export const INSPECTION_TIMEOUT_MS = 10 * 60 * 1_000;
 export const INSPECTION_BATCH_SIZE = 8;
 export const MAX_INSPECTABLE_MAGNETS = 30;
