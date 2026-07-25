@@ -176,6 +176,16 @@ class ResourceSummary(BaseModel):
     completeness_score: int = Field(default=0, ge=0, le=100)
 
 
+class ResourcePageResponse(BaseModel):
+    items: list[ResourceSummary]
+    page: int = Field(ge=1)
+    page_size: Literal[25, 50, 100]
+    total: int = Field(ge=0)
+    total_pages: int = Field(ge=0)
+    facets: dict[str, int]
+    snapshot_revision: str
+
+
 class SearchRequest(BaseModel):
     model_config = {"extra": "forbid"}
 

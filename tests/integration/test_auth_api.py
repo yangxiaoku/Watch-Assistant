@@ -85,8 +85,10 @@ async def test_invalid_web_password_returns_401(tmp_path):
     client, database, tmdb, pansou = await _make_auth_client(tmp_path)
 
     response = await client.post("/api/v1/auth/login", json={"password": "wrong"})
+    resources = await client.get("/api/v1/media/movie/12345/resources")
 
     assert response.status_code == 401
+    assert resources.status_code == 401
     await _close(client, database, tmdb, pansou)
 
 
