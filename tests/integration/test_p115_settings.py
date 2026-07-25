@@ -141,6 +141,7 @@ async def test_get_settings_requires_auth_and_hides_state_without_session(tmp_pa
         (True, None, True, False),
         (True, {"magnet": "true", "share": False}, True, False),
         (True, {"magnet": True}, True, False),
+        (True, {"magnet": True, "share": False, "future": True}, True, True),
         (True, {"magnet": True, "share": False}, True, True),
     ],
 )
@@ -221,6 +222,156 @@ async def test_validation_timeout_returns_unavailable_without_error_text(tmp_pat
 
     assert result.status == "unavailable"
     assert "timeout" not in repr(result).casefold()
+
+
+@pytest.mark.integration
+async def test_native_validation_timeout_cancels_probe_and_releases_semaphore(
+    tmp_path,
+):
+    path = tmp_path / "p115-cookie"
+    _write_cookie(path)
+
+    class BlockingClient:
+        def __init__(self):
+            self.active = 0
+            self.started = asyncio.Event()
+            self.cancelled = asyncio.Event()
+
+        def clouddownload_task_list(self, payload, *, async_):
+            assert payload == {"page": 1}
+            assert async_ is True
+
+            async def probe():
+                self.active += 1
+                self.started.set()
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    self.active -= 1
+                    self.cancelled.set()
+
+            return probe()
+
+        def close(self):
+            return None
+
+    fake = BlockingClient()
+    adapter = P115Adapter(CookieProvider(path), 1, client_factory=lambda _cookie: fake)
+    service = P115SettingsService(
+        enabled=True,
+        cookie_provider=CookieProvider(path),
+        cookie_path=path,
+        target_configured=True,
+        max_concurrency=1,
+        adapter=adapter,
+        validation_timeout_seconds=0.01,
+    )
+
+    result = await service.validate()
+    await asyncio.wait_for(fake.cancelled.wait(), timeout=1)
+
+    assert result.status == "unavailable"
+    assert fake.active == 0
+
+
+@pytest.mark.integration
+async def test_outer_validation_cancellation_propagates_after_native_probe_cancel(
+    tmp_path,
+):
+    path = tmp_path / "p115-cookie"
+    _write_cookie(path)
+
+    class BlockingClient:
+        def __init__(self):
+            self.started = asyncio.Event()
+            self.cancelled = asyncio.Event()
+
+        def clouddownload_task_list(self, payload, *, async_):
+            async def probe():
+                self.started.set()
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    self.cancelled.set()
+
+            return probe()
+
+        def close(self):
+            return None
+
+    fake = BlockingClient()
+    adapter = P115Adapter(CookieProvider(path), 1, client_factory=lambda _cookie: fake)
+    service = P115SettingsService(
+        enabled=True,
+        cookie_provider=CookieProvider(path),
+        cookie_path=path,
+        target_configured=True,
+        max_concurrency=1,
+        adapter=adapter,
+        validation_timeout_seconds=10,
+    )
+    task = asyncio.create_task(service.validate())
+    await asyncio.wait_for(fake.started.wait(), timeout=1)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await asyncio.wait_for(fake.cancelled.wait(), timeout=1)
+
+
+@pytest.mark.integration
+async def test_concurrent_validations_keep_one_active_native_probe(tmp_path):
+    path = tmp_path / "p115-cookie"
+    _write_cookie(path)
+
+    class SerialClient:
+        def __init__(self):
+            self.active = 0
+            self.max_active = 0
+            self.calls = 0
+            self.first_started = asyncio.Event()
+            self.release = asyncio.Event()
+
+        def clouddownload_task_list(self, payload, *, async_):
+            async def probe():
+                self.calls += 1
+                self.active += 1
+                self.max_active = max(self.max_active, self.active)
+                if self.calls == 1:
+                    self.first_started.set()
+                try:
+                    await self.release.wait()
+                    return {"state": True, "data": []}
+                finally:
+                    self.active -= 1
+
+            return probe()
+
+        def close(self):
+            return None
+
+    fake = SerialClient()
+    adapter = P115Adapter(CookieProvider(path), 1, client_factory=lambda _cookie: fake)
+    service = P115SettingsService(
+        enabled=True,
+        cookie_provider=CookieProvider(path),
+        cookie_path=path,
+        target_configured=True,
+        max_concurrency=1,
+        adapter=adapter,
+        validation_timeout_seconds=1,
+    )
+    first = asyncio.create_task(service.validate())
+    second = asyncio.create_task(service.validate())
+    await asyncio.wait_for(fake.first_started.wait(), timeout=1)
+    assert fake.active == 1
+    fake.release.set()
+
+    results = await asyncio.gather(first, second)
+
+    assert [result.status for result in results] == ["ready", "ready"]
+    assert fake.max_active == 1
+    assert fake.active == 0
 
 
 @pytest.mark.integration
@@ -328,9 +479,10 @@ async def test_p115_adapter_validation_uses_only_task_list(tmp_path):
             self.task_list_calls = 0
             self.mutating_calls = 0
 
-        def clouddownload_task_list(self, payload):
+        async def clouddownload_task_list(self, payload, *, async_):
             self.task_list_calls += 1
             assert payload == {"page": 1}
+            assert async_ is True
             return {"state": True, "data": []}
 
         def clouddownload_task_add_url(self, payload):

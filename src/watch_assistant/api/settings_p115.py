@@ -1,5 +1,6 @@
 """Authenticated P115 settings and read-only validation routes."""
 
+from collections.abc import Mapping
 from datetime import datetime
 from typing import Annotated, Literal
 
@@ -80,11 +81,10 @@ async def get_p115_settings(
     runtime_ready = getattr(state, "p115_ready", None) is True
     capabilities = getattr(state, "push_capabilities", None)
     runtime_magnet_capability = (
-        type(capabilities) is dict
-        and set(capabilities) == {"magnet", "share"}
-        and type(capabilities["magnet"]) is bool
-        and type(capabilities["share"]) is bool
-        and capabilities["magnet"] is True
+        isinstance(capabilities, Mapping)
+        and type(capabilities.get("magnet")) is bool
+        and type(capabilities.get("share")) is bool
+        and capabilities.get("magnet") is True
     )
     return P115SettingsResponse.model_validate(
         service.snapshot(

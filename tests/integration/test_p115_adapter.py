@@ -44,6 +44,7 @@ class FakeP115Client:
         self.active = 0
         self.max_active = 0
         self.delay = 0
+        self.validation_async_flags = []
 
     def clouddownload_task_add_url(self, payload):
         self.add_payloads.append(payload)
@@ -72,13 +73,21 @@ class FakeP115Client:
             return {"state": True, "data": {"list": []}}
         return self.share_pages[index]
 
-    def clouddownload_task_list(self, payload):
+    def clouddownload_task_list(self, payload, *, async_=False):
+        self.validation_async_flags.append(async_)
         self.list_payloads.append(payload)
         if self.task_pages is not None:
             response = self.task_pages[self.task_page_calls]
             self.task_page_calls += 1
+        else:
+            response = self.task_response
+        if not async_:
             return response
-        return self.task_response
+
+        async def deliver() -> dict:
+            return response
+
+        return deliver()
 
 
 def _provider(tmp_path, value=COOKIE):
@@ -197,6 +206,21 @@ async def test_missing_cookie_readiness_stays_needs_auth(tmp_path):
 
     assert result.status == RemoteStatus.NEEDS_AUTH
     assert result.remote_ref is None
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
+async def test_validation_uses_one_native_async_task_list_probe(tmp_path):
+    provider, _path = _provider(tmp_path)
+    fake = FakeP115Client(task_response={"state": True, "data": []})
+    adapter = P115Adapter(provider, 1, client_factory=lambda _cookie: fake)
+
+    await adapter.validate_read_only()
+
+    assert fake.validation_async_flags == [True]
+    assert fake.list_payloads == [{"page": 1}]
+    assert fake.add_payloads == []
+    assert fake.share_payloads == []
     await adapter.aclose()
 
 

@@ -224,10 +224,16 @@ class P115Adapter:
             if client is None:
                 raise P115UnavailableError
             try:
-                response = await self._call(
-                    client, "clouddownload_task_list", {"page": 1}
-                )
+                method = getattr(client, "clouddownload_task_list", None)
+                if not callable(method):
+                    raise P115UnavailableError
+                response = method({"page": 1}, async_=True)
+                if not inspect.isawaitable(response):
+                    raise P115UnavailableError
+                response = await response
             except asyncio.CancelledError:
+                raise
+            except P115UnavailableError:
                 raise
             except Exception as error:  # noqa: BLE001 - map remote failure
                 if _auth_exception(error):
