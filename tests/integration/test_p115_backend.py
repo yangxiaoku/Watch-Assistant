@@ -5,6 +5,7 @@ from pathlib import Path
 import httpx
 import pytest
 from cryptography.fernet import Fernet
+from pwdlib import PasswordHash
 from sqlalchemy import select
 
 from watch_assistant.adapters.p115 import P115Adapter
@@ -13,6 +14,7 @@ from watch_assistant.crypto import SecretCrypto
 from watch_assistant.db import create_database, initialize_database
 from watch_assistant.models import Resource, Task, TaskState
 from watch_assistant.schemas import RemoteStatus
+from watch_assistant.security import SESSION_COOKIE, SecurityManager
 from watch_assistant.services.p115_credentials import CookieProvider
 from watch_assistant.services.tasks import TaskService
 
@@ -183,6 +185,91 @@ async def test_p115_disabled_does_not_construct_adapter_or_worker(
         assert not hasattr(app.state, "task_adapter")
         assert not hasattr(app.state, "task_worker")
         assert app.state.push_capabilities == {"magnet": False, "share": False}
+
+
+@pytest.mark.integration
+async def test_p115_settings_reuses_runtime_adapter_without_remote_access(
+    tmp_path, monkeypatch
+):
+    contract = tmp_path / "tgto.json"
+    contract.write_text('{"supported": false}', encoding="utf-8")
+    cookie_path = tmp_path / "p115-cookie"
+    cookie_path.write_text(
+        "UID=uid_A1_456; CID=cid; KID=kid; SEID=seid",
+        encoding="ascii",
+    )
+    values = {
+        "DATABASE_URL": f"sqlite+aiosqlite:///{tmp_path / 'app.db'}",
+        "ENCRYPTION_KEY": Fernet.generate_key().decode("ascii"),
+        "TMDB_API_KEY": "tmdb",
+        "WEB_PASSWORD_HASH": "unused",
+        "SCRIPT_TOKEN_HASH": "unused",
+        "PANSOU_BASE_URL": "http://pansou.test",
+        "TGTO_BASE_URL": "http://tgto.test",
+        "TGTO_CONTRACT_PATH": str(contract),
+        "CACHE_WARM_ENABLED": "false",
+        "P115_ENABLED": "true",
+        "P115_COOKIE_PATH": str(cookie_path),
+        "P115_TARGET_CID": "1",
+        "P115_MAX_CONCURRENCY": "1",
+    }
+    for key, value in values.items():
+        monkeypatch.setenv(key, value)
+
+    class FakeRuntimeAdapter:
+        def __init__(self, cookie_provider, target_cid, *, max_concurrency):
+            self.cookie_provider = cookie_provider
+            self.target_cid = target_cid
+            self.max_concurrency = max_concurrency
+            self.validation_calls = 0
+
+        async def ensure_available(self):
+            return True
+
+        async def validate_read_only(self):
+            self.validation_calls += 1
+
+        async def aclose(self):
+            return None
+
+    monkeypatch.setattr("watch_assistant.app.P115Adapter", FakeRuntimeAdapter)
+    password_hash = PasswordHash.recommended()
+    security = SecurityManager(
+        web_password_hash=password_hash.hash("web-secret"),
+        script_token_hash=password_hash.hash("script-secret"),
+    )
+    app = create_app(
+        frontend_dir=tmp_path / "missing",
+        security_manager=security,
+    )
+
+    async with app.router.lifespan_context(app):
+        adapter = app.state.task_adapter
+        assert app.state.p115_settings_service._adapter is adapter
+        assert (
+            app.state.p115_settings_service._cookie_provider is adapter.cookie_provider
+        )
+        session_id, csrf_token = security.login("web-secret")
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://app.test"
+        ) as client:
+            client.cookies.set(SESSION_COOKIE, session_id)
+            settings = await client.get("/api/v1/settings/p115")
+            assert adapter.validation_calls == 0
+            validation = await client.post(
+                "/api/v1/settings/p115/validate",
+                headers={"X-CSRF-Token": csrf_token},
+            )
+            health = await client.get("/api/v1/health")
+
+    assert settings.status_code == 200
+    assert settings.json()["ready"] is True
+    assert settings.json()["capabilities"] == {"magnet": True, "share": False}
+    assert validation.status_code == 200
+    assert validation.json()["status"] == "ready"
+    assert adapter.validation_calls == 1
+    assert health.json()["push_supported"] is False
+    assert health.json()["push_capabilities"] == {"magnet": True, "share": False}
 
 
 @pytest.mark.integration

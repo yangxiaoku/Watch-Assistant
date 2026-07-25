@@ -97,10 +97,18 @@ async def test_settings_overview_logging_patch_and_redacted_logs(tmp_path, monke
         retention_days=7,
         max_file_mb=5,
     )
-    logs = await client.get("/api/v1/logs", params={"limit": 2})
+    first_logs = await client.get("/api/v1/logs", params={"limit": 1})
+    assert first_logs.status_code == 200
+    assert len(first_logs.json()["items"]) == 1
+    assert first_logs.json()["next_cursor"] is not None
+    logs = await client.get(
+        "/api/v1/logs",
+        params={"limit": 2, "cursor": first_logs.json()["next_cursor"]},
+    )
     assert logs.status_code == 200
     assert logs.json()["items"]
-    rendered = repr(logs.json())
+    assert logs.json()["items"][0]["id"] < first_logs.json()["items"][0]["id"]
+    rendered = repr(first_logs.json()) + repr(logs.json())
     assert "secret" not in rendered
     assert "token-value" not in rendered
 

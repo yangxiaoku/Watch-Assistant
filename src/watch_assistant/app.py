@@ -21,6 +21,7 @@ from watch_assistant.api.inspection import router as inspection_router
 from watch_assistant.api.maintenance import router as maintenance_router
 from watch_assistant.api.search import router as search_router
 from watch_assistant.api.settings import router as settings_router
+from watch_assistant.api.settings_p115 import router as p115_settings_router
 from watch_assistant.api.tasks import router as tasks_router
 from watch_assistant.config import Settings, load_tgto_contract
 from watch_assistant.crypto import SecretCrypto
@@ -30,6 +31,7 @@ from watch_assistant.services.cache_warm import CacheWarmer
 from watch_assistant.services.inspection import InspectionService, InspectionWorker
 from watch_assistant.services.maintenance import MaintenanceService
 from watch_assistant.services.p115_credentials import CookieProvider
+from watch_assistant.services.p115_settings import P115SettingsService
 from watch_assistant.services.search import SearchService
 from watch_assistant.services.settings import SettingsService
 from watch_assistant.services.tasks import TaskService
@@ -110,10 +112,12 @@ def create_app(
                 "magnet": False,
                 "share": False,
             }
+            application.state.p115_ready = False
             application.state.database = runtime_database
             owned = [runtime_database, runtime_tmdb, runtime_pansou]
+            cookie_provider = CookieProvider(settings.p115_cookie_path)
+            runtime_task_adapter: TaskAdapter | None = None
             if settings.p115_enabled:
-                cookie_provider = CookieProvider(settings.p115_cookie_path)
                 runtime_task_adapter = task_adapter or P115Adapter(
                     cookie_provider,
                     settings.p115_target_cid,
@@ -134,6 +138,14 @@ def create_app(
                         "magnet": True,
                         "share": False,
                     }
+            application.state.p115_settings_service = P115SettingsService(
+                enabled=settings.p115_enabled,
+                cookie_provider=cookie_provider,
+                cookie_path=settings.p115_cookie_path,
+                target_configured=settings.p115_target_cid is not None,
+                max_concurrency=settings.p115_max_concurrency,
+                adapter=runtime_task_adapter,
+            )
             inspection_client = qbittorrent_client
             if inspection_client is None and settings.inspection_configured:
                 inspection_client = QbittorrentClient(
@@ -300,6 +312,7 @@ def create_app(
 
     application.include_router(search_router)
     application.include_router(settings_router)
+    application.include_router(p115_settings_router)
     application.include_router(tasks_router)
     application.include_router(auth_router)
     application.include_router(maintenance_router)
@@ -321,6 +334,7 @@ def create_app(
         @application.get("/favorites", include_in_schema=False)
         @application.get("/history", include_in_schema=False)
         @application.get("/search", include_in_schema=False)
+        @application.get("/settings", include_in_schema=False)
         async def frontend_browse_route() -> FileResponse:
             return FileResponse(index_path)
 

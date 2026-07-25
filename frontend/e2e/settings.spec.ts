@@ -72,17 +72,19 @@ test("settings contract, cursor logs, validation states, and responsive layout",
   await expect(page.getByText("2026.07.25")).toBeVisible();
   await expect(page.getByText("内容检测")).toBeVisible();
 
-  if (testInfo.project.name === "mobile") await page.locator(".settings-mobile-select select").selectOption("logs");
+  const mobileSectionSelect = page.locator(".settings-mobile-select select");
+  const mobileLayout = await mobileSectionSelect.isVisible();
+  if (mobileLayout) await mobileSectionSelect.selectOption("logs");
   else await page.getByRole("button", { name: "日志" }).click();
-  const logMessage = testInfo.project.name === "mobile" ? page.locator(".settings-log-item p").filter({ hasText: "服务已启动" }) : page.locator(".settings-log-table td").filter({ hasText: "服务已启动" });
+  const logMessage = mobileLayout ? page.locator(".settings-log-item p").filter({ hasText: "服务已启动" }) : page.locator(".settings-log-table td").filter({ hasText: "服务已启动" });
   await expect(logMessage).toBeVisible();
   await expect.poll(() => logsCount).toBe(1);
   await page.getByRole("button", { name: "加载更多" }).click();
-  const laterMessage = testInfo.project.name === "mobile" ? page.locator(".settings-log-item p").filter({ hasText: "需要重新登录" }) : page.locator(".settings-log-table td").filter({ hasText: "需要重新登录" });
+  const laterMessage = mobileLayout ? page.locator(".settings-log-item p").filter({ hasText: "需要重新登录" }) : page.locator(".settings-log-table td").filter({ hasText: "需要重新登录" });
   await expect(laterMessage).toBeVisible();
   await expect(page.getByText("已加载 3 条")).toBeVisible();
   await page.locator(".settings-filter-row select").selectOption("search");
-  const categoryMessage = testInfo.project.name === "mobile" ? page.locator(".settings-log-item p").filter({ hasText: "新分类响应" }) : page.locator(".settings-log-table td").filter({ hasText: "新分类响应" });
+  const categoryMessage = mobileLayout ? page.locator(".settings-log-item p").filter({ hasText: "新分类响应" }) : page.locator(".settings-log-table td").filter({ hasText: "新分类响应" });
   await expect(categoryMessage).toBeVisible();
   await expect(page.getByText("服务已启动")).toHaveCount(0);
   await expect.poll(() => logsCount).toBe(3);
@@ -101,7 +103,7 @@ test("settings contract, cursor logs, validation states, and responsive layout",
   await expect.poll(() => saveCount).toBe(2);
   expect(patchBodies[0]).toEqual({ revision: 0, level: "WARNING", retention_days: 45, max_file_mb: 20 });
 
-  if (testInfo.project.name === "mobile") await page.locator(".settings-mobile-select select").selectOption("p115");
+  if (mobileLayout) await mobileSectionSelect.selectOption("p115");
   else await page.getByRole("button", { name: "115 推送" }).click();
   await expect(page.getByText("已就绪")).toBeVisible();
   await expect(page.getByText("TgtoDrive")).toBeVisible();
