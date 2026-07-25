@@ -1,14 +1,17 @@
 <script setup lang="ts">
 import { Clock3, Film, Flame, Heart, Home, LoaderCircle, LogIn, PanelRight, Search, Settings, Tv, X } from "@lucide/vue";
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 import { ApiClient, ApiError } from "./api";
 import TaskDrawer from "./components/TaskDrawer.vue";
 import {
   extractBrowseView,
   extractMediaRoute,
+  clampCatalogPage,
+  navigateToCatalog,
   navigateToMedia,
-  navigateToSearch,
   navigateToView,
+  parseCatalogRoute,
+  type CatalogRoute,
   type BrowseView,
 } from "./router";
 import { mediaKey, mediaTypeOf } from "./media";
@@ -64,10 +67,129 @@ const inspectionAutoRequestId = ref<number | null>(null);
 let searchRequestId = 0;
 let inspectionRunId = 0;
 let pollTimer: number | undefined;
+let catalogRequestId = 0;
+
+interface CatalogCacheEntry {
+  movies: MovieMetadata[];
+  page: number;
+  totalPages: number;
+  totalResults: number;
+}
+
+const catalogCache = new Map<string, CatalogCacheEntry>();
+const committedCatalogRoute = ref<CatalogRoute | null>(null);
+let catalogReturnRoute: CatalogRoute | null = null;
+let catalogReturnScrollY: number | null = null;
 
 const favoriteIds = computed(() => new Set(favorites.value.map(mediaKey)));
 const detailFavorite = computed(() => result.value ? favoriteIds.value.has(mediaKey(result.value.movie)) : false);
 const hasActiveTasks = computed(() => tasks.value.some((task) => task.state === "queued" || task.state === "submitting"));
+
+function catalogCacheKey(route: CatalogRoute): string {
+  return [route.view, route.query.trim(), route.genreId ?? "", route.year ?? "", route.sort, route.page].join("|");
+}
+
+function readCatalogCache(route: CatalogRoute): CatalogCacheEntry | undefined {
+  const key = catalogCacheKey(route);
+  const entry = catalogCache.get(key);
+  if (!entry) return undefined;
+  catalogCache.delete(key);
+  catalogCache.set(key, entry);
+  return entry;
+}
+
+function writeCatalogCache(route: CatalogRoute, entry: CatalogCacheEntry) {
+  const key = catalogCacheKey(route);
+  catalogCache.delete(key);
+  catalogCache.set(key, entry);
+  while (catalogCache.size > 20) catalogCache.delete(catalogCache.keys().next().value as string);
+}
+
+function applyCatalogPreview(route: CatalogRoute) {
+  activeView.value = route.view;
+  query.value = route.query;
+  genreId.value = route.genreId;
+  year.value = route.year;
+  sort.value = route.sort;
+  catalogHeading.value = route.view === "search" ? `“${route.query}”的搜索结果` : route.view === "popular" ? "本周热门" : "";
+}
+
+function applyCatalogData(route: CatalogRoute, entry: CatalogCacheEntry) {
+  applyCatalogPreview(route);
+  catalogMovies.value = entry.movies;
+  currentPage.value = entry.page;
+  totalPages.value = entry.totalPages;
+  totalResults.value = entry.totalResults;
+}
+
+function catalogScroll(restoreY?: number) {
+  void nextTick(() => {
+    const behavior = window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
+    if (restoreY !== undefined) {
+      window.scrollTo({ top: restoreY, behavior });
+      return;
+    }
+    document.getElementById("catalog-title")?.scrollIntoView({ behavior, block: "start" });
+  });
+}
+
+function commitCatalogRoute(route: CatalogRoute, historyMode: "push" | "replace" | "none", scrollY = 0) {
+  committedCatalogRoute.value = { ...route };
+  if (historyMode === "push") navigateToCatalog(route, false, { catalogScrollY: scrollY });
+  else if (historyMode === "replace") navigateToCatalog(route, true, { catalogScrollY: scrollY });
+  else navigateToCatalog(route, true, { ...window.history.state, catalogScrollY: window.history.state?.catalogScrollY ?? scrollY });
+}
+
+async function requestCatalog(route: CatalogRoute, historyMode: "push" | "replace" | "none", restoreY?: number) {
+  const safeRoute = { ...route, page: clampCatalogPage(route.page) };
+  const requestId = ++catalogRequestId;
+  const previousRoute = committedCatalogRoute.value;
+  applyCatalogPreview(safeRoute);
+  catalogLoading.value = true;
+  error.value = "";
+
+  const cached = readCatalogCache(safeRoute);
+  if (cached) {
+    if (requestId !== catalogRequestId) return;
+    applyCatalogData(safeRoute, cached);
+    catalogLoading.value = false;
+    commitCatalogRoute(safeRoute, historyMode, restoreY ?? 0);
+    catalogScroll(restoreY);
+    return;
+  }
+
+  try {
+    const response = safeRoute.view === "search"
+      ? await api.searchMedia(safeRoute.query, safeRoute.page)
+      : safeRoute.view === "popular"
+        ? await api.popularMovies(safeRoute.page)
+        : await api.discoverMedia(safeRoute.view === "tv" ? "tv" : "movie", {
+            genreId: safeRoute.genreId,
+            year: safeRoute.year,
+            sort: safeRoute.sort,
+            page: safeRoute.page,
+          });
+    if (requestId !== catalogRequestId) return;
+    const entry: CatalogCacheEntry = {
+      movies: response.results,
+      page: clampCatalogPage(Math.trunc(response.page)),
+      totalPages: clampCatalogPage(Math.trunc(response.total_pages)),
+      totalResults: response.total_results,
+    };
+    writeCatalogCache(safeRoute, entry);
+    applyCatalogData({ ...safeRoute, page: entry.page }, entry);
+    catalogLoading.value = false;
+    commitCatalogRoute({ ...safeRoute, page: entry.page }, historyMode, restoreY ?? 0);
+    catalogScroll(restoreY);
+  } catch (exception) {
+    if (requestId !== catalogRequestId) return;
+    catalogLoading.value = false;
+    error.value = exception instanceof ApiError ? exception.message : "目录加载失败，请稍后重试";
+    if (previousRoute) {
+      applyCatalogPreview(previousRoute);
+    }
+  }
+}
 function inspectionBatchIds(limit = 8, retriesOnly = false): string[] {
   if (!result.value) return [];
   const unavailableIds = new Set([...inspectionProcessedIds.value, ...inspectionInFlightIds.value]);
@@ -140,45 +262,14 @@ async function loadHome() {
 async function loadDiscover(
   filters = { genreId: genreId.value, year: year.value, sort: sort.value },
   page = 1,
+  historyMode: "push" | "none" = "push",
 ) {
-  genreId.value = filters.genreId;
-  year.value = filters.year;
-  sort.value = filters.sort;
-  catalogLoading.value = true;
-  currentPage.value = page;
-  error.value = "";
-  try {
-    const response = await api.discoverMedia(
-      activeView.value === "tv" ? "tv" : "movie",
-      { ...filters, page },
-    );
-    catalogMovies.value = response.results;
-    currentPage.value = response.page;
-    totalPages.value = response.total_pages;
-    totalResults.value = response.total_results;
-  } catch (exception) {
-    const label = activeView.value === "tv" ? "剧集" : "电影";
-    error.value = exception instanceof ApiError ? exception.message : `${label}目录加载失败，请稍后重试`;
-  } finally {
-    catalogLoading.value = false;
-  }
+  const view = activeView.value === "tv" ? "tv" : "movies";
+  await requestCatalog({ view, query: "", page, genreId: filters.genreId, year: filters.year, sort: filters.sort }, historyMode);
 }
 
-async function loadPopular(page = 1) {
-  catalogLoading.value = true;
-  error.value = "";
-  try {
-    const response = await api.popularMovies(page);
-    catalogMovies.value = response.results;
-    currentPage.value = response.page;
-    totalPages.value = response.total_pages;
-    totalResults.value = response.total_results;
-    catalogHeading.value = "本周热门";
-  } catch (exception) {
-    error.value = exception instanceof ApiError ? exception.message : "热门电影加载失败，请稍后重试";
-  } finally {
-    catalogLoading.value = false;
-  }
+async function loadPopular(page = 1, historyMode: "push" | "none" = "push") {
+  await requestCatalog({ view: "popular", query: "", page, sort: "popular" }, historyMode);
 }
 
 async function performSearch(updateUrl: boolean, page = 1) {
@@ -188,21 +279,7 @@ async function performSearch(updateUrl: boolean, page = 1) {
   activeView.value = "search";
   previousView.value = "search";
   result.value = null;
-  if (updateUrl) navigateToSearch(searchQuery);
-  catalogLoading.value = true;
-  error.value = "";
-  catalogHeading.value = `“${searchQuery}”的搜索结果`;
-  try {
-    const response = await api.searchMedia(searchQuery, page);
-    catalogMovies.value = response.results;
-    currentPage.value = response.page;
-    totalPages.value = response.total_pages;
-    totalResults.value = response.total_results;
-  } catch (exception) {
-    error.value = exception instanceof ApiError ? exception.message : "影视搜索失败，请稍后重试";
-  } finally {
-    catalogLoading.value = false;
-  }
+  await requestCatalog({ view: "search", query: searchQuery, page, sort: "popular" }, updateUrl ? "push" : "none");
 }
 
 async function searchMovies() {
@@ -210,24 +287,17 @@ async function searchMovies() {
 }
 
 async function loadPage(page: number) {
-  if (activeView.value === "movies" || activeView.value === "tv") {
-    await loadDiscover(
-      { genreId: genreId.value, year: year.value, sort: sort.value },
-      page,
-    );
-  } else if (activeView.value === "popular") {
-    await loadPopular(page);
-  } else if (activeView.value === "search") {
-    await performSearch(false, page);
-  }
-  window.scrollTo({ top: 0, behavior: "smooth" });
+  if (catalogLoading.value) return;
+  const current = committedCatalogRoute.value;
+  if (!current) return;
+  await requestCatalog({ ...current, page }, "push");
 }
 
-async function loadView(view: BrowseView) {
+async function loadView(view: BrowseView, historyMode: "push" | "none" = "none") {
   if (view === "home") await loadHome();
-  if (view === "movies") await loadDiscover();
-  if (view === "tv") await loadDiscover();
-  if (view === "popular") await loadPopular();
+  if (view === "movies") await loadDiscover({ genreId: undefined, year: undefined, sort: "popular" }, 1, historyMode);
+  if (view === "tv") await loadDiscover({ genreId: undefined, year: undefined, sort: "popular" }, 1, historyMode);
+  if (view === "popular") await loadPopular(1, historyMode);
   if (view === "search") await performSearch(false);
 }
 
@@ -235,16 +305,20 @@ async function selectView(view: Exclude<BrowseView, "search">) {
   invalidateDetailRequest();
   result.value = null;
   error.value = "";
-  activeView.value = view;
-  currentPage.value = 1;
-  if (view === "movies" || view === "tv") {
-    genreId.value = undefined;
-    year.value = undefined;
-    sort.value = "popular";
-  }
   previousView.value = view;
-  navigateToView(view);
-  await loadView(view);
+  if (view === "movies" || view === "tv") {
+    activeView.value = view;
+    await loadDiscover({ genreId: undefined, year: undefined, sort: "popular" }, 1, "push");
+  } else if (view === "popular") {
+    await loadPopular(1, "push");
+  } else {
+    committedCatalogRoute.value = null;
+    catalogReturnRoute = null;
+    catalogReturnScrollY = null;
+    activeView.value = view;
+    navigateToView(view);
+    await loadView(view);
+  }
 }
 
 function resetInspection() {
@@ -262,6 +336,8 @@ function resetInspection() {
 
 function invalidateDetailRequest() {
   searchRequestId += 1;
+  catalogRequestId += 1;
+  catalogLoading.value = false;
   loading.value = false;
   resetInspection();
 }
@@ -301,6 +377,14 @@ async function loadResources(
 
 async function openMovie(movie: MovieMetadata) {
   previousView.value = activeView.value;
+  if (committedCatalogRoute.value) {
+    catalogReturnRoute = { ...committedCatalogRoute.value };
+    catalogReturnScrollY = window.scrollY;
+    window.history.replaceState({ ...window.history.state, catalog: catalogReturnRoute, catalogScrollY: catalogReturnScrollY }, "", window.location.href);
+  } else {
+    catalogReturnRoute = null;
+    catalogReturnScrollY = null;
+  }
   recordHistory(movie);
   result.value = null;
   selectedSeason.value = null;
@@ -320,13 +404,13 @@ async function selectSeason(seasonNumber: number | null) {
 async function returnToBrowse() {
   invalidateDetailRequest();
   result.value = null;
+  if (catalogReturnRoute) {
+    await requestCatalog(catalogReturnRoute, "push", catalogReturnScrollY ?? undefined);
+    return;
+  }
   const view = previousView.value === "search" ? "search" : previousView.value;
   activeView.value = view;
-  if (view === "search") {
-    navigateToSearch(query.value.trim());
-  } else {
-    navigateToView(view);
-  }
+  navigateToView(view);
   await loadView(view);
 }
 
@@ -337,9 +421,13 @@ async function initializeWorkspace() {
     await loadResources(mediaRoute.tmdbId, mediaRoute.mediaType, false, selectedSeason.value, true);
     return;
   }
+  const catalogRoute = parseCatalogRoute(window.location.pathname + window.location.search);
+  if (catalogRoute) {
+    await requestCatalog(catalogRoute, "none", typeof window.history.state?.catalogScrollY === "number" ? window.history.state.catalogScrollY : undefined);
+    return;
+  }
   activeView.value = extractBrowseView(window.location.pathname);
   previousView.value = activeView.value;
-  if (activeView.value === "search") query.value = new URLSearchParams(window.location.search).get("q") ?? "";
   await loadView(activeView.value);
 }
 

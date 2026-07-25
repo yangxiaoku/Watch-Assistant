@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { extractBrowseView, extractMediaRoute } from "../src/router";
+import { catalogRoutePath, extractBrowseView, extractMediaRoute, parseCatalogRoute } from "../src/router";
 
 describe("media route seasons", () => {
   it("restores a positive TV season from the URL", () => {
@@ -17,5 +17,26 @@ describe("media route seasons", () => {
 describe("settings route", () => {
   it("restores the settings view", () => {
     expect(extractBrowseView("/settings")).toBe("settings");
+  });
+});
+
+describe("catalog routes", () => {
+  it("round-trips search and catalog filters through the URL", () => {
+    const route = parseCatalogRoute("/movies?page=2&genre=28&year=2024&sort=rating");
+    expect(route).toEqual({ view: "movies", query: "", page: 2, genreId: 28, year: 2024, sort: "rating" });
+    expect(catalogRoutePath(route!)).toBe("/movies?page=2&genre=28&year=2024&sort=rating");
+
+    expect(parseCatalogRoute("/search?query=the%20bear&page=3")).toEqual({
+      view: "search",
+      query: "the bear",
+      page: 3,
+      sort: "popular",
+    });
+  });
+
+  it("clamps invalid catalog pages to the 500-page boundary", () => {
+    expect(parseCatalogRoute("/popular?page=501")?.page).toBe(500);
+    expect(parseCatalogRoute("/popular?page=0")?.page).toBe(1);
+    expect(catalogRoutePath({ view: "popular", query: "", page: 501, sort: "popular" })).toBe("/popular?page=500");
   });
 });

@@ -105,6 +105,8 @@ input { outline: none; }
 .filter-options button.active { color: #10141a; background: #68a0ff; font-weight: 800; }
 .movie-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 26px 14px; }
 .catalog-grid { padding-bottom: 40px; }
+.catalog-results { min-width: 0; }
+.catalog-loading { min-height: 24px; margin: -22px 0 18px; color: #858a94; font-size: 12px; }
 .search-heading { align-items: center; }
 .collection-empty, .empty-state { display: grid; min-height: 270px; place-items: center; align-content: center; gap: 10px; color: #6f7580; text-align: center; border: 1px dashed #35383e; }
 .collection-empty strong { color: #d5d7dc; }
