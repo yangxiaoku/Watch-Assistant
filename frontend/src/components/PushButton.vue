@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { LoaderCircle, Send } from "@lucide/vue";
 
-defineProps<{ busy?: boolean; disabled?: boolean }>();
+const props = withDefaults(defineProps<{ busy?: boolean; disabled?: boolean; title?: string }>(), {
+  title: "推送到 115",
+});
 defineEmits<{ push: [] }>();
 </script>
 
@@ -10,7 +12,7 @@ defineEmits<{ push: [] }>();
     class="push-button"
     type="button"
     :disabled="disabled || busy"
-    title="推送到 115"
+    :title="props.title"
     @click="$emit('push')"
   >
     <LoaderCircle v-if="busy" class="spin" :size="16" />

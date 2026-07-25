@@ -46,7 +46,7 @@ describe("MovieView seasons", () => {
         mediaType: "tv",
         seasonNumber: null,
         pushingId: null,
-        pushSupported: true,
+        pushCapabilities: { magnet: true, share: true },
         favorite: false,
       },
     });
@@ -64,7 +64,7 @@ describe("MovieView seasons", () => {
         mediaType: "tv",
         seasonNumber: null,
         pushingId: null,
-        pushSupported: true,
+        pushCapabilities: { magnet: true, share: true },
         favorite: false,
       },
     });
@@ -80,7 +80,7 @@ describe("MovieView seasons", () => {
         result: response("movie"),
         mediaType: "movie",
         pushingId: null,
-        pushSupported: true,
+        pushCapabilities: { magnet: true, share: true },
         favorite: false,
       },
     });
@@ -95,7 +95,7 @@ describe("MovieView seasons", () => {
         mediaType: "tv",
         seasonNumber: 0,
         pushingId: null,
-        pushSupported: true,
+        pushCapabilities: { magnet: true, share: true },
         favorite: false,
       },
     });
@@ -112,7 +112,7 @@ describe("MovieView seasons", () => {
         mediaType: "tv",
         seasonNumber: 0,
         pushingId: null,
-        pushSupported: true,
+        pushCapabilities: { magnet: true, share: true },
         favorite: false,
       },
     });

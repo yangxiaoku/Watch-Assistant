@@ -12,6 +12,7 @@ import {
   type BrowseView,
 } from "./router";
 import { mediaKey, mediaTypeOf } from "./media";
+import { canPushResource, NO_PUSH_CAPABILITIES, resolvePushCapabilities, submitPushResource, type PushCapabilities } from "./push";
 import { finalizeInspectionResources, inspectionProgress as getInspectionProgress, inspectionResultEnded, inspectionState as getInspectionBatchState, mergeInspectionResult, nextInspectionResourceIds, pollInspectionBatch } from "./inspection";
 import type { HomeCatalogResponse, MovieMetadata, ResourceSummary, SearchResponse, TaskResponse } from "./types";
 import CollectionView from "./views/CollectionView.vue";
@@ -46,7 +47,7 @@ const history = ref<MovieMetadata[]>(readStoredMovies(HISTORY_KEY));
 const tasks = ref<TaskResponse[]>([]);
 const pushingId = ref<string | null>(null);
 const drawerOpen = ref(false);
-const pushSupported = ref(true);
+const pushCapabilities = ref<PushCapabilities>({ ...NO_PUSH_CAPABILITIES });
 const inspectionSupported = ref(false);
 const selectedSeason = ref<number | null>(null);
 const detailMediaType = ref<"movie" | "tv">("movie");
@@ -354,14 +355,18 @@ async function login() {
 }
 
 async function push(resource: ResourceSummary) {
-  if (!pushSupported.value) {
-    error.value = "TgtoDrive 尚未提供稳定推送接口，当前已安全禁用真实推送。";
+  if (!canPushResource(resource, pushCapabilities.value)) {
+    error.value = resource.kind === "115_share" ? "115 分享转存尚未验证" : "磁力云下载不可用";
     return;
   }
   pushingId.value = resource.resource_id;
   error.value = "";
   try {
-    const task = await api.createTask(resource.resource_id);
+    const task = await submitPushResource(resource, pushCapabilities.value, (resourceId) => api.createTask(resourceId));
+    if (!task) {
+      error.value = resource.kind === "115_share" ? "115 分享转存尚未验证" : "磁力云下载不可用";
+      return;
+    }
     tasks.value = [task, ...tasks.value.filter((item) => item.id !== task.id)].slice(0, 50);
     drawerOpen.value = true;
     ensurePolling();
@@ -553,8 +558,7 @@ async function syncRoute() {
 onMounted(async () => {
   try {
     const health = await api.health();
-    if (typeof health.push_supported !== "boolean") throw new Error("invalid health response");
-    pushSupported.value = health.push_supported;
+    pushCapabilities.value = resolvePushCapabilities(health);
     inspectionSupported.value = health.inspection_supported === true;
     await api.me();
     authenticated.value = true;
@@ -603,8 +607,9 @@ onBeforeUnmount(() => {
         <SearchView v-else v-model="query" :loading="catalogLoading" :movies="catalogMovies" :heading="catalogHeading" :favorite-ids="favoriteIds" :page="currentPage" :total-pages="totalPages" :total-results="totalResults" @search="searchMovies" @reset="selectView('home')" @open="openMovie" @favorite="toggleFavorite" @page="loadPage" />
       </template>
       <section v-else-if="loading && !result" class="detail-loading"><LoaderCircle class="spin" :size="24" /><strong>正在聚合资源</strong><span>正在查询 PanSou 的磁力与 115 分享结果</span></section>
-      <p v-if="!pushSupported && result" class="warning-strip">TgtoDrive 推送契约尚未验证，推送按钮已禁用。</p>
-       <section v-if="result" class="detail-workspace"><MovieView :result="result" :media-type="detailMediaType" :season-number="selectedSeason" :pushing-id="pushingId" :push-supported="pushSupported" :favorite="detailFavorite" :inspection-supported="inspectionSupported" :inspection-state="inspectionState" :inspection-completed="inspectionCompleted" :inspection-total="inspectionTotal" :inspection-failed="inspectionFailed" :inspection-error="inspectionError" :inspection-more-available="inspectionMoreAvailable" :inspection-retry-available="inspectionRetryAvailable" @push="push" @favorite="toggleFavorite(result.movie)" @refresh="loadResources(result.movie.tmdb_id, detailMediaType, true)" @season="selectSeason" @inspect-more="inspectMore" @retry-failed="retryFailed" @back="returnToBrowse" /></section>
+       <p v-if="result && !pushCapabilities.magnet && !pushCapabilities.share" class="warning-strip">115 推送当前不可用，推送按钮已禁用。</p>
+       <p v-else-if="result && pushCapabilities.magnet && !pushCapabilities.share" class="warning-strip">磁力云下载可用，115 分享转存尚未验证</p>
+       <section v-if="result" class="detail-workspace"><MovieView :result="result" :media-type="detailMediaType" :season-number="selectedSeason" :pushing-id="pushingId" :push-capabilities="pushCapabilities" :favorite="detailFavorite" :inspection-supported="inspectionSupported" :inspection-state="inspectionState" :inspection-completed="inspectionCompleted" :inspection-total="inspectionTotal" :inspection-failed="inspectionFailed" :inspection-error="inspectionError" :inspection-more-available="inspectionMoreAvailable" :inspection-retry-available="inspectionRetryAvailable" @push="push" @favorite="toggleFavorite(result.movie)" @refresh="loadResources(result.movie.tmdb_id, detailMediaType, true)" @season="selectSeason" @inspect-more="inspectMore" @retry-failed="retryFailed" @back="returnToBrowse" /></section>
     </template>
     <TaskDrawer :tasks="tasks" :open="drawerOpen" @close="drawerOpen = false" />
   </main>

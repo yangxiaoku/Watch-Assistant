@@ -2,6 +2,7 @@ import { mount } from "@vue/test-utils";
 import { describe, expect, it, vi } from "vitest";
 
 import ResourceTable from "../src/components/ResourceTable.vue";
+import type { PushCapabilities } from "../src/push";
 import type { ResourceSummary } from "../src/types";
 
 const magnetWithoutStats: ResourceSummary = {
@@ -25,6 +26,26 @@ describe("ResourceTable", () => {
     expect(wrapper.text()).not.toContain("综合 未知");
     expect(wrapper.text()).not.toContain("综合 0.0");
     expect(wrapper.findAll(".quality-metrics")).toHaveLength(0);
+  });
+
+  it("enables magnets and disables shares with a resource-specific title", async () => {
+    const capabilities: PushCapabilities = { magnet: true, share: false };
+    const wrapper = mount(ResourceTable, {
+      props: {
+        resources: [magnetWithoutStats, { ...magnetWithoutStats, resource_id: "share_1", kind: "115_share", name: "115 分享" }],
+        pushCapabilities: capabilities,
+        onPush: vi.fn(),
+      },
+    });
+    const tableButtons = wrapper.findAll(".resource-table .push-button");
+
+    expect(tableButtons[0].attributes("disabled")).toBeUndefined();
+    expect(tableButtons[0].attributes("title")).toBe("推送到 115");
+    expect(tableButtons[1].attributes("disabled")).toBeDefined();
+    expect(tableButtons[1].attributes("title")).toBe("115 分享转存尚未验证");
+
+    await tableButtons[0].trigger("click");
+    expect(wrapper.emitted("push")).toHaveLength(1);
   });
 
   it("keeps shares, caps magnets at 30, and sorts ties stably", async () => {
