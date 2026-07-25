@@ -2,7 +2,7 @@
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, PositiveInt
 
@@ -117,6 +117,9 @@ class ResourceSummary(BaseModel):
     seeders: int | None
     source: str
     captured_at: datetime
+    size_source: Literal["pansou", "inspection"] | None = None
+    seeders_source: Literal["pansou"] | None = None
+    seeders_observed_at: datetime | None = None
     rank_score: int = Field(default=0, ge=0, le=100)
     relevance_score: int = Field(default=0, ge=0, le=100)
     completeness_score: int = Field(default=0, ge=0, le=100)
@@ -200,7 +203,10 @@ class InspectionStartRequest(BaseModel):
     resource_ids: list[str] = Field(min_length=1, max_length=30)
 
     def model_post_init(self, _context: Any) -> None:
-        if any(not resource_id or len(resource_id) > 40 for resource_id in self.resource_ids):
+        if any(
+            not resource_id or len(resource_id) > 40
+            for resource_id in self.resource_ids
+        ):
             raise ValueError("invalid_resource_id")
         if len(set(self.resource_ids)) != len(self.resource_ids):
             raise ValueError("duplicate_resource_id")

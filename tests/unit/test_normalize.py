@@ -255,6 +255,83 @@ def test_duplicate_infohash_keeps_and_merges_richer_result():
     assert resource.password == "code"
 
 
+def test_duplicate_infohash_keeps_plugin_metadata_but_structured_fields_win():
+    resources = normalize_pansou(
+        _magnet_data(
+            {
+                "url": f"magnet:?xt=urn:btih:{HEX_HASH}",
+                "note": "Show",
+                "size": 9 * 1024**3,
+                "seeders": 99,
+            },
+            {
+                "url": f"magnet:?xt=urn:btih:{HEX_HASH}&dn=Plugin",
+                "note": "Show Plugin",
+                "size": int(1.5 * 1024**3),
+                "size_source": "pansou",
+                "seeders": 12,
+                "seeders_source": "pansou",
+                "seeders_observed_at": "2026-07-25T04:00:00+00:00",
+            },
+        )
+    )
+
+    assert len(resources) == 1
+    resource = resources[0]
+    assert resource.size_bytes == 9 * 1024**3
+    assert resource.seeders == 99
+    assert "size_source" not in resource.metadata
+    assert "seeders_source" not in resource.metadata
+    assert "seeders_observed_at" not in resource.metadata
+
+
+def test_plugin_metadata_survives_infohash_deduplication():
+    resources = normalize_pansou(
+        _magnet_data(
+            {
+                "url": f"magnet:?xt=urn:btih:{HEX_HASH}",
+                "note": "Show",
+                "size": 2 * 1024**4,
+                "size_source": "pansou",
+                "seeders": 7,
+                "seeders_source": "pansou",
+                "seeders_observed_at": "2026-07-25T04:00:00+00:00",
+            },
+            {
+                "url": f"magnet:?xt=urn:btih:{HEX_HASH}&dn=Duplicate",
+                "note": "Duplicate",
+            },
+        )
+    )
+
+    assert len(resources) == 1
+    assert resources[0].size_bytes == 2 * 1024**4
+    assert resources[0].seeders == 7
+    assert resources[0].metadata["size_source"] == "pansou"
+    assert resources[0].metadata["seeders_source"] == "pansou"
+    assert resources[0].metadata["seeders_observed_at"] == ("2026-07-25T04:00:00+00:00")
+
+
+def test_size_parser_supports_binary_units_and_rejects_negative_values():
+    resources = normalize_pansou(
+        _magnet_data(
+            {
+                "url": f"magnet:?xt=urn:btih:{1:040x}",
+                "note": "Binary units",
+                "size": "2 MiB",
+            },
+            {
+                "url": f"magnet:?xt=urn:btih:{2:040x}",
+                "note": "Negative",
+                "size": "-1 GB",
+            },
+        )
+    )
+
+    assert resources[0].size_bytes == 2 * 1024**2
+    assert resources[1].size_bytes is None
+
+
 def test_tmdb_queries_include_title_and_year_fallbacks():
     movie = MovieMetadata(
         tmdb_id=123,

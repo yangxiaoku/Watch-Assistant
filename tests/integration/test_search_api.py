@@ -1175,11 +1175,63 @@ async def test_public_search_reads_legacy_list_cache_scores(tmp_path):
             "seeders": None,
             "source": "test",
             "captured_at": body["results"][0]["captured_at"],
+            "size_source": None,
+            "seeders_source": None,
+            "seeders_observed_at": None,
             "rank_score": 61,
             "relevance_score": 52,
             "completeness_score": 43,
         }
     ]
+    await _close(client, database, tmdb, pansou)
+
+
+@pytest.mark.integration
+@respx.mock
+async def test_public_search_cache_hit_preserves_pansou_metadata_sources(tmp_path):
+    _mock_tmdb()
+    pansou_route = respx.get("http://pansou.test/api/search").mock(
+        return_value=httpx.Response(200, json=_empty_pansou_response())
+    )
+    client, database, tmdb, pansou = await _make_client(tmp_path)
+    now = datetime.now(UTC)
+    resource = Resource(
+        id="res_pansou_metadata",
+        kind="magnet",
+        canonical_key="magnet:pansou-metadata",
+        encrypted_url="cipher-pansou-metadata",
+        name="Pansou cached resource",
+        size_bytes=2 * 1024**3,
+        seeders=17,
+        source="plugin:nyaa",
+        captured_at=now,
+        expires_at=now + timedelta(days=7),
+        metadata_json=json.dumps(
+            {
+                "size_source": "pansou",
+                "seeders_source": "pansou",
+                "seeders_observed_at": "2026-07-25T04:00:00+00:00",
+            }
+        ),
+    )
+    cache = SearchCache(
+        cache_key="tmdb:movie:12345:queries:v4",
+        resource_ids_json=json.dumps([resource.id]),
+        fetched_at=now,
+        expires_at=now + timedelta(days=7),
+    )
+    async with database.session_factory() as session:
+        session.add_all([resource, cache])
+        await session.commit()
+
+    response = await client.post("/api/v1/search", json={"tmdb_id": 12345})
+    result = response.json()["results"][0]
+
+    assert response.status_code == 200
+    assert pansou_route.call_count == 0
+    assert result["size_source"] == "pansou"
+    assert result["seeders_source"] == "pansou"
+    assert result["seeders_observed_at"] == "2026-07-25T04:00:00Z"
     await _close(client, database, tmdb, pansou)
 
 

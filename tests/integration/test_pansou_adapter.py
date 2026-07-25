@@ -19,7 +19,8 @@ from watch_assistant.schemas import MediaType, MovieMetadata
 @respx.mock
 async def test_pansou_client_returns_merged_result_shape():
     route = respx.get(
-        "http://pansou.test/api/search", params={"kw": "Inception 2010"}
+        "http://pansou.test/api/search",
+        params={"kw": "Inception 2010", "res": "all"},
     ).mock(
         return_value=httpx.Response(
             200,
@@ -37,6 +38,129 @@ async def test_pansou_client_returns_merged_result_shape():
 
     assert result == {"total": 1, "merged_by_type": {"magnet": []}}
     assert route.called
+
+
+@respx.mock
+async def test_pansou_extracts_nyaa_and_tpb_plugin_metadata_by_infohash():
+    nyaa_hash = "a" * 40
+    tpb_hash = "b" * 40
+    route = respx.get("http://pansou.test/api/search").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "code": 0,
+                "data": {
+                    "total": 2,
+                    "merged_by_type": {
+                        "magnet": [
+                            {
+                                "url": f"magnet:?xt=urn:btih:{nyaa_hash}",
+                                "note": "Nyaa Movie",
+                            },
+                            {
+                                "url": f"magnet:?xt=urn:btih:{tpb_hash}",
+                                "note": "TPB Movie",
+                            },
+                        ]
+                    },
+                    "results": [
+                        {
+                            "source": "plugin:nyaa",
+                            "links": [
+                                {
+                                    "url": f"magnet:?xt=urn:btih:{nyaa_hash}",
+                                    "Content": "大小: 1.5 GiB",
+                                    "Tags": "做种: 12",
+                                }
+                            ],
+                        },
+                        {
+                            "source": "plugin:thepiratebay",
+                            "links": [
+                                {
+                                    "url": f"magnet:?xt=urn:btih:{tpb_hash}",
+                                    "Content": "文件大小: 2 TB, Seeders: 34",
+                                }
+                            ],
+                        },
+                    ],
+                },
+            },
+        )
+    )
+    client = PanSouClient("http://pansou.test")
+
+    result = await client.search("Movie")
+    await client.aclose()
+
+    magnets = result["merged_by_type"]["magnet"]
+    assert magnets[0]["size"] == int(1.5 * 1024**3)
+    assert magnets[0]["seeders"] == 12
+    assert magnets[0]["size_source"] == "pansou"
+    assert magnets[0]["seeders_source"] == "pansou"
+    assert magnets[0]["seeders_observed_at"]
+    assert magnets[1]["size"] == 2 * 1024**4
+    assert magnets[1]["seeders"] == 34
+    assert route.calls[0].request.url.params["res"] == "all"
+    assert route.call_count == 1
+
+
+@respx.mock
+async def test_pansou_ignores_invalid_values_and_unknown_plugin_text():
+    invalid_hash = "c" * 40
+    unknown_hash = "d" * 40
+    respx.get("http://pansou.test/api/search").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "code": 0,
+                "data": {
+                    "merged_by_type": {
+                        "magnet": [
+                            {
+                                "url": f"magnet:?xt=urn:btih:{invalid_hash}",
+                                "note": "Invalid",
+                            },
+                            {
+                                "url": f"magnet:?xt=urn:btih:{unknown_hash}",
+                                "note": "Unknown",
+                            },
+                        ]
+                    },
+                    "results": [
+                        {
+                            "source": "plugin:nyaa",
+                            "links": [
+                                {
+                                    "url": f"magnet:?xt=urn:btih:{invalid_hash}",
+                                    "Content": "大小: -1 GB",
+                                    "Tags": "做种: -3",
+                                }
+                            ],
+                        },
+                        {
+                            "source": "plugin:other",
+                            "links": [
+                                {
+                                    "url": f"magnet:?xt=urn:btih:{unknown_hash}",
+                                    "Content": "大小: 99 TB, Seeders: 999",
+                                }
+                            ],
+                        },
+                    ],
+                },
+            },
+        )
+    )
+    client = PanSouClient("http://pansou.test")
+
+    result = await client.search("Movie")
+    await client.aclose()
+
+    assert "size" not in result["merged_by_type"]["magnet"][0]
+    assert "seeders" not in result["merged_by_type"]["magnet"][0]
+    assert "size" not in result["merged_by_type"]["magnet"][1]
+    assert "seeders" not in result["merged_by_type"]["magnet"][1]
 
 
 @respx.mock

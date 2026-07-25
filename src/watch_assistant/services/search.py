@@ -773,25 +773,7 @@ class SearchService:
     ) -> SearchResponse:
         return SearchResponse(
             movie=movie,
-            results=[
-                ResourceSummary(
-                    resource_id=item.id,
-                    kind=item.kind,
-                    name=item.name,
-                    size_bytes=item.size_bytes,
-                    seeders=item.seeders,
-                    source=item.source,
-                    captured_at=_as_utc(item.captured_at),
-                    rank_score=_snapshot_score(score_snapshot, item.id, "rank_score"),
-                    relevance_score=_snapshot_score(
-                        score_snapshot, item.id, "relevance_score"
-                    ),
-                    completeness_score=_snapshot_score(
-                        score_snapshot, item.id, "completeness_score"
-                    ),
-                )
-                for item in resources
-            ],
+            results=[_resource_summary(item, score_snapshot) for item in resources],
             warnings=warnings or [],
             cached=cached,
             cache_age_seconds=(
@@ -829,6 +811,55 @@ def _stored_warnings(cache: SearchCache) -> list[str]:
     if not isinstance(warnings, list):
         return []
     return [item for item in warnings if isinstance(item, str)]
+
+
+def _resource_summary(
+    item: Resource,
+    score_snapshot: Mapping[str, Mapping[str, int]] | None,
+) -> ResourceSummary:
+    metadata = _resource_metadata(item)
+    size_source = metadata.get("size_source")
+    seeders_source = metadata.get("seeders_source")
+    observed_at = metadata.get("seeders_observed_at")
+    return ResourceSummary(
+        resource_id=item.id,
+        kind=item.kind,
+        name=item.name,
+        size_bytes=item.size_bytes,
+        seeders=item.seeders,
+        source=item.source,
+        captured_at=_as_utc(item.captured_at),
+        size_source=(size_source if size_source in {"pansou", "inspection"} else None),
+        seeders_source=seeders_source if seeders_source == "pansou" else None,
+        seeders_observed_at=(
+            _parse_metadata_datetime(observed_at)
+            if seeders_source == "pansou"
+            else None
+        ),
+        rank_score=_snapshot_score(score_snapshot, item.id, "rank_score"),
+        relevance_score=_snapshot_score(score_snapshot, item.id, "relevance_score"),
+        completeness_score=_snapshot_score(
+            score_snapshot, item.id, "completeness_score"
+        ),
+    )
+
+
+def _resource_metadata(resource: Resource) -> dict:
+    try:
+        metadata = json.loads(resource.metadata_json)
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    return metadata if isinstance(metadata, dict) else {}
+
+
+def _parse_metadata_datetime(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.strip())
+    except ValueError:
+        return None
+    return _as_utc(parsed)
 
 
 def _merge_warnings(current: list[str], additions: list[str]) -> list[str]:
