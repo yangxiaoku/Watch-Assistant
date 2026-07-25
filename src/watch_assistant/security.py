@@ -60,7 +60,6 @@ class SecurityManager:
             web_password_hash.encode("utf-8")
         ).hexdigest()
         self._sessions: dict[str, SessionRecord] = {}
-        self._legacy_sessions: dict[str, SessionRecord] = {}
         self._rate_windows: dict[tuple[str, str], deque[datetime]] = {}
 
     @property
@@ -73,14 +72,14 @@ class SecurityManager:
         *,
         session_ttl: timedelta | None = None,
     ) -> None:
-        if self._session_factory is None:
-            self._legacy_sessions.update(self._sessions)
-            self._sessions.clear()
         self._session_factory = session_factory
+        self._sessions.clear()
         if session_ttl is not None:
             self._session_ttl = session_ttl
 
     def login(self, password: str) -> tuple[str, str]:
+        if self._session_factory is not None:
+            raise AuthError(503, "auth_unavailable")
         try:
             valid = self._password_hash.verify(password, self._web_password_hash)
         except Exception:  # noqa: BLE001 - invalid configured hash fails closed
@@ -89,10 +88,9 @@ class SecurityManager:
             raise AuthError(401, "invalid_credentials")
         session_id = secrets.token_urlsafe(32)
         csrf_token = secrets.token_urlsafe(24)
-        target = self._legacy_sessions if self._session_factory else self._sessions
-        target[session_id] = SessionRecord(
+        self._sessions[session_id] = SessionRecord(
             csrf_token=csrf_token,
-            expires_at=datetime.now(UTC) + SESSION_TTL,
+            expires_at=datetime.now(UTC) + self._session_ttl,
         )
         return session_id, csrf_token
 
@@ -118,11 +116,13 @@ class SecurityManager:
                     )
                 )
                 await session.commit()
-        except Exception as exc:
-            raise AuthError(503, "auth_unavailable") from exc
+        except Exception:  # noqa: BLE001 - storage failures fail closed
+            raise AuthError(503, "auth_unavailable") from None
         return session_id, csrf_token
 
     def logout(self, session_id: str | None) -> None:
+        if self._session_factory is not None:
+            raise AuthError(503, "auth_unavailable")
         if session_id:
             self._sessions.pop(session_id, None)
 
@@ -140,12 +140,13 @@ class SecurityManager:
                     )
                 )
                 await session.commit()
-        except Exception as exc:
-            raise AuthError(503, "auth_unavailable") from exc
+        except Exception:  # noqa: BLE001 - storage failures fail closed
+            raise AuthError(503, "auth_unavailable") from None
         self._sessions.pop(session_id, None)
-        self._legacy_sessions.pop(session_id, None)
 
     def authenticate(self, request: Request) -> AuthContext:
+        if self._session_factory is not None:
+            raise AuthError(503, "auth_unavailable")
         return self._authenticate_memory(request)
 
     async def authenticate_async(self, request: Request) -> AuthContext:
@@ -217,17 +218,6 @@ class SecurityManager:
             async with self._session_factory() as session:
                 record = await session.get(WebSession, digest)
                 expires_at = _as_utc(record.expires_at) if record else None
-                if record is None:
-                    legacy_record = self._legacy_sessions.get(session_id)
-                    if legacy_record is not None:
-                        if legacy_record.expires_at > now:
-                            return AuthContext(
-                                identity="session:" + digest,
-                                via_bearer=False,
-                                session_id=session_id,
-                                csrf_token=legacy_record.csrf_token,
-                            )
-                        self._legacy_sessions.pop(session_id, None)
                 if (
                     record is None
                     or expires_at <= now
@@ -245,8 +235,8 @@ class SecurityManager:
                 )
         except AuthError:
             raise
-        except Exception as exc:
-            raise AuthError(401, "unauthorized") from exc
+        except Exception:  # noqa: BLE001 - storage failures fail closed
+            raise AuthError(503, "auth_unavailable") from None
 
     def _verify_web_password(self, password: str) -> None:
         try:

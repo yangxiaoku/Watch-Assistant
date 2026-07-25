@@ -14,7 +14,7 @@ from watch_assistant.crypto import SecretCrypto
 from watch_assistant.db import create_database, initialize_database
 from watch_assistant.models import Resource, Task, TaskState
 from watch_assistant.schemas import RemoteStatus
-from watch_assistant.security import SESSION_COOKIE, SecurityManager
+from watch_assistant.security import SecurityManager
 from watch_assistant.services.p115_credentials import CookieProvider
 from watch_assistant.services.tasks import TaskService
 
@@ -249,11 +249,13 @@ async def test_p115_settings_reuses_runtime_adapter_without_remote_access(
         assert (
             app.state.p115_settings_service._cookie_provider is adapter.cookie_provider
         )
-        session_id, csrf_token = security.login("web-secret")
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://app.test"
         ) as client:
-            client.cookies.set(SESSION_COOKIE, session_id)
+            login = await client.post(
+                "/api/v1/auth/login", json={"password": "web-secret"}
+            )
+            csrf_token = login.json()["csrf_token"]
             settings = await client.get("/api/v1/settings/p115")
             assert adapter.validation_calls == 0
             validation = await client.post(

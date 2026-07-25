@@ -123,7 +123,7 @@ async def test_get_settings_requires_auth_and_hides_state_without_session(tmp_pa
 
     async with await _client(app) as client:
         anonymous = await client.get("/api/v1/settings/p115")
-        session_id, _csrf_token = security.login("web-secret")
+        session_id, _csrf_token = await security.login_async("web-secret")
         client.cookies.set(SESSION_COOKIE, session_id)
         authenticated = await client.get("/api/v1/settings/p115")
 
@@ -388,7 +388,7 @@ async def test_invalid_cookie_is_failed_and_validation_needs_auth(tmp_path):
         adapter=adapter,
     )
     security = _security()
-    session_id, csrf_token = security.login("web-secret")
+    session_id, csrf_token = await security.login_async("web-secret")
     app = _settings_app(service, security)
 
     async with await _client(app) as client:
@@ -421,7 +421,7 @@ async def test_validate_requires_csrf_calls_only_read_only_adapter_and_rate_limi
         validation_limit=1,
     )
     security = _security()
-    session_id, csrf_token = security.login("web-secret")
+    session_id, csrf_token = await security.login_async("web-secret")
     app = _settings_app(service, security)
 
     async with await _client(app) as client:
