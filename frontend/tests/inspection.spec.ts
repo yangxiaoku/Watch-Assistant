@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  INSPECTION_POLL_INTERVAL_MS,
   INSPECTION_TIMEOUT_MS,
   finalizeInspectionResources,
   inspectionProgress,
@@ -49,6 +50,10 @@ const resource: ResourceSummary = {
 
 describe("inspection contract", () => {
   afterEach(() => vi.useRealTimers());
+
+  it("polls inspection batches at the one-second UI interval", () => {
+    expect(INSPECTION_POLL_INTERVAL_MS).toBe(1_000);
+  });
 
   it("uses submitted_count/completed_count and counts failed results", () => {
     const response = batch({

@@ -98,6 +98,10 @@ def create_app(
                     settings.qbittorrent_base_url,
                     settings.qbittorrent_username.get_secret_value(),
                     settings.qbittorrent_password.get_secret_value(),
+                    concurrency=settings.inspection_concurrency,
+                    item_timeout=settings.inspection_item_timeout_seconds,
+                    poll_interval=settings.inspection_poll_interval_seconds,
+                    request_timeout=settings.inspection_request_timeout_seconds,
                 )
                 owned.append(inspection_client)
             application.state.inspection_supported = inspection_client is not None
@@ -174,7 +178,9 @@ def create_app(
         application.state.inspection_supported = qbittorrent_client is not None
         if qbittorrent_client is not None:
             application.state.inspection_client = qbittorrent_client
-            application.state.inspection_service = InspectionService(database.session_factory)
+            application.state.inspection_service = InspectionService(
+                database.session_factory
+            )
             application.state.inspection_worker = InspectionWorker(
                 database.session_factory,
                 crypto,

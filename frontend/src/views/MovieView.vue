@@ -20,7 +20,7 @@ const props = defineProps<{
   inspectionMoreAvailable?: boolean;
   inspectionRetryAvailable?: boolean;
 }>();
-const emit = defineEmits<{ push: [resource: ResourceSummary]; refresh: []; back: []; favorite: []; season: [seasonNumber: number | null]; inspectMore: [] }>();
+const emit = defineEmits<{ push: [resource: ResourceSummary]; refresh: []; back: []; favorite: []; season: [seasonNumber: number | null]; inspectMore: []; retryFailed: [] }>();
 
 const isTv = computed(() => props.mediaType === "tv" || props.result.movie.media_type === "tv");
 const seasons = computed(() => props.result.movie.seasons ?? []);
@@ -62,6 +62,6 @@ function posterUrl(path: string | null): string | null {
     </header>
     <section v-if="result.movie.overview" class="overview-section"><h2>简介</h2><p>{{ result.movie.overview }}</p></section>
     <div v-if="result.warnings.length" class="warning-strip">{{ result.warnings.join(' · ') }}</div>
-    <ResourceTable :resources="result.results" :pushing-id="pushingId" :push-supported="pushSupported" :inspection-supported="inspectionSupported" :inspection-state="inspectionState" :inspection-completed="inspectionCompleted" :inspection-total="inspectionTotal" :inspection-failed="inspectionFailed" :inspection-error="inspectionError" :inspection-more-available="inspectionMoreAvailable" :inspection-retry-available="inspectionRetryAvailable" @push="$emit('push', $event)" @inspect-more="$emit('inspectMore')" />
+    <ResourceTable :resources="result.results" :pushing-id="pushingId" :push-supported="pushSupported" :inspection-supported="inspectionSupported" :inspection-state="inspectionState" :inspection-completed="inspectionCompleted" :inspection-total="inspectionTotal" :inspection-failed="inspectionFailed" :inspection-error="inspectionError" :inspection-more-available="inspectionMoreAvailable" :inspection-retry-available="inspectionRetryAvailable" @push="$emit('push', $event)" @inspect-more="$emit('inspectMore')" @retry-failed="$emit('retryFailed')" />
   </section>
 </template>

@@ -6,9 +6,11 @@ import httpx
 import pytest
 import respx
 
+import watch_assistant.adapters.qbittorrent as qbittorrent_module
 from watch_assistant.adapters.qbittorrent import (
     InspectionStatus,
     QbittorrentClient,
+    QbittorrentInspectionResult,
 )
 
 BASE_URL = "http://qbittorrent.test"
@@ -36,6 +38,7 @@ class FakeQbittorrent:
         add_response_json: dict[str, object] | None = None,
         state_sequence: list[str] | None = None,
         downloaded: int | None = None,
+        info_failure_after_add: bool = False,
     ) -> None:
         self.existing = {value.casefold() for value in (existing or set())}
         self.metadata_received = metadata_received
@@ -51,6 +54,7 @@ class FakeQbittorrent:
         self.add_response_json = add_response_json
         self.state_sequence = state_sequence
         self.downloaded = downloaded
+        self.info_failure_after_add = info_failure_after_add
         self.added: dict[str, str] = {}
         self.added_state_checks = 0
         self.add_calls = 0
@@ -121,6 +125,8 @@ class FakeQbittorrent:
                     )
                 marker = self.added.get(normalized)
                 if marker:
+                    if self.info_failure_after_add:
+                        raise httpx.ReadTimeout("controlled info failure")
                     state = self.state or (
                         "stoppedDL" if self.metadata_received else "metaDL"
                     )
@@ -425,6 +431,89 @@ async def test_instance_semaphore_limits_concurrent_batches():
     assert fake.max_active_checks == 2
 
 
+async def test_eight_inspection_tasks_enter_concurrency_zone_together(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    client = QbittorrentClient(BASE_URL, "user", "password", concurrency=8)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    active = 0
+    max_active = 0
+
+    async def fake_login() -> None:
+        return None
+
+    async def fake_inspect_one(item, _marker, _marker_used):
+        nonlocal active, max_active
+        active += 1
+        max_active = max(max_active, active)
+        if active == 8:
+            entered.set()
+        await release.wait()
+        active -= 1
+        return QbittorrentInspectionResult(
+            infohash=item.infohash,
+            status=InspectionStatus.VERIFIED,
+        )
+
+    monkeypatch.setattr(client, "_login", fake_login)
+    monkeypatch.setattr(client, "_inspect_one", fake_inspect_one)
+    task = asyncio.create_task(
+        client.inspect([_magnet(f"{index:040x}") for index in range(1, 9)])
+    )
+
+    await asyncio.wait_for(entered.wait(), timeout=1)
+    assert active == 8
+    assert max_active == 8
+    release.set()
+    results = await task
+    await client.aclose()
+
+    assert len(results) == 8
+    assert all(result.status == InspectionStatus.VERIFIED for result in results)
+
+
+async def test_inspection_concurrency_cap_is_strict_with_controlled_barrier(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    client = QbittorrentClient(BASE_URL, "user", "password", concurrency=2)
+    first_wave = asyncio.Event()
+    release = asyncio.Event()
+    active = 0
+    max_active = 0
+
+    async def fake_login() -> None:
+        return None
+
+    async def fake_inspect_one(item, _marker, _marker_used):
+        nonlocal active, max_active
+        active += 1
+        max_active = max(max_active, active)
+        if active == 2:
+            first_wave.set()
+        await release.wait()
+        active -= 1
+        return QbittorrentInspectionResult(
+            infohash=item.infohash,
+            status=InspectionStatus.VERIFIED,
+        )
+
+    monkeypatch.setattr(client, "_login", fake_login)
+    monkeypatch.setattr(client, "_inspect_one", fake_inspect_one)
+    task = asyncio.create_task(
+        client.inspect([_magnet(f"{index:040x}") for index in range(1, 5)])
+    )
+
+    await asyncio.wait_for(first_wave.wait(), timeout=1)
+    assert active == 2
+    assert max_active == 2
+    release.set()
+    await task
+    await client.aclose()
+
+    assert max_active == 2
+
+
 @respx.mock
 async def test_same_hash_is_serialized_across_batches_and_lock_table_is_reclaimed():
     fake = FakeQbittorrent(add_delay=0.01)
@@ -569,6 +658,56 @@ async def test_metadata_timeout_still_cleans_owned_torrent():
     assert result.status == InspectionStatus.TIMEOUT
     assert result.error_code == "metadata_timeout"
     assert fake.delete_calls == 1
+    assert fake.delete_tag_calls == 1
+    assert fake.remove_category_calls == 1
+
+
+@respx.mock
+async def test_thirty_second_metadata_timeout_is_deterministic(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    class ControlledClock:
+        def __init__(self) -> None:
+            self.values = iter((0.0, 31.0))
+
+        def monotonic(self) -> float:
+            return next(self.values)
+
+    fake = FakeQbittorrent(metadata_received=False)
+    fake.install()
+    monkeypatch.setattr(qbittorrent_module, "time", ControlledClock())
+    client = QbittorrentClient(
+        BASE_URL,
+        "user",
+        "password",
+        item_timeout=30,
+        poll_interval=0,
+    )
+
+    result = (await client.inspect([_magnet("a" * 40)]))[0]
+    await client.aclose()
+
+    assert result.status == InspectionStatus.TIMEOUT
+    assert result.error_code == "metadata_timeout"
+    assert fake.delete_calls == 1
+    assert fake.delete_tag_calls == 1
+    assert fake.remove_category_calls == 1
+
+
+@respx.mock
+async def test_exception_after_add_cleans_torrent_tag_and_category():
+    fake = FakeQbittorrent(info_failure_after_add=True)
+    fake.install()
+    client = QbittorrentClient(BASE_URL, "user", "password", poll_interval=0)
+
+    result = (await client.inspect([_magnet("b" * 40)]))[0]
+    await client.aclose()
+
+    assert result.status == InspectionStatus.FAILED
+    assert result.error_code == "api_unavailable"
+    assert fake.delete_calls == 1
+    assert fake.delete_tag_calls == 1
+    assert fake.remove_category_calls == 1
 
 
 @respx.mock

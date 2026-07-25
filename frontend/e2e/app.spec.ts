@@ -442,13 +442,13 @@ test("exposes a retry action after POST failure and resubmits the same resource 
   await expect(page.getByRole("status")).toContainText("1 / 1");
 });
 
-test("partial inspection retries only failed and timed out resources", async ({ page }) => {
+test("keeps more and retry actions separate when eight failures and untested resources coexist", async ({ page }) => {
   const submittedIds: string[][] = [];
   let inspectPostCount = 0;
-  const resources = ["verified", "unsupported", "failed", "timeout"].map((id) => ({
-    resource_id: `resource-${id}`,
+  const resources = Array.from({ length: 12 }, (_, index) => ({
+    resource_id: `resource-${index}`,
     kind: "magnet",
-    name: `Resource ${id}`,
+    name: `Resource ${index}`,
     size_bytes: null,
     seeders: null,
     source: "test",
@@ -467,28 +467,47 @@ test("partial inspection retries only failed and timed out resources", async ({ 
     const resourceIds = (route.request().postDataJSON() as { resource_ids: string[] }).resource_ids;
     submittedIds.push(resourceIds);
     inspectPostCount += 1;
-    const statuses = inspectPostCount === 1
-      ? ["verified", "unsupported", "failed", "timeout"] as const
-      : ["verified", "verified"] as const;
+    const status: "failed" | "verified" = inspectPostCount === 1 ? "failed" : "verified";
     return route.fulfill({
       json: {
         batch_id: `partial-batch-${inspectPostCount}`,
         status: inspectPostCount === 1 ? "partial" : "completed",
         submitted_count: resourceIds.length,
         completed_count: resourceIds.length,
-        results: resourceIds.map((resourceId, index) => inspectionResult(resourceId, statuses[index])),
+        results: resourceIds.map((resourceId) => inspectionResult(resourceId, status)),
       },
     });
   });
 
   await page.goto("/movie/27205");
+  await expect(page.getByRole("button", { name: "检测更多" })).toBeVisible();
   await expect(page.getByRole("button", { name: "重试失败项" })).toBeVisible();
-  await page.getByRole("button", { name: "重试失败项" }).click();
+  expect(await page.evaluate(() => {
+    const buttons = [...document.querySelectorAll<HTMLElement>(".resource-controls .inspection-more-button")]
+      .filter((button) => getComputedStyle(button).display !== "none");
+    const boxes = buttons.map((button) => button.getBoundingClientRect());
+    return boxes.every((box, index) => boxes.slice(index + 1).every((other) =>
+      box.right <= other.left + 1
+      || other.right <= box.left + 1
+      || box.bottom <= other.top + 1
+      || other.bottom <= box.top + 1,
+    )) && buttons.every((button) => button.scrollWidth <= button.clientWidth)
+      && document.body.scrollWidth <= window.innerWidth;
+  })).toBe(true);
+  await page.getByRole("button", { name: "检测更多" }).click();
   await expect.poll(() => inspectPostCount).toBe(2);
   expect(submittedIds).toEqual([
-    ["resource-verified", "resource-unsupported", "resource-failed", "resource-timeout"],
-    ["resource-failed", "resource-timeout"],
+    resources.slice(0, 8).map((resource) => resource.resource_id),
+    resources.slice(8).map((resource) => resource.resource_id),
   ]);
+
+  await expect(page.getByRole("button", { name: "重试失败项" })).toBeVisible();
+  await page.getByRole("button", { name: "重试失败项" }).click();
+  await expect.poll(() => inspectPostCount).toBe(3);
+  expect(submittedIds[2]).toEqual(resources.slice(0, 8).map((resource) => resource.resource_id));
+  expect(new Set(submittedIds.flat()).size).toBe(12);
+  await expect(page.getByRole("button", { name: "检测更多" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "重试失败项" })).toHaveCount(0);
 });
 
 test("clears the failed inspection queue when switching seasons", async ({ page }) => {

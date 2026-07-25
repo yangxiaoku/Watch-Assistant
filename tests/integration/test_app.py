@@ -55,3 +55,54 @@ async def test_supported_contract_fails_closed_without_production_worker(
     with pytest.raises(RuntimeError, match="no production worker"):
         async with app.router.lifespan_context(app):
             pass
+
+
+@pytest.mark.integration
+async def test_app_passes_inspection_settings_to_qbittorrent_client(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    contract_path = tmp_path / "tgto-contract.json"
+    contract_path.write_text('{"supported": false}', encoding="utf-8")
+    settings = {
+        "DATABASE_URL": f"sqlite+aiosqlite:///{tmp_path / 'app.db'}",
+        "ENCRYPTION_KEY": Fernet.generate_key().decode("ascii"),
+        "TMDB_API_KEY": "tmdb-key",
+        "WEB_PASSWORD_HASH": "web-hash",
+        "SCRIPT_TOKEN_HASH": "script-hash",
+        "PANSOU_BASE_URL": "http://pansou.test",
+        "TGTO_BASE_URL": "http://tgto.test",
+        "TGTO_CONTRACT_PATH": str(contract_path),
+        "CACHE_WARM_ENABLED": "false",
+        "INSPECTION_ENABLED": "true",
+        "QBITTORRENT_BASE_URL": "http://qbittorrent.test",
+        "QBITTORRENT_USERNAME": "user",
+        "QBITTORRENT_PASSWORD": "password",
+        "INSPECTION_CONCURRENCY": "9",
+        "INSPECTION_ITEM_TIMEOUT_SECONDS": "45",
+        "INSPECTION_POLL_INTERVAL_SECONDS": "0.5",
+        "INSPECTION_REQUEST_TIMEOUT_SECONDS": "12",
+    }
+    for name, value in settings.items():
+        monkeypatch.setenv(name, value)
+
+    captured: dict[str, object] = {}
+
+    class CapturingQbittorrent:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            captured["args"] = args
+            captured["kwargs"] = kwargs
+
+        async def aclose(self) -> None:
+            return None
+
+    monkeypatch.setattr("watch_assistant.app.QbittorrentClient", CapturingQbittorrent)
+    app = create_app(frontend_dir=tmp_path / "missing")
+
+    async with app.router.lifespan_context(app):
+        assert captured["args"] == ("http://qbittorrent.test", "user", "password")
+        assert captured["kwargs"] == {
+            "concurrency": 9,
+            "item_timeout": 45.0,
+            "poll_interval": 0.5,
+            "request_timeout": 12.0,
+        }
