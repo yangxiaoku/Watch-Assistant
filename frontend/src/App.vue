@@ -153,10 +153,14 @@ function resourceCacheKey(route: ResourceRouteState, snapshotRevision?: string |
   return [detailMediaType.value, result.value?.movie.tmdb_id ?? "", selectedSeason.value ?? "all", snapshotRevision ?? "snapshot", route.kind, route.quality, route.query.trim(), route.sort, route.page, route.pageSize].join("|");
 }
 
-function clearResourcePagination() {
+function invalidateResourceRequest(): void {
   resourceAbortController?.abort();
   resourceAbortController = null;
   resourceRequestId += 1;
+}
+
+function clearResourcePagination() {
+  invalidateResourceRequest();
   resourceResponse.value = null;
   resourceItemsFallback.value = [];
   resourceLoading.value = false;
@@ -213,6 +217,34 @@ function normalizeCatalogRoute(route: CatalogRoute): CatalogRoute {
     ...(genreId !== undefined ? { genreId } : {}),
     ...(year !== undefined ? { year } : {}),
   };
+}
+
+function restoreCatalogReturnState(): void {
+  const state = window.history.state;
+  const value = state?.catalog;
+  if (!state?.catalogDetailEntry || !value || typeof value !== "object") {
+    catalogReturnRoute = null;
+    catalogReturnScrollY = null;
+    return;
+  }
+  const candidate = value as Partial<CatalogRoute>;
+  const validView = candidate.view === "movies" || candidate.view === "tv" || candidate.view === "popular" || candidate.view === "search";
+  const validSort = candidate.sort === "popular" || candidate.sort === "rating" || candidate.sort === "release";
+  if (!validView || !validSort || !Number.isInteger(candidate.page)) {
+    catalogReturnRoute = null;
+    catalogReturnScrollY = null;
+    return;
+  }
+  catalogReturnRoute = normalizeCatalogRoute({
+    view: candidate.view,
+    query: typeof candidate.query === "string" ? candidate.query : "",
+    page: candidate.page,
+    sort: candidate.sort,
+    ...(Number.isInteger(candidate.genreId) ? { genreId: candidate.genreId } : {}),
+    ...(Number.isInteger(candidate.year) ? { year: candidate.year } : {}),
+  });
+  catalogReturnScrollY = typeof state.catalogScrollY === "number" ? state.catalogScrollY : null;
+  previousView.value = catalogReturnRoute.view;
 }
 
 function sameCatalogRoute(left: CatalogRoute, right: CatalogRoute): boolean {
@@ -489,9 +521,7 @@ function invalidateDetailRequest() {
 }
 
 function beginResourceSnapshot(fallback: ResourceSummary[]) {
-  resourceAbortController?.abort();
-  resourceAbortController = null;
-  resourceRequestId += 1;
+  invalidateResourceRequest();
   resourceResponse.value = null;
   resourceItemsFallback.value = fallback;
   resourceLoading.value = false;
@@ -597,6 +627,7 @@ function changeResourceFilter(next: Partial<ResourceRouteState>) {
 
 function changeResourceQuery(value: string) {
   if (resourceQueryTimer !== undefined) window.clearTimeout(resourceQueryTimer);
+  invalidateResourceRequest();
   resourceQueryTimer = window.setTimeout(() => {
     changeResourceFilter({ query: value.trim() });
     resourceQueryTimer = undefined;
@@ -704,6 +735,7 @@ async function returnToBrowse() {
 async function initializeWorkspace() {
   const mediaRoute = extractMediaRoute(window.location.pathname + window.location.search);
   if (mediaRoute !== null) {
+    restoreCatalogReturnState();
     selectedSeason.value = mediaRoute.mediaType === "tv" ? mediaRoute.seasonNumber ?? null : null;
     await loadResources(mediaRoute.tmdbId, mediaRoute.mediaType, false, selectedSeason.value, true, resourceRouteFromMediaRoute(mediaRoute));
     return;

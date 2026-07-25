@@ -99,13 +99,18 @@ test("sends backend filters and ignores a stale delayed response", async ({ page
   await page.route("**/api/v1/media/movie/27205/resources**", async (route) => {
     const url = new URL(route.request().url());
     requests.push(url);
-    if (url.searchParams.get("query") === "old") await new Promise((resolve) => setTimeout(resolve, 250));
+    if (url.searchParams.get("query") === "old") await new Promise((resolve) => setTimeout(resolve, 120));
     return route.fulfill({ json: { ...pageResponse(1), items: [resource(`query-${url.searchParams.get("query") ?? "all"}`, 1)] } });
   });
   await page.goto("/movie/27205");
   await page.getByLabel("资源名称搜索").fill("old");
   await page.waitForTimeout(280);
   await page.getByLabel("资源名称搜索").fill("new");
+  await expect(page.getByLabel("资源名称搜索")).toHaveValue("new");
+  await page.waitForTimeout(150);
+  await expect(page.getByLabel("资源名称搜索")).toHaveValue("new");
+  await expect(page).not.toHaveURL(/resource_query=old/);
+  await expect(page.locator(".resource-title").first()).not.toContainText("query-old");
   await expect(page.locator(".resource-title").first()).toContainText("query-new");
   await page.getByRole("button", { name: "字幕 80" }).click();
   await page.locator('select[aria-label="资源排序"]').selectOption("seeders");
@@ -270,15 +275,21 @@ test("returns from an internal resource route to the original catalog entry", as
   await page.getByRole("button", { name: "下一页" }).click();
   await expect(page).toHaveURL(/resource_page=2/);
   await expect(page.locator(".resource-title").first()).toContainText("page 2");
+  await page.locator('select[aria-label="资源排序"]').selectOption("relevance");
+  await expect(page).toHaveURL(/resource_sort=relevance/);
+  await page.getByRole("button", { name: "下一页" }).click();
+  await expect(page).toHaveURL(/resource_page=2.*resource_sort=relevance|resource_sort=relevance.*resource_page=2/);
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "目录电影" })).toBeVisible();
   await page.getByRole("button", { name: "返回浏览" }).click();
   await expect(page).toHaveURL(/\/movies\?page=2$/);
   await expect(page.getByText("第 2 / 2 页 · 共 24 条")).toBeVisible();
   await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(savedScroll);
-  expect(catalogRequests).toEqual([1, 2]);
+  expect(catalogRequests).toEqual([1, 2, 2]);
 
   await page.goBack();
   await expect(page.getByText("第 1 / 2 页 · 共 24 条")).toBeVisible();
   await page.goForward();
   await expect(page.getByText("第 2 / 2 页 · 共 24 条")).toBeVisible();
-  expect(catalogRequests).toEqual([1, 2]);
+  expect(catalogRequests).toEqual([1, 2, 2, 1]);
 });
