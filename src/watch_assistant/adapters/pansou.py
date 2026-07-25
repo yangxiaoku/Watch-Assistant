@@ -160,12 +160,9 @@ def _enrich_magnet_metadata(
         return merged_by_type
 
     observed_at = datetime.now(UTC).isoformat()
-    plugin_by_hash: dict[str, dict[str, int]] = {}
+    results_by_hash: dict[str, list[dict[str, Any]]] = {}
     for result in results:
         if not isinstance(result, dict):
-            continue
-        plugin = result.get("source") or result.get("plugin")
-        if plugin not in {"plugin:nyaa", "plugin:thepiratebay"}:
             continue
         links = result.get("links")
         if not isinstance(links, list):
@@ -176,21 +173,25 @@ def _enrich_magnet_metadata(
             infohash = _magnet_infohash(link.get("url"))
             if infohash is None:
                 continue
-            values = _parse_plugin_link(plugin, link)
-            if values:
-                existing = plugin_by_hash.setdefault(infohash, {})
-                for key, value in values.items():
-                    existing.setdefault(key, value)
+            results_by_hash.setdefault(infohash, []).append(result)
 
-    if not plugin_by_hash:
+    if not results_by_hash:
         return merged_by_type
     enriched_magnets = []
     for item in magnets:
         if not isinstance(item, dict):
             enriched_magnets.append(item)
             continue
+        plugin = item.get("source")
+        if plugin not in {"plugin:nyaa", "plugin:thepiratebay"}:
+            enriched_magnets.append(item)
+            continue
         infohash = _magnet_infohash(item.get("url"))
-        values = plugin_by_hash.get(infohash or "")
+        values: dict[str, int] = {}
+        for result in results_by_hash.get(infohash or "", []):
+            parsed = _parse_plugin_result(plugin, result)
+            for key, value in parsed.items():
+                values.setdefault(key, value)
         if not values:
             enriched_magnets.append(item)
             continue
@@ -206,18 +207,13 @@ def _enrich_magnet_metadata(
     return {**merged_by_type, "magnet": enriched_magnets}
 
 
-def _parse_plugin_link(plugin: object, link: dict[str, Any]) -> dict[str, int]:
+def _parse_plugin_result(plugin: object, result: dict[str, Any]) -> dict[str, int]:
     if plugin == "plugin:nyaa":
         labels = ("大小", "做种")
-        values = [
-            link.get("content"),
-            link.get("Content"),
-            link.get("tags"),
-            link.get("Tags"),
-        ]
+        values = [result.get("content"), result.get("tags")]
     elif plugin == "plugin:thepiratebay":
         labels = ("文件大小", "Seeders")
-        values = [link.get("content"), link.get("Content")]
+        values = [result.get("content")]
     else:
         return {}
     parsed: dict[str, int] = {}

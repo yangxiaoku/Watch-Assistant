@@ -1,3 +1,5 @@
+import base64
+
 import httpx
 import pytest
 import respx
@@ -44,6 +46,46 @@ async def test_pansou_client_returns_merged_result_shape():
 async def test_pansou_extracts_nyaa_and_tpb_plugin_metadata_by_infohash():
     nyaa_hash = "a" * 40
     tpb_hash = "b" * 40
+    nyaa_base32 = base64.b32encode(bytes.fromhex(nyaa_hash)).decode().rstrip("=")
+    tpb_base32 = base64.b32encode(bytes.fromhex(tpb_hash)).decode().rstrip("=")
+    nyaa_result = {
+        "message_id": "nyaa-message",
+        "unique_id": "nyaa-unique",
+        "channel": "nyaa",
+        "datetime": "2026-07-25T00:00:00Z",
+        "title": "Nyaa Movie",
+        "content": "大小: 1.5 GiB",
+        "links": [
+            {
+                "type": "magnet",
+                "url": f"magnet:?xt=urn:btih:{nyaa_base32}",
+                "password": "",
+                "datetime": "2026-07-25T00:00:00Z",
+                "work_title": "Nyaa Movie",
+            }
+        ],
+        "tags": "做种: 12",
+        "images": [],
+    }
+    tpb_result = {
+        "message_id": "tpb-message",
+        "unique_id": "tpb-unique",
+        "channel": "tpb",
+        "datetime": "2026-07-25T00:00:00Z",
+        "title": "TPB Movie",
+        "content": "文件大小: 2 TB, Seeders: 34",
+        "links": [
+            {
+                "type": "magnet",
+                "url": f"magnet:?xt=urn:btih:{tpb_hash.upper()}",
+                "password": "",
+                "datetime": "2026-07-25T00:00:00Z",
+                "work_title": "TPB Movie",
+            }
+        ],
+        "tags": "",
+        "images": [],
+    }
     route = respx.get("http://pansou.test/api/search").mock(
         return_value=httpx.Response(
             200,
@@ -54,36 +96,18 @@ async def test_pansou_extracts_nyaa_and_tpb_plugin_metadata_by_infohash():
                     "merged_by_type": {
                         "magnet": [
                             {
-                                "url": f"magnet:?xt=urn:btih:{nyaa_hash}",
+                                "url": f"magnet:?xt=urn:btih:{nyaa_hash.upper()}",
                                 "note": "Nyaa Movie",
+                                "source": "plugin:nyaa",
                             },
                             {
-                                "url": f"magnet:?xt=urn:btih:{tpb_hash}",
+                                "url": f"magnet:?xt=urn:btih:{tpb_base32}",
                                 "note": "TPB Movie",
+                                "source": "plugin:thepiratebay",
                             },
                         ]
                     },
-                    "results": [
-                        {
-                            "source": "plugin:nyaa",
-                            "links": [
-                                {
-                                    "url": f"magnet:?xt=urn:btih:{nyaa_hash}",
-                                    "Content": "大小: 1.5 GiB",
-                                    "Tags": "做种: 12",
-                                }
-                            ],
-                        },
-                        {
-                            "source": "plugin:thepiratebay",
-                            "links": [
-                                {
-                                    "url": f"magnet:?xt=urn:btih:{tpb_hash}",
-                                    "Content": "文件大小: 2 TB, Seeders: 34",
-                                }
-                            ],
-                        },
-                    ],
+                    "results": [nyaa_result, tpb_result],
                 },
             },
         )
@@ -94,6 +118,12 @@ async def test_pansou_extracts_nyaa_and_tpb_plugin_metadata_by_infohash():
     await client.aclose()
 
     magnets = result["merged_by_type"]["magnet"]
+    for search_result in result["results"]:
+        assert "source" not in search_result
+        assert "plugin" not in search_result
+        for link in search_result["links"]:
+            assert "content" not in link
+            assert "tags" not in link
     assert magnets[0]["size"] == int(1.5 * 1024**3)
     assert magnets[0]["seeders"] == 12
     assert magnets[0]["size_source"] == "pansou"
@@ -120,32 +150,53 @@ async def test_pansou_ignores_invalid_values_and_unknown_plugin_text():
                             {
                                 "url": f"magnet:?xt=urn:btih:{invalid_hash}",
                                 "note": "Invalid",
+                                "source": "plugin:nyaa",
                             },
                             {
                                 "url": f"magnet:?xt=urn:btih:{unknown_hash}",
                                 "note": "Unknown",
+                                "source": "plugin:other",
                             },
                         ]
                     },
                     "results": [
                         {
-                            "source": "plugin:nyaa",
+                            "message_id": "invalid-message",
+                            "unique_id": "invalid-unique",
+                            "channel": "nyaa",
+                            "datetime": "2026-07-25T00:00:00Z",
+                            "title": "Invalid",
+                            "content": "大小: -1 GB",
                             "links": [
                                 {
+                                    "type": "magnet",
                                     "url": f"magnet:?xt=urn:btih:{invalid_hash}",
-                                    "Content": "大小: -1 GB",
-                                    "Tags": "做种: -3",
+                                    "password": "",
+                                    "datetime": "2026-07-25T00:00:00Z",
+                                    "work_title": "Invalid",
                                 }
                             ],
+                            "tags": "做种: -3",
+                            "images": [],
                         },
                         {
-                            "source": "plugin:other",
+                            "message_id": "unknown-message",
+                            "unique_id": "unknown-unique",
+                            "channel": "other",
+                            "datetime": "2026-07-25T00:00:00Z",
+                            "title": "Unknown",
+                            "content": "大小: 99 TB, Seeders: 999",
                             "links": [
                                 {
+                                    "type": "magnet",
                                     "url": f"magnet:?xt=urn:btih:{unknown_hash}",
-                                    "Content": "大小: 99 TB, Seeders: 999",
+                                    "password": "",
+                                    "datetime": "2026-07-25T00:00:00Z",
+                                    "work_title": "Unknown",
                                 }
                             ],
+                            "tags": "",
+                            "images": [],
                         },
                     ],
                 },
@@ -161,6 +212,127 @@ async def test_pansou_ignores_invalid_values_and_unknown_plugin_text():
     assert "seeders" not in result["merged_by_type"]["magnet"][0]
     assert "size" not in result["merged_by_type"]["magnet"][1]
     assert "seeders" not in result["merged_by_type"]["magnet"][1]
+
+
+@respx.mock
+async def test_pansou_keeps_existing_structured_magnet_fields():
+    infohash = "e" * 40
+    result = {
+        "message_id": "structured-message",
+        "unique_id": "structured-unique",
+        "channel": "nyaa",
+        "datetime": "2026-07-25T00:00:00Z",
+        "title": "Structured",
+        "content": "大小: 1 GB",
+        "links": [
+            {
+                "type": "magnet",
+                "url": f"magnet:?xt=urn:btih:{infohash}",
+                "password": "",
+                "datetime": "2026-07-25T00:00:00Z",
+                "work_title": "Structured",
+            }
+        ],
+        "tags": "做种: 2",
+        "images": [],
+    }
+    respx.get("http://pansou.test/api/search").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "code": 0,
+                "data": {
+                    "merged_by_type": {
+                        "magnet": [
+                            {
+                                "url": f"magnet:?xt=urn:btih:{infohash}",
+                                "note": "Structured",
+                                "source": "plugin:nyaa",
+                                "size": "4 GB",
+                                "seeders": 8,
+                            }
+                        ]
+                    },
+                    "results": [result],
+                },
+            },
+        )
+    )
+    client = PanSouClient("http://pansou.test")
+
+    response = await client.search("Structured")
+    await client.aclose()
+
+    magnet = response["merged_by_type"]["magnet"][0]
+    assert magnet["size"] == "4 GB"
+    assert magnet["seeders"] == 8
+    assert "size_source" not in magnet
+    assert "seeders_source" not in magnet
+    assert "seeders_observed_at" not in magnet
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        {
+            "merged_by_type": {
+                "magnet": [
+                    {
+                        "url": "magnet:?xt=urn:btih:ffffffffffffffffffffffffffffffffffffffff",
+                        "source": "plugin:nyaa",
+                    }
+                ]
+            }
+        },
+        {
+            "merged_by_type": {
+                "magnet": [
+                    {
+                        "url": "magnet:?xt=urn:btih:ffffffffffffffffffffffffffffffffffffffff",
+                        "source": "plugin:nyaa",
+                    }
+                ]
+            },
+            "results": [None, "invalid"],
+        },
+        {
+            "merged_by_type": {
+                "magnet": [
+                    {
+                        "url": "magnet:?xt=urn:btih:ffffffffffffffffffffffffffffffffffffffff",
+                        "source": "plugin:nyaa",
+                    }
+                ]
+            },
+            "results": [
+                {
+                    "links": [
+                        {
+                            "type": "magnet",
+                            "url": "magnet:?xt=urn:btih:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+                        }
+                    ],
+                    "content": "大小: 1 GB",
+                    "tags": "做种: 3",
+                }
+            ],
+        },
+    ],
+)
+@respx.mock
+async def test_pansou_missing_or_malformed_results_degrade_safely(data):
+    respx.get("http://pansou.test/api/search").mock(
+        return_value=httpx.Response(
+            200,
+            json={"code": 0, "data": data},
+        )
+    )
+    client = PanSouClient("http://pansou.test")
+
+    response = await client.search("No metadata")
+    await client.aclose()
+
+    assert response["merged_by_type"]["magnet"] == data["merged_by_type"]["magnet"]
 
 
 @respx.mock
