@@ -89,6 +89,23 @@ describe("inspection contract", () => {
     expect(nextInspectionResourceIds([], new Set())).toEqual([]);
   });
 
+  it("prioritizes retry candidates without mixing them into a retry-only batch", () => {
+    const resources: ResourceSummary[] = Array.from({ length: 12 }, (_, index) => ({
+      ...resource,
+      resource_id: `magnet-${index}`,
+    }));
+    const retryIds = new Set(["magnet-5", "magnet-7"]);
+
+    expect(nextInspectionResourceIds(resources, new Set(), 8, retryIds).slice(0, 2)).toEqual([
+      "magnet-5",
+      "magnet-7",
+    ]);
+    expect(nextInspectionResourceIds(resources, new Set(), 8, retryIds).filter((id) => retryIds.has(id))).toEqual([
+      "magnet-5",
+      "magnet-7",
+    ]);
+  });
+
   it("does not leave target rows running after failed or timeout exits", () => {
     const resources: ResourceSummary[] = [
       { ...resource, resource_id: "running", inspection_status: "running" },

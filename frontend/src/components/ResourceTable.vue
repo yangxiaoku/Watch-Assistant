@@ -17,6 +17,7 @@ const props = defineProps<{
   inspectionFailed?: number;
   inspectionError?: string | null;
   inspectionMoreAvailable?: boolean;
+  inspectionRetryAvailable?: boolean;
 }>();
 const emit = defineEmits<{ push: [resource: ResourceSummary]; inspectMore: [] }>();
 const filter = ref<"all" | ResourceKind>("all");
@@ -80,7 +81,7 @@ function hasInferredTag(resource: ResourceSummary, tag: Exclude<ResourceTag, "al
   if (tag === "4k") return /(?:4k|2160p|uhd)/i.test(name);
   if (tag === "1080p") return /1080p/i.test(name);
   if (tag === "720p") return /720p/i.test(name);
-  return /字幕|sub(?:title)?|chs|cht|简中|繁中|双语/i.test(name);
+  return /(?:^|[^a-z0-9])(?:sub(?:title)?|chs|cht)(?=$|[^a-z0-9])|字幕|简中|繁中|双语/i.test(name);
 }
 
 const tagCounts = computed(() => ({
@@ -192,7 +193,7 @@ function formatDate(value: string): string {
           class="secondary-button inspection-more-button"
           @click="emit('inspectMore')"
         >
-          <ScanSearch :size="15" />检测更多
+          <ScanSearch :size="15" />{{ inspectionRetryAvailable ? '重试失败项' : '检测更多' }}
         </button>
       </div>
     </div>

@@ -21,6 +21,23 @@ const show = {
   original_title: "Game of Thrones",
 };
 
+function inspectionResult(resourceId: string, status: "verified" | "unsupported" | "timeout" | "failed") {
+  return {
+    resource_id: resourceId,
+    infohash: status === "unsupported" ? null : `hash-${resourceId}`,
+    status,
+    total_size_bytes: status === "verified" ? 1073741824 : 0,
+    file_count: status === "verified" ? 1 : 0,
+    video_file_count: status === "verified" ? 1 : 0,
+    video_size_bytes: status === "verified" ? 1000000000 : 0,
+    subtitle_count: status === "verified" ? 1 : 0,
+    sample_count: status === "verified" ? 1 : 0,
+    largest_video_name: status === "verified" ? "episode.mkv" : null,
+    content_summary: status === "verified" ? "verified" : null,
+    error_code: status === "verified" ? null : status.toUpperCase(),
+  };
+}
+
 test("login, popular browsing, and resource detail remain usable", async ({ page }) => {
   let authenticated = false;
   await page.route("**/api/v1/health", (route) =>
@@ -366,4 +383,180 @@ test("invalidates an automatic batch when switching seasons quickly", async ({ p
   await page.waitForTimeout(350);
   await expect(page.locator(".resource-name:visible, .resource-card h3:visible").filter({ hasText: "第 2 季资源" })).toHaveCount(0);
   await expect(page.locator(".resource-name:visible, .resource-card h3:visible").filter({ hasText: "第 1 季资源" })).toBeVisible();
+});
+
+test("exposes a retry action after POST failure and resubmits the same resource once", async ({ page }) => {
+  const submittedIds: string[][] = [];
+  let inspectPostCount = 0;
+  await page.route("**/api/v1/health", (route) =>
+    route.fulfill({ json: { status: "ok", push_supported: false, inspection_supported: true } }),
+  );
+  await page.route("**/api/v1/auth/me", (route) =>
+    route.fulfill({ json: { authenticated: true, via_bearer: false, csrf_token: "csrf-test" } }),
+  );
+  await page.route("**/api/v1/search", (route) => route.fulfill({
+    json: {
+      movie,
+      results: [{ resource_id: "retry-me", kind: "magnet", name: "Retry Me 1080P", size_bytes: null, seeders: null, source: "test", captured_at: "2026-07-24T10:00:00Z" }],
+      warnings: [],
+      cached: false,
+      cache_age_seconds: null,
+    },
+  }));
+  await page.route("**/api/v1/resources/inspect", async (route) => {
+    inspectPostCount += 1;
+    const resourceIds = (route.request().postDataJSON() as { resource_ids: string[] }).resource_ids;
+    submittedIds.push(resourceIds);
+    if (inspectPostCount === 1) {
+      return route.fulfill({ status: 500, json: { detail: "inspection unavailable" } });
+    }
+    return route.fulfill({
+      json: {
+        batch_id: "retry-batch",
+        status: "queued",
+        submitted_count: 1,
+        completed_count: 0,
+        results: [],
+      },
+    });
+  });
+  await page.route("**/api/v1/resources/inspect/*", (route) => route.fulfill({
+    json: {
+      batch_id: "retry-batch",
+      status: "completed",
+      submitted_count: 1,
+      completed_count: 1,
+      results: [inspectionResult("retry-me", "verified")],
+    },
+  }));
+
+  await page.goto("/movie/27205");
+  await expect(page.getByRole("heading", { name: "盗梦空间" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "重试失败项" })).toBeVisible();
+  await expect(page.locator(".resource-table:visible .inspection-cell strong, .resource-cards:visible .inspection-details").filter({ hasText: "检测失败" })).toBeVisible();
+
+  await page.getByRole("button", { name: "重试失败项" }).click();
+  await expect.poll(() => inspectPostCount).toBe(2);
+  expect(submittedIds).toEqual([["retry-me"], ["retry-me"]]);
+  await expect(page.getByRole("button", { name: "重试失败项" })).toHaveCount(0);
+  await expect(page.getByRole("status")).toContainText("1 / 1");
+});
+
+test("partial inspection retries only failed and timed out resources", async ({ page }) => {
+  const submittedIds: string[][] = [];
+  let inspectPostCount = 0;
+  const resources = ["verified", "unsupported", "failed", "timeout"].map((id) => ({
+    resource_id: `resource-${id}`,
+    kind: "magnet",
+    name: `Resource ${id}`,
+    size_bytes: null,
+    seeders: null,
+    source: "test",
+    captured_at: "2026-07-24T10:00:00Z",
+  }));
+  await page.route("**/api/v1/health", (route) =>
+    route.fulfill({ json: { status: "ok", push_supported: false, inspection_supported: true } }),
+  );
+  await page.route("**/api/v1/auth/me", (route) =>
+    route.fulfill({ json: { authenticated: true, via_bearer: false, csrf_token: "csrf-test" } }),
+  );
+  await page.route("**/api/v1/search", (route) => route.fulfill({
+    json: { movie, results: resources, warnings: [], cached: false, cache_age_seconds: null },
+  }));
+  await page.route("**/api/v1/resources/inspect", async (route) => {
+    const resourceIds = (route.request().postDataJSON() as { resource_ids: string[] }).resource_ids;
+    submittedIds.push(resourceIds);
+    inspectPostCount += 1;
+    const statuses = inspectPostCount === 1
+      ? ["verified", "unsupported", "failed", "timeout"] as const
+      : ["verified", "verified"] as const;
+    return route.fulfill({
+      json: {
+        batch_id: `partial-batch-${inspectPostCount}`,
+        status: inspectPostCount === 1 ? "partial" : "completed",
+        submitted_count: resourceIds.length,
+        completed_count: resourceIds.length,
+        results: resourceIds.map((resourceId, index) => inspectionResult(resourceId, statuses[index])),
+      },
+    });
+  });
+
+  await page.goto("/movie/27205");
+  await expect(page.getByRole("button", { name: "重试失败项" })).toBeVisible();
+  await page.getByRole("button", { name: "重试失败项" }).click();
+  await expect.poll(() => inspectPostCount).toBe(2);
+  expect(submittedIds).toEqual([
+    ["resource-verified", "resource-unsupported", "resource-failed", "resource-timeout"],
+    ["resource-failed", "resource-timeout"],
+  ]);
+});
+
+test("clears the failed inspection queue when switching seasons", async ({ page }) => {
+  const submittedIds: string[][] = [];
+  let inspectPostCount = 0;
+  const seasons = [
+    { season_number: 1, name: "第 1 季", episode_count: 8, air_date: "2011-01-01", poster_path: null },
+    { season_number: 2, name: "第 2 季", episode_count: 8, air_date: "2012-01-01", poster_path: null },
+  ];
+  const seasonOneResources = Array.from({ length: 8 }, (_, index) => ({
+    resource_id: `season-one-${index}`,
+    kind: "magnet",
+    name: `第 1 季资源 ${index}`,
+    size_bytes: null,
+    seeders: null,
+    source: "test",
+    captured_at: "2026-07-24T10:00:00Z",
+  }));
+  seasonOneResources.push({
+    resource_id: "legacy-failed",
+    kind: "magnet",
+    name: "旧失败资源",
+    size_bytes: null,
+    seeders: null,
+    source: "test",
+    captured_at: "2026-07-24T10:00:00Z",
+  });
+  await page.route("**/api/v1/health", (route) =>
+    route.fulfill({ json: { status: "ok", push_supported: false, inspection_supported: true } }),
+  );
+  await page.route("**/api/v1/auth/me", (route) =>
+    route.fulfill({ json: { authenticated: true, via_bearer: false, csrf_token: "csrf-test" } }),
+  );
+  await page.route("**/api/v1/search", (route) => {
+    const season = Number((route.request().postDataJSON() as { season_number?: number }).season_number ?? 2);
+    return route.fulfill({
+      json: {
+        movie: { ...show, seasons },
+        results: season === 1 ? seasonOneResources : [{ ...seasonOneResources[8], name: "第 2 季失败资源" }],
+        warnings: [],
+        cached: false,
+        cache_age_seconds: null,
+        selected_season: season,
+      },
+    });
+  });
+  await page.route("**/api/v1/resources/inspect", async (route) => {
+    const resourceIds = (route.request().postDataJSON() as { resource_ids: string[] }).resource_ids;
+    submittedIds.push(resourceIds);
+    inspectPostCount += 1;
+    if (inspectPostCount === 1) return route.fulfill({ status: 500, json: { detail: "failed" } });
+    return route.fulfill({
+      json: {
+        batch_id: `season-batch-${inspectPostCount}`,
+        status: "completed",
+        submitted_count: resourceIds.length,
+        completed_count: resourceIds.length,
+        results: resourceIds.map((resourceId) => inspectionResult(resourceId, "verified")),
+      },
+    });
+  });
+
+  await page.goto("/tv/1399?season=2");
+  await expect(page.getByRole("button", { name: "重试失败项" })).toBeVisible();
+  await page.goto("/tv/1399?season=1");
+  await expect(page.locator("#season-select")).toHaveValue("1");
+  await expect.poll(() => inspectPostCount).toBe(2);
+  expect(submittedIds[1]).toEqual(seasonOneResources.slice(0, 8).map((resource) => resource.resource_id));
+  await expect(page.getByRole("button", { name: "检测更多" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "重试失败项" })).toHaveCount(0);
 });

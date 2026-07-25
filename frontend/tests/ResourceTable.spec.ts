@@ -98,4 +98,21 @@ describe("ResourceTable", () => {
     expect(wrapper.findAll("tbody tr")).toHaveLength(1);
     expect(wrapper.get(".resource-title").text()).toContain("2160P");
   });
+
+  it("matches subtitle release tokens without matching ordinary words", async () => {
+    const subtitleNames = ["Movie.CHS.1080p", "Movie.Subtitle", "Movie.简中"];
+    const resources: ResourceSummary[] = [
+      ...subtitleNames.map((name, index) => ({ ...magnetWithoutStats, resource_id: `subtitle-${index}`, name })),
+      { ...magnetWithoutStats, resource_id: "submarine", name: "Submarine.2025" },
+      { ...magnetWithoutStats, resource_id: "substance", name: "The.Substance.2024" },
+    ];
+    const wrapper = mount(ResourceTable, {
+      props: { resources, onPush: vi.fn() },
+    });
+
+    expect(wrapper.get('[aria-label="资源名称标签"]').text()).toContain("字幕 3");
+    await wrapper.get('[aria-label="资源名称标签"] button:nth-child(5)').trigger("click");
+    expect(wrapper.findAll("tbody tr")).toHaveLength(3);
+    expect(wrapper.findAll(".resource-title").map((cell) => cell.text())).toEqual(subtitleNames);
+  });
 });

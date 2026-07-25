@@ -70,11 +70,20 @@ export function nextInspectionResourceIds(
   resources: ResourceSummary[],
   processedIds: ReadonlySet<string>,
   limit = INSPECTION_BATCH_SIZE,
+  preferredIds: ReadonlySet<string> = new Set(),
 ): string[] {
-  return resources
+  const candidates = resources
     .filter((resource) => resource.kind === "magnet")
     .slice(0, MAX_INSPECTABLE_MAGNETS)
-    .filter((resource) => !processedIds.has(resource.resource_id))
+    .filter((resource) => !processedIds.has(resource.resource_id));
+  if (preferredIds.size) {
+    candidates.sort((left, right) => {
+      const leftPreferred = preferredIds.has(left.resource_id) ? 0 : 1;
+      const rightPreferred = preferredIds.has(right.resource_id) ? 0 : 1;
+      return leftPreferred - rightPreferred;
+    });
+  }
+  return candidates
     .slice(0, limit)
     .map((resource) => resource.resource_id);
 }
