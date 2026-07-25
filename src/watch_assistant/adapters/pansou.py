@@ -1,8 +1,13 @@
 """PanSou search and share-link validation adapter."""
 
+import base64
+import binascii
+import re
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
+from urllib.parse import parse_qsl, urlsplit
 
 import httpx
 
@@ -25,6 +30,34 @@ class LinkCheckItem:
     password: str | None
 
 
+_PLUGIN_SIZE = re.compile(
+    r"(?<![\w-])(?P<label>大小|文件大小)\s*[:：]\s*"
+    r"(?P<number>\d+(?:\.\d+)?)\s*(?P<unit>B|KB|MB|GB|TB|KiB|MiB|GiB|TiB)\b",
+    re.IGNORECASE,
+)
+_TPB_SIZE = re.compile(
+    r"(?<![\w-])Size(?:\s*[:：]\s*|\s+)"
+    r"(?P<number>\d+(?:\.\d+)?)\s*"
+    r"(?P<unit>B|KB|MB|GB|TB|KiB|MiB|GiB|TiB)\b",
+    re.IGNORECASE,
+)
+_PLUGIN_SEEDERS = re.compile(
+    r"(?<![\w-])(?P<label>做种|Seeders)\s*[:：]\s*(?P<number>\d+)(?!\w)",
+    re.IGNORECASE,
+)
+_SIZE_MULTIPLIERS = {
+    "B": 1,
+    "KB": 1024,
+    "KIB": 1024,
+    "MB": 1024**2,
+    "MIB": 1024**2,
+    "GB": 1024**3,
+    "GIB": 1024**3,
+    "TB": 1024**4,
+    "TIB": 1024**4,
+}
+
+
 class PanSouClient:
     def __init__(
         self,
@@ -40,7 +73,9 @@ class PanSouClient:
     async def search(self, keyword: str) -> dict[str, Any]:
         try:
             response = await self._client.get(
-                "/api/search", params={"kw": keyword}, timeout=self._timeout
+                "/api/search",
+                params={"kw": keyword, "res": "all"},
+                timeout=self._timeout,
             )
             response.raise_for_status()
         except httpx.HTTPError as exc:
@@ -63,7 +98,10 @@ class PanSouClient:
             raise PanSouError("Unexpected PanSou response shape")
         if not all(isinstance(items, list) for items in merged_by_type.values()):
             raise PanSouError("Unexpected PanSou response shape")
-        return {**data, "merged_by_type": merged_by_type}
+        return {
+            **data,
+            "merged_by_type": _enrich_magnet_metadata(data, merged_by_type),
+        }
 
     async def check_links(
         self,
@@ -116,3 +154,212 @@ class PanSouClient:
     async def aclose(self) -> None:
         if self._owns_client:
             await self._client.aclose()
+
+
+def _enrich_magnet_metadata(
+    data: dict[str, Any],
+    merged_by_type: dict[str, list[Any]],
+) -> dict[str, list[Any]]:
+    magnets = merged_by_type.get("magnet")
+    results = data.get("results")
+    if not isinstance(magnets, list) or not isinstance(results, list):
+        return merged_by_type
+
+    observed_at = datetime.now(UTC).isoformat()
+    results_by_hash: dict[str, list[dict[str, Any]]] = {}
+    for result in results:
+        if not isinstance(result, dict):
+            continue
+        links = result.get("links")
+        if not isinstance(links, list):
+            continue
+        for link in links:
+            if not isinstance(link, dict):
+                continue
+            infohash = _magnet_infohash(link.get("url"))
+            if infohash is None:
+                continue
+            results_by_hash.setdefault(infohash, []).append(result)
+
+    if not results_by_hash:
+        return merged_by_type
+    enriched_magnets = []
+    for item in magnets:
+        if not isinstance(item, dict):
+            enriched_magnets.append(item)
+            continue
+        plugin = item.get("source")
+        if plugin not in {"plugin:nyaa", "plugin:thepiratebay"}:
+            enriched_magnets.append(item)
+            continue
+        infohash = _magnet_infohash(item.get("url"))
+        values: dict[str, int] = {}
+        for result in results_by_hash.get(infohash or "", []):
+            parsed = _parse_plugin_result(plugin, result)
+            for key, value in parsed.items():
+                values.setdefault(key, value)
+        if not values:
+            enriched_magnets.append(item)
+            continue
+        enriched = dict(item)
+        if not _has_structured_size(enriched.get("size")) and "size" in values:
+            enriched["size"] = values["size"]
+            enriched["size_source"] = "pansou"
+        if not _has_structured_seeders(enriched.get("seeders")) and "seeders" in values:
+            enriched["seeders"] = values["seeders"]
+            enriched["seeders_source"] = "pansou"
+            enriched["seeders_observed_at"] = observed_at
+        enriched_magnets.append(enriched)
+    return {**merged_by_type, "magnet": enriched_magnets}
+
+
+def _parse_plugin_result(plugin: object, result: dict[str, Any]) -> dict[str, int]:
+    if plugin == "plugin:nyaa":
+        labels = ("大小", "做种")
+        values = [result.get("content"), result.get("tags")]
+    elif plugin == "plugin:thepiratebay":
+        labels = ("文件大小", "Seeders")
+        values = [result.get("content")]
+    else:
+        return {}
+    parsed: dict[str, int] = {}
+    for value in values:
+        if "size" not in parsed:
+            size = _find_plugin_size(value, labels[0])
+            if size is not None:
+                parsed["size"] = size
+        if "seeders" not in parsed:
+            seeders = _find_plugin_seeders(value, labels[1])
+            if seeders is not None:
+                parsed["seeders"] = seeders
+    return parsed
+
+
+def _find_plugin_size(value: object, label: str) -> int | None:
+    if isinstance(value, dict):
+        direct = next(
+            (
+                item
+                for key, item in value.items()
+                if str(key).casefold() == label.casefold()
+            ),
+            None,
+        )
+        parsed = _parse_size_value(direct)
+        if parsed is not None:
+            return parsed
+        for item in value.values():
+            parsed = _find_plugin_size(item, label)
+            if parsed is not None:
+                return parsed
+        return None
+    if isinstance(value, list):
+        for item in value:
+            parsed = _find_plugin_size(item, label)
+            if parsed is not None:
+                return parsed
+        return None
+    if not isinstance(value, str):
+        return None
+    patterns = [_PLUGIN_SIZE]
+    if label == "文件大小":
+        patterns.append(_TPB_SIZE)
+    for pattern in patterns:
+        match = pattern.search(value)
+        if match is None:
+            continue
+        if "label" in match.groupdict() and (
+            match.group("label").casefold() != label.casefold()
+        ):
+            continue
+        return _parse_size_value(f"{match.group('number')} {match.group('unit')}")
+    return None
+
+
+def _find_plugin_seeders(value: object, label: str) -> int | None:
+    if isinstance(value, dict):
+        direct = next(
+            (
+                item
+                for key, item in value.items()
+                if str(key).casefold() == label.casefold()
+            ),
+            None,
+        )
+        parsed = _parse_seeders_value(direct)
+        if parsed is not None:
+            return parsed
+        for item in value.values():
+            parsed = _find_plugin_seeders(item, label)
+            if parsed is not None:
+                return parsed
+        return None
+    if isinstance(value, list):
+        for item in value:
+            parsed = _find_plugin_seeders(item, label)
+            if parsed is not None:
+                return parsed
+        return None
+    if not isinstance(value, str):
+        return None
+    match = _PLUGIN_SEEDERS.search(value)
+    if match is None or match.group("label").casefold() != label.casefold():
+        return None
+    return int(match.group("number"))
+
+
+def _parse_size_value(value: object) -> int | None:
+    if not isinstance(value, str):
+        return None
+    match = re.fullmatch(
+        r"\s*(\d+(?:\.\d+)?)\s*(B|KB|MB|GB|TB|KiB|MiB|GiB|TiB)\s*",
+        value,
+        re.IGNORECASE,
+    )
+    if match is None:
+        return None
+    try:
+        return int(float(match.group(1)) * _SIZE_MULTIPLIERS[match.group(2).upper()])
+    except (KeyError, OverflowError, ValueError):
+        return None
+
+
+def _parse_seeders_value(value: object) -> int | None:
+    if type(value) is int and value >= 0:
+        return value
+    if isinstance(value, str) and value.isdigit():
+        return int(value)
+    return None
+
+
+def _has_structured_size(value: object) -> bool:
+    if type(value) is int:
+        return value >= 0
+    return _parse_size_value(value) is not None
+
+
+def _has_structured_seeders(value: object) -> bool:
+    return _parse_seeders_value(value) is not None
+
+
+def _magnet_infohash(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return None
+    if parsed.scheme.casefold() != "magnet":
+        return None
+    for key, raw in parse_qsl(parsed.query, keep_blank_values=True):
+        if key.casefold() != "xt" or not raw.casefold().startswith("urn:btih:"):
+            continue
+        infohash = raw[9:]
+        if re.fullmatch(r"[0-9a-fA-F]{40}", infohash):
+            return infohash.casefold()
+        if re.fullmatch(r"[A-Z2-7a-z2-7]{32}", infohash):
+            try:
+                return base64.b32decode(infohash.upper()).hex()
+            except (binascii.Error, ValueError):
+                return None
+    return None

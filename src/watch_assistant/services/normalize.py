@@ -12,13 +12,20 @@ from watch_assistant.schemas import NormalizedResource, ResourceKind
 HEX_INFOHASH = re.compile(r"[0-9A-Fa-f]{40}")
 BASE32_INFOHASH = re.compile(r"[A-Z2-7a-z2-7]{32}")
 SHARE_PATH = re.compile(r"/(?:s|share)/([A-Za-z0-9_-]+)(?:/|$)")
-SIZE_VALUE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*(B|KB|MB|GB|TB)\s*$", re.IGNORECASE)
+SIZE_VALUE = re.compile(
+    r"^\s*(\d+(?:\.\d+)?)\s*(KiB|MiB|GiB|TiB|B|KB|MB|GB|TB)\s*$",
+    re.IGNORECASE,
+)
 SIZE_MULTIPLIERS = {
     "B": 1,
     "KB": 1024,
+    "KIB": 1024,
     "MB": 1024**2,
+    "MIB": 1024**2,
     "GB": 1024**3,
+    "GIB": 1024**3,
     "TB": 1024**4,
+    "TIB": 1024**4,
 }
 LABEL_PRIORITY = {"dn": 1, "note": 2, "name": 3}
 
@@ -104,6 +111,18 @@ def _normalize_item(
         metadata["datetime"] = raw_datetime
     if isinstance(item.get("images"), list):
         metadata["images"] = item["images"]
+    size_bytes = _parse_size(item.get("size"))
+    seeders = _parse_nonnegative_int(item.get("seeders"))
+    if size_bytes is not None and item.get("size_source") in {
+        "pansou",
+        "inspection",
+    }:
+        metadata["size_source"] = item["size_source"]
+    if seeders is not None and item.get("seeders_source") == "pansou":
+        metadata["seeders_source"] = "pansou"
+        observed_at = item.get("seeders_observed_at")
+        if isinstance(observed_at, str) and observed_at.strip():
+            metadata["seeders_observed_at"] = observed_at.strip()
 
     return NormalizedResource(
         kind=kind,
@@ -111,8 +130,8 @@ def _normalize_item(
         name=name,
         url=url,
         password=password,
-        size_bytes=_parse_size(item.get("size")),
-        seeders=_parse_nonnegative_int(item.get("seeders")),
+        size_bytes=size_bytes,
+        seeders=seeders,
         source=source,
         captured_at=_parse_datetime(raw_datetime) or fallback_time,
         metadata=metadata,
@@ -201,16 +220,64 @@ def merge_normalized_resources(
     else:
         base, other = existing, candidate
     metadata = {**other.metadata, **base.metadata}
+    size_bytes, size_owner = _merge_optional_field(
+        base, other, "size_bytes", "size_source"
+    )
+    seeders, seeders_owner = _merge_optional_field(
+        base, other, "seeders", "seeders_source"
+    )
+    _set_field_source(metadata, "size_source", size_owner)
+    _set_field_source(metadata, "seeders_source", seeders_owner)
+    if metadata.get("seeders_source") == "pansou":
+        observed_at = seeders_owner.metadata.get("seeders_observed_at")
+        if isinstance(observed_at, str) and observed_at.strip():
+            metadata["seeders_observed_at"] = observed_at
+        else:
+            metadata.pop("seeders_observed_at", None)
+    else:
+        metadata.pop("seeders_observed_at", None)
     return base.model_copy(
         update={
             "password": base.password or other.password,
-            "size_bytes": (
-                base.size_bytes if base.size_bytes is not None else other.size_bytes
-            ),
-            "seeders": base.seeders if base.seeders is not None else other.seeders,
+            "size_bytes": size_bytes,
+            "seeders": seeders,
             "metadata": metadata,
         }
     )
+
+
+def _merge_optional_field(
+    base: NormalizedResource,
+    other: NormalizedResource,
+    field: str,
+    source_key: str,
+) -> tuple[int | None, NormalizedResource | None]:
+    base_value = getattr(base, field)
+    other_value = getattr(other, field)
+    if base_value is None:
+        return other_value, other if other_value is not None else None
+    if other_value is None:
+        return base_value, base
+    base_source = base.metadata.get(source_key)
+    other_source = other.metadata.get(source_key)
+    if base_source == "pansou" and other_source != "pansou":
+        return other_value, other
+    if other_source == "pansou" and base_source != "pansou":
+        return base_value, base
+    return base_value, base
+
+
+def _set_field_source(
+    metadata: dict[str, Any],
+    source_key: str,
+    owner: NormalizedResource | None,
+) -> None:
+    source = owner.metadata.get(source_key) if owner is not None else None
+    allowed = {"pansou", "inspection"} if source_key == "size_source" else {"pansou"}
+    if source in allowed:
+        metadata[source_key] = source
+    else:
+        metadata.pop(source_key, None)
 
 
 def _resource_richness(resource: NormalizedResource) -> tuple[int, int, int, int, int]:
@@ -270,7 +337,10 @@ def _parse_size(value: object) -> int | None:
     match = SIZE_VALUE.fullmatch(value)
     if not match:
         return None
-    return int(float(match.group(1)) * SIZE_MULTIPLIERS[match.group(2).upper()])
+    try:
+        return int(float(match.group(1)) * SIZE_MULTIPLIERS[match.group(2).upper()])
+    except (KeyError, OverflowError, ValueError):
+        return None
 
 
 def _parse_nonnegative_int(value: object) -> int | None:
