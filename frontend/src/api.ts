@@ -2,16 +2,17 @@ import type {
   HealthResponse,
   HomeCatalogResponse,
   InspectionBatchResponse,
-  LogLevel,
+  LogCategory,
   LoggingSettingsResponse,
   LogsResponse,
   MovieCollectionResponse,
+  PatchLoggingSettingsRequest,
   P115SettingsResponse,
+  P115ValidationResponse,
   SearchRequest,
   SearchResponse,
   SettingsOverviewResponse,
   TaskResponse,
-  UpdateLoggingSettingsRequest,
 } from "./types";
 
 export class ApiError extends Error {
@@ -53,9 +54,9 @@ export class ApiClient {
     return this.request<LoggingSettingsResponse>("/api/v1/settings/logging");
   }
 
-  async updateLoggingSettings(settings: UpdateLoggingSettingsRequest): Promise<LoggingSettingsResponse> {
+  async updateLoggingSettings(settings: PatchLoggingSettingsRequest): Promise<LoggingSettingsResponse> {
     return this.request<LoggingSettingsResponse>("/api/v1/settings/logging", {
-      method: "PUT",
+      method: "PATCH",
       body: JSON.stringify(settings),
     });
   }
@@ -64,19 +65,16 @@ export class ApiClient {
     return this.request<P115SettingsResponse>("/api/v1/settings/p115");
   }
 
-  async validateP115Cookie(): Promise<P115SettingsResponse> {
-    return this.request<P115SettingsResponse>("/api/v1/settings/p115/validate", {
+  async validateP115Cookie(): Promise<P115ValidationResponse> {
+    return this.request<P115ValidationResponse>("/api/v1/settings/p115/validate", {
       method: "POST",
       body: JSON.stringify({}),
     });
   }
 
-  async logs(filters: { level?: LogLevel; category?: string; page?: number; pageSize?: number }): Promise<LogsResponse> {
-    const params = new URLSearchParams({
-      page: String(filters.page ?? 1),
-      page_size: String(filters.pageSize ?? 20),
-    });
-    if (filters.level) params.set("level", filters.level);
+  async logs(filters: { category?: LogCategory; cursor?: number; limit?: number }): Promise<LogsResponse> {
+    const params = new URLSearchParams({ limit: String(filters.limit ?? 20) });
+    if (filters.cursor !== undefined) params.set("cursor", String(filters.cursor));
     if (filters.category) params.set("category", filters.category);
     return this.request<LogsResponse>(`/api/v1/logs?${params}`);
   }

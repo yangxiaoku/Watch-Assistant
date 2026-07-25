@@ -117,61 +117,68 @@ export interface HealthResponse {
   inspection_supported?: boolean;
 }
 
-export type SettingsComponentStatus = "ok" | "degraded" | "down" | "unknown";
-export type LogLevel = "debug" | "info" | "warning" | "error";
+export type LogLevel = "ERROR" | "WARNING" | "INFO";
+export type LogCategory = "system" | "search" | "cache" | "inspection" | "p115" | "security";
 
 export interface SettingsOverviewResponse {
-  revision: string;
-  version: string;
-  uptime_seconds: number | null;
-  database_size_bytes: number | null;
-  components: Array<{
-    name: string;
-    status: SettingsComponentStatus;
-    detail: string | null;
-  }>;
-}
-
-export interface LoggingSettingsResponse {
-  revision: string;
-  level: LogLevel;
-  retention_days: number;
-  capacity_mb: number;
-}
-
-export interface UpdateLoggingSettingsRequest {
-  revision: string;
-  level: LogLevel;
-  retention_days: number;
-  capacity_mb: number;
-}
-
-export interface P115SettingsResponse {
-  enabled: boolean;
-  readiness: "ready" | "not_ready" | "unknown";
-  cookie_source: "file" | "environment" | "unknown";
-  cookie_structure: "valid" | "invalid" | "unknown";
-  cookie_synced_at: string | null;
+  release: string;
+  uptime_seconds: number;
+  database_size_bytes: number;
   capabilities: {
+    inspection: boolean;
     magnet: boolean;
     share: boolean;
   };
 }
 
+export interface LoggingSettingsResponse {
+  revision: number;
+  level: LogLevel;
+  retention_days: number;
+  max_file_mb: number;
+}
+
+export interface PatchLoggingSettingsRequest {
+  revision: number;
+  level: LogLevel;
+  retention_days: number;
+  max_file_mb: number;
+}
+
+export interface P115SettingsResponse {
+  enabled: boolean;
+  ready: boolean;
+  capabilities: {
+    magnet: boolean;
+    share: boolean;
+  };
+  cookie: {
+    source: "tgtodrive";
+    configured: boolean;
+    structure_valid: boolean;
+    sync_status: "success" | "failed" | "unknown";
+    last_sync_at: string | null;
+  };
+  target_configured: boolean;
+  max_concurrency: number;
+}
+
+export interface P115ValidationResponse {
+  status: "ready" | "needs_auth" | "unavailable";
+  checked_at: string;
+}
+
 export interface LogEntry {
-  id: string;
+  id: number;
   timestamp: string;
   level: LogLevel;
-  category: string;
+  category: LogCategory;
   message: string;
 }
 
 export interface LogsResponse {
   items: LogEntry[];
-  page: number;
-  page_size: number;
-  total: number;
-  total_pages: number;
+  next_cursor: number | null;
 }
 
 export interface TaskResponse {
