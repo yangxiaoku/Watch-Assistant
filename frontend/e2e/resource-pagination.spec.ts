@@ -80,7 +80,7 @@ test("uses resource pages beyond the POST result limit and restores URL state", 
 
   await page.goto("/movie/27205");
   await expect(page.getByRole("heading", { name: "盗梦空间" })).toBeVisible();
-  const visibleResources = testInfo.project.name === "mobile" ? page.locator(".resource-cards:visible .resource-card") : page.locator(".resource-table-wrap:visible tbody tr");
+  const visibleResources = testInfo.project.name.startsWith("mobile") ? page.locator(".resource-cards:visible .resource-card") : page.locator(".resource-table-wrap:visible tbody tr");
   await expect(visibleResources).toHaveCount(25);
   await expect(page.locator(".resource-heading-copy h2")).toContainText("501");
   await page.getByRole("button", { name: "下一页" }).click();
