@@ -36,7 +36,7 @@ export function navigateHome(): void {
   window.history.pushState({}, "", "/");
 }
 
-export type BrowseView = "home" | "movies" | "tv" | "popular" | "favorites" | "history" | "search";
+export type BrowseView = "home" | "movies" | "tv" | "popular" | "favorites" | "history" | "search" | "settings";
 
 const VIEW_PATHS: Record<Exclude<BrowseView, "search">, string> = {
   home: "/",
@@ -45,6 +45,7 @@ const VIEW_PATHS: Record<Exclude<BrowseView, "search">, string> = {
   popular: "/popular",
   favorites: "/favorites",
   history: "/history",
+  settings: "/settings",
 };
 
 export function navigateToView(view: Exclude<BrowseView, "search">): void {
@@ -62,5 +63,6 @@ export function extractBrowseView(path: string): BrowseView {
   if (path === "/favorites") return "favorites";
   if (path === "/history") return "history";
   if (path === "/search") return "search";
+  if (path === "/settings") return "settings";
   return "home";
 }

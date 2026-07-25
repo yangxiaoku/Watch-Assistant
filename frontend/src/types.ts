@@ -117,6 +117,70 @@ export interface HealthResponse {
   inspection_supported?: boolean;
 }
 
+export type LogLevel = "ERROR" | "WARNING" | "INFO";
+export type LogCategory = "system" | "search" | "cache" | "inspection" | "p115" | "security";
+
+export interface SettingsOverviewResponse {
+  release: string;
+  uptime_seconds: number;
+  database_size_bytes: number;
+  capabilities: {
+    inspection: boolean;
+    magnet: boolean;
+    share: boolean;
+  };
+}
+
+export interface LoggingSettingsResponse {
+  revision: number;
+  level: LogLevel;
+  retention_days: number;
+  max_file_mb: number;
+}
+
+export interface PatchLoggingSettingsRequest {
+  revision: number;
+  level: LogLevel;
+  retention_days: number;
+  max_file_mb: number;
+}
+
+export interface P115SettingsResponse {
+  enabled: boolean;
+  ready: boolean;
+  capabilities: {
+    magnet: boolean;
+    share: boolean;
+  };
+  cookie: {
+    source: "tgtodrive";
+    configured: boolean;
+    structure_valid: boolean;
+    sync_status: "success" | "failed" | "unknown";
+    last_sync_at: string | null;
+  };
+  target_configured: boolean;
+  max_concurrency: number;
+}
+
+export interface P115ValidationResponse {
+  status: "ready" | "needs_auth" | "unavailable";
+  checked_at: string;
+}
+
+export interface LogEntry {
+  id: number;
+  timestamp: string;
+  level: LogLevel;
+  category: LogCategory;
+  message: string;
+}
+
+export interface LogsResponse {
+  items: LogEntry[];
+  next_cursor: number | null;
+}
+
 export interface TaskResponse {
   id: string;
   resource_id: string | null;
