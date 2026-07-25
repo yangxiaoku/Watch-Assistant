@@ -3,6 +3,7 @@
 import asyncio
 import os
 import socket
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
@@ -19,6 +20,7 @@ from watch_assistant.api.auth import router as auth_router
 from watch_assistant.api.inspection import router as inspection_router
 from watch_assistant.api.maintenance import router as maintenance_router
 from watch_assistant.api.search import router as search_router
+from watch_assistant.api.settings import router as settings_router
 from watch_assistant.api.tasks import router as tasks_router
 from watch_assistant.config import Settings, load_tgto_contract
 from watch_assistant.crypto import SecretCrypto
@@ -29,6 +31,7 @@ from watch_assistant.services.inspection import InspectionService, InspectionWor
 from watch_assistant.services.maintenance import MaintenanceService
 from watch_assistant.services.p115_credentials import CookieProvider
 from watch_assistant.services.search import SearchService
+from watch_assistant.services.settings import SettingsService
 from watch_assistant.services.tasks import TaskService
 from watch_assistant.worker import TaskAdapter, TaskWorker
 
@@ -79,6 +82,10 @@ def create_app(
             )
             runtime_pansou = pansou_client or PanSouClient(settings.pansou_base_url)
             await initialize_database(runtime_database.engine)
+            application.state.settings_service = SettingsService(
+                runtime_database.session_factory,
+                state_directory=_state_directory(runtime_database),
+            )
             application.state.search_service = SearchService(
                 runtime_database.session_factory,
                 tmdb_client=runtime_tmdb,
@@ -229,6 +236,8 @@ def create_app(
                     await resource.aclose()
 
     application = FastAPI(title="Watch Assistant", lifespan=lifespan)
+    application.state.release = os.environ.get("WATCH_ASSISTANT_RELEASE", "unknown")
+    application.state.started_at = time.monotonic()
     if database and crypto and tmdb_client and pansou_client:
         application.state.database = database
         application.state.search_service = SearchService(
@@ -239,6 +248,10 @@ def create_app(
             share_domains=share_domains,
         )
         application.state.task_service = TaskService(database.session_factory)
+        application.state.settings_service = SettingsService(
+            database.session_factory,
+            state_directory=_state_directory(database),
+        )
         application.state.maintenance_service = MaintenanceService(
             database.session_factory
         )
@@ -286,6 +299,7 @@ def create_app(
         }
 
     application.include_router(search_router)
+    application.include_router(settings_router)
     application.include_router(tasks_router)
     application.include_router(auth_router)
     application.include_router(maintenance_router)
@@ -318,6 +332,16 @@ def create_app(
 
 def _worker_owner() -> str:
     return f"{socket.gethostname()}:{os.getpid()}"
+
+
+def _state_directory(database: Database) -> Path:
+    configured = os.environ.get("STATE_DIRECTORY")
+    if configured:
+        return Path(configured)
+    database_path = database.engine.url.database
+    if database_path and database_path != ":memory:":
+        return Path(database_path).parent
+    return Path.cwd() / ".watch-assistant-state"
 
 
 async def _ensure_adapter_available(adapter: TaskAdapter) -> bool:

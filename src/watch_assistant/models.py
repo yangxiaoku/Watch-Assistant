@@ -32,6 +32,19 @@ class Base(DeclarativeBase):
     pass
 
 
+class ApplicationSettings(Base):
+    __tablename__ = "application_settings"
+
+    id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    logging_level: Mapped[str] = mapped_column(String(16), default="INFO")
+    retention_days: Mapped[int] = mapped_column(Integer, default=14)
+    max_file_mb: Mapped[int] = mapped_column(Integer, default=10)
+    revision: Mapped[int] = mapped_column(Integer, default=0)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+
+
 class TaskState(StrEnum):
     QUEUED = "queued"
     SUBMITTING = "submitting"
