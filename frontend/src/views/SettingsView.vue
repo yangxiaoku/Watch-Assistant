@@ -96,6 +96,7 @@ const autoRefreshLogs = ref(true);
 const logsUpdatedAt = ref<string | null>(null);
 let logsRequestId = 0;
 let logsRefreshTimer: number | null = null;
+let settingsMounted = false;
 const logLimit = 20;
 
 const contentPolicy = ref<ContentPolicyResponse | null>(null);
@@ -357,7 +358,7 @@ function onVisibilityChange() {
 }
 
 function syncLogsRefreshTimer() {
-  const shouldRun = autoRefreshLogs.value && activeSection.value === "logs" && document.visibilityState === "visible" && !logsLoading.value;
+  const shouldRun = settingsMounted && autoRefreshLogs.value && activeSection.value === "logs" && document.visibilityState === "visible" && !logsLoading.value;
   if (!shouldRun) {
     if (logsRefreshTimer !== null) {
       window.clearInterval(logsRefreshTimer);
@@ -444,6 +445,7 @@ function validationClass(value: ValidationState) {
 }
 
 onMounted(() => {
+  settingsMounted = true;
   void loadOverview();
   void loadLogging();
   void loadInspection();
@@ -453,6 +455,7 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  settingsMounted = false;
   document.removeEventListener("visibilitychange", onVisibilityChange);
   if (logsRefreshTimer !== null) {
     window.clearInterval(logsRefreshTimer);
