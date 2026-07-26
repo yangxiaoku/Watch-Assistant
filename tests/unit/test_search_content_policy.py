@@ -51,5 +51,6 @@ async def test_tmdb_adult_items_are_excluded_from_catalog_and_search(tmp_path):
     assert [item.title for item in await service.search_movies("x")] == ["Safe"]
     collection = await service.search_media("x", page=1)
     assert [item.title for item in collection.results] == ["Safe"]
-    assert collection.total_results == 1
+    assert collection.total_results == 2
+    assert collection.total_pages == 1
     await database.engine.dispose()

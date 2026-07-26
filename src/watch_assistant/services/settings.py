@@ -494,7 +494,13 @@ class SettingsService:
             settings.inspection_auto_start_enabled = patch.auto_start_enabled
             settings.revision += 1
             await session.commit()
-            return _inspection_response(settings)
+            response = _inspection_response(settings)
+        await self.log_event(
+            "settings.changed",
+            level=LoggingLevel.INFO,
+            fields={"status": "inspection"},
+        )
+        return response
 
     async def _get_or_create(self, session: AsyncSession) -> ApplicationSettings:
         settings = await session.get(ApplicationSettings, SETTINGS_ID)
@@ -585,9 +591,7 @@ def _event_message(event: str, fields: dict[str, object] | None) -> str:
 
 
 def _content_policy(settings: ApplicationSettings) -> ContentPolicy:
-    return content_policy_from_json(
-        settings.content_policy_json, settings.revision
-    )
+    return content_policy_from_json(settings.content_policy_json, settings.revision)
 
 
 def _content_policy_response(policy: ContentPolicy) -> ContentPolicyResponse:
@@ -598,6 +602,7 @@ def _content_policy_response(policy: ContentPolicy) -> ContentPolicyResponse:
         blocked_keywords=list(policy.blocked_keywords),
         revision=policy.revision,
     )
+
 
 def _inspection_response(settings: ApplicationSettings) -> InspectionSettingsResponse:
     return InspectionSettingsResponse(

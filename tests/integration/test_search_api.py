@@ -350,7 +350,6 @@ async def test_resource_snapshot_applies_current_content_policy_and_hidden_total
         max_file_mb=10,
         revision=0,
         content_policy_json="{}",
-        content_policy_revision=0,
     )
     async with database.session_factory() as session:
         session.add_all([*resources, cache, settings])

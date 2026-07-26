@@ -1033,7 +1033,7 @@ onMounted(async () => {
     const health = await api.health();
     pushCapabilities.value = resolvePushCapabilities(health);
     inspectionSupported.value = health.inspection_supported === true;
-    inspectionAutoStartEnabled.value = health.inspection_auto_start_enabled ?? true;
+    inspectionAutoStartEnabled.value = health.inspection_auto_start_enabled === true;
     await api.me();
     authenticated.value = true;
   } catch {

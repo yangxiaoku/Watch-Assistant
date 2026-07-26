@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import re
 import socket
 import time
 from collections.abc import AsyncIterator
@@ -37,6 +38,12 @@ from watch_assistant.services.search import SearchService
 from watch_assistant.services.settings import SettingsService
 from watch_assistant.services.tasks import TaskService
 from watch_assistant.worker import TaskAdapter, TaskWorker
+
+_RELEASE_SHA = re.compile(r"(?<![0-9a-f])[0-9a-f]{40}(?![0-9a-f])", re.IGNORECASE)
+_TRUSTED_RELEASE_PATHS = (
+    Path("/app/RELEASE"),
+    Path("/opt/watch-assistant/current/RELEASE"),
+)
 
 
 def create_app(
@@ -278,7 +285,7 @@ def create_app(
                     await resource.aclose()
 
     application = FastAPI(title="Watch Assistant", lifespan=lifespan)
-    application.state.release = os.environ.get("WATCH_ASSISTANT_RELEASE", "unknown")
+    application.state.release = _resolve_release()
     application.state.started_at = time.monotonic()
     if database and crypto and tmdb_client and pansou_client:
         application.state.database = database
@@ -339,7 +346,7 @@ def create_app(
             "push_capabilities",
             {"magnet": False, "share": False},
         )
-        inspection_auto_start_enabled = True
+        inspection_auto_start_enabled = False
         settings_service = getattr(application.state, "settings_service", None)
         if settings_service is not None:
             try:
@@ -390,6 +397,20 @@ def create_app(
             "/", StaticFiles(directory=static_path, html=True), name="frontend"
         )
     return application
+
+
+def _resolve_release() -> str:
+    configured = os.environ.get("WATCH_ASSISTANT_RELEASE")
+    if configured:
+        return configured
+    for path in _TRUSTED_RELEASE_PATHS:
+        try:
+            match = _RELEASE_SHA.search(path.read_text(encoding="ascii"))
+        except (OSError, UnicodeError):
+            continue
+        if match is not None:
+            return match.group(0).lower()
+    return "unknown"
 
 
 def _worker_owner() -> str:

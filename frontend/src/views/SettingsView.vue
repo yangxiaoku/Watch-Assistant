@@ -525,18 +525,6 @@ watch(autoRefreshLogs, syncLogsRefreshTimer);
         </section>
 
         <section v-else-if="activeSection === 'p115'" class="settings-section" aria-labelledby="p115-title">
-        <section v-else-if="activeSection === 'inspection'" class="settings-section" aria-labelledby="inspection-title">
-          <header class="settings-section-heading"><div><p class="eyebrow">RESOURCE INSPECTION</p><h2 id="inspection-title">资源检测</h2></div><button class="icon-button" type="button" title="刷新资源检测设置" aria-label="刷新资源检测设置" :disabled="inspectionLoading" @click="loadInspection"><RefreshCw :size="16" :class="{ spin: inspectionLoading }" /></button></header>
-          <div v-if="inspectionLoading" class="settings-loading"><LoaderCircle class="spin" :size="20" />正在加载资源检测设置</div>
-          <div v-else-if="inspectionError" class="settings-state settings-state-error"><AlertTriangle :size="18" /><span>{{ inspectionError }}</span><button class="text-button" type="button" @click="loadInspection">重试</button></div>
-          <template v-else-if="inspectionSettings">
-            <div class="settings-subsection"><h3>打开详情时自动检测</h3><label class="settings-toggle"><input v-model="inspectionDraft" type="checkbox" aria-label="打开详情时自动检测" /><span>自动提交首批资源检测</span></label><p class="settings-note">关闭后仍可在资源详情中手动开始检测。</p></div>
-            <div v-if="inspectionDirty" class="settings-save-bar"><span>有未保存的资源检测设置</span><div><button class="secondary-button" type="button" :disabled="savingInspection" @click="loadInspection">取消</button><button class="primary-button" type="button" :disabled="savingInspection" @click="saveInspection"><LoaderCircle v-if="savingInspection" class="spin" :size="15" /><Save v-else :size="15" />保存</button></div></div>
-            <div v-if="inspectionSaveError" class="settings-state settings-state-error settings-save-error"><AlertTriangle :size="17" /><span>{{ inspectionSaveError }}</span><button v-if="inspectionConflict" class="text-button" type="button" @click="loadInspection">重新加载</button></div>
-          </template>
-        </section>
-
-        <section v-else class="settings-section" aria-labelledby="p115-title">
           <header class="settings-section-heading"><div><p class="eyebrow">P115 CONNECTOR</p><h2 id="p115-title">115 推送</h2></div><button class="icon-button" type="button" title="刷新 115 状态" aria-label="刷新 115 状态" :disabled="p115Loading" @click="loadP115"><RefreshCw :size="16" :class="{ spin: p115Loading }" /></button></header>
           <div v-if="p115Loading" class="settings-loading"><LoaderCircle class="spin" :size="20" />正在加载 115 状态</div>
           <div v-else-if="p115Error" class="settings-state settings-state-error"><AlertTriangle :size="18" /><span>{{ p115Error }}</span><button class="text-button" type="button" @click="loadP115">重试</button></div>

@@ -216,7 +216,7 @@ test("does not fabricate a catalog return for a direct detail URL or invalid sta
 
 test("pagination does not repeat the automatic inspection batch", async ({ page }) => {
   let inspectPostCount = 0;
-  await page.route("**/api/v1/health", (route) => route.fulfill({ json: { status: "ok", push_supported: false, inspection_supported: true } }));
+  await page.route("**/api/v1/health", (route) => route.fulfill({ json: { status: "ok", push_supported: false, inspection_supported: true, inspection_auto_start_enabled: true } }));
   await page.route("**/api/v1/auth/me", (route) => route.fulfill({ json: { authenticated: true, via_bearer: false, csrf_token: "csrf-test" } }));
   await page.route("**/api/v1/search", (route) => route.fulfill({ json: { movie, results: Array.from({ length: 30 }, (_, index) => resource(`legacy-${index}`, 1)), warnings: [], cached: false, cache_age_seconds: null } }));
   await page.route("**/api/v1/media/movie/27205/resources**", (route) => route.fulfill({ json: pageResponse(Number(new URL(route.request().url()).searchParams.get("page") ?? 1)) }));
@@ -280,7 +280,7 @@ test("corrects a direct page 500 URL to the backend last page once", async ({ pa
 test("starts the automatic batch from the visible initial resource page", async ({ page }) => {
   const inspected: string[][] = [];
   const pageItems = Array.from({ length: 25 }, (_, index) => resource(`page-two-${index}`, 2));
-  await page.route("**/api/v1/health", (route) => route.fulfill({ json: { status: "ok", push_supported: false, inspection_supported: true } }));
+  await page.route("**/api/v1/health", (route) => route.fulfill({ json: { status: "ok", push_supported: false, inspection_supported: true, inspection_auto_start_enabled: true } }));
   await page.route("**/api/v1/auth/me", (route) => route.fulfill({ json: { authenticated: true, via_bearer: false, csrf_token: "csrf-test" } }));
   await page.route("**/api/v1/search", (route) => route.fulfill({ json: { movie, results: Array.from({ length: 30 }, (_, index) => resource(`legacy-${index}`, 1)), warnings: [], cached: false, cache_age_seconds: null } }));
   await page.route("**/api/v1/media/movie/27205/resources**", (route) => route.fulfill({ json: { ...pageResponse(2), items: pageItems } }));
@@ -301,7 +301,7 @@ test("keeps unique inspection quota across pages and retries failures after the 
   const failedIds = new Set<string>();
   const pageOne = Array.from({ length: 25 }, (_, index) => resource(`page-one-${index}`, 1));
   const pageTwo = Array.from({ length: 25 }, (_, index) => resource(`page-two-${index}`, 2));
-  await page.route("**/api/v1/health", (route) => route.fulfill({ json: { status: "ok", push_supported: false, inspection_supported: true } }));
+  await page.route("**/api/v1/health", (route) => route.fulfill({ json: { status: "ok", push_supported: false, inspection_supported: true, inspection_auto_start_enabled: true } }));
   await page.route("**/api/v1/auth/me", (route) => route.fulfill({ json: { authenticated: true, via_bearer: false, csrf_token: "csrf-test" } }));
   await page.route("**/api/v1/search", (route) => route.fulfill({ json: { movie, results: pageOne, warnings: [], cached: false, cache_age_seconds: null } }));
   await page.route("**/api/v1/media/movie/27205/resources**", (route) => {

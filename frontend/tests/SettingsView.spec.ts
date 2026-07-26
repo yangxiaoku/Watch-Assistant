@@ -290,6 +290,57 @@ describe("SettingsView", () => {
     ]);
   });
 
+  it("keeps the content draft after a failed save without advancing committed revision", async () => {
+    const updateContentPolicy = vi.fn()
+      .mockRejectedValueOnce(new ApiError("failed", 500))
+      .mockResolvedValueOnce({ ...contentPolicy, hide_adult_media: false, revision: 4 });
+    const api = makeApi({ updateContentPolicy });
+    const wrapper = mount(SettingsView, { props: { api } });
+    await flushPromises();
+    await wrapper.findAll("button").find((button) => button.text().includes("内容安全"))?.trigger("click");
+    await flushPromises();
+
+    await wrapper.get(".settings-policy-row input").setValue(false);
+    await wrapper.get(".settings-save-bar .primary-button").trigger("click");
+    await flushPromises();
+    expect(wrapper.get(".settings-policy-row input").element).toHaveProperty("checked", false);
+    expect(wrapper.text()).toContain("当前版本 3");
+
+    await wrapper.get(".settings-save-bar .primary-button").trigger("click");
+    await flushPromises();
+    expect(updateContentPolicy).toHaveBeenNthCalledWith(2, expect.objectContaining({ revision: 3, hide_adult_media: false }));
+    expect(wrapper.text()).toContain("当前版本 4");
+  });
+
+  it("starts and stops the log timer with section, visibility, and toggle state", async () => {
+    vi.useFakeTimers();
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+    const logsMock = vi.fn().mockResolvedValue(firstLogs);
+    const wrapper = mount(SettingsView, { props: { api: makeApi({ logs: logsMock }) } });
+    await flushPromises();
+    await openLogs(wrapper);
+    const callsAfterLoad = logsMock.mock.calls.length;
+
+    const autoRefresh = wrapper.get(".settings-section-actions input[type=checkbox]");
+    await autoRefresh.setValue(false);
+    vi.advanceTimersByTime(10000);
+    await flushPromises();
+    expect(logsMock).toHaveBeenCalledTimes(callsAfterLoad);
+
+    await autoRefresh.setValue(true);
+    vi.advanceTimersByTime(5000);
+    await flushPromises();
+    expect(logsMock).toHaveBeenCalledTimes(callsAfterLoad + 1);
+
+    const overviewButton = wrapper.findAll("button").find((button) => button.text().includes("概览"));
+    await overviewButton?.trigger("click");
+    vi.advanceTimersByTime(10000);
+    await flushPromises();
+    expect(logsMock).toHaveBeenCalledTimes(callsAfterLoad + 1);
+    wrapper.unmount();
+    vi.useRealTimers();
+  });
+
   it.each([
     ["ready", "Cookie 已就绪"],
     ["needs_auth", "Cookie 需要重新授权"],

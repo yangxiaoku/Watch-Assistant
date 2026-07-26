@@ -360,9 +360,7 @@ class SearchService:
             settings = await session.get(ApplicationSettings, "default")
         if settings is None:
             return ContentPolicy()
-        return content_policy_from_json(
-            settings.content_policy_json, settings.content_policy_revision
-        )
+        return content_policy_from_json(settings.content_policy_json, settings.revision)
 
     async def list_active_watches(self) -> list[MovieMetadata]:
         async with self._session_factory() as session:
@@ -1169,22 +1167,11 @@ def _filter_media_collection(
     response: MovieCollectionResponse, policy: ContentPolicy
 ) -> MovieCollectionResponse:
     items = _visible_media(response.results, policy)
-    hidden = len(response.results) - len(items)
-    total_results = max(0, response.total_results - hidden)
-    page_size = (
-        (response.total_results + response.total_pages - 1) // response.total_pages
-        if response.total_pages and response.total_results
-        else len(response.results)
-    )
+    # TMDB only provides page-local results here; preserve its collection-wide
+    # pagination metadata instead of presenting a fabricated global count.
     return response.model_copy(
         update={
             "results": items,
-            "total_results": total_results,
-            "total_pages": (
-                (total_results + page_size - 1) // page_size
-                if total_results and page_size
-                else 0
-            ),
         }
     )
 

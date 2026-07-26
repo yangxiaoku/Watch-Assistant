@@ -169,7 +169,7 @@ test("automatically inspects eight magnets and continues without duplicates", as
   }));
 
   await page.route("**/api/v1/health", (route) =>
-    route.fulfill({ json: { status: "ok", push_supported: false, inspection_supported: true } }),
+    route.fulfill({ json: { status: "ok", push_supported: false, inspection_supported: true, inspection_auto_start_enabled: true } }),
   );
   await page.route("**/api/v1/auth/me", (route) =>
     route.fulfill({ json: { authenticated: true, via_bearer: false, csrf_token: "csrf-test" } }),
@@ -409,7 +409,7 @@ test("invalidates an automatic batch when switching seasons quickly", async ({ p
     { season_number: 2, name: "第 2 季", episode_count: 10, air_date: "2012-04-01", poster_path: null },
   ];
   await page.route("**/api/v1/health", (route) =>
-    route.fulfill({ json: { status: "ok", push_supported: false, inspection_supported: true } }),
+    route.fulfill({ json: { status: "ok", push_supported: false, inspection_supported: true, inspection_auto_start_enabled: true } }),
   );
   await page.route("**/api/v1/auth/me", (route) =>
     route.fulfill({ json: { authenticated: true, via_bearer: false, csrf_token: "csrf-test" } }),
@@ -459,7 +459,7 @@ test("exposes a retry action after POST failure and resubmits the same resource 
   const submittedIds: string[][] = [];
   let inspectPostCount = 0;
   await page.route("**/api/v1/health", (route) =>
-    route.fulfill({ json: { status: "ok", push_supported: false, inspection_supported: true } }),
+    route.fulfill({ json: { status: "ok", push_supported: false, inspection_supported: true, inspection_auto_start_enabled: true } }),
   );
   await page.route("**/api/v1/auth/me", (route) =>
     route.fulfill({ json: { authenticated: true, via_bearer: false, csrf_token: "csrf-test" } }),
@@ -525,7 +525,7 @@ test("keeps more and retry actions separate when eight failures and untested res
     captured_at: "2026-07-24T10:00:00Z",
   }));
   await page.route("**/api/v1/health", (route) =>
-    route.fulfill({ json: { status: "ok", push_supported: false, inspection_supported: true } }),
+    route.fulfill({ json: { status: "ok", push_supported: false, inspection_supported: true, inspection_auto_start_enabled: true } }),
   );
   await page.route("**/api/v1/auth/me", (route) =>
     route.fulfill({ json: { authenticated: true, via_bearer: false, csrf_token: "csrf-test" } }),
@@ -606,7 +606,7 @@ test("clears the failed inspection queue when switching seasons", async ({ page 
     captured_at: "2026-07-24T10:00:00Z",
   });
   await page.route("**/api/v1/health", (route) =>
-    route.fulfill({ json: { status: "ok", push_supported: false, inspection_supported: true } }),
+    route.fulfill({ json: { status: "ok", push_supported: false, inspection_supported: true, inspection_auto_start_enabled: true } }),
   );
   await page.route("**/api/v1/auth/me", (route) =>
     route.fulfill({ json: { authenticated: true, via_bearer: false, csrf_token: "csrf-test" } }),

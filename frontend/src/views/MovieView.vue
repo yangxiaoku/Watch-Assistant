@@ -58,6 +58,10 @@ function onSeasonChange(event: Event): void {
 function posterUrl(path: string | null): string | null {
   return path ? `https://image.tmdb.org/t/p/w500${path}` : null;
 }
+
+function warningLabel(value: string): string {
+  return value === "resource_mismatch_filtered" ? "已隐藏与当前影视不匹配的资源" : value;
+}
 </script>
 
 <template>
@@ -77,7 +81,7 @@ function posterUrl(path: string | null): string | null {
       </aside>
     </header>
     <section v-if="result.movie.overview" class="overview-section"><h2>简介</h2><p>{{ result.movie.overview }}</p></section>
-    <div v-if="result.warnings.length" class="warning-strip">{{ result.warnings.join(' · ') }}</div>
+    <div v-if="result.warnings.length" class="warning-strip">{{ result.warnings.map(warningLabel).join(' · ') }}</div>
     <ResourceTable :resources="resources ?? result.results" :facets="resourceFacets" :total="resourceTotal" :hidden-total="resourceHiddenTotal" :page="resourcePage" :page-size="resourcePageSize" :total-pages="resourceTotalPages" :resource-kind="resourceKind" :resource-quality="resourceQuality" :resource-query="resourceQuery" :resource-sort="resourceSort" :resource-loading="resourceLoading" :resource-error="resourceError" :pagination-unavailable="paginationUnavailable" :pushing-id="pushingId" :push-capabilities="pushCapabilities" :inspection-supported="inspectionSupported" :inspection-state="inspectionState" :inspection-completed="inspectionCompleted" :inspection-total="inspectionTotal" :inspection-failed="inspectionFailed" :inspection-error="inspectionError" :inspection-more-available="inspectionMoreAvailable" :inspection-retry-available="inspectionRetryAvailable" :inspection-started="inspectionStarted" @push="$emit('push', $event)" @inspect-more="$emit('inspectMore')" @retry-failed="$emit('retryFailed')" @retry-page="$emit('retryPage')" @page="$emit('page', $event)" @kind="$emit('kind', $event)" @quality="$emit('quality', $event)" @query="$emit('query', $event)" @sort="$emit('sort', $event)" @page-size="$emit('pageSize', $event)" />
   </section>
 </template>
