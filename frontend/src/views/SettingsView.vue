@@ -79,6 +79,8 @@ const p115CredentialSaving = ref(false);
 const p115CredentialResetting = ref(false);
 const tmdbCredentialError = ref("");
 const p115CredentialError = ref("");
+const credentialMutationBusy = computed(() => tmdbSaving.value || tmdbResetting.value || p115CredentialSaving.value || p115CredentialResetting.value);
+const p115MutationBusy = computed(() => p115CredentialSaving.value || p115CredentialResetting.value);
 const inspectionSettings = ref<InspectionSettingsResponse | null>(null);
 const inspectionLoading = ref(true);
 const inspectionError = ref("");
@@ -202,7 +204,7 @@ function credentialErrorMessage(exception: unknown, fallback: string): string {
 }
 
 async function saveTmdbCredential() {
-  if (!credentials.value || tmdbSaving.value || tmdbResetting.value) return;
+  if (!credentials.value || credentialMutationBusy.value) return;
   if (!tmdbDraft.value) {
     tmdbCredentialError.value = "请输入 TMDB API Key。";
     return;
@@ -223,7 +225,7 @@ async function saveTmdbCredential() {
 }
 
 async function resetTmdbCredential() {
-  if (!credentials.value || tmdbSaving.value || tmdbResetting.value) return;
+  if (!credentials.value || credentialMutationBusy.value || credentials.value.tmdb.source !== "managed") return;
   tmdbResetting.value = true;
   tmdbCredentialError.value = "";
   try {
@@ -240,7 +242,7 @@ async function resetTmdbCredential() {
 }
 
 async function saveP115Credential() {
-  if (!credentials.value || p115CredentialSaving.value || p115CredentialResetting.value) return;
+  if (!credentials.value || credentialMutationBusy.value || validationState.value === "running") return;
   if (!p115CookieDraft.value) {
     p115CredentialError.value = "请输入 P115 Cookie。";
     return;
@@ -262,7 +264,7 @@ async function saveP115Credential() {
 }
 
 async function resetP115Credential() {
-  if (!credentials.value || p115CredentialSaving.value || p115CredentialResetting.value) return;
+  if (!credentials.value || credentialMutationBusy.value || validationState.value === "running" || credentials.value.p115_cookie.source !== "managed") return;
   p115CredentialResetting.value = true;
   p115CredentialError.value = "";
   try {
@@ -503,7 +505,7 @@ function loadMoreLogs() {
 }
 
 async function validateP115() {
-  if (validationState.value === "running") return;
+  if (validationState.value === "running" || p115MutationBusy.value) return;
   validationState.value = "running";
   validationMessage.value = "正在验证已配置 Cookie";
   try {
@@ -624,7 +626,7 @@ watch(autoRefreshLogs, syncLogsRefreshTimer);
             <section class="credential-panel" aria-labelledby="tmdb-credential-title">
               <header class="credential-panel-heading"><div><p class="eyebrow">TMDB</p><h3 id="tmdb-credential-title">TMDB API Key</h3></div><KeyRound :size="20" /></header>
               <dl class="credential-status-grid"><div><dt>是否配置</dt><dd :class="credentials.tmdb.configured ? 'status-ok' : 'status-degraded'">{{ credentials.tmdb.configured ? '已配置' : '未配置' }}</dd></div><div><dt>来源</dt><dd>{{ credentialSourceLabel(credentials.tmdb.source) }}</dd></div><div><dt>最后更新时间</dt><dd>{{ credentials.tmdb.last_updated_at ? formatTimestamp(credentials.tmdb.last_updated_at) : '未知' }}</dd></div></dl>
-              <div class="credential-form"><label>API Key<input v-model="tmdbDraft" type="password" autocomplete="new-password" spellcheck="false" aria-label="TMDB API Key" placeholder="输入新的 API Key" /></label><div class="credential-actions"><button class="primary-button" type="button" :disabled="tmdbSaving || tmdbResetting" @click="saveTmdbCredential"><LoaderCircle v-if="tmdbSaving" class="spin" :size="15" /><Save v-else :size="15" />保存并验证</button><button class="secondary-button" type="button" :disabled="tmdbSaving || tmdbResetting" @click="resetTmdbCredential"><LoaderCircle v-if="tmdbResetting" class="spin" :size="15" /><RefreshCw v-else :size="15" />恢复环境配置</button></div></div>
+              <div class="credential-form"><label>API Key<input v-model="tmdbDraft" type="password" autocomplete="new-password" spellcheck="false" aria-label="TMDB API Key" placeholder="输入新的 API Key" :disabled="credentialMutationBusy" /></label><div class="credential-actions"><button class="primary-button" type="button" :disabled="credentialMutationBusy" @click="saveTmdbCredential"><LoaderCircle v-if="tmdbSaving" class="spin" :size="15" /><Save v-else :size="15" />保存并验证</button><button class="secondary-button" type="button" :disabled="credentialMutationBusy || credentials.tmdb.source !== 'managed'" @click="resetTmdbCredential"><LoaderCircle v-if="tmdbResetting" class="spin" :size="15" /><RefreshCw v-else :size="15" />恢复环境配置</button></div></div>
               <p v-if="tmdbCredentialError" class="settings-state settings-state-error credential-error" role="alert"><AlertTriangle :size="16" />{{ tmdbCredentialError }}<button v-if="tmdbCredentialError.includes('其他请求')" class="text-button" type="button" @click="loadCredentials">重新加载</button></p>
             </section>
 
@@ -632,7 +634,7 @@ watch(autoRefreshLogs, syncLogsRefreshTimer);
               <header class="credential-panel-heading"><div><p class="eyebrow">P115</p><h3 id="p115-credential-title">P115 Cookie</h3></div><Cookie :size="20" /></header>
               <dl class="credential-status-grid"><div><dt>是否配置</dt><dd :class="credentials.p115_cookie.configured ? 'status-ok' : 'status-degraded'">{{ credentials.p115_cookie.configured ? '已配置' : '未配置' }}</dd></div><div><dt>来源</dt><dd>{{ credentialSourceLabel(credentials.p115_cookie.source) }}</dd></div><div><dt>结构状态</dt><dd :class="credentials.p115_cookie.structure_valid ? 'status-ok' : 'status-degraded'">{{ credentials.p115_cookie.structure_valid ? '结构正常' : '结构异常' }}</dd></div><div><dt>Readiness</dt><dd :class="credentials.p115_cookie.ready ? 'status-ok' : 'status-degraded'">{{ credentials.p115_cookie.ready ? '已就绪' : '未就绪' }}</dd></div><div><dt>最后更新时间</dt><dd>{{ credentials.p115_cookie.last_updated_at ? formatTimestamp(credentials.p115_cookie.last_updated_at) : '未知' }}</dd></div></dl>
               <div class="credential-capabilities"><span>磁力云下载 <strong :class="p115?.capabilities.magnet ? 'status-ok' : 'status-degraded'">{{ p115 ? capabilityLabel(p115.capabilities.magnet) : '未知' }}</strong></span><span>115 分享转存 <strong :class="p115?.capabilities.share ? 'status-ok' : 'status-degraded'">{{ p115 ? (p115.capabilities.share ? '可用' : '未启用') : '未知' }}</strong></span></div>
-              <div class="credential-form"><label>Cookie<input v-model="p115CookieDraft" type="password" autocomplete="new-password" spellcheck="false" aria-label="P115 Cookie" placeholder="输入新的 Cookie" /></label><div class="credential-actions"><button class="primary-button" type="button" :disabled="p115CredentialSaving || p115CredentialResetting" @click="saveP115Credential"><LoaderCircle v-if="p115CredentialSaving" class="spin" :size="15" /><Save v-else :size="15" />保存并验证</button><button class="secondary-button" type="button" :disabled="p115CredentialSaving || p115CredentialResetting" @click="resetP115Credential"><LoaderCircle v-if="p115CredentialResetting" class="spin" :size="15" /><RefreshCw v-else :size="15" />恢复 TgtoDrive</button><button class="secondary-button" type="button" :disabled="validationState === 'running'" @click="validateP115"><LoaderCircle v-if="validationState === 'running'" class="spin" :size="15" /><Cookie v-else :size="15" />验证当前 Cookie</button></div></div>
+              <div class="credential-form"><label>Cookie<input v-model="p115CookieDraft" type="password" autocomplete="new-password" spellcheck="false" aria-label="P115 Cookie" placeholder="输入新的 Cookie" :disabled="credentialMutationBusy" /></label><div class="credential-actions"><button class="primary-button" type="button" :disabled="credentialMutationBusy || validationState === 'running'" @click="saveP115Credential"><LoaderCircle v-if="p115CredentialSaving" class="spin" :size="15" /><Save v-else :size="15" />保存并验证</button><button class="secondary-button" type="button" :disabled="credentialMutationBusy || validationState === 'running' || credentials.p115_cookie.source !== 'managed'" @click="resetP115Credential"><LoaderCircle v-if="p115CredentialResetting" class="spin" :size="15" /><RefreshCw v-else :size="15" />恢复 TgtoDrive</button><button class="secondary-button" type="button" :disabled="p115MutationBusy || validationState === 'running'" @click="validateP115"><LoaderCircle v-if="validationState === 'running'" class="spin" :size="15" /><Cookie v-else :size="15" />验证当前 Cookie</button></div></div>
               <p v-if="p115CredentialError" class="settings-state settings-state-error credential-error" role="alert"><AlertTriangle :size="16" />{{ p115CredentialError }}<button v-if="p115CredentialError.includes('其他请求')" class="text-button" type="button" @click="loadCredentials">重新加载</button></p>
               <p v-if="validationMessage" :class="['settings-action-message', validationClass(validationState)]" role="status">{{ validationMessage }}</p>
             </section>
@@ -690,7 +692,7 @@ watch(autoRefreshLogs, syncLogsRefreshTimer);
             <div class="settings-metrics p115-metrics"><div class="settings-metric"><span>Cookie 来源</span><strong>{{ p115.cookie.source === 'managed' ? '托管' : 'TgtoDrive' }}</strong></div><div class="settings-metric"><span>Cookie 已配置</span><strong :class="p115.cookie.configured ? 'status-ok' : 'status-degraded'">{{ p115.cookie.configured ? '是' : '否' }}</strong></div><div class="settings-metric"><span>Cookie 结构</span><strong :class="p115.cookie.structure_valid ? 'status-ok' : 'status-degraded'">{{ p115.cookie.structure_valid ? '结构正常' : '结构异常' }}</strong></div><div class="settings-metric"><span>同步状态</span><strong :class="p115.cookie.sync_status === 'success' ? 'status-ok' : p115.cookie.sync_status === 'failed' ? 'status-down' : 'status-unknown'">{{ cookieSyncLabel(p115.cookie.sync_status) }}</strong></div><div class="settings-metric"><span>最后同步</span><strong>{{ p115.cookie.last_sync_at ? formatTimestamp(p115.cookie.last_sync_at) : '未知' }}</strong></div></div>
             <div class="settings-subsection"><h3>推送能力</h3><div class="settings-capability-list"><div><span>磁力云下载</span><strong :class="capabilityClass(p115.capabilities.magnet)">{{ capabilityLabel(p115.capabilities.magnet) }}</strong></div><div><span>115 分享转存</span><strong :class="capabilityClass(p115.capabilities.share)">{{ p115.capabilities.share ? '可用' : '未启用' }}</strong></div></div></div>
             <div class="settings-action-row"><button class="secondary-button" type="button" :disabled="validationState === 'running'" @click="validateP115"><LoaderCircle v-if="validationState === 'running'" class="spin" :size="16" /><Cookie v-else :size="16" />验证 Cookie</button><span v-if="validationMessage" :class="['settings-action-message', validationClass(validationState)]">{{ validationMessage }}</span></div>
-            <p class="settings-note"><Cookie :size="15" />Cookie 仅使用服务端已配置的来源，页面不会读取或输入 Cookie 原文。</p>
+            <p class="settings-note"><Cookie :size="15" />Cookie 仅使用服务端已配置的来源，页面不会回显已保存的 Cookie 原文。</p>
           </template>
         </section>
       </div>

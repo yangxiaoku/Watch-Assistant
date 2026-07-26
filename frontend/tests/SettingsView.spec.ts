@@ -101,6 +101,7 @@ describe("SettingsView", () => {
     expect(wrapper.text()).toContain("Cookie 来源");
     expect(wrapper.text()).toContain("TgtoDrive");
     expect(wrapper.text()).toContain("结构正常");
+    expect(wrapper.text()).toContain("页面不会回显已保存的 Cookie 原文");
   });
 
   it("loads the first cursor page and appends later pages with id de-duplication", async () => {
@@ -440,5 +441,82 @@ describe("SettingsView", () => {
     expect(updateTmdbCredential).toHaveBeenCalledTimes(1);
     resolveSave?.({ ...credentials, revision: 1 });
     await flushPromises();
+  });
+
+  it("shares one mutation gate across both credential panels and disables both drafts", async () => {
+    let resolveSave: ((value: typeof credentials) => void) | undefined;
+    const api = makeApi({
+      credentialSettings: vi.fn().mockResolvedValue({ ...credentials, p115_cookie: { ...credentials.p115_cookie, source: "managed" as const } }),
+      updateTmdbCredential: vi.fn().mockImplementation(() => new Promise((resolve) => { resolveSave = resolve; })),
+    });
+    const wrapper = mount(SettingsView, { props: { api } });
+    await flushPromises();
+    await wrapper.findAll("button").find((button) => button.text().includes("连接配置"))?.trigger("click");
+    await flushPromises();
+    const panels = wrapper.findAll(".credential-panel");
+    await panels[0].get("input[type=password]").setValue("tmdb-pending-secret");
+    await panels[1].get("input[type=password]").setValue("p115-pending-secret");
+    await panels[0].get(".primary-button").trigger("click");
+    expect((panels[0].get("input[type=password]").element as HTMLInputElement).disabled).toBe(true);
+    expect((panels[1].get("input[type=password]").element as HTMLInputElement).disabled).toBe(true);
+    await panels[1].get(".primary-button").trigger("click");
+    await panels[1].findAll(".secondary-button")[0].trigger("click");
+    expect(api.updateP115Cookie).not.toHaveBeenCalled();
+    expect(api.resetP115Cookie).not.toHaveBeenCalled();
+    resolveSave?.({ ...credentials, revision: 1 });
+    await flushPromises();
+  });
+
+  it("blocks P115 mutations while current Cookie validation is pending", async () => {
+    let resolveValidation: ((value: { status: "ready"; checked_at: string }) => void) | undefined;
+    const api = makeApi({
+      credentialSettings: vi.fn().mockResolvedValue({ ...credentials, p115_cookie: { ...credentials.p115_cookie, source: "managed" as const } }),
+      validateP115Cookie: vi.fn().mockImplementation(() => new Promise((resolve) => { resolveValidation = resolve; })),
+    });
+    const wrapper = mount(SettingsView, { props: { api } });
+    await flushPromises();
+    await wrapper.findAll("button").find((button) => button.text().includes("连接配置"))?.trigger("click");
+    await flushPromises();
+    const panel = wrapper.findAll(".credential-panel")[1];
+    await panel.get(".credential-actions .secondary-button:last-child").trigger("click");
+    expect((panel.get(".credential-actions .primary-button").element as HTMLButtonElement).disabled).toBe(true);
+    expect((panel.findAll(".credential-actions .secondary-button")[0].element as HTMLButtonElement).disabled).toBe(true);
+    await panel.get(".credential-actions .primary-button").trigger("click");
+    await panel.findAll(".credential-actions .secondary-button")[0].trigger("click");
+    expect(api.updateP115Cookie).not.toHaveBeenCalled();
+    expect(api.resetP115Cookie).not.toHaveBeenCalled();
+    resolveValidation?.({ status: "ready", checked_at: "2026-07-25T02:00:00Z" });
+    await flushPromises();
+  });
+
+  it("does not reset environment or fallback credentials, including direct handler calls", async () => {
+    const api = makeApi();
+    const wrapper = mount(SettingsView, { props: { api } });
+    await flushPromises();
+    await wrapper.findAll("button").find((button) => button.text().includes("连接配置"))?.trigger("click");
+    await flushPromises();
+    const panels = wrapper.findAll(".credential-panel");
+    expect((panels[0].findAll(".secondary-button")[0].element as HTMLButtonElement).disabled).toBe(true);
+    expect((panels[1].findAll(".secondary-button")[0].element as HTMLButtonElement).disabled).toBe(true);
+    await panels[0].findAll(".secondary-button")[0].trigger("click");
+    await panels[1].findAll(".secondary-button")[0].trigger("click");
+    expect(api.resetTmdbCredential).not.toHaveBeenCalled();
+    expect(api.resetP115Cookie).not.toHaveBeenCalled();
+  });
+
+  it("does not update credential state after an in-flight mutation is unmounted", async () => {
+    let resolveSave: ((value: typeof credentials) => void) | undefined;
+    const api = makeApi({ updateTmdbCredential: vi.fn().mockImplementation(() => new Promise((resolve) => { resolveSave = resolve; })) });
+    const wrapper = mount(SettingsView, { props: { api } });
+    await flushPromises();
+    await wrapper.findAll("button").find((button) => button.text().includes("连接配置"))?.trigger("click");
+    await flushPromises();
+    const panel = wrapper.findAll(".credential-panel")[0];
+    await panel.get("input[type=password]").setValue("unmounted-secret");
+    await panel.get(".primary-button").trigger("click");
+    wrapper.unmount();
+    resolveSave?.({ ...credentials, revision: 1 });
+    await flushPromises();
+    expect(api.updateTmdbCredential).toHaveBeenCalledTimes(1);
   });
 });
