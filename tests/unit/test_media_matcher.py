@@ -208,6 +208,74 @@ async def test_low_margin_is_needs_review():
     assert MatchReason.SCORE_MARGIN_INSUFFICIENT in decision.reasons
 
 
+async def test_conflicting_duplicate_identity_is_order_independent_and_review_only():
+    first_candidate = candidate(7, year=2005, title="The Office")
+    conflicting_candidate = candidate(7, year=2006, title="The Office")
+
+    first = await TmdbMatcher(
+        FakeClient([first_candidate, conflicting_candidate])
+    ).match(query())
+    reversed_decision = await TmdbMatcher(
+        FakeClient([conflicting_candidate, first_candidate])
+    ).match(query())
+
+    assert first.status is MatchStatus.NEEDS_REVIEW
+    assert first.reasons == (MatchReason.CONFLICTING_CANDIDATES,)
+    assert first == reversed_decision
+
+
+async def test_equivalent_duplicate_identity_is_deterministically_deduped():
+    duplicate = candidate(7, aliases=("办公室", "The Office"))
+    same = candidate(7, aliases=("The Office", "办公室"))
+
+    decision = await TmdbMatcher(FakeClient([duplicate, same])).match(query())
+    reversed_decision = await TmdbMatcher(FakeClient([same, duplicate])).match(query())
+
+    assert decision.accepted
+    assert len(decision.ranked_candidates) == 1
+    assert decision == reversed_decision
+
+
+@pytest.mark.parametrize(
+    "left,right",
+    (
+        (candidate(7, title="The Office"), candidate(7, title="Office")),
+        (
+            candidate(7, media_type=MediaType.TV),
+            candidate(7, media_type=MediaType.MOVIE),
+        ),
+        (
+            candidate(7, seasons=(TmdbSeason(1, episode_count=10),)),
+            candidate(7, seasons=(TmdbSeason(1, episode_count=8),)),
+        ),
+        (
+            candidate(7, special=SpecialKind.STANDARD),
+            candidate(7, special=SpecialKind.SP),
+        ),
+    ),
+)
+async def test_duplicate_identity_field_conflicts_fail_closed(left, right):
+    first = await TmdbMatcher(FakeClient([left, right])).match(query())
+    reversed_decision = await TmdbMatcher(FakeClient([right, left])).match(query())
+
+    assert first.status is MatchStatus.NEEDS_REVIEW
+    assert first.reasons == (MatchReason.CONFLICTING_CANDIDATES,)
+    assert first == reversed_decision
+
+
+@pytest.mark.parametrize(
+    ("query_title", "candidate_title"),
+    (("Office", "The Office"), ("办公室", "办公室风云")),
+)
+async def test_substring_titles_are_not_strong_matches(query_title, candidate_title):
+    decision = await TmdbMatcher(FakeClient([candidate(title=candidate_title)])).match(
+        query(title=query_title)
+    )
+
+    assert decision.status is MatchStatus.NEEDS_REVIEW
+    assert MatchReason.TITLE_MISMATCH in decision.reasons
+
+
 @pytest.mark.parametrize(
     ("error", "status"),
     (
@@ -241,10 +309,10 @@ async def test_timeout_and_exception_representations_are_redacted():
 
 
 async def test_cancelled_and_malformed_responses_are_distinct():
-    cancelled = await TmdbMatcher(FakeClient(asyncio.CancelledError())).match(query())
+    with pytest.raises(asyncio.CancelledError):
+        await TmdbMatcher(FakeClient(asyncio.CancelledError())).match(query())
     malformed = await TmdbMatcher(FakeClient({"unexpected": []})).match(query())
 
-    assert cancelled.status is MatchStatus.CANCELLED
     assert malformed.status is MatchStatus.MALFORMED_RESPONSE
 
     with pytest.raises(TmdbMalformedResponseError):
@@ -258,7 +326,8 @@ async def test_empty_and_duplicate_candidates():
     ).match(query())
 
     assert empty.status is MatchStatus.NO_CANDIDATES
-    assert len(duplicate.ranked_candidates) == 1
+    assert duplicate.status is MatchStatus.NEEDS_REVIEW
+    assert duplicate.reasons == (MatchReason.CONFLICTING_CANDIDATES,)
 
 
 async def test_manual_lock_wins_without_calling_tmdb():

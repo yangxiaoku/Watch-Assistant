@@ -26,7 +26,6 @@ class MatchStatus(StrEnum):
     NO_CANDIDATES = "no_candidates"
     RATE_LIMITED = "rate_limited"
     TIMEOUT = "timeout"
-    CANCELLED = "cancelled"
     MALFORMED_RESPONSE = "malformed_response"
     UNAVAILABLE = "unavailable"
 
@@ -80,12 +79,12 @@ class MatchReason(StrEnum):
     SPECIAL_CONFLICT = "special_conflict"
     SPECIAL_BOUNDARY_UNKNOWN = "special_boundary_unknown"
     EMPTY_CANDIDATES = "empty_candidates"
+    CONFLICTING_CANDIDATES = "conflicting_candidates"
     LOW_SCORE = "low_score"
     SCORE_MARGIN_INSUFFICIENT = "score_margin_insufficient"
     MANUAL_LOCK = "manual_lock"
     RATE_LIMITED = "rate_limited"
     TIMEOUT = "timeout"
-    CANCELLED = "cancelled"
     MALFORMED_RESPONSE = "malformed_response"
     UNAVAILABLE = "unavailable"
 
@@ -216,6 +215,7 @@ class TmdbCandidate:
             if clean and key and key not in seen:
                 seen.add(key)
                 aliases.append(clean)
+        aliases.sort(key=lambda value: (_normalize(value), value))
         object.__setattr__(self, "aliases", tuple(aliases[:20]))
         countries = tuple(
             sorted(
@@ -361,6 +361,10 @@ class TmdbMatchClient(Protocol):
     ) -> Sequence[TmdbCandidate] | Mapping[str, object]: ...
 
 
+class _ConflictingCandidatesError(Exception):
+    """Candidates with one TMDB ID disagree on matching fields."""
+
+
 def build_match_input(
     parsed: MediaParseResult,
     *,
@@ -428,8 +432,10 @@ class TmdbMatcher:
         try:
             raw = await self._search(match_input)
             candidates = _coerce_candidates(raw)
-        except asyncio.CancelledError:
-            return _status_decision(MatchStatus.CANCELLED, MatchReason.CANCELLED)
+        except _ConflictingCandidatesError:
+            return _status_decision(
+                MatchStatus.NEEDS_REVIEW, MatchReason.CONFLICTING_CANDIDATES
+            )
         except TmdbRateLimitError:
             return _status_decision(MatchStatus.RATE_LIMITED, MatchReason.RATE_LIMITED)
         except (TmdbTimeoutError, TimeoutError):
@@ -504,14 +510,18 @@ def _coerce_candidates(
             parsed.append(TmdbCandidate.from_payload(item))
         else:
             raise TmdbMalformedResponseError
-    by_identity: dict[tuple[int, MediaType], TmdbCandidate] = {}
+    by_tmdb_id: dict[int, list[TmdbCandidate]] = {}
     for candidate in parsed:
-        previous = by_identity.get(candidate.identity)
-        if previous is None or _candidate_quality_key(
-            candidate
-        ) > _candidate_quality_key(previous):
-            by_identity[candidate.identity] = candidate
-    return tuple(by_identity.values())
+        by_tmdb_id.setdefault(candidate.tmdb_id, []).append(candidate)
+
+    unique: list[TmdbCandidate] = []
+    for tmdb_id in sorted(by_tmdb_id):
+        group = by_tmdb_id[tmdb_id]
+        fingerprints = {_candidate_conflict_fingerprint(item) for item in group}
+        if len(fingerprints) > 1:
+            raise _ConflictingCandidatesError
+        unique.append(group[0])
+    return tuple(unique)
 
 
 def _rank_candidates(
@@ -725,22 +735,12 @@ def _score_special(
 
 def _title_match(title: str, candidate: TmdbCandidate) -> str | None:
     normalized = _normalize(title)
-    compact = normalized.replace(" ", "")
     options = ((candidate.title, "title"), (candidate.original_title, "original_title"))
     options += tuple((alias, "alias") for alias in candidate.aliases)
     for value, kind in options:
-        if value and _alias_matches(value, normalized, compact):
+        if value and _normalize(value) == normalized:
             return kind
     return None
-
-
-def _alias_matches(alias: str, normalized: str, compact: str) -> bool:
-    value = _normalize(alias)
-    if not value:
-        return False
-    if _contains_cjk(value):
-        return value.replace(" ", "") in compact
-    return f" {value} " in f" {normalized} "
 
 
 def _rank_key(item: RankedCandidate) -> tuple[object, ...]:
@@ -754,15 +754,24 @@ def _rank_key(item: RankedCandidate) -> tuple[object, ...]:
     )
 
 
-def _candidate_quality_key(candidate: TmdbCandidate) -> tuple[object, ...]:
+def _candidate_conflict_fingerprint(candidate: TmdbCandidate) -> tuple[object, ...]:
     return (
-        len(candidate.aliases),
-        len(candidate.origin_countries),
-        len(candidate.seasons),
-        candidate.release_year is not None,
-        candidate.original_title is not None,
-        tuple(_normalize(alias) for alias in candidate.aliases),
+        candidate.media_type.value,
         _normalize(candidate.title),
+        _normalize(candidate.original_title or ""),
+        tuple(sorted(_normalize(alias) for alias in candidate.aliases)),
+        candidate.release_year,
+        candidate.origin_countries,
+        candidate.kind.value,
+        candidate.special_kind.value,
+        tuple(
+            (
+                season.season_number,
+                season.episode_count,
+                season.episode_numbers,
+            )
+            for season in candidate.seasons
+        ),
     )
 
 
@@ -846,10 +855,6 @@ def _normalize(value: str) -> str:
             character if character.isalnum() else " " for character in normalized
         ).split()
     )
-
-
-def _contains_cjk(value: str) -> bool:
-    return any("\u3400" <= character <= "\u9fff" for character in value)
 
 
 def _unique_reasons(values: Sequence[MatchReason]) -> tuple[MatchReason, ...]:
