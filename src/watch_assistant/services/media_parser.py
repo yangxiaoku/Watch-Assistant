@@ -259,10 +259,17 @@ def parse_media_filename(filename: str) -> MediaParseResult:
     explicit_special_hints, explicit_special_spans = _matches(
         _EXPLICIT_SPECIAL_PATTERNS, stem
     )
-    generic_special_match = _GENERIC_SPECIAL_PATTERN.search(stem)
-    contextual_special = generic_special_match is not None and (
-        season is not None or episode_start is not None
+    generic_special_matches = tuple(_GENERIC_SPECIAL_PATTERN.finditer(stem))
+    episode_marker_end = max((end for _, end in episode_spans), default=-1)
+    post_episode_specials = tuple(
+        match
+        for match in generic_special_matches
+        if episode_spans and match.start() > episode_marker_end
     )
+    generic_special_match = (
+        post_episode_specials[0] if len(post_episode_specials) == 1 else None
+    )
+    contextual_special = generic_special_match is not None
     if explicit_special_hints:
         special_hints = explicit_special_hints
         special_spans = explicit_special_spans
@@ -333,7 +340,7 @@ def parse_media_filename(filename: str) -> MediaParseResult:
         evidence.append("episode_range")
     if special_hints:
         evidence.append("special")
-    elif generic_special_match is not None:
+    elif generic_special_matches:
         evidence.append("generic_special_token")
     if resolution:
         evidence.append("resolution")

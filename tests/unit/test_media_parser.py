@@ -71,6 +71,35 @@ def test_generic_special_gets_contextual_hint_with_season_episode():
 
 
 @pytest.mark.parametrize(
+    ("name", "title", "special_hints"),
+    (
+        ("Special.Ops.Lioness.S01E01.1080p.mkv", "Special Ops Lioness", ()),
+        ("The.Special.S01E01.1080p.mkv", "The Special", ()),
+        ("Show.S01E01.Special.1080p.mkv", "Show", ("special",)),
+        ("Show.Season.1.Specials.1080p.mkv", "Show", ("special",)),
+    ),
+)
+def test_generic_special_position_controls_hint_and_title(name, title, special_hints):
+    parsed = parse_media_filename(name)
+
+    assert parsed.title == title
+    assert parsed.special_hints == special_hints
+    assert parsed.media_type_hint == "tv"
+
+
+def test_multiple_generic_special_tokens_choose_only_a_clear_post_episode_candidate():
+    before_and_after = parse_media_filename(
+        "Special.Special.Show.S01E01.Special.1080p.mkv"
+    )
+    ambiguous_suffix = parse_media_filename("Show.S01E01.Special.Specials.1080p.mkv")
+
+    assert before_and_after.title == "Special Special Show"
+    assert before_and_after.special_hints == ("special",)
+    assert ambiguous_suffix.title == "Show Special Specials"
+    assert ambiguous_suffix.special_hints == ()
+
+
+@pytest.mark.parametrize(
     ("name", "season", "episode_start", "episode_end"),
     (
         ("Show.S01E02.mkv", 1, 2, None),
