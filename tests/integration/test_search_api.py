@@ -1558,6 +1558,18 @@ async def test_concurrent_warm_with_barrier_share_checks_avoids_sqlite_lock(
         )
 
     respx.get("http://pansou.test/api/search").mock(side_effect=search_response)
+    respx.get("https://api.themoviedb.org/3/movie/1501").mock(
+        return_value=httpx.Response(
+            200,
+            json={"id": 1501, "title": "Movie A", "release_date": "2020-01-01"},
+        )
+    )
+    respx.get("https://api.themoviedb.org/3/movie/1502").mock(
+        return_value=httpx.Response(
+            200,
+            json={"id": 1502, "title": "Movie B", "release_date": "2020-01-01"},
+        )
+    )
 
     barrier = asyncio.Barrier(2)
     entered_checks = 0
@@ -1588,6 +1600,12 @@ async def test_concurrent_warm_with_barrier_share_checks_avoids_sqlite_lock(
 
     assert results == [True, True]
     assert entered_checks == 2
+    cached_a = await service.search(1501, media_type=MediaType.MOVIE)
+    cached_b = await service.search(1502, media_type=MediaType.MOVIE)
+    assert cached_a.cached is True
+    assert cached_b.cached is True
+    assert cached_a.results and all("Movie A" in item.name for item in cached_a.results)
+    assert cached_b.results and all("Movie B" in item.name for item in cached_b.results)
     async with database.session_factory() as session:
         caches = list(await session.scalars(select(SearchCache)))
     assert {item.cache_key for item in caches} == {
