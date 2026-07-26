@@ -124,12 +124,14 @@ _AUDIO_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("FLAC", re.compile(r"(?<![A-Za-z0-9])FLAC(?![A-Za-z0-9])", re.IGNORECASE)),
     ("Opus", re.compile(r"(?<![A-Za-z0-9])Opus(?![A-Za-z0-9])", re.IGNORECASE)),
 )
-_SPECIAL_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+_EXPLICIT_SPECIAL_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("SP", re.compile(r"(?<![A-Za-z0-9])SP(?![A-Za-z0-9])", re.IGNORECASE)),
     ("OVA", re.compile(r"(?<![A-Za-z0-9])OVA(?![A-Za-z0-9])", re.IGNORECASE)),
     ("OAD", re.compile(r"(?<![A-Za-z0-9])OAD(?![A-Za-z0-9])", re.IGNORECASE)),
     ("ONA", re.compile(r"(?<![A-Za-z0-9])ONA(?![A-Za-z0-9])", re.IGNORECASE)),
-    ("special", re.compile(r"(?<![A-Za-z0-9])specials?(?![A-Za-z0-9])", re.IGNORECASE)),
+)
+_GENERIC_SPECIAL_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9])specials?(?![A-Za-z0-9])", re.IGNORECASE
 )
 _LANGUAGE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
@@ -190,6 +192,7 @@ class MediaParseResult:
     original_filename: str | None = None
     title: str | None = None
     year: int | None = None
+    year_candidates: tuple[int, ...] = ()
     season: int | None = None
     episode_start: int | None = None
     episode_end: int | None = None
@@ -248,10 +251,27 @@ def parse_media_filename(filename: str) -> MediaParseResult:
         return MediaParseResult(original_filename=basename or None, container=extension)
 
     companion_type = _companion_type(stem, extension)
-    year_match = _YEAR_RE.search(stem)
+    year_matches = tuple(_YEAR_RE.finditer(stem))
+    year_match = _select_year_match(stem, year_matches)
     year = int(year_match.group()) if year_match else None
+    year_candidates = tuple(int(match.group()) for match in year_matches)
     season, episode_start, episode_end, episode_spans = _episode_fields(stem)
-    special_hints, special_spans = _matches(_SPECIAL_PATTERNS, stem)
+    explicit_special_hints, explicit_special_spans = _matches(
+        _EXPLICIT_SPECIAL_PATTERNS, stem
+    )
+    generic_special_match = _GENERIC_SPECIAL_PATTERN.search(stem)
+    contextual_special = generic_special_match is not None and (
+        season is not None or episode_start is not None
+    )
+    if explicit_special_hints:
+        special_hints = explicit_special_hints
+        special_spans = explicit_special_spans
+    elif contextual_special:
+        special_hints = ("special",)
+        special_spans = ((generic_special_match.start(), generic_special_match.end()),)
+    else:
+        special_hints = ()
+        special_spans = ()
     resolution, _ = _first_match(_RESOLUTION_PATTERNS, stem)
     _, all_resolution_spans = _matches(_RESOLUTION_PATTERNS, stem)
     source, _ = _first_match(_SOURCE_PATTERNS, stem)
@@ -313,6 +333,8 @@ def parse_media_filename(filename: str) -> MediaParseResult:
         evidence.append("episode_range")
     if special_hints:
         evidence.append("special")
+    elif generic_special_match is not None:
+        evidence.append("generic_special_token")
     if resolution:
         evidence.append("resolution")
     if source:
@@ -342,6 +364,7 @@ def parse_media_filename(filename: str) -> MediaParseResult:
         original_filename=basename or None,
         title=title,
         year=year,
+        year_candidates=year_candidates,
         season=season,
         episode_start=episode_start,
         episode_end=episode_end,
@@ -372,6 +395,40 @@ def _split_extension(basename: str) -> tuple[str, str | None]:
         return basename, None
     stem, extension = basename.rsplit(".", 1)
     return stem, extension.casefold() or None
+
+
+def _select_year_match(
+    stem: str, candidates: tuple[re.Match[str], ...]
+) -> re.Match[str] | None:
+    """Choose the final year before the first unambiguous metadata marker."""
+
+    if not candidates:
+        return None
+    metadata_patterns: tuple[re.Pattern[str], ...] = (
+        _SEASON_EPISODE_RE,
+        _MULTI_SEASON_EPISODE_RE,
+        _CHINESE_EPISODE_RE,
+        _SEASON_ONLY_RE,
+        _EPISODE_LABEL_RE,
+        *(pattern for _, pattern in _EXPLICIT_SPECIAL_PATTERNS),
+        *(pattern for _, pattern in _RESOLUTION_PATTERNS),
+        *(pattern for _, pattern in _SOURCE_PATTERNS),
+        *(pattern for _, pattern in _VIDEO_CODEC_PATTERNS),
+        *(pattern for _, pattern in _HDR_PATTERNS),
+        *(pattern for _, pattern in _AUDIO_PATTERNS),
+        *(pattern for _, pattern in _LANGUAGE_PATTERNS),
+        *(pattern for _, pattern in _SUBTITLE_HINT_PATTERNS),
+    )
+    metadata_starts = [
+        match.start()
+        for pattern in metadata_patterns
+        if (match := pattern.search(stem)) is not None
+    ]
+    cutoff = min(metadata_starts, default=len(stem))
+    before_metadata = [
+        candidate for candidate in candidates if candidate.start() < cutoff
+    ]
+    return (before_metadata or list(candidates))[-1]
 
 
 def _companion_type(stem: str, extension: str | None) -> CompanionType:

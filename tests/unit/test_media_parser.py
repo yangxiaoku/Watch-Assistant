@@ -27,6 +27,50 @@ def test_movie_title_year_and_technical_evidence_are_extracted():
 
 
 @pytest.mark.parametrize(
+    ("name", "title", "year", "candidates"),
+    (
+        ("1917.2019.1080p.BluRay.mkv", "1917", 2019, (1917, 2019)),
+        (
+            "2001.A.Space.Odyssey.1968.1080p.mkv",
+            "2001 A Space Odyssey",
+            1968,
+            (2001, 1968),
+        ),
+        ("1984.1984.1080p.mkv", "1984", 1984, (1984, 1984)),
+    ),
+)
+def test_numeric_titles_keep_title_years_and_select_final_release_year(
+    name, title, year, candidates
+):
+    parsed = parse_media_filename(name)
+
+    assert parsed.title == title
+    assert parsed.year == year
+    assert parsed.year_candidates == candidates
+
+
+def test_generic_special_word_stays_in_movie_title():
+    special = parse_media_filename("The.Special.2024.1080p.mkv")
+    delivery = parse_media_filename("Special.Delivery.2022.1080p.mkv")
+
+    assert special.title == "The Special"
+    assert special.media_type_hint == "movie"
+    assert special.special_hints == ()
+    assert "generic_special_token" in special.evidence
+    assert delivery.title == "Special Delivery"
+    assert delivery.media_type_hint == "movie"
+    assert delivery.special_hints == ()
+
+
+def test_generic_special_gets_contextual_hint_with_season_episode():
+    parsed = parse_media_filename("Show.S01E01.Special.1080p.mkv")
+
+    assert parsed.title == "Show"
+    assert parsed.special_hints == ("special",)
+    assert parsed.media_type_hint == "tv"
+
+
+@pytest.mark.parametrize(
     ("name", "season", "episode_start", "episode_end"),
     (
         ("Show.S01E02.mkv", 1, 2, None),
