@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import re
+import weakref
 from collections import deque
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
@@ -40,6 +41,22 @@ MAX_MESSAGE_CHARS = 4096
 MESSAGE_TRUNCATION_MARKER = "[TRUNCATED]"
 
 logger = logging.getLogger(__name__)
+
+_MUTATION_LOCKS: weakref.WeakKeyDictionary[object, asyncio.Lock] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def shared_settings_mutation_lock(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> asyncio.Lock:
+    """Return the process-local lock shared by every settings writer."""
+    lock = _MUTATION_LOCKS.get(session_factory)
+    if lock is None:
+        lock = asyncio.Lock()
+        _MUTATION_LOCKS[session_factory] = lock
+    return lock
+
 
 _COOKIE_FIELD = re.compile(r"\b(?:UID|CID|KID|SEID)=[^;\s]+", re.IGNORECASE)
 _SECRET_ASSIGNMENT = re.compile(
@@ -348,7 +365,7 @@ class SettingsService:
     ) -> None:
         self._session_factory = session_factory
         self.log_store = LogStore(state_directory)
-        self._settings_lock = asyncio.Lock()
+        self._settings_lock = shared_settings_mutation_lock(session_factory)
         self._write_windows: dict[str, deque[datetime]] = {}
 
     async def get_logging(self) -> LoggingSettingsResponse:

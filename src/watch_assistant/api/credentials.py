@@ -1,8 +1,10 @@
 """Authenticated managed credential endpoints."""
 
-from typing import Annotated
+from collections.abc import Mapping
+from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Request
+from pydantic import ValidationError
 
 from watch_assistant.schemas import (
     CredentialRequest,
@@ -51,6 +53,20 @@ def _map_error(error: Exception) -> HTTPException:
     return HTTPException(status_code=503, detail="credential_unavailable")
 
 
+def _credential_payload(
+    value: object, *, reset: bool
+) -> CredentialRequest | CredentialResetRequest:
+    if not isinstance(value, Mapping):
+        raise HTTPException(status_code=422, detail="invalid_credential_request")
+    try:
+        model = CredentialResetRequest if reset else CredentialRequest
+        return model.model_validate(dict(value))
+    except (TypeError, ValueError, ValidationError):
+        raise HTTPException(
+            status_code=422, detail="invalid_credential_request"
+        ) from None
+
+
 @router.get("/settings/credentials", response_model=CredentialSettingsResponse)
 async def get_credentials(
     service: CredentialDependency, _auth: AuthDependency
@@ -60,11 +76,14 @@ async def get_credentials(
 
 @router.put("/settings/credentials/tmdb", response_model=CredentialSettingsResponse)
 async def put_tmdb(
-    payload: CredentialRequest,
+    *,
+    payload: Annotated[Any, Body()],
     service: CredentialDependency,
     auth: AuthDependency,
 ) -> CredentialSettingsResponse:
     _rate_limit(service, auth)
+    payload = _credential_payload(payload, reset=False)
+    assert isinstance(payload, CredentialRequest)
     try:
         result = await service.update_tmdb(
             payload.value.get_secret_value(), payload.revision
@@ -78,11 +97,14 @@ async def put_tmdb(
     "/settings/credentials/p115-cookie", response_model=CredentialSettingsResponse
 )
 async def put_p115(
-    payload: CredentialRequest,
+    *,
+    payload: Annotated[Any, Body()],
     service: CredentialDependency,
     auth: AuthDependency,
 ) -> CredentialSettingsResponse:
     _rate_limit(service, auth)
+    payload = _credential_payload(payload, reset=False)
+    assert isinstance(payload, CredentialRequest)
     try:
         result = await service.update_p115_cookie(
             payload.value.get_secret_value(), payload.revision
@@ -96,11 +118,14 @@ async def put_p115(
     "/settings/credentials/tmdb/reset", response_model=CredentialSettingsResponse
 )
 async def reset_tmdb(
-    payload: CredentialResetRequest,
+    *,
+    payload: Annotated[Any, Body()],
     service: CredentialDependency,
     auth: AuthDependency,
 ) -> CredentialSettingsResponse:
     _rate_limit(service, auth)
+    payload = _credential_payload(payload, reset=True)
+    assert isinstance(payload, CredentialResetRequest)
     try:
         result = await service.reset_tmdb(payload.revision)
     except Exception as error:  # noqa: BLE001 - stable public error mapping
@@ -112,11 +137,14 @@ async def reset_tmdb(
     "/settings/credentials/p115-cookie/reset", response_model=CredentialSettingsResponse
 )
 async def reset_p115(
-    payload: CredentialResetRequest,
+    *,
+    payload: Annotated[Any, Body()],
     service: CredentialDependency,
     auth: AuthDependency,
 ) -> CredentialSettingsResponse:
     _rate_limit(service, auth)
+    payload = _credential_payload(payload, reset=True)
+    assert isinstance(payload, CredentialResetRequest)
     try:
         result = await service.reset_p115_cookie(payload.revision)
     except Exception as error:  # noqa: BLE001 - stable public error mapping

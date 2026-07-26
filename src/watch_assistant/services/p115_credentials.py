@@ -134,10 +134,6 @@ class CompositeCookieProvider:
     def fallback(self) -> CookieProvider:
         return self._fallback
 
-    @property
-    def managed_cookie(self) -> str | None:
-        return self._managed
-
     def set_managed(self, cookie: str | None) -> None:
         self._managed = normalize_cookie_text(cookie) if cookie else None
 
@@ -147,6 +143,3 @@ class CompositeCookieProvider:
         return self._fallback.load()
 
     read = load
-
-    def fallback_load(self) -> str | None:
-        return self._fallback.load()

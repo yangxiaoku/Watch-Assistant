@@ -21,6 +21,7 @@ from watch_assistant.services.p115_credentials import (
     CookieProvider,
     normalize_cookie_text,
 )
+from watch_assistant.services.settings import shared_settings_mutation_lock
 
 SETTINGS_ID = "default"
 _TMDB_KEY = re.compile(r"^[^\x00-\x1f\x7f\r\n]{1,256}$")
@@ -57,6 +58,7 @@ class CredentialService:
         event_logger: EventLogger | None = None,
         runtime_state: Any | None = None,
         p115_runtime_callback: Callable[[bool], Awaitable[None]] | None = None,
+        mutation_lock: asyncio.Lock | None = None,
     ) -> None:
         if timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be positive")
@@ -73,7 +75,10 @@ class CredentialService:
         self._runtime_state = runtime_state
         self._p115_runtime_callback = p115_runtime_callback
         self._timeout_seconds = timeout_seconds
-        self._lock = asyncio.Lock()
+        self._operation_lock = asyncio.Lock()
+        self._mutation_lock = mutation_lock or shared_settings_mutation_lock(
+            session_factory
+        )
         self._rate_windows: dict[str, deque[datetime]] = {}
 
     def bind_runtime(
@@ -87,10 +92,6 @@ class CredentialService:
         self._p115_adapter = p115_adapter
         if runtime_state is not None:
             self._runtime_state = runtime_state
-
-    @property
-    def cookie_provider(self) -> CompositeCookieProvider:
-        return self._cookie_provider
 
     def check_rate_limit(
         self,
@@ -110,7 +111,7 @@ class CredentialService:
         bucket.append(current)
 
     async def load_managed(self) -> tuple[str | None, str | None]:
-        async with self._session_factory() as session:
+        async with self._mutation_lock, self._session_factory() as session:
             settings = await self._get_or_create(session)
             tmdb = self._decrypt(settings.managed_tmdb_key_encrypted)
             cookie = self._decrypt(settings.managed_p115_cookie_encrypted)
@@ -121,7 +122,7 @@ class CredentialService:
         return tmdb, cookie
 
     async def snapshot(self) -> dict[str, object]:
-        async with self._session_factory() as session:
+        async with self._mutation_lock, self._session_factory() as session:
             settings = await self._get_or_create(session)
             tmdb_configured = (
                 self._decrypt(settings.managed_tmdb_key_encrypted) is not None
@@ -167,20 +168,22 @@ class CredentialService:
     async def update_tmdb(self, value: str, revision: int) -> dict[str, object]:
         if not isinstance(value, str) or _TMDB_KEY.fullmatch(value) is None:
             raise CredentialRejected
-        await self._assert_revision(revision)
-        await self._validate_tmdb(value)
-        now = datetime.now(UTC)
-        async with self._lock, self._session_factory() as session:
-            settings = await self._get_or_create(session)
-            if settings.revision != revision:
-                raise CredentialConflict
-            settings.managed_tmdb_key_encrypted = self._crypto.encrypt(value)
-            settings.managed_tmdb_updated_at = now
-            settings.revision += 1
-            await session.commit()
-            next_revision = settings.revision
-        if self._tmdb_client is not None:
-            self._tmdb_client.set_api_key(value)
+        async with self._operation_lock:
+            await self._assert_revision(revision)
+            await self._validate_tmdb(value)
+            now = datetime.now(UTC)
+            async with self._mutation_lock, self._session_factory() as session:
+                settings = await self._get_or_create(session)
+                if settings.revision != revision:
+                    raise CredentialConflict
+                settings.managed_tmdb_key_encrypted = self._crypto.encrypt(value)
+                settings.managed_tmdb_updated_at = now
+                settings.revision += 1
+                commit_cancelled = await self._commit_uncancellable(session)
+                next_revision = settings.revision
+            cancelled = await self._finish_after_commit(self._apply_tmdb(value))
+            if commit_cancelled or cancelled:
+                raise asyncio.CancelledError
         await emit_event(
             self._event_logger, "settings.changed", fields={"status": "tmdb"}
         )
@@ -192,38 +195,52 @@ class CredentialService:
         normalized = normalize_cookie_text(value)
         if normalized is None:
             raise CredentialRejected
-        await self._assert_revision(revision)
-        await self._validate_p115(normalized)
-        now = datetime.now(UTC)
-        async with self._lock, self._session_factory() as session:
-            settings = await self._get_or_create(session)
-            if settings.revision != revision:
-                raise CredentialConflict
-            settings.managed_p115_cookie_encrypted = self._crypto.encrypt(normalized)
-            settings.managed_p115_updated_at = now
-            settings.revision += 1
-            await session.commit()
-            next_revision = settings.revision
-        self._cookie_provider.set_managed(normalized)
-        await self._refresh_p115_runtime()
+        async with self._operation_lock:
+            await self._assert_revision(revision)
+            await self._validate_p115(normalized)
+            now = datetime.now(UTC)
+            async with self._mutation_lock, self._session_factory() as session:
+                settings = await self._get_or_create(session)
+                if settings.revision != revision:
+                    raise CredentialConflict
+                settings.managed_p115_cookie_encrypted = self._crypto.encrypt(
+                    normalized
+                )
+                settings.managed_p115_updated_at = now
+                settings.revision += 1
+                commit_cancelled = await self._commit_uncancellable(session)
+                next_revision = settings.revision
+            cancelled = await self._finish_after_commit(
+                self._apply_p115_runtime(normalized, validate=False),
+                fail_closed_p115=True,
+            )
+            if commit_cancelled or cancelled:
+                raise asyncio.CancelledError
         await emit_event(
             self._event_logger, "settings.changed", fields={"status": "p115_cookie"}
         )
         return await self.snapshot() | {"revision": next_revision}
 
     async def reset_tmdb(self, revision: int) -> dict[str, object]:
-        next_revision = await self._reset("tmdb", revision)
-        if self._tmdb_client is not None:
-            self._tmdb_client.set_api_key(self._environment_tmdb_key)
+        async with self._operation_lock:
+            next_revision, commit_cancelled = await self._reset("tmdb", revision)
+            cancelled = await self._finish_after_commit(self._apply_tmdb(None))
+            if commit_cancelled or cancelled:
+                raise asyncio.CancelledError
         await emit_event(
             self._event_logger, "settings.changed", fields={"status": "tmdb_reset"}
         )
         return await self.snapshot() | {"revision": next_revision}
 
     async def reset_p115_cookie(self, revision: int) -> dict[str, object]:
-        next_revision = await self._reset("p115", revision)
-        self._cookie_provider.set_managed(None)
-        await self._refresh_p115_runtime()
+        async with self._operation_lock:
+            next_revision, commit_cancelled = await self._reset("p115", revision)
+            cancelled = await self._finish_after_commit(
+                self._apply_p115_runtime(None, validate=True),
+                fail_closed_p115=True,
+            )
+            if commit_cancelled or cancelled:
+                raise asyncio.CancelledError
         await emit_event(
             self._event_logger, "settings.changed", fields={"status": "p115_reset"}
         )
@@ -255,15 +272,9 @@ class CredentialService:
             raise CredentialValidationUnavailable
         try:
             method = getattr(adapter, "validate_cookie", None)
-            candidate_method = callable(method)
-            if not candidate_method:
-                method = getattr(adapter, "validate_read_only", None)
             if not callable(method):
                 raise CredentialValidationUnavailable
-            if candidate_method:
-                await asyncio.wait_for(method(value), timeout=self._timeout_seconds)
-            else:
-                await asyncio.wait_for(method(), timeout=self._timeout_seconds)
+            await asyncio.wait_for(method(value), timeout=self._timeout_seconds)
         except asyncio.CancelledError:
             raise
         except CredentialRejected:
@@ -275,27 +286,92 @@ class CredentialService:
                 raise CredentialValidationUnavailable from None
             raise CredentialValidationUnavailable from None
 
-    async def _refresh_p115_runtime(self) -> None:
+    async def _apply_tmdb(self, value: str | None) -> None:
+        if self._tmdb_client is None:
+            return
+        self._tmdb_client.set_api_key(value or self._environment_tmdb_key)
+
+    async def _apply_p115_runtime(self, cookie: str | None, *, validate: bool) -> None:
         adapter = self._p115_adapter
         if adapter is None:
             return
+        ready = False
+        if cookie is not None:
+            self._cookie_provider.set_managed(cookie)
+        else:
+            self._cookie_provider.set_managed(None)
+        if validate:
+            fallback = self._safe_fallback_cookie()
+            if fallback is None:
+                await self._set_p115_runtime(False)
+                return
+            try:
+                await self._validate_p115(fallback)
+            except (CredentialRejected, CredentialValidationUnavailable):
+                await self._set_p115_runtime(False)
+                return
         try:
             ready = await adapter.ensure_available()
         except asyncio.CancelledError:
-            raise
+            ready = False
         except Exception:  # noqa: BLE001 - readiness fails closed
             ready = False
+        await self._set_p115_runtime(bool(ready))
+
+    async def _set_p115_runtime(self, ready: bool) -> None:
         if self._runtime_state is not None:
-            self._runtime_state.p115_ready = bool(ready)
+            self._runtime_state.p115_ready = ready
             self._runtime_state.push_capabilities = {
-                "magnet": bool(ready),
+                "magnet": ready,
                 "share": False,
             }
         if self._p115_runtime_callback is not None:
-            await self._p115_runtime_callback(bool(ready))
+            try:
+                await self._p115_runtime_callback(ready)
+            except BaseException:  # noqa: BLE001 - fail closed after persistence
+                if self._runtime_state is not None:
+                    self._runtime_state.p115_ready = False
+                    self._runtime_state.push_capabilities = {
+                        "magnet": False,
+                        "share": False,
+                    }
 
-    async def _reset(self, kind: str, revision: int) -> int:
-        async with self._lock, self._session_factory() as session:
+    def _safe_fallback_cookie(self) -> str | None:
+        try:
+            return self._fallback_cookie_provider.load()
+        except Exception:  # noqa: BLE001 - fallback state is opaque
+            return None
+
+    async def _commit_uncancellable(self, session: AsyncSession) -> bool:
+        commit_task = asyncio.create_task(session.commit())
+        cancelled = False
+        while not commit_task.done():
+            try:
+                await asyncio.shield(commit_task)
+            except asyncio.CancelledError:
+                cancelled = True
+        await commit_task
+        return cancelled
+
+    async def _finish_after_commit(
+        self, operation: Awaitable[None], *, fail_closed_p115: bool = False
+    ) -> bool:
+        task = asyncio.create_task(operation)
+        cancelled = False
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                cancelled = True
+        try:
+            await task
+        except BaseException:  # noqa: BLE001 - post-commit convergence is opaque
+            if fail_closed_p115:
+                await self._set_p115_runtime(False)
+        return cancelled
+
+    async def _reset(self, kind: str, revision: int) -> tuple[int, bool]:
+        async with self._mutation_lock, self._session_factory() as session:
             settings = await self._get_or_create(session)
             if settings.revision != revision:
                 raise CredentialConflict
@@ -306,11 +382,11 @@ class CredentialService:
                 settings.managed_p115_cookie_encrypted = None
                 settings.managed_p115_updated_at = None
             settings.revision += 1
-            await session.commit()
-            return settings.revision
+            commit_cancelled = await self._commit_uncancellable(session)
+            return settings.revision, commit_cancelled
 
     async def _assert_revision(self, revision: int) -> None:
-        async with self._session_factory() as session:
+        async with self._mutation_lock, self._session_factory() as session:
             settings = await self._get_or_create(session)
             if settings.revision != revision:
                 raise CredentialConflict

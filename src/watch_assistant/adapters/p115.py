@@ -288,10 +288,6 @@ class P115Adapter:
             finally:
                 await self._close_client(client)
 
-    @property
-    def cookie_provider(self) -> CookieProvider:
-        return self._cookie_provider
-
     async def _client_for_operation(self) -> tuple[Any, bool]:
         cookie = self._cookie_provider.load()
         if not cookie:
