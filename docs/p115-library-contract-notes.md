@@ -51,6 +51,39 @@ fake 是本阶段唯一可执行 transport，真实服务器、Cookie、P115Clie
 | direct link | `P115Client.download_url(pickcode, strict=True, user_agent=None, app='os_windows', *, async_=False, **request_kwargs)` | unverified，禁止调用 | pickcode | 临时 URL 候选 | 可能产生签名 URL | C05 脱敏探针 | URL TTL、Cookie 失效、错误字段 |
 | HEAD/GET/Range | p115client 未冻结媒体服务器代理方法；`download_url` 只提供 URL 候选 | unverified，禁止调用 | 直链、请求方法和 Range | HTTP 状态/头部候选 | 可能消耗直链配额 | C05 使用本地 HTTP 夹具和真实直链脱敏验证 | 302/307、HEAD、Range、并发和缓存语义 |
 
+## C03 写契约离线预备
+
+`adapters/p115_library_write_contract.py` 是独立的离线边界，不扩展只读的
+`P115LibraryGateway`，也不导入或创建 `P115Client`。它只冻结固定版源码的候选
+请求形态：
+
+| 操作 | 固定版候选方法 | 脱敏 payload 形态 | 当前状态 |
+| --- | --- | --- | --- |
+| mkdir | `fs_mkdir(payload, pid=0)` | `file_name`、`pid` | unverified；offline_only |
+| move | `fs_move(payload, pid=0)` | `file_ids`、`to_cid` | unverified；offline_only |
+| rename | `fs_rename(payload)` | `file_id`、`file_name` | unverified；offline_only |
+| quarantine | move + rename 组合 | 两个独立步骤 | unverified；offline_only |
+| restore | move + rename 组合 | 两个独立步骤 | unverified；offline_only |
+| recycle | `fs_delete(payload)`（open API 候选） | `file_id` | unverified；offline_only |
+| delete | `fs_delete(payload)`（web API 候选） | `file_id` | disabled；永久删除关闭 |
+
+所有写操作必须同时满足 `write_enabled`、用户明确批准、专用可丢弃 fixture
+范围和可精确执行的清理计划；默认全部为 false。永久删除另有独立门禁，当前
+始终关闭。离线 fake 只记录操作名和 payload 字段名，不保留任何 ID、名称、路径、
+Cookie 或异常正文。
+
+结果状态固定为 `success`、`failed`、`uncertain`：远端明确失败映射为
+`failed/remote_failed`，超时映射为 `uncertain/timeout` 且必须进行后置核对，
+`CancelledError` 继续传播，不自动重试。`WritePostcondition` 只描述待核对的
+身份、父目录、名称和存在性，核对结果为 `satisfied`、`not_satisfied` 或
+`unverified`，不承诺任何真实字段值。
+
+真实 C03 验收仍需要用户批准的专用非生产临时目录、可验证的前后置条件和精确
+清理清单，必须按“建目录 -> 上传/复制 fixture -> 重命名 -> 移动 -> 隔离 ->
+恢复 -> 只读核对 -> 精确清理”顺序单独授权。任何 timeout/uncertain 只允许
+只读核对并停止后续写入；不得使用正式影视文件。永久删除、业务 worker、API、
+前端和 capability 本轮均未接入。
+
 ## 固定版本源码观察
 
 本地源码仅用于记录方法名和 `inspect.signature`，没有执行任何客户端实例化。
