@@ -39,11 +39,8 @@ from watch_assistant.services.settings import SettingsService
 from watch_assistant.services.tasks import TaskService
 from watch_assistant.worker import TaskAdapter, TaskWorker
 
-_RELEASE_SHA = re.compile(r"(?<![0-9a-f])[0-9a-f]{40}(?![0-9a-f])", re.IGNORECASE)
-_TRUSTED_RELEASE_PATHS = (
-    Path("/app/RELEASE"),
-    Path("/opt/watch-assistant/current/RELEASE"),
-)
+_RELEASE_SHA = re.compile(r"[0-9a-f]{40}", re.IGNORECASE)
+_TRUSTED_RELEASE_PATH = Path("/opt/watch-assistant/current")
 
 
 def create_app(
@@ -399,17 +396,16 @@ def create_app(
     return application
 
 
-def _resolve_release() -> str:
+def _resolve_release(trusted_path: Path | None = None) -> str:
     configured = os.environ.get("WATCH_ASSISTANT_RELEASE")
     if configured:
         return configured
-    for path in _TRUSTED_RELEASE_PATHS:
-        try:
-            match = _RELEASE_SHA.search(path.read_text(encoding="ascii"))
-        except (OSError, UnicodeError):
-            continue
-        if match is not None:
-            return match.group(0).lower()
+    try:
+        release_name = (trusted_path or _TRUSTED_RELEASE_PATH).resolve(strict=True).name
+    except (OSError, RuntimeError, ValueError):
+        return "unknown"
+    if _RELEASE_SHA.fullmatch(release_name) is not None:
+        return release_name.lower()
     return "unknown"
 
 
