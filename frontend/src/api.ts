@@ -1,5 +1,6 @@
 import type {
   HealthResponse,
+  InspectionSettingsResponse,
   HomeCatalogResponse,
   InspectionBatchResponse,
   LogCategory,
@@ -7,6 +8,7 @@ import type {
   LogsResponse,
   MovieCollectionResponse,
   PatchLoggingSettingsRequest,
+  PatchInspectionSettingsRequest,
   P115SettingsResponse,
   P115ValidationResponse,
   SearchRequest,
@@ -60,6 +62,17 @@ export class ApiClient {
 
   async updateLoggingSettings(settings: PatchLoggingSettingsRequest): Promise<LoggingSettingsResponse> {
     return this.request<LoggingSettingsResponse>("/api/v1/settings/logging", {
+      method: "PATCH",
+      body: JSON.stringify(settings),
+    });
+  }
+
+  async inspectionSettings(): Promise<InspectionSettingsResponse> {
+    return this.request<InspectionSettingsResponse>("/api/v1/settings/inspection");
+  }
+
+  async updateInspectionSettings(settings: PatchInspectionSettingsRequest): Promise<InspectionSettingsResponse> {
+    return this.request<InspectionSettingsResponse>("/api/v1/settings/inspection", {
       method: "PATCH",
       body: JSON.stringify(settings),
     });

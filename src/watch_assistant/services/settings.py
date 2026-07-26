@@ -16,6 +16,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from watch_assistant.models import ApplicationSettings
 from watch_assistant.schemas import (
+    InspectionSettingsPatch,
+    InspectionSettingsResponse,
     LogCategory,
     LoggingLevel,
     LoggingSettingsPatch,
@@ -367,6 +369,23 @@ class SettingsService:
             logger.warning("settings audit log write failed")
         return response
 
+    async def get_inspection(self) -> InspectionSettingsResponse:
+        async with self._settings_lock, self._session_factory() as session:
+            settings = await self._get_or_create(session)
+            return _inspection_response(settings)
+
+    async def update_inspection(
+        self, patch: InspectionSettingsPatch
+    ) -> InspectionSettingsResponse:
+        async with self._settings_lock, self._session_factory() as session:
+            settings = await self._get_or_create(session)
+            if settings.revision != patch.revision:
+                raise SettingsConflict
+            settings.inspection_auto_start_enabled = patch.auto_start_enabled
+            settings.revision += 1
+            await session.commit()
+            return _inspection_response(settings)
+
     async def _get_or_create(self, session: AsyncSession) -> ApplicationSettings:
         settings = await session.get(ApplicationSettings, SETTINGS_ID)
         if settings is None:
@@ -375,6 +394,7 @@ class SettingsService:
                 logging_level=DEFAULT_LEVEL.value,
                 retention_days=DEFAULT_RETENTION_DAYS,
                 max_file_mb=DEFAULT_MAX_FILE_MB,
+                inspection_auto_start_enabled=True,
                 revision=0,
             )
             session.add(settings)
@@ -387,5 +407,12 @@ def _settings_response(settings: ApplicationSettings) -> LoggingSettingsResponse
         level=LoggingLevel(settings.logging_level),
         retention_days=settings.retention_days,
         max_file_mb=settings.max_file_mb,
+        revision=settings.revision,
+    )
+
+
+def _inspection_response(settings: ApplicationSettings) -> InspectionSettingsResponse:
+    return InspectionSettingsResponse(
+        auto_start_enabled=bool(settings.inspection_auto_start_enabled),
         revision=settings.revision,
     )

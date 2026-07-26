@@ -10,6 +10,7 @@ import {
   Save,
   Server,
   Settings2,
+  ScanSearch,
   ShieldCheck,
   XCircle,
 } from "@lucide/vue";
@@ -20,6 +21,7 @@ import type {
   LogEntry,
   LogLevel,
   LoggingSettingsResponse,
+  InspectionSettingsResponse,
   LogsResponse,
   P115SettingsResponse,
   P115ValidationResponse,
@@ -28,12 +30,13 @@ import type {
 
 const props = defineProps<{ api: ApiClient }>();
 
-type SettingsSection = "overview" | "logs" | "p115";
+type SettingsSection = "overview" | "logs" | "inspection" | "p115";
 type ValidationState = "idle" | "running" | "error" | P115ValidationResponse["status"];
 
 const sections = [
   { id: "overview" as const, label: "概览", icon: Activity },
   { id: "logs" as const, label: "日志", icon: FileText },
+  { id: "inspection" as const, label: "资源检测", icon: ScanSearch },
   { id: "p115" as const, label: "115 推送", icon: ShieldCheck },
 ];
 const levelOptions: Array<{ value: LogLevel; label: string }> = [
@@ -57,6 +60,13 @@ const overviewError = ref("");
 const p115 = ref<P115SettingsResponse | null>(null);
 const p115Loading = ref(true);
 const p115Error = ref("");
+const inspectionSettings = ref<InspectionSettingsResponse | null>(null);
+const inspectionLoading = ref(true);
+const inspectionError = ref("");
+const inspectionDraft = ref(true);
+const savingInspection = ref(false);
+const inspectionSaveError = ref("");
+const inspectionConflict = ref(false);
 const validationState = ref<ValidationState>("idle");
 const validationMessage = ref("");
 
@@ -96,7 +106,7 @@ function selectSection(section: SettingsSection) {
 
 function selectMobileSection(event: Event) {
   const value = (event.target as HTMLSelectElement).value;
-  if (value === "overview" || value === "logs" || value === "p115") selectSection(value);
+  if (value === "overview" || value === "logs" || value === "inspection" || value === "p115") selectSection(value);
 }
 
 async function loadOverview() {
@@ -120,6 +130,49 @@ async function loadP115() {
     p115Error.value = exception instanceof ApiError ? exception.message : "115 状态加载失败，请稍后重试";
   } finally {
     p115Loading.value = false;
+  }
+}
+
+function applyInspection(value: InspectionSettingsResponse) {
+  inspectionSettings.value = value;
+  inspectionDraft.value = value.auto_start_enabled;
+}
+
+async function loadInspection() {
+  inspectionLoading.value = true;
+  inspectionError.value = "";
+  inspectionSaveError.value = "";
+  inspectionConflict.value = false;
+  try {
+    applyInspection(await props.api.inspectionSettings());
+  } catch (exception) {
+    inspectionError.value = exception instanceof ApiError ? exception.message : "资源检测设置加载失败，请稍后重试";
+  } finally {
+    inspectionLoading.value = false;
+  }
+}
+
+const inspectionDirty = computed(() => Boolean(inspectionSettings.value) && inspectionDraft.value !== inspectionSettings.value?.auto_start_enabled);
+
+async function saveInspection() {
+  if (!inspectionSettings.value || savingInspection.value || !inspectionDirty.value) return;
+  savingInspection.value = true;
+  inspectionSaveError.value = "";
+  inspectionConflict.value = false;
+  try {
+    applyInspection(await props.api.updateInspectionSettings({
+      auto_start_enabled: inspectionDraft.value,
+      revision: inspectionSettings.value.revision,
+    }));
+  } catch (exception) {
+    if (exception instanceof ApiError && exception.status === 409) {
+      inspectionConflict.value = true;
+      inspectionSaveError.value = "设置已被其他请求修改，请重新加载后再保存。";
+    } else {
+      inspectionSaveError.value = exception instanceof ApiError ? exception.message : "保存失败，请稍后重试";
+    }
+  } finally {
+    savingInspection.value = false;
   }
 }
 
@@ -281,6 +334,7 @@ function validationClass(value: ValidationState) {
 onMounted(() => {
   void loadOverview();
   void loadLogging();
+  void loadInspection();
   void loadP115();
 });
 </script>
@@ -316,6 +370,17 @@ onMounted(() => {
             <div class="settings-pagination"><span>已加载 {{ logItems.length }} 条</span><button v-if="hasMoreLogs" class="secondary-button" type="button" :disabled="logsLoading" @click="loadMoreLogs"><LoaderCircle v-if="logsLoading" class="spin" :size="15" />加载更多</button></div>
           </template>
           <div class="settings-subsection logging-settings"><h3>日志保留</h3><div v-if="loggingLoading" class="settings-loading"><LoaderCircle class="spin" :size="18" />正在加载日志设置</div><div v-else-if="loggingError" class="settings-state settings-state-error"><AlertTriangle :size="18" /><span>{{ loggingError }}</span><button class="text-button" type="button" @click="loadLogging">重试</button></div><template v-else-if="logging"><div class="settings-form-grid"><label>最低级别<select v-model="draftLevel"><option v-for="option in levelOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select></label><label>保留天数（1-90）<input v-model.number="draftRetentionDays" type="number" min="1" max="90" /></label><label>文件上限（MB，1-50）<input v-model.number="draftMaxFileMb" type="number" min="1" max="50" /></label></div><div v-if="loggingDirty" class="settings-save-bar"><span>有未保存的日志设置</span><div><button class="secondary-button" type="button" :disabled="savingLogging" @click="loadLogging">取消</button><button class="primary-button" type="button" :disabled="savingLogging" @click="saveLogging"><LoaderCircle v-if="savingLogging" class="spin" :size="15" /><Save v-else :size="15" />保存</button></div></div><div v-if="saveError" class="settings-state settings-state-error settings-save-error"><AlertTriangle :size="17" /><span>{{ saveError }}</span><button v-if="conflict" class="text-button" type="button" @click="loadLogging">重新加载</button></div></template></div>
+        </section>
+
+        <section v-else-if="activeSection === 'inspection'" class="settings-section" aria-labelledby="inspection-title">
+          <header class="settings-section-heading"><div><p class="eyebrow">RESOURCE INSPECTION</p><h2 id="inspection-title">资源检测</h2></div><button class="icon-button" type="button" title="刷新资源检测设置" aria-label="刷新资源检测设置" :disabled="inspectionLoading" @click="loadInspection"><RefreshCw :size="16" :class="{ spin: inspectionLoading }" /></button></header>
+          <div v-if="inspectionLoading" class="settings-loading"><LoaderCircle class="spin" :size="20" />正在加载资源检测设置</div>
+          <div v-else-if="inspectionError" class="settings-state settings-state-error"><AlertTriangle :size="18" /><span>{{ inspectionError }}</span><button class="text-button" type="button" @click="loadInspection">重试</button></div>
+          <template v-else-if="inspectionSettings">
+            <div class="settings-subsection"><h3>打开详情时自动检测</h3><label class="settings-toggle"><input v-model="inspectionDraft" type="checkbox" /><span>自动提交首批资源检测</span></label><p class="settings-note">关闭后仍可在资源详情中手动开始检测。</p></div>
+            <div v-if="inspectionDirty" class="settings-save-bar"><span>有未保存的资源检测设置</span><div><button class="secondary-button" type="button" :disabled="savingInspection" @click="loadInspection">取消</button><button class="primary-button" type="button" :disabled="savingInspection" @click="saveInspection"><LoaderCircle v-if="savingInspection" class="spin" :size="15" /><Save v-else :size="15" />保存</button></div></div>
+            <div v-if="inspectionSaveError" class="settings-state settings-state-error settings-save-error"><AlertTriangle :size="17" /><span>{{ inspectionSaveError }}</span><button v-if="inspectionConflict" class="text-button" type="button" @click="loadInspection">重新加载</button></div>
+          </template>
         </section>
 
         <section v-else class="settings-section" aria-labelledby="p115-title">

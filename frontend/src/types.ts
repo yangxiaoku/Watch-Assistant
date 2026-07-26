@@ -137,6 +137,7 @@ export interface HealthResponse {
     share: boolean;
   };
   inspection_supported?: boolean;
+  inspection_auto_start_enabled?: boolean;
 }
 
 export type LogLevel = "ERROR" | "WARNING" | "INFO";
@@ -158,6 +159,16 @@ export interface LoggingSettingsResponse {
   level: LogLevel;
   retention_days: number;
   max_file_mb: number;
+}
+
+export interface InspectionSettingsResponse {
+  auto_start_enabled: boolean;
+  revision: number;
+}
+
+export interface PatchInspectionSettingsRequest {
+  auto_start_enabled: boolean;
+  revision: number;
 }
 
 export interface PatchLoggingSettingsRequest {

@@ -808,6 +808,7 @@ async def test_lifespan_runs_the_single_worker_and_closes_the_qb_client(tmp_path
             "push_supported": False,
             "push_capabilities": {"magnet": False, "share": False},
             "inspection_supported": True,
+            "inspection_auto_start_enabled": True,
         }
         assert fake.closed is False
 

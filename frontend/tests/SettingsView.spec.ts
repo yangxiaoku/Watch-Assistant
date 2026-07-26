@@ -17,6 +17,7 @@ const logging = {
   retention_days: 30,
   max_file_mb: 10,
 };
+const inspection = { auto_start_enabled: true, revision: 0 };
 const p115 = {
   enabled: true,
   ready: true,
@@ -44,6 +45,8 @@ function makeApi(overrides: Partial<Record<keyof ApiClient, unknown>> = {}) {
   return {
     settingsOverview: vi.fn().mockResolvedValue(overview),
     loggingSettings: vi.fn().mockResolvedValue(logging),
+    inspectionSettings: vi.fn().mockResolvedValue(inspection),
+    updateInspectionSettings: vi.fn().mockResolvedValue({ ...inspection, revision: 1 }),
     updateLoggingSettings: vi.fn().mockResolvedValue({ ...logging, revision: 8 }),
     p115Settings: vi.fn().mockResolvedValue(p115),
     validateP115Cookie: vi.fn().mockResolvedValue({ status: "ready", checked_at: "2026-07-25T02:00:00Z" }),
@@ -147,6 +150,22 @@ describe("SettingsView", () => {
     await flushPromises();
     expect(wrapper.find(".settings-save-error").exists()).toBe(false);
     expect(wrapper.text()).not.toContain("设置已被其他请求修改");
+  });
+
+  it("loads and saves the persistent inspection auto-start setting", async () => {
+    const api = makeApi({
+      inspectionSettings: vi.fn().mockResolvedValue({ auto_start_enabled: true, revision: 3 }),
+      updateInspectionSettings: vi.fn().mockResolvedValue({ auto_start_enabled: false, revision: 4 }),
+    });
+    const wrapper = mount(SettingsView, { props: { api } });
+    await flushPromises();
+    await wrapper.findAll("button").find((button) => button.text().includes("资源检测"))?.trigger("click");
+    const toggle = wrapper.get(".settings-toggle input");
+    await toggle.setValue(false);
+    await wrapper.get(".settings-save-bar .primary-button").trigger("click");
+    await flushPromises();
+    expect(api.updateInspectionSettings).toHaveBeenCalledWith({ auto_start_enabled: false, revision: 3 });
+    expect(wrapper.text()).toContain("资源检测");
   });
 
   it.each([

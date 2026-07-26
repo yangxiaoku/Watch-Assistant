@@ -77,6 +77,18 @@ class LoggingSettingsPatch(BaseModel):
     revision: int = Field(ge=0)
 
 
+class InspectionSettingsResponse(BaseModel):
+    auto_start_enabled: bool
+    revision: int = Field(ge=0)
+
+
+class InspectionSettingsPatch(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    auto_start_enabled: bool
+    revision: int = Field(ge=0)
+
+
 class SettingsOverviewResponse(BaseModel):
     release: str
     uptime_seconds: int = Field(ge=0)

@@ -39,6 +39,9 @@ class ApplicationSettings(Base):
     logging_level: Mapped[str] = mapped_column(String(16), default="INFO")
     retention_days: Mapped[int] = mapped_column(Integer, default=14)
     max_file_mb: Mapped[int] = mapped_column(Integer, default=10)
+    inspection_auto_start_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default="1"
+    )
     revision: Mapped[int] = mapped_column(Integer, default=0)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, onupdate=utc_now

@@ -312,6 +312,15 @@ def create_app(
             "push_capabilities",
             {"magnet": False, "share": False},
         )
+        inspection_auto_start_enabled = True
+        settings_service = getattr(application.state, "settings_service", None)
+        if settings_service is not None:
+            try:
+                inspection_auto_start_enabled = (
+                    await settings_service.get_inspection()
+                ).auto_start_enabled
+            except Exception:  # noqa: BLE001 - health remains available
+                inspection_auto_start_enabled = True
         return {
             "status": "ok",
             "push_supported": getattr(application.state, "push_supported", False),
@@ -319,6 +328,7 @@ def create_app(
             "inspection_supported": getattr(
                 application.state, "inspection_supported", False
             ),
+            "inspection_auto_start_enabled": inspection_auto_start_enabled,
         }
 
     application.include_router(search_router)

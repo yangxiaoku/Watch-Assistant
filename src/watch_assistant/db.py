@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import delete, event, select
+from sqlalchemy import delete, event, select, text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -65,6 +65,18 @@ def create_database(url: str) -> Database:
 async def initialize_database(engine: AsyncEngine) -> None:
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
+        if engine.url.get_backend_name() == "sqlite":
+            columns = await connection.execute(
+                text("PRAGMA table_info(application_settings)")
+            )
+            names = {row[1] for row in columns}
+            if "inspection_auto_start_enabled" not in names:
+                await connection.execute(
+                    text(
+                        "ALTER TABLE application_settings "
+                        "ADD COLUMN inspection_auto_start_enabled BOOLEAN NOT NULL DEFAULT 1"
+                    )
+                )
 
 
 async def cleanup_expired(
