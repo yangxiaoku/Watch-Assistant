@@ -253,8 +253,11 @@ class SecurityManager:
     def _check_rate_limit(self, request: Request, identity: str) -> None:
         path = request.url.path
         if request.method != "POST":
-            return
-        if path == "/api/v1/search":
+            if request.method == "PATCH" and path == "/api/v1/settings/inspection":
+                bucket, limit = "inspection_settings", 10
+            else:
+                return
+        elif path == "/api/v1/search":
             bucket, limit = "search", 30
         elif path == "/api/v1/cache/retry":
             bucket, limit = "maintenance", 2

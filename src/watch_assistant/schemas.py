@@ -93,6 +93,17 @@ class ContentPolicyPatch(BaseModel):
     hide_suspicious_resources: bool | None = None
     hide_low_quality_resources: bool | None = None
     blocked_keywords: list[str] | None = Field(default=None, max_length=50)
+
+
+class InspectionSettingsResponse(BaseModel):
+    auto_start_enabled: bool
+    revision: int = Field(ge=0)
+
+
+class InspectionSettingsPatch(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    auto_start_enabled: bool
     revision: int = Field(ge=0)
 
 

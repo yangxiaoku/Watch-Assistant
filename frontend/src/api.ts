@@ -1,5 +1,6 @@
 import type {
   HealthResponse,
+  InspectionSettingsResponse,
   HomeCatalogResponse,
   InspectionBatchResponse,
   LogCategory,
@@ -9,6 +10,7 @@ import type {
   LogsResponse,
   MovieCollectionResponse,
   PatchLoggingSettingsRequest,
+  PatchInspectionSettingsRequest,
   P115SettingsResponse,
   P115ValidationResponse,
   SearchRequest,
@@ -73,6 +75,17 @@ export class ApiClient {
 
   async updateContentPolicy(settings: PatchContentPolicyRequest): Promise<ContentPolicyResponse> {
     return this.request<ContentPolicyResponse>("/api/v1/settings/content-policy", {
+      method: "PATCH",
+      body: JSON.stringify(settings),
+    });
+  }
+
+  async inspectionSettings(): Promise<InspectionSettingsResponse> {
+    return this.request<InspectionSettingsResponse>("/api/v1/settings/inspection");
+  }
+
+  async updateInspectionSettings(settings: PatchInspectionSettingsRequest): Promise<InspectionSettingsResponse> {
+    return this.request<InspectionSettingsResponse>("/api/v1/settings/inspection", {
       method: "PATCH",
       body: JSON.stringify(settings),
     });

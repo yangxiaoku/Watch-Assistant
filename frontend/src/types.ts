@@ -140,6 +140,7 @@ export interface HealthResponse {
     share: boolean;
   };
   inspection_supported?: boolean;
+  inspection_auto_start_enabled?: boolean;
 }
 
 export type LogLevel = "DEBUG" | "ERROR" | "WARNING" | "INFO";
@@ -177,6 +178,16 @@ export interface PatchContentPolicyRequest {
   hide_suspicious_resources?: boolean;
   hide_low_quality_resources?: boolean;
   blocked_keywords?: string[];
+}
+
+export interface InspectionSettingsResponse {
+  auto_start_enabled: boolean;
+  revision: number;
+}
+
+export interface PatchInspectionSettingsRequest {
+  auto_start_enabled: boolean;
+  revision: number;
 }
 
 export interface PatchLoggingSettingsRequest {

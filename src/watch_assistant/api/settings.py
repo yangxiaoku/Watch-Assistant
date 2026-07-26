@@ -9,6 +9,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from watch_assistant.schemas import (
     ContentPolicyPatch,
     ContentPolicyResponse,
+    InspectionSettingsPatch,
+    InspectionSettingsResponse,
     LogCategory,
     LoggingSettingsPatch,
     LoggingSettingsResponse,
@@ -100,6 +102,22 @@ async def patch_content_policy(
         raise HTTPException(status_code=409, detail="settings_conflict") from exc
     except ContentPolicyValidationError as exc:
         raise HTTPException(status_code=422, detail="invalid_content_policy") from exc
+
+
+@router.get("/settings/inspection", response_model=InspectionSettingsResponse)
+async def get_inspection(settings: SettingsDependency) -> InspectionSettingsResponse:
+    return await settings.get_inspection()
+
+
+@router.patch("/settings/inspection", response_model=InspectionSettingsResponse)
+async def patch_inspection(
+    patch: InspectionSettingsPatch,
+    settings: SettingsDependency,
+) -> InspectionSettingsResponse:
+    try:
+        return await settings.update_inspection(patch)
+    except SettingsConflict as exc:
+        raise HTTPException(status_code=409, detail="settings_conflict") from exc
 
 
 @router.get("/logs", response_model=LogsResponse)

@@ -69,6 +69,8 @@ describe("ApiClient season and inspection requests", () => {
       { release: "2026.07.25", uptime_seconds: 1, database_size_bytes: 456, capabilities: { inspection: true, magnet: true, share: false } },
       { revision: 0, level: "INFO", retention_days: 30, max_file_mb: 10 },
       { revision: 1, level: "WARNING", retention_days: 45, max_file_mb: 20 },
+      { auto_start_enabled: true, revision: 0 },
+      { auto_start_enabled: false, revision: 1 },
       { enabled: true, ready: true, capabilities: { magnet: true, share: false }, cookie: { source: "tgtodrive", configured: true, structure_valid: true, sync_status: "success", last_sync_at: null }, target_configured: true, max_concurrency: 1 },
       { status: "needs_auth", checked_at: "2026-07-25T02:00:00Z" },
       { items: [], next_cursor: 20 },
@@ -80,6 +82,8 @@ describe("ApiClient season and inspection requests", () => {
     await api.settingsOverview();
     await api.loggingSettings();
     await api.updateLoggingSettings({ revision: 0, level: "WARNING", retention_days: 45, max_file_mb: 20 });
+    await api.inspectionSettings();
+    await api.updateInspectionSettings({ revision: 0, auto_start_enabled: false });
     await api.p115Settings();
     await api.validateP115Cookie();
     await api.logs({ category: "system", cursor: 20, limit: 20 });
@@ -88,6 +92,8 @@ describe("ApiClient season and inspection requests", () => {
       "/api/v1/settings/overview",
       "/api/v1/settings/logging",
       "/api/v1/settings/logging",
+      "/api/v1/settings/inspection",
+      "/api/v1/settings/inspection",
       "/api/v1/settings/p115",
       "/api/v1/settings/p115/validate",
       "/api/v1/logs?limit=20&cursor=20&category=system",
@@ -95,6 +101,9 @@ describe("ApiClient season and inspection requests", () => {
     expect(fetchMock.mock.calls[1][1].method).toBeUndefined();
     expect(fetchMock.mock.calls[2][1].method).toBe("PATCH");
     expect(JSON.parse(fetchMock.mock.calls[2][1].body as string)).toEqual({ revision: 0, level: "WARNING", retention_days: 45, max_file_mb: 20 });
-    expect(fetchMock.mock.calls[4][1].method).toBe("POST");
+    expect(fetchMock.mock.calls[3][1].method).toBeUndefined();
+    expect(fetchMock.mock.calls[4][1].method).toBe("PATCH");
+    expect(fetchMock.mock.calls[5][1].method).toBeUndefined();
+    expect(fetchMock.mock.calls[6][1].method).toBe("POST");
   });
 });

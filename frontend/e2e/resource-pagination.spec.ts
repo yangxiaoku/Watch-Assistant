@@ -232,6 +232,27 @@ test("pagination does not repeat the automatic inspection batch", async ({ page 
   expect(inspectPostCount).toBe(1);
 });
 
+test("disabled auto inspection stays quiet until the user starts an eight-item batch", async ({ page }) => {
+  let inspectPostCount = 0;
+  await page.route("**/api/v1/health", (route) => route.fulfill({ json: { status: "ok", push_supported: false, inspection_supported: true, inspection_auto_start_enabled: false } }));
+  await page.route("**/api/v1/auth/me", (route) => route.fulfill({ json: { authenticated: true, via_bearer: false, csrf_token: "csrf-test" } }));
+  await page.route("**/api/v1/search", (route) => route.fulfill({ json: { movie, results: Array.from({ length: 30 }, (_, index) => resource(`legacy-${index}`, 1)), warnings: [], cached: false, cache_age_seconds: null } }));
+  await page.route("**/api/v1/media/movie/27205/resources**", (route) => route.fulfill({ json: pageResponse(Number(new URL(route.request().url()).searchParams.get("page") ?? 1)) }));
+  await page.route("**/api/v1/resources/inspect", (route) => {
+    inspectPostCount += 1;
+    const ids = (route.request().postDataJSON() as { resource_ids: string[] }).resource_ids;
+    expect(ids).toHaveLength(8);
+    return route.fulfill({ json: { batch_id: "manual-batch", status: "completed", submitted_count: ids.length, completed_count: ids.length, results: ids.map((resourceId) => inspectionResult(resourceId)) } });
+  });
+  await page.goto("/movie/27205");
+  await expect(page.getByRole("button", { name: "开始检测" })).toBeVisible();
+  await page.getByRole("button", { name: "下一页" }).click();
+  await expect(page.locator(".resource-title").first()).toContainText("page 2");
+  expect(inspectPostCount).toBe(0);
+  await page.getByRole("button", { name: "开始检测" }).click();
+  await expect.poll(() => inspectPostCount).toBe(1);
+});
+
 test("corrects a direct page 500 URL to the backend last page once", async ({ page }) => {
   const requests: number[] = [];
   await mockShell(page);

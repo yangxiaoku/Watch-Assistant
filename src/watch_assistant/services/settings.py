@@ -19,6 +19,8 @@ from watch_assistant.models import ApplicationSettings
 from watch_assistant.schemas import (
     ContentPolicyPatch,
     ContentPolicyResponse,
+    InspectionSettingsPatch,
+    InspectionSettingsResponse,
     LogCategory,
     LoggingLevel,
     LoggingSettingsPatch,
@@ -407,7 +409,7 @@ class SettingsService:
     ) -> ContentPolicyResponse:
         async with self._settings_lock, self._session_factory() as session:
             settings = await self._get_or_create(session)
-            if settings.content_policy_revision != patch.revision:
+            if settings.revision != patch.revision:
                 raise SettingsConflict
             current = _content_policy(settings)
             values = patch.model_dump(exclude_none=True)
@@ -428,7 +430,7 @@ class SettingsService:
                     "hide_low_quality_resources", current.hide_low_quality_resources
                 ),
                 blocked_keywords=keywords,
-                revision=current.revision + 1,
+                revision=settings.revision + 1,
             )
             settings.content_policy_json = json.dumps(
                 {
@@ -439,7 +441,7 @@ class SettingsService:
                 },
                 ensure_ascii=False,
             )
-            settings.content_policy_revision = updated.revision
+            settings.revision = updated.revision
             await session.commit()
             response = _content_policy_response(updated)
         await self.log_event(
@@ -477,6 +479,23 @@ class SettingsService:
         except Exception:  # noqa: BLE001 - observability cannot break requests
             logger.warning("business log write failed")
 
+    async def get_inspection(self) -> InspectionSettingsResponse:
+        async with self._settings_lock, self._session_factory() as session:
+            settings = await self._get_or_create(session)
+            return _inspection_response(settings)
+
+    async def update_inspection(
+        self, patch: InspectionSettingsPatch
+    ) -> InspectionSettingsResponse:
+        async with self._settings_lock, self._session_factory() as session:
+            settings = await self._get_or_create(session)
+            if settings.revision != patch.revision:
+                raise SettingsConflict
+            settings.inspection_auto_start_enabled = patch.auto_start_enabled
+            settings.revision += 1
+            await session.commit()
+            return _inspection_response(settings)
+
     async def _get_or_create(self, session: AsyncSession) -> ApplicationSettings:
         settings = await session.get(ApplicationSettings, SETTINGS_ID)
         if settings is None:
@@ -485,9 +504,9 @@ class SettingsService:
                 logging_level=DEFAULT_LEVEL.value,
                 retention_days=DEFAULT_RETENTION_DAYS,
                 max_file_mb=DEFAULT_MAX_FILE_MB,
+                inspection_auto_start_enabled=True,
                 revision=0,
                 content_policy_json="{}",
-                content_policy_revision=0,
             )
             session.add(settings)
             await session.commit()
@@ -567,7 +586,7 @@ def _event_message(event: str, fields: dict[str, object] | None) -> str:
 
 def _content_policy(settings: ApplicationSettings) -> ContentPolicy:
     return content_policy_from_json(
-        settings.content_policy_json, settings.content_policy_revision
+        settings.content_policy_json, settings.revision
     )
 
 
@@ -578,4 +597,10 @@ def _content_policy_response(policy: ContentPolicy) -> ContentPolicyResponse:
         hide_low_quality_resources=policy.hide_low_quality_resources,
         blocked_keywords=list(policy.blocked_keywords),
         revision=policy.revision,
+    )
+
+def _inspection_response(settings: ApplicationSettings) -> InspectionSettingsResponse:
+    return InspectionSettingsResponse(
+        auto_start_enabled=bool(settings.inspection_auto_start_enabled),
+        revision=settings.revision,
     )

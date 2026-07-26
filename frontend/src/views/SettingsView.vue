@@ -11,10 +11,11 @@ import {
   Save,
   Server,
   Settings2,
+  ScanSearch,
   ShieldCheck,
   XCircle,
 } from "@lucide/vue";
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { ApiClient, ApiError } from "../api";
 import type {
   LogCategory,
@@ -22,6 +23,7 @@ import type {
   LogLevel,
   ContentPolicyResponse,
   LoggingSettingsResponse,
+  InspectionSettingsResponse,
   LogsResponse,
   P115SettingsResponse,
   P115ValidationResponse,
@@ -29,14 +31,16 @@ import type {
 } from "../types";
 
 const props = defineProps<{ api: ApiClient }>();
+const emit = defineEmits<{ "auto-start-enabled": [enabled: boolean] }>();
 
-type SettingsSection = "overview" | "logs" | "content" | "p115";
+type SettingsSection = "overview" | "logs" | "content" | "inspection" | "p115";
 type ValidationState = "idle" | "running" | "error" | P115ValidationResponse["status"];
 
 const sections = [
   { id: "overview" as const, label: "概览", icon: Activity },
   { id: "logs" as const, label: "日志", icon: FileText },
   { id: "content" as const, label: "内容安全", icon: ShieldAlert },
+  { id: "inspection" as const, label: "资源检测", icon: ScanSearch },
   { id: "p115" as const, label: "115 推送", icon: ShieldCheck },
 ];
 const levelOptions: Array<{ value: LogLevel; label: string }> = [
@@ -61,6 +65,13 @@ const overviewError = ref("");
 const p115 = ref<P115SettingsResponse | null>(null);
 const p115Loading = ref(true);
 const p115Error = ref("");
+const inspectionSettings = ref<InspectionSettingsResponse | null>(null);
+const inspectionLoading = ref(true);
+const inspectionError = ref("");
+const inspectionDraft = ref(true);
+const savingInspection = ref(false);
+const inspectionSaveError = ref("");
+const inspectionConflict = ref(false);
 const validationState = ref<ValidationState>("idle");
 const validationMessage = ref("");
 
@@ -93,6 +104,9 @@ const contentError = ref("");
 const contentSaving = ref(false);
 const contentSaveError = ref("");
 const contentConflict = ref(false);
+const contentDraftHideAdultMedia = ref(true);
+const contentDraftHideSuspiciousResources = ref(true);
+const contentDraftHideLowQualityResources = ref(true);
 const blockedKeywordsDraft = ref("");
 
 const loggingDirty = computed(() => {
@@ -108,11 +122,12 @@ function selectSection(section: SettingsSection) {
   activeSection.value = section;
   if (section === "logs" && !logsLoaded.value) void loadLogs();
   if (section === "content" && !contentPolicy.value) void loadContentPolicy();
+  syncLogsRefreshTimer();
 }
 
 function selectMobileSection(event: Event) {
   const value = (event.target as HTMLSelectElement).value;
-  if (value === "overview" || value === "logs" || value === "content" || value === "p115") selectSection(value);
+  if (value === "overview" || value === "logs" || value === "content" || value === "inspection" || value === "p115") selectSection(value);
 }
 
 async function loadOverview() {
@@ -136,6 +151,52 @@ async function loadP115() {
     p115Error.value = exception instanceof ApiError ? exception.message : "115 状态加载失败，请稍后重试";
   } finally {
     p115Loading.value = false;
+  }
+}
+
+function applyInspection(value: InspectionSettingsResponse) {
+  inspectionSettings.value = value;
+  inspectionDraft.value = value.auto_start_enabled;
+}
+
+async function loadInspection() {
+  inspectionLoading.value = true;
+  inspectionError.value = "";
+  inspectionSaveError.value = "";
+  inspectionConflict.value = false;
+  try {
+    applyInspection(await props.api.inspectionSettings());
+  } catch (exception) {
+    inspectionError.value = exception instanceof ApiError ? exception.message : "资源检测设置加载失败，请稍后重试";
+  } finally {
+    inspectionLoading.value = false;
+  }
+}
+
+const inspectionDirty = computed(() => Boolean(inspectionSettings.value) && inspectionDraft.value !== inspectionSettings.value?.auto_start_enabled);
+
+async function saveInspection() {
+  if (!inspectionSettings.value || savingInspection.value || !inspectionDirty.value) return;
+  savingInspection.value = true;
+  inspectionSaveError.value = "";
+  inspectionConflict.value = false;
+  try {
+    const response = await props.api.updateInspectionSettings({
+      auto_start_enabled: inspectionDraft.value,
+      revision: inspectionSettings.value.revision,
+    });
+    applyInspection(response);
+    syncSharedRevision(response.revision);
+    emit("auto-start-enabled", response.auto_start_enabled);
+  } catch (exception) {
+    if (exception instanceof ApiError && exception.status === 409) {
+      inspectionConflict.value = true;
+      inspectionSaveError.value = "设置已被其他请求修改，请重新加载后再保存。";
+    } else {
+      inspectionSaveError.value = exception instanceof ApiError ? exception.message : "保存失败，请稍后重试";
+    }
+  } finally {
+    savingInspection.value = false;
   }
 }
 
@@ -166,12 +227,14 @@ async function saveLogging() {
   saveError.value = "";
   conflict.value = false;
   try {
-    applyLogging(await props.api.updateLoggingSettings({
+    const response = await props.api.updateLoggingSettings({
       revision: logging.value.revision,
       level: draftLevel.value,
       retention_days: draftRetentionDays.value,
       max_file_mb: draftMaxFileMb.value,
-    }));
+    });
+    applyLogging(response);
+    syncSharedRevision(response.revision);
   } catch (exception) {
     if (exception instanceof ApiError && exception.status === 409) {
       conflict.value = true;
@@ -198,7 +261,16 @@ async function loadContentPolicy() {
 
 function applyContentPolicy(value: ContentPolicyResponse) {
   contentPolicy.value = value;
+  contentDraftHideAdultMedia.value = value.hide_adult_media;
+  contentDraftHideSuspiciousResources.value = value.hide_suspicious_resources;
+  contentDraftHideLowQualityResources.value = value.hide_low_quality_resources;
   blockedKeywordsDraft.value = value.blocked_keywords.join("\n");
+}
+
+function syncSharedRevision(revision: number) {
+  if (logging.value) logging.value = { ...logging.value, revision };
+  if (inspectionSettings.value) inspectionSettings.value = { ...inspectionSettings.value, revision };
+  if (contentPolicy.value) contentPolicy.value = { ...contentPolicy.value, revision };
 }
 
 async function saveContentPolicy() {
@@ -207,13 +279,15 @@ async function saveContentPolicy() {
   contentSaveError.value = "";
   contentConflict.value = false;
   try {
-    applyContentPolicy(await props.api.updateContentPolicy({
+    const response = await props.api.updateContentPolicy({
       revision: contentPolicy.value.revision,
-      hide_adult_media: contentPolicy.value.hide_adult_media,
-      hide_suspicious_resources: contentPolicy.value.hide_suspicious_resources,
-      hide_low_quality_resources: contentPolicy.value.hide_low_quality_resources,
+      hide_adult_media: contentDraftHideAdultMedia.value,
+      hide_suspicious_resources: contentDraftHideSuspiciousResources.value,
+      hide_low_quality_resources: contentDraftHideLowQualityResources.value,
       blocked_keywords: blockedKeywordsDraft.value.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean),
-    }));
+    });
+    applyContentPolicy(response);
+    syncSharedRevision(response.revision);
   } catch (exception) {
     if (exception instanceof ApiError && exception.status === 409) {
       contentConflict.value = true;
@@ -237,6 +311,7 @@ async function loadLogs(append = false, preserve = false) {
     logsLoaded.value = false;
   }
   logsLoading.value = true;
+  syncLogsRefreshTimer();
   logsError.value = "";
   try {
     const response = await props.api.logs({
@@ -261,7 +336,10 @@ async function loadLogs(append = false, preserve = false) {
   } catch (exception) {
     if (requestId === logsRequestId) logsError.value = exception instanceof ApiError ? exception.message : "日志加载失败，请稍后重试";
   } finally {
-    if (requestId === logsRequestId) logsLoading.value = false;
+    if (requestId === logsRequestId) {
+      logsLoading.value = false;
+      syncLogsRefreshTimer();
+    }
   }
 }
 
@@ -275,7 +353,19 @@ function autoRefreshLogsIfVisible() {
 }
 
 function onVisibilityChange() {
-  autoRefreshLogsIfVisible();
+  syncLogsRefreshTimer();
+}
+
+function syncLogsRefreshTimer() {
+  const shouldRun = autoRefreshLogs.value && activeSection.value === "logs" && document.visibilityState === "visible" && !logsLoading.value;
+  if (!shouldRun) {
+    if (logsRefreshTimer !== null) {
+      window.clearInterval(logsRefreshTimer);
+      logsRefreshTimer = null;
+    }
+    return;
+  }
+  if (logsRefreshTimer === null) logsRefreshTimer = window.setInterval(autoRefreshLogsIfVisible, 5000);
 }
 
 function changeLogFilter() {
@@ -356,15 +446,21 @@ function validationClass(value: ValidationState) {
 onMounted(() => {
   void loadOverview();
   void loadLogging();
+  void loadInspection();
   void loadP115();
   document.addEventListener("visibilitychange", onVisibilityChange);
-  logsRefreshTimer = window.setInterval(autoRefreshLogsIfVisible, 5000);
+  syncLogsRefreshTimer();
 });
 
 onBeforeUnmount(() => {
   document.removeEventListener("visibilitychange", onVisibilityChange);
-  if (logsRefreshTimer !== null) window.clearInterval(logsRefreshTimer);
+  if (logsRefreshTimer !== null) {
+    window.clearInterval(logsRefreshTimer);
+    logsRefreshTimer = null;
+  }
 });
+
+watch(autoRefreshLogs, syncLogsRefreshTimer);
 </script>
 
 <template>
@@ -407,9 +503,9 @@ onBeforeUnmount(() => {
           <div v-else-if="contentError" class="settings-state settings-state-error"><AlertTriangle :size="18" /><span>{{ contentError }}</span><button class="text-button" type="button" @click="loadContentPolicy">重试</button></div>
           <template v-else-if="contentPolicy">
             <div class="settings-policy-list">
-              <label class="settings-policy-row"><span><strong>过滤成人媒体</strong><small>不在首页、目录和搜索结果中显示 TMDB 标记内容</small></span><input v-model="contentPolicy.hide_adult_media" type="checkbox" /></label>
-              <label class="settings-policy-row"><span><strong>过滤可疑资源</strong><small>屏蔽高置信成人来源和明确标记</small></span><input v-model="contentPolicy.hide_suspicious_resources" type="checkbox" /></label>
-              <label class="settings-policy-row"><span><strong>过滤低质量资源</strong><small>屏蔽 CAM、枪版等高置信低质量标记</small></span><input v-model="contentPolicy.hide_low_quality_resources" type="checkbox" /></label>
+              <label class="settings-policy-row"><span><strong>过滤成人媒体</strong><small>不在首页、目录和搜索结果中显示 TMDB 标记内容</small></span><input v-model="contentDraftHideAdultMedia" type="checkbox" /></label>
+              <label class="settings-policy-row"><span><strong>过滤可疑资源</strong><small>屏蔽高置信成人来源和明确标记</small></span><input v-model="contentDraftHideSuspiciousResources" type="checkbox" /></label>
+              <label class="settings-policy-row"><span><strong>过滤低质量资源</strong><small>屏蔽 CAM、枪版等高置信低质量标记</small></span><input v-model="contentDraftHideLowQualityResources" type="checkbox" /></label>
             </div>
             <label class="content-keywords"><span>自定义屏蔽词</span><textarea v-model="blockedKeywordsDraft" rows="5" maxlength="2048" placeholder="每行一个关键词" /></label>
             <div class="settings-save-bar"><span>当前版本 {{ contentPolicy.revision }}</span><button class="primary-button" type="button" :disabled="contentSaving" @click="saveContentPolicy"><LoaderCircle v-if="contentSaving" class="spin" :size="15" /><Save v-else :size="15" />保存</button></div>
@@ -417,7 +513,30 @@ onBeforeUnmount(() => {
           </template>
         </section>
 
+        <section v-else-if="activeSection === 'inspection'" class="settings-section" aria-labelledby="inspection-title">
+          <header class="settings-section-heading"><div><p class="eyebrow">RESOURCE INSPECTION</p><h2 id="inspection-title">资源检测</h2></div><button class="icon-button" type="button" title="刷新资源检测设置" aria-label="刷新资源检测设置" :disabled="inspectionLoading" @click="loadInspection"><RefreshCw :size="16" :class="{ spin: inspectionLoading }" /></button></header>
+          <div v-if="inspectionLoading" class="settings-loading"><LoaderCircle class="spin" :size="20" />正在加载资源检测设置</div>
+          <div v-else-if="inspectionError" class="settings-state settings-state-error"><AlertTriangle :size="18" /><span>{{ inspectionError }}</span><button class="text-button" type="button" @click="loadInspection">重试</button></div>
+          <template v-else-if="inspectionSettings">
+            <div class="settings-subsection"><h3>打开详情时自动检测</h3><label class="settings-toggle"><input v-model="inspectionDraft" type="checkbox" aria-label="打开详情时自动检测" /><span>自动提交首批资源检测</span></label><p class="settings-note">关闭后仍可在资源详情中手动开始检测。</p></div>
+            <div v-if="inspectionDirty" class="settings-save-bar"><span>有未保存的资源检测设置</span><div><button class="secondary-button" type="button" :disabled="savingInspection" @click="loadInspection">取消</button><button class="primary-button" type="button" :disabled="savingInspection" @click="saveInspection"><LoaderCircle v-if="savingInspection" class="spin" :size="15" /><Save v-else :size="15" />保存</button></div></div>
+            <div v-if="inspectionSaveError" class="settings-state settings-state-error settings-save-error"><AlertTriangle :size="17" /><span>{{ inspectionSaveError }}</span><button v-if="inspectionConflict" class="text-button" type="button" @click="loadInspection">重新加载</button></div>
+          </template>
+        </section>
+
         <section v-else-if="activeSection === 'p115'" class="settings-section" aria-labelledby="p115-title">
+        <section v-else-if="activeSection === 'inspection'" class="settings-section" aria-labelledby="inspection-title">
+          <header class="settings-section-heading"><div><p class="eyebrow">RESOURCE INSPECTION</p><h2 id="inspection-title">资源检测</h2></div><button class="icon-button" type="button" title="刷新资源检测设置" aria-label="刷新资源检测设置" :disabled="inspectionLoading" @click="loadInspection"><RefreshCw :size="16" :class="{ spin: inspectionLoading }" /></button></header>
+          <div v-if="inspectionLoading" class="settings-loading"><LoaderCircle class="spin" :size="20" />正在加载资源检测设置</div>
+          <div v-else-if="inspectionError" class="settings-state settings-state-error"><AlertTriangle :size="18" /><span>{{ inspectionError }}</span><button class="text-button" type="button" @click="loadInspection">重试</button></div>
+          <template v-else-if="inspectionSettings">
+            <div class="settings-subsection"><h3>打开详情时自动检测</h3><label class="settings-toggle"><input v-model="inspectionDraft" type="checkbox" aria-label="打开详情时自动检测" /><span>自动提交首批资源检测</span></label><p class="settings-note">关闭后仍可在资源详情中手动开始检测。</p></div>
+            <div v-if="inspectionDirty" class="settings-save-bar"><span>有未保存的资源检测设置</span><div><button class="secondary-button" type="button" :disabled="savingInspection" @click="loadInspection">取消</button><button class="primary-button" type="button" :disabled="savingInspection" @click="saveInspection"><LoaderCircle v-if="savingInspection" class="spin" :size="15" /><Save v-else :size="15" />保存</button></div></div>
+            <div v-if="inspectionSaveError" class="settings-state settings-state-error settings-save-error"><AlertTriangle :size="17" /><span>{{ inspectionSaveError }}</span><button v-if="inspectionConflict" class="text-button" type="button" @click="loadInspection">重新加载</button></div>
+          </template>
+        </section>
+
+        <section v-else class="settings-section" aria-labelledby="p115-title">
           <header class="settings-section-heading"><div><p class="eyebrow">P115 CONNECTOR</p><h2 id="p115-title">115 推送</h2></div><button class="icon-button" type="button" title="刷新 115 状态" aria-label="刷新 115 状态" :disabled="p115Loading" @click="loadP115"><RefreshCw :size="16" :class="{ spin: p115Loading }" /></button></header>
           <div v-if="p115Loading" class="settings-loading"><LoaderCircle class="spin" :size="20" />正在加载 115 状态</div>
           <div v-else-if="p115Error" class="settings-state settings-state-error"><AlertTriangle :size="18" /><span>{{ p115Error }}</span><button class="text-button" type="button" @click="loadP115">重试</button></div>

@@ -73,8 +73,8 @@ def _ensure_application_settings_columns(connection) -> None:
         item["name"] for item in inspect(connection).get_columns("application_settings")
     }
     additions = {
+        "inspection_auto_start_enabled": "BOOLEAN NOT NULL DEFAULT 1",
         "content_policy_json": "TEXT NOT NULL DEFAULT '{}'",
-        "content_policy_revision": "INTEGER NOT NULL DEFAULT 0",
     }
     for name, definition in additions.items():
         if name not in columns:

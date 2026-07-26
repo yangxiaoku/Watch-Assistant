@@ -178,3 +178,81 @@ async def test_logging_patch_rejects_unknown_fields(tmp_path):
     await tmdb.aclose()
     await pansou.aclose()
     await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_inspection_setting_persists_and_is_authenticated(tmp_path):
+    app, client, database, tmdb, pansou = await _app(tmp_path)
+    assert (await client.get("/api/v1/settings/inspection")).status_code == 401
+    login = await client.post("/api/v1/auth/login", json={"password": WEB_PASSWORD})
+    assert login.status_code == 200
+    headers = {"X-CSRF-Token": login.json()["csrf_token"]}
+    current = await client.get("/api/v1/settings/inspection")
+    assert current.json() == {"auto_start_enabled": True, "revision": 0}
+    patched = await client.patch(
+        "/api/v1/settings/inspection",
+        json={"auto_start_enabled": False, "revision": 0},
+        headers=headers,
+    )
+    assert patched.status_code == 200
+    assert patched.json() == {"auto_start_enabled": False, "revision": 1}
+    conflict = await client.patch(
+        "/api/v1/settings/inspection",
+        json={"auto_start_enabled": True, "revision": 0},
+        headers=headers,
+    )
+    assert conflict.status_code == 409
+    assert conflict.json()["detail"] == "settings_conflict"
+    missing_csrf = await client.patch(
+        "/api/v1/settings/inspection",
+        json={"auto_start_enabled": True, "revision": 1},
+    )
+    assert missing_csrf.status_code == 403
+    rebuilt_security = SecurityManager(
+        web_password_hash=app.state.security_manager._web_password_hash,
+        script_token_hash=PasswordHash.recommended().hash(SCRIPT_TOKEN),
+        cookie_secure=False,
+    )
+    rebuilt = create_app(
+        database=database,
+        crypto=SecretCrypto(Fernet.generate_key().decode("ascii")),
+        tmdb_client=tmdb,
+        pansou_client=pansou,
+        security_manager=rebuilt_security,
+        frontend_dir=tmp_path / "missing-rebuilt",
+    )
+    rebuilt_client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=rebuilt), base_url="http://app.test"
+    )
+    persisted = await rebuilt_client.get(
+        "/api/v1/settings/inspection", cookies=client.cookies
+    )
+    assert persisted.status_code == 200
+    assert persisted.json()["auto_start_enabled"] is False
+    health = await rebuilt_client.get("/api/v1/health")
+    assert health.json()["inspection_auto_start_enabled"] is False
+    await rebuilt_client.aclose()
+    await client.aclose()
+    await tmdb.aclose()
+    await pansou.aclose()
+    await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_health_fails_closed_when_inspection_setting_read_fails(tmp_path):
+    app, client, database, tmdb, pansou = await _app(tmp_path)
+
+    async def unavailable():
+        raise RuntimeError("hidden storage detail")
+
+    app.state.settings_service.get_inspection = unavailable
+    response = await client.get("/api/v1/health")
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
+    assert response.json()["inspection_auto_start_enabled"] is False
+    assert "hidden storage detail" not in response.text
+
+    await client.aclose()
+    await tmdb.aclose()
+    await pansou.aclose()
+    await database.engine.dispose()

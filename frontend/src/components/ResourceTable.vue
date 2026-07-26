@@ -32,6 +32,7 @@ const props = defineProps<{
   inspectionError?: string | null;
   inspectionMoreAvailable?: boolean;
   inspectionRetryAvailable?: boolean;
+  inspectionStarted?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -154,7 +155,7 @@ function pageRequest(target: number) {
         <label class="resource-name-search"><Search :size="15" /><span class="sr-only">搜索资源名称</span><input :value="queryDraft" type="search" aria-label="资源名称搜索" placeholder="搜索资源名称" @input="updateQuery" /></label>
         <label class="sort-control">排序<select :value="sort" aria-label="资源排序" @change="emit('sort', ($event.target as HTMLSelectElement).value as ResourceSort)"><option value="comprehensive">综合</option><option value="relevance">相关度</option><option value="completeness">完整度</option><option value="size">大小</option><option value="seeders">做种</option></select></label>
         <label class="sort-control">每页<select :value="pageSize" aria-label="资源每页数量" @change="emit('pageSize', Number(($event.target as HTMLSelectElement).value) as 25 | 50 | 100)"><option :value="25">25</option><option :value="50">50</option><option :value="100">100</option></select></label>
-        <button v-if="inspectionSupported && inspectionMoreAvailable && inspectionState !== 'running'" type="button" class="secondary-button inspection-more-button" @click="emit('inspectMore')"><ScanSearch :size="15" />检测更多</button>
+        <button v-if="inspectionSupported && inspectionMoreAvailable && inspectionState !== 'running'" type="button" class="secondary-button inspection-more-button" @click="emit('inspectMore')"><ScanSearch :size="15" />{{ inspectionStarted ? '检测更多' : '开始检测' }}</button>
         <button v-if="inspectionSupported && inspectionRetryAvailable && inspectionState !== 'running'" type="button" class="secondary-button inspection-more-button" @click="emit('retryFailed')"><ScanSearch :size="15" />重试失败项</button>
       </div>
     </div>

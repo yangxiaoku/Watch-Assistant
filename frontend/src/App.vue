@@ -56,6 +56,7 @@ const pushingId = ref<string | null>(null);
 const drawerOpen = ref(false);
 const pushCapabilities = ref<PushCapabilities>({ ...NO_PUSH_CAPABILITIES });
 const inspectionSupported = ref(false);
+const inspectionAutoStartEnabled = ref<boolean | "unknown">("unknown");
 const selectedSeason = ref<number | null>(null);
 const detailMediaType = ref<"movie" | "tv">("movie");
 const inspectionState = ref<"idle" | "running" | "completed" | "partial" | "failed" | "timeout">("idle");
@@ -976,7 +977,7 @@ async function inspectBatch(resourceIds: string[], requestId: number) {
 function startAutomaticInspection(requestId: number) {
   if (inspectionAutoRequestId.value === requestId) return;
   inspectionAutoRequestId.value = requestId;
-  if (!inspectionSupported.value || !result.value) return;
+  if (inspectionAutoStartEnabled.value !== true || !inspectionSupported.value || !result.value) return;
   const resourceIds = inspectionBatchIds();
   if (resourceIds.length) void inspectBatch(resourceIds, requestId);
 }
@@ -1032,6 +1033,7 @@ onMounted(async () => {
     const health = await api.health();
     pushCapabilities.value = resolvePushCapabilities(health);
     inspectionSupported.value = health.inspection_supported === true;
+    inspectionAutoStartEnabled.value = health.inspection_auto_start_enabled ?? true;
     await api.me();
     authenticated.value = true;
   } catch {
@@ -1077,13 +1079,13 @@ onBeforeUnmount(() => {
         <HomeView v-if="activeView === 'home'" :catalog="homeCatalog" :loading="catalogLoading" :favorite-ids="favoriteIds" @open="openMovie" @favorite="toggleFavorite" @navigate="selectView" />
         <LibraryView v-else-if="activeView === 'movies' || activeView === 'tv'" :movies="catalogMovies" :loading="catalogLoading" :favorite-ids="favoriteIds" :genre-id="genreId" :year="year" :sort="sort" :media-type="activeView" :page="currentPage" :total-pages="totalPages" :total-results="totalResults" @open="openMovie" @favorite="toggleFavorite" @filters="loadDiscover" @page="loadPage" />
         <CollectionView v-else-if="activeView === 'favorites' || activeView === 'history'" :mode="activeView" :movies="activeView === 'favorites' ? favorites : history" :favorite-ids="favoriteIds" @open="openMovie" @favorite="toggleFavorite" />
-        <SettingsView v-else-if="activeView === 'settings'" :api="api" />
+        <SettingsView v-else-if="activeView === 'settings'" :api="api" @auto-start-enabled="inspectionAutoStartEnabled = $event" />
         <SearchView v-else v-model="searchInput" :loading="catalogLoading" :movies="catalogMovies" :heading="catalogHeading" :favorite-ids="favoriteIds" :page="currentPage" :total-pages="totalPages" :total-results="totalResults" @search="searchMovies" @reset="selectView('home')" @open="openMovie" @favorite="toggleFavorite" @page="loadPage" />
       </template>
       <section v-else-if="loading && !result" class="detail-loading"><LoaderCircle class="spin" :size="24" /><strong>正在聚合资源</strong><span>正在查询 PanSou 的磁力与 115 分享结果</span></section>
        <p v-if="result && !pushCapabilities.magnet && !pushCapabilities.share" class="warning-strip">115 推送当前不可用，推送按钮已禁用。</p>
        <p v-else-if="result && pushCapabilities.magnet && !pushCapabilities.share" class="warning-strip">磁力云下载可用，115 分享转存尚未验证</p>
-       <section v-if="result" class="detail-workspace"><MovieView :result="result" :resources="resourceItems" :resource-facets="resourceFacets" :resource-total="resourceTotal" :resource-hidden-total="resourceHiddenTotal" :resource-page="resourcePage" :resource-page-size="resourcePageSize" :resource-total-pages="resourceTotalPages" :resource-kind="resourceKind" :resource-quality="resourceQuality" :resource-query="resourceQuery" :resource-sort="resourceSort" :resource-loading="resourceLoading" :resource-error="resourceError" :pagination-unavailable="resourcePaginationUnavailable" :media-type="detailMediaType" :season-number="selectedSeason" :pushing-id="pushingId" :push-capabilities="pushCapabilities" :favorite="detailFavorite" :inspection-supported="inspectionSupported" :inspection-state="inspectionState" :inspection-completed="inspectionCompleted" :inspection-total="inspectionTotal" :inspection-failed="inspectionFailed" :inspection-error="inspectionError" :inspection-more-available="inspectionMoreAvailable" :inspection-retry-available="inspectionRetryAvailable" @push="push" @favorite="toggleFavorite(result.movie)" @refresh="refreshResources" @season="selectSeason" @inspect-more="inspectMore" @retry-failed="retryFailed" @retry-page="() => loadResourcePage(currentResourceRoute(), 'replace')" @page="changeResourcePage" @kind="(value) => changeResourceFilter({ kind: value })" @quality="(value) => changeResourceFilter({ quality: value })" @query="changeResourceQuery" @sort="(value) => changeResourceFilter({ sort: value })" @page-size="(value) => changeResourceFilter({ pageSize: value })" @back="returnToBrowse" /></section>
+       <section v-if="result" class="detail-workspace"><MovieView :result="result" :resources="resourceItems" :resource-facets="resourceFacets" :resource-total="resourceTotal" :resource-hidden-total="resourceHiddenTotal" :resource-page="resourcePage" :resource-page-size="resourcePageSize" :resource-total-pages="resourceTotalPages" :resource-kind="resourceKind" :resource-quality="resourceQuality" :resource-query="resourceQuery" :resource-sort="resourceSort" :resource-loading="resourceLoading" :resource-error="resourceError" :pagination-unavailable="resourcePaginationUnavailable" :media-type="detailMediaType" :season-number="selectedSeason" :pushing-id="pushingId" :push-capabilities="pushCapabilities" :favorite="detailFavorite" :inspection-supported="inspectionSupported" :inspection-state="inspectionState" :inspection-completed="inspectionCompleted" :inspection-total="inspectionTotal" :inspection-failed="inspectionFailed" :inspection-error="inspectionError" :inspection-more-available="inspectionMoreAvailable" :inspection-retry-available="inspectionRetryAvailable" :inspection-started="inspectionSeenIds.size > 0" @push="push" @favorite="toggleFavorite(result.movie)" @refresh="refreshResources" @season="selectSeason" @inspect-more="inspectMore" @retry-failed="retryFailed" @retry-page="() => loadResourcePage(currentResourceRoute(), 'replace')" @page="changeResourcePage" @kind="(value) => changeResourceFilter({ kind: value })" @quality="(value) => changeResourceFilter({ quality: value })" @query="changeResourceQuery" @sort="(value) => changeResourceFilter({ sort: value })" @page-size="(value) => changeResourceFilter({ pageSize: value })" @back="returnToBrowse" /></section>
     </template>
     <TaskDrawer :tasks="tasks" :open="drawerOpen" @close="drawerOpen = false" />
   </main>
