@@ -64,16 +64,19 @@ async def test_repeated_empty_and_changed_pages_are_partial():
     repeated_result = await scan_directory(repeated, "directory")
     assert repeated_result.scan_complete is False
     assert repeated_result.error_code == "repeated_page"
+    assert repeated_result.pages_read == 1
 
     empty = FakeP115LibraryGateway({1: first, 2: replace(second, items=(), page=2)})
     empty_result = await scan_directory(empty, "directory")
     assert empty_result.scan_complete is False
     assert empty_result.error_code == "empty_page"
+    assert empty_result.pages_read == 2
 
     changed = FakeP115LibraryGateway({1: first, 2: replace(second, page_count=3)})
     changed_result = await scan_directory(changed, "directory")
     assert changed_result.scan_complete is False
     assert changed_result.error_code == "page_count_changed"
+    assert changed_result.pages_read == 2
 
     cancelled = FakeP115LibraryGateway(
         {1: replace(first, state=ScanState.CANCELLED, scan_complete=False)}
@@ -81,6 +84,103 @@ async def test_repeated_empty_and_changed_pages_are_partial():
     cancelled_result = await scan_directory(cancelled, "directory")
     assert cancelled_result.state is ScanState.CANCELLED
     assert cancelled_result.scan_complete is False
+    assert cancelled_result.pages_read == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "signals",
+    [
+        {"terminal": True, "has_more": True},
+        {"terminal": True, "next_page": 2},
+        {"has_more": False, "next_page": 2},
+        {"terminal": False, "has_more": False},
+    ],
+)
+async def test_conflicting_pagination_signals_are_unverified(signals):
+    page = replace(_fixture("page_1.json"), page_count=1, total=2, **signals)
+    result = await scan_directory(FakeP115LibraryGateway({1: page}), "directory")
+    assert result.state is ScanState.PARTIAL
+    assert result.scan_complete is False
+    assert result.error_code == "pagination_unverified"
+    assert result.pages_read == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "signals",
+    [
+        {"terminal": False},
+        {"has_more": True},
+        {"next_page": 2},
+    ],
+)
+async def test_terminal_page_with_nonterminal_signal_is_unverified(signals):
+    page = replace(_fixture("page_1.json"), page_count=1, total=2, **signals)
+    result = await scan_directory(FakeP115LibraryGateway({1: page}), "directory")
+    assert result.state is ScanState.PARTIAL
+    assert result.scan_complete is False
+    assert result.error_code == "pagination_unverified"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "signals",
+    [{"terminal": True}, {"has_more": False}],
+)
+async def test_nonterminal_page_with_terminal_signal_is_unverified(signals):
+    page = replace(_fixture("page_1.json"), page_count=2, total=3, **signals)
+    result = await scan_directory(FakeP115LibraryGateway({1: page}), "directory")
+    assert result.state is ScanState.PARTIAL
+    assert result.scan_complete is False
+    assert result.error_code == "pagination_unverified"
+    assert result.pages_read == 1
+
+
+@pytest.mark.asyncio
+async def test_next_page_must_be_contiguous_and_pages_read_is_actual():
+    first = replace(_fixture("page_1.json"), page_count=3, total=3, next_page=3)
+    gateway = FakeP115LibraryGateway({1: first, 3: _fixture("page_2.json")})
+    result = await scan_directory(gateway, "directory")
+    assert result.state is ScanState.PARTIAL
+    assert result.error_code == "pagination_unverified"
+    assert result.pages_read == 1
+    assert [call.page for call in gateway.calls] == [1]
+
+
+@pytest.mark.asyncio
+async def test_contiguous_next_page_scans_two_pages():
+    first = replace(
+        _fixture("page_1.json"),
+        page_count=None,
+        total=3,
+        has_more=True,
+        next_page=2,
+    )
+    second = replace(_fixture("page_2.json"), page_count=None, total=3, has_more=False)
+    result = await scan_directory(
+        FakeP115LibraryGateway({1: first, 2: second}), "directory"
+    )
+    assert result.scan_complete is True
+    assert result.pages_read == 2
+
+
+@pytest.mark.asyncio
+async def test_three_contiguous_page_count_pages_report_three_read():
+    first = replace(_fixture("page_1.json"), page_count=3, total=4)
+    second = replace(_fixture("page_2.json"), page_count=3, total=4)
+    third = replace(
+        _fixture("page_2.json"),
+        page=3,
+        page_count=3,
+        total=4,
+        items=(replace(_fixture("page_2.json").items[0], file_id="103"),),
+    )
+    result = await scan_directory(
+        FakeP115LibraryGateway({1: first, 2: second, 3: third}), "directory"
+    )
+    assert result.scan_complete is True
+    assert result.pages_read == 3
 
 
 @pytest.mark.asyncio
@@ -113,11 +213,13 @@ async def test_total_change_and_terminal_total_mismatch_are_partial():
     )
     assert changed.scan_complete is False
     assert changed.error_code == "total_changed"
+    assert changed.pages_read == 2
 
     mismatch = replace(_fixture("page_1.json"), page_count=1, total=4)
     result = await scan_directory(FakeP115LibraryGateway({1: mismatch}), "directory")
     assert result.scan_complete is False
     assert result.error_code == "total_mismatch"
+    assert result.pages_read == 1
 
 
 @pytest.mark.asyncio
@@ -127,6 +229,7 @@ async def test_explicit_terminal_is_a_valid_completion_boundary():
     )
     result = await scan_directory(FakeP115LibraryGateway({1: with_total}), "directory")
     assert result.scan_complete is True
+    assert result.pages_read == 1
 
     first = replace(
         _fixture("page_1.json"),
@@ -154,6 +257,7 @@ async def test_explicit_terminal_is_a_valid_completion_boundary():
         FakeP115LibraryGateway({1: without_total}), "directory"
     )
     assert result.scan_complete is True
+    assert result.pages_read == 1
 
 
 @pytest.mark.asyncio
@@ -167,6 +271,7 @@ async def test_gateway_exception_returns_partial_without_exception_details():
     assert result.state is ScanState.PARTIAL
     assert result.scan_complete is False
     assert result.error_code == "gateway_error"
+    assert result.pages_read == 1
     assert "request failed" not in repr(result)
 
 

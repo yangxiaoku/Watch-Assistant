@@ -15,6 +15,9 @@
 - `pickcode` 可为空，仅作为播放属性候选，不作为移动或复制后的稳定主键。
 - `DirectoryPage` 的 `scan_complete=None` 表示上游没有声明整次扫描完成；扫描器只接受已验证
   `page_count` 末页或显式 `has_more`/`next_page`/`terminal` 作为终止依据。
+- 多个分页信号必须彼此一致；矛盾信号一律返回 `partial/pagination_unverified`。
+- 当前 `page`/`next_page` 是连续页号，`next_page` 必须等于当前页加一，不是 opaque cursor；
+  `pages_read` 表示实际取得并处理的页数。
 - `DirectoryPage` 和 `ScanResult` 同时表达 `complete`、`partial`、`cancelled`。
 - 扫描发现异常、重复页、空页、页数或 total 漂移时返回 `partial`；取消继续传播。
 - `scan_directory` 当前仅用于有界离线探针。Phase 1 生产索引器必须逐页持久化，不能把整库加载到内存。

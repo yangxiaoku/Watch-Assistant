@@ -368,6 +368,7 @@ async def scan_directory(
     page_count_seen = False
     total: int | None = None
     total_seen = False
+    pages_read = 0
     page_number = 1
     while True:
         try:
@@ -379,7 +380,7 @@ async def scan_directory(
         except Exception:  # noqa: BLE001 - sanitize all gateway failures
             return ScanResult(
                 tuple(items),
-                page_number - 1,
+                pages_read,
                 expected_page_count,
                 total,
                 False,
@@ -389,7 +390,7 @@ async def scan_directory(
         if page.page != page_number or page.page in seen_pages:
             return ScanResult(
                 tuple(items),
-                page_number - 1,
+                pages_read,
                 expected_page_count,
                 total,
                 False,
@@ -397,13 +398,14 @@ async def scan_directory(
                 "repeated_page",
             )
         seen_pages.add(page.page)
+        pages_read += 1
         if not page_count_seen:
             expected_page_count = page.page_count
             page_count_seen = True
         elif page.page_count != expected_page_count:
             return ScanResult(
                 tuple(items),
-                page_number,
+                pages_read,
                 page.page_count,
                 page.total,
                 False,
@@ -413,7 +415,7 @@ async def scan_directory(
         if total_seen and page.total != total:
             return ScanResult(
                 tuple(items),
-                page_number,
+                pages_read,
                 expected_page_count,
                 page.total,
                 False,
@@ -426,12 +428,49 @@ async def scan_directory(
         if page.state != ScanState.COMPLETE or page.scan_complete is False:
             return ScanResult(
                 tuple(items),
-                page_number,
+                pages_read,
                 expected_page_count,
                 total,
                 False,
                 page.state,
                 page.error_code or "partial_page",
+            )
+        page_count_terminal = (
+            expected_page_count is not None and page_number == expected_page_count
+        )
+        page_count_continues = (
+            expected_page_count is not None and page_number < expected_page_count
+        )
+        explicit_terminal = page.terminal is True or page.has_more is False
+        pagination_signal_conflict = (
+            (page.terminal is True and page.has_more is True)
+            or (page.terminal is True and page.next_page is not None)
+            or (page.has_more is False and page.next_page is not None)
+            or (page.terminal is False and page.has_more is False)
+            or (page.next_page is not None and page.next_page != page_number + 1)
+            or (
+                page_count_terminal
+                and (
+                    page.terminal is False
+                    or page.has_more is True
+                    or page.next_page is not None
+                )
+            )
+            or (
+                page_count_continues
+                and (page.terminal is True or page.has_more is False)
+            )
+            or (expected_page_count is not None and page_number > expected_page_count)
+        )
+        if pagination_signal_conflict:
+            return ScanResult(
+                tuple(items),
+                pages_read,
+                expected_page_count,
+                total,
+                False,
+                ScanState.PARTIAL,
+                "pagination_unverified",
             )
         if (
             not page.items
@@ -445,7 +484,7 @@ async def scan_directory(
         ):
             return ScanResult(
                 tuple(items),
-                page_number,
+                pages_read,
                 expected_page_count,
                 total,
                 False,
@@ -462,7 +501,7 @@ async def scan_directory(
             if identity in seen_entries:
                 return ScanResult(
                     tuple(items),
-                    page_number,
+                    pages_read,
                     expected_page_count,
                     total,
                     False,
@@ -471,47 +510,14 @@ async def scan_directory(
                 )
             seen_entries.add(identity)
             items.append(item)
-        page_count_terminal = (
-            expected_page_count is not None and page_number >= expected_page_count
-        )
-        page_count_continues = (
-            expected_page_count is not None and page_number < expected_page_count
-        )
-        explicit_terminal = page.terminal is True or page.has_more is False
         pagination_continues = (
             page_count_continues or page.has_more is True or page.next_page is not None
         )
-        if (
-            explicit_terminal
-            and expected_page_count is not None
-            and page_number < expected_page_count
-        ):
-            return ScanResult(
-                tuple(items),
-                page_number,
-                expected_page_count,
-                total,
-                False,
-                ScanState.PARTIAL,
-                "pagination_unverified",
-            )
-        if page_count_terminal and (
-            page.has_more is True or page.next_page is not None
-        ):
-            return ScanResult(
-                tuple(items),
-                page_number,
-                expected_page_count,
-                total,
-                False,
-                ScanState.PARTIAL,
-                "pagination_unverified",
-            )
         if page_count_terminal or explicit_terminal:
             if total is not None and len(items) != total:
                 return ScanResult(
                     tuple(items),
-                    page_number,
+                    pages_read,
                     expected_page_count,
                     total,
                     False,
@@ -520,7 +526,7 @@ async def scan_directory(
                 )
             return ScanResult(
                 tuple(items),
-                page_number,
+                pages_read,
                 expected_page_count,
                 total,
                 True,
@@ -529,7 +535,7 @@ async def scan_directory(
         if not pagination_continues:
             return ScanResult(
                 tuple(items),
-                page_number,
+                pages_read,
                 expected_page_count,
                 total,
                 False,
@@ -540,7 +546,7 @@ async def scan_directory(
         if next_page <= page_number or next_page in seen_pages:
             return ScanResult(
                 tuple(items),
-                page_number,
+                pages_read,
                 expected_page_count,
                 total,
                 False,
