@@ -6,6 +6,7 @@ import type {
   LogCategory,
   LoggingSettingsResponse,
   ContentPolicyResponse,
+  CredentialSettingsResponse,
   PatchContentPolicyRequest,
   LogsResponse,
   MovieCollectionResponse,
@@ -93,6 +94,38 @@ export class ApiClient {
 
   async p115Settings(): Promise<P115SettingsResponse> {
     return this.request<P115SettingsResponse>("/api/v1/settings/p115");
+  }
+
+  async credentialSettings(): Promise<CredentialSettingsResponse> {
+    return this.request<CredentialSettingsResponse>("/api/v1/settings/credentials");
+  }
+
+  async updateTmdbCredential(value: string, revision: number): Promise<CredentialSettingsResponse> {
+    return this.request<CredentialSettingsResponse>("/api/v1/settings/credentials/tmdb", {
+      method: "PUT",
+      body: JSON.stringify({ value, revision }),
+    });
+  }
+
+  async resetTmdbCredential(revision: number): Promise<CredentialSettingsResponse> {
+    return this.request<CredentialSettingsResponse>("/api/v1/settings/credentials/tmdb/reset", {
+      method: "POST",
+      body: JSON.stringify({ revision }),
+    });
+  }
+
+  async updateP115Cookie(value: string, revision: number): Promise<CredentialSettingsResponse> {
+    return this.request<CredentialSettingsResponse>("/api/v1/settings/credentials/p115-cookie", {
+      method: "PUT",
+      body: JSON.stringify({ value, revision }),
+    });
+  }
+
+  async resetP115Cookie(revision: number): Promise<CredentialSettingsResponse> {
+    return this.request<CredentialSettingsResponse>("/api/v1/settings/credentials/p115-cookie/reset", {
+      method: "POST",
+      body: JSON.stringify({ revision }),
+    });
   }
 
   async validateP115Cookie(): Promise<P115ValidationResponse> {

@@ -106,4 +106,33 @@ describe("ApiClient season and inspection requests", () => {
     expect(fetchMock.mock.calls[5][1].method).toBeUndefined();
     expect(fetchMock.mock.calls[6][1].method).toBe("POST");
   });
+
+  it("uses the managed credentials endpoints without expecting secret response fields", async () => {
+    const response = { revision: 3, tmdb: { configured: true, source: "managed", last_updated_at: "2026-07-25T03:00:00Z" }, p115_cookie: { configured: true, source: "managed", last_updated_at: "2026-07-25T03:00:00Z", structure_valid: true, ready: true } };
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(response), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const api = new ApiClient();
+
+    await api.credentialSettings();
+    await api.updateTmdbCredential("test-tmdb-key", 3);
+    await api.resetTmdbCredential(4);
+    await api.updateP115Cookie("UID=test-cookie", 5);
+    await api.resetP115Cookie(6);
+
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "/api/v1/settings/credentials",
+      "/api/v1/settings/credentials/tmdb",
+      "/api/v1/settings/credentials/tmdb/reset",
+      "/api/v1/settings/credentials/p115-cookie",
+      "/api/v1/settings/credentials/p115-cookie/reset",
+    ]);
+    expect(fetchMock.mock.calls[1][1].method).toBe("PUT");
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body as string)).toEqual({ value: "test-tmdb-key", revision: 3 });
+    expect(fetchMock.mock.calls[2][1].method).toBe("POST");
+    expect(JSON.parse(fetchMock.mock.calls[2][1].body as string)).toEqual({ revision: 4 });
+    expect(fetchMock.mock.calls[3][1].method).toBe("PUT");
+    expect(JSON.parse(fetchMock.mock.calls[3][1].body as string)).toEqual({ value: "UID=test-cookie", revision: 5 });
+    expect(fetchMock.mock.calls[4][1].method).toBe("POST");
+    expect(JSON.parse(fetchMock.mock.calls[4][1].body as string)).toEqual({ revision: 6 });
+  });
 });

@@ -205,7 +205,7 @@ export interface P115SettingsResponse {
     share: boolean;
   };
   cookie: {
-    source: "tgtodrive";
+    source: "managed" | "tgtodrive";
     configured: boolean;
     structure_valid: boolean;
     sync_status: "success" | "failed" | "unknown";
@@ -213,6 +213,26 @@ export interface P115SettingsResponse {
   };
   target_configured: boolean;
   max_concurrency: number;
+}
+
+export interface CredentialSourceResponse {
+  configured: boolean;
+  source: "managed" | "environment";
+  last_updated_at: string | null;
+}
+
+export interface P115CredentialStatus {
+  configured: boolean;
+  source: "managed" | "tgtodrive";
+  last_updated_at: string | null;
+  structure_valid: boolean;
+  ready: boolean;
+}
+
+export interface CredentialSettingsResponse {
+  revision: number;
+  tmdb: CredentialSourceResponse;
+  p115_cookie: P115CredentialStatus;
 }
 
 export interface P115ValidationResponse {

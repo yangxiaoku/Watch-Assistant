@@ -496,6 +496,26 @@ html, body, .app-shell { background: #151719; }
 .settings-action-message { font-size: 12px; }
 .settings-note { display: flex; align-items: flex-start; gap: 7px; margin: 18px 0 0; color: #858b95; font-size: 11px; line-height: 1.5; }
 .settings-note svg { flex: 0 0 auto; margin-top: 1px; }
+.credential-panels { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 30px; }
+.credential-panel { min-width: 0; border-top: 1px solid #2b2e33; }
+.credential-panel-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; padding: 18px 0 14px; }
+.credential-panel-heading .eyebrow { margin-bottom: 6px; }
+.credential-panel-heading h3 { margin: 0; color: #d9dce2; font-size: 17px; }
+.credential-panel-heading > svg { color: #68a0ff; }
+.credential-status-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 16px; margin: 0; border-bottom: 1px solid #2b2e33; }
+.credential-status-grid > div { min-width: 0; display: grid; gap: 7px; padding: 11px 0 13px; border-top: 1px solid #2b2e33; }
+.credential-status-grid dt { color: #838993; font-size: 11px; }
+.credential-status-grid dd { min-width: 0; margin: 0; overflow-wrap: anywhere; color: #f4f5f7; font-size: 13px; font-weight: 700; }
+.credential-form { display: grid; gap: 13px; padding-top: 18px; }
+.credential-form label { display: grid; gap: 7px; color: #858b95; font-size: 11px; font-weight: 700; }
+.credential-form input { width: 100%; min-width: 0; min-height: 36px; padding: 0 10px; color: #f4f5f7; background: #1d2024; border: 1px solid #353940; border-radius: 4px; }
+.credential-form input:focus { border-color: #68a0ff; outline: none; }
+.credential-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.credential-actions button { min-height: 34px; padding: 0 10px; font-size: 12px; }
+.credential-capabilities { display: flex; flex-wrap: wrap; gap: 10px 20px; padding: 14px 0 0; color: #aeb3bd; font-size: 12px; }
+.credential-capabilities strong { margin-left: 5px; font-size: 11px; }
+.credential-error { min-height: 42px; margin: 14px 0 0; }
+.credential-error .text-button { margin-left: auto; }
 
 @media (max-width: 760px) {
   .settings-view { padding-top: 24px; }
@@ -525,4 +545,7 @@ html, body, .app-shell { background: #151719; }
   .settings-save-bar button { flex: 1; }
   .settings-action-row { align-items: stretch; flex-direction: column; }
   .settings-action-row .secondary-button { width: 100%; }
+  .credential-panels { grid-template-columns: 1fr; gap: 24px; }
+  .credential-actions { display: grid; grid-template-columns: 1fr; }
+  .credential-actions button { width: 100%; }
 }

@@ -32,6 +32,11 @@ const p115 = {
   target_configured: true,
   max_concurrency: 1,
 };
+const credentials = {
+  revision: 0,
+  tmdb: { configured: false, source: "environment" as const, last_updated_at: null },
+  p115_cookie: { configured: true, source: "tgtodrive" as const, last_updated_at: "2026-07-25T02:00:00Z", structure_valid: true, ready: true },
+};
 
 const firstLogs: LogsResponse = {
   items: [
@@ -56,6 +61,11 @@ function makeApi(overrides: Partial<Record<keyof ApiClient, unknown>> = {}) {
     updateInspectionSettings: vi.fn().mockResolvedValue({ ...inspection, revision: 1 }),
     updateLoggingSettings: vi.fn().mockResolvedValue({ ...logging, revision: 8 }),
     p115Settings: vi.fn().mockResolvedValue(p115),
+    credentialSettings: vi.fn().mockResolvedValue(credentials),
+    updateTmdbCredential: vi.fn().mockResolvedValue({ ...credentials, revision: 1, tmdb: { configured: true, source: "managed", last_updated_at: "2026-07-25T03:00:00Z" } }),
+    resetTmdbCredential: vi.fn().mockResolvedValue(credentials),
+    updateP115Cookie: vi.fn().mockResolvedValue({ ...credentials, revision: 1, p115_cookie: { ...credentials.p115_cookie, source: "managed" } }),
+    resetP115Cookie: vi.fn().mockResolvedValue(credentials),
     validateP115Cookie: vi.fn().mockResolvedValue({ status: "ready", checked_at: "2026-07-25T02:00:00Z" }),
     logs: vi.fn().mockResolvedValue(firstLogs),
     contentPolicy: vi.fn().mockResolvedValue(contentPolicy),
@@ -359,5 +369,76 @@ describe("SettingsView", () => {
     expect(wrapper.text()).toContain(message);
     expect(wrapper.text()).toContain("结构正常");
     expect(api.p115Settings).toHaveBeenCalledTimes(2);
+  });
+
+  it("saves both managed credentials with the shared revision and clears drafts", async () => {
+    const updatedTmdb = { ...credentials, revision: 1, tmdb: { configured: true, source: "managed" as const, last_updated_at: "2026-07-25T03:00:00Z" } };
+    const updatedP115 = { ...updatedTmdb, revision: 2, p115_cookie: { ...credentials.p115_cookie, source: "managed" as const } };
+    const api = makeApi({
+      updateTmdbCredential: vi.fn().mockResolvedValue(updatedTmdb),
+      updateP115Cookie: vi.fn().mockResolvedValue(updatedP115),
+      p115Settings: vi.fn().mockResolvedValue({ ...p115, cookie: { ...p115.cookie, source: "managed" as const } }),
+    });
+    const wrapper = mount(SettingsView, { props: { api } });
+    await flushPromises();
+    await wrapper.findAll("button").find((button) => button.text().includes("连接配置"))?.trigger("click");
+    await flushPromises();
+    const panels = wrapper.findAll(".credential-panel");
+    const tmdbInput = panels[0].get("input[type=password]");
+    await tmdbInput.setValue("test-tmdb-key-123");
+    await panels[0].get(".primary-button").trigger("click");
+    await flushPromises();
+    expect(api.updateTmdbCredential).toHaveBeenCalledWith("test-tmdb-key-123", 0);
+    expect((tmdbInput.element as HTMLInputElement).value).toBe("");
+    expect(wrapper.html()).not.toContain("test-tmdb-key-123");
+
+    const p115Input = panels[1].get("input[type=password]");
+    await p115Input.setValue("UID=test-cookie; CID=fake");
+    await panels[1].get(".primary-button").trigger("click");
+    await flushPromises();
+    expect(api.updateP115Cookie).toHaveBeenCalledWith("UID=test-cookie; CID=fake", 1);
+    expect((p115Input.element as HTMLInputElement).value).toBe("");
+
+    await panels[0].get(".secondary-button").trigger("click");
+    await flushPromises();
+    expect(api.resetTmdbCredential).toHaveBeenCalledWith(2);
+  });
+
+  it.each([
+    [409, "设置已被其他请求修改"],
+    [422, "凭据格式或验证未通过"],
+    [429, "操作过于频繁"],
+    [503, "凭据服务暂不可用"],
+  ] as const)("maps credential status %s without losing the draft", async (status, message) => {
+    const api = makeApi({ updateTmdbCredential: vi.fn().mockRejectedValue(new ApiError("secret backend detail", status)) });
+    const wrapper = mount(SettingsView, { props: { api } });
+    await flushPromises();
+    await wrapper.findAll("button").find((button) => button.text().includes("连接配置"))?.trigger("click");
+    await flushPromises();
+    const panel = wrapper.findAll(".credential-panel")[0];
+    const input = panel.get("input[type=password]");
+    await input.setValue("draft-only-secret");
+    await panel.get(".primary-button").trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain(message);
+    expect((input.element as HTMLInputElement).value).toBe("draft-only-secret");
+    expect(wrapper.text()).not.toContain("secret backend detail");
+  });
+
+  it("gates repeated credential submissions while the first request is pending", async () => {
+    let resolveSave: ((value: typeof credentials) => void) | undefined;
+    const updateTmdbCredential = vi.fn().mockImplementation(() => new Promise((resolve) => { resolveSave = resolve; }));
+    const api = makeApi({ updateTmdbCredential });
+    const wrapper = mount(SettingsView, { props: { api } });
+    await flushPromises();
+    await wrapper.findAll("button").find((button) => button.text().includes("连接配置"))?.trigger("click");
+    await flushPromises();
+    const panel = wrapper.findAll(".credential-panel")[0];
+    await panel.get("input[type=password]").setValue("duplicate-click-secret");
+    await panel.get(".primary-button").trigger("click");
+    await panel.get(".primary-button").trigger("click");
+    expect(updateTmdbCredential).toHaveBeenCalledTimes(1);
+    resolveSave?.({ ...credentials, revision: 1 });
+    await flushPromises();
   });
 });
