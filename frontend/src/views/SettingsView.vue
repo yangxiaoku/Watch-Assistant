@@ -29,6 +29,7 @@ import type {
 } from "../types";
 
 const props = defineProps<{ api: ApiClient }>();
+const emit = defineEmits<{ "auto-start-enabled": [enabled: boolean] }>();
 
 type SettingsSection = "overview" | "logs" | "inspection" | "p115";
 type ValidationState = "idle" | "running" | "error" | P115ValidationResponse["status"];
@@ -160,10 +161,13 @@ async function saveInspection() {
   inspectionSaveError.value = "";
   inspectionConflict.value = false;
   try {
-    applyInspection(await props.api.updateInspectionSettings({
+    const response = await props.api.updateInspectionSettings({
       auto_start_enabled: inspectionDraft.value,
       revision: inspectionSettings.value.revision,
-    }));
+    });
+    applyInspection(response);
+    if (logging.value) logging.value = { ...logging.value, revision: response.revision };
+    emit("auto-start-enabled", response.auto_start_enabled);
   } catch (exception) {
     if (exception instanceof ApiError && exception.status === 409) {
       inspectionConflict.value = true;
@@ -203,12 +207,16 @@ async function saveLogging() {
   saveError.value = "";
   conflict.value = false;
   try {
-    applyLogging(await props.api.updateLoggingSettings({
+    const response = await props.api.updateLoggingSettings({
       revision: logging.value.revision,
       level: draftLevel.value,
       retention_days: draftRetentionDays.value,
       max_file_mb: draftMaxFileMb.value,
-    }));
+    });
+    applyLogging(response);
+    if (inspectionSettings.value) {
+      inspectionSettings.value = { ...inspectionSettings.value, revision: response.revision };
+    }
   } catch (exception) {
     if (exception instanceof ApiError && exception.status === 409) {
       conflict.value = true;
@@ -377,7 +385,7 @@ onMounted(() => {
           <div v-if="inspectionLoading" class="settings-loading"><LoaderCircle class="spin" :size="20" />正在加载资源检测设置</div>
           <div v-else-if="inspectionError" class="settings-state settings-state-error"><AlertTriangle :size="18" /><span>{{ inspectionError }}</span><button class="text-button" type="button" @click="loadInspection">重试</button></div>
           <template v-else-if="inspectionSettings">
-            <div class="settings-subsection"><h3>打开详情时自动检测</h3><label class="settings-toggle"><input v-model="inspectionDraft" type="checkbox" /><span>自动提交首批资源检测</span></label><p class="settings-note">关闭后仍可在资源详情中手动开始检测。</p></div>
+            <div class="settings-subsection"><h3>打开详情时自动检测</h3><label class="settings-toggle"><input v-model="inspectionDraft" type="checkbox" aria-label="打开详情时自动检测" /><span>自动提交首批资源检测</span></label><p class="settings-note">关闭后仍可在资源详情中手动开始检测。</p></div>
             <div v-if="inspectionDirty" class="settings-save-bar"><span>有未保存的资源检测设置</span><div><button class="secondary-button" type="button" :disabled="savingInspection" @click="loadInspection">取消</button><button class="primary-button" type="button" :disabled="savingInspection" @click="saveInspection"><LoaderCircle v-if="savingInspection" class="spin" :size="15" /><Save v-else :size="15" />保存</button></div></div>
             <div v-if="inspectionSaveError" class="settings-state settings-state-error settings-save-error"><AlertTriangle :size="17" /><span>{{ inspectionSaveError }}</span><button v-if="inspectionConflict" class="text-button" type="button" @click="loadInspection">重新加载</button></div>
           </template>

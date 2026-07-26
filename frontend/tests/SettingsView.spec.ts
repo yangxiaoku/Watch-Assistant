@@ -168,6 +168,48 @@ describe("SettingsView", () => {
     expect(wrapper.text()).toContain("资源检测");
   });
 
+  it("keeps the shared revision synchronized between logging and inspection saves", async () => {
+    const inspectionCalls: unknown[] = [];
+    const loggingCalls: unknown[] = [];
+    const api = makeApi({
+      inspectionSettings: vi.fn().mockResolvedValue({ auto_start_enabled: true, revision: 0 }),
+      loggingSettings: vi.fn().mockResolvedValue({ ...logging, revision: 0 }),
+      updateInspectionSettings: vi.fn().mockImplementation(async (value) => {
+        inspectionCalls.push(value);
+        return { auto_start_enabled: value.auto_start_enabled, revision: value.revision + 1 };
+      }),
+      updateLoggingSettings: vi.fn().mockImplementation(async (value) => {
+        loggingCalls.push(value);
+        return { ...logging, level: value.level, revision: value.revision + 1 };
+      }),
+    });
+    const wrapper = mount(SettingsView, { props: { api } });
+    await flushPromises();
+
+    await wrapper.findAll("button").find((button) => button.text().includes("资源检测"))?.trigger("click");
+    await wrapper.get(".settings-toggle input").setValue(false);
+    await wrapper.get(".settings-save-bar .primary-button").trigger("click");
+    await flushPromises();
+
+    await wrapper.findAll("button").find((button) => button.text().includes("日志"))?.trigger("click");
+    await wrapper.get(".logging-settings select").setValue("WARNING");
+    await wrapper.get(".settings-save-bar .primary-button").trigger("click");
+    await flushPromises();
+
+    await wrapper.findAll("button").find((button) => button.text().includes("资源检测"))?.trigger("click");
+    await wrapper.get(".settings-toggle input").setValue(true);
+    await wrapper.get(".settings-save-bar .primary-button").trigger("click");
+    await flushPromises();
+
+    expect(inspectionCalls).toEqual([
+      { auto_start_enabled: false, revision: 0 },
+      { auto_start_enabled: true, revision: 2 },
+    ]);
+    expect(loggingCalls).toEqual([
+      expect.objectContaining({ revision: 1, level: "WARNING" }),
+    ]);
+  });
+
   it.each([
     ["ready", "Cookie 已就绪"],
     ["needs_auth", "Cookie 需要重新授权"],

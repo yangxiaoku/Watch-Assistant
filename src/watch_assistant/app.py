@@ -320,7 +320,7 @@ def create_app(
                     await settings_service.get_inspection()
                 ).auto_start_enabled
             except Exception:  # noqa: BLE001 - health remains available
-                inspection_auto_start_enabled = True
+                inspection_auto_start_enabled = False
         return {
             "status": "ok",
             "push_supported": getattr(application.state, "push_supported", False),

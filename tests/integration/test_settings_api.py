@@ -189,3 +189,23 @@ async def test_inspection_setting_persists_and_is_authenticated(tmp_path):
     await tmdb.aclose()
     await pansou.aclose()
     await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_health_fails_closed_when_inspection_setting_read_fails(tmp_path):
+    app, client, database, tmdb, pansou = await _app(tmp_path)
+
+    async def unavailable():
+        raise RuntimeError("hidden storage detail")
+
+    app.state.settings_service.get_inspection = unavailable
+    response = await client.get("/api/v1/health")
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
+    assert response.json()["inspection_auto_start_enabled"] is False
+    assert "hidden storage detail" not in response.text
+
+    await client.aclose()
+    await tmdb.aclose()
+    await pansou.aclose()
+    await database.engine.dispose()

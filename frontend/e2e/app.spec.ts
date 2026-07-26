@@ -324,6 +324,84 @@ test("does not start inspection when the backend disables it", async ({ page }) 
   await expect(page.getByRole("button", { name: "检测更多" })).toHaveCount(0);
 });
 
+test("syncs the inspection setting from the settings page into the live detail workflow", async ({ page }) => {
+  let autoStartEnabled = true;
+  let revision = 0;
+  let inspectPostCount = 0;
+  const secondMovie = { ...movie, tmdb_id: 27206, title: "另一部电影" };
+  const home = { popular: [movie, secondMovie], now_playing: [movie], upcoming: [movie], top_rated: [movie], tv_popular: [], tv_on_the_air: [], tv_top_rated: [] };
+  const resourcePage = (tmdbId: number) => ({
+    items: [{ resource_id: `resource-${tmdbId}`, kind: "magnet", name: `资源 ${tmdbId}`, size_bytes: null, seeders: null, source: "test", captured_at: "2026-07-24T10:00:00Z" }],
+    page: 1,
+    page_size: 25,
+    total: 1,
+    total_pages: 1,
+    facets: { magnet: 1, share: 0, "4k": 0, "1080p": 0, "720p": 0, subtitle: 0 },
+    snapshot_revision: `snapshot-${tmdbId}`,
+  });
+
+  await page.route("**/api/v1/health", (route) => route.fulfill({ json: { status: "ok", push_supported: false, inspection_supported: true, inspection_auto_start_enabled: true } }));
+  await page.route("**/api/v1/auth/me", (route) => route.fulfill({ json: { authenticated: true, via_bearer: false, csrf_token: "csrf-workflow" } }));
+  await page.route("**/api/v1/movies/home", (route) => route.fulfill({ json: home }));
+  await page.route("**/api/v1/settings/overview", (route) => route.fulfill({ json: { release: "test", uptime_seconds: 1, database_size_bytes: 1, capabilities: { inspection: true, magnet: false, share: false } } }));
+  await page.route("**/api/v1/settings/logging", (route) => route.fulfill({ json: { revision, level: "INFO", retention_days: 14, max_file_mb: 10 } }));
+  await page.route("**/api/v1/settings/p115", (route) => route.fulfill({ json: { enabled: false, ready: false, capabilities: { magnet: false, share: false }, cookie: { source: "tgtodrive", configured: false, structure_valid: false, sync_status: "unknown", last_sync_at: null }, target_configured: false, max_concurrency: 1 } }));
+  await page.route("**/api/v1/logs?**", (route) => route.fulfill({ json: { items: [], next_cursor: null } }));
+  await page.route("**/api/v1/settings/inspection", (route) => {
+    if (route.request().method() === "GET") return route.fulfill({ json: { auto_start_enabled: autoStartEnabled, revision } });
+    const body = route.request().postDataJSON() as { auto_start_enabled: boolean; revision: number };
+    expect(body.revision).toBe(revision);
+    autoStartEnabled = body.auto_start_enabled;
+    revision += 1;
+    return route.fulfill({ json: { auto_start_enabled: autoStartEnabled, revision } });
+  });
+  await page.route("**/api/v1/search", (route) => {
+    const tmdbId = (route.request().postDataJSON() as { tmdb_id: number }).tmdb_id;
+    const selected = tmdbId === secondMovie.tmdb_id ? secondMovie : movie;
+    return route.fulfill({ json: { movie: selected, results: [{ resource_id: `resource-${tmdbId}`, kind: "magnet", name: `资源 ${tmdbId}`, size_bytes: null, seeders: null, source: "test", captured_at: "2026-07-24T10:00:00Z" }], warnings: [], cached: false, cache_age_seconds: null } });
+  });
+  await page.route("**/api/v1/media/movie/*/resources**", (route) => {
+    const tmdbId = Number(route.request().url().match(/media\/movie\/(\d+)/)?.[1]);
+    return route.fulfill({ json: resourcePage(tmdbId) });
+  });
+  await page.route("**/api/v1/resources/inspect", (route) => {
+    inspectPostCount += 1;
+    const ids = (route.request().postDataJSON() as { resource_ids: string[] }).resource_ids;
+    expect(ids).toHaveLength(1);
+    return route.fulfill({ json: { batch_id: `batch-${inspectPostCount}`, status: "completed", submitted_count: 1, completed_count: 1, results: [inspectionResult(ids[0], "verified")] } });
+  });
+
+  const openInspectionSettings = async () => {
+    const mobileSelect = page.locator(".settings-mobile-select select");
+    if (await mobileSelect.isVisible()) await mobileSelect.selectOption("inspection");
+    else await page.getByRole("button", { name: "资源检测" }).click();
+  };
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "设置" }).click();
+  await openInspectionSettings();
+  await page.getByLabel("打开详情时自动检测").uncheck();
+  await page.getByRole("button", { name: "保存" }).click();
+  await expect.poll(() => autoStartEnabled).toBe(false);
+
+  await page.getByRole("button", { name: "首页" }).click();
+  await page.locator(".feature-hero").click();
+  await expect(page.getByRole("heading", { name: "盗梦空间" })).toBeVisible();
+  await expect.poll(() => inspectPostCount).toBe(0);
+  await page.getByRole("button", { name: "开始检测" }).click();
+  await expect.poll(() => inspectPostCount).toBe(1);
+
+  await page.getByRole("button", { name: "设置" }).click();
+  await openInspectionSettings();
+  await page.getByLabel("打开详情时自动检测").check();
+  await page.getByRole("button", { name: "保存" }).click();
+  await expect.poll(() => autoStartEnabled).toBe(true);
+  await page.getByRole("button", { name: "首页" }).click();
+  await page.getByRole("button", { name: "查看 另一部电影" }).click();
+  await expect(page.getByRole("heading", { name: "另一部电影" })).toBeVisible();
+  await expect.poll(() => inspectPostCount).toBe(2);
+});
+
 test("invalidates an automatic batch when switching seasons quickly", async ({ page }) => {
   let inspectPostCount = 0;
   const seasons = [
