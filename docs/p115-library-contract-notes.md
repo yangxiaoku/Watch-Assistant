@@ -13,15 +13,18 @@
 
 - `file_id` / `directory_id` 是候选稳定身份；`path` 仅展示用途。
 - `pickcode` 可为空，仅作为播放属性候选，不作为移动或复制后的稳定主键。
+- `DirectoryPage` 的 `scan_complete=None` 表示上游没有声明整次扫描完成；扫描器只接受已验证
+  `page_count` 末页或显式 `has_more`/`next_page`/`terminal` 作为终止依据。
 - `DirectoryPage` 和 `ScanResult` 同时表达 `complete`、`partial`、`cancelled`。
-- 扫描发现异常、重复页、空页或页数漂移时返回 `partial`；取消继续传播。
+- 扫描发现异常、重复页、空页、页数或 total 漂移时返回 `partial`；取消继续传播。
+- `scan_directory` 当前仅用于有界离线探针。Phase 1 生产索引器必须逐页持久化，不能把整库加载到内存。
 - DTO 的 `repr`、fake 调用记录和错误码不包含名称、完整路径、pickcode 或异常正文。
 
 ## p115client 候选能力矩阵
 
 | 能力 | 固定版本候选方法/签名 | 当前状态 | 需要的输入 | 预期输出 | 副作用 | 下一步探针 | 未知点 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| list directory | `P115Client.fs_files(payload=0, /, base_url='https://webapi.115.com', *, async_=False, **request_kwargs)` | unverified；DTO 为 offline_only | `cid`、`limit`、`offset`，可选 `show_dir` | 列表、页游标/总数候选 | 可能记录打开时间（库默认 `record_open_time=1`） | 固定目录、只读分页、核对重复/漏项 | `page/page_count` 与 `count/offset` 的真实组合、最大安全页大小 |
+| list directory | `P115Client.fs_files(payload=0, /, base_url='https://webapi.115.com', *, async_=False, **request_kwargs)` | unverified；DTO 为 offline_only | `cid`、`limit`、`offset`，可选 `show_dir` | 列表、页游标/总数候选 | 可能记录打开时间（库默认 `record_open_time=1`） | 固定目录、只读分页、核对重复/漏项 | `fs_files` 的 `offset/limit/count` 到分页 DTO 的映射、`page/page_count` 语义和最大安全页大小 |
 | file detail | `P115Client.fs_info(payload, /, base_url='https://webapi.115.com', *, async_=False, **request_kwargs)` | unverified；DTO 为 offline_only | `file_id` 或 path | 文件详情候选：ID、父目录、大小、mtime、pickcode | 只读；目录查询可能计算统计 | 只读文件详情字段脱敏记录 | `fid/cid`、时间和 pickcode 字段的真实类型 |
 | directory detail | `P115Client.fs_info(payload, /, base_url='https://webapi.115.com', *, async_=False, **request_kwargs)` | unverified；DTO 为 offline_only | `file_id` 或 path | 目录详情和统计候选 | 只读；可能触发目录统计计算 | 小目录详情读取，确认统计是否稳定 | 大目录耗时、统计字段是否分页一致 |
 | pickcode | `P115Client.fs_info` 响应候选字段；`P115Client.download_url(pickcode, strict=True, user_agent=None, app='os_windows', *, async_=False, **request_kwargs)` 为播放候选 | unverified | 文件 ID/pickcode | 可空 pickcode；直链候选 | 直链可能有时效 | 不输出 URL 的字段类型探针 | 移动/重命名/复制后的稳定性和过期语义 |

@@ -61,9 +61,12 @@ class DirectoryPage:
     page: int
     page_count: int | None
     total: int | None
-    scan_complete: bool
+    scan_complete: bool | None
     state: ScanState = ScanState.COMPLETE
     error_code: str | None = None
+    has_more: bool | None = None
+    next_page: int | None = None
+    terminal: bool | None = None
 
     def __post_init__(self) -> None:
         if self.page < 1:
@@ -72,10 +75,16 @@ class DirectoryPage:
             raise LibraryContractError("invalid_page_count")
         if self.total is not None and self.total < 0:
             raise LibraryContractError("invalid_total")
-        if self.state == ScanState.COMPLETE and not self.scan_complete:
+        if self.state == ScanState.COMPLETE and self.scan_complete is False:
             raise LibraryContractError("invalid_scan_state")
-        if self.state != ScanState.COMPLETE and self.scan_complete:
+        if self.state != ScanState.COMPLETE and self.scan_complete is True:
             raise LibraryContractError("invalid_scan_state")
+        if self.has_more is not None and not isinstance(self.has_more, bool):
+            raise LibraryContractError("invalid_pagination")
+        if self.next_page is not None and self.next_page < 1:
+            raise LibraryContractError("invalid_next_page")
+        if self.terminal is not None and not isinstance(self.terminal, bool):
+            raise LibraryContractError("invalid_pagination")
 
     def __repr__(self) -> str:
         return (
@@ -284,18 +293,28 @@ def parse_directory_page(raw: Mapping[str, Any]) -> DirectoryPage:
         raise LibraryContractError("invalid_page_count")
     if total is not None and (not isinstance(total, int) or isinstance(total, bool)):
         raise LibraryContractError("invalid_total")
-    scan_complete = _value(body, "scan_complete")
-    if scan_complete is None:
-        scan_complete = True
-    if not isinstance(scan_complete, bool):
+    scan_complete = body.get("scan_complete")
+    if scan_complete is not None and not isinstance(scan_complete, bool):
         raise LibraryContractError("invalid_scan_state")
     state_value = _value(body, "state", "scan_state")
     try:
         state = ScanState(
-            state_value or (ScanState.COMPLETE if scan_complete else ScanState.PARTIAL)
+            state_value
+            or (ScanState.PARTIAL if scan_complete is False else ScanState.COMPLETE)
         )
     except ValueError as exc:
         raise LibraryContractError("invalid_scan_state") from exc
+    has_more = body.get("has_more")
+    if has_more is not None and not isinstance(has_more, bool):
+        raise LibraryContractError("invalid_pagination")
+    next_page = body.get("next_page")
+    if next_page is not None and (
+        not isinstance(next_page, int) or isinstance(next_page, bool) or next_page < 1
+    ):
+        raise LibraryContractError("invalid_next_page")
+    terminal = body.get("terminal")
+    if terminal is not None and not isinstance(terminal, bool):
+        raise LibraryContractError("invalid_pagination")
     return DirectoryPage(
         items=entries,
         page=page,
@@ -304,6 +323,9 @@ def parse_directory_page(raw: Mapping[str, Any]) -> DirectoryPage:
         scan_complete=scan_complete,
         state=state,
         error_code="partial_page" if state == ScanState.PARTIAL else None,
+        has_more=has_more,
+        next_page=next_page,
+        terminal=terminal,
     )
 
 
@@ -343,7 +365,9 @@ async def scan_directory(
     seen_pages: set[int] = set()
     seen_entries: set[tuple[str | None, str | None]] = set()
     expected_page_count: int | None = None
+    page_count_seen = False
     total: int | None = None
+    total_seen = False
     page_number = 1
     while True:
         try:
@@ -373,8 +397,9 @@ async def scan_directory(
                 "repeated_page",
             )
         seen_pages.add(page.page)
-        if expected_page_count is None:
+        if not page_count_seen:
             expected_page_count = page.page_count
+            page_count_seen = True
         elif page.page_count != expected_page_count:
             return ScanResult(
                 tuple(items),
@@ -385,8 +410,20 @@ async def scan_directory(
                 ScanState.PARTIAL,
                 "page_count_changed",
             )
-        total = page.total if page.total is not None else total
-        if page.state != ScanState.COMPLETE or not page.scan_complete:
+        if total_seen and page.total != total:
+            return ScanResult(
+                tuple(items),
+                page_number,
+                expected_page_count,
+                page.total,
+                False,
+                ScanState.PARTIAL,
+                "total_changed",
+            )
+        if not total_seen:
+            total = page.total
+            total_seen = True
+        if page.state != ScanState.COMPLETE or page.scan_complete is False:
             return ScanResult(
                 tuple(items),
                 page_number,
@@ -396,10 +433,15 @@ async def scan_directory(
                 page.state,
                 page.error_code or "partial_page",
             )
-        if not page.items and (
-            expected_page_count is None
-            or page_number < expected_page_count
-            or (page.total not in (None, 0))
+        if (
+            not page.items
+            and (
+                expected_page_count is None
+                or page_number < expected_page_count
+                or (page.total not in (None, 0))
+            )
+            and page.terminal is not True
+            and page.has_more is not False
         ):
             return ScanResult(
                 tuple(items),
@@ -408,7 +450,12 @@ async def scan_directory(
                 total,
                 False,
                 ScanState.PARTIAL,
-                "empty_page",
+                "pagination_unverified"
+                if expected_page_count is None
+                and page.has_more is None
+                and page.next_page is None
+                and page.terminal is None
+                else "empty_page",
             )
         for item in page.items:
             identity = (item.directory_id, item.file_id)
@@ -424,7 +471,53 @@ async def scan_directory(
                 )
             seen_entries.add(identity)
             items.append(item)
-        if expected_page_count is None or page_number >= expected_page_count:
+        page_count_terminal = (
+            expected_page_count is not None and page_number >= expected_page_count
+        )
+        page_count_continues = (
+            expected_page_count is not None and page_number < expected_page_count
+        )
+        explicit_terminal = page.terminal is True or page.has_more is False
+        pagination_continues = (
+            page_count_continues or page.has_more is True or page.next_page is not None
+        )
+        if (
+            explicit_terminal
+            and expected_page_count is not None
+            and page_number < expected_page_count
+        ):
+            return ScanResult(
+                tuple(items),
+                page_number,
+                expected_page_count,
+                total,
+                False,
+                ScanState.PARTIAL,
+                "pagination_unverified",
+            )
+        if page_count_terminal and (
+            page.has_more is True or page.next_page is not None
+        ):
+            return ScanResult(
+                tuple(items),
+                page_number,
+                expected_page_count,
+                total,
+                False,
+                ScanState.PARTIAL,
+                "pagination_unverified",
+            )
+        if page_count_terminal or explicit_terminal:
+            if total is not None and len(items) != total:
+                return ScanResult(
+                    tuple(items),
+                    page_number,
+                    expected_page_count,
+                    total,
+                    False,
+                    ScanState.PARTIAL,
+                    "total_mismatch",
+                )
             return ScanResult(
                 tuple(items),
                 page_number,
@@ -433,7 +526,28 @@ async def scan_directory(
                 True,
                 ScanState.COMPLETE,
             )
-        page_number += 1
+        if not pagination_continues:
+            return ScanResult(
+                tuple(items),
+                page_number,
+                expected_page_count,
+                total,
+                False,
+                ScanState.PARTIAL,
+                "pagination_unverified",
+            )
+        next_page = page.next_page if page.next_page is not None else page_number + 1
+        if next_page <= page_number or next_page in seen_pages:
+            return ScanResult(
+                tuple(items),
+                page_number,
+                expected_page_count,
+                total,
+                False,
+                ScanState.PARTIAL,
+                "pagination_unverified",
+            )
+        page_number = next_page
 
 
 @dataclass(frozen=True, slots=True)

@@ -26,12 +26,21 @@ def _fixture(name: str) -> DirectoryPage:
         return parse_directory_page(json.load(fixture))
 
 
+def _unique_items(count: int):
+    template = _fixture("page_1.json").items[0]
+    return tuple(
+        replace(template, file_id=str(1000 + index), name=f"synthetic-{index}")
+        for index in range(count)
+    )
+
+
 @pytest.mark.asyncio
 async def test_fake_gateway_scans_multiple_pages_without_exposing_call_values():
     first = _fixture("page_1.json")
     second = _fixture("page_2.json")
     gateway = FakeP115LibraryGateway({1: first, 2: second})
 
+    assert first.scan_complete is None
     result = await scan_directory(gateway, "sensitive-directory-id", page_size=2)
 
     assert result.scan_complete is True
@@ -72,6 +81,79 @@ async def test_repeated_empty_and_changed_pages_are_partial():
     cancelled_result = await scan_directory(cancelled, "directory")
     assert cancelled_result.state is ScanState.CANCELLED
     assert cancelled_result.scan_complete is False
+
+
+@pytest.mark.asyncio
+async def test_missing_page_count_never_completes_after_first_page():
+    page = replace(
+        _fixture("page_1.json"),
+        page_count=None,
+        total=250,
+        items=_unique_items(100),
+    )
+    result = await scan_directory(FakeP115LibraryGateway({1: page}), "directory")
+    assert result.scan_complete is False
+    assert result.error_code == "pagination_unverified"
+
+
+@pytest.mark.asyncio
+async def test_missing_all_termination_information_is_unverified():
+    page = replace(_fixture("page_1.json"), page_count=None, total=None, items=())
+    result = await scan_directory(FakeP115LibraryGateway({1: page}), "directory")
+    assert result.scan_complete is False
+    assert result.error_code == "pagination_unverified"
+
+
+@pytest.mark.asyncio
+async def test_total_change_and_terminal_total_mismatch_are_partial():
+    first = replace(_fixture("page_1.json"), page_count=2, total=3)
+    second = replace(_fixture("page_2.json"), total=4)
+    changed = await scan_directory(
+        FakeP115LibraryGateway({1: first, 2: second}), "directory"
+    )
+    assert changed.scan_complete is False
+    assert changed.error_code == "total_changed"
+
+    mismatch = replace(_fixture("page_1.json"), page_count=1, total=4)
+    result = await scan_directory(FakeP115LibraryGateway({1: mismatch}), "directory")
+    assert result.scan_complete is False
+    assert result.error_code == "total_mismatch"
+
+
+@pytest.mark.asyncio
+async def test_explicit_terminal_is_a_valid_completion_boundary():
+    with_total = replace(
+        _fixture("page_1.json"), page_count=None, total=2, terminal=True
+    )
+    result = await scan_directory(FakeP115LibraryGateway({1: with_total}), "directory")
+    assert result.scan_complete is True
+
+    first = replace(
+        _fixture("page_1.json"),
+        page_count=None,
+        total=3,
+        has_more=True,
+        next_page=2,
+    )
+    second = replace(
+        _fixture("page_2.json"),
+        page_count=None,
+        total=3,
+        has_more=False,
+    )
+    result = await scan_directory(
+        FakeP115LibraryGateway({1: first, 2: second}), "directory"
+    )
+    assert result.scan_complete is True
+    assert result.state is ScanState.COMPLETE
+
+    without_total = replace(
+        _fixture("page_1.json"), page_count=None, total=None, terminal=True
+    )
+    result = await scan_directory(
+        FakeP115LibraryGateway({1: without_total}), "directory"
+    )
+    assert result.scan_complete is True
 
 
 @pytest.mark.asyncio
