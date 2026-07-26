@@ -172,6 +172,20 @@ def test_low_confidence_match_requires_review():
     assert plan.target_path is None
 
 
+def test_missing_confidence_match_requires_review():
+    decision = MatchDecision(
+        status=MatchStatus.ACCEPTED,
+        selected=candidate(),
+        confidence=None,
+    )
+
+    plan = plan_media(parsed("Missing Confidence 2024 1080p.mkv"), decision)
+
+    assert plan.status is ClassificationStatus.REVIEW_REQUIRED
+    assert plan.target_path is None
+    assert plan.executable is False
+
+
 def test_missing_kind_and_type_conflict_are_conservative():
     unknown_kind = plan_media(
         parsed("Unknown Kind 2024 1080p.mkv"),

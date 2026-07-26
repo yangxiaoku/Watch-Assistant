@@ -267,10 +267,7 @@ def plan_media(
             "match_not_accepted",
             *(reason.value for reason in decision.reasons),
         )
-    if (
-        decision.confidence is not None
-        and decision.confidence is not MatchConfidence.HIGH
-    ):
+    if decision.confidence is not MatchConfidence.HIGH:
         return _review_plan(config, "match_confidence_insufficient")
     if parsed.companion_type != "video":
         return _unsupported_plan(config, "non_primary_companion")
