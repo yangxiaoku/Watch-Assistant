@@ -116,3 +116,37 @@ def normalize_cookie_text(text: str) -> str | None:
             return None
         values.append(f"{name}={morsel.value}")
     return "; ".join(values)
+
+
+class CompositeCookieProvider:
+    """Prefer an in-memory managed cookie, then use the TgtoDrive file."""
+
+    __slots__ = ("_fallback", "_managed")
+
+    def __init__(self, fallback: CookieProvider) -> None:
+        self._fallback = fallback
+        self._managed: str | None = None
+
+    def __repr__(self) -> str:
+        return "<CompositeCookieProvider>"
+
+    @property
+    def fallback(self) -> CookieProvider:
+        return self._fallback
+
+    @property
+    def managed_cookie(self) -> str | None:
+        return self._managed
+
+    def set_managed(self, cookie: str | None) -> None:
+        self._managed = normalize_cookie_text(cookie) if cookie else None
+
+    def load(self) -> str | None:
+        if self._managed is not None:
+            return self._managed
+        return self._fallback.load()
+
+    read = load
+
+    def fallback_load(self) -> str | None:
+        return self._fallback.load()

@@ -12,7 +12,10 @@ from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
 from watch_assistant.schemas import RemoteStatus, SubmissionResult
-from watch_assistant.services.p115_credentials import CookieProvider
+from watch_assistant.services.p115_credentials import (
+    CookieProvider,
+    normalize_cookie_text,
+)
 from watch_assistant.services.p115_settings import (
     P115NeedsAuthError,
     P115UnavailableError,
@@ -245,6 +248,49 @@ class P115Adapter:
                 raise P115NeedsAuthError
             if not _response_ok(response):
                 raise P115UnavailableError
+
+    async def validate_cookie(self, cookie: str) -> None:
+        """Validate a candidate cookie with one native async read-only request."""
+        normalized = normalize_cookie_text(cookie)
+        if normalized is None:
+            raise P115NeedsAuthError
+        async with self._semaphore:
+            try:
+                client = await asyncio.to_thread(self._client_factory, normalized)
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:  # noqa: BLE001 - stable validation mapping
+                if _auth_exception(error):
+                    raise P115NeedsAuthError from None
+                raise P115UnavailableError from None
+            try:
+                method = getattr(client, "clouddownload_task_list", None)
+                if not callable(method):
+                    raise P115UnavailableError
+                response = method({"page": 1}, async_=True)
+                if not inspect.isawaitable(response):
+                    raise P115UnavailableError
+                response = await response
+                if not isinstance(response, Mapping):
+                    raise P115UnavailableError
+                if _response_auth(response):
+                    raise P115NeedsAuthError
+                if not _response_ok(response):
+                    raise P115UnavailableError
+            except asyncio.CancelledError:
+                raise
+            except P115UnavailableError:
+                raise
+            except Exception as error:  # noqa: BLE001 - stable validation mapping
+                if _auth_exception(error):
+                    raise P115NeedsAuthError from None
+                raise P115UnavailableError from None
+            finally:
+                await self._close_client(client)
+
+    @property
+    def cookie_provider(self) -> CookieProvider:
+        return self._cookie_provider
 
     async def _client_for_operation(self) -> tuple[Any, bool]:
         cookie = self._cookie_provider.load()

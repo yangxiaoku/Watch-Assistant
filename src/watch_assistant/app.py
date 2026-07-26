@@ -19,6 +19,7 @@ from watch_assistant.adapters.pansou import PanSouClient
 from watch_assistant.adapters.qbittorrent import QbittorrentClient
 from watch_assistant.adapters.tmdb import TmdbClient
 from watch_assistant.api.auth import router as auth_router
+from watch_assistant.api.credentials import router as credentials_router
 from watch_assistant.api.inspection import router as inspection_router
 from watch_assistant.api.maintenance import router as maintenance_router
 from watch_assistant.api.search import router as search_router
@@ -30,9 +31,13 @@ from watch_assistant.crypto import SecretCrypto
 from watch_assistant.db import Database, create_database, initialize_database
 from watch_assistant.security import SecurityManager
 from watch_assistant.services.cache_warm import CacheWarmer
+from watch_assistant.services.credentials import CredentialService
 from watch_assistant.services.inspection import InspectionService, InspectionWorker
 from watch_assistant.services.maintenance import MaintenanceService
-from watch_assistant.services.p115_credentials import CookieProvider
+from watch_assistant.services.p115_credentials import (
+    CompositeCookieProvider,
+    CookieProvider,
+)
 from watch_assistant.services.p115_settings import P115SettingsService
 from watch_assistant.services.search import SearchService
 from watch_assistant.services.settings import SettingsService
@@ -65,6 +70,56 @@ def create_app(
         inspection_task: asyncio.Task[None] | None = None
         task_stop: asyncio.Event | None = None
         task_task: asyncio.Task[None] | None = None
+
+        async def apply_p115_runtime(ready: bool) -> None:
+            nonlocal task_stop, task_task
+            application.state.p115_ready = ready
+            application.state.push_capabilities = {
+                "magnet": ready,
+                "share": False,
+            }
+            adapter = getattr(application.state, "task_adapter", None)
+            if adapter is None:
+                return
+            if not ready:
+                if task_stop is not None:
+                    task_stop.set()
+                if task_task is not None:
+                    task_task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await task_task
+                task_stop = None
+                task_task = None
+                application.state.task_worker = None
+                return
+            if getattr(application.state, "task_worker", None) is not None:
+                return
+            worker = TaskWorker(
+                runtime_database.session_factory,
+                runtime_crypto,
+                adapter,
+                owner=_worker_owner(),
+                event_logger=application.state.settings_service,
+            )
+            await worker.recover_expired()
+            application.state.task_worker = worker
+            task_stop = asyncio.Event()
+            task_task = asyncio.create_task(
+                worker.run_forever(task_stop), name="watch-assistant-task-worker"
+            )
+
+        existing_credentials = getattr(application.state, "credential_service", None)
+        if existing_credentials is not None and not getattr(
+            application.state, "_credentials_loaded", False
+        ):
+            managed_tmdb, _managed_cookie = await existing_credentials.load_managed()
+            if managed_tmdb is not None:
+                existing_tmdb = getattr(existing_credentials, "_tmdb_client", None)
+                set_api_key = getattr(existing_tmdb, "set_api_key", None)
+                if callable(set_api_key):
+                    set_api_key(managed_tmdb)
+            application.state._credentials_loaded = True
+
         if not hasattr(application.state, "search_service"):
             credentials_directory = os.environ.get("CREDENTIALS_DIRECTORY")
             secrets_dir = Path(credentials_directory or "/run/secrets")
@@ -80,19 +135,39 @@ def create_app(
                     "is configured"
                 )
             runtime_database = database or create_database(settings.database_url)
+            await initialize_database(runtime_database.engine)
             runtime_crypto = crypto or SecretCrypto(
                 settings.encryption_key.get_secret_value()
             )
-            runtime_tmdb = tmdb_client or TmdbClient(
-                settings.tmdb_api_key.get_secret_value(),
-                base_url=settings.tmdb_base_url,
-            )
             runtime_pansou = pansou_client or PanSouClient(settings.pansou_base_url)
-            await initialize_database(runtime_database.engine)
             application.state.settings_service = SettingsService(
                 runtime_database.session_factory,
                 state_directory=_state_directory(runtime_database),
             )
+            fallback_cookie_provider = CookieProvider(settings.p115_cookie_path)
+            composite_cookie_provider = CompositeCookieProvider(
+                fallback_cookie_provider
+            )
+            credential_service = CredentialService(
+                runtime_database.session_factory,
+                runtime_crypto,
+                environment_tmdb_key=settings.tmdb_api_key.get_secret_value(),
+                fallback_cookie_provider=fallback_cookie_provider,
+                cookie_provider=composite_cookie_provider,
+                event_logger=application.state.settings_service,
+                runtime_state=application.state,
+                p115_runtime_callback=apply_p115_runtime,
+            )
+            managed_tmdb, _managed_cookie = await credential_service.load_managed()
+            runtime_tmdb = tmdb_client or TmdbClient(
+                managed_tmdb or settings.tmdb_api_key.get_secret_value(),
+                base_url=settings.tmdb_base_url,
+            )
+            if tmdb_client is not None and managed_tmdb is not None:
+                set_api_key = getattr(tmdb_client, "set_api_key", None)
+                if callable(set_api_key):
+                    set_api_key(managed_tmdb)
+            application.state.credential_service = credential_service
             await application.state.settings_service.log_event(
                 "application.startup", fields={"status": "started"}
             )
@@ -134,7 +209,7 @@ def create_app(
             application.state.p115_ready = False
             application.state.database = runtime_database
             owned = [runtime_database, runtime_tmdb, runtime_pansou]
-            cookie_provider = CookieProvider(settings.p115_cookie_path)
+            cookie_provider = composite_cookie_provider
             runtime_task_adapter: TaskAdapter | None = None
             if settings.p115_enabled:
                 runtime_task_adapter = task_adapter or P115Adapter(
@@ -144,6 +219,11 @@ def create_app(
                 )
                 application.state.task_adapter = runtime_task_adapter
                 owned.append(runtime_task_adapter)
+                credential_service.bind_runtime(
+                    tmdb_client=runtime_tmdb,
+                    p115_adapter=runtime_task_adapter,
+                    runtime_state=application.state,
+                )
                 p115_ready = await _ensure_adapter_available(runtime_task_adapter)
                 application.state.p115_ready = p115_ready
                 if p115_ready:
@@ -172,6 +252,12 @@ def create_app(
                 max_concurrency=settings.p115_max_concurrency,
                 adapter=runtime_task_adapter,
             )
+            if runtime_task_adapter is None:
+                credential_service.bind_runtime(
+                    tmdb_client=runtime_tmdb,
+                    p115_adapter=None,
+                    runtime_state=application.state,
+                )
             inspection_client = qbittorrent_client
             if inspection_client is None and settings.inspection_configured:
                 inspection_client = QbittorrentClient(
@@ -305,6 +391,21 @@ def create_app(
         application.state.maintenance_service = MaintenanceService(
             database.session_factory
         )
+        fallback_cookie_provider = CookieProvider(
+            os.environ.get("P115_COOKIE_PATH", "/run/secrets/p115_cookie")
+        )
+        composite_cookie_provider = CompositeCookieProvider(fallback_cookie_provider)
+        application.state.credential_service = CredentialService(
+            database.session_factory,
+            crypto,
+            environment_tmdb_key=os.environ.get("TMDB_API_KEY", ""),
+            fallback_cookie_provider=fallback_cookie_provider,
+            cookie_provider=composite_cookie_provider,
+            event_logger=application.state.settings_service,
+            tmdb_client=tmdb_client,
+            p115_adapter=task_adapter,
+            runtime_state=application.state,
+        )
         application.state.inspection_supported = qbittorrent_client is not None
         if qbittorrent_client is not None:
             application.state.inspection_client = qbittorrent_client
@@ -364,6 +465,7 @@ def create_app(
 
     application.include_router(search_router)
     application.include_router(settings_router)
+    application.include_router(credentials_router)
     application.include_router(p115_settings_router)
     application.include_router(tasks_router)
     application.include_router(auth_router)

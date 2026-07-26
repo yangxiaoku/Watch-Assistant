@@ -44,6 +44,16 @@ class ApplicationSettings(Base):
     )
     revision: Mapped[int] = mapped_column(Integer, default=0)
     content_policy_json: Mapped[str] = mapped_column(Text, default="{}")
+    managed_tmdb_key_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    managed_tmdb_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    managed_p115_cookie_encrypted: Mapped[str | None] = mapped_column(
+        Text, nullable=True
+    )
+    managed_p115_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, onupdate=utc_now
     )

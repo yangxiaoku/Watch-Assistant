@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, PositiveInt
+from pydantic import BaseModel, Field, PositiveInt, SecretStr
 
 
 class ResourceKind(StrEnum):
@@ -106,6 +106,39 @@ class InspectionSettingsPatch(BaseModel):
 
     auto_start_enabled: bool
     revision: int = Field(ge=0)
+
+
+class CredentialRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    value: SecretStr
+    revision: int = Field(ge=0)
+
+
+class CredentialResetRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    revision: int = Field(ge=0)
+
+
+class CredentialSourceResponse(BaseModel):
+    configured: bool
+    source: Literal["managed", "environment"]
+    last_updated_at: datetime | None
+
+
+class P115CredentialStatus(BaseModel):
+    configured: bool
+    source: Literal["managed", "tgtodrive"]
+    last_updated_at: datetime | None
+    structure_valid: bool
+    ready: bool
+
+
+class CredentialSettingsResponse(BaseModel):
+    revision: int = Field(ge=0)
+    tmdb: CredentialSourceResponse
+    p115_cookie: P115CredentialStatus
 
 
 class SettingsOverviewResponse(BaseModel):

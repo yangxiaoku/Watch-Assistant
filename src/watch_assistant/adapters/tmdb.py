@@ -35,6 +35,10 @@ class TmdbError(RuntimeError):
     pass
 
 
+class TmdbAuthError(TmdbError):
+    pass
+
+
 class TmdbClient:
     def __init__(
         self,
@@ -48,6 +52,19 @@ class TmdbClient:
         self._timeout = timeout
         self._owns_client = client is None
         self._client = client or httpx.AsyncClient(base_url=base_url.rstrip("/"))
+
+    def set_api_key(self, api_key: str) -> None:
+        self._api_key = api_key
+
+    update_api_key = set_api_key
+
+    @property
+    def api_key_configured(self) -> bool:
+        return bool(self._api_key)
+
+    async def validate_api_key(self, api_key: str) -> None:
+        """Perform exactly one read-only request for a candidate key."""
+        await self._get("/configuration", api_key=api_key)
 
     async def get_movie(self, tmdb_id: int) -> MovieMetadata:
         return await self.get_media(tmdb_id, MediaType.MOVIE)
@@ -169,19 +186,27 @@ class TmdbClient:
         return ordered
 
     async def _get(
-        self, path: str, *, params: dict[str, str | int] | None = None
+        self,
+        path: str,
+        *,
+        params: dict[str, str | int] | None = None,
+        api_key: str | None = None,
     ) -> dict:
         try:
             response = await self._client.get(
                 path,
                 params={
-                    "api_key": self._api_key,
+                    "api_key": self._api_key if api_key is None else api_key,
                     "language": "zh-CN",
                     **(params or {}),
                 },
                 timeout=self._timeout,
             )
             response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code in {401, 403}:
+                raise TmdbAuthError("TMDB credential rejected") from None
+            raise TmdbError("TMDB request failed") from None
         except httpx.HTTPError as exc:
             raise TmdbError("TMDB request failed") from exc
 

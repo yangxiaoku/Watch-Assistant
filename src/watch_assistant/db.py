@@ -75,6 +75,10 @@ def _ensure_application_settings_columns(connection) -> None:
     additions = {
         "inspection_auto_start_enabled": "BOOLEAN NOT NULL DEFAULT 1",
         "content_policy_json": "TEXT NOT NULL DEFAULT '{}'",
+        "managed_tmdb_key_encrypted": "TEXT",
+        "managed_tmdb_updated_at": "DATETIME",
+        "managed_p115_cookie_encrypted": "TEXT",
+        "managed_p115_updated_at": "DATETIME",
     }
     for name, definition in additions.items():
         if name not in columns:
