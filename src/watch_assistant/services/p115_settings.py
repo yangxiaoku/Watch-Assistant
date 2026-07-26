@@ -9,7 +9,10 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Protocol
 
-from watch_assistant.services.p115_credentials import CookieProvider
+from watch_assistant.services.p115_credentials import (
+    CompositeCookieProvider,
+    CookieProvider,
+)
 
 P115_COOKIE_SOURCE = "tgtodrive"
 COOKIE_SYNC_STATUSES = frozenset(("success", "failed", "unknown"))
@@ -68,7 +71,7 @@ class P115SettingsService:
         self,
         *,
         enabled: bool,
-        cookie_provider: CookieProvider,
+        cookie_provider: CookieProvider | CompositeCookieProvider,
         target_configured: bool,
         max_concurrency: int,
         adapter: P115ValidationAdapter | None = None,
@@ -171,8 +174,13 @@ class P115SettingsService:
             structure_valid = False
         configured = configured or structure_valid
         sync_status = self._sync_status or "unknown"
+        source = (
+            self._cookie_provider.source
+            if isinstance(self._cookie_provider, CompositeCookieProvider)
+            else P115_COOKIE_SOURCE
+        )
         return P115CookieSnapshot(
-            source=P115_COOKIE_SOURCE,
+            source=source,
             configured=configured,
             structure_valid=structure_valid,
             sync_status=sync_status,

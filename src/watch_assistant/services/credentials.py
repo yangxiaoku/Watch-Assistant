@@ -313,7 +313,7 @@ class CredentialService:
         try:
             ready = await adapter.ensure_available()
         except asyncio.CancelledError:
-            ready = False
+            raise
         except Exception:  # noqa: BLE001 - readiness fails closed
             ready = False
         await self._set_p115_runtime(bool(ready))
@@ -328,7 +328,15 @@ class CredentialService:
         if self._p115_runtime_callback is not None:
             try:
                 await self._p115_runtime_callback(ready)
-            except BaseException:  # noqa: BLE001 - fail closed after persistence
+            except asyncio.CancelledError:
+                if self._runtime_state is not None:
+                    self._runtime_state.p115_ready = False
+                    self._runtime_state.push_capabilities = {
+                        "magnet": False,
+                        "share": False,
+                    }
+                raise
+            except Exception:  # noqa: BLE001 - fail closed after persistence
                 if self._runtime_state is not None:
                     self._runtime_state.p115_ready = False
                     self._runtime_state.push_capabilities = {
@@ -363,12 +371,17 @@ class CredentialService:
                 await asyncio.shield(task)
             except asyncio.CancelledError:
                 cancelled = True
+        operation_cancelled = False
         try:
             await task
-        except BaseException:  # noqa: BLE001 - post-commit convergence is opaque
+        except asyncio.CancelledError:
+            operation_cancelled = True
             if fail_closed_p115:
                 await self._set_p115_runtime(False)
-        return cancelled
+        except Exception:  # noqa: BLE001 - post-commit convergence is opaque
+            if fail_closed_p115:
+                await self._set_p115_runtime(False)
+        return cancelled or operation_cancelled
 
     async def _reset(self, kind: str, revision: int) -> tuple[int, bool]:
         async with self._mutation_lock, self._session_factory() as session:

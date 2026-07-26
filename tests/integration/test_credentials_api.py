@@ -124,11 +124,21 @@ async def test_credentials_are_authenticated_and_never_return_secret(tmp_path: P
         assert secret not in response.text
         assert body["tmdb"]["source"] == "managed"
         assert tmdb.key == secret
+        reset = await client.post(
+            "/api/v1/settings/credentials/tmdb/reset",
+            json={"revision": 1},
+            headers={"X-CSRF-Token": csrf},
+        )
+        assert reset.status_code == 200
+        assert reset.json()["tmdb"]["source"] == "environment"
+        assert tmdb.key == "environment"
+        assert secret not in repr(app.state.credential_service)
     async with database.session_factory() as session:
         stored = await session.scalar(select(ApplicationSettings))
         assert stored is not None
         assert secret not in (stored.managed_tmdb_key_encrypted or "")
     await database.engine.dispose()
+    assert secret.encode("utf-8") not in (tmp_path / "credentials.db").read_bytes()
 
 
 @pytest.mark.integration
@@ -154,6 +164,36 @@ async def test_p115_cookie_validation_is_single_call_and_revision_conflict_is_sa
         )
         assert conflict.status_code == 409
     await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_rebuilt_service_restores_managed_p115_source(tmp_path: Path):
+    database, crypto, _tmdb, p115, _security, app = await _setup(tmp_path)
+    service = app.state.credential_service
+    await service.update_p115_cookie(COOKIE, 0)
+    await database.engine.dispose()
+
+    rebuilt_database = create_database(
+        f"sqlite+aiosqlite:///{tmp_path / 'credentials.db'}"
+    )
+    await initialize_database(rebuilt_database.engine)
+    fallback = CookieProvider(tmp_path / "missing-fallback")
+    rebuilt_provider = CompositeCookieProvider(fallback)
+    rebuilt = CredentialService(
+        rebuilt_database.session_factory,
+        crypto,
+        environment_tmdb_key="environment",
+        fallback_cookie_provider=fallback,
+        cookie_provider=rebuilt_provider,
+        tmdb_client=FakeTmdb(),  # type: ignore[arg-type]
+        p115_adapter=FakeP115(),  # type: ignore[arg-type]
+    )
+    await rebuilt.load_managed()
+    snapshot = await rebuilt.snapshot()
+    assert snapshot["p115_cookie"]["source"] == "managed"  # type: ignore[index]
+    assert COOKIE not in repr(rebuilt)
+    assert len(p115.calls) == 1
+    await rebuilt_database.engine.dispose()
 
 
 @pytest.mark.integration
@@ -194,6 +234,23 @@ async def test_invalid_payload_is_stable_and_csrf_is_enforced(tmp_path: Path):
         )
         assert response.status_code == 422
         assert sentinel not in response.text
+        malformed = await client.put(
+            "/api/v1/settings/credentials/tmdb",
+            content='{"value":"sentinel-secret-value"',
+            headers={
+                "X-CSRF-Token": csrf,
+                "Content-Type": "application/json",
+            },
+        )
+        assert malformed.status_code == 422
+        assert sentinel not in malformed.text
+        wrong_type = await client.put(
+            "/api/v1/settings/credentials/tmdb",
+            json={"value": {"sentinel": sentinel}, "revision": 0},
+            headers={"X-CSRF-Token": csrf},
+        )
+        assert wrong_type.status_code == 422
+        assert sentinel not in wrong_type.text
     await database.engine.dispose()
 
 

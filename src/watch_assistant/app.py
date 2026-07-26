@@ -90,7 +90,8 @@ def create_app(
                         await task_task
                 task_stop = None
                 task_task = None
-                application.state.task_worker = None
+                if hasattr(application.state, "task_worker"):
+                    delattr(application.state, "task_worker")
                 return
             if getattr(application.state, "task_worker", None) is not None:
                 return

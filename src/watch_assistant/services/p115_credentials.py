@@ -134,6 +134,10 @@ class CompositeCookieProvider:
     def fallback(self) -> CookieProvider:
         return self._fallback
 
+    @property
+    def source(self) -> str:
+        return "managed" if self._managed is not None else "tgtodrive"
+
     def set_managed(self, cookie: str | None) -> None:
         self._managed = normalize_cookie_text(cookie) if cookie else None
 

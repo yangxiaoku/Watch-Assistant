@@ -20,7 +20,7 @@ router = APIRouter(
 
 
 class P115CookieResponse(BaseModel):
-    source: Literal["tgtodrive"]
+    source: Literal["managed", "tgtodrive"]
     configured: bool
     structure_valid: bool
     sync_status: Literal["success", "failed", "unknown"]
