@@ -510,17 +510,17 @@ def _coerce_candidates(
             parsed.append(TmdbCandidate.from_payload(item))
         else:
             raise TmdbMalformedResponseError
-    by_tmdb_id: dict[int, list[TmdbCandidate]] = {}
+    by_identity: dict[tuple[int, MediaType], list[TmdbCandidate]] = {}
     for candidate in parsed:
-        by_tmdb_id.setdefault(candidate.tmdb_id, []).append(candidate)
+        by_identity.setdefault(candidate.identity, []).append(candidate)
 
     unique: list[TmdbCandidate] = []
-    for tmdb_id in sorted(by_tmdb_id):
-        group = by_tmdb_id[tmdb_id]
+    for identity in sorted(by_identity, key=lambda item: (item[0], item[1].value)):
+        group = by_identity[identity]
         fingerprints = {_candidate_conflict_fingerprint(item) for item in group}
         if len(fingerprints) > 1:
             raise _ConflictingCandidatesError
-        unique.append(group[0])
+        unique.append(min(group, key=_candidate_canonical_key))
     return tuple(unique)
 
 
@@ -775,21 +775,52 @@ def _candidate_conflict_fingerprint(candidate: TmdbCandidate) -> tuple[object, .
     )
 
 
+def _candidate_canonical_key(candidate: TmdbCandidate) -> tuple[object, ...]:
+    """Choose one stable representative among equivalent candidate payloads."""
+
+    return (
+        candidate.media_type.value,
+        candidate.tmdb_id,
+        _stable_text_key(candidate.title),
+        _stable_text_key(candidate.original_title or ""),
+        tuple(_stable_text_key(alias) for alias in candidate.aliases),
+        candidate.release_year if candidate.release_year is not None else -1,
+        candidate.origin_countries,
+        candidate.kind.value,
+        candidate.special_kind.value,
+        tuple(_season_canonical_key(season) for season in candidate.seasons),
+    )
+
+
 def _dedupe_seasons(seasons: Sequence[TmdbSeason]) -> tuple[TmdbSeason, ...]:
-    by_number: dict[int, TmdbSeason] = {}
+    by_number: dict[int, list[TmdbSeason]] = {}
     for season in seasons:
         if not isinstance(season, TmdbSeason):
             raise TypeError("invalid season")
-        previous = by_number.get(season.season_number)
-        if previous is None or _season_quality_key(season) > _season_quality_key(
-            previous
-        ):
-            by_number[season.season_number] = season
-    return tuple(by_number[number] for number in sorted(by_number))
+        by_number.setdefault(season.season_number, []).append(season)
+    result: list[TmdbSeason] = []
+    for number in sorted(by_number):
+        group = by_number[number]
+        if len({_season_fingerprint(item) for item in group}) > 1:
+            raise ValueError("conflicting season metadata")
+        result.append(min(group, key=_season_canonical_key))
+    return tuple(result)
 
 
-def _season_quality_key(season: TmdbSeason) -> tuple[int, int]:
-    return (len(season.episode_numbers), season.episode_count or -1)
+def _season_fingerprint(season: TmdbSeason) -> tuple[object, ...]:
+    return season.season_number, season.episode_count, season.episode_numbers
+
+
+def _season_canonical_key(season: TmdbSeason) -> tuple[object, ...]:
+    return (
+        season.season_number,
+        season.episode_count if season.episode_count is not None else -1,
+        season.episode_numbers,
+    )
+
+
+def _stable_text_key(value: str) -> tuple[str, str, str]:
+    return value.casefold(), _normalize(value), value
 
 
 def _canonical_special_hints(values: Sequence[str]) -> tuple[str, ...]:

@@ -224,26 +224,90 @@ async def test_conflicting_duplicate_identity_is_order_independent_and_review_on
     assert first == reversed_decision
 
 
+async def test_movie_and_tv_share_numeric_id_but_are_distinct_identities():
+    movie = candidate(7, title="The Office", media_type=MediaType.MOVIE)
+    tv = candidate(7, title="The Office", media_type=MediaType.TV)
+
+    tv_first = await TmdbMatcher(FakeClient([movie, tv])).match(query())
+    tv_reversed = await TmdbMatcher(FakeClient([tv, movie])).match(query())
+    movie_first = await TmdbMatcher(FakeClient([movie, tv])).match(
+        query(media_type_hint="movie")
+    )
+    movie_reversed = await TmdbMatcher(FakeClient([tv, movie])).match(
+        query(media_type_hint="movie")
+    )
+
+    assert tv_first.accepted and tv_first.selected is not None
+    assert tv_first.selected.media_type is MediaType.TV
+    assert movie_first.accepted and movie_first.selected is not None
+    assert movie_first.selected.media_type is MediaType.MOVIE
+    assert tv_first == tv_reversed
+    assert movie_first == movie_reversed
+
+
 async def test_equivalent_duplicate_identity_is_deterministically_deduped():
-    duplicate = candidate(7, aliases=("办公室", "The Office"))
-    same = candidate(7, aliases=("The Office", "办公室"))
+    duplicate = candidate(7, title="The.Office", aliases=("办公室", "US OFFICE"))
+    same = candidate(7, title="The Office", aliases=("us office", "办公室"))
 
     decision = await TmdbMatcher(FakeClient([duplicate, same])).match(query())
     reversed_decision = await TmdbMatcher(FakeClient([same, duplicate])).match(query())
 
     assert decision.accepted
     assert len(decision.ranked_candidates) == 1
+    assert decision.selected is not None
+    assert decision.selected.title == "The Office"
     assert decision == reversed_decision
+
+
+async def test_equivalent_duplicate_seasons_are_deterministically_deduped():
+    first = candidate(
+        7,
+        seasons=(
+            TmdbSeason(2, episode_count=3, episode_numbers=(1, 2, 3)),
+            TmdbSeason(1, episode_count=2, episode_numbers=(1, 2)),
+            TmdbSeason(1, episode_count=2, episode_numbers=(1, 2)),
+        ),
+    )
+    reversed_seasons = candidate(
+        7,
+        seasons=(
+            TmdbSeason(1, episode_count=2, episode_numbers=(2, 1)),
+            TmdbSeason(2, episode_count=3, episode_numbers=(3, 2, 1)),
+        ),
+    )
+
+    assert first.seasons == reversed_seasons.seasons
+    assert first.seasons == (
+        TmdbSeason(1, episode_count=2, episode_numbers=(1, 2)),
+        TmdbSeason(2, episode_count=3, episode_numbers=(1, 2, 3)),
+    )
+
+    first_decision = await TmdbMatcher(FakeClient([first])).match(
+        query(season=2, episode_start=2, episode_end=3)
+    )
+    reversed_decision = await TmdbMatcher(FakeClient([reversed_seasons])).match(
+        query(season=2, episode_start=2, episode_end=3)
+    )
+    assert first_decision.accepted
+    assert first_decision == reversed_decision
+
+
+@pytest.mark.parametrize(
+    "seasons",
+    (
+        (TmdbSeason(1, episode_count=2), TmdbSeason(1, episode_count=3)),
+        (TmdbSeason(1, episode_numbers=(1, 2)), TmdbSeason(1, episode_numbers=(1, 3))),
+    ),
+)
+def test_conflicting_duplicate_seasons_fail_closed(seasons):
+    with pytest.raises(ValueError, match="conflicting season metadata"):
+        candidate(7, seasons=seasons)
 
 
 @pytest.mark.parametrize(
     "left,right",
     (
         (candidate(7, title="The Office"), candidate(7, title="Office")),
-        (
-            candidate(7, media_type=MediaType.TV),
-            candidate(7, media_type=MediaType.MOVIE),
-        ),
         (
             candidate(7, seasons=(TmdbSeason(1, episode_count=10),)),
             candidate(7, seasons=(TmdbSeason(1, episode_count=8),)),
