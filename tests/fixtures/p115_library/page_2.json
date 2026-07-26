@@ -1,0 +1,19 @@
+{
+  "data": {
+    "list": [
+      {
+        "fid": "102",
+        "cid": "7001",
+        "pid": "7000",
+        "file_name": "Synthetic Episode S01E02.mkv",
+        "is_dir": false,
+        "size": 1073741824,
+        "user_utime": "2026-07-26T00:01:00+00:00",
+        "pick_code": "SYNTHETIC_PICK_2"
+      }
+    ],
+    "page": 2,
+    "page_count": 2,
+    "count": 3
+  }
+}

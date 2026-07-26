@@ -1,0 +1,28 @@
+{
+  "data": {
+    "list": [
+      {
+        "fid": "101",
+        "cid": "7001",
+        "pid": "7000",
+        "file_name": "Synthetic Feature 2026.mkv",
+        "is_dir": false,
+        "size": 2147483648,
+        "user_utime": "2026-07-26T00:00:00+00:00",
+        "pick_code": "SYNTHETIC_PICK_1"
+      },
+      {
+        "cid": "7002",
+        "pid": "7000",
+        "file_name": "Synthetic Series",
+        "is_dir": true,
+        "size": 0,
+        "user_utime": 1780000000,
+        "pick_code": null
+      }
+    ],
+    "page": 1,
+    "page_count": 2,
+    "count": 3
+  }
+}
