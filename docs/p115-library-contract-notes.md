@@ -192,6 +192,28 @@ pickcode、直链及所有写能力仍为 `unverified`。所有 115 写入、STR
 文件路径时才可能读取远端；默认以及任一前置失败均为零外部调用。每次最多读取两个连续
 `fs_files` 页面，并且最多读取一个已发现文件和一个已发现子目录的 `fs_info`；没有重试、
 写入、下载、播放或 STRM 操作。公开 JSON 只含状态、计数和错误码。
+## C05 播放/动态直链离线预备
+
+`adapters/p115_playback_contract.py` 是 `offline_only` 的 C05 合同基础，
+不导入 `P115Client`、`CookieProvider` 或任何 HTTP 客户端，也没有 API 路由、
+STRM 写入、传输实现或持久化。动态链接只能作为 `DynamicLinkOutcome.url` 的
+短暂内存值存在；DTO 的 `repr`、错误码和 fake 调用记录均不包含 URL、Cookie、
+pickcode、manifest ID 或 token 类值。
+
+- `PlaybackGate` 默认 `enabled=false`、`contract_verified=false`；因此默认
+  结果为 `disabled/playback_disabled`。即使显式开启而未完成真实合同验证，仍为
+  `unverified/contract_unverified`。
+- 输入只接受受管 STRM 产生的 `strm_` opaque ID、`HEAD` 或 `GET`，以及至多一个
+  严格的 `bytes` Range。格式外 ID 拒绝为 `invalid_manifest_id`；格式正确但不在
+  fake 受管集合中的 ID 返回 `not_found/manifest_out_of_scope`。
+- 转发策略已冻结为：`HEAD` 绝不转发 Range；`GET` 只转发一个已验证的 byte range。
+  这只是本地合同，不是 115、CDN 或媒体服务器的真实行为证据。
+- 超时固定映射为 `uncertain/timeout`，不重试；`CancelledError` 必须继续传播；
+  其他异常固定为 `failed/remote_failed`，不得保留异常正文。
+
+真实 `download_url`、链接 TTL、重定向状态、Cookie 失效、HEAD/GET/Range 服务端
+语义、限流与媒体服务器兼容性仍是 `unverified`。C05 未通过专门授权的脱敏真实
+探针前，播放 capability 必须保持关闭。
 
 ## 固定版本源码观察
 
