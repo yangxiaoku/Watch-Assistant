@@ -24,8 +24,10 @@ from watch_assistant.schemas import (
     InspectionBatchStatus,
     InspectionItemStatus,
     InspectionResultResponse,
+    LoggingLevel,
     ResourceKind,
 )
+from watch_assistant.services.observability import EventLogger, emit_event
 
 INSPECTION_RETENTION = timedelta(days=7)
 TERMINAL_ITEM_STATUSES = (
@@ -78,9 +80,15 @@ class InspectionClient(Protocol):
 
 
 class InspectionService:
-    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+    def __init__(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        *,
+        event_logger: EventLogger | None = None,
+    ) -> None:
         self._session_factory = session_factory
         self._create_lock = asyncio.Lock()
+        self._event_logger = event_logger
 
     async def create(self, resource_ids: list[str]) -> InspectionBatchResponse:
         now = datetime.now(UTC)
@@ -146,6 +154,28 @@ class InspectionService:
             session.add(batch)
             session.add_all(items)
             await session.commit()
+            await emit_event(
+                self._event_logger,
+                "inspection.batch_started",
+                fields={"status": "queued", "count": len(resource_ids)},
+            )
+            if batch.status in {
+                InspectionBatchStatus.COMPLETED,
+                InspectionBatchStatus.PARTIAL,
+                InspectionBatchStatus.FAILED,
+            }:
+                await emit_event(
+                    self._event_logger,
+                    "inspection.batch_completed"
+                    if batch.status != InspectionBatchStatus.FAILED
+                    else "inspection.batch_failed",
+                    level=(
+                        LoggingLevel.ERROR
+                        if batch.status == InspectionBatchStatus.FAILED
+                        else LoggingLevel.INFO
+                    ),
+                    fields={"status": batch.status.value, "count": len(resource_ids)},
+                )
             return InspectionBatchResponse(
                 batch_id=batch.id,
                 status=batch.status,
@@ -192,11 +222,14 @@ class InspectionWorker:
         session_factory: async_sessionmaker[AsyncSession],
         crypto: SecretCrypto,
         client: InspectionClient,
+        *,
+        event_logger: EventLogger | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._crypto = crypto
         self._client = client
         self._write_lock = asyncio.Lock()
+        self._event_logger = event_logger
 
     async def recover_after_restart(self) -> int:
         async with self._session_factory() as session:
@@ -302,6 +335,12 @@ class InspectionWorker:
                         batch.status = InspectionBatchStatus.FAILED
                         batch.updated_at = datetime.now(UTC)
                         await session.commit()
+                        await emit_event(
+                            self._event_logger,
+                            "inspection.batch_failed",
+                            level=LoggingLevel.ERROR,
+                            fields={"status": "dependency_failed"},
+                        )
                         return False
             return True
 
@@ -419,6 +458,23 @@ class InspectionWorker:
             )
             batch.updated_at = datetime.now(UTC)
             await session.commit()
+            await emit_event(
+                self._event_logger,
+                "inspection.batch_completed"
+                if batch.status == InspectionBatchStatus.COMPLETED
+                else "inspection.batch_failed"
+                if batch.status == InspectionBatchStatus.FAILED
+                else "inspection.batch_completed",
+                level=(
+                    LoggingLevel.ERROR
+                    if batch.status == InspectionBatchStatus.FAILED
+                    else LoggingLevel.INFO
+                ),
+                fields={
+                    "status": batch.status.value,
+                    "count": len(items),
+                },
+            )
 
 
 def _result_response(item: InspectionItem) -> InspectionResultResponse:

@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from watch_assistant.models import Resource, Task, TaskState
 from watch_assistant.schemas import RemoteStatus, TaskAction
+from watch_assistant.services.observability import EventLogger, emit_event
 
 REUSABLE_STATES = (TaskState.QUEUED, TaskState.SUBMITTING, TaskState.ACCEPTED)
 
@@ -65,9 +66,15 @@ def prepare_manual_retry(task: Task) -> None:
 
 
 class TaskService:
-    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+    def __init__(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        *,
+        event_logger: EventLogger | None = None,
+    ) -> None:
         self._session_factory = session_factory
         self._create_lock = asyncio.Lock()
+        self._event_logger = event_logger
 
     async def create(
         self,
@@ -106,6 +113,11 @@ class TaskService:
             )
             session.add(task)
             await session.commit()
+            await emit_event(
+                self._event_logger,
+                "task.submitted",
+                fields={"status": "queued", "count": 1},
+            )
             return task, False
 
     async def get(self, task_id: str) -> Task | None:

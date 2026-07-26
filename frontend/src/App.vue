@@ -78,6 +78,7 @@ const resourcePaginationUnavailable = ref(false);
 const resourcePage = ref(1);
 const resourcePageSize = ref<25 | 50 | 100>(25);
 const resourceTotal = ref(0);
+const resourceHiddenTotal = ref(0);
 const resourceTotalPages = ref(1);
 const resourceFacets = ref<ResourceFacets>({ magnet: 0, share: 0, "4k": 0, "1080p": 0, "720p": 0, subtitle: 0 });
 const resourceKind = ref<"all" | "magnet" | "115_share">("all");
@@ -167,6 +168,7 @@ function clearResourcePagination() {
   resourceError.value = "";
   resourcePaginationUnavailable.value = false;
   resourceTotal.value = 0;
+  resourceHiddenTotal.value = 0;
   resourceTotalPages.value = 1;
   resourceFacets.value = { magnet: 0, share: 0, "4k": 0, "1080p": 0, "720p": 0, subtitle: 0 };
   resourceCache.clear();
@@ -185,6 +187,7 @@ function applyResourceResponse(response: ResourcePageResponse, requestedPage = 1
   resourcePage.value = response.total === 0 ? 1 : Math.max(1, Math.min(safeTotalPages, responsePage));
   resourcePageSize.value = response.page_size;
   resourceTotal.value = response.total;
+  resourceHiddenTotal.value = response.hidden_total ?? 0;
   resourceTotalPages.value = safeTotalPages;
   resourceFacets.value = response.facets;
   resourcePaginationUnavailable.value = false;
@@ -536,7 +539,7 @@ function invalidateDetailRequest() {
   resetInspection();
 }
 
-function beginResourceSnapshot(fallback: ResourceSummary[]) {
+function beginResourceSnapshot(fallback: ResourceSummary[], hiddenTotal = 0) {
   invalidateResourceRequest();
   resourceResponse.value = null;
   resourceItemsFallback.value = fallback;
@@ -544,6 +547,7 @@ function beginResourceSnapshot(fallback: ResourceSummary[]) {
   resourceError.value = "";
   resourcePaginationUnavailable.value = false;
   resourceTotal.value = fallback.length;
+  resourceHiddenTotal.value = hiddenTotal;
   resourceTotalPages.value = 1;
   resourceFacets.value = {
     magnet: fallback.filter((item) => item.kind === "magnet").length,
@@ -693,7 +697,7 @@ async function loadResources(
         : seasonNumber
       : null;
     applyResourceRoute(initialResourceRoute);
-    beginResourceSnapshot(response.results);
+    beginResourceSnapshot(response.results, response.hidden_total ?? 0);
     recordHistory(response.movie);
     void loadResourcePage(initialResourceRoute, "none");
   } catch (exception) {
@@ -1079,7 +1083,7 @@ onBeforeUnmount(() => {
       <section v-else-if="loading && !result" class="detail-loading"><LoaderCircle class="spin" :size="24" /><strong>正在聚合资源</strong><span>正在查询 PanSou 的磁力与 115 分享结果</span></section>
        <p v-if="result && !pushCapabilities.magnet && !pushCapabilities.share" class="warning-strip">115 推送当前不可用，推送按钮已禁用。</p>
        <p v-else-if="result && pushCapabilities.magnet && !pushCapabilities.share" class="warning-strip">磁力云下载可用，115 分享转存尚未验证</p>
-       <section v-if="result" class="detail-workspace"><MovieView :result="result" :resources="resourceItems" :resource-facets="resourceFacets" :resource-total="resourceTotal" :resource-page="resourcePage" :resource-page-size="resourcePageSize" :resource-total-pages="resourceTotalPages" :resource-kind="resourceKind" :resource-quality="resourceQuality" :resource-query="resourceQuery" :resource-sort="resourceSort" :resource-loading="resourceLoading" :resource-error="resourceError" :pagination-unavailable="resourcePaginationUnavailable" :media-type="detailMediaType" :season-number="selectedSeason" :pushing-id="pushingId" :push-capabilities="pushCapabilities" :favorite="detailFavorite" :inspection-supported="inspectionSupported" :inspection-state="inspectionState" :inspection-completed="inspectionCompleted" :inspection-total="inspectionTotal" :inspection-failed="inspectionFailed" :inspection-error="inspectionError" :inspection-more-available="inspectionMoreAvailable" :inspection-retry-available="inspectionRetryAvailable" @push="push" @favorite="toggleFavorite(result.movie)" @refresh="refreshResources" @season="selectSeason" @inspect-more="inspectMore" @retry-failed="retryFailed" @retry-page="() => loadResourcePage(currentResourceRoute(), 'replace')" @page="changeResourcePage" @kind="(value) => changeResourceFilter({ kind: value })" @quality="(value) => changeResourceFilter({ quality: value })" @query="changeResourceQuery" @sort="(value) => changeResourceFilter({ sort: value })" @page-size="(value) => changeResourceFilter({ pageSize: value })" @back="returnToBrowse" /></section>
+       <section v-if="result" class="detail-workspace"><MovieView :result="result" :resources="resourceItems" :resource-facets="resourceFacets" :resource-total="resourceTotal" :resource-hidden-total="resourceHiddenTotal" :resource-page="resourcePage" :resource-page-size="resourcePageSize" :resource-total-pages="resourceTotalPages" :resource-kind="resourceKind" :resource-quality="resourceQuality" :resource-query="resourceQuery" :resource-sort="resourceSort" :resource-loading="resourceLoading" :resource-error="resourceError" :pagination-unavailable="resourcePaginationUnavailable" :media-type="detailMediaType" :season-number="selectedSeason" :pushing-id="pushingId" :push-capabilities="pushCapabilities" :favorite="detailFavorite" :inspection-supported="inspectionSupported" :inspection-state="inspectionState" :inspection-completed="inspectionCompleted" :inspection-total="inspectionTotal" :inspection-failed="inspectionFailed" :inspection-error="inspectionError" :inspection-more-available="inspectionMoreAvailable" :inspection-retry-available="inspectionRetryAvailable" @push="push" @favorite="toggleFavorite(result.movie)" @refresh="refreshResources" @season="selectSeason" @inspect-more="inspectMore" @retry-failed="retryFailed" @retry-page="() => loadResourcePage(currentResourceRoute(), 'replace')" @page="changeResourcePage" @kind="(value) => changeResourceFilter({ kind: value })" @quality="(value) => changeResourceFilter({ quality: value })" @query="changeResourceQuery" @sort="(value) => changeResourceFilter({ sort: value })" @page-size="(value) => changeResourceFilter({ pageSize: value })" @back="returnToBrowse" /></section>
     </template>
     <TaskDrawer :tasks="tasks" :open="drawerOpen" @close="drawerOpen = false" />
   </main>

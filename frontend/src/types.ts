@@ -20,6 +20,7 @@ export interface MovieMetadata {
   backdrop_path?: string | null;
   genre_ids?: number[];
   vote_average: number | null;
+  adult?: boolean;
   seasons?: SeasonMetadata[];
 }
 
@@ -82,6 +83,7 @@ export interface SearchResponse {
   cached: boolean;
   cache_age_seconds: number | null;
   selected_season?: number | null;
+  hidden_total?: number;
 }
 
 export type ResourceQuality = "4k" | "1080p" | "720p" | "subtitle";
@@ -104,6 +106,7 @@ export interface ResourcePageResponse {
   total_pages: number;
   facets: ResourceFacets;
   snapshot_revision: string;
+  hidden_total?: number;
 }
 
 export interface InspectionResult {
@@ -139,7 +142,7 @@ export interface HealthResponse {
   inspection_supported?: boolean;
 }
 
-export type LogLevel = "ERROR" | "WARNING" | "INFO";
+export type LogLevel = "DEBUG" | "ERROR" | "WARNING" | "INFO";
 export type LogCategory = "system" | "search" | "cache" | "inspection" | "p115" | "security";
 
 export interface SettingsOverviewResponse {
@@ -158,6 +161,22 @@ export interface LoggingSettingsResponse {
   level: LogLevel;
   retention_days: number;
   max_file_mb: number;
+}
+
+export interface ContentPolicyResponse {
+  hide_adult_media: boolean;
+  hide_suspicious_resources: boolean;
+  hide_low_quality_resources: boolean;
+  blocked_keywords: string[];
+  revision: number;
+}
+
+export interface PatchContentPolicyRequest {
+  revision: number;
+  hide_adult_media?: boolean;
+  hide_suspicious_resources?: boolean;
+  hide_low_quality_resources?: boolean;
+  blocked_keywords?: string[];
 }
 
 export interface PatchLoggingSettingsRequest {

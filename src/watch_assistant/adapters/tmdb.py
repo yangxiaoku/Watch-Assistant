@@ -301,6 +301,7 @@ def _parse_media(
         else None,
         genre_ids=_parse_genre_ids(payload),
         vote_average=vote_average,
+        adult=payload.get("adult") is True,
         seasons=_parse_seasons(payload, media_type) if include_seasons else [],
     )
 

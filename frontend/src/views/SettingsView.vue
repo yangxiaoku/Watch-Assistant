@@ -4,6 +4,7 @@ import {
   AlertTriangle,
   CheckCircle2,
   Cookie,
+  ShieldAlert,
   FileText,
   LoaderCircle,
   RefreshCw,
@@ -13,12 +14,13 @@ import {
   ShieldCheck,
   XCircle,
 } from "@lucide/vue";
-import { computed, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { ApiClient, ApiError } from "../api";
 import type {
   LogCategory,
   LogEntry,
   LogLevel,
+  ContentPolicyResponse,
   LoggingSettingsResponse,
   LogsResponse,
   P115SettingsResponse,
@@ -28,15 +30,17 @@ import type {
 
 const props = defineProps<{ api: ApiClient }>();
 
-type SettingsSection = "overview" | "logs" | "p115";
+type SettingsSection = "overview" | "logs" | "content" | "p115";
 type ValidationState = "idle" | "running" | "error" | P115ValidationResponse["status"];
 
 const sections = [
   { id: "overview" as const, label: "概览", icon: Activity },
   { id: "logs" as const, label: "日志", icon: FileText },
+  { id: "content" as const, label: "内容安全", icon: ShieldAlert },
   { id: "p115" as const, label: "115 推送", icon: ShieldCheck },
 ];
 const levelOptions: Array<{ value: LogLevel; label: string }> = [
+  { value: "DEBUG", label: "调试" },
   { value: "ERROR", label: "错误" },
   { value: "WARNING", label: "警告" },
   { value: "INFO", label: "信息" },
@@ -77,8 +81,19 @@ const logsLoaded = ref(false);
 const logsError = ref("");
 const logCategory = ref<LogCategory | "">("");
 const nextLogCursor = ref<number | null>(null);
+const autoRefreshLogs = ref(true);
+const logsUpdatedAt = ref<string | null>(null);
 let logsRequestId = 0;
+let logsRefreshTimer: number | null = null;
 const logLimit = 20;
+
+const contentPolicy = ref<ContentPolicyResponse | null>(null);
+const contentLoading = ref(false);
+const contentError = ref("");
+const contentSaving = ref(false);
+const contentSaveError = ref("");
+const contentConflict = ref(false);
+const blockedKeywordsDraft = ref("");
 
 const loggingDirty = computed(() => {
   if (!logging.value) return false;
@@ -92,11 +107,12 @@ const hasMoreLogs = computed(() => logsLoaded.value && nextLogCursor.value !== n
 function selectSection(section: SettingsSection) {
   activeSection.value = section;
   if (section === "logs" && !logsLoaded.value) void loadLogs();
+  if (section === "content" && !contentPolicy.value) void loadContentPolicy();
 }
 
 function selectMobileSection(event: Event) {
   const value = (event.target as HTMLSelectElement).value;
-  if (value === "overview" || value === "logs" || value === "p115") selectSection(value);
+  if (value === "overview" || value === "logs" || value === "content" || value === "p115") selectSection(value);
 }
 
 async function loadOverview() {
@@ -168,10 +184,53 @@ async function saveLogging() {
   }
 }
 
-async function loadLogs(append = false) {
+async function loadContentPolicy() {
+  contentLoading.value = true;
+  contentError.value = "";
+  try {
+    applyContentPolicy(await props.api.contentPolicy());
+  } catch (exception) {
+    contentError.value = exception instanceof ApiError ? exception.message : "内容安全设置加载失败，请稍后重试";
+  } finally {
+    contentLoading.value = false;
+  }
+}
+
+function applyContentPolicy(value: ContentPolicyResponse) {
+  contentPolicy.value = value;
+  blockedKeywordsDraft.value = value.blocked_keywords.join("\n");
+}
+
+async function saveContentPolicy() {
+  if (!contentPolicy.value || contentSaving.value) return;
+  contentSaving.value = true;
+  contentSaveError.value = "";
+  contentConflict.value = false;
+  try {
+    applyContentPolicy(await props.api.updateContentPolicy({
+      revision: contentPolicy.value.revision,
+      hide_adult_media: contentPolicy.value.hide_adult_media,
+      hide_suspicious_resources: contentPolicy.value.hide_suspicious_resources,
+      hide_low_quality_resources: contentPolicy.value.hide_low_quality_resources,
+      blocked_keywords: blockedKeywordsDraft.value.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean),
+    }));
+  } catch (exception) {
+    if (exception instanceof ApiError && exception.status === 409) {
+      contentConflict.value = true;
+      contentSaveError.value = "设置已被其他请求修改，请重新加载后再保存。";
+    } else {
+      contentSaveError.value = exception instanceof ApiError ? exception.message : "保存失败，请稍后重试";
+    }
+  } finally {
+    contentSaving.value = false;
+  }
+}
+
+async function loadLogs(append = false, preserve = false) {
   const requestId = ++logsRequestId;
   const cursor = append ? nextLogCursor.value : undefined;
-  if (!append) {
+  const previousCursor = nextLogCursor.value;
+  if (!append && !preserve) {
     logItems.value = [];
     logs.value = null;
     nextLogCursor.value = null;
@@ -186,12 +245,19 @@ async function loadLogs(append = false) {
       category: logCategory.value || undefined,
     });
     if (requestId !== logsRequestId) return;
-    const byId = new Map<number, LogEntry>(append ? logItems.value.map((item) => [item.id, item]) : []);
+    const byId = new Map<number, LogEntry>(
+      (append || preserve) ? logItems.value.map((item) => [item.id, item]) : [],
+    );
     response.items.forEach((item) => byId.set(item.id, item));
-    logItems.value = [...byId.values()];
+    logItems.value = [...byId.values()].sort((a, b) => b.id - a.id);
     logs.value = response;
-    nextLogCursor.value = response.next_cursor;
+    nextLogCursor.value = append
+      ? response.next_cursor
+      : preserve
+        ? previousCursor ?? response.next_cursor
+        : response.next_cursor;
     logsLoaded.value = true;
+    logsUpdatedAt.value = new Date().toISOString();
   } catch (exception) {
     if (requestId === logsRequestId) logsError.value = exception instanceof ApiError ? exception.message : "日志加载失败，请稍后重试";
   } finally {
@@ -201,6 +267,15 @@ async function loadLogs(append = false) {
 
 function refreshLogs() {
   void loadLogs();
+}
+
+function autoRefreshLogsIfVisible() {
+  if (!autoRefreshLogs.value || activeSection.value !== "logs" || document.visibilityState !== "visible" || logsLoading.value) return;
+  void loadLogs(false, true);
+}
+
+function onVisibilityChange() {
+  autoRefreshLogsIfVisible();
 }
 
 function changeLogFilter() {
@@ -282,6 +357,13 @@ onMounted(() => {
   void loadOverview();
   void loadLogging();
   void loadP115();
+  document.addEventListener("visibilitychange", onVisibilityChange);
+  logsRefreshTimer = window.setInterval(autoRefreshLogsIfVisible, 5000);
+});
+
+onBeforeUnmount(() => {
+  document.removeEventListener("visibilitychange", onVisibilityChange);
+  if (logsRefreshTimer !== null) window.clearInterval(logsRefreshTimer);
 });
 </script>
 
@@ -305,7 +387,7 @@ onMounted(() => {
         </section>
 
         <section v-else-if="activeSection === 'logs'" class="settings-section" aria-labelledby="logs-title">
-          <header class="settings-section-heading"><div><p class="eyebrow">EVENT STREAM</p><h2 id="logs-title">日志</h2></div><button class="icon-button" type="button" title="刷新日志" aria-label="刷新日志" :disabled="logsLoading" @click="refreshLogs"><RefreshCw :size="16" :class="{ spin: logsLoading }" /></button></header>
+          <header class="settings-section-heading"><div><p class="eyebrow">EVENT STREAM</p><h2 id="logs-title">日志</h2></div><div class="settings-section-actions"><label class="settings-toggle"><input v-model="autoRefreshLogs" type="checkbox" />自动刷新</label><button class="icon-button" type="button" title="刷新日志" aria-label="刷新日志" :disabled="logsLoading" @click="refreshLogs"><RefreshCw :size="16" :class="{ spin: logsLoading }" /></button></div></header>
           <div class="settings-filter-row"><label>分类<select v-model="logCategory" @change="changeLogFilter"><option value="">全部分类</option><option v-for="option in categoryOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select></label></div>
           <div v-if="logsLoading && !logsLoaded" class="settings-loading"><LoaderCircle class="spin" :size="20" />正在加载日志</div>
           <div v-else-if="logsError" class="settings-state settings-state-error"><AlertTriangle :size="18" /><span>{{ logsError }}</span><button class="text-button" type="button" @click="refreshLogs">重试</button></div>
@@ -314,11 +396,28 @@ onMounted(() => {
             <div class="settings-log-table-wrap"><table class="settings-log-table"><thead><tr><th>时间</th><th>级别</th><th>分类</th><th>内容</th></tr></thead><tbody><tr v-for="item in logItems" :key="item.id"><td>{{ formatTimestamp(item.timestamp) }}</td><td><span :class="['log-level', logLevelClass(item.level)]">{{ levelLabel(item.level) }}</span></td><td>{{ categoryLabel(item.category) }}</td><td>{{ item.message }}</td></tr></tbody></table></div>
             <div class="settings-log-list"><article v-for="item in logItems" :key="item.id" class="settings-log-item"><div><span :class="['log-level', logLevelClass(item.level)]">{{ levelLabel(item.level) }}</span><time>{{ formatTimestamp(item.timestamp) }}</time></div><strong>{{ categoryLabel(item.category) }}</strong><p>{{ item.message }}</p></article></div>
             <div class="settings-pagination"><span>已加载 {{ logItems.length }} 条</span><button v-if="hasMoreLogs" class="secondary-button" type="button" :disabled="logsLoading" @click="loadMoreLogs"><LoaderCircle v-if="logsLoading" class="spin" :size="15" />加载更多</button></div>
+            <p v-if="logsUpdatedAt" class="settings-updated-at">最后更新 {{ formatTimestamp(logsUpdatedAt) }}</p>
           </template>
           <div class="settings-subsection logging-settings"><h3>日志保留</h3><div v-if="loggingLoading" class="settings-loading"><LoaderCircle class="spin" :size="18" />正在加载日志设置</div><div v-else-if="loggingError" class="settings-state settings-state-error"><AlertTriangle :size="18" /><span>{{ loggingError }}</span><button class="text-button" type="button" @click="loadLogging">重试</button></div><template v-else-if="logging"><div class="settings-form-grid"><label>最低级别<select v-model="draftLevel"><option v-for="option in levelOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select></label><label>保留天数（1-90）<input v-model.number="draftRetentionDays" type="number" min="1" max="90" /></label><label>文件上限（MB，1-50）<input v-model.number="draftMaxFileMb" type="number" min="1" max="50" /></label></div><div v-if="loggingDirty" class="settings-save-bar"><span>有未保存的日志设置</span><div><button class="secondary-button" type="button" :disabled="savingLogging" @click="loadLogging">取消</button><button class="primary-button" type="button" :disabled="savingLogging" @click="saveLogging"><LoaderCircle v-if="savingLogging" class="spin" :size="15" /><Save v-else :size="15" />保存</button></div></div><div v-if="saveError" class="settings-state settings-state-error settings-save-error"><AlertTriangle :size="17" /><span>{{ saveError }}</span><button v-if="conflict" class="text-button" type="button" @click="loadLogging">重新加载</button></div></template></div>
         </section>
 
-        <section v-else class="settings-section" aria-labelledby="p115-title">
+        <section v-else-if="activeSection === 'content'" class="settings-section" aria-labelledby="content-policy-title">
+          <header class="settings-section-heading"><div><p class="eyebrow">CONTENT SAFETY</p><h2 id="content-policy-title">内容安全</h2></div><button class="icon-button" type="button" title="刷新内容安全设置" aria-label="刷新内容安全设置" :disabled="contentLoading" @click="loadContentPolicy"><RefreshCw :size="16" :class="{ spin: contentLoading }" /></button></header>
+          <div v-if="contentLoading && !contentPolicy" class="settings-loading"><LoaderCircle class="spin" :size="20" />正在加载内容安全设置</div>
+          <div v-else-if="contentError" class="settings-state settings-state-error"><AlertTriangle :size="18" /><span>{{ contentError }}</span><button class="text-button" type="button" @click="loadContentPolicy">重试</button></div>
+          <template v-else-if="contentPolicy">
+            <div class="settings-policy-list">
+              <label class="settings-policy-row"><span><strong>过滤成人媒体</strong><small>不在首页、目录和搜索结果中显示 TMDB 标记内容</small></span><input v-model="contentPolicy.hide_adult_media" type="checkbox" /></label>
+              <label class="settings-policy-row"><span><strong>过滤可疑资源</strong><small>屏蔽高置信成人来源和明确标记</small></span><input v-model="contentPolicy.hide_suspicious_resources" type="checkbox" /></label>
+              <label class="settings-policy-row"><span><strong>过滤低质量资源</strong><small>屏蔽 CAM、枪版等高置信低质量标记</small></span><input v-model="contentPolicy.hide_low_quality_resources" type="checkbox" /></label>
+            </div>
+            <label class="content-keywords"><span>自定义屏蔽词</span><textarea v-model="blockedKeywordsDraft" rows="5" maxlength="2048" placeholder="每行一个关键词" /></label>
+            <div class="settings-save-bar"><span>当前版本 {{ contentPolicy.revision }}</span><button class="primary-button" type="button" :disabled="contentSaving" @click="saveContentPolicy"><LoaderCircle v-if="contentSaving" class="spin" :size="15" /><Save v-else :size="15" />保存</button></div>
+            <div v-if="contentSaveError" class="settings-state settings-state-error settings-save-error"><AlertTriangle :size="17" /><span>{{ contentSaveError }}</span><button v-if="contentConflict" class="text-button" type="button" @click="loadContentPolicy">重新加载</button></div>
+          </template>
+        </section>
+
+        <section v-else-if="activeSection === 'p115'" class="settings-section" aria-labelledby="p115-title">
           <header class="settings-section-heading"><div><p class="eyebrow">P115 CONNECTOR</p><h2 id="p115-title">115 推送</h2></div><button class="icon-button" type="button" title="刷新 115 状态" aria-label="刷新 115 状态" :disabled="p115Loading" @click="loadP115"><RefreshCw :size="16" :class="{ spin: p115Loading }" /></button></header>
           <div v-if="p115Loading" class="settings-loading"><LoaderCircle class="spin" :size="20" />正在加载 115 状态</div>
           <div v-else-if="p115Error" class="settings-state settings-state-error"><AlertTriangle :size="18" /><span>{{ p115Error }}</span><button class="text-button" type="button" @click="loadP115">重试</button></div>

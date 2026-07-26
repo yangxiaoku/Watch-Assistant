@@ -39,6 +39,13 @@ const firstLogs: LogsResponse = {
   ],
   next_cursor: 20,
 };
+const contentPolicy = {
+  hide_adult_media: true,
+  hide_suspicious_resources: true,
+  hide_low_quality_resources: true,
+  blocked_keywords: [],
+  revision: 3,
+};
 
 function makeApi(overrides: Partial<Record<keyof ApiClient, unknown>> = {}) {
   return {
@@ -48,6 +55,8 @@ function makeApi(overrides: Partial<Record<keyof ApiClient, unknown>> = {}) {
     p115Settings: vi.fn().mockResolvedValue(p115),
     validateP115Cookie: vi.fn().mockResolvedValue({ status: "ready", checked_at: "2026-07-25T02:00:00Z" }),
     logs: vi.fn().mockResolvedValue(firstLogs),
+    contentPolicy: vi.fn().mockResolvedValue(contentPolicy),
+    updateContentPolicy: vi.fn().mockResolvedValue({ ...contentPolicy, revision: 4 }),
     ...overrides,
   } as unknown as ApiClient;
 }
@@ -129,6 +138,77 @@ describe("SettingsView", () => {
 
     expect(wrapper.text()).toContain("新分类响应");
     expect(wrapper.text()).not.toContain("旧分类响应");
+  });
+
+  it("auto refreshes the first page without dropping loaded cursor pages", async () => {
+    vi.useFakeTimers();
+    const api = makeApi({
+      logs: vi.fn()
+        .mockResolvedValueOnce(firstLogs)
+        .mockResolvedValueOnce({
+          items: [{ id: 3, timestamp: "2026-07-25T02:02:00Z", level: "INFO" as const, category: "system" as const, message: "旧页" }],
+          next_cursor: null,
+        })
+        .mockResolvedValueOnce({
+          items: [{ id: 4, timestamp: "2026-07-25T02:03:00Z", level: "INFO" as const, category: "system" as const, message: "自动刷新" }],
+          next_cursor: 20,
+        }),
+    });
+    const wrapper = mount(SettingsView, { props: { api } });
+    await flushPromises();
+    await openLogs(wrapper);
+    await wrapper.get(".settings-pagination button").trigger("click");
+    await flushPromises();
+
+    vi.advanceTimersByTime(5000);
+    await flushPromises();
+
+    expect(api.logs).toHaveBeenLastCalledWith({ limit: 20, cursor: undefined, category: undefined });
+    expect(wrapper.findAll(".settings-log-item")).toHaveLength(4);
+    expect(wrapper.text()).toContain("旧页");
+    expect(wrapper.text()).toContain("自动刷新");
+    wrapper.unmount();
+    vi.useRealTimers();
+  });
+
+  it("pauses auto refresh while hidden or outside the log section", async () => {
+    vi.useFakeTimers();
+    const logsMock = vi.fn().mockResolvedValue(firstLogs);
+    const api = makeApi({ logs: logsMock });
+    const wrapper = mount(SettingsView, { props: { api } });
+    await flushPromises();
+    await openLogs(wrapper);
+    const callsAfterLoad = logsMock.mock.calls.length;
+
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
+    vi.advanceTimersByTime(10000);
+    await flushPromises();
+    expect(logsMock.mock.calls.length).toBe(callsAfterLoad);
+
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+    const overviewButton = wrapper.findAll("button").find((button) => button.text().includes("概览"));
+    await overviewButton?.trigger("click");
+    vi.advanceTimersByTime(10000);
+    await flushPromises();
+    expect(logsMock.mock.calls.length).toBe(callsAfterLoad);
+    wrapper.unmount();
+    vi.useRealTimers();
+  });
+
+  it("loads content policy controls and handles a revision conflict", async () => {
+    const api = makeApi({
+      updateContentPolicy: vi.fn().mockRejectedValue(new ApiError("conflict", 409)),
+    });
+    const wrapper = mount(SettingsView, { props: { api } });
+    await flushPromises();
+    const contentButton = wrapper.findAll("button").find((button) => button.text().includes("内容安全"));
+    await contentButton?.trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("过滤成人媒体");
+    await wrapper.get(".settings-policy-row input").setValue(false);
+    await wrapper.get(".settings-save-bar .primary-button").trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("设置已被其他请求修改");
   });
 
   it("saves uppercase logging settings with numeric revision and clears a conflict after reload", async () => {

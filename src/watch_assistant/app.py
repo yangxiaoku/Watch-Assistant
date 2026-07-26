@@ -89,6 +89,9 @@ def create_app(
                 runtime_database.session_factory,
                 state_directory=_state_directory(runtime_database),
             )
+            await application.state.settings_service.log_event(
+                "application.startup", fields={"status": "started"}
+            )
             application.state.search_service = SearchService(
                 runtime_database.session_factory,
                 tmdb_client=runtime_tmdb,
@@ -96,9 +99,11 @@ def create_app(
                 crypto=runtime_crypto,
                 share_domains=share_domains,
                 pansou_max_concurrency=settings.pansou_max_concurrency,
+                event_logger=application.state.settings_service,
             )
             application.state.task_service = TaskService(
-                runtime_database.session_factory
+                runtime_database.session_factory,
+                event_logger=application.state.settings_service,
             )
             application.state.maintenance_service = MaintenanceService(
                 runtime_database.session_factory
@@ -143,11 +148,18 @@ def create_app(
                         runtime_crypto,
                         runtime_task_adapter,
                         owner=_worker_owner(),
+                        event_logger=application.state.settings_service,
                     )
                     application.state.push_capabilities = {
                         "magnet": True,
                         "share": False,
                     }
+            await application.state.settings_service.log_event(
+                "p115.readiness",
+                fields={
+                    "status": "ready" if application.state.p115_ready else "unavailable"
+                },
+            )
             application.state.p115_settings_service = P115SettingsService(
                 enabled=settings.p115_enabled,
                 cookie_provider=cookie_provider,
@@ -172,12 +184,14 @@ def create_app(
             if inspection_client is not None:
                 application.state.inspection_client = inspection_client
                 application.state.inspection_service = InspectionService(
-                    runtime_database.session_factory
+                    runtime_database.session_factory,
+                    event_logger=application.state.settings_service,
                 )
                 application.state.inspection_worker = InspectionWorker(
                     runtime_database.session_factory,
                     runtime_crypto,
                     inspection_client,
+                    event_logger=application.state.settings_service,
                 )
             if settings.cache_warm_enabled:
                 warmer = CacheWarmer(
@@ -185,6 +199,7 @@ def create_app(
                     runtime_database.session_factory,
                     timezone_name=settings.cache_warm_timezone,
                     concurrency=settings.cache_warm_concurrency,
+                    event_logger=application.state.settings_service,
                 )
                 warm_stop = asyncio.Event()
                 warm_task = asyncio.create_task(
@@ -218,6 +233,11 @@ def create_app(
             task_task = asyncio.create_task(
                 task_worker.run_forever(task_stop),
                 name="watch-assistant-task-worker",
+            )
+        settings_service = getattr(application.state, "settings_service", None)
+        if settings_service is not None:
+            await settings_service.log_event(
+                "application.readiness", fields={"status": "ready"}
             )
         try:
             yield
@@ -262,17 +282,21 @@ def create_app(
     application.state.started_at = time.monotonic()
     if database and crypto and tmdb_client and pansou_client:
         application.state.database = database
+        application.state.settings_service = SettingsService(
+            database.session_factory,
+            state_directory=_state_directory(database),
+        )
         application.state.search_service = SearchService(
             database.session_factory,
             tmdb_client=tmdb_client,
             pansou_client=pansou_client,
             crypto=crypto,
             share_domains=share_domains,
+            event_logger=application.state.settings_service,
         )
-        application.state.task_service = TaskService(database.session_factory)
-        application.state.settings_service = SettingsService(
+        application.state.task_service = TaskService(
             database.session_factory,
-            state_directory=_state_directory(database),
+            event_logger=application.state.settings_service,
         )
         application.state.maintenance_service = MaintenanceService(
             database.session_factory
@@ -281,12 +305,14 @@ def create_app(
         if qbittorrent_client is not None:
             application.state.inspection_client = qbittorrent_client
             application.state.inspection_service = InspectionService(
-                database.session_factory
+                database.session_factory,
+                event_logger=application.state.settings_service,
             )
             application.state.inspection_worker = InspectionWorker(
                 database.session_factory,
                 crypto,
                 qbittorrent_client,
+                event_logger=application.state.settings_service,
             )
         if security_manager is not None:
             security_manager.configure_session_store(database.session_factory)
@@ -303,6 +329,7 @@ def create_app(
                 crypto,
                 task_adapter,
                 owner=_worker_owner(),
+                event_logger=application.state.settings_service,
             )
 
     @application.get("/api/v1/health")

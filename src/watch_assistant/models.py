@@ -40,6 +40,8 @@ class ApplicationSettings(Base):
     retention_days: Mapped[int] = mapped_column(Integer, default=14)
     max_file_mb: Mapped[int] = mapped_column(Integer, default=10)
     revision: Mapped[int] = mapped_column(Integer, default=0)
+    content_policy_json: Mapped[str] = mapped_column(Text, default="{}")
+    content_policy_revision: Mapped[int] = mapped_column(Integer, default=0)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, onupdate=utc_now
     )

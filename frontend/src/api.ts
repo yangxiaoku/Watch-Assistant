@@ -4,6 +4,8 @@ import type {
   InspectionBatchResponse,
   LogCategory,
   LoggingSettingsResponse,
+  ContentPolicyResponse,
+  PatchContentPolicyRequest,
   LogsResponse,
   MovieCollectionResponse,
   PatchLoggingSettingsRequest,
@@ -60,6 +62,17 @@ export class ApiClient {
 
   async updateLoggingSettings(settings: PatchLoggingSettingsRequest): Promise<LoggingSettingsResponse> {
     return this.request<LoggingSettingsResponse>("/api/v1/settings/logging", {
+      method: "PATCH",
+      body: JSON.stringify(settings),
+    });
+  }
+
+  async contentPolicy(): Promise<ContentPolicyResponse> {
+    return this.request<ContentPolicyResponse>("/api/v1/settings/content-policy");
+  }
+
+  async updateContentPolicy(settings: PatchContentPolicyRequest): Promise<ContentPolicyResponse> {
+    return this.request<ContentPolicyResponse>("/api/v1/settings/content-policy", {
       method: "PATCH",
       body: JSON.stringify(settings),
     });

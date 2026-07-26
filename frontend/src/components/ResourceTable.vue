@@ -11,6 +11,7 @@ const props = defineProps<{
   resources: ResourceSummary[];
   facets?: ResourceFacets;
   total?: number;
+  hiddenTotal?: number;
   page?: number;
   pageSize?: 25 | 50 | 100;
   totalPages?: number;
@@ -139,7 +140,7 @@ function pageRequest(target: number) {
     <div class="resource-toolbar">
       <div class="resource-heading-copy">
         <p class="eyebrow">资源分页</p>
-        <h2>可用资源 <span>{{ total }}</span></h2>
+        <h2>可用资源 <span>{{ total }}</span></h2><p v-if="hiddenTotal" class="resource-hidden-count">已隐藏 {{ hiddenTotal }} 条</p>
         <p v-if="inspectionState === 'running'" class="inspection-progress" role="status">检测中 {{ inspectionCompleted ?? 0 }} / {{ inspectionTotal ?? 0 }} 条磁力<span v-if="inspectionFailed"> · 失败 {{ inspectionFailed }} 条</span></p>
         <p v-else-if="inspectionState === 'completed'" class="inspection-progress success" role="status">检测完成 · {{ inspectionCompleted ?? 0 }} / {{ inspectionTotal ?? 0 }}<span v-if="inspectionFailed"> · 失败 {{ inspectionFailed }} 条</span></p>
         <p v-else-if="inspectionState === 'partial' || inspectionState === 'timeout' || inspectionState === 'failed'" class="inspection-progress warning" role="status">{{ inspectionError ?? (inspectionState === 'timeout' ? '检测超时，可重试' : inspectionState === 'partial' ? `部分失败：${inspectionFailed ?? 0} 条磁力检测失败` : '检测失败，可重试') }} · {{ inspectionCompleted ?? 0 }} / {{ inspectionTotal ?? 0 }}</p>

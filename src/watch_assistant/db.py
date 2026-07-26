@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import delete, event, select
+from sqlalchemy import delete, event, inspect, select, text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -65,6 +65,22 @@ def create_database(url: str) -> Database:
 async def initialize_database(engine: AsyncEngine) -> None:
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
+        await connection.run_sync(_ensure_application_settings_columns)
+
+
+def _ensure_application_settings_columns(connection) -> None:
+    columns = {
+        item["name"] for item in inspect(connection).get_columns("application_settings")
+    }
+    additions = {
+        "content_policy_json": "TEXT NOT NULL DEFAULT '{}'",
+        "content_policy_revision": "INTEGER NOT NULL DEFAULT 0",
+    }
+    for name, definition in additions.items():
+        if name not in columns:
+            connection.execute(
+                text(f"ALTER TABLE application_settings ADD COLUMN {name} {definition}")
+            )
 
 
 async def cleanup_expired(

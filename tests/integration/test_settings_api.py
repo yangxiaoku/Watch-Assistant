@@ -119,6 +119,53 @@ async def test_settings_overview_logging_patch_and_redacted_logs(tmp_path, monke
 
 
 @pytest.mark.integration
+async def test_content_policy_defaults_requires_csrf_and_uses_revision(tmp_path):
+    _app_obj, client, database, tmdb, pansou = await _app(tmp_path)
+    try:
+        assert (await client.get("/api/v1/settings/content-policy")).status_code == 401
+        login = await client.post("/api/v1/auth/login", json={"password": WEB_PASSWORD})
+        csrf = login.json()["csrf_token"]
+        response = await client.get("/api/v1/settings/content-policy")
+        assert response.status_code == 200
+        assert response.json() == {
+            "hide_adult_media": True,
+            "hide_suspicious_resources": True,
+            "hide_low_quality_resources": True,
+            "blocked_keywords": [],
+            "revision": 0,
+        }
+        missing_csrf = await client.patch(
+            "/api/v1/settings/content-policy",
+            json={"revision": 0, "blocked_keywords": ["Foo"]},
+        )
+        assert missing_csrf.status_code == 403
+        updated = await client.patch(
+            "/api/v1/settings/content-policy",
+            json={
+                "revision": 0,
+                "hide_adult_media": False,
+                "blocked_keywords": ["ＦＯＯ－ＢＡＲ"],
+            },
+            headers={"X-CSRF-Token": csrf},
+        )
+        assert updated.status_code == 200
+        assert updated.json()["revision"] == 1
+        assert updated.json()["blocked_keywords"] == ["foo bar"]
+        conflict = await client.patch(
+            "/api/v1/settings/content-policy",
+            json={"revision": 0},
+            headers={"X-CSRF-Token": csrf},
+        )
+        assert conflict.status_code == 409
+        assert conflict.json()["detail"] == "settings_conflict"
+    finally:
+        await client.aclose()
+        await tmdb.aclose()
+        await pansou.aclose()
+        await database.engine.dispose()
+
+
+@pytest.mark.integration
 async def test_logging_patch_rejects_unknown_fields(tmp_path):
     _app_instance, client, database, tmdb, pansou = await _app(tmp_path)
     response = await client.patch(

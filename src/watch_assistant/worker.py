@@ -9,7 +9,13 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from watch_assistant.crypto import SecretCrypto
 from watch_assistant.models import Task, TaskState
-from watch_assistant.schemas import RemoteStatus, SubmissionResult, TaskAction
+from watch_assistant.schemas import (
+    LoggingLevel,
+    RemoteStatus,
+    SubmissionResult,
+    TaskAction,
+)
+from watch_assistant.services.observability import EventLogger, emit_event
 from watch_assistant.services.tasks import recover_after_restart
 
 
@@ -30,12 +36,14 @@ class TaskWorker:
         *,
         owner: str,
         lease_seconds: int = 60,
+        event_logger: EventLogger | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._crypto = crypto
         self._adapter = adapter
         self._owner = owner
         self._lease_seconds = lease_seconds
+        self._event_logger = event_logger
 
     async def run_once(self) -> bool:
         task_id = await self._claim_one()
@@ -81,6 +89,18 @@ class TaskWorker:
             task.lease_expires_at = None
             task.updated_at = datetime.now(UTC)
             await session.commit()
+        await emit_event(
+            self._event_logger,
+            "task.accepted"
+            if result.status == RemoteStatus.ACCEPTED
+            else "task.failed",
+            level=(
+                LoggingLevel.INFO
+                if result.status == RemoteStatus.ACCEPTED
+                else LoggingLevel.WARNING
+            ),
+            fields={"status": result.status.value, "count": 1},
+        )
         return True
 
     async def recover_expired(self) -> int:

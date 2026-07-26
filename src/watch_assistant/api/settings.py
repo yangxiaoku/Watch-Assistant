@@ -7,6 +7,8 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from watch_assistant.schemas import (
+    ContentPolicyPatch,
+    ContentPolicyResponse,
     LogCategory,
     LoggingSettingsPatch,
     LoggingSettingsResponse,
@@ -14,8 +16,12 @@ from watch_assistant.schemas import (
     LogsResponse,
     SettingsOverviewResponse,
 )
-from watch_assistant.security import require_api_auth
-from watch_assistant.services.settings import SettingsConflict, SettingsService
+from watch_assistant.security import AuthContext, require_api_auth
+from watch_assistant.services.settings import (
+    ContentPolicyValidationError,
+    SettingsConflict,
+    SettingsService,
+)
 
 router = APIRouter(prefix="/api/v1", dependencies=[Depends(require_api_auth)])
 
@@ -28,6 +34,16 @@ def get_settings_service(request: Request) -> SettingsService:
 
 
 SettingsDependency = Annotated[SettingsService, Depends(get_settings_service)]
+
+
+async def require_content_policy_write_access(
+    auth: Annotated[AuthContext, Depends(require_api_auth)],
+    settings: SettingsDependency,
+) -> None:
+    try:
+        settings.check_write_rate_limit(auth.identity)
+    except SettingsConflict as exc:
+        raise HTTPException(status_code=429, detail="rate_limited") from exc
 
 
 @router.get("/settings/overview", response_model=SettingsOverviewResponse)
@@ -65,6 +81,25 @@ async def patch_logging(
         return await settings.update_logging(patch)
     except SettingsConflict as exc:
         raise HTTPException(status_code=409, detail="settings_conflict") from exc
+
+
+@router.get("/settings/content-policy", response_model=ContentPolicyResponse)
+async def get_content_policy(settings: SettingsDependency) -> ContentPolicyResponse:
+    return await settings.get_content_policy()
+
+
+@router.patch("/settings/content-policy", response_model=ContentPolicyResponse)
+async def patch_content_policy(
+    patch: ContentPolicyPatch,
+    settings: SettingsDependency,
+    _: Annotated[None, Depends(require_content_policy_write_access)],
+) -> ContentPolicyResponse:
+    try:
+        return await settings.update_content_policy(patch)
+    except SettingsConflict as exc:
+        raise HTTPException(status_code=409, detail="settings_conflict") from exc
+    except ContentPolicyValidationError as exc:
+        raise HTTPException(status_code=422, detail="invalid_content_policy") from exc
 
 
 @router.get("/logs", response_model=LogsResponse)

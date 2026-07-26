@@ -151,6 +151,7 @@ input { outline: none; }
 .sort-control select { min-height: 34px; padding-right: 26px; }
 .inspection-more-button { min-height: 34px; padding: 0 11px; font-size: 12px; }
 .inspection-progress { margin: 0 0 12px; color: #aeb2bb; font-size: 12px; }
+.resource-hidden-count { margin: 4px 0 0; color: #858b95; font-size: 11px; }
 .inspection-progress.success { color: #b9ec68; }
 .inspection-progress.warning { color: #f5d98d; }
 .segmented { display: flex; gap: 3px; padding: 3px; background: #1b1d21; border: 1px solid #2d3036; }
@@ -419,6 +420,18 @@ html, body, .app-shell { background: #151719; }
 .settings-section-heading .eyebrow { margin-bottom: 6px; }
 .settings-section-heading h2 { margin: 0; font-size: 22px; }
 .settings-section-heading .icon-button { flex: 0 0 auto; }
+.settings-section-actions { display: flex; align-items: center; gap: 12px; }
+.settings-toggle, .settings-policy-row { display: flex; align-items: center; gap: 8px; color: #aeb3bd; font-size: 12px; }
+.settings-toggle input, .settings-policy-row input { accent-color: #68a0ff; }
+.settings-updated-at { margin: 8px 0 0; color: #737984; font-size: 11px; }
+.settings-policy-list { border-top: 1px solid #2b2e33; }
+.settings-policy-row { justify-content: space-between; min-height: 58px; padding: 10px 0; border-bottom: 1px solid #2b2e33; }
+.settings-policy-row span { display: grid; gap: 5px; min-width: 0; }
+.settings-policy-row strong { color: #d9dce2; font-size: 13px; }
+.settings-policy-row small { color: #858b95; font-size: 11px; }
+.content-keywords { display: grid; gap: 8px; margin-top: 22px; color: #858b95; font-size: 11px; font-weight: 700; }
+.content-keywords textarea { width: 100%; min-height: 110px; padding: 10px; color: #f4f5f7; background: #1d2024; border: 1px solid #353940; border-radius: 4px; resize: vertical; }
+.content-keywords textarea:focus { border-color: #68a0ff; outline: none; }
 .settings-loading, .settings-state { display: flex; min-height: 68px; align-items: center; gap: 9px; color: #9da2ac; font-size: 13px; }
 .settings-state-error { color: #ff9c9c; }
 .settings-state-error .text-button { margin-left: auto; color: #ffb0b0; }

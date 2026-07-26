@@ -14,10 +14,12 @@ from watch_assistant.db import cleanup_expired
 from watch_assistant.models import CacheWarmState
 from watch_assistant.schemas import (
     HomeCatalogResponse,
+    LoggingLevel,
     MediaIdentity,
     MediaType,
     MovieMetadata,
 )
+from watch_assistant.services.observability import EventLogger, emit_event
 from watch_assistant.services.search import SearchService
 
 logger = logging.getLogger(__name__)
@@ -41,12 +43,14 @@ class CacheWarmer:
         timezone_name: str = "Asia/Hong_Kong",
         retry_delays: tuple[float, ...] = (1800, 3600, 7200),
         concurrency: int = 3,
+        event_logger: EventLogger | None = None,
     ) -> None:
         self._search = search_service
         self._session_factory = session_factory
         self._timezone = ZoneInfo(timezone_name)
         self._retry_delays = retry_delays
         self._concurrency = max(1, concurrency)
+        self._event_logger = event_logger
         self._run_lock = asyncio.Lock()
 
     @property
@@ -70,7 +74,16 @@ class CacheWarmer:
 
     async def warm_once(self, *, since: datetime) -> WarmRun:
         async with self._run_lock:
-            return await self._warm_once(since=since)
+            try:
+                return await self._warm_once(since=since)
+            except Exception:
+                await emit_event(
+                    self._event_logger,
+                    "warmup.failed",
+                    level=LoggingLevel.ERROR,
+                    fields={"status": "failed"},
+                )
+                raise
 
     async def retry_failed(self, failed_media: list[MediaIdentity]) -> WarmRun:
         async with self._run_lock:
@@ -95,6 +108,7 @@ class CacheWarmer:
 
     async def _warm_once(self, *, since: datetime) -> WarmRun:
         started = monotonic()
+        await emit_event(self._event_logger, "warmup.started")
         catalog = await self._search.get_home_catalog()
         media = await self._catalog_and_watches(catalog)
         await self._record_started(len(media))
@@ -123,6 +137,16 @@ class CacheWarmer:
                 "failure_count": run.failed,
                 "skipped_count": run.skipped,
                 "elapsed_seconds": round(monotonic() - started, 3),
+            },
+        )
+        await emit_event(
+            self._event_logger,
+            "warmup.completed",
+            fields={
+                "status": "completed",
+                "total": run.total,
+                "count": run.succeeded,
+                "duration_ms": int((monotonic() - started) * 1000),
             },
         )
         return run

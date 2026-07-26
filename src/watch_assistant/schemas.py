@@ -47,6 +47,7 @@ class RemoteStatus(StrEnum):
 
 
 class LoggingLevel(StrEnum):
+    DEBUG = "DEBUG"
     ERROR = "ERROR"
     WARNING = "WARNING"
     INFO = "INFO"
@@ -74,6 +75,24 @@ class LoggingSettingsPatch(BaseModel):
     level: LoggingLevel | None = None
     retention_days: int | None = Field(default=None, ge=1, le=90)
     max_file_mb: int | None = Field(default=None, ge=1, le=50)
+    revision: int = Field(ge=0)
+
+
+class ContentPolicyResponse(BaseModel):
+    hide_adult_media: bool
+    hide_suspicious_resources: bool
+    hide_low_quality_resources: bool
+    blocked_keywords: list[str] = Field(default_factory=list, max_length=50)
+    revision: int = Field(ge=0)
+
+
+class ContentPolicyPatch(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    hide_adult_media: bool | None = None
+    hide_suspicious_resources: bool | None = None
+    hide_low_quality_resources: bool | None = None
+    blocked_keywords: list[str] | None = Field(default=None, max_length=50)
     revision: int = Field(ge=0)
 
 
@@ -127,6 +146,7 @@ class MovieMetadata(BaseModel):
     backdrop_path: str | None = None
     genre_ids: list[int] = Field(default_factory=list)
     vote_average: float | None = None
+    adult: bool = False
     seasons: list[SeasonMetadata] = Field(default_factory=list)
 
 
@@ -184,6 +204,7 @@ class ResourcePageResponse(BaseModel):
     total_pages: int = Field(ge=0)
     facets: dict[str, int]
     snapshot_revision: str
+    hidden_total: int = Field(default=0, ge=0)
 
 
 class SearchRequest(BaseModel):
@@ -202,6 +223,7 @@ class SearchResponse(BaseModel):
     cached: bool = False
     cache_age_seconds: int | None = None
     selected_season: int | None = Field(default=None, ge=0)
+    hidden_total: int = Field(default=0, ge=0)
 
 
 class MediaIdentity(BaseModel):

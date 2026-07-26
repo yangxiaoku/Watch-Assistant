@@ -15,6 +15,7 @@ from watch_assistant.app import create_app
 from watch_assistant.crypto import SecretCrypto
 from watch_assistant.db import create_database, initialize_database
 from watch_assistant.models import (
+    ApplicationSettings,
     MovieWatch,
     Resource,
     SearchCache,
@@ -306,6 +307,69 @@ async def test_resource_snapshot_filters_quality_query_and_rejects_bad_parameter
     assert invalid_sort.status_code == 422
     assert invalid_quality.status_code == 422
     await _close(client, _database, tmdb, pansou)
+
+
+@pytest.mark.integration
+async def test_resource_snapshot_applies_current_content_policy_and_hidden_total(
+    tmp_path,
+):
+    client, database, tmdb, pansou = await _make_client(tmp_path)
+    now = datetime.now(UTC)
+    resources = [
+        Resource(
+            id=f"res_policy_{index}",
+            kind=ResourceKind.MAGNET,
+            canonical_key=f"magnet:policy-{index}",
+            encrypted_url="encrypted",
+            name=name,
+            source="test",
+            captured_at=now,
+            expires_at=now + timedelta(days=7),
+        )
+        for index, name in enumerate(
+            ("FC2-PPV release", "Sex Education", "normal TS m2ts remux"),
+            start=1,
+        )
+    ]
+    cache = SearchCache(
+        cache_key=make_cache_key(12345, MediaType.MOVIE),
+        resource_ids_json=json.dumps(
+            {
+                "version": 1,
+                "resources": [{"resource_id": item.id} for item in resources],
+            }
+        ),
+        warnings_json="[]",
+        fetched_at=now,
+        expires_at=now + timedelta(days=7),
+    )
+    settings = ApplicationSettings(
+        id="default",
+        logging_level="INFO",
+        retention_days=14,
+        max_file_mb=10,
+        revision=0,
+        content_policy_json="{}",
+        content_policy_revision=0,
+    )
+    async with database.session_factory() as session:
+        session.add_all([*resources, cache, settings])
+        await session.commit()
+
+    response = await client.get(
+        "/api/v1/media/movie/12345/resources", params={"page_size": 100}
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["hidden_total"] == 1
+    assert [item["name"] for item in body["items"]] == [
+        "Sex Education",
+        "normal TS m2ts remux",
+    ]
+    assert body["total"] == 2
+    assert body["facets"]["magnet"] == 2
+    assert "FC2-PPV" not in response.text
+    await _close(client, database, tmdb, pansou)
 
 
 @pytest.mark.integration

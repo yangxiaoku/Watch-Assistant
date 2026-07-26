@@ -6,6 +6,7 @@ import re
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
+from time import monotonic
 
 from sqlalchemy import select
 from sqlalchemy.dialects.sqlite import insert
@@ -19,9 +20,16 @@ from watch_assistant.adapters.pansou import (
 )
 from watch_assistant.adapters.tmdb import TmdbClient, TmdbError, build_search_queries
 from watch_assistant.crypto import SecretCrypto
-from watch_assistant.models import MovieWatch, Resource, SearchCache, SourceReliability
+from watch_assistant.models import (
+    ApplicationSettings,
+    MovieWatch,
+    Resource,
+    SearchCache,
+    SourceReliability,
+)
 from watch_assistant.schemas import (
     HomeCatalogResponse,
+    LoggingLevel,
     MediaType,
     MovieCollectionResponse,
     MovieMetadata,
@@ -31,10 +39,15 @@ from watch_assistant.schemas import (
     ResourceSummary,
     SearchResponse,
 )
+from watch_assistant.services.content_policy import (
+    ContentPolicy,
+    content_policy_from_json,
+)
 from watch_assistant.services.normalize import (
     merge_normalized_resources,
     normalize_pansou,
 )
+from watch_assistant.services.observability import EventLogger, emit_event
 from watch_assistant.services.validation import (
     resource_matches_media,
     validate_and_rank_resources,
@@ -77,12 +90,14 @@ class SearchService:
         crypto: SecretCrypto,
         share_domains: tuple[str, ...] = ("115.com", "115cdn.com"),
         pansou_max_concurrency: int = 6,
+        event_logger: EventLogger | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._tmdb = tmdb_client
         self._pansou = pansou_client
         self._crypto = crypto
         self._share_domains = share_domains
+        self._event_logger = event_logger
         self._pansou_limit = asyncio.Semaphore(max(1, pansou_max_concurrency))
         self._search_locks: dict[tuple[MediaType, int], asyncio.Lock] = {}
 
@@ -93,9 +108,12 @@ class SearchService:
         return await self._tmdb.get_media(tmdb_id, media_type)
 
     async def get_popular(self) -> list[MovieMetadata]:
-        return await self._tmdb.get_popular()
+        return _visible_media(
+            await self._tmdb.get_popular(), await self._load_content_policy()
+        )
 
     async def get_home_catalog(self) -> HomeCatalogResponse:
+        policy = await self._load_content_policy()
         (
             popular,
             now_playing,
@@ -114,13 +132,13 @@ class SearchService:
             self._tmdb.get_feed("top_rated", MediaType.TV),
         )
         return HomeCatalogResponse(
-            popular=popular,
-            now_playing=now_playing,
-            upcoming=upcoming,
-            top_rated=top_rated,
-            tv_popular=tv_popular,
-            tv_on_the_air=tv_on_the_air,
-            tv_top_rated=tv_top_rated,
+            popular=_visible_media(popular, policy),
+            now_playing=_visible_media(now_playing, policy),
+            upcoming=_visible_media(upcoming, policy),
+            top_rated=_visible_media(top_rated, policy),
+            tv_popular=_visible_media(tv_popular, policy),
+            tv_on_the_air=_visible_media(tv_on_the_air, policy),
+            tv_top_rated=_visible_media(tv_top_rated, policy),
         )
 
     async def discover_media(
@@ -132,24 +150,79 @@ class SearchService:
         sort: str,
         page: int,
     ) -> MovieCollectionResponse:
-        return await self._tmdb.discover_media(
+        response = await self._tmdb.discover_media(
             media_type=media_type,
             genre_id=genre_id,
             year=year,
             sort=sort,
             page=page,
         )
+        return _filter_media_collection(response, await self._load_content_policy())
 
     async def get_popular_page(self, page: int) -> MovieCollectionResponse:
-        return await self._tmdb.get_feed_page("popular", page=page)
+        response = await self._tmdb.get_feed_page("popular", page=page)
+        return _filter_media_collection(response, await self._load_content_policy())
 
     async def search_movies(self, query: str) -> list[MovieMetadata]:
-        return await self._tmdb.search_movies(query)
+        return _visible_media(
+            await self._tmdb.search_movies(query), await self._load_content_policy()
+        )
 
     async def search_media(self, query: str, page: int) -> MovieCollectionResponse:
-        return await self._tmdb.search_media(query, page=page)
+        response = await self._tmdb.search_media(query, page=page)
+        return _filter_media_collection(response, await self._load_content_policy())
 
     async def search(
+        self,
+        tmdb_id: int,
+        *,
+        media_type: MediaType = MediaType.MOVIE,
+        refresh: bool = False,
+        season_number: int | None = None,
+    ) -> SearchResponse:
+        started = monotonic()
+        await emit_event(
+            self._event_logger,
+            "search.started",
+            fields={
+                "media_type": media_type.value,
+                "season": season_number if season_number is not None else "all",
+            },
+        )
+        try:
+            response = await self._search_impl(
+                tmdb_id,
+                media_type=media_type,
+                refresh=refresh,
+                season_number=season_number,
+            )
+        except Exception:
+            await emit_event(
+                self._event_logger,
+                "search.failed",
+                level=LoggingLevel.ERROR,
+                fields={
+                    "media_type": media_type.value,
+                    "season": season_number if season_number is not None else "all",
+                    "status": "failed",
+                    "duration_ms": int((monotonic() - started) * 1000),
+                },
+            )
+            raise
+        await emit_event(
+            self._event_logger,
+            "search.completed",
+            fields={
+                "media_type": media_type.value,
+                "season": season_number if season_number is not None else "all",
+                "count": len(response.results),
+                "hidden_count": response.hidden_total,
+                "duration_ms": int((monotonic() - started) * 1000),
+            },
+        )
+        return response
+
+    async def _search_impl(
         self,
         tmdb_id: int,
         *,
@@ -166,6 +239,9 @@ class SearchService:
             season.season_number == season_number for season in media.seasons
         ):
             raise InvalidSeasonRequest("season_not_found")
+        policy = await self._load_content_policy()
+        if not policy.media_visible(media.adult):
+            return SearchResponse(movie=media, results=[], hidden_total=0)
         lock_key = (media.media_type, media.tmdb_id)
         lock = self._search_locks.setdefault(lock_key, asyncio.Lock())
         async with lock:
@@ -174,6 +250,7 @@ class SearchService:
                 refresh=refresh,
                 verify_links=refresh,
                 season_number=season_number,
+                policy=policy,
             )
 
     async def warm_media(self, media: MovieMetadata) -> bool:
@@ -226,11 +303,19 @@ class SearchService:
             resources, scores = await self._load_cached_resources(session, cache)
 
         resources = list({resource.id: resource for resource in resources}.values())
-        facets = _resource_facets(resources)
+        policy = await self._load_content_policy()
+        visible_resources = [
+            resource
+            for resource in resources
+            if policy.resource_reason(resource.name) is None
+        ]
+        hidden_total = len(resources) - len(visible_resources)
+        hidden_reasons = _hidden_reason_counts(resources, policy)
+        facets = _resource_facets(visible_resources)
         normalized_query = query.casefold().strip() if query else None
         filtered = [
             resource
-            for resource in resources
+            for resource in visible_resources
             if (kind is None or resource.kind == kind)
             and (quality is None or _quality_matches(resource.name, quality))
             and (
@@ -241,6 +326,22 @@ class SearchService:
         total = len(filtered)
         start = (page - 1) * page_size
         end = start + page_size
+        await emit_event(
+            self._event_logger,
+            "resources.page_served",
+            level=LoggingLevel.DEBUG,
+            fields={
+                "page": page,
+                "count": len(filtered[start:end]),
+                "total": total,
+                "hidden_count": hidden_total,
+                "hidden_suspicious": hidden_reasons["suspicious"],
+                "hidden_low_quality": hidden_reasons["low_quality"],
+                "hidden_keyword": hidden_reasons["keyword"],
+                "media_type": media_type.value,
+                "season": season_number if season_number is not None else "all",
+            },
+        )
         return ResourcePageResponse(
             items=[
                 _resource_summary(resource, scores) for resource in filtered[start:end]
@@ -251,6 +352,16 @@ class SearchService:
             total_pages=(total + page_size - 1) // page_size if total else 0,
             facets=facets,
             snapshot_revision=_as_utc(cache.fetched_at).isoformat(),
+            hidden_total=hidden_total,
+        )
+
+    async def _load_content_policy(self) -> ContentPolicy:
+        async with self._session_factory() as session:
+            settings = await session.get(ApplicationSettings, "default")
+        if settings is None:
+            return ContentPolicy()
+        return content_policy_from_json(
+            settings.content_policy_json, settings.content_policy_revision
         )
 
     async def list_active_watches(self) -> list[MovieMetadata]:
@@ -278,7 +389,9 @@ class SearchService:
         refresh: bool,
         verify_links: bool,
         season_number: int | None,
+        policy: ContentPolicy | None = None,
     ) -> SearchResponse:
+        policy = policy or await self._load_content_policy()
         cache_key = make_cache_key(media.tmdb_id, media.media_type, season_number)
         now = datetime.now(UTC)
         async with self._session_factory() as session:
@@ -298,6 +411,16 @@ class SearchService:
                 and not refresh
                 and cache_age <= FRESH_CACHE_AGE
             ):
+                await emit_event(
+                    self._event_logger,
+                    "search.cache_hit",
+                    level=LoggingLevel.DEBUG,
+                    fields={
+                        "media_type": media.media_type.value,
+                        "season": season_number if season_number is not None else "all",
+                        "count": len(cached_resources),
+                    },
+                )
                 return self._response(
                     media,
                     cached_resources,
@@ -307,6 +430,7 @@ class SearchService:
                     warnings=_stored_warnings(cache),
                     selected_season=_selected_season(media, season_number),
                     score_snapshot=cached_scores,
+                    policy=policy,
                 )
 
         queries = build_search_queries(media, season_number)
@@ -335,6 +459,7 @@ class SearchService:
                     warnings=_merge_warnings(warnings, ["stale_cache"]),
                     selected_season=_selected_season(media, season_number),
                     score_snapshot=cached_scores,
+                    policy=policy,
                 )
             raise SearchUnavailable("pansou_unavailable")
 
@@ -408,6 +533,7 @@ class SearchService:
                     warnings=_merge_warnings(warnings, ["stale_cache"]),
                     selected_season=_selected_season(media, season_number),
                     score_snapshot=cached_scores,
+                    policy=policy,
                 )
             async with self._session_factory() as session:
                 resources = await self._persist_resources(session, candidates, now)
@@ -421,6 +547,7 @@ class SearchService:
                 warnings=warnings,
                 selected_season=_selected_season(media, season_number),
                 score_snapshot=_resource_score_snapshot(resources),
+                policy=policy,
             )
 
         preserved: list[Resource] = []
@@ -485,6 +612,7 @@ class SearchService:
                 warnings=warnings,
                 selected_season=_selected_season(media, season_number),
                 score_snapshot=score_snapshot,
+                policy=policy,
             )
 
     async def _query_pansou(self, query: str) -> dict:
@@ -827,10 +955,17 @@ class SearchService:
         warnings: list[str] | None = None,
         selected_season: int | None = None,
         score_snapshot: Mapping[str, Mapping[str, int]] | None = None,
+        policy: ContentPolicy,
     ) -> SearchResponse:
-        response_scores = _complete_score_snapshot(resources, score_snapshot or {})
+        visible = [
+            resource
+            for resource in resources
+            if policy.resource_reason(resource.name) is None
+        ]
+        hidden_total = len(resources) - len(visible)
+        response_scores = _complete_score_snapshot(visible, score_snapshot or {})
         ordered_resources = sorted(
-            resources,
+            visible,
             key=lambda resource: _resource_sort_key(
                 resource, response_scores, "comprehensive"
             ),
@@ -851,6 +986,7 @@ class SearchService:
                 else None
             ),
             selected_season=selected_season,
+            hidden_total=hidden_total,
         )
 
 
@@ -1010,6 +1146,47 @@ def _quality_tags(name: str) -> frozenset[str]:
 
 def _quality_matches(name: str, quality: str) -> bool:
     return quality in _quality_tags(name)
+
+
+def _visible_media(
+    items: list[MovieMetadata], policy: ContentPolicy
+) -> list[MovieMetadata]:
+    return [item for item in items if policy.media_visible(item.adult)]
+
+
+def _hidden_reason_counts(
+    resources: list[Resource], policy: ContentPolicy
+) -> dict[str, int]:
+    counts = {"suspicious": 0, "low_quality": 0, "keyword": 0}
+    for resource in resources:
+        reason = policy.resource_reason(resource.name)
+        if reason in counts:
+            counts[reason] += 1
+    return counts
+
+
+def _filter_media_collection(
+    response: MovieCollectionResponse, policy: ContentPolicy
+) -> MovieCollectionResponse:
+    items = _visible_media(response.results, policy)
+    hidden = len(response.results) - len(items)
+    total_results = max(0, response.total_results - hidden)
+    page_size = (
+        (response.total_results + response.total_pages - 1) // response.total_pages
+        if response.total_pages and response.total_results
+        else len(response.results)
+    )
+    return response.model_copy(
+        update={
+            "results": items,
+            "total_results": total_results,
+            "total_pages": (
+                (total_results + page_size - 1) // page_size
+                if total_results and page_size
+                else 0
+            ),
+        }
+    )
 
 
 def _resource_sort_key(
