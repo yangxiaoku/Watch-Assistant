@@ -107,6 +107,13 @@ ID、名称、路径、Cookie、pickcode、URL 或第三方异常正文。每次
 本轮受管对象；任何 uncertain、外来/缺失对象、分页不完整或列举失败都不回收。
 回收后再只读确认根不存在。该探针仍是 fixture-only 证据，不打开业务 capability。
 
+2026-07-27 使用四项显式 gate 的一次性 live runner 在受管夹具上复验成功：10 次
+写操作均获确认，15 次列表观察共读取 31 页，临时根回收后确认不存在。真实响应中
+`fs_mkdir` 的成功 `errno` 是空字符串，且目录 `fs_info` 不回显稳定 ID 或父 ID；
+transport 仅接受前者这一已验证成功形态，并改用 `fs_files` 的稳定 ID、父 ID、名称和
+目录标记核对写后状态。该证据仍只适用于受管夹具，业务写能力、STRM、洗版和永久删除
+继续关闭。
+
 `src/watch_assistant/adapters/p115_c03_live_transport.py` 和
 `scripts/p115_c03_live_runner.py` 是独立的一次性 live 入口。runner 必须同时收到
 `--live`、非零数字 `--parent-id`、显式 `--cookie-path`，并满足上述三个 C03 gate
