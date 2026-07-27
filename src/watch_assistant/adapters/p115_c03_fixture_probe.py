@@ -13,6 +13,7 @@ import hashlib
 import os
 import re
 import secrets
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -41,6 +42,7 @@ MAX_LIST_CALLS = 15
 MAX_LIST_PAGE_CALLS = 4
 MAX_READ_CALLS = MAX_LIST_CALLS * MAX_LIST_PAGE_CALLS
 MAX_TOTAL_CALLS = MAX_WRITE_CALLS + MAX_READ_CALLS
+MAX_RUN_TIMEOUT_SECONDS = 10 * 60
 MAX_CONFLICT_OBSERVATION_CALLS = 0
 MAX_BATCH_OBSERVATION_CALLS = 0
 
@@ -114,11 +116,17 @@ class C03DirectoryListing:
 class P115C03Transport(Protocol):
     """Caller-owned async transport seam for C03 writes and read checks."""
 
-    async def execute(self, request: PreparedWrite) -> C03WriteReceipt: ...
+    async def execute(
+        self, request: PreparedWrite, *, timeout_seconds: float
+    ) -> C03WriteReceipt: ...
 
-    async def read(self, file_id: str) -> C03RemoteEntry | None: ...
+    async def read(
+        self, file_id: str, *, timeout_seconds: float
+    ) -> C03RemoteEntry | None: ...
 
-    async def list_children(self, parent_id: str) -> C03DirectoryListing: ...
+    async def list_children(
+        self, parent_id: str, *, timeout_seconds: float
+    ) -> C03DirectoryListing: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -210,12 +218,22 @@ class _ProbeState:
     root_name: str | None = None
     root_confirmed: bool = False
     managed: dict[str, tuple[str, str]] = field(default_factory=dict)
+    deadline: float | None = None
 
 
 class _ProbeHalt(Exception):
     def __init__(self, code: str) -> None:
         self.code = code
         super().__init__(code)
+
+
+def _remaining_timeout(state: _ProbeState) -> float:
+    if state.deadline is None:
+        raise _ProbeHalt("deadline_unavailable")
+    remaining = state.deadline - time.monotonic()
+    if remaining <= 0:
+        raise _ProbeHalt("deadline_exceeded")
+    return remaining
 
 
 def normalize_parent_id(value: object) -> str:
@@ -309,7 +327,7 @@ async def run_p115_c03_fixture_probe(
     transport: P115C03Transport,
     parent_id: object,
     env: Mapping[str, str] | None = None,
-    timeout_seconds: float = 10.0,
+    timeout_seconds: float = MAX_RUN_TIMEOUT_SECONDS,
     budget: C03CallBudget | None = None,
     live: bool = False,
 ) -> C03ProbeReport:
@@ -345,6 +363,7 @@ async def run_p115_c03_fixture_probe(
         not isinstance(timeout_seconds, (int, float))
         or isinstance(timeout_seconds, bool)
         or timeout_seconds <= 0
+        or timeout_seconds > MAX_RUN_TIMEOUT_SECONDS
     ):
         return _report(
             state,
@@ -353,6 +372,7 @@ async def run_p115_c03_fixture_probe(
             cleanup="not_started",
             error_code="invalid_timeout",
         )
+    state.deadline = time.monotonic() + float(timeout_seconds)
 
     root_name = _fixture_name("root")
     fingerprint = _fingerprint(root_name)
@@ -602,7 +622,10 @@ async def _write(
         raise _ProbeHalt("total_call_limit_reached")
     state.write_calls += 1
     try:
-        receipt = await asyncio.wait_for(transport.execute(request), timeout_seconds)
+        remaining = _remaining_timeout(state)
+        receipt = await asyncio.wait_for(
+            transport.execute(request, timeout_seconds=remaining), remaining
+        )
     except asyncio.CancelledError:
         if verify_identity is not None:
             await _best_effort_verify(
@@ -737,8 +760,9 @@ async def _list_children(
     state.list_calls += 1
     state.read_calls += reserved_pages
     try:
+        remaining = _remaining_timeout(state)
         listing = await asyncio.wait_for(
-            transport.list_children(parent_id), timeout_seconds
+            transport.list_children(parent_id, timeout_seconds=remaining), remaining
         )
     except asyncio.CancelledError:
         state.page_calls += reserved_pages
@@ -880,6 +904,7 @@ class FakeP115C03Transport:
         self.write_operations: list[WriteOperation] = []
         self.read_count = 0
         self.list_count = 0
+        self.timeouts: list[float] = []
 
     def __repr__(self) -> str:
         return (
@@ -887,7 +912,10 @@ class FakeP115C03Transport:
             f"read_count={self.read_count}, entry_count={len(self._entries)})"
         )
 
-    async def execute(self, request: PreparedWrite) -> C03WriteReceipt:
+    async def execute(
+        self, request: PreparedWrite, *, timeout_seconds: float
+    ) -> C03WriteReceipt:
+        self.timeouts.append(timeout_seconds)
         self.write_operations.append(request.operation)
         if self._failure == request.operation.value:
             raise OSError("opaque transport failure")
@@ -938,7 +966,10 @@ class FakeP115C03Transport:
             return C03WriteReceipt(WriteStatus.SUCCESS)
         raise RuntimeError("unsupported offline operation")
 
-    async def read(self, file_id: str) -> C03RemoteEntry | None:
+    async def read(
+        self, file_id: str, *, timeout_seconds: float
+    ) -> C03RemoteEntry | None:
+        self.timeouts.append(timeout_seconds)
         self.read_count += 1
         if self._failure == "read":
             raise OSError("opaque read failure")
@@ -946,7 +977,10 @@ class FakeP115C03Transport:
             raise TimeoutError("opaque read timeout")
         return self._entries.get(file_id)
 
-    async def list_children(self, parent_id: str) -> C03DirectoryListing:
+    async def list_children(
+        self, parent_id: str, *, timeout_seconds: float
+    ) -> C03DirectoryListing:
+        self.timeouts.append(timeout_seconds)
         self.list_count += 1
         if self._scope_fault == "list-failed":
             raise OSError("opaque list failure")
@@ -990,6 +1024,7 @@ __all__ = [
     "MAX_LIST_CALLS",
     "MAX_LIST_PAGE_CALLS",
     "MAX_READ_CALLS",
+    "MAX_RUN_TIMEOUT_SECONDS",
     "MAX_TOTAL_CALLS",
     "MAX_WRITE_CALLS",
     "C03CallBudget",

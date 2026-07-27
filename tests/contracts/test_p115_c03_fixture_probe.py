@@ -11,6 +11,7 @@ from watch_assistant.adapters.p115_c03_fixture_probe import (
     MAX_LIST_CALLS,
     MAX_LIST_PAGE_CALLS,
     MAX_READ_CALLS,
+    MAX_RUN_TIMEOUT_SECONDS,
     MAX_TOTAL_CALLS,
     MAX_WRITE_CALLS,
     C03CallBudget,
@@ -67,6 +68,25 @@ async def test_c03_lifecycle_is_bounded_and_reclaims_only_its_exact_root():
     for value in ("7000", "source", "quarantine", "artifact", "wa-c03"):
         assert value not in rendered
     assert len(report.fixture_fingerprint or "") == 16
+    assert transport.timeouts
+    assert all(
+        earlier >= later > 0
+        for earlier, later in zip(transport.timeouts, transport.timeouts[1:])
+    )
+
+
+@pytest.mark.asyncio
+async def test_global_deadline_is_bounded_and_rejects_excess_timeout():
+    transport = FakeP115C03Transport()
+    report = await run_p115_c03_fixture_probe(
+        transport=transport,
+        parent_id="7000",
+        env=_enabled_env(),
+        timeout_seconds=MAX_RUN_TIMEOUT_SECONDS + 1,
+    )
+    assert report.status is C03ProbeStatus.BLOCKED
+    assert report.error_code == "invalid_timeout"
+    assert transport.write_operations == []
 
 
 @pytest.mark.asyncio
@@ -134,6 +154,7 @@ async def test_parent_id_accepts_only_nonzero_decimal_values():
     ("failure", "error_code"),
     (
         ("move", "remote_write_failed"),
+        ("rename", "remote_write_failed"),
         ("timeout:move", "timeout"),
         ("cancel:move", "cancelled"),
     ),
@@ -149,7 +170,10 @@ async def test_failure_timeout_and_cancel_are_uncertain_without_write_retry(
     assert report.status is C03ProbeStatus.UNCERTAIN
     assert report.error_code == error_code
     assert report.cleanup == "not_attempted_uncertain"
-    assert transport.write_operations.count(WriteOperation.MOVE) == 1
+    failed_operation = (
+        WriteOperation.RENAME if failure == "rename" else WriteOperation.MOVE
+    )
+    assert transport.write_operations.count(failed_operation) == 1
     assert WriteOperation.RECYCLE not in transport.write_operations
 
 
@@ -164,6 +188,18 @@ async def test_unconfirmed_root_is_never_recycled():
     assert report.error_code == "remote_write_failed"
     assert report.cleanup == "not_attempted_uncertain"
     assert WriteOperation.RECYCLE not in transport.write_operations
+
+
+@pytest.mark.asyncio
+async def test_recycle_failure_stops_after_cleanup_attempt():
+    transport = FakeP115C03Transport("recycle")
+    report = await run_p115_c03_fixture_probe(
+        transport=transport, parent_id="7000", env=_enabled_env()
+    )
+    assert report.status is C03ProbeStatus.UNCERTAIN
+    assert report.cleanup == "not_attempted_uncertain"
+    assert transport.write_operations[-1] is WriteOperation.RECYCLE
+    assert transport.write_operations.count(WriteOperation.RECYCLE) == 1
 
 
 @pytest.mark.asyncio

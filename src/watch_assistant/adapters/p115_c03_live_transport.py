@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-from collections.abc import Mapping
+import time
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, Protocol
 
 from watch_assistant.adapters.p115_c03_fixture_probe import (
@@ -44,16 +45,33 @@ class P115ClientLike(Protocol):
     def fs_files(self, payload: Mapping[str, int | str], **kwargs: Any) -> Any: ...
 
 
+P115C03CallExecutor = Callable[..., Awaitable[Any] | Any]
+
+
+class P115C03CallTimeoutUnavailable(RuntimeError):
+    """The injected client seam cannot enforce a call-level timeout."""
+
+
 class P115C03LiveTransport(P115C03Transport):
     """Translate only fixed C03 calls through a caller-created client."""
 
-    def __init__(self, client: P115ClientLike) -> None:
+    def __init__(
+        self,
+        client: P115ClientLike,
+        *,
+        call_executor: P115C03CallExecutor | None = None,
+    ) -> None:
         self._client = client
+        self._call_executor = call_executor
 
     def __repr__(self) -> str:
         return "P115C03LiveTransport(mode='c03', client='injected')"
 
-    async def execute(self, request: PreparedWrite) -> C03WriteReceipt:
+    async def execute(
+        self, request: PreparedWrite, *, timeout_seconds: float
+    ) -> C03WriteReceipt:
+        if self._call_executor is None:
+            raise P115C03CallTimeoutUnavailable
         method_name = {
             WriteOperation.MKDIR: "fs_mkdir",
             WriteOperation.MOVE: "fs_move",
@@ -63,19 +81,44 @@ class P115C03LiveTransport(P115C03Transport):
         payload = _client_payload(request)
         if method_name is None or payload is None:
             return C03WriteReceipt(WriteStatus.UNCERTAIN)
-        response = await _call(getattr(self._client, method_name), payload)
+        response = await _call(
+            self._call_executor,
+            getattr(self._client, method_name),
+            payload,
+            timeout_seconds=timeout_seconds,
+        )
         return _normalize_write_response(request.operation, response)
 
-    async def read(self, file_id: str) -> C03RemoteEntry | None:
-        response = await _call(self._client.fs_info, {"cid": file_id})
+    async def read(
+        self, file_id: str, *, timeout_seconds: float
+    ) -> C03RemoteEntry | None:
+        if self._call_executor is None:
+            raise P115C03CallTimeoutUnavailable
+        response = await _call(
+            self._call_executor,
+            self._client.fs_info,
+            {"cid": file_id},
+            timeout_seconds=timeout_seconds,
+        )
         return _normalize_info_response(file_id, response)
 
-    async def list_children(self, parent_id: str) -> C03DirectoryListing:
+    async def list_children(
+        self, parent_id: str, *, timeout_seconds: float
+    ) -> C03DirectoryListing:
+        if self._call_executor is None:
+            raise P115C03CallTimeoutUnavailable
         entries: list[C03RemoteEntry] = []
         offset = 0
+        deadline = time.monotonic() + timeout_seconds
         for page_calls in range(1, MAX_FS_FILES_PAGE_CALLS + 1):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return C03DirectoryListing(
+                    tuple(entries), complete=False, page_calls=page_calls - 1
+                )
             try:
                 response = await _call(
+                    self._call_executor,
                     self._client.fs_files,
                     {
                         "cid": parent_id,
@@ -84,6 +127,7 @@ class P115C03LiveTransport(P115C03Transport):
                         "record_open_time": 0,
                         "show_dir": 1,
                     },
+                    timeout_seconds=remaining,
                 )
             except asyncio.CancelledError:
                 raise
@@ -117,10 +161,22 @@ class P115C03LiveTransport(P115C03Transport):
         )
 
 
-async def _call(method: Any, payload: Mapping[str, Any]) -> Any:
-    """Run one synchronous fixed-client call without retaining its response."""
+async def _call(
+    call_executor: P115C03CallExecutor | None,
+    method: Callable[..., Any],
+    payload: Mapping[str, Any],
+    *,
+    timeout_seconds: float,
+) -> Any:
+    """Run one call only through a seam that owns call-level timeout."""
 
-    result = await asyncio.to_thread(method, dict(payload), async_=False)
+    if call_executor is None:
+        raise P115C03CallTimeoutUnavailable
+    result = call_executor(
+        method,
+        dict(payload),
+        timeout_seconds=timeout_seconds,
+    )
     if inspect.isawaitable(result):
         return await result
     return result
@@ -331,6 +387,8 @@ __all__ = [
     "EXPECTED_P115CLIENT_VERSION",
     "MAX_FS_FILES_PAGE_CALLS",
     "VERIFIED_FS_FILES_PAGE_SIZE",
+    "P115C03CallExecutor",
+    "P115C03CallTimeoutUnavailable",
     "P115C03LiveTransport",
     "P115ClientLike",
 ]
