@@ -10,6 +10,7 @@ from watch_assistant.db import create_database, initialize_database
 from watch_assistant.library_models import (
     LibraryScanCheckpoint,
     LibraryScanEntry,
+    LibraryScanRun,
     MediaLibrary,
 )
 from watch_assistant.services.library_index import (
@@ -171,6 +172,95 @@ async def test_cancel_persists_checkpoint_and_same_key_resumes(tmp_path):
     assert resumed.state is ScanRunState.COMPLETED
     assert resumed.complete is True
     assert gateway.calls == [1, 2, 2]
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_cancel_during_persist_marks_run_cancelled_and_resumes(
+    tmp_path, monkeypatch
+):
+    database = await _database(tmp_path)
+    gateway = _ReadOnlyGateway(2, page_size=1)
+    service = _service(database, gateway, page_size=1)
+    original_persist = service._persist_page
+    cancelled_once = False
+
+    async def cancel_on_second_page(
+        run_id, page, *, expected_page_count, expected_total
+    ):
+        nonlocal cancelled_once
+        if page.page == 2 and not cancelled_once:
+            cancelled_once = True
+            raise asyncio.CancelledError
+        return await original_persist(
+            run_id,
+            page,
+            expected_page_count=expected_page_count,
+            expected_total=expected_total,
+        )
+
+    monkeypatch.setattr(service, "_persist_page", cancel_on_second_page)
+    cancelled = await service.scan("persist-cancel")
+
+    assert cancelled.state is ScanRunState.CANCELLED
+    assert cancelled.complete is False
+    assert cancelled.error_code == "cancelled"
+    assert cancelled.deletion_candidates == ()
+    async with database.session_factory() as session:
+        run = await session.get(LibraryScanRun, cancelled.run_id)
+        checkpoint = await session.get(LibraryScanCheckpoint, cancelled.run_id)
+    assert run is not None
+    assert run.state == ScanRunState.CANCELLED.value
+    assert run.complete is False
+    assert checkpoint is not None
+    assert checkpoint.page == 1
+
+    resumed = await service.scan("persist-cancel")
+    assert resumed.state is ScanRunState.COMPLETED
+    assert resumed.complete is True
+    assert gateway.calls == [1, 2, 2]
+    assert gateway.write_calls == 0
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_cancel_during_complete_marks_run_cancelled_and_recovers_from_checkpoint(
+    tmp_path, monkeypatch
+):
+    database = await _database(tmp_path)
+    gateway = _ReadOnlyGateway(1)
+    service = _service(database, gateway)
+    original_complete = service._complete_run
+    cancelled_once = False
+
+    async def cancel_once(run_id):
+        nonlocal cancelled_once
+        if not cancelled_once:
+            cancelled_once = True
+            raise asyncio.CancelledError
+        return await original_complete(run_id)
+
+    monkeypatch.setattr(service, "_complete_run", cancel_once)
+    cancelled = await service.scan("complete-cancel")
+
+    assert cancelled.state is ScanRunState.CANCELLED
+    assert cancelled.complete is False
+    assert cancelled.error_code == "cancelled"
+    assert cancelled.deletion_candidates == ()
+    async with database.session_factory() as session:
+        run = await session.get(LibraryScanRun, cancelled.run_id)
+        checkpoint = await session.get(LibraryScanCheckpoint, cancelled.run_id)
+    assert run is not None
+    assert run.state == ScanRunState.CANCELLED.value
+    assert run.complete is False
+    assert checkpoint is not None
+    assert checkpoint.page == 1
+
+    resumed = await service.scan("complete-cancel")
+    assert resumed.state is ScanRunState.COMPLETED
+    assert resumed.complete is True
+    assert gateway.calls == [1]
+    assert gateway.write_calls == 0
     await database.engine.dispose()
 
 

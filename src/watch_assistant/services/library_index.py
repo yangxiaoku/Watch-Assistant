@@ -135,64 +135,72 @@ class LibraryIndexService:
         run = await self._get_or_create_run(idempotency_key)
         if run.complete and run.state == ScanRunState.COMPLETED.value:
             return await self._result_for_run(run.id)
-        await self._mark_running(run.id)
-        checkpoint = await self._checkpoint_for_run(run.id)
-        next_page = checkpoint.page + 1
-        expected_page_count = run.expected_page_count
-        expected_total = run.expected_total
-
-        while True:
-            try:
-                page = await self._gateway.list_directory(
-                    self._root_directory_id, page=next_page, page_size=self._page_size
-                )
-            except asyncio.CancelledError:
-                await self._finish_incomplete(
-                    run.id, ScanRunState.CANCELLED, "cancelled"
-                )
-                return await self._result_for_run(run.id)
-            except Exception:  # noqa: BLE001 - remote details never cross the boundary
-                await self._finish_incomplete(
-                    run.id, ScanRunState.FAILED, "gateway_error"
-                )
-                return await self._result_for_run(run.id)
-
-            try:
-                expected_page_count, expected_total, terminal = _validate_page(
-                    page,
-                    requested_page=next_page,
-                    root_directory_id=self._root_directory_id,
-                    expected_page_count=expected_page_count,
-                    expected_total=expected_total,
-                )
-            except LibraryIndexError as error:
-                state = (
-                    ScanRunState.CANCELLED
-                    if error.code == "cancelled"
-                    else ScanRunState.FAILED
-                )
-                await self._finish_incomplete(run.id, state, error.code)
-                return await self._result_for_run(run.id)
-
-            try:
-                await self._persist_page(
-                    run.id,
-                    page,
-                    expected_page_count=expected_page_count,
-                    expected_total=expected_total,
-                )
-            except LibraryIndexError as error:
-                await self._finish_incomplete(run.id, ScanRunState.FAILED, error.code)
-                return await self._result_for_run(run.id)
-            except Exception:  # noqa: BLE001 - storage details never cross the boundary
-                await self._finish_incomplete(
-                    run.id, ScanRunState.FAILED, "storage_error"
-                )
-                return await self._result_for_run(run.id)
-
-            if terminal:
+        try:
+            await self._mark_running(run.id)
+            checkpoint = await self._checkpoint_for_run(run.id)
+            if (
+                run.expected_page_count is not None
+                and checkpoint.page == run.expected_page_count
+            ):
                 return await self._complete_run(run.id)
-            next_page += 1
+            next_page = checkpoint.page + 1
+            expected_page_count = run.expected_page_count
+            expected_total = run.expected_total
+
+            while True:
+                try:
+                    page = await self._gateway.list_directory(
+                        self._root_directory_id,
+                        page=next_page,
+                        page_size=self._page_size,
+                    )
+                except Exception:  # noqa: BLE001 - remote details never cross the boundary
+                    await self._finish_incomplete(
+                        run.id, ScanRunState.FAILED, "gateway_error"
+                    )
+                    return await self._result_for_run(run.id)
+
+                try:
+                    expected_page_count, expected_total, terminal = _validate_page(
+                        page,
+                        requested_page=next_page,
+                        root_directory_id=self._root_directory_id,
+                        expected_page_count=expected_page_count,
+                        expected_total=expected_total,
+                    )
+                except LibraryIndexError as error:
+                    state = (
+                        ScanRunState.CANCELLED
+                        if error.code == "cancelled"
+                        else ScanRunState.FAILED
+                    )
+                    await self._finish_incomplete(run.id, state, error.code)
+                    return await self._result_for_run(run.id)
+
+                try:
+                    await self._persist_page(
+                        run.id,
+                        page,
+                        expected_page_count=expected_page_count,
+                        expected_total=expected_total,
+                    )
+                except LibraryIndexError as error:
+                    await self._finish_incomplete(
+                        run.id, ScanRunState.FAILED, error.code
+                    )
+                    return await self._result_for_run(run.id)
+                except Exception:  # noqa: BLE001 - storage details never cross the boundary
+                    await self._finish_incomplete(
+                        run.id, ScanRunState.FAILED, "storage_error"
+                    )
+                    return await self._result_for_run(run.id)
+
+                if terminal:
+                    return await self._complete_run(run.id)
+                next_page += 1
+        except asyncio.CancelledError:
+            await self._finish_incomplete(run.id, ScanRunState.CANCELLED, "cancelled")
+            return await self._result_for_run(run.id)
 
     async def _verify_scope(self) -> None:
         async with self._session_factory() as session:
