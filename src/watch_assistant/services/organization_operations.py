@@ -139,7 +139,7 @@ class OrganizationOperationService:
                 )
             )
             if existing is not None:
-                return _summary(existing)
+                raise OrganizationOperationConflict("operation_plan_conflict")
             operation = OrganizationOperation(
                 id="op_" + uuid.uuid4().hex,
                 plan_id=plan.id,
@@ -161,6 +161,15 @@ class OrganizationOperationService:
                 )
                 if existing is not None and existing.plan_id == plan_id:
                     return _summary(existing)
+                existing = await session.scalar(
+                    select(OrganizationOperation).where(
+                        OrganizationOperation.plan_id == plan_id
+                    )
+                )
+                if existing is not None:
+                    raise OrganizationOperationConflict(
+                        "operation_plan_conflict"
+                    ) from None
                 raise OrganizationOperationConflict(
                     "operation_creation_conflict"
                 ) from None

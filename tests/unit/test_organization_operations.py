@@ -257,24 +257,30 @@ async def test_expired_lease_recovers_after_reopening_database(tmp_path):
 
 @pytest.mark.asyncio
 async def test_concurrent_different_keys_create_one_operation(tmp_path):
-    database = await _database(tmp_path)
-    plan = await _plan(database)
-    first = OrganizationOperationService(database.session_factory)
-    second = OrganizationOperationService(database.session_factory)
+    for round_number in range(8):
+        round_path = tmp_path / str(round_number)
+        round_path.mkdir()
+        database = await _database(round_path)
+        plan = await _plan(database)
+        first = OrganizationOperationService(database.session_factory)
+        second = OrganizationOperationService(database.session_factory)
 
-    results = await asyncio.gather(
-        first.create(plan.plan_id, idempotency_key="key-a"),
-        second.create(plan.plan_id, idempotency_key="key-b"),
-        return_exceptions=True,
-    )
-    assert (
-        sum(isinstance(result, OrganizationOperationConflict) for result in results)
-        == 1
-    )
-    assert sum(not isinstance(result, BaseException) for result in results) == 1
-    async with database.session_factory() as session:
-        assert len(list(await session.scalars(select(OrganizationOperation)))) == 1
-    await database.engine.dispose()
+        results = await asyncio.gather(
+            first.create(plan.plan_id, idempotency_key="key-a"),
+            second.create(plan.plan_id, idempotency_key="key-b"),
+            return_exceptions=True,
+        )
+        conflicts = [
+            result
+            for result in results
+            if isinstance(result, OrganizationOperationConflict)
+        ]
+        assert len(conflicts) == 1
+        assert str(conflicts[0]) == "operation_plan_conflict"
+        assert sum(not isinstance(result, BaseException) for result in results) == 1
+        async with database.session_factory() as session:
+            assert len(list(await session.scalars(select(OrganizationOperation)))) == 1
+        await database.engine.dispose()
 
 
 @pytest.mark.asyncio
@@ -369,7 +375,9 @@ async def test_operation_schema_defaults_and_unique_keys(tmp_path):
         "revision",
         "attempts",
     } <= columns
-    assert any(index["unique"] for index in indexes)
+    assert any(
+        index["unique"] and index["column_names"] == ["plan_id"] for index in indexes
+    )
     operation = await _operation(database)
     assert operation.status is OrganizationOperationStatus.PLANNED
     assert operation.revision == 1
@@ -378,6 +386,10 @@ async def test_operation_schema_defaults_and_unique_keys(tmp_path):
         operation.plan_id, idempotency_key="operation-1"
     )
     assert repeated.operation_id == operation.operation_id
+    with pytest.raises(OrganizationOperationConflict, match="operation_plan_conflict"):
+        await OrganizationOperationService(database.session_factory).create(
+            operation.plan_id, idempotency_key="different-key"
+        )
     await database.engine.dispose()
 
 
