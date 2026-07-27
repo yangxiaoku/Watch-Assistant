@@ -647,6 +647,7 @@ def _build_payload(
             target=target,
             order=index,
         )
+        preconditions[-1]["execution"] = execution
         actions.append(
             {
                 "order": index,
@@ -849,7 +850,98 @@ def _valid_target_name(value: object) -> bool:
     )
 
 
-def load_executable_steps(
+async def load_executable_steps(
+    session_factory: async_sessionmaker[AsyncSession],
+    plan: OrganizationPlan | str,
+) -> tuple[OrganizationPlanExecutionStep, ...] | None:
+    """Load executable steps only after revalidating durable plan state."""
+
+    plan_id = plan if isinstance(plan, str) else getattr(plan, "id", None)
+    if not _safe_identity(plan_id):
+        return None
+    async with session_factory() as session:
+        stored = await session.get(OrganizationPlan, plan_id)
+        if stored is None or stored.status != OrganizationPlanStatus.PLANNED.value:
+            return None
+        library = await session.get(MediaLibrary, stored.library_id)
+        run = await session.get(LibraryScanRun, stored.source_scan_run_id)
+        if (
+            library is None
+            or not library.enabled
+            or not library.scope_verified
+            or run is None
+            or run.library_id != stored.library_id
+            or run.root_directory_id != library.root_directory_id
+            or run.state != ScanRunState.COMPLETED.value
+            or not run.complete
+            or run.snapshot_revision != stored.source_snapshot_revision
+            or _utc(stored.expires_at) <= datetime.now(UTC)
+        ):
+            return None
+        latest = await session.scalar(
+            select(LibraryScanRun)
+            .where(
+                LibraryScanRun.library_id == stored.library_id,
+                LibraryScanRun.root_directory_id == library.root_directory_id,
+                LibraryScanRun.state == ScanRunState.COMPLETED.value,
+                LibraryScanRun.complete.is_(True),
+            )
+            .order_by(LibraryScanRun.snapshot_revision.desc())
+            .limit(1)
+        )
+        if latest is None or latest.id != run.id:
+            return None
+        source_snapshot = _load_source_snapshot(
+            stored.source_snapshot_json, require_name=True
+        )
+        actions = _load_json_list(stored.actions_json)
+        preconditions = _load_json_object(stored.preconditions_json)
+        precondition_items = preconditions.get("items")
+        if (
+            source_snapshot is None
+            or not actions
+            or preconditions.get("library") != _library_snapshot(library)
+            or not isinstance(precondition_items, list)
+            or len(precondition_items) != len(actions)
+        ):
+            return None
+        steps = _parse_executable_steps(stored)
+        if steps is None:
+            return None
+        rows = {
+            (row.object_type, row.object_id): row
+            for row in await session.scalars(
+                select(LibraryScanEntry).where(LibraryScanEntry.scan_run_id == run.id)
+            )
+        }
+        if not _validate_persisted_execution(
+            stored,
+            library=library,
+            run=run,
+            source_snapshot=source_snapshot,
+            actions=actions,
+            preconditions=precondition_items,
+            steps=steps,
+            rows=rows,
+        ):
+            return None
+        canonical = {
+            "library_id": stored.library_id,
+            "library_snapshot": _library_snapshot(library),
+            "source_snapshot": source_snapshot,
+            "target_root": stored.target_root,
+            "actions": actions,
+            "preconditions": preconditions,
+            "rule_version": stored.rule_version,
+            "parser_version": stored.parser_version,
+            "matcher_version": stored.matcher_version,
+        }
+        if stored.plan_hash != _canonical_hash(canonical):
+            return None
+        return steps
+
+
+def _parse_executable_steps(
     plan: OrganizationPlan,
 ) -> tuple[OrganizationPlanExecutionStep, ...] | None:
     """Parse only the complete execution payload used by a future executor.
@@ -957,6 +1049,145 @@ def load_executable_steps(
     return tuple(steps)
 
 
+def _validate_persisted_execution(
+    plan: OrganizationPlan,
+    *,
+    library: MediaLibrary,
+    run: LibraryScanRun,
+    source_snapshot: list[dict[str, object]],
+    actions: list[object],
+    preconditions: list[object],
+    steps: tuple[OrganizationPlanExecutionStep, ...],
+    rows: Mapping[tuple[str, str], LibraryScanEntry],
+) -> bool:
+    if len(source_snapshot) != len(actions) or len(steps) != len(actions):
+        return False
+    source_by_key = {
+        (item["object_type"], item["object_id"]): item for item in source_snapshot
+    }
+    if len(source_by_key) != len(source_snapshot):
+        return False
+    directory_rows: dict[str, list[LibraryScanEntry]] = {}
+    for row in rows.values():
+        if row.is_directory:
+            directory_rows.setdefault(row.object_id, []).append(row)
+    managed_directory_ids = {library.root_directory_id}
+    managed_directory_ids.update(
+        object_id for object_id, matches in directory_rows.items() if len(matches) == 1
+    )
+    try:
+        _validate_relative_path(plan.target_root, allow_empty=True)
+        _validate_version(plan.rule_version)
+        _validate_version(plan.parser_version)
+        _validate_version(plan.matcher_version)
+    except OrganizationPlanError:
+        return False
+    for index, (action, precondition, step) in enumerate(
+        zip(actions, preconditions, steps, strict=True)
+    ):
+        if not isinstance(action, dict) or not isinstance(precondition, dict):
+            return False
+        object_key = (action.get("object_type"), action.get("object_id"))
+        snapshot = source_by_key.get(object_key)
+        current_row = rows.get(object_key)
+        execution = action.get("execution")
+        if (
+            snapshot is None
+            or precondition.get("source_index") != index
+            or precondition.get("object_type") != action.get("object_type")
+            or precondition.get("object_id") != action.get("object_id")
+            or precondition.get("parent_id") != snapshot.get("parent_id")
+            or precondition.get("source_path") != snapshot.get("path")
+            or precondition.get("remote_version") != snapshot.get("remote_version")
+            or precondition.get("source_snapshot_revision")
+            != plan.source_snapshot_revision
+            or precondition.get("target") != action.get("target")
+            or precondition.get("rule_version") != plan.rule_version
+            or precondition.get("parser_version") != plan.parser_version
+            or precondition.get("matcher_version") != plan.matcher_version
+            or precondition.get("target_conflict") is not False
+            or precondition.get("execution") != execution
+            or not isinstance(execution, dict)
+            or action.get("kind") != "move"
+            or action.get("order") != index
+            or step.order != index
+            or current_row is None
+            or snapshot.get("name") != current_row.name
+            or current_row.parent_id != snapshot.get("parent_id")
+            or current_row.path != snapshot.get("path")
+            or current_row.is_directory is not False
+        ):
+            return False
+        if not _validate_persisted_step(
+            action,
+            step=step,
+            library=library,
+            managed_directory_ids=managed_directory_ids,
+            directory_rows=directory_rows,
+            rows=rows,
+        ):
+            return False
+    return run.snapshot_revision == plan.source_snapshot_revision
+
+
+def _validate_persisted_step(
+    action: dict[str, object],
+    *,
+    step: OrganizationPlanExecutionStep,
+    library: MediaLibrary,
+    managed_directory_ids: set[str],
+    directory_rows: Mapping[str, Sequence[LibraryScanEntry]],
+    rows: Mapping[tuple[str, str], LibraryScanEntry],
+) -> bool:
+    target = action.get("target")
+    if not isinstance(target, str):
+        return False
+    try:
+        _validate_relative_path(target)
+    except OrganizationPlanError:
+        return False
+    if not step.members:
+        return False
+    primary = step.members[0]
+    if (
+        primary.object_type != action.get("object_type")
+        or primary.object_id != action.get("object_id")
+        or primary.target_name != PurePosixPath(target).name
+        or not _target_directory_matches(
+            target,
+            target_parent_id=primary.target_parent_id,
+            directory_rows=directory_rows,
+            root_directory_id=library.root_directory_id,
+        )
+    ):
+        return False
+    expected_scope = {
+        library.root_directory_id,
+        *(member.source_parent_id for member in step.members),
+        *(member.target_parent_id for member in step.members),
+    }
+    if (
+        set(step.scope_directory_ids) != expected_scope
+        or not expected_scope <= managed_directory_ids
+    ):
+        return False
+    for member in step.members:
+        row = rows.get((member.object_type, member.object_id))
+        if (
+            row is None
+            or row.is_directory
+            or row.parent_id != member.source_parent_id
+            or row.name != member.source_name
+            or not _source_parent_is_managed(
+                member.source_parent_id, directory_rows, library.root_directory_id
+            )
+            or member.target_parent_id != primary.target_parent_id
+            or not _valid_target_name(member.target_name)
+        ):
+            return False
+    return True
+
+
 def _library_snapshot(library: MediaLibrary) -> dict[str, object]:
     return {
         "library_id": library.id,
@@ -975,7 +1206,9 @@ def _load_json_object(value: str) -> dict[str, object]:
     return parsed if isinstance(parsed, dict) else {}
 
 
-def _load_source_snapshot(value: object) -> list[dict[str, object]] | None:
+def _load_source_snapshot(
+    value: object, *, require_name: bool = False
+) -> list[dict[str, object]] | None:
     try:
         parsed = json.loads(value) if isinstance(value, str) else None
     except (TypeError, ValueError):
@@ -1002,6 +1235,7 @@ def _load_source_snapshot(value: object) -> list[dict[str, object]] | None:
             or not remote_version
             or len(remote_version) > 128
             or item.get("is_directory") is not False
+            or (require_name and not _valid_target_name(item.get("name")))
         ):
             return None
     return parsed

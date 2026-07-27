@@ -32,6 +32,7 @@ from watch_assistant.services.organization_plan import (
     OrganizationPlanService,
     OrganizationPlanStatus,
     PlanSource,
+    _canonical_hash,
     load_executable_steps,
 )
 
@@ -204,7 +205,7 @@ async def test_complete_execution_payload_is_persisted_and_parsed(tmp_path):
     async with database.session_factory() as session:
         plan = await session.get(OrganizationPlan, plan_view.plan_id)
         assert plan is not None
-        steps = load_executable_steps(plan)
+        steps = await load_executable_steps(database.session_factory, plan)
         assert steps is not None
         assert steps[0].scope_directory_ids == (ROOT_ID, "8000")
         member = steps[0].members[0]
@@ -264,7 +265,7 @@ async def test_companion_group_is_complete_and_target_identity_changes_hash(tmp_
     async with database.session_factory() as session:
         stored = await session.get(OrganizationPlan, plan.plan_id)
         assert stored is not None
-        steps = load_executable_steps(stored)
+        steps = await load_executable_steps(database.session_factory, stored)
         assert steps is not None
         assert len(steps[0].members) == 2
     alternate = await service.create_plan(
@@ -324,8 +325,104 @@ async def test_old_plan_payload_is_readable_but_not_executable(tmp_path):
         await session.commit()
         refreshed = await session.get(OrganizationPlan, plan_view.plan_id)
         assert refreshed is not None
-        assert load_executable_steps(refreshed) is None
+        assert await load_executable_steps(database.session_factory, refreshed) is None
     await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_executable_loader_rejects_persisted_tampering(tmp_path):
+    mutations = ("hash", "target", "scope", "snapshot", "member")
+    for mutation in mutations:
+        case_dir = tmp_path / mutation
+        case_dir.mkdir()
+        database = await _database(case_dir)
+        service = OrganizationPlanService(database.session_factory)
+        plan_view = await service.create_plan(
+            library_id=LIBRARY_ID, scan_run_id=SCAN_ID, items=(_item(),)
+        )
+        async with database.session_factory() as session:
+            plan = await session.get(OrganizationPlan, plan_view.plan_id)
+            assert plan is not None
+            if mutation == "hash":
+                plan.plan_hash = "0" * 64
+            else:
+                actions = json.loads(plan.actions_json)
+                preconditions = json.loads(plan.preconditions_json)
+                snapshot = json.loads(plan.source_snapshot_json)
+                if mutation == "target":
+                    actions[0]["target"] = "movie/other-title.mkv"
+                elif mutation == "scope":
+                    scope = ["7000", "8000", "9999"]
+                    actions[0]["execution"]["scope_directory_ids"] = scope
+                    preconditions["items"][0]["execution"]["scope_directory_ids"] = (
+                        scope
+                    )
+                elif mutation == "snapshot":
+                    snapshot[0]["name"] = "other-title.mkv"
+                else:
+                    member_name = "other-title.mkv"
+                    actions[0]["execution"]["members"][0]["source_name"] = member_name
+                    preconditions["items"][0]["execution"]["members"][0][
+                        "source_name"
+                    ] = member_name
+                plan.actions_json = json.dumps(actions)
+                plan.preconditions_json = json.dumps(preconditions)
+                plan.source_snapshot_json = json.dumps(snapshot)
+                plan.plan_hash = _canonical_hash(
+                    {
+                        "library_id": plan.library_id,
+                        "library_snapshot": preconditions["library"],
+                        "source_snapshot": snapshot,
+                        "target_root": plan.target_root,
+                        "actions": actions,
+                        "preconditions": preconditions,
+                        "rule_version": plan.rule_version,
+                        "parser_version": plan.parser_version,
+                        "matcher_version": plan.matcher_version,
+                    }
+                )
+            await session.commit()
+            stored = await session.get(OrganizationPlan, plan.id)
+            assert stored is not None
+            assert await load_executable_steps(database.session_factory, stored) is None
+        await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_executable_loader_rejects_library_and_scan_changes(tmp_path):
+    changes = (
+        ("library_revision",),
+        ("library_scope",),
+        ("library_root",),
+        ("scan_incomplete",),
+    )
+    for (change,) in changes:
+        case_dir = tmp_path / change
+        case_dir.mkdir()
+        database = await _database(case_dir)
+        service = OrganizationPlanService(database.session_factory)
+        plan_view = await service.create_plan(
+            library_id=LIBRARY_ID, scan_run_id=SCAN_ID, items=(_item(),)
+        )
+        async with database.session_factory() as session:
+            if change.startswith("library"):
+                library = await session.get(MediaLibrary, LIBRARY_ID)
+                assert library is not None
+                if change == "library_revision":
+                    library.revision += 1
+                elif change == "library_scope":
+                    library.scope_verified = False
+                else:
+                    library.root_directory_id = "7001"
+            else:
+                run = await session.get(LibraryScanRun, SCAN_ID)
+                assert run is not None
+                run.complete = False
+            await session.commit()
+            stored = await session.get(OrganizationPlan, plan_view.plan_id)
+            assert stored is not None
+            assert await load_executable_steps(database.session_factory, stored) is None
+        await database.engine.dispose()
 
 
 @pytest.mark.asyncio
