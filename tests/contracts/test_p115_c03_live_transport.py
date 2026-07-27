@@ -13,7 +13,10 @@ from scripts.p115_c03_live_runner import (
 from scripts.p115_c03_live_runner import (
     main as live_runner_main,
 )
-from watch_assistant.adapters.p115_c03_fixture_probe import C03ProbeStatus
+from watch_assistant.adapters.p115_c03_fixture_probe import (
+    C03ProbeReport,
+    C03ProbeStatus,
+)
 from watch_assistant.adapters.p115_c03_live_transport import (
     MAX_FS_FILES_PAGE_CALLS,
     P115C03CallTimeoutUnavailable,
@@ -389,6 +392,46 @@ def test_live_runner_requires_live_flag_and_gates_before_cookie_or_client(
     assert report.status is C03ProbeStatus.BLOCKED
     assert report.error_code == "blocked_environment"
     assert called is False
+
+
+def test_live_runner_cli_injects_bounded_executor(monkeypatch, capsys):
+    observed = {}
+
+    def fake_run_live_probe(**kwargs):
+        observed.update(kwargs)
+        return C03ProbeReport(
+            status=C03ProbeStatus.SUCCESS,
+            fixture_fingerprint="offline",
+            steps=(),
+            write_calls=1,
+            read_calls=1,
+            list_calls=1,
+            page_calls=1,
+            cleanup="confirmed",
+        )
+
+    monkeypatch.setattr(
+        "scripts.p115_c03_live_runner.run_live_probe", fake_run_live_probe
+    )
+
+    assert (
+        live_runner_main(
+            [
+                "--parent-id",
+                "7",
+                "--cookie-path",
+                "cookie.txt",
+                "--authorization-path",
+                "authorization.json",
+                "--managed-scope-path",
+                "scope.json",
+                "--live",
+            ]
+        )
+        == 0
+    )
+    assert observed["call_executor"] is _p115client_timeout_executor
+    assert '"status": "success"' in capsys.readouterr().out
 
 
 def test_live_runner_uses_positional_cookie_and_disables_qrcode(tmp_path, monkeypatch):

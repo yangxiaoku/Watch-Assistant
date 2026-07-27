@@ -136,6 +136,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             cookie_path=args.cookie_path,
             authorization_path=args.authorization_path,
             managed_parent_ids=_read_managed_scope(args.managed_scope_path),
+            call_executor=_p115client_timeout_executor,
         )
     print(json.dumps(report.to_public_dict(), ensure_ascii=True, sort_keys=True))
     return 0 if report.status is C03ProbeStatus.SUCCESS else 1
