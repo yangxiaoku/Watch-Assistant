@@ -108,6 +108,37 @@ class InspectionSettingsPatch(BaseModel):
     revision: int = Field(ge=0)
 
 
+class OrganizationPlanResponse(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    plan_id: str
+    plan_hash: str
+    status: Literal["needs_review", "planned", "invalidated", "ignored"]
+    revision: int = Field(ge=1)
+    expires_at: datetime
+    source_count: int = Field(ge=0)
+    action_count: int = Field(ge=0)
+    precondition_count: int = Field(ge=0)
+    alias: str | None = None
+
+
+class OrganizationPlanListResponse(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    items: list[OrganizationPlanResponse]
+    next_cursor: int | None = Field(default=None, ge=0)
+
+
+class OrganizationPlanMutationRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    expected_revision: int = Field(ge=1)
+
+
+class OrganizationPlanAliasRequest(OrganizationPlanMutationRequest):
+    alias: str = Field(min_length=1, max_length=64)
+
+
 class CredentialRequest(BaseModel):
     model_config = {"extra": "forbid"}
 

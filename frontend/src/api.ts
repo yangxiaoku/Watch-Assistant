@@ -21,6 +21,8 @@ import type {
   ResourceSort,
   SettingsOverviewResponse,
   TaskResponse,
+  OrganizationPlanListResponse,
+  OrganizationPlanSummary,
 } from "./types";
 
 export class ApiError extends Error {
@@ -231,6 +233,42 @@ export class ApiClient {
 
   async getTask(taskId: string): Promise<TaskResponse> {
     return this.request<TaskResponse>(`/api/v1/tasks/${taskId}`);
+  }
+
+  async organizationPlans(filters: {
+    status?: "needs_review" | "planned" | "invalidated" | "ignored";
+    cursor?: number;
+    limit?: number;
+  } = {}): Promise<OrganizationPlanListResponse> {
+    const params = new URLSearchParams({ limit: String(filters.limit ?? 20) });
+    if (filters.status) params.set("status", filters.status);
+    if (filters.cursor !== undefined) params.set("cursor", String(filters.cursor));
+    return this.request<OrganizationPlanListResponse>(`/api/v1/organization-plans?${params}`);
+  }
+
+  async organizationPlan(planId: string): Promise<OrganizationPlanSummary> {
+    return this.request<OrganizationPlanSummary>(`/api/v1/organization-plans/${encodeURIComponent(planId)}`);
+  }
+
+  async confirmOrganizationPlan(planId: string, expectedRevision: number): Promise<OrganizationPlanSummary> {
+    return this.request<OrganizationPlanSummary>(`/api/v1/organization-plans/${encodeURIComponent(planId)}/confirm`, {
+      method: "POST",
+      body: JSON.stringify({ expected_revision: expectedRevision }),
+    });
+  }
+
+  async ignoreOrganizationPlan(planId: string, expectedRevision: number): Promise<OrganizationPlanSummary> {
+    return this.request<OrganizationPlanSummary>(`/api/v1/organization-plans/${encodeURIComponent(planId)}/ignore`, {
+      method: "POST",
+      body: JSON.stringify({ expected_revision: expectedRevision }),
+    });
+  }
+
+  async aliasOrganizationPlan(planId: string, alias: string, expectedRevision: number): Promise<OrganizationPlanSummary> {
+    return this.request<OrganizationPlanSummary>(`/api/v1/organization-plans/${encodeURIComponent(planId)}/alias`, {
+      method: "POST",
+      body: JSON.stringify({ alias, expected_revision: expectedRevision }),
+    });
   }
 
   private async request<T>(path: string, init: RequestInit = {}): Promise<T> {

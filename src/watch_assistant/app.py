@@ -22,6 +22,7 @@ from watch_assistant.api.auth import router as auth_router
 from watch_assistant.api.credentials import router as credentials_router
 from watch_assistant.api.inspection import router as inspection_router
 from watch_assistant.api.maintenance import router as maintenance_router
+from watch_assistant.api.organization_plan import router as organization_plan_router
 from watch_assistant.api.search import router as search_router
 from watch_assistant.api.settings import router as settings_router
 from watch_assistant.api.settings_p115 import router as p115_settings_router
@@ -34,6 +35,7 @@ from watch_assistant.services.cache_warm import CacheWarmer
 from watch_assistant.services.credentials import CredentialService
 from watch_assistant.services.inspection import InspectionService, InspectionWorker
 from watch_assistant.services.maintenance import MaintenanceService
+from watch_assistant.services.organization_plan import OrganizationPlanService
 from watch_assistant.services.p115_credentials import (
     CompositeCookieProvider,
     CookieProvider,
@@ -392,6 +394,9 @@ def create_app(
         application.state.maintenance_service = MaintenanceService(
             database.session_factory
         )
+        application.state.organization_plan_service = OrganizationPlanService(
+            database.session_factory
+        )
         fallback_cookie_provider = CookieProvider(
             os.environ.get("P115_COOKIE_PATH", "/run/secrets/p115_cookie")
         )
@@ -472,6 +477,7 @@ def create_app(
     application.include_router(auth_router)
     application.include_router(maintenance_router)
     application.include_router(inspection_router)
+    application.include_router(organization_plan_router)
     static_path = frontend_dir or Path(
         os.environ.get("FRONTEND_DIST_DIR", "frontend/dist")
     )
@@ -490,6 +496,7 @@ def create_app(
         @application.get("/history", include_in_schema=False)
         @application.get("/search", include_in_schema=False)
         @application.get("/settings", include_in_schema=False)
+        @application.get("/organization-plans", include_in_schema=False)
         async def frontend_browse_route() -> FileResponse:
             return FileResponse(index_path)
 

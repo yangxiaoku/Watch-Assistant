@@ -12,7 +12,7 @@ from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import PurePosixPath
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -84,13 +84,14 @@ class OrganizationPlanView:
     source_count: int
     action_count: int
     precondition_count: int
+    alias: str | None = None
 
     def __repr__(self) -> str:
         return (
             "OrganizationPlanView(plan_id=<redacted>, plan_hash=<redacted>, "
             f"status={self.status.value!r}, revision={self.revision}, "
             f"source_count={self.source_count}, action_count={self.action_count}, "
-            f"precondition_count={self.precondition_count})"
+            f"precondition_count={self.precondition_count}, alias=<redacted>)"
         )
 
     def to_public_dict(self) -> dict[str, object]:
@@ -103,6 +104,7 @@ class OrganizationPlanView:
             "source_count": self.source_count,
             "action_count": self.action_count,
             "precondition_count": self.precondition_count,
+            "alias": self.alias,
         }
 
 
@@ -319,17 +321,147 @@ class OrganizationPlanService:
                 await session.commit()
             return _view(plan)
 
-    async def ignore_plan(self, plan_id: str) -> OrganizationPlanView:
+    async def ignore_plan(
+        self, plan_id: str, *, expected_revision: int
+    ) -> OrganizationPlanView:
+        return await self.ignore_plan_at_revision(
+            plan_id, expected_revision=expected_revision
+        )
+
+    async def list_plans(
+        self,
+        *,
+        status: OrganizationPlanStatus | None = None,
+        cursor: int = 0,
+        limit: int = 50,
+    ) -> tuple[list[OrganizationPlanView], int | None]:
+        if cursor < 0 or limit < 1 or limit > 100:
+            raise OrganizationPlanError("invalid_pagination")
+        async with self._session_factory() as session:
+            statement = select(OrganizationPlan).order_by(
+                OrganizationPlan.created_at.asc(), OrganizationPlan.id.asc()
+            )
+            if status is not None:
+                statement = statement.where(OrganizationPlan.status == status.value)
+            rows = list(
+                (await session.scalars(statement.offset(cursor).limit(limit + 1))).all()
+            )
+            has_more = len(rows) > limit
+            rows = rows[:limit]
+            next_cursor = cursor + limit if has_more else None
+            return [_view(row) for row in rows], next_cursor
+
+    async def get_plan(self, plan_id: str) -> OrganizationPlanView:
         _validate_identity(plan_id, "invalid_plan")
         async with self._session_factory() as session:
             plan = await session.get(OrganizationPlan, plan_id)
             if plan is None:
                 raise OrganizationPlanError("plan_not_found")
-            if plan.status != OrganizationPlanStatus.IGNORED.value:
-                plan.status = OrganizationPlanStatus.IGNORED.value
-                plan.revision += 1
-                await session.commit()
             return _view(plan)
+
+    async def confirm_plan(
+        self, plan_id: str, *, expected_revision: int
+    ) -> OrganizationPlanView:
+        return await self._transition_plan(
+            plan_id,
+            expected_revision=expected_revision,
+            target=OrganizationPlanStatus.PLANNED,
+            allowed=(
+                OrganizationPlanStatus.NEEDS_REVIEW,
+                OrganizationPlanStatus.PLANNED,
+            ),
+        )
+
+    async def ignore_plan_at_revision(
+        self, plan_id: str, *, expected_revision: int
+    ) -> OrganizationPlanView:
+        return await self._transition_plan(
+            plan_id,
+            expected_revision=expected_revision,
+            target=OrganizationPlanStatus.IGNORED,
+            allowed=tuple(OrganizationPlanStatus),
+        )
+
+    async def alias_plan(
+        self, plan_id: str, *, alias: str, expected_revision: int
+    ) -> OrganizationPlanView:
+        _validate_identity(plan_id, "invalid_plan")
+        alias = _validate_alias(alias)
+        if expected_revision < 0:
+            raise OrganizationPlanError("invalid_revision")
+        async with self._session_factory() as session:
+            plan = await session.get(OrganizationPlan, plan_id)
+            if plan is None:
+                raise OrganizationPlanError("plan_not_found")
+            if plan.revision != expected_revision:
+                raise OrganizationPlanError("stale_revision")
+            if plan.status not in {
+                OrganizationPlanStatus.NEEDS_REVIEW.value,
+                OrganizationPlanStatus.PLANNED.value,
+            }:
+                raise OrganizationPlanError("plan_not_reviewable")
+            if plan.alias == alias:
+                return _view(plan)
+            result = await session.execute(
+                update(OrganizationPlan)
+                .where(
+                    OrganizationPlan.id == plan_id,
+                    OrganizationPlan.revision == expected_revision,
+                    OrganizationPlan.status.in_(
+                        (
+                            OrganizationPlanStatus.NEEDS_REVIEW.value,
+                            OrganizationPlanStatus.PLANNED.value,
+                        )
+                    ),
+                )
+                .values(alias=alias, revision=expected_revision + 1)
+            )
+            if result.rowcount != 1:
+                await session.rollback()
+                raise OrganizationPlanError("stale_revision")
+            await session.commit()
+            refreshed = await session.get(OrganizationPlan, plan_id)
+            if refreshed is None:
+                raise OrganizationPlanError("plan_not_found")
+            return _view(refreshed)
+
+    async def _transition_plan(
+        self,
+        plan_id: str,
+        *,
+        expected_revision: int,
+        target: OrganizationPlanStatus,
+        allowed: tuple[OrganizationPlanStatus, ...],
+    ) -> OrganizationPlanView:
+        _validate_identity(plan_id, "invalid_plan")
+        if expected_revision < 0:
+            raise OrganizationPlanError("invalid_revision")
+        async with self._session_factory() as session:
+            plan = await session.get(OrganizationPlan, plan_id)
+            if plan is None:
+                raise OrganizationPlanError("plan_not_found")
+            if plan.revision != expected_revision:
+                raise OrganizationPlanError("stale_revision")
+            if plan.status == target.value:
+                return _view(plan)
+            if plan.status not in {item.value for item in allowed}:
+                raise OrganizationPlanError("plan_not_reviewable")
+            result = await session.execute(
+                update(OrganizationPlan)
+                .where(
+                    OrganizationPlan.id == plan_id,
+                    OrganizationPlan.revision == expected_revision,
+                )
+                .values(status=target.value, revision=expected_revision + 1)
+            )
+            if result.rowcount != 1:
+                await session.rollback()
+                raise OrganizationPlanError("stale_revision")
+            await session.commit()
+            refreshed = await session.get(OrganizationPlan, plan_id)
+            if refreshed is None:
+                raise OrganizationPlanError("plan_not_found")
+            return _view(refreshed)
 
     async def _verified_scan(
         self,
@@ -661,6 +793,28 @@ def _validate_identity(value: str, code: str) -> str:
     return value
 
 
+def _validate_alias(value: str) -> str:
+    if not isinstance(value, str):
+        raise OrganizationPlanError("invalid_alias")
+    value = value.strip()
+    lowered = value.casefold()
+    if (
+        not value
+        or len(value) > 64
+        or not any(character.isalpha() for character in value)
+        or any(character.isspace() and character not in {" "} for character in value)
+        or any(character in value for character in ("/", "\\", "\x00", ":"))
+        or "://" in value
+        or any(
+            marker in lowered
+            for marker in ("cookie", "pickcode", "token", "password", "secret")
+        )
+        or value in {".", ".."}
+    ):
+        raise OrganizationPlanError("invalid_alias")
+    return value
+
+
 def _validate_version(value: str) -> str:
     if (
         not isinstance(value, str)
@@ -739,6 +893,7 @@ def _view(plan: OrganizationPlan) -> OrganizationPlanView:
         source_count=len(source_snapshot),
         action_count=len(_load_json_list(plan.actions_json)),
         precondition_count=precondition_count,
+        alias=plan.alias,
     )
 
 

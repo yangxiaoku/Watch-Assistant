@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Clock3, Film, Flame, Heart, Home, LoaderCircle, LogIn, PanelRight, Search, Settings, Tv, X } from "@lucide/vue";
+import { ClipboardCheck, Clock3, Film, Flame, Heart, Home, LoaderCircle, LogIn, PanelRight, Search, Settings, Tv, X } from "@lucide/vue";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 import { ApiClient, ApiError } from "./api";
 import TaskDrawer from "./components/TaskDrawer.vue";
@@ -26,6 +26,7 @@ import LibraryView from "./views/LibraryView.vue";
 import MovieView from "./views/MovieView.vue";
 import SearchView from "./views/SearchView.vue";
 import SettingsView from "./views/SettingsView.vue";
+import OrganizationWorkbenchView from "./views/OrganizationWorkbenchView.vue";
 
 const FAVORITES_KEY = "watch-assistant:favorites";
 const HISTORY_KEY = "watch-assistant:history";
@@ -410,6 +411,7 @@ const navItems = [
   { view: "movies" as const, label: "电影", icon: Film },
   { view: "tv" as const, label: "剧集", icon: Tv },
   { view: "popular" as const, label: "热门", icon: Flame },
+  { view: "organization-plans" as const, label: "整理", icon: ClipboardCheck },
 ];
 
 function readStoredMovies(key: string): MovieMetadata[] {
@@ -1080,6 +1082,7 @@ onBeforeUnmount(() => {
         <LibraryView v-else-if="activeView === 'movies' || activeView === 'tv'" :movies="catalogMovies" :loading="catalogLoading" :favorite-ids="favoriteIds" :genre-id="genreId" :year="year" :sort="sort" :media-type="activeView" :page="currentPage" :total-pages="totalPages" :total-results="totalResults" @open="openMovie" @favorite="toggleFavorite" @filters="loadDiscover" @page="loadPage" />
         <CollectionView v-else-if="activeView === 'favorites' || activeView === 'history'" :mode="activeView" :movies="activeView === 'favorites' ? favorites : history" :favorite-ids="favoriteIds" @open="openMovie" @favorite="toggleFavorite" />
         <SettingsView v-else-if="activeView === 'settings'" :api="api" @auto-start-enabled="inspectionAutoStartEnabled = $event" />
+        <OrganizationWorkbenchView v-else-if="activeView === 'organization-plans'" :api="api" />
         <SearchView v-else v-model="searchInput" :loading="catalogLoading" :movies="catalogMovies" :heading="catalogHeading" :favorite-ids="favoriteIds" :page="currentPage" :total-pages="totalPages" :total-results="totalResults" @search="searchMovies" @reset="selectView('home')" @open="openMovie" @favorite="toggleFavorite" @page="loadPage" />
       </template>
       <section v-else-if="loading && !result" class="detail-loading"><LoaderCircle class="spin" :size="24" /><strong>正在聚合资源</strong><span>正在查询 PanSou 的磁力与 115 分享结果</span></section>

@@ -142,6 +142,7 @@ class OrganizationPlan(Base):
     status: Mapped[str] = mapped_column(
         String(16), default="needs_review", server_default="needs_review"
     )
+    alias: Mapped[str | None] = mapped_column(Text, nullable=True)
     revision: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     plan_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)

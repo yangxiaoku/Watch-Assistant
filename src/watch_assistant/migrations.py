@@ -159,10 +159,21 @@ def _create_organization_plan_tables(connection: Connection) -> None:
     )
 
 
+def _add_organization_plan_alias(connection: Connection) -> None:
+    """Add the local-only review alias without changing existing plans."""
+
+    columns = {
+        item["name"] for item in inspect(connection).get_columns("organization_plans")
+    }
+    if "alias" not in columns:
+        connection.execute(text("ALTER TABLE organization_plans ADD COLUMN alias TEXT"))
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration("001_application_settings_columns", _add_application_settings_columns),
     Migration("002_library_index_tables", _create_library_index_tables),
     Migration("003_organization_plan_tables", _create_organization_plan_tables),
+    Migration("004_organization_plan_alias", _add_organization_plan_alias),
 )
 
 

@@ -253,6 +253,25 @@ export interface LogsResponse {
   next_cursor: number | null;
 }
 
+export type OrganizationPlanStatus = "needs_review" | "planned" | "invalidated" | "ignored";
+
+export interface OrganizationPlanSummary {
+  plan_id: string;
+  plan_hash: string;
+  status: OrganizationPlanStatus;
+  revision: number;
+  expires_at: string;
+  source_count: number;
+  action_count: number;
+  precondition_count: number;
+  alias: string | null;
+}
+
+export interface OrganizationPlanListResponse {
+  items: OrganizationPlanSummary[];
+  next_cursor: number | null;
+}
+
 export interface TaskResponse {
   id: string;
   resource_id: string | null;
