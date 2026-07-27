@@ -118,9 +118,51 @@ def _create_library_index_tables(connection: Connection) -> None:
         connection.execute(text(statement))
 
 
+def _create_organization_plan_tables(connection: Connection) -> None:
+    """Create local, preview-only organization plans for legacy databases."""
+
+    connection.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS organization_plans (
+                id VARCHAR(64) PRIMARY KEY,
+                library_id VARCHAR(128) NOT NULL
+                    REFERENCES media_libraries(id),
+                source_scan_run_id VARCHAR(64) NOT NULL
+                    REFERENCES library_scan_runs(id),
+                source_snapshot_revision INTEGER NOT NULL,
+                source_snapshot_json TEXT NOT NULL,
+                target_root TEXT NOT NULL,
+                actions_json TEXT NOT NULL,
+                basis_json TEXT NOT NULL,
+                preconditions_json TEXT NOT NULL,
+                rule_version VARCHAR(64) NOT NULL,
+                parser_version VARCHAR(64) NOT NULL,
+                matcher_version VARCHAR(64) NOT NULL,
+                status VARCHAR(16) NOT NULL DEFAULT 'needs_review',
+                revision INTEGER NOT NULL DEFAULT 1,
+                expires_at DATETIME NOT NULL,
+                plan_hash VARCHAR(64) NOT NULL UNIQUE,
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL
+            )
+            """
+        )
+    )
+    connection.execute(
+        text(
+            """
+            CREATE INDEX IF NOT EXISTS ix_organization_plans_library_id
+                ON organization_plans (library_id)
+            """
+        )
+    )
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration("001_application_settings_columns", _add_application_settings_columns),
     Migration("002_library_index_tables", _create_library_index_tables),
+    Migration("003_organization_plan_tables", _create_organization_plan_tables),
 )
 
 
