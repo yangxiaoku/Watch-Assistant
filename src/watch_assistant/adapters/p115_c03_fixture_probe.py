@@ -37,7 +37,8 @@ C03_LIVE_ENV = "WATCH_ASSISTANT_P115_C03_LIVE"
 PROBE_ENABLED_VALUE = "1"
 
 MAX_WRITE_CALLS = 10
-MAX_READ_CALLS = 11
+MAX_LIST_CALLS = 4
+MAX_READ_CALLS = 15
 MAX_TOTAL_CALLS = MAX_WRITE_CALLS + MAX_READ_CALLS
 MAX_CONFLICT_OBSERVATION_CALLS = 0
 MAX_BATCH_OBSERVATION_CALLS = 0
@@ -85,6 +86,20 @@ class C03RemoteEntry:
         return f"C03RemoteEntry(is_directory={self.is_directory!r})"
 
 
+@dataclass(frozen=True, slots=True, repr=False)
+class C03DirectoryListing:
+    """A bounded, read-only child listing normalized by the caller."""
+
+    entries: tuple[C03RemoteEntry, ...]
+    complete: bool = True
+
+    def __repr__(self) -> str:
+        return (
+            f"C03DirectoryListing(entry_count={len(self.entries)}, "
+            f"complete={self.complete!r})"
+        )
+
+
 class P115C03Transport(Protocol):
     """Caller-owned async transport seam for C03 writes and read checks."""
 
@@ -92,11 +107,14 @@ class P115C03Transport(Protocol):
 
     async def read(self, file_id: str) -> C03RemoteEntry | None: ...
 
+    async def list_children(self, parent_id: str) -> C03DirectoryListing: ...
+
 
 @dataclass(frozen=True, slots=True)
 class C03CallBudget:
     max_write_calls: int = MAX_WRITE_CALLS
     max_read_calls: int = MAX_READ_CALLS
+    max_list_calls: int = MAX_LIST_CALLS
     max_total_calls: int = MAX_TOTAL_CALLS
     max_conflict_observation_calls: int = MAX_CONFLICT_OBSERVATION_CALLS
     max_batch_observation_calls: int = MAX_BATCH_OBSERVATION_CALLS
@@ -107,6 +125,8 @@ class C03CallBudget:
             and self.max_write_calls <= MAX_WRITE_CALLS
             and self.max_read_calls > 0
             and self.max_read_calls <= MAX_READ_CALLS
+            and self.max_list_calls > 0
+            and self.max_list_calls <= MAX_LIST_CALLS
             and self.max_total_calls > 0
             and self.max_total_calls <= MAX_TOTAL_CALLS
             and self.max_conflict_observation_calls == 0
@@ -132,6 +152,7 @@ class C03ProbeReport:
     steps: tuple[C03StepReport, ...]
     write_calls: int
     read_calls: int
+    list_calls: int
     cleanup: str
     error_code: str | None = None
 
@@ -140,7 +161,8 @@ class C03ProbeReport:
             f"C03ProbeReport(status={self.status.value!r}, "
             f"fixture_fingerprint_present={self.fixture_fingerprint is not None}, "
             f"step_count={len(self.steps)}, write_calls={self.write_calls}, "
-            f"read_calls={self.read_calls}, cleanup={self.cleanup!r}, "
+            f"read_calls={self.read_calls}, list_calls={self.list_calls}, "
+            f"cleanup={self.cleanup!r}, "
             f"error_code={self.error_code!r})"
         )
 
@@ -154,6 +176,7 @@ class C03ProbeReport:
             ],
             "write_calls": self.write_calls,
             "read_calls": self.read_calls,
+            "list_calls": self.list_calls,
             "cleanup": self.cleanup,
             "error_code": self.error_code,
         }
@@ -163,10 +186,12 @@ class C03ProbeReport:
 class _ProbeState:
     write_calls: int = 0
     read_calls: int = 0
+    list_calls: int = 0
     steps: list[C03StepReport] = field(default_factory=list)
     root_id: str | None = None
     root_name: str | None = None
     root_confirmed: bool = False
+    managed: dict[str, tuple[str, str]] = field(default_factory=dict)
 
 
 class _ProbeHalt(Exception):
@@ -254,6 +279,7 @@ def _report(
         steps=tuple(state.steps),
         write_calls=state.write_calls,
         read_calls=state.read_calls,
+        list_calls=state.list_calls,
         cleanup=cleanup,
         error_code=error_code,
     )
@@ -338,6 +364,7 @@ async def run_p115_c03_fixture_probe(
             name=root_name,
         )
         state.root_confirmed = True
+        state.managed[root_id] = (normalized_parent_id, root_name)
         if root_receipt.status is not WriteStatus.SUCCESS:
             raise _ProbeHalt("root_creation_unconfirmed")
 
@@ -349,6 +376,7 @@ async def run_p115_c03_fixture_probe(
             parent_id=root_id,
             name="source",
         )
+        state.managed[source_id] = (root_id, "source")
         quarantine_id = await _mkdir(
             transport,
             state,
@@ -357,7 +385,8 @@ async def run_p115_c03_fixture_probe(
             parent_id=root_id,
             name="quarantine",
         )
-        await _mkdir(
+        state.managed[quarantine_id] = (root_id, "quarantine")
+        artifact_id = await _mkdir(
             transport,
             state,
             selected_budget,
@@ -365,6 +394,7 @@ async def run_p115_c03_fixture_probe(
             parent_id=root_id,
             name="artifact",
         )
+        state.managed[artifact_id] = (root_id, "artifact")
 
         await _rename_and_verify(
             transport,
@@ -418,7 +448,7 @@ async def run_p115_c03_fixture_probe(
         outcome = C03ProbeStatus.UNCERTAIN
         error_code = error.code
 
-    if state.root_confirmed:
+    if outcome is C03ProbeStatus.SUCCESS and state.root_confirmed:
         cleanup, cleanup_error = await _cleanup(
             transport,
             state,
@@ -429,8 +459,8 @@ async def run_p115_c03_fixture_probe(
         if cleanup_error is not None:
             outcome = C03ProbeStatus.UNCERTAIN
             error_code = cleanup_error
-    elif state.root_id is not None:
-        cleanup = "not_attempted_unconfirmed"
+    elif outcome is C03ProbeStatus.UNCERTAIN:
+        cleanup = "not_attempted_uncertain"
 
     return _report(
         state,
@@ -683,6 +713,78 @@ def _receipt_file_id(receipt: C03WriteReceipt) -> str | None:
         return None
 
 
+async def _list_children(
+    transport: P115C03Transport,
+    state: _ProbeState,
+    budget: C03CallBudget,
+    timeout_seconds: float,
+    parent_id: str,
+) -> C03DirectoryListing:
+    if state.list_calls >= budget.max_list_calls:
+        raise _ProbeHalt("list_call_limit_reached")
+    if state.read_calls >= budget.max_read_calls:
+        raise _ProbeHalt("read_call_limit_reached")
+    if state.write_calls + state.read_calls >= budget.max_total_calls:
+        raise _ProbeHalt("total_call_limit_reached")
+    state.list_calls += 1
+    state.read_calls += 1
+    try:
+        listing = await asyncio.wait_for(
+            transport.list_children(parent_id), timeout_seconds
+        )
+    except asyncio.CancelledError:
+        raise
+    except TimeoutError:
+        raise _ProbeHalt("list_timeout") from None
+    except Exception:  # noqa: BLE001 - listing details never cross the boundary
+        raise _ProbeHalt("list_failed") from None
+    if not isinstance(listing, C03DirectoryListing):
+        raise _ProbeHalt("list_result_unconfirmed")
+    if listing.complete is not True:
+        raise _ProbeHalt("list_incomplete")
+    return listing
+
+
+async def _verify_managed_scope(
+    transport: P115C03Transport,
+    state: _ProbeState,
+    budget: C03CallBudget,
+    timeout_seconds: float,
+) -> None:
+    """Require every child of each managed directory to be in the manifest."""
+
+    for parent_id in state.managed:
+        listing = await _list_children(
+            transport, state, budget, timeout_seconds, parent_id
+        )
+        expected = {
+            (file_id, child_parent_id, name, True)
+            for file_id, (child_parent_id, name) in state.managed.items()
+            if child_parent_id == parent_id
+        }
+        actual: list[tuple[str, str, str, bool]] = []
+        try:
+            for entry in listing.entries:
+                if not isinstance(entry, C03RemoteEntry):
+                    raise _ProbeHalt("cleanup_scope_unconfirmed")
+                if not isinstance(entry.name, str) or not isinstance(
+                    entry.is_directory, bool
+                ):
+                    raise _ProbeHalt("cleanup_scope_unconfirmed")
+                actual.append(
+                    (
+                        _normalize_file_id(entry.file_id),
+                        _normalize_file_id(entry.parent_id),
+                        entry.name,
+                        entry.is_directory,
+                    )
+                )
+        except (TypeError, ValueError):
+            raise _ProbeHalt("cleanup_scope_unconfirmed") from None
+        if len(actual) != len(set(actual)) or set(actual) != expected:
+            raise _ProbeHalt("cleanup_scope_unconfirmed")
+
+
 async def _cleanup(
     transport: P115C03Transport,
     state: _ProbeState,
@@ -704,6 +806,7 @@ async def _cleanup(
             parent_id=parent_id,
             name=state.root_name,
         )
+        await _verify_managed_scope(transport, state, budget, timeout_seconds)
         receipt = await _write(
             transport,
             prepare_recycle(state.root_id),
@@ -732,20 +835,24 @@ async def _cleanup(
             return "uncertain", "cleanup_not_confirmed"
         return "complete", None
     except asyncio.CancelledError:
-        return "not_attempted_cancelled", "cancelled"
+        return "not_attempted_uncertain", "cancelled"
     except _ProbeHalt as error:
-        return "not_completed", f"cleanup_{error.code}"
+        return "not_attempted_uncertain", f"cleanup_{error.code}"
 
 
 class FakeP115C03Transport:
     """In-memory fixture; public state exposes counts and operation shapes only."""
 
-    def __init__(self, failure: str | None = None) -> None:
+    def __init__(
+        self, failure: str | None = None, scope_fault: str | None = None
+    ) -> None:
         self._failure = failure
+        self._scope_fault = scope_fault
         self._next_id = 90000000000000000001
         self._entries: dict[str, C03RemoteEntry] = {}
         self.write_operations: list[WriteOperation] = []
         self.read_count = 0
+        self.list_count = 0
 
     def __repr__(self) -> str:
         return (
@@ -767,6 +874,15 @@ class FakeP115C03Transport:
             file_id = str(self._next_id)
             self._next_id += 1
             self._entries[file_id] = C03RemoteEntry(file_id, parent_id, name)
+            if self._scope_fault == "foreign" and len(self.write_operations) == 4:
+                root = next(
+                    entry
+                    for entry in self._entries.values()
+                    if entry.name.startswith("wa-c03-root-")
+                )
+                self._entries["90000000000000000099"] = C03RemoteEntry(
+                    "90000000000000000099", root.file_id, "user-owned"
+                )
             return C03WriteReceipt(WriteStatus.SUCCESS, file_id)
         if request.operation is WriteOperation.MOVE:
             file_id = request.payload["fid"]
@@ -806,6 +922,30 @@ class FakeP115C03Transport:
             raise TimeoutError("opaque read timeout")
         return self._entries.get(file_id)
 
+    async def list_children(self, parent_id: str) -> C03DirectoryListing:
+        self.list_count += 1
+        if self._scope_fault == "list-failed":
+            raise OSError("opaque list failure")
+        if self._scope_fault == "missing" and self.list_count == 1:
+            root = next(
+                entry
+                for entry in self._entries.values()
+                if entry.name.startswith("wa-c03-root-")
+            )
+            artifact = next(
+                file_id
+                for file_id, entry in self._entries.items()
+                if entry.parent_id == root.file_id and entry.name == "artifact"
+            )
+            self._entries.pop(artifact)
+        entries = tuple(
+            entry for entry in self._entries.values() if entry.parent_id == parent_id
+        )
+        return C03DirectoryListing(
+            entries,
+            complete=self._scope_fault != "incomplete",
+        )
+
     def _is_descendant(self, file_id: str, root_id: str) -> bool:
         current = self._entries[file_id]
         while current.parent_id in self._entries:
@@ -822,10 +962,12 @@ __all__ = [
     "C03_WRITE_ENABLED_ENV",
     "MAX_BATCH_OBSERVATION_CALLS",
     "MAX_CONFLICT_OBSERVATION_CALLS",
+    "MAX_LIST_CALLS",
     "MAX_READ_CALLS",
     "MAX_TOTAL_CALLS",
     "MAX_WRITE_CALLS",
     "C03CallBudget",
+    "C03DirectoryListing",
     "C03ProbeReport",
     "C03ProbeStatus",
     "C03RemoteEntry",

@@ -90,7 +90,7 @@ Cookie 或异常正文。
 `scripts/p115_c03_fixture_probe.py` 只提供注入式边界和 offline fake；模块不读取
 Cookie、不创建 `P115Client`、不发网络。探针只接受非零十进制 `parent_id`，拒绝 URL、
 路径和任意目录输入。每轮固定执行 4 次 `mkdir`、5 次隔离/恢复组合操作及 1 次
-`fs_delete` 回收，最多 10 次写调用和 11 次只读核对；冲突、批量观测本轮未覆盖且预算为 0。
+`fs_delete` 回收，最多 10 次写调用、15 次只读调用（其中 4 次目录列举）；冲突、批量观测本轮未覆盖且预算为 0。
 
 运行前必须同时设置：
 `WATCH_ASSISTANT_P115_C03_WRITE=1`、
@@ -103,7 +103,9 @@ Cookie、不创建 `P115Client`、不发网络。探针只接受非零十进制 
 ID、名称、路径、Cookie、pickcode、URL 或第三方异常正文。每次写入后都按稳定
 `file_id + parent_id + name` 做只读核对；任一失败、超时、取消或无法确认均报告
 `uncertain`，不自动重试。只有再次精确核对本轮创建的受管根后，才允许一次回收，
-并在回收后只读确认根不存在。该探针仍是 fixture-only 证据，不打开业务 capability。
+并在回收前逐层列举 root/source/quarantine/artifact，确认目录完整且子项集合只含
+本轮受管对象；任何 uncertain、外来/缺失对象、分页不完整或列举失败都不回收。
+回收后再只读确认根不存在。该探针仍是 fixture-only 证据，不打开业务 capability。
 
 ## 固定版本源码观察
 

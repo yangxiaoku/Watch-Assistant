@@ -40,7 +40,9 @@ async def test_c03_lifecycle_is_bounded_and_reclaims_only_its_exact_root():
     assert report.cleanup == "complete"
     assert report.error_code is None
     assert report.write_calls == MAX_WRITE_CALLS == 10
-    assert report.read_calls == MAX_READ_CALLS == 11
+    assert report.read_calls == MAX_READ_CALLS == 15
+    assert report.list_calls == 4
+    assert transport.list_count == report.list_calls
     assert report.write_calls + report.read_calls <= MAX_TOTAL_CALLS
     assert transport.write_operations == [
         WriteOperation.MKDIR,
@@ -126,8 +128,9 @@ async def test_failure_timeout_and_cancel_are_uncertain_without_write_retry(
 
     assert report.status is C03ProbeStatus.UNCERTAIN
     assert report.error_code == error_code
+    assert report.cleanup == "not_attempted_uncertain"
     assert transport.write_operations.count(WriteOperation.MOVE) == 1
-    assert transport.write_operations[-1] is WriteOperation.RECYCLE
+    assert WriteOperation.RECYCLE not in transport.write_operations
 
 
 @pytest.mark.asyncio
@@ -139,8 +142,24 @@ async def test_unconfirmed_root_is_never_recycled():
 
     assert report.status is C03ProbeStatus.UNCERTAIN
     assert report.error_code == "remote_write_failed"
-    assert report.cleanup == "not_attempted"
+    assert report.cleanup == "not_attempted_uncertain"
     assert WriteOperation.RECYCLE not in transport.write_operations
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "scope_fault", ("foreign", "missing", "incomplete", "list-failed")
+)
+async def test_cleanup_requires_complete_exact_managed_scope(scope_fault):
+    transport = FakeP115C03Transport(scope_fault=scope_fault)
+    report = await run_p115_c03_fixture_probe(
+        transport=transport, parent_id="7000", env=_enabled_env()
+    )
+
+    assert report.status is C03ProbeStatus.UNCERTAIN
+    assert report.cleanup == "not_attempted_uncertain"
+    assert WriteOperation.RECYCLE not in transport.write_operations
+    assert transport.list_count >= 1
 
 
 @pytest.mark.asyncio
