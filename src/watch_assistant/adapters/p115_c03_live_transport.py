@@ -60,9 +60,10 @@ class P115C03LiveTransport(P115C03Transport):
             WriteOperation.RENAME: "fs_rename",
             WriteOperation.RECYCLE: "fs_delete",
         }.get(request.operation)
-        if method_name is None:
+        payload = _client_payload(request)
+        if method_name is None or payload is None:
             return C03WriteReceipt(WriteStatus.UNCERTAIN)
-        response = await _call(getattr(self._client, method_name), request.payload)
+        response = await _call(getattr(self._client, method_name), payload)
         return _normalize_write_response(request.operation, response)
 
     async def read(self, file_id: str) -> C03RemoteEntry | None:
@@ -123,6 +124,29 @@ async def _call(method: Any, payload: Mapping[str, Any]) -> Any:
     if inspect.isawaitable(result):
         return await result
     return result
+
+
+def _client_payload(request: PreparedWrite) -> dict[str, str] | None:
+    """Map the generic write DTO to the fixed p115client payload shape."""
+
+    payload = request.payload
+    if request.operation is WriteOperation.MKDIR:
+        if set(payload) != {"pid", "file_name"}:
+            return None
+        return {"pid": payload["pid"], "cname": payload["file_name"]}
+    if request.operation is WriteOperation.MOVE:
+        if set(payload) != {"file_ids", "to_cid"}:
+            return None
+        return {"fid": payload["file_ids"], "pid": payload["to_cid"]}
+    if request.operation is WriteOperation.RENAME:
+        if set(payload) != {"file_id", "file_name"}:
+            return None
+        return {f"files_new_name[{payload['file_id']}]": payload["file_name"]}
+    if request.operation is WriteOperation.RECYCLE:
+        if set(payload) != {"file_id"}:
+            return None
+        return {"fid": payload["file_id"]}
+    return None
 
 
 def _normalize_write_response(

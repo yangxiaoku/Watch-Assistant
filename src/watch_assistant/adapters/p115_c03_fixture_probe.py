@@ -897,7 +897,7 @@ class FakeP115C03Transport:
             raise asyncio.CancelledError()
         if request.operation is WriteOperation.MKDIR:
             parent_id = request.payload["pid"]
-            name = request.payload["cname"]
+            name = request.payload["file_name"]
             file_id = str(self._next_id)
             self._next_id += 1
             self._entries[file_id] = C03RemoteEntry(file_id, parent_id, name)
@@ -912,24 +912,21 @@ class FakeP115C03Transport:
                 )
             return C03WriteReceipt(WriteStatus.SUCCESS, file_id)
         if request.operation is WriteOperation.MOVE:
-            file_id = request.payload["fid"]
+            file_id = request.payload["file_ids"]
             entry = self._entries[file_id]
             self._entries[file_id] = C03RemoteEntry(
-                entry.file_id, request.payload["pid"], entry.name
+                entry.file_id, request.payload["to_cid"], entry.name
             )
             return C03WriteReceipt(WriteStatus.SUCCESS)
         if request.operation is WriteOperation.RENAME:
-            key = next(
-                key for key in request.payload if key.startswith("files_new_name[")
-            )
-            file_id = key.removeprefix("files_new_name[").removesuffix("]")
+            file_id = request.payload["file_id"]
             entry = self._entries[file_id]
             self._entries[file_id] = C03RemoteEntry(
-                entry.file_id, entry.parent_id, request.payload[key]
+                entry.file_id, entry.parent_id, request.payload["file_name"]
             )
             return C03WriteReceipt(WriteStatus.SUCCESS)
         if request.operation is WriteOperation.RECYCLE:
-            root_id = request.payload["fid"]
+            root_id = request.payload["file_id"]
             descendants = {
                 file_id
                 for file_id in self._entries
