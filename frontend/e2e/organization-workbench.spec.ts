@@ -14,7 +14,7 @@ const needsReview = {
 
 test.beforeEach(async ({ page }) => {
   await page.route("**/api/v1/health", (route) =>
-    route.fulfill({ json: { status: "ok", push_supported: false } }),
+    route.fulfill({ json: { status: "ok", push_supported: false, organization_plan_enabled: true } }),
   );
   await page.route("**/api/v1/auth/me", (route) =>
     route.fulfill({ json: { authenticated: true, via_bearer: false, csrf_token: "csrf-local" } }),

@@ -24,7 +24,7 @@ class _FakeClient:
         return None
 
 
-async def _client(tmp_path: Path):
+async def _client(tmp_path: Path, *, enabled: bool = False):
     database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'organization.db'}")
     await initialize_database(database.engine)
     now = datetime.now(UTC)
@@ -85,6 +85,7 @@ async def _client(tmp_path: Path):
         pansou_client=_FakeClient(),
         security_manager=security,
         frontend_dir=tmp_path / "missing",
+        organization_plan_enabled=enabled,
     )
     client = httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://app.test"
@@ -94,7 +95,7 @@ async def _client(tmp_path: Path):
 
 @pytest.mark.integration
 async def test_plan_review_api_is_authenticated_and_redacted(tmp_path):
-    client, database = await _client(tmp_path)
+    client, database = await _client(tmp_path, enabled=True)
     unauthenticated = await client.get("/api/v1/organization-plans")
     assert unauthenticated.status_code == 401
 
@@ -160,7 +161,7 @@ async def test_plan_review_api_is_authenticated_and_redacted(tmp_path):
 
 @pytest.mark.integration
 async def test_plan_review_cursor_is_bounded_and_confirm_is_local_only(tmp_path):
-    client, database = await _client(tmp_path)
+    client, database = await _client(tmp_path, enabled=True)
     login = await client.post("/api/v1/auth/login", json={"password": WEB_PASSWORD})
     headers = {"X-CSRF-Token": login.json()["csrf_token"]}
     too_large = await client.get("/api/v1/organization-plans", params={"limit": 101})
@@ -185,5 +186,31 @@ async def test_plan_review_cursor_is_bounded_and_confirm_is_local_only(tmp_path)
     )
     assert ignored.status_code == 200
     assert ignored.json()["status"] == "ignored"
+    await client.aclose()
+    await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_plan_review_is_disabled_by_default_for_reads_and_mutations(tmp_path):
+    client, database = await _client(tmp_path)
+    health = await client.get("/api/v1/health")
+    assert health.status_code == 200
+    assert health.json()["organization_plan_enabled"] is False
+
+    login = await client.post("/api/v1/auth/login", json={"password": WEB_PASSWORD})
+    assert login.status_code == 200
+    headers = {"X-CSRF-Token": login.json()["csrf_token"]}
+
+    listing = await client.get("/api/v1/organization-plans")
+    assert listing.status_code == 503
+    assert listing.json()["detail"] == "organization_plan_disabled"
+
+    confirm = await client.post(
+        "/api/v1/organization-plans/plan-review/confirm",
+        json={"expected_revision": 1},
+        headers=headers,
+    )
+    assert confirm.status_code == 503
+    assert confirm.json()["detail"] == "organization_plan_disabled"
     await client.aclose()
     await database.engine.dispose()

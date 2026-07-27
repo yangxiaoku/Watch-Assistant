@@ -79,6 +79,9 @@ class Settings(BaseSettings):
         validation_alias="INSPECTION_REQUEST_TIMEOUT_SECONDS",
     )
     p115_enabled: bool = Field(default=False, validation_alias="P115_ENABLED")
+    organization_plan_enabled: bool = Field(
+        default=False, validation_alias="ORGANIZATION_PLAN_ENABLED"
+    )
     p115_cookie_path: Path = Field(
         default=Path("/etc/watch-assistant/p115-cookie"),
         validation_alias="P115_COOKIE_PATH",

@@ -29,6 +29,30 @@ function makeApi(overrides: Partial<Record<keyof ApiClient, unknown>> = {}) {
 }
 
 describe("OrganizationWorkbenchView", () => {
+  it("does not request or render the workbench when disabled", async () => {
+    const api = makeApi();
+    const wrapper = mount(OrganizationWorkbenchView, { props: { api, enabled: false } });
+    await flushPromises();
+
+    expect(api.organizationPlans).not.toHaveBeenCalled();
+    expect(wrapper.find(".organization-workbench").exists()).toBe(false);
+  });
+
+  it("hides mutation controls for invalidated plans", async () => {
+    const api = makeApi({
+      organizationPlans: vi.fn().mockResolvedValue({
+        items: [{ ...plan, status: "invalidated" }],
+        next_cursor: null,
+      }),
+    });
+    const wrapper = mount(OrganizationWorkbenchView, { props: { api } });
+    await flushPromises();
+
+    expect(wrapper.get(".organization-status").text()).toContain("已失效");
+    expect(wrapper.find(".organization-actions").exists()).toBe(false);
+    expect(wrapper.find(".organization-alias").exists()).toBe(false);
+  });
+
   it("loads a safe cursor page and sends the current revision for local actions", async () => {
     const api = makeApi();
     const wrapper = mount(OrganizationWorkbenchView, { props: { api } });

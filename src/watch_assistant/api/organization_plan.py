@@ -17,7 +17,19 @@ from watch_assistant.services.organization_plan import (
     OrganizationPlanStatus,
 )
 
-router = APIRouter(prefix="/api/v1", dependencies=[Depends(require_api_auth)])
+
+async def require_organization_plan_enabled(request: Request) -> None:
+    if not getattr(request.app.state, "organization_plan_enabled", False):
+        raise HTTPException(status_code=503, detail="organization_plan_disabled")
+
+
+router = APIRouter(
+    prefix="/api/v1",
+    dependencies=[
+        Depends(require_api_auth),
+        Depends(require_organization_plan_enabled),
+    ],
+)
 
 
 def get_organization_plan_service(request: Request) -> OrganizationPlanService:

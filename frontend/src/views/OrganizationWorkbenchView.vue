@@ -4,7 +4,9 @@ import { computed, onMounted, ref } from "vue";
 import { ApiClient, ApiError } from "../api";
 import type { OrganizationPlanStatus, OrganizationPlanSummary } from "../types";
 
-const props = defineProps<{ api: ApiClient }>();
+const props = withDefaults(defineProps<{ api: ApiClient; enabled?: boolean }>(), {
+  enabled: true,
+});
 
 const activeStatus = ref<OrganizationPlanStatus>("needs_review");
 const items = ref<OrganizationPlanSummary[]>([]);
@@ -17,6 +19,7 @@ const error = ref("");
 const notice = ref("");
 
 const selectedIsReviewable = computed(() => selected.value?.status === "needs_review");
+const selectedCanEdit = computed(() => selected.value?.status === "needs_review" || selected.value?.status === "planned");
 
 const statusLabel: Record<OrganizationPlanStatus, string> = {
   needs_review: "待确认",
@@ -60,13 +63,13 @@ async function confirmPlan() {
 
 async function ignorePlan() {
   const plan = selected.value;
-  if (!plan || busy.value) return;
+  if (!plan || busy.value || !selectedCanEdit.value) return;
   await mutate("ignore", () => props.api.ignoreOrganizationPlan(plan.plan_id, plan.revision));
 }
 
 async function saveAlias() {
   const plan = selected.value;
-  if (!plan || busy.value) return;
+  if (!plan || busy.value || !selectedCanEdit.value) return;
   await mutate("alias", () => props.api.aliasOrganizationPlan(plan.plan_id, aliasInput.value, plan.revision));
 }
 
@@ -97,11 +100,13 @@ async function changeStatus(status: OrganizationPlanStatus) {
   await loadPlans();
 }
 
-onMounted(() => { void loadPlans(); });
+onMounted(() => {
+  if (props.enabled) void loadPlans();
+});
 </script>
 
 <template>
-  <section class="organization-workbench">
+  <section v-if="enabled" class="organization-workbench">
     <div class="organization-heading">
       <div>
         <p class="eyebrow">LOCAL REVIEW</p>
@@ -142,11 +147,11 @@ onMounted(() => { void loadPlans(); });
           <div><dt>前置条件</dt><dd>{{ selected.precondition_count }}</dd></div>
         </dl>
         <p class="organization-safe-note">预览只显示本地摘要；远端 ID、路径、Cookie、pickcode 和直链不会进入工作台。</p>
-        <div class="organization-actions">
+        <div v-if="selectedCanEdit" class="organization-actions">
           <button v-if="selectedIsReviewable" class="primary-button" type="button" :disabled="busy" @click="confirmPlan"><Check :size="16" />确认本地计划</button>
-          <button v-if="selected.status !== 'ignored'" class="secondary-button" type="button" :disabled="busy" @click="ignorePlan"><Ban :size="16" />忽略</button>
+          <button class="secondary-button" type="button" :disabled="busy" @click="ignorePlan"><Ban :size="16" />忽略</button>
         </div>
-        <form class="organization-alias" @submit.prevent="saveAlias">
+        <form v-if="selectedCanEdit" class="organization-alias" @submit.prevent="saveAlias">
           <label for="organization-alias-input"><Tag :size="16" />本地别名</label>
           <div><input id="organization-alias-input" v-model="aliasInput" maxlength="64" autocomplete="off" placeholder="仅用于本地标记" /><button class="secondary-button" type="submit" :disabled="busy || !aliasInput.trim()">保存</button></div>
         </form>

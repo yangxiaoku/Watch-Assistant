@@ -58,6 +58,7 @@ const drawerOpen = ref(false);
 const pushCapabilities = ref<PushCapabilities>({ ...NO_PUSH_CAPABILITIES });
 const inspectionSupported = ref(false);
 const inspectionAutoStartEnabled = ref<boolean | "unknown">("unknown");
+const organizationPlanEnabled = ref(false);
 const selectedSeason = ref<number | null>(null);
 const detailMediaType = ref<"movie" | "tv">("movie");
 const inspectionState = ref<"idle" | "running" | "completed" | "partial" | "failed" | "timeout">("idle");
@@ -498,6 +499,10 @@ async function loadView(view: BrowseView, historyMode: "push" | "none" = "none")
 }
 
 async function selectView(view: Exclude<BrowseView, "search">) {
+  if (view === "organization-plans" && !organizationPlanEnabled.value) {
+    await selectView("home");
+    return;
+  }
   invalidateDetailRequest();
   result.value = null;
   error.value = "";
@@ -765,6 +770,13 @@ async function returnToBrowse() {
 }
 
 async function initializeWorkspace() {
+  if (window.location.pathname === "/organization-plans" && !organizationPlanEnabled.value) {
+    activeView.value = "home";
+    previousView.value = "home";
+    navigateToView("home", true);
+    await loadHome();
+    return;
+  }
   const mediaRoute = extractMediaRoute(window.location.pathname + window.location.search);
   if (mediaRoute !== null) {
     restoreCatalogReturnState();
@@ -1036,6 +1048,7 @@ onMounted(async () => {
     pushCapabilities.value = resolvePushCapabilities(health);
     inspectionSupported.value = health.inspection_supported === true;
     inspectionAutoStartEnabled.value = health.inspection_auto_start_enabled === true;
+    organizationPlanEnabled.value = health.organization_plan_enabled === true;
     await api.me();
     authenticated.value = true;
   } catch {
@@ -1060,7 +1073,7 @@ onBeforeUnmount(() => {
       <a class="brand" href="/">WATCH<span>/</span>ASSISTANT</a>
       <template v-if="authenticated">
         <nav class="primary-nav" aria-label="主导航">
-          <button v-for="item in navItems" :key="item.view" type="button" :class="{ active: activeView === item.view && !result }" @click="selectView(item.view)"><component :is="item.icon" :size="16" />{{ item.label }}</button>
+          <template v-for="item in navItems" :key="item.view"><button v-if="item.view !== 'organization-plans' || organizationPlanEnabled" type="button" :class="{ active: activeView === item.view && !result }" @click="selectView(item.view)"><component :is="item.icon" :size="16" />{{ item.label }}</button></template>
         </nav>
         <form class="top-search" role="search" @submit.prevent="searchMovies"><Search :size="17" /><input v-model="searchInput" type="search" aria-label="搜索电影或电视剧" placeholder="搜索电影或电视剧" /><button type="submit" aria-label="提交搜索" title="搜索"><Search :size="17" /></button></form>
         <div class="topbar-actions">
@@ -1082,7 +1095,7 @@ onBeforeUnmount(() => {
         <LibraryView v-else-if="activeView === 'movies' || activeView === 'tv'" :movies="catalogMovies" :loading="catalogLoading" :favorite-ids="favoriteIds" :genre-id="genreId" :year="year" :sort="sort" :media-type="activeView" :page="currentPage" :total-pages="totalPages" :total-results="totalResults" @open="openMovie" @favorite="toggleFavorite" @filters="loadDiscover" @page="loadPage" />
         <CollectionView v-else-if="activeView === 'favorites' || activeView === 'history'" :mode="activeView" :movies="activeView === 'favorites' ? favorites : history" :favorite-ids="favoriteIds" @open="openMovie" @favorite="toggleFavorite" />
         <SettingsView v-else-if="activeView === 'settings'" :api="api" @auto-start-enabled="inspectionAutoStartEnabled = $event" />
-        <OrganizationWorkbenchView v-else-if="activeView === 'organization-plans'" :api="api" />
+        <OrganizationWorkbenchView v-else-if="activeView === 'organization-plans' && organizationPlanEnabled" :api="api" :enabled="organizationPlanEnabled" />
         <SearchView v-else v-model="searchInput" :loading="catalogLoading" :movies="catalogMovies" :heading="catalogHeading" :favorite-ids="favoriteIds" :page="currentPage" :total-pages="totalPages" :total-results="totalResults" @search="searchMovies" @reset="selectView('home')" @open="openMovie" @favorite="toggleFavorite" @page="loadPage" />
       </template>
       <section v-else-if="loading && !result" class="detail-loading"><LoaderCircle class="spin" :size="24" /><strong>正在聚合资源</strong><span>正在查询 PanSou 的磁力与 115 分享结果</span></section>

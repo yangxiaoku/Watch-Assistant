@@ -141,6 +141,7 @@ export interface HealthResponse {
   };
   inspection_supported?: boolean;
   inspection_auto_start_enabled?: boolean;
+  organization_plan_enabled?: boolean;
 }
 
 export type LogLevel = "DEBUG" | "ERROR" | "WARNING" | "INFO";

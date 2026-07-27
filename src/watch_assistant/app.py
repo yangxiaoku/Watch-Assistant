@@ -62,6 +62,7 @@ def create_app(
     qbittorrent_client: QbittorrentClient | None = None,
     task_adapter: TaskAdapter | None = None,
     frontend_dir: Path | None = None,
+    organization_plan_enabled: bool | None = None,
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
@@ -129,6 +130,10 @@ def create_app(
             settings = Settings(
                 _secrets_dir=secrets_dir if secrets_dir.is_dir() else None
             )
+            if organization_plan_enabled is None:
+                application.state.organization_plan_enabled = (
+                    settings.organization_plan_enabled
+                )
             if settings.p115_enabled and settings.p115_target_cid is None:
                 raise RuntimeError("P115_ENABLED requires P115_TARGET_CID")
             contract = load_tgto_contract(settings.tgto_contract_path)
@@ -373,6 +378,11 @@ def create_app(
     application = FastAPI(title="Watch Assistant", lifespan=lifespan)
     application.state.release = _resolve_release()
     application.state.started_at = time.monotonic()
+    application.state.organization_plan_enabled = (
+        organization_plan_enabled
+        if organization_plan_enabled is not None
+        else _env_flag("ORGANIZATION_PLAN_ENABLED")
+    )
     if database and crypto and tmdb_client and pansou_client:
         application.state.database = database
         application.state.settings_service = SettingsService(
@@ -467,6 +477,9 @@ def create_app(
                 application.state, "inspection_supported", False
             ),
             "inspection_auto_start_enabled": inspection_auto_start_enabled,
+            "organization_plan_enabled": bool(
+                getattr(application.state, "organization_plan_enabled", False)
+            ),
         }
 
     application.include_router(search_router)
@@ -521,6 +534,10 @@ def _resolve_release(trusted_path: Path | None = None) -> str:
 
 def _worker_owner() -> str:
     return f"{socket.gethostname()}:{os.getpid()}"
+
+
+def _env_flag(name: str) -> bool:
+    return os.environ.get(name, "").strip().casefold() in {"1", "true", "yes", "on"}
 
 
 def _state_directory(database: Database) -> Path:
