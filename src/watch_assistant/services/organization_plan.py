@@ -128,6 +128,7 @@ class OrganizationPlanExecutionMember:
     object_type: str
     object_id: str
     source_parent_id: str
+    source_path: str
     source_name: str
     source_version: str
     target_parent_id: str
@@ -631,9 +632,12 @@ def _build_payload(
                 "object_id": source.object_id,
                 "parent_id": source.parent_id,
                 "source_path": source.path,
+                "source_name": rows[key].name,
                 "remote_version": source.remote_version,
                 "source_snapshot_revision": source_snapshot_revision,
                 "target": target,
+                "target_parent_id": item.target_parent_id,
+                "target_name": item.target_name,
                 "rule_version": item.naming_plan.rule_version,
                 "parser_version": parser_version,
                 "matcher_version": matcher_version,
@@ -654,10 +658,29 @@ def _build_payload(
                 "kind": "move" if target is not None else "review",
                 "object_type": source.object_type,
                 "object_id": source.object_id,
+                "source_parent_id": source.parent_id,
+                "source_path": source.path,
+                "source_name": rows[key].name,
+                "source_version": source.remote_version,
+                "target_parent_id": item.target_parent_id,
+                "target_name": item.target_name,
                 "target": target,
                 "execution": execution,
             }
         )
+        if execution is not None:
+            source_snapshot[-1]["companions"] = [
+                {
+                    "object_type": member["object_type"],
+                    "object_id": member["object_id"],
+                    "parent_id": member["source_parent_id"],
+                    "path": member["source_path"],
+                    "name": member["source_name"],
+                    "remote_version": member["source_version"],
+                    "is_directory": False,
+                }
+                for member in execution["members"][1:]
+            ]
         if target is not None:
             targets[_normalize_target(target)] = (
                 targets.get(_normalize_target(target), 0) + 1
@@ -771,7 +794,9 @@ def _execution_payload(
             or not _safe_identity(member_target_parent)
             or not _valid_target_name(member_target_name)
             or member_target_parent != target_parent_id
+            or not _valid_source_path(source.path)
             or not _valid_target_name(member_row.name)
+            or not _valid_source_path(member_row.path)
             or member_row.parent_id != source.parent_id
             or member_row.path != source.path
         ):
@@ -786,6 +811,7 @@ def _execution_payload(
                 "object_type": source.object_type,
                 "object_id": source.object_id,
                 "source_parent_id": member_row.parent_id,
+                "source_path": member_row.path,
                 "source_name": member_row.name,
                 "source_version": source.remote_version,
                 "target_parent_id": member_target_parent,
@@ -989,6 +1015,7 @@ def _parse_executable_steps(
                 member.get("object_type"),
                 member.get("object_id"),
                 member.get("source_parent_id"),
+                member.get("source_path"),
                 member.get("source_name"),
                 member.get("source_version"),
                 member.get("target_parent_id"),
@@ -998,6 +1025,7 @@ def _parse_executable_steps(
                 object_type,
                 object_id,
                 source_parent,
+                source_path,
                 source_name,
                 version,
                 target_parent,
@@ -1007,6 +1035,7 @@ def _parse_executable_steps(
                 not _safe_identity(object_type)
                 or not _safe_identity(object_id)
                 or not _safe_identity(source_parent)
+                or not _valid_source_path(source_path)
                 or not _valid_target_name(source_name)
                 or not _valid_source_version(version)
                 or not _safe_identity(target_parent)
@@ -1022,6 +1051,7 @@ def _parse_executable_steps(
                     object_type=object_type,
                     object_id=object_id,
                     source_parent_id=source_parent,
+                    source_path=source_path,
                     source_name=source_name,
                     source_version=version,
                     target_parent_id=target_parent,
@@ -1099,9 +1129,19 @@ def _validate_persisted_execution(
             or precondition.get("parent_id") != snapshot.get("parent_id")
             or precondition.get("source_path") != snapshot.get("path")
             or precondition.get("remote_version") != snapshot.get("remote_version")
+            or action.get("source_parent_id") != snapshot.get("parent_id")
+            or action.get("source_path") != snapshot.get("path")
+            or action.get("source_name") != snapshot.get("name")
+            or action.get("source_version") != snapshot.get("remote_version")
             or precondition.get("source_snapshot_revision")
             != plan.source_snapshot_revision
             or precondition.get("target") != action.get("target")
+            or precondition.get("parent_id") != action.get("source_parent_id")
+            or precondition.get("source_path") != action.get("source_path")
+            or precondition.get("source_name") != action.get("source_name")
+            or precondition.get("remote_version") != action.get("source_version")
+            or precondition.get("target_parent_id") != action.get("target_parent_id")
+            or precondition.get("target_name") != action.get("target_name")
             or precondition.get("rule_version") != plan.rule_version
             or precondition.get("parser_version") != plan.parser_version
             or precondition.get("matcher_version") != plan.matcher_version
@@ -1125,6 +1165,7 @@ def _validate_persisted_execution(
             managed_directory_ids=managed_directory_ids,
             directory_rows=directory_rows,
             rows=rows,
+            snapshot=snapshot,
         ):
             return False
     return run.snapshot_revision == plan.source_snapshot_revision
@@ -1138,6 +1179,7 @@ def _validate_persisted_step(
     managed_directory_ids: set[str],
     directory_rows: Mapping[str, Sequence[LibraryScanEntry]],
     rows: Mapping[tuple[str, str], LibraryScanEntry],
+    snapshot: dict[str, object],
 ) -> bool:
     target = action.get("target")
     if not isinstance(target, str):
@@ -1152,6 +1194,12 @@ def _validate_persisted_step(
     if (
         primary.object_type != action.get("object_type")
         or primary.object_id != action.get("object_id")
+        or primary.source_parent_id != action.get("source_parent_id")
+        or primary.source_path != action.get("source_path")
+        or primary.source_name != action.get("source_name")
+        or primary.source_version != action.get("source_version")
+        or primary.target_parent_id != action.get("target_parent_id")
+        or primary.target_name != action.get("target_name")
         or primary.target_name != PurePosixPath(target).name
         or not _target_directory_matches(
             target,
@@ -1159,6 +1207,24 @@ def _validate_persisted_step(
             directory_rows=directory_rows,
             root_directory_id=library.root_directory_id,
         )
+    ):
+        return False
+    companion_snapshot = snapshot.get("companions", [])
+    if not isinstance(companion_snapshot, list):
+        return False
+    snapshot_members = [snapshot, *companion_snapshot]
+    if len(snapshot_members) != len(step.members):
+        return False
+    if any(
+        not isinstance(item, dict)
+        or item.get("object_type") != member.object_type
+        or item.get("object_id") != member.object_id
+        or item.get("parent_id") != member.source_parent_id
+        or item.get("path") != member.source_path
+        or item.get("name") != member.source_name
+        or item.get("remote_version") != member.source_version
+        or item.get("is_directory") is not False
+        for item, member in zip(snapshot_members, step.members, strict=True)
     ):
         return False
     expected_scope = {
@@ -1177,6 +1243,7 @@ def _validate_persisted_step(
             row is None
             or row.is_directory
             or row.parent_id != member.source_parent_id
+            or row.path != member.source_path
             or row.name != member.source_name
             or not _source_parent_is_managed(
                 member.source_parent_id, directory_rows, library.root_directory_id
@@ -1227,17 +1294,36 @@ def _load_source_snapshot(
             not _safe_identity(object_type)
             or not _safe_identity(object_id)
             or not _safe_identity(parent_id)
-            or not isinstance(path, str)
-            or not path
-            or "\x00" in path
-            or len(path) > 4096
-            or not isinstance(remote_version, str)
-            or not remote_version
-            or len(remote_version) > 128
+            or not _valid_source_path(path)
+            or not _valid_source_version(remote_version)
             or item.get("is_directory") is not False
             or (require_name and not _valid_target_name(item.get("name")))
         ):
             return None
+        companions = item.get("companions", [])
+        if not isinstance(companions, list):
+            return None
+        seen_companions: set[tuple[object, object]] = set()
+        for companion in companions:
+            if not isinstance(companion, dict):
+                return None
+            companion_key = (
+                companion.get("object_type"),
+                companion.get("object_id"),
+            )
+            if (
+                not _safe_identity(companion_key[0])
+                or not _safe_identity(companion_key[1])
+                or companion_key in seen_companions
+                or companion_key == (object_type, object_id)
+                or not _safe_identity(companion.get("parent_id"))
+                or not _valid_source_path(companion.get("path"))
+                or not _valid_target_name(companion.get("name"))
+                or not _valid_source_version(companion.get("remote_version"))
+                or companion.get("is_directory") is not False
+            ):
+                return None
+            seen_companions.add(companion_key)
     return parsed
 
 
@@ -1351,6 +1437,22 @@ def _valid_source_version(value: object) -> bool:
         marker in value.casefold()
         for marker in ("pickcode", "cookie", "token", "password", "secret")
     )
+
+
+def _valid_source_path(value: object) -> bool:
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value) > 4096
+        or "\x00" in value
+        or "\\" in value
+        or "://" in value
+    ):
+        return False
+    parts = value.split("/")
+    if value.startswith("/"):
+        parts = parts[1:]
+    return bool(parts) and all(part not in {"", ".", ".."} for part in parts)
 
 
 def _validate_alias(value: str) -> str:

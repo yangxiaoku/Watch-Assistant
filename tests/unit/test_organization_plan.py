@@ -209,7 +209,11 @@ async def test_complete_execution_payload_is_persisted_and_parsed(tmp_path):
         assert steps is not None
         assert steps[0].scope_directory_ids == (ROOT_ID, "8000")
         member = steps[0].members[0]
-        assert (member.source_parent_id, member.source_name) == (ROOT_ID, SECRET_NAME)
+        assert (member.source_parent_id, member.source_path, member.source_name) == (
+            ROOT_ID,
+            SECRET_PATH,
+            SECRET_NAME,
+        )
         assert (member.target_parent_id, member.target_name) == (
             "8000",
             "safe-title.mkv",
@@ -268,12 +272,99 @@ async def test_companion_group_is_complete_and_target_identity_changes_hash(tmp_
         steps = await load_executable_steps(database.session_factory, stored)
         assert steps is not None
         assert len(steps[0].members) == 2
+        assert steps[0].members[1].source_path == "/private/cloud/private-title.srt"
     alternate = await service.create_plan(
         library_id=LIBRARY_ID,
         scan_run_id=SCAN_ID,
         items=(_item(target_parent_id="8001"),),
     )
     assert alternate.plan_hash != plan.plan_hash
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("member_index", "field"),
+    (
+        (0, "source_version"),
+        (0, "source_path"),
+        (1, "source_version"),
+        (1, "source_path"),
+    ),
+)
+async def test_executable_loader_rejects_synced_member_version_or_path_tampering(
+    tmp_path, member_index, field
+):
+    database = await _database(tmp_path)
+    service = OrganizationPlanService(database.session_factory)
+    async with database.session_factory() as session:
+        session.add(
+            LibraryScanEntry(
+                scan_run_id=SCAN_ID,
+                object_type="file",
+                object_id="102",
+                parent_id=ROOT_ID,
+                name="private-title.srt",
+                path="/private/cloud/private-title.srt",
+                is_directory=False,
+            )
+        )
+        await session.commit()
+    companion = OrganizationPlanCompanion(
+        source=PlanSource(
+            object_type="file",
+            object_id="102",
+            parent_id=ROOT_ID,
+            path="/private/cloud/private-title.srt",
+            remote_version="remote-v1",
+        ),
+        target_parent_id="8000",
+        target_name="safe-title.srt",
+    )
+    plan_view = await service.create_plan(
+        library_id=LIBRARY_ID,
+        scan_run_id=SCAN_ID,
+        items=(_item(companions=(companion,)),),
+    )
+    async with database.session_factory() as session:
+        plan = await session.get(OrganizationPlan, plan_view.plan_id)
+        assert plan is not None
+        actions = json.loads(plan.actions_json)
+        preconditions = json.loads(plan.preconditions_json)
+        execution = actions[0]["execution"]
+        replacement = (
+            "remote-v2" if field == "source_version" else "/private/cloud/changed"
+        )
+        execution["members"][member_index][field] = replacement
+        preconditions["items"][0]["execution"]["members"][member_index][field] = (
+            replacement
+        )
+        if member_index == 0:
+            if field == "source_version":
+                actions[0]["source_version"] = replacement
+                preconditions["items"][0]["remote_version"] = replacement
+            else:
+                actions[0]["source_path"] = replacement
+                preconditions["items"][0]["source_path"] = replacement
+        plan.actions_json = json.dumps(actions)
+        plan.preconditions_json = json.dumps(preconditions)
+        plan.plan_hash = _canonical_hash(
+            {
+                "library_id": plan.library_id,
+                "library_snapshot": preconditions["library"],
+                "source_snapshot": json.loads(plan.source_snapshot_json),
+                "target_root": plan.target_root,
+                "actions": actions,
+                "preconditions": preconditions,
+                "rule_version": plan.rule_version,
+                "parser_version": plan.parser_version,
+                "matcher_version": plan.matcher_version,
+            }
+        )
+        await session.commit()
+        stored = await session.get(OrganizationPlan, plan.id)
+        assert stored is not None
+        assert await load_executable_steps(database.session_factory, stored) is None
     await database.engine.dispose()
 
 
