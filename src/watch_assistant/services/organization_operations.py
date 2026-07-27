@@ -21,6 +21,10 @@ from watch_assistant.models import (
     OrganizationOperationStatus,
 )
 from watch_assistant.services.library_index import ScanRunState
+from watch_assistant.services.organization_outbox import (
+    DirectoryDirtyOutboxService,
+    OrganizationOutboxError,
+)
 from watch_assistant.services.organization_plan import OrganizationPlanStatus
 
 VALID_OPERATION_ERROR_CODES = frozenset(
@@ -95,9 +99,11 @@ class OrganizationOperationService:
         session_factory: async_sessionmaker[AsyncSession],
         *,
         event_logger: object | None = None,
+        outbox_service: DirectoryDirtyOutboxService | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._event_logger = event_logger
+        self._outbox_service = outbox_service or DirectoryDirtyOutboxService()
 
     async def create(
         self,
@@ -288,6 +294,8 @@ class OrganizationOperationService:
         lease_token: str,
         status: OrganizationOperationStatus,
         error_code: str | None = None,
+        source_directory_id: str | None = None,
+        target_directory_id: str | None = None,
         now: datetime | None = None,
     ) -> OrganizationOperationSummary:
         if status not in {
@@ -296,6 +304,17 @@ class OrganizationOperationService:
             OrganizationOperationStatus.UNCERTAIN,
         }:
             raise OrganizationOperationStateError("invalid_terminal_status")
+        if status is OrganizationOperationStatus.ORGANIZED:
+            if source_directory_id is None or target_directory_id is None:
+                raise OrganizationOperationStateError("directory_scope_required")
+            return await self.complete_organized_with_dirty_events(
+                operation_id,
+                expected_revision=expected_revision,
+                lease_token=lease_token,
+                source_directory_id=source_directory_id,
+                target_directory_id=target_directory_id,
+                now=now,
+            )
         _validate_token(lease_token)
         _validate_error_code(error_code)
         current_time = _as_utc(now or datetime.now(UTC))
@@ -329,6 +348,69 @@ class OrganizationOperationService:
                 raise OrganizationOperationNotFound
             summary = _summary(operation)
         await self._audit("整理操作状态已更新")
+        return summary
+
+    async def complete_organized_with_dirty_events(
+        self,
+        operation_id: str,
+        *,
+        expected_revision: int,
+        lease_token: str,
+        source_directory_id: str,
+        target_directory_id: str,
+        now: datetime | None = None,
+    ) -> OrganizationOperationSummary:
+        """Complete a valid lease and enqueue dirty events in one transaction."""
+
+        _validate_identifier(operation_id, "invalid_operation_id", maximum=40)
+        _validate_token(lease_token)
+        current_time = _as_utc(now or datetime.now(UTC))
+        async with self._session_factory() as session:
+            try:
+                result = await session.execute(
+                    update(OrganizationOperation)
+                    .where(
+                        OrganizationOperation.id == operation_id,
+                        OrganizationOperation.revision == expected_revision,
+                        OrganizationOperation.status
+                        == OrganizationOperationStatus.ORGANIZING,
+                        OrganizationOperation.lease_token == lease_token,
+                        OrganizationOperation.lease_expires_at > current_time,
+                    )
+                    .values(
+                        status=OrganizationOperationStatus.ORGANIZED,
+                        revision=expected_revision + 1,
+                        lease_token=None,
+                        lease_expires_at=None,
+                        error_code=None,
+                        finished_at=current_time,
+                        updated_at=current_time,
+                    )
+                    .execution_options(synchronize_session=False)
+                )
+                if result.rowcount != 1:
+                    raise OrganizationOperationLeaseUnavailable("lease_is_not_owned")
+                await self._outbox_service.enqueue_directory_dirty(
+                    session,
+                    operation_id=operation_id,
+                    directory_ids=(source_directory_id, target_directory_id),
+                )
+                await session.commit()
+            except OrganizationOperationLeaseUnavailable:
+                await session.rollback()
+                raise
+            except Exception as exc:  # noqa: BLE001 - rollback and map locally
+                await session.rollback()
+                if isinstance(exc, OrganizationOutboxError):
+                    raise OrganizationOperationConflict(str(exc)) from None
+                raise OrganizationOperationConflict(
+                    "outbox_persistence_failed"
+                ) from None
+            operation = await session.get(OrganizationOperation, operation_id)
+            if operation is None:
+                raise OrganizationOperationNotFound
+            summary = _summary(operation)
+        await self._audit("整理操作已完成")
         return summary
 
     async def cancel(

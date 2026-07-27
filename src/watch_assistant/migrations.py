@@ -177,12 +177,21 @@ def _create_organization_operation_table(connection: Connection) -> None:
     OrganizationOperation.__table__.create(connection, checkfirst=True)
 
 
+def _create_directory_dirty_outbox_table(connection: Connection) -> None:
+    """Create the pending local directory dirty-event outbox."""
+
+    from watch_assistant.models import DirectoryDirtyEvent
+
+    DirectoryDirtyEvent.__table__.create(connection, checkfirst=True)
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration("001_application_settings_columns", _add_application_settings_columns),
     Migration("002_library_index_tables", _create_library_index_tables),
     Migration("003_organization_plan_tables", _create_organization_plan_tables),
     Migration("004_organization_plan_alias", _add_organization_plan_alias),
     Migration("005_organization_operations", _create_organization_operation_table),
+    Migration("006_directory_dirty_outbox", _create_directory_dirty_outbox_table),
 )
 
 

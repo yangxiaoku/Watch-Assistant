@@ -12,6 +12,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -340,4 +341,40 @@ class OrganizationOperation(Base):
         return (
             "OrganizationOperation(id=<redacted>, plan_id=<redacted>, "
             f"status={status!r}, revision={self.revision!r})"
+        )
+
+
+class DirectoryDirtyEvent(Base):
+    """Pending local invalidation event; no consumer is wired in this phase."""
+
+    __tablename__ = "directory_dirty_events"
+    __table_args__ = (
+        UniqueConstraint(
+            "operation_id",
+            "directory_id",
+            "event_kind",
+            name="uq_directory_dirty_event_key",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    operation_id: Mapped[str] = mapped_column(
+        ForeignKey("organization_operations.id", ondelete="RESTRICT"), index=True
+    )
+    directory_id: Mapped[str] = mapped_column(String(128))
+    event_kind: Mapped[str] = mapped_column(
+        String(32), default="directory_dirty", server_default="directory_dirty"
+    )
+    status: Mapped[str] = mapped_column(
+        String(16), default="pending", server_default="pending", index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now
+    )
+
+    def __repr__(self) -> str:
+        return (
+            "DirectoryDirtyEvent(id=<redacted>, operation_id=<redacted>, "
+            "directory_id=<redacted>, "
+            f"event_kind={self.event_kind!r}, status={self.status!r})"
         )

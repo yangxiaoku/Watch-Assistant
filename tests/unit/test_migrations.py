@@ -211,10 +211,12 @@ async def test_organization_operation_migration_preserves_existing_data(tmp_path
         await connection.execute(
             text(
                 "DELETE FROM schema_migrations "
-                "WHERE migration_id = '005_organization_operations'"
+                "WHERE migration_id IN ("
+                "'005_organization_operations', '006_directory_dirty_outbox'"
+                ")"
             )
         )
-        await connection.run_sync(run_migrations, (MIGRATIONS[-1],))
+        await connection.run_sync(run_migrations, MIGRATIONS[4:])
 
     async with database.engine.connect() as connection:
         marker = await connection.scalar(text("SELECT value FROM legacy_marker"))
