@@ -160,12 +160,19 @@ class OrganizationPlanService:
             if len(rule_versions) != 1:
                 raise OrganizationPlanError("rule_version_conflict")
             rule_version = _validate_version(rule_versions[0])
+            library_snapshot = _library_snapshot(library)
+            preconditions_payload = {
+                "library": library_snapshot,
+                "items": preconditions,
+            }
+            # basis_json is display/audit evidence; it is intentionally excluded.
             canonical = {
                 "library_id": library.id,
+                "library_snapshot": library_snapshot,
                 "source_snapshot": source_snapshot,
                 "target_root": target_root,
                 "actions": actions,
-                "preconditions": preconditions,
+                "preconditions": preconditions_payload,
                 "rule_version": rule_version,
                 "parser_version": parser_version,
                 "matcher_version": matcher_version,
@@ -188,7 +195,7 @@ class OrganizationPlanService:
                 target_root=target_root,
                 actions_json=_json(actions),
                 basis_json=_json(basis),
-                preconditions_json=_json(preconditions),
+                preconditions_json=_json(preconditions_payload),
                 rule_version=rule_version,
                 parser_version=parser_version,
                 matcher_version=matcher_version,
@@ -240,6 +247,12 @@ class OrganizationPlanService:
             if plan.status == OrganizationPlanStatus.IGNORED.value:
                 return _view(plan)
             stale = current_time >= _utc(plan.expires_at)
+            library = await session.get(MediaLibrary, plan.library_id)
+            stored_preconditions = _load_json_object(plan.preconditions_json)
+            if library is None or stored_preconditions.get(
+                "library"
+            ) != _library_snapshot(library):
+                stale = True
             run = await session.get(LibraryScanRun, plan.source_scan_run_id)
             latest = await session.scalar(
                 select(LibraryScanRun)
@@ -275,7 +288,7 @@ class OrganizationPlanService:
                     rows = await self._load_source_rows(
                         session, run.id, items, verify_snapshot=False
                     )
-                    current_snapshot, _, _, _, _ = _build_payload(
+                    current_snapshot, _, _, current_basis, _ = _build_payload(
                         items,
                         rows,
                         target_root=plan.target_root,
@@ -285,6 +298,9 @@ class OrganizationPlanService:
                         matcher_version=plan.matcher_version,
                     )
                     if current_snapshot != json.loads(plan.source_snapshot_json):
+                        stale = True
+                    # Basis is audit-only for hashing; explicit refresh invalidates changes.
+                    if current_basis != json.loads(plan.basis_json):
                         stale = True
             if any(
                 _normalize_target(value) in _target_set(plan)
@@ -504,6 +520,24 @@ def _target_set(plan: OrganizationPlan) -> set[str]:
     }
 
 
+def _library_snapshot(library: MediaLibrary) -> dict[str, object]:
+    return {
+        "library_id": library.id,
+        "revision": library.revision,
+        "enabled": library.enabled,
+        "scope_verified": library.scope_verified,
+        "root_directory_id": library.root_directory_id,
+    }
+
+
+def _load_json_object(value: str) -> dict[str, object]:
+    try:
+        parsed = json.loads(value)
+    except (TypeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
 def _target_path(root: str, path: str | None) -> str | None:
     if path is None:
         return None
@@ -632,6 +666,11 @@ def _utc(value: datetime | None) -> datetime:
 
 
 def _view(plan: OrganizationPlan) -> OrganizationPlanView:
+    preconditions = json.loads(plan.preconditions_json)
+    if isinstance(preconditions, dict):
+        precondition_count = len(preconditions.get("items", ()))
+    else:
+        precondition_count = len(preconditions)
     return OrganizationPlanView(
         plan_id=plan.id,
         plan_hash=plan.plan_hash,
@@ -640,7 +679,7 @@ def _view(plan: OrganizationPlan) -> OrganizationPlanView:
         expires_at=_utc(plan.expires_at),
         source_count=len(json.loads(plan.source_snapshot_json)),
         action_count=len(json.loads(plan.actions_json)),
-        precondition_count=len(json.loads(plan.preconditions_json)),
+        precondition_count=precondition_count,
     )
 
 

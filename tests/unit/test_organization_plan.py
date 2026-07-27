@@ -1,3 +1,4 @@
+import json
 import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -151,9 +152,26 @@ async def test_plan_hash_is_stable_and_persistence_is_idempotent(tmp_path):
     assert first.plan_id == second.plan_id
     assert first.plan_hash == second.plan_hash
     assert first.status is OrganizationPlanStatus.PLANNED
+    # Display/audit basis changes do not change the canonical idempotency hash.
     async with database.session_factory() as session:
         plans = list(await session.scalars(select(OrganizationPlan)))
+        stored = plans[0]
     assert len(plans) == 1
+    assert json.loads(stored.preconditions_json)["library"]["revision"] == 0
+
+    ordered_first = await service.create_plan(
+        library_id=LIBRARY_ID,
+        scan_run_id=SCAN_ID,
+        items=(_item("101"), _item("100")),
+        target_root="ordered",
+    )
+    ordered_second = await service.create_plan(
+        library_id=LIBRARY_ID,
+        scan_run_id=SCAN_ID,
+        items=(_item("100"), _item("101")),
+        target_root="ordered",
+    )
+    assert ordered_first.plan_id == ordered_second.plan_id
     await database.engine.dispose()
 
 
@@ -251,6 +269,19 @@ async def test_refresh_invalidates_snapshot_versions_and_expiry(tmp_path):
     database = await _database(tmp_path)
     service = OrganizationPlanService(database.session_factory)
     now = datetime(2026, 7, 28, tzinfo=UTC)
+    basis_plan = await service.create_plan(
+        library_id=LIBRARY_ID,
+        scan_run_id=SCAN_ID,
+        items=(_item(),),
+        target_root="basis-check",
+        now=now,
+    )
+    basis_changed = await service.refresh_plan(
+        basis_plan.plan_id,
+        source_items=(_item(reasons=("basis_changed",)),),
+    )
+    assert basis_changed.status is OrganizationPlanStatus.INVALIDATED
+
     plan = await service.create_plan(
         library_id=LIBRARY_ID,
         scan_run_id=SCAN_ID,
@@ -284,6 +315,32 @@ async def test_refresh_invalidates_snapshot_versions_and_expiry(tmp_path):
     rule_changed = await service.refresh_plan(third.plan_id, rule_version="i06-v2")
     assert rule_changed.status is OrganizationPlanStatus.INVALIDATED
     await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_refresh_invalidates_library_scope_changes(tmp_path):
+    changes = (
+        ("revision", 2),
+        ("enabled", False),
+        ("scope_verified", False),
+        ("root_directory_id", "7001"),
+    )
+    for index, (field, value) in enumerate(changes):
+        case_dir = tmp_path / str(index)
+        case_dir.mkdir()
+        database = await _database(case_dir)
+        service = OrganizationPlanService(database.session_factory)
+        plan = await service.create_plan(
+            library_id=LIBRARY_ID, scan_run_id=SCAN_ID, items=(_item(),)
+        )
+        async with database.session_factory() as session:
+            library = await session.get(MediaLibrary, LIBRARY_ID)
+            assert library is not None
+            setattr(library, field, value)
+            await session.commit()
+        refreshed = await service.refresh_plan(plan.plan_id)
+        assert refreshed.status is OrganizationPlanStatus.INVALIDATED
+        await database.engine.dispose()
 
 
 @pytest.mark.asyncio
