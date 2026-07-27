@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
@@ -32,7 +33,9 @@ VALID_OPERATION_ERROR_CODES = frozenset(
         "cancelled",
         "local_failure",
         "outcome_unknown",
+        "postcondition_mismatch",
         "plan_prerequisites_changed",
+        "rate_limited",
         "remote_write_failed",
         "timeout",
     }
@@ -367,6 +370,7 @@ class OrganizationOperationService:
         lease_token: str,
         source_directory_id: str,
         target_directory_id: str,
+        directory_ids: Iterable[str] | None = None,
         now: datetime | None = None,
     ) -> OrganizationOperationSummary:
         """Complete a valid lease and enqueue dirty events in one transaction."""
@@ -402,7 +406,11 @@ class OrganizationOperationService:
                 await self._outbox_service.enqueue_directory_dirty(
                     session,
                     operation_id=operation_id,
-                    directory_ids=(source_directory_id, target_directory_id),
+                    directory_ids=(
+                        (source_directory_id, target_directory_id)
+                        if directory_ids is None
+                        else directory_ids
+                    ),
                 )
                 await session.commit()
             except OrganizationOperationLeaseUnavailable:
