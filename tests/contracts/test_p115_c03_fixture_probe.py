@@ -8,6 +8,8 @@ from watch_assistant.adapters.p115_c03_fixture_probe import (
     C03_WRITE_ENABLED_ENV,
     MAX_BATCH_OBSERVATION_CALLS,
     MAX_CONFLICT_OBSERVATION_CALLS,
+    MAX_LIST_CALLS,
+    MAX_LIST_PAGE_CALLS,
     MAX_READ_CALLS,
     MAX_TOTAL_CALLS,
     MAX_WRITE_CALLS,
@@ -41,11 +43,12 @@ async def test_c03_lifecycle_is_bounded_and_reclaims_only_its_exact_root():
     assert report.error_code is None
     assert report.write_calls == MAX_WRITE_CALLS == 10
     assert report.read_calls == 15
-    assert MAX_READ_CALLS == 27
-    assert report.list_calls == 4
-    assert report.page_calls == 4
+    assert MAX_READ_CALLS == MAX_LIST_CALLS * MAX_LIST_PAGE_CALLS
+    assert report.list_calls == MAX_LIST_CALLS == 15
+    assert report.page_calls == 15
     assert transport.list_count == report.list_calls
     assert report.write_calls + report.read_calls <= MAX_TOTAL_CALLS
+    assert transport.read_count == 0
     assert transport.write_operations == [
         WriteOperation.MKDIR,
         WriteOperation.MKDIR,
@@ -75,8 +78,8 @@ async def test_probe_reports_transport_page_calls_in_read_budget():
     )
 
     assert report.status is C03ProbeStatus.SUCCESS
-    assert report.page_calls == 12
-    assert report.read_calls == 23
+    assert report.page_calls == 45
+    assert report.read_calls == 45
     assert report.read_calls < MAX_READ_CALLS
     assert report.write_calls + report.read_calls <= MAX_TOTAL_CALLS
 

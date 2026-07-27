@@ -157,14 +157,19 @@ async def test_live_transport_accepts_verified_blank_mkdir_errno_only():
 
 
 @pytest.mark.asyncio
-async def test_live_transport_normalizes_directory_info_and_bounded_pages():
+async def test_live_transport_requires_listing_for_exact_directory_identity():
     client = _FakeP115Client(
         {
             "fs_mkdir": [],
             "fs_move": [],
             "fs_rename": [],
             "fs_delete": [],
-            "fs_info": [{"state": True, "data": _directory("101", "7", "source")}],
+            "fs_info": [
+                {
+                    "state": True,
+                    "data": {"file_category": "0", "file_name": "source"},
+                }
+            ],
             "fs_files": [
                 _page([_directory("101", "7", "source")], offset=0, count=2),
                 _page([_directory("102", "7", "quarantine")], offset=1, count=2),
@@ -176,8 +181,13 @@ async def test_live_transport_normalizes_directory_info_and_bounded_pages():
     entry = await transport.read("101")
     listing = await transport.list_children("7")
 
-    assert entry is not None
-    assert (entry.file_id, entry.parent_id, entry.name, entry.is_directory) == (
+    assert entry is None
+    assert (
+        listing.entries[0].file_id,
+        listing.entries[0].parent_id,
+        listing.entries[0].name,
+        listing.entries[0].is_directory,
+    ) == (
         "101",
         "7",
         "source",
@@ -222,6 +232,29 @@ async def test_live_transport_fails_closed_on_unknown_write_or_pagination():
     assert incomplete.complete is False
     assert incomplete.page_calls == MAX_FS_FILES_PAGE_CALLS == 4
     assert len(client.calls) == 1 + 1 + MAX_FS_FILES_PAGE_CALLS
+
+
+@pytest.mark.asyncio
+async def test_live_transport_rejects_duplicate_directory_entries_across_pages():
+    client = _FakeP115Client(
+        {
+            "fs_mkdir": [],
+            "fs_move": [],
+            "fs_rename": [],
+            "fs_delete": [],
+            "fs_info": [],
+            "fs_files": [
+                _page([_directory("101", "7", "source")], offset=0, count=2),
+                _page([_directory("101", "7", "source")], offset=1, count=2),
+            ],
+        }
+    )
+
+    listing = await P115C03LiveTransport(client).list_children("7")
+
+    assert listing.complete is False
+    assert listing.page_calls == 2
+    assert len(client.calls) == 2
 
 
 def _enabled_env() -> dict[str, str]:

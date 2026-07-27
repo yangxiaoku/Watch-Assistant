@@ -37,9 +37,9 @@ C03_LIVE_ENV = "WATCH_ASSISTANT_P115_C03_LIVE"
 PROBE_ENABLED_VALUE = "1"
 
 MAX_WRITE_CALLS = 10
-MAX_LIST_CALLS = 4
+MAX_LIST_CALLS = 15
 MAX_LIST_PAGE_CALLS = 4
-MAX_READ_CALLS = 27
+MAX_READ_CALLS = MAX_LIST_CALLS * MAX_LIST_PAGE_CALLS
 MAX_TOTAL_CALLS = MAX_WRITE_CALLS + MAX_READ_CALLS
 MAX_CONFLICT_OBSERVATION_CALLS = 0
 MAX_BATCH_OBSERVATION_CALLS = 0
@@ -686,33 +686,21 @@ async def _verify(
     parent_id: str,
     name: str,
 ) -> None:
-    if state.read_calls >= budget.max_read_calls:
-        raise _ProbeHalt("read_call_limit_reached")
-    if state.write_calls + state.read_calls >= budget.max_total_calls:
-        raise _ProbeHalt("total_call_limit_reached")
-    state.read_calls += 1
     try:
-        entry = await asyncio.wait_for(transport.read(file_id), timeout_seconds)
+        listing = await _list_children(
+            transport, state, budget, timeout_seconds, parent_id
+        )
     except asyncio.CancelledError:
         raise
-    except TimeoutError:
+    except _ProbeHalt:
         state.steps.append(C03StepReport(operation.value, C03StepStatus.UNCONFIRMED))
-        raise _ProbeHalt("timeout") from None
-    except Exception:  # noqa: BLE001 - read details never cross the boundary
-        state.steps.append(C03StepReport(operation.value, C03StepStatus.UNCONFIRMED))
-        raise _ProbeHalt("read_failed") from None
-    if not isinstance(entry, C03RemoteEntry):
-        state.steps.append(C03StepReport(operation.value, C03StepStatus.UNCONFIRMED))
-        raise _ProbeHalt("read_result_unconfirmed")
+        raise
     try:
-        matched = (
-            _normalize_file_id(entry.file_id) == file_id
-            and _normalize_file_id(entry.parent_id) == parent_id
-            and entry.name == name
-            and entry.is_directory is True
-        )
+        actual = _normalize_listing_entries(listing, parent_id)
     except (TypeError, ValueError):
-        matched = False
+        state.steps.append(C03StepReport(operation.value, C03StepStatus.UNCONFIRMED))
+        raise _ProbeHalt("read_result_unconfirmed") from None
+    matched = (file_id, parent_id, name, True) in actual
     state.steps.append(
         C03StepReport(
             operation.value,
@@ -794,27 +782,33 @@ async def _verify_managed_scope(
             for file_id, (child_parent_id, name) in state.managed.items()
             if child_parent_id == parent_id
         }
-        actual: list[tuple[str, str, str, bool]] = []
         try:
-            for entry in listing.entries:
-                if not isinstance(entry, C03RemoteEntry):
-                    raise _ProbeHalt("cleanup_scope_unconfirmed")
-                if not isinstance(entry.name, str) or not isinstance(
-                    entry.is_directory, bool
-                ):
-                    raise _ProbeHalt("cleanup_scope_unconfirmed")
-                actual.append(
-                    (
-                        _normalize_file_id(entry.file_id),
-                        _normalize_file_id(entry.parent_id),
-                        entry.name,
-                        entry.is_directory,
-                    )
-                )
+            actual = _normalize_listing_entries(listing, parent_id)
         except (TypeError, ValueError):
             raise _ProbeHalt("cleanup_scope_unconfirmed") from None
         if len(actual) != len(set(actual)) or set(actual) != expected:
             raise _ProbeHalt("cleanup_scope_unconfirmed")
+
+
+def _normalize_listing_entries(
+    listing: C03DirectoryListing, parent_id: str
+) -> tuple[tuple[str, str, str, bool], ...]:
+    actual: list[tuple[str, str, str, bool]] = []
+    for entry in listing.entries:
+        if not isinstance(entry, C03RemoteEntry):
+            raise TypeError("invalid_listing_entry")
+        if not isinstance(entry.name, str) or not isinstance(entry.is_directory, bool):
+            raise TypeError("invalid_listing_entry")
+        normalized = (
+            _normalize_file_id(entry.file_id),
+            _normalize_file_id(entry.parent_id),
+            entry.name,
+            entry.is_directory,
+        )
+        if normalized[1] != parent_id or normalized in actual:
+            raise ValueError("invalid_listing_entry")
+        actual.append(normalized)
+    return tuple(actual)
 
 
 async def _cleanup(
@@ -848,22 +842,19 @@ async def _cleanup(
         )
         if receipt.status is not WriteStatus.SUCCESS:
             return "uncertain", "cleanup_unconfirmed"
-        if state.read_calls >= budget.max_read_calls:
-            return "uncertain", "cleanup_read_call_limit_reached"
-        if state.write_calls + state.read_calls >= budget.max_total_calls:
-            return "uncertain", "cleanup_total_call_limit_reached"
-        state.read_calls += 1
         try:
-            remaining = await asyncio.wait_for(
-                transport.read(state.root_id), timeout_seconds
+            listing = await _list_children(
+                transport, state, budget, timeout_seconds, parent_id
             )
         except asyncio.CancelledError:
             raise
-        except TimeoutError:
-            return "uncertain", "cleanup_timeout"
-        except Exception:  # noqa: BLE001 - read details never cross the boundary
-            return "uncertain", "cleanup_read_failed"
-        if remaining is not None:
+        except _ProbeHalt as error:
+            return "uncertain", f"cleanup_{error.code}"
+        try:
+            actual = _normalize_listing_entries(listing, parent_id)
+        except (TypeError, ValueError):
+            return "uncertain", "cleanup_not_confirmed"
+        if any(entry[0] == state.root_id for entry in actual):
             return "uncertain", "cleanup_not_confirmed"
         return "complete", None
     except asyncio.CancelledError:
@@ -1000,6 +991,7 @@ __all__ = [
     "MAX_BATCH_OBSERVATION_CALLS",
     "MAX_CONFLICT_OBSERVATION_CALLS",
     "MAX_LIST_CALLS",
+    "MAX_LIST_PAGE_CALLS",
     "MAX_READ_CALLS",
     "MAX_TOTAL_CALLS",
     "MAX_WRITE_CALLS",

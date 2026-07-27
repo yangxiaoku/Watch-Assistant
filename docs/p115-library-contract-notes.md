@@ -90,7 +90,7 @@ Cookie 或异常正文。
 `scripts/p115_c03_fixture_probe.py` 只提供注入式边界和 offline fake；模块不读取
 Cookie、不创建 `P115Client`、不发网络。探针只接受非零十进制 `parent_id`，拒绝 URL、
 路径和任意目录输入。每轮固定执行 4 次 `mkdir`、5 次隔离/恢复组合操作及 1 次
-`fs_delete` 回收，最多 10 次写调用、27 次只读调用（其中目录列举最多 4 次、每次最多 4 页）；冲突、批量观测本轮未覆盖且预算为 0。
+`fs_delete` 回收，最多 10 次写调用、60 次只读调用（其中列表观察最多 15 次、每次最多 4 页）；冲突、批量观测本轮未覆盖且预算为 0。
 
 运行前必须同时设置：
 `WATCH_ASSISTANT_P115_C03_WRITE=1`、
@@ -115,11 +115,17 @@ ID、名称、路径、Cookie、pickcode、URL 或第三方异常正文。每次
 它不读取 server config，也不接入 app/worker/capability。
 
 live transport 仅调用 `fs_mkdir`、`fs_move`、`fs_rename`、`fs_delete`、`fs_info` 和
-固定 `limit=1` 的 `fs_files`。每个 `list_children` 最多 4 个连续页，并在
-`C03DirectoryListing.page_calls` 中记录实际页数；分页信号缺失/矛盾、非终止空页、
-超过 4 页或 DTO 字段无法确认均为 `complete=false`，因此不会回收。真实响应只在
-transport 内立即归一化为 C03 DTO，不保存或输出原响应、ID、名称、路径、pickcode、
-Cookie 或异常正文。第三方 `state`/`data`、详情别名和分页字段的跨场景稳定性仍未冻结。
+固定 `limit=1` 的 `fs_files`。`fs_info` 缺少响应 ID 或父 ID 时保持未确认，不能以
+请求 ID 补齐身份；C03 probe 的每次写后核对和回收后根不存在核对均改用父目录的
+`fs_files` 列表，从 `cid`、`pid`、`n`、`fc` 精确确认 ID、父级、名称和目录类型。
+每个 `list_children` 最多 4 个连续页，并在 `C03DirectoryListing.page_calls` 中记录
+实际页数；分页信号缺失/矛盾、`count/offset/limit` 不一致、重复条目、非终止空页、
+超过 4 页或 DTO 字段无法确认均为 `complete=false`，因此不会回收。probe 固定最多
+15 次列表观察，并在每次调用前按 4 页预留只读预算，最大 `read_calls` 为 60；公开
+计数只报告实际页数。真实响应只在 transport 内立即归一化为 C03 DTO，不保存或输出
+原响应、ID、名称、路径、pickcode、Cookie 或异常正文。第三方 `state`/`data`、详情
+别名和分页字段的跨场景稳定性仍未冻结。
+
 ## 固定版本源码观察
 
 本地源码仅用于记录方法名和 `inspect.signature`，没有执行任何客户端实例化。

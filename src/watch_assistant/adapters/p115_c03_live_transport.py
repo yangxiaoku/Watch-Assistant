@@ -96,6 +96,11 @@ class P115C03LiveTransport(P115C03Transport):
                     tuple(entries), complete=False, page_calls=page_calls
                 )
             page_entries, total = page
+            known_ids = {entry.file_id for entry in entries}
+            if any(entry.file_id in known_ids for entry in page_entries):
+                return C03DirectoryListing(
+                    tuple(entries), complete=False, page_calls=page_calls
+                )
             entries.extend(page_entries)
             if offset + len(page_entries) == total:
                 return C03DirectoryListing(
@@ -149,9 +154,9 @@ def _normalize_info_response(requested_id: str, response: Any) -> C03RemoteEntry
     response_id = _single_id(
         detail, ("file_id", "fid", "directory_id", "category_id", "cid")
     )
-    if name is None or parent_id is None:
+    if name is None or parent_id is None or response_id is None:
         return None
-    if response_id is not None and response_id != requested_id:
+    if response_id != requested_id:
         return None
     return C03RemoteEntry(requested_id, parent_id, name, True)
 
@@ -172,7 +177,9 @@ def _normalize_files_page(
         or total < 0
         or records is None
         or len(records) > VERIFIED_FS_FILES_PAGE_SIZE
+        or expected_offset > total
         or expected_offset + len(records) > total
+        or len(records) != min(VERIFIED_FS_FILES_PAGE_SIZE, total - expected_offset)
         or (not records and total > expected_offset)
     ):
         return None
@@ -273,6 +280,11 @@ def _directory_marker(record: Mapping[str, Any]) -> bool | None:
             values.append(record[name])
     if "fc" in record:
         value = record["fc"]
+        if isinstance(value, bool) or value not in (0, 1, "0", "1"):
+            return None
+        values.append(value in (0, "0"))
+    if "file_category" in record:
+        value = record["file_category"]
         if isinstance(value, bool) or value not in (0, 1, "0", "1"):
             return None
         values.append(value in (0, "0"))
