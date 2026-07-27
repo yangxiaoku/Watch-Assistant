@@ -77,6 +77,8 @@ def _item(
             ),
             confidence=confidence,
         ),
+        target_parent_id="8000",
+        target_name="movie.mkv",
     )
 
 
@@ -106,6 +108,17 @@ async def _database(tmp_path: Path):
             )
         )
         await session.commit()
+        session.add(
+            LibraryScanEntry(
+                scan_run_id=SCAN_ID,
+                object_type="directory",
+                object_id="8000",
+                parent_id=ROOT_ID,
+                name="movie",
+                path="movie",
+                is_directory=True,
+            )
+        )
         session.add(
             LibraryScanEntry(
                 scan_run_id=SCAN_ID,

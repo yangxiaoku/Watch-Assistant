@@ -65,10 +65,25 @@ class PlanSource:
 
 
 @dataclass(frozen=True, slots=True, repr=False)
+class OrganizationPlanCompanion:
+    """Optional companion source and its independently verified target."""
+
+    source: PlanSource
+    target_parent_id: str | None = None
+    target_name: str | None = None
+
+    def __repr__(self) -> str:
+        return "OrganizationPlanCompanion(source=<redacted>, target=<redacted>)"
+
+
+@dataclass(frozen=True, slots=True, repr=False)
 class OrganizationPlanItem:
     source: PlanSource
     naming_plan: NamingPlan
     decision: MatchDecision
+    target_parent_id: str | None = None
+    target_name: str | None = None
+    companions: tuple[OrganizationPlanCompanion, ...] = ()
 
     def __repr__(self) -> str:
         return "OrganizationPlanItem(source=<redacted>, naming_plan=<redacted>)"
@@ -106,6 +121,34 @@ class OrganizationPlanView:
             "precondition_count": self.precondition_count,
             "alias": self.alias,
         }
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class OrganizationPlanExecutionMember:
+    object_type: str
+    object_id: str
+    source_parent_id: str
+    source_name: str
+    source_version: str
+    target_parent_id: str
+    target_name: str
+
+    def __repr__(self) -> str:
+        return "OrganizationPlanExecutionMember(<redacted>)"
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class OrganizationPlanExecutionStep:
+    order: int
+    kind: str
+    scope_directory_ids: tuple[str, ...]
+    members: tuple[OrganizationPlanExecutionMember, ...]
+
+    def __repr__(self) -> str:
+        return (
+            "OrganizationPlanExecutionStep(order="
+            f"{self.order}, kind={self.kind!r}, member_count={len(self.members)})"
+        )
 
 
 class OrganizationPlanService:
@@ -150,6 +193,7 @@ class OrganizationPlanService:
             source_snapshot, actions, preconditions, basis, status = _build_payload(
                 normalized_items,
                 rows,
+                root_directory_id=library.root_directory_id,
                 target_root=target_root,
                 target_conflicts=target_conflicts,
                 source_snapshot_revision=run.snapshot_revision,
@@ -299,6 +343,9 @@ class OrganizationPlanService:
                     current_snapshot, _, _, current_basis, _ = _build_payload(
                         items,
                         rows,
+                        root_directory_id=library.root_directory_id
+                        if library is not None
+                        else "",
                         target_root=plan.target_root,
                         target_conflicts=target_conflicts,
                         source_snapshot_revision=run.snapshot_revision,
@@ -534,6 +581,7 @@ def _build_payload(
     items: Sequence[OrganizationPlanItem],
     rows: Mapping[tuple[str, str], LibraryScanEntry],
     *,
+    root_directory_id: str,
     target_root: str,
     target_conflicts: Iterable[str],
     source_snapshot_revision: int | None,
@@ -554,6 +602,10 @@ def _build_payload(
     preconditions: list[dict[str, object]] = []
     basis: list[dict[str, object]] = []
     targets: dict[str, int] = {}
+    directory_rows: dict[str, list[LibraryScanEntry]] = {}
+    for row in rows.values():
+        if row.is_directory:
+            directory_rows.setdefault(row.object_id, []).append(row)
     planned = True
     for index, item in enumerate(items):
         source = item.source
@@ -567,6 +619,7 @@ def _build_payload(
                 "object_id": source.object_id,
                 "parent_id": source.parent_id,
                 "path": source.path,
+                "name": rows[key].name,
                 "remote_version": source.remote_version,
                 "is_directory": source.is_directory,
             }
@@ -586,6 +639,14 @@ def _build_payload(
                 "matcher_version": matcher_version,
             }
         )
+        execution = _execution_payload(
+            item,
+            companions=rows,
+            directory_rows=directory_rows,
+            root_directory_id=root_directory_id,
+            target=target,
+            order=index,
+        )
         actions.append(
             {
                 "order": index,
@@ -593,6 +654,7 @@ def _build_payload(
                 "object_type": source.object_type,
                 "object_id": source.object_id,
                 "target": target,
+                "execution": execution,
             }
         )
         if target is not None:
@@ -605,6 +667,7 @@ def _build_payload(
             and item.decision.confidence is MatchConfidence.HIGH
             and item.decision.selected is not None
             and target is not None
+            and execution is not None
         )
         if not accepted:
             planned = False
@@ -650,12 +713,248 @@ def _build_payload(
 
 
 def _target_set(plan: OrganizationPlan) -> set[str]:
-    actions = json.loads(plan.actions_json)
+    actions = _load_json_list(plan.actions_json)
     return {
         _normalize_target(action["target"])
         for action in actions
-        if isinstance(action.get("target"), str)
+        if isinstance(action, dict) and isinstance(action.get("target"), str)
     }
+
+
+def _execution_payload(
+    item: OrganizationPlanItem,
+    *,
+    companions: Mapping[tuple[str, str], LibraryScanEntry],
+    directory_rows: Mapping[str, Sequence[LibraryScanEntry]],
+    root_directory_id: str,
+    target: str | None,
+    order: int,
+) -> dict[str, object] | None:
+    if target is None or not _safe_identity(root_directory_id):
+        return None
+    target_parent_id = item.target_parent_id
+    target_name = item.target_name
+    if not _valid_target_name(target_name) or not _safe_identity(target_parent_id):
+        return None
+    if target_name != PurePosixPath(target).name:
+        return None
+    if not _target_directory_matches(
+        target,
+        target_parent_id=target_parent_id,
+        directory_rows=directory_rows,
+        root_directory_id=root_directory_id,
+    ):
+        return None
+    members: list[dict[str, str]] = []
+    member_keys: set[tuple[str, str]] = set()
+    all_sources = (
+        (item.source, target_parent_id, target_name),
+        *(
+            (companion.source, companion.target_parent_id, companion.target_name)
+            for companion in item.companions
+        ),
+    )
+    for source, member_target_parent, member_target_name in all_sources:
+        key = (source.object_type, source.object_id)
+        member_row = companions.get(key)
+        if (
+            key in member_keys
+            or member_row is None
+            or member_row.is_directory
+            or not _safe_identity(source.object_type)
+            or not _safe_identity(source.object_id)
+            or not _safe_identity(source.parent_id)
+            or not isinstance(source.remote_version, str)
+            or not source.remote_version
+            or not _valid_source_version(source.remote_version)
+            or not _safe_identity(member_target_parent)
+            or not _valid_target_name(member_target_name)
+            or member_target_parent != target_parent_id
+            or not _valid_target_name(member_row.name)
+            or member_row.parent_id != source.parent_id
+            or member_row.path != source.path
+        ):
+            return None
+        if not _source_parent_is_managed(
+            member_row.parent_id, directory_rows, root_directory_id
+        ):
+            return None
+        member_keys.add(key)
+        members.append(
+            {
+                "object_type": source.object_type,
+                "object_id": source.object_id,
+                "source_parent_id": member_row.parent_id,
+                "source_name": member_row.name,
+                "source_version": source.remote_version,
+                "target_parent_id": member_target_parent,
+                "target_name": member_target_name,
+            }
+        )
+    scope_directory_ids = sorted(
+        {
+            root_directory_id,
+            *(member["source_parent_id"] for member in members),
+            *(member["target_parent_id"] for member in members),
+        }
+    )
+    return {
+        "order": order,
+        "kind": "move",
+        "scope_directory_ids": scope_directory_ids,
+        "members": members,
+    }
+
+
+def _target_directory_matches(
+    target: str,
+    *,
+    target_parent_id: str,
+    directory_rows: Mapping[str, Sequence[LibraryScanEntry]],
+    root_directory_id: str,
+) -> bool:
+    parent_path = PurePosixPath(target).parent
+    if str(parent_path) == ".":
+        return target_parent_id == root_directory_id
+    directories = directory_rows.get(target_parent_id, ())
+    if len(directories) != 1:
+        return False
+    directory = directories[0]
+    if not isinstance(directory.path, str):
+        return False
+    return _index_path(directory.path) == _index_path(str(parent_path))
+
+
+def _source_parent_is_managed(
+    parent_id: str,
+    directory_rows: Mapping[str, Sequence[LibraryScanEntry]],
+    root_directory_id: str,
+) -> bool:
+    return parent_id == root_directory_id or len(directory_rows.get(parent_id, ())) == 1
+
+
+def _index_path(value: str) -> str:
+    return value.strip("/").replace("\\", "/")
+
+
+def _valid_target_name(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and bool(value)
+        and len(value) <= 4096
+        and value not in {".", ".."}
+        and "\x00" not in value
+        and "/" not in value
+        and "\\" not in value
+    )
+
+
+def load_executable_steps(
+    plan: OrganizationPlan,
+) -> tuple[OrganizationPlanExecutionStep, ...] | None:
+    """Parse only the complete execution payload used by a future executor.
+
+    Old previews remain readable, but their actions intentionally return ``None``
+    here because they do not carry the stable directory and member identities.
+    """
+
+    if plan.status != OrganizationPlanStatus.PLANNED.value:
+        return None
+    actions = _load_json_list(plan.actions_json)
+    if not actions:
+        return None
+    steps: list[OrganizationPlanExecutionStep] = []
+    seen_members: set[tuple[str, str]] = set()
+    for expected_order, action in enumerate(actions):
+        if not isinstance(action, dict) or action.get("kind") != "move":
+            return None
+        execution = action.get("execution")
+        if not isinstance(execution, dict):
+            return None
+        order = execution.get("order")
+        kind = execution.get("kind")
+        scope = execution.get("scope_directory_ids")
+        members = execution.get("members")
+        if (
+            isinstance(order, bool)
+            or not isinstance(order, int)
+            or order != expected_order
+            or kind != "move"
+            or not isinstance(scope, list)
+            or not scope
+            or not all(_safe_identity(value) for value in scope)
+            or len(scope) != len(set(scope))
+            or scope != sorted(scope)
+            or not isinstance(members, list)
+            or not members
+        ):
+            return None
+        parsed_members: list[OrganizationPlanExecutionMember] = []
+        for member in members:
+            if not isinstance(member, dict):
+                return None
+            values = (
+                member.get("object_type"),
+                member.get("object_id"),
+                member.get("source_parent_id"),
+                member.get("source_name"),
+                member.get("source_version"),
+                member.get("target_parent_id"),
+                member.get("target_name"),
+            )
+            (
+                object_type,
+                object_id,
+                source_parent,
+                source_name,
+                version,
+                target_parent,
+                target_name,
+            ) = values
+            if (
+                not _safe_identity(object_type)
+                or not _safe_identity(object_id)
+                or not _safe_identity(source_parent)
+                or not _valid_target_name(source_name)
+                or not _valid_source_version(version)
+                or not _safe_identity(target_parent)
+                or not _valid_target_name(target_name)
+            ):
+                return None
+            key = (object_type, object_id)
+            if key in seen_members:
+                return None
+            seen_members.add(key)
+            parsed_members.append(
+                OrganizationPlanExecutionMember(
+                    object_type=object_type,
+                    object_id=object_id,
+                    source_parent_id=source_parent,
+                    source_name=source_name,
+                    source_version=version,
+                    target_parent_id=target_parent,
+                    target_name=target_name,
+                )
+            )
+        if (
+            action.get("order") != expected_order
+            or action.get("object_type") != parsed_members[0].object_type
+            or action.get("object_id") != parsed_members[0].object_id
+            or not set(scope).issuperset(
+                {member.source_parent_id for member in parsed_members}
+                | {member.target_parent_id for member in parsed_members}
+            )
+        ):
+            return None
+        steps.append(
+            OrganizationPlanExecutionStep(
+                order=order,
+                kind=kind,
+                scope_directory_ids=tuple(scope),
+                members=tuple(parsed_members),
+            )
+        )
+    return tuple(steps)
 
 
 def _library_snapshot(library: MediaLibrary) -> dict[str, object]:
@@ -759,6 +1058,7 @@ def _validate_items(
             or not isinstance(source.remote_version, str)
             or not source.remote_version
             or len(source.remote_version) > 128
+            or not _valid_source_version(source.remote_version)
             or not isinstance(source.is_directory, bool)
         ):
             raise OrganizationPlanError("invalid_source_snapshot")
@@ -770,6 +1070,15 @@ def _validate_items(
         keys.add(key)
         if not isinstance(item.naming_plan, NamingPlan) or not isinstance(
             item.decision, MatchDecision
+        ):
+            raise OrganizationPlanError("invalid_plan_input")
+        if not isinstance(item.companions, Sequence) or isinstance(
+            item.companions, (str, bytes)
+        ):
+            raise OrganizationPlanError("invalid_plan_input")
+        if any(
+            not isinstance(companion, OrganizationPlanCompanion)
+            for companion in item.companions
         ):
             raise OrganizationPlanError("invalid_plan_input")
     return tuple(
@@ -791,6 +1100,23 @@ def _validate_identity(value: str, code: str) -> str:
     ):
         raise OrganizationPlanError(code)
     return value
+
+
+def _valid_source_version(value: object) -> bool:
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value) > 128
+        or "\x00" in value
+        or "/" in value
+        or "\\" in value
+        or "://" in value
+    ):
+        return False
+    return not any(
+        marker in value.casefold()
+        for marker in ("pickcode", "cookie", "token", "password", "secret")
+    )
 
 
 def _validate_alias(value: str) -> str:
@@ -898,10 +1224,14 @@ def _view(plan: OrganizationPlan) -> OrganizationPlanView:
 
 
 __all__ = [
+    "OrganizationPlanCompanion",
     "OrganizationPlanError",
+    "OrganizationPlanExecutionMember",
+    "OrganizationPlanExecutionStep",
     "OrganizationPlanItem",
     "OrganizationPlanService",
     "OrganizationPlanStatus",
     "OrganizationPlanView",
     "PlanSource",
+    "load_executable_steps",
 ]

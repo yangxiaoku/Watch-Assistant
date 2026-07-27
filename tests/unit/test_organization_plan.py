@@ -26,11 +26,13 @@ from watch_assistant.services.media_matcher import (
     TmdbCandidate,
 )
 from watch_assistant.services.organization_plan import (
+    OrganizationPlanCompanion,
     OrganizationPlanError,
     OrganizationPlanItem,
     OrganizationPlanService,
     OrganizationPlanStatus,
     PlanSource,
+    load_executable_steps,
 )
 
 LIBRARY_ID = "library-1"
@@ -60,6 +62,9 @@ def _item(
     naming_status: ClassificationStatus = ClassificationStatus.PLANNED,
     display_name: str = SECRET_NAME,
     reasons: tuple[str, ...] = ("tmdb_match_accepted",),
+    target_parent_id: str | None = "8000",
+    target_name: str = "safe-title.mkv",
+    companions: tuple[OrganizationPlanCompanion, ...] = (),
 ) -> OrganizationPlanItem:
     return OrganizationPlanItem(
         source=PlanSource(
@@ -81,6 +86,9 @@ def _item(
             selected=_candidate(),
             confidence=confidence,
         ),
+        target_parent_id=target_parent_id,
+        target_name=target_name,
+        companions=companions,
     )
 
 
@@ -110,6 +118,17 @@ async def _database(tmp_path: Path):
             )
         )
         await session.commit()
+        session.add(
+            LibraryScanEntry(
+                scan_run_id=SCAN_ID,
+                object_type="directory",
+                object_id="8000",
+                parent_id=ROOT_ID,
+                name="movie",
+                path="movie",
+                is_directory=True,
+            )
+        )
         session.add(
             LibraryScanEntry(
                 scan_run_id=SCAN_ID,
@@ -172,6 +191,140 @@ async def test_plan_hash_is_stable_and_persistence_is_idempotent(tmp_path):
         target_root="ordered",
     )
     assert ordered_first.plan_id == ordered_second.plan_id
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_complete_execution_payload_is_persisted_and_parsed(tmp_path):
+    database = await _database(tmp_path)
+    service = OrganizationPlanService(database.session_factory)
+    plan_view = await service.create_plan(
+        library_id=LIBRARY_ID, scan_run_id=SCAN_ID, items=(_item(),)
+    )
+    async with database.session_factory() as session:
+        plan = await session.get(OrganizationPlan, plan_view.plan_id)
+        assert plan is not None
+        steps = load_executable_steps(plan)
+        assert steps is not None
+        assert steps[0].scope_directory_ids == (ROOT_ID, "8000")
+        member = steps[0].members[0]
+        assert (member.source_parent_id, member.source_name) == (ROOT_ID, SECRET_NAME)
+        assert (member.target_parent_id, member.target_name) == (
+            "8000",
+            "safe-title.mkv",
+        )
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_companion_group_is_complete_and_target_identity_changes_hash(tmp_path):
+    database = await _database(tmp_path)
+    service = OrganizationPlanService(database.session_factory)
+    async with database.session_factory() as session:
+        session.add(
+            LibraryScanEntry(
+                scan_run_id=SCAN_ID,
+                object_type="file",
+                object_id="102",
+                parent_id=ROOT_ID,
+                name="private-title.srt",
+                path="/private/cloud/private-title.srt",
+                is_directory=False,
+            )
+        )
+        session.add(
+            LibraryScanEntry(
+                scan_run_id=SCAN_ID,
+                object_type="directory",
+                object_id="8001",
+                parent_id=ROOT_ID,
+                name="movie",
+                path="movie",
+                is_directory=True,
+            )
+        )
+        await session.commit()
+    companion = OrganizationPlanCompanion(
+        source=PlanSource(
+            object_type="file",
+            object_id="102",
+            parent_id=ROOT_ID,
+            path="/private/cloud/private-title.srt",
+            remote_version="remote-v1",
+        ),
+        target_parent_id="8000",
+        target_name="safe-title.srt",
+    )
+    plan = await service.create_plan(
+        library_id=LIBRARY_ID,
+        scan_run_id=SCAN_ID,
+        items=(_item(companions=(companion,)),),
+    )
+    assert plan.status is OrganizationPlanStatus.PLANNED
+    async with database.session_factory() as session:
+        stored = await session.get(OrganizationPlan, plan.plan_id)
+        assert stored is not None
+        steps = load_executable_steps(stored)
+        assert steps is not None
+        assert len(steps[0].members) == 2
+    alternate = await service.create_plan(
+        library_id=LIBRARY_ID,
+        scan_run_id=SCAN_ID,
+        items=(_item(target_parent_id="8001"),),
+    )
+    assert alternate.plan_hash != plan.plan_hash
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_missing_target_mapping_or_companion_identity_needs_review(tmp_path):
+    database = await _database(tmp_path)
+    service = OrganizationPlanService(database.session_factory)
+    missing_target = await service.create_plan(
+        library_id=LIBRARY_ID,
+        scan_run_id=SCAN_ID,
+        items=(_item(target_parent_id="9999"),),
+        target_root="missing-target",
+    )
+    assert missing_target.status is OrganizationPlanStatus.NEEDS_REVIEW
+    companion = OrganizationPlanCompanion(
+        source=PlanSource(
+            object_type="file",
+            object_id="missing-companion",
+            parent_id=ROOT_ID,
+            path="/private/subtitle.srt",
+            remote_version="remote-v1",
+        ),
+        target_parent_id="8000",
+        target_name="safe-title.srt",
+    )
+    incomplete = await service.create_plan(
+        library_id=LIBRARY_ID,
+        scan_run_id=SCAN_ID,
+        items=(_item(companions=(companion,)),),
+        target_root="companion",
+    )
+    assert incomplete.status is OrganizationPlanStatus.NEEDS_REVIEW
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_old_plan_payload_is_readable_but_not_executable(tmp_path):
+    database = await _database(tmp_path)
+    service = OrganizationPlanService(database.session_factory)
+    plan_view = await service.create_plan(
+        library_id=LIBRARY_ID, scan_run_id=SCAN_ID, items=(_item(),)
+    )
+    async with database.session_factory() as session:
+        plan = await session.get(OrganizationPlan, plan_view.plan_id)
+        assert plan is not None
+        actions = json.loads(plan.actions_json)
+        actions[0].pop("execution", None)
+        plan.actions_json = json.dumps(actions)
+        await session.commit()
+        refreshed = await session.get(OrganizationPlan, plan_view.plan_id)
+        assert refreshed is not None
+        assert load_executable_steps(refreshed) is None
     await database.engine.dispose()
 
 
