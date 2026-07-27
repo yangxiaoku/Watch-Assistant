@@ -284,3 +284,60 @@ class Task(Base):
     )
 
     resource: Mapped[Resource | None] = relationship(back_populates="tasks")
+
+
+class OrganizationOperationStatus(StrEnum):
+    PLANNED = "planned"
+    ORGANIZING = "organizing"
+    ORGANIZED = "organized"
+    FAILED = "failed"
+    UNCERTAIN = "uncertain"
+    CANCELLED = "cancelled"
+
+
+class OrganizationOperation(Base):
+    """Durable local state for a future organization execution."""
+
+    __tablename__ = "organization_operations"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    plan_id: Mapped[str] = mapped_column(
+        ForeignKey("organization_plans.id", ondelete="RESTRICT"),
+        unique=True,
+        index=True,
+    )
+    plan_revision: Mapped[int] = mapped_column(Integer)
+    idempotency_key: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    status: Mapped[OrganizationOperationStatus] = mapped_column(
+        Enum(
+            OrganizationOperationStatus,
+            values_callable=enum_values,
+            native_enum=False,
+        ),
+        default=OrganizationOperationStatus.PLANNED,
+        server_default=OrganizationOperationStatus.PLANNED.value,
+        index=True,
+    )
+    revision: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    lease_token: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    def __repr__(self) -> str:
+        status = self.status.value if self.status is not None else None
+        return (
+            "OrganizationOperation(id=<redacted>, plan_id=<redacted>, "
+            f"status={status!r}, revision={self.revision!r})"
+        )

@@ -6,7 +6,13 @@ from sqlalchemy import inspect, text
 import watch_assistant.db as database_module
 from watch_assistant.db import create_database, initialize_database
 from watch_assistant.migrations import MIGRATIONS, Migration, run_migrations
-from watch_assistant.models import ApplicationSettings, Resource, Task, WebSession
+from watch_assistant.models import (
+    ApplicationSettings,
+    OrganizationOperation,
+    Resource,
+    Task,
+    WebSession,
+)
 from watch_assistant.schemas import ResourceKind, TaskAction
 
 APPLICATION_SETTINGS_COLUMNS = {
@@ -185,6 +191,38 @@ async def test_initialize_database_is_idempotent(tmp_path):
     assert await _applied_migration_ids(database) == [
         migration.id for migration in MIGRATIONS
     ]
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_organization_operation_migration_preserves_existing_data(tmp_path):
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'watch.db'}")
+    await initialize_database(database.engine)
+    async with database.engine.begin() as connection:
+        await connection.execute(
+            text("CREATE TABLE legacy_marker (id INTEGER PRIMARY KEY, value TEXT)")
+        )
+        await connection.execute(
+            text("INSERT INTO legacy_marker (id, value) VALUES (1, 'preserved')")
+        )
+        await connection.run_sync(
+            lambda sync: OrganizationOperation.__table__.drop(sync, checkfirst=True)
+        )
+        await connection.execute(
+            text(
+                "DELETE FROM schema_migrations "
+                "WHERE migration_id = '005_organization_operations'"
+            )
+        )
+        await connection.run_sync(run_migrations, (MIGRATIONS[-1],))
+
+    async with database.engine.connect() as connection:
+        marker = await connection.scalar(text("SELECT value FROM legacy_marker"))
+        has_operations = await connection.run_sync(
+            lambda sync: inspect(sync).has_table(OrganizationOperation.__tablename__)
+        )
+    assert marker == "preserved"
+    assert has_operations is True
     await database.engine.dispose()
 
 
