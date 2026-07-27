@@ -125,6 +125,38 @@ async def test_live_transport_uses_fixed_payloads_and_redacts_write_results():
 
 
 @pytest.mark.asyncio
+async def test_live_transport_accepts_verified_blank_mkdir_errno_only():
+    client = _FakeP115Client(
+        {
+            "fs_mkdir": [
+                {
+                    "state": True,
+                    "errno": "",
+                    "cid": "101",
+                    "file_id": "101",
+                }
+            ],
+            "fs_move": [],
+            "fs_rename": [],
+            "fs_delete": [],
+            "fs_info": [],
+            "fs_files": [],
+        }
+    )
+    transport = P115C03LiveTransport(client)
+
+    accepted = await transport.execute(prepare_mkdir("7", "source"))
+    assert accepted.status is WriteStatus.SUCCESS
+    assert accepted.file_id == "101"
+
+    client.responses["fs_mkdir"] = [
+        {"state": True, "errno": "unexpected", "cid": "102", "file_id": "102"}
+    ]
+    rejected = await transport.execute(prepare_mkdir("7", "other"))
+    assert rejected.status is WriteStatus.UNCERTAIN
+
+
+@pytest.mark.asyncio
 async def test_live_transport_normalizes_directory_info_and_bounded_pages():
     client = _FakeP115Client(
         {

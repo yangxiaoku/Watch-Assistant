@@ -218,7 +218,7 @@ def _response_success(response: Mapping[str, Any]) -> bool:
         return False
     if "code" in response and not _zero_code(response["code"]):
         return False
-    return "errno" not in response or _zero_code(response["errno"])
+    return "errno" not in response or _errno_success(response["errno"])
 
 
 def _zero_code(value: Any) -> bool:
@@ -227,6 +227,10 @@ def _zero_code(value: Any) -> bool:
     if isinstance(value, int):
         return value in {0, 200}
     return isinstance(value, str) and value.strip() in {"0", "200"}
+
+
+def _errno_success(value: Any) -> bool:
+    return _zero_code(value) or (isinstance(value, str) and not value.strip())
 
 
 def _single_id(record: Mapping[str, Any], names: tuple[str, ...]) -> str | None:
