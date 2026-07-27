@@ -244,6 +244,12 @@ class OrganizationPlanService:
             plan = await session.get(OrganizationPlan, plan_id)
             if plan is None:
                 raise OrganizationPlanError("plan_not_found")
+            stored_source_snapshot = _load_source_snapshot(plan.source_snapshot_json)
+            if stored_source_snapshot is None:
+                plan.status = OrganizationPlanStatus.INVALIDATED.value
+                plan.revision += 1
+                await session.commit()
+                return _view(plan)
             if plan.status == OrganizationPlanStatus.IGNORED.value:
                 return _view(plan)
             stale = current_time >= _utc(plan.expires_at)
@@ -297,7 +303,7 @@ class OrganizationPlanService:
                         parser_version=plan.parser_version,
                         matcher_version=plan.matcher_version,
                     )
-                    if current_snapshot != json.loads(plan.source_snapshot_json):
+                    if current_snapshot != stored_source_snapshot:
                         stale = True
                     # Basis is audit-only for hashing; explicit refresh invalidates changes.
                     if current_basis != json.loads(plan.basis_json):
@@ -538,6 +544,58 @@ def _load_json_object(value: str) -> dict[str, object]:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _load_source_snapshot(value: object) -> list[dict[str, object]] | None:
+    try:
+        parsed = json.loads(value) if isinstance(value, str) else None
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(parsed, list) or not parsed:
+        return None
+    for item in parsed:
+        if not isinstance(item, dict):
+            return None
+        object_type = item.get("object_type")
+        object_id = item.get("object_id")
+        parent_id = item.get("parent_id")
+        path = item.get("path")
+        remote_version = item.get("remote_version")
+        if (
+            not _safe_identity(object_type)
+            or not _safe_identity(object_id)
+            or not _safe_identity(parent_id)
+            or not isinstance(path, str)
+            or not path
+            or "\x00" in path
+            or len(path) > 4096
+            or not isinstance(remote_version, str)
+            or not remote_version
+            or len(remote_version) > 128
+            or item.get("is_directory") is not False
+        ):
+            return None
+    return parsed
+
+
+def _safe_identity(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and bool(value)
+        and len(value) <= 128
+        and "\x00" not in value
+        and "/" not in value
+        and "\\" not in value
+        and "://" not in value
+    )
+
+
+def _load_json_list(value: object) -> list[object]:
+    try:
+        parsed = json.loads(value) if isinstance(value, str) else None
+    except (TypeError, ValueError):
+        return []
+    return parsed if isinstance(parsed, list) else []
+
+
 def _target_path(root: str, path: str | None) -> str | None:
     if path is None:
         return None
@@ -666,7 +724,8 @@ def _utc(value: datetime | None) -> datetime:
 
 
 def _view(plan: OrganizationPlan) -> OrganizationPlanView:
-    preconditions = json.loads(plan.preconditions_json)
+    source_snapshot = _load_source_snapshot(plan.source_snapshot_json) or []
+    preconditions = _load_json_object(plan.preconditions_json)
     if isinstance(preconditions, dict):
         precondition_count = len(preconditions.get("items", ()))
     else:
@@ -677,8 +736,8 @@ def _view(plan: OrganizationPlan) -> OrganizationPlanView:
         status=OrganizationPlanStatus(plan.status),
         revision=plan.revision,
         expires_at=_utc(plan.expires_at),
-        source_count=len(json.loads(plan.source_snapshot_json)),
-        action_count=len(json.loads(plan.actions_json)),
+        source_count=len(source_snapshot),
+        action_count=len(_load_json_list(plan.actions_json)),
         precondition_count=precondition_count,
     )
 

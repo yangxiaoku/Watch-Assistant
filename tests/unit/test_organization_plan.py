@@ -344,6 +344,36 @@ async def test_refresh_invalidates_library_scope_changes(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_refresh_invalidates_corrupt_source_snapshot_without_leaking_json(
+    tmp_path,
+):
+    corruptions = (
+        "{broken-json",
+        "[]",
+        '[{"object_type":"file","parent_id":"7000","path":"/private"}]',
+    )
+    for index, corruption in enumerate(corruptions):
+        case_dir = tmp_path / str(index)
+        case_dir.mkdir()
+        database = await _database(case_dir)
+        service = OrganizationPlanService(database.session_factory)
+        plan = await service.create_plan(
+            library_id=LIBRARY_ID, scan_run_id=SCAN_ID, items=(_item(),)
+        )
+        async with database.session_factory() as session:
+            stored = await session.get(OrganizationPlan, plan.plan_id)
+            assert stored is not None
+            stored.source_snapshot_json = corruption
+            await session.commit()
+
+        refreshed = await service.refresh_plan(plan.plan_id)
+        assert refreshed.status is OrganizationPlanStatus.INVALIDATED
+        assert refreshed.source_count == 0
+        assert corruption not in repr(refreshed)
+        await database.engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_public_and_error_outputs_are_redacted_and_migration_is_idempotent(
     tmp_path,
 ):
