@@ -340,6 +340,120 @@ async def test_expired_lease_stops_before_transport(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_call_rechecks_cancel_after_rate_limit_sleep(tmp_path: Path):
+    database = await _database(tmp_path)
+    transport = FakeOrganizationTransport()
+    executor, operation, lease = await _claimed_executor(
+        database, transport, min_call_interval=1
+    )
+    cancel_event = asyncio.Event()
+
+    async def cancel_after_sleep(_delay: float) -> None:
+        cancel_event.set()
+
+    executor = OrganizationExecutor(
+        OrganizationOperationService(database.session_factory),
+        database.session_factory,
+        transport,
+        min_call_interval=1,
+        sleep=cancel_after_sleep,
+    )
+    result = await executor.execute(
+        operation.operation_id,
+        expected_revision=lease.revision,
+        lease_token=lease.lease_token,
+        cancel_event=cancel_event,
+    )
+
+    assert (result.status, result.error_code) == (
+        OrganizationExecutionStatus.CANCELLED,
+        "cancelled",
+    )
+    assert [call[0] for call in transport.calls] == ["read_object"]
+    current = await OrganizationOperationService(database.session_factory).get(
+        operation.operation_id
+    )
+    assert current.status is OrganizationOperationStatus.UNCERTAIN
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_call_rechecks_lease_after_rate_limit_sleep(tmp_path: Path):
+    database = await _database(tmp_path)
+    transport = FakeOrganizationTransport()
+    executor, operation, lease = await _claimed_executor(
+        database, transport, min_call_interval=1
+    )
+
+    async def lose_lease_after_sleep(_delay: float) -> None:
+        async with database.session_factory() as session:
+            row = await session.get(OrganizationOperation, operation.operation_id)
+            assert row is not None
+            row.lease_token = "z" * 32
+            await session.commit()
+
+    executor = OrganizationExecutor(
+        OrganizationOperationService(database.session_factory),
+        database.session_factory,
+        transport,
+        min_call_interval=1,
+        sleep=lose_lease_after_sleep,
+    )
+    result = await executor.execute(
+        operation.operation_id,
+        expected_revision=lease.revision,
+        lease_token=lease.lease_token,
+    )
+
+    assert (result.status, result.error_code) == (
+        OrganizationExecutionStatus.LEASE_LOST,
+        "lease_lost",
+    )
+    assert [call[0] for call in transport.calls] == ["read_object"]
+    current = await OrganizationOperationService(database.session_factory).get(
+        operation.operation_id
+    )
+    assert current.status is OrganizationOperationStatus.ORGANIZING
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_lease_loss_after_write_persists_uncertain(tmp_path: Path):
+    database = await _database(tmp_path)
+    transport = FakeOrganizationTransport()
+    executor, operation, lease = await _claimed_executor(database, transport)
+    move = transport.move
+
+    async def move_then_lose_lease(object_id, target_parent_id):
+        result = await move(object_id, target_parent_id)
+        async with database.session_factory() as session:
+            row = await session.get(OrganizationOperation, operation.operation_id)
+            assert row is not None
+            row.lease_expires_at = datetime(2020, 1, 1, tzinfo=UTC)
+            await session.commit()
+        return result
+
+    transport.move = move_then_lose_lease
+    result = await executor.execute(
+        operation.operation_id,
+        expected_revision=lease.revision,
+        lease_token=lease.lease_token,
+    )
+
+    assert (result.status, result.error_code) == (
+        OrganizationExecutionStatus.UNCERTAIN,
+        "lease_lost",
+    )
+    assert all(call[0] != "rename" for call in transport.calls)
+    current = await OrganizationOperationService(database.session_factory).get(
+        operation.operation_id
+    )
+    assert current.status is OrganizationOperationStatus.UNCERTAIN
+    assert current.error_code == "lease_lost"
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_rate_limit_stops_before_first_write(tmp_path: Path):
     database = await _database(tmp_path)
     transport = FakeOrganizationTransport()
@@ -418,6 +532,64 @@ async def test_companion_partial_failure_does_not_continue_group(tmp_path: Path)
     assert result.status is OrganizationExecutionStatus.UNCERTAIN
     assert ("rename", "102", "movie.srt") not in transport.calls
     assert result.completed_steps == 0
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_companion_partial_replay_is_uncertain_without_writes(tmp_path: Path):
+    database = await _database(tmp_path)
+    async with database.session_factory() as session:
+        session.add(
+            LibraryScanEntry(
+                scan_run_id="scan-1",
+                object_type="file",
+                object_id="102",
+                parent_id="7000",
+                name="movie.srt",
+                path="/private/movie.srt",
+                is_directory=False,
+            )
+        )
+        await session.commit()
+    companion = OrganizationPlanCompanion(
+        source=PlanSource(
+            object_type="file",
+            object_id="102",
+            parent_id="7000",
+            path="/private/movie.srt",
+            remote_version="remote-v1",
+        ),
+        target_parent_id="8000",
+        target_name="movie.srt",
+    )
+    plan = await OrganizationPlanService(database.session_factory).create_plan(
+        library_id="library-1",
+        scan_run_id="scan-1",
+        items=(replace(_item(), companions=(companion,)),),
+    )
+    operation = await OrganizationOperationService(database.session_factory).create(
+        plan.plan_id, idempotency_key="partial-replay-operation"
+    )
+    operation_service = OrganizationOperationService(database.session_factory)
+    lease = await operation_service.claim(operation.operation_id, expected_revision=1)
+    transport = FakeOrganizationTransport(
+        states={"100": ("8000", "movie.mkv"), "102": ("7000", "movie.srt")}
+    )
+    result = await OrganizationExecutor(
+        operation_service, database.session_factory, transport
+    ).execute(
+        operation.operation_id,
+        expected_revision=lease.revision,
+        lease_token=lease.lease_token,
+    )
+
+    assert (result.status, result.error_code) == (
+        OrganizationExecutionStatus.UNCERTAIN,
+        "outcome_unknown",
+    )
+    assert all(call[0] not in {"move", "rename"} for call in transport.calls)
+    current = await operation_service.get(operation.operation_id)
+    assert current.status is OrganizationOperationStatus.UNCERTAIN
     await database.engine.dispose()
 
 

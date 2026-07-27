@@ -118,6 +118,7 @@ class _ExecutionContext:
     completed_steps: int = 0
     transport_calls: int = 0
     last_call_at: float | None = None
+    write_started: bool = False
 
 
 class _TransportFailure(Exception):
@@ -131,6 +132,10 @@ class _RateLimitReached(Exception):
 
 
 class _ExecutionCancelled(Exception):
+    pass
+
+
+class _LeaseLost(Exception):
     pass
 
 
@@ -230,7 +235,7 @@ class OrganizationExecutor:
                     now=now,
                 )
             if not await self._renew(context, now=now):
-                return self._lease_lost(context)
+                return await self._handle_lease_loss(context, now=now)
             group = _group_for_step(step)
             if group is None:
                 return await self._finish(
@@ -245,13 +250,17 @@ class OrganizationExecutor:
                 for member in step.members:
                     self._check_cancel(cancel_event)
                     if not await self._renew(context, now=now):
-                        return self._lease_lost(context)
+                        return await self._handle_lease_loss(context, now=now)
                     sources[member.object_id] = await self._call(
-                        context, self._transport.read_object, member.object_id
+                        context,
+                        self._transport.read_object,
+                        member.object_id,
+                        cancel_event=cancel_event,
+                        now=now,
                     )
                     self._check_cancel(cancel_event)
                     if not await self._renew(context, now=now):
-                        return self._lease_lost(context)
+                        return await self._handle_lease_loss(context, now=now)
                     self._check_cancel(cancel_event)
                     targets[
                         (member.target_parent_id, member.target_name)
@@ -260,6 +269,8 @@ class OrganizationExecutor:
                         self._transport.read_target,
                         member.target_parent_id,
                         member.target_name,
+                        cancel_event=cancel_event,
+                        now=now,
                     )
             except _RateLimitReached:
                 return await self._finish(
@@ -275,6 +286,8 @@ class OrganizationExecutor:
                     "cancelled",
                     now=now,
                 )
+            except _LeaseLost:
+                return await self._handle_lease_loss(context, now=now)
             except _TransportFailure as failure:
                 return await self._finish(
                     context,
@@ -299,6 +312,13 @@ class OrganizationExecutor:
                     now=now,
                 )
             if result.status is OrganizationStepCheck.CONFLICT:
+                if result.error_code == "group_partial_state":
+                    return await self._finish(
+                        context,
+                        OrganizationExecutionStatus.UNCERTAIN,
+                        "outcome_unknown",
+                        now=now,
+                    )
                 return await self._finish(
                     context,
                     OrganizationExecutionStatus.FAILED,
@@ -319,24 +339,30 @@ class OrganizationExecutor:
                 for member in step.members:
                     self._check_cancel(cancel_event)
                     if not await self._renew(context, now=now):
-                        return self._lease_lost(context)
+                        return await self._handle_lease_loss(context, now=now)
                     self._check_cancel(cancel_event)
                     move = await self._call(
                         context,
                         self._transport.move,
                         member.object_id,
                         member.target_parent_id,
+                        cancel_event=cancel_event,
+                        now=now,
+                        is_write=True,
                     )
                     self._check_write_result(move, OrganizationTransportOperation.MOVE)
                     self._check_cancel(cancel_event)
                     if not await self._renew(context, now=now):
-                        return self._lease_lost(context)
+                        return await self._handle_lease_loss(context, now=now)
                     self._check_cancel(cancel_event)
                     rename = await self._call(
                         context,
                         self._transport.rename,
                         member.object_id,
                         member.target_name,
+                        cancel_event=cancel_event,
+                        now=now,
+                        is_write=True,
                     )
                     self._check_write_result(
                         rename, OrganizationTransportOperation.RENAME
@@ -355,6 +381,8 @@ class OrganizationExecutor:
                     "cancelled",
                     now=now,
                 )
+            except _LeaseLost:
+                return await self._handle_lease_loss(context, now=now)
             except _TransportFailure as failure:
                 return await self._finish(
                     context,
@@ -369,10 +397,14 @@ class OrganizationExecutor:
                 for member in step.members:
                     self._check_cancel(cancel_event)
                     if not await self._renew(context, now=now):
-                        return self._lease_lost(context)
+                        return await self._handle_lease_loss(context, now=now)
                     self._check_cancel(cancel_event)
                     observed[member.object_id] = await self._call(
-                        context, self._transport.read_object, member.object_id
+                        context,
+                        self._transport.read_object,
+                        member.object_id,
+                        cancel_event=cancel_event,
+                        now=now,
                     )
             except _RateLimitReached:
                 return await self._finish(
@@ -388,6 +420,8 @@ class OrganizationExecutor:
                     "cancelled",
                     now=now,
                 )
+            except _LeaseLost:
+                return await self._handle_lease_loss(context, now=now)
             except _TransportFailure as failure:
                 return await self._finish(
                     context,
@@ -434,13 +468,27 @@ class OrganizationExecutor:
             return False
         return True
 
-    async def _call(self, context: _ExecutionContext, method, *args):
+    async def _call(
+        self,
+        context: _ExecutionContext,
+        method,
+        *args,
+        cancel_event: asyncio.Event | None,
+        now,
+        is_write: bool = False,
+    ):
         if context.transport_calls >= self._max_transport_calls:
             raise _RateLimitReached
         if context.last_call_at is not None and self._min_call_interval:
             elapsed = time.monotonic() - context.last_call_at
             if elapsed < self._min_call_interval:
                 await self._sleep(self._min_call_interval - elapsed)
+        self._check_cancel(cancel_event)
+        if not await self._renew(context, now=now):
+            raise _LeaseLost
+        self._check_cancel(cancel_event)
+        if is_write:
+            context.write_started = True
         context.transport_calls += 1
         context.last_call_at = time.monotonic()
         try:
@@ -455,6 +503,33 @@ class OrganizationExecutor:
     def _check_cancel(self, cancel_event: asyncio.Event | None) -> None:
         if _is_cancelled(cancel_event):
             raise _ExecutionCancelled
+
+    async def _handle_lease_loss(
+        self, context: _ExecutionContext, *, now
+    ) -> OrganizationExecutionResult:
+        if not context.write_started:
+            return self._lease_lost(context)
+        return await self._persist_lease_loss(context, now=now)
+
+    async def _persist_lease_loss(
+        self, context: _ExecutionContext, *, now
+    ) -> OrganizationExecutionResult:
+        try:
+            await self._operation_service.finish_after_lease_loss(
+                context.lease.operation_id,
+                expected_revision=context.lease.revision,
+                lease_token=context.lease.lease_token,
+                now=now,
+            )
+        except OrganizationOperationLeaseUnavailable:
+            return self._lease_lost(context)
+        return OrganizationExecutionResult(
+            context.lease.operation_id,
+            OrganizationExecutionStatus.UNCERTAIN,
+            "lease_lost",
+            context.completed_steps,
+            context.transport_calls,
+        )
 
     def _check_write_result(
         self,
@@ -514,6 +589,8 @@ class OrganizationExecutor:
                     now=now,
                 )
         except OrganizationOperationLeaseUnavailable:
+            if context.write_started:
+                return await self._persist_lease_loss(context, now=now)
             return self._lease_lost(context)
         except OrganizationOperationConflict:
             if status is OrganizationExecutionStatus.ORGANIZED:

@@ -31,6 +31,7 @@ from watch_assistant.services.organization_plan import OrganizationPlanStatus
 VALID_OPERATION_ERROR_CODES = frozenset(
     {
         "cancelled",
+        "lease_lost",
         "local_failure",
         "outcome_unknown",
         "postcondition_mismatch",
@@ -360,6 +361,50 @@ class OrganizationOperationService:
                 raise OrganizationOperationNotFound
             summary = _summary(operation)
         await self._audit("整理操作状态已更新")
+        return summary
+
+    async def finish_after_lease_loss(
+        self,
+        operation_id: str,
+        *,
+        expected_revision: int,
+        lease_token: str,
+        now: datetime | None = None,
+    ) -> OrganizationOperationSummary:
+        """Persist uncertainty after a write when the lease cannot renew."""
+
+        _validate_identifier(operation_id, "invalid_operation_id", maximum=40)
+        _validate_token(lease_token)
+        current_time = _as_utc(now or datetime.now(UTC))
+        async with self._session_factory() as session:
+            result = await session.execute(
+                update(OrganizationOperation)
+                .where(
+                    OrganizationOperation.id == operation_id,
+                    OrganizationOperation.revision == expected_revision,
+                    OrganizationOperation.status
+                    == OrganizationOperationStatus.ORGANIZING,
+                    OrganizationOperation.lease_token == lease_token,
+                )
+                .values(
+                    status=OrganizationOperationStatus.UNCERTAIN,
+                    revision=expected_revision + 1,
+                    lease_token=None,
+                    lease_expires_at=None,
+                    error_code="lease_lost",
+                    finished_at=current_time,
+                    updated_at=current_time,
+                )
+                .execution_options(synchronize_session=False)
+            )
+            if result.rowcount != 1:
+                raise OrganizationOperationLeaseUnavailable("lease_is_not_owned")
+            await session.commit()
+            operation = await session.get(OrganizationOperation, operation_id)
+            if operation is None:
+                raise OrganizationOperationNotFound
+            summary = _summary(operation)
+        await self._audit("整理操作已标记为结果不确定")
         return summary
 
     async def complete_organized_with_dirty_events(
