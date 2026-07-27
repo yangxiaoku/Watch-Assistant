@@ -123,8 +123,11 @@ def test_validation_filters_other_tv_seasons_when_one_is_selected():
         "Game of Thrones S02 全季 2012 1080p",
         "Game of Thrones S02 Complete Season 2012 1080p",
         "Game of Thrones S02 Full Season 2012 1080p",
+        "Game of Thrones S02 Complete Series 2012 1080p",
+        "Game of Thrones S02 Complete Collection 2012 1080p",
+        "Game of Thrones S02 Collection 2012 1080p",
     }
-    assert rejected == 11
+    assert rejected == 8
 
 
 def test_season_numbers_do_not_treat_years_as_seasons():

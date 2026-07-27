@@ -18,10 +18,6 @@ EPISODE_PATTERN = re.compile(
     r"\u7b2c\s*\d+\s*[\u5b63\u96c6]|\u66f4\u65b0\u81f3\s*\d*\s*\u96c6?|\u5168\s*\d+\s*\u96c6",
     re.IGNORECASE,
 )
-COLLECTION_PATTERN = re.compile(
-    r"全剧|全系列|complete\s+(?:series|collection)|\bcollection\b",
-    re.IGNORECASE,
-)
 MEDIA_PATTERN = re.compile(
     r"\b(?:2160p|1080p|720p|4k|blu[ .-]?ray|web[ .-]?dl|webrip|"
     r"remux|brrip|dvd[ .-]?rip|hdr|x26[45]|h[ .]?26[45])\b",
@@ -131,10 +127,7 @@ def _match_score(
     if (
         media.media_type == MediaType.TV
         and season_number is not None
-        and (
-            season_numbers != {season_number}
-            or COLLECTION_PATTERN.search(normalized_name) is not None
-        )
+        and season_numbers != {season_number}
     ):
         return None
 
