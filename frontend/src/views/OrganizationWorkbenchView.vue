@@ -146,7 +146,7 @@ onMounted(() => {
           <div><dt>预览动作</dt><dd>{{ selected.action_count }}</dd></div>
           <div><dt>前置条件</dt><dd>{{ selected.precondition_count }}</dd></div>
         </dl>
-        <p class="organization-safe-note">预览只显示本地摘要；远端 ID、路径、Cookie、pickcode 和直链不会进入工作台。</p>
+        <p class="organization-safe-note">预览只显示本地摘要。</p>
         <div v-if="selectedCanEdit" class="organization-actions">
           <button v-if="selectedIsReviewable" class="primary-button" type="button" :disabled="busy" @click="confirmPlan"><Check :size="16" />确认本地计划</button>
           <button class="secondary-button" type="button" :disabled="busy" @click="ignorePlan"><Ban :size="16" />忽略</button>

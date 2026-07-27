@@ -19,9 +19,9 @@ test.beforeEach(async ({ page }) => {
   await page.route("**/api/v1/auth/me", (route) =>
     route.fulfill({ json: { authenticated: true, via_bearer: false, csrf_token: "csrf-local" } }),
   );
-  await page.route("**/api/v1/organization-plans*", async (route) => {
+  await page.route("**/api/v1/organization-plans**", async (route) => {
     const request = route.request();
-    if (request.method() === "POST" && request.url().endsWith("/confirm")) {
+    if (request.method() === "POST") {
       await route.fulfill({ json: { ...needsReview, status: "planned", revision: 5 } });
       return;
     }
