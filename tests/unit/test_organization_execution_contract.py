@@ -80,14 +80,19 @@ def test_missing_source_is_uncertain_not_a_new_write_attempt():
     )
 
 
-def test_confirmed_postcondition_requires_the_same_object_and_target():
+@pytest.mark.parametrize(
+    "observed",
+    (
+        RemoteObjectState("file-1", "target", "unexpected.mkv"),
+        RemoteObjectState("other-file", "target", "after.mkv"),
+        RemoteObjectState("file-1", "other-parent", "after.mkv"),
+    ),
+)
+def test_confirmed_postcondition_requires_the_same_object_parent_and_name(observed):
     assert check_after_write(_expectation(), observed=_target()).status is (
         OrganizationStepCheck.ALREADY_APPLIED
     )
-    mismatch = check_after_write(
-        _expectation(),
-        observed=RemoteObjectState("file-1", "target", "unexpected.mkv"),
-    )
+    mismatch = check_after_write(_expectation(), observed=observed)
     assert (mismatch.status, mismatch.error_code) == (
         OrganizationStepCheck.CONFLICT,
         "postcondition_mismatch",
