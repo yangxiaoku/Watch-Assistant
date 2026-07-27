@@ -135,6 +135,66 @@ class OrganizationPlanMutationRequest(BaseModel):
     expected_revision: int = Field(ge=1)
 
 
+class OrganizationOperationQueueRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    expected_revision: int = Field(ge=1)
+    idempotency_key: str = Field(min_length=1, max_length=255)
+
+
+class OrganizationOperationBatchItem(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    plan_id: str = Field(min_length=1, max_length=64)
+    expected_revision: int = Field(ge=1)
+    idempotency_key: str = Field(min_length=1, max_length=255)
+
+
+class OrganizationOperationBatchRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    items: list[OrganizationOperationBatchItem] = Field(min_length=1, max_length=20)
+
+
+class OrganizationOperationResponse(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    operation_id: str
+    plan_id: str
+    status: Literal[
+        "planned", "organizing", "organized", "failed", "uncertain", "cancelled"
+    ]
+    revision: int = Field(ge=1)
+    attempts: int = Field(ge=0)
+    error_code: str | None = None
+
+
+class OrganizationOperationBatchResult(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    plan_id: str
+    operation_id: str | None = None
+    status: Literal[
+        "planned",
+        "organizing",
+        "organized",
+        "failed",
+        "uncertain",
+        "cancelled",
+        "rejected",
+    ]
+    revision: int | None = Field(default=None, ge=1)
+    attempts: int | None = Field(default=None, ge=0)
+    error_code: str | None = None
+    message: str
+
+
+class OrganizationOperationBatchResponse(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    items: list[OrganizationOperationBatchResult]
+
+
 class OrganizationPlanAliasRequest(OrganizationPlanMutationRequest):
     alias: str = Field(min_length=1, max_length=64)
 

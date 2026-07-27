@@ -82,6 +82,9 @@ class Settings(BaseSettings):
     organization_plan_enabled: bool = Field(
         default=False, validation_alias="ORGANIZATION_PLAN_ENABLED"
     )
+    organization_execution_enabled: bool = Field(
+        default=False, validation_alias="ORGANIZATION_EXECUTION_ENABLED"
+    )
     p115_cookie_path: Path = Field(
         default=Path("/etc/watch-assistant/p115-cookie"),
         validation_alias="P115_COOKIE_PATH",

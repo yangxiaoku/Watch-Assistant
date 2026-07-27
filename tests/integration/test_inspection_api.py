@@ -810,6 +810,7 @@ async def test_lifespan_runs_the_single_worker_and_closes_the_qb_client(tmp_path
             "inspection_supported": True,
             "inspection_auto_start_enabled": True,
             "organization_plan_enabled": False,
+            "organization_execution_enabled": False,
         }
         assert fake.closed is False
 

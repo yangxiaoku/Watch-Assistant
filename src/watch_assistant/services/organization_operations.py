@@ -90,15 +90,33 @@ class OrganizationOperationLease:
 class OrganizationOperationService:
     """Manage local operation state only; no transport or remote write exists."""
 
-    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+    def __init__(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        *,
+        event_logger: object | None = None,
+    ) -> None:
         self._session_factory = session_factory
+        self._event_logger = event_logger
 
     async def create(
-        self, plan_id: str, *, idempotency_key: str
+        self,
+        plan_id: str,
+        *,
+        idempotency_key: str,
+        expected_plan_revision: int | None = None,
     ) -> OrganizationOperationSummary:
         _validate_identifier(plan_id, "invalid_plan_id", maximum=64)
         _validate_identifier(idempotency_key, "invalid_idempotency_key", maximum=255)
         async with self._session_factory() as session:
+            plan = await session.get(OrganizationPlan, plan_id)
+            await self._ensure_planned_and_current(session, plan)
+            if (
+                expected_plan_revision is not None
+                and plan.revision != expected_plan_revision
+            ):
+                raise OrganizationOperationConflict("plan_revision_changed")
+
             existing = await session.scalar(
                 select(OrganizationOperation).where(
                     OrganizationOperation.idempotency_key == idempotency_key
@@ -115,10 +133,7 @@ class OrganizationOperationService:
                 )
             )
             if existing is not None:
-                raise OrganizationOperationConflict("plan_already_has_operation")
-
-            plan = await session.get(OrganizationPlan, plan_id)
-            await self._ensure_planned_and_current(session, plan)
+                return _summary(existing)
             operation = OrganizationOperation(
                 id="op_" + uuid.uuid4().hex,
                 plan_id=plan.id,
@@ -143,7 +158,9 @@ class OrganizationOperationService:
                 raise OrganizationOperationConflict(
                     "operation_creation_conflict"
                 ) from None
-            return _summary(operation)
+            summary = _summary(operation)
+        await self._audit("整理操作已排队")
+        return summary
 
     async def get(self, operation_id: str) -> OrganizationOperationSummary:
         _validate_identifier(operation_id, "invalid_operation_id", maximum=40)
@@ -310,11 +327,14 @@ class OrganizationOperationService:
             operation = await session.get(OrganizationOperation, operation_id)
             if operation is None:
                 raise OrganizationOperationNotFound
-            return _summary(operation)
+            summary = _summary(operation)
+        await self._audit("整理操作状态已更新")
+        return summary
 
     async def cancel(
         self, operation_id: str, *, expected_revision: int
     ) -> OrganizationOperationSummary:
+        _validate_identifier(operation_id, "invalid_operation_id", maximum=40)
         current_time = datetime.now(UTC)
         async with self._session_factory() as session:
             result = await session.execute(
@@ -338,7 +358,9 @@ class OrganizationOperationService:
             operation = await session.get(OrganizationOperation, operation_id)
             if operation is None:
                 raise OrganizationOperationNotFound
-            return _summary(operation)
+            summary = _summary(operation)
+        await self._audit("整理操作已取消")
+        return summary
 
     async def retry(
         self, operation_id: str, *, expected_revision: int
@@ -407,6 +429,7 @@ class OrganizationOperationService:
             and run.state == ScanRunState.COMPLETED.value
             and run.complete
             and run.snapshot_revision == plan.source_snapshot_revision
+            and _as_utc(plan.expires_at) > datetime.now(UTC)
         )
         if current:
             return
@@ -415,6 +438,16 @@ class OrganizationOperationService:
             plan.revision += 1
             await session.commit()
         raise OrganizationOperationPrerequisiteError("plan_prerequisites_changed")
+
+    async def _audit(self, status: str) -> None:
+        logger = self._event_logger
+        log_event = getattr(logger, "log_event", None)
+        if not callable(log_event):
+            return
+        try:
+            await log_event("settings.changed", fields={"status": status})
+        except Exception:  # noqa: BLE001 - audit failure cannot alter local state
+            return
 
 
 def _summary(operation: OrganizationOperation) -> OrganizationOperationSummary:

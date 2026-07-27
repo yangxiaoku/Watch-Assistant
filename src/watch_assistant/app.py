@@ -22,6 +22,9 @@ from watch_assistant.api.auth import router as auth_router
 from watch_assistant.api.credentials import router as credentials_router
 from watch_assistant.api.inspection import router as inspection_router
 from watch_assistant.api.maintenance import router as maintenance_router
+from watch_assistant.api.organization_operation import (
+    router as organization_operation_router,
+)
 from watch_assistant.api.organization_plan import router as organization_plan_router
 from watch_assistant.api.search import router as search_router
 from watch_assistant.api.settings import router as settings_router
@@ -35,6 +38,9 @@ from watch_assistant.services.cache_warm import CacheWarmer
 from watch_assistant.services.credentials import CredentialService
 from watch_assistant.services.inspection import InspectionService, InspectionWorker
 from watch_assistant.services.maintenance import MaintenanceService
+from watch_assistant.services.organization_operations import (
+    OrganizationOperationService,
+)
 from watch_assistant.services.organization_plan import OrganizationPlanService
 from watch_assistant.services.p115_credentials import (
     CompositeCookieProvider,
@@ -63,6 +69,7 @@ def create_app(
     task_adapter: TaskAdapter | None = None,
     frontend_dir: Path | None = None,
     organization_plan_enabled: bool | None = None,
+    organization_execution_enabled: bool | None = None,
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
@@ -134,6 +141,10 @@ def create_app(
                 application.state.organization_plan_enabled = (
                     settings.organization_plan_enabled
                 )
+            if organization_execution_enabled is None:
+                application.state.organization_execution_enabled = (
+                    settings.organization_execution_enabled
+                )
             if settings.p115_enabled and settings.p115_target_cid is None:
                 raise RuntimeError("P115_ENABLED requires P115_TARGET_CID")
             contract = load_tgto_contract(settings.tgto_contract_path)
@@ -151,6 +162,15 @@ def create_app(
             application.state.settings_service = SettingsService(
                 runtime_database.session_factory,
                 state_directory=_state_directory(runtime_database),
+            )
+            application.state.organization_plan_service = OrganizationPlanService(
+                runtime_database.session_factory
+            )
+            application.state.organization_operation_service = (
+                OrganizationOperationService(
+                    runtime_database.session_factory,
+                    event_logger=application.state.settings_service,
+                )
             )
             fallback_cookie_provider = CookieProvider(settings.p115_cookie_path)
             composite_cookie_provider = CompositeCookieProvider(
@@ -383,6 +403,11 @@ def create_app(
         if organization_plan_enabled is not None
         else _env_flag("ORGANIZATION_PLAN_ENABLED")
     )
+    application.state.organization_execution_enabled = (
+        organization_execution_enabled
+        if organization_execution_enabled is not None
+        else _env_flag("ORGANIZATION_EXECUTION_ENABLED")
+    )
     if database and crypto and tmdb_client and pansou_client:
         application.state.database = database
         application.state.settings_service = SettingsService(
@@ -406,6 +431,10 @@ def create_app(
         )
         application.state.organization_plan_service = OrganizationPlanService(
             database.session_factory
+        )
+        application.state.organization_operation_service = OrganizationOperationService(
+            database.session_factory,
+            event_logger=application.state.settings_service,
         )
         fallback_cookie_provider = CookieProvider(
             os.environ.get("P115_COOKIE_PATH", "/run/secrets/p115_cookie")
@@ -480,6 +509,9 @@ def create_app(
             "organization_plan_enabled": bool(
                 getattr(application.state, "organization_plan_enabled", False)
             ),
+            "organization_execution_enabled": bool(
+                getattr(application.state, "organization_execution_enabled", False)
+            ),
         }
 
     application.include_router(search_router)
@@ -491,6 +523,7 @@ def create_app(
     application.include_router(maintenance_router)
     application.include_router(inspection_router)
     application.include_router(organization_plan_router)
+    application.include_router(organization_operation_router)
     static_path = frontend_dir or Path(
         os.environ.get("FRONTEND_DIST_DIR", "frontend/dist")
     )

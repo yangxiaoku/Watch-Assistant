@@ -23,6 +23,7 @@ def test_inspection_settings_have_production_defaults():
     settings = make_settings()
 
     assert settings.organization_plan_enabled is False
+    assert settings.organization_execution_enabled is False
     assert settings.inspection_concurrency == 8
     assert settings.inspection_item_timeout_seconds == 30
     assert settings.inspection_poll_interval_seconds == 0.75
@@ -33,6 +34,15 @@ def test_inspection_settings_have_production_defaults():
 def test_organization_plan_flag_can_be_enabled_explicitly():
     assert (
         make_settings(ORGANIZATION_PLAN_ENABLED="true").organization_plan_enabled
+        is True
+    )
+
+
+def test_organization_execution_flag_can_be_enabled_explicitly():
+    assert (
+        make_settings(
+            ORGANIZATION_EXECUTION_ENABLED="true"
+        ).organization_execution_enabled
         is True
     )
 
