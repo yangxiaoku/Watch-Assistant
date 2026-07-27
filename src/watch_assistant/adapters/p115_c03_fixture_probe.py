@@ -845,6 +845,7 @@ async def _cleanup(
 ) -> tuple[str, str | None]:
     assert state.root_id is not None
     assert state.root_name is not None
+    recycle_call_count = state.write_calls
     try:
         await _verify(
             transport,
@@ -882,8 +883,12 @@ async def _cleanup(
             return "uncertain", "cleanup_not_confirmed"
         return "complete", None
     except asyncio.CancelledError:
+        if state.write_calls > recycle_call_count:
+            return "uncertain", "cancelled"
         return "not_attempted_uncertain", "cancelled"
     except _ProbeHalt as error:
+        if state.write_calls > recycle_call_count:
+            return "uncertain", f"cleanup_{error.code}"
         return "not_attempted_uncertain", f"cleanup_{error.code}"
 
 
@@ -901,6 +906,7 @@ class FakeP115C03Transport:
         self._page_calls = page_calls
         self._next_id = 90000000000000000001
         self._entries: dict[str, C03RemoteEntry] = {}
+        self._recycled = False
         self.write_operations: list[WriteOperation] = []
         self.read_count = 0
         self.list_count = 0
@@ -963,6 +969,7 @@ class FakeP115C03Transport:
             self._entries.pop(root_id, None)
             for file_id in descendants:
                 self._entries.pop(file_id, None)
+            self._recycled = True
             return C03WriteReceipt(WriteStatus.SUCCESS)
         raise RuntimeError("unsupported offline operation")
 
@@ -983,6 +990,8 @@ class FakeP115C03Transport:
         self.timeouts.append(timeout_seconds)
         self.list_count += 1
         if self._scope_fault == "list-failed":
+            raise OSError("opaque list failure")
+        if self._scope_fault == "post-cleanup-list-failed" and self._recycled:
             raise OSError("opaque list failure")
         if self._scope_fault == "missing" and self.list_count == 1:
             root = next(

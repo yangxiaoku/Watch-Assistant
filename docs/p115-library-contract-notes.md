@@ -106,7 +106,9 @@ ID、名称、路径、Cookie、pickcode、URL 或第三方异常正文。每次
 `uncertain`，不自动重试。只有再次精确核对本轮创建的受管根后，才允许一次回收，
 并在回收前逐层列举 root/source/quarantine/artifact，确认目录完整且子项集合只含
 本轮受管对象；任何 uncertain、外来/缺失对象、分页不完整或列举失败都不回收。
-回收后再只读确认根不存在。该探针仍是 fixture-only 证据，不打开业务 capability。
+回收后再只读确认根不存在；回收调用一旦发出，若回收失败、取消或之后的清单核对失败，
+公开 `cleanup` 必须是 `uncertain`，不能误报为 `not_attempted_uncertain`，且不重试。
+该探针仍是 fixture-only 证据，不打开业务 capability。
 
 2026-07-27 使用四项显式 gate 的一次性 live runner 在受管夹具上复验成功：10 次
 写操作均获确认，15 次列表观察共读取 31 页，临时根回收后确认不存在。真实响应中
@@ -139,11 +141,11 @@ live transport 仅调用 `fs_mkdir`、`fs_move`、`fs_rename`、`fs_delete`、`f
 本地源码仅用于记录方法名和 `inspect.signature`，没有执行任何客户端实例化。
 `fs_files` 的源码文档明确使用 `cid`、`limit`、`offset`；`fs_info` 接受
 `file_id` 或 path。源码默认 Web API 地址为 `https://webapi.115.com`，但这不是
-本任务的网络验证结论。固定版 `fs_*` 方法只把额外参数收进
-`**request_kwargs`；本地源码没有证明其中任何参数会把调用级 timeout 传到 HTTP
-层。因此 C03 runner 在没有该证据时保持 `blocked_environment`，不以外层等待或
-臆测的 timeout 参数构造 executor。未来最小前置是固定版本源码可验证的底层
-timeout 传递签名，以及覆盖参数传递和停止语义的离线 fake 契约。
+本任务的网络验证结论。C03 runner 复用固定版 documented `request` hook，将每次
+共享 deadline 的剩余时间作为底层 urllib3 `timeout`，并固定 `retries=False`；该
+调用级传递、停止和脱敏边界已有离线 fake 契约。它仍不是实时验收证据：真实运行仍
+必须满足一次性授权、受管夹具、四项 gate、零重试和精确清理保护，且本轮未访问
+服务器、真实 115、Cookie 或外部 HTTP。
 
 ## 后续门禁
 

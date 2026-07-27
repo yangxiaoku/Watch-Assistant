@@ -197,8 +197,21 @@ async def test_recycle_failure_stops_after_cleanup_attempt():
         transport=transport, parent_id="7000", env=_enabled_env()
     )
     assert report.status is C03ProbeStatus.UNCERTAIN
-    assert report.cleanup == "not_attempted_uncertain"
+    assert report.cleanup == "uncertain"
     assert transport.write_operations[-1] is WriteOperation.RECYCLE
+    assert transport.write_operations.count(WriteOperation.RECYCLE) == 1
+
+
+@pytest.mark.asyncio
+async def test_cleanup_reports_uncertain_when_post_recycle_listing_fails():
+    transport = FakeP115C03Transport(scope_fault="post-cleanup-list-failed")
+    report = await run_p115_c03_fixture_probe(
+        transport=transport, parent_id="7000", env=_enabled_env()
+    )
+
+    assert report.status is C03ProbeStatus.UNCERTAIN
+    assert report.error_code == "cleanup_list_failed"
+    assert report.cleanup == "uncertain"
     assert transport.write_operations.count(WriteOperation.RECYCLE) == 1
 
 
