@@ -1,5 +1,6 @@
 import pytest
 
+import watch_assistant.adapters.p115_c03_fixture_probe as fixture_probe
 from scripts.p115_c03_fixture_probe import main as probe_cli_main
 from watch_assistant.adapters.p115_c03_fixture_probe import (
     C03_CLEANUP_PLAN_ENV,
@@ -200,6 +201,28 @@ async def test_recycle_failure_stops_after_cleanup_attempt():
     assert report.cleanup == "uncertain"
     assert transport.write_operations[-1] is WriteOperation.RECYCLE
     assert transport.write_operations.count(WriteOperation.RECYCLE) == 1
+
+
+@pytest.mark.asyncio
+async def test_deadline_before_recycle_transport_is_not_attempted(monkeypatch):
+    transport = FakeP115C03Transport()
+    original_remaining_timeout = fixture_probe._remaining_timeout
+
+    def remaining_timeout(state):
+        if state.write_calls == 10 and transport.list_count == 14:
+            raise fixture_probe._ProbeHalt("deadline_exceeded")
+        return original_remaining_timeout(state)
+
+    monkeypatch.setattr(fixture_probe, "_remaining_timeout", remaining_timeout)
+    report = await run_p115_c03_fixture_probe(
+        transport=transport, parent_id="7000", env=_enabled_env()
+    )
+
+    assert report.status is C03ProbeStatus.UNCERTAIN
+    assert report.error_code == "cleanup_deadline_exceeded"
+    assert report.cleanup == "not_attempted_uncertain"
+    assert report.write_calls == MAX_WRITE_CALLS
+    assert WriteOperation.RECYCLE not in transport.write_operations
 
 
 @pytest.mark.asyncio

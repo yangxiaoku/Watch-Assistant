@@ -210,6 +210,7 @@ class C03ProbeReport:
 @dataclass
 class _ProbeState:
     write_calls: int = 0
+    write_calls_sent: int = 0
     read_calls: int = 0
     list_calls: int = 0
     page_calls: int = 0
@@ -621,8 +622,9 @@ async def _write(
     if state.write_calls + state.read_calls >= budget.max_total_calls:
         raise _ProbeHalt("total_call_limit_reached")
     state.write_calls += 1
+    remaining = _remaining_timeout(state)
+    state.write_calls_sent += 1
     try:
-        remaining = _remaining_timeout(state)
         receipt = await asyncio.wait_for(
             transport.execute(request, timeout_seconds=remaining), remaining
         )
@@ -845,7 +847,7 @@ async def _cleanup(
 ) -> tuple[str, str | None]:
     assert state.root_id is not None
     assert state.root_name is not None
-    recycle_call_count = state.write_calls
+    recycle_call_count = state.write_calls_sent
     try:
         await _verify(
             transport,
@@ -883,11 +885,11 @@ async def _cleanup(
             return "uncertain", "cleanup_not_confirmed"
         return "complete", None
     except asyncio.CancelledError:
-        if state.write_calls > recycle_call_count:
+        if state.write_calls_sent > recycle_call_count:
             return "uncertain", "cancelled"
         return "not_attempted_uncertain", "cancelled"
     except _ProbeHalt as error:
-        if state.write_calls > recycle_call_count:
+        if state.write_calls_sent > recycle_call_count:
             return "uncertain", f"cleanup_{error.code}"
         return "not_attempted_uncertain", f"cleanup_{error.code}"
 
