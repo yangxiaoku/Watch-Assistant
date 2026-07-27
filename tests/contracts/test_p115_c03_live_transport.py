@@ -7,6 +7,7 @@ from scripts.p115_c03_live_runner import (
     C03_LIVE_ENV,
     C03_MANAGED_FIXTURE_ENV,
     C03_WRITE_ENABLED_ENV,
+    _p115client_timeout_executor,
     run_live_probe,
 )
 from scripts.p115_c03_live_runner import (
@@ -89,6 +90,27 @@ def _directory(file_id, parent_id, name):
 async def _call_executor(method, payload, *, timeout_seconds):
     assert timeout_seconds > 0
     return method(payload, async_=False)
+
+
+def test_p115client_timeout_executor_passes_hook_and_does_not_retry(monkeypatch):
+    observed = {}
+
+    def fake_urllib3_request(*, async_, **kwargs):
+        observed["async"] = async_
+        observed.update(kwargs)
+        return {"state": True}
+
+    monkeypatch.setattr("urllib3_future_request.request", fake_urllib3_request)
+
+    def method(payload, *, async_, request):
+        return request(url="https://example.invalid", method="POST", async_=async_)
+
+    assert _p115client_timeout_executor(method, {"fid": "1"}, timeout_seconds=3.5) == {
+        "state": True
+    }
+    assert observed["async"] is False
+    assert observed["timeout"] == 3.5
+    assert observed["retries"] is False
 
 
 @pytest.mark.asyncio

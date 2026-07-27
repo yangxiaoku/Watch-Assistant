@@ -99,7 +99,10 @@ def run_live_probe(
     except Exception:  # noqa: BLE001 - client details never cross the boundary
         return _blocked("blocked_environment")
     transport: P115C03Transport = P115C03LiveTransport(
-        client, call_executor=call_executor
+        client,
+        call_executor=(
+            _p115client_timeout_executor if call_executor is None else call_executor
+        ),
     )
     try:
         return asyncio.run(
@@ -292,6 +295,31 @@ def _p115client_version() -> str | None:
         return version("p115client")
     except Exception:  # noqa: BLE001 - package details stay behind the gate
         return None
+
+
+def _p115client_timeout_executor(method, payload, *, timeout_seconds: float):
+    """Use p115client's documented request hook with a per-call urllib3 timeout."""
+
+    if (
+        isinstance(timeout_seconds, bool)
+        or not isinstance(timeout_seconds, (int, float))
+        or not math.isfinite(float(timeout_seconds))
+        or timeout_seconds <= 0
+    ):
+        raise RuntimeError("invalid_timeout")
+    try:
+        from urllib3_future_request import request as urllib3_request
+    except Exception as error:
+        raise RuntimeError("timeout_transport_unavailable") from error
+
+    def request_with_timeout(*, async_: bool = False, **request_kwargs):
+        if async_:
+            raise RuntimeError("async_transport_unsupported")
+        request_kwargs["timeout"] = float(timeout_seconds)
+        request_kwargs["retries"] = False
+        return urllib3_request(async_=False, **request_kwargs)
+
+    return method(payload, async_=False, request=request_with_timeout)
 
 
 def _blocked(
