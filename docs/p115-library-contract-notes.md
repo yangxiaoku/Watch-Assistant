@@ -23,6 +23,18 @@
 - `scan_directory` 当前仅用于有界离线探针。Phase 1 生产索引器必须逐页持久化，不能把整库加载到内存。
 - DTO 的 `repr`、fake 调用记录和错误码不包含名称、完整路径、pickcode 或异常正文。
 
+## I02/I03 离线索引边界
+
+`LibraryIndexService` 只接受已启用、`scope_verified` 且 root ID 精确匹配的本地
+`MediaLibrary`。它通过注入的只读 `P115LibraryGateway` 逐页读取并在每页事务中保存
+checkpoint；取消、分页异常、范围外条目和远端失败都会保留已提交进度并标记
+`complete=false`。同一幂等键恢复同一 scan run；不同幂等键对相同完整快照只产生观察，
+稳定 file/directory ID 用作身份，路径变化只记录为变更属性。
+
+该索引没有删除候选字段的生成能力，也没有写 gateway、清理、API、worker 或 feature
+flag 接线。`complete=false` 的结果以及所有结果的 `deletion_candidates` 均为空；本地
+fake 是本阶段唯一可执行 transport，真实服务器、Cookie、P115Client 和外部调用仍为 0。
+
 ## p115client 候选能力矩阵
 
 | 能力 | 固定版本候选方法/签名 | 当前状态 | 需要的输入 | 预期输出 | 副作用 | 下一步探针 | 未知点 |

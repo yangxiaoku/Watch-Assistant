@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
+from watch_assistant import library_models as _library_models  # noqa: F401
 from watch_assistant.migrations import run_migrations
 from watch_assistant.models import (
     Base,
