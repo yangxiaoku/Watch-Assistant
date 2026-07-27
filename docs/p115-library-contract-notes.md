@@ -90,7 +90,7 @@ Cookie 或异常正文。
 `scripts/p115_c03_fixture_probe.py` 只提供注入式边界和 offline fake；模块不读取
 Cookie、不创建 `P115Client`、不发网络。探针只接受非零十进制 `parent_id`，拒绝 URL、
 路径和任意目录输入。每轮固定执行 4 次 `mkdir`、5 次隔离/恢复组合操作及 1 次
-`fs_delete` 回收，最多 10 次写调用、15 次只读调用（其中 4 次目录列举）；冲突、批量观测本轮未覆盖且预算为 0。
+`fs_delete` 回收，最多 10 次写调用、27 次只读调用（其中目录列举最多 4 次、每次最多 4 页）；冲突、批量观测本轮未覆盖且预算为 0。
 
 运行前必须同时设置：
 `WATCH_ASSISTANT_P115_C03_WRITE=1`、
@@ -107,6 +107,19 @@ ID、名称、路径、Cookie、pickcode、URL 或第三方异常正文。每次
 本轮受管对象；任何 uncertain、外来/缺失对象、分页不完整或列举失败都不回收。
 回收后再只读确认根不存在。该探针仍是 fixture-only 证据，不打开业务 capability。
 
+`src/watch_assistant/adapters/p115_c03_live_transport.py` 和
+`scripts/p115_c03_live_runner.py` 是独立的一次性 live 入口。runner 必须同时收到
+`--live`、非零数字 `--parent-id`、显式 `--cookie-path`，并满足上述三个 C03 gate
+及 `WATCH_ASSISTANT_P115_C03_LIVE=1`；之后才读取内存 cookie、校验
+`p115client==0.0.9.6.5.1` 并以 `P115Client(cookie, console_qrcode=False)` 创建一次客户端。
+它不读取 server config，也不接入 app/worker/capability。
+
+live transport 仅调用 `fs_mkdir`、`fs_move`、`fs_rename`、`fs_delete`、`fs_info` 和
+固定 `limit=1` 的 `fs_files`。每个 `list_children` 最多 4 个连续页，并在
+`C03DirectoryListing.page_calls` 中记录实际页数；分页信号缺失/矛盾、非终止空页、
+超过 4 页或 DTO 字段无法确认均为 `complete=false`，因此不会回收。真实响应只在
+transport 内立即归一化为 C03 DTO，不保存或输出原响应、ID、名称、路径、pickcode、
+Cookie 或异常正文。第三方 `state`/`data`、详情别名和分页字段的跨场景稳定性仍未冻结。
 ## 固定版本源码观察
 
 本地源码仅用于记录方法名和 `inspect.signature`，没有执行任何客户端实例化。

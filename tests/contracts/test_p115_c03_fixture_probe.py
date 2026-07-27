@@ -40,8 +40,10 @@ async def test_c03_lifecycle_is_bounded_and_reclaims_only_its_exact_root():
     assert report.cleanup == "complete"
     assert report.error_code is None
     assert report.write_calls == MAX_WRITE_CALLS == 10
-    assert report.read_calls == MAX_READ_CALLS == 15
+    assert report.read_calls == 15
+    assert MAX_READ_CALLS == 27
     assert report.list_calls == 4
+    assert report.page_calls == 4
     assert transport.list_count == report.list_calls
     assert report.write_calls + report.read_calls <= MAX_TOTAL_CALLS
     assert transport.write_operations == [
@@ -62,6 +64,21 @@ async def test_c03_lifecycle_is_bounded_and_reclaims_only_its_exact_root():
     for value in ("7000", "source", "quarantine", "artifact", "wa-c03"):
         assert value not in rendered
     assert len(report.fixture_fingerprint or "") == 16
+
+
+@pytest.mark.asyncio
+async def test_probe_reports_transport_page_calls_in_read_budget():
+    transport = FakeP115C03Transport(page_calls=3)
+
+    report = await run_p115_c03_fixture_probe(
+        transport=transport, parent_id="7000", env=_enabled_env()
+    )
+
+    assert report.status is C03ProbeStatus.SUCCESS
+    assert report.page_calls == 12
+    assert report.read_calls == 23
+    assert report.read_calls < MAX_READ_CALLS
+    assert report.write_calls + report.read_calls <= MAX_TOTAL_CALLS
 
 
 @pytest.mark.asyncio

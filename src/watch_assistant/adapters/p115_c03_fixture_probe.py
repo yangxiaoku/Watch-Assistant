@@ -38,7 +38,8 @@ PROBE_ENABLED_VALUE = "1"
 
 MAX_WRITE_CALLS = 10
 MAX_LIST_CALLS = 4
-MAX_READ_CALLS = 15
+MAX_LIST_PAGE_CALLS = 4
+MAX_READ_CALLS = 27
 MAX_TOTAL_CALLS = MAX_WRITE_CALLS + MAX_READ_CALLS
 MAX_CONFLICT_OBSERVATION_CALLS = 0
 MAX_BATCH_OBSERVATION_CALLS = 0
@@ -92,11 +93,21 @@ class C03DirectoryListing:
 
     entries: tuple[C03RemoteEntry, ...]
     complete: bool = True
+    page_calls: int = 1
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.page_calls, int)
+            or isinstance(self.page_calls, bool)
+            or self.page_calls < 1
+            or self.page_calls > MAX_LIST_PAGE_CALLS
+        ):
+            raise ValueError("invalid_page_calls")
 
     def __repr__(self) -> str:
         return (
             f"C03DirectoryListing(entry_count={len(self.entries)}, "
-            f"complete={self.complete!r})"
+            f"complete={self.complete!r}, page_calls={self.page_calls})"
         )
 
 
@@ -115,6 +126,7 @@ class C03CallBudget:
     max_write_calls: int = MAX_WRITE_CALLS
     max_read_calls: int = MAX_READ_CALLS
     max_list_calls: int = MAX_LIST_CALLS
+    max_list_page_calls: int = MAX_LIST_PAGE_CALLS
     max_total_calls: int = MAX_TOTAL_CALLS
     max_conflict_observation_calls: int = MAX_CONFLICT_OBSERVATION_CALLS
     max_batch_observation_calls: int = MAX_BATCH_OBSERVATION_CALLS
@@ -127,6 +139,8 @@ class C03CallBudget:
             and self.max_read_calls <= MAX_READ_CALLS
             and self.max_list_calls > 0
             and self.max_list_calls <= MAX_LIST_CALLS
+            and self.max_list_page_calls > 0
+            and self.max_list_page_calls <= MAX_LIST_PAGE_CALLS
             and self.max_total_calls > 0
             and self.max_total_calls <= MAX_TOTAL_CALLS
             and self.max_conflict_observation_calls == 0
@@ -153,6 +167,7 @@ class C03ProbeReport:
     write_calls: int
     read_calls: int
     list_calls: int
+    page_calls: int
     cleanup: str
     error_code: str | None = None
 
@@ -162,6 +177,7 @@ class C03ProbeReport:
             f"fixture_fingerprint_present={self.fixture_fingerprint is not None}, "
             f"step_count={len(self.steps)}, write_calls={self.write_calls}, "
             f"read_calls={self.read_calls}, list_calls={self.list_calls}, "
+            f"page_calls={self.page_calls}, "
             f"cleanup={self.cleanup!r}, "
             f"error_code={self.error_code!r})"
         )
@@ -177,6 +193,7 @@ class C03ProbeReport:
             "write_calls": self.write_calls,
             "read_calls": self.read_calls,
             "list_calls": self.list_calls,
+            "page_calls": self.page_calls,
             "cleanup": self.cleanup,
             "error_code": self.error_code,
         }
@@ -187,6 +204,7 @@ class _ProbeState:
     write_calls: int = 0
     read_calls: int = 0
     list_calls: int = 0
+    page_calls: int = 0
     steps: list[C03StepReport] = field(default_factory=list)
     root_id: str | None = None
     root_name: str | None = None
@@ -280,6 +298,7 @@ def _report(
         write_calls=state.write_calls,
         read_calls=state.read_calls,
         list_calls=state.list_calls,
+        page_calls=state.page_calls,
         cleanup=cleanup,
         error_code=error_code,
     )
@@ -722,24 +741,37 @@ async def _list_children(
 ) -> C03DirectoryListing:
     if state.list_calls >= budget.max_list_calls:
         raise _ProbeHalt("list_call_limit_reached")
-    if state.read_calls >= budget.max_read_calls:
+    reserved_pages = MAX_LIST_PAGE_CALLS
+    if state.read_calls + reserved_pages > budget.max_read_calls:
         raise _ProbeHalt("read_call_limit_reached")
-    if state.write_calls + state.read_calls >= budget.max_total_calls:
+    if state.write_calls + state.read_calls + reserved_pages > budget.max_total_calls:
         raise _ProbeHalt("total_call_limit_reached")
     state.list_calls += 1
-    state.read_calls += 1
+    state.read_calls += reserved_pages
     try:
         listing = await asyncio.wait_for(
             transport.list_children(parent_id), timeout_seconds
         )
     except asyncio.CancelledError:
+        state.page_calls += reserved_pages
         raise
     except TimeoutError:
+        state.page_calls += reserved_pages
         raise _ProbeHalt("list_timeout") from None
     except Exception:  # noqa: BLE001 - listing details never cross the boundary
+        state.page_calls += reserved_pages
         raise _ProbeHalt("list_failed") from None
     if not isinstance(listing, C03DirectoryListing):
+        state.page_calls += reserved_pages
         raise _ProbeHalt("list_result_unconfirmed")
+    if listing.page_calls > budget.max_list_page_calls:
+        state.page_calls += listing.page_calls
+        state.read_calls -= reserved_pages
+        state.read_calls += listing.page_calls
+        raise _ProbeHalt("list_call_limit_reached")
+    state.read_calls -= reserved_pages
+    state.read_calls += listing.page_calls
+    state.page_calls += listing.page_calls
     if listing.complete is not True:
         raise _ProbeHalt("list_incomplete")
     return listing
@@ -844,10 +876,14 @@ class FakeP115C03Transport:
     """In-memory fixture; public state exposes counts and operation shapes only."""
 
     def __init__(
-        self, failure: str | None = None, scope_fault: str | None = None
+        self,
+        failure: str | None = None,
+        scope_fault: str | None = None,
+        page_calls: int = 1,
     ) -> None:
         self._failure = failure
         self._scope_fault = scope_fault
+        self._page_calls = page_calls
         self._next_id = 90000000000000000001
         self._entries: dict[str, C03RemoteEntry] = {}
         self.write_operations: list[WriteOperation] = []
@@ -944,6 +980,7 @@ class FakeP115C03Transport:
         return C03DirectoryListing(
             entries,
             complete=self._scope_fault != "incomplete",
+            page_calls=self._page_calls,
         )
 
     def _is_descendant(self, file_id: str, root_id: str) -> bool:
