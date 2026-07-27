@@ -139,7 +139,11 @@ live transport 仅调用 `fs_mkdir`、`fs_move`、`fs_rename`、`fs_delete`、`f
 本地源码仅用于记录方法名和 `inspect.signature`，没有执行任何客户端实例化。
 `fs_files` 的源码文档明确使用 `cid`、`limit`、`offset`；`fs_info` 接受
 `file_id` 或 path。源码默认 Web API 地址为 `https://webapi.115.com`，但这不是
-本任务的网络验证结论。
+本任务的网络验证结论。固定版 `fs_*` 方法只把额外参数收进
+`**request_kwargs`；本地源码没有证明其中任何参数会把调用级 timeout 传到 HTTP
+层。因此 C03 runner 在没有该证据时保持 `blocked_environment`，不以外层等待或
+臆测的 timeout 参数构造 executor。未来最小前置是固定版本源码可验证的底层
+timeout 传递签名，以及覆盖参数传递和停止语义的离线 fake 契约。
 
 ## 后续门禁
 
