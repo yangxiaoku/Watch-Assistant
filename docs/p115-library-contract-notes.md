@@ -84,6 +84,27 @@ Cookie 或异常正文。
 只读核对并停止后续写入；不得使用正式影视文件。永久删除、业务 worker、API、
 前端和 capability 本轮均未接入。
 
+### C03 本地生命周期探针
+
+`src/watch_assistant/adapters/p115_c03_fixture_probe.py` 与
+`scripts/p115_c03_fixture_probe.py` 只提供注入式边界和 offline fake；模块不读取
+Cookie、不创建 `P115Client`、不发网络。探针只接受非零十进制 `parent_id`，拒绝 URL、
+路径和任意目录输入。每轮固定执行 4 次 `mkdir`、5 次隔离/恢复组合操作及 1 次
+`fs_delete` 回收，最多 10 次写调用和 11 次只读核对；冲突、批量观测本轮未覆盖且预算为 0。
+
+运行前必须同时设置：
+`WATCH_ASSISTANT_P115_C03_WRITE=1`、
+`WATCH_ASSISTANT_P115_C03_MANAGED_FIXTURE=1`、
+`WATCH_ASSISTANT_P115_C03_CLEANUP_PLAN=1`。注入边界的 `live=True` 还必须设置
+`WATCH_ASSISTANT_P115_C03_LIVE=1`；CLI 仅运行 offline fake，不提供 live transport。
+永久删除门禁没有入口，回收只使用已冻结的 `fs_delete(fid)` 候选形态。
+
+根名由随机 nonce 生成，公开报告只保留短指纹、阶段、调用计数和固定错误码，不输出
+ID、名称、路径、Cookie、pickcode、URL 或第三方异常正文。每次写入后都按稳定
+`file_id + parent_id + name` 做只读核对；任一失败、超时、取消或无法确认均报告
+`uncertain`，不自动重试。只有再次精确核对本轮创建的受管根后，才允许一次回收，
+并在回收后只读确认根不存在。该探针仍是 fixture-only 证据，不打开业务 capability。
+
 ## 固定版本源码观察
 
 本地源码仅用于记录方法名和 `inspect.signature`，没有执行任何客户端实例化。
