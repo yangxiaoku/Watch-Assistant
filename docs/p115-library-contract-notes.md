@@ -78,7 +78,7 @@ Cookie 或异常正文。
 身份、父目录、名称和存在性，核对结果为 `satisfied`、`not_satisfied` 或
 `unverified`，不承诺任何真实字段值。
 
-真实 C03 验收仍需要用户批准的专用非生产临时目录、可验证的前后置条件和精确
+超出已记录受管夹具的 C03 验收仍需要用户批准的专用非生产临时目录、可验证的前后置条件和精确
 清理清单，必须按“建目录 -> 上传/复制 fixture -> 重命名 -> 移动 -> 隔离 ->
 恢复 -> 只读核对 -> 精确清理”顺序单独授权。任何 timeout/uncertain 只允许
 只读核对并停止后续写入；不得使用正式影视文件。永久删除、业务 worker、API、
@@ -96,7 +96,8 @@ Cookie、不创建 `P115Client`、不发网络。探针只接受非零十进制 
 `WATCH_ASSISTANT_P115_C03_WRITE=1`、
 `WATCH_ASSISTANT_P115_C03_MANAGED_FIXTURE=1`、
 `WATCH_ASSISTANT_P115_C03_CLEANUP_PLAN=1`。注入边界的 `live=True` 还必须设置
-`WATCH_ASSISTANT_P115_C03_LIVE=1`；CLI 仅运行 offline fake，不提供 live transport。
+`WATCH_ASSISTANT_P115_C03_LIVE=1`；`p115_c03_fixture_probe.py` 仅运行 offline fake，
+live transport 仅由下述独立 runner 提供。
 永久删除门禁没有入口，回收只使用已冻结的 `fs_delete(fid)` 候选形态。
 
 根名由随机 nonce 生成，公开报告只保留短指纹、阶段、调用计数和固定错误码，不输出
