@@ -268,6 +268,42 @@ async def test_write_failure_stops_without_retry(
 
 
 @pytest.mark.asyncio
+async def test_confirmed_move_then_failed_rename_is_uncertain(tmp_path: Path):
+    database = await _database(tmp_path)
+    transport = FakeOrganizationTransport(
+        rename_outcomes={
+            "100": OrganizationTransportResult(
+                OrganizationTransportOperation.RENAME,
+                OrganizationTransportStatus.FAILED,
+            )
+        }
+    )
+    executor, operation, lease = await _claimed_executor(database, transport)
+
+    result = await executor.execute(
+        operation.operation_id,
+        expected_revision=lease.revision,
+        lease_token=lease.lease_token,
+    )
+
+    assert (result.status, result.error_code) == (
+        OrganizationExecutionStatus.UNCERTAIN,
+        "remote_write_failed",
+    )
+    assert [call[0] for call in transport.calls] == [
+        "read_object",
+        "read_target",
+        "move",
+        "rename",
+    ]
+    current = await OrganizationOperationService(database.session_factory).get(
+        operation.operation_id
+    )
+    assert current.status is OrganizationOperationStatus.UNCERTAIN
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_postcondition_mismatch_is_uncertain_and_stops(tmp_path: Path):
     database = await _database(tmp_path)
     transport = FakeOrganizationTransport(post_mismatch=True)

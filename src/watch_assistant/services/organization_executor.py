@@ -119,6 +119,7 @@ class _ExecutionContext:
     transport_calls: int = 0
     last_call_at: float | None = None
     write_started: bool = False
+    write_confirmed: bool = False
 
 
 class _TransportFailure(Exception):
@@ -351,6 +352,7 @@ class OrganizationExecutor:
                         is_write=True,
                     )
                     self._check_write_result(move, OrganizationTransportOperation.MOVE)
+                    context.write_confirmed = True
                     self._check_cancel(cancel_event)
                     if not await self._renew(context, now=now):
                         return await self._handle_lease_loss(context, now=now)
@@ -367,6 +369,7 @@ class OrganizationExecutor:
                     self._check_write_result(
                         rename, OrganizationTransportOperation.RENAME
                     )
+                    context.write_confirmed = True
             except _RateLimitReached:
                 return await self._finish(
                     context,
@@ -387,7 +390,7 @@ class OrganizationExecutor:
                 return await self._finish(
                     context,
                     OrganizationExecutionStatus.UNCERTAIN
-                    if failure.uncertain
+                    if failure.uncertain or context.write_confirmed
                     else OrganizationExecutionStatus.FAILED,
                     failure.error_code,
                     now=now,
