@@ -150,7 +150,8 @@ live transport 仅调用 `fs_mkdir`、`fs_move`、`fs_rename`、`fs_delete`、`f
 固定版 `p115client` 的公开源码把缺失 `state` 视为成功，并直接读取二维码 token 的
 `data.uid/time/sign`；`qrcode` 缺失时使用 `uid` 构造扫码地址。离线 C03 iPad 登录
 边界据此只接受缺失或明确成功的状态、上述三个严格字段及可选二维码字段；显式失败、
-矛盾状态、未知类型和缺少关键字段均拒绝，DTO 和 repr 不呈现认证字段。
+固定版已知错误码别名、矛盾状态、非法 Unicode、未知类型和缺少关键字段均拒绝，DTO
+和 repr 不呈现认证字段。
 
 ## 后续门禁
 

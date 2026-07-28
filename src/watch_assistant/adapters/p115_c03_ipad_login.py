@@ -68,7 +68,7 @@ def _response_success(response: Mapping[str, Any]) -> bool:
     for name in ("state", "success"):
         if name in response and not _success_flag(response[name]):
             return False
-    for name in ("code", "errno"):
+    for name in ("errno", "errNo", "errcode", "errCode", "code", "msg_code"):
         if name in response and not _zero_code(response[name]):
             return False
     return True
@@ -91,7 +91,11 @@ def _safe_text(value: object, *, max_bytes: int) -> str | None:
         return None
     if "\r" in value or "\n" in value:
         return None
-    if len(value.encode("utf-8")) > max_bytes:
+    try:
+        encoded = value.encode("utf-8")
+    except UnicodeEncodeError:
+        return None
+    if len(encoded) > max_bytes:
         return None
     return value
 

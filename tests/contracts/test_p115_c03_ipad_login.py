@@ -63,6 +63,11 @@ def test_token_parser_rejects_failed_or_contradictory_status(overrides):
     assert parse_qrcode_token_response(_token_response(**overrides)) is None
 
 
+@pytest.mark.parametrize("code_name", ["errNo", "errcode", "errCode", "msg_code"])
+def test_token_parser_rejects_fixed_client_error_code_aliases(code_name):
+    assert parse_qrcode_token_response(_token_response(**{code_name: 99})) is None
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
@@ -75,6 +80,7 @@ def test_token_parser_rejects_failed_or_contradictory_status(overrides):
         ("sign", None),
         ("sign", "unsafe\x00sign"),
         ("qrcode", []),
+        ("qrcode", "unsafe\ud800qrcode"),
     ],
 )
 def test_token_parser_rejects_missing_or_malformed_token_fields(field, value):
