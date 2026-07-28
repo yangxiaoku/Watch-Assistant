@@ -1,8 +1,7 @@
 # P115 Library Contract Notes
 
-本文件对应 Phase 0-A 的 C01/C02 离线部分。固定依赖为
-`p115client==0.0.9.6.5.1`；本提交没有读取 Cookie、创建 `P115Client` 或发起
-网络请求。除 `offline_only` 的 fake/DTO 验证外，所有真实能力均为
+本文件对应 Phase 0-A 的 C01/C02 契约。固定依赖为
+`p115client==0.0.9.6.5.1`；除下文明确记录的有限 C02 只读样本外，所有真实能力均为
 `unverified`，不能作为生产能力声明。
 
 ## 本地冻结的业务边界
@@ -39,8 +38,8 @@ fake 是本阶段唯一可执行 transport，真实服务器、Cookie、P115Clie
 
 | 能力 | 固定版本候选方法/签名 | 当前状态 | 需要的输入 | 预期输出 | 副作用 | 下一步探针 | 未知点 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| list directory | `P115Client.fs_files(payload=0, /, base_url='https://webapi.115.com', *, async_=False, **request_kwargs)` | unverified；DTO 为 offline_only | `cid`、`limit`、`offset`，可选 `show_dir` | 列表、页游标/总数候选 | 可能记录打开时间（库默认 `record_open_time=1`） | 固定目录、只读分页、核对重复/漏项 | `fs_files` 的 `offset/limit/count` 到分页 DTO 的映射、`page/page_count` 语义和最大安全页大小 |
-| file detail | `P115Client.fs_info(payload, /, base_url='https://webapi.115.com', *, async_=False, **request_kwargs)` | unverified；DTO 为 offline_only | `file_id` 或 path | 文件详情候选：ID、父目录、大小、mtime、pickcode | 只读；目录查询可能计算统计 | 只读文件详情字段脱敏记录 | `fid/cid`、时间和 pickcode 字段的真实类型 |
+| list directory | `P115Client.fs_files(payload=0, /, base_url='https://webapi.115.com', *, async_=False, **request_kwargs)` | `verified_read_only`，仅一个受管小目录的单页样本 | `cid`、`limit`、`offset`，可选 `show_dir` | 列表、页游标/总数候选 | 可能记录打开时间（库默认 `record_open_time=1`） | 小目录连续分页复验 | 大目录、最大安全页大小与快照语义 |
+| file detail | `P115Client.fs_info(payload, /, base_url='https://webapi.115.com', *, async_=False, **request_kwargs)` | `verified_read_only`，仅一个已观察文件详情样本 | `fid` | 文件详情候选：类型、名称、大小、mtime、pickcode | 只读；目录查询可能计算统计 | 目录详情与时间语义脱敏验证 | 目录详情、时间精度和 pickcode 稳定性 |
 | directory detail | `P115Client.fs_info(payload, /, base_url='https://webapi.115.com', *, async_=False, **request_kwargs)` | unverified；DTO 为 offline_only | `file_id` 或 path | 目录详情和统计候选 | 只读；可能触发目录统计计算 | 小目录详情读取，确认统计是否稳定 | 大目录耗时、统计字段是否分页一致 |
 | pickcode | `P115Client.fs_info` 响应候选字段；`P115Client.download_url(pickcode, strict=True, user_agent=None, app='os_windows', *, async_=False, **request_kwargs)` 为播放候选 | unverified | 文件 ID/pickcode | 可空 pickcode；直链候选 | 直链可能有时效 | 不输出 URL 的字段类型探针 | 移动/重命名/复制后的稳定性和过期语义 |
 | move | `P115Client.fs_move(payload, /, pid=0, base_url='https://webapi.115.com', *, async_=False, **request_kwargs)` | unverified，禁止调用 | 文件/目录 ID、目标父目录 | 未冻结 | 写入云端目录 | C03 专用临时夹具 | 超时幂等、部分成功、ID/pickcode 变化 |
@@ -141,6 +140,47 @@ live transport 仅调用 `fs_mkdir`、`fs_move`、`fs_rename`、`fs_delete`、`f
 计数只报告实际页数。真实响应只在 transport 内立即归一化为 C03 DTO，不保存或输出
 原响应、ID、名称、路径、pickcode、Cookie 或异常正文。第三方 `state`/`data`、详情
 别名和分页字段的跨场景稳定性仍未冻结。
+
+## C02 只读目录 gateway 离线适配
+
+`adapters/p115_library_gateway.py` 与 `adapters/p115_library_transport.py` 是尚未接入
+app、worker 或 feature flag 的受限只读适配层。只允许 `fs_files` 与 `fs_info`；默认
+transport 仅在实际调用前校验固定版 `p115client` 并创建客户端。它不记录凭据，也不暴露
+远端异常正文。
+
+- 适配器只接受非零数字目录 ID 和 `page_size=1`。这是当前唯一有真实证据的
+  `limit=1` 两页样本边界，不能放宽为任意目录或页大小。
+- payload 固定为 `cid/limit=1/offset/record_open_time=0/show_dir=1`。响应必须返回
+  一致的整数 `offset/limit/count`；缺少或矛盾任一项均为
+  `pagination_unverified`，不会生成不完整页面。
+- 只有 `offset + entries == count` 才合成终止信号；否则只生成下一连续页提示，扫描器
+  必须继续读取。任何中断或下一页失败仍由上层保持 `partial`，不可据此删除、清理或
+  打开 read capability。
+- 调用范围由非根目录 allowlist 限制；只有指定根目录或本次列表已观察到的子目录可继续
+  `fs_files` 扫描，`fs_info` 只接受已观察到的文件或子目录（或调用方显式提供的稳定 ID）。
+  范围外请求在读取凭据或创建客户端前拒绝。列表和详情中的 pickcode、路径均被主动丢弃，
+  DTO 的 `repr` 和边界错误只包含稳定机器码。
+- 每次调用把单调时钟的剩余时间传至固定版 documented request hook，并固定
+  `retries=False`。无法建立该边界时返回 `blocked_environment`，而不降级为无超时调用。
+- `fs_info` 仅用于将已授权的文件或目录详情归一化为本地 DTO；没有下载、移动、重命名、
+  mkdir、删除、播放或 STRM 方法。
+- 固定版客户端的详情请求按真实只读验收使用文件 `fid` 与目录 `cid`；不使用展示层的
+  `file_id` 作为远端 payload 键。
+- 详情成功响应可能不回显对象或父目录身份。仅当该对象刚由受管 `fs_files` 结果观察到，且
+  详情没有任何冲突身份字段时，gateway 才复用观察到的身份；无法解释的可选时间字段不写入
+  DTO。任何显式身份冲突仍返回 `detail_unverified`。
+
+2026-07-28 使用受管非根小目录完成一次 C02 真实只读验收：`fs_files=1`、
+`fs_info(file)=1`，公开结果为 `success/complete=true`、一页、一条目；没有自动重试。
+凭据、目录身份、文件名、路径、pickcode 和原始响应均未记录。本证据仅将该单页列表和
+已观察文件详情标为 `verified_read_only`；目录详情、多页/大目录、并发、远端总数语义、
+pickcode、直链及所有写能力仍为 `unverified`。所有 115 写入、STRM、替换和清理能力继续关闭。
+
+`scripts/p115_library_readonly_live_runner.py` 是单次 C02 验收入口，不接入应用。只有同时
+提供 `--live`、`WATCH_ASSISTANT_P115_LIBRARY_READONLY_LIVE=1`、非根目录 ID 和 Cookie
+文件路径时才可能读取远端；默认以及任一前置失败均为零外部调用。每次最多读取两个连续
+`fs_files` 页面，并且最多读取一个已发现文件和一个已发现子目录的 `fs_info`；没有重试、
+写入、下载、播放或 STRM 操作。公开 JSON 只含状态、计数和错误码。
 
 ## 固定版本源码观察
 
