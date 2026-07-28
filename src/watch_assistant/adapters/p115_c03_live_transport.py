@@ -278,9 +278,12 @@ def _normalize_list_entry(
     is_directory = _directory_marker(record)
     if is_directory is None:
         return None
-    file_id = _single_id(
-        record, ("file_id", "fid", "directory_id", "category_id", "cid")
+    identity_names = (
+        ("file_id", "fid")
+        if not is_directory
+        else ("file_id", "fid", "directory_id", "category_id", "cid")
     )
+    file_id = _single_id(record, identity_names)
     record_parent_id = _single_id(record, ("parent_id", "pid"))
     name = _single_text(record, ("name", "n", "fn", "file_name", "category_name"))
     if file_id is None or record_parent_id != parent_id or name is None:

@@ -94,6 +94,7 @@ def _file(file_id, parent_id, name):
     return {
         "fc": 1,
         "fid": file_id,
+        "cid": parent_id,
         "pid": parent_id,
         "n": name,
     }
