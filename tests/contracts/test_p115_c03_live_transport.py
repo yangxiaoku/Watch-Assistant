@@ -90,6 +90,15 @@ def _directory(file_id, parent_id, name):
     }
 
 
+def _file(file_id, parent_id, name):
+    return {
+        "fc": 1,
+        "fid": file_id,
+        "pid": parent_id,
+        "n": name,
+    }
+
+
 async def _call_executor(method, payload, *, timeout_seconds):
     assert timeout_seconds > 0
     return method(payload, async_=False)
@@ -238,6 +247,33 @@ async def test_live_transport_requires_listing_for_exact_directory_identity():
     assert client.calls[1][1]["limit"] == 1
     assert client.calls[1][1]["record_open_time"] == 0
     assert client.calls[1][1]["show_dir"] == 1
+
+
+@pytest.mark.asyncio
+async def test_live_transport_lists_existing_files_without_rejecting_the_page():
+    client = _FakeP115Client(
+        {
+            "fs_mkdir": [],
+            "fs_move": [],
+            "fs_rename": [],
+            "fs_delete": [],
+            "fs_info": [],
+            "fs_files": [
+                _page([_file("101", "7", "existing-file")], offset=0, count=2),
+                _page([_directory("102", "7", "fixture-root")], offset=1, count=2),
+            ],
+        }
+    )
+
+    listing = await P115C03LiveTransport(
+        client, call_executor=_call_executor
+    ).list_children("7", timeout_seconds=10)
+
+    assert listing.complete is True
+    assert [(entry.file_id, entry.is_directory) for entry in listing.entries] == [
+        ("101", False),
+        ("102", True),
+    ]
 
 
 @pytest.mark.asyncio

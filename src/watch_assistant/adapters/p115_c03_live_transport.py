@@ -275,7 +275,8 @@ def _normalize_files_page(
 def _normalize_list_entry(
     record: Mapping[str, Any], parent_id: str
 ) -> C03RemoteEntry | None:
-    if _directory_marker(record) is not True:
+    is_directory = _directory_marker(record)
+    if is_directory is None:
         return None
     file_id = _single_id(
         record, ("file_id", "fid", "directory_id", "category_id", "cid")
@@ -284,7 +285,7 @@ def _normalize_list_entry(
     name = _single_text(record, ("name", "n", "fn", "file_name", "category_name"))
     if file_id is None or record_parent_id != parent_id or name is None:
         return None
-    return C03RemoteEntry(file_id, parent_id, name, True)
+    return C03RemoteEntry(file_id, parent_id, name, is_directory)
 
 
 def _records(response: Mapping[str, Any]) -> list[Mapping[str, Any]] | None:
