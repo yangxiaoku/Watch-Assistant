@@ -147,6 +147,11 @@ live transport 仅调用 `fs_mkdir`、`fs_move`、`fs_rename`、`fs_delete`、`f
 必须满足一次性授权、受管夹具、四项 gate、零重试和精确清理保护，且本轮未访问
 服务器、真实 115、Cookie 或外部 HTTP。
 
+固定版 `p115client` 的公开源码把缺失 `state` 视为成功，并直接读取二维码 token 的
+`data.uid/time/sign`；`qrcode` 缺失时使用 `uid` 构造扫码地址。离线 C03 iPad 登录
+边界据此只接受缺失或明确成功的状态、上述三个严格字段及可选二维码字段；显式失败、
+矛盾状态、未知类型和缺少关键字段均拒绝，DTO 和 repr 不呈现认证字段。
+
 ## 后续门禁
 
 真实探针必须单独获得 Cookie 安全授权，并把所有响应字段、ID、路径、pickcode、
