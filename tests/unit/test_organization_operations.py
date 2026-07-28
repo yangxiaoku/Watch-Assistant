@@ -302,12 +302,14 @@ async def test_old_lease_token_cannot_finish_after_reclaim(tmp_path):
             expected_revision=reclaimed.revision,
             lease_token=lease.lease_token,
             status=OrganizationOperationStatus.ORGANIZED,
+            now=now + timedelta(seconds=2),
         )
     finished = await service.finish(
         operation.operation_id,
         expected_revision=reclaimed.revision,
         lease_token=reclaimed.lease_token,
         status=OrganizationOperationStatus.ORGANIZED,
+        now=now + timedelta(seconds=2),
     )
     assert finished.status is OrganizationOperationStatus.ORGANIZED
     await database.engine.dispose()
