@@ -34,6 +34,17 @@ checkpoint；取消、分页异常、范围外条目和远端失败都会保留�
 flag 接线。`complete=false` 的结果以及所有结果的 `deletion_candidates` 均为空；本地
 fake 是本阶段唯一可执行 transport，真实服务器、Cookie、P115Client 和外部调用仍为 0。
 
+## Phase 2 整理 transport 离线边界
+
+`adapters/p115_organization_transport.py` 仅提供注入
+`OrganizationExecutorTransport` 的内存 fake。构造时必须冻结受管目录 allowlist，以及
+每个计划成员的稳定对象 ID、源/目标父目录和源/目标名称；未确认 scope、范围外调用、
+远端状态漂移和未知结果均 fail-closed。`move`、`rename` 不重试，timeout 与取消继续传播，
+公开 `repr` 和调用记录只含操作名与计数。
+
+工厂默认 `live=false`，且显式拒绝 `live=true`。该模块没有 Cookie、`P115Client`、网络、
+delete、quarantine、API、worker 或 feature flag 接线；真实整理 transport 仍未实现。
+
 ## p115client 候选能力矩阵
 
 | 能力 | 固定版本候选方法/签名 | 当前状态 | 需要的输入 | 预期输出 | 副作用 | 下一步探针 | 未知点 |
