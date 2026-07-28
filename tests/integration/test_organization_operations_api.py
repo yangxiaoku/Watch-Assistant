@@ -217,13 +217,13 @@ async def test_queue_is_idempotent_and_rejects_unconfirmed_stale_or_expired_plan
     )
     assert repeated.status_code == 200
     assert repeated.json()["operation_id"] == first_body["operation_id"]
-    recovered = await client.post(
+    conflicting = await client.post(
         "/api/v1/organization-plans/plan-ready/operation",
         json={"expected_revision": 1, "idempotency_key": "new-queue-key"},
         headers=headers,
     )
-    assert recovered.status_code == 200
-    assert recovered.json()["operation_id"] == first_body["operation_id"]
+    assert conflicting.status_code == 409
+    assert conflicting.json()["detail"]["code"] == "operation_plan_conflict"
     stale = await client.post(
         "/api/v1/organization-plans/plan-stale/operation",
         json={"expected_revision": 1, "idempotency_key": "stale-key"},

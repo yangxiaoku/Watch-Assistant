@@ -201,6 +201,7 @@ _MESSAGES = {
     "plan_revision_changed": "计划版本已变化，请刷新后重试",
     "idempotency_key_conflict": "幂等请求与既有操作冲突",
     "plan_already_has_operation": "计划已有受控操作",
+    "operation_plan_conflict": "计划已有受控操作",
     "operation_creation_conflict": "操作创建发生冲突",
     "operation_revision_changed": "操作版本已变化，请刷新后重试",
     "operation_is_not_cancellable": "操作当前状态不可取消",
