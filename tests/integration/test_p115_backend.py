@@ -1,4 +1,5 @@
 import asyncio
+import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -198,6 +199,8 @@ async def test_p115_settings_reuses_runtime_adapter_without_remote_access(
         "UID=uid_A1_456; CID=cid; KID=kid; SEID=seid",
         encoding="ascii",
     )
+    if os.name != "nt":
+        cookie_path.chmod(0o600)
     values = {
         "DATABASE_URL": f"sqlite+aiosqlite:///{tmp_path / 'app.db'}",
         "ENCRYPTION_KEY": Fernet.generate_key().decode("ascii"),

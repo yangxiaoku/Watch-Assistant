@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 
 import httpx
@@ -336,6 +337,8 @@ async def test_reset_validates_fallback_and_disables_when_fallback_invalid(
     database, _crypto, _tmdb, p115, _security, app = await _setup(tmp_path)
     fallback_path = tmp_path / "tgtodrive-cookie"
     fallback_path.write_text(COOKIE, encoding="ascii", newline="")
+    if os.name != "nt":
+        fallback_path.chmod(0o600)
     service = app.state.credential_service
     await service.update_p115_cookie(COOKIE, 0)
     await service.reset_p115_cookie(1)
