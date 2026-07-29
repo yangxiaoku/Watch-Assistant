@@ -9,39 +9,87 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 from datetime import timedelta
 from pathlib import Path
+from uuid import uuid4
 
-from fastapi import FastAPI
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import FileResponse, JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.staticfiles import StaticFiles
 
 from watch_assistant.adapters.p115 import P115Adapter
 from watch_assistant.adapters.pansou import PanSouClient
 from watch_assistant.adapters.qbittorrent import QbittorrentClient
 from watch_assistant.adapters.tmdb import TmdbClient
+from watch_assistant.api.agent import router as agent_router
+from watch_assistant.api.audit import router as audit_router
 from watch_assistant.api.auth import router as auth_router
+from watch_assistant.api.backups import router as backups_router
 from watch_assistant.api.credentials import router as credentials_router
+from watch_assistant.api.deployment import router as deployment_router
 from watch_assistant.api.inspection import router as inspection_router
+from watch_assistant.api.library import router as library_router
 from watch_assistant.api.maintenance import router as maintenance_router
+from watch_assistant.api.manual_import import router as manual_import_router
+from watch_assistant.api.mcp import router as mcp_router
+from watch_assistant.api.notifications import router as notifications_router
+from watch_assistant.api.organization_operation import (
+    router as organization_operation_router,
+)
+from watch_assistant.api.organization_plan import router as organization_plan_router
+from watch_assistant.api.pwa import router as pwa_router
+from watch_assistant.api.quality_profiles import router as quality_profiles_router
 from watch_assistant.api.search import router as search_router
+from watch_assistant.api.seasons import router as seasons_router
 from watch_assistant.api.settings import router as settings_router
 from watch_assistant.api.settings_p115 import router as p115_settings_router
+from watch_assistant.api.subscriptions import router as subscriptions_router
+from watch_assistant.api.subtitles import router as subtitles_router
 from watch_assistant.api.tasks import router as tasks_router
+from watch_assistant.api.telemetry import router as telemetry_router
+from watch_assistant.api.webhooks import router as webhooks_router
+from watch_assistant.api.workflows import router as workflows_router
 from watch_assistant.config import Settings, load_tgto_contract
 from watch_assistant.crypto import SecretCrypto
 from watch_assistant.db import Database, create_database, initialize_database
 from watch_assistant.security import SecurityManager
+from watch_assistant.services.agent_tokens import AgentTokenService
+from watch_assistant.services.api_errors import (
+    build_error_payload,
+    error_code_from_detail,
+    legacy_detail,
+)
+from watch_assistant.services.backups import BackupService
 from watch_assistant.services.cache_warm import CacheWarmer
 from watch_assistant.services.credentials import CredentialService
+from watch_assistant.services.deployment_diagnostics import DeploymentDiagnosticsService
 from watch_assistant.services.inspection import InspectionService, InspectionWorker
+from watch_assistant.services.inventory_push_guard import InventoryPushGuard
 from watch_assistant.services.maintenance import MaintenanceService
+from watch_assistant.services.manual_import import ManualImportService
+from watch_assistant.services.mcp import McpService
+from watch_assistant.services.notifications import NotificationService
+from watch_assistant.services.organization_operations import (
+    OrganizationOperationService,
+)
+from watch_assistant.services.organization_plan import OrganizationPlanService
+from watch_assistant.services.organization_worker import OrganizationWorker
 from watch_assistant.services.p115_credentials import (
     CompositeCookieProvider,
     CookieProvider,
 )
 from watch_assistant.services.p115_settings import P115SettingsService
+from watch_assistant.services.pwa_devices import PwaDeviceService
+from watch_assistant.services.quality_profiles import QualityProfileService
 from watch_assistant.services.search import SearchService
+from watch_assistant.services.season_metadata import SeasonMetadataService
 from watch_assistant.services.settings import SettingsService
+from watch_assistant.services.subscription_scheduler import SubscriptionScheduler
+from watch_assistant.services.subscriptions import SubscriptionService
 from watch_assistant.services.tasks import TaskService
+from watch_assistant.services.webhooks import WebhookService
+from watch_assistant.services.workflows import WorkflowService
 from watch_assistant.worker import TaskAdapter, TaskWorker
 
 _RELEASE_SHA = re.compile(r"[0-9a-f]{40}", re.IGNORECASE)
@@ -59,7 +107,10 @@ def create_app(
     push_supported: bool | None = None,
     qbittorrent_client: QbittorrentClient | None = None,
     task_adapter: TaskAdapter | None = None,
+    inventory_guard: InventoryPushGuard | None = None,
     frontend_dir: Path | None = None,
+    organization_plan_enabled: bool | None = None,
+    organization_execution_enabled: bool | None = None,
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
@@ -70,6 +121,52 @@ def create_app(
         inspection_task: asyncio.Task[None] | None = None
         task_stop: asyncio.Event | None = None
         task_task: asyncio.Task[None] | None = None
+        subscription_stop: asyncio.Event | None = None
+        subscription_task: asyncio.Task[None] | None = None
+        webhook_stop: asyncio.Event | None = None
+        webhook_task: asyncio.Task[None] | None = None
+        organization_stop: asyncio.Event | None = None
+        organization_task: asyncio.Task[None] | None = None
+
+        async def apply_organization_runtime(ready: bool) -> None:
+            nonlocal organization_stop, organization_task
+            enabled = (
+                ready
+                and getattr(application.state, "organization_plan_enabled", False)
+                and getattr(application.state, "organization_execution_enabled", False)
+                and getattr(application.state, "organization_cookie_provider", None)
+                is not None
+                and getattr(application.state, "organization_target_root_id", None)
+                is not None
+            )
+            if not enabled:
+                if organization_stop is not None:
+                    organization_stop.set()
+                if organization_task is not None:
+                    organization_task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await organization_task
+                organization_stop = None
+                organization_task = None
+                if hasattr(application.state, "organization_worker"):
+                    delattr(application.state, "organization_worker")
+                return
+            if organization_task is not None:
+                return
+            worker = OrganizationWorker(
+                application.state.database.session_factory,
+                application.state.organization_operation_service,
+                application.state.organization_cookie_provider,
+                production_root_id=application.state.organization_target_root_id,
+                live_enabled=True,
+                event_logger=application.state.settings_service,
+            )
+            application.state.organization_worker = worker
+            organization_stop = asyncio.Event()
+            organization_task = asyncio.create_task(
+                worker.run_forever(organization_stop),
+                name="watch-assistant-organization-worker",
+            )
 
         async def apply_p115_runtime(ready: bool) -> None:
             nonlocal task_stop, task_task
@@ -80,6 +177,7 @@ def create_app(
             }
             adapter = getattr(application.state, "task_adapter", None)
             if adapter is None:
+                await apply_organization_runtime(False)
                 return
             if not ready:
                 if task_stop is not None:
@@ -92,22 +190,26 @@ def create_app(
                 task_task = None
                 if hasattr(application.state, "task_worker"):
                     delattr(application.state, "task_worker")
+                await apply_organization_runtime(False)
                 return
-            if getattr(application.state, "task_worker", None) is not None:
-                return
-            worker = TaskWorker(
-                runtime_database.session_factory,
-                runtime_crypto,
-                adapter,
-                owner=_worker_owner(),
-                event_logger=application.state.settings_service,
-            )
-            await worker.recover_expired()
-            application.state.task_worker = worker
-            task_stop = asyncio.Event()
-            task_task = asyncio.create_task(
-                worker.run_forever(task_stop), name="watch-assistant-task-worker"
-            )
+            if getattr(application.state, "task_worker", None) is None:
+                worker = TaskWorker(
+                    runtime_database.session_factory,
+                    runtime_crypto,
+                    adapter,
+                    owner=_worker_owner(),
+                    event_logger=application.state.settings_service,
+                    inventory_guard=getattr(
+                        application.state, "inventory_push_guard", None
+                    ),
+                )
+                await worker.recover_expired()
+                application.state.task_worker = worker
+                task_stop = asyncio.Event()
+                task_task = asyncio.create_task(
+                    worker.run_forever(task_stop), name="watch-assistant-task-worker"
+                )
+            await apply_organization_runtime(True)
 
         existing_credentials = getattr(application.state, "credential_service", None)
         if existing_credentials is not None and not getattr(
@@ -127,6 +229,14 @@ def create_app(
             settings = Settings(
                 _secrets_dir=secrets_dir if secrets_dir.is_dir() else None
             )
+            if organization_plan_enabled is None:
+                application.state.organization_plan_enabled = (
+                    settings.organization_plan_enabled
+                )
+            if organization_execution_enabled is None:
+                application.state.organization_execution_enabled = (
+                    settings.organization_execution_enabled
+                )
             if settings.p115_enabled and settings.p115_target_cid is None:
                 raise RuntimeError("P115_ENABLED requires P115_TARGET_CID")
             contract = load_tgto_contract(settings.tgto_contract_path)
@@ -144,6 +254,30 @@ def create_app(
             application.state.settings_service = SettingsService(
                 runtime_database.session_factory,
                 state_directory=_state_directory(runtime_database),
+            )
+            application.state.webhook_service = WebhookService(
+                runtime_database.session_factory,
+                runtime_crypto,
+                event_logger=application.state.settings_service,
+            )
+            application.state.settings_service.bind_event_sink(
+                application.state.webhook_service.enqueue_event
+            )
+            application.state.pwa_device_service = PwaDeviceService(
+                runtime_database.session_factory, runtime_crypto
+            )
+            application.state.agent_token_service = AgentTokenService(
+                runtime_database.session_factory,
+                event_logger=application.state.settings_service,
+            )
+            application.state.organization_plan_service = OrganizationPlanService(
+                runtime_database.session_factory
+            )
+            application.state.organization_operation_service = (
+                OrganizationOperationService(
+                    runtime_database.session_factory,
+                    event_logger=application.state.settings_service,
+                )
             )
             fallback_cookie_provider = CookieProvider(settings.p115_cookie_path)
             composite_cookie_provider = CompositeCookieProvider(
@@ -181,8 +315,57 @@ def create_app(
                 pansou_max_concurrency=settings.pansou_max_concurrency,
                 event_logger=application.state.settings_service,
             )
+            application.state.manual_import_service = ManualImportService(
+                runtime_database.session_factory,
+                application.state.search_service,
+                runtime_crypto,
+                share_domains=share_domains,
+            )
+            application.state.subscription_service = SubscriptionService(
+                runtime_database.session_factory,
+                application.state.search_service,
+                event_logger=application.state.settings_service,
+            )
+            application.state.subscription_scheduler = SubscriptionScheduler(
+                runtime_database.session_factory,
+                application.state.subscription_service,
+                event_logger=application.state.settings_service,
+            )
+            application.state.quality_profile_service = QualityProfileService(
+                runtime_database.session_factory,
+                event_logger=application.state.settings_service,
+            )
+            application.state.workflow_service = WorkflowService(
+                runtime_database.session_factory,
+                event_logger=application.state.settings_service,
+            )
+            application.state.notification_service = NotificationService(
+                runtime_database.session_factory,
+                event_logger=application.state.settings_service,
+            )
+            application.state.backup_service = BackupService(
+                runtime_database.engine.url.database,
+                _state_directory(runtime_database) / "backups",
+                release=application.state.release,
+                event_logger=application.state.settings_service,
+            )
+            application.state.deployment_diagnostics_service = (
+                DeploymentDiagnosticsService(runtime_database.engine, application.state)
+            )
+            application.state.season_metadata_service = SeasonMetadataService(
+                runtime_database.session_factory, runtime_tmdb
+            )
             application.state.task_service = TaskService(
                 runtime_database.session_factory,
+                event_logger=application.state.settings_service,
+            )
+            application.state.mcp_service = McpService(
+                task_service=application.state.task_service,
+                notification_service=application.state.notification_service,
+                organization_plan_service=application.state.organization_plan_service,
+                organization_operation_service=application.state.organization_operation_service,
+                workflow_service=application.state.workflow_service,
+                library_session_factory=runtime_database.session_factory,
                 event_logger=application.state.settings_service,
             )
             application.state.maintenance_service = MaintenanceService(
@@ -195,6 +378,7 @@ def create_app(
                     cookie_secure=settings.cookie_secure,
                     session_factory=runtime_database.session_factory,
                     session_ttl=timedelta(hours=settings.web_session_ttl_hours),
+                    event_logger=application.state.settings_service,
                 )
             else:
                 security_manager.configure_session_store(
@@ -202,6 +386,9 @@ def create_app(
                     session_ttl=timedelta(hours=settings.web_session_ttl_hours),
                 )
                 application.state.security_manager = security_manager
+                security_manager.configure_event_logger(
+                    application.state.settings_service
+                )
             application.state.push_supported = False
             application.state.push_capabilities = {
                 "magnet": False,
@@ -209,6 +396,17 @@ def create_app(
             }
             application.state.p115_ready = False
             application.state.database = runtime_database
+            application.state.inventory_push_guard = (
+                inventory_guard
+                if inventory_guard is not None
+                else InventoryPushGuard(runtime_database.session_factory)
+            )
+            application.state.organization_cookie_provider = composite_cookie_provider
+            application.state.organization_target_root_id = (
+                str(settings.p115_target_cid)
+                if settings.p115_target_cid is not None and settings.p115_target_cid > 0
+                else None
+            )
             owned = [runtime_database, runtime_tmdb, runtime_pansou]
             cookie_provider = composite_cookie_provider
             runtime_task_adapter: TaskAdapter | None = None
@@ -234,6 +432,7 @@ def create_app(
                         runtime_task_adapter,
                         owner=_worker_owner(),
                         event_logger=application.state.settings_service,
+                        inventory_guard=application.state.inventory_push_guard,
                     )
                     application.state.push_capabilities = {
                         "magnet": True,
@@ -266,7 +465,10 @@ def create_app(
                     settings.qbittorrent_username.get_secret_value(),
                     settings.qbittorrent_password.get_secret_value(),
                     concurrency=settings.inspection_concurrency,
-                    item_timeout=settings.inspection_item_timeout_seconds,
+                    item_timeout=(
+                        settings.inspection_final_timeout_seconds
+                        or settings.inspection_item_timeout_seconds
+                    ),
                     poll_interval=settings.inspection_poll_interval_seconds,
                     request_timeout=settings.inspection_request_timeout_seconds,
                 )
@@ -298,6 +500,15 @@ def create_app(
                     name="watch-assistant-cache-warmer",
                 )
                 application.state.cache_warmer = warmer
+            if settings.subscription_scheduler_enabled:
+                subscription_stop = asyncio.Event()
+                subscription_task = asyncio.create_task(
+                    application.state.subscription_scheduler.run_forever(
+                        subscription_stop,
+                        interval_seconds=settings.subscription_scheduler_interval_seconds,
+                    ),
+                    name="watch-assistant-subscription-scheduler",
+                )
         task_adapter_resource = getattr(application.state, "task_adapter", None)
         if task_adapter_resource is not None and not hasattr(
             application.state, "p115_ready"
@@ -310,6 +521,8 @@ def create_app(
                     "share": False,
                 }
                 application.state.task_worker = None
+        if getattr(application.state, "p115_ready", False):
+            await apply_organization_runtime(True)
         worker = getattr(application.state, "inspection_worker", None)
         if worker is not None:
             inspection_stop = asyncio.Event()
@@ -325,6 +538,25 @@ def create_app(
                 task_worker.run_forever(task_stop),
                 name="watch-assistant-task-worker",
             )
+        webhook_service = getattr(application.state, "webhook_service", None)
+        if webhook_service is not None:
+            webhook_stop = asyncio.Event()
+
+            async def run_webhook_worker() -> None:
+                while not webhook_stop.is_set():
+                    try:
+                        await webhook_service.publish_due()
+                    except Exception:  # noqa: BLE001 - one delivery must not stop the worker
+                        await asyncio.sleep(5)
+                        continue
+                    try:
+                        await asyncio.wait_for(webhook_stop.wait(), timeout=5)
+                    except TimeoutError:
+                        continue
+
+            webhook_task = asyncio.create_task(
+                run_webhook_worker(), name="watch-assistant-webhook-worker"
+            )
         settings_service = getattr(application.state, "settings_service", None)
         if settings_service is not None:
             await settings_service.log_event(
@@ -338,6 +570,11 @@ def create_app(
                 task_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await task_task
+            if organization_task is not None and organization_stop is not None:
+                organization_stop.set()
+                organization_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await organization_task
             if inspection_task is not None and inspection_stop is not None:
                 inspection_stop.set()
                 inspection_task.cancel()
@@ -348,6 +585,16 @@ def create_app(
                 warm_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await warm_task
+            if subscription_task is not None and subscription_stop is not None:
+                subscription_stop.set()
+                subscription_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await subscription_task
+            if webhook_task is not None and webhook_stop is not None:
+                webhook_stop.set()
+                webhook_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await webhook_task
             inspection_client = getattr(application.state, "inspection_client", None)
             if (
                 inspection_client is not None
@@ -367,15 +614,101 @@ def create_app(
                     await resource.engine.dispose()
                 elif hasattr(resource, "aclose"):
                     await resource.aclose()
+            webhook_service = getattr(application.state, "webhook_service", None)
+            if webhook_service is not None and webhook_service not in owned:
+                await webhook_service.aclose()
 
     application = FastAPI(title="Watch Assistant", lifespan=lifespan)
+
+    @application.middleware("http")
+    async def request_context(request: Request, call_next):
+        request_id = _request_context_id(request.headers.get("X-Request-ID"), "req_")
+        correlation_id = _request_context_id(
+            request.headers.get("X-Correlation-ID"), "corr_"
+        )
+        request.state.request_id = request_id
+        request.state.correlation_id = correlation_id
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = request_id
+        response.headers["X-Correlation-ID"] = correlation_id
+        return response
+
+    @application.exception_handler(HTTPException)
+    @application.exception_handler(StarletteHTTPException)
+    async def http_error_handler(request: Request, exception: HTTPException):
+        request_id, correlation_id = _request_context_values(request)
+        code = error_code_from_detail(exception.detail, exception.status_code)
+        payload = build_error_payload(
+            code,
+            exception.status_code,
+            request_id=request_id,
+            correlation_id=correlation_id,
+            missing_scopes=(
+                exception.detail.get("missing_scopes", [])
+                if isinstance(exception.detail, dict)
+                else None
+            ),
+        )
+        return JSONResponse(
+            status_code=exception.status_code,
+            content={"error": payload, "detail": jsonable_encoder(legacy_detail(exception.detail, code))},
+        )
+
+    @application.exception_handler(RequestValidationError)
+    async def validation_error_handler(request: Request, exception: RequestValidationError):
+        request_id, correlation_id = _request_context_values(request)
+        fields = _validation_field_errors(exception)
+        payload = build_error_payload(
+            "validation_error",
+            422,
+            request_id=request_id,
+            correlation_id=correlation_id,
+            field_errors=fields,
+        )
+        return JSONResponse(status_code=422, content={"error": payload, "detail": "validation_error"})
+
+    @application.exception_handler(Exception)
+    async def unhandled_error_handler(request: Request, _exception: Exception):
+        request_id, correlation_id = _request_context_values(request)
+        payload = build_error_payload(
+            "internal_error",
+            500,
+            request_id=request_id,
+            correlation_id=correlation_id,
+        )
+        return JSONResponse(status_code=500, content={"error": payload, "detail": "internal_error"})
     application.state.release = _resolve_release()
     application.state.started_at = time.monotonic()
+    application.state.organization_plan_enabled = (
+        organization_plan_enabled
+        if organization_plan_enabled is not None
+        else _env_flag("ORGANIZATION_PLAN_ENABLED")
+    )
+    application.state.organization_execution_enabled = (
+        organization_execution_enabled
+        if organization_execution_enabled is not None
+        else _env_flag("ORGANIZATION_EXECUTION_ENABLED")
+    )
     if database and crypto and tmdb_client and pansou_client:
         application.state.database = database
         application.state.settings_service = SettingsService(
             database.session_factory,
             state_directory=_state_directory(database),
+        )
+        application.state.webhook_service = WebhookService(
+            database.session_factory,
+            crypto,
+            event_logger=application.state.settings_service,
+        )
+        application.state.settings_service.bind_event_sink(
+            application.state.webhook_service.enqueue_event
+        )
+        application.state.pwa_device_service = PwaDeviceService(
+            database.session_factory, crypto
+        )
+        application.state.agent_token_service = AgentTokenService(
+            database.session_factory,
+            event_logger=application.state.settings_service,
         )
         application.state.search_service = SearchService(
             database.session_factory,
@@ -385,12 +718,63 @@ def create_app(
             share_domains=share_domains,
             event_logger=application.state.settings_service,
         )
+        application.state.manual_import_service = ManualImportService(
+            database.session_factory,
+            application.state.search_service,
+            crypto,
+            share_domains=share_domains,
+        )
+        application.state.subscription_service = SubscriptionService(
+            database.session_factory,
+            application.state.search_service,
+            event_logger=application.state.settings_service,
+        )
+        application.state.quality_profile_service = QualityProfileService(
+            database.session_factory,
+            event_logger=application.state.settings_service,
+        )
+        application.state.workflow_service = WorkflowService(
+            database.session_factory,
+            event_logger=application.state.settings_service,
+        )
+        application.state.notification_service = NotificationService(
+            database.session_factory,
+            event_logger=application.state.settings_service,
+        )
+        application.state.backup_service = BackupService(
+            database.engine.url.database,
+            _state_directory(database) / "backups",
+            release=application.state.release,
+            event_logger=application.state.settings_service,
+        )
+        application.state.deployment_diagnostics_service = DeploymentDiagnosticsService(
+            database.engine, application.state
+        )
+        application.state.season_metadata_service = SeasonMetadataService(
+            database.session_factory, tmdb_client
+        )
         application.state.task_service = TaskService(
             database.session_factory,
             event_logger=application.state.settings_service,
         )
         application.state.maintenance_service = MaintenanceService(
             database.session_factory
+        )
+        application.state.organization_plan_service = OrganizationPlanService(
+            database.session_factory
+        )
+        application.state.organization_operation_service = OrganizationOperationService(
+            database.session_factory,
+            event_logger=application.state.settings_service,
+        )
+        application.state.mcp_service = McpService(
+            task_service=application.state.task_service,
+            notification_service=application.state.notification_service,
+            organization_plan_service=application.state.organization_plan_service,
+            organization_operation_service=application.state.organization_operation_service,
+            workflow_service=application.state.workflow_service,
+            library_session_factory=database.session_factory,
+            event_logger=application.state.settings_service,
         )
         fallback_cookie_provider = CookieProvider(
             os.environ.get("P115_COOKIE_PATH", "/run/secrets/p115_cookie")
@@ -422,6 +806,7 @@ def create_app(
             )
         if security_manager is not None:
             security_manager.configure_session_store(database.session_factory)
+            security_manager.configure_event_logger(application.state.settings_service)
             application.state.security_manager = security_manager
         application.state.push_supported = False
         application.state.push_capabilities = {
@@ -436,6 +821,9 @@ def create_app(
                 task_adapter,
                 owner=_worker_owner(),
                 event_logger=application.state.settings_service,
+                inventory_guard=getattr(
+                    application.state, "inventory_push_guard", inventory_guard
+                ),
             )
 
     @application.get("/api/v1/health")
@@ -462,16 +850,43 @@ def create_app(
                 application.state, "inspection_supported", False
             ),
             "inspection_auto_start_enabled": inspection_auto_start_enabled,
+            "organization_plan_enabled": bool(
+                getattr(application.state, "organization_plan_enabled", False)
+            ),
+            "organization_execution_enabled": bool(
+                getattr(application.state, "organization_execution_enabled", False)
+            ),
+            "organization_execution_supported": bool(
+                getattr(application.state, "organization_worker", None) is not None
+            ),
         }
 
     application.include_router(search_router)
     application.include_router(settings_router)
     application.include_router(credentials_router)
+    application.include_router(deployment_router)
     application.include_router(p115_settings_router)
+    application.include_router(seasons_router)
+    application.include_router(subtitles_router)
+    application.include_router(subscriptions_router)
+    application.include_router(quality_profiles_router)
+    application.include_router(workflows_router)
+    application.include_router(notifications_router)
+    application.include_router(backups_router)
     application.include_router(tasks_router)
+    application.include_router(telemetry_router)
     application.include_router(auth_router)
+    application.include_router(agent_router)
+    application.include_router(audit_router)
+    application.include_router(webhooks_router)
+    application.include_router(mcp_router)
+    application.include_router(pwa_router)
     application.include_router(maintenance_router)
     application.include_router(inspection_router)
+    application.include_router(library_router)
+    application.include_router(manual_import_router)
+    application.include_router(organization_plan_router)
+    application.include_router(organization_operation_router)
     static_path = frontend_dir or Path(
         os.environ.get("FRONTEND_DIST_DIR", "frontend/dist")
     )
@@ -490,6 +905,7 @@ def create_app(
         @application.get("/history", include_in_schema=False)
         @application.get("/search", include_in_schema=False)
         @application.get("/settings", include_in_schema=False)
+        @application.get("/organization-plans", include_in_schema=False)
         async def frontend_browse_route() -> FileResponse:
             return FileResponse(index_path)
 
@@ -514,6 +930,40 @@ def _resolve_release(trusted_path: Path | None = None) -> str:
 
 def _worker_owner() -> str:
     return f"{socket.gethostname()}:{os.getpid()}"
+
+
+def _env_flag(name: str) -> bool:
+    return os.environ.get(name, "").strip().casefold() in {"1", "true", "yes", "on"}
+
+
+def _request_context_id(value: str | None, prefix: str) -> str:
+    if value and len(value) <= 128 and re.fullmatch(r"[A-Za-z0-9_.:-]+", value):
+        return value
+    return prefix + uuid4().hex
+
+
+def _request_context_values(request: Request) -> tuple[str, str]:
+    return (
+        getattr(request.state, "request_id", _request_context_id(None, "req_")),
+        getattr(request.state, "correlation_id", _request_context_id(None, "corr_")),
+    )
+
+
+def _validation_field_errors(exception: RequestValidationError) -> list[dict[str, str]]:
+    fields: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in exception.errors():
+        location = tuple(
+            str(part)
+            for part in item.get("loc", ())
+            if part not in {"body", "query", "path", "header"}
+        )
+        field_id = ".".join(location) or "request"
+        if field_id in seen:
+            continue
+        seen.add(field_id)
+        fields.append({"field_id": field_id, "message_zh": "字段内容格式不正确。"})
+    return fields
 
 
 def _state_directory(database: Database) -> Path:

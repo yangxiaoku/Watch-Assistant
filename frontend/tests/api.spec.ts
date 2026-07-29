@@ -1,10 +1,227 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { ApiClient } from "../src/api";
+import { ApiClient, ApiError, focusFirstFieldError } from "../src/api";
 
 afterEach(() => vi.unstubAllGlobals());
 
 describe("ApiClient season and inspection requests", () => {
+  it("focuses the first structured field error by id or name", () => {
+    document.body.innerHTML = '<input id="blocked_keywords" />';
+    const error = new ApiError("输入内容有误", 422, "validation_error", {
+      fieldErrors: [{ fieldId: "blocked_keywords", message: "字段内容格式不正确。" }],
+    });
+
+    focusFirstFieldError(error);
+
+    expect(document.activeElement?.id).toBe("blocked_keywords");
+  });
+
+  it("preserves safe structured field errors from the backend", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      error: {
+        code: "validation_error",
+        field_errors: [{ field_id: "blocked_keywords", message_zh: "字段内容格式不正确。" }],
+      },
+    }), { status: 422 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const api = new ApiClient();
+
+    await expect(api.mediaMetadata("movie", 1)).rejects.toMatchObject({
+      code: "validation_error",
+      fieldErrors: [{ fieldId: "blocked_keywords", message: "字段内容格式不正确。" }],
+    });
+  });
+
+  it("uses notification list, read, and preference endpoints", async () => {
+    const responses = [
+      { items: [], unread_count: 0 },
+      { id: "notification-1", event_code: "workflow.completed", severity: "info", title_zh: "完成", message_zh: "已完成", action_type: null, action_id: null, aggregate_count: 1, read_at: "2026-07-29T01:00:00Z", created_at: "2026-07-29T01:00:00Z", updated_at: "2026-07-29T01:00:00Z" },
+      { marked_count: 1 },
+      { enabled: true, muted_event_codes: [], revision: 2 },
+      { enabled: false, muted_event_codes: ["storage.threshold"], revision: 3 },
+    ];
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(new Response(JSON.stringify(responses.shift()), { status: 200 })));
+    vi.stubGlobal("fetch", fetchMock);
+    const api = new ApiClient();
+
+    await api.notifications(true, 10);
+    await api.markNotificationRead("notification/1");
+    await api.markAllNotificationsRead();
+    await api.notificationPreferences();
+    await api.updateNotificationPreferences({ enabled: false, muted_event_codes: ["storage.threshold"], revision: 2 });
+
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "/api/v1/notifications?unread_only=true&limit=10",
+      "/api/v1/notifications/notification%2F1/read",
+      "/api/v1/notifications/read-all",
+      "/api/v1/notification-preferences",
+      "/api/v1/notification-preferences",
+    ]);
+    expect(fetchMock.mock.calls[1][1].method).toBe("POST");
+    expect(fetchMock.mock.calls[2][1].method).toBe("POST");
+    expect(fetchMock.mock.calls[4][1].method).toBe("PATCH");
+    expect(JSON.parse(fetchMock.mock.calls[4][1].body as string)).toEqual({ enabled: false, muted_event_codes: ["storage.threshold"], revision: 2 });
+  });
+
+  it("starts and polls an independent resource search task", async () => {
+    const task = {
+      task_id: "resource_search_1",
+      tmdb_id: 1399,
+      media_type: "tv",
+      season_number: 2,
+      status: "running",
+      snapshot_revision: null,
+      query_plan_version: "v4",
+      cache_age_seconds: null,
+      sources: [],
+      selected_season: 2,
+      warnings: [],
+      error_code: null,
+      created_at: "2026-07-29T01:00:00Z",
+      updated_at: "2026-07-29T01:00:00Z",
+    };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(task), { status: 202 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ...task, status: "ready", snapshot_revision: "snap-1", sources: ["plugin:magnet"] }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const api = new ApiClient();
+
+    await api.startResourceSearch("tv", 1399, { seasonNumber: 2 });
+    await api.resourceSearch("resource_search_1");
+
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "/api/v1/media/tv/1399/resource-search",
+      "/api/v1/resource-search/resource_search_1",
+    ]);
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body as string)).toEqual({ season_number: 2, refresh: false });
+  });
+
+  it("associates inspection and push requests with a workflow", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: "wf_1" }), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ batch_id: "inspect_1" }), { status: 202 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: "task_1", workflow_id: "wf_1" }), { status: 202 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const api = new ApiClient();
+
+    await api.createWorkflow({ mediaType: "movie", tmdbId: 27205 });
+    await api.inspectResources(["resource_1"], "wf_1");
+    await api.createTask("resource_1", false, "wf_1");
+
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "/api/v1/workflows",
+      "/api/v1/resources/inspect",
+      "/api/v1/tasks",
+    ]);
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body as string)).toEqual({
+      resource_ids: ["resource_1"],
+      workflow_id: "wf_1",
+    });
+    expect(JSON.parse(fetchMock.mock.calls[2][1].body as string)).toEqual({
+      resource_id: "resource_1",
+      force: false,
+      workflow_id: "wf_1",
+    });
+  });
+
+  it("converts an unknown backend detail to a safe Chinese error", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ detail: "python traceback secret" }), { status: 500 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const api = new ApiClient();
+
+    await expect(api.mediaMetadata("movie", 1)).rejects.toMatchObject({
+      code: "unknown_error",
+      message: "本次操作未完成，当前页面没有更新。",
+      retryable: true,
+    });
+  });
+
+  it("loads media metadata independently from resource search", async () => {
+    const response = { tmdb_id: 1399, media_type: "tv", title: "权力的游戏", original_title: "Game of Thrones", release_year: 2011, overview: "剧集简介", poster_path: null, backdrop_path: null, genre_ids: [], vote_average: 8.2, seasons: [] };
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(response), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const api = new ApiClient();
+    const controller = new AbortController();
+
+    await api.mediaMetadata("tv", 1399, controller.signal);
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/v1/media/tv/1399");
+    expect(fetchMock.mock.calls[0][1].signal).toBe(controller.signal);
+  });
+
+  it("records bounded media detail performance metrics", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ accepted: true }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const api = new ApiClient();
+
+    await api.recordMediaDetailMetric("movie", 1399, {
+      stage: "metadata_complete",
+      status: "success",
+      duration_ms: 87,
+      cached: true,
+      season_number: 2,
+    });
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/v1/media/movie/1399/performance");
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body as string)).toEqual({
+      stage: "metadata_complete",
+      status: "success",
+      duration_ms: 87,
+      cached: true,
+      season_number: 2,
+    });
+  });
+
+  it("loads workflow summaries and a workflow timeline through separate endpoints", async () => {
+    const list = { items: [], page: 1, page_size: 20, total: 0 };
+    const detail = { id: "wf_1", correlation_id: "corr_1", media_type: "movie", tmdb_id: 1, subscription_id: null, status: "completed", status_zh: "已完成", state_reason: null, created_at: "2026-07-29T00:00:00Z", updated_at: "2026-07-29T00:00:00Z", stages: [] };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(list), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(detail), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const api = new ApiClient();
+
+    await api.workflows({ status: "in_progress" });
+    await api.workflow("wf_1");
+
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "/api/v1/workflows?page=1&page_size=20&status=in_progress",
+      "/api/v1/workflows/wf_1",
+    ]);
+  });
+
+  it("sends workflow filters and guarded approval/cancel actions", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ items: [], page: 1, page_size: 20, total: 0 }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: "wf_1", status: "in_progress", stages: [] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: "wf_1", status: "cancelled", stages: [] }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const api = new ApiClient();
+
+    await api.workflows({ subscriptionId: "sub_1", stage: "approval", stageStatus: "waiting_confirmation" });
+    await api.decideWorkflowApproval("wf_1", "approve");
+    await api.cancelWorkflow("wf_1");
+
+    expect(fetchMock.mock.calls.map(([url, init]) => [url, init?.body])).toEqual([
+      ["/api/v1/workflows?page=1&page_size=20&subscription_id=sub_1&stage=approval&stage_status=waiting_confirmation", undefined],
+      ["/api/v1/workflows/wf_1/approval", JSON.stringify({ decision: "approve" })],
+      ["/api/v1/workflows/wf_1/cancel", JSON.stringify({})],
+    ]);
+  });
+
+  it("loads independent season metadata with a cache-safe query", async () => {
+    const response = { series_tmdb_id: 1399, tmdb_season_id: 456, season_number: 2, name: "第 2 季", overview: "本季简介", overview_language: "zh-CN", poster_path: null, air_date: "2025-01-01", episode_count: 10, vote_average: 8.1, source: "tmdb", fetched_at: "2026-07-29T00:00:00Z", cached: false, stale: false, data_version: 1, episodes: [], warnings: [] };
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(response), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const api = new ApiClient();
+    const controller = new AbortController();
+
+    await api.seasonMetadata(1399, 2, { refresh: true }, controller.signal);
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/v1/media/tv/1399/seasons/2?language=zh-CN&fallback_language=en-US&refresh=true");
+    expect(fetchMock.mock.calls[0][1].signal).toBe(controller.signal);
+  });
+
   it("sends the frozen resource pagination query and signal", async () => {
     const response = { items: [], page: 2, page_size: 50, total: 501, total_pages: 11, facets: { magnet: 500, share: 1, "4k": 100, "1080p": 300, "720p": 50, subtitle: 80 }, snapshot_revision: "snapshot-1" };
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(response), { status: 200 }));

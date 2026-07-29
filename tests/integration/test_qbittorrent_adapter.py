@@ -38,6 +38,7 @@ class FakeQbittorrent:
         add_response_json: dict[str, object] | None = None,
         state_sequence: list[str] | None = None,
         downloaded: int | None = None,
+        has_metadata: bool | None = None,
         info_failure_after_add: bool = False,
     ) -> None:
         self.existing = {value.casefold() for value in (existing or set())}
@@ -54,6 +55,7 @@ class FakeQbittorrent:
         self.add_response_json = add_response_json
         self.state_sequence = state_sequence
         self.downloaded = downloaded
+        self.has_metadata = has_metadata
         self.info_failure_after_add = info_failure_after_add
         self.added: dict[str, str] = {}
         self.added_state_checks = 0
@@ -142,6 +144,8 @@ class FakeQbittorrent:
                     }
                     if self.downloaded is not None:
                         row["downloaded"] = self.downloaded
+                    if self.has_metadata is not None:
+                        row["has_metadata"] = self.has_metadata
                     return httpx.Response(
                         200,
                         json=[row],
@@ -186,7 +190,8 @@ class FakeQbittorrent:
 
     def _files(self, request: httpx.Request) -> httpx.Response:
         self.files_calls += 1
-        assert request.url.params.get("hash") in self.added
+        infohash = request.url.params.get("hash")
+        assert infohash in self.added or infohash in self.existing
         return httpx.Response(200, json=self.files)
 
     async def _delete(self, request: httpx.Request) -> httpx.Response:
@@ -751,10 +756,24 @@ async def test_preexisting_torrent_is_never_added_or_deleted():
     result = (await client.inspect([_magnet(infohash)]))[0]
     await client.aclose()
 
-    assert result.status == InspectionStatus.UNSUPPORTED
-    assert result.error_code == "existing_torrent"
+    assert result.status == InspectionStatus.VERIFIED
+    assert result.error_code is None
+    assert result.result_source == "existing_torrent"
     assert fake.add_calls == 0
     assert fake.delete_calls == 0
+
+
+@respx.mock
+async def test_qbittorrent_has_metadata_is_authoritative_when_state_is_transient():
+    fake = FakeQbittorrent(state="metaDL", has_metadata=True)
+    fake.install()
+    client = QbittorrentClient(BASE_URL, "user", "password", poll_interval=0)
+
+    result = (await client.inspect([_magnet("e" * 40)]))[0]
+    await client.aclose()
+
+    assert result.status == InspectionStatus.VERIFIED
+    assert result.result_source == "new_torrent"
 
 
 @respx.mock

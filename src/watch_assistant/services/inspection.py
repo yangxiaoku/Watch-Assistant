@@ -26,8 +26,10 @@ from watch_assistant.schemas import (
     InspectionResultResponse,
     LoggingLevel,
     ResourceKind,
+    WorkflowStageName,
 )
 from watch_assistant.services.observability import EventLogger, emit_event
+from watch_assistant.services.workflows import link_child
 
 INSPECTION_RETENTION = timedelta(days=7)
 TERMINAL_ITEM_STATUSES = (
@@ -38,13 +40,13 @@ TERMINAL_ITEM_STATUSES = (
 )
 SUCCESSFUL_ITEM_STATUSES = (
     InspectionItemStatus.VERIFIED,
-    InspectionItemStatus.UNSUPPORTED,
 )
 KNOWN_ERROR_CODES = {
     "invalid_magnet",
     "authentication_failed",
     "login_unavailable",
     "existing_torrent",
+    "existing_torrent_unreadable",
     "incompatible_qbittorrent",
     "metadata_stop_unsupported",
     "metadata_stop_failed",
@@ -58,7 +60,7 @@ KNOWN_ERROR_CODES = {
 }
 INFOHASH_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 INSPECTION_CACHE_SCHEMA_VERSION = 1
-METADATA_TIMEOUT_CACHE_TTL = timedelta(minutes=30)
+METADATA_TIMEOUT_CACHE_TTL = timedelta(minutes=10)
 CACHEABLE_ITEM_STATUSES = (
     InspectionItemStatus.VERIFIED,
     InspectionItemStatus.TIMEOUT,
@@ -90,7 +92,13 @@ class InspectionService:
         self._create_lock = asyncio.Lock()
         self._event_logger = event_logger
 
-    async def create(self, resource_ids: list[str]) -> InspectionBatchResponse:
+    async def create(
+        self,
+        resource_ids: list[str],
+        *,
+        force: bool = False,
+        workflow_id: str | None = None,
+    ) -> InspectionBatchResponse:
         now = datetime.now(UTC)
         async with self._create_lock, self._session_factory() as session:
             resources = list(
@@ -128,6 +136,7 @@ class InspectionService:
 
             batch = InspectionBatch(
                 id="inspect_" + uuid4().hex,
+                workflow_id=workflow_id,
                 status=InspectionBatchStatus.QUEUED,
                 created_at=now,
                 updated_at=now,
@@ -146,6 +155,7 @@ class InspectionService:
                 if (
                     infohash is not None
                     and cache is not None
+                    and not force
                     and _cache_is_valid(cache, now)
                 ):
                     _apply_cache_to_item(item, cache, infohash)
@@ -153,6 +163,14 @@ class InspectionService:
             batch.status = _batch_status(item.status for item in items)
             session.add(batch)
             session.add_all(items)
+            if workflow_id is not None:
+                await link_child(
+                    session,
+                    workflow_id,
+                    WorkflowStageName.INSPECTION,
+                    "inspection_batch",
+                    batch.id,
+                )
             await session.commit()
             await emit_event(
                 self._event_logger,
@@ -428,6 +446,7 @@ class InspectionWorker:
                 return
             item.status = status
             item.infohash = item_infohash
+            item.result_source = result.result_source
             item.error_code = (
                 None if status == InspectionItemStatus.VERIFIED else _error_code(result)
             )
@@ -491,6 +510,7 @@ def _result_response(item: InspectionItem) -> InspectionResultResponse:
         largest_video_name=item.largest_video_name,
         content_summary=item.content_summary,
         error_code=item.error_code,
+        result_source=item.result_source,
     )
 
 
@@ -523,6 +543,7 @@ def _apply_cache_to_item(
     infohash: str,
 ) -> None:
     item.infohash = infohash
+    item.result_source = cache.result_source
     item.status = cache.status
     item.error_code = (
         None if cache.status == InspectionItemStatus.VERIFIED else "metadata_timeout"
@@ -554,6 +575,7 @@ def _apply_result_to_item(
         item.sample_count = max(0, result.sample_count)
         item.largest_video_name = _basename(result.largest_video_name)
         item.content_summary = result.content_summary
+        item.result_source = result.result_source
     else:
         _clear_item_details(item)
 
@@ -591,6 +613,7 @@ async def _store_cache(
         )
         session.add(cache)
     cache.status = status
+    cache.result_source = result.result_source
     cache.schema_version = INSPECTION_CACHE_SCHEMA_VERSION
     cache.updated_at = datetime.now(UTC)
     cache.expires_at = (

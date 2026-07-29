@@ -18,6 +18,7 @@ from watch_assistant.models import (
     ApplicationSettings,
     MovieWatch,
     Resource,
+    ResourceSearchJob,
     SearchCache,
     SourceReliability,
 )
@@ -59,6 +60,44 @@ async def _close(client, database, tmdb, pansou):
     await tmdb.aclose()
     await pansou.aclose()
     await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_media_detail_performance_telemetry_is_redacted_and_cataloged(tmp_path: Path):
+    client, database, tmdb, pansou = await _make_client(tmp_path)
+    try:
+        response = await client.post(
+            "/api/v1/media/movie/12345/performance",
+            json={
+                "stage": "metadata_complete",
+                "status": "success",
+                "duration_ms": 87,
+                "cached": True,
+                "season_number": 2,
+            },
+        )
+        assert response.status_code == 200
+        assert response.json() == {"accepted": True}
+
+        logs = await client.get(
+            "/api/v1/logs",
+            params={"event_code": "media.detail.performance", "limit": 10},
+        )
+        assert logs.status_code == 200
+        item = logs.json()["items"][0]
+        assert item["title_zh"] == "详情性能指标"
+        assert item["duration_ms"] == 87
+        assert item["resource_id"] != "12345"
+        assert len(item["resource_id"]) == 16
+        assert "12345" not in item["message_zh"]
+        assert item["context"] == {
+            "media_type": "movie",
+            "stage": "metadata_complete",
+            "cached": True,
+            "season": 2,
+        }
+    finally:
+        await _close(client, database, tmdb, pansou)
 
 
 def _mock_tmdb():
@@ -128,6 +167,75 @@ async def test_search_persists_encrypted_resources_and_returns_only_ids(tmp_path
         "share-secret" not in (item.encrypted_password or "") for item in resources
     )
     assert MAGNET not in cache.resource_ids_json
+    await _close(client, database, tmdb, pansou)
+
+
+@pytest.mark.integration
+@respx.mock
+async def test_resource_search_task_is_independent_and_reuses_snapshot(tmp_path):
+    _mock_tmdb()
+    respx.get("http://pansou.test/api/search").mock(
+        return_value=httpx.Response(200, json=_pansou_response())
+    )
+    client, database, tmdb, pansou = await _make_client(tmp_path)
+
+    accepted = await client.post(
+        "/api/v1/media/movie/12345/resource-search",
+        json={"refresh": False},
+    )
+    assert accepted.status_code == 202
+    task = accepted.json()
+    assert task["status"] in {"queued", "running", "ready"}
+    assert task["task_id"].startswith("resource_search_")
+
+    repeated = await client.post(
+        "/api/v1/media/movie/12345/resource-search",
+        json={"refresh": False},
+    )
+    assert repeated.json()["task_id"] == task["task_id"]
+
+    final = task
+    for _ in range(50):
+        if final["status"] in {"ready", "failed"}:
+            break
+        await asyncio.sleep(0.01)
+        final = (await client.get(f"/api/v1/resource-search/{task['task_id']}")).json()
+    assert final["status"] == "ready"
+    async with database.session_factory() as session:
+        cache = await session.scalar(select(SearchCache))
+        job = await session.get(ResourceSearchJob, task["task_id"])
+    assert cache is not None
+    assert job is not None
+    assert final["snapshot_revision"] == job.snapshot_revision
+
+    resources = await client.get("/api/v1/media/movie/12345/resources")
+    assert resources.status_code == 200
+    assert resources.json()["snapshot_revision"] == final["snapshot_revision"]
+
+    missing = await client.get("/api/v1/resource-search/missing-task")
+    assert missing.status_code == 404
+    assert missing.json()["error"]["code"] == "resource_search_not_found"
+    await _close(client, database, tmdb, pansou)
+
+    restored_client, restored_database, restored_tmdb, restored_pansou = await _make_client(tmp_path)
+    restored = await restored_client.get(f"/api/v1/resource-search/{task['task_id']}")
+    assert restored.status_code == 200
+    assert restored.json()["status"] == "ready"
+    await _close(restored_client, restored_database, restored_tmdb, restored_pansou)
+
+
+@pytest.mark.integration
+@respx.mock
+async def test_resource_search_rejects_movie_season_without_starting_task(tmp_path):
+    client, database, tmdb, pansou = await _make_client(tmp_path)
+
+    response = await client.post(
+        "/api/v1/media/movie/12345/resource-search",
+        json={"season_number": 1},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "season_requires_tv"
     await _close(client, database, tmdb, pansou)
 
 
@@ -381,7 +489,9 @@ async def test_resource_snapshot_missing_returns_stable_error_without_upstream(
     response = await client.get("/api/v1/media/movie/12345/resources")
 
     assert response.status_code == 404
-    assert response.json() == {"detail": "resource_snapshot_not_found"}
+    assert response.json()["detail"] == "resource_snapshot_not_found"
+    assert response.json()["error"]["code"] == "resource_snapshot_not_found"
+    assert response.json()["error"]["correlation_id"] == response.headers["X-Correlation-ID"]
     assert respx.calls.call_count == 0
     await _close(client, _database, tmdb, pansou)
 
@@ -536,7 +646,8 @@ async def test_partial_positive_refresh_preserves_existing_cache(tmp_path):
     assert first.status_code == 200
     assert refreshed.status_code == 200
     assert refreshed.json()["cached"] is True
-    assert len(refreshed.json()["results"]) == 2
+    assert len(refreshed.json()["results"]) == 3
+    assert any(item["source"] == "plugin:partial" for item in refreshed.json()["results"])
     assert "partial_upstream" in refreshed.json()["warnings"]
     assert "stale_cache" in refreshed.json()["warnings"]
     await _close(client, database, tmdb, pansou)
@@ -1200,8 +1311,6 @@ async def test_missing_tv_season_returns_422_without_pansou_or_cache(tmp_path):
     assert response.status_code == 422
     assert response.json()["detail"] == "season_not_found"
     assert not pansou_route.called
-    async with database.session_factory() as session:
-        assert await session.scalar(select(SearchCache)) is None
     await _close(client, database, tmdb, pansou)
 
 
@@ -1558,6 +1667,18 @@ async def test_concurrent_warm_with_barrier_share_checks_avoids_sqlite_lock(
         )
 
     respx.get("http://pansou.test/api/search").mock(side_effect=search_response)
+    respx.get("https://api.themoviedb.org/3/movie/1501").mock(
+        return_value=httpx.Response(
+            200,
+            json={"id": 1501, "title": "Movie A", "release_date": "2020-01-01"},
+        )
+    )
+    respx.get("https://api.themoviedb.org/3/movie/1502").mock(
+        return_value=httpx.Response(
+            200,
+            json={"id": 1502, "title": "Movie B", "release_date": "2020-01-01"},
+        )
+    )
 
     barrier = asyncio.Barrier(2)
     entered_checks = 0
@@ -1588,6 +1709,12 @@ async def test_concurrent_warm_with_barrier_share_checks_avoids_sqlite_lock(
 
     assert results == [True, True]
     assert entered_checks == 2
+    cached_a = await service.search(1501, media_type=MediaType.MOVIE)
+    cached_b = await service.search(1502, media_type=MediaType.MOVIE)
+    assert cached_a.cached is True
+    assert cached_b.cached is True
+    assert cached_a.results and all("Movie A" in item.name for item in cached_a.results)
+    assert cached_b.results and all("Movie B" in item.name for item in cached_b.results)
     async with database.session_factory() as session:
         caches = list(await session.scalars(select(SearchCache)))
     assert {item.cache_key for item in caches} == {
@@ -1705,5 +1832,7 @@ async def test_resource_search_merges_all_queries_and_keeps_richer_duplicate(tmp
     assert metadata["search_queries"] == ["盗梦空间 2010", "Inception 2010"]
     assert metadata["sources"] == ["plugin:zh-year", "plugin:en-year"]
     async with database.session_factory() as session:
-        assert await session.scalar(select(SearchCache)) is None
+        cache = await session.scalar(select(SearchCache))
+    assert cache is not None
+    assert cache.cache_kind == "partial"
     await _close(client, database, tmdb, pansou)

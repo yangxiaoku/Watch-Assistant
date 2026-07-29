@@ -43,9 +43,16 @@ def test_cookie_provider_validates_and_reloads_changed_file(tmp_path):
 
     assert provider.load() == COOKIE
     assert "123_A1_456" not in repr(provider)
-
     _write_cookie(path, "UID=999_A1_456; CID=new; KID=new; SEID=new")
     assert provider.read() == "UID=999_A1_456; CID=new; KID=new; SEID=new"
+
+
+@pytest.mark.parametrize("line_ending", ["\n", "\r\n"])
+def test_cookie_provider_accepts_terminal_line_ending(tmp_path, line_ending):
+    path = tmp_path / "tgto-cookie.txt"
+    _write_cookie(path, COOKIE + line_ending)
+
+    assert CookieProvider(path).load() == COOKIE
 
 
 @pytest.mark.parametrize(

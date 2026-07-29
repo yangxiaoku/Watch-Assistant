@@ -4,6 +4,7 @@ import re
 import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import date
 
 from watch_assistant.schemas import MediaType, MovieMetadata, NormalizedResource
 
@@ -15,10 +16,6 @@ EPISODE_PATTERN = re.compile(
     r"(?<![a-z0-9])episode\s*\d+(?!\d)|"
     r"全集|全季|全剧|全系列|complete\s+(?:series|collection|season)|"
     r"\u7b2c\s*\d+\s*[\u5b63\u96c6]|\u66f4\u65b0\u81f3\s*\d*\s*\u96c6?|\u5168\s*\d+\s*\u96c6",
-    re.IGNORECASE,
-)
-COLLECTION_PATTERN = re.compile(
-    r"全剧|全系列|complete\s+(?:series|collection)",
     re.IGNORECASE,
 )
 MEDIA_PATTERN = re.compile(
@@ -130,10 +127,7 @@ def _match_score(
     if (
         media.media_type == MediaType.TV
         and season_number is not None
-        and (
-            season_numbers != {season_number}
-            or COLLECTION_PATTERN.search(normalized_name) is not None
-        )
+        and season_numbers != {season_number}
     ):
         return None
 
@@ -260,12 +254,19 @@ def _completeness_score(name: str, resource: NormalizedResource) -> int:
 
 
 def _target_year(media: MovieMetadata, season_number: int | None) -> int | None:
-    if media.media_type == MediaType.TV and season_number is not None:
+    if media.media_type == MediaType.TV:
+        if season_number is None:
+            return None
         for season in media.seasons:
             if season.season_number != season_number:
                 continue
-            if season.air_date and re.match(r"^\d{4}-", season.air_date):
-                return int(season.air_date[:4])
+            air_date = season.air_date
+            if not isinstance(air_date, str):
+                return None
+            try:
+                return date.fromisoformat(air_date).year
+            except ValueError:
+                return None
         return None
     if media.media_type == MediaType.MOVIE:
         return media.release_year

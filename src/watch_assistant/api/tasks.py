@@ -12,6 +12,7 @@ from watch_assistant.services.tasks import (
     ResourceNotFound,
     TaskService,
 )
+from watch_assistant.services.workflows import WorkflowNotFound
 
 router = APIRouter(prefix="/api/v1", dependencies=[Depends(require_api_auth)])
 
@@ -48,11 +49,14 @@ async def create_task(
             request.resource_id,
             force=request.force,
             allowed_actions=allowed_push_actions(raw_request),
+            workflow_id=request.workflow_id,
         )
     except ResourceNotFound as exc:
         raise HTTPException(status_code=404, detail="resource_not_found") from exc
     except PushKindUnsupported as exc:
         raise HTTPException(status_code=503, detail="push_kind_unsupported") from exc
+    except WorkflowNotFound as exc:
+        raise HTTPException(status_code=404, detail="workflow_not_found") from exc
     return task
 
 

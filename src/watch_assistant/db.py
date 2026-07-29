@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import delete, event, inspect, select, text
+from sqlalchemy import delete, event, select
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -11,6 +11,8 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
+from watch_assistant import library_models as _library_models  # noqa: F401
+from watch_assistant.migrations import run_migrations
 from watch_assistant.models import (
     Base,
     InspectionBatch,
@@ -64,27 +66,11 @@ def create_database(url: str) -> Database:
 
 async def initialize_database(engine: AsyncEngine) -> None:
     async with engine.begin() as connection:
+        if connection.dialect.name == "sqlite":
+            # sqlite3 does not begin a transaction for DDL without an explicit BEGIN.
+            await connection.exec_driver_sql("BEGIN IMMEDIATE")
         await connection.run_sync(Base.metadata.create_all)
-        await connection.run_sync(_ensure_application_settings_columns)
-
-
-def _ensure_application_settings_columns(connection) -> None:
-    columns = {
-        item["name"] for item in inspect(connection).get_columns("application_settings")
-    }
-    additions = {
-        "inspection_auto_start_enabled": "BOOLEAN NOT NULL DEFAULT 1",
-        "content_policy_json": "TEXT NOT NULL DEFAULT '{}'",
-        "managed_tmdb_key_encrypted": "TEXT",
-        "managed_tmdb_updated_at": "DATETIME",
-        "managed_p115_cookie_encrypted": "TEXT",
-        "managed_p115_updated_at": "DATETIME",
-    }
-    for name, definition in additions.items():
-        if name not in columns:
-            connection.execute(
-                text(f"ALTER TABLE application_settings ADD COLUMN {name} {definition}")
-            )
+        await connection.run_sync(run_migrations)
 
 
 async def cleanup_expired(

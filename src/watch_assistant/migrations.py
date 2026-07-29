@@ -1,0 +1,583 @@
+"""Versioned SQLite schema migrations."""
+
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
+
+from sqlalchemy import inspect, text
+from sqlalchemy.engine import Connection
+
+MigrationApply = Callable[[Connection], None]
+
+
+@dataclass(frozen=True)
+class Migration:
+    """One ordered, forward-only schema migration."""
+
+    id: str
+    apply: MigrationApply
+
+
+APPLICATION_SETTINGS_COLUMN_ADDITIONS = (
+    ("inspection_auto_start_enabled", "BOOLEAN NOT NULL DEFAULT 1"),
+    ("content_policy_json", "TEXT NOT NULL DEFAULT '{}'"),
+    ("managed_tmdb_key_encrypted", "TEXT"),
+    ("managed_tmdb_updated_at", "DATETIME"),
+    ("managed_p115_cookie_encrypted", "TEXT"),
+    ("managed_p115_updated_at", "DATETIME"),
+)
+
+
+def _add_application_settings_columns(connection: Connection) -> None:
+    columns = {
+        item["name"] for item in inspect(connection).get_columns("application_settings")
+    }
+    for name, definition in APPLICATION_SETTINGS_COLUMN_ADDITIONS:
+        if name not in columns:
+            connection.execute(
+                text(f"ALTER TABLE application_settings ADD COLUMN {name} {definition}")
+            )
+
+
+def _create_library_index_tables(connection: Connection) -> None:
+    """Create the forward-only read/index tables for legacy SQLite databases."""
+
+    statements = (
+        """
+            CREATE TABLE IF NOT EXISTS media_libraries (
+                id VARCHAR(128) PRIMARY KEY,
+                name TEXT NOT NULL,
+                root_directory_id VARCHAR(128) NOT NULL,
+                scope_verified BOOLEAN NOT NULL DEFAULT 0,
+                enabled BOOLEAN NOT NULL DEFAULT 0,
+                revision INTEGER NOT NULL DEFAULT 0,
+                created_at DATETIME NOT NULL
+            )
+        """,
+        """
+            CREATE TABLE IF NOT EXISTS library_scan_runs (
+                id VARCHAR(64) PRIMARY KEY,
+                library_id VARCHAR(128) NOT NULL REFERENCES media_libraries(id),
+                root_directory_id VARCHAR(128) NOT NULL,
+                idempotency_key VARCHAR(128) NOT NULL,
+                state VARCHAR(16) NOT NULL DEFAULT 'queued',
+                complete BOOLEAN NOT NULL DEFAULT 0,
+                snapshot_revision INTEGER,
+                expected_page_count INTEGER,
+                expected_total INTEGER,
+                pages_read INTEGER NOT NULL DEFAULT 0,
+                items_seen INTEGER NOT NULL DEFAULT 0,
+                added_count INTEGER NOT NULL DEFAULT 0,
+                changed_count INTEGER NOT NULL DEFAULT 0,
+                error_code VARCHAR(64),
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL,
+                UNIQUE (library_id, idempotency_key)
+            )
+        """,
+        """
+            CREATE TABLE IF NOT EXISTS library_scan_checkpoints (
+                scan_run_id VARCHAR(64) PRIMARY KEY
+                    REFERENCES library_scan_runs(id) ON DELETE CASCADE,
+                page INTEGER NOT NULL DEFAULT 0,
+                items_seen INTEGER NOT NULL DEFAULT 0,
+                updated_at DATETIME NOT NULL
+            )
+        """,
+        """
+            CREATE TABLE IF NOT EXISTS library_scan_entries (
+                scan_run_id VARCHAR(64) NOT NULL
+                    REFERENCES library_scan_runs(id) ON DELETE CASCADE,
+                object_type VARCHAR(16) NOT NULL,
+                object_id VARCHAR(128) NOT NULL,
+                parent_id VARCHAR(128),
+                name TEXT NOT NULL,
+                path TEXT,
+                is_directory BOOLEAN NOT NULL,
+                size_bytes BIGINT,
+                modified_at DATETIME,
+                PRIMARY KEY (scan_run_id, object_type, object_id)
+            )
+        """,
+        """
+            CREATE TABLE IF NOT EXISTS library_scan_diffs (
+                scan_run_id VARCHAR(64) NOT NULL
+                    REFERENCES library_scan_runs(id) ON DELETE CASCADE,
+                object_type VARCHAR(16) NOT NULL,
+                object_id VARCHAR(128) NOT NULL,
+                change_kind VARCHAR(16) NOT NULL,
+                path_changed BOOLEAN NOT NULL DEFAULT 0,
+                PRIMARY KEY (scan_run_id, object_type, object_id)
+            )
+        """,
+        """
+            CREATE INDEX IF NOT EXISTS ix_library_scan_runs_library_id
+                ON library_scan_runs (library_id)
+        """,
+    )
+    for statement in statements:
+        connection.execute(text(statement))
+
+
+def _create_library_media_identity_table(connection: Connection) -> None:
+    """Persist local TMDB confirmations without changing remote files."""
+
+    from watch_assistant.library_models import LibraryMediaIdentity
+
+    LibraryMediaIdentity.__table__.create(connection, checkfirst=True)
+
+
+def _create_library_inventory_ledger_tables(connection: Connection) -> None:
+    """Persist complete-scan availability evidence and recovery events."""
+
+    from watch_assistant.library_models import (
+        LibraryInventoryEvent,
+        LibraryObjectLedger,
+    )
+
+    LibraryObjectLedger.__table__.create(connection, checkfirst=True)
+    LibraryInventoryEvent.__table__.create(connection, checkfirst=True)
+    scan_columns = {
+        item["name"] for item in inspect(connection).get_columns("library_scan_runs")
+    }
+    if "removed_count" not in scan_columns:
+        connection.execute(
+            text(
+                "ALTER TABLE library_scan_runs "
+                "ADD COLUMN removed_count INTEGER NOT NULL DEFAULT 0"
+            )
+        )
+
+
+def _create_organization_plan_tables(connection: Connection) -> None:
+    """Create local, preview-only organization plans for legacy databases."""
+
+    connection.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS organization_plans (
+                id VARCHAR(64) PRIMARY KEY,
+                library_id VARCHAR(128) NOT NULL
+                    REFERENCES media_libraries(id),
+                source_scan_run_id VARCHAR(64) NOT NULL
+                    REFERENCES library_scan_runs(id),
+                source_snapshot_revision INTEGER NOT NULL,
+                source_snapshot_json TEXT NOT NULL,
+                target_root TEXT NOT NULL,
+                actions_json TEXT NOT NULL,
+                basis_json TEXT NOT NULL,
+                preconditions_json TEXT NOT NULL,
+                rule_version VARCHAR(64) NOT NULL,
+                parser_version VARCHAR(64) NOT NULL,
+                matcher_version VARCHAR(64) NOT NULL,
+                status VARCHAR(16) NOT NULL DEFAULT 'needs_review',
+                revision INTEGER NOT NULL DEFAULT 1,
+                expires_at DATETIME NOT NULL,
+                plan_hash VARCHAR(64) NOT NULL UNIQUE,
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL
+            )
+            """
+        )
+    )
+    connection.execute(
+        text(
+            """
+            CREATE INDEX IF NOT EXISTS ix_organization_plans_library_id
+                ON organization_plans (library_id)
+            """
+        )
+    )
+
+
+def _add_organization_plan_alias(connection: Connection) -> None:
+    """Add the local-only review alias without changing existing plans."""
+
+    columns = {
+        item["name"] for item in inspect(connection).get_columns("organization_plans")
+    }
+    if "alias" not in columns:
+        connection.execute(text("ALTER TABLE organization_plans ADD COLUMN alias TEXT"))
+
+
+def _create_organization_operation_table(connection: Connection) -> None:
+    """Create the local operation ledger without adding execution wiring."""
+
+    from watch_assistant.models import OrganizationOperation
+
+    OrganizationOperation.__table__.create(connection, checkfirst=True)
+
+
+def _create_directory_dirty_outbox_table(connection: Connection) -> None:
+    """Create the pending local directory dirty-event outbox."""
+
+    from watch_assistant.models import DirectoryDirtyEvent
+
+    DirectoryDirtyEvent.__table__.create(connection, checkfirst=True)
+
+
+def _create_audit_records_table(connection: Connection) -> None:
+    """Create durable security audit storage for existing installations."""
+
+    from watch_assistant.models import AuditRecord
+
+    AuditRecord.__table__.create(connection, checkfirst=True)
+
+
+def _upgrade_audit_records_schema(connection: Connection) -> None:
+    """Bridge the pre-REQ-004 audit table to the current event schema."""
+
+    if not inspect(connection).has_table("audit_records"):
+        return
+    columns = {
+        item["name"] for item in inspect(connection).get_columns("audit_records")
+    }
+    additions = (
+        ("timestamp", "DATETIME"),
+        ("title_zh", "TEXT"),
+        ("message_zh", "TEXT"),
+        ("suggestion_zh", "TEXT"),
+        ("status", "VARCHAR(32)"),
+        ("context_json", "TEXT NOT NULL DEFAULT '{}'"),
+    )
+    for name, definition in additions:
+        if name not in columns:
+            connection.execute(
+                text(f"ALTER TABLE audit_records ADD COLUMN {name} {definition}")
+            )
+    if "created_at" in columns:
+        connection.execute(
+            text(
+                "UPDATE audit_records SET timestamp = COALESCE(timestamp, created_at) "
+                "WHERE timestamp IS NULL"
+            )
+        )
+    connection.execute(
+        text(
+            "UPDATE audit_records SET context_json = '{}' "
+            "WHERE context_json IS NULL"
+        )
+    )
+    connection.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_audit_records_timestamp "
+            "ON audit_records (timestamp)"
+        )
+    )
+
+
+def _rebuild_legacy_audit_records(connection: Connection) -> None:
+    """Replace a legacy NOT NULL audit table while retaining a local copy."""
+
+    if not inspect(connection).has_table("audit_records"):
+        return
+    columns = {
+        item["name"] for item in inspect(connection).get_columns("audit_records")
+    }
+    if "action" not in columns or "outcome" not in columns:
+        return
+    info = {
+        item["name"]: item
+        for item in inspect(connection).get_columns("audit_records")
+    }
+    if not (info["action"].get("nullable") is False or info["outcome"].get("nullable") is False):
+        return
+
+    from watch_assistant.models import AuditRecord
+
+    legacy_table = "audit_records_legacy_038"
+    if not inspect(connection).has_table(legacy_table):
+        connection.execute(
+            text(
+                f"CREATE TABLE {legacy_table} AS "
+                "SELECT * FROM audit_records"
+            )
+        )
+    for index_name in (
+        "ix_audit_records_timestamp",
+        "ix_audit_records_event_code",
+        "ix_audit_records_status",
+        "ix_audit_records_request_id",
+        "ix_audit_records_correlation_id",
+    ):
+        connection.execute(text(f"DROP INDEX IF EXISTS {index_name}"))
+    connection.execute(text("DROP TABLE audit_records"))
+    AuditRecord.__table__.create(connection)
+    connection.execute(
+        text(
+            f"""
+            INSERT INTO audit_records (
+                id, timestamp, event_code, event_version, title_zh, message_zh,
+                suggestion_zh, status, request_id, correlation_id, actor_type,
+                actor_id, resource_type, resource_id, task_id, context_json
+            )
+            SELECT
+                id,
+                COALESCE(timestamp, created_at, CURRENT_TIMESTAMP),
+                event_code,
+                COALESCE(event_version, 1),
+                COALESCE(action, '历史审计记录'),
+                COALESCE(outcome, '历史审计记录'),
+                NULL,
+                outcome,
+                request_id,
+                correlation_id,
+                actor_type,
+                actor_id,
+                resource_type,
+                resource_id,
+                task_id,
+                COALESCE(NULLIF(details_json, ''), '{{}}')
+            FROM {legacy_table}
+            """
+        )
+    )
+
+
+def _add_search_cache_kind(connection: Connection) -> None:
+    columns = {
+        item["name"] for item in inspect(connection).get_columns("search_cache")
+    }
+    if "cache_kind" not in columns:
+        connection.execute(
+            text(
+                "ALTER TABLE search_cache ADD COLUMN cache_kind "
+                "VARCHAR(16) NOT NULL DEFAULT 'positive'"
+            )
+        )
+
+
+def _add_inspection_result_source(connection: Connection) -> None:
+    for table in ("inspection_items", "magnet_metadata_cache"):
+        columns = {item["name"] for item in inspect(connection).get_columns(table)}
+        if "result_source" not in columns:
+            connection.execute(
+                text(f"ALTER TABLE {table} ADD COLUMN result_source VARCHAR(32)")
+            )
+
+
+def _create_subscriptions_table(connection: Connection) -> None:
+    from watch_assistant.models import Subscription
+
+    Subscription.__table__.create(connection, checkfirst=True)
+
+
+def _create_subscription_resource_observations_table(connection: Connection) -> None:
+    """Persist canonical resources already seen by each subscription."""
+
+    from watch_assistant.models import SubscriptionResourceObservation
+
+    SubscriptionResourceObservation.__table__.create(connection, checkfirst=True)
+
+
+def _create_quality_profiles_table(connection: Connection) -> None:
+    from watch_assistant.models import QualityProfile
+
+    QualityProfile.__table__.create(connection, checkfirst=True)
+
+
+def _create_workflow_tables(connection: Connection) -> None:
+    from watch_assistant.models import Workflow, WorkflowStage
+
+    Workflow.__table__.create(connection, checkfirst=True)
+    WorkflowStage.__table__.create(connection, checkfirst=True)
+    for table in ("tasks", "inspection_batches"):
+        columns = {item["name"] for item in inspect(connection).get_columns(table)}
+        if "workflow_id" not in columns:
+            connection.execute(
+                text(f"ALTER TABLE {table} ADD COLUMN workflow_id VARCHAR(40)")
+            )
+
+
+def _create_notification_tables(connection: Connection) -> None:
+    from watch_assistant.models import Notification, NotificationPreference
+
+    Notification.__table__.create(connection, checkfirst=True)
+    NotificationPreference.__table__.create(connection, checkfirst=True)
+
+
+def _create_season_metadata_cache_table(connection: Connection) -> None:
+    from watch_assistant.models import SeasonMetadataCache
+
+    SeasonMetadataCache.__table__.create(connection, checkfirst=True)
+
+
+def _create_resource_search_jobs_table(connection: Connection) -> None:
+    from watch_assistant.models import ResourceSearchJob
+
+    ResourceSearchJob.__table__.create(connection, checkfirst=True)
+
+
+def _create_agent_tokens_table(connection: Connection) -> None:
+    from watch_assistant.models import AgentToken
+
+    AgentToken.__table__.create(connection, checkfirst=True)
+
+
+def _create_webhook_tables(connection: Connection) -> None:
+    from watch_assistant.models import WebhookDelivery, WebhookEndpoint
+
+    WebhookEndpoint.__table__.create(connection, checkfirst=True)
+    WebhookDelivery.__table__.create(connection, checkfirst=True)
+    connection.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_webhook_deliveries_due "
+            "ON webhook_deliveries (status, next_attempt_at)"
+        )
+    )
+
+
+def _create_pwa_device_table(connection: Connection) -> None:
+    from watch_assistant.models import PwaDevice
+
+    PwaDevice.__table__.create(connection, checkfirst=True)
+
+
+def _upgrade_legacy_workflow_schema(connection: Connection) -> None:
+    """Bridge the earlier workflow tables to the current timeline model.
+
+    Older releases used ``stage_key``/``task_id`` and recorded ``completed`` or
+    ``queued`` stage states.  Keep those columns for existing callers, while
+    adding the current names and normalizing values used by the ORM enum.
+    """
+
+    workflow_columns = {
+        item["name"] for item in inspect(connection).get_columns("workflows")
+    }
+    for name, definition in (
+        ("media_type", "VARCHAR(16)"),
+        ("tmdb_id", "INTEGER"),
+        ("state_reason", "TEXT"),
+    ):
+        if name not in workflow_columns:
+            connection.execute(
+                text(f"ALTER TABLE workflows ADD COLUMN {name} {definition}")
+            )
+
+    stage_columns = {
+        item["name"] for item in inspect(connection).get_columns("workflow_stages")
+    }
+    for name, definition in (
+        ("stage", "VARCHAR(32)"),
+        ("child_type", "VARCHAR(64)"),
+        ("child_id", "VARCHAR(128)"),
+        ("completed_at", "DATETIME"),
+    ):
+        if name not in stage_columns:
+            connection.execute(
+                text(f"ALTER TABLE workflow_stages ADD COLUMN {name} {definition}")
+            )
+
+    if "stage_key" in stage_columns:
+        connection.execute(
+            text(
+                """
+                UPDATE workflow_stages
+                SET stage = CASE stage_key
+                    WHEN 'search' THEN 'discovery'
+                    ELSE stage_key
+                END
+                WHERE stage IS NULL
+                """
+            )
+        )
+    connection.execute(
+        text(
+            """
+            UPDATE workflow_stages
+            SET status = CASE status
+                WHEN 'completed' THEN 'succeeded'
+                WHEN 'queued' THEN 'pending'
+                WHEN 'needs_auth' THEN 'waiting_confirmation'
+                ELSE status
+            END
+            WHERE status IN ('completed', 'queued', 'needs_auth')
+            """
+        )
+    )
+    if "task_id" in stage_columns:
+        connection.execute(
+            text(
+                """
+                UPDATE workflow_stages
+                SET child_type = 'task', child_id = task_id
+                WHERE child_id IS NULL AND task_id IS NOT NULL
+                """
+            )
+        )
+    if "finished_at" in stage_columns:
+        connection.execute(
+            text(
+                """
+                UPDATE workflow_stages
+                SET completed_at = finished_at
+                WHERE completed_at IS NULL AND finished_at IS NOT NULL
+                """
+            )
+        )
+
+
+MIGRATIONS: tuple[Migration, ...] = (
+    Migration("001_application_settings_columns", _add_application_settings_columns),
+    Migration("002_library_index_tables", _create_library_index_tables),
+    Migration("003_organization_plan_tables", _create_organization_plan_tables),
+    Migration("004_organization_plan_alias", _add_organization_plan_alias),
+    Migration("005_organization_operations", _create_organization_operation_table),
+    Migration("006_directory_dirty_outbox", _create_directory_dirty_outbox_table),
+    Migration("007_audit_records", _create_audit_records_table),
+    Migration("008_search_cache_kind", _add_search_cache_kind),
+    Migration("009_inspection_result_source", _add_inspection_result_source),
+    Migration("010_subscriptions", _create_subscriptions_table),
+    Migration("011_quality_profiles", _create_quality_profiles_table),
+    Migration("012_workflow_tables", _create_workflow_tables),
+    Migration("013_notification_tables", _create_notification_tables),
+    Migration("014_season_metadata_cache", _create_season_metadata_cache_table),
+    Migration("015_resource_search_jobs", _create_resource_search_jobs_table),
+    Migration("031_workflow_schema_compatibility", _upgrade_legacy_workflow_schema),
+    Migration("032_agent_tokens", _create_agent_tokens_table),
+    Migration("033_webhook_outbox", _create_webhook_tables),
+    Migration("034_pwa_devices", _create_pwa_device_table),
+    Migration("035_library_media_identities", _create_library_media_identity_table),
+    Migration("036_library_inventory_ledger", _create_library_inventory_ledger_tables),
+    Migration("037_audit_records_schema_compatibility", _upgrade_audit_records_schema),
+    Migration("038_audit_records_legacy_rebuild", _rebuild_legacy_audit_records),
+    Migration("039_subscription_resource_observations", _create_subscription_resource_observations_table),
+)
+
+
+def run_migrations(
+    connection: Connection,
+    migrations: Sequence[Migration] = MIGRATIONS,
+) -> None:
+    """Apply pending migrations inside the caller's transaction."""
+    _validate_migrations(migrations)
+    connection.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS schema_migrations (
+                migration_id TEXT PRIMARY KEY,
+                applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+    )
+    applied_ids = set(
+        connection.execute(text("SELECT migration_id FROM schema_migrations")).scalars()
+    )
+    for migration in migrations:
+        if migration.id in applied_ids:
+            continue
+        migration.apply(connection)
+        connection.execute(
+            text("INSERT INTO schema_migrations (migration_id) VALUES (:migration_id)"),
+            {"migration_id": migration.id},
+        )
+
+
+def _validate_migrations(migrations: Sequence[Migration]) -> None:
+    migration_ids = [migration.id for migration in migrations]
+    if not all(migration_ids):
+        raise ValueError("Migration IDs must not be empty")
+    if len(migration_ids) != len(set(migration_ids)):
+        raise ValueError("Migration IDs must be unique")
+    if migration_ids != sorted(migration_ids):
+        raise ValueError("Migrations must be ordered by ID")

@@ -2,7 +2,12 @@
 
 文档版本：V1.0
 日期：2026-07-26
-依据：`2026-07-26-115-library-organization-strm-requirements.md`
+依据：
+
+- [`REQ-001：115 影视库自动整理`](../requirements/REQ-001-115-library-organization/README.md)
+- [`REQ-002：115 STRM 全量与增量同步`](../requirements/REQ-002-115-strm-sync/README.md)
+
+本计划只覆盖 REQ-001 和 REQ-002。Agent CLI 与中文结构化日志应分别依据 REQ-003、REQ-004 制定独立实施计划。
 状态：供产品、研发、测试和运维评审；不代表功能已经上线
 
 ## 1. 项目范围说明
@@ -96,7 +101,7 @@ flowchart LR
 - 洗版默认仅提示；启用后默认移入隔离区 7 天；永久删除独立开关且默认关闭。
 - 清理仅处理受管清单；扫描 `complete=false` 时删除阶段硬关闭。
 - STRM 仅含稳定 Watch Assistant 入口和非敏感标识，不含 Cookie、完整 play token 或真实直链。
-- 报告第 17 节“STRM 带可撤销 play token”与本次强制原则冲突：本计划以强制原则为准。Phase 0 默认验证“LAN/Tailscale allowlist + opaque manifest ID”方案；若需公网鉴权，必须另行产品/安全评审，不能静默嵌入完整 token。
+- REQ-002 明确禁止在 STRM 中嵌入完整 play token。本计划默认验证“LAN/Tailscale allowlist + opaque manifest ID”方案；若需公网鉴权，必须另行产品/安全评审。
 
 ## 3. Epic、Feature、User Story 与技术任务
 
@@ -197,7 +202,7 @@ flowchart TD
 | 前端工程师 | 1 | 库配置、整理 review、STRM 工作台、冲突与进度 UX |
 | QA/自动化 | 1 | fixture、契约、崩溃恢复、三媒体服务器、回归矩阵 |
 | 运维/SRE | 0.5 | 备份、systemd、目录权限、性能、上线/回滚和安全扫描 |
-| 产品/媒体资料负责人 | 0.5 | 第 17 节决策、样本集、分类和命名验收、误匹配复核 |
+| 产品/媒体资料负责人 | 0.5 | REQ-001/REQ-002 待确认项、样本集、分类和命名验收、误匹配复核 |
 
 代码所有权建议：115 写 adapter 与 executor 必须双人 review；清理、隔离和播放鉴权必须技术负责人或安全 reviewer 批准。
 
@@ -238,7 +243,7 @@ flowchart TD
 
 ## 9. 待产品确认事项
 
-在确认前使用需求报告第 17 节默认值，但以下事项仍必须进入决策日志：
+在确认前使用 REQ-001 和 REQ-002“待确认项与建议默认值”，但以下事项仍必须进入决策日志：
 
 1. 动画电影归动漫：默认是。
 2. 港澳台归国产：默认是。

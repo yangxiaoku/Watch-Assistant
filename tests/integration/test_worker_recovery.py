@@ -6,8 +6,13 @@ from cryptography.fernet import Fernet
 from watch_assistant.crypto import SecretCrypto
 from watch_assistant.db import create_database, initialize_database
 from watch_assistant.models import Resource, Task, TaskState
-from watch_assistant.schemas import RemoteStatus, SubmissionResult
+from watch_assistant.schemas import (
+    RemoteStatus,
+    SubmissionResult,
+    WorkflowCreateRequest,
+)
 from watch_assistant.services.tasks import TaskService
+from watch_assistant.services.workflows import WorkflowService
 from watch_assistant.worker import TaskWorker
 
 
@@ -97,6 +102,33 @@ async def test_task_creation_is_idempotent_and_worker_accepts_submission(tmp_pat
     assert task.state == TaskState.ACCEPTED
     assert task.remote_ref == "remote-123"
     assert adapter.submissions == 1
+    await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_worker_terminal_state_updates_linked_workflow_stage(tmp_path):
+    database = await _database(tmp_path)
+    crypto = SecretCrypto(Fernet.generate_key().decode("ascii"))
+    await _add_resource(database, crypto)
+    task_service = TaskService(database.session_factory)
+    workflow_service = WorkflowService(database.session_factory)
+    workflow = await workflow_service.create(
+        WorkflowCreateRequest(media_type="movie", tmdb_id=27205)
+    )
+    task, _ = await task_service.create("res_magnet", workflow_id=workflow.id)
+
+    worker = TaskWorker(
+        database.session_factory,
+        crypto,
+        FakeAdapter(),
+        owner="workflow-worker",
+    )
+    assert await worker.run_once() is True
+
+    updated = await workflow_service.get(workflow.id)
+    push_stage = next(stage for stage in updated.stages if stage.stage.value == "push")
+    assert push_stage.status.value == "succeeded"
+    assert push_stage.child_id == task.id
     await database.engine.dispose()
 
 

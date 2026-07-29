@@ -4,9 +4,11 @@ import asyncio
 import json
 import re
 from collections.abc import Mapping
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from time import monotonic
+from uuid import uuid4
 
 from sqlalchemy import select
 from sqlalchemy.dialects.sqlite import insert
@@ -24,6 +26,7 @@ from watch_assistant.models import (
     ApplicationSettings,
     MovieWatch,
     Resource,
+    ResourceSearchJob,
     SearchCache,
     SourceReliability,
 )
@@ -36,6 +39,7 @@ from watch_assistant.schemas import (
     NormalizedResource,
     ResourceKind,
     ResourcePageResponse,
+    ResourceSearchResponse,
     ResourceSummary,
     SearchResponse,
 )
@@ -54,6 +58,8 @@ from watch_assistant.services.validation import (
 )
 
 FRESH_CACHE_AGE = timedelta(hours=24)
+NEGATIVE_CACHE_AGE = timedelta(minutes=30)
+PARTIAL_CACHE_AGE = timedelta(minutes=10)
 STALE_CACHE_AGE = timedelta(days=7)
 MAX_SNAPSHOT_MAGNETS = 500
 LEGACY_MAGNET_LIMIT = 30
@@ -69,6 +75,41 @@ class ResourceSnapshotNotFound(RuntimeError):
 
 class InvalidSeasonRequest(ValueError):
     pass
+
+
+@dataclass(slots=True)
+class _ResourceSearchTask:
+    task_id: str
+    tmdb_id: int
+    media_type: MediaType
+    season_number: int | None
+    refresh: bool
+    status: str
+    created_at: datetime
+    updated_at: datetime
+    snapshot_revision: str | None = None
+    cache_age_seconds: int | None = None
+    sources: list[str] = field(default_factory=list)
+    selected_season: int | None = None
+    warnings: list[str] = field(default_factory=list)
+    error_code: str | None = None
+
+    def response(self) -> ResourceSearchResponse:
+        return ResourceSearchResponse(
+            task_id=self.task_id,
+            tmdb_id=self.tmdb_id,
+            media_type=self.media_type,
+            season_number=self.season_number,
+            status=self.status,
+            snapshot_revision=self.snapshot_revision,
+            cache_age_seconds=self.cache_age_seconds,
+            sources=list(self.sources),
+            selected_season=self.selected_season,
+            warnings=list(self.warnings),
+            error_code=self.error_code,
+            created_at=self.created_at,
+            updated_at=self.updated_at,
+        )
 
 
 def make_cache_key(
@@ -100,6 +141,10 @@ class SearchService:
         self._event_logger = event_logger
         self._pansou_limit = asyncio.Semaphore(max(1, pansou_max_concurrency))
         self._search_locks: dict[tuple[MediaType, int], asyncio.Lock] = {}
+        self._resource_search_tasks: dict[
+            tuple[MediaType, int, int | None], _ResourceSearchTask
+        ] = {}
+        self._resource_search_finalize_locks: dict[str, asyncio.Lock] = {}
 
     async def get_movie(self, tmdb_id: int) -> MovieMetadata:
         return await self._tmdb.get_movie(tmdb_id)
@@ -221,6 +266,186 @@ class SearchService:
             },
         )
         return response
+
+    async def start_resource_search(
+        self,
+        tmdb_id: int,
+        *,
+        media_type: MediaType,
+        season_number: int | None,
+        refresh: bool = False,
+    ) -> ResourceSearchResponse:
+        key = (media_type, tmdb_id, season_number)
+        existing = self._resource_search_tasks.get(key)
+        restored = False
+        if existing is None:
+            existing = await self._load_latest_resource_search_task(key)
+            restored = existing is not None
+        if existing is not None and existing.status in {"queued", "running"}:
+            self._resource_search_tasks[key] = existing
+            if restored:
+                asyncio.create_task(
+                    self._run_resource_search(existing), name=existing.task_id
+                )
+            return existing.response()
+        if existing is not None and existing.status == "ready" and not refresh:
+            async with self._resource_search_lock(existing.task_id):
+                return existing.response()
+
+        now = datetime.now(UTC)
+        snapshot_revision = None
+        cache_age_seconds = None
+        if not refresh:
+            snapshot_revision, cache_age_seconds = await self._snapshot_metadata(
+                tmdb_id, media_type, season_number
+            )
+        task = _ResourceSearchTask(
+            task_id="resource_search_" + uuid4().hex,
+            tmdb_id=tmdb_id,
+            media_type=media_type,
+            season_number=season_number,
+            refresh=refresh,
+            status="ready" if snapshot_revision is not None else "queued",
+            created_at=now,
+            updated_at=now,
+            snapshot_revision=snapshot_revision,
+            cache_age_seconds=cache_age_seconds,
+            selected_season=season_number,
+        )
+        self._resource_search_tasks[key] = task
+        await self._save_resource_search_task(task)
+        if snapshot_revision is None:
+            asyncio.create_task(self._run_resource_search(task), name=task.task_id)
+        return task.response()
+
+    async def get_resource_search_task(
+        self, task_id: str
+    ) -> ResourceSearchResponse | None:
+        task = next(
+            (item for item in self._resource_search_tasks.values() if item.task_id == task_id),
+            None,
+        )
+        if task is None:
+            task = await self._load_resource_search_task(task_id)
+            if task is None:
+                return None
+            key = (task.media_type, task.tmdb_id, task.season_number)
+            self._resource_search_tasks[key] = task
+            if task.status in {"queued", "running"}:
+                asyncio.create_task(self._run_resource_search(task), name=task.task_id)
+        if task.status in {"ready", "failed"}:
+            # A worker updates the in-memory object before its final SQLite
+            # commit. Serialize terminal reads with that commit so callers
+            # never receive a receipt that the durable ledger cannot yet
+            # reproduce after a restart.
+            async with self._resource_search_lock(task.task_id):
+                return task.response()
+        return task.response()
+
+    async def _run_resource_search(self, task: _ResourceSearchTask) -> None:
+        task.status = "running"
+        task.updated_at = datetime.now(UTC)
+        await self._save_resource_search_task(task)
+        try:
+            response = await self.search(
+                task.tmdb_id,
+                media_type=task.media_type,
+                refresh=task.refresh,
+                season_number=task.season_number,
+            )
+            task.selected_season = response.selected_season or task.season_number
+            task.warnings = list(response.warnings)
+            task.sources = sorted({item.source for item in response.results})
+            task.cache_age_seconds = response.cache_age_seconds
+            task.snapshot_revision, _ = await self._snapshot_metadata(
+                task.tmdb_id, task.media_type, task.season_number
+            )
+            task.error_code = None
+            task.status = "ready"
+        except InvalidSeasonRequest as exc:
+            task.status = "failed"
+            task.error_code = str(exc) if str(exc) in {
+                "season_requires_tv", "season_not_found"
+            } else "invalid_season_request"
+        except TmdbError:
+            task.status = "failed"
+            task.error_code = "tmdb_unavailable"
+        except SearchUnavailable:
+            task.status = "failed"
+            task.error_code = "resource_search_unavailable"
+        except Exception:  # noqa: BLE001 - task state must not leak exception text
+            task.status = "failed"
+            task.error_code = "resource_search_failed"
+        finally:
+            async with self._resource_search_lock(task.task_id):
+                task.updated_at = datetime.now(UTC)
+                await self._save_resource_search_task(task)
+
+    def _resource_search_lock(self, task_id: str) -> asyncio.Lock:
+        lock = self._resource_search_finalize_locks.get(task_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._resource_search_finalize_locks[task_id] = lock
+        return lock
+
+    async def _load_latest_resource_search_task(
+        self, key: tuple[MediaType, int, int | None]
+    ) -> _ResourceSearchTask | None:
+        media_type, tmdb_id, season_number = key
+        async with self._session_factory() as session:
+            statement = (
+                select(ResourceSearchJob)
+                .where(
+                    ResourceSearchJob.media_type == media_type,
+                    ResourceSearchJob.tmdb_id == tmdb_id,
+                    ResourceSearchJob.season_number == season_number,
+                )
+                .order_by(ResourceSearchJob.updated_at.desc())
+                .limit(1)
+            )
+            row = await session.scalar(statement)
+        return _resource_search_task_from_row(row) if row is not None else None
+
+    async def _load_resource_search_task(
+        self, task_id: str
+    ) -> _ResourceSearchTask | None:
+        async with self._session_factory() as session:
+            row = await session.get(ResourceSearchJob, task_id)
+        return _resource_search_task_from_row(row) if row is not None else None
+
+    async def _save_resource_search_task(self, task: _ResourceSearchTask) -> None:
+        async with self._session_factory() as session:
+            row = await session.get(ResourceSearchJob, task.task_id)
+            if row is None:
+                row = ResourceSearchJob(task_id=task.task_id)
+                session.add(row)
+            row.tmdb_id = task.tmdb_id
+            row.media_type = task.media_type
+            row.season_number = task.season_number
+            row.refresh = task.refresh
+            row.status = task.status
+            row.snapshot_revision = task.snapshot_revision
+            row.query_plan_version = "v4"
+            row.cache_age_seconds = task.cache_age_seconds
+            row.sources_json = json.dumps(task.sources, ensure_ascii=False)
+            row.selected_season = task.selected_season
+            row.warnings_json = json.dumps(task.warnings, ensure_ascii=False)
+            row.error_code = task.error_code
+            row.created_at = task.created_at
+            row.updated_at = task.updated_at
+            await session.commit()
+
+    async def _snapshot_metadata(
+        self, tmdb_id: int, media_type: MediaType, season_number: int | None
+    ) -> tuple[str | None, int | None]:
+        async with self._session_factory() as session:
+            cache = await session.get(
+                SearchCache, make_cache_key(tmdb_id, media_type, season_number)
+            )
+        if cache is None:
+            return None, None
+        age = max(0, int((datetime.now(UTC) - _as_utc(cache.fetched_at)).total_seconds()))
+        return _as_utc(cache.fetched_at).isoformat(), age
 
     async def _search_impl(
         self,
@@ -407,7 +632,7 @@ class SearchService:
                 cache is not None
                 and cache_usable
                 and not refresh
-                and cache_age <= FRESH_CACHE_AGE
+                and _cache_is_fresh(cache, cache_age)
             ):
                 await emit_event(
                     self._event_logger,
@@ -522,19 +747,45 @@ class SearchService:
         if not complete:
             warnings = _merge_warnings(warnings, ["partial_upstream"])
             if cache_usable and cache is not None:
+                async with self._session_factory() as session:
+                    fresh_resources = await self._persist_resources(session, candidates, now)
+                    resources = _dedupe_resources([*fresh_resources, *cached_resources])
+                    score_snapshot = _resource_score_snapshot(resources)
+                    score_snapshot.update(cached_scores)
+                    await self._persist_cache(
+                        session,
+                        cache_key,
+                        resources,
+                        score_snapshot,
+                        _merge_warnings(warnings, ["stale_cache"]),
+                        now,
+                        cache_kind="partial",
+                    )
+                    await session.commit()
+                    cache = await session.get(SearchCache, cache_key)
                 return self._response(
                     media,
-                    cached_resources,
+                    resources,
                     now,
                     cache,
                     cached=True,
                     warnings=_merge_warnings(warnings, ["stale_cache"]),
                     selected_season=_selected_season(media, season_number),
-                    score_snapshot=cached_scores,
+                    score_snapshot=score_snapshot,
                     policy=policy,
                 )
             async with self._session_factory() as session:
                 resources = await self._persist_resources(session, candidates, now)
+                score_snapshot = _resource_score_snapshot(resources)
+                await self._persist_cache(
+                    session,
+                    cache_key,
+                    resources,
+                    score_snapshot,
+                    warnings,
+                    now,
+                    cache_kind="partial",
+                )
                 await session.commit()
             return self._response(
                 media,
@@ -544,7 +795,7 @@ class SearchService:
                 cached=False,
                 warnings=warnings,
                 selected_season=_selected_season(media, season_number),
-                score_snapshot=_resource_score_snapshot(resources),
+                score_snapshot=score_snapshot,
                 policy=policy,
             )
 
@@ -597,7 +848,15 @@ class SearchService:
                 if preserved_scores:
                     score_snapshot[preserved_resource.id] = dict(preserved_scores)
             await self._persist_cache(
-                session, cache_key, resources, score_snapshot, warnings, now
+                session,
+                cache_key,
+                resources,
+                score_snapshot,
+                warnings,
+                now,
+                cache_kind=(
+                    "negative" if not resources else "positive"
+                ),
             )
             await session.commit()
             cache = await session.get(SearchCache, cache_key)
@@ -912,6 +1171,8 @@ class SearchService:
         score_snapshot,
         warnings,
         now,
+        *,
+        cache_kind: str = "positive",
     ):
         snapshot = {
             "version": 1,
@@ -927,8 +1188,9 @@ class SearchService:
             "cache_key": cache_key,
             "resource_ids_json": json.dumps(snapshot),
             "warnings_json": json.dumps(warnings),
+            "cache_kind": cache_kind,
             "fetched_at": now,
-            "expires_at": now + STALE_CACHE_AGE,
+            "expires_at": now + _cache_ttl(cache_kind),
         }
         stmt = insert(SearchCache).values(values)
         await session.execute(
@@ -988,6 +1250,37 @@ class SearchService:
         )
 
 
+def _resource_search_task_from_row(row: ResourceSearchJob) -> _ResourceSearchTask:
+    try:
+        sources = json.loads(row.sources_json)
+    except (TypeError, json.JSONDecodeError):
+        sources = []
+    try:
+        warnings = json.loads(row.warnings_json)
+    except (TypeError, json.JSONDecodeError):
+        warnings = []
+    return _ResourceSearchTask(
+        task_id=row.task_id,
+        tmdb_id=row.tmdb_id,
+        media_type=MediaType(row.media_type),
+        season_number=row.season_number,
+        refresh=bool(row.refresh),
+        status=row.status,
+        created_at=_as_utc(row.created_at),
+        updated_at=_as_utc(row.updated_at),
+        snapshot_revision=row.snapshot_revision,
+        cache_age_seconds=row.cache_age_seconds,
+        sources=[item for item in sources if isinstance(item, str)]
+        if isinstance(sources, list)
+        else [],
+        selected_season=row.selected_season,
+        warnings=[item for item in warnings if isinstance(item, str)]
+        if isinstance(warnings, list)
+        else [],
+        error_code=row.error_code,
+    )
+
+
 def _merge_normalized(
     existing: NormalizedResource,
     candidate: NormalizedResource,
@@ -1014,6 +1307,19 @@ def _stored_warnings(cache: SearchCache) -> list[str]:
     if not isinstance(warnings, list):
         return []
     return [item for item in warnings if isinstance(item, str)]
+
+
+def _cache_ttl(cache_kind: str) -> timedelta:
+    if cache_kind == "negative":
+        return NEGATIVE_CACHE_AGE
+    if cache_kind == "partial":
+        return PARTIAL_CACHE_AGE
+    return FRESH_CACHE_AGE
+
+
+def _cache_is_fresh(cache: SearchCache, age: timedelta) -> bool:
+    # The age rule keeps legacy rows compatible; expires_at remains a cleanup hint.
+    return age <= _cache_ttl(getattr(cache, "cache_kind", "positive"))
 
 
 def _resource_summary(

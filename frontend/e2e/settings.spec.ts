@@ -113,7 +113,7 @@ test("settings contract, cursor logs, validation states, and responsive layout",
   const laterMessage = mobileLayout ? page.locator(".settings-log-item p").filter({ hasText: "需要重新登录" }) : page.locator(".settings-log-table td").filter({ hasText: "需要重新登录" });
   await expect(laterMessage).toBeVisible();
   await expect(page.getByText("已加载 3 条")).toBeVisible();
-  await page.locator(".settings-filter-row select").selectOption("search");
+  await page.locator(".settings-filter-row select").first().selectOption("search");
   const categoryMessage = mobileLayout ? page.locator(".settings-log-item p").filter({ hasText: "新分类响应" }) : page.locator(".settings-log-table td").filter({ hasText: "新分类响应" });
   await expect(categoryMessage).toBeVisible();
   await expect(page.getByText("服务已启动")).toHaveCount(0);

@@ -177,7 +177,7 @@ test("falls back to the POST result when the resource snapshot is missing", asyn
   await mockShell(page);
   await page.route("**/api/v1/media/movie/27205/resources**", (route) => route.fulfill({ status: 404, json: { detail: "resource_snapshot_not_found" } }));
   await page.goto("/movie/27205");
-  await expect(page.getByRole("status")).toContainText("分页暂不可用");
+  await expect(page.locator(".resource-page-notice")).toContainText("分页暂不可用");
   await expect(page.locator(".resource-title").first()).toContainText("legacy-0");
   await expect(page.getByRole("button", { name: "下一页" })).toHaveCount(0);
 });

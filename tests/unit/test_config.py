@@ -22,11 +22,29 @@ def make_settings(**overrides: object) -> Settings:
 def test_inspection_settings_have_production_defaults():
     settings = make_settings()
 
+    assert settings.organization_plan_enabled is False
+    assert settings.organization_execution_enabled is False
     assert settings.inspection_concurrency == 8
     assert settings.inspection_item_timeout_seconds == 30
     assert settings.inspection_poll_interval_seconds == 0.75
     assert settings.inspection_request_timeout_seconds == 10
     assert settings.web_session_ttl_hours == 12
+
+
+def test_organization_plan_flag_can_be_enabled_explicitly():
+    assert (
+        make_settings(ORGANIZATION_PLAN_ENABLED="true").organization_plan_enabled
+        is True
+    )
+
+
+def test_organization_execution_flag_can_be_enabled_explicitly():
+    assert (
+        make_settings(
+            ORGANIZATION_EXECUTION_ENABLED="true"
+        ).organization_execution_enabled
+        is True
+    )
 
 
 @pytest.mark.parametrize("value", [1, 720])

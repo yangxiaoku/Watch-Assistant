@@ -9,14 +9,15 @@ import os
 import re
 import weakref
 from collections import deque
-from collections.abc import Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from watch_assistant.models import ApplicationSettings
+from watch_assistant.models import ApplicationSettings, AuditRecord, utc_now
 from watch_assistant.schemas import (
     ContentPolicyPatch,
     ContentPolicyResponse,
@@ -31,6 +32,9 @@ from watch_assistant.services.content_policy import (
     ContentPolicy,
     content_policy_from_json,
     normalize_keywords,
+)
+from watch_assistant.services.event_catalog import (
+    get_event_definition,
 )
 
 DEFAULT_LEVEL = LoggingLevel.INFO
@@ -145,6 +149,23 @@ class LogStore:
         message: str,
         retention_days: int,
         max_file_mb: int,
+        event_code: str = "legacy.log",
+        event_version: int = 1,
+        title_zh: str = "应用日志",
+        message_zh: str | None = None,
+        suggestion_zh: str | None = None,
+        status: str | None = None,
+        request_id: str | None = None,
+        correlation_id: str | None = None,
+        actor_type: str | None = None,
+        actor_id: str | None = None,
+        resource_type: str | None = None,
+        resource_id: str | None = None,
+        task_id: str | None = None,
+        duration_ms: int | None = None,
+        counts: dict[str, int] | None = None,
+        error_code: str | None = None,
+        context: dict[str, Any] | None = None,
     ) -> None:
         level = LoggingLevel(level)
         category = LogCategory(category)
@@ -156,6 +177,23 @@ class LogStore:
                 message,
                 retention_days,
                 max_file_mb,
+                event_code,
+                event_version,
+                title_zh,
+                message_zh if message_zh is not None else message,
+                suggestion_zh,
+                status,
+                request_id,
+                correlation_id,
+                actor_type,
+                actor_id,
+                resource_type,
+                resource_id,
+                task_id,
+                duration_ms,
+                counts or {},
+                error_code,
+                context or {},
             )
 
     async def list(
@@ -164,15 +202,41 @@ class LogStore:
         cursor: int | None,
         limit: int,
         category: LogCategory | None,
+        level: LoggingLevel | None = None,
+        event_code: str | None = None,
+        status: str | None = None,
+        request_id: str | None = None,
+        correlation_id: str | None = None,
+        task_id: str | None = None,
+        actor_type: str | None = None,
+        actor_id: str | None = None,
+        resource_type: str | None = None,
+        resource_id: str | None = None,
+        start_time: datetime | None = None,
+        end_time: datetime | None = None,
     ) -> tuple[list[dict[str, Any]], int | None]:
         if category is not None:
             category = LogCategory(category)
+        start_time = _as_utc(start_time)
+        end_time = _as_utc(end_time)
         async with self._lock:
             return await asyncio.to_thread(
                 self._list_sync,
                 cursor,
                 limit,
                 category,
+                level,
+                event_code,
+                status,
+                request_id,
+                correlation_id,
+                task_id,
+                actor_type,
+                actor_id,
+                resource_type,
+                resource_id,
+                start_time,
+                end_time,
             )
 
     def _append_sync(
@@ -182,6 +246,23 @@ class LogStore:
         message: str,
         retention_days: int,
         max_file_mb: int,
+        event_code: str,
+        event_version: int,
+        title_zh: str,
+        message_zh: str,
+        suggestion_zh: str | None,
+        status: str | None,
+        request_id: str | None,
+        correlation_id: str | None,
+        actor_type: str | None,
+        actor_id: str | None,
+        resource_type: str | None,
+        resource_id: str | None,
+        task_id: str | None,
+        duration_ms: int | None,
+        counts: dict[str, int],
+        error_code: str | None,
+        context: dict[str, Any],
     ) -> None:
         self._directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         try:
@@ -198,6 +279,23 @@ class LogStore:
             "level": level.value,
             "category": category.value,
             "message": redact_log_message(message),
+            "event_code": event_code,
+            "event_version": event_version,
+            "title_zh": redact_log_message(title_zh),
+            "message_zh": redact_log_message(message_zh),
+            "suggestion_zh": redact_log_message(suggestion_zh) if suggestion_zh else None,
+            "status": _safe_scalar(status),
+            "request_id": _safe_scalar(request_id),
+            "correlation_id": _safe_scalar(correlation_id),
+            "actor_type": _safe_scalar(actor_type),
+            "actor_id": _safe_scalar(actor_id),
+            "resource_type": _safe_scalar(resource_type),
+            "resource_id": _safe_scalar(resource_id),
+            "task_id": _safe_scalar(task_id),
+            "duration_ms": duration_ms,
+            "counts": _safe_counts(counts),
+            "error_code": _safe_scalar(error_code),
+            "context": _safe_context(context),
         }
         line = (
             json.dumps(record, ensure_ascii=True, separators=(",", ":")) + "\n"
@@ -227,6 +325,18 @@ class LogStore:
         cursor: int | None,
         limit: int,
         category: LogCategory | None,
+        level: LoggingLevel | None,
+        event_code: str | None,
+        status: str | None,
+        request_id: str | None,
+        correlation_id: str | None,
+        task_id: str | None,
+        actor_type: str | None,
+        actor_id: str | None,
+        resource_type: str | None,
+        resource_id: str | None,
+        start_time: datetime | None,
+        end_time: datetime | None,
     ) -> tuple[list[dict[str, Any]], int | None]:
         records: list[dict[str, Any]] = []
         for path in self._log_paths_sync():
@@ -239,6 +349,31 @@ class LogStore:
                 if cursor is not None and record["id"] >= cursor:
                     continue
                 if category is not None and record["category"] != category.value:
+                    continue
+                if level is not None and record["level"] != level.value:
+                    continue
+                if event_code is not None and record["event_code"] != event_code:
+                    continue
+                if status is not None and record.get("status") != status:
+                    continue
+                if request_id is not None and record.get("request_id") != request_id:
+                    continue
+                if correlation_id is not None and record.get("correlation_id") != correlation_id:
+                    continue
+                if task_id is not None and record.get("task_id") != task_id:
+                    continue
+                if actor_type is not None and record.get("actor_type") != actor_type:
+                    continue
+                if actor_id is not None and record.get("actor_id") != actor_id:
+                    continue
+                if resource_type is not None and record.get("resource_type") != resource_type:
+                    continue
+                if resource_id is not None and record.get("resource_id") != resource_id:
+                    continue
+                timestamp = datetime.fromisoformat(record["timestamp"])
+                if start_time is not None and timestamp < start_time:
+                    continue
+                if end_time is not None and timestamp > end_time:
                     continue
                 records.append(record)
                 if len(records) >= limit + 1:
@@ -346,6 +481,25 @@ class LogStore:
             "level": level.value,
             "category": category.value,
             "message": redact_log_message(message),
+            "event_code": str(record.get("event_code") or "legacy.log"),
+            "event_version": _positive_int(record.get("event_version"), 1),
+            "title_zh": _safe_text(record.get("title_zh"), "应用日志"),
+            "message_zh": redact_log_message(
+                _safe_text(record.get("message_zh"), message)
+            ),
+            "suggestion_zh": _safe_optional_text(record.get("suggestion_zh")),
+            "status": _safe_optional_text(record.get("status")),
+            "request_id": _safe_optional_text(record.get("request_id")),
+            "correlation_id": _safe_optional_text(record.get("correlation_id")),
+            "actor_type": _safe_optional_text(record.get("actor_type")),
+            "actor_id": _safe_optional_text(record.get("actor_id")),
+            "resource_type": _safe_optional_text(record.get("resource_type")),
+            "resource_id": _safe_optional_text(record.get("resource_id")),
+            "task_id": _safe_optional_text(record.get("task_id")),
+            "duration_ms": _nonnegative_int(record.get("duration_ms")),
+            "counts": _safe_counts(record.get("counts")),
+            "error_code": _safe_optional_text(record.get("error_code")),
+            "context": _safe_context(record.get("context")),
         }
 
     @staticmethod
@@ -354,6 +508,73 @@ class LogStore:
             os.chmod(path, 0o600)
         except OSError:
             pass
+
+
+def _safe_text(value: object, default: str = "") -> str:
+    return value if isinstance(value, str) else default
+
+
+def _as_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None or value.utcoffset() is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+def _safe_optional_text(value: object) -> str | None:
+    return value if isinstance(value, str) else None
+
+
+def _positive_int(value: object, default: int) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 1 else default
+
+
+def _nonnegative_int(value: object) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
+def _safe_scalar(value: object) -> str | None:
+    if isinstance(value, str):
+        return redact_log_message(value)[:256]
+    if isinstance(value, (int, float, bool)):
+        return str(value)
+    return None
+
+
+def _safe_counts(value: object) -> dict[str, int]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        str(key)[:64]: item
+        for key, item in value.items()
+        if isinstance(key, str)
+        and isinstance(item, int)
+        and not isinstance(item, bool)
+        and 0 <= item <= 10_000_000
+    }
+
+
+def _safe_context(value: object) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        str(key)[:64]: _safe_context_item(item)
+        for key, item in value.items()
+        if isinstance(key, str) and _safe_context_item(item) is not None
+    }
+
+
+def _safe_context_item(value: object) -> object | None:
+    if isinstance(value, bool) or value is None:
+        return value
+    if isinstance(value, (int, float)):
+        return value
+    if isinstance(value, str):
+        return redact_log_message(value)[:256]
+    if isinstance(value, list):
+        return [_safe_context_item(item) for item in value[:20]]
+    return None
 
 
 class SettingsService:
@@ -367,6 +588,11 @@ class SettingsService:
         self.log_store = LogStore(state_directory)
         self._settings_lock = shared_settings_mutation_lock(session_factory)
         self._write_windows: dict[str, deque[datetime]] = {}
+        self._event_sink: Callable[..., Awaitable[object]] | None = None
+
+    def bind_event_sink(self, event_sink: Callable[..., Awaitable[object]]) -> None:
+        """Attach an optional durable event consumer without changing callers."""
+        self._event_sink = event_sink
 
     async def get_logging(self) -> LoggingSettingsResponse:
         async with self._settings_lock, self._session_factory() as session:
@@ -391,7 +617,12 @@ class SettingsService:
         bucket.append(checked_at)
 
     async def update_logging(
-        self, patch: LoggingSettingsPatch
+        self,
+        patch: LoggingSettingsPatch,
+        *,
+        actor_type: str | None = None,
+        actor_id: str | None = None,
+        request_id: str | None = None,
     ) -> LoggingSettingsResponse:
         async with self._settings_lock, self._session_factory() as session:
             settings = await self._get_or_create(session)
@@ -402,6 +633,14 @@ class SettingsService:
             for key, value in values.items():
                 setattr(settings, f"logging_{key}" if key == "level" else key, value)
             settings.revision += 1
+            self._add_audit_record(
+                session,
+                event="settings.changed",
+                fields={"status": "logging", "changed_fields": sorted(values)},
+                actor_type=actor_type,
+                actor_id=actor_id,
+                request_id=request_id,
+            )
             await session.commit()
             response = _settings_response(settings)
         try:
@@ -422,7 +661,12 @@ class SettingsService:
             return _content_policy_response(_content_policy(settings))
 
     async def update_content_policy(
-        self, patch: ContentPolicyPatch
+        self,
+        patch: ContentPolicyPatch,
+        *,
+        actor_type: str | None = None,
+        actor_id: str | None = None,
+        request_id: str | None = None,
     ) -> ContentPolicyResponse:
         async with self._settings_lock, self._session_factory() as session:
             settings = await self._get_or_create(session)
@@ -459,12 +703,26 @@ class SettingsService:
                 ensure_ascii=False,
             )
             settings.revision = updated.revision
+            self._add_audit_record(
+                session,
+                event="settings.changed",
+                fields={
+                    "status": "content_policy",
+                    "changed_fields": sorted(values),
+                },
+                actor_type=actor_type,
+                actor_id=actor_id,
+                request_id=request_id,
+            )
             await session.commit()
             response = _content_policy_response(updated)
         await self.log_event(
             "settings.changed",
             level=LoggingLevel.INFO,
             fields={"status": "content_policy"},
+            actor_type=actor_type,
+            actor_id=actor_id,
+            request_id=request_id,
         )
         return response
 
@@ -474,10 +732,104 @@ class SettingsService:
         *,
         level: LoggingLevel = LoggingLevel.INFO,
         fields: dict[str, object] | None = None,
+        request_id: str | None = None,
+        correlation_id: str | None = None,
+        actor_type: str | None = None,
+        actor_id: str | None = None,
+        resource_type: str | None = None,
+        resource_id: str | None = None,
+        task_id: str | None = None,
+        duration_ms: int | None = None,
+        counts: dict[str, int] | None = None,
+        error_code: str | None = None,
+        context: dict[str, object] | None = None,
     ) -> None:
-        category = _EVENT_CATEGORIES.get(event)
-        if category is None:
+        definition = get_event_definition(event)
+        if definition is None:
+            safe_event = _safe_scalar(event) or "unknown"
+            logger.error("unknown business event: %s", safe_event)
+            unknown = get_event_definition("observability.unknown_event")
+            if unknown is not None:
+                try:
+                    async with self._settings_lock, self._session_factory() as session:
+                        settings = await self._get_or_create(session)
+                        configured_level = LoggingLevel(settings.logging_level)
+                        retention_days = settings.retention_days
+                        max_file_mb = settings.max_file_mb
+                    if _level_rank(LoggingLevel.ERROR) >= _level_rank(configured_level):
+                        await self.log_store.append(
+                            level=LoggingLevel.ERROR,
+                            category=unknown.category,
+                            message=_legacy_event_message(
+                                unknown.code,
+                                {"status": "unregistered", "event_code": safe_event},
+                            ),
+                            retention_days=retention_days,
+                            max_file_mb=max_file_mb,
+                            event_code=unknown.code,
+                            event_version=unknown.version,
+                            title_zh=unknown.title_zh,
+                            message_zh=unknown.render(
+                                {"status": "unregistered", "event_code": safe_event}
+                            ),
+                            suggestion_zh=unknown.suggestion_zh,
+                            status="unregistered",
+                            request_id=request_id,
+                            correlation_id=correlation_id,
+                            actor_type=actor_type,
+                            actor_id=actor_id,
+                            resource_type=resource_type,
+                            resource_id=resource_id,
+                            task_id=task_id,
+                            error_code="unknown_event",
+                            context={"event_code": safe_event},
+                        )
+                except Exception:  # noqa: BLE001 - observability cannot break requests
+                    logger.warning("unknown event audit write failed")
             return
+        raw_fields = dict(fields or {})
+        unknown_fields = set(raw_fields) - definition.allowed_fields
+        if unknown_fields:
+            logger.error(
+                "unknown fields for business event %s: %s",
+                event,
+                ",".join(sorted(unknown_fields)),
+            )
+        safe_fields = {
+            key: value
+            for key, value in raw_fields.items()
+            if key in definition.allowed_fields
+        }
+        if counts is None:
+            counts = {
+                key: value
+                for key, value in safe_fields.items()
+                if key in {"count", "total", "hidden_count", "hidden_suspicious", "hidden_low_quality", "hidden_keyword"}
+                and isinstance(value, int)
+                and not isinstance(value, bool)
+            }
+        status = _safe_optional_text(safe_fields.get("status"))
+        error_code = error_code or _safe_optional_text(safe_fields.get("error_code"))
+        duration_ms = duration_ms if duration_ms is not None else _nonnegative_int(safe_fields.get("duration_ms"))
+        context = context or {
+            key: value
+            for key, value in safe_fields.items()
+            if key not in {"status", "error_code", "duration_ms", "count", "total", "hidden_count", "hidden_suspicious", "hidden_low_quality", "hidden_keyword", "changed_fields"}
+        }
+        if self._event_sink is not None:
+            try:
+                await self._event_sink(
+                    definition.code,
+                    fields=safe_fields,
+                    request_id=request_id,
+                    correlation_id=correlation_id,
+                    resource_type=resource_type,
+                    resource_id=resource_id,
+                    task_id=task_id,
+                )
+            except Exception:  # noqa: BLE001 - outbound automation never breaks logging
+                logger.warning("webhook event enqueue failed")
+        legacy_message = _legacy_event_message(event, safe_fields)
         try:
             async with self._settings_lock, self._session_factory() as session:
                 settings = await self._get_or_create(session)
@@ -488,10 +840,27 @@ class SettingsService:
                 return
             await self.log_store.append(
                 level=level,
-                category=category,
-                message=_event_message(event, fields),
+                category=definition.category,
+                message=legacy_message,
                 retention_days=retention_days,
                 max_file_mb=max_file_mb,
+                event_code=definition.code,
+                event_version=definition.version,
+                title_zh=definition.title_zh,
+                message_zh=definition.render(safe_fields),
+                suggestion_zh=definition.suggestion_zh if level in {LoggingLevel.WARNING, LoggingLevel.ERROR} else None,
+                status=status,
+                request_id=request_id,
+                correlation_id=correlation_id,
+                actor_type=actor_type,
+                actor_id=actor_id,
+                resource_type=resource_type,
+                resource_id=resource_id,
+                task_id=task_id,
+                duration_ms=duration_ms,
+                counts=counts,
+                error_code=error_code,
+                context=context,
             )
         except Exception:  # noqa: BLE001 - observability cannot break requests
             logger.warning("business log write failed")
@@ -502,7 +871,12 @@ class SettingsService:
             return _inspection_response(settings)
 
     async def update_inspection(
-        self, patch: InspectionSettingsPatch
+        self,
+        patch: InspectionSettingsPatch,
+        *,
+        actor_type: str | None = None,
+        actor_id: str | None = None,
+        request_id: str | None = None,
     ) -> InspectionSettingsResponse:
         async with self._settings_lock, self._session_factory() as session:
             settings = await self._get_or_create(session)
@@ -510,14 +884,63 @@ class SettingsService:
                 raise SettingsConflict
             settings.inspection_auto_start_enabled = patch.auto_start_enabled
             settings.revision += 1
+            self._add_audit_record(
+                session,
+                event="settings.changed",
+                fields={
+                    "status": "inspection",
+                    "changed_fields": ["auto_start_enabled"],
+                },
+                actor_type=actor_type,
+                actor_id=actor_id,
+                request_id=request_id,
+            )
             await session.commit()
             response = _inspection_response(settings)
         await self.log_event(
             "settings.changed",
             level=LoggingLevel.INFO,
             fields={"status": "inspection"},
+            actor_type=actor_type,
+            actor_id=actor_id,
+            request_id=request_id,
         )
         return response
+
+    @staticmethod
+    def _add_audit_record(
+        session: AsyncSession,
+        *,
+        event: str,
+        fields: dict[str, object],
+        actor_type: str | None = None,
+        actor_id: str | None = None,
+        request_id: str | None = None,
+    ) -> None:
+        definition = get_event_definition(event)
+        if definition is None:
+            raise ValueError(f"unknown audit event: {event}")
+        safe_fields = {
+            key: value for key, value in fields.items() if key in definition.allowed_fields
+        }
+        session.add(
+            AuditRecord(
+                id=uuid4().hex,
+                timestamp=utc_now(),
+                event_code=definition.code,
+                event_version=definition.version,
+                title_zh=definition.title_zh,
+                message_zh=definition.render(safe_fields),
+                suggestion_zh=definition.suggestion_zh,
+                status=_safe_optional_text(safe_fields.get("status")),
+                actor_type=_safe_scalar(actor_type),
+                actor_id=_safe_scalar(actor_id),
+                request_id=_safe_scalar(request_id),
+                context_json=json.dumps(
+                    _safe_context(safe_fields), ensure_ascii=False, separators=(",", ":")
+                ),
+            )
+        )
 
     async def _get_or_create(self, session: AsyncSession) -> ApplicationSettings:
         settings = await session.get(ApplicationSettings, SETTINGS_ID)
@@ -545,41 +968,6 @@ def _settings_response(settings: ApplicationSettings) -> LoggingSettingsResponse
     )
 
 
-_EVENT_CATEGORIES = {
-    "application.startup": LogCategory.SYSTEM,
-    "application.readiness": LogCategory.SYSTEM,
-    "warmup.started": LogCategory.CACHE,
-    "warmup.completed": LogCategory.CACHE,
-    "warmup.failed": LogCategory.CACHE,
-    "search.started": LogCategory.SEARCH,
-    "search.completed": LogCategory.SEARCH,
-    "search.failed": LogCategory.SEARCH,
-    "search.cache_hit": LogCategory.CACHE,
-    "resources.page_served": LogCategory.CACHE,
-    "inspection.batch_started": LogCategory.INSPECTION,
-    "inspection.batch_completed": LogCategory.INSPECTION,
-    "inspection.batch_failed": LogCategory.INSPECTION,
-    "p115.readiness": LogCategory.P115,
-    "task.submitted": LogCategory.SYSTEM,
-    "task.accepted": LogCategory.SYSTEM,
-    "task.failed": LogCategory.SYSTEM,
-    "settings.changed": LogCategory.SECURITY,
-}
-_EVENT_FIELDS = frozenset(
-    {
-        "status",
-        "count",
-        "total",
-        "duration_ms",
-        "page",
-        "media_type",
-        "season",
-        "hidden_count",
-        "hidden_suspicious",
-        "hidden_low_quality",
-        "hidden_keyword",
-    }
-)
 _LEVEL_RANK = {
     LoggingLevel.DEBUG: 10,
     LoggingLevel.INFO: 20,
@@ -592,11 +980,9 @@ def _level_rank(level: LoggingLevel) -> int:
     return _LEVEL_RANK[LoggingLevel(level)]
 
 
-def _event_message(event: str, fields: dict[str, object] | None) -> str:
+def _legacy_event_message(event: str, fields: dict[str, object] | None) -> str:
     safe: list[str] = []
     for key, value in sorted((fields or {}).items()):
-        if key not in _EVENT_FIELDS:
-            continue
         if isinstance(value, bool):
             rendered = "true" if value else "false"
         elif isinstance(value, (int, float, str)):

@@ -100,3 +100,32 @@ async def test_retry_is_blocked_when_push_is_unsupported(tmp_path):
     await tmdb.aclose()
     await pansou.aclose()
     await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_task_creation_links_push_stage_to_workflow(tmp_path):
+    client, database, tmdb, pansou, _app = await _make_task_client(tmp_path)
+
+    workflow_response = await client.post(
+        "/api/v1/workflows", json={"media_type": "movie", "tmdb_id": 27205}
+    )
+    assert workflow_response.status_code == 201
+    workflow_id = workflow_response.json()["id"]
+
+    task_response = await client.post(
+        "/api/v1/tasks",
+        json={"resource_id": "res_task_api", "workflow_id": workflow_id},
+    )
+
+    assert task_response.status_code == 202
+    assert task_response.json()["workflow_id"] == workflow_id
+    workflow = await client.get(f"/api/v1/workflows/{workflow_id}")
+    push_stage = next(item for item in workflow.json()["stages"] if item["stage"] == "push")
+    assert push_stage["status"] == "running"
+    assert push_stage["child_type"] == "task"
+    assert push_stage["child_id"] == task_response.json()["id"]
+
+    await client.aclose()
+    await tmdb.aclose()
+    await pansou.aclose()
+    await database.engine.dispose()

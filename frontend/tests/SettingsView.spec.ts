@@ -131,6 +131,30 @@ describe("SettingsView", () => {
     expect(wrapper.find(".settings-pagination button").exists()).toBe(false);
   });
 
+  it("passes structured log filters to the API", async () => {
+    const logsMock = vi.fn().mockResolvedValue({ ...firstLogs, next_cursor: null });
+    const wrapper = mount(SettingsView, { props: { api: makeApi({ logs: logsMock }) } });
+    await flushPromises();
+    await openLogs(wrapper);
+
+    const selects = wrapper.findAll(".settings-filter-row select");
+    await selects[1].setValue("ERROR");
+    await selects[2].setValue("failed");
+    const inputs = wrapper.findAll(".settings-filter-row input");
+    await inputs[0].setValue("task.failed");
+    await inputs[0].trigger("keyup", { key: "Enter" });
+    await flushPromises();
+
+    expect(logsMock).toHaveBeenLastCalledWith({
+      limit: 20,
+      cursor: undefined,
+      category: undefined,
+      level: "ERROR",
+      status: "failed",
+      eventCode: "task.failed",
+    });
+  });
+
   it("invalidates an older category request before applying its response", async () => {
     let resolveFirst: ((value: LogsResponse) => void) | undefined;
     let resolveSecond: ((value: LogsResponse) => void) | undefined;

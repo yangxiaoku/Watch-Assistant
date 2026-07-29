@@ -2,6 +2,7 @@
 
 import base64
 import binascii
+import json
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -83,8 +84,13 @@ class PanSouClient:
 
         try:
             payload = response.json()
-        except ValueError as exc:
-            raise PanSouError("Unexpected PanSou response shape") from exc
+        except (UnicodeDecodeError, ValueError):
+            try:
+                # PanSou may embed scraper text with invalid UTF-8 bytes while
+                # keeping the surrounding response valid JSON.
+                payload = json.loads(response.content.decode("utf-8", errors="replace"))
+            except (UnicodeDecodeError, ValueError) as exc:
+                raise PanSouError("Unexpected PanSou response shape") from exc
 
         if not isinstance(payload, dict) or payload.get("code") != 0:
             raise PanSouError("Unexpected PanSou response shape")
