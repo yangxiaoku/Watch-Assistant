@@ -38,6 +38,19 @@
   `feature/p115-playback-contracts`：P115 合同和探针。
 - `feature/search-ranking-seasons-warm-v2`：搜索排序与预热。
 
+## 未入库工作树
+
+以下资产位于 worktree 工作区，尚未形成提交，不能视为已发布，也不能直接删除：
+
+- `codex/integration-library-phase-2-current`：387 项变更（65 个已跟踪文件、320 个新文件），
+  含库/组织/前端/测试的大批候选实现；需要单独拆分和验证。
+- `feature/watch-assistant`：23 项变更，主要是搜索、缓存和维护功能候选。
+- `codex/integration-library-phase-2-clean`、`codex/integration-library-phase-1-c03-clean`：
+  C03 runner/fixture 变更和验收截图，需先确认是否已被发布基线覆盖。
+- `feature/library-migration-foundation`：迁移/fixture 相关未入库文件，需单独复核。
+- `feature/integration-inspection-deploy`：仅有 production acceptance 截图，待归档或补充说明。
+- `library-workbench-audit` 目录存在未登记的残留修改，需恢复为正式 worktree 后再裁决。
+
 ## 待启动
 
 - `REQ-001`：完成 115 影视库整理，验收为只处理授权范围并可回滚的计划/执行闭环。
