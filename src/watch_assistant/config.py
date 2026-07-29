@@ -103,8 +103,14 @@ class Settings(BaseSettings):
     organization_write_enabled: bool = Field(
         default=False, validation_alias="ORGANIZATION_WRITE_ENABLED"
     )
+    organization_write_contract_verified: bool = Field(
+        default=False, validation_alias="ORGANIZATION_WRITE_CONTRACT_VERIFIED"
+    )
     permanent_delete_enabled: bool = Field(
         default=False, validation_alias="PERMANENT_DELETE_ENABLED"
+    )
+    permanent_delete_contract_verified: bool = Field(
+        default=False, validation_alias="PERMANENT_DELETE_CONTRACT_VERIFIED"
     )
     strm_full_enabled: bool = Field(
         default=False, validation_alias="STRM_FULL_ENABLED"

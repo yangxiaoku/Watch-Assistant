@@ -71,6 +71,44 @@ async def settings_overview(request: Request) -> SettingsOverviewResponse:
             "share": bool(
                 getattr(request.app.state, "push_capabilities", {}).get("share", False)
             ),
+            "organization_plan": bool(
+                getattr(request.app.state, "organization_plan_enabled", False)
+            ),
+            "organization_execution": bool(
+                getattr(request.app.state, "organization_execution_supported", False)
+                or getattr(request.app.state, "organization_worker", None) is not None
+            ),
+            "organization_write": bool(
+                getattr(request.app.state, "organization_worker", None) is not None
+                and getattr(request.app.state, "organization_write_enabled", False)
+                and getattr(
+                    request.app.state, "organization_write_contract_verified", False
+                )
+            ),
+            "permanent_delete": bool(
+                getattr(request.app.state, "organization_worker", None) is not None
+                and getattr(request.app.state, "organization_write_enabled", False)
+                and getattr(
+                    request.app.state, "organization_write_contract_verified", False
+                )
+                and getattr(request.app.state, "permanent_delete_enabled", False)
+                and getattr(
+                    request.app.state, "permanent_delete_contract_verified", False
+                )
+            ),
+            "strm_full": bool(getattr(request.app.state, "strm_full_enabled", False)),
+            "strm_incremental": bool(
+                getattr(request.app.state, "strm_incremental_enabled", False)
+            ),
+            "strm_cleanup": bool(
+                getattr(request.app.state, "strm_cleanup_enabled", False)
+            ),
+            "strm_playback": bool(
+                getattr(request.app.state, "strm_playback_enabled", False)
+                and getattr(
+                    request.app.state, "strm_playback_contract_verified", False
+                )
+            ),
         },
     )
 

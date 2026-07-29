@@ -201,6 +201,14 @@ export interface SettingsOverviewResponse {
     inspection: boolean;
     magnet: boolean;
     share: boolean;
+    organization_plan: boolean;
+    organization_execution: boolean;
+    organization_write: boolean;
+    permanent_delete: boolean;
+    strm_full: boolean;
+    strm_incremental: boolean;
+    strm_cleanup: boolean;
+    strm_playback: boolean;
   };
 }
 

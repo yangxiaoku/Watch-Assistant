@@ -62,7 +62,33 @@ async def test_settings_overview_logging_patch_and_redacted_logs(tmp_path, monke
     overview = await client.get("/api/v1/settings/overview")
     assert overview.status_code == 200
     assert overview.json()["release"] == "test-release"
-    assert set(overview.json()["capabilities"]) == {"inspection", "magnet", "share"}
+    assert set(overview.json()["capabilities"]) == {
+        "inspection",
+        "magnet",
+        "share",
+        "organization_plan",
+        "organization_execution",
+        "organization_write",
+        "permanent_delete",
+        "strm_full",
+        "strm_incremental",
+        "strm_cleanup",
+        "strm_playback",
+    }
+    capabilities = overview.json()["capabilities"]
+    assert all(
+        capabilities[name] is False
+        for name in (
+            "organization_plan",
+            "organization_execution",
+            "organization_write",
+            "permanent_delete",
+            "strm_full",
+            "strm_incremental",
+            "strm_cleanup",
+            "strm_playback",
+        )
+    )
 
     current = await client.get("/api/v1/settings/logging")
     assert current.status_code == 200

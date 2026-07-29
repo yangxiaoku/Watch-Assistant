@@ -817,7 +817,18 @@ async def test_lifespan_runs_the_single_worker_and_closes_the_qb_client(tmp_path
             "inspection_auto_start_enabled": True,
                 "organization_plan_enabled": False,
                 "organization_execution_enabled": False,
+                "organization_write_enabled": False,
+                "organization_write_contract_verified": False,
+                "permanent_delete_enabled": False,
+                "permanent_delete_contract_verified": False,
                 "organization_execution_supported": False,
+                "strm_capabilities": {
+                    "full": False,
+                    "incremental": False,
+                    "cleanup": False,
+                    "playback": False,
+                    "playback_contract_verified": False,
+                },
             }
         assert fake.closed is False
 

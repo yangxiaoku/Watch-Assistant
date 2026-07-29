@@ -145,3 +145,27 @@ async def test_library_configuration_is_scoped_optimistic_and_read_verified(tmp_
         assert verified.json()["enabled"] is True
 
     await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_delete_route_requires_verified_write_and_delete_contracts(tmp_path):
+    app, database = await _client(tmp_path)
+    app.state.organization_write_enabled = True
+    app.state.permanent_delete_enabled = True
+    app.state.organization_write_contract_verified = False
+    app.state.permanent_delete_contract_verified = False
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://app.test"
+    ) as client:
+        login = await client.post(
+            "/api/v1/auth/login", json={"password": WEB_PASSWORD}
+        )
+        headers = {"X-CSRF-Token": login.json()["csrf_token"]}
+        response = await client.post(
+            "/api/v1/libraries/production/objects/100/delete",
+            headers=headers,
+            json={"expected_name": "fixture.wav", "confirm": True},
+        )
+    assert response.status_code == 503
+    assert response.json()["detail"] == "organization_write_unverified"
+    await database.engine.dispose()

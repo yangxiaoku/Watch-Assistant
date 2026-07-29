@@ -115,7 +115,9 @@ def create_app(
     organization_plan_enabled: bool | None = None,
     organization_execution_enabled: bool | None = None,
     organization_write_enabled: bool | None = None,
+    organization_write_contract_verified: bool | None = None,
     permanent_delete_enabled: bool | None = None,
+    permanent_delete_contract_verified: bool | None = None,
     strm_full_enabled: bool | None = None,
     strm_incremental_enabled: bool | None = None,
     strm_cleanup_enabled: bool | None = None,
@@ -147,6 +149,9 @@ def create_app(
                 and getattr(application.state, "organization_plan_enabled", False)
                 and getattr(application.state, "organization_execution_enabled", False)
                 and getattr(application.state, "organization_write_enabled", False)
+                and getattr(
+                    application.state, "organization_write_contract_verified", False
+                )
                 and getattr(application.state, "organization_cookie_provider", None)
                 is not None
                 and getattr(application.state, "organization_target_root_id", None)
@@ -714,10 +719,20 @@ def create_app(
         if organization_write_enabled is not None
         else _env_flag("ORGANIZATION_WRITE_ENABLED")
     )
+    application.state.organization_write_contract_verified = (
+        organization_write_contract_verified
+        if organization_write_contract_verified is not None
+        else _env_flag("ORGANIZATION_WRITE_CONTRACT_VERIFIED")
+    )
     application.state.permanent_delete_enabled = (
         permanent_delete_enabled
         if permanent_delete_enabled is not None
         else _env_flag("PERMANENT_DELETE_ENABLED")
+    )
+    application.state.permanent_delete_contract_verified = (
+        permanent_delete_contract_verified
+        if permanent_delete_contract_verified is not None
+        else _env_flag("PERMANENT_DELETE_CONTRACT_VERIFIED")
     )
     application.state.strm_full_enabled = (
         strm_full_enabled
@@ -929,8 +944,18 @@ def create_app(
             "organization_write_enabled": bool(
                 getattr(application.state, "organization_write_enabled", False)
             ),
+            "organization_write_contract_verified": bool(
+                getattr(
+                    application.state, "organization_write_contract_verified", False
+                )
+            ),
             "permanent_delete_enabled": bool(
                 getattr(application.state, "permanent_delete_enabled", False)
+            ),
+            "permanent_delete_contract_verified": bool(
+                getattr(
+                    application.state, "permanent_delete_contract_verified", False
+                )
             ),
             "organization_execution_supported": bool(
                 getattr(application.state, "organization_worker", None) is not None

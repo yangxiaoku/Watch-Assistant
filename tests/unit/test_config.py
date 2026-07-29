@@ -25,7 +25,9 @@ def test_inspection_settings_have_production_defaults():
     assert settings.organization_plan_enabled is False
     assert settings.organization_execution_enabled is False
     assert settings.organization_write_enabled is False
+    assert settings.organization_write_contract_verified is False
     assert settings.permanent_delete_enabled is False
+    assert settings.permanent_delete_contract_verified is False
     assert settings.strm_full_enabled is False
     assert settings.strm_incremental_enabled is False
     assert settings.strm_cleanup_enabled is False
@@ -52,6 +54,19 @@ def test_organization_execution_flag_can_be_enabled_explicitly():
         ).organization_execution_enabled
         is True
     )
+
+
+def test_write_and_delete_contract_flags_are_independent():
+    settings = make_settings(
+        ORGANIZATION_WRITE_ENABLED="true",
+        ORGANIZATION_WRITE_CONTRACT_VERIFIED="true",
+        PERMANENT_DELETE_ENABLED="true",
+        PERMANENT_DELETE_CONTRACT_VERIFIED="true",
+    )
+    assert settings.organization_write_enabled is True
+    assert settings.organization_write_contract_verified is True
+    assert settings.permanent_delete_enabled is True
+    assert settings.permanent_delete_contract_verified is True
 
 
 @pytest.mark.parametrize("value", [1, 720])

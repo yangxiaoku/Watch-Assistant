@@ -59,8 +59,14 @@ _LIBRARY_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
 async def require_permanent_delete_enabled(request: Request) -> None:
     if not getattr(request.app.state, "organization_write_enabled", False):
         raise HTTPException(status_code=503, detail="organization_write_disabled")
+    if not getattr(
+        request.app.state, "organization_write_contract_verified", False
+    ):
+        raise HTTPException(status_code=503, detail="organization_write_unverified")
     if not getattr(request.app.state, "permanent_delete_enabled", False):
         raise HTTPException(status_code=503, detail="permanent_delete_disabled")
+    if not getattr(request.app.state, "permanent_delete_contract_verified", False):
+        raise HTTPException(status_code=503, detail="permanent_delete_unverified")
 
 
 def _stable_library_id(value: str) -> bool:

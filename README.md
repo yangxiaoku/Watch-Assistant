@@ -66,6 +66,16 @@ curl http://127.0.0.1:8000/api/v1/health
 
 服务器的 `8000` 端口已被占用时，可按 `.env.example` 使用 `8115`。若 Docker Hub 不可达，可以使用 `deploy/watch-assistant.service` 以 Python venv 运行；对应环境变量模板是 `deploy/watch-assistant.env.example`。
 
+115 真实操作采用独立的 fail-closed 开关。整理计划、移动/重命名写入、永久删除和 STRM
+生成/增量/清理/播放分别受 `ORGANIZATION_PLAN_ENABLED`、
+`ORGANIZATION_EXECUTION_ENABLED`、`ORGANIZATION_WRITE_ENABLED`、
+`PERMANENT_DELETE_ENABLED`、`STRM_FULL_ENABLED`、`STRM_INCREMENTAL_ENABLED`、
+`STRM_CLEANUP_ENABLED` 和 `STRM_PLAYBACK_ENABLED` 控制；所有开关默认关闭。
+真实移动/重命名还必须有 `ORGANIZATION_WRITE_CONTRACT_VERIFIED=true`，删除还必须有
+`PERMANENT_DELETE_CONTRACT_VERIFIED=true`。契约未验收时，即使功能开关被误设为 true，
+应用也不会启动真实 worker 或删除入口。修改 systemd 环境文件后需重启服务，并通过
+`GET /api/v1/health` 或设置页核对实际有效能力。
+
 使用 systemd 部署时，`watch-assistant.service` 可独立重启。qBittorrent sidecar 的升级或重启必须作为独立维护操作执行；不得通过重启应用隐式管理 qBittorrent 的生命周期。
 
 ## HTTPS
