@@ -27,7 +27,9 @@ cleanup() {
 trap cleanup EXIT
 
 mkdir -p "$PACKAGE_ROOT" "$OUTPUT_DIR"
-git archive HEAD | tar -x -C "$PACKAGE_ROOT"
+SOURCE_ARCHIVE="$TEMP_DIR/source.tar"
+git archive --format=tar HEAD -o "$SOURCE_ARCHIVE"
+tar -xf "$SOURCE_ARCHIVE" -C "$PACKAGE_ROOT"
 if [[ ! -f "$ROOT_DIR/frontend/dist/index.html" ]]; then
     echo "release refused: frontend/dist/index.html is missing; run the frontend production build first" >&2
     exit 1
