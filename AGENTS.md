@@ -121,3 +121,5 @@ docker compose config
 
 按改动风险补充对应 API/迁移/任务状态机测试、Playwright 桌面和移动回归。真实 115、
 媒体服务器或写操作验收必须使用专用低风险夹具、功能开关和回滚记录。
+
+唯一发布基线 = `codex/publish-main` @ `83edfcd`，日期 2026-07-29。
