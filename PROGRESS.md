@@ -3,15 +3,16 @@
 本文档是唯一可信的进度来源。历史计划文档保留作设计背景，不再用未更新的 checkbox 判断
 发布状态。提交号以 `codex/publish-main` 为发布基线。
 
-当前基线：`codex/publish-main` @ `793a9c9`（2026-07-29）。生产服务已部署并通过健康检查；
+当前发布基线：`codex/publish-main` @ `a2bdfc8`（2026-07-29）；文档最新提交为 `8bfa5e7`。
+生产服务已部署并通过健康检查；
 真实 115 写入、永久删除、STRM 写入/清理/播放开关均保持关闭。
 
 ## 已发布
 
 - 115 真实操作门禁：整理计划/执行、移动/重命名写入、永久删除和 STRM 全量/增量/清理/播放均已部署；生产开关保持关闭，真实写入仍需受管 fixture 契约验收。
 
-- 发现与搜索：TMDB 榜单、季度资料、PanSou 聚合、BTIH 校验、质量筛选和缓存；对应基线早期
-  `feature/watch-assistant` 到 `codex/publish-main` 的合并提交。
+- 发现与搜索：TMDB 榜单、季度资料、PanSou 聚合、BTIH 校验、质量筛选和缓存；对应历史
+  合并提交已纳入 `codex/publish-main`。
 - 任务与安全：SQLite 状态机、uncertain 防重复提交、Web 会话、CSRF、Bearer token 和加密；
   对应 `codex/publish-main` 基线提交。
 - 115 只读与组织契约：受限目录网关、分页校验、组织计划/执行离线契约和 playback contract；
@@ -19,29 +20,22 @@
 - 当前通知/工作流候选：后端订阅、通知、工作流、CLI/MCP/PWA 模块及前端中心；对应
   `ee9917a`、`e6aa158`、`44834fb`、`7ddcfb3`。
 
-## 待裁决分支
+## 保留中的待裁决分支
 
-以下分支仍有独立提交，均不属于当前发布版本。合入前必须基于发布基线验证并登记结果；不得把它们描述为已发布：
+以下分支仍有独立提交或被其他 detached worktree 依赖，均不属于当前发布版本。合入前必须基于发布基线验证并登记结果；不得把它们描述为已发布：
 
-- `codex/c05-p115-playback-contract`、`codex/c05-runner-deadline`：C05 playback 合同和 runner deadline。
-- `codex/integration-library-phase-1-c03-clean`、`codex/integration-library-phase-1-ui`、
-  `codex/integration-library-phase-2-clean`：C03 只读验证、fixture 和组织界面变体。
-- `codex/library-capability-matrix`、`codex/library-directories-ui`：库能力和目录配置界面。
-- `codex/library-readonly-index-clean`、`codex/library-review-workbench-clean`、
-  `codex/library-workbench-audit`：库索引/审核工作台变体，需去重裁决。
-- `codex/o01-organization-operation-core`、`codex/o03-companion-preview`、
-  `codex/organization-companion-groups`、`codex/organization-plan-preview-clean`：组织操作扩展。
-- `codex/phase1-readonly-gateway`、`codex/phase1-readonly-gateway-squashed`：只读 gateway 变体，需保留一个。
-- `codex/r01-r02-replacement`：媒体替换策略。
-- `feature/frontend-catalog-navigation-v2`、`feature/integration-library-phase-1`、
-  `feature/library-migration-foundation`、`feature/library-readonly-index`、
-  `feature/library-review-workbench-ui`：前端导航和库基础设施。
-- `feature/media-classification-naming`、`feature/media-parser-core`、`feature/tmdb-match-core`：媒体解析与匹配。
-- `feature/organization-plan-core`、`feature/organization-review-api`：组织计划与审核 API。
-- `feature/p115-library-contracts`、`feature/p115-library-marker-contract`、
-  `feature/p115-library-readonly-probe`、`feature/p115-pickcode-contracts`、
-  `feature/p115-playback-contracts`：P115 合同和探针。
-- `feature/search-ranking-seasons-warm-v2`：搜索排序与预热。
+- `codex/c05-runner-deadline`、`codex/integration-library-phase-1-c03-clean`、
+  `codex/integration-library-phase-2-clean`、`codex/integration-library-phase-2-current`：
+  C03/C05 runner、fixture 和组织 transport 工作树，均有未提交修改。
+- `codex/integration-library-phase-1-ui`、`codex/library-workbench-audit`、
+  `codex/o03-companion-preview`、`codex/organization-companion-groups`：被 detached worktree
+  依赖，待对应任务结束后再归档。
+- `feature/integration-inspection-deploy`、`feature/library-migration-foundation`、
+  `feature/watch-assistant`：关联 worktree 有未提交改动或验收资产。
+
+25 条无 worktree 的旧分支已归档为 `archive/20260729/...` 标签并删除，详见
+`docs/ops/branch-governance-audit-20260729.md`。远端 `origin/codex/publish-20260729` 保留，
+因其仍有独立旧发布说明提交 `05f22e7`，不得误报为当前发布版本。
 
 ## 未入库工作树
 
