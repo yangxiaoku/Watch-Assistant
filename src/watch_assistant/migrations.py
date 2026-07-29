@@ -223,6 +223,14 @@ def _create_audit_records_table(connection: Connection) -> None:
     AuditRecord.__table__.create(connection, checkfirst=True)
 
 
+def _create_strm_manifest_table(connection: Connection) -> None:
+    """Create the local STRM manifest without touching remote 115 state."""
+
+    from watch_assistant.library_models import StrmManifestEntry
+
+    StrmManifestEntry.__table__.create(connection, checkfirst=True)
+
+
 def _upgrade_audit_records_schema(connection: Connection) -> None:
     """Bridge the pre-REQ-004 audit table to the current event schema."""
 
@@ -541,6 +549,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration("037_audit_records_schema_compatibility", _upgrade_audit_records_schema),
     Migration("038_audit_records_legacy_rebuild", _rebuild_legacy_audit_records),
     Migration("039_subscription_resource_observations", _create_subscription_resource_observations_table),
+    Migration("040_strm_manifest_entries", _create_strm_manifest_table),
 )
 
 

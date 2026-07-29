@@ -84,6 +84,7 @@ class P115C03LiveTransport(P115C03Transport):
             WriteOperation.MOVE: "fs_move",
             WriteOperation.RENAME: "fs_rename",
             WriteOperation.RECYCLE: "fs_delete",
+            WriteOperation.DELETE: "fs_delete",
         }.get(request.operation)
         payload = _client_payload(request)
         if method_name is None or payload is None:
@@ -309,7 +310,7 @@ def _client_payload(request: PreparedWrite) -> dict[str, str] | None:
         if set(payload) != {"file_id", "file_name"}:
             return None
         return {f"files_new_name[{payload['file_id']}]": payload["file_name"]}
-    if request.operation is WriteOperation.RECYCLE:
+    if request.operation in {WriteOperation.RECYCLE, WriteOperation.DELETE}:
         if set(payload) != {"file_id"}:
             return None
         return {"fid": payload["file_id"]}

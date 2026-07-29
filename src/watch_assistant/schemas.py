@@ -242,6 +242,59 @@ class MediaEntryListResponse(BaseModel):
     next_cursor: int | None = Field(default=None, ge=0)
 
 
+class StrmGenerationRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    source_scan_run_id: str = Field(min_length=1, max_length=128)
+
+
+class StrmManifestItemResponse(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    manifest_id: str
+    library_id: str
+    cloud_file_id: str
+    cloud_relative_path: str
+    local_relative_path: str
+    status: Literal["pending", "verified"]
+    source_version: int = Field(ge=0)
+
+
+class StrmManifestListResponse(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    items: list[StrmManifestItemResponse]
+    page: int = Field(ge=1)
+    page_size: int = Field(ge=1, le=100)
+    total: int = Field(ge=0)
+    total_pages: int = Field(ge=0)
+
+
+class StrmGenerationResponse(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    library_id: str
+    scan_run_id: str
+    generated: int = Field(ge=0)
+    unchanged: int = Field(ge=0)
+    skipped: int = Field(ge=0)
+    failed: int = Field(ge=0)
+
+
+class LibraryDeleteRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    expected_name: str = Field(min_length=1, max_length=255)
+    confirm: bool
+
+
+class LibraryDeleteResponse(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    status: Literal["success", "failed", "uncertain"]
+    error_code: str | None = None
+
+
 class InventoryFreshnessResponse(BaseModel):
     model_config = {"extra": "forbid"}
 

@@ -1,16 +1,19 @@
 """Persistence models for the offline, read-only library index."""
 
 from datetime import UTC, datetime
+from enum import StrEnum
 
 from sqlalchemy import (
     BigInteger,
     Boolean,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -227,6 +230,53 @@ class LibraryMediaIdentity(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utc_now
     )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utc_now, onupdate=_utc_now
+    )
+
+
+class StrmManifestStatus(StrEnum):
+    PENDING = "pending"
+    VERIFIED = "verified"
+
+
+class StrmManifestEntry(Base):
+    """A local STRM file backed by one current, indexed 115 file."""
+
+    __tablename__ = "strm_manifest_entries"
+    __table_args__ = (
+        Index(
+            "uq_strm_manifest_current_file",
+            "library_id",
+            "cloud_file_id",
+            unique=True,
+            sqlite_where=text("is_current = 1"),
+        ),
+    )
+
+    manifest_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    library_id: Mapped[str] = mapped_column(
+        ForeignKey("media_libraries.id", ondelete="CASCADE"), index=True
+    )
+    cloud_file_id: Mapped[str] = mapped_column(String(128), index=True)
+    cloud_directory_id: Mapped[str | None] = mapped_column(
+        String(128), nullable=True
+    )
+    pickcode: Mapped[str | None] = mapped_column(Text, nullable=True)
+    cloud_relative_path: Mapped[str] = mapped_column(Text)
+    local_relative_path: Mapped[str] = mapped_column(Text)
+    size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    source_version: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(
+        String(16), default=StrmManifestStatus.PENDING, server_default="pending", index=True
+    )
+    is_current: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default="1", index=True
+    )
+    last_verified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utc_now, onupdate=_utc_now
     )

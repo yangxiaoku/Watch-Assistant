@@ -28,6 +28,8 @@ from watch_assistant.schemas import (
     InventoryFreshnessResponse,
     InventoryIdentityPatch,
     InventoryIdentityResponse,
+    LibraryDeleteRequest,
+    LibraryDeleteResponse,
     LibraryInventoryResponse,
     LibraryScanSummary,
     MediaEntryListResponse,
@@ -44,12 +46,21 @@ from watch_assistant.services.library_inventory import (
     build_snapshot,
     check_inventory,
 )
+from watch_assistant.services.p115_delete import P115DeleteService
 
 router = APIRouter(prefix="/api/v1", dependencies=[Depends(require_api_auth)])
 AuthDependency = Annotated[AuthContext, Depends(require_api_auth)]
 ReviewWriteDependency = Annotated[AuthContext, Depends(require_scope("review:write"))]
 SettingsWriteDependency = Annotated[AuthContext, Depends(require_scope("settings:write"))]
+OrganizeWriteDependency = Annotated[AuthContext, Depends(require_scope("organize:execute"))]
 _LIBRARY_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
+
+
+async def require_permanent_delete_enabled(request: Request) -> None:
+    if not getattr(request.app.state, "organization_write_enabled", False):
+        raise HTTPException(status_code=503, detail="organization_write_disabled")
+    if not getattr(request.app.state, "permanent_delete_enabled", False):
+        raise HTTPException(status_code=503, detail="permanent_delete_disabled")
 
 
 def _stable_library_id(value: str) -> bool:
@@ -321,6 +332,32 @@ async def list_library_media(
         items=[_entry_response(library_id, latest.id, entry) for entry in entries],
         next_cursor=cursor + limit if has_more else None,
     )
+
+
+@router.post(
+    "/libraries/{library_id}/objects/{object_id}/delete",
+    response_model=LibraryDeleteResponse,
+    dependencies=[Depends(require_permanent_delete_enabled)],
+)
+async def delete_library_object(
+    library_id: str,
+    object_id: str,
+    payload: LibraryDeleteRequest,
+    request: Request,
+    context: OrganizeWriteDependency,
+) -> LibraryDeleteResponse:
+    if not _allowed(context, library_id):
+        raise HTTPException(status_code=404, detail="library_not_found")
+    service = getattr(request.app.state, "p115_delete_service", None)
+    if not isinstance(service, P115DeleteService):
+        raise HTTPException(status_code=503, detail="delete_unavailable")
+    result = await service.delete(
+        library_id,
+        object_id,
+        expected_name=payload.expected_name,
+        confirmed=payload.confirm,
+    )
+    return LibraryDeleteResponse(status=result.status.value, error_code=result.error_code)
 
 
 @router.get(

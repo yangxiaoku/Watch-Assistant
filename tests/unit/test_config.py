@@ -24,6 +24,13 @@ def test_inspection_settings_have_production_defaults():
 
     assert settings.organization_plan_enabled is False
     assert settings.organization_execution_enabled is False
+    assert settings.organization_write_enabled is False
+    assert settings.permanent_delete_enabled is False
+    assert settings.strm_full_enabled is False
+    assert settings.strm_incremental_enabled is False
+    assert settings.strm_cleanup_enabled is False
+    assert settings.strm_playback_enabled is False
+    assert settings.strm_playback_contract_verified is False
     assert settings.inspection_concurrency == 8
     assert settings.inspection_item_timeout_seconds == 30
     assert settings.inspection_poll_interval_seconds == 0.75

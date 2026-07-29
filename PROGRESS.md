@@ -5,6 +5,8 @@
 
 ## 已发布
 
+- 115 真实操作开关候选：真实整理/移动/重命名写入、永久删除门控，以及 STRM 全量清单生成已完成离线实现和验证；待生产部署与受管 fixture 验收，默认仍关闭。
+
 - 发现与搜索：TMDB 榜单、季度资料、PanSou 聚合、BTIH 校验、质量筛选和缓存；对应基线早期
   `feature/watch-assistant` 到 `codex/publish-main` 的合并提交。
 - 任务与安全：SQLite 状态机、uncertain 防重复提交、Web 会话、CSRF、Bearer token 和加密；

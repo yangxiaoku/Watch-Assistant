@@ -100,6 +100,35 @@ class Settings(BaseSettings):
     organization_execution_enabled: bool = Field(
         default=False, validation_alias="ORGANIZATION_EXECUTION_ENABLED"
     )
+    organization_write_enabled: bool = Field(
+        default=False, validation_alias="ORGANIZATION_WRITE_ENABLED"
+    )
+    permanent_delete_enabled: bool = Field(
+        default=False, validation_alias="PERMANENT_DELETE_ENABLED"
+    )
+    strm_full_enabled: bool = Field(
+        default=False, validation_alias="STRM_FULL_ENABLED"
+    )
+    strm_incremental_enabled: bool = Field(
+        default=False, validation_alias="STRM_INCREMENTAL_ENABLED"
+    )
+    strm_cleanup_enabled: bool = Field(
+        default=False, validation_alias="STRM_CLEANUP_ENABLED"
+    )
+    strm_playback_enabled: bool = Field(
+        default=False, validation_alias="STRM_PLAYBACK_ENABLED"
+    )
+    strm_playback_contract_verified: bool = Field(
+        default=False, validation_alias="STRM_PLAYBACK_CONTRACT_VERIFIED"
+    )
+    strm_output_root: Path = Field(
+        default=Path("./data/strm"), validation_alias="STRM_OUTPUT_ROOT"
+    )
+    strm_playback_url_prefix: str = Field(
+        default="http://127.0.0.1:8115/api/v1/strm/play",
+        min_length=1,
+        validation_alias="STRM_PLAYBACK_URL_PREFIX",
+    )
     p115_cookie_path: Path = Field(
         default=Path("/etc/watch-assistant/p115-cookie"),
         validation_alias="P115_COOKIE_PATH",

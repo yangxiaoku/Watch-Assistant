@@ -44,6 +44,7 @@ from watch_assistant.api.search import router as search_router
 from watch_assistant.api.seasons import router as seasons_router
 from watch_assistant.api.settings import router as settings_router
 from watch_assistant.api.settings_p115 import router as p115_settings_router
+from watch_assistant.api.strm import router as strm_router
 from watch_assistant.api.subscriptions import router as subscriptions_router
 from watch_assistant.api.subtitles import router as subtitles_router
 from watch_assistant.api.tasks import router as tasks_router
@@ -79,12 +80,14 @@ from watch_assistant.services.p115_credentials import (
     CompositeCookieProvider,
     CookieProvider,
 )
+from watch_assistant.services.p115_delete import P115DeleteService
 from watch_assistant.services.p115_settings import P115SettingsService
 from watch_assistant.services.pwa_devices import PwaDeviceService
 from watch_assistant.services.quality_profiles import QualityProfileService
 from watch_assistant.services.search import SearchService
 from watch_assistant.services.season_metadata import SeasonMetadataService
 from watch_assistant.services.settings import SettingsService
+from watch_assistant.services.strm_manifest import StrmManifestService
 from watch_assistant.services.subscription_scheduler import SubscriptionScheduler
 from watch_assistant.services.subscriptions import SubscriptionService
 from watch_assistant.services.tasks import TaskService
@@ -111,6 +114,15 @@ def create_app(
     frontend_dir: Path | None = None,
     organization_plan_enabled: bool | None = None,
     organization_execution_enabled: bool | None = None,
+    organization_write_enabled: bool | None = None,
+    permanent_delete_enabled: bool | None = None,
+    strm_full_enabled: bool | None = None,
+    strm_incremental_enabled: bool | None = None,
+    strm_cleanup_enabled: bool | None = None,
+    strm_playback_enabled: bool | None = None,
+    strm_playback_contract_verified: bool | None = None,
+    strm_output_root: Path | None = None,
+    strm_playback_url_prefix: str | None = None,
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
@@ -134,6 +146,7 @@ def create_app(
                 ready
                 and getattr(application.state, "organization_plan_enabled", False)
                 and getattr(application.state, "organization_execution_enabled", False)
+                and getattr(application.state, "organization_write_enabled", False)
                 and getattr(application.state, "organization_cookie_provider", None)
                 is not None
                 and getattr(application.state, "organization_target_root_id", None)
@@ -279,6 +292,9 @@ def create_app(
                     event_logger=application.state.settings_service,
                 )
             )
+            application.state.strm_manifest_service = StrmManifestService(
+                runtime_database.session_factory
+            )
             fallback_cookie_provider = CookieProvider(settings.p115_cookie_path)
             composite_cookie_provider = CompositeCookieProvider(
                 fallback_cookie_provider
@@ -406,6 +422,10 @@ def create_app(
                 str(settings.p115_target_cid)
                 if settings.p115_target_cid is not None and settings.p115_target_cid > 0
                 else None
+            )
+            application.state.p115_delete_service = P115DeleteService(
+                runtime_database.session_factory,
+                composite_cookie_provider,
             )
             owned = [runtime_database, runtime_tmdb, runtime_pansou]
             cookie_provider = composite_cookie_provider
@@ -689,6 +709,48 @@ def create_app(
         if organization_execution_enabled is not None
         else _env_flag("ORGANIZATION_EXECUTION_ENABLED")
     )
+    application.state.organization_write_enabled = (
+        organization_write_enabled
+        if organization_write_enabled is not None
+        else _env_flag("ORGANIZATION_WRITE_ENABLED")
+    )
+    application.state.permanent_delete_enabled = (
+        permanent_delete_enabled
+        if permanent_delete_enabled is not None
+        else _env_flag("PERMANENT_DELETE_ENABLED")
+    )
+    application.state.strm_full_enabled = (
+        strm_full_enabled
+        if strm_full_enabled is not None
+        else _env_flag("STRM_FULL_ENABLED")
+    )
+    application.state.strm_incremental_enabled = (
+        strm_incremental_enabled
+        if strm_incremental_enabled is not None
+        else _env_flag("STRM_INCREMENTAL_ENABLED")
+    ) and bool(application.state.strm_full_enabled)
+    application.state.strm_cleanup_enabled = (
+        strm_cleanup_enabled
+        if strm_cleanup_enabled is not None
+        else _env_flag("STRM_CLEANUP_ENABLED")
+    ) and bool(application.state.strm_full_enabled)
+    application.state.strm_playback_enabled = (
+        strm_playback_enabled
+        if strm_playback_enabled is not None
+        else _env_flag("STRM_PLAYBACK_ENABLED")
+    )
+    application.state.strm_playback_contract_verified = (
+        strm_playback_contract_verified
+        if strm_playback_contract_verified is not None
+        else _env_flag("STRM_PLAYBACK_CONTRACT_VERIFIED")
+    )
+    application.state.strm_output_root = strm_output_root or Path(
+        os.environ.get("STRM_OUTPUT_ROOT", "./data/strm")
+    )
+    application.state.strm_playback_url_prefix = strm_playback_url_prefix or os.environ.get(
+        "STRM_PLAYBACK_URL_PREFIX",
+        "http://127.0.0.1:8115/api/v1/strm/play",
+    )
     if database and crypto and tmdb_client and pansou_client:
         application.state.database = database
         application.state.settings_service = SettingsService(
@@ -767,6 +829,9 @@ def create_app(
             database.session_factory,
             event_logger=application.state.settings_service,
         )
+        application.state.strm_manifest_service = StrmManifestService(
+            database.session_factory
+        )
         application.state.mcp_service = McpService(
             task_service=application.state.task_service,
             notification_service=application.state.notification_service,
@@ -780,6 +845,11 @@ def create_app(
             os.environ.get("P115_COOKIE_PATH", "/run/secrets/p115_cookie")
         )
         composite_cookie_provider = CompositeCookieProvider(fallback_cookie_provider)
+        application.state.organization_cookie_provider = composite_cookie_provider
+        application.state.p115_delete_service = P115DeleteService(
+            database.session_factory,
+            composite_cookie_provider,
+        )
         application.state.credential_service = CredentialService(
             database.session_factory,
             crypto,
@@ -856,9 +926,35 @@ def create_app(
             "organization_execution_enabled": bool(
                 getattr(application.state, "organization_execution_enabled", False)
             ),
+            "organization_write_enabled": bool(
+                getattr(application.state, "organization_write_enabled", False)
+            ),
+            "permanent_delete_enabled": bool(
+                getattr(application.state, "permanent_delete_enabled", False)
+            ),
             "organization_execution_supported": bool(
                 getattr(application.state, "organization_worker", None) is not None
             ),
+            "strm_capabilities": {
+                "full": bool(getattr(application.state, "strm_full_enabled", False)),
+                "incremental": bool(
+                    getattr(application.state, "strm_incremental_enabled", False)
+                ),
+                "cleanup": bool(
+                    getattr(application.state, "strm_cleanup_enabled", False)
+                ),
+                "playback": bool(
+                    getattr(application.state, "strm_playback_enabled", False)
+                    and getattr(
+                        application.state, "strm_playback_contract_verified", False
+                    )
+                ),
+                "playback_contract_verified": bool(
+                    getattr(
+                        application.state, "strm_playback_contract_verified", False
+                    )
+                ),
+            },
         }
 
     application.include_router(search_router)
@@ -887,6 +983,7 @@ def create_app(
     application.include_router(manual_import_router)
     application.include_router(organization_plan_router)
     application.include_router(organization_operation_router)
+    application.include_router(strm_router)
     static_path = frontend_dir or Path(
         os.environ.get("FRONTEND_DIST_DIR", "frontend/dist")
     )
