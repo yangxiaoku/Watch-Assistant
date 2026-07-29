@@ -22,8 +22,8 @@
 真实移动/重命名、永久删除和受管 STRM 播放入口已接入；整理移动/重命名和永久删除使用
 固定测试 CID 完成真实闭环，播放直链完成 `HEAD`、单段 `Range GET` 验收。
 
-STRM 全量、增量和清理代码已部署但生产开关保持关闭。固定测试目录只有 WAV，当前 STRM
-生成器只处理视频扩展名，因此没有伪造视频 STRM 验收结果。TgtoDrive 仍保持禁用。
+STRM 全量、增量和清理代码已部署并开启。受控视频夹具已完成完整扫描后全量生成、重命名
+后的增量对账、删除后的失效清理，且 `.strm` 内容只包含稳定播放入口。TgtoDrive 仍保持禁用。
 
 TgtoDrive 当前没有验证通过的稳定提交/状态 HTTP 契约，`config/tgto-contract.json` 明确为 `supported:false`。因此生产部署会禁用真实推送并返回 `503 push_unsupported`，不会猜测接口、写 TgtoDrive 数据库或调用内部 `.pyc`。
 
@@ -68,8 +68,8 @@ curl http://127.0.0.1:8000/api/v1/health
 真实移动/重命名还必须有 `ORGANIZATION_WRITE_CONTRACT_VERIFIED=true`，删除还必须有
 `PERMANENT_DELETE_CONTRACT_VERIFIED=true`。契约未验收时，即使功能开关被误设为 true，
 应用也不会启动真实 worker 或删除入口。当前生产实际状态以 `GET /api/v1/health` 为准：
-整理计划/执行、移动/重命名、永久删除、STRM 播放及播放契约已开启，STRM 全量/增量/清理
-仍关闭。STRM 增量接口使用完整扫描差异，失效清理会校验受管文件内容。
+整理计划/执行、移动/重命名、永久删除、STRM 全量/增量/清理、播放及播放契约均已开启。
+STRM 增量接口使用完整扫描差异，失效清理会校验受管文件内容。
 
 使用 systemd 部署时，`watch-assistant.service` 可独立重启。qBittorrent sidecar 的升级或重启必须作为独立维护操作执行；不得通过重启应用隐式管理 qBittorrent 的生命周期。
 
