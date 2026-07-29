@@ -74,7 +74,7 @@ curl http://127.0.0.1:8000/api/v1/health
 真实移动/重命名还必须有 `ORGANIZATION_WRITE_CONTRACT_VERIFIED=true`，删除还必须有
 `PERMANENT_DELETE_CONTRACT_VERIFIED=true`。契约未验收时，即使功能开关被误设为 true，
 应用也不会启动真实 worker 或删除入口。修改 systemd 环境文件后需重启服务，并通过
-`GET /api/v1/health` 或设置页核对实际有效能力。
+`GET /api/v1/health` 或设置页核对实际有效能力。STRM 增量接口使用完整扫描差异，失效清理会校验受管文件内容；动态播放在真实播放契约完成前始终保持不可用。
 
 使用 systemd 部署时，`watch-assistant.service` 可独立重启。qBittorrent sidecar 的升级或重启必须作为独立维护操作执行；不得通过重启应用隐式管理 qBittorrent 的生命周期。
 

@@ -256,7 +256,7 @@ class StrmManifestItemResponse(BaseModel):
     cloud_file_id: str
     cloud_relative_path: str
     local_relative_path: str
-    status: Literal["pending", "verified"]
+    status: Literal["pending", "verified", "retired"]
     source_version: int = Field(ge=0)
 
 
@@ -279,6 +279,7 @@ class StrmGenerationResponse(BaseModel):
     unchanged: int = Field(ge=0)
     skipped: int = Field(ge=0)
     failed: int = Field(ge=0)
+    retired: int = Field(default=0, ge=0)
 
 
 class LibraryDeleteRequest(BaseModel):

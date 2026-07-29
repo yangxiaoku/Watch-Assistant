@@ -15,7 +15,7 @@ WEB_PASSWORD = "settings-web-password"
 SCRIPT_TOKEN = "settings-script-token"
 
 
-async def _app(tmp_path: Path):
+async def _app(tmp_path: Path, **feature_flags):
     database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'settings-api.db'}")
     await initialize_database(database.engine)
     crypto = SecretCrypto(Fernet.generate_key().decode("ascii"))
@@ -34,6 +34,7 @@ async def _app(tmp_path: Path):
         pansou_client=pansou,
         security_manager=security,
         frontend_dir=tmp_path / "missing",
+        **feature_flags,
     )
     client = httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://app.test"
@@ -290,6 +291,39 @@ async def test_inspection_setting_persists_and_is_authenticated(tmp_path):
 
 
 @pytest.mark.integration
+async def test_strm_routes_enforce_independent_flags_and_reach_service(tmp_path):
+    app, client, database, tmdb, pansou = await _app(tmp_path)
+    payload = {"source_scan_run_id": "missing-scan"}
+    try:
+        login = await client.post(
+            "/api/v1/auth/login", json={"password": WEB_PASSWORD}
+        )
+        headers = {"X-CSRF-Token": login.json()["csrf_token"]}
+        disabled = {
+            "/api/v1/libraries/library/strm-generation": "strm_full_disabled",
+            "/api/v1/libraries/library/strm-incremental": "strm_incremental_disabled",
+            "/api/v1/libraries/library/strm-cleanup": "strm_cleanup_disabled",
+        }
+        for path, code in disabled.items():
+            response = await client.post(path, json=payload, headers=headers)
+            assert response.status_code == 503
+            assert response.json()["detail"]["code"] == code
+
+        app.state.strm_full_enabled = True
+        app.state.strm_incremental_enabled = True
+        app.state.strm_cleanup_enabled = True
+        for path in disabled:
+            response = await client.post(path, json=payload, headers=headers)
+            assert response.status_code == 409
+            assert response.json()["detail"] == "source_snapshot_not_ready"
+    finally:
+        await client.aclose()
+        await tmdb.aclose()
+        await pansou.aclose()
+        await database.engine.dispose()
+
+
+@pytest.mark.integration
 async def test_health_fails_closed_when_inspection_setting_read_fails(tmp_path):
     app, client, database, tmdb, pansou = await _app(tmp_path)
 
@@ -303,6 +337,26 @@ async def test_health_fails_closed_when_inspection_setting_read_fails(tmp_path):
     assert response.json()["inspection_auto_start_enabled"] is False
     assert "hidden storage detail" not in response.text
 
+    await client.aclose()
+    await tmdb.aclose()
+    await pansou.aclose()
+    await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_playback_flag_cannot_claim_capability_without_transport(tmp_path):
+    _app_instance, client, database, tmdb, pansou = await _app(
+        tmp_path,
+        strm_playback_enabled=True,
+        strm_playback_contract_verified=True,
+    )
+    login = await client.post("/api/v1/auth/login", json={"password": WEB_PASSWORD})
+    assert login.status_code == 200
+    overview = await client.get("/api/v1/settings/overview", cookies=client.cookies)
+    assert overview.status_code == 200
+    assert overview.json()["capabilities"]["strm_playback"] is False
+    health = await client.get("/api/v1/health")
+    assert health.json()["strm_capabilities"]["playback"] is False
     await client.aclose()
     await tmdb.aclose()
     await pansou.aclose()

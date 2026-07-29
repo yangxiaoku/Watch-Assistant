@@ -188,6 +188,18 @@ export interface HealthResponse {
   inspection_supported?: boolean;
   inspection_auto_start_enabled?: boolean;
   organization_plan_enabled?: boolean;
+  organization_execution_enabled?: boolean;
+  organization_write_enabled?: boolean;
+  organization_write_contract_verified?: boolean;
+  permanent_delete_enabled?: boolean;
+  permanent_delete_contract_verified?: boolean;
+  strm_capabilities?: {
+    full: boolean;
+    incremental: boolean;
+    cleanup: boolean;
+    playback: boolean;
+    playback_contract_verified: boolean;
+  };
 }
 
 export type LogLevel = "DEBUG" | "ERROR" | "WARNING" | "INFO";

@@ -238,6 +238,7 @@ class LibraryMediaIdentity(Base):
 class StrmManifestStatus(StrEnum):
     PENDING = "pending"
     VERIFIED = "verified"
+    RETIRED = "retired"
 
 
 class StrmManifestEntry(Base):

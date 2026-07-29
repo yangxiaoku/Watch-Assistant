@@ -472,7 +472,10 @@ def _required_scope(request: Request) -> str:
         return "organize:plan"
     if path.startswith("/api/v1/strm/play"):
         return "strm:read"
-    if path.startswith("/api/v1/libraries/") and "/strm-generation" in path:
+    if path.startswith("/api/v1/libraries/") and any(
+        marker in path
+        for marker in ("/strm-generation", "/strm-incremental", "/strm-cleanup")
+    ):
         return "strm:write" if method not in {"GET", "HEAD"} else "strm:read"
     if path.startswith("/api/v1/libraries/") and "/objects/" in path and path.endswith("/delete"):
         return "organize:execute"

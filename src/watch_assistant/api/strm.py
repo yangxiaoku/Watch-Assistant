@@ -29,6 +29,25 @@ async def require_strm_enabled(request: Request) -> None:
         )
 
 
+async def require_strm_incremental_enabled(request: Request) -> None:
+    if not getattr(request.app.state, "strm_incremental_enabled", False):
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "strm_incremental_disabled",
+                "message": "STRM 增量同步未启用",
+            },
+        )
+
+
+async def require_strm_cleanup_enabled(request: Request) -> None:
+    if not getattr(request.app.state, "strm_cleanup_enabled", False):
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "strm_cleanup_disabled", "message": "STRM 失效清理未启用"},
+        )
+
+
 def _service(request: Request) -> StrmManifestService:
     service = getattr(request.app.state, "strm_manifest_service", None)
     if not isinstance(service, StrmManifestService):
@@ -112,6 +131,87 @@ async def generate_manifest(
         unchanged=summary.unchanged,
         skipped=summary.skipped,
         failed=summary.failed,
+        retired=summary.retired,
+    )
+
+
+@router.post(
+    "/libraries/{library_id}/strm-incremental",
+    response_model=StrmGenerationResponse,
+    dependencies=[
+        Depends(require_strm_incremental_enabled),
+        Depends(require_scope("strm:write")),
+    ],
+)
+async def incremental_manifest(
+    library_id: str,
+    payload: StrmGenerationRequest,
+    service: ServiceDependency,
+    request: Request,
+) -> StrmGenerationResponse:
+    try:
+        summary = await service.incremental(
+            library_id,
+            source_scan_run_id=payload.source_scan_run_id,
+            output_root=Path(
+                getattr(request.app.state, "strm_output_root", "./data/strm")
+            ),
+            playback_url_prefix=getattr(
+                request.app.state,
+                "strm_playback_url_prefix",
+                "http://127.0.0.1:8115/api/v1/strm/play",
+            ),
+        )
+    except StrmManifestError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from None
+    return StrmGenerationResponse(
+        library_id=summary.library_id,
+        scan_run_id=summary.scan_run_id,
+        generated=summary.generated,
+        unchanged=summary.unchanged,
+        skipped=summary.skipped,
+        failed=summary.failed,
+        retired=summary.retired,
+    )
+
+
+@router.post(
+    "/libraries/{library_id}/strm-cleanup",
+    response_model=StrmGenerationResponse,
+    dependencies=[
+        Depends(require_strm_cleanup_enabled),
+        Depends(require_scope("strm:write")),
+    ],
+)
+async def cleanup_manifest(
+    library_id: str,
+    payload: StrmGenerationRequest,
+    service: ServiceDependency,
+    request: Request,
+) -> StrmGenerationResponse:
+    try:
+        summary = await service.cleanup(
+            library_id,
+            source_scan_run_id=payload.source_scan_run_id,
+            output_root=Path(
+                getattr(request.app.state, "strm_output_root", "./data/strm")
+            ),
+            playback_url_prefix=getattr(
+                request.app.state,
+                "strm_playback_url_prefix",
+                "http://127.0.0.1:8115/api/v1/strm/play",
+            ),
+        )
+    except StrmManifestError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from None
+    return StrmGenerationResponse(
+        library_id=summary.library_id,
+        scan_run_id=summary.scan_run_id,
+        generated=summary.generated,
+        unchanged=summary.unchanged,
+        skipped=summary.skipped,
+        failed=summary.failed,
+        retired=summary.retired,
     )
 
 

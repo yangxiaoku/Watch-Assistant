@@ -759,6 +759,7 @@ def create_app(
         if strm_playback_contract_verified is not None
         else _env_flag("STRM_PLAYBACK_CONTRACT_VERIFIED")
     )
+    application.state.strm_playback_supported = False
     application.state.strm_output_root = strm_output_root or Path(
         os.environ.get("STRM_OUTPUT_ROOT", "./data/strm")
     )
@@ -970,6 +971,7 @@ def create_app(
                 ),
                 "playback": bool(
                     getattr(application.state, "strm_playback_enabled", False)
+                    and getattr(application.state, "strm_playback_supported", False)
                     and getattr(
                         application.state, "strm_playback_contract_verified", False
                     )

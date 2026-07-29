@@ -105,6 +105,7 @@ async def settings_overview(request: Request) -> SettingsOverviewResponse:
             ),
             "strm_playback": bool(
                 getattr(request.app.state, "strm_playback_enabled", False)
+                and getattr(request.app.state, "strm_playback_supported", False)
                 and getattr(
                     request.app.state, "strm_playback_contract_verified", False
                 )

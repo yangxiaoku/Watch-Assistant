@@ -113,6 +113,8 @@ _CATALOG: dict[str, ApiErrorDescriptor] = {
     "permanent_delete_unverified": ApiErrorDescriptor("permanent_delete_unverified", "永久删除契约未验收", "本次删除操作未执行。", "删除契约未完成前不能执行真实删除。", False, "inspect_configuration"),
     "delete_unavailable": ApiErrorDescriptor("delete_unavailable", "删除服务暂时不可用", "本次删除操作未完成。", "请稍后重试。", True, "retry"),
     "strm_full_disabled": ApiErrorDescriptor("strm_full_disabled", "STRM 功能未启用", "本次 STRM 操作未执行。", "请查看 STRM 功能配置。", False, "inspect_configuration"),
+    "strm_incremental_disabled": ApiErrorDescriptor("strm_incremental_disabled", "STRM 增量同步未启用", "本次 STRM 增量操作未执行。", "请查看 STRM 功能配置。", False, "inspect_configuration"),
+    "strm_cleanup_disabled": ApiErrorDescriptor("strm_cleanup_disabled", "STRM 失效清理未启用", "本次 STRM 清理未执行。", "请查看 STRM 功能配置。", False, "inspect_configuration"),
     "strm_unavailable": ApiErrorDescriptor("strm_unavailable", "STRM 服务暂时不可用", "本次 STRM 操作未完成。", "请稍后重试。", True, "retry"),
     "organization_operation_unavailable": ApiErrorDescriptor("organization_operation_unavailable", "整理操作服务暂时不可用", "本次整理操作未完成。", "请稍后重试。", True, "retry"),
     "plan_not_found": ApiErrorDescriptor("plan_not_found", "整理计划不存在", "本次整理操作未完成。", "请刷新整理计划列表后再试。", False, "retry"),

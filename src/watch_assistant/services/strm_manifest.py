@@ -14,6 +14,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from watch_assistant.library_models import (
+    LibraryScanDiff,
     LibraryScanEntry,
     LibraryScanRun,
     MediaLibrary,
@@ -49,6 +50,7 @@ class StrmGenerationSummary:
     unchanged: int
     skipped: int
     failed: int
+    retired: int = 0
 
 
 class StrmManifestService:
@@ -64,7 +66,9 @@ class StrmManifestService:
             raise StrmManifestError("invalid_request")
         async with self._session_factory() as session:
             total = await session.scalar(
-                select(func.count()).select_from(StrmManifestEntry).where(
+                select(func.count())
+                .select_from(StrmManifestEntry)
+                .where(
                     StrmManifestEntry.library_id == library_id,
                     StrmManifestEntry.is_current.is_(True),
                 )
@@ -141,6 +145,17 @@ class StrmManifestService:
                     skipped += 1
                     continue
                 cloud_path, local_path = paths
+                collision = await session.scalar(
+                    select(StrmManifestEntry).where(
+                        StrmManifestEntry.library_id == library_id,
+                        StrmManifestEntry.local_relative_path == local_path,
+                        StrmManifestEntry.is_current.is_(True),
+                        StrmManifestEntry.cloud_file_id != entry.object_id,
+                    )
+                )
+                if collision is not None:
+                    failed += 1
+                    continue
                 manifest = await session.scalar(
                     select(StrmManifestEntry).where(
                         StrmManifestEntry.library_id == library_id,
@@ -172,7 +187,9 @@ class StrmManifestService:
                     manifest.source_version = run.snapshot_revision
                     manifest.status = StrmManifestStatus.PENDING
                 try:
-                    content = f"{prefix}{quote(manifest.manifest_id, safe='')}\n".encode()
+                    content = (
+                        f"{prefix}{quote(manifest.manifest_id, safe='')}\n".encode()
+                    )
                     written = _write(root, local_path, content)
                 except (OSError, StrmManifestError):
                     failed += 1
@@ -184,7 +201,256 @@ class StrmManifestService:
                 else:
                     unchanged += 1
             await session.commit()
-        return StrmGenerationSummary(library_id, source_scan_run_id, generated, unchanged, skipped, failed)
+        return StrmGenerationSummary(
+            library_id, source_scan_run_id, generated, unchanged, skipped, failed
+        )
+
+    async def incremental(
+        self,
+        library_id: str,
+        *,
+        source_scan_run_id: str,
+        output_root: Path | str,
+        playback_url_prefix: str,
+    ) -> StrmGenerationSummary:
+        """Reconcile only file-level changes from one complete current scan."""
+
+        return await self._reconcile(
+            library_id,
+            source_scan_run_id=source_scan_run_id,
+            output_root=output_root,
+            playback_url_prefix=playback_url_prefix,
+            include_generation=True,
+        )
+
+    async def cleanup(
+        self,
+        library_id: str,
+        *,
+        source_scan_run_id: str,
+        output_root: Path | str,
+        playback_url_prefix: str,
+    ) -> StrmGenerationSummary:
+        """Retire only manifest entries removed by a complete current scan."""
+
+        return await self._reconcile(
+            library_id,
+            source_scan_run_id=source_scan_run_id,
+            output_root=output_root,
+            playback_url_prefix=playback_url_prefix,
+            include_generation=False,
+        )
+
+    async def _reconcile(
+        self,
+        library_id: str,
+        *,
+        source_scan_run_id: str,
+        output_root: Path | str,
+        playback_url_prefix: str,
+        include_generation: bool,
+    ) -> StrmGenerationSummary:
+        if not _valid_id(library_id) or not _valid_id(source_scan_run_id):
+            raise StrmManifestError("invalid_request")
+        prefix = _safe_prefix(playback_url_prefix)
+        root = _safe_root(output_root)
+        generated = unchanged = skipped = failed = retired = 0
+        async with self._session_factory() as session:
+            library, run = await self._validated_current_run(
+                session, library_id, source_scan_run_id
+            )
+            changes = list(
+                (
+                    await session.scalars(
+                        select(LibraryScanDiff)
+                        .where(
+                            LibraryScanDiff.scan_run_id == run.id,
+                            LibraryScanDiff.object_type == "file",
+                        )
+                        .order_by(LibraryScanDiff.object_id)
+                    )
+                ).all()
+            )
+            # Process each diff in its own transaction boundary. A failure for
+            # one file must not roll back already verified local files.
+            for change in changes:
+                if change.change_kind == "removed":
+                    try:
+                        async with session.begin_nested():
+                            did_retire = await self._retire_removed(
+                                session,
+                                library_id=library.id,
+                                object_id=change.object_id,
+                                root=root,
+                                prefix=prefix,
+                            )
+                    except StrmManifestError:
+                        failed += 1
+                    else:
+                        retired += int(did_retire)
+                    continue
+                if not include_generation:
+                    continue
+                entry = await session.scalar(
+                    select(LibraryScanEntry).where(
+                        LibraryScanEntry.scan_run_id == run.id,
+                        LibraryScanEntry.object_type == "file",
+                        LibraryScanEntry.object_id == change.object_id,
+                        LibraryScanEntry.is_directory.is_(False),
+                    )
+                )
+                if entry is None:
+                    failed += 1
+                    continue
+                try:
+                    async with session.begin_nested():
+                        outcome = await self._reconcile_entry(
+                            session,
+                            library_id=library.id,
+                            entry=entry,
+                            source_version=run.snapshot_revision,
+                            root=root,
+                            prefix=prefix,
+                        )
+                except StrmManifestError:
+                    failed += 1
+                else:
+                    if outcome == "generated":
+                        generated += 1
+                    elif outcome == "unchanged":
+                        unchanged += 1
+                    else:
+                        skipped += 1
+            await session.commit()
+        return StrmGenerationSummary(
+            library_id,
+            source_scan_run_id,
+            generated,
+            unchanged,
+            skipped,
+            failed,
+            retired,
+        )
+
+    async def _validated_current_run(
+        self, session: AsyncSession, library_id: str, source_scan_run_id: str
+    ) -> tuple[MediaLibrary, LibraryScanRun]:
+        library = await session.get(MediaLibrary, library_id)
+        run = await session.get(LibraryScanRun, source_scan_run_id)
+        if (
+            library is None
+            or not library.enabled
+            or not library.scope_verified
+            or run is None
+            or run.library_id != library_id
+            or run.root_directory_id != library.root_directory_id
+            or run.state != "completed"
+            or not run.complete
+            or run.snapshot_revision is None
+        ):
+            raise StrmManifestError("source_snapshot_not_ready")
+        latest = await session.scalar(
+            select(func.max(LibraryScanRun.snapshot_revision)).where(
+                LibraryScanRun.library_id == library_id,
+                LibraryScanRun.complete.is_(True),
+                LibraryScanRun.state == "completed",
+            )
+        )
+        if latest != run.snapshot_revision:
+            raise StrmManifestError("source_snapshot_not_current")
+        return library, run
+
+    async def _reconcile_entry(
+        self,
+        session: AsyncSession,
+        *,
+        library_id: str,
+        entry: LibraryScanEntry,
+        source_version: int,
+        root: Path,
+        prefix: str,
+    ) -> str:
+        paths = _paths(entry)
+        if paths is None:
+            return "skipped"
+        cloud_path, local_path = paths
+        manifest = await session.scalar(
+            select(StrmManifestEntry).where(
+                StrmManifestEntry.library_id == library_id,
+                StrmManifestEntry.cloud_file_id == entry.object_id,
+                StrmManifestEntry.is_current.is_(True),
+            )
+        )
+        collision = await session.scalar(
+            select(StrmManifestEntry).where(
+                StrmManifestEntry.library_id == library_id,
+                StrmManifestEntry.local_relative_path == local_path,
+                StrmManifestEntry.is_current.is_(True),
+                StrmManifestEntry.cloud_file_id != entry.object_id,
+            )
+        )
+        if collision is not None:
+            raise StrmManifestError("path_collision")
+        if manifest is None:
+            manifest = StrmManifestEntry(
+                manifest_id="strm_" + uuid.uuid4().hex,
+                library_id=library_id,
+                cloud_file_id=entry.object_id,
+                cloud_directory_id=entry.parent_id,
+                pickcode=None,
+                cloud_relative_path=cloud_path,
+                local_relative_path=local_path,
+                size_bytes=entry.size_bytes,
+                source_version=source_version,
+                status=StrmManifestStatus.PENDING,
+                is_current=True,
+            )
+            session.add(manifest)
+            await session.flush()
+            old_path = None
+        else:
+            old_path = manifest.local_relative_path
+        content = f"{prefix}{quote(manifest.manifest_id, safe='')}\n".encode()
+        written = _write(root, local_path, content)
+        if old_path and old_path != local_path:
+            try:
+                _remove_managed(root, old_path, content)
+            except Exception:
+                if written:
+                    _remove_managed(root, local_path, content, tolerate_missing=True)
+                raise
+        manifest.cloud_directory_id = entry.parent_id
+        manifest.cloud_relative_path = cloud_path
+        manifest.local_relative_path = local_path
+        manifest.size_bytes = entry.size_bytes
+        manifest.source_version = source_version
+        manifest.status = StrmManifestStatus.VERIFIED
+        manifest.last_verified_at = datetime.now(UTC)
+        return "generated" if written else "unchanged"
+
+    async def _retire_removed(
+        self,
+        session: AsyncSession,
+        *,
+        library_id: str,
+        object_id: str,
+        root: Path,
+        prefix: str,
+    ) -> bool:
+        manifest = await session.scalar(
+            select(StrmManifestEntry).where(
+                StrmManifestEntry.library_id == library_id,
+                StrmManifestEntry.cloud_file_id == object_id,
+                StrmManifestEntry.is_current.is_(True),
+            )
+        )
+        if manifest is None:
+            return False
+        expected = f"{prefix}{quote(manifest.manifest_id, safe='')}\n".encode()
+        _remove_managed(root, manifest.local_relative_path, expected)
+        manifest.is_current = False
+        manifest.status = StrmManifestStatus.RETIRED
+        return True
 
 
 def _item(row: StrmManifestEntry) -> StrmManifestItem:
@@ -229,7 +495,9 @@ def _write(root: Path, relative_path: str, content: bytes) -> bool:
         return False
     if target.exists() and not target.is_file():
         raise StrmManifestError("target_not_file")
-    descriptor, temporary_name = tempfile.mkstemp(prefix=".watch-assistant-", dir=parent)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=".watch-assistant-", dir=parent
+    )
     temporary = Path(temporary_name)
     try:
         with os.fdopen(descriptor, "wb") as handle:
@@ -240,6 +508,36 @@ def _write(root: Path, relative_path: str, content: bytes) -> bool:
     finally:
         temporary.unlink(missing_ok=True)
     return True
+
+
+def _remove_managed(
+    root: Path,
+    relative_path: str,
+    expected: bytes,
+    *,
+    tolerate_missing: bool = False,
+) -> None:
+    if not _valid_relative_path(relative_path):
+        raise StrmManifestError("invalid_managed_path")
+    target = root.joinpath(*PurePosixPath(relative_path).parts)
+    if not target.exists():
+        if tolerate_missing:
+            return
+        return
+    try:
+        resolved_parent = target.parent.resolve(strict=True)
+    except OSError as error:
+        raise StrmManifestError("managed_parent_not_safe") from error
+    _within(root, resolved_parent)
+    if target.is_symlink() or not target.is_file():
+        raise StrmManifestError("managed_file_not_safe")
+    try:
+        actual = target.read_bytes()
+    except OSError as error:
+        raise StrmManifestError("managed_file_not_readable") from error
+    if actual != expected:
+        raise StrmManifestError("managed_file_changed")
+    target.unlink()
 
 
 def _safe_root(value: Path | str) -> Path:
@@ -262,20 +560,45 @@ def _safe_prefix(value: object) -> str:
     if not isinstance(value, str) or not value or len(value) > 2048:
         raise StrmManifestError("invalid_playback_url_prefix")
     parsed = urlsplit(value)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.query or parsed.fragment:
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.netloc
+        or parsed.query
+        or parsed.fragment
+    ):
         raise StrmManifestError("invalid_playback_url_prefix")
     return value.rstrip("/") + "/"
 
 
 def _valid_id(value: object) -> bool:
-    return isinstance(value, str) and 1 <= len(value) <= 128 and value.isascii() and "/" not in value and "\\" not in value
+    return (
+        isinstance(value, str)
+        and 1 <= len(value) <= 128
+        and value.isascii()
+        and "/" not in value
+        and "\\" not in value
+    )
 
 
 def _valid_relative_path(value: object) -> bool:
-    if not isinstance(value, str) or len(value) > 1024 or "\\" in value or "\x00" in value:
+    if (
+        not isinstance(value, str)
+        or len(value) > 1024
+        or "\\" in value
+        or "\x00" in value
+    ):
         return False
     path = PurePosixPath(value)
-    return not path.is_absolute() and path.as_posix() == value and all(part not in {"", ".", ".."} for part in path.parts)
+    return (
+        not path.is_absolute()
+        and path.as_posix() == value
+        and all(part not in {"", ".", ".."} for part in path.parts)
+    )
 
 
-__all__ = ["StrmGenerationSummary", "StrmManifestError", "StrmManifestItem", "StrmManifestService"]
+__all__ = [
+    "StrmGenerationSummary",
+    "StrmManifestError",
+    "StrmManifestItem",
+    "StrmManifestService",
+]
