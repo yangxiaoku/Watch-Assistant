@@ -24,16 +24,14 @@
 
 以下分支仍有独立提交或被其他 detached worktree 依赖，均不属于当前发布版本。合入前必须基于发布基线验证并登记结果；不得把它们描述为已发布：
 
-- `codex/c05-runner-deadline`、`codex/integration-library-phase-1-c03-clean`、
-  `codex/integration-library-phase-2-clean`、`codex/integration-library-phase-2-current`：
-  C03/C05 runner、fixture 和组织 transport 工作树，均有未提交修改。
-- `codex/integration-library-phase-1-ui`、`codex/library-workbench-audit`、
-  `codex/o03-companion-preview`、`codex/organization-companion-groups`：被 detached worktree
-  依赖，待对应任务结束后再归档。
+- `codex/integration-library-phase-1-c03-clean`、`codex/integration-library-phase-2-clean`、
+  `codex/integration-library-phase-2-current`：C03 runner、fixture 和组织 transport 工作树，
+  均有未提交修改。
 - `feature/integration-inspection-deploy`、`feature/library-migration-foundation`、
   `feature/watch-assistant`：关联 worktree 有未提交改动或验收资产。
+- 未注册的 `D:/115ts/.worktrees/library-workbench-audit` 目录仍有残留资产，暂不删除。
 
-25 条无 worktree 的旧分支已归档为 `archive/20260729/...` 标签并删除，详见
+30 条无 worktree 的旧分支已归档为 `archive/20260729/...` 标签并删除，详见
 `docs/ops/branch-governance-audit-20260729.md`。远端 `origin/codex/publish-20260729` 保留，
 因其仍有独立旧发布说明提交 `05f22e7`，不得误报为当前发布版本。
 
