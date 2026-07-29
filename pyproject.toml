@@ -19,6 +19,9 @@ dependencies = [
     "uvicorn==0.46.0",
 ]
 
+[project.scripts]
+watchctl = "watch_assistant.cli:main"
+
 [project.optional-dependencies]
 dev = [
     "pytest==9.0.3",

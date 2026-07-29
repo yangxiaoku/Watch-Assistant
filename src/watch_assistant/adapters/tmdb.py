@@ -1,6 +1,7 @@
 """TMDB movie and television metadata adapter."""
 
 import re
+from datetime import UTC, datetime
 
 import httpx
 
@@ -8,6 +9,8 @@ from watch_assistant.schemas import (
     MediaType,
     MovieCollectionResponse,
     MovieMetadata,
+    SeasonDetailResponse,
+    SeasonEpisodeMetadata,
     SeasonMetadata,
 )
 
@@ -36,6 +39,10 @@ class TmdbError(RuntimeError):
 
 
 class TmdbAuthError(TmdbError):
+    pass
+
+
+class TmdbNotFoundError(TmdbError):
     pass
 
 
@@ -72,6 +79,25 @@ class TmdbClient:
     async def get_media(self, tmdb_id: int, media_type: MediaType) -> MovieMetadata:
         payload = await self._get(f"/{media_type.value}/{tmdb_id}")
         return _parse_media(payload, tmdb_id=tmdb_id, media_type=media_type)
+
+    async def get_season(
+        self,
+        tmdb_id: int,
+        season_number: int,
+        *,
+        language: str = "zh-CN",
+    ) -> SeasonDetailResponse:
+        if tmdb_id < 1 or season_number < 0:
+            raise ValueError("Invalid TMDB season identity")
+        payload = await self._get(
+            f"/tv/{tmdb_id}/season/{season_number}", language=language
+        )
+        return _parse_season(
+            payload,
+            series_tmdb_id=tmdb_id,
+            season_number=season_number,
+            language=language,
+        )
 
     async def get_popular(self) -> list[MovieMetadata]:
         return await self.get_feed("popular")
@@ -191,13 +217,14 @@ class TmdbClient:
         *,
         params: dict[str, str | int] | None = None,
         api_key: str | None = None,
+        language: str = "zh-CN",
     ) -> dict:
         try:
             response = await self._client.get(
                 path,
                 params={
                     "api_key": self._api_key if api_key is None else api_key,
-                    "language": "zh-CN",
+                    "language": language,
                     **(params or {}),
                 },
                 timeout=self._timeout,
@@ -206,6 +233,8 @@ class TmdbClient:
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code in {401, 403}:
                 raise TmdbAuthError("TMDB credential rejected") from None
+            if exc.response.status_code == 404:
+                raise TmdbNotFoundError("TMDB resource not found") from None
             raise TmdbError("TMDB request failed") from None
         except httpx.HTTPError as exc:
             raise TmdbError("TMDB request failed") from exc
@@ -369,9 +398,106 @@ def _parse_seasons(payload: dict, media_type: MediaType) -> list[SeasonMetadata]
                 poster_path=item.get("poster_path")
                 if isinstance(item.get("poster_path"), str)
                 else None,
+                tmdb_season_id=(
+                    item.get("id")
+                    if isinstance(item.get("id"), int) and item["id"] > 0
+                    else None
+                ),
+                overview_available=bool(
+                    isinstance(item.get("overview"), str)
+                    and item["overview"].strip()
+                ),
             ),
         )
     return [by_number[number] for number in sorted(by_number)]
+
+
+def _parse_season(
+    payload: dict,
+    *,
+    series_tmdb_id: int,
+    season_number: int,
+    language: str,
+) -> SeasonDetailResponse:
+    raw_name = payload.get("name")
+    name = raw_name.strip() if isinstance(raw_name, str) else ""
+    if not name:
+        name = "特别篇" if season_number == 0 else f"第 {season_number} 季"
+    raw_overview = payload.get("overview")
+    overview = raw_overview.strip() if isinstance(raw_overview, str) else None
+    overview = overview or None
+    episodes: list[SeasonEpisodeMetadata] = []
+    raw_episodes = payload.get("episodes")
+    if isinstance(raw_episodes, list):
+        for item in raw_episodes:
+            if not isinstance(item, dict):
+                continue
+            episode_number = item.get("episode_number")
+            if (
+                not isinstance(episode_number, int)
+                or isinstance(episode_number, bool)
+                or episode_number < 0
+            ):
+                continue
+            raw_episode_name = item.get("name")
+            episode_name = (
+                raw_episode_name.strip()
+                if isinstance(raw_episode_name, str)
+                else f"第 {episode_number} 集"
+            )
+            episodes.append(
+                SeasonEpisodeMetadata(
+                    episode_number=episode_number,
+                    name=episode_name or f"第 {episode_number} 集",
+                    overview=_optional_text(item.get("overview")),
+                    air_date=_optional_text(item.get("air_date")),
+                    still_path=_optional_text(item.get("still_path")),
+                    runtime=(
+                        item["runtime"]
+                        if isinstance(item.get("runtime"), int)
+                        and not isinstance(item["runtime"], bool)
+                        and item["runtime"] >= 0
+                        else None
+                    ),
+                    vote_average=(
+                        float(item["vote_average"])
+                        if isinstance(item.get("vote_average"), (int, float))
+                        and not isinstance(item.get("vote_average"), bool)
+                        else None
+                    ),
+                )
+            )
+    episodes.sort(key=lambda item: item.episode_number)
+    episode_count = payload.get("episode_count")
+    if not isinstance(episode_count, int) or isinstance(episode_count, bool) or episode_count < 0:
+        episode_count = len(episodes)
+    vote_average = payload.get("vote_average")
+    return SeasonDetailResponse(
+        series_tmdb_id=series_tmdb_id,
+        tmdb_season_id=(
+            payload["id"]
+            if isinstance(payload.get("id"), int) and payload["id"] > 0
+            else None
+        ),
+        season_number=season_number,
+        name=name,
+        overview=overview,
+        overview_language=language if overview else None,
+        poster_path=_optional_text(payload.get("poster_path")),
+        air_date=_optional_text(payload.get("air_date")),
+        episode_count=episode_count,
+        vote_average=(
+            float(vote_average)
+            if isinstance(vote_average, (int, float)) and not isinstance(vote_average, bool)
+            else None
+        ),
+        fetched_at=datetime.now(UTC),
+        episodes=episodes,
+    )
+
+
+def _optional_text(value: object) -> str | None:
+    return value.strip() if isinstance(value, str) and value.strip() else None
 
 
 def _parse_genre_ids(payload: dict) -> list[int]:

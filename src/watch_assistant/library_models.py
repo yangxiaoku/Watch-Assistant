@@ -2,7 +2,16 @@
 
 from datetime import UTC, datetime
 
-from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from watch_assistant.models import Base
@@ -52,6 +61,7 @@ class LibraryScanRun(Base):
     items_seen: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     added_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     changed_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    removed_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utc_now
@@ -101,7 +111,11 @@ class LibraryScanEntry(Base):
 
 
 class LibraryScanDiff(Base):
-    """Add/change observations only; this table has no deletion action."""
+    """The bounded diff between two complete snapshots.
+
+    A ``removed`` row is only written after a scan has proved completeness.  A
+    partial or failed scan must never manufacture a deletion conclusion.
+    """
 
     __tablename__ = "library_scan_diffs"
 
@@ -115,6 +129,106 @@ class LibraryScanDiff(Base):
     change_kind: Mapped[str] = mapped_column(String(16))
     path_changed: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default="0"
+    )
+
+
+class LibraryObjectLedger(Base):
+    """Latest availability state for one stable cloud object identity."""
+
+    __tablename__ = "library_object_ledger"
+    __table_args__ = (
+        UniqueConstraint(
+            "library_id",
+            "object_type",
+            "object_id",
+            name="uq_library_object_ledger_identity",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    library_id: Mapped[str] = mapped_column(
+        String(128), ForeignKey("media_libraries.id", ondelete="CASCADE"), index=True
+    )
+    object_type: Mapped[str] = mapped_column(String(16))
+    object_id: Mapped[str] = mapped_column(String(128), index=True)
+    parent_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    name: Mapped[str] = mapped_column(Text)
+    path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_directory: Mapped[bool] = mapped_column(Boolean)
+    size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    modified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    status: Mapped[str] = mapped_column(
+        String(16), default="active", server_default="active", index=True
+    )
+    first_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utc_now
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utc_now, index=True
+    )
+    missing_since: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_scan_run_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("library_scan_runs.id", ondelete="SET NULL"), nullable=True
+    )
+    revision: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+
+
+class LibraryInventoryEvent(Base):
+    """Immutable, deduplicated evidence for inventory availability changes."""
+
+    __tablename__ = "library_inventory_events"
+    __table_args__ = (
+        UniqueConstraint("dedupe_key", name="uq_library_inventory_event_dedupe"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    library_id: Mapped[str] = mapped_column(
+        String(128), ForeignKey("media_libraries.id", ondelete="CASCADE"), index=True
+    )
+    scan_run_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("library_scan_runs.id", ondelete="SET NULL"), nullable=True
+    )
+    object_type: Mapped[str] = mapped_column(String(16))
+    object_id: Mapped[str] = mapped_column(String(128), index=True)
+    event_kind: Mapped[str] = mapped_column(String(16), index=True)
+    previous_status: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    dedupe_key: Mapped[str] = mapped_column(String(255), index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utc_now, index=True
+    )
+
+
+class LibraryMediaIdentity(Base):
+    """A local, manually confirmed media identity for one stable file."""
+
+    __tablename__ = "library_media_identities"
+    __table_args__ = (
+        UniqueConstraint("library_id", "object_id", name="uq_library_media_identity_object"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    library_id: Mapped[str] = mapped_column(
+        String(128), ForeignKey("media_libraries.id", ondelete="CASCADE"), index=True
+    )
+    object_id: Mapped[str] = mapped_column(String(128), index=True)
+    tmdb_id: Mapped[int] = mapped_column(Integer, index=True)
+    media_type: Mapped[str] = mapped_column(String(8))
+    season: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    episode_start: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    episode_end: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    confidence: Mapped[str] = mapped_column(
+        String(16), default="trusted", server_default="trusted"
+    )
+    revision: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utc_now
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utc_now, onupdate=_utc_now
     )
 
 

@@ -4,17 +4,24 @@ from __future__ import annotations
 
 import asyncio
 import math
+import time
 from collections.abc import Callable, Mapping
 from importlib.metadata import version
 from typing import Any, Protocol
 
 EXPECTED_P115CLIENT_VERSION = "0.0.9.6.5.1"
+P115_BUSY_OPERATION_ERRNO = 990009
+P115_BUSY_OPERATION_RETRY_DELAY_SECONDS = 3.0
 
 
 class P115ReadOnlyClient(Protocol):
     def fs_files(self, payload: Mapping[str, int | str], **kwargs: Any) -> Any: ...
 
     def fs_info(self, payload: Mapping[str, str], **kwargs: Any) -> Any: ...
+
+    def fs_files_app(self, payload: Mapping[str, int | str], **kwargs: Any) -> Any: ...
+
+    def fs_info_app(self, payload: Mapping[str, str], **kwargs: Any) -> Any: ...
 
 
 P115ReadOnlyCallExecutor = Callable[..., Any]
@@ -52,16 +59,36 @@ class P115FixedReadOnlyTransport:
     async def fs_files(
         self, payload: Mapping[str, int | str], *, timeout_seconds: float
     ) -> object:
-        return await self._call(
-            self._client.fs_files, payload, timeout_seconds=timeout_seconds
-        )
+        try:
+            response = await self._call(
+                self._client.fs_files, payload, timeout_seconds=timeout_seconds
+            )
+            if not _is_structured_method_not_allowed(response):
+                return response
+        except Exception as error:
+            if not _is_method_not_allowed(error):
+                raise
+        fallback = getattr(self._client, "fs_files_app", None)
+        if not callable(fallback):
+            raise P115ReadOnlyTransportUnavailable("app_read_endpoint_unavailable")
+        return await self._call(fallback, payload, timeout_seconds=timeout_seconds)
 
     async def fs_info(
         self, payload: Mapping[str, str], *, timeout_seconds: float
     ) -> object:
-        return await self._call(
-            self._client.fs_info, payload, timeout_seconds=timeout_seconds
-        )
+        try:
+            response = await self._call(
+                self._client.fs_info, payload, timeout_seconds=timeout_seconds
+            )
+            if not _is_structured_method_not_allowed(response):
+                return response
+        except Exception as error:
+            if not _is_method_not_allowed(error):
+                raise
+        fallback = getattr(self._client, "fs_info_app", None)
+        if not callable(fallback):
+            raise P115ReadOnlyTransportUnavailable("app_read_endpoint_unavailable")
+        return await self._call(fallback, payload, timeout_seconds=timeout_seconds)
 
     async def _call(
         self,
@@ -119,7 +146,43 @@ def p115_readonly_timeout_executor(
         request_kwargs["retries"] = False
         return urllib3_request(async_=False, **request_kwargs)
 
-    return method(payload, async_=False, request=request_with_timeout)
+    for attempt in range(2):
+        try:
+            return method(payload, async_=False, request=request_with_timeout)
+        except Exception as error:
+            if attempt or not _has_busy_errno(error):
+                raise
+            time.sleep(P115_BUSY_OPERATION_RETRY_DELAY_SECONDS)
+    raise P115ReadOnlyTransportUnavailable("blocked_environment")
+
+
+def _has_busy_errno(error: BaseException) -> bool:
+    if getattr(error, "errno", None) == P115_BUSY_OPERATION_ERRNO:
+        return True
+    return any(
+        isinstance(argument, Mapping)
+        and argument.get("errno") == P115_BUSY_OPERATION_ERRNO
+        for argument in getattr(error, "args", ())
+    )
+
+
+def _is_method_not_allowed(error: BaseException) -> bool:
+    """Use the app read endpoint only for a provider-level HTTP 405."""
+
+    for name in ("status", "status_code", "code"):
+        value = getattr(error, name, None)
+        if value == 405:
+            return True
+    response = getattr(error, "response", None)
+    return getattr(response, "status_code", None) == 405
+
+
+def _is_structured_method_not_allowed(response: object) -> bool:
+    if not isinstance(response, Mapping):
+        return False
+    return any(
+        response.get(name) in {405, "405"} for name in ("status_code", "http_status")
+    )
 
 
 def _positive_timeout(value: object) -> float:

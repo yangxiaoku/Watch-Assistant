@@ -54,6 +54,15 @@ class Settings(BaseSettings):
     cache_warm_concurrency: int = Field(
         default=3, ge=1, le=16, validation_alias="CACHE_WARM_CONCURRENCY"
     )
+    subscription_scheduler_enabled: bool = Field(
+        default=False, validation_alias="SUBSCRIPTION_SCHEDULER_ENABLED"
+    )
+    subscription_scheduler_interval_seconds: int = Field(
+        default=300,
+        ge=5,
+        le=86_400,
+        validation_alias="SUBSCRIPTION_SCHEDULER_INTERVAL_SECONDS",
+    )
     inspection_enabled: bool = Field(
         default=False, validation_alias="INSPECTION_ENABLED"
     )
@@ -65,6 +74,12 @@ class Settings(BaseSettings):
         ge=5,
         le=120,
         validation_alias="INSPECTION_ITEM_TIMEOUT_SECONDS",
+    )
+    inspection_final_timeout_seconds: float | None = Field(
+        default=None,
+        ge=30,
+        le=300,
+        validation_alias="INSPECTION_FINAL_TIMEOUT_SECONDS",
     )
     inspection_poll_interval_seconds: float = Field(
         default=0.75,

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import math
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, Protocol
@@ -44,8 +45,14 @@ class P115ClientLike(Protocol):
 
     def fs_files(self, payload: Mapping[str, int | str], **kwargs: Any) -> Any: ...
 
+    def fs_info_app(self, payload: Mapping[str, str], **kwargs: Any) -> Any: ...
+
+    def fs_files_app(self, payload: Mapping[str, int | str], **kwargs: Any) -> Any: ...
+
 
 P115C03CallExecutor = Callable[..., Awaitable[Any] | Any]
+P115_BUSY_OPERATION_ERRNO = 990009
+P115_BUSY_OPERATION_RETRY_DELAY_SECONDS = 3.0
 
 
 class P115C03CallTimeoutUnavailable(RuntimeError):
@@ -94,9 +101,10 @@ class P115C03LiveTransport(P115C03Transport):
     ) -> C03RemoteEntry | None:
         if self._call_executor is None:
             raise P115C03CallTimeoutUnavailable
-        response = await _call(
+        response = await _call_read_with_405_fallback(
             self._call_executor,
             self._client.fs_info,
+            getattr(self._client, "fs_info_app", None),
             {"cid": file_id},
             timeout_seconds=timeout_seconds,
         )
@@ -117,9 +125,10 @@ class P115C03LiveTransport(P115C03Transport):
                     tuple(entries), complete=False, page_calls=page_calls - 1
                 )
             try:
-                response = await _call(
+                response = await _call_read_with_405_fallback(
                     self._call_executor,
                     self._client.fs_files,
+                    getattr(self._client, "fs_files_app", None),
                     {
                         "cid": parent_id,
                         "limit": VERIFIED_FS_FILES_PAGE_SIZE,
@@ -180,6 +189,108 @@ async def _call(
     if inspect.isawaitable(result):
         return await result
     return result
+
+
+async def _call_read_with_405_fallback(
+    call_executor: P115C03CallExecutor | None,
+    primary_method: Callable[..., Any],
+    fallback_method: Callable[..., Any] | None,
+    payload: Mapping[str, Any],
+    *,
+    timeout_seconds: float,
+) -> Any:
+    """Use the verified app read endpoint only for a provider HTTP 405."""
+
+    try:
+        response = await _call(
+            call_executor,
+            primary_method,
+            payload,
+            timeout_seconds=timeout_seconds,
+        )
+        if not _is_structured_method_not_allowed(response):
+            return response
+        if not callable(fallback_method):
+            return response
+        return await _call(
+            call_executor,
+            fallback_method,
+            payload,
+            timeout_seconds=timeout_seconds,
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as error:
+        if not _is_method_not_allowed(error) or not callable(fallback_method):
+            raise
+        return await _call(
+            call_executor,
+            fallback_method,
+            payload,
+            timeout_seconds=timeout_seconds,
+        )
+
+
+def _is_method_not_allowed(error: BaseException) -> bool:
+    for name in ("status", "status_code", "code"):
+        value = getattr(error, name, None)
+        if value == 405 or value == "405":
+            return True
+    response = getattr(error, "response", None)
+    return getattr(response, "status_code", None) in {405, "405"}
+
+
+def _is_structured_method_not_allowed(response: object) -> bool:
+    if not isinstance(response, Mapping):
+        return False
+    return any(response.get(name) in {405, "405"} for name in ("status_code", "http_status"))
+
+
+def p115_c03_timeout_executor(
+    method: Callable[..., Any],
+    payload: Mapping[str, Any],
+    *,
+    timeout_seconds: float,
+) -> Any:
+    """Execute one fixed-client call with timeout and the known busy retry."""
+
+    if (
+        isinstance(timeout_seconds, bool)
+        or not isinstance(timeout_seconds, (int, float))
+        or not math.isfinite(float(timeout_seconds))
+        or timeout_seconds <= 0
+    ):
+        raise RuntimeError("invalid_timeout")
+    try:
+        from urllib3_future_request import request as urllib3_request
+    except ImportError:
+        raise RuntimeError("timeout_transport_unavailable") from None
+
+    def request_with_timeout(*, async_: bool = False, **request_kwargs: Any) -> Any:
+        if async_:
+            raise RuntimeError("async_transport_unsupported")
+        request_kwargs["timeout"] = float(timeout_seconds)
+        request_kwargs["retries"] = False
+        return urllib3_request(async_=False, **request_kwargs)
+
+    for attempt in range(2):
+        try:
+            return method(payload, async_=False, request=request_with_timeout)
+        except Exception as error:
+            if attempt or not _has_busy_errno(error):
+                raise
+            time.sleep(P115_BUSY_OPERATION_RETRY_DELAY_SECONDS)
+    raise RuntimeError("call_unreachable")
+
+
+def _has_busy_errno(error: BaseException) -> bool:
+    if getattr(error, "errno", None) == P115_BUSY_OPERATION_ERRNO:
+        return True
+    return any(
+        isinstance(argument, Mapping)
+        and argument.get("errno") == P115_BUSY_OPERATION_ERRNO
+        for argument in getattr(error, "args", ())
+    )
 
 
 def _client_payload(request: PreparedWrite) -> dict[str, str] | None:
@@ -398,4 +509,5 @@ __all__ = [
     "P115C03CallTimeoutUnavailable",
     "P115C03LiveTransport",
     "P115ClientLike",
+    "p115_c03_timeout_executor",
 ]

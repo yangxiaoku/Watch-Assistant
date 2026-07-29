@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from enum import StrEnum
 
 from sqlalchemy import delete, func, select
@@ -18,6 +19,8 @@ from watch_assistant.adapters.p115_library import (
     ScanState,
 )
 from watch_assistant.library_models import (
+    LibraryInventoryEvent,
+    LibraryObjectLedger,
     LibraryScanCheckpoint,
     LibraryScanDiff,
     LibraryScanEntry,
@@ -66,6 +69,7 @@ class LibraryScanResult:
     snapshot_revision: int | None
     added_count: int
     changed_count: int
+    removed_count: int
     changes: tuple[ScanChange, ...]
     deletion_candidates: tuple[str, ...] = ()
     error_code: str | None = None
@@ -76,7 +80,9 @@ class LibraryScanResult:
             f"state={self.state.value!r}, complete={self.complete!r}, "
             f"pages_read={self.pages_read}, items_seen={self.items_seen}, "
             f"added_count={self.added_count}, changed_count={self.changed_count}, "
-            f"change_count={len(self.changes)}, deletion_candidates=0, "
+            f"removed_count={self.removed_count}, "
+            f"change_count={len(self.changes)}, "
+            f"deletion_candidates={len(self.deletion_candidates)}, "
             f"error_code={self.error_code!r})"
         )
 
@@ -89,8 +95,9 @@ class LibraryScanResult:
             "snapshot_revision": self.snapshot_revision,
             "added_count": self.added_count,
             "changed_count": self.changed_count,
+            "removed_count": self.removed_count,
             "change_count": len(self.changes),
-            "deletion_candidates": [],
+            "deletion_candidates": list(self.deletion_candidates),
             "error_code": self.error_code,
         }
 
@@ -367,22 +374,31 @@ class LibraryIndexService:
                     changes: list[ScanChange] = []
                     added_count = 0
                     changed_count = 0
-                    entries = await session.stream_scalars(
-                        select(LibraryScanEntry).where(
-                            LibraryScanEntry.scan_run_id == run_id
-                        )
-                    )
-                    async for entry in entries:
-                        old = None
-                        if previous_id is not None:
-                            old = await session.get(
-                                LibraryScanEntry,
-                                {
-                                    "scan_run_id": previous_id,
-                                    "object_type": entry.object_type,
-                                    "object_id": entry.object_id,
-                                },
+                    removed_count = 0
+                    entries = list(
+                        (
+                            await session.scalars(
+                                select(LibraryScanEntry).where(
+                                    LibraryScanEntry.scan_run_id == run_id
+                                )
                             )
+                        ).all()
+                    )
+                    previous_entries: dict[tuple[str, str], LibraryScanEntry] = {}
+                    if previous_id is not None:
+                        previous_entries = {
+                            (entry.object_type, entry.object_id): entry
+                            for entry in (
+                                await session.scalars(
+                                    select(LibraryScanEntry).where(
+                                        LibraryScanEntry.scan_run_id == previous_id
+                                    )
+                                )
+                            ).all()
+                        }
+                    current_keys = {(entry.object_type, entry.object_id) for entry in entries}
+                    for entry in entries:
+                        old = previous_entries.get((entry.object_type, entry.object_id))
                         if old is None:
                             kind = "added"
                             path_changed = False
@@ -411,11 +427,48 @@ class LibraryIndexService:
                                     path_changed,
                                 )
                             )
+                        await _record_ledger_observation(
+                            session,
+                            library_id=self._library_id,
+                            scan_run_id=run_id,
+                            entry=entry,
+                            event_kind=kind,
+                        )
+                    if previous_id is not None:
+                        for key, old in previous_entries.items():
+                            if key in current_keys:
+                                continue
+                            removed_count += 1
+                            session.add(
+                                LibraryScanDiff(
+                                    scan_run_id=run_id,
+                                    object_type=old.object_type,
+                                    object_id=old.object_id,
+                                    change_kind="removed",
+                                    path_changed=False,
+                                )
+                            )
+                            if len(changes) < self._max_reported_changes:
+                                changes.append(
+                                    ScanChange(
+                                        old.object_type,
+                                        old.object_id,
+                                        "removed",
+                                        False,
+                                    )
+                                )
+                            await _record_ledger_removal(
+                                session,
+                                library_id=self._library_id,
+                                scan_run_id=run_id,
+                                entry=old,
+                            )
                     run.state = ScanRunState.COMPLETED.value
                     run.complete = True
                     run.error_code = None
                     run.added_count = added_count
                     run.changed_count = changed_count
+                    run.removed_count = removed_count
             await session.commit()
         return await self._result_for_run(run_id)
 
@@ -445,6 +498,7 @@ class LibraryIndexService:
                 snapshot_revision=run.snapshot_revision,
                 added_count=run.added_count,
                 changed_count=run.changed_count,
+                removed_count=run.removed_count,
                 changes=tuple(
                     ScanChange(
                         row.object_type,
@@ -454,8 +508,171 @@ class LibraryIndexService:
                     )
                     for row in rows
                 ),
+                deletion_candidates=tuple(
+                    row.object_id for row in rows if row.change_kind == "removed"
+                ),
                 error_code=run.error_code,
             )
+
+
+async def _record_ledger_observation(
+    session: AsyncSession,
+    *,
+    library_id: str,
+    scan_run_id: str,
+    entry: LibraryScanEntry,
+    event_kind: str,
+) -> None:
+    """Upsert one observed object and record only meaningful transitions."""
+
+    ledger = await session.scalar(
+        select(LibraryObjectLedger).where(
+            LibraryObjectLedger.library_id == library_id,
+            LibraryObjectLedger.object_type == entry.object_type,
+            LibraryObjectLedger.object_id == entry.object_id,
+        )
+    )
+    now = datetime.now(UTC)
+    if ledger is None:
+        ledger = LibraryObjectLedger(
+            id="ledger_" + uuid.uuid4().hex,
+            library_id=library_id,
+            object_type=entry.object_type,
+            object_id=entry.object_id,
+            parent_id=entry.parent_id,
+            name=entry.name,
+            path=entry.path,
+            is_directory=entry.is_directory,
+            size_bytes=entry.size_bytes,
+            modified_at=entry.modified_at,
+            status="active",
+            first_seen_at=now,
+            last_seen_at=now,
+            last_scan_run_id=scan_run_id,
+        )
+        session.add(ledger)
+        await _record_inventory_event(
+            session,
+            library_id=library_id,
+            scan_run_id=scan_run_id,
+            entry=entry,
+            event_kind="added",
+            previous_status=None,
+        )
+        return
+
+    previous_status = ledger.status
+    ledger.parent_id = entry.parent_id
+    ledger.name = entry.name
+    ledger.path = entry.path
+    ledger.is_directory = entry.is_directory
+    ledger.size_bytes = entry.size_bytes
+    ledger.modified_at = entry.modified_at
+    ledger.last_seen_at = now
+    ledger.last_scan_run_id = scan_run_id
+    ledger.revision += 1
+    if previous_status == "missing":
+        ledger.status = "active"
+        ledger.missing_since = None
+        await _record_inventory_event(
+            session,
+            library_id=library_id,
+            scan_run_id=scan_run_id,
+            entry=entry,
+            event_kind="restored",
+            previous_status=previous_status,
+        )
+    elif event_kind == "changed":
+        await _record_inventory_event(
+            session,
+            library_id=library_id,
+            scan_run_id=scan_run_id,
+            entry=entry,
+            event_kind="changed",
+            previous_status=previous_status,
+        )
+
+
+async def _record_ledger_removal(
+    session: AsyncSession,
+    *,
+    library_id: str,
+    scan_run_id: str,
+    entry: LibraryScanEntry,
+) -> None:
+    ledger = await session.scalar(
+        select(LibraryObjectLedger).where(
+            LibraryObjectLedger.library_id == library_id,
+            LibraryObjectLedger.object_type == entry.object_type,
+            LibraryObjectLedger.object_id == entry.object_id,
+        )
+    )
+    now = datetime.now(UTC)
+    previous_status = None if ledger is None else ledger.status
+    if ledger is None:
+        ledger = LibraryObjectLedger(
+            id="ledger_" + uuid.uuid4().hex,
+            library_id=library_id,
+            object_type=entry.object_type,
+            object_id=entry.object_id,
+            parent_id=entry.parent_id,
+            name=entry.name,
+            path=entry.path,
+            is_directory=entry.is_directory,
+            size_bytes=entry.size_bytes,
+            modified_at=entry.modified_at,
+            status="missing",
+            first_seen_at=now,
+            last_seen_at=now,
+            missing_since=now,
+            last_scan_run_id=scan_run_id,
+        )
+        session.add(ledger)
+    else:
+        ledger.status = "missing"
+        ledger.missing_since = ledger.missing_since or now
+        ledger.last_scan_run_id = scan_run_id
+        ledger.revision += 1
+    if previous_status != "missing":
+        await _record_inventory_event(
+            session,
+            library_id=library_id,
+            scan_run_id=scan_run_id,
+            entry=entry,
+            event_kind="removed",
+            previous_status=previous_status,
+        )
+
+
+async def _record_inventory_event(
+    session: AsyncSession,
+    *,
+    library_id: str,
+    scan_run_id: str,
+    entry: LibraryScanEntry,
+    event_kind: str,
+    previous_status: str | None,
+) -> None:
+    dedupe_key = f"{scan_run_id}:{entry.object_type}:{entry.object_id}:{event_kind}"
+    existing = await session.scalar(
+        select(LibraryInventoryEvent.id).where(
+            LibraryInventoryEvent.dedupe_key == dedupe_key
+        )
+    )
+    if existing is not None:
+        return
+    session.add(
+        LibraryInventoryEvent(
+            id="inv_evt_" + uuid.uuid4().hex,
+            library_id=library_id,
+            scan_run_id=scan_run_id,
+            object_type=entry.object_type,
+            object_id=entry.object_id,
+            event_kind=event_kind,
+            previous_status=previous_status,
+            dedupe_key=dedupe_key,
+        )
+    )
 
 
 def _validate_identity(value: str) -> None:

@@ -8,8 +8,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from watch_assistant.models import Resource, Task, TaskState
-from watch_assistant.schemas import RemoteStatus, TaskAction
+from watch_assistant.schemas import (
+    RemoteStatus,
+    TaskAction,
+    WorkflowStageName,
+    WorkflowStageStatus,
+)
 from watch_assistant.services.observability import EventLogger, emit_event
+from watch_assistant.services.workflows import link_child, sync_child_stage
 
 REUSABLE_STATES = (TaskState.QUEUED, TaskState.SUBMITTING, TaskState.ACCEPTED)
 
@@ -82,6 +88,7 @@ class TaskService:
         *,
         force: bool = False,
         allowed_actions: frozenset[TaskAction] | None = None,
+        workflow_id: str | None = None,
     ):
         async with self._create_lock, self._session_factory() as session:
             resource = await session.get(Resource, resource_id)
@@ -100,10 +107,21 @@ class TaskService:
                 )
                 existing = choose_existing_task(existing_tasks, resource_id)
                 if existing is not None:
+                    if workflow_id is not None and existing.workflow_id is None:
+                        existing.workflow_id = workflow_id
+                        await link_child(
+                            session,
+                            workflow_id,
+                            WorkflowStageName.PUSH,
+                            "task",
+                            existing.id,
+                        )
+                        await session.commit()
                     return existing, True
 
             task = Task(
                 id="task_" + uuid4().hex,
+                workflow_id=workflow_id,
                 resource_id=resource.id,
                 action=action,
                 encrypted_url_snapshot=resource.encrypted_url,
@@ -112,6 +130,14 @@ class TaskService:
                 attempts=0,
             )
             session.add(task)
+            if workflow_id is not None:
+                await link_child(
+                    session,
+                    workflow_id,
+                    WorkflowStageName.PUSH,
+                    "task",
+                    task.id,
+                )
             await session.commit()
             await emit_event(
                 self._event_logger,
@@ -124,10 +150,16 @@ class TaskService:
         async with self._session_factory() as session:
             return await session.get(Task, task_id)
 
-    async def list_recent(self, limit: int = 50) -> list[Task]:
+    async def list_recent(self, limit: int = 50, offset: int = 0) -> list[Task]:
+        # MCP asks for one look-ahead row to produce a stable next cursor.
+        limit = max(1, min(limit, 101))
+        offset = max(0, offset)
         async with self._session_factory() as session:
             rows = await session.scalars(
-                select(Task).order_by(Task.created_at.desc()).limit(limit)
+                select(Task)
+                .order_by(Task.created_at.desc())
+                .offset(offset)
+                .limit(limit)
             )
             return list(rows)
 
@@ -144,6 +176,16 @@ class TaskService:
             if allowed_actions is not None and task.action not in allowed_actions:
                 raise PushKindUnsupported("push kind is not supported")
             prepare_manual_retry(task)
+            if task.workflow_id is not None:
+                await sync_child_stage(
+                    session,
+                    task.workflow_id,
+                    WorkflowStageName.PUSH,
+                    child_type="task",
+                    child_id=task.id,
+                    status=WorkflowStageStatus.RUNNING,
+                    reason="task_retry",
+                )
             await session.commit()
             return task
 

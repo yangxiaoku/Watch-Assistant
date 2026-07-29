@@ -85,7 +85,7 @@ class CookieProvider:
 
 
 def _parse_cookie(raw: bytes) -> str | None:
-    if not raw or b"\x00" in raw or b"\n" in raw or b"\r" in raw:
+    if not raw or b"\x00" in raw:
         return None
     try:
         text = raw.decode("ascii")
@@ -95,12 +95,12 @@ def _parse_cookie(raw: bytes) -> str | None:
 
 
 def normalize_cookie_text(text: str) -> str | None:
-    if not isinstance(text, str) or not text or "\x00" in text:
-        return None
-    if "\n" in text or "\r" in text:
+    if not isinstance(text, str) or not text:
         return None
     text = text.strip()
-    if not text:
+    if not text or "\x00" in text:
+        return None
+    if "\n" in text or "\r" in text:
         return None
     parsed = SimpleCookie()
     try:

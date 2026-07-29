@@ -1,5 +1,6 @@
 """Authenticated local queue and cancellation routes for organization plans."""
 
+import hmac
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -13,7 +14,7 @@ from watch_assistant.schemas import (
     OrganizationOperationResponse,
     OrganizationPlanMutationRequest,
 )
-from watch_assistant.security import require_api_auth
+from watch_assistant.security import AuthContext, require_api_auth
 from watch_assistant.services.organization_operations import (
     OrganizationOperationNotFound,
     OrganizationOperationService,
@@ -58,6 +59,7 @@ def _get_operation_service(request: Request) -> OrganizationOperationService:
 ServiceDependency = Annotated[
     OrganizationOperationService, Depends(_get_operation_service)
 ]
+AuthDependency = Annotated[AuthContext, Depends(require_api_auth)]
 
 
 @router.post(
@@ -67,9 +69,13 @@ ServiceDependency = Annotated[
 async def queue_organization_operation(
     plan_id: str,
     payload: OrganizationOperationQueueRequest,
+    context: AuthDependency,
     service: ServiceDependency,
 ) -> OrganizationOperationResponse:
     try:
+        await _validate_agent_confirmation(
+            context, service, plan_id, digest=payload.digest, confirm=payload.confirm
+        )
         summary = await service.create(
             plan_id,
             idempotency_key=payload.idempotency_key,
@@ -86,11 +92,19 @@ async def queue_organization_operation(
 )
 async def queue_organization_operations_batch(
     payload: OrganizationOperationBatchRequest,
+    context: AuthDependency,
     service: ServiceDependency,
 ) -> OrganizationOperationBatchResponse:
     results: list[OrganizationOperationBatchResult] = []
     for item in payload.items:
         try:
+            await _validate_agent_confirmation(
+                context,
+                service,
+                item.plan_id,
+                digest=item.digest,
+                confirm=item.confirm,
+            )
             summary = await service.create(
                 item.plan_id,
                 idempotency_key=item.idempotency_key,
@@ -188,11 +202,33 @@ def _error_values(error: Exception) -> tuple[int, str, str]:
     return status, code, _MESSAGES.get(code, "整理操作暂不可用")
 
 
+async def _validate_agent_confirmation(
+    context: AuthContext,
+    service: OrganizationOperationService,
+    plan_id: str,
+    *,
+    digest: str | None,
+    confirm: bool,
+) -> None:
+    if not context.via_bearer:
+        return
+    if not confirm:
+        raise ValueError("confirmation_required")
+    if digest is None:
+        raise ValueError("plan_digest_required")
+    expected = await service.plan_digest(plan_id)
+    if not hmac.compare_digest(expected, digest):
+        raise ValueError("plan_digest_mismatch")
+
+
 _STATUSES = {
     "invalid_plan_id": 422,
     "invalid_idempotency_key": 422,
     "invalid_operation_id": 422,
     "operation_not_found": 404,
+    "confirmation_required": 409,
+    "plan_digest_required": 422,
+    "plan_digest_mismatch": 409,
 }
 _MESSAGES = {
     "plan_not_found": "计划不存在",
@@ -210,6 +246,9 @@ _MESSAGES = {
     "invalid_idempotency_key": "幂等标识无效",
     "invalid_operation_id": "操作标识无效",
     "operation_not_found": "操作不存在",
+    "confirmation_required": "缺少操作确认",
+    "plan_digest_required": "缺少计划摘要",
+    "plan_digest_mismatch": "计划摘要已变化，请刷新后重试",
     "operation_unavailable": "整理操作暂不可用",
 }
 

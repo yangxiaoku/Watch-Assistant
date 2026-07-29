@@ -178,7 +178,7 @@ class OrganizationOperationService:
                     "operation_creation_conflict"
                 ) from None
             summary = _summary(operation)
-        await self._audit("整理操作已排队")
+        await self._audit("organize.operation.queued", "整理操作已排队")
         return summary
 
     async def get(self, operation_id: str) -> OrganizationOperationSummary:
@@ -188,6 +188,73 @@ class OrganizationOperationService:
             if operation is None:
                 raise OrganizationOperationNotFound
             return _summary(operation)
+
+    async def claim_next(
+        self,
+        *,
+        lease_duration: timedelta = timedelta(minutes=5),
+        now: datetime | None = None,
+    ) -> OrganizationOperationLease | None:
+        """Claim the oldest approved operation, if one is available."""
+
+        async with self._session_factory() as session:
+            operation = await session.scalar(
+                select(OrganizationOperation)
+                .where(OrganizationOperation.status == OrganizationOperationStatus.PLANNED)
+                .order_by(OrganizationOperation.created_at.asc(), OrganizationOperation.id.asc())
+                .limit(1)
+            )
+            if operation is None:
+                return None
+            operation_id = operation.id
+            revision = operation.revision
+        try:
+            return await self.claim(
+                operation_id,
+                expected_revision=revision,
+                lease_duration=lease_duration,
+                now=now,
+            )
+        except OrganizationOperationLeaseUnavailable:
+            return None
+
+    async def plan_execution_scope(self, operation_id: str) -> frozenset[str] | None:
+        """Return the complete directory scope frozen by the approved plan."""
+
+        from watch_assistant.services.organization_plan import load_executable_steps
+
+        async with self._session_factory() as session:
+            operation = await session.get(OrganizationOperation, operation_id)
+            if operation is None:
+                return None
+            steps = await load_executable_steps(self._session_factory, operation.plan_id)
+        if not steps:
+            return None
+        return frozenset(
+            directory_id
+            for step in steps
+            for directory_id in step.scope_directory_ids
+        )
+
+    async def load_execution_steps(self, operation_id: str):
+        """Load steps again after claim, so execution uses durable plan data."""
+
+        from watch_assistant.services.organization_plan import load_executable_steps
+
+        async with self._session_factory() as session:
+            operation = await session.get(OrganizationOperation, operation_id)
+            if operation is None:
+                return None
+            return await load_executable_steps(self._session_factory, operation.plan_id)
+
+    async def plan_digest(self, plan_id: str) -> str:
+        """Return the immutable digest used by an explicit execution confirmation."""
+        _validate_identifier(plan_id, "invalid_plan_id", maximum=64)
+        async with self._session_factory() as session:
+            plan = await session.get(OrganizationPlan, plan_id)
+            if plan is None:
+                raise OrganizationOperationNotFound
+            return plan.plan_hash
 
     async def claim(
         self,
@@ -360,7 +427,7 @@ class OrganizationOperationService:
             if operation is None:
                 raise OrganizationOperationNotFound
             summary = _summary(operation)
-        await self._audit("整理操作状态已更新")
+        await self._audit("organize.operation.updated", "整理操作状态已更新")
         return summary
 
     async def finish_after_lease_loss(
@@ -404,7 +471,7 @@ class OrganizationOperationService:
             if operation is None:
                 raise OrganizationOperationNotFound
             summary = _summary(operation)
-        await self._audit("整理操作已标记为结果不确定")
+        await self._audit("organize.operation.uncertain", "整理操作已标记为结果不确定")
         return summary
 
     async def complete_organized_with_dirty_events(
@@ -472,7 +539,7 @@ class OrganizationOperationService:
             if operation is None:
                 raise OrganizationOperationNotFound
             summary = _summary(operation)
-        await self._audit("整理操作已完成")
+        await self._audit("organize.operation.completed", "整理操作已完成")
         return summary
 
     async def cancel(
@@ -503,7 +570,7 @@ class OrganizationOperationService:
             if operation is None:
                 raise OrganizationOperationNotFound
             summary = _summary(operation)
-        await self._audit("整理操作已取消")
+        await self._audit("organize.operation.cancelled", "整理操作已取消")
         return summary
 
     async def retry(
@@ -540,7 +607,9 @@ class OrganizationOperationService:
                 raise OrganizationOperationConflict("operation_revision_changed")
             await session.commit()
             await session.refresh(operation)
-            return _summary(operation)
+            summary = _summary(operation)
+        await self._audit("organize.operation.retried", "整理操作已重试")
+        return summary
 
     async def _load_operation(
         self, session: AsyncSession, operation_id: str, expected_revision: int
@@ -583,13 +652,13 @@ class OrganizationOperationService:
             await session.commit()
         raise OrganizationOperationPrerequisiteError("plan_prerequisites_changed")
 
-    async def _audit(self, status: str) -> None:
+    async def _audit(self, event: str, status: str) -> None:
         logger = self._event_logger
         log_event = getattr(logger, "log_event", None)
         if not callable(log_event):
             return
         try:
-            await log_event("settings.changed", fields={"status": status})
+            await log_event(event, fields={"status": status})
         except Exception:  # noqa: BLE001 - audit failure cannot alter local state
             return
 

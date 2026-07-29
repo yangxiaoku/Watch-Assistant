@@ -47,6 +47,7 @@ class QbittorrentInspectionResult:
     largest_video_name: str | None = None
     content_summary: str | None = None
     error_code: str | None = None
+    result_source: str | None = None
 
 
 @dataclass(frozen=True)
@@ -81,7 +82,7 @@ class QbittorrentClient:
         password: str,
         *,
         concurrency: int = 4,
-        item_timeout: float = 60.0,
+        item_timeout: float = 120.0,
         poll_interval: float = 1.0,
         request_timeout: float = 10.0,
         client: httpx.AsyncClient | None = None,
@@ -246,12 +247,9 @@ class QbittorrentClient:
         cancelled = False
         async with self._hash_guard(item.infohash):
             try:
-                if await self._torrent_exists(item.infohash):
-                    result = QbittorrentInspectionResult(
-                        infohash=item.infohash,
-                        status=InspectionStatus.UNSUPPORTED,
-                        error_code="existing_torrent",
-                    )
+                existing = await self._torrent_info(hashes=item.infohash)
+                if _matching_torrent(existing, item.infohash) is not None:
+                    result = await self._inspect_existing(item.infohash)
                 else:
                     add_attempted = True
                     marker_used.set()
@@ -272,7 +270,21 @@ class QbittorrentClient:
                             if not isinstance(state, str):
                                 raise _ApiError("malformed_response")
                             normalized_state = state.casefold()
-                            if normalized_state in {
+                            if _has_metadata(torrent):
+                                downloaded = torrent.get("downloaded")
+                                if isinstance(downloaded, int) and downloaded > 0:
+                                    result = QbittorrentInspectionResult(
+                                        infohash=item.infohash,
+                                        status=InspectionStatus.FAILED,
+                                        error_code="metadata_stop_failed",
+                                    )
+                                else:
+                                    files = await self._torrent_files(item.infohash)
+                                    result = replace(
+                                        _summarize(item.infohash, files),
+                                        result_source="new_torrent",
+                                    )
+                            elif normalized_state in {
                                 "checkingresumedata",
                                 "metadl",
                                 "queueddl",
@@ -286,7 +298,10 @@ class QbittorrentClient:
                                     )
                             elif normalized_state in {"pauseddl", "stoppeddl"}:
                                 files = await self._torrent_files(item.infohash)
-                                result = _summarize(item.infohash, files)
+                                result = replace(
+                                    _summarize(item.infohash, files),
+                                    result_source="new_torrent",
+                                )
                                 break
                             else:
                                 result = QbittorrentInspectionResult(
@@ -349,6 +364,57 @@ class QbittorrentClient:
             status=InspectionStatus.FAILED,
             error_code="internal_error",
         )
+
+    async def _inspect_existing(
+        self, infohash: str
+    ) -> QbittorrentInspectionResult:
+        deadline = time.monotonic() + self._item_timeout
+        while True:
+            torrents = await self._torrent_info(hashes=infohash)
+            torrent = _matching_torrent(torrents, infohash)
+            if torrent is None:
+                return QbittorrentInspectionResult(
+                    infohash=infohash,
+                    status=InspectionStatus.FAILED,
+                    error_code="existing_torrent_unreadable",
+                )
+            state = torrent.get("state")
+            normalized_state = state.casefold() if isinstance(state, str) else ""
+            if _has_metadata(torrent):
+                try:
+                    files = await self._torrent_files(infohash)
+                except _ApiError:
+                    return QbittorrentInspectionResult(
+                        infohash=infohash,
+                        status=InspectionStatus.FAILED,
+                        error_code="existing_torrent_unreadable",
+                    )
+                return replace(
+                    _summarize(infohash, files), result_source="existing_torrent"
+                )
+            if normalized_state in {"metadl", "queuedl", "queueddl"}:
+                if time.monotonic() >= deadline:
+                    return QbittorrentInspectionResult(
+                        infohash=infohash,
+                        status=InspectionStatus.TIMEOUT,
+                        error_code="metadata_timeout",
+                        result_source="existing_torrent",
+                    )
+            else:
+                try:
+                    files = await self._torrent_files(infohash)
+                except _ApiError:
+                    return QbittorrentInspectionResult(
+                        infohash=infohash,
+                        status=InspectionStatus.FAILED,
+                        error_code="existing_torrent_unreadable",
+                    )
+                return replace(
+                    _summarize(infohash, files), result_source="existing_torrent"
+                )
+            await asyncio.sleep(
+                min(self._poll_interval, max(0.0, deadline - time.monotonic()))
+            )
 
     async def _torrent_exists(self, infohash: str) -> bool:
         torrents = await self._torrent_info(hashes=infohash)
@@ -588,6 +654,11 @@ def _has_tag(torrent: dict[str, Any], marker: str) -> bool:
     return isinstance(tags, str) and marker in {
         tag.strip() for tag in tags.split(",") if tag.strip()
     }
+
+
+def _has_metadata(torrent: dict[str, Any]) -> bool:
+    """qB exposes this independently of its transient state string."""
+    return torrent.get("has_metadata") is True
 
 
 def _valid_file(row: object) -> bool:

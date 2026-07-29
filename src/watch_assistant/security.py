@@ -2,21 +2,41 @@
 
 import hashlib
 import inspect
+import json
 import secrets
 from collections import deque
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from fastapi import HTTPException, Request
+from fastapi import Depends, HTTPException, Request
 from pwdlib import PasswordHash
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from watch_assistant.models import WebSession
+from watch_assistant.models import AgentToken, WebSession
 
 SESSION_COOKIE = "watch_session"
 SESSION_TTL = timedelta(hours=12)
+AGENT_TOKEN_PREFIX = "wa_at_"
+AGENT_SCOPES = frozenset(
+    {
+        "system:read",
+        "library:read",
+        "task:read",
+        "task:write",
+        "organize:plan",
+        "organize:execute",
+        "review:write",
+        "strm:read",
+        "strm:write",
+        "cleanup:plan",
+        "cleanup:execute",
+        "settings:read",
+        "settings:write",
+        "audit:read",
+    }
+)
 
 
 class AuthError(HTTPException):
@@ -36,6 +56,14 @@ class AuthContext:
     via_bearer: bool
     session_id: str | None = None
     csrf_token: str | None = None
+    token_kind: str = "session"
+    agent_token_id: str | None = None
+    agent_name: str | None = None
+    scopes: frozenset[str] = frozenset()
+    library_ids: frozenset[str] = frozenset()
+
+    def has_scope(self, scope: str) -> bool:
+        return not self.via_bearer or scope in self.scopes
 
 
 class SecurityManager:
@@ -48,6 +76,7 @@ class SecurityManager:
         push_limit: int = 10,
         session_factory: async_sessionmaker[AsyncSession] | None = None,
         session_ttl: timedelta = SESSION_TTL,
+        event_logger: Any | None = None,
     ) -> None:
         self._password_hash = PasswordHash.recommended()
         self._web_password_hash = web_password_hash
@@ -56,6 +85,7 @@ class SecurityManager:
         self.push_limit = push_limit
         self._session_factory = session_factory
         self._session_ttl = session_ttl
+        self._event_logger = event_logger
         self._credential_fingerprint = hashlib.sha256(
             web_password_hash.encode("utf-8")
         ).hexdigest()
@@ -76,6 +106,9 @@ class SecurityManager:
         self._sessions.clear()
         if session_ttl is not None:
             self._session_ttl = session_ttl
+
+    def configure_event_logger(self, event_logger: Any | None) -> None:
+        self._event_logger = event_logger
 
     def login(self, password: str) -> tuple[str, str]:
         if self._session_factory is not None:
@@ -152,7 +185,10 @@ class SecurityManager:
     async def authenticate_async(self, request: Request) -> AuthContext:
         authorization = request.headers.get("Authorization", "")
         if authorization:
-            context = self._bearer_context(authorization)
+            if self._session_factory is None:
+                context = self._bearer_context(authorization)
+            else:
+                context = await self._bearer_context_async(authorization, request)
         elif self._session_factory is None:
             return self._authenticate_memory(request)
         else:
@@ -209,7 +245,77 @@ class SecurityManager:
         return AuthContext(
             identity="bearer:" + hashlib.sha256(token.encode()).hexdigest(),
             via_bearer=True,
+            token_kind="legacy",
+            scopes=frozenset(AGENT_SCOPES),
         )
+
+    async def _bearer_context_async(
+        self, authorization: str, request: Request
+    ) -> AuthContext:
+        scheme, _, token = authorization.partition(" ")
+        if scheme.casefold() != "bearer" or not token:
+            raise AuthError(401, "unauthorized")
+        try:
+            valid = self._password_hash.verify(token, self._script_token_hash)
+        except Exception:  # noqa: BLE001 - invalid configured hash fails closed
+            valid = False
+        if valid:
+            return AuthContext(
+                identity="bearer:" + hashlib.sha256(token.encode()).hexdigest(),
+                via_bearer=True,
+                token_kind="legacy",
+                scopes=frozenset(AGENT_SCOPES),
+            )
+        return await self._agent_token_context(token, request)
+
+    async def _agent_token_context(
+        self, token: str, request: Request
+    ) -> AuthContext:
+        digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        now = datetime.now(UTC)
+        try:
+            async with self._session_factory() as session:
+                record = await session.scalar(
+                    select(AgentToken).where(AgentToken.token_digest == digest)
+                )
+                if record is None:
+                    raise AuthError(401, "unauthorized")
+                expires_at = (
+                    _as_utc(record.expires_at) if record.expires_at is not None else None
+                )
+                if (
+                    record.revoked_at is not None
+                    or record.paused_at is not None
+                    or (expires_at is not None and expires_at <= now)
+                ):
+                    raise AuthError(401, "unauthorized")
+                record.last_used_at = now
+                record.last_used_ip = _client_host(request)
+                record.last_client_version = _safe_client_version(
+                    request.headers.get("X-Watch-Assistant-Client-Version")
+                )
+                record.call_count += 1
+                await session.commit()
+                context = AuthContext(
+                    identity="agent:" + record.id,
+                    via_bearer=True,
+                    token_kind="agent",
+                    agent_token_id=record.id,
+                    agent_name=record.name,
+                    scopes=frozenset(_decode_json_strings(record.scopes_json)),
+                    library_ids=frozenset(_decode_json_strings(record.library_ids_json)),
+                )
+        except AuthError:
+            raise
+        except Exception:  # noqa: BLE001 - storage failures fail closed
+            raise AuthError(503, "auth_unavailable") from None
+        await _emit_security_event(
+            self._event_logger,
+            "agent.request.authenticated",
+            request=request,
+            actor_id=context.agent_token_id,
+        )
+        return context
 
     async def _database_context(self, session_id: str) -> AuthContext:
         digest = self._session_digest(session_id)
@@ -261,6 +367,10 @@ class SecurityManager:
             bucket, limit = "search", 30
         elif path == "/api/v1/cache/retry":
             bucket, limit = "maintenance", 2
+        elif path == "/api/v1/resources/inspect":
+            bucket, limit = "inspection", 10
+        elif path == "/api/v1/mcp":
+            bucket, limit = "mcp", 60
         elif path.startswith("/api/v1/tasks"):
             bucket, limit = "push", self.push_limit
         else:
@@ -283,8 +393,41 @@ async def require_api_auth(request: Request) -> AuthContext:
         return AuthContext(identity="internal", via_bearer=True)
     result = manager.authenticate_async(request)
     if inspect.isawaitable(result):
-        return await result
-    return result
+        context = await result
+    else:
+        context = result
+    required_scope = _required_scope(request)
+    if context.token_kind == "agent" and required_scope not in context.scopes:
+        await _emit_security_event(
+            getattr(manager, "_event_logger", None),
+            "agent.permission_denied",
+            request=request,
+            actor_id=context.agent_token_id,
+        )
+        raise AuthError(
+            403,
+            {"code": "missing_scope", "missing_scopes": [required_scope]},
+        )
+    return context
+
+
+def require_scope(scope: str):
+    """Build a dependency for adapters that expose a narrower route contract."""
+
+    if scope not in AGENT_SCOPES:
+        raise ValueError(f"unknown agent scope: {scope}")
+
+    async def dependency(
+        context: AuthContext = Depends(require_api_auth),  # noqa: B008
+    ) -> AuthContext:
+        if not context.has_scope(scope):
+            raise AuthError(
+                403,
+                {"code": "missing_scope", "missing_scopes": [scope]},
+            )
+        return context
+
+    return dependency
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -310,3 +453,80 @@ def redact_mapping(value: Any, *, secrets: tuple[str, ...] = ()) -> Any:
             redacted = redacted.replace(secret, "[REDACTED]")
         return redacted
     return value
+
+
+def _required_scope(request: Request) -> str:
+    path = request.url.path
+    method = request.method.upper()
+    if path in {"/api/v1/health", "/api/v1/mcp"} or path.startswith("/api/v1/agent/"):
+        return "system:read"
+    if path.startswith(("/api/v1/tasks", "/api/v1/workflows")):
+        return "task:read" if method in {"GET", "HEAD"} else "task:write"
+    if path.startswith("/api/v1/notifications"):
+        return "task:read" if method in {"GET", "HEAD"} else "task:write"
+    if path.startswith("/api/v1/organization-operations"):
+        return "task:read" if method in {"GET", "HEAD"} else "organize:execute"
+    if path.startswith("/api/v1/organization-plans/") and path.endswith("/operation"):
+        return "organize:execute"
+    if path.startswith("/api/v1/organization-plans"):
+        return "organize:plan"
+    if path.startswith(("/api/v1/settings", "/api/v1/notification-preferences")):
+        return "settings:read" if method in {"GET", "HEAD"} else "settings:write"
+    if path.startswith(("/api/v1/search", "/api/v1/movie")):
+        return "library:read"
+    if path.startswith(("/api/v1/libraries", "/api/v1/media")):
+        return "library:read"
+    if path.startswith("/api/v1/audit"):
+        return "audit:read"
+    if path.startswith(("/api/v1/resources", "/api/v1/seasons")):
+        return "library:read" if method in {"GET", "HEAD"} else "task:write"
+    if path.startswith(("/api/v1/subscriptions", "/api/v1/quality-profiles")):
+        return "library:read" if method in {"GET", "HEAD"} else "task:write"
+    return "system:read" if method in {"GET", "HEAD"} else "task:write"
+
+
+def _decode_json_strings(value: str) -> list[str]:
+    try:
+        decoded = json.loads(value or "[]")
+    except (TypeError, json.JSONDecodeError):
+        return []
+    if not isinstance(decoded, list):
+        return []
+    return [item for item in decoded if isinstance(item, str)]
+
+
+def _client_host(request: Request) -> str | None:
+    host = request.client.host if request.client is not None else None
+    return host if host and len(host) <= 64 else None
+
+
+def _safe_client_version(value: str | None) -> str | None:
+    if not value:
+        return None
+    value = value.strip()
+    return value[:64] if value else None
+
+
+async def _emit_security_event(
+    logger: Any | None,
+    event: str,
+    *,
+    request: Request,
+    actor_id: str | None,
+) -> None:
+    log_event = getattr(logger, "log_event", None)
+    if not callable(log_event):
+        return
+    try:
+        result = log_event(
+            event,
+            actor_type="agent",
+            actor_id=actor_id,
+            request_id=getattr(request.state, "request_id", None),
+            correlation_id=getattr(request.state, "correlation_id", None),
+            fields={"status": "accepted" if event.endswith("authenticated") else "denied"},
+        )
+        if inspect.isawaitable(result):
+            await result
+    except Exception:  # noqa: BLE001 - audit must not change auth outcome
+        return

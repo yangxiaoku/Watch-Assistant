@@ -11,6 +11,7 @@ from watch_assistant.services.inspection import (
     InspectionResourceInvalid,
     InspectionService,
 )
+from watch_assistant.services.workflows import WorkflowNotFound
 
 router = APIRouter(prefix="/api/v1", dependencies=[Depends(require_api_auth)])
 
@@ -37,9 +38,15 @@ async def start_inspection(
     service: InspectionServiceDependency,
 ) -> InspectionBatchResponse:
     try:
-        return await service.create(payload.resource_ids)
+        return await service.create(
+            payload.resource_ids,
+            force=payload.force,
+            workflow_id=payload.workflow_id,
+        )
     except InspectionResourceInvalid as exc:
         raise HTTPException(status_code=422, detail="resource_not_inspectable") from exc
+    except WorkflowNotFound as exc:
+        raise HTTPException(status_code=404, detail="workflow_not_found") from exc
 
 
 @router.get(

@@ -12,6 +12,8 @@ from watch_assistant.schemas import (
     MovieMetadata,
     ResourceKind,
     ResourcePageResponse,
+    ResourceSearchRequest,
+    ResourceSearchResponse,
     SearchRequest,
     SearchResponse,
 )
@@ -130,6 +132,41 @@ async def get_media(
         raise HTTPException(status_code=502, detail="tmdb_unavailable") from exc
 
 
+@router.post(
+    "/media/{media_type}/{tmdb_id}/resource-search",
+    response_model=ResourceSearchResponse,
+    status_code=202,
+)
+async def start_resource_search(
+    media_type: MediaType,
+    tmdb_id: int,
+    request: ResourceSearchRequest,
+    service: SearchServiceDependency,
+) -> ResourceSearchResponse:
+    if request.season_number is not None and media_type != MediaType.TV:
+        raise HTTPException(status_code=422, detail="season_requires_tv")
+    return await service.start_resource_search(
+        tmdb_id,
+        media_type=media_type,
+        season_number=request.season_number,
+        refresh=request.refresh,
+    )
+
+
+@router.get(
+    "/resource-search/{task_id}",
+    response_model=ResourceSearchResponse,
+)
+async def get_resource_search(
+    task_id: str,
+    service: SearchServiceDependency,
+) -> ResourceSearchResponse:
+    task = await service.get_resource_search_task(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="resource_search_not_found")
+    return task
+
+
 @router.get(
     "/media/{media_type}/{tmdb_id}/resources",
     response_model=ResourcePageResponse,
@@ -192,7 +229,10 @@ async def search(
         )
     except TmdbError as exc:
         raise HTTPException(status_code=502, detail="tmdb_unavailable") from exc
-    except SearchUnavailable as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except SearchUnavailable:
+        raise HTTPException(status_code=502, detail="pansou_unavailable") from None
     except InvalidSeasonRequest as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        code = str(exc)
+        if code not in {"season_requires_tv", "season_not_found"}:
+            code = "invalid_season_request"
+        raise HTTPException(status_code=422, detail=code) from None

@@ -14,9 +14,13 @@ from watch_assistant.schemas import (
     RemoteStatus,
     SubmissionResult,
     TaskAction,
+    WorkflowStageName,
+    WorkflowStageStatus,
 )
+from watch_assistant.services.inventory_push_guard import InventoryPushGuard
 from watch_assistant.services.observability import EventLogger, emit_event
 from watch_assistant.services.tasks import recover_after_restart
+from watch_assistant.services.workflows import sync_child_stage
 
 
 class TaskAdapter(Protocol):
@@ -37,6 +41,7 @@ class TaskWorker:
         owner: str,
         lease_seconds: int = 60,
         event_logger: EventLogger | None = None,
+        inventory_guard: InventoryPushGuard | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._crypto = crypto
@@ -44,6 +49,7 @@ class TaskWorker:
         self._owner = owner
         self._lease_seconds = lease_seconds
         self._event_logger = event_logger
+        self._inventory_guard = inventory_guard
 
     async def run_once(self) -> bool:
         task_id = await self._claim_one()
@@ -60,23 +66,40 @@ class TaskWorker:
                     error_message="share push is not supported",
                 )
             else:
-                try:
-                    url = self._crypto.decrypt(task.encrypted_url_snapshot)
-                except Exception:  # noqa: BLE001 - failure occurred before remote submission
+                gate = None
+                if self._inventory_guard is not None:
+                    try:
+                        gate = await self._inventory_guard.check(task.resource_id)
+                    except Exception:  # noqa: BLE001 - fail closed before remote submission
+                        gate = None
+                if self._inventory_guard is not None and (
+                    gate is None or not gate.allowed
+                ):
                     result = SubmissionResult(
                         status=RemoteStatus.FAILED,
-                        error_code="local_decryption_failed",
-                        error_message="stored submission data could not be decrypted",
+                        error_code=(
+                            "inventory_check_failed" if gate is None else gate.code
+                        ),
+                        error_message="inventory preflight blocked remote submission",
                     )
                 else:
                     try:
-                        result = await self._adapter.submit_magnet(url)
-                    except Exception:  # noqa: BLE001 - remote outcome may be ambiguous
+                        url = self._crypto.decrypt(task.encrypted_url_snapshot)
+                    except Exception:  # noqa: BLE001 - failure occurred before remote submission
                         result = SubmissionResult(
-                            status=RemoteStatus.UNCERTAIN,
-                            error_code="adapter_error",
-                            error_message="submission outcome is uncertain",
+                            status=RemoteStatus.FAILED,
+                            error_code="local_decryption_failed",
+                            error_message="stored submission data could not be decrypted",
                         )
+                    else:
+                        try:
+                            result = await self._adapter.submit_magnet(url)
+                        except Exception:  # noqa: BLE001 - remote outcome may be ambiguous
+                            result = SubmissionResult(
+                                status=RemoteStatus.UNCERTAIN,
+                                error_code="adapter_error",
+                                error_message="submission outcome is uncertain",
+                            )
 
             task.state = TaskState(result.status.value)
             task.remote_ref = result.remote_ref
@@ -88,6 +111,17 @@ class TaskWorker:
             task.lease_owner = None
             task.lease_expires_at = None
             task.updated_at = datetime.now(UTC)
+            if task.workflow_id is not None:
+                await sync_child_stage(
+                    session,
+                    task.workflow_id,
+                    WorkflowStageName.PUSH,
+                    child_type="task",
+                    child_id=task.id,
+                    status=_workflow_stage_status(result.status),
+                    reason=f"task_{result.status.value}",
+                    error_code=result.error_code,
+                )
             await session.commit()
         await emit_event(
             self._event_logger,
@@ -124,6 +158,17 @@ class TaskWorker:
                     task.lease_owner = None
                     task.lease_expires_at = None
                     task.updated_at = now
+                    if task.workflow_id is not None:
+                        await sync_child_stage(
+                            session,
+                            task.workflow_id,
+                            WorkflowStageName.PUSH,
+                            child_type="task",
+                            child_id=task.id,
+                            status=WorkflowStageStatus.FAILED,
+                            reason="task_failed",
+                            error_code=task.error_code,
+                        )
                     continue
                 remote_status = None
                 if task.remote_ref:
@@ -132,6 +177,17 @@ class TaskWorker:
                     except Exception:  # noqa: BLE001 - status failure is uncertain
                         remote_status = None
                 recover_after_restart(task, remote_status)
+                if task.workflow_id is not None:
+                    await sync_child_stage(
+                        session,
+                        task.workflow_id,
+                        WorkflowStageName.PUSH,
+                        child_type="task",
+                        child_id=task.id,
+                        status=_workflow_stage_status(task.state),
+                        reason=f"task_{task.state.value}",
+                        error_code=task.error_code,
+                    )
             await session.commit()
             return len(tasks)
 
@@ -164,3 +220,18 @@ class TaskWorker:
             task.updated_at = now
             await session.commit()
             return task.id
+
+
+def _workflow_stage_status(
+    status: RemoteStatus | TaskState,
+) -> WorkflowStageStatus:
+    value = status.value
+    if value == RemoteStatus.ACCEPTED.value:
+        return WorkflowStageStatus.SUCCEEDED
+    if value == RemoteStatus.NEEDS_AUTH.value:
+        return WorkflowStageStatus.WAITING_CONFIRMATION
+    if value == RemoteStatus.UNCERTAIN.value:
+        return WorkflowStageStatus.UNCERTAIN
+    if value == RemoteStatus.FAILED.value:
+        return WorkflowStageStatus.FAILED
+    return WorkflowStageStatus.RUNNING

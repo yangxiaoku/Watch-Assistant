@@ -407,6 +407,16 @@ class OrganizationPlanService:
                 raise OrganizationPlanError("plan_not_found")
             return _view(plan)
 
+    async def plan_library_id(self, plan_id: str) -> str:
+        """Return the owning library ID for a scope check at an adapter boundary."""
+
+        _validate_identity(plan_id, "invalid_plan")
+        async with self._session_factory() as session:
+            plan = await session.get(OrganizationPlan, plan_id)
+            if plan is None:
+                raise OrganizationPlanError("plan_not_found")
+            return plan.library_id
+
     async def confirm_plan(
         self, plan_id: str, *, expected_revision: int
     ) -> OrganizationPlanView:
