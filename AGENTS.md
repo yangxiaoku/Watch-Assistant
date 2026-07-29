@@ -97,6 +97,18 @@ ssh root@192.168.6.236 'curl -fsS http://127.0.0.1:8115/api/v1/health'
   `Task` 表或适配器扩展成通用文件系统。
 - SQLite 迁移必须向前、幂等、可由发布前备份回滚；前端列表采用分页/游标，不一次返回整库。
 
+## 工程纪律（2026-07-29 健康检查补充）
+
+以下规则由项目健康度审计导出，违反即导致分支失控和发布循环失效：
+
+1. **一功能一分支**：72h 内合并基线或删除；返工 rebase 最新基线，禁止开 clean2/current2/squashed2 变体。
+2. **未合并 = 未完成**：任务完成的标志是合入基线，不是"代码写完了"。合并后立即删枝。
+3. **提交先于发布**：禁止从未提交改动打 tar.gz；包名必须含 commit hash（`watch-assistant-<hash7>-<date>.tar.gz`）。
+4. **发布基线唯一**：当前 `codex/publish-main`；禁止两个 publish 分支并存，分叉时立即裁决并线。
+5. **凭据不进仓**：secrets 只放 `C:\Users\98275\.115ts-secrets\`；.gitignore 已覆盖 `*cookie*`、`authorization*.json`、`p115-prod-*.json`、`*.tar.gz` 等。
+6. **Python 环境**：worktree 内用 `.venv/Scripts/python.exe`，禁止系统 python（74 import error）、禁止 `uv sync`（删依赖）、禁止 PowerShell。全量 956 tests 分三批跑（unit/integration/contracts），单条全量超 120s 必超时。
+7. **验收脚本化**：合并前 `scripts/verify.sh` 全绿，不靠截图。离线测试 = 合并门禁，live 测试 = 每日单独跑。
+
 ## 多会话协作
 
 - 项目管理 Agent 负责需求拆解、任务派发、依赖和风险门禁、集成顺序、验收与发布决策；
@@ -130,6 +142,13 @@ docker compose config
 - 固定 `p115client` 版本：`0.0.9.6.5.1`。
 - `_p115client_timeout_executor` 对 `errno=990009` 使用 3 秒重试。
 - C03 live 文件分页大小必须保持 `VERIFIED_FS_FILES_PAGE_SIZE=1`；fixture probe 必须先
-  receipt 再 verify；live runner 保持 990009 重试。
+receipt 再 verify；live runner 保持 990009 重试。
+
+## 工程纪律
+
+- 一功能一分支：72 小时内合并基线或删除；返工必须基于最新基线，禁止重复的 clean/current/squashed 变体。
+- 未合并即未完成；提交先于发布，发布包名必须包含 commit hash。
+- 发布基线只允许 `codex/publish-main`；凭据只放在 `C:\Users\98275\.115ts-secrets\`。
+- 合并前运行 `scripts/verify.sh`；离线测试是门禁，live 测试单独每日运行。
 
 唯一发布基线 = `codex/publish-main` @ `83edfcd`，日期 2026-07-29。
