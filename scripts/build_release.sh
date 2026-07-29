@@ -28,6 +28,12 @@ trap cleanup EXIT
 
 mkdir -p "$PACKAGE_ROOT" "$OUTPUT_DIR"
 git archive HEAD | tar -x -C "$PACKAGE_ROOT"
+if [[ ! -f "$ROOT_DIR/frontend/dist/index.html" ]]; then
+    echo "release refused: frontend/dist/index.html is missing; run the frontend production build first" >&2
+    exit 1
+fi
+mkdir -p "$PACKAGE_ROOT/frontend/dist"
+cp -a "$ROOT_DIR/frontend/dist/." "$PACKAGE_ROOT/frontend/dist/"
 cat > "$PACKAGE_ROOT/VERSION" <<EOF
 commit=${COMMIT_HASH}
 build_time=${BUILD_TIME}
