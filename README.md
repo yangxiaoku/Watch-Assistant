@@ -16,6 +16,21 @@
 - SQLite WAL、Fernet 敏感字段加密和保留期清理。
 - 持久任务状态机与崩溃后的 `uncertain` 防重复提交。
 
+## 115 影视库整理进度
+
+当前发布候选包含第一阶段的只读索引、解析匹配、分类命名、计划预览，以及第二阶段的
+本地操作租约、计划前置条件、dirty outbox、隔离恢复契约和离线执行器。新增的
+`p115_organization_transport` 目前只有内存 fake，用于验证范围、身份、超时、取消和
+结果不确定状态；它不创建 `P115Client`，也不发起网络请求。
+
+以下能力已经实现但默认关闭，不能视为生产上线：真实 115 移动/重命名、正式影视库自动
+整理、STRM 全量或增量输出、媒体服务器播放、洗版、隔离和删除。相关开关保持关闭，真实
+外部调用须经过单独契约和受管测试夹具验收。
+
+本候选继承的阶段验证包括后端 `794 passed, 4 skipped`、前端 Vitest `78 passed`、构建通过、
+Playwright `149 passed`；后续执行器安全修复定向测试 `29 passed`，离线 transport 契约
+`39 passed`。未部署生产环境。
+
 TgtoDrive 当前没有验证通过的稳定提交/状态 HTTP 契约，`config/tgto-contract.json` 明确为 `supported:false`。因此生产部署会禁用真实推送并返回 `503 push_unsupported`，不会猜测接口、写 TgtoDrive 数据库或调用内部 `.pyc`。
 
 ## 部署
