@@ -151,4 +151,4 @@ receipt 再 verify；live runner 保持 990009 重试。
 - 发布基线只允许 `codex/publish-main`；凭据只放在 `C:\Users\98275\.115ts-secrets\`。
 - 合并前运行 `scripts/verify.sh`；离线测试是门禁，live 测试单独每日运行。
 
-唯一生产发布基线 = `codex/publish-main` @ `a2bdfc8`，日期 2026-07-29；后续 `8bfa5e7` 仅更新发布说明。
+唯一生产发布基线 = `codex/publish-main` @ `a2bdfc8`，日期 2026-07-29；其后的提交仅更新治理/发布文档，不改变运行版本。
