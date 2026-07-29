@@ -30,6 +30,38 @@ export interface SeasonMetadata {
   episode_count: number;
   air_date: string | null;
   poster_path: string | null;
+  tmdb_season_id?: number | null;
+  overview_available?: boolean;
+}
+
+export interface SeasonEpisodeMetadata {
+  episode_number: number;
+  name: string;
+  overview: string | null;
+  air_date: string | null;
+  still_path: string | null;
+  runtime: number | null;
+  vote_average: number | null;
+}
+
+export interface SeasonDetailResponse {
+  series_tmdb_id: number;
+  tmdb_season_id: number | null;
+  season_number: number;
+  name: string;
+  overview: string | null;
+  overview_language: string | null;
+  poster_path: string | null;
+  air_date: string | null;
+  episode_count: number;
+  vote_average: number | null;
+  source: "tmdb";
+  fetched_at: string;
+  cached: boolean;
+  stale: boolean;
+  data_version: number;
+  episodes: SeasonEpisodeMetadata[];
+  warnings: string[];
 }
 
 export interface MovieCollectionResponse {
@@ -109,6 +141,20 @@ export interface ResourcePageResponse {
   hidden_total?: number;
 }
 
+export interface ResourceSearchResponse {
+  task_id: string;
+  tmdb_id: number;
+  media_type: "movie" | "tv";
+  season_number: number | null;
+  status: "queued" | "running" | "ready" | "failed";
+  snapshot_revision: string | null;
+  selected_season: number | null;
+  warnings: string[];
+  error_code: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface InspectionResult {
   resource_id: string;
   infohash: string | null;
@@ -145,7 +191,7 @@ export interface HealthResponse {
 }
 
 export type LogLevel = "DEBUG" | "ERROR" | "WARNING" | "INFO";
-export type LogCategory = "system" | "search" | "cache" | "inspection" | "p115" | "security";
+export type LogCategory = "system" | "security" | "search" | "pansou" | "cache" | "inspection" | "p115" | "task" | "organize" | "strm" | "library" | "agent" | "settings" | "subscription" | "quality" | "notification";
 
 export interface SettingsOverviewResponse {
   release: string;
@@ -247,6 +293,20 @@ export interface LogEntry {
   level: LogLevel;
   category: LogCategory;
   message: string;
+  event_code?: string;
+  title_zh?: string;
+  message_zh?: string;
+  suggestion_zh?: string | null;
+  status?: string | null;
+  request_id?: string | null;
+  correlation_id?: string | null;
+  actor_type?: string | null;
+  actor_id?: string | null;
+  resource_type?: string | null;
+  resource_id?: string | null;
+  task_id?: string | null;
+  duration_ms?: number | null;
+  error_code?: string | null;
 }
 
 export interface LogsResponse {
@@ -276,6 +336,7 @@ export interface OrganizationPlanListResponse {
 export interface TaskResponse {
   id: string;
   resource_id: string | null;
+  workflow_id: string | null;
   action: "offline_download" | "save_share";
   state: TaskState;
   attempts: number;
@@ -285,4 +346,79 @@ export interface TaskResponse {
   created_at: string;
   updated_at: string;
   submitted_at: string | null;
+}
+
+export type WorkflowStatus = "in_progress" | "waiting_user_confirmation" | "waiting_external" | "partial" | "completed" | "cancelled" | "failed" | "result_pending_confirmation";
+export type WorkflowStageName = "discovery" | "inspection" | "approval" | "push" | "availability" | "organization" | "strm";
+export type WorkflowStageStatus = "pending" | "running" | "waiting_confirmation" | "waiting_external" | "succeeded" | "skipped" | "failed" | "uncertain" | "cancelled";
+
+export interface WorkflowStageResponse {
+  id: string;
+  stage: WorkflowStageName;
+  status: WorkflowStageStatus;
+  status_zh: string;
+  reason: string | null;
+  error_code: string | null;
+  child_type: string | null;
+  child_id: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  updated_at: string;
+}
+
+export interface WorkflowResponse {
+  id: string;
+  correlation_id: string;
+  media_type: "movie" | "tv" | null;
+  tmdb_id: number | null;
+  subscription_id: string | null;
+  status: WorkflowStatus;
+  status_zh: string;
+  state_reason: string | null;
+  created_at: string;
+  updated_at: string;
+  stages: WorkflowStageResponse[];
+}
+
+export interface WorkflowListResponse {
+  items: WorkflowResponse[];
+  page: number;
+  page_size: number;
+  total: number;
+}
+
+export type NotificationSeverity = "info" | "warning" | "error" | "security";
+
+export interface NotificationResponse {
+  id: string;
+  event_code: string;
+  severity: NotificationSeverity;
+  title_zh: string;
+  message_zh: string;
+  action_type: string | null;
+  action_id: string | null;
+  aggregate_count: number;
+  read_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface NotificationListResponse {
+  items: NotificationResponse[];
+  unread_count: number;
+}
+
+export interface NotificationPreferenceResponse {
+  enabled: boolean;
+  muted_event_codes: string[];
+  revision: number;
+}
+
+export interface PwaDevice {
+  id: string;
+  name: string;
+  created_at: string;
+  last_seen_at: string;
+  revoked_at: string | null;
+  status: "active" | "revoked";
 }

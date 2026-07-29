@@ -55,12 +55,12 @@ function posterUrl(path: string | null): string | null {
       </button>
     </section>
 
-    <MovieRow title="正在热映" eyebrow="NOW PLAYING" :movies="catalog.now_playing" :favorite-ids="favoriteIds" action-label="全部电影" @open="$emit('open', $event)" @favorite="$emit('favorite', $event)" @action="$emit('navigate', 'movies')" />
-    <MovieRow title="本周热门" eyebrow="TRENDING NOW" :movies="catalog.popular" :favorite-ids="favoriteIds" action-label="查看热门" @open="$emit('open', $event)" @favorite="$emit('favorite', $event)" @action="$emit('navigate', 'popular')" />
-    <MovieRow title="热播剧集" eyebrow="TV ON THE AIR" :movies="catalog.tv_on_the_air" :favorite-ids="favoriteIds" action-label="全部剧集" @open="$emit('open', $event)" @favorite="$emit('favorite', $event)" @action="$emit('navigate', 'tv')" />
-    <MovieRow title="即将上映" eyebrow="COMING SOON" :movies="catalog.upcoming" :favorite-ids="favoriteIds" @open="$emit('open', $event)" @favorite="$emit('favorite', $event)" />
-    <MovieRow title="高分佳片" eyebrow="TOP RATED" :movies="catalog.top_rated" :favorite-ids="favoriteIds" @open="$emit('open', $event)" @favorite="$emit('favorite', $event)" />
-    <MovieRow title="高分剧集" eyebrow="TOP RATED TV" :movies="catalog.tv_top_rated" :favorite-ids="favoriteIds" @open="$emit('open', $event)" @favorite="$emit('favorite', $event)" />
+    <MovieRow title="正在热映" eyebrow="院线新片" :movies="catalog.now_playing" :favorite-ids="favoriteIds" action-label="全部电影" @open="$emit('open', $event)" @favorite="$emit('favorite', $event)" @action="$emit('navigate', 'movies')" />
+    <MovieRow title="本周热门" eyebrow="本周热度" :movies="catalog.popular" :favorite-ids="favoriteIds" action-label="查看热门" @open="$emit('open', $event)" @favorite="$emit('favorite', $event)" @action="$emit('navigate', 'popular')" />
+    <MovieRow title="热播剧集" eyebrow="正在热播" :movies="catalog.tv_on_the_air" :favorite-ids="favoriteIds" action-label="全部剧集" @open="$emit('open', $event)" @favorite="$emit('favorite', $event)" @action="$emit('navigate', 'tv')" />
+    <MovieRow title="即将上映" eyebrow="即将到来" :movies="catalog.upcoming" :favorite-ids="favoriteIds" @open="$emit('open', $event)" @favorite="$emit('favorite', $event)" />
+    <MovieRow title="高分佳片" eyebrow="高分推荐" :movies="catalog.top_rated" :favorite-ids="favoriteIds" @open="$emit('open', $event)" @favorite="$emit('favorite', $event)" />
+    <MovieRow title="高分剧集" eyebrow="高分剧集" :movies="catalog.tv_top_rated" :favorite-ids="favoriteIds" @open="$emit('open', $event)" @favorite="$emit('favorite', $event)" />
   </div>
   <div v-else class="empty-state">首页内容暂时不可用</div>
 </template>

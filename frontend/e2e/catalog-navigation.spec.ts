@@ -62,7 +62,7 @@ async function installCatalogMocks(page: Page) {
     );
     if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
     if (failedPages.has(requestedPage)) {
-      await route.fulfill({ status: 500, json: { detail: "目录暂时不可用" } });
+      await route.fulfill({ status: 502, json: { error: { code: "tmdb_unavailable" } } });
       return;
     }
     const responsePage = responsePageOverrides.get(requestedPage) ?? requestedPage;
@@ -223,7 +223,7 @@ test("keeps the old list and page when a catalog request fails", async ({ page }
   mocks.failedPages.add(2);
 
   await page.getByRole("button", { name: "下一页" }).click();
-  await expect(page.getByText("目录暂时不可用")).toBeVisible();
+  await expect(page.getByText("本次影视资料没有更新，资源区和已有页面仍可查看。")).toBeVisible();
   await expect(page.getByText("第 1 / 3 页 · 共 60 条")).toBeVisible();
   await expect(page.locator(".movie-card").first()).toContainText("第 1 页");
   await expect(page).toHaveURL(/\/movies\?genre=28&year=2024&sort=rating$/);

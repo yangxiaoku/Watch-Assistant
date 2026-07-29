@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { Ban, Check, ChevronRight, Eye, LoaderCircle, RefreshCw, Tag } from "@lucide/vue";
 import { computed, onMounted, ref } from "vue";
-import { ApiClient, ApiError } from "../api";
+import { ApiClient, ApiError, focusFirstFieldError } from "../api";
 import type { OrganizationPlanStatus, OrganizationPlanSummary } from "../types";
 
 const props = withDefaults(defineProps<{ api: ApiClient; enabled?: boolean }>(), {
@@ -84,6 +84,7 @@ async function mutate(action: "confirm" | "ignore" | "alias", operation: () => P
     items.value = items.value.map((item) => item.plan_id === updated.plan_id ? updated : item);
     notice.value = action === "confirm" ? "已确认本地计划，未执行远端写操作" : action === "ignore" ? "已忽略本地计划" : "本地别名已保存";
   } catch (exception) {
+    focusFirstFieldError(exception);
     if (exception instanceof ApiError && exception.status === 409) {
       await refreshAfterConflict();
     } else {
@@ -109,7 +110,7 @@ onMounted(() => {
   <section v-if="enabled" class="organization-workbench">
     <div class="organization-heading">
       <div>
-        <p class="eyebrow">LOCAL REVIEW</p>
+        <p class="eyebrow">本地审核</p>
         <h1>整理计划工作台</h1>
         <p>这里只改变本地计划状态，不会自动执行远端操作。</p>
       </div>
@@ -138,7 +139,7 @@ onMounted(() => {
       </div>
 
       <article v-if="selected" class="organization-preview">
-        <div class="organization-preview-heading"><div><p class="eyebrow">PLAN PREVIEW</p><h2>{{ selected.alias || "未命名计划" }}</h2></div><span class="organization-status">{{ statusLabel[selected.status] }}</span></div>
+        <div class="organization-preview-heading"><div><p class="eyebrow">整理计划预览</p><h2>{{ selected.alias || "未命名计划" }}</h2></div><span class="organization-status">{{ statusLabel[selected.status] }}</span></div>
         <dl class="organization-facts">
           <div><dt>计划标识</dt><dd>{{ selected.plan_id }}</dd></div>
           <div><dt>版本</dt><dd>{{ selected.revision }}</dd></div>
@@ -153,7 +154,7 @@ onMounted(() => {
         </div>
         <form v-if="selectedCanEdit" class="organization-alias" @submit.prevent="saveAlias">
           <label for="organization-alias-input"><Tag :size="16" />本地别名</label>
-          <div><input id="organization-alias-input" v-model="aliasInput" maxlength="64" autocomplete="off" placeholder="仅用于本地标记" /><button class="secondary-button" type="submit" :disabled="busy || !aliasInput.trim()">保存</button></div>
+          <div><input id="organization-alias-input" name="alias" v-model="aliasInput" maxlength="64" autocomplete="off" placeholder="仅用于本地标记" /><button class="secondary-button" type="submit" :disabled="busy || !aliasInput.trim()">保存</button></div>
         </form>
       </article>
     </div>

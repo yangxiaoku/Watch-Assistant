@@ -10,29 +10,80 @@ import type {
   PatchContentPolicyRequest,
   LogsResponse,
   MovieCollectionResponse,
+  MovieMetadata,
   PatchLoggingSettingsRequest,
   PatchInspectionSettingsRequest,
   P115SettingsResponse,
   P115ValidationResponse,
   SearchRequest,
   SearchResponse,
+  SeasonDetailResponse,
   ResourcePageResponse,
+  ResourceSearchResponse,
   ResourceQuality,
   ResourceSort,
   SettingsOverviewResponse,
   TaskResponse,
+  WorkflowListResponse,
+  WorkflowResponse,
+  WorkflowStageName,
+  WorkflowStageStatus,
+  NotificationListResponse,
+  NotificationResponse,
+  NotificationPreferenceResponse,
   OrganizationPlanListResponse,
   OrganizationPlanSummary,
+  PwaDevice,
 } from "./types";
+import { describeUiError, type UiErrorAction } from "./errorCatalog";
+
+export interface ApiFieldError {
+  fieldId: string;
+  message: string;
+}
+
+export function browserIsOnline(): boolean {
+  return typeof navigator === "undefined" || navigator.onLine !== false;
+}
 
 export class ApiError extends Error {
+  readonly title: string;
+  readonly suggestion: string;
+  readonly retryable: boolean;
+  readonly action: UiErrorAction;
+  readonly fieldErrors: ApiFieldError[];
+  readonly requestId: string | null;
+  readonly correlationId: string | null;
+
   constructor(
     message: string,
     readonly status: number,
     readonly code?: string,
+    details: Partial<Pick<ApiError, "title" | "suggestion" | "retryable" | "action" | "fieldErrors" | "requestId" | "correlationId">> = {},
   ) {
     super(message);
+    this.title = details.title ?? "操作暂时无法完成";
+    this.suggestion = details.suggestion ?? "请检查当前状态后再试。";
+    this.retryable = details.retryable ?? false;
+    this.action = details.action ?? null;
+    this.fieldErrors = details.fieldErrors ?? [];
+    this.requestId = details.requestId ?? null;
+    this.correlationId = details.correlationId ?? null;
   }
+}
+
+export function focusFirstFieldError(exception: unknown): void {
+  if (!(exception instanceof ApiError) || !exception.fieldErrors.length || typeof document === "undefined") return;
+  const fieldId = exception.fieldErrors[0]?.fieldId;
+  if (!fieldId) return;
+  const byId = document.getElementById(fieldId);
+  if (byId instanceof HTMLElement) {
+    byId.focus();
+    return;
+  }
+  const byName = Array.from(document.querySelectorAll<HTMLElement>("[name]"))
+    .find((element) => element.getAttribute("name") === fieldId);
+  byName?.focus();
 }
 
 export class ApiClient {
@@ -137,10 +188,34 @@ export class ApiClient {
     });
   }
 
-  async logs(filters: { category?: LogCategory; cursor?: number; limit?: number }): Promise<LogsResponse> {
+  async logs(filters: {
+    category?: LogCategory;
+    level?: import("./types").LogLevel;
+    status?: string;
+    eventCode?: string;
+    requestId?: string;
+    correlationId?: string;
+    taskId?: string;
+    actorType?: string;
+    actorId?: string;
+    resourceType?: string;
+    resourceId?: string;
+    cursor?: number;
+    limit?: number;
+  }): Promise<LogsResponse> {
     const params = new URLSearchParams({ limit: String(filters.limit ?? 20) });
     if (filters.cursor !== undefined) params.set("cursor", String(filters.cursor));
     if (filters.category) params.set("category", filters.category);
+    if (filters.level) params.set("level", filters.level);
+    if (filters.status) params.set("status", filters.status);
+    if (filters.eventCode) params.set("event_code", filters.eventCode);
+    if (filters.requestId) params.set("request_id", filters.requestId);
+    if (filters.correlationId) params.set("correlation_id", filters.correlationId);
+    if (filters.taskId) params.set("task_id", filters.taskId);
+    if (filters.actorType) params.set("actor_type", filters.actorType);
+    if (filters.actorId) params.set("actor_id", filters.actorId);
+    if (filters.resourceType) params.set("resource_type", filters.resourceType);
+    if (filters.resourceId) params.set("resource_id", filters.resourceId);
     return this.request<LogsResponse>(`/api/v1/logs?${params}`);
   }
 
@@ -156,6 +231,49 @@ export class ApiClient {
       method: "POST",
       body: JSON.stringify(body),
     });
+  }
+
+  async mediaMetadata(
+    mediaType: "movie" | "tv",
+    tmdbId: number,
+    signal?: AbortSignal,
+  ): Promise<MovieMetadata> {
+    return this.request<MovieMetadata>(`/api/v1/media/${mediaType}/${tmdbId}`, { signal });
+  }
+
+  async recordMediaDetailMetric(
+    mediaType: "movie" | "tv",
+    tmdbId: number,
+    metric: {
+      stage: "detail_framework" | "metadata_summary" | "metadata_complete" | "metadata_failed" | "resource_first_batch" | "resource_complete" | "resource_failed" | "late_response" | "request_cancelled";
+      status: "success" | "failed" | "discarded" | "cancelled";
+      duration_ms: number;
+      cached?: boolean;
+      season_number?: number | null;
+      error_code?: string;
+    },
+  ): Promise<void> {
+    await this.request<void>(`/api/v1/media/${mediaType}/${tmdbId}/performance`, {
+      method: "POST",
+      body: JSON.stringify({ cached: false, ...metric }),
+    });
+  }
+
+  async seasonMetadata(
+    tmdbId: number,
+    seasonNumber: number,
+    options: { refresh?: boolean; language?: string; fallbackLanguage?: string } = {},
+    signal?: AbortSignal,
+  ): Promise<SeasonDetailResponse> {
+    const params = new URLSearchParams({
+      language: options.language ?? "zh-CN",
+      fallback_language: options.fallbackLanguage ?? "en-US",
+    });
+    if (options.refresh) params.set("refresh", "true");
+    return this.request<SeasonDetailResponse>(
+      `/api/v1/media/tv/${tmdbId}/seasons/${seasonNumber}?${params}`,
+      { signal },
+    );
   }
 
   async resources(
@@ -184,10 +302,30 @@ export class ApiClient {
     return this.request<ResourcePageResponse>(`/api/v1/media/${mediaType}/${tmdbId}/resources?${params}`, { signal });
   }
 
-  async inspectResources(resourceIds: string[]): Promise<InspectionBatchResponse> {
+  async startResourceSearch(
+    mediaType: "movie" | "tv",
+    tmdbId: number,
+    options: { seasonNumber?: number | null; refresh?: boolean } = {},
+    signal?: AbortSignal,
+  ): Promise<ResourceSearchResponse> {
+    return this.request<ResourceSearchResponse>(`/api/v1/media/${mediaType}/${tmdbId}/resource-search`, {
+      method: "POST",
+      body: JSON.stringify({
+        season_number: options.seasonNumber ?? null,
+        refresh: options.refresh ?? false,
+      }),
+      signal,
+    });
+  }
+
+  async resourceSearch(taskId: string, signal?: AbortSignal): Promise<ResourceSearchResponse> {
+    return this.request<ResourceSearchResponse>(`/api/v1/resource-search/${encodeURIComponent(taskId)}`, { signal });
+  }
+
+  async inspectResources(resourceIds: string[], workflowId?: string | null): Promise<InspectionBatchResponse> {
     return this.request<InspectionBatchResponse>("/api/v1/resources/inspect", {
       method: "POST",
-      body: JSON.stringify({ resource_ids: resourceIds }),
+      body: JSON.stringify({ resource_ids: resourceIds, ...(workflowId ? { workflow_id: workflowId } : {}) }),
     });
   }
 
@@ -224,15 +362,106 @@ export class ApiClient {
     return this.request<MovieCollectionResponse>(`/api/v1/media/search?${params}`);
   }
 
-  async createTask(resourceId: string, force = false): Promise<TaskResponse> {
+  async createTask(resourceId: string, force = false, workflowId?: string | null): Promise<TaskResponse> {
     return this.request<TaskResponse>("/api/v1/tasks", {
       method: "POST",
-      body: JSON.stringify({ resource_id: resourceId, force }),
+      body: JSON.stringify({ resource_id: resourceId, force, ...(workflowId ? { workflow_id: workflowId } : {}) }),
     });
   }
 
   async getTask(taskId: string): Promise<TaskResponse> {
     return this.request<TaskResponse>(`/api/v1/tasks/${taskId}`);
+  }
+
+  async workflows(filters: { status?: string; mediaType?: "movie" | "tv"; subscriptionId?: string; stage?: string; stageStatus?: string; page?: number; pageSize?: number } = {}): Promise<WorkflowListResponse> {
+    const params = new URLSearchParams({ page: String(filters.page ?? 1), page_size: String(filters.pageSize ?? 20) });
+    if (filters.status) params.set("status", filters.status);
+    if (filters.mediaType) params.set("media_type", filters.mediaType);
+    if (filters.subscriptionId) params.set("subscription_id", filters.subscriptionId);
+    if (filters.stage) params.set("stage", filters.stage);
+    if (filters.stageStatus) params.set("stage_status", filters.stageStatus);
+    return this.request<WorkflowListResponse>(`/api/v1/workflows?${params}`);
+  }
+
+  async workflow(workflowId: string): Promise<WorkflowResponse> {
+    return this.request<WorkflowResponse>(`/api/v1/workflows/${encodeURIComponent(workflowId)}`);
+  }
+
+  async createWorkflow(input: { mediaType: "movie" | "tv"; tmdbId: number }): Promise<WorkflowResponse> {
+    return this.request<WorkflowResponse>("/api/v1/workflows", {
+      method: "POST",
+      body: JSON.stringify({ media_type: input.mediaType, tmdb_id: input.tmdbId }),
+    });
+  }
+
+  async patchWorkflowStage(
+    workflowId: string,
+    stage: import("./types").WorkflowStageName,
+    patch: { status: import("./types").WorkflowStageStatus; reason?: string; errorCode?: string; childType?: string; childId?: string },
+  ): Promise<WorkflowResponse> {
+    return this.request<WorkflowResponse>(`/api/v1/workflows/${encodeURIComponent(workflowId)}/stages/${stage}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        status: patch.status,
+        ...(patch.reason ? { reason: patch.reason } : {}),
+        ...(patch.errorCode ? { error_code: patch.errorCode } : {}),
+        ...(patch.childType ? { child_type: patch.childType } : {}),
+        ...(patch.childId ? { child_id: patch.childId } : {}),
+      }),
+    });
+  }
+
+  async decideWorkflowApproval(workflowId: string, decision: "approve" | "reject", reason?: string): Promise<WorkflowResponse> {
+    return this.request<WorkflowResponse>(`/api/v1/workflows/${encodeURIComponent(workflowId)}/approval`, {
+      method: "POST",
+      body: JSON.stringify({ decision, ...(reason ? { reason } : {}) }),
+    });
+  }
+
+  async cancelWorkflow(workflowId: string, reason?: string): Promise<WorkflowResponse> {
+    return this.request<WorkflowResponse>(`/api/v1/workflows/${encodeURIComponent(workflowId)}/cancel`, {
+      method: "POST",
+      body: JSON.stringify(reason ? { reason } : {}),
+    });
+  }
+
+  async notifications(unreadOnly = false, limit = 50): Promise<NotificationListResponse> {
+    const params = new URLSearchParams({ unread_only: String(unreadOnly), limit: String(limit) });
+    return this.request<NotificationListResponse>(`/api/v1/notifications?${params}`);
+  }
+
+  async markNotificationRead(notificationId: string): Promise<NotificationResponse> {
+    return this.request<NotificationResponse>(`/api/v1/notifications/${encodeURIComponent(notificationId)}/read`, { method: "POST", body: "{}" });
+  }
+
+  async markAllNotificationsRead(): Promise<{ marked_count: number }> {
+    return this.request<{ marked_count: number }>("/api/v1/notifications/read-all", { method: "POST", body: "{}" });
+  }
+
+  async notificationPreferences(): Promise<NotificationPreferenceResponse> {
+    return this.request<NotificationPreferenceResponse>("/api/v1/notification-preferences");
+  }
+
+  async updateNotificationPreferences(patch: { enabled?: boolean; muted_event_codes?: string[]; revision: number }): Promise<NotificationPreferenceResponse> {
+    return this.request<NotificationPreferenceResponse>("/api/v1/notification-preferences", { method: "PATCH", body: JSON.stringify(patch) });
+  }
+
+  async pwaDevices(): Promise<{ items: PwaDevice[] }> {
+    return this.request<{ items: PwaDevice[] }>("/api/v1/pwa/devices");
+  }
+
+  async registerPwaDevice(name: string, subscription: PushSubscriptionJSON): Promise<PwaDevice> {
+    return this.request<PwaDevice>("/api/v1/pwa/devices", {
+      method: "POST",
+      body: JSON.stringify({ name, subscription }),
+    });
+  }
+
+  async revokePwaDevice(deviceId: string): Promise<PwaDevice> {
+    return this.request<PwaDevice>(`/api/v1/pwa/devices/${encodeURIComponent(deviceId)}/revoke`, {
+      method: "POST",
+      body: "{}",
+    });
   }
 
   async organizationPlans(filters: {
@@ -272,19 +501,102 @@ export class ApiClient {
   }
 
   private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
+    const method = (init.method ?? "GET").toUpperCase();
+    if (method !== "GET" && !browserIsOnline()) {
+      throw new ApiError("当前处于离线状态，写操作已暂停。", 0, "offline_write_blocked", {
+        title: "当前处于离线状态",
+        suggestion: "恢复网络后再提交，系统不会在本地排队执行写操作。",
+        retryable: true,
+        action: "retry",
+      });
+    }
     const headers = new Headers(init.headers);
     headers.set("Content-Type", "application/json");
-    if (init.method && init.method !== "GET" && this.csrfToken) {
+    if (method !== "GET" && this.csrfToken) {
       headers.set("X-CSRF-Token", this.csrfToken);
     }
-    const response = await fetch(path, { ...init, headers, credentials: "same-origin" });
-    const body = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      const detail = body.detail;
-      const message = typeof detail === "string" ? detail : detail?.message ?? "请求失败";
-      const code = typeof detail === "string" ? detail : detail?.code;
-      throw new ApiError(message, response.status, code);
+    if (method !== "GET" && !headers.has("Idempotency-Key")) {
+      headers.set("Idempotency-Key", createIdempotencyKey());
     }
-    return body as T;
+    try {
+      const requestInit: RequestInit = { ...init, headers, credentials: "same-origin" };
+      if (init.method) requestInit.method = method;
+      const response = await fetch(path, requestInit);
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const detail = body.error ?? body.detail;
+        const code = typeof detail === "string" ? detail : detail?.code;
+        const descriptor = describeUiError(code, response.status);
+        const fieldErrors = parseFieldErrors(detail?.field_errors);
+        const requestId = typeof detail?.request_id === "string" ? detail.request_id : response.headers.get("X-Request-ID");
+        const correlationId = typeof detail?.correlation_id === "string" ? detail.correlation_id : response.headers.get("X-Correlation-ID");
+        throw new ApiError(descriptor.message, response.status, descriptor.code, {
+          ...descriptor,
+          fieldErrors,
+          requestId,
+          correlationId,
+        });
+      }
+      if (method === "GET" && isCacheableRead(path)) {
+        writeReadCache(path, body);
+      }
+      return body as T;
+    } catch (exception) {
+      if (method === "GET" && isCacheableRead(path) && !(exception instanceof ApiError)) {
+        const cached = readReadCache<T>(path);
+        if (cached) {
+          if (typeof window !== "undefined") {
+            window.dispatchEvent(new CustomEvent("watch-assistant:offline-data", { detail: { cachedAt: cached.cachedAt } }));
+          }
+          return cached.data;
+        }
+      }
+      throw exception;
+    }
   }
+}
+
+const READ_CACHE_PREFIX = "watch-assistant:readonly-cache:";
+const READ_CACHE_TTL_MS = 15 * 60 * 1000;
+
+function isCacheableRead(path: string): boolean {
+  return /^\/api\/v1\/(health|tasks(?:[/?]|$)|notifications(?:[/?]|$)|workflows(?:[/?]|$))/.test(path);
+}
+
+function createIdempotencyKey(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) return crypto.randomUUID();
+  return `wa-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function writeReadCache(path: string, data: unknown): void {
+  if (typeof localStorage === "undefined") return;
+  try {
+    localStorage.setItem(`${READ_CACHE_PREFIX}${path}`, JSON.stringify({ cachedAt: new Date().toISOString(), data }));
+  } catch {
+    // Storage quotas and privacy mode must not affect online requests.
+  }
+}
+
+function readReadCache<T>(path: string): { cachedAt: string; data: T } | null {
+  if (typeof localStorage === "undefined") return null;
+  try {
+    const value = localStorage.getItem(`${READ_CACHE_PREFIX}${path}`);
+    if (!value) return null;
+    const parsed = JSON.parse(value) as { cachedAt?: string; data?: T };
+    if (!parsed.cachedAt || Date.now() - Date.parse(parsed.cachedAt) > READ_CACHE_TTL_MS || parsed.data === undefined) return null;
+    return { cachedAt: parsed.cachedAt, data: parsed.data };
+  } catch {
+    return null;
+  }
+}
+
+function parseFieldErrors(value: unknown): ApiFieldError[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item): ApiFieldError[] => {
+    if (!item || typeof item !== "object") return [];
+    const record = item as Record<string, unknown>;
+    const fieldId = typeof record.field_id === "string" ? record.field_id : typeof record.field === "string" ? record.field : "";
+    const message = typeof record.message_zh === "string" ? record.message_zh : typeof record.message === "string" ? record.message : "";
+    return fieldId && message ? [{ fieldId, message }] : [];
+  });
 }

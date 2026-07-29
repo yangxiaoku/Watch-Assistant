@@ -28,7 +28,7 @@ defineEmits<{
 <template>
   <section class="search-view" aria-labelledby="catalog-title">
     <header class="library-heading search-heading">
-      <div><p class="eyebrow">SEARCH RESULTS</p><h1 id="catalog-title">{{ heading }}</h1><p>从 TMDB 结果中选择影片，随后自动查询 PanSou 资源。</p></div>
+      <div><p class="eyebrow">搜索结果</p><h1 id="catalog-title">{{ heading }}</h1><p>从 TMDB 结果中选择影片，随后自动查询 PanSou 资源。</p></div>
       <button class="secondary-button" type="button" @click="$emit('reset')">返回首页</button>
     </header>
     <div v-if="loading && !movies.length" class="movie-grid" aria-label="正在加载电影">

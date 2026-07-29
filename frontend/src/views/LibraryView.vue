@@ -42,7 +42,7 @@ const years = [undefined, ...Array.from({ length: 8 }, (_, index) => currentYear
 
 <template>
   <section class="library-view">
-    <header class="library-heading"><div><p class="eyebrow">EXPLORE TMDB</p><h1 id="catalog-title">{{ mediaType === 'tv' ? '剧集库' : '电影库' }}</h1><p>按类型、年份和排序方式发现{{ mediaType === 'tv' ? '电视剧' : '电影' }}，打开后直接聚合 PanSou 资源。</p></div><SlidersHorizontal :size="28" /></header>
+    <header class="library-heading"><div><p class="eyebrow">浏览 TMDB</p><h1 id="catalog-title">{{ mediaType === 'tv' ? '剧集库' : '电影库' }}</h1><p>按类型、年份和排序方式发现{{ mediaType === 'tv' ? '电视剧' : '电影' }}，打开后直接聚合 PanSou 资源。</p></div><SlidersHorizontal :size="28" /></header>
     <div class="filter-panel">
       <div class="filter-row"><strong>类型</strong><div class="filter-options"><button v-for="genre in (mediaType === 'tv' ? tvGenres : movieGenres)" :key="genre[1]" type="button" :class="{ active: genreId === genre[0] }" @click="$emit('filters', { genreId: genre[0], year, sort })">{{ genre[1] }}</button></div></div>
       <div class="filter-row"><strong>年份</strong><div class="filter-options"><button v-for="item in years" :key="item ?? 'all'" type="button" :class="{ active: year === item }" @click="$emit('filters', { genreId, year: item, sort })">{{ item ?? '全部' }}</button></div></div>

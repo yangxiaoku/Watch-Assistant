@@ -17,7 +17,7 @@ import {
   XCircle,
 } from "@lucide/vue";
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { ApiClient, ApiError } from "../api";
+import { ApiClient, ApiError, focusFirstFieldError } from "../api";
 import type {
   LogCategory,
   LogEntry,
@@ -54,11 +54,38 @@ const levelOptions: Array<{ value: LogLevel; label: string }> = [
 ];
 const categoryOptions: Array<{ value: LogCategory; label: string }> = [
   { value: "system", label: "系统" },
+  { value: "security", label: "安全" },
   { value: "search", label: "搜索" },
+  { value: "pansou", label: "PanSou" },
   { value: "cache", label: "缓存" },
   { value: "inspection", label: "检测" },
   { value: "p115", label: "115" },
-  { value: "security", label: "安全" },
+  { value: "task", label: "任务" },
+  { value: "organize", label: "整理" },
+  { value: "strm", label: "STRM" },
+  { value: "library", label: "媒体库" },
+  { value: "agent", label: "Agent" },
+  { value: "settings", label: "设置" },
+  { value: "subscription", label: "订阅" },
+  { value: "quality", label: "质量策略" },
+  { value: "notification", label: "通知" },
+];
+const statusOptions = [
+  { value: "success", label: "成功" },
+  { value: "warning", label: "警告" },
+  { value: "partial", label: "部分完成" },
+  { value: "failed", label: "失败" },
+  { value: "uncertain", label: "待确认" },
+  { value: "queued", label: "排队中" },
+  { value: "cancelled", label: "已取消" },
+  { value: "unregistered", label: "未登记" },
+];
+const actorTypeOptions = [
+  { value: "web", label: "Web" },
+  { value: "system", label: "系统" },
+  { value: "worker", label: "Worker" },
+  { value: "agent", label: "Agent" },
+  { value: "userscript", label: "用户脚本" },
 ];
 
 const activeSection = ref<SettingsSection>("overview");
@@ -107,6 +134,16 @@ const logsLoading = ref(false);
 const logsLoaded = ref(false);
 const logsError = ref("");
 const logCategory = ref<LogCategory | "">("");
+const logLevel = ref<LogLevel | "">("");
+const logStatus = ref("");
+const logEventCode = ref("");
+const logRequestId = ref("");
+const logCorrelationId = ref("");
+const logTaskId = ref("");
+const logActorType = ref("");
+const logActorId = ref("");
+const logResourceType = ref("");
+const logResourceId = ref("");
 const nextLogCursor = ref<number | null>(null);
 const autoRefreshLogs = ref(true);
 const logsUpdatedAt = ref<string | null>(null);
@@ -218,6 +255,7 @@ async function saveTmdbCredential() {
     syncSharedRevision(response.revision);
     tmdbDraft.value = "";
   } catch (exception) {
+    focusFirstFieldError(exception);
     if (settingsMounted) tmdbCredentialError.value = credentialErrorMessage(exception, "TMDB 凭据保存失败，请稍后重试");
   } finally {
     if (settingsMounted) tmdbSaving.value = false;
@@ -235,6 +273,7 @@ async function resetTmdbCredential() {
     syncSharedRevision(response.revision);
     tmdbDraft.value = "";
   } catch (exception) {
+    focusFirstFieldError(exception);
     if (settingsMounted) tmdbCredentialError.value = credentialErrorMessage(exception, "TMDB 配置恢复失败，请稍后重试");
   } finally {
     if (settingsMounted) tmdbResetting.value = false;
@@ -257,6 +296,7 @@ async function saveP115Credential() {
     p115CookieDraft.value = "";
     await loadP115();
   } catch (exception) {
+    focusFirstFieldError(exception);
     if (settingsMounted) p115CredentialError.value = credentialErrorMessage(exception, "P115 Cookie 保存失败，请稍后重试");
   } finally {
     if (settingsMounted) p115CredentialSaving.value = false;
@@ -275,6 +315,7 @@ async function resetP115Credential() {
     p115CookieDraft.value = "";
     await loadP115();
   } catch (exception) {
+    focusFirstFieldError(exception);
     if (settingsMounted) p115CredentialError.value = credentialErrorMessage(exception, "P115 Cookie 恢复失败，请稍后重试");
   } finally {
     if (settingsMounted) p115CredentialResetting.value = false;
@@ -316,6 +357,7 @@ async function saveInspection() {
     syncSharedRevision(response.revision);
     emit("auto-start-enabled", response.auto_start_enabled);
   } catch (exception) {
+    focusFirstFieldError(exception);
     if (exception instanceof ApiError && exception.status === 409) {
       inspectionConflict.value = true;
       inspectionSaveError.value = "设置已被其他请求修改，请重新加载后再保存。";
@@ -363,6 +405,7 @@ async function saveLogging() {
     applyLogging(response);
     syncSharedRevision(response.revision);
   } catch (exception) {
+    focusFirstFieldError(exception);
     if (exception instanceof ApiError && exception.status === 409) {
       conflict.value = true;
       saveError.value = "设置已被其他请求修改，请重新加载后再保存。";
@@ -417,6 +460,7 @@ async function saveContentPolicy() {
     applyContentPolicy(response);
     syncSharedRevision(response.revision);
   } catch (exception) {
+    focusFirstFieldError(exception);
     if (exception instanceof ApiError && exception.status === 409) {
       contentConflict.value = true;
       contentSaveError.value = "设置已被其他请求修改，请重新加载后再保存。";
@@ -442,11 +486,7 @@ async function loadLogs(append = false, preserve = false) {
   syncLogsRefreshTimer();
   logsError.value = "";
   try {
-    const response = await props.api.logs({
-      limit: logLimit,
-      cursor: cursor ?? undefined,
-      category: logCategory.value || undefined,
-    });
+    const response = await props.api.logs(currentLogFilters(cursor));
     if (requestId !== logsRequestId) return;
     const byId = new Map<number, LogEntry>(
       (append || preserve) ? logItems.value.map((item) => [item.id, item]) : [],
@@ -469,6 +509,25 @@ async function loadLogs(append = false, preserve = false) {
       syncLogsRefreshTimer();
     }
   }
+}
+
+function currentLogFilters(cursor: number | null = null): Parameters<ApiClient["logs"]>[0] {
+  const filters: Parameters<ApiClient["logs"]>[0] = {
+    limit: logLimit,
+    cursor: cursor ?? undefined,
+    category: logCategory.value || undefined,
+  };
+  if (logLevel.value) filters.level = logLevel.value;
+  if (logStatus.value) filters.status = logStatus.value;
+  if (logEventCode.value.trim()) filters.eventCode = logEventCode.value.trim();
+  if (logRequestId.value.trim()) filters.requestId = logRequestId.value.trim();
+  if (logCorrelationId.value.trim()) filters.correlationId = logCorrelationId.value.trim();
+  if (logTaskId.value.trim()) filters.taskId = logTaskId.value.trim();
+  if (logActorType.value) filters.actorType = logActorType.value;
+  if (logActorId.value.trim()) filters.actorId = logActorId.value.trim();
+  if (logResourceType.value.trim()) filters.resourceType = logResourceType.value.trim();
+  if (logResourceId.value.trim()) filters.resourceId = logResourceId.value.trim();
+  return filters;
 }
 
 function refreshLogs() {
@@ -497,6 +556,21 @@ function syncLogsRefreshTimer() {
 }
 
 function changeLogFilter() {
+  void loadLogs();
+}
+
+function clearLogFilters() {
+  logCategory.value = "";
+  logLevel.value = "";
+  logStatus.value = "";
+  logEventCode.value = "";
+  logRequestId.value = "";
+  logCorrelationId.value = "";
+  logTaskId.value = "";
+  logActorType.value = "";
+  logActorId.value = "";
+  logResourceType.value = "";
+  logResourceId.value = "";
   void loadLogs();
 }
 
@@ -601,25 +675,25 @@ watch(autoRefreshLogs, syncLogsRefreshTimer);
 
 <template>
   <section class="settings-view">
-    <header class="settings-heading"><div><p class="eyebrow">WORKSPACE SETTINGS</p><h1>设置</h1><p>查看运行状态、日志策略和 115 推送准备情况。</p></div><Settings2 :size="28" /></header>
+    <header class="settings-heading"><div><p class="eyebrow">工作区设置</p><h1>设置</h1><p>查看运行状态、日志策略和 115 推送准备情况。</p></div><Settings2 :size="28" /></header>
     <div class="settings-layout">
       <aside class="settings-nav" aria-label="设置分区"><button v-for="item in sections" :key="item.id" type="button" :class="{ active: activeSection === item.id }" @click="selectSection(item.id)"><component :is="item.icon" :size="16" />{{ item.label }}</button></aside>
       <div class="settings-content">
         <label class="settings-mobile-select">分区<select aria-label="设置分区" :value="activeSection" @change="selectMobileSection"><option v-for="item in sections" :key="item.id" :value="item.id">{{ item.label }}</option></select></label>
-        <div class="settings-section-kicker"><span>{{ currentSection?.label }}</span><span>WATCH ASSISTANT</span></div>
+        <div class="settings-section-kicker"><span>{{ currentSection?.label }}</span><span>观影助手</span></div>
 
         <section v-if="activeSection === 'overview'" class="settings-section" aria-labelledby="overview-title">
-          <header class="settings-section-heading"><div><p class="eyebrow">SYSTEM SNAPSHOT</p><h2 id="overview-title">概览</h2></div><button class="icon-button" type="button" title="刷新概览" aria-label="刷新概览" :disabled="overviewLoading" @click="loadOverview"><RefreshCw :size="16" :class="{ spin: overviewLoading }" /></button></header>
+          <header class="settings-section-heading"><div><p class="eyebrow">系统概览</p><h2 id="overview-title">概览</h2></div><button class="icon-button" type="button" title="刷新概览" aria-label="刷新概览" :disabled="overviewLoading" @click="loadOverview"><RefreshCw :size="16" :class="{ spin: overviewLoading }" /></button></header>
           <div v-if="overviewLoading" class="settings-loading"><LoaderCircle class="spin" :size="20" />正在加载概览</div>
           <div v-else-if="overviewError" class="settings-state settings-state-error"><AlertTriangle :size="18" /><span>{{ overviewError }}</span><button class="text-button" type="button" @click="loadOverview">重试</button></div>
           <template v-else-if="overview">
-            <div class="settings-metrics"><div class="settings-metric"><span>Release</span><strong>{{ overview.release }}</strong></div><div class="settings-metric"><span>运行时间</span><strong>{{ formatUptime(overview.uptime_seconds) }}</strong></div><div class="settings-metric"><span>数据库大小</span><strong>{{ formatBytes(overview.database_size_bytes) }}</strong></div></div>
+            <div class="settings-metrics"><div class="settings-metric"><span>版本</span><strong>{{ overview.release }}</strong></div><div class="settings-metric"><span>运行时间</span><strong>{{ formatUptime(overview.uptime_seconds) }}</strong></div><div class="settings-metric"><span>数据库大小</span><strong>{{ formatBytes(overview.database_size_bytes) }}</strong></div></div>
             <div class="settings-subsection"><h3>能力</h3><div class="settings-capability-list"><div><span>内容检测</span><strong :class="capabilityClass(overview.capabilities.inspection)">{{ capabilityLabel(overview.capabilities.inspection) }}</strong></div><div><span>磁力云下载</span><strong :class="capabilityClass(overview.capabilities.magnet)">{{ capabilityLabel(overview.capabilities.magnet) }}</strong></div><div><span>115 分享转存</span><strong :class="capabilityClass(overview.capabilities.share)">{{ overview.capabilities.share ? '可用' : '未启用' }}</strong></div></div></div>
           </template>
         </section>
 
         <section v-else-if="activeSection === 'credentials'" class="settings-section" aria-labelledby="credentials-title">
-          <header class="settings-section-heading"><div><p class="eyebrow">MANAGED CONNECTIONS</p><h2 id="credentials-title">连接配置</h2></div><button class="icon-button" type="button" title="刷新连接配置" aria-label="刷新连接配置" :disabled="credentialsLoading" @click="loadCredentials"><RefreshCw :size="16" :class="{ spin: credentialsLoading }" /></button></header>
+          <header class="settings-section-heading"><div><p class="eyebrow">托管连接</p><h2 id="credentials-title">连接配置</h2></div><button class="icon-button" type="button" title="刷新连接配置" aria-label="刷新连接配置" :disabled="credentialsLoading" @click="loadCredentials"><RefreshCw :size="16" :class="{ spin: credentialsLoading }" /></button></header>
           <div v-if="credentialsLoading" class="settings-loading"><LoaderCircle class="spin" :size="20" />正在加载连接配置</div>
           <div v-else-if="credentialsError" class="settings-state settings-state-error"><AlertTriangle :size="18" /><span>{{ credentialsError }}</span><button class="text-button" type="button" @click="loadCredentials">重新加载</button></div>
           <div v-else-if="credentials" class="credential-panels">
@@ -632,7 +706,7 @@ watch(autoRefreshLogs, syncLogsRefreshTimer);
 
             <section class="credential-panel" aria-labelledby="p115-credential-title">
               <header class="credential-panel-heading"><div><p class="eyebrow">P115</p><h3 id="p115-credential-title">P115 Cookie</h3></div><Cookie :size="20" /></header>
-              <dl class="credential-status-grid"><div><dt>是否配置</dt><dd :class="credentials.p115_cookie.configured ? 'status-ok' : 'status-degraded'">{{ credentials.p115_cookie.configured ? '已配置' : '未配置' }}</dd></div><div><dt>来源</dt><dd>{{ credentialSourceLabel(credentials.p115_cookie.source) }}</dd></div><div><dt>结构状态</dt><dd :class="credentials.p115_cookie.structure_valid ? 'status-ok' : 'status-degraded'">{{ credentials.p115_cookie.structure_valid ? '结构正常' : '结构异常' }}</dd></div><div><dt>Readiness</dt><dd :class="credentials.p115_cookie.ready ? 'status-ok' : 'status-degraded'">{{ credentials.p115_cookie.ready ? '已就绪' : '未就绪' }}</dd></div><div><dt>最后更新时间</dt><dd>{{ credentials.p115_cookie.last_updated_at ? formatTimestamp(credentials.p115_cookie.last_updated_at) : '未知' }}</dd></div></dl>
+              <dl class="credential-status-grid"><div><dt>是否配置</dt><dd :class="credentials.p115_cookie.configured ? 'status-ok' : 'status-degraded'">{{ credentials.p115_cookie.configured ? '已配置' : '未配置' }}</dd></div><div><dt>来源</dt><dd>{{ credentialSourceLabel(credentials.p115_cookie.source) }}</dd></div><div><dt>结构状态</dt><dd :class="credentials.p115_cookie.structure_valid ? 'status-ok' : 'status-degraded'">{{ credentials.p115_cookie.structure_valid ? '结构正常' : '结构异常' }}</dd></div><div><dt>就绪状态</dt><dd :class="credentials.p115_cookie.ready ? 'status-ok' : 'status-degraded'">{{ credentials.p115_cookie.ready ? '已就绪' : '未就绪' }}</dd></div><div><dt>最后更新时间</dt><dd>{{ credentials.p115_cookie.last_updated_at ? formatTimestamp(credentials.p115_cookie.last_updated_at) : '未知' }}</dd></div></dl>
               <div class="credential-capabilities"><span>磁力云下载 <strong :class="p115?.capabilities.magnet ? 'status-ok' : 'status-degraded'">{{ p115 ? capabilityLabel(p115.capabilities.magnet) : '未知' }}</strong></span><span>115 分享转存 <strong :class="p115?.capabilities.share ? 'status-ok' : 'status-degraded'">{{ p115 ? (p115.capabilities.share ? '可用' : '未启用') : '未知' }}</strong></span></div>
               <div class="credential-form"><label>Cookie<input v-model="p115CookieDraft" type="password" autocomplete="new-password" spellcheck="false" aria-label="P115 Cookie" placeholder="输入新的 Cookie" :disabled="credentialMutationBusy" /></label><div class="credential-actions"><button class="primary-button" type="button" :disabled="credentialMutationBusy || validationState === 'running'" @click="saveP115Credential"><LoaderCircle v-if="p115CredentialSaving" class="spin" :size="15" /><Save v-else :size="15" />保存并验证</button><button class="secondary-button" type="button" :disabled="credentialMutationBusy || validationState === 'running' || credentials.p115_cookie.source !== 'managed'" @click="resetP115Credential"><LoaderCircle v-if="p115CredentialResetting" class="spin" :size="15" /><RefreshCw v-else :size="15" />恢复 TgtoDrive</button><button class="secondary-button" type="button" :disabled="p115MutationBusy || validationState === 'running'" @click="validateP115"><LoaderCircle v-if="validationState === 'running'" class="spin" :size="15" /><Cookie v-else :size="15" />验证当前 Cookie</button></div></div>
               <p v-if="p115CredentialError" class="settings-state settings-state-error credential-error" role="alert"><AlertTriangle :size="16" />{{ p115CredentialError }}<button v-if="p115CredentialError.includes('其他请求')" class="text-button" type="button" @click="loadCredentials">重新加载</button></p>
@@ -642,14 +716,27 @@ watch(autoRefreshLogs, syncLogsRefreshTimer);
         </section>
 
         <section v-else-if="activeSection === 'logs'" class="settings-section" aria-labelledby="logs-title">
-          <header class="settings-section-heading"><div><p class="eyebrow">EVENT STREAM</p><h2 id="logs-title">日志</h2></div><div class="settings-section-actions"><label class="settings-toggle"><input v-model="autoRefreshLogs" type="checkbox" />自动刷新</label><button class="icon-button" type="button" title="刷新日志" aria-label="刷新日志" :disabled="logsLoading" @click="refreshLogs"><RefreshCw :size="16" :class="{ spin: logsLoading }" /></button></div></header>
-          <div class="settings-filter-row"><label>分类<select v-model="logCategory" @change="changeLogFilter"><option value="">全部分类</option><option v-for="option in categoryOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select></label></div>
+          <header class="settings-section-heading"><div><p class="eyebrow">事件流</p><h2 id="logs-title">日志</h2></div><div class="settings-section-actions"><label class="settings-toggle"><input v-model="autoRefreshLogs" type="checkbox" />自动刷新</label><button class="icon-button" type="button" title="刷新日志" aria-label="刷新日志" :disabled="logsLoading" @click="refreshLogs"><RefreshCw :size="16" :class="{ spin: logsLoading }" /></button></div></header>
+          <div class="settings-filter-row">
+            <label>分类<select v-model="logCategory" @change="changeLogFilter"><option value="">全部分类</option><option v-for="option in categoryOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select></label>
+            <label>等级<select v-model="logLevel" @change="changeLogFilter"><option value="">全部等级</option><option v-for="option in levelOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select></label>
+            <label>状态<select v-model="logStatus" @change="changeLogFilter"><option value="">全部状态</option><option v-for="option in statusOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select></label>
+            <label>操作者<select v-model="logActorType" @change="changeLogFilter"><option value="">全部操作者</option><option v-for="option in actorTypeOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select></label>
+            <label>事件码<input v-model="logEventCode" type="search" maxlength="128" placeholder="例如 task.failed" @keyup.enter="changeLogFilter" /></label>
+            <label>请求 ID<input v-model="logRequestId" type="search" maxlength="128" placeholder="筛选请求" @keyup.enter="changeLogFilter" /></label>
+            <label>关联 ID<input v-model="logCorrelationId" type="search" maxlength="128" placeholder="筛选关联" @keyup.enter="changeLogFilter" /></label>
+            <label>任务 ID<input v-model="logTaskId" type="search" maxlength="128" placeholder="筛选任务" @keyup.enter="changeLogFilter" /></label>
+            <label>操作者 ID<input v-model="logActorId" type="search" maxlength="128" placeholder="筛选操作者" @keyup.enter="changeLogFilter" /></label>
+            <label>资源类型<input v-model="logResourceType" type="search" maxlength="64" placeholder="例如 library" @keyup.enter="changeLogFilter" /></label>
+            <label>资源 ID<input v-model="logResourceId" type="search" maxlength="128" placeholder="筛选资源" @keyup.enter="changeLogFilter" /></label>
+            <button class="text-button" type="button" @click="clearLogFilters">清除筛选</button>
+          </div>
           <div v-if="logsLoading && !logsLoaded" class="settings-loading"><LoaderCircle class="spin" :size="20" />正在加载日志</div>
           <div v-else-if="logsError" class="settings-state settings-state-error"><AlertTriangle :size="18" /><span>{{ logsError }}</span><button class="text-button" type="button" @click="refreshLogs">重试</button></div>
           <div v-else-if="logsLoaded && !logItems.length" class="settings-empty-block"><FileText :size="24" /><strong>暂无日志</strong><span>调整分类或稍后刷新。</span></div>
           <template v-else-if="logsLoaded">
-            <div class="settings-log-table-wrap"><table class="settings-log-table"><thead><tr><th>时间</th><th>级别</th><th>分类</th><th>内容</th></tr></thead><tbody><tr v-for="item in logItems" :key="item.id"><td>{{ formatTimestamp(item.timestamp) }}</td><td><span :class="['log-level', logLevelClass(item.level)]">{{ levelLabel(item.level) }}</span></td><td>{{ categoryLabel(item.category) }}</td><td>{{ item.message }}</td></tr></tbody></table></div>
-            <div class="settings-log-list"><article v-for="item in logItems" :key="item.id" class="settings-log-item"><div><span :class="['log-level', logLevelClass(item.level)]">{{ levelLabel(item.level) }}</span><time>{{ formatTimestamp(item.timestamp) }}</time></div><strong>{{ categoryLabel(item.category) }}</strong><p>{{ item.message }}</p></article></div>
+            <div class="settings-log-table-wrap"><table class="settings-log-table"><thead><tr><th>时间</th><th>级别</th><th>分类</th><th>内容</th></tr></thead><tbody><tr v-for="item in logItems" :key="item.id"><td>{{ formatTimestamp(item.timestamp) }}</td><td><span :class="['log-level', logLevelClass(item.level)]">{{ levelLabel(item.level) }}</span></td><td>{{ categoryLabel(item.category) }}</td><td><strong>{{ item.title_zh || item.event_code || '应用日志' }}</strong><br />{{ item.message_zh || item.message }}<small v-if="item.request_id || item.task_id">{{ item.request_id ? `请求 ${item.request_id}` : '' }}{{ item.task_id ? ` · 任务 ${item.task_id}` : '' }}</small></td></tr></tbody></table></div>
+            <div class="settings-log-list"><article v-for="item in logItems" :key="item.id" class="settings-log-item"><div><span :class="['log-level', logLevelClass(item.level)]">{{ levelLabel(item.level) }}</span><time>{{ formatTimestamp(item.timestamp) }}</time></div><strong>{{ categoryLabel(item.category) }} · {{ item.title_zh || item.event_code || '应用日志' }}</strong><p>{{ item.message_zh || item.message }}<small v-if="item.request_id || item.task_id">{{ item.request_id ? `请求 ${item.request_id}` : '' }}{{ item.task_id ? ` · 任务 ${item.task_id}` : '' }}</small></p></article></div>
             <div class="settings-pagination"><span>已加载 {{ logItems.length }} 条</span><button v-if="hasMoreLogs" class="secondary-button" type="button" :disabled="logsLoading" @click="loadMoreLogs"><LoaderCircle v-if="logsLoading" class="spin" :size="15" />加载更多</button></div>
             <p v-if="logsUpdatedAt" class="settings-updated-at">最后更新 {{ formatTimestamp(logsUpdatedAt) }}</p>
           </template>
@@ -657,7 +744,7 @@ watch(autoRefreshLogs, syncLogsRefreshTimer);
         </section>
 
         <section v-else-if="activeSection === 'content'" class="settings-section" aria-labelledby="content-policy-title">
-          <header class="settings-section-heading"><div><p class="eyebrow">CONTENT SAFETY</p><h2 id="content-policy-title">内容安全</h2></div><button class="icon-button" type="button" title="刷新内容安全设置" aria-label="刷新内容安全设置" :disabled="contentLoading" @click="loadContentPolicy"><RefreshCw :size="16" :class="{ spin: contentLoading }" /></button></header>
+          <header class="settings-section-heading"><div><p class="eyebrow">内容安全</p><h2 id="content-policy-title">内容安全</h2></div><button class="icon-button" type="button" title="刷新内容安全设置" aria-label="刷新内容安全设置" :disabled="contentLoading" @click="loadContentPolicy"><RefreshCw :size="16" :class="{ spin: contentLoading }" /></button></header>
           <div v-if="contentLoading && !contentPolicy" class="settings-loading"><LoaderCircle class="spin" :size="20" />正在加载内容安全设置</div>
           <div v-else-if="contentError" class="settings-state settings-state-error"><AlertTriangle :size="18" /><span>{{ contentError }}</span><button class="text-button" type="button" @click="loadContentPolicy">重试</button></div>
           <template v-else-if="contentPolicy">
@@ -673,7 +760,7 @@ watch(autoRefreshLogs, syncLogsRefreshTimer);
         </section>
 
         <section v-else-if="activeSection === 'inspection'" class="settings-section" aria-labelledby="inspection-title">
-          <header class="settings-section-heading"><div><p class="eyebrow">RESOURCE INSPECTION</p><h2 id="inspection-title">资源检测</h2></div><button class="icon-button" type="button" title="刷新资源检测设置" aria-label="刷新资源检测设置" :disabled="inspectionLoading" @click="loadInspection"><RefreshCw :size="16" :class="{ spin: inspectionLoading }" /></button></header>
+          <header class="settings-section-heading"><div><p class="eyebrow">资源检测</p><h2 id="inspection-title">资源检测</h2></div><button class="icon-button" type="button" title="刷新资源检测设置" aria-label="刷新资源检测设置" :disabled="inspectionLoading" @click="loadInspection"><RefreshCw :size="16" :class="{ spin: inspectionLoading }" /></button></header>
           <div v-if="inspectionLoading" class="settings-loading"><LoaderCircle class="spin" :size="20" />正在加载资源检测设置</div>
           <div v-else-if="inspectionError" class="settings-state settings-state-error"><AlertTriangle :size="18" /><span>{{ inspectionError }}</span><button class="text-button" type="button" @click="loadInspection">重试</button></div>
           <template v-else-if="inspectionSettings">
@@ -684,7 +771,7 @@ watch(autoRefreshLogs, syncLogsRefreshTimer);
         </section>
 
         <section v-else-if="activeSection === 'p115'" class="settings-section" aria-labelledby="p115-title">
-          <header class="settings-section-heading"><div><p class="eyebrow">P115 CONNECTOR</p><h2 id="p115-title">115 推送</h2></div><button class="icon-button" type="button" title="刷新 115 状态" aria-label="刷新 115 状态" :disabled="p115Loading" @click="loadP115"><RefreshCw :size="16" :class="{ spin: p115Loading }" /></button></header>
+          <header class="settings-section-heading"><div><p class="eyebrow">P115 连接器</p><h2 id="p115-title">115 推送</h2></div><button class="icon-button" type="button" title="刷新 115 状态" aria-label="刷新 115 状态" :disabled="p115Loading" @click="loadP115"><RefreshCw :size="16" :class="{ spin: p115Loading }" /></button></header>
           <div v-if="p115Loading" class="settings-loading"><LoaderCircle class="spin" :size="20" />正在加载 115 状态</div>
           <div v-else-if="p115Error" class="settings-state settings-state-error"><AlertTriangle :size="18" /><span>{{ p115Error }}</span><button class="text-button" type="button" @click="loadP115">重试</button></div>
           <template v-else-if="p115">

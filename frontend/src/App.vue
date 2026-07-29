@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { ClipboardCheck, Clock3, Film, Flame, Heart, Home, LoaderCircle, LogIn, PanelRight, Search, Settings, Tv, X } from "@lucide/vue";
+import { Bell, ClipboardCheck, Clock3, Film, Flame, Heart, Home, ListTodo, LoaderCircle, LogIn, PanelRight, Search, Settings, Tv, X } from "@lucide/vue";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
-import { ApiClient, ApiError } from "./api";
+import { ApiClient, ApiError, browserIsOnline, focusFirstFieldError } from "./api";
 import TaskDrawer from "./components/TaskDrawer.vue";
 import {
   extractBrowseView,
@@ -19,7 +19,9 @@ import {
 import { mediaKey, mediaTypeOf } from "./media";
 import { canPushResource, NO_PUSH_CAPABILITIES, resolvePushCapabilities, submitPushResource, type PushCapabilities } from "./push";
 import { finalizeInspectionResources, inspectionProgress as getInspectionProgress, inspectionResultEnded, inspectionState as getInspectionBatchState, MAX_INSPECTABLE_MAGNETS, mergeInspectionResult, nextInspectionResourceIds, pollInspectionBatch } from "./inspection";
-import type { HomeCatalogResponse, MovieMetadata, ResourceFacets, ResourcePageResponse, ResourceQuality, ResourceSort, ResourceSummary, SearchResponse, TaskResponse } from "./types";
+import { describeUiError } from "./errorCatalog";
+import { waitForResourceSearch as pollResourceSearch } from "./resourceSearchPolling";
+import type { HomeCatalogResponse, MovieMetadata, ResourceFacets, ResourcePageResponse, ResourceQuality, ResourceSearchResponse, ResourceSort, ResourceSummary, SearchResponse, SeasonDetailResponse, TaskResponse } from "./types";
 import CollectionView from "./views/CollectionView.vue";
 import HomeView from "./views/HomeView.vue";
 import LibraryView from "./views/LibraryView.vue";
@@ -27,6 +29,8 @@ import MovieView from "./views/MovieView.vue";
 import SearchView from "./views/SearchView.vue";
 import SettingsView from "./views/SettingsView.vue";
 import OrganizationWorkbenchView from "./views/OrganizationWorkbenchView.vue";
+import WorkflowCenterView from "./views/WorkflowCenterView.vue";
+import NotificationCenterView from "./views/NotificationCenterView.vue";
 
 const FAVORITES_KEY = "watch-assistant:favorites";
 const HISTORY_KEY = "watch-assistant:history";
@@ -35,10 +39,15 @@ const password = ref("");
 const query = ref("");
 const searchInput = ref("");
 const authenticated = ref(false);
+const isOnline = ref(browserIsOnline());
+const offlineDataAt = ref<string | null>(null);
 const loading = ref(false);
 const catalogLoading = ref(false);
 const error = ref("");
 const result = ref<SearchResponse | null>(null);
+const metadataLoading = ref(false);
+const metadataError = ref("");
+const metadataStale = ref(false);
 const homeCatalog = ref<HomeCatalogResponse | null>(null);
 const catalogMovies = ref<MovieMetadata[]>([]);
 const catalogHeading = ref("");
@@ -53,6 +62,7 @@ const totalResults = ref(0);
 const favorites = ref<MovieMetadata[]>(readStoredMovies(FAVORITES_KEY));
 const history = ref<MovieMetadata[]>(readStoredMovies(HISTORY_KEY));
 const tasks = ref<TaskResponse[]>([]);
+const activeWorkflowId = ref<string | null>(null);
 const pushingId = ref<string | null>(null);
 const drawerOpen = ref(false);
 const pushCapabilities = ref<PushCapabilities>({ ...NO_PUSH_CAPABILITIES });
@@ -60,6 +70,9 @@ const inspectionSupported = ref(false);
 const inspectionAutoStartEnabled = ref<boolean | "unknown">("unknown");
 const organizationPlanEnabled = ref(false);
 const selectedSeason = ref<number | null>(null);
+const seasonDetail = ref<SeasonDetailResponse | null>(null);
+const seasonDetailLoading = ref(false);
+const seasonDetailError = ref("");
 const detailMediaType = ref<"movie" | "tv">("movie");
 const inspectionState = ref<"idle" | "running" | "completed" | "partial" | "failed" | "timeout">("idle");
 const inspectionCompleted = ref(0);
@@ -88,18 +101,60 @@ const resourceKind = ref<"all" | "magnet" | "115_share">("all");
 const resourceQuality = ref<"all" | ResourceQuality>("all");
 const resourceQuery = ref("");
 const resourceSort = ref<ResourceSort>("comprehensive");
+let resourceSearchCached = false;
 let searchRequestId = 0;
+let metadataRequestId = 0;
 let inspectionRunId = 0;
 let pollTimer: number | undefined;
 let catalogRequestId = 0;
 let resourceRequestId = 0;
 let resourceAbortController: AbortController | null = null;
+let resourceSearchAbortController: AbortController | null = null;
+let metadataAbortController: AbortController | null = null;
 let resourceQueryTimer: number | undefined;
+let workflowCreationPromise: Promise<string | null> | null = null;
 let pendingResourceRoute: ResourceRouteState | null = null;
+let seasonDetailRequestId = 0;
+let seasonDetailAbortController: AbortController | null = null;
+
+type DetailMetricStage = "detail_framework" | "metadata_summary" | "metadata_complete" | "metadata_failed" | "resource_first_batch" | "resource_complete" | "resource_failed" | "late_response" | "request_cancelled";
+type DetailTiming = { startedAt: number; mediaType: "movie" | "tv"; tmdbId: number; seasonNumber: number | null; reported: Set<DetailMetricStage> };
+const detailTimings = new Map<number, DetailTiming>();
+
+function detailClock(): number {
+  return typeof performance !== "undefined" ? performance.now() : Date.now();
+}
+
+function startDetailTiming(requestId: number, mediaType: "movie" | "tv", tmdbId: number): void {
+  detailTimings.set(requestId, { startedAt: detailClock(), mediaType, tmdbId, seasonNumber: null, reported: new Set() });
+  while (detailTimings.size > 12) detailTimings.delete(detailTimings.keys().next().value as number);
+}
+
+function reportDetailMetric(
+  requestId: number,
+  stage: DetailMetricStage,
+  status: "success" | "failed" | "discarded" | "cancelled",
+  options: { cached?: boolean; errorCode?: string; once?: boolean } = {},
+): void {
+  const timing = detailTimings.get(requestId);
+  if (!timing) return;
+  if (options.once && timing.reported.has(stage)) return;
+  if (options.once) timing.reported.add(stage);
+  const durationMs = Math.max(0, Math.round(detailClock() - timing.startedAt));
+  void api.recordMediaDetailMetric(timing.mediaType, timing.tmdbId, {
+    stage,
+    status,
+    duration_ms: durationMs,
+    cached: options.cached ?? false,
+    season_number: timing.seasonNumber,
+    ...(options.errorCode ? { error_code: options.errorCode } : {}),
+  }).catch(() => undefined);
+}
 
 interface ResourceRouteState extends MediaResourceRouteState {}
 
 const resourceCache = new Map<string, ResourcePageResponse>();
+const seasonDetailCache = new Map<string, SeasonDetailResponse>();
 
 interface CatalogCacheEntry {
   movies: MovieMetadata[];
@@ -413,6 +468,8 @@ const navItems = [
   { view: "tv" as const, label: "剧集", icon: Tv },
   { view: "popular" as const, label: "热门", icon: Flame },
   { view: "organization-plans" as const, label: "整理", icon: ClipboardCheck },
+  { view: "workflows" as const, label: "任务中心", icon: ListTodo },
+  { view: "notifications" as const, label: "通知", icon: Bell },
 ];
 
 function readStoredMovies(key: string): MovieMetadata[] {
@@ -538,13 +595,178 @@ function resetInspection() {
 }
 
 function invalidateDetailRequest() {
+  if (
+    (metadataAbortController && !metadataAbortController.signal.aborted)
+    || (resourceSearchAbortController && !resourceSearchAbortController.signal.aborted)
+  ) {
+    const previous = [...detailTimings.entries()].at(-1);
+    if (previous) reportDetailMetric(previous[0], "request_cancelled", "cancelled", { once: true });
+  }
   searchRequestId += 1;
+  metadataRequestId += 1;
+  metadataAbortController?.abort();
+  metadataAbortController = null;
+  resourceSearchAbortController?.abort();
+  resourceSearchAbortController = null;
+  metadataLoading.value = false;
+  metadataError.value = "";
+  metadataStale.value = false;
+  invalidateSeasonDetailRequest();
   catalogRequestId += 1;
   pendingCatalogRoute = null;
   catalogLoading.value = false;
   loading.value = false;
   clearResourcePagination();
   resetInspection();
+  activeWorkflowId.value = null;
+}
+
+async function ensureActiveWorkflow(): Promise<string | null> {
+  if (activeWorkflowId.value) return activeWorkflowId.value;
+  if (!result.value || !result.value.movie.media_type) return null;
+  if (workflowCreationPromise) return workflowCreationPromise;
+  const mediaType = detailMediaType.value;
+  const tmdbId = result.value.movie.tmdb_id;
+  workflowCreationPromise = (async () => {
+    try {
+      const workflow = await api.createWorkflow({ mediaType, tmdbId });
+      if (result.value?.movie.tmdb_id !== tmdbId || detailMediaType.value !== mediaType) return null;
+      activeWorkflowId.value = workflow.id;
+      await api.patchWorkflowStage(workflow.id, "discovery", {
+        status: "succeeded",
+        reason: "resource_discovery_completed",
+      });
+      return workflow.id;
+    } catch {
+      return null;
+    } finally {
+      workflowCreationPromise = null;
+    }
+  })();
+  return workflowCreationPromise;
+}
+
+function detailResult(movie: MovieMetadata): SearchResponse {
+  return {
+    movie,
+    results: [],
+    warnings: [],
+    cached: false,
+    cache_age_seconds: null,
+  };
+}
+
+function detailPlaceholder(tmdbId: number, mediaType: "movie" | "tv"): MovieMetadata {
+  return {
+    tmdb_id: tmdbId,
+    media_type: mediaType,
+    title: "正在加载影视资料",
+    original_title: null,
+    release_year: null,
+    overview: null,
+    poster_path: null,
+    backdrop_path: null,
+    genre_ids: [],
+    vote_average: null,
+    seasons: [],
+  };
+}
+
+function isMovieMetadata(value: unknown): value is MovieMetadata {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Partial<MovieMetadata>;
+  return typeof candidate.tmdb_id === "number"
+    && (candidate.media_type === "movie" || candidate.media_type === "tv")
+    && typeof candidate.title === "string";
+}
+
+function isResourceSearchResponse(value: unknown): value is ResourceSearchResponse {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Partial<ResourceSearchResponse>;
+  return typeof candidate.task_id === "string"
+    && ["queued", "running", "ready", "failed"].includes(candidate.status ?? "");
+}
+
+async function loadMetadata(
+  tmdbId: number,
+  mediaType: "movie" | "tv",
+  initialMovie?: MovieMetadata,
+): Promise<void> {
+  const detailRequest = searchRequestId;
+  const requestId = ++metadataRequestId;
+  metadataAbortController?.abort();
+  const controller = new AbortController();
+  metadataAbortController = controller;
+  metadataLoading.value = true;
+  metadataError.value = "";
+  metadataStale.value = false;
+  if (initialMovie && (!result.value || result.value.movie.tmdb_id !== tmdbId)) {
+    result.value = detailResult(initialMovie);
+  }
+  try {
+    const movie = await api.mediaMetadata(mediaType, tmdbId, controller.signal);
+    if (!isMovieMetadata(movie)) throw new ApiError("影视资料响应格式无效", 502, "tmdb_unavailable");
+    if (requestId !== metadataRequestId || controller.signal.aborted || !result.value || result.value.movie.tmdb_id !== tmdbId) {
+      if (!controller.signal.aborted) reportDetailMetric(detailRequest, "late_response", "discarded");
+      return;
+    }
+    result.value = { ...result.value, movie };
+    metadataError.value = "";
+    reportDetailMetric(detailRequest, "metadata_complete", "success", { once: true });
+  } catch (exception) {
+    if (requestId !== metadataRequestId || controller.signal.aborted) return;
+    metadataError.value = exception instanceof ApiError ? exception.message : "影视资料暂时无法加载";
+    metadataStale.value = Boolean(initialMovie || result.value?.movie.title !== "正在加载影视资料");
+    reportDetailMetric(detailRequest, "metadata_failed", "failed", { errorCode: exception instanceof ApiError ? exception.code : "metadata_unavailable", once: true });
+  } finally {
+    if (requestId === metadataRequestId) metadataLoading.value = false;
+  }
+}
+
+function invalidateSeasonDetailRequest() {
+  seasonDetailRequestId += 1;
+  seasonDetailAbortController?.abort();
+  seasonDetailAbortController = null;
+  seasonDetailLoading.value = false;
+  seasonDetailError.value = "";
+}
+
+function seasonDetailKey(tmdbId: number, seasonNumber: number): string {
+  return `${tmdbId}:${seasonNumber}`;
+}
+
+async function loadSeasonDetail(
+  tmdbId: number,
+  seasonNumber: number | null,
+  refresh = false,
+  detailRequestId = searchRequestId,
+): Promise<void> {
+  invalidateSeasonDetailRequest();
+  seasonDetail.value = null;
+  if (seasonNumber === null || detailRequestId !== searchRequestId) return;
+  const requestId = seasonDetailRequestId;
+  const key = seasonDetailKey(tmdbId, seasonNumber);
+  const cached = seasonDetailCache.get(key);
+  if (cached && !refresh) seasonDetail.value = cached;
+  seasonDetailLoading.value = !cached || refresh;
+  const controller = new AbortController();
+  seasonDetailAbortController = controller;
+  try {
+    if (cached && !refresh) {
+      seasonDetailLoading.value = false;
+      return;
+    }
+    const response = await api.seasonMetadata(tmdbId, seasonNumber, { refresh }, controller.signal);
+    if (requestId !== seasonDetailRequestId || detailRequestId !== searchRequestId || controller.signal.aborted || selectedSeason.value !== seasonNumber) return;
+    seasonDetailCache.set(key, response);
+    seasonDetail.value = response;
+    seasonDetailError.value = "";
+  } catch (exception) {
+    if (requestId !== seasonDetailRequestId || controller.signal.aborted) return;
+    seasonDetailError.value = exception instanceof ApiError ? exception.message : "季度资料加载失败，请重试";
+  } finally {
+    if (requestId === seasonDetailRequestId) seasonDetailLoading.value = false;
+  }
 }
 
 function beginResourceSnapshot(fallback: ResourceSummary[], hiddenTotal = 0) {
@@ -571,6 +793,7 @@ function beginResourceSnapshot(fallback: ResourceSummary[], hiddenTotal = 0) {
 
 async function loadResourcePage(route: ResourceRouteState, historyMode: "push" | "replace" | "none" = "push", correctionAttempted = false): Promise<void> {
   if (!result.value) return;
+  const detailRequest = searchRequestId;
   const requestId = ++resourceRequestId;
   resourceAbortController?.abort();
   const controller = new AbortController();
@@ -586,8 +809,13 @@ async function loadResourcePage(route: ResourceRouteState, historyMode: "push" |
   resourceLoading.value = true;
   resourceError.value = "";
   if (cached) {
-    if (!isCurrent()) return;
+    if (!isCurrent()) {
+      if (!controller.signal.aborted) reportDetailMetric(detailRequest, "late_response", "discarded");
+      return;
+    }
     applyResourceResponse(cached, safeRoute.page);
+    reportDetailMetric(detailRequest, "resource_first_batch", "success", { cached: true, once: true });
+    reportDetailMetric(detailRequest, "resource_complete", "success", { cached: true, once: true });
     applyResourceRoute(safeRoute);
     pendingResourceRoute = null;
     resourceLoading.value = false;
@@ -605,7 +833,10 @@ async function loadResourcePage(route: ResourceRouteState, historyMode: "push" |
       page: safeRoute.page,
       pageSize: safeRoute.pageSize,
     }, controller.signal);
-    if (!isCurrent()) return;
+    if (!isCurrent()) {
+      if (!controller.signal.aborted) reportDetailMetric(detailRequest, "late_response", "discarded");
+      return;
+    }
     const actualTotalPages = Math.max(1, Math.min(500, Math.trunc(response.total_pages) || 1));
     const legalPage = response.total === 0 ? 1 : actualTotalPages;
     if (safeRoute.page > legalPage && !correctionAttempted) {
@@ -616,6 +847,8 @@ async function loadResourcePage(route: ResourceRouteState, historyMode: "push" |
     resourceCache.set(resourceCacheKey({ ...safeRoute, page: actualPage }, response.snapshot_revision), response);
     while (resourceCache.size > 20) resourceCache.delete(resourceCache.keys().next().value as string);
     applyResourceResponse(response, actualPage);
+    reportDetailMetric(detailRequest, "resource_first_batch", "success", { cached: resourceSearchCached, once: true });
+    reportDetailMetric(detailRequest, "resource_complete", "success", { cached: resourceSearchCached, once: true });
     applyResourceRoute({ ...safeRoute, page: actualPage });
     pendingResourceRoute = null;
     resourcePage.value = actualPage;
@@ -623,7 +856,10 @@ async function loadResourcePage(route: ResourceRouteState, historyMode: "push" |
     if (historyMode !== "none") navigateToMedia(detailMediaType.value, result.value.movie.tmdb_id, detailMediaType.value === "tv" ? selectedSeason.value ?? undefined : undefined, { ...safeRoute, page: actualPage }, historyMode === "replace");
     startAutomaticInspection(searchId);
   } catch (exception) {
-    if (!isCurrent()) return;
+    if (!isCurrent()) {
+      if (!controller.signal.aborted) reportDetailMetric(detailRequest, "late_response", "discarded");
+      return;
+    }
     resourceLoading.value = false;
     if (exception instanceof ApiError && exception.status === 404 && exception.code === "resource_snapshot_not_found") {
       pendingResourceRoute = null;
@@ -636,6 +872,7 @@ async function loadResourcePage(route: ResourceRouteState, historyMode: "push" |
     }
     pendingResourceRoute = null;
     resourceError.value = exception instanceof ApiError ? exception.message : "资源分页加载失败，请重试";
+    reportDetailMetric(detailRequest, "resource_failed", "failed", { errorCode: exception instanceof ApiError ? exception.code : "resource_page_failed", once: true });
   }
 }
 
@@ -686,34 +923,87 @@ async function loadResources(
   clearResult = false,
   initialResourceRoute: ResourceRouteState = defaultResourceRoute(),
 ) {
-  const requestId = ++searchRequestId;
+  const requestId = searchRequestId;
+  if (resourceSearchAbortController && !resourceSearchAbortController.signal.aborted) {
+    reportDetailMetric(requestId, "request_cancelled", "cancelled", { once: true });
+  }
+  resourceSearchAbortController?.abort();
+  const controller = new AbortController();
+  resourceSearchAbortController = controller;
   resetInspection();
   detailMediaType.value = mediaType;
   if (clearResult) {
-    result.value = null;
     clearResourcePagination();
   }
-  loading.value = true;
-  error.value = "";
+  resourceLoading.value = true;
+  resourceError.value = "";
+  resourceSearchCached = false;
   try {
-    const response = await api.search(id, mediaType, refresh, mediaType === "tv" ? seasonNumber ?? undefined : undefined);
-    if (requestId !== searchRequestId) return;
-    result.value = response;
-    selectedSeason.value = mediaType === "tv"
-      ? Object.prototype.hasOwnProperty.call(response, "selected_season")
-        ? response.selected_season ?? null
-        : seasonNumber
-      : null;
+    const task = await api.startResourceSearch(mediaType, id, {
+      refresh,
+      seasonNumber: mediaType === "tv" ? seasonNumber : null,
+    }, controller.signal);
+    if (!isResourceSearchResponse(task)) {
+      throw new ApiError("资源搜索任务接口不可用", 404, "resource_search_endpoint_unavailable");
+    }
+    const response = await pollResourceSearch(api, task, {
+      requestId,
+      currentRequestId: () => searchRequestId,
+      signal: controller.signal,
+    });
+    if (requestId !== searchRequestId || !result.value || result.value.movie.tmdb_id !== id || !response) {
+      if (requestId !== searchRequestId) reportDetailMetric(requestId, "late_response", "discarded");
+      return;
+    }
+    if (response.status === "failed") {
+      resourceLoading.value = false;
+      resourceError.value = describeUiError(response.error_code ?? "resource_search_failed", 502).message;
+      reportDetailMetric(requestId, "resource_failed", "failed", { errorCode: response.error_code ?? "resource_search_failed", once: true });
+      return;
+    }
+    resourceSearchCached = response.cache_age_seconds !== null;
+    reportDetailMetric(requestId, "resource_first_batch", "success", { cached: resourceSearchCached, once: true });
+    selectedSeason.value = mediaType === "tv" ? response.selected_season ?? seasonNumber : null;
+    const timing = detailTimings.get(requestId);
+    if (timing) timing.seasonNumber = selectedSeason.value;
+    void loadSeasonDetail(id, selectedSeason.value, refresh, requestId);
     applyResourceRoute(initialResourceRoute);
-    beginResourceSnapshot(response.results, response.hidden_total ?? 0);
-    recordHistory(response.movie);
+    beginResourceSnapshot([]);
     void loadResourcePage(initialResourceRoute, "none");
   } catch (exception) {
+    if (controller.signal.aborted) return;
+    if (exception instanceof ApiError && [404, 405, 501, 503].includes(exception.status)) {
+      try {
+        const legacy = await api.search(id, mediaType, refresh, mediaType === "tv" ? seasonNumber ?? undefined : undefined);
+        if (requestId !== searchRequestId || !result.value) return;
+        result.value = {
+          ...result.value,
+          movie: legacy.movie,
+          results: legacy.results,
+          warnings: legacy.warnings,
+          cached: legacy.cached,
+          cache_age_seconds: legacy.cache_age_seconds,
+          selected_season: legacy.selected_season,
+          hidden_total: legacy.hidden_total,
+        };
+        selectedSeason.value = mediaType === "tv" ? legacy.selected_season ?? seasonNumber : null;
+        resourceSearchCached = legacy.cached;
+        applyResourceRoute(initialResourceRoute);
+        beginResourceSnapshot(legacy.results, legacy.hidden_total ?? 0);
+        await loadResourcePage(initialResourceRoute, "none");
+        return;
+      } catch (legacyException) {
+        if (legacyException instanceof DOMException && legacyException.name === "AbortError") return;
+        exception = legacyException;
+      }
+    }
     if (requestId === searchRequestId) {
-      error.value = exception instanceof ApiError ? exception.message : "资源搜索失败，请稍后重试";
+      resourceLoading.value = false;
+      resourceError.value = exception instanceof ApiError ? exception.message : "可用资源暂时无法加载";
+      reportDetailMetric(requestId, "resource_failed", "failed", { errorCode: exception instanceof ApiError ? exception.code : "resource_search_failed", once: true });
     }
   } finally {
-    if (requestId === searchRequestId) loading.value = false;
+    if (resourceSearchAbortController === controller) resourceSearchAbortController = null;
   }
 }
 
@@ -728,9 +1018,16 @@ async function openMovie(movie: MovieMetadata) {
     catalogReturnScrollY = null;
   }
   recordHistory(movie);
-  result.value = null;
+  invalidateDetailRequest();
+  startDetailTiming(searchRequestId, mediaTypeOf(movie), movie.tmdb_id);
+  result.value = detailResult(movie);
   selectedSeason.value = null;
+  seasonDetail.value = null;
+  detailMediaType.value = mediaTypeOf(movie);
   const mediaType = mediaTypeOf(movie);
+  beginResourceSnapshot([]);
+  reportDetailMetric(searchRequestId, "detail_framework", "success", { once: true });
+  reportDetailMetric(searchRequestId, "metadata_summary", "success", { cached: true, once: true });
   navigateToMedia(mediaType, movie.tmdb_id, undefined, defaultResourceRoute());
   if (catalogReturnRoute) {
     window.history.replaceState({
@@ -741,16 +1038,21 @@ async function openMovie(movie: MovieMetadata) {
       catalogBackDelta: 1,
     }, "", window.location.href);
   }
-  await loadResources(movie.tmdb_id, mediaType, false, null, true, defaultResourceRoute());
+  void loadMetadata(movie.tmdb_id, mediaType, movie);
+  void loadResources(movie.tmdb_id, mediaType, false, null, false, defaultResourceRoute());
 }
 
 async function selectSeason(seasonNumber: number | null) {
   if (!result.value || detailMediaType.value !== "tv") return;
   const movie = result.value.movie;
   selectedSeason.value = seasonNumber;
+  const timing = detailTimings.get(searchRequestId);
+  if (timing) timing.seasonNumber = seasonNumber;
+  seasonDetail.value = null;
   const nextRoute = { ...currentResourceRoute(), page: 1, kind: "all" as const, quality: "all" as const, query: "" };
   navigateToMedia("tv", movie.tmdb_id, seasonNumber ?? undefined, nextRoute, true);
-  await loadResources(movie.tmdb_id, "tv", false, seasonNumber, true, nextRoute);
+  beginResourceSnapshot([]);
+  void loadResources(movie.tmdb_id, "tv", false, seasonNumber, false, nextRoute);
 }
 
 async function returnToBrowse() {
@@ -780,8 +1082,18 @@ async function initializeWorkspace() {
   const mediaRoute = extractMediaRoute(window.location.pathname + window.location.search);
   if (mediaRoute !== null) {
     restoreCatalogReturnState();
+    invalidateDetailRequest();
     selectedSeason.value = mediaRoute.mediaType === "tv" ? mediaRoute.seasonNumber ?? null : null;
-    await loadResources(mediaRoute.tmdbId, mediaRoute.mediaType, false, selectedSeason.value, true, resourceRouteFromMediaRoute(mediaRoute));
+    detailMediaType.value = mediaRoute.mediaType;
+    startDetailTiming(searchRequestId, mediaRoute.mediaType, mediaRoute.tmdbId);
+    const timing = detailTimings.get(searchRequestId);
+    if (timing) timing.seasonNumber = selectedSeason.value;
+    result.value = detailResult(detailPlaceholder(mediaRoute.tmdbId, mediaRoute.mediaType));
+    beginResourceSnapshot([]);
+    reportDetailMetric(searchRequestId, "detail_framework", "success", { once: true });
+    const resourceRoute = resourceRouteFromMediaRoute(mediaRoute);
+    void loadMetadata(mediaRoute.tmdbId, mediaRoute.mediaType);
+    void loadResources(mediaRoute.tmdbId, mediaRoute.mediaType, false, selectedSeason.value, false, resourceRoute);
     return;
   }
   const catalogRoute = parseCatalogRoute(window.location.pathname + window.location.search);
@@ -809,6 +1121,7 @@ async function login() {
     password.value = "";
     await initializeWorkspace();
   } catch (exception) {
+    focusFirstFieldError(exception);
     error.value = exception instanceof ApiError ? "密码不正确" : "登录失败";
   }
 }
@@ -821,7 +1134,8 @@ async function push(resource: ResourceSummary) {
   pushingId.value = resource.resource_id;
   error.value = "";
   try {
-    const task = await submitPushResource(resource, pushCapabilities.value, (resourceId) => api.createTask(resourceId));
+    const workflowId = await ensureActiveWorkflow();
+    const task = await submitPushResource(resource, pushCapabilities.value, (resourceId) => api.createTask(resourceId, false, workflowId));
     if (!task) {
       error.value = resource.kind === "115_share" ? "115 分享转存尚未验证" : "磁力云下载不可用";
       return;
@@ -955,7 +1269,8 @@ async function inspectBatch(resourceIds: string[], requestId: number) {
   const isCurrent = () => requestId === searchRequestId && runId === inspectionRunId;
 
   try {
-    const started = await api.inspectResources(resourceIds);
+    const workflowId = await ensureActiveWorkflow();
+    const started = await api.inspectResources(resourceIds, workflowId);
     if (!isCurrent()) return;
     applyInspectionResponse(started, resourceIds);
     const startedState = getInspectionBatchState(started);
@@ -1042,7 +1357,19 @@ async function syncRoute() {
   await initializeWorkspace();
 }
 
+function updateOnline(): void {
+  isOnline.value = browserIsOnline();
+}
+
+function recordOfflineData(event: Event): void {
+  const cachedAt = (event as CustomEvent<{ cachedAt?: string }>).detail?.cachedAt;
+  if (cachedAt) offlineDataAt.value = cachedAt;
+}
+
 onMounted(async () => {
+  window.addEventListener("online", updateOnline);
+  window.addEventListener("offline", updateOnline);
+  window.addEventListener("watch-assistant:offline-data", recordOfflineData);
   try {
     const health = await api.health();
     pushCapabilities.value = resolvePushCapabilities(health);
@@ -1064,6 +1391,9 @@ onBeforeUnmount(() => {
   invalidateDetailRequest();
   if (pollTimer !== undefined) window.clearInterval(pollTimer);
   window.removeEventListener("popstate", syncRoute);
+  window.removeEventListener("online", updateOnline);
+  window.removeEventListener("offline", updateOnline);
+  window.removeEventListener("watch-assistant:offline-data", recordOfflineData);
 });
 </script>
 
@@ -1083,10 +1413,12 @@ onBeforeUnmount(() => {
           <button class="icon-button" type="button" :class="{ active: activeView === 'settings' && !result }" title="设置" aria-label="设置" @click="selectView('settings')"><Settings :size="18" /></button>
         </div>
       </template>
-      <div v-else class="topbar-meta"><span class="status-dot" />LAN workspace</div>
+      <div v-else class="topbar-meta"><span class="status-dot" />局域网工作台</div>
     </header>
+    <p v-if="!isOnline" class="offline-strip" role="status">当前处于离线状态，仅显示最近一次只读摘要；写操作已暂停。</p>
+    <p v-else-if="offlineDataAt" class="offline-data-strip" role="status">网络已恢复，之前显示过离线缓存（{{ new Date(offlineDataAt).toLocaleString('zh-CN') }}）。</p>
 
-    <section v-if="!authenticated" class="auth-gate"><div class="auth-mark"><LogIn :size="20" /></div><p class="eyebrow">PRIVATE WORKSPACE</p><h1>进入观影工作台</h1><p>你的 PanSou 聚合和 115 推送只在本地网络可见。</p><form @submit.prevent="login"><label for="password">Web 密码</label><input id="password" v-model="password" type="password" autocomplete="current-password" placeholder="输入访问密码" /><button class="primary-button" type="submit"><LogIn :size="17" />登录</button></form><p v-if="error" class="error-text">{{ error }}</p></section>
+    <section v-if="!authenticated" class="auth-gate"><div class="auth-mark"><LogIn :size="20" /></div><p class="eyebrow">私有工作区</p><h1>进入观影工作台</h1><p>你的 PanSou 聚合和 115 推送只在本地网络可见。</p><form @submit.prevent="login"><label for="password">Web 密码</label><input id="password" name="password" v-model="password" type="password" autocomplete="current-password" placeholder="输入访问密码" /><button class="primary-button" type="submit"><LogIn :size="17" />登录</button></form><p v-if="error" class="error-text">{{ error }}</p></section>
 
     <template v-else>
       <p v-if="error" class="error-strip"><X :size="16" />{{ error }}</p>
@@ -1096,12 +1428,14 @@ onBeforeUnmount(() => {
         <CollectionView v-else-if="activeView === 'favorites' || activeView === 'history'" :mode="activeView" :movies="activeView === 'favorites' ? favorites : history" :favorite-ids="favoriteIds" @open="openMovie" @favorite="toggleFavorite" />
         <SettingsView v-else-if="activeView === 'settings'" :api="api" @auto-start-enabled="inspectionAutoStartEnabled = $event" />
         <OrganizationWorkbenchView v-else-if="activeView === 'organization-plans' && organizationPlanEnabled" :api="api" :enabled="organizationPlanEnabled" />
+        <WorkflowCenterView v-else-if="activeView === 'workflows'" :api="api" />
+        <NotificationCenterView v-else-if="activeView === 'notifications'" :api="api" @navigate="selectView" />
         <SearchView v-else v-model="searchInput" :loading="catalogLoading" :movies="catalogMovies" :heading="catalogHeading" :favorite-ids="favoriteIds" :page="currentPage" :total-pages="totalPages" :total-results="totalResults" @search="searchMovies" @reset="selectView('home')" @open="openMovie" @favorite="toggleFavorite" @page="loadPage" />
       </template>
-      <section v-else-if="loading && !result" class="detail-loading"><LoaderCircle class="spin" :size="24" /><strong>正在聚合资源</strong><span>正在查询 PanSou 的磁力与 115 分享结果</span></section>
+      <section v-else-if="loading && !result" class="detail-loading" aria-busy="true"><LoaderCircle class="spin" :size="24" /><strong>正在加载影视资料</strong><span>资源将在资料下方独立加载</span></section>
        <p v-if="result && !pushCapabilities.magnet && !pushCapabilities.share" class="warning-strip">115 推送当前不可用，推送按钮已禁用。</p>
        <p v-else-if="result && pushCapabilities.magnet && !pushCapabilities.share" class="warning-strip">磁力云下载可用，115 分享转存尚未验证</p>
-       <section v-if="result" class="detail-workspace"><MovieView :result="result" :resources="resourceItems" :resource-facets="resourceFacets" :resource-total="resourceTotal" :resource-hidden-total="resourceHiddenTotal" :resource-page="resourcePage" :resource-page-size="resourcePageSize" :resource-total-pages="resourceTotalPages" :resource-kind="resourceKind" :resource-quality="resourceQuality" :resource-query="resourceQuery" :resource-sort="resourceSort" :resource-loading="resourceLoading" :resource-error="resourceError" :pagination-unavailable="resourcePaginationUnavailable" :media-type="detailMediaType" :season-number="selectedSeason" :pushing-id="pushingId" :push-capabilities="pushCapabilities" :favorite="detailFavorite" :inspection-supported="inspectionSupported" :inspection-state="inspectionState" :inspection-completed="inspectionCompleted" :inspection-total="inspectionTotal" :inspection-failed="inspectionFailed" :inspection-error="inspectionError" :inspection-more-available="inspectionMoreAvailable" :inspection-retry-available="inspectionRetryAvailable" :inspection-started="inspectionSeenIds.size > 0" @push="push" @favorite="toggleFavorite(result.movie)" @refresh="refreshResources" @season="selectSeason" @inspect-more="inspectMore" @retry-failed="retryFailed" @retry-page="() => loadResourcePage(currentResourceRoute(), 'replace')" @page="changeResourcePage" @kind="(value) => changeResourceFilter({ kind: value })" @quality="(value) => changeResourceFilter({ quality: value })" @query="changeResourceQuery" @sort="(value) => changeResourceFilter({ sort: value })" @page-size="(value) => changeResourceFilter({ pageSize: value })" @back="returnToBrowse" /></section>
+       <section v-if="result" class="detail-workspace"><MovieView :result="result" :resources="resourceItems" :resource-facets="resourceFacets" :resource-total="resourceTotal" :resource-hidden-total="resourceHiddenTotal" :resource-page="resourcePage" :resource-page-size="resourcePageSize" :resource-total-pages="resourceTotalPages" :resource-kind="resourceKind" :resource-quality="resourceQuality" :resource-query="resourceQuery" :resource-sort="resourceSort" :resource-loading="resourceLoading" :resource-error="resourceError" :metadata-loading="metadataLoading" :metadata-error="metadataError" :metadata-stale="metadataStale" :pagination-unavailable="resourcePaginationUnavailable" :media-type="detailMediaType" :season-number="selectedSeason" :season-detail="seasonDetail" :season-detail-loading="seasonDetailLoading" :season-detail-error="seasonDetailError" :pushing-id="pushingId" :push-capabilities="pushCapabilities" :favorite="detailFavorite" :inspection-supported="inspectionSupported" :inspection-state="inspectionState" :inspection-completed="inspectionCompleted" :inspection-total="inspectionTotal" :inspection-failed="inspectionFailed" :inspection-error="inspectionError" :inspection-more-available="inspectionMoreAvailable" :inspection-retry-available="inspectionRetryAvailable" :inspection-started="inspectionSeenIds.size > 0" @push="push" @favorite="toggleFavorite(result.movie)" @refresh="refreshResources" @retry-metadata="loadMetadata(detailMediaType, result.movie.tmdb_id, result.movie.title === '正在加载影视资料' ? undefined : result.movie)" @season="selectSeason" @inspect-more="inspectMore" @retry-failed="retryFailed" @retry-page="resourcePaginationUnavailable ? () => loadResourcePage(currentResourceRoute(), 'replace') : refreshResources" @page="changeResourcePage" @kind="(value) => changeResourceFilter({ kind: value })" @quality="(value) => changeResourceFilter({ quality: value })" @query="changeResourceQuery" @sort="(value) => changeResourceFilter({ sort: value })" @page-size="(value) => changeResourceFilter({ pageSize: value })" @back="returnToBrowse" /></section>
     </template>
     <TaskDrawer :tasks="tasks" :open="drawerOpen" @close="drawerOpen = false" />
   </main>

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { CircleAlert, CircleCheck, LoaderCircle, X } from "@lucide/vue";
+import { taskErrorMessage } from "../errorCatalog";
 import type { TaskResponse } from "../types";
 
 defineProps<{ tasks: TaskResponse[]; open: boolean }>();
@@ -9,7 +10,7 @@ const labels: Record<TaskResponse["state"], string> = {
   queued: "排队中",
   submitting: "提交中",
   accepted: "已推送到 115",
-  needs_auth: "需要重新授权",
+  needs_auth: "需要重新登录",
   failed: "提交失败",
   uncertain: "结果待确认",
 };
@@ -25,7 +26,7 @@ const labels: Record<TaskResponse["state"], string> = {
         <CircleCheck v-else-if="task.state === 'accepted'" :size="17" />
         <CircleAlert v-else :size="17" />
       </div>
-      <div class="task-copy"><strong>{{ labels[task.state] }}</strong><small>{{ task.id }}</small><small v-if="task.error_message">{{ task.error_message }}</small></div>
+      <div class="task-copy"><strong>{{ labels[task.state] }}</strong><small>任务 {{ task.id }}</small><small v-if="task.workflow_id">工作流 {{ task.workflow_id }}</small><small v-if="task.error_code">{{ taskErrorMessage(task.error_code) }}</small><small v-else-if="task.error_message">任务处理未完成，请查看状态后再试</small></div>
     </article>
   </aside>
 </template>
