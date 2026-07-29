@@ -18,18 +18,12 @@
 
 ## 115 影视库整理进度
 
-当前发布候选包含第一阶段的只读索引、解析匹配、分类命名、计划预览，以及第二阶段的
-本地操作租约、计划前置条件、dirty outbox、隔离恢复契约和离线执行器。新增的
-`p115_organization_transport` 目前只有内存 fake，用于验证范围、身份、超时、取消和
-结果不确定状态；它不创建 `P115Client`，也不发起网络请求。
+当前发布版本为 `4e46e85`，已部署到 `192.168.6.236:8115`。只读索引、组织计划/执行、
+真实移动/重命名、永久删除和受管 STRM 播放入口已接入；整理移动/重命名和永久删除使用
+固定测试 CID 完成真实闭环，播放直链完成 `HEAD`、单段 `Range GET` 验收。
 
-以下能力已经实现但默认关闭，不能视为生产上线：真实 115 移动/重命名、正式影视库自动
-整理、STRM 全量或增量输出、媒体服务器播放、洗版、隔离和删除。相关开关保持关闭，真实
-外部调用须经过单独契约和受管测试夹具验收。
-
-本候选继承的阶段验证包括后端 `794 passed, 4 skipped`、前端 Vitest `78 passed`、构建通过、
-Playwright `149 passed`；后续执行器安全修复定向测试 `29 passed`，离线 transport 契约
-`39 passed`。未部署生产环境。
+STRM 全量、增量和清理代码已部署但生产开关保持关闭。固定测试目录只有 WAV，当前 STRM
+生成器只处理视频扩展名，因此没有伪造视频 STRM 验收结果。TgtoDrive 仍保持禁用。
 
 TgtoDrive 当前没有验证通过的稳定提交/状态 HTTP 契约，`config/tgto-contract.json` 明确为 `supported:false`。因此生产部署会禁用真实推送并返回 `503 push_unsupported`，不会猜测接口、写 TgtoDrive 数据库或调用内部 `.pyc`。
 
@@ -73,8 +67,9 @@ curl http://127.0.0.1:8000/api/v1/health
 `STRM_CLEANUP_ENABLED` 和 `STRM_PLAYBACK_ENABLED` 控制；所有开关默认关闭。
 真实移动/重命名还必须有 `ORGANIZATION_WRITE_CONTRACT_VERIFIED=true`，删除还必须有
 `PERMANENT_DELETE_CONTRACT_VERIFIED=true`。契约未验收时，即使功能开关被误设为 true，
-应用也不会启动真实 worker 或删除入口。修改 systemd 环境文件后需重启服务，并通过
-`GET /api/v1/health` 或设置页核对实际有效能力。STRM 增量接口使用完整扫描差异，失效清理会校验受管文件内容；动态播放在真实播放契约完成前始终保持不可用。
+应用也不会启动真实 worker 或删除入口。当前生产实际状态以 `GET /api/v1/health` 为准：
+整理计划/执行、移动/重命名、永久删除、STRM 播放及播放契约已开启，STRM 全量/增量/清理
+仍关闭。STRM 增量接口使用完整扫描差异，失效清理会校验受管文件内容。
 
 使用 systemd 部署时，`watch-assistant.service` 可独立重启。qBittorrent sidecar 的升级或重启必须作为独立维护操作执行；不得通过重启应用隐式管理 qBittorrent 的生命周期。
 
