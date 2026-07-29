@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 from typing import ClassVar
 
@@ -81,6 +82,8 @@ async def test_p115_managed_cookie_lifecycle_uses_app_runtime_callback(
     contract.write_text('{"supported": false}', encoding="utf-8")
     cookie_path = tmp_path / "tgtodrive-cookie"
     cookie_path.write_text("invalid", encoding="ascii", newline="")
+    if os.name != "nt":
+        cookie_path.chmod(0o600)
     values = {
         "DATABASE_URL": f"sqlite+aiosqlite:///{tmp_path / 'app.db'}",
         "ENCRYPTION_KEY": Fernet.generate_key().decode("ascii"),
@@ -171,6 +174,8 @@ async def test_p115_managed_cookie_lifecycle_uses_app_runtime_callback(
             assert credentials.json()["p115_cookie"]["ready"] is False
 
             cookie_path.write_text(COOKIE, encoding="ascii", newline="")
+            if os.name != "nt":
+                cookie_path.chmod(0o600)
             restore = await client.post(
                 "/api/v1/settings/credentials/p115-cookie/reset",
                 json={"revision": 3},

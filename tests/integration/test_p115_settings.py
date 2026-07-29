@@ -1,4 +1,5 @@
 import asyncio
+import os
 from datetime import UTC, datetime
 
 import httpx
@@ -23,6 +24,8 @@ _UNSET = object()
 
 def _write_cookie(path, value: str = COOKIE) -> None:
     path.write_text(value, encoding="ascii", newline="")
+    if os.name != "nt":
+        path.chmod(0o600)
 
 
 class FakeValidationAdapter:
