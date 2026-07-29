@@ -16,6 +16,7 @@ from scripts.p115_c03_live_runner import (
 from watch_assistant.adapters.p115_c03_fixture_probe import (
     C03ProbeReport,
     C03ProbeStatus,
+    C03RemoteEntry,
 )
 from watch_assistant.adapters.p115_c03_live_transport import (
     MAX_FS_FILES_PAGE_CALLS,
@@ -61,6 +62,12 @@ class _FakeP115Client:
     def fs_files(self, payload, **kwargs):
         return self._response("fs_files", payload, **kwargs)
 
+    def fs_info_app(self, payload, **kwargs):
+        return self._response("fs_info_app", payload, **kwargs)
+
+    def fs_files_app(self, payload, **kwargs):
+        return self._response("fs_files_app", payload, **kwargs)
+
     def __repr__(self):
         return f"_FakeP115Client(call_count={len(self.calls)})"
 
@@ -99,13 +106,19 @@ def _file(file_id, parent_id, name):
     }
 
 
+class _MethodNotAllowed(RuntimeError):
+    status_code = 405
+
+
 async def _call_executor(method, payload, *, timeout_seconds):
     assert timeout_seconds > 0
     return method(payload, async_=False)
 
 
-def test_p115client_timeout_executor_passes_hook_and_does_not_retry(monkeypatch):
+def test_p115client_timeout_executor_retries_990009_once_after_three_seconds(monkeypatch):
     observed = {}
+    sleeps = []
+    calls = 0
 
     def fake_urllib3_request(*, async_, **kwargs):
         observed["async"] = async_
@@ -113,8 +126,15 @@ def test_p115client_timeout_executor_passes_hook_and_does_not_retry(monkeypatch)
         return {"state": True}
 
     monkeypatch.setattr("urllib3_future_request.request", fake_urllib3_request)
+    monkeypatch.setattr("scripts.p115_c03_live_runner.time.sleep", sleeps.append)
 
     def method(payload, *, async_, request):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            error = RuntimeError("redacted")
+            error.errno = 990009
+            raise error
         return request(url="https://example.invalid", method="POST", async_=async_)
 
     assert _p115client_timeout_executor(method, {"fid": "1"}, timeout_seconds=3.5) == {
@@ -123,6 +143,8 @@ def test_p115client_timeout_executor_passes_hook_and_does_not_retry(monkeypatch)
     assert observed["async"] is False
     assert observed["timeout"] == 3.5
     assert observed["retries"] is False
+    assert calls == 2
+    assert sleeps == [3.0]
 
 
 @pytest.mark.asyncio
@@ -247,6 +269,48 @@ async def test_live_transport_requires_listing_for_exact_directory_identity():
     assert client.calls[1][1]["limit"] == 1
     assert client.calls[1][1]["record_open_time"] == 0
     assert client.calls[1][1]["show_dir"] == 1
+
+
+@pytest.mark.asyncio
+async def test_live_transport_falls_back_to_app_reads_only_for_http_405():
+    client = _FakeP115Client(
+        {
+            "fs_mkdir": [],
+            "fs_move": [],
+            "fs_rename": [],
+            "fs_delete": [],
+            "fs_info": [_MethodNotAllowed()],
+            "fs_files": [{"status_code": 405}],
+            "fs_info_app": [
+                {
+                    "state": True,
+                    "data": {
+                        "fc": 0,
+                        "cid": "101",
+                        "pid": "7",
+                        "n": "source",
+                    },
+                }
+            ],
+            "fs_files_app": [
+                _page([_directory("101", "7", "source")], offset=0, count=1)
+            ],
+        }
+    )
+    transport = P115C03LiveTransport(client, call_executor=_call_executor)
+
+    assert await transport.read("101", timeout_seconds=10) == C03RemoteEntry(
+        "101", "7", "source", True
+    )
+    listing = await transport.list_children("7", timeout_seconds=10)
+
+    assert listing.complete is True
+    assert [call[0] for call in client.calls] == [
+        "fs_info",
+        "fs_info_app",
+        "fs_files",
+        "fs_files_app",
+    ]
 
 
 @pytest.mark.asyncio

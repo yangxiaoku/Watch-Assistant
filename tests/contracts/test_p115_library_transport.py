@@ -23,6 +23,14 @@ class _Client:
         self.calls.append(("fs_info", dict(payload), kwargs))
         return {"state": True}
 
+    def fs_files_app(self, payload, **kwargs):
+        self.calls.append(("fs_files_app", dict(payload), kwargs))
+        return {"state": True, "data": [], "offset": 0, "limit": 1, "count": 0}
+
+    def fs_info_app(self, payload, **kwargs):
+        self.calls.append(("fs_info_app", dict(payload), kwargs))
+        return {"state": True}
+
 
 @pytest.mark.asyncio
 async def test_transport_calls_only_allowlisted_methods_with_injected_timeout():
@@ -56,6 +64,45 @@ async def test_invalid_timeout_rejects_before_any_client_call():
         await transport.fs_files({"cid": "7"}, timeout_seconds=0)
 
     assert client.calls == []
+
+
+@pytest.mark.asyncio
+async def test_405_uses_documented_app_read_endpoints_only():
+    client = _Client()
+    executor_calls = []
+
+    def executor(method, payload, *, timeout_seconds):
+        executor_calls.append(method.__name__)
+        if method.__name__ in {"fs_files", "fs_info"}:
+            error = RuntimeError("provider response")
+            error.status = 405  # type: ignore[attr-defined]
+            raise error
+        return method(payload)
+
+    transport = P115FixedReadOnlyTransport(client, call_executor=executor)
+
+    await transport.fs_files({"cid": "7"}, timeout_seconds=4)
+    await transport.fs_info({"fid": "8"}, timeout_seconds=4)
+
+    assert executor_calls == ["fs_files", "fs_files_app", "fs_info", "fs_info_app"]
+
+
+@pytest.mark.asyncio
+async def test_non_405_failure_is_not_hidden_by_app_fallback():
+    client = _Client()
+
+    def executor(method, payload, *, timeout_seconds):
+        if method.__name__ == "fs_files":
+            error = RuntimeError("provider response")
+            error.status = 503  # type: ignore[attr-defined]
+            raise error
+        return method(payload)
+
+    transport = P115FixedReadOnlyTransport(client, call_executor=executor)
+
+    with pytest.raises(RuntimeError):
+        await transport.fs_files({"cid": "7"}, timeout_seconds=4)
+    assert [call[0] for call in client.calls] == []
 
 
 def test_native_executor_forces_timeout_and_disables_retries(monkeypatch):

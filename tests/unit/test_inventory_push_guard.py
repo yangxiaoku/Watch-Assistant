@@ -1,0 +1,132 @@
+import json
+from datetime import UTC, datetime, timedelta
+
+from cryptography.fernet import Fernet
+
+from watch_assistant.crypto import SecretCrypto
+from watch_assistant.db import create_database, initialize_database
+from watch_assistant.library_models import (
+    LibraryScanEntry,
+    LibraryScanRun,
+    MediaLibrary,
+)
+from watch_assistant.models import Resource
+from watch_assistant.services.inventory_push_guard import InventoryPushGuard
+
+
+async def _database(tmp_path):
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'guard.db'}")
+    await initialize_database(database.engine)
+    return database
+
+
+async def _resource(database, crypto, *, metadata=None, name="New.Movie.2026.mkv"):
+    async with database.session_factory() as session:
+        session.add(
+            Resource(
+                id="resource-guard",
+                kind="magnet",
+                canonical_key="magnet:abcdef0123456789abcdef0123456789abcdef01",
+                encrypted_url=crypto.encrypt("magnet:?xt=urn:btih:abcdef0123456789abcdef0123456789abcdef01"),
+                name=name,
+                source="test",
+                captured_at=datetime.now(UTC),
+                expires_at=datetime.now(UTC) + timedelta(days=1),
+                metadata_json=json.dumps(metadata or {}),
+            )
+        )
+        await session.commit()
+
+
+async def _library(database, *, complete=True, captured_at=None, object_id=None):
+    now = captured_at or datetime.now(UTC)
+    async with database.session_factory() as session:
+        session.add(
+            MediaLibrary(
+                id="library-guard",
+                name="测试库",
+                root_directory_id="root-guard",
+                enabled=True,
+                scope_verified=True,
+            )
+        )
+        await session.flush()
+        session.add(
+            LibraryScanRun(
+                id="scan-guard",
+                library_id="library-guard",
+                root_directory_id="root-guard",
+                idempotency_key="scan-guard-key",
+                state="completed" if complete else "failed",
+                complete=complete,
+                snapshot_revision=1 if complete else None,
+                updated_at=now,
+            )
+        )
+        await session.flush()
+        if object_id:
+            session.add(
+                LibraryScanEntry(
+                    scan_run_id="scan-guard",
+                    object_type="file",
+                    object_id=object_id,
+                    parent_id="root-guard",
+                    name="New.Movie.2026.mkv",
+                    is_directory=False,
+                )
+            )
+        await session.commit()
+
+
+async def test_missing_scope_blocks_before_remote_submission(tmp_path):
+    database = await _database(tmp_path)
+    crypto = SecretCrypto(Fernet.generate_key().decode("ascii"))
+    await _resource(database, crypto)
+
+    result = await InventoryPushGuard(database.session_factory).check("resource-guard")
+
+    assert result.allowed is False
+    assert result.code == "inventory_scope_unconfigured"
+    await database.engine.dispose()
+
+
+async def test_incomplete_scope_blocks_and_fresh_empty_scope_allows(tmp_path):
+    database = await _database(tmp_path)
+    crypto = SecretCrypto(Fernet.generate_key().decode("ascii"))
+    await _resource(database, crypto)
+    await _library(database, complete=False)
+    guard = InventoryPushGuard(database.session_factory)
+
+    incomplete = await guard.check("resource-guard")
+    assert incomplete.code == "inventory_index_incomplete"
+
+    async with database.session_factory() as session:
+        run = await session.get(LibraryScanRun, "scan-guard")
+        run.complete = True
+        run.state = "completed"
+        run.snapshot_revision = 2
+        run.updated_at = datetime.now(UTC)
+        await session.commit()
+    allowed = await guard.check("resource-guard")
+    assert allowed.allowed is True
+    assert allowed.code == "inventory_not_found"
+    await database.engine.dispose()
+
+
+async def test_exact_identity_and_stale_scope_are_blocked(tmp_path):
+    database = await _database(tmp_path)
+    crypto = SecretCrypto(Fernet.generate_key().decode("ascii"))
+    await _resource(database, crypto, metadata={"object_id": "remote-file"})
+    await _library(database, object_id="remote-file")
+    guard = InventoryPushGuard(database.session_factory)
+
+    duplicate = await guard.check("resource-guard")
+    assert duplicate.code == "inventory_exact_duplicate"
+
+    async with database.session_factory() as session:
+        run = await session.get(LibraryScanRun, "scan-guard")
+        run.updated_at = datetime.now(UTC) - timedelta(minutes=16)
+        await session.commit()
+    stale = await guard.check("resource-guard")
+    assert stale.code == "inventory_index_stale"
+    await database.engine.dispose()

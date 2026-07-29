@@ -1,3 +1,4 @@
+import hashlib
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -16,7 +17,11 @@ from watch_assistant.library_models import (
     MediaLibrary,
     OrganizationPlan,
 )
-from watch_assistant.models import OrganizationOperation, OrganizationOperationStatus
+from watch_assistant.models import (
+    AgentToken,
+    OrganizationOperation,
+    OrganizationOperationStatus,
+)
 from watch_assistant.security import SecurityManager
 
 WEB_PASSWORD = "organization-operation-password"
@@ -250,6 +255,54 @@ async def test_queue_is_idempotent_and_rejects_unconfirmed_stale_or_expired_plan
 
 
 @pytest.mark.integration
+async def test_agent_operation_requires_confirmation_and_current_digest(tmp_path: Path):
+    client, database = await _client(tmp_path, execution_enabled=True)
+    raw_token = "wa_at_execute_contract"
+    async with database.session_factory() as session:
+        session.add(
+            AgentToken(
+                id="agent-execute",
+                name="execute-contract",
+                token_digest=hashlib.sha256(raw_token.encode()).hexdigest(),
+                token_prefix=raw_token[:16],
+                scopes_json=json.dumps(["organize:execute"]),
+                library_ids_json="[]",
+                expires_at=datetime.now(UTC) + timedelta(hours=1),
+                created_at=datetime.now(UTC),
+            )
+        )
+        await session.commit()
+    headers = {"Authorization": f"Bearer {raw_token}"}
+    base = {"expected_revision": 1, "idempotency_key": "agent-key"}
+    missing = await client.post(
+        "/api/v1/organization-plans/plan-ready/operation",
+        json=base,
+        headers=headers,
+    )
+    assert missing.status_code == 409
+    assert missing.json()["error"]["code"] == "confirmation_required"
+    wrong = await client.post(
+        "/api/v1/organization-plans/plan-ready/operation",
+        json={**base, "digest": "0" * 64, "confirm": True},
+        headers=headers,
+    )
+    assert wrong.status_code == 409
+    assert wrong.json()["error"]["code"] == "plan_digest_mismatch"
+    async with database.session_factory() as session:
+        plan = await session.get(OrganizationPlan, "plan-ready")
+        assert plan is not None
+        digest = plan.plan_hash
+    accepted = await client.post(
+        "/api/v1/organization-plans/plan-ready/operation",
+        json={**base, "digest": digest, "confirm": True},
+        headers=headers,
+    )
+    assert accepted.status_code == 200
+    assert accepted.json()["status"] == "planned"
+    await _close(client, database)
+
+
+@pytest.mark.integration
 async def test_batch_isolates_item_failures_and_cancel_is_local(tmp_path: Path):
     client, database = await _client(tmp_path, execution_enabled=True)
     headers = await _auth_headers(client)
@@ -303,6 +356,10 @@ async def test_batch_isolates_item_failures_and_cancel_is_local(tmp_path: Path):
     log_text = " ".join(record["message"] for record in records)
     assert "整理操作已排队" in log_text
     assert "整理操作已取消" in log_text
+    event_codes = {record.get("event_code") for record in records}
+    assert "organize.operation.queued" in event_codes
+    assert "organize.operation.cancelled" in event_codes
+    assert "settings.changed" not in event_codes
     assert REMOTE_SECRET not in log_text
     assert "pickcode-private" not in log_text
     await _close(client, database)

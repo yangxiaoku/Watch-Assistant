@@ -3,10 +3,12 @@ import asyncio
 import pytest
 
 from watch_assistant.adapters.p115_organization_transport import (
+    LiveP115OrganizationTransport,
     OfflineP115OrganizationTransport,
     OrganizationObjectIntent,
     P115OrganizationMethod,
     P115OrganizationTransportError,
+    create_live_p115_organization_transport,
     create_p115_organization_transport,
 )
 from watch_assistant.services.organization_execution_contract import RemoteObjectState
@@ -15,6 +17,54 @@ from watch_assistant.services.organization_executor import (
     OrganizationTransportResult,
     OrganizationTransportStatus,
 )
+
+
+class _LiveFakeP115Client:
+    def __init__(self, responses):
+        self.responses = {name: list(values) for name, values in responses.items()}
+        self.calls = []
+
+    def _response(self, name, payload, **kwargs):
+        self.calls.append((name, dict(payload), dict(kwargs)))
+        value = self.responses[name].pop(0)
+        if isinstance(value, BaseException):
+            raise value
+        return value
+
+    def fs_move(self, payload, **kwargs):
+        return self._response("fs_move", payload, **kwargs)
+
+    def fs_rename(self, payload, **kwargs):
+        return self._response("fs_rename", payload, **kwargs)
+
+    def fs_info(self, payload, **kwargs):
+        return self._response("fs_info", payload, **kwargs)
+
+    def fs_files(self, payload, **kwargs):
+        return self._response("fs_files", payload, **kwargs)
+
+
+async def _live_call_executor(method, payload, *, timeout_seconds):
+    assert timeout_seconds > 0
+    return method(payload, async_=False)
+
+
+def _live_file(file_id, parent_id, name):
+    return {"state": True, "data": {"fc": 1, "fid": file_id, "cid": parent_id, "n": name}}
+
+
+def _empty_page():
+    return {"state": True, "data": [], "offset": 0, "limit": 1, "count": 0}
+
+
+def _file_page(file_id, parent_id, name):
+    return {
+        "state": True,
+        "data": [{"fc": 1, "fid": file_id, "cid": parent_id, "n": name}],
+        "offset": 0,
+        "limit": 1,
+        "count": 1,
+    }
 
 
 def _intent(
@@ -127,6 +177,102 @@ async def test_exact_intent_executes_move_then_rename_and_preserves_identity():
         "rename",
         "read_object",
     ]
+
+
+@pytest.mark.asyncio
+async def test_live_transport_uses_scope_fixed_payloads_and_receipt_before_verify():
+    client = _LiveFakeP115Client(
+        {
+            "fs_info": [],
+            "fs_files": [
+                _file_page("100", "7000", "before.mkv"),
+                _empty_page(),
+                _empty_page(),
+                _empty_page(),
+                _file_page("100", "8000", "after.mkv"),
+            ],
+            "fs_move": [{"state": True}],
+            "fs_rename": [{"state": True}],
+        }
+    )
+    transport = create_live_p115_organization_transport(
+        client=client,
+        call_executor=_live_call_executor,
+        intents=(_intent(),),
+        managed_directory_ids=("7000", "8000"),
+        scope_confirmed=True,
+        live_enabled=True,
+    )
+
+    assert isinstance(transport, LiveP115OrganizationTransport)
+    assert await transport.read_object("100") == RemoteObjectState(
+        "100", "7000", "before.mkv"
+    )
+    assert await transport.read_target("8000", "after.mkv") is None
+    move = await transport.move("100", "8000")
+    rename = await transport.rename("100", "after.mkv")
+    assert await transport.read_object("100") == RemoteObjectState(
+        "100", "8000", "after.mkv"
+    )
+    assert move.status is OrganizationTransportStatus.SUCCESS
+    assert rename.status is OrganizationTransportStatus.SUCCESS
+    assert transport.receipts == (move, rename)
+    assert [call[0] for call in client.calls] == [
+        "fs_files",
+        "fs_files",
+        "fs_files",
+        "fs_move",
+        "fs_rename",
+        "fs_files",
+        "fs_files",
+    ]
+    assert client.calls[3][1] == {"fid": "100", "pid": "8000"}
+    assert client.calls[4][1] == {"files_new_name[100]": "after.mkv"}
+
+
+@pytest.mark.asyncio
+async def test_live_transport_timeout_is_uncertain_and_is_not_retried():
+    client = _LiveFakeP115Client(
+        {
+            "fs_info": [],
+            "fs_files": [],
+            "fs_move": [TimeoutError("private")],
+            "fs_rename": [],
+        }
+    )
+    transport = create_live_p115_organization_transport(
+        client=client,
+        call_executor=_live_call_executor,
+        intents=(_intent(),),
+        managed_directory_ids=("7000", "8000"),
+        scope_confirmed=True,
+        live_enabled=True,
+    )
+
+    with pytest.raises(TimeoutError):
+        await transport.move("100", "8000")
+    assert len(client.calls) == 1
+    assert transport.receipts == ()
+
+
+def test_live_transport_requires_explicit_gate_and_confirmed_scope():
+    with pytest.raises(P115OrganizationTransportError, match="live_transport_disabled"):
+        create_live_p115_organization_transport(
+            client=object(),
+            call_executor=_live_call_executor,
+            intents=(_intent(),),
+            managed_directory_ids=("7000", "8000"),
+            scope_confirmed=True,
+        )
+    with pytest.raises(ValueError, match="invalid_organization_scope"):
+        create_live_p115_organization_transport(
+            client=object(),
+            call_executor=_live_call_executor,
+            intents=(_intent(),),
+            managed_directory_ids=("7000", "8000"),
+            scope_confirmed=False,
+            live_enabled=True,
+        )
 
 
 @pytest.mark.asyncio

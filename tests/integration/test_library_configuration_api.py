@@ -1,0 +1,147 @@
+from pathlib import Path
+
+import httpx
+import pytest
+from cryptography.fernet import Fernet
+from pwdlib import PasswordHash
+
+from watch_assistant.adapters.p115_library import DirectoryPage, ScanState
+from watch_assistant.app import create_app
+from watch_assistant.crypto import SecretCrypto
+from watch_assistant.db import create_database, initialize_database
+from watch_assistant.security import SecurityManager
+
+WEB_PASSWORD = "library-config-password"
+
+
+class _FakeClient:
+    async def aclose(self):
+        return None
+
+
+class _FakeCookieProvider:
+    def load(self):
+        return "unused"
+
+
+class _FakeGateway:
+    def __init__(self, *_args, **_kwargs):
+        pass
+
+    async def list_directory(self, _directory_id, *, page, page_size):
+        assert page == 1
+        assert page_size == 1
+        return DirectoryPage(
+            items=(),
+            page=1,
+            page_count=1,
+            total=0,
+            scan_complete=True,
+            state=ScanState.COMPLETE,
+            has_more=False,
+            terminal=True,
+        )
+
+
+async def _client(tmp_path: Path):
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'library-config.db'}")
+    await initialize_database(database.engine)
+    password_hash = PasswordHash.recommended()
+    app = create_app(
+        database=database,
+        crypto=SecretCrypto(Fernet.generate_key().decode("ascii")),
+        tmdb_client=_FakeClient(),
+        pansou_client=_FakeClient(),
+        security_manager=SecurityManager(
+            web_password_hash=password_hash.hash(WEB_PASSWORD),
+            script_token_hash=password_hash.hash("unused-script-token"),
+        ),
+        frontend_dir=tmp_path / "missing",
+    )
+    app.state.organization_target_root_id = "2988794667098701570"
+    app.state.organization_cookie_provider = _FakeCookieProvider()
+    return app, database
+
+
+@pytest.mark.integration
+async def test_library_configuration_is_scoped_optimistic_and_read_verified(tmp_path, monkeypatch):
+    app, database = await _client(tmp_path)
+    monkeypatch.setattr(
+        "watch_assistant.api.library.P115ReadOnlyDirectoryGateway", _FakeGateway
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://app.test"
+    ) as client:
+        assert (
+            await client.put(
+                "/api/v1/libraries/production/configuration",
+                json={
+                    "name": "Production",
+                    "root_directory_id": "2988794667098701570",
+                    "revision": 0,
+                },
+            )
+        ).status_code == 401
+        login = await client.post(
+            "/api/v1/auth/login", json={"password": WEB_PASSWORD}
+        )
+        csrf = login.json()["csrf_token"]
+        headers = {"X-CSRF-Token": csrf}
+
+        invalid_root = await client.put(
+            "/api/v1/libraries/production/configuration",
+            headers=headers,
+            json={
+                "name": "Production",
+                "root_directory_id": "2988794667098701570-not-a-cid",
+                "revision": 0,
+            },
+        )
+        assert invalid_root.status_code == 422
+
+        mismatch = await client.put(
+            "/api/v1/libraries/production/configuration",
+            headers=headers,
+            json={
+                "name": "Production",
+                "root_directory_id": "3482085898508567892",
+                "revision": 0,
+            },
+        )
+        assert mismatch.status_code == 409
+        assert mismatch.json()["detail"] == "library_scope_mismatch"
+
+        configured = await client.put(
+            "/api/v1/libraries/production/configuration",
+            headers=headers,
+            json={
+                "name": "Production",
+                "root_directory_id": "2988794667098701570",
+                "revision": 0,
+            },
+        )
+        assert configured.status_code == 200
+        assert configured.json()["scope_verified"] is False
+        assert configured.json()["enabled"] is False
+        assert configured.json()["revision"] == 1
+
+        conflict = await client.put(
+            "/api/v1/libraries/production/configuration",
+            headers=headers,
+            json={
+                "name": "Production renamed",
+                "root_directory_id": "2988794667098701570",
+                "revision": 0,
+            },
+        )
+        assert conflict.status_code == 409
+        assert conflict.json()["detail"] == "library_configuration_conflict"
+
+        verified = await client.post(
+            "/api/v1/libraries/production/verify-scope", headers=headers
+        )
+        assert verified.status_code == 200
+        assert verified.json()["verified"] is True
+        assert verified.json()["enabled"] is True
+
+    await database.engine.dispose()

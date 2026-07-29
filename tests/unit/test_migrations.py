@@ -229,6 +229,62 @@ async def test_organization_operation_migration_preserves_existing_data(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_legacy_workflow_schema_is_upgraded_without_losing_rows(tmp_path):
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'watch.db'}")
+    async with database.engine.begin() as connection:
+        await connection.exec_driver_sql(
+            """
+            CREATE TABLE workflows (
+                id VARCHAR(40) PRIMARY KEY,
+                correlation_id VARCHAR(64) NOT NULL,
+                status VARCHAR(21) NOT NULL,
+                subscription_id VARCHAR(128),
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL
+            )
+            """
+        )
+        await connection.exec_driver_sql(
+            """
+            CREATE TABLE workflow_stages (
+                id VARCHAR(40) PRIMARY KEY,
+                workflow_id VARCHAR(40) NOT NULL,
+                stage_key VARCHAR(64) NOT NULL,
+                status VARCHAR(20) NOT NULL,
+                task_id VARCHAR(40),
+                finished_at DATETIME,
+                updated_at DATETIME NOT NULL
+            )
+            """
+        )
+        await connection.exec_driver_sql(
+            "INSERT INTO workflows (id, correlation_id, status, created_at, updated_at) "
+            "VALUES ('wf_legacy', 'corr_legacy', 'completed', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+        )
+        await connection.exec_driver_sql(
+            "INSERT INTO workflow_stages "
+            "(id, workflow_id, stage_key, status, task_id, finished_at, updated_at) "
+            "VALUES ('stage_legacy', 'wf_legacy', 'search', 'completed', 'task_legacy', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+        )
+
+    await initialize_database(database.engine)
+
+    async with database.engine.connect() as connection:
+        workflow_columns = await connection.run_sync(
+            lambda sync: {item["name"] for item in inspect(sync).get_columns("workflows")}
+        )
+        stage = (
+            await connection.execute(
+                text("SELECT stage, status, child_type, child_id, completed_at FROM workflow_stages")
+            )
+        ).one()
+
+    assert {"media_type", "tmdb_id", "state_reason"} <= workflow_columns
+    assert stage == ("discovery", "succeeded", "task", "task_legacy", stage[4])
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_migrations_run_in_order_and_skip_applied_ids(tmp_path):
     database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'watch.db'}")
     executed: list[str] = []
@@ -250,6 +306,116 @@ async def test_migrations_run_in_order_and_skip_applied_ids(tmp_path):
 
     assert executed == ["first", "second"]
     assert await _applied_migration_ids(database) == ["001_first", "002_second"]
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_audit_schema_compatibility_migration_preserves_legacy_columns(tmp_path):
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'audit-legacy.db'}")
+    async with database.engine.begin() as connection:
+        await connection.execute(
+            text(
+                "CREATE TABLE audit_records ("
+                "id VARCHAR(64) PRIMARY KEY, event_code VARCHAR(128), "
+                "event_version INTEGER, action TEXT, outcome TEXT, "
+                "actor_type TEXT, actor_id TEXT, request_id TEXT, "
+                "correlation_id TEXT, task_id TEXT, resource_type TEXT, "
+                "resource_id TEXT, error_code TEXT, details_json TEXT, "
+                "created_at DATETIME, expires_at DATETIME)"
+            )
+        )
+        await connection.execute(
+            text(
+                "INSERT INTO audit_records "
+                "(id, event_code, created_at) VALUES ('legacy', 'legacy.event', "
+                "'2026-07-29 00:00:00')"
+            )
+        )
+        await connection.execute(
+            text(
+                "CREATE TABLE schema_migrations ("
+                "migration_id TEXT PRIMARY KEY, "
+                "applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)"
+            )
+        )
+        await connection.execute(
+            text(
+                "INSERT INTO schema_migrations (migration_id, applied_at) "
+                "VALUES ('007_audit_records', CURRENT_TIMESTAMP)"
+            )
+        )
+        compatibility = next(
+            migration
+            for migration in MIGRATIONS
+            if migration.id == "037_audit_records_schema_compatibility"
+        )
+        await connection.run_sync(lambda sync: run_migrations(sync, (compatibility,)))
+        columns = await connection.run_sync(
+            lambda sync: {item["name"] for item in inspect(sync).get_columns("audit_records")}
+        )
+        row = (
+            await connection.execute(
+                text("SELECT timestamp, context_json FROM audit_records WHERE id='legacy'")
+            )
+        ).one()
+    assert {"timestamp", "title_zh", "message_zh", "context_json"} <= columns
+    assert row.timestamp == "2026-07-29 00:00:00"
+    assert row.context_json == "{}"
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_legacy_audit_rebuild_keeps_backup_and_allows_current_insert(tmp_path):
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'audit-rebuild.db'}")
+    async with database.engine.begin() as connection:
+        await connection.execute(
+            text(
+                "CREATE TABLE audit_records ("
+                "id VARCHAR(64) PRIMARY KEY, event_code VARCHAR(128) NOT NULL, "
+                "event_version INTEGER NOT NULL, action TEXT NOT NULL, "
+                "outcome TEXT NOT NULL, actor_type TEXT, actor_id TEXT, "
+                "request_id TEXT, correlation_id TEXT, task_id TEXT, "
+                "resource_type TEXT, resource_id TEXT, error_code TEXT, "
+                "details_json TEXT, created_at DATETIME, expires_at DATETIME)"
+            )
+        )
+        await connection.execute(
+            text(
+                "INSERT INTO audit_records "
+                "(id, event_code, event_version, action, outcome) "
+                "VALUES ('legacy', 'legacy.event', 1, 'old-action', 'old-outcome')"
+            )
+        )
+        await connection.execute(
+            text(
+                "CREATE TABLE schema_migrations (migration_id TEXT PRIMARY KEY, "
+                "applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)"
+            )
+        )
+        migrations = tuple(
+            migration
+            for migration in MIGRATIONS
+            if migration.id in {
+                "037_audit_records_schema_compatibility",
+                "038_audit_records_legacy_rebuild",
+            }
+        )
+        await connection.run_sync(lambda sync: run_migrations(sync, migrations))
+        await connection.execute(
+            text(
+                "INSERT INTO audit_records "
+                "(id, timestamp, event_code, event_version, title_zh, message_zh, "
+                "status, actor_type, actor_id, context_json) VALUES "
+                "('current', CURRENT_TIMESTAMP, 'current.event', 1, '标题', '消息', "
+                "'completed', 'system', 'test', '{}')"
+            )
+        )
+        backup_count = await connection.scalar(
+            text("SELECT count(*) FROM audit_records_legacy_038")
+        )
+        current_count = await connection.scalar(text("SELECT count(*) FROM audit_records"))
+    assert backup_count == 1
+    assert current_count == 2
     await database.engine.dispose()
 
 

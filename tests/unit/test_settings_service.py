@@ -167,6 +167,46 @@ async def test_log_store_latest_first_cursor_and_category_filter(tmp_path: Path)
     assert category_next is None
 
 
+@pytest.mark.asyncio
+async def test_log_store_filters_actor_and_resource_dimensions(tmp_path: Path):
+    store = LogStore(tmp_path)
+    await store.append(
+        level=LoggingLevel.INFO,
+        category=LogCategory.AGENT,
+        message="agent event",
+        actor_type="agent",
+        actor_id="agent-1",
+        resource_type="library",
+        resource_id="library-1",
+        retention_days=1,
+        max_file_mb=50,
+    )
+    await store.append(
+        level=LoggingLevel.INFO,
+        category=LogCategory.SYSTEM,
+        message="system event",
+        actor_type="system",
+        actor_id="worker-1",
+        resource_type="task",
+        resource_id="task-1",
+        retention_days=1,
+        max_file_mb=50,
+    )
+
+    items, next_cursor = await store.list(
+        cursor=None,
+        limit=10,
+        category=None,
+        actor_type="agent",
+        actor_id="agent-1",
+        resource_type="library",
+        resource_id="library-1",
+    )
+
+    assert next_cursor is None
+    assert [item["message"] for item in items] == ["agent event"]
+
+
 def _log_record(record_id: int, timestamp: str) -> dict[str, object]:
     return {
         "id": record_id,

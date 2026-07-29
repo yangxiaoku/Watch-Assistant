@@ -393,6 +393,32 @@ async def test_pansou_rejects_unexpected_response_shape():
 
 
 @respx.mock
+async def test_pansou_replaces_invalid_utf8_inside_json_text():
+    route = respx.get("http://pansou.test/api/search").mock(
+        return_value=httpx.Response(
+            200,
+            content=(
+                b'{"code":0,"data":{"total":1,"merged_by_type":'
+                b'{"magnet":[{"url":"magnet:?xt=urn:btih:'
+                b'abcdef0123456789abcdef0123456789abcdef01",'
+                b'"note":"Movie \xff 1080p"}]}}}'
+            ),
+            headers={"content-type": "application/json"},
+        )
+    )
+    client = PanSouClient("http://pansou.test")
+
+    try:
+        result = await client.search("Movie")
+    finally:
+        await client.aclose()
+
+    assert route.called
+    assert result["total"] == 1
+    assert result["merged_by_type"]["magnet"][0]["note"] == "Movie � 1080p"
+
+
+@respx.mock
 async def test_pansou_accepts_empty_result_without_merged_groups():
     respx.get("http://pansou.test/api/search").mock(
         return_value=httpx.Response(

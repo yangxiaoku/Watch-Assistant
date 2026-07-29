@@ -94,6 +94,10 @@ async def test_settings_overview_logging_patch_and_redacted_logs(tmp_path, monke
         level=LoggingLevel.INFO,
         category=LogCategory.SECURITY,
         message="password=secret token=token-value",
+        actor_type="agent",
+        actor_id="agent-test",
+        resource_type="library",
+        resource_id="library-test",
         retention_days=7,
         max_file_mb=5,
     )
@@ -111,6 +115,27 @@ async def test_settings_overview_logging_patch_and_redacted_logs(tmp_path, monke
     rendered = repr(first_logs.json()) + repr(logs.json())
     assert "secret" not in rendered
     assert "token-value" not in rendered
+
+    filtered = await client.get(
+        "/api/v1/logs",
+        params={
+            "actor_type": "agent",
+            "actor_id": "agent-test",
+            "resource_type": "library",
+            "resource_id": "library-test",
+        },
+    )
+    assert filtered.status_code == 200
+    assert [item["resource_id"] for item in filtered.json()["items"]] == ["library-test"]
+
+    exported = await client.get(
+        "/api/v1/logs/export",
+        params={"format": "csv", "event_code": "legacy.log"},
+    )
+    assert exported.status_code == 200
+    assert "message_zh" in exported.text
+    assert "secret" not in exported.text
+    assert "token-value" not in exported.text
 
     await client.aclose()
     await tmdb.aclose()

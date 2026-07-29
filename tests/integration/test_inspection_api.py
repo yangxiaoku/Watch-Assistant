@@ -549,7 +549,7 @@ async def test_old_schema_verified_cache_can_be_replaced_by_timeout(tmp_path):
 
 
 @pytest.mark.integration
-async def test_timeout_cache_is_valid_for_30_minutes_then_retries(tmp_path):
+async def test_timeout_cache_is_valid_for_10_minutes_then_retries(tmp_path):
     magnet = _magnet("c")
     fake = FakeInspectionClient(
         {
@@ -592,16 +592,22 @@ async def test_timeout_cache_is_valid_for_30_minutes_then_retries(tmp_path):
     assert cached.results[0].largest_video_name is None
     assert cached.results[0].content_summary is None
     assert len(fake.magnets) == 1
+
+    forced = await service.create(["res_c"], force=True)
+    assert forced.status == InspectionBatchStatus.QUEUED
+    assert await worker.run_once()
+    assert len(fake.magnets) == 2
+
     async with database.session_factory() as session:
         cache = await session.get(MagnetMetadataCache, "c" * 40)
-        assert cache.expires_at - cache.updated_at >= timedelta(minutes=29)
+        assert cache.expires_at - cache.updated_at >= timedelta(minutes=9)
         cache.updated_at = datetime.now(UTC) - timedelta(minutes=31)
         await session.commit()
 
     expired = await service.create(["res_c"])
     assert expired.status == InspectionBatchStatus.QUEUED
     assert await worker.run_once()
-    assert len(fake.magnets) == 2
+    assert len(fake.magnets) == 3
     await _close(client, database, tmdb, pansou)
 
 
@@ -733,7 +739,7 @@ async def test_non_timeout_results_are_not_cached(tmp_path, status, error_code):
                     "b" * 40, InspectionStatus.UNSUPPORTED, error_code="invalid_magnet"
                 ),
             ],
-            "completed",
+            "partial",
         ),
         (
             [
@@ -809,9 +815,10 @@ async def test_lifespan_runs_the_single_worker_and_closes_the_qb_client(tmp_path
             "push_capabilities": {"magnet": False, "share": False},
             "inspection_supported": True,
             "inspection_auto_start_enabled": True,
-            "organization_plan_enabled": False,
-            "organization_execution_enabled": False,
-        }
+                "organization_plan_enabled": False,
+                "organization_execution_enabled": False,
+                "organization_execution_supported": False,
+            }
         assert fake.closed is False
 
     assert fake.closed is True

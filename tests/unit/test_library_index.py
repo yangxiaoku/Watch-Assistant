@@ -8,6 +8,8 @@ from sqlalchemy import func, inspect, select
 from watch_assistant.adapters.p115_library import DirectoryPage, LibraryEntry, ScanState
 from watch_assistant.db import create_database, initialize_database
 from watch_assistant.library_models import (
+    LibraryInventoryEvent,
+    LibraryObjectLedger,
     LibraryScanCheckpoint,
     LibraryScanEntry,
     LibraryScanRun,
@@ -126,6 +128,8 @@ async def test_migration_creates_read_index_tables_and_is_idempotent(tmp_path):
         "library_scan_checkpoints",
         "library_scan_entries",
         "library_scan_diffs",
+        "library_object_ledger",
+        "library_inventory_events",
     } <= tables
     await database.engine.dispose()
 
@@ -356,6 +360,53 @@ async def test_repeat_snapshot_is_idempotent_and_path_change_uses_stable_identit
     assert changed.changes[0].change_kind == "changed"
     assert changed.changes[0].path_changed is True
     assert changed.deletion_candidates == ()
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_complete_scan_records_removal_and_restoration_ledger(tmp_path):
+    database = await _database(tmp_path)
+    first = await _service(database, _ReadOnlyGateway(1)).scan("present")
+    assert first.complete is True
+
+    class _EmptyGateway(_ReadOnlyGateway):
+        async def list_directory(self, directory_id: str, *, page=1, page_size=100):
+            assert directory_id == ROOT_ID
+            return _page(
+                page,
+                (),
+                1,
+                0,
+                terminal=True,
+                has_more=False,
+            )
+
+    removed = await _service(database, _EmptyGateway(0)).scan("removed")
+    assert removed.complete is True
+    assert removed.removed_count == 1
+    assert removed.deletion_candidates == ("1000",)
+    async with database.session_factory() as session:
+        ledger = await session.scalar(select(LibraryObjectLedger))
+        events = list((await session.scalars(select(LibraryInventoryEvent))).all())
+    assert ledger is not None
+    assert ledger.status == "missing"
+    assert [event.event_kind for event in events] == ["added", "removed"]
+
+    restored = await _service(database, _ReadOnlyGateway(1)).scan("restored")
+    assert restored.complete is True
+    assert restored.deletion_candidates == ()
+    async with database.session_factory() as session:
+        ledger = await session.scalar(select(LibraryObjectLedger))
+        events = list(
+            (
+                await session.scalars(
+                    select(LibraryInventoryEvent).order_by(LibraryInventoryEvent.created_at)
+                )
+            ).all()
+        )
+    assert ledger is not None
+    assert ledger.status == "active"
+    assert [event.event_kind for event in events] == ["added", "removed", "restored"]
     await database.engine.dispose()
 
 
