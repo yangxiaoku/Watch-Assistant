@@ -138,19 +138,23 @@ class C03CallBudget:
     max_total_calls: int = MAX_TOTAL_CALLS
     max_conflict_observation_calls: int = MAX_CONFLICT_OBSERVATION_CALLS
     max_batch_observation_calls: int = MAX_BATCH_OBSERVATION_CALLS
+    allow_cleanup_reserve: bool = False
 
     def valid(self) -> bool:
+        read_limit = MAX_READ_CALLS + 24 if self.allow_cleanup_reserve else MAX_READ_CALLS
+        list_limit = MAX_LIST_CALLS + 6 if self.allow_cleanup_reserve else MAX_LIST_CALLS
+        total_limit = MAX_TOTAL_CALLS + 24 if self.allow_cleanup_reserve else MAX_TOTAL_CALLS
         return (
             self.max_write_calls > 0
             and self.max_write_calls <= MAX_WRITE_CALLS
             and self.max_read_calls > 0
-            and self.max_read_calls <= MAX_READ_CALLS
+            and self.max_read_calls <= read_limit
             and self.max_list_calls > 0
-            and self.max_list_calls <= MAX_LIST_CALLS
+            and self.max_list_calls <= list_limit
             and self.max_list_page_calls > 0
             and self.max_list_page_calls <= MAX_LIST_PAGE_CALLS
             and self.max_total_calls > 0
-            and self.max_total_calls <= MAX_TOTAL_CALLS
+            and self.max_total_calls <= total_limit
             and self.max_conflict_observation_calls == 0
             and self.max_batch_observation_calls == 0
         )
@@ -488,7 +492,7 @@ async def run_p115_c03_fixture_probe(
         outcome = C03ProbeStatus.UNCERTAIN
         error_code = error.code
 
-    if outcome is C03ProbeStatus.SUCCESS and state.root_confirmed:
+    if state.root_confirmed:
         cleanup, cleanup_error = await _cleanup(
             transport,
             state,
@@ -496,8 +500,10 @@ async def run_p115_c03_fixture_probe(
             timeout_seconds,
             parent_id=normalized_parent_id,
         )
-        if cleanup_error is not None:
+        if cleanup_error is not None and outcome is C03ProbeStatus.SUCCESS:
             outcome = C03ProbeStatus.UNCERTAIN
+            error_code = cleanup_error
+        elif cleanup_error is not None and error_code is None:
             error_code = cleanup_error
     elif outcome is C03ProbeStatus.UNCERTAIN:
         cleanup = "not_attempted_uncertain"

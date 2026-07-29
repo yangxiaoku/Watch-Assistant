@@ -24,7 +24,11 @@ from watch_assistant.adapters.p115_c03_fixture_probe import (
     C03_LIVE_ENV,
     C03_MANAGED_FIXTURE_ENV,
     C03_WRITE_ENABLED_ENV,
+    MAX_LIST_CALLS,
+    MAX_READ_CALLS,
     MAX_RUN_TIMEOUT_SECONDS,
+    MAX_TOTAL_CALLS,
+    C03CallBudget,
     C03ProbeReport,
     C03ProbeStatus,
     P115C03Transport,
@@ -113,6 +117,12 @@ def run_live_probe(
                 parent_id=normalized_parent_id,
                 env=environment,
                 timeout_seconds=MAX_RUN_TIMEOUT_SECONDS,
+                budget=C03CallBudget(
+                    max_read_calls=MAX_READ_CALLS + 24,
+                    max_list_calls=MAX_LIST_CALLS + 6,
+                    max_total_calls=MAX_TOTAL_CALLS + 24,
+                    allow_cleanup_reserve=True,
+                ),
                 live=True,
             )
         )

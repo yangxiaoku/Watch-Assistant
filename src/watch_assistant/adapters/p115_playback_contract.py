@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import re
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol
@@ -180,6 +180,7 @@ class DynamicLinkOutcome:
     error_code: str | None = None
     url: str | None = None
     policy: ForwardingPolicy | None = None
+    request_headers: tuple[tuple[str, str], ...] = ()
 
     def __post_init__(self) -> None:
         if self.error_code is not None and self.error_code not in _ERROR_CODES:
@@ -189,6 +190,15 @@ class DynamicLinkOutcome:
                 raise PlaybackContractError("invalid_dynamic_link")
         elif self.url is not None:
             raise PlaybackContractError("invalid_dynamic_link")
+        if any(
+            not isinstance(name, str)
+            or name.casefold() != "user-agent"
+            or not isinstance(value, str)
+            or not value
+            or len(value) > 512
+            for name, value in self.request_headers
+        ):
+            raise PlaybackContractError("invalid_request_headers")
 
     def __repr__(self) -> str:
         return (
@@ -210,10 +220,14 @@ class PlaybackCall:
 
 
 class P115PlaybackGateway(Protocol):
-    """Future dynamic-link boundary; C05 supplies only an offline fake."""
+    """Dynamic-link boundary for the managed STRM manifest."""
 
     async def resolve(
-        self, request: PlaybackRequest, *, gate: PlaybackGate
+        self,
+        request: PlaybackRequest,
+        *,
+        gate: PlaybackGate,
+        allowed_library_ids: Collection[str] | None = None,
     ) -> DynamicLinkOutcome: ...
 
 
@@ -241,8 +255,13 @@ class FakeP115PlaybackGateway:
         return f"FakeP115PlaybackGateway(manifest_count={len(self._outcomes)})"
 
     async def resolve(
-        self, request: PlaybackRequest, *, gate: PlaybackGate
+        self,
+        request: PlaybackRequest,
+        *,
+        gate: PlaybackGate,
+        allowed_library_ids: Collection[str] | None = None,
     ) -> DynamicLinkOutcome:
+        del allowed_library_ids
         decision = evaluate_playback_gate(gate)
         if not decision.allowed:
             return DynamicLinkOutcome(
@@ -259,7 +278,11 @@ class FakeP115PlaybackGateway:
             return classify_playback_exception(outcome)
         policy = forwarding_policy(request)
         return DynamicLinkOutcome(
-            outcome.status, outcome.error_code, outcome.url, policy
+            outcome.status,
+            outcome.error_code,
+            outcome.url,
+            policy,
+            outcome.request_headers,
         )
 
 

@@ -1,6 +1,7 @@
 """FastAPI application factory."""
 
 import asyncio
+import ipaddress
 import os
 import re
 import socket
@@ -19,6 +20,8 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.staticfiles import StaticFiles
 
 from watch_assistant.adapters.p115 import P115Adapter
+from watch_assistant.adapters.p115_playback_contract import P115PlaybackGateway
+from watch_assistant.adapters.p115_playback_gateway import P115LivePlaybackGateway
 from watch_assistant.adapters.pansou import PanSouClient
 from watch_assistant.adapters.qbittorrent import QbittorrentClient
 from watch_assistant.adapters.tmdb import TmdbClient
@@ -97,6 +100,15 @@ from watch_assistant.worker import TaskAdapter, TaskWorker
 
 _RELEASE_SHA = re.compile(r"[0-9a-f]{40}", re.IGNORECASE)
 _TRUSTED_RELEASE_PATH = Path("/opt/watch-assistant/current")
+_DEFAULT_PLAYBACK_NETWORKS = (
+    "127.0.0.0/8",
+    "::1/128",
+    "10.0.0.0/8",
+    "172.16.0.0/12",
+    "192.168.0.0/16",
+    "100.64.0.0/10",
+    "fc00::/7",
+)
 
 
 def create_app(
@@ -125,6 +137,8 @@ def create_app(
     strm_playback_contract_verified: bool | None = None,
     strm_output_root: Path | None = None,
     strm_playback_url_prefix: str | None = None,
+    strm_playback_allowed_networks: tuple[str, ...] | None = None,
+    strm_playback_gateway: P115PlaybackGateway | None = None,
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
@@ -189,6 +203,9 @@ def create_app(
         async def apply_p115_runtime(ready: bool) -> None:
             nonlocal task_stop, task_task
             application.state.p115_ready = ready
+            application.state.strm_playback_supported = bool(
+                ready and getattr(application.state, "strm_playback_gateway", None)
+            )
             application.state.push_capabilities = {
                 "magnet": ready,
                 "share": False,
@@ -247,6 +264,10 @@ def create_app(
             settings = Settings(
                 _secrets_dir=secrets_dir if secrets_dir.is_dir() else None
             )
+            if strm_playback_allowed_networks is None:
+                application.state.strm_playback_allowed_networks = _parse_networks(
+                    settings.strm_playback_allowed_networks
+                )
             if organization_plan_enabled is None:
                 application.state.organization_plan_enabled = (
                     settings.organization_plan_enabled
@@ -304,6 +325,12 @@ def create_app(
             composite_cookie_provider = CompositeCookieProvider(
                 fallback_cookie_provider
             )
+            if application.state.strm_playback_gateway is None and settings.p115_enabled:
+                application.state.strm_playback_gateway = P115LivePlaybackGateway(
+                    runtime_database.session_factory,
+                    composite_cookie_provider,
+                    max_concurrency=min(settings.p115_max_concurrency, 2),
+                )
             credential_service = CredentialService(
                 runtime_database.session_factory,
                 runtime_crypto,
@@ -450,6 +477,9 @@ def create_app(
                 )
                 p115_ready = await _ensure_adapter_available(runtime_task_adapter)
                 application.state.p115_ready = p115_ready
+                application.state.strm_playback_supported = bool(
+                    p115_ready and application.state.strm_playback_gateway is not None
+                )
                 if p115_ready:
                     application.state.task_worker = TaskWorker(
                         runtime_database.session_factory,
@@ -463,6 +493,8 @@ def create_app(
                         "magnet": True,
                         "share": False,
                     }
+            else:
+                application.state.strm_playback_supported = False
             await application.state.settings_service.log_event(
                 "p115.readiness",
                 fields={
@@ -540,12 +572,20 @@ def create_app(
         ):
             p115_ready = await _ensure_adapter_available(task_adapter_resource)
             application.state.p115_ready = p115_ready
+            application.state.strm_playback_supported = bool(
+                p115_ready and application.state.strm_playback_gateway is not None
+            )
             if not p115_ready:
                 application.state.push_capabilities = {
                     "magnet": False,
                     "share": False,
                 }
                 application.state.task_worker = None
+        elif (
+            not getattr(application.state, "p115_ready", False)
+            and application.state.strm_playback_gateway is None
+        ):
+            application.state.strm_playback_supported = False
         if getattr(application.state, "p115_ready", False):
             await apply_organization_runtime(True)
         worker = getattr(application.state, "inspection_worker", None)
@@ -759,13 +799,19 @@ def create_app(
         if strm_playback_contract_verified is not None
         else _env_flag("STRM_PLAYBACK_CONTRACT_VERIFIED")
     )
-    application.state.strm_playback_supported = False
+    application.state.strm_playback_gateway = strm_playback_gateway
+    application.state.strm_playback_supported = strm_playback_gateway is not None
     application.state.strm_output_root = strm_output_root or Path(
         os.environ.get("STRM_OUTPUT_ROOT", "./data/strm")
     )
     application.state.strm_playback_url_prefix = strm_playback_url_prefix or os.environ.get(
         "STRM_PLAYBACK_URL_PREFIX",
         "http://127.0.0.1:8115/api/v1/strm/play",
+    )
+    application.state.strm_playback_allowed_networks = _parse_networks(
+        strm_playback_allowed_networks
+        or os.environ.get("STRM_PLAYBACK_ALLOWED_NETWORKS")
+        or _DEFAULT_PLAYBACK_NETWORKS
     )
     if database and crypto and tmdb_client and pansou_client:
         application.state.database = database
@@ -862,6 +908,14 @@ def create_app(
         )
         composite_cookie_provider = CompositeCookieProvider(fallback_cookie_provider)
         application.state.organization_cookie_provider = composite_cookie_provider
+        if (
+            application.state.strm_playback_gateway is None
+            and task_adapter is not None
+        ):
+            application.state.strm_playback_gateway = P115LivePlaybackGateway(
+                database.session_factory,
+                composite_cookie_provider,
+            )
         application.state.p115_delete_service = P115DeleteService(
             database.session_factory,
             composite_cookie_provider,
@@ -1058,6 +1112,21 @@ def _worker_owner() -> str:
 
 def _env_flag(name: str) -> bool:
     return os.environ.get(name, "").strip().casefold() in {"1", "true", "yes", "on"}
+
+
+def _parse_networks(value: str | tuple[str, ...]) -> tuple[object, ...]:
+    values = value.split(",") if isinstance(value, str) else list(value)
+    try:
+        networks = tuple(
+            ipaddress.ip_network(item.strip(), strict=False)
+            for item in values
+            if item.strip()
+        )
+    except ValueError as error:
+        raise RuntimeError("invalid_strm_playback_allowed_networks") from error
+    if not networks:
+        raise RuntimeError("invalid_strm_playback_allowed_networks")
+    return networks
 
 
 def _request_context_id(value: str | None, prefix: str) -> str:

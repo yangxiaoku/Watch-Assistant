@@ -15,12 +15,14 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from watch_assistant.adapters.p115_c03_live_transport import (
     EXPECTED_P115CLIENT_VERSION,
-    P115C03LiveTransport,
     p115_c03_timeout_executor,
 )
 from watch_assistant.adapters.p115_library_write_contract import (
     WriteStatus,
     prepare_delete,
+)
+from watch_assistant.adapters.p115_permanent_delete_transport import (
+    P115PermanentDeleteTransport,
 )
 from watch_assistant.library_models import (
     LibraryScanEntry,
@@ -108,7 +110,9 @@ class P115DeleteService:
         except Exception:  # noqa: BLE001 - client details stay private
             return DeleteResult(DeleteStatus.FAILED, "client_unavailable")
         try:
-            transport = P115C03LiveTransport(client, call_executor=self._call_executor)
+            transport = P115PermanentDeleteTransport(
+                client, call_executor=self._call_executor
+            )
             listing = await transport.list_children(
                 entry.parent_id, timeout_seconds=self._timeout_seconds
             )
@@ -117,13 +121,34 @@ class P115DeleteService:
             matches = [item for item in listing.entries if item.file_id == object_id]
             if len(matches) != 1 or matches[0].name != expected_name:
                 return DeleteResult(DeleteStatus.FAILED, "delete_precondition_changed")
-            receipt = await transport.execute(
+            before_recycle = await transport.list_entries(
+                timeout_seconds=self._timeout_seconds
+            )
+            if before_recycle is None:
+                return DeleteResult(DeleteStatus.UNCERTAIN, "recycle_listing_unverified")
+            before_recycle_ids = {item.recycle_id for item in before_recycle}
+            reversible = await transport.move_to_recycle(
                 prepare_delete(object_id), timeout_seconds=self._timeout_seconds
             )
-            if receipt.status is WriteStatus.FAILED:
-                return DeleteResult(DeleteStatus.FAILED, "remote_failed")
-            if receipt.status is not WriteStatus.SUCCESS:
-                return DeleteResult(DeleteStatus.UNCERTAIN, "outcome_unknown")
+            if reversible.status is not WriteStatus.SUCCESS:
+                return DeleteResult(DeleteStatus.UNCERTAIN, "recycle_outcome_unknown")
+            recycle_matches = await transport.find_new_entries(
+                before_recycle_ids,
+                parent_id=entry.parent_id,
+                name=expected_name,
+                size_bytes=entry.size_bytes,
+                timeout_seconds=self._timeout_seconds,
+            )
+            if recycle_matches is None:
+                return DeleteResult(DeleteStatus.UNCERTAIN, "recycle_listing_unverified")
+            if len(recycle_matches) != 1:
+                return DeleteResult(DeleteStatus.UNCERTAIN, "recycle_entry_unverified")
+            permanent = await transport.permanently_clean(
+                recycle_matches[0].recycle_id,
+                timeout_seconds=self._timeout_seconds,
+            )
+            if permanent.status is not WriteStatus.SUCCESS:
+                return DeleteResult(DeleteStatus.UNCERTAIN, "permanent_delete_unconfirmed")
             after = await transport.list_children(
                 entry.parent_id, timeout_seconds=self._timeout_seconds
             )
@@ -131,6 +156,15 @@ class P115DeleteService:
                 return DeleteResult(DeleteStatus.UNCERTAIN, "postcondition_unverified")
             if any(item.file_id == object_id for item in after.entries):
                 return DeleteResult(DeleteStatus.UNCERTAIN, "postcondition_mismatch")
+            recycle_absent = await transport.wait_until_absent(
+                recycle_matches[0].recycle_id,
+                timeout_seconds=self._timeout_seconds,
+            )
+            if recycle_absent is not True:
+                return DeleteResult(
+                    DeleteStatus.UNCERTAIN,
+                    "permanent_delete_postcondition_unverified",
+                )
             return DeleteResult(DeleteStatus.SUCCESS)
         except asyncio.CancelledError:
             raise

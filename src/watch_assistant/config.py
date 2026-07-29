@@ -135,6 +135,11 @@ class Settings(BaseSettings):
         min_length=1,
         validation_alias="STRM_PLAYBACK_URL_PREFIX",
     )
+    strm_playback_allowed_networks: str = Field(
+        default="127.0.0.0/8,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10,fc00::/7",
+        min_length=1,
+        validation_alias="STRM_PLAYBACK_ALLOWED_NETWORKS",
+    )
     p115_cookie_path: Path = Field(
         default=Path("/etc/watch-assistant/p115-cookie"),
         validation_alias="P115_COOKIE_PATH",

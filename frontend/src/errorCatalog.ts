@@ -42,6 +42,7 @@ const RETRYABLE_CODES = new Set([
   "resource_search_timeout",
   "workflows_unavailable",
   "library_scope_verification_failed",
+  "library_scope_unverified",
 ]);
 
 const ACTION_BY_CODE: Record<string, UiErrorAction> = {
@@ -128,6 +129,10 @@ const ADDITIONAL_CODES = [
   "tmdb_unavailable", "tool_not_found", "unauthorized", "uncertain", "validation_error",
   "library_configuration_conflict", "library_scope_mismatch", "library_scope_unavailable",
   "library_scope_verification_failed",
+  "library_scope_unverified",
+  "invalid_playback_request", "strm_playback_disabled", "strm_playback_unverified",
+  "strm_playback_unavailable", "playback_file_not_found", "playback_network_forbidden",
+  "playback_timeout", "playback_remote_failed",
   "webhook_conflict", "webhook_delivery_conflict", "webhook_delivery_not_found",
   "webhook_dns_failed", "webhook_event_not_allowed", "webhook_not_found",
   "webhook_url_not_allowed", "webhook_url_unresolvable", "webhooks_unavailable",

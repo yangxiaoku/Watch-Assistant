@@ -170,12 +170,16 @@ async def test_failure_timeout_and_cancel_are_uncertain_without_write_retry(
 
     assert report.status is C03ProbeStatus.UNCERTAIN
     assert report.error_code == error_code
-    assert report.cleanup == "not_attempted_uncertain"
+    expected_cleanup = "complete" if failure == "rename" else "not_attempted_uncertain"
+    assert report.cleanup == expected_cleanup
     failed_operation = (
         WriteOperation.RENAME if failure == "rename" else WriteOperation.MOVE
     )
     assert transport.write_operations.count(failed_operation) == 1
-    assert WriteOperation.RECYCLE not in transport.write_operations
+    if failure == "rename":
+        assert WriteOperation.RECYCLE in transport.write_operations
+    else:
+        assert WriteOperation.RECYCLE not in transport.write_operations
 
 
 @pytest.mark.asyncio

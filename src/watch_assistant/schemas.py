@@ -213,6 +213,12 @@ class MediaLibraryVerificationResponse(BaseModel):
     enabled: bool
 
 
+class LibraryScanRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    idempotency_key: str = Field(min_length=1, max_length=128)
+
+
 class MediaLibraryListResponse(BaseModel):
     model_config = {"extra": "forbid"}
 

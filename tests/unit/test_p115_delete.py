@@ -17,6 +17,15 @@ class _CookieProvider:
 class _Client:
     def __init__(self):
         self.deleted = False
+        self.cleaned = False
+        self.recycle_records = [
+            {
+                "id": "899",
+                "cid": "7000",
+                "file_name": "gone.mkv",
+                "file_size": "100",
+            }
+        ]
 
     def fs_files(self, payload, **kwargs):
         if self.deleted:
@@ -31,6 +40,28 @@ class _Client:
 
     def fs_delete(self, payload, **kwargs):
         self.deleted = True
+        self.recycle_records.append(
+            {
+                "id": "900",
+                "cid": "7000",
+                "file_name": "gone.mkv",
+                "file_size": "100",
+            }
+        )
+        return {"state": True}
+
+    def recyclebin_list(self, payload, **kwargs):
+        records = [] if self.cleaned else self.recycle_records
+        if self.cleaned:
+            return {"state": True, "count": 0}
+        return {
+            "state": True,
+            "data": records,
+        }
+
+    def recyclebin_clean(self, payload, **kwargs):
+        assert payload["tid"] == "900"
+        self.cleaned = True
         return {"state": True}
 
 
@@ -93,4 +124,5 @@ async def test_delete_requires_local_snapshot_and_verifies_postcondition(tmp_pat
     )
     assert result.status is DeleteStatus.SUCCESS
     assert client.deleted is True
+    assert client.cleaned is True
     await database.engine.dispose()

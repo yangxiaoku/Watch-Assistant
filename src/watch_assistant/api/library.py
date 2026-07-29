@@ -31,6 +31,7 @@ from watch_assistant.schemas import (
     LibraryDeleteRequest,
     LibraryDeleteResponse,
     LibraryInventoryResponse,
+    LibraryScanRequest,
     LibraryScanSummary,
     MediaEntryListResponse,
     MediaEntryResponse,
@@ -40,6 +41,10 @@ from watch_assistant.schemas import (
     MediaLibraryVerificationResponse,
 )
 from watch_assistant.security import AuthContext, require_api_auth, require_scope
+from watch_assistant.services.library_index import (
+    LibraryIndexError,
+    LibraryIndexService,
+)
 from watch_assistant.services.library_inventory import (
     InventoryFile,
     InventorySnapshot,
@@ -52,6 +57,7 @@ router = APIRouter(prefix="/api/v1", dependencies=[Depends(require_api_auth)])
 AuthDependency = Annotated[AuthContext, Depends(require_api_auth)]
 ReviewWriteDependency = Annotated[AuthContext, Depends(require_scope("review:write"))]
 SettingsWriteDependency = Annotated[AuthContext, Depends(require_scope("settings:write"))]
+LibraryReadDependency = Annotated[AuthContext, Depends(require_scope("library:read"))]
 OrganizeWriteDependency = Annotated[AuthContext, Depends(require_scope("organize:execute"))]
 _LIBRARY_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
 
@@ -289,6 +295,59 @@ async def verify_library_scope(
         library=response,
         verified=library.scope_verified,
         enabled=library.enabled,
+    )
+
+
+@router.post(
+    "/libraries/{library_id}/scan",
+    response_model=LibraryScanSummary,
+)
+async def scan_library(
+    library_id: str,
+    payload: LibraryScanRequest,
+    request: Request,
+    context: LibraryReadDependency,
+) -> LibraryScanSummary:
+    if not _stable_library_id(library_id) or not _allowed(context, library_id):
+        raise HTTPException(status_code=404, detail="library_not_found")
+    provider = getattr(request.app.state, "organization_cookie_provider", None)
+    if provider is None:
+        raise HTTPException(status_code=503, detail="library_scope_unavailable")
+    async with request.app.state.database.session_factory() as session:
+        library = await session.get(MediaLibrary, library_id)
+    if (
+        library is None
+        or not library.enabled
+        or not library.scope_verified
+    ):
+        raise HTTPException(status_code=409, detail="library_scope_unverified")
+    gateway = P115ReadOnlyDirectoryGateway(
+        provider,
+        authorized_directory_ids=(library.root_directory_id,),
+        request_timeout_seconds=30,
+    )
+    service = LibraryIndexService(
+        request.app.state.database.session_factory,
+        gateway,
+        library_id=library.id,
+        root_directory_id=library.root_directory_id,
+        page_size=1,
+    )
+    try:
+        result = await service.scan(payload.idempotency_key)
+    except LibraryIndexError as error:
+        raise HTTPException(status_code=409, detail=error.code) from None
+    return LibraryScanSummary(
+        run_id=result.run_id,
+        state=result.state.value,
+        complete=result.complete,
+        snapshot_revision=result.snapshot_revision,
+        pages_read=result.pages_read,
+        items_seen=result.items_seen,
+        added_count=result.added_count,
+        changed_count=result.changed_count,
+        removed_count=result.removed_count,
+        error_code=result.error_code,
     )
 
 
