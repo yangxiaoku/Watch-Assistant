@@ -41,6 +41,8 @@ from watch_assistant.adapters.p115_c03_live_transport import (
 MAX_COOKIE_BYTES = 16 * 1024
 MAX_AUTHORIZATION_BYTES = 8 * 1024
 AUTHORIZATION_VERSION = 1
+P115_BUSY_OPERATION_ERRNO = 990009
+P115_BUSY_OPERATION_RETRY_DELAY_SECONDS = 3.0
 _SAFE_NONCE = re.compile(r"[A-Za-z0-9._-]+")
 
 
@@ -320,7 +322,28 @@ def _p115client_timeout_executor(method, payload, *, timeout_seconds: float):
         request_kwargs["retries"] = False
         return urllib3_request(async_=False, **request_kwargs)
 
-    return method(payload, async_=False, request=request_with_timeout)
+    for attempt in range(2):
+        try:
+            return method(payload, async_=False, request=request_with_timeout)
+        except Exception as error:
+            if attempt or not _has_p115_errno(error, P115_BUSY_OPERATION_ERRNO):
+                raise
+            time.sleep(P115_BUSY_OPERATION_RETRY_DELAY_SECONDS)
+
+
+def _has_p115_errno(error: BaseException, expected: int) -> bool:
+    """Read only the structured errno field, never exception text."""
+
+    try:
+        structured_errno = getattr(error, "errno", None)
+    except Exception:  # noqa: BLE001 - error details stay behind the boundary
+        structured_errno = None
+    if structured_errno == expected:
+        return True
+    for argument in getattr(error, "args", ()):
+        if isinstance(argument, Mapping) and argument.get("errno") == expected:
+            return True
+    return False
 
 
 def _blocked(
