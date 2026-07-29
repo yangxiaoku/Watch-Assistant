@@ -32,7 +32,16 @@ run_stage() {
     fi
 }
 
-run_stage python-tests "$PYTHON_BIN" -m pytest -q
+# Keep test roots separate.  The repository contains archived release trees and
+# a few legacy unit helpers imported as top-level modules; a single repository
+# wide collection makes both cases ambiguous.
+run_stage unit-tests "$PYTHON_BIN" -m pytest -q tests/unit
+for test_file in "$ROOT_DIR"/tests/integration/test_*.py; do
+    test_name="${test_file##*/}"
+    test_name="${test_name%.py}"
+    run_stage "integration-${test_name}" "$PYTHON_BIN" -m pytest -q "$test_file"
+done
+run_stage contract-tests "$PYTHON_BIN" -m pytest -q tests/contracts
 run_stage ruff "$PYTHON_BIN" -m ruff check src tests scripts
 run_stage frontend-tests npm --prefix frontend test -- --run
 run_stage frontend-build npm --prefix frontend run build

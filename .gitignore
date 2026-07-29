@@ -25,6 +25,7 @@ secrets/
 *cookie*
 authorization*.json
 p115-prod-*.json
+managed_scope.json
 .artifacts/
 .release-staging-*/
 deployment-evidence/
