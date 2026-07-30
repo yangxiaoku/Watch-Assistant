@@ -186,6 +186,9 @@ EVENT_CATALOG: dict[str, EventDefinition] = {
     "strm.dirty_consumed": _event(
         "strm.dirty_consumed", LogCategory.STRM, "目录变更已完成增量对账", "目录变更已完成增量对账，当前状态：{status}"
     ),
+    "strm.dirty_skipped": _event(
+        "strm.dirty_skipped", LogCategory.STRM, "已跳过目录增量对账", "整理完成后未启用 STRM 联动"
+    ),
     "library.identity.bound": _event(
         "library.identity.bound",
         LogCategory.LIBRARY,

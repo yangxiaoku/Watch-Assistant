@@ -58,6 +58,10 @@ from watch_assistant.services.organization_preview import (
     OrganizationPreviewError,
     OrganizationPreviewService,
 )
+from watch_assistant.services.organization_target import (
+    OrganizationTargetError,
+    read_target_catalog,
+)
 from watch_assistant.services.p115_delete import P115DeleteService
 
 router = APIRouter(prefix="/api/v1", dependencies=[Depends(require_api_auth)])
@@ -377,10 +381,32 @@ async def create_organization_preview(
         raise HTTPException(status_code=503, detail="organization_preview_unavailable")
     settings_service = getattr(request.app.state, "settings_service", None)
     settings = await settings_service.get_organization() if settings_service is not None else None
+    target_directories = None
+    existing_target_files = ()
+    if settings is not None and settings.target_directory_id is not None:
+        provider = getattr(request.app.state, "organization_cookie_provider", None)
+        if provider is None:
+            raise HTTPException(status_code=503, detail="target_catalog_unavailable")
+        try:
+            catalog = await read_target_catalog(
+                P115ReadOnlyDirectoryGateway(
+                    provider,
+                    authorized_directory_ids=(settings.target_directory_id,),
+                    request_timeout_seconds=30,
+                ),
+                settings.target_directory_id,
+            )
+            target_directories = catalog.by_path
+            existing_target_files = catalog.files
+        except OrganizationTargetError as error:
+            raise HTTPException(status_code=409, detail=error.code) from None
     try:
         plan = await service.create_preview(
             library_id=library_id,
             scan_run_id=payload.source_scan_run_id,
+            target_directory_id=settings.target_directory_id if settings else None,
+            target_directories=target_directories,
+            existing_target_files=existing_target_files,
             video_extensions=settings.video_extensions if settings else None,
             metadata_extensions=settings.metadata_extensions if settings else None,
             small_file_threshold_mb=settings.small_file_threshold_mb if settings else 0.0,
@@ -389,6 +415,15 @@ async def create_organization_preview(
             year_grouping_enabled=settings.year_grouping_enabled if settings else False,
             include_children_category=settings.include_children_category if settings else False,
             include_concert_category=settings.include_concert_category if settings else False,
+            media_probe_enabled=settings.media_probe_enabled if settings else False,
+            ai_identification_enabled=settings.ai_identification_enabled if settings else False,
+            cleanup_empty_directories=settings.cleanup_empty_directories if settings else False,
+            strm_linkage_enabled=settings.strm_linkage_enabled if settings else False,
+            prefer_remux=settings.prefer_remux if settings else True,
+            prefer_resolution=settings.prefer_resolution if settings else True,
+            prefer_dolby=settings.prefer_dolby if settings else False,
+            conflict_mode=settings.conflict_mode if settings else 2,
+            multi_version_enabled=settings.multi_version_enabled if settings else False,
         )
     except OrganizationPreviewError as error:
         statuses = {

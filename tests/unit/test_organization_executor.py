@@ -29,6 +29,7 @@ from watch_assistant.services.organization_plan import (
     OrganizationPlanService,
     PlanSource,
 )
+from watch_assistant.services.organization_policy import VersionDecision
 
 
 class FakeOrganizationTransport:
@@ -98,6 +99,18 @@ class FakeOrganizationTransport:
             OrganizationTransportOperation.RENAME, OrganizationTransportStatus.SUCCESS
         )
 
+    async def recycle(self, object_id, parent_id, name):
+        self.calls.append(("recycle", object_id, parent_id, name))
+        if self.states.get(object_id) != (parent_id, name):
+            return OrganizationTransportResult(
+                OrganizationTransportOperation.RECYCLE,
+                OrganizationTransportStatus.UNCERTAIN,
+            )
+        del self.states[object_id]
+        return OrganizationTransportResult(
+            OrganizationTransportOperation.RECYCLE, OrganizationTransportStatus.SUCCESS
+        )
+
 
 async def _claimed_executor(database, transport, **kwargs):
     operation_service = OrganizationOperationService(database.session_factory)
@@ -154,6 +167,50 @@ async def test_exact_target_replay_is_success_without_write(tmp_path: Path):
     assert result.status is OrganizationExecutionStatus.ORGANIZED
     assert result.completed_steps == 1
     assert all(call[0] not in {"move", "rename"} for call in transport.calls)
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_candidate_replacement_recycles_existing_target_before_write(tmp_path: Path):
+    database = await _database(tmp_path)
+    plan_service = OrganizationPlanService(database.session_factory)
+    plan = await plan_service.create_plan(
+        library_id="library-1",
+        scan_run_id="scan-1",
+        items=(
+            replace(
+                _item(),
+                policy_decision=VersionDecision("candidate", "remux_priority", "remux"),
+                replacement_object_id="200",
+                replacement_parent_id="8000",
+                replacement_name="movie.mkv",
+            ),
+        ),
+    )
+    operation_service = OrganizationOperationService(database.session_factory)
+    operation = await operation_service.create(plan.plan_id, idempotency_key="replace")
+    lease = await operation_service.claim(operation.operation_id, expected_revision=1)
+    transport = FakeOrganizationTransport(
+        states={"100": ("7000", "movie.mkv"), "200": ("8000", "movie.mkv")}
+    )
+    result = await OrganizationExecutor(
+        operation_service, database.session_factory, transport
+    ).execute(
+        operation.operation_id,
+        expected_revision=lease.revision,
+        lease_token=lease.lease_token,
+    )
+
+    assert result.status is OrganizationExecutionStatus.ORGANIZED
+    assert [call[0] for call in transport.calls] == [
+        "read_object",
+        "read_target",
+        "recycle",
+        "read_target",
+        "move",
+        "rename",
+        "read_object",
+    ]
     await database.engine.dispose()
 
 

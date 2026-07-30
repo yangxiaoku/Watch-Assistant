@@ -43,6 +43,7 @@ from watch_assistant.services.organization_plan import (
 class OrganizationTransportOperation(StrEnum):
     MOVE = "move"
     RENAME = "rename"
+    RECYCLE = "recycle"
 
 
 class OrganizationTransportStatus(StrEnum):
@@ -80,6 +81,10 @@ class OrganizationExecutorTransport(Protocol):
 
     async def rename(
         self, object_id: str, target_name: str
+    ) -> OrganizationTransportResult: ...
+
+    async def recycle(
+        self, object_id: str, parent_id: str, name: str
     ) -> OrganizationTransportResult: ...
 
 
@@ -297,6 +302,93 @@ class OrganizationExecutor:
                     now=now,
                 )
             result = check_group_before_write(group, sources=sources, targets=targets)
+            if step.replacement_object_id is not None:
+                replacement_target = targets.get(
+                    (step.replacement_parent_id, step.replacement_name)
+                )
+                if (
+                    replacement_target is None
+                    or replacement_target.object_id != step.replacement_object_id
+                    or any(
+                        target is not None
+                        and target.object_id != step.replacement_object_id
+                        for key, target in targets.items()
+                        if key != (step.replacement_parent_id, step.replacement_name)
+                    )
+                ):
+                    return await self._finish(
+                        context,
+                        OrganizationExecutionStatus.FAILED,
+                        "plan_prerequisites_changed",
+                        now=now,
+                    )
+                effective_targets = dict(targets)
+                effective_targets[(step.replacement_parent_id, step.replacement_name)] = None
+                result = check_group_before_write(
+                    group, sources=sources, targets=effective_targets
+                )
+                if result.status is not OrganizationStepCheck.READY:
+                    return await self._finish(
+                        context,
+                        OrganizationExecutionStatus.FAILED,
+                        "plan_prerequisites_changed",
+                        now=now,
+                    )
+                try:
+                    recycled = await self._call(
+                        context,
+                        self._transport.recycle,
+                        step.replacement_object_id,
+                        step.replacement_parent_id,
+                        step.replacement_name,
+                        cancel_event=cancel_event,
+                        now=now,
+                        is_write=True,
+                    )
+                    self._check_write_result(
+                        recycled, OrganizationTransportOperation.RECYCLE
+                    )
+                    context.write_confirmed = True
+                    target_after_recycle = await self._call(
+                        context,
+                        self._transport.read_target,
+                        step.replacement_parent_id,
+                        step.replacement_name,
+                        cancel_event=cancel_event,
+                        now=now,
+                    )
+                    if target_after_recycle is not None:
+                        return await self._finish(
+                            context,
+                            OrganizationExecutionStatus.UNCERTAIN,
+                            "cleanup_postcondition_mismatch",
+                            now=now,
+                        )
+                except _RateLimitReached:
+                    return await self._finish(
+                        context,
+                        OrganizationExecutionStatus.UNCERTAIN,
+                        "rate_limited",
+                        now=now,
+                    )
+                except _ExecutionCancelled:
+                    return await self._finish(
+                        context,
+                        OrganizationExecutionStatus.CANCELLED,
+                        "cancelled",
+                        now=now,
+                    )
+                except _LeaseLost:
+                    return await self._handle_lease_loss(context, now=now)
+                except _TransportFailure as failure:
+                    return await self._finish(
+                        context,
+                        OrganizationExecutionStatus.UNCERTAIN
+                        if failure.uncertain or context.write_confirmed
+                        else OrganizationExecutionStatus.FAILED,
+                        failure.error_code,
+                        now=now,
+                    )
             if result.status is OrganizationStepCheck.ALREADY_APPLIED and any(
                 isinstance(target, RemoteObjectState)
                 and target.object_id != member.object_id

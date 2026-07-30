@@ -36,6 +36,16 @@ class _FakeStrm:
         self.calls.append((library_id, kwargs))
 
 
+class _OrganizationSettings:
+    strm_linkage_enabled = False
+    cleanup_empty_directories = False
+
+
+class _Settings:
+    async def get_organization(self):
+        return _OrganizationSettings()
+
+
 @pytest.mark.asyncio
 async def test_dirty_worker_consumes_event_and_preserves_cleanup_gate(tmp_path: Path):
     database = await _database(tmp_path)
@@ -109,4 +119,41 @@ async def test_dirty_worker_retries_incomplete_scan(tmp_path: Path):
         assert row.status == "pending"
         assert row.error_code == "scan_incomplete"
         assert row.attempts == 1
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_dirty_worker_consumes_without_scan_when_linkage_is_disabled(tmp_path: Path):
+    database = await _database(tmp_path)
+    service, operation, lease = await _claimed(database)
+    await service.finish(
+        operation.operation_id,
+        expected_revision=lease.revision,
+        lease_token=lease.lease_token,
+        status=OrganizationOperationStatus.ORGANIZED,
+        source_directory_id="7000",
+        target_directory_id="8000",
+    )
+    index = _FakeIndex()
+    strm = _FakeStrm()
+    worker = DirectoryDirtyWorker(
+        database.session_factory,
+        strm,
+        lambda _library_id, _root_id: index,
+        output_root=tmp_path / "strm",
+        playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+        settings_service=_Settings(),
+    )
+
+    assert await worker.run_once()
+    assert await worker.run_once()
+    assert index.calls == []
+    assert strm.calls == []
+    async with database.session_factory() as session:
+        event = await session.scalar(
+            select(DirectoryDirtyEvent).where(DirectoryDirtyEvent.directory_id == "7000")
+        )
+        assert event is not None
+        assert event.status == "consumed"
+        assert event.error_code == "strm_linkage_disabled"
     await database.engine.dispose()

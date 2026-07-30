@@ -32,6 +32,11 @@ from watch_assistant.services.media_matcher import (
     MatchDecision,
     MatchStatus,
 )
+from watch_assistant.services.organization_policy import (
+    OrganizationConflictPolicy,
+    VersionDecision,
+    VersionEvidence,
+)
 
 
 class OrganizationPlanStatus(StrEnum):
@@ -84,6 +89,12 @@ class OrganizationPlanItem:
     target_parent_id: str | None = None
     target_name: str | None = None
     companions: tuple[OrganizationPlanCompanion, ...] = ()
+    policy_decision: VersionDecision | None = None
+    policy_evidence: VersionEvidence | None = None
+    existing_evidence: VersionEvidence | None = None
+    replacement_object_id: str | None = None
+    replacement_parent_id: str | None = None
+    replacement_name: str | None = None
 
     def __repr__(self) -> str:
         return "OrganizationPlanItem(source=<redacted>, naming_plan=<redacted>)"
@@ -144,6 +155,9 @@ class OrganizationPlanExecutionStep:
     kind: str
     scope_directory_ids: tuple[str, ...]
     members: tuple[OrganizationPlanExecutionMember, ...]
+    replacement_object_id: str | None = None
+    replacement_parent_id: str | None = None
+    replacement_name: str | None = None
 
     def __repr__(self) -> str:
         return (
@@ -172,6 +186,7 @@ class OrganizationPlanService:
         expires_at: datetime | None = None,
         now: datetime | None = None,
         target_conflicts: Iterable[str] = (),
+        organization_policy: Mapping[str, object] | None = None,
     ) -> OrganizationPlanView:
         _validate_identity(library_id, "invalid_library")
         _validate_identity(scan_run_id, "invalid_scan_run")
@@ -184,6 +199,7 @@ class OrganizationPlanService:
         parser_version = _validate_version(parser_version)
         matcher_version = _validate_version(matcher_version)
         normalized_items = _validate_items(items)
+        policy = OrganizationConflictPolicy.from_mapping(organization_policy).to_dict()
         current_time = _utc(now)
         expiry = _utc(expires_at) if expires_at is not None else None
         if expiry is None:
@@ -206,6 +222,7 @@ class OrganizationPlanService:
                 target_directory_id=target_directory_id,
                 target_directories=normalized_target_directories,
                 target_conflicts=target_conflicts,
+                organization_policy=policy,
                 source_snapshot_revision=run.snapshot_revision,
                 parser_version=parser_version,
                 matcher_version=matcher_version,
@@ -221,6 +238,7 @@ class OrganizationPlanService:
                 "library": library_snapshot,
                 "target_directory_id": target_directory_id,
                 "target_directories": normalized_target_directories,
+                "organization_policy": policy,
                 "items": preconditions,
             }
             # basis_json is display/audit evidence; it is intentionally excluded.
@@ -319,6 +337,7 @@ class OrganizationPlanService:
                 "target_directory_id"
             )
             stored_target_directories: dict[str, str] = {}
+            stored_policy: dict[str, object] = OrganizationConflictPolicy().to_dict()
             try:
                 if stored_target_directory_id is not None:
                     _validate_identity(
@@ -327,9 +346,14 @@ class OrganizationPlanService:
                 stored_target_directories = _validate_target_directories(
                     stored_preconditions.get("target_directories", {})
                 )
+                stored_policy = OrganizationConflictPolicy.from_mapping(
+                    stored_preconditions.get("organization_policy")
+                ).to_dict()
             except OrganizationPlanError:
                 stale = True
                 stored_target_directory_id = None
+            except ValueError:
+                stale = True
             if library is None or stored_preconditions.get(
                 "library"
             ) != _library_snapshot(library):
@@ -379,6 +403,7 @@ class OrganizationPlanService:
                         target_directory_id=stored_target_directory_id,
                         target_directories=stored_target_directories,
                         target_conflicts=target_conflicts,
+                        organization_policy=stored_policy,
                         source_snapshot_revision=run.snapshot_revision,
                         parser_version=plan.parser_version,
                         matcher_version=plan.matcher_version,
@@ -627,6 +652,7 @@ def _build_payload(
     target_directory_id: str | None,
     target_directories: Mapping[str, str],
     target_conflicts: Iterable[str],
+    organization_policy: Mapping[str, object],
     source_snapshot_revision: int | None,
     parser_version: str,
     matcher_version: str,
@@ -637,6 +663,7 @@ def _build_payload(
     list[dict[str, object]],
     OrganizationPlanStatus,
 ]:
+    policy = OrganizationConflictPolicy.from_mapping(organization_policy).to_dict()
     conflicts = {
         _normalize_target(_validate_relative_path(value)) for value in target_conflicts
     }
@@ -683,6 +710,7 @@ def _build_payload(
                 "rule_version": item.naming_plan.rule_version,
                 "parser_version": parser_version,
                 "matcher_version": matcher_version,
+                "organization_policy": policy,
             }
         )
         execution = _execution_payload(
@@ -756,6 +784,21 @@ def _build_payload(
                 ),
                 "accepted": accepted,
                 "reasons": reasons,
+                "policy": (
+                    item.policy_decision.to_dict()
+                    if item.policy_decision is not None
+                    else None
+                ),
+                "policy_evidence": (
+                    item.policy_evidence.to_dict()
+                    if item.policy_evidence is not None
+                    else None
+                ),
+                "existing_evidence": (
+                    item.existing_evidence.to_dict()
+                    if item.existing_evidence is not None
+                    else None
+                ),
             }
         )
     if any(count > 1 for count in targets.values()) or conflicts & set(targets):
@@ -873,12 +916,35 @@ def _execution_payload(
     }
     if target_directory_id is not None:
         scope_directory_ids.add(target_directory_id)
-    return {
+    payload: dict[str, object] = {
         "order": order,
         "kind": "move",
         "scope_directory_ids": sorted(scope_directory_ids),
         "members": members,
     }
+    replacement_values = (
+        item.replacement_object_id,
+        item.replacement_parent_id,
+        item.replacement_name,
+    )
+    if any(value is not None for value in replacement_values):
+        if (
+            item.policy_decision is None
+            or item.policy_decision.outcome != "candidate"
+            or not _safe_identity(item.replacement_object_id)
+            or not _safe_identity(item.replacement_parent_id)
+            or not _valid_target_name(item.replacement_name)
+            or item.replacement_parent_id != target_parent_id
+            or item.replacement_name != target_name
+            or item.replacement_object_id in {member["object_id"] for member in members}
+        ):
+            return None
+        payload["replacement"] = {
+            "object_id": item.replacement_object_id,
+            "parent_id": item.replacement_parent_id,
+            "name": item.replacement_name,
+        }
+    return payload
 
 
 def _target_directory_matches(
@@ -927,6 +993,16 @@ def _valid_target_name(value: object) -> bool:
         and "/" not in value
         and "\\" not in value
     )
+
+
+def _replacement_from_execution(
+    value: object,
+) -> tuple[str | None, str | None, str | None]:
+    if value is None:
+        return None, None, None
+    if not isinstance(value, dict):
+        return ("<invalid>", None, None)
+    return value.get("object_id"), value.get("parent_id"), value.get("name")
 
 
 async def load_executable_steps(
@@ -1073,6 +1149,22 @@ def _parse_executable_steps(
             or not members
         ):
             return None
+        replacement = execution.get("replacement")
+        replacement_object_id = replacement_parent_id = replacement_name = None
+        if replacement is not None:
+            if not isinstance(replacement, dict):
+                return None
+            replacement_object_id = replacement.get("object_id")
+            replacement_parent_id = replacement.get("parent_id")
+            replacement_name = replacement.get("name")
+            if (
+                not _safe_identity(replacement_object_id)
+                or not _safe_identity(replacement_parent_id)
+                or not _valid_target_name(replacement_name)
+                or replacement_parent_id != members[0].get("target_parent_id")
+                or replacement_name != members[0].get("target_name")
+            ):
+                return None
         parsed_members: list[OrganizationPlanExecutionMember] = []
         for member in members:
             if not isinstance(member, dict):
@@ -1140,6 +1232,9 @@ def _parse_executable_steps(
                 kind=kind,
                 scope_directory_ids=tuple(scope),
                 members=tuple(parsed_members),
+                replacement_object_id=replacement_object_id,
+                replacement_parent_id=replacement_parent_id,
+                replacement_name=replacement_name,
             )
         )
     return tuple(steps)
@@ -1181,7 +1276,12 @@ def _validate_persisted_execution(
         _validate_version(plan.rule_version)
         _validate_version(plan.parser_version)
         _validate_version(plan.matcher_version)
+        stored_policy = OrganizationConflictPolicy.from_mapping(
+            _load_json_object(plan.preconditions_json).get("organization_policy")
+        ).to_dict()
     except OrganizationPlanError:
+        return False
+    except ValueError:
         return False
     for index, (action, precondition, step) in enumerate(
         zip(actions, preconditions, steps, strict=True)
@@ -1192,6 +1292,7 @@ def _validate_persisted_execution(
         snapshot = source_by_key.get(object_key)
         current_row = rows.get(object_key)
         execution = action.get("execution")
+        replacement = execution.get("replacement") if isinstance(execution, dict) else None
         if (
             snapshot is None
             or precondition.get("source_index") != index
@@ -1216,8 +1317,15 @@ def _validate_persisted_execution(
             or precondition.get("rule_version") != plan.rule_version
             or precondition.get("parser_version") != plan.parser_version
             or precondition.get("matcher_version") != plan.matcher_version
+            or precondition.get("organization_policy") != stored_policy
             or precondition.get("target_conflict") is not False
             or precondition.get("execution") != execution
+            or _replacement_from_execution(replacement)
+            != (
+                step.replacement_object_id,
+                step.replacement_parent_id,
+                step.replacement_name,
+            )
             or not isinstance(execution, dict)
             or action.get("kind") != "move"
             or action.get("order") != index
@@ -1478,6 +1586,31 @@ def _validate_items(
         if any(
             not isinstance(companion, OrganizationPlanCompanion)
             for companion in item.companions
+        ):
+            raise OrganizationPlanError("invalid_plan_input")
+        if item.policy_decision is not None and not isinstance(
+            item.policy_decision, VersionDecision
+        ):
+            raise OrganizationPlanError("invalid_plan_input")
+        if item.policy_evidence is not None and not isinstance(
+            item.policy_evidence, VersionEvidence
+        ):
+            raise OrganizationPlanError("invalid_plan_input")
+        if item.existing_evidence is not None and not isinstance(
+            item.existing_evidence, VersionEvidence
+        ):
+            raise OrganizationPlanError("invalid_plan_input")
+        replacement_values = (
+            item.replacement_object_id,
+            item.replacement_parent_id,
+            item.replacement_name,
+        )
+        if any(value is not None for value in replacement_values) and (
+            not _safe_identity(item.replacement_object_id)
+            or not _safe_identity(item.replacement_parent_id)
+            or not _valid_target_name(item.replacement_name)
+            or item.policy_decision is None
+            or item.policy_decision.outcome != "candidate"
         ):
             raise OrganizationPlanError("invalid_plan_input")
     return tuple(

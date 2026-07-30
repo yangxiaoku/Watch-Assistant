@@ -37,6 +37,9 @@ class _LiveFakeP115Client:
     def fs_rename(self, payload, **kwargs):
         return self._response("fs_rename", payload, **kwargs)
 
+    def fs_delete(self, payload, **kwargs):
+        return self._response("fs_delete", payload, **kwargs)
+
     def fs_info(self, payload, **kwargs):
         return self._response("fs_info", payload, **kwargs)
 
@@ -253,6 +256,67 @@ async def test_live_transport_timeout_is_uncertain_and_is_not_retried():
         await transport.move("100", "8000")
     assert len(client.calls) == 1
     assert transport.receipts == ()
+
+
+@pytest.mark.asyncio
+async def test_live_transport_recycle_uses_one_receipt():
+    client = _LiveFakeP115Client(
+        {
+            "fs_info": [],
+            "fs_files": [
+                _file_page("200", "8000", "movie.mkv"),
+                _empty_page(),
+                _empty_page(),
+            ],
+            "fs_move": [],
+            "fs_rename": [],
+            "fs_delete": [{"state": True}],
+        }
+    )
+    transport = create_live_p115_organization_transport(
+        client=client,
+        call_executor=_live_call_executor,
+        intents=(_intent(object_id="200", target_name="movie.mkv"),),
+        managed_directory_ids=("7000", "8000"),
+        scope_confirmed=True,
+        live_enabled=True,
+    )
+
+    result = await transport.recycle("200", "8000", "movie.mkv")
+
+    assert result == OrganizationTransportResult(
+        OrganizationTransportOperation.RECYCLE,
+        OrganizationTransportStatus.SUCCESS,
+    )
+    assert transport.receipts == (result,)
+    assert client.calls == [("fs_delete", {"fid": "200"}, {"async_": False})]
+
+
+@pytest.mark.asyncio
+async def test_live_transport_recycle_rejects_unknown_result_without_retry():
+    client = _LiveFakeP115Client(
+        {
+            "fs_info": [],
+            "fs_files": [_file_page("200", "8000", "movie.mkv")],
+            "fs_move": [],
+            "fs_rename": [],
+            "fs_delete": [{"state": False}],
+        }
+    )
+    transport = create_live_p115_organization_transport(
+        client=client,
+        call_executor=_live_call_executor,
+        intents=(_intent(object_id="200", source_parent_id="8000", source_name="movie.mkv", target_name="movie.mkv"),),
+        managed_directory_ids=("7000", "8000"),
+        scope_confirmed=True,
+        live_enabled=True,
+    )
+
+    result = await transport.recycle("200", "8000", "movie.mkv")
+
+    assert result.status is OrganizationTransportStatus.UNCERTAIN
+    assert result.error_code == "outcome_unknown"
+    assert len(client.calls) == 1
 
 
 def test_live_transport_requires_explicit_gate_and_confirmed_scope():

@@ -15,6 +15,7 @@ from watch_assistant.adapters.p115_c03_live_transport import (
 from watch_assistant.adapters.p115_library_write_contract import (
     WriteStatus,
     prepare_move,
+    prepare_recycle,
     prepare_rename,
 )
 from watch_assistant.services.organization_execution_contract import RemoteObjectState
@@ -41,6 +42,7 @@ class P115OrganizationMethod(StrEnum):
     READ_TARGET = "read_target"
     MOVE = "move"
     RENAME = "rename"
+    RECYCLE = "recycle"
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -243,6 +245,35 @@ class OfflineP115OrganizationTransport:
         )
         return _success(OrganizationTransportOperation.RENAME)
 
+    async def recycle(
+        self, object_id: str, parent_id: str, name: str
+    ) -> OrganizationTransportResult:
+        self._require_scope()
+        if (
+            _stable_id(object_id) is None
+            or parent_id not in self._managed_directory_ids
+            or (parent_id, name) not in self._targets
+        ):
+            raise P115OrganizationTransportError("scope_unverified")
+        self._calls.append(OrganizationTransportCall(P115OrganizationMethod.RECYCLE))
+        outcome = self._write_outcome(
+            P115OrganizationMethod.RECYCLE,
+            OrganizationTransportOperation.RECYCLE,
+            object_id,
+        )
+        if outcome is not None:
+            return outcome
+        state = self._states.get(object_id)
+        if (
+            state is None
+            or state.parent_id != parent_id
+            or state.name != name
+            or state.parent_id not in self._managed_directory_ids
+        ):
+            return _uncertain(OrganizationTransportOperation.RECYCLE)
+        del self._states[object_id]
+        return _success(OrganizationTransportOperation.RECYCLE)
+
     def _intent(self, object_id: str) -> OrganizationObjectIntent:
         self._require_scope()
         if _stable_id(object_id) is None or object_id not in self._intents:
@@ -422,6 +453,26 @@ class LiveP115OrganizationTransport:
             timeout_seconds=self._timeout_seconds,
         )
         result = _organization_result(OrganizationTransportOperation.MOVE, receipt.status)
+        self._receipts.append(result)
+        return result
+
+    async def recycle(
+        self, object_id: str, parent_id: str, name: str
+    ) -> OrganizationTransportResult:
+        self._require_scope()
+        if (
+            _stable_id(object_id) is None
+            or parent_id not in self._managed_directory_ids
+            or (parent_id, name) not in self._targets
+            or not _safe_name(name)
+        ):
+            raise P115OrganizationTransportError("scope_unverified")
+        receipt = await self._c03.execute(
+            prepare_recycle(object_id), timeout_seconds=self._timeout_seconds
+        )
+        result = _organization_result(
+            OrganizationTransportOperation.RECYCLE, receipt.status
+        )
         self._receipts.append(result)
         return result
 

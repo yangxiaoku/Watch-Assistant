@@ -21,11 +21,24 @@ class OrganizationTargetError(ValueError):
 
 
 @dataclass(frozen=True, slots=True, repr=False)
+class OrganizationTargetFile:
+    object_id: str
+    parent_id: str
+    name: str
+    path: str
+    size_bytes: int | None = None
+
+    def __repr__(self) -> str:
+        return "OrganizationTargetFile(<redacted>)"
+
+
+@dataclass(frozen=True, slots=True, repr=False)
 class OrganizationTargetCatalog:
     """A complete, relative-path-to-CID view of one target root."""
 
     root_directory_id: str
     directories: tuple[tuple[str, str], ...]
+    files: tuple[OrganizationTargetFile, ...] = ()
 
     def __repr__(self) -> str:
         return (
@@ -49,8 +62,9 @@ async def read_target_catalog(
     root_directory_id: str,
     *,
     max_directories: int = 2048,
+    max_files: int = 100_000,
 ) -> OrganizationTargetCatalog:
-    """Read every directory below ``root_directory_id`` with hard bounds.
+    """Read every directory and file below ``root_directory_id`` with hard bounds.
 
     Directory names are used only to construct an in-memory relative path. The
     result is accepted only when every paginated listing is complete and every
@@ -63,10 +77,15 @@ async def read_target_catalog(
         raise OrganizationTargetError("target_directory_limit_invalid")
     if max_directories < 1 or max_directories > 100_000:
         raise OrganizationTargetError("target_directory_limit_invalid")
+    if not isinstance(max_files, int) or isinstance(max_files, bool):
+        raise OrganizationTargetError("target_file_limit_invalid")
+    if max_files < 1 or max_files > 1_000_000:
+        raise OrganizationTargetError("target_file_limit_invalid")
 
     pending: list[tuple[str, str]] = [(root_directory_id, "")]
     by_path: dict[str, str] = {"": root_directory_id}
     seen_ids: set[str] = {root_directory_id}
+    files: list[OrganizationTargetFile] = []
     while pending:
         directory_id, parent_path = pending.pop(0)
         page = 1
@@ -86,7 +105,24 @@ async def read_target_catalog(
             ):
                 raise OrganizationTargetError("target_directory_incomplete")
             for entry in result.items:
-                if not entry.is_directory or entry.directory_id is None:
+                if not entry.is_directory:
+                    if entry.file_id is not None:
+                        if len(files) >= max_files:
+                            raise OrganizationTargetError("target_file_limit_exceeded")
+                        file_path = _join(parent_path, entry.name)
+                        if file_path is None:
+                            raise OrganizationTargetError("target_file_name_invalid")
+                        files.append(
+                            OrganizationTargetFile(
+                                entry.file_id,
+                                directory_id,
+                                entry.name,
+                                file_path,
+                                entry.size_bytes,
+                            )
+                        )
+                    continue
+                if entry.directory_id is None:
                     continue
                 child_id = entry.directory_id
                 child_path = _join(parent_path, entry.name)
@@ -115,6 +151,7 @@ async def read_target_catalog(
     return OrganizationTargetCatalog(
         root_directory_id=root_directory_id,
         directories=tuple(sorted(by_path.items())),
+        files=tuple(sorted(files, key=lambda item: item.object_id)),
     )
 
 
@@ -143,4 +180,9 @@ def _join(parent: str, name: object) -> str | None:
     return _relative_path("/".join(part for part in (parent, name) if part))
 
 
-__all__ = ["OrganizationTargetCatalog", "OrganizationTargetError", "read_target_catalog"]
+__all__ = [
+    "OrganizationTargetCatalog",
+    "OrganizationTargetError",
+    "OrganizationTargetFile",
+    "read_target_catalog",
+]

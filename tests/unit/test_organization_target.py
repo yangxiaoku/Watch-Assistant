@@ -165,3 +165,31 @@ async def test_rejects_noncontiguous_pagination():
         await read_target_catalog(gateway, "100")
 
     assert error.value.code == "target_directory_pagination_unverified"
+
+
+@pytest.mark.asyncio
+async def test_rejects_invalid_file_limit():
+    gateway = _DirectoryGateway({("100", 1): _page()})
+
+    with pytest.raises(OrganizationTargetError) as error:
+        await read_target_catalog(gateway, "100", max_files=0)
+
+    assert error.value.code == "target_file_limit_invalid"
+    assert gateway.calls == []
+
+
+@pytest.mark.asyncio
+async def test_rejects_target_file_limit_before_collecting_more_files():
+    gateway = _DirectoryGateway(
+        {
+            ("100", 1): _page(
+                _entry(name="one.mkv", file_id="301"),
+                _entry(name="two.mkv", file_id="302"),
+            )
+        }
+    )
+
+    with pytest.raises(OrganizationTargetError) as error:
+        await read_target_catalog(gateway, "100", max_files=1)
+
+    assert error.value.code == "target_file_limit_exceeded"

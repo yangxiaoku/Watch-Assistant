@@ -165,6 +165,7 @@ class OrganizationAutomationService:
                     scan_run_id=scan.run_id,
                     target_directory_id=target_id,
                     target_directories=catalog.by_path,
+                    existing_target_files=catalog.files,
                     video_extensions=settings.video_extensions,
                     metadata_extensions=settings.metadata_extensions,
                     small_file_threshold_mb=settings.small_file_threshold_mb,
@@ -173,6 +174,15 @@ class OrganizationAutomationService:
                     year_grouping_enabled=settings.year_grouping_enabled,
                     include_children_category=settings.include_children_category,
                     include_concert_category=settings.include_concert_category,
+                    media_probe_enabled=settings.media_probe_enabled,
+                    ai_identification_enabled=settings.ai_identification_enabled,
+                    cleanup_empty_directories=settings.cleanup_empty_directories,
+                    strm_linkage_enabled=settings.strm_linkage_enabled,
+                    prefer_remux=settings.prefer_remux,
+                    prefer_resolution=settings.prefer_resolution,
+                    prefer_dolby=settings.prefer_dolby,
+                    conflict_mode=settings.conflict_mode,
+                    multi_version_enabled=settings.multi_version_enabled,
                 )
                 plans += 1
                 if (

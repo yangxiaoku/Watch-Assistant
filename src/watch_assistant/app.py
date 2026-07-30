@@ -20,6 +20,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.staticfiles import StaticFiles
 
 from watch_assistant.adapters.p115 import P115Adapter
+from watch_assistant.adapters.p115_c03_live_transport import p115_c03_timeout_executor
 from watch_assistant.adapters.p115_library_gateway import P115ReadOnlyDirectoryGateway
 from watch_assistant.adapters.p115_playback_contract import P115PlaybackGateway
 from watch_assistant.adapters.p115_playback_gateway import P115LivePlaybackGateway
@@ -70,6 +71,10 @@ from watch_assistant.services.cache_warm import CacheWarmer
 from watch_assistant.services.credentials import CredentialService
 from watch_assistant.services.deployment_diagnostics import DeploymentDiagnosticsService
 from watch_assistant.services.directory_dirty_worker import DirectoryDirtyWorker
+from watch_assistant.services.empty_directory_cleanup import (
+    EmptyDirectoryCleanupError,
+    LiveP115EmptyDirectoryCleaner,
+)
 from watch_assistant.services.inspection import InspectionService, InspectionWorker
 from watch_assistant.services.inventory_push_guard import InventoryPushGuard
 from watch_assistant.services.library_index import LibraryIndexService
@@ -86,7 +91,11 @@ from watch_assistant.services.organization_operations import (
 from watch_assistant.services.organization_plan import OrganizationPlanService
 from watch_assistant.services.organization_preview import OrganizationPreviewService
 from watch_assistant.services.organization_scheduler import OrganizationScheduler
-from watch_assistant.services.organization_worker import OrganizationWorker
+from watch_assistant.services.organization_worker import (
+    OrganizationWorker,
+    _close_client,
+    _default_client_factory,
+)
 from watch_assistant.services.p115_credentials import (
     CompositeCookieProvider,
     CookieProvider,
@@ -204,6 +213,45 @@ def create_app(
                     page_size=1,
                 )
 
+            empty_directory_cleaner = None
+            cleanup_write_gate = (
+                getattr(application.state, "organization_execution_enabled", False)
+                and getattr(application.state, "organization_write_enabled", False)
+                and getattr(
+                    application.state, "organization_write_contract_verified", False
+                )
+            )
+            if cleanup_write_gate:
+                async def clean_empty_directory(
+                    directory_id: str, parent_id: str, name: str
+                ):
+                    try:
+                        cookie = await asyncio.to_thread(
+                            application.state.organization_cookie_provider.load
+                        )
+                        if not cookie:
+                            raise EmptyDirectoryCleanupError("credentials_unavailable")
+                        client = await asyncio.to_thread(_default_client_factory, cookie)
+                        cleaner = LiveP115EmptyDirectoryCleaner(
+                            client=client,
+                            call_executor=p115_c03_timeout_executor,
+                            managed_directory_ids=(directory_id, parent_id),
+                            scope_confirmed=True,
+                        )
+                        return await cleaner.cleanup(directory_id, parent_id, name)
+                    except EmptyDirectoryCleanupError:
+                        raise
+                    except Exception as exc:  # noqa: BLE001 - details stay private
+                        del exc
+                        raise EmptyDirectoryCleanupError(
+                            "empty_directory_cleanup_unavailable"
+                        ) from None
+                    finally:
+                        if "client" in locals():
+                            await _close_client(client)
+
+                empty_directory_cleaner = clean_empty_directory
+
             worker = DirectoryDirtyWorker(
                 application.state.database.session_factory,
                 application.state.strm_manifest_service,
@@ -213,6 +261,8 @@ def create_app(
                 cleanup_enabled=bool(
                     getattr(application.state, "strm_cleanup_enabled", False)
                 ),
+                settings_service=application.state.settings_service,
+                empty_directory_cleaner=empty_directory_cleaner,
                 event_logger=application.state.settings_service,
             )
             application.state.directory_dirty_worker = worker

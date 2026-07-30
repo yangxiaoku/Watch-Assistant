@@ -34,6 +34,13 @@ from watch_assistant.services.organization_plan import (
     OrganizationPlanView,
     PlanSource,
 )
+from watch_assistant.services.organization_policy import (
+    OrganizationConflictPolicy,
+    VersionDecision,
+    compare_versions,
+    evidence_from_parse,
+)
+from watch_assistant.services.organization_target import OrganizationTargetFile
 
 
 class OrganizationPreviewError(ValueError):
@@ -64,6 +71,7 @@ class OrganizationPreviewService:
         scan_run_id: str,
         target_directory_id: str | None = None,
         target_directories: Mapping[str, str] | None = None,
+        existing_target_files: Sequence[OrganizationTargetFile] = (),
         video_extensions: Collection[str] | None = None,
         metadata_extensions: Collection[str] | None = None,
         small_file_threshold_mb: float = 0.0,
@@ -72,6 +80,15 @@ class OrganizationPreviewService:
         year_grouping_enabled: bool = False,
         include_children_category: bool = False,
         include_concert_category: bool = False,
+        media_probe_enabled: bool = False,
+        ai_identification_enabled: bool = False,
+        cleanup_empty_directories: bool = False,
+        strm_linkage_enabled: bool = False,
+        prefer_remux: bool = True,
+        prefer_resolution: bool = True,
+        prefer_dolby: bool = False,
+        conflict_mode: int = 2,
+        multi_version_enabled: bool = False,
         target_root: str = "",
         now: datetime | None = None,
     ) -> OrganizationPlanView:
@@ -115,9 +132,28 @@ class OrganizationPreviewService:
         if not files:
             raise OrganizationPreviewError("no_video_files")
 
-        existing_targets = tuple(
-            entry.path for entry in entries if isinstance(entry.path, str) and entry.path
+        policy = OrganizationConflictPolicy(
+            prefer_remux=prefer_remux,
+            prefer_resolution=prefer_resolution,
+            prefer_dolby=prefer_dolby,
+            conflict_mode=conflict_mode,
+            multi_version_enabled=multi_version_enabled,
+            media_probe_enabled=media_probe_enabled,
+            ai_identification_enabled=ai_identification_enabled,
+            cleanup_empty_directories=cleanup_empty_directories,
+            strm_linkage_enabled=strm_linkage_enabled,
         )
+        existing_files_by_path = {
+            _normalize_path(entry.path): entry
+            for entry in entries
+            if not entry.is_directory
+            and isinstance(entry.path, str)
+            and entry.path
+        }
+        for target_file in existing_target_files:
+            if not isinstance(target_file, OrganizationTargetFile):
+                raise OrganizationPreviewError("target_file_invalid")
+            existing_files_by_path[_normalize_path(target_file.path)] = target_file
         target_parents = (
             dict(target_directories)
             if target_directories is not None
@@ -129,6 +165,7 @@ class OrganizationPreviewService:
             year_grouping_enabled=year_grouping_enabled,
             include_children_category=include_children_category,
             include_concert_category=include_concert_category,
+            preserve_technical_tags=media_probe_enabled,
         )
         semaphore = asyncio.Semaphore(4)
 
@@ -148,10 +185,55 @@ class OrganizationPreviewService:
             naming_plan = plan_media(
                 parsed,
                 decision,
-                existing_targets=existing_targets,
+                # Existing targets are evaluated below by the version policy;
+                # plan_media alone cannot know which version should win.
+                existing_targets=(),
                 rules=rules,
                 companions=companion_files,
             )
+            policy_decision: VersionDecision | None = None
+            policy_evidence = evidence_from_parse(parsed, size_bytes=entry.size_bytes)
+            existing_evidence = None
+            replacement_object_id: str | None = None
+            replacement_parent_id: str | None = None
+            replacement_name: str | None = None
+            if naming_plan.target_path:
+                target_key = _normalize_path(naming_plan.target_path)
+                existing_entry = existing_files_by_path.get(target_key)
+                if existing_entry is not None and existing_entry.object_id != entry.object_id:
+                    existing_parsed = parse_media_filename(existing_entry.name)
+                    existing_evidence = evidence_from_parse(
+                        existing_parsed, size_bytes=existing_entry.size_bytes
+                    )
+                    policy_decision = compare_versions(
+                        policy_evidence, existing_evidence, policy
+                    )
+                    replacement_allowed = policy_decision.outcome == "candidate"
+                    naming_plan = replace(
+                        naming_plan,
+                        status=(
+                            ClassificationStatus.PLANNED
+                            if replacement_allowed
+                            else ClassificationStatus.CONFLICT
+                        ),
+                        reasons=naming_plan.reasons
+                        + (
+                            "target_conflict",
+                            f"policy_{policy_decision.reason}",
+                            "replacement_planned"
+                            if replacement_allowed
+                            else "replacement_not_planned",
+                        ),
+                    )
+                    if replacement_allowed:
+                        replacement_object_id = existing_entry.object_id
+                        replacement_parent_id = existing_entry.parent_id
+                        replacement_name = existing_entry.name
+            if ai_identification_enabled and not decision.accepted:
+                naming_plan = replace(
+                    naming_plan,
+                    reasons=naming_plan.reasons + ("ai_identification_unavailable",),
+                )
             if not rename_enabled and naming_plan.target_directory:
                 original_name = PurePosixPath(entry.name).name
                 target_path = _join_target_path(
@@ -168,7 +250,7 @@ class OrganizationPreviewService:
                     normalized_target = _normalize_path(target_path)
                     existing = {
                         _normalize_path(value)
-                        for value in existing_targets
+                        for value in existing_files_by_path
                         if isinstance(value, str)
                     }
                     naming_plan = replace(
@@ -234,6 +316,12 @@ class OrganizationPreviewService:
                 target_parent_id=target_parent_id,
                 target_name=target_name,
                 companions=companions,
+                policy_decision=policy_decision,
+                policy_evidence=policy_evidence,
+                existing_evidence=existing_evidence,
+                replacement_object_id=replacement_object_id,
+                replacement_parent_id=replacement_parent_id,
+                replacement_name=replacement_name,
             )
 
         items = await asyncio.gather(*(build_item(entry) for entry in files))
@@ -243,6 +331,7 @@ class OrganizationPreviewService:
             items=items,
             target_directory_id=target_directory_id,
             target_directories=target_parents,
+            organization_policy=policy.to_dict(),
             target_root="",
             now=now,
         )
