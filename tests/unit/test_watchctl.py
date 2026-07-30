@@ -274,6 +274,50 @@ def test_workflow_actions_use_shared_approval_and_cancel_endpoints(capsys):
     ]
 
 
+def test_notification_commands_list_read_and_read_all_use_versioned_endpoints(capsys):
+    seen: list[tuple[str, str, str, dict[str, object] | None]] = []
+
+    class Transport(httpx.BaseTransport):
+        def handle_request(self, request):
+            seen.append((request.method, request.url.path, request.url.query.decode(), json.loads(request.content) if request.content else None))
+            if request.method == "GET":
+                return httpx.Response(
+                    200,
+                    json={"items": [{"id": "notice-one", "read": False}], "unread_count": 1},
+                    request=request,
+                )
+            if request.url.path.endswith("/read-all"):
+                return httpx.Response(200, json={"marked_count": 1}, request=request)
+            return httpx.Response(200, json={"id": "notice-one", "read": True}, request=request)
+
+    original = ApiClient.__init__
+    original_close = ApiClient.close
+    ApiClient.__init__ = lambda self, config: (
+        setattr(self, "config", config),
+        setattr(self, "_client", httpx.Client(base_url=config.server, transport=Transport())),
+    )[-1]
+    ApiClient.close = lambda self: self._client.close()
+    try:
+        assert main(["--server", "http://app.test", "--token", "wa_at_test", "--output", "json", "notification", "list", "--unread-only"]) == EXIT_OK
+        assert json.loads(capsys.readouterr().out)["data"]["unread_count"] == 1
+        assert main(["--server", "http://app.test", "--token", "wa_at_test", "--output", "json", "notification"]) == EXIT_OK
+        assert json.loads(capsys.readouterr().out)["data"]["unread_count"] == 1
+        assert main(["--server", "http://app.test", "--token", "wa_at_test", "--output", "json", "notification", "read", "notice-one"]) == EXIT_OK
+        assert json.loads(capsys.readouterr().out)["data"]["read"] is True
+        assert main(["--server", "http://app.test", "--token", "wa_at_test", "--output", "json", "notification", "read-all"]) == EXIT_OK
+        assert json.loads(capsys.readouterr().out)["data"]["marked_count"] == 1
+    finally:
+        ApiClient.__init__ = original
+        ApiClient.close = original_close
+
+    assert seen == [
+        ("GET", "/api/v1/notifications", "unread_only=true", None),
+        ("GET", "/api/v1/notifications", "", None),
+        ("POST", "/api/v1/notifications/notice-one/read", "", {}),
+        ("POST", "/api/v1/notifications/read-all", "", {}),
+    ]
+
+
 def test_organize_apply_sends_digest_confirmation_and_generated_key(monkeypatch, capsys):
     digest = "a" * 64
     seen: list[tuple[str, str, dict[str, object] | None]] = []

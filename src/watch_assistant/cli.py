@@ -363,8 +363,27 @@ def _command(args: argparse.Namespace, path: Path) -> tuple[Any, int]:
                 body = client.get(f"/api/v1/workflows/{args.workflow_id}")
             return envelope(data=_data_for("/api/v1/workflows", body), request_id=_request_id(body)), EXIT_OK
         if args.command == "notification":
-            body = client.get("/api/v1/notifications")
-            return envelope(data=_data_for("/api/v1/notifications", body), request_id=_request_id(body)), EXIT_OK
+            notification_command = args.notification_command or "list"
+            if notification_command == "list":
+                unread_only = getattr(args, "unread_only", False)
+                limit = getattr(args, "limit", 50)
+                params = {"unread_only": "true"} if unread_only else None
+                if limit != 50:
+                    params = params or {}
+                    params["limit"] = str(limit)
+                body = client.get("/api/v1/notifications", params=params)
+                return envelope(
+                    data=_data_for("/api/v1/notifications", body),
+                    request_id=_request_id(body),
+                ), EXIT_OK
+            if notification_command == "read":
+                body = client.post(f"/api/v1/notifications/{args.notification_id}/read")
+            else:
+                body = client.post("/api/v1/notifications/read-all")
+            return envelope(
+                data=_data_for("/api/v1/notifications", body),
+                request_id=_request_id(body),
+            ), EXIT_OK
         if args.command == "backup":
             body = client.get("/api/v1/backups")
             return envelope(data=_data_for("/api/v1/backups", body), request_id=_request_id(body)), EXIT_OK
@@ -499,7 +518,14 @@ def _build_parser() -> argparse.ArgumentParser:
     workflow_cancel.add_argument("workflow_id")
     workflow_cancel.add_argument("--reason", help="操作原因（最多 255 字符）")
 
-    sub.add_parser("notification", help="通知只读查询")
+    notification = sub.add_parser("notification", help="通知查询和已读操作")
+    notification_sub = notification.add_subparsers(dest="notification_command")
+    notification_list = notification_sub.add_parser("list", help="列出通知")
+    notification_list.add_argument("--unread-only", action="store_true")
+    notification_list.add_argument("--limit", type=int, choices=range(1, 101), default=50)
+    notification_read = notification_sub.add_parser("read", help="标记单条通知已读")
+    notification_read.add_argument("notification_id")
+    notification_sub.add_parser("read-all", help="标记全部通知已读")
     sub.add_parser("backup", help="备份只读查询")
     sub.add_parser("deployment", help="部署诊断只读查询")
 
