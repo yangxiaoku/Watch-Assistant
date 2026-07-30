@@ -1,4 +1,5 @@
 import sys
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -33,6 +34,7 @@ async def test_qrcode_session_keeps_provider_fields_server_side(monkeypatch):
     assert "uid" not in str(created)
     assert "sign" not in str(created)
     assert created["image_data_url"].startswith("data:image/svg+xml;base64,")
+    assert created["expires_at"] > datetime.now(UTC) + timedelta(seconds=590)
 
     session_id = str(created["session_id"])
     assert (await service.poll(session_id))[0] == "waiting"

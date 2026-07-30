@@ -36,7 +36,7 @@ class _Session:
 class P115QrcodeService:
     """Keep provider authorization fields in memory and never return them."""
 
-    def __init__(self, *, ttl_seconds: int = 180, timeout_seconds: float = 35):
+    def __init__(self, *, ttl_seconds: int = 600, timeout_seconds: float = 35):
         self._ttl = timedelta(seconds=ttl_seconds)
         self._timeout = timeout_seconds
         self._sessions: dict[str, _Session] = {}
