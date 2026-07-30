@@ -318,6 +318,53 @@ def test_notification_commands_list_read_and_read_all_use_versioned_endpoints(ca
     ]
 
 
+def test_webhook_test_command_only_enqueues_versioned_endpoint_test(capsys):
+    seen: list[tuple[str, str, dict[str, object] | None]] = []
+
+    class Transport(httpx.BaseTransport):
+        def handle_request(self, request):
+            seen.append((request.method, request.url.path, json.loads(request.content) if request.content else None))
+            return httpx.Response(
+                200,
+                json={"id": "delivery-one", "event_code": "webhook.test", "status": "queued"},
+                request=request,
+            )
+
+    original = ApiClient.__init__
+    original_close = ApiClient.close
+    ApiClient.__init__ = lambda self, config: (
+        setattr(self, "config", config),
+        setattr(self, "_client", httpx.Client(base_url=config.server, transport=Transport())),
+    )[-1]
+    ApiClient.close = lambda self: self._client.close()
+    try:
+        code = main(
+            [
+                "--server",
+                "http://app.test",
+                "--token",
+                "wa_at_test",
+                "--output",
+                "json",
+                "webhook",
+                "test",
+                "endpoint-one",
+            ]
+        )
+    finally:
+        ApiClient.__init__ = original
+        ApiClient.close = original_close
+
+    body = json.loads(capsys.readouterr().out)
+    assert code == EXIT_OK
+    assert body["data"] == {
+        "id": "delivery-one",
+        "event_code": "webhook.test",
+        "status": "queued",
+    }
+    assert seen == [("POST", "/api/v1/webhooks/endpoint-one/test", {})]
+
+
 def test_organize_apply_sends_digest_confirmation_and_generated_key(monkeypatch, capsys):
     digest = "a" * 64
     seen: list[tuple[str, str, dict[str, object] | None]] = []

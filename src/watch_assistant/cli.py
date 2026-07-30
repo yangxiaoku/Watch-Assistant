@@ -384,6 +384,12 @@ def _command(args: argparse.Namespace, path: Path) -> tuple[Any, int]:
                 data=_data_for("/api/v1/notifications", body),
                 request_id=_request_id(body),
             ), EXIT_OK
+        if args.command == "webhook" and args.webhook_command == "test":
+            body = client.post(f"/api/v1/webhooks/{args.endpoint_id}/test")
+            return envelope(
+                data=_data_for("/api/v1/webhooks", body),
+                request_id=_request_id(body),
+            ), EXIT_OK
         if args.command == "backup":
             body = client.get("/api/v1/backups")
             return envelope(data=_data_for("/api/v1/backups", body), request_id=_request_id(body)), EXIT_OK
@@ -526,6 +532,11 @@ def _build_parser() -> argparse.ArgumentParser:
     notification_read = notification_sub.add_parser("read", help="标记单条通知已读")
     notification_read.add_argument("notification_id")
     notification_sub.add_parser("read-all", help="标记全部通知已读")
+
+    webhook = sub.add_parser("webhook", help="Webhook 管理操作")
+    webhook_sub = webhook.add_subparsers(dest="webhook_command", required=True)
+    webhook_test = webhook_sub.add_parser("test", help="排队单端点测试通知")
+    webhook_test.add_argument("endpoint_id")
     sub.add_parser("backup", help="备份只读查询")
     sub.add_parser("deployment", help="部署诊断只读查询")
 

@@ -175,6 +175,8 @@ watchctl task cancel <task-id>
 
 watchctl audit list [--actor <agent>] [--since <time>]
 watchctl audit show <audit-id>
+
+watchctl webhook test <endpoint-id>
 ```
 
 正式发布后命令遵循语义化兼容策略，删除或重命名必须经过弃用周期。
@@ -302,6 +304,7 @@ CLI 必须使用正式版本化 API，与 Web 共用校验和状态机。不得�
 - 网络超时返回可查询标识，不自动重写。
 - JSON、JSONL、退出码和错误码符合固定契约。
 - `watchctl notification list [--unread-only]`、`notification read <id>` 和 `notification read-all` 使用正式通知 API，并保持统一 JSON/JSONL envelope。
+- `watchctl webhook test <endpoint-id>` 仅调用正式的单端点测试投递 API，不直接访问第三方接收端。
 - Token 撤销后不能提交新操作。
 - 每个操作可追踪到 Agent、计划、任务和最终结果。
 - CLI 无法获得 Cookie、真实直链、Web 密码或其他 Token。
