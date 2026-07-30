@@ -1,12 +1,14 @@
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 from sqlalchemy import inspect, select
-from test_organization_operations import _database, _operation
+from test_organization_operations import _database, _item, _operation
 
 from watch_assistant.models import (
     DirectoryDirtyEvent,
+    DirectoryDirtyGeneration,
     OrganizationOperationStatus,
 )
 from watch_assistant.services.organization_operations import (
@@ -20,6 +22,7 @@ from watch_assistant.services.organization_outbox import (
     DirectoryDirtyOutboxService,
     OrganizationOutboxError,
 )
+from watch_assistant.services.organization_plan import OrganizationPlanService
 
 
 async def _claimed(database):
@@ -45,6 +48,78 @@ async def test_organized_completion_and_directory_dedup_are_atomic(tmp_path: Pat
         events = list((await session.scalars(select(DirectoryDirtyEvent))).all())
     assert len(events) == 1
     assert events[0].status == "pending"
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_generation_coalesces_running_change_and_requeues_latest_generation(
+    tmp_path: Path,
+):
+    database = await _database(tmp_path)
+    service = OrganizationOperationService(database.session_factory)
+    first_operation = await _operation(database, key="generation-operation-1")
+    first_lease = await service.claim(first_operation.operation_id, expected_revision=1)
+    await service.finish(
+        first_operation.operation_id,
+        expected_revision=first_lease.revision,
+        lease_token=first_lease.lease_token,
+        status=OrganizationOperationStatus.ORGANIZED,
+        source_directory_id="source-directory",
+        target_directory_id="target-directory",
+    )
+
+    outbox = DirectoryDirtyOutboxService()
+    now = datetime.now(UTC) + timedelta(seconds=1)
+    running = await outbox.claim_generation(database.session_factory, now=now)
+    assert running is not None
+    assert running.generation == 1
+
+    second_item = _item()
+    second_item = replace(
+        second_item,
+        source=replace(second_item.source, remote_version="remote-v2"),
+    )
+    second_plan = await OrganizationPlanService(database.session_factory).create_plan(
+        library_id="library-1",
+        scan_run_id="scan-1",
+        items=(second_item,),
+    )
+    second_operation = await OrganizationOperationService(
+        database.session_factory
+    ).create(second_plan.plan_id, idempotency_key="generation-operation-2")
+    second_lease = await service.claim(second_operation.operation_id, expected_revision=1)
+    await service.finish(
+        second_operation.operation_id,
+        expected_revision=second_lease.revision,
+        lease_token=second_lease.lease_token,
+        status=OrganizationOperationStatus.ORGANIZED,
+        source_directory_id="source-directory",
+        target_directory_id="target-directory",
+    )
+    async with database.session_factory() as session:
+        queue = await session.scalar(select(DirectoryDirtyGeneration))
+        assert queue is not None
+        assert queue.generation == 2
+        assert queue.status == "dirty"
+
+    assert await outbox.complete(database.session_factory, running, now=now)
+    async with database.session_factory() as session:
+        queue = await session.scalar(select(DirectoryDirtyGeneration))
+        assert queue is not None
+        assert queue.generation == 2
+        assert queue.status == "queued"
+        assert queue.lease_token is None
+
+    latest = await outbox.claim_generation(database.session_factory, now=now)
+    assert latest is not None
+    assert latest.generation == 2
+    assert latest.operation_id == second_operation.operation_id
+    assert await outbox.complete(database.session_factory, latest, now=now)
+    async with database.session_factory() as session:
+        queue = await session.scalar(select(DirectoryDirtyGeneration))
+        assert queue is not None
+        assert queue.generation == 2
+        assert queue.status == "clean"
     await database.engine.dispose()
 
 

@@ -270,6 +270,79 @@ def _upgrade_directory_dirty_outbox(connection: Connection) -> None:
     )
 
 
+def _create_directory_dirty_generation_table(connection: Connection) -> None:
+    """Create the coalesced directory queue used by incremental reconciliation."""
+
+    from watch_assistant.models import DirectoryDirtyGeneration
+
+    DirectoryDirtyGeneration.__table__.create(connection, checkfirst=True)
+    connection.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_directory_dirty_generations_due "
+            "ON directory_dirty_generations (status, available_at, lease_expires_at)"
+        )
+    )
+    if not inspect(connection).has_table("directory_dirty_events"):
+        return
+    connection.execute(
+        text(
+            """
+            INSERT OR IGNORE INTO directory_dirty_generations (
+                id, library_id, directory_id, operation_id, generation,
+                claimed_generation, status, attempts, lease_token,
+                lease_expires_at, available_at, error_code, created_at, updated_at
+            )
+            WITH legacy_events AS (
+                SELECT
+                    event.id,
+                    plan.library_id,
+                    event.directory_id,
+                    event.operation_id,
+                    event.status,
+                    event.attempts,
+                    event.lease_token,
+                    event.lease_expires_at,
+                    event.available_at,
+                    event.error_code,
+                    event.created_at,
+                    event.updated_at,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY plan.library_id, event.directory_id
+                        ORDER BY event.created_at DESC, event.id DESC
+                    ) AS event_rank,
+                    COUNT(*) OVER (
+                        PARTITION BY plan.library_id, event.directory_id
+                    ) AS generation_count
+                FROM directory_dirty_events AS event
+                JOIN organization_operations AS operation
+                  ON operation.id = event.operation_id
+                JOIN organization_plans AS plan
+                  ON plan.id = operation.plan_id
+                WHERE event.event_kind = 'directory_dirty'
+                  AND event.status IN ('pending', 'running')
+            )
+            SELECT
+                'gen_legacy_' || id,
+                library_id,
+                directory_id,
+                operation_id,
+                generation_count,
+                CASE WHEN status = 'running' THEN generation_count ELSE NULL END,
+                CASE WHEN status = 'running' THEN 'running' ELSE 'queued' END,
+                COALESCE(attempts, 0),
+                lease_token,
+                lease_expires_at,
+                COALESCE(available_at, created_at),
+                error_code,
+                created_at,
+                COALESCE(updated_at, created_at)
+            FROM legacy_events
+            WHERE event_rank = 1
+            """
+        )
+    )
+
+
 def _create_audit_records_table(connection: Connection) -> None:
     """Create durable security audit storage for existing installations."""
 
@@ -686,6 +759,10 @@ MIGRATIONS: tuple[Migration, ...] = (
     ),
     Migration("045_workflow_stage_sequence", _upgrade_workflow_stage_sequence),
     Migration("046_workflow_stage_created_at", _upgrade_workflow_stage_created_at),
+    Migration(
+        "047_directory_dirty_generations",
+        _create_directory_dirty_generation_table,
+    ),
 )
 
 

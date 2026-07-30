@@ -91,7 +91,7 @@ class DirectoryDirtyWorker:
         self._stop = asyncio.Event()
 
     async def run_once(self) -> bool:
-        lease = await self._outbox.claim_next(self._session_factory)
+        lease = await self._outbox.claim_generation(self._session_factory)
         if lease is None:
             return False
         try:

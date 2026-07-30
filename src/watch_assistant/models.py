@@ -785,3 +785,50 @@ class DirectoryDirtyEvent(Base):
             f"event_kind={self.event_kind!r}, status={self.status!r}, "
             f"attempts={self.attempts!r})"
         )
+
+
+class DirectoryDirtyGeneration(Base):
+    """One coalesced dirty lease per managed library directory."""
+
+    __tablename__ = "directory_dirty_generations"
+    __table_args__ = (
+        UniqueConstraint(
+            "library_id",
+            "directory_id",
+            name="uq_directory_dirty_generation_scope",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    library_id: Mapped[str] = mapped_column(
+        ForeignKey("media_libraries.id", ondelete="CASCADE"), index=True
+    )
+    directory_id: Mapped[str] = mapped_column(String(128), index=True)
+    operation_id: Mapped[str] = mapped_column(
+        ForeignKey("organization_operations.id", ondelete="RESTRICT"), index=True
+    )
+    generation: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    claimed_generation: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(16), default="queued", server_default="queued", index=True
+    )
+    attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    lease_token: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    available_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, server_default=text("CURRENT_TIMESTAMP"), index=True
+    )
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+
+    def __repr__(self) -> str:
+        return (
+            "DirectoryDirtyGeneration(id=<redacted>, library_id=<redacted>, "
+            "directory_id=<redacted>, "
+            f"generation={self.generation!r}, status={self.status!r})"
+        )
