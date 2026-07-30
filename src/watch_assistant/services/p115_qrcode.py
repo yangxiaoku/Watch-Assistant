@@ -13,6 +13,7 @@ import qrcode
 
 from watch_assistant.adapters.p115_c03_ipad_login import parse_qrcode_token_response
 from watch_assistant.services.p115_credentials import normalize_cookie_text
+from watch_assistant.services.p115_device_types import P115_DEVICE_CODE_SET
 
 
 class P115QrcodeError(ValueError):
@@ -43,7 +44,7 @@ class P115QrcodeService:
 
     async def create(self, device_code: str, device_name: str = "扫码设备") -> dict[str, object]:
         device_code = device_code.strip().lower()
-        if device_code not in {"web", "ios", "android", "ipad", "qios", "qipad", "qandroid"}:
+        if device_code not in P115_DEVICE_CODE_SET:
             raise P115QrcodeError("invalid_device_code")
         device_name = device_name.strip()
         if not 1 <= len(device_name) <= 64:
@@ -136,7 +137,7 @@ class P115QrcodeService:
             from p115client import P115Client
 
             if action == "token":
-                return P115Client.login_qrcode_token(app="web")
+                return P115Client.login_qrcode_token(app=value)
             if action == "status":
                 return P115Client.login_qrcode_scan_status(value)  # type: ignore[arg-type]
             uid, device_code = value  # type: ignore[misc]

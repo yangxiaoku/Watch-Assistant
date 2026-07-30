@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict
 
 from watch_assistant.security import AuthContext, require_api_auth
+from watch_assistant.services.p115_device_types import P115DeviceCode
 from watch_assistant.services.p115_login_devices import (
     P115LoginDeviceError,
     P115LoginDeviceService,
@@ -79,7 +80,7 @@ class P115LoginDeviceListResponse(BaseModel):
 
 
 class P115QrcodeCreateRequest(BaseModel):
-    device_code: Literal["web", "ios", "android", "ipad", "qios", "qipad", "qandroid"] = "web"
+    device_code: P115DeviceCode = "web"
     device_name: str = "扫码设备"
 
 

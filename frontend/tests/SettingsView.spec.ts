@@ -2,6 +2,7 @@ import { flushPromises, mount } from "@vue/test-utils";
 import { describe, expect, it, vi } from "vitest";
 
 import { ApiClient, ApiError } from "../src/api";
+import { p115DeviceOptions } from "../src/p115DeviceTypes";
 import type { LogsResponse } from "../src/types";
 import SettingsView from "../src/views/SettingsView.vue";
 
@@ -110,6 +111,17 @@ async function openLogs(wrapper: ReturnType<typeof mount>) {
 }
 
 describe("SettingsView", () => {
+  it("keeps all verified 115 QR device types available", () => {
+    expect(p115DeviceOptions).toHaveLength(18);
+    expect(p115DeviceOptions.map((option) => option.value)).toEqual([
+      "android", "115android", "web", "ios", "115ios", "ipad", "115ipad", "os_linux",
+      "os_windows", "os_mac", "tv", "apple_tv", "qandroid", "qios", "qipad", "alipaymini",
+      "wechatmini", "harmony",
+    ]);
+    expect(p115DeviceOptions.map((option) => option.label)).toContain("115生活(支付宝小程序)");
+    expect(p115DeviceOptions.map((option) => option.label)).toContain("115(鸿蒙端)");
+  });
+
   it("keeps manual organization independent from the schedule switch", async () => {
     const api = makeApi();
     const wrapper = mount(SettingsView, { props: { api } });

@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from watch_assistant.crypto import SecretCrypto
 from watch_assistant.models import P115LoginDevice
 from watch_assistant.services.p115_credentials import normalize_cookie_text
+from watch_assistant.services.p115_device_types import P115_DEVICE_CODE_SET
 
 
 class P115LoginDeviceError(ValueError):
@@ -51,7 +52,7 @@ class P115LoginDeviceService:
         if not 1 <= len(name) <= 64:
             raise P115LoginDeviceError("invalid_device_name")
         device_code = device_code.strip().lower()
-        if device_code not in {"web", "ios", "android", "ipad", "qios", "qipad", "qandroid"}:
+        if device_code not in P115_DEVICE_CODE_SET:
             raise P115LoginDeviceError("invalid_device_code")
         now = datetime.now(UTC)
         device = P115LoginDevice(

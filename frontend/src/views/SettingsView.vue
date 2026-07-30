@@ -20,6 +20,7 @@ import {
 } from "@lucide/vue";
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { ApiClient, ApiError, focusFirstFieldError } from "../api";
+import { p115DeviceOptions } from "../p115DeviceTypes";
 import type {
   LogCategory,
   LogEntry,
@@ -93,7 +94,6 @@ const actorTypeOptions = [
   { value: "agent", label: "Agent" },
   { value: "userscript", label: "用户脚本" },
 ];
-
 const activeSection = ref<SettingsSection>("overview");
 const overview = ref<SettingsOverviewResponse | null>(null);
 const overviewLoading = ref(true);
@@ -1031,7 +1031,7 @@ watch(autoRefreshLogs, syncLogsRefreshTimer);
               <p v-if="validationMessage" :class="['settings-action-message', validationClass(validationState)]" role="status">{{ validationMessage }}</p>
               <div class="p115-qr-box">
                 <div class="p115-qr-heading"><div><h4>扫码登录新设备</h4><p>每次扫码都会保存为独立设备，不会覆盖已保存的其他设备。</p></div><button class="secondary-button" type="button" :disabled="p115QrBusy" @click="startP115QrLogin">{{ p115QrBusy ? '等待扫码' : '生成二维码' }}</button></div>
-                <div v-if="p115QrImage" class="p115-qr-content"><img :src="p115QrImage" alt="115 登录二维码" /><div><label class="settings-form-label">设备名称<input v-model="p115QrDeviceName" maxlength="64" :disabled="p115QrBusy" /></label><label class="settings-form-label">115 设备类型<select v-model="p115QrDeviceCode" :disabled="p115QrBusy"><option value="web">网页端</option><option value="ios">iPhone / iPad</option><option value="android">安卓端</option><option value="qios">管理端 iPhone</option><option value="qipad">管理端 iPad</option><option value="qandroid">管理端安卓</option></select></label><p class="settings-note">请用 115 扫码确认。设备类型对应 115 的登录设备码；同一类型可能受 115 官方登录限制影响。</p><strong v-if="p115QrStatus === 'scanned'" class="status-ok">已扫码，等待确认</strong><strong v-else-if="p115QrStatus === 'waiting'" class="status-unknown">等待扫码</strong></div></div>
+                <div v-if="p115QrImage" class="p115-qr-content"><img :src="p115QrImage" alt="115 登录二维码" /><div><label class="settings-form-label">设备名称<input v-model="p115QrDeviceName" maxlength="64" :disabled="p115QrBusy" /></label><label class="settings-form-label">115 设备类型<select v-model="p115QrDeviceCode" :disabled="p115QrBusy"><option v-for="option in p115DeviceOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select></label><p class="settings-note">请选择实际扫码设备类型；该值会同时用于生成二维码和确认登录结果。</p><strong v-if="p115QrStatus === 'scanned'" class="status-ok">已扫码，等待确认</strong><strong v-else-if="p115QrStatus === 'waiting'" class="status-unknown">等待扫码</strong></div></div>
                 <p v-if="p115QrError" class="settings-action-message" role="status">{{ p115QrError }}</p>
               </div>
               <div class="p115-device-list"><div class="p115-device-list-heading"><h4>已保存的登录设备</h4><button class="text-button" type="button" @click="loadP115Devices">刷新</button></div><p v-if="!p115Devices.length" class="settings-note">暂无扫码设备。手动 Cookie 不会显示在这里。</p><div v-for="device in p115Devices" :key="device.id" class="p115-device-row"><div><strong>{{ device.name }}</strong><small>{{ device.device_code }} · {{ device.last_used_at ? formatTimestamp(device.last_used_at) : '未使用' }}</small></div><div><strong v-if="device.active" class="status-ok">当前使用</strong><button v-else class="text-button" type="button" @click="activateP115Device(device)">切换</button><button v-if="!device.active" class="text-button danger-text" type="button" @click="revokeP115Device(device)">移除</button></div></div></div>
