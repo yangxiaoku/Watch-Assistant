@@ -52,6 +52,31 @@ const contentPolicy = {
   blocked_keywords: [],
   revision: 3,
 };
+const organization = {
+  schedule_enabled: true,
+  scan_interval_minutes: 30,
+  source_directory_ids: ["1000"],
+  target_directory_id: "2000",
+  video_extensions: ["mkv", "mp4"],
+  metadata_extensions: ["srt", "nfo"],
+  rename_enabled: true,
+  media_probe_enabled: true,
+  ai_identification_enabled: false,
+  small_file_threshold_mb: 10,
+  cleanup_empty_directories: false,
+  strm_linkage_enabled: true,
+  operation_delay_seconds: 1.5,
+  include_children_category: false,
+  include_concert_category: false,
+  region_grouping_enabled: true,
+  year_grouping_enabled: false,
+  prefer_remux: true,
+  prefer_resolution: true,
+  prefer_dolby: false,
+  conflict_mode: 2 as const,
+  multi_version_enabled: false,
+  revision: 4,
+};
 
 function makeApi(overrides: Partial<Record<keyof ApiClient, unknown>> = {}) {
   return {
@@ -70,6 +95,10 @@ function makeApi(overrides: Partial<Record<keyof ApiClient, unknown>> = {}) {
     logs: vi.fn().mockResolvedValue(firstLogs),
     contentPolicy: vi.fn().mockResolvedValue(contentPolicy),
     updateContentPolicy: vi.fn().mockResolvedValue({ ...contentPolicy, revision: 4 }),
+    organizationSettings: vi.fn().mockResolvedValue(organization),
+    updateOrganizationSettings: vi.fn().mockResolvedValue({ ...organization, revision: 5 }),
+    runOrganizationNow: vi.fn().mockResolvedValue({ action: "run_now", queued: true, schedule_enabled: false, message_zh: "整理已排队" }),
+    stopOrganization: vi.fn().mockResolvedValue({ action: "stop", queued: false, schedule_enabled: false, message_zh: "已停止整理" }),
     ...overrides,
   } as unknown as ApiClient;
 }
@@ -81,6 +110,31 @@ async function openLogs(wrapper: ReturnType<typeof mount>) {
 }
 
 describe("SettingsView", () => {
+  it("keeps manual organization independent from the schedule switch", async () => {
+    const api = makeApi();
+    const wrapper = mount(SettingsView, { props: { api } });
+    await flushPromises();
+    await wrapper.findAll("button").find((button) => button.text().includes("115 整理"))?.trigger("click");
+    await flushPromises();
+
+    expect(wrapper.findAll("details.settings-subsection")).toHaveLength(6);
+    const scheduleToggle = wrapper.get(".settings-subsection input[type=checkbox]");
+    await scheduleToggle.setValue(false);
+    await wrapper.get(".settings-subsection input[type=number]").setValue("10");
+    await wrapper.get(".settings-save-bar .primary-button").trigger("click");
+    await flushPromises();
+
+    expect(api.updateOrganizationSettings).toHaveBeenCalledWith(expect.objectContaining({
+      schedule_enabled: false,
+      scan_interval_minutes: 10,
+      revision: 4,
+    }));
+    await wrapper.findAll("button").find((button) => button.text().includes("立即整理"))?.trigger("click");
+    expect(api.runOrganizationNow).toHaveBeenCalledTimes(1);
+    await wrapper.findAll("button").find((button) => button.text().includes("停止整理"))?.trigger("click");
+    expect(api.stopOrganization).toHaveBeenCalledTimes(1);
+  });
+
   it("renders the real overview fields and p115 settings without a cookie input", async () => {
     const api = makeApi();
     const wrapper = mount(SettingsView, { props: { api } });

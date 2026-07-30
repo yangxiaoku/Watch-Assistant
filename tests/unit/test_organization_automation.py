@@ -100,7 +100,15 @@ class _Events:
         self.events: list[tuple[str, dict[str, object]]] = []
 
     async def log_event(self, event, *, fields=None, counts=None, **_kwargs):
-        self.events.append((event, {**(fields or {}), **(counts or {})}))
+            self.events.append((event, {**(fields or {}), **(counts or {})}))
+
+
+class _Operations:
+    def __init__(self):
+        self.calls: list[tuple[str, dict[str, object]]] = []
+
+    async def create(self, plan_id: str, **kwargs):
+        self.calls.append((plan_id, kwargs))
 
 
 def _entry(
@@ -208,4 +216,41 @@ async def test_automation_does_not_read_when_settings_are_unconfigured(tmp_path:
 
     assert await service.run_once() is False
     assert called is False
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_automation_confirms_and_queues_planned_work_when_write_gate_is_open(
+    tmp_path: Path,
+):
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'automation-write.db'}")
+    await initialize_database(database.engine)
+    operations = _Operations()
+    plan_service = OrganizationPlanService(database.session_factory)
+    preview = OrganizationPreviewService(
+        database.session_factory, _TmdbClient(), plan_service
+    )
+
+    class _ConfirmedPreview:
+        async def create_preview(self, **kwargs):
+            plan = await preview.create_preview(**kwargs)
+            return await plan_service.confirm_plan(
+                plan.plan_id, expected_revision=plan.revision
+            )
+
+    service = OrganizationAutomationService(
+        database.session_factory,
+        _Settings(configured=True),
+        _ConfirmedPreview(),
+        plan_service,
+        lambda _authorized: _Gateway(),
+        operation_service=operations,
+        auto_execute=True,
+    )
+
+    assert await service.run_once() is True
+    assert service.last_result is not None
+    assert service.last_result.queued_count == 1
+    assert len(operations.calls) == 1
+    assert operations.calls[0][1]["idempotency_key"].startswith("organization-auto:")
     await database.engine.dispose()

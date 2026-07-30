@@ -588,6 +588,11 @@ html, body, .app-shell { background: #151719; }
 .settings-metric-mono { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 13px !important; }
 .settings-subsection { padding: 24px 0 0; }
 .settings-subsection h3 { margin: 0 0 12px; color: #c7cad1; font-size: 14px; }
+.settings-subsection > summary { display: flex; align-items: center; justify-content: space-between; cursor: pointer; list-style: none; }
+.settings-subsection > summary::-webkit-details-marker { display: none; }
+.settings-subsection > summary h3 { margin-bottom: 12px; }
+.settings-section-disclosure { color: #8f96a3; font-size: 18px; line-height: 1; transition: transform 160ms ease; }
+.settings-subsection:not([open]) .settings-section-disclosure { transform: rotate(-90deg); }
 .settings-status-list { border-top: 1px solid #2b2e33; }
 .settings-status-row, .p115-status-line { display: flex; min-height: 48px; align-items: center; justify-content: space-between; gap: 16px; border-bottom: 1px solid #2b2e33; }
 .settings-status-name { display: inline-flex; min-width: 0; align-items: center; gap: 8px; color: #d9dce2; font-size: 13px; }
