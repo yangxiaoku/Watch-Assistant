@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "audit_date": "2026-07-30",
+  "scope": "受管低风险测试源/目标目录；临时应用数据库",
+  "application_runner": {
+    "status": "success",
+    "settings_source_count": 1,
+    "settings_target_configured": true,
+    "schedule_enabled": false,
+    "scanned_count": 1,
+    "plan_count": 1,
+    "plan_status": "needs_review",
+    "queued_count": 0,
+    "operation_count": 0,
+    "remote_write_calls": 0,
+    "write_started": false,
+    "output_database_is_temporary": true
+  },
+  "path_materialization": {
+    "status": "fixed_and_tested",
+    "reason": "只读 P115 网关不传播远端路径，树形扫描根据已验证父目录和名称重建相对路径",
+    "library_index_tests": 14
+  },
+  "conclusion": "真实应用规划链路已完成设置、完整扫描和计划生成；低置信测试文件进入人工复核，不会自动排队或写入。"
+}

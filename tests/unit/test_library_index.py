@@ -96,6 +96,37 @@ class _TreeGateway:
         )
 
 
+class _PathlessTreeGateway:
+    async def list_directory(self, directory_id: str, *, page: int = 1, page_size=100):
+        del page_size
+        if directory_id == ROOT_ID:
+            return _page(
+                page,
+                (
+                    LibraryEntry(
+                        directory_id="7100",
+                        file_id=None,
+                        parent_id=ROOT_ID,
+                        name="nested",
+                        is_directory=True,
+                        size_bytes=None,
+                        modified_at=None,
+                        pickcode=None,
+                        path=None,
+                    ),
+                    replace(_file_entry("1000"), path=None),
+                ),
+                1,
+                2,
+            )
+        return _page(
+            page,
+            (replace(_file_entry("1001", parent_id="7100"), path=None),),
+            1,
+            1,
+        )
+
+
 def _file_entry(file_id: str, *, path: str = SECRET_PATH, parent_id: str = ROOT_ID):
     return LibraryEntry(
         directory_id=None,
@@ -413,6 +444,24 @@ async def test_tree_scan_includes_discovered_child_directories(tmp_path):
     async with database.session_factory() as session:
         entries = list(await session.scalars(select(LibraryScanEntry)))
     assert {entry.object_id for entry in entries} == {"7100", "1000", "1001"}
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_tree_scan_materializes_relative_paths_when_gateway_omits_them(tmp_path):
+    database = await _database(tmp_path)
+
+    result = await _service(database, _PathlessTreeGateway(), page_size=1).scan_tree(
+        "pathless-tree-scan"
+    )
+
+    assert result.state is ScanRunState.COMPLETED
+    async with database.session_factory() as session:
+        entries = list(await session.scalars(select(LibraryScanEntry)))
+    paths = {entry.object_id: entry.path for entry in entries}
+    assert paths["7100"] == "nested"
+    assert paths["1000"] == "private-title.mkv"
+    assert paths["1001"] == "nested/private-title.mkv"
     await database.engine.dispose()
 
 

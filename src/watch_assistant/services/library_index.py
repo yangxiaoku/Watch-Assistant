@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from enum import StrEnum
+from pathlib import PurePosixPath
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
@@ -235,9 +236,16 @@ class LibraryIndexService:
             await self._mark_running(run.id)
             pending = [self._root_directory_id]
             visited = {self._root_directory_id}
+            directory_paths = {self._root_directory_id: ""}
             pages_read = 0
             while pending:
                 directory_id = pending.pop(0)
+                parent_path = directory_paths.get(directory_id)
+                if parent_path is None:
+                    await self._finish_incomplete(
+                        run.id, ScanRunState.FAILED, "entry_path_invalid"
+                    )
+                    return await self._result_for_run(run.id)
                 page_number = 1
                 expected_page_count: int | None = None
                 expected_total: int | None = None
@@ -256,6 +264,7 @@ class LibraryIndexService:
                         )
                         return await self._result_for_run(run.id)
                     try:
+                        page = _materialize_tree_paths(page, parent_path)
                         expected_page_count, expected_total, terminal = _validate_page(
                             page,
                             requested_page=page_number,
@@ -295,6 +304,13 @@ class LibraryIndexService:
                             )
                             return await self._result_for_run(run.id)
                         visited.add(child_id)
+                        child_path = entry.path
+                        if not isinstance(child_path, str) or not child_path:
+                            await self._finish_incomplete(
+                                run.id, ScanRunState.FAILED, "entry_path_invalid"
+                            )
+                            return await self._result_for_run(run.id)
+                        directory_paths[child_id] = child_path
                         pending.append(child_id)
                     if terminal:
                         break
@@ -850,6 +866,37 @@ def _validate_identity(value: str) -> None:
         or "://" in value
     ):
         raise LibraryIndexError("invalid_identity")
+
+
+def _materialize_tree_paths(page: DirectoryPage, parent_path: str) -> DirectoryPage:
+    """Fill relative paths for gateways that intentionally omit remote paths."""
+
+    items = tuple(
+        entry
+        if entry.path is not None
+        else replace(entry, path=_join_tree_path(parent_path, entry.name))
+        for entry in page.items
+    )
+    return replace(page, items=items)
+
+
+def _join_tree_path(parent_path: str, name: str) -> str:
+    if (
+        not isinstance(name, str)
+        or not name
+        or "/" in name
+        or "\\" in name
+        or name in {".", ".."}
+    ):
+        raise LibraryIndexError("entry_path_invalid")
+    value = "/".join(part for part in (parent_path, name) if part)
+    parsed = PurePosixPath(value)
+    if parsed.is_absolute() or any(part in {"", ".", ".."} for part in parsed.parts):
+        raise LibraryIndexError("entry_path_invalid")
+    normalized = "/".join(parsed.parts)
+    if not normalized or len(normalized) > 4096:
+        raise LibraryIndexError("entry_path_invalid")
+    return normalized
 
 
 def _validate_idempotency_key(value: str) -> None:
