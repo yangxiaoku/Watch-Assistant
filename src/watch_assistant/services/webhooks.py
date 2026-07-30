@@ -205,6 +205,51 @@ class WebhookService:
             await session.commit()
         return count
 
+    async def enqueue_test(self, endpoint_id: str) -> WebhookDeliveryResponse:
+        """Queue one safe test delivery for exactly one configured endpoint."""
+        definition = get_event_definition("webhook.test")
+        if definition is None:  # pragma: no cover - catalog import invariant
+            raise WebhookError("webhook_event_not_allowed")
+        now = datetime.now(UTC)
+        event_id = "event_" + uuid4().hex
+        payload = {
+            "event_id": event_id,
+            "event_code": definition.code,
+            "schema_version": f"v{definition.version}",
+            "occurred_at": now.isoformat(),
+            "resource_type": None,
+            "resource_id": None,
+            "task_id": None,
+            "request_id": None,
+            "correlation_id": None,
+            "status": "test",
+            "summary": {
+                "title_zh": definition.title_zh,
+                "message_zh": definition.render({}),
+                "fields": {},
+            },
+        }
+        async with self._session_factory() as session:
+            endpoint = await session.get(WebhookEndpoint, endpoint_id)
+            if endpoint is None:
+                raise WebhookError("webhook_not_found")
+            if not endpoint.enabled:
+                raise WebhookError("webhook_endpoint_disabled")
+            delivery = WebhookDelivery(
+                id="delivery_" + uuid4().hex,
+                endpoint_id=endpoint.id,
+                event_id=event_id,
+                event_code=definition.code,
+                payload_json=json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+                status="pending",
+                next_attempt_at=now,
+                created_at=now,
+                updated_at=now,
+            )
+            session.add(delivery)
+            await session.commit()
+            return _delivery_response(delivery)
+
     async def deliveries(self, *, endpoint_id: str | None = None, limit: int = 50) -> WebhookDeliveryListResponse:
         async with self._session_factory() as session:
             query = select(WebhookDelivery).order_by(WebhookDelivery.created_at.desc()).limit(limit)

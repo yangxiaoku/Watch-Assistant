@@ -290,6 +290,9 @@ EVENT_CATALOG: dict[str, EventDefinition] = {
     "notification.preferences_changed": _event(
         "notification.preferences_changed", LogCategory.TASK, "通知偏好已更新", "站内通知当前状态：{status}"
     ),
+    "webhook.test": _event(
+        "webhook.test", LogCategory.NOTIFICATION, "Webhook 测试通知", "Webhook 测试通知已排队发送"
+    ),
     "backup.created": _event(
         "backup.created", LogCategory.SYSTEM, "备份已创建", "数据库备份已创建，状态：{status}，数量：{count}"
     ),

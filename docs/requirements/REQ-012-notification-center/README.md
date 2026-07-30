@@ -112,5 +112,7 @@
   workflow ID 关联；同一事件仍通过现有 Webhook Outbox 投递，不阻塞业务事务。
 - 任务 worker 的远端 `uncertain` 现在发出 `task.uncertain`（不再误报为失败），并携带任务
   ID；任务失败、115 不可用、订阅发现新资源、备份失败和异常恢复预览已接入通知过滤。
+- Webhook 管理接口提供单端点测试通知；测试载荷只包含 `webhook.test`、版本和中文摘要，
+  不包含 Secret 或业务资源，且复用持久投递、签名、重试和死信状态。
 - 当前仍未宣称 REQ-012 完成：完整事件矩阵、外部渠道真实接收端验收、静默时段、Bark/Telegram
   和 PWA Push 仍按需求状态保持待实现或待验收。

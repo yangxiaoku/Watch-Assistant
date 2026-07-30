@@ -73,6 +73,16 @@ async def rotate_webhook(
         raise _http_error(exc) from None
 
 
+@router.post("/{endpoint_id}/test", response_model=WebhookDeliveryResponse)
+async def test_webhook(
+    endpoint_id: str, _: WebAuthDependency, service: ServiceDependency
+) -> WebhookDeliveryResponse:
+    try:
+        return await service.enqueue_test(endpoint_id)
+    except WebhookError as exc:
+        raise _http_error(exc) from None
+
+
 @router.delete("/{endpoint_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_webhook(
     endpoint_id: str, _: WebAuthDependency, service: ServiceDependency
@@ -115,6 +125,7 @@ def _http_error(error: WebhookError) -> HTTPException:
         "webhook_event_not_allowed": 422,
         "webhook_delivery_not_found": 404,
         "webhook_delivery_conflict": 409,
+        "webhook_endpoint_disabled": 409,
         "webhook_dns_failed": 422,
     }.get(error.code, 422)
     return HTTPException(status_code=status_code, detail={"code": error.code})
