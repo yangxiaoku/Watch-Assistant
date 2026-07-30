@@ -23,6 +23,7 @@ APPLICATION_SETTINGS_COLUMNS = {
     "inspection_auto_start_enabled",
     "revision",
     "content_policy_json",
+    "organization_settings_json",
     "managed_tmdb_key_encrypted",
     "managed_tmdb_updated_at",
     "managed_p115_cookie_encrypted",
@@ -75,6 +76,7 @@ async def test_initialize_database_creates_schema_records_migration_and_defaults
     assert settings.inspection_auto_start_enabled is True
     assert settings.revision == 0
     assert settings.content_policy_json == "{}"
+    assert settings.organization_settings_json == "{}"
     assert settings.managed_tmdb_key_encrypted is None
     assert settings.managed_tmdb_updated_at is None
     assert settings.managed_p115_cookie_encrypted is None

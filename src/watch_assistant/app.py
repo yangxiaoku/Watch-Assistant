@@ -79,6 +79,7 @@ from watch_assistant.services.organization_operations import (
 )
 from watch_assistant.services.organization_plan import OrganizationPlanService
 from watch_assistant.services.organization_preview import OrganizationPreviewService
+from watch_assistant.services.organization_scheduler import OrganizationScheduler
 from watch_assistant.services.organization_worker import OrganizationWorker
 from watch_assistant.services.p115_credentials import (
     CompositeCookieProvider,
@@ -183,6 +184,8 @@ def create_app(
                 organization_task = None
                 if hasattr(application.state, "organization_worker"):
                     delattr(application.state, "organization_worker")
+                if hasattr(application.state, "organization_scheduler"):
+                    delattr(application.state, "organization_scheduler")
                 return
             if organization_task is not None:
                 return
@@ -195,10 +198,15 @@ def create_app(
                 event_logger=application.state.settings_service,
             )
             application.state.organization_worker = worker
+            scheduler = OrganizationScheduler(
+                application.state.settings_service,
+                worker.run_once,
+            )
+            application.state.organization_scheduler = scheduler
             organization_stop = asyncio.Event()
             organization_task = asyncio.create_task(
-                worker.run_forever(organization_stop),
-                name="watch-assistant-organization-worker",
+                scheduler.run_forever(organization_stop),
+                name="watch-assistant-organization-scheduler",
             )
 
         async def apply_p115_runtime(ready: bool) -> None:

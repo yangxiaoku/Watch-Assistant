@@ -14,6 +14,8 @@ import {
   Settings2,
   ScanSearch,
   ShieldCheck,
+  StopCircle,
+  Zap,
   XCircle,
 } from "@lucide/vue";
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
@@ -26,6 +28,7 @@ import type {
   CredentialSettingsResponse,
   LoggingSettingsResponse,
   InspectionSettingsResponse,
+  OrganizationSettingsResponse,
   LogsResponse,
   P115SettingsResponse,
   P115ValidationResponse,
@@ -35,7 +38,7 @@ import type {
 const props = defineProps<{ api: ApiClient }>();
 const emit = defineEmits<{ "auto-start-enabled": [enabled: boolean] }>();
 
-type SettingsSection = "overview" | "credentials" | "logs" | "content" | "inspection" | "p115";
+type SettingsSection = "overview" | "credentials" | "logs" | "content" | "inspection" | "p115" | "organization";
 type ValidationState = "idle" | "running" | "error" | P115ValidationResponse["status"];
 
 const sections = [
@@ -45,6 +48,7 @@ const sections = [
   { id: "content" as const, label: "内容安全", icon: ShieldAlert },
   { id: "inspection" as const, label: "资源检测", icon: ScanSearch },
   { id: "p115" as const, label: "115 推送", icon: ShieldCheck },
+  { id: "organization" as const, label: "115 整理", icon: Zap },
 ];
 const levelOptions: Array<{ value: LogLevel; label: string }> = [
   { value: "DEBUG", label: "调试" },
@@ -117,6 +121,37 @@ const inspectionSaveError = ref("");
 const inspectionConflict = ref(false);
 const validationState = ref<ValidationState>("idle");
 const validationMessage = ref("");
+const organizationSettings = ref<OrganizationSettingsResponse | null>(null);
+const organizationLoading = ref(true);
+const organizationError = ref("");
+const organizationSaveError = ref("");
+const organizationSaving = ref(false);
+const organizationActionBusy = ref(false);
+const organizationActionMessage = ref("");
+const organizationSourceDraft = ref("");
+const organizationTargetDraft = ref("");
+const organizationVideoExtensionsDraft = ref("");
+const organizationMetadataExtensionsDraft = ref("");
+const organizationDraft = ref({
+  schedule_enabled: false,
+  scan_interval_minutes: 30,
+  rename_enabled: true,
+  media_probe_enabled: true,
+  ai_identification_enabled: false,
+  small_file_threshold_mb: 0,
+  cleanup_empty_directories: false,
+  strm_linkage_enabled: false,
+  operation_delay_seconds: 1.5,
+  include_children_category: false,
+  include_concert_category: false,
+  region_grouping_enabled: true,
+  year_grouping_enabled: false,
+  prefer_remux: true,
+  prefer_resolution: true,
+  prefer_dolby: false,
+  conflict_mode: 2 as 0 | 1 | 2,
+  multi_version_enabled: false,
+});
 
 const logging = ref<LoggingSettingsResponse | null>(null);
 const loggingLoading = ref(true);
@@ -177,12 +212,13 @@ function selectSection(section: SettingsSection) {
   if (section === "credentials" && !credentials.value && !credentialsLoading.value) void loadCredentials();
   if (section === "logs" && !logsLoaded.value) void loadLogs();
   if (section === "content" && !contentPolicy.value) void loadContentPolicy();
+  if (section === "organization" && !organizationSettings.value && !organizationLoading.value) void loadOrganization();
   syncLogsRefreshTimer();
 }
 
 function selectMobileSection(event: Event) {
   const value = (event.target as HTMLSelectElement).value;
-  if (value === "overview" || value === "credentials" || value === "logs" || value === "content" || value === "inspection" || value === "p115") selectSection(value);
+  if (value === "overview" || value === "credentials" || value === "logs" || value === "content" || value === "inspection" || value === "p115" || value === "organization") selectSection(value);
 }
 
 async function loadOverview() {
@@ -369,6 +405,134 @@ async function saveInspection() {
   }
 }
 
+function applyOrganization(value: OrganizationSettingsResponse) {
+  organizationSettings.value = value;
+  organizationDraft.value = {
+    schedule_enabled: value.schedule_enabled,
+    scan_interval_minutes: value.scan_interval_minutes,
+    rename_enabled: value.rename_enabled,
+    media_probe_enabled: value.media_probe_enabled,
+    ai_identification_enabled: value.ai_identification_enabled,
+    small_file_threshold_mb: value.small_file_threshold_mb,
+    cleanup_empty_directories: value.cleanup_empty_directories,
+    strm_linkage_enabled: value.strm_linkage_enabled,
+    operation_delay_seconds: value.operation_delay_seconds,
+    include_children_category: value.include_children_category,
+    include_concert_category: value.include_concert_category,
+    region_grouping_enabled: value.region_grouping_enabled,
+    year_grouping_enabled: value.year_grouping_enabled,
+    prefer_remux: value.prefer_remux,
+    prefer_resolution: value.prefer_resolution,
+    prefer_dolby: value.prefer_dolby,
+    conflict_mode: value.conflict_mode,
+    multi_version_enabled: value.multi_version_enabled,
+  };
+  organizationSourceDraft.value = value.source_directory_ids.join(", ");
+  organizationTargetDraft.value = value.target_directory_id ?? "";
+  organizationVideoExtensionsDraft.value = value.video_extensions.join(", ");
+  organizationMetadataExtensionsDraft.value = value.metadata_extensions.join(", ");
+}
+
+async function loadOrganization() {
+  organizationLoading.value = true;
+  organizationError.value = "";
+  organizationSaveError.value = "";
+  try {
+    applyOrganization(await props.api.organizationSettings());
+  } catch (exception) {
+    organizationError.value = exception instanceof ApiError ? exception.message : "整理设置加载失败，请稍后重试";
+  } finally {
+    organizationLoading.value = false;
+  }
+}
+
+const organizationDirty = computed(() => {
+  return organizationDraftChanged();
+});
+
+function organizationList(value: string) {
+  return value.split(/[,，\s]+/).map((item) => item.trim().toLowerCase()).filter(Boolean);
+}
+
+function organizationDraftChanged() {
+  if (!organizationSettings.value) return false;
+  const draft = organizationDraft.value;
+  return organizationSettings.value.schedule_enabled !== draft.schedule_enabled
+    || organizationSettings.value.scan_interval_minutes !== draft.scan_interval_minutes
+    || organizationSettings.value.rename_enabled !== draft.rename_enabled
+    || organizationSettings.value.media_probe_enabled !== draft.media_probe_enabled
+    || organizationSettings.value.ai_identification_enabled !== draft.ai_identification_enabled
+    || organizationSettings.value.small_file_threshold_mb !== draft.small_file_threshold_mb
+    || organizationSettings.value.cleanup_empty_directories !== draft.cleanup_empty_directories
+    || organizationSettings.value.strm_linkage_enabled !== draft.strm_linkage_enabled
+    || organizationSettings.value.operation_delay_seconds !== draft.operation_delay_seconds
+    || organizationSettings.value.include_children_category !== draft.include_children_category
+    || organizationSettings.value.include_concert_category !== draft.include_concert_category
+    || organizationSettings.value.region_grouping_enabled !== draft.region_grouping_enabled
+    || organizationSettings.value.year_grouping_enabled !== draft.year_grouping_enabled
+    || organizationSettings.value.prefer_remux !== draft.prefer_remux
+    || organizationSettings.value.prefer_resolution !== draft.prefer_resolution
+    || organizationSettings.value.prefer_dolby !== draft.prefer_dolby
+    || organizationSettings.value.conflict_mode !== draft.conflict_mode
+    || organizationSettings.value.multi_version_enabled !== draft.multi_version_enabled
+    || organizationSettings.value.target_directory_id !== (organizationTargetDraft.value.trim() || null)
+    || organizationSettings.value.source_directory_ids.join(",") !== organizationList(organizationSourceDraft.value).join(",")
+    || organizationSettings.value.video_extensions.join(",") !== organizationList(organizationVideoExtensionsDraft.value).join(",")
+    || organizationSettings.value.metadata_extensions.join(",") !== organizationList(organizationMetadataExtensionsDraft.value).join(",");
+}
+
+async function saveOrganization() {
+  if (!organizationSettings.value || organizationSaving.value || !organizationDraftChanged()) return;
+  organizationSaving.value = true;
+  organizationSaveError.value = "";
+  try {
+    const response = await props.api.updateOrganizationSettings({
+      ...organizationDraft.value,
+      source_directory_ids: organizationList(organizationSourceDraft.value),
+      target_directory_id: organizationTargetDraft.value.trim() || null,
+      video_extensions: organizationList(organizationVideoExtensionsDraft.value),
+      metadata_extensions: organizationList(organizationMetadataExtensionsDraft.value),
+      revision: organizationSettings.value.revision,
+    });
+    applyOrganization(response);
+    syncSharedRevision(response.revision);
+  } catch (exception) {
+    focusFirstFieldError(exception);
+    organizationSaveError.value = exception instanceof ApiError ? exception.message : "整理设置保存失败，请稍后重试";
+  } finally {
+    organizationSaving.value = false;
+  }
+}
+
+async function runOrganizationNow() {
+  if (organizationActionBusy.value) return;
+  organizationActionBusy.value = true;
+  organizationActionMessage.value = "";
+  try {
+    const response = await props.api.runOrganizationNow();
+    organizationActionMessage.value = response.message_zh;
+  } catch (exception) {
+    organizationActionMessage.value = exception instanceof ApiError ? exception.message : "立即整理排队失败，请稍后重试";
+  } finally {
+    organizationActionBusy.value = false;
+  }
+}
+
+async function stopOrganization() {
+  if (organizationActionBusy.value) return;
+  organizationActionBusy.value = true;
+  organizationActionMessage.value = "";
+  try {
+    const response = await props.api.stopOrganization();
+    organizationActionMessage.value = response.message_zh;
+    await loadOrganization();
+  } catch (exception) {
+    organizationActionMessage.value = exception instanceof ApiError ? exception.message : "停止整理失败，请稍后重试";
+  } finally {
+    organizationActionBusy.value = false;
+  }
+}
+
 function applyLogging(value: LoggingSettingsResponse) {
   logging.value = value;
   draftLevel.value = value.level;
@@ -442,6 +606,7 @@ function syncSharedRevision(revision: number) {
   if (inspectionSettings.value) inspectionSettings.value = { ...inspectionSettings.value, revision };
   if (contentPolicy.value) contentPolicy.value = { ...contentPolicy.value, revision };
   if (credentials.value) credentials.value = { ...credentials.value, revision };
+  if (organizationSettings.value) organizationSettings.value = { ...organizationSettings.value, revision };
 }
 
 async function saveContentPolicy() {
@@ -657,6 +822,7 @@ onMounted(() => {
   void loadLogging();
   void loadInspection();
   void loadP115();
+  void loadOrganization();
   document.addEventListener("visibilitychange", onVisibilityChange);
   syncLogsRefreshTimer();
 });
@@ -715,6 +881,23 @@ watch(autoRefreshLogs, syncLogsRefreshTimer);
               <p v-if="validationMessage" :class="['settings-action-message', validationClass(validationState)]" role="status">{{ validationMessage }}</p>
             </section>
           </div>
+        </section>
+
+        <section v-else-if="activeSection === 'organization'" class="settings-section" aria-labelledby="organization-title">
+          <header class="settings-section-heading"><div><p class="eyebrow">115 网盘</p><h2 id="organization-title">自动整理</h2><p>定时整理只控制自动触发；手动立即整理始终可以单独排队。</p></div><div class="settings-section-actions"><button class="primary-button" type="button" :disabled="organizationActionBusy" @click="runOrganizationNow"><LoaderCircle v-if="organizationActionBusy" class="spin" :size="15" /><Zap v-else :size="15" />立即整理</button><button class="secondary-button" type="button" :disabled="organizationActionBusy" @click="stopOrganization"><StopCircle :size="15" />停止整理</button></div></header>
+          <div v-if="organizationLoading" class="settings-loading"><LoaderCircle class="spin" :size="20" />正在加载整理设置</div>
+          <div v-else-if="organizationError" class="settings-state settings-state-error"><AlertTriangle :size="18" /><span>{{ organizationError }}</span><button class="text-button" type="button" @click="loadOrganization">重试</button></div>
+          <template v-else-if="organizationSettings">
+            <div class="settings-subsection"><h3>整理执行</h3><label class="settings-toggle"><input v-model="organizationDraft.schedule_enabled" type="checkbox" />115 网盘定时整理开关：已启用时会按扫描间隔自动整理；关闭时不会自动整理，但手动立即整理不受影响</label><div class="settings-form-grid"><label>扫描频率（分钟）<input v-model.number="organizationDraft.scan_interval_minutes" type="number" min="5" max="1440" /></label></div><p class="settings-note">建议不低于 5 分钟。停止整理会自动关闭定时开关并保存，正在执行的远端操作不会被强行中断。</p></div>
+            <div class="settings-subsection"><h3>扫描来源与归档目录</h3><p class="settings-note">源目录可以填写多个 CID，目标目录只能填写一个。源目录与目标目录不能相同；目录上下级关系会在只读范围验证时再次核对。</p><div class="settings-form-grid"><label>源目录 ID（逗号分隔）<input v-model="organizationSourceDraft" inputmode="numeric" placeholder="例如 3482085898508567892" /></label><label>目标目录 ID<input v-model="organizationTargetDraft" inputmode="numeric" placeholder="输入归档目录 CID" /></label></div></div>
+            <div class="settings-subsection"><h3>识别与命名</h3><div class="settings-form-grid"><label>视频文件类型（逗号分隔）<input v-model="organizationVideoExtensionsDraft" placeholder="mkv, mp4, avi" /></label><label>字幕/元数据类型（逗号分隔）<input v-model="organizationMetadataExtensionsDraft" placeholder="srt, ass, nfo" /></label></div><div class="settings-capability-list"><label class="settings-toggle"><input v-model="organizationDraft.rename_enabled" type="checkbox" />标准化重命名</label><label class="settings-toggle"><input v-model="organizationDraft.media_probe_enabled" type="checkbox" />媒体信息提取完善命名</label><label class="settings-toggle"><input v-model="organizationDraft.ai_identification_enabled" type="checkbox" />AI 辅助识别</label></div><p class="settings-note">AI 辅助识别需要先在实用工具完成 API 配置；未配置时不会调用 AI。</p></div>
+            <div class="settings-subsection"><h3>整理规则</h3><div class="settings-form-grid"><label>小文件过滤（MB）<input v-model.number="organizationDraft.small_file_threshold_mb" type="number" min="0" step="0.1" /></label><label>操作延时（秒）<input v-model.number="organizationDraft.operation_delay_seconds" type="number" min="0" max="60" step="0.1" /></label></div><div class="settings-capability-list"><label class="settings-toggle"><input v-model="organizationDraft.cleanup_empty_directories" type="checkbox" />整理后清理空文件夹</label><label class="settings-toggle"><input v-model="organizationDraft.strm_linkage_enabled" type="checkbox" />联动生成 STRM</label></div></div>
+            <div class="settings-subsection"><h3>分类策略</h3><div class="settings-capability-list"><label class="settings-toggle"><input v-model="organizationDraft.include_children_category" type="checkbox" />添加儿童节目分类</label><label class="settings-toggle"><input v-model="organizationDraft.include_concert_category" type="checkbox" />添加演唱会分类</label><label class="settings-toggle"><input v-model="organizationDraft.region_grouping_enabled" type="checkbox" />按地区二次分类</label><label class="settings-toggle"><input v-model="organizationDraft.year_grouping_enabled" type="checkbox" />按年份三次分类</label></div></div>
+            <div class="settings-subsection"><h3>覆盖策略</h3><div class="settings-capability-list"><label class="settings-toggle"><input v-model="organizationDraft.prefer_remux" type="checkbox" />Remux/蓝光优先</label><label class="settings-toggle"><input v-model="organizationDraft.prefer_resolution" type="checkbox" />大分辨率优先</label><label class="settings-toggle"><input v-model="organizationDraft.prefer_dolby" type="checkbox" />杜比优先</label><label>冲突处理方式<select v-model.number="organizationDraft.conflict_mode"><option :value="2">不主动覆盖（仅检查同名）</option><option :value="1">进行覆盖：大文件优先</option><option :value="0">进行覆盖：小文件优先</option></select></label><label class="settings-toggle"><input v-model="organizationDraft.multi_version_enabled" type="checkbox" />保留杜比 + 非杜比多版本</label></div><p class="settings-note">真实移动、重命名和覆盖仍需经过已确认计划、远端前置条件核对、幂等和审计门禁。</p></div>
+            <div v-if="organizationDirty" class="settings-save-bar"><span>有未保存的整理设置</span><div><button class="secondary-button" type="button" :disabled="organizationSaving" @click="loadOrganization">取消</button><button class="primary-button" type="button" :disabled="organizationSaving" @click="saveOrganization"><LoaderCircle v-if="organizationSaving" class="spin" :size="15" /><Save v-else :size="15" />保存</button></div></div>
+            <div v-if="organizationSaveError" class="settings-state settings-state-error settings-save-error"><AlertTriangle :size="17" /><span>{{ organizationSaveError }}</span><button class="text-button" type="button" @click="loadOrganization">重新加载</button></div>
+            <p v-if="organizationActionMessage" class="settings-action-message" role="status">{{ organizationActionMessage }}</p>
+          </template>
         </section>
 
         <section v-else-if="activeSection === 'logs'" class="settings-section" aria-labelledby="logs-title">

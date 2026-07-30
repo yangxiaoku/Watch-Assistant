@@ -22,11 +22,15 @@ from watch_assistant.schemas import (
     LoggingSettingsResponse,
     LogItem,
     LogsResponse,
+    OrganizationScheduleActionResponse,
+    OrganizationSettingsPatch,
+    OrganizationSettingsResponse,
     SettingsOverviewResponse,
 )
 from watch_assistant.security import AuthContext, require_api_auth
 from watch_assistant.services.settings import (
     ContentPolicyValidationError,
+    OrganizationSettingsValidationError,
     SettingsConflict,
     SettingsService,
 )
@@ -184,6 +188,79 @@ async def patch_inspection(
         )
     except SettingsConflict as exc:
         raise HTTPException(status_code=409, detail="settings_conflict") from exc
+
+
+@router.get("/settings/organization", response_model=OrganizationSettingsResponse)
+async def get_organization(settings: SettingsDependency) -> OrganizationSettingsResponse:
+    return await settings.get_organization()
+
+
+@router.patch("/settings/organization", response_model=OrganizationSettingsResponse)
+async def patch_organization(
+    patch: OrganizationSettingsPatch,
+    settings: SettingsDependency,
+    request: Request,
+    auth: Annotated[AuthContext, Depends(require_api_auth)],
+) -> OrganizationSettingsResponse:
+    try:
+        return await settings.update_organization(
+            patch,
+            actor_type="agent" if auth.via_bearer else "web",
+            actor_id=auth.identity,
+            request_id=request.headers.get("X-Request-ID"),
+        )
+    except SettingsConflict as exc:
+        raise HTTPException(status_code=409, detail="settings_conflict") from exc
+    except OrganizationSettingsValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+
+
+@router.post(
+    "/settings/organization/run-now",
+    response_model=OrganizationScheduleActionResponse,
+)
+async def run_organization_now(
+    request: Request,
+    settings: SettingsDependency,
+) -> OrganizationScheduleActionResponse:
+    controller = getattr(request.app.state, "organization_scheduler", None)
+    if controller is None:
+        raise HTTPException(status_code=503, detail="organization_schedule_unavailable")
+    await controller.request_run_now()
+    current = await settings.get_organization()
+    return OrganizationScheduleActionResponse(
+        action="run_now",
+        queued=True,
+        schedule_enabled=current.schedule_enabled,
+        message_zh="整理已排队，当前任务完成后将立即执行。",
+    )
+
+
+@router.post(
+    "/settings/organization/stop",
+    response_model=OrganizationScheduleActionResponse,
+)
+async def stop_organization(
+    request: Request,
+    settings: SettingsDependency,
+    auth: Annotated[AuthContext, Depends(require_api_auth)],
+) -> OrganizationScheduleActionResponse:
+    current = await settings.get_organization()
+    await settings.update_organization(
+        OrganizationSettingsPatch(revision=current.revision, schedule_enabled=False),
+        actor_type="agent" if auth.via_bearer else "web",
+        actor_id=auth.identity,
+        request_id=request.headers.get("X-Request-ID"),
+    )
+    controller = getattr(request.app.state, "organization_scheduler", None)
+    if controller is not None:
+        controller.stop_pending()
+    return OrganizationScheduleActionResponse(
+        action="stop",
+        queued=False,
+        schedule_enabled=False,
+        message_zh="已关闭定时整理，并停止尚未开始的整理请求；正在执行的远端操作继续按安全流程收尾。",
+    )
 
 
 @router.get("/logs", response_model=LogsResponse)

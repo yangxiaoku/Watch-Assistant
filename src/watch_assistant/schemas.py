@@ -460,6 +460,71 @@ class InspectionSettingsPatch(BaseModel):
     revision: int = Field(ge=0)
 
 
+class OrganizationSettingsResponse(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    schedule_enabled: bool
+    scan_interval_minutes: int = Field(ge=5, le=1440)
+    source_directory_ids: list[str] = Field(max_length=50)
+    target_directory_id: str | None = None
+    video_extensions: list[str] = Field(max_length=50)
+    metadata_extensions: list[str] = Field(max_length=50)
+    rename_enabled: bool
+    media_probe_enabled: bool
+    ai_identification_enabled: bool
+    small_file_threshold_mb: float = Field(ge=0, le=10_240)
+    cleanup_empty_directories: bool
+    strm_linkage_enabled: bool
+    operation_delay_seconds: float = Field(ge=0, le=60)
+    include_children_category: bool
+    include_concert_category: bool
+    region_grouping_enabled: bool
+    year_grouping_enabled: bool
+    prefer_remux: bool
+    prefer_resolution: bool
+    prefer_dolby: bool
+    conflict_mode: Literal[0, 1, 2]
+    multi_version_enabled: bool
+    revision: int = Field(ge=0)
+
+
+class OrganizationSettingsPatch(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    schedule_enabled: bool | None = None
+    scan_interval_minutes: int | None = Field(default=None, ge=5, le=1440)
+    source_directory_ids: list[str] | None = Field(default=None, max_length=50)
+    target_directory_id: str | None = None
+    video_extensions: list[str] | None = Field(default=None, max_length=50)
+    metadata_extensions: list[str] | None = Field(default=None, max_length=50)
+    rename_enabled: bool | None = None
+    media_probe_enabled: bool | None = None
+    ai_identification_enabled: bool | None = None
+    small_file_threshold_mb: float | None = Field(default=None, ge=0, le=10_240)
+    cleanup_empty_directories: bool | None = None
+    strm_linkage_enabled: bool | None = None
+    operation_delay_seconds: float | None = Field(default=None, ge=0, le=60)
+    include_children_category: bool | None = None
+    include_concert_category: bool | None = None
+    region_grouping_enabled: bool | None = None
+    year_grouping_enabled: bool | None = None
+    prefer_remux: bool | None = None
+    prefer_resolution: bool | None = None
+    prefer_dolby: bool | None = None
+    conflict_mode: Literal[0, 1, 2] | None = None
+    multi_version_enabled: bool | None = None
+    revision: int = Field(ge=0)
+
+
+class OrganizationScheduleActionResponse(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    action: Literal["run_now", "stop"]
+    queued: bool
+    schedule_enabled: bool
+    message_zh: str
+
+
 class OrganizationPlanResponse(BaseModel):
     model_config = {"extra": "forbid"}
 

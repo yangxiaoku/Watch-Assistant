@@ -361,3 +361,99 @@ async def test_playback_flag_cannot_claim_capability_without_transport(tmp_path)
     await tmdb.aclose()
     await pansou.aclose()
     await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_organization_settings_persist_and_validate_cid_scope(tmp_path):
+    _app_instance, client, database, tmdb, pansou = await _app(tmp_path)
+    try:
+        login = await client.post("/api/v1/auth/login", json={"password": WEB_PASSWORD})
+        headers = {"X-CSRF-Token": login.json()["csrf_token"]}
+        current = await client.get("/api/v1/settings/organization")
+        assert current.status_code == 200
+        assert current.json()["schedule_enabled"] is False
+        assert current.json()["scan_interval_minutes"] == 30
+
+        updated = await client.patch(
+            "/api/v1/settings/organization",
+            json={
+                "revision": current.json()["revision"],
+                "schedule_enabled": True,
+                "scan_interval_minutes": 5,
+                "source_directory_ids": ["3482085898508567892"],
+                "target_directory_id": "2988794667098701570",
+                "video_extensions": ["MKV", "mp4"],
+                "metadata_extensions": ["SRT", "nfo"],
+                "operation_delay_seconds": 2.0,
+            },
+            headers=headers,
+        )
+        assert updated.status_code == 200
+        assert updated.json()["schedule_enabled"] is True
+        assert updated.json()["video_extensions"] == ["mkv", "mp4"]
+        assert updated.json()["metadata_extensions"] == ["srt", "nfo"]
+
+        invalid = await client.patch(
+            "/api/v1/settings/organization",
+            json={
+                "revision": updated.json()["revision"],
+                "source_directory_ids": ["3482085898508567892"],
+                "target_directory_id": "3482085898508567892",
+            },
+            headers=headers,
+        )
+        assert invalid.status_code == 422
+        assert invalid.json()["detail"] == "source_target_same"
+
+        cleared = await client.patch(
+            "/api/v1/settings/organization",
+            json={"revision": updated.json()["revision"], "target_directory_id": None},
+            headers=headers,
+        )
+        assert cleared.status_code == 200
+        assert cleared.json()["target_directory_id"] is None
+    finally:
+        await client.aclose()
+        await tmdb.aclose()
+        await pansou.aclose()
+        await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_organization_manual_run_is_independent_from_schedule_and_stop_clears_queue(tmp_path):
+    app, client, database, tmdb, pansou = await _app(tmp_path)
+
+    class FakeScheduler:
+        def __init__(self):
+            self.requested = 0
+            self.stopped = 0
+
+        async def request_run_now(self):
+            self.requested += 1
+
+        def stop_pending(self):
+            self.stopped += 1
+
+    scheduler = FakeScheduler()
+    app.state.organization_scheduler = scheduler
+    try:
+        login = await client.post("/api/v1/auth/login", json={"password": WEB_PASSWORD})
+        headers = {"X-CSRF-Token": login.json()["csrf_token"]}
+        run_now = await client.post(
+            "/api/v1/settings/organization/run-now", json={}, headers=headers
+        )
+        assert run_now.status_code == 200
+        assert run_now.json()["queued"] is True
+        assert scheduler.requested == 1
+
+        stopped = await client.post(
+            "/api/v1/settings/organization/stop", json={}, headers=headers
+        )
+        assert stopped.status_code == 200
+        assert stopped.json()["schedule_enabled"] is False
+        assert scheduler.stopped == 1
+    finally:
+        await client.aclose()
+        await tmdb.aclose()
+        await pansou.aclose()
+        await database.engine.dispose()

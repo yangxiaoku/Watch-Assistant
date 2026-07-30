@@ -1,6 +1,8 @@
 import type {
   HealthResponse,
   InspectionSettingsResponse,
+  OrganizationSettingsResponse,
+  OrganizationScheduleActionResponse,
   HomeCatalogResponse,
   InspectionBatchResponse,
   LogCategory,
@@ -13,6 +15,7 @@ import type {
   MovieMetadata,
   PatchLoggingSettingsRequest,
   PatchInspectionSettingsRequest,
+  PatchOrganizationSettingsRequest,
   P115SettingsResponse,
   P115ValidationResponse,
   SearchRequest,
@@ -223,6 +226,31 @@ export class ApiClient {
     if (filters.resourceType) params.set("resource_type", filters.resourceType);
     if (filters.resourceId) params.set("resource_id", filters.resourceId);
     return this.request<LogsResponse>(`/api/v1/logs?${params}`);
+  }
+
+  async organizationSettings(): Promise<OrganizationSettingsResponse> {
+    return this.request<OrganizationSettingsResponse>("/api/v1/settings/organization");
+  }
+
+  async updateOrganizationSettings(settings: PatchOrganizationSettingsRequest): Promise<OrganizationSettingsResponse> {
+    return this.request<OrganizationSettingsResponse>("/api/v1/settings/organization", {
+      method: "PATCH",
+      body: JSON.stringify(settings),
+    });
+  }
+
+  async runOrganizationNow(): Promise<OrganizationScheduleActionResponse> {
+    return this.request<OrganizationScheduleActionResponse>("/api/v1/settings/organization/run-now", {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+  }
+
+  async stopOrganization(): Promise<OrganizationScheduleActionResponse> {
+    return this.request<OrganizationScheduleActionResponse>("/api/v1/settings/organization/stop", {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
   }
 
   async search(

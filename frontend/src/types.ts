@@ -337,6 +337,65 @@ export interface InspectionSettingsResponse {
   revision: number;
 }
 
+export interface OrganizationSettingsResponse {
+  schedule_enabled: boolean;
+  scan_interval_minutes: number;
+  source_directory_ids: string[];
+  target_directory_id: string | null;
+  video_extensions: string[];
+  metadata_extensions: string[];
+  rename_enabled: boolean;
+  media_probe_enabled: boolean;
+  ai_identification_enabled: boolean;
+  small_file_threshold_mb: number;
+  cleanup_empty_directories: boolean;
+  strm_linkage_enabled: boolean;
+  operation_delay_seconds: number;
+  include_children_category: boolean;
+  include_concert_category: boolean;
+  region_grouping_enabled: boolean;
+  year_grouping_enabled: boolean;
+  prefer_remux: boolean;
+  prefer_resolution: boolean;
+  prefer_dolby: boolean;
+  conflict_mode: 0 | 1 | 2;
+  multi_version_enabled: boolean;
+  revision: number;
+}
+
+export interface PatchOrganizationSettingsRequest {
+  schedule_enabled?: boolean;
+  scan_interval_minutes?: number;
+  source_directory_ids?: string[];
+  target_directory_id?: string | null;
+  video_extensions?: string[];
+  metadata_extensions?: string[];
+  rename_enabled?: boolean;
+  media_probe_enabled?: boolean;
+  ai_identification_enabled?: boolean;
+  small_file_threshold_mb?: number;
+  cleanup_empty_directories?: boolean;
+  strm_linkage_enabled?: boolean;
+  operation_delay_seconds?: number;
+  include_children_category?: boolean;
+  include_concert_category?: boolean;
+  region_grouping_enabled?: boolean;
+  year_grouping_enabled?: boolean;
+  prefer_remux?: boolean;
+  prefer_resolution?: boolean;
+  prefer_dolby?: boolean;
+  conflict_mode?: 0 | 1 | 2;
+  multi_version_enabled?: boolean;
+  revision: number;
+}
+
+export interface OrganizationScheduleActionResponse {
+  action: "run_now" | "stop";
+  queued: boolean;
+  schedule_enabled: boolean;
+  message_zh: string;
+}
+
 export interface PatchInspectionSettingsRequest {
   auto_start_enabled: boolean;
   revision: number;

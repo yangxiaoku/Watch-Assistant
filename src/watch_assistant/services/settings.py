@@ -27,6 +27,8 @@ from watch_assistant.schemas import (
     LoggingLevel,
     LoggingSettingsPatch,
     LoggingSettingsResponse,
+    OrganizationSettingsPatch,
+    OrganizationSettingsResponse,
 )
 from watch_assistant.services.content_policy import (
     ContentPolicy,
@@ -102,6 +104,38 @@ class SettingsConflict(ValueError):
 
 class ContentPolicyValidationError(ValueError):
     pass
+
+
+class OrganizationSettingsValidationError(ValueError):
+    pass
+
+
+_CID_PATTERN = re.compile(r"^[1-9][0-9]{0,127}$")
+_EXTENSION_PATTERN = re.compile(r"^[a-z0-9][a-z0-9+_-]{0,15}$")
+_ORGANIZATION_DEFAULTS: dict[str, object] = {
+    "schedule_enabled": False,
+    "scan_interval_minutes": 30,
+    "source_directory_ids": [],
+    "target_directory_id": None,
+    "video_extensions": ["mkv", "mp4", "avi", "mov", "ts", "m2ts", "wmv", "flv", "webm"],
+    "metadata_extensions": ["srt", "ass", "ssa", "sub", "vtt", "nfo", "jpg", "jpeg", "png", "webp"],
+    "rename_enabled": True,
+    "media_probe_enabled": True,
+    "ai_identification_enabled": False,
+    "small_file_threshold_mb": 0.0,
+    "cleanup_empty_directories": False,
+    "strm_linkage_enabled": False,
+    "operation_delay_seconds": 1.5,
+    "include_children_category": False,
+    "include_concert_category": False,
+    "region_grouping_enabled": True,
+    "year_grouping_enabled": False,
+    "prefer_remux": True,
+    "prefer_resolution": True,
+    "prefer_dolby": False,
+    "conflict_mode": 2,
+    "multi_version_enabled": False,
+}
 
 
 def redact_log_message(message: str) -> str:
@@ -907,6 +941,61 @@ class SettingsService:
         )
         return response
 
+    async def get_organization(self) -> OrganizationSettingsResponse:
+        async with self._settings_lock, self._session_factory() as session:
+            settings = await self._get_or_create(session)
+            return _organization_response(settings)
+
+    async def update_organization(
+        self,
+        patch: OrganizationSettingsPatch,
+        *,
+        actor_type: str | None = None,
+        actor_id: str | None = None,
+        request_id: str | None = None,
+    ) -> OrganizationSettingsResponse:
+        async with self._settings_lock, self._session_factory() as session:
+            settings = await self._get_or_create(session)
+            if settings.revision != patch.revision:
+                raise SettingsConflict
+            current = _organization_values(settings)
+            values = current | patch.model_dump(exclude_unset=True, exclude={"revision"})
+            try:
+                values = _validate_organization_values(values)
+            except ValueError as exc:
+                raise OrganizationSettingsValidationError(str(exc)) from None
+            settings.organization_settings_json = json.dumps(
+                values, ensure_ascii=False, separators=(",", ":")
+            )
+            settings.revision += 1
+            changed = sorted(
+                key
+                for key, value in values.items()
+                if current.get(key) != value
+            )
+            self._add_audit_record(
+                session,
+                event="settings.changed",
+                fields={
+                    "status": "organization",
+                    "changed_fields": changed,
+                },
+                actor_type=actor_type,
+                actor_id=actor_id,
+                request_id=request_id,
+            )
+            await session.commit()
+            response = _organization_response(settings)
+        await self.log_event(
+            "settings.changed",
+            level=LoggingLevel.INFO,
+            fields={"status": "organization"},
+            actor_type=actor_type,
+            actor_id=actor_id,
+            request_id=request_id,
+        )
+        return response
+
     @staticmethod
     def _add_audit_record(
         session: AsyncSession,
@@ -953,6 +1042,9 @@ class SettingsService:
                 inspection_auto_start_enabled=True,
                 revision=0,
                 content_policy_json="{}",
+                organization_settings_json=json.dumps(
+                    _ORGANIZATION_DEFAULTS, ensure_ascii=False, separators=(",", ":")
+                ),
             )
             session.add(settings)
             await session.commit()
@@ -1012,3 +1104,51 @@ def _inspection_response(settings: ApplicationSettings) -> InspectionSettingsRes
         auto_start_enabled=bool(settings.inspection_auto_start_enabled),
         revision=settings.revision,
     )
+
+
+def _organization_values(settings: ApplicationSettings) -> dict[str, object]:
+    try:
+        raw = json.loads(settings.organization_settings_json or "{}")
+    except (TypeError, ValueError):
+        raw = {}
+    values = dict(_ORGANIZATION_DEFAULTS)
+    if isinstance(raw, dict):
+        values.update(raw)
+    return _validate_organization_values(values)
+
+
+def _validate_organization_values(values: dict[str, object]) -> dict[str, object]:
+    result = dict(_ORGANIZATION_DEFAULTS)
+    result.update(values)
+    sources = result.get("source_directory_ids")
+    if not isinstance(sources, list) or any(
+        not isinstance(item, str) or _CID_PATTERN.fullmatch(item) is None for item in sources
+    ):
+        raise ValueError("invalid_source_directory_ids")
+    normalized_sources = list(dict.fromkeys(sources))
+    target = result.get("target_directory_id")
+    if target == "":
+        target = None
+    if target is not None and (
+        not isinstance(target, str) or _CID_PATTERN.fullmatch(target) is None
+    ):
+        raise ValueError("invalid_target_directory_id")
+    if target is not None and target in normalized_sources:
+        raise ValueError("source_target_same")
+    for key in ("video_extensions", "metadata_extensions"):
+        extensions = result.get(key)
+        if not isinstance(extensions, list) or any(
+            not isinstance(item, str)
+            or _EXTENSION_PATTERN.fullmatch(item.strip().lower()) is None
+            for item in extensions
+        ):
+            raise ValueError(f"invalid_{key}")
+        result[key] = list(dict.fromkeys(item.strip().lower() for item in extensions))
+    result["source_directory_ids"] = normalized_sources
+    result["target_directory_id"] = target
+    return result
+
+
+def _organization_response(settings: ApplicationSettings) -> OrganizationSettingsResponse:
+    values = _organization_values(settings)
+    return OrganizationSettingsResponse(**values, revision=settings.revision)

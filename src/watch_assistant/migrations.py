@@ -38,6 +38,19 @@ def _add_application_settings_columns(connection: Connection) -> None:
             )
 
 
+def _add_organization_settings_column(connection: Connection) -> None:
+    columns = {
+        item["name"] for item in inspect(connection).get_columns("application_settings")
+    }
+    if "organization_settings_json" not in columns:
+        connection.execute(
+            text(
+                "ALTER TABLE application_settings "
+                "ADD COLUMN organization_settings_json TEXT NOT NULL DEFAULT '{}'"
+            )
+        )
+
+
 def _create_library_index_tables(connection: Connection) -> None:
     """Create the forward-only read/index tables for legacy SQLite databases."""
 
@@ -550,6 +563,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration("038_audit_records_legacy_rebuild", _rebuild_legacy_audit_records),
     Migration("039_subscription_resource_observations", _create_subscription_resource_observations_table),
     Migration("040_strm_manifest_entries", _create_strm_manifest_table),
+    Migration("041_organization_settings", _add_organization_settings_column),
 )
 
 
