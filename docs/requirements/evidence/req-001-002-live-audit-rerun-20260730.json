@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "audit_date": "2026-07-30",
+  "baseline": "codex/publish-main@f9ff953",
+  "scope": "受管低风险测试目录；不包含生产影视库",
+  "organization": {
+    "preview": {
+      "status": "preview",
+      "source_count": 1,
+      "scope_confirmed": true,
+      "write_started": false,
+      "plan_digest_verified": true
+    },
+    "confirmed_execution": {
+      "status": "success",
+      "source_count": 1,
+      "receipt_count": 6,
+      "cleanup": "restored",
+      "write_started": true
+    },
+    "postcondition": {
+      "complete": true,
+      "files": 1,
+      "directories": 0,
+      "probe_directories_remaining": 0
+    }
+  },
+  "strm": {
+    "status": "success",
+    "scope_verified": true,
+    "initial_scan_complete": true,
+    "initial_generated": 1,
+    "changed_scan_complete": true,
+    "incremental_generated_after_rename": 1,
+    "restored_scan_complete": true,
+    "incremental_generated_after_restore": 1,
+    "cleanup_failed": 0,
+    "cleanup_retired": 0,
+    "output_root_is_temporary": true,
+    "production_root_touched": false,
+    "permanent_delete_used": false
+  },
+  "permanent_delete": {
+    "status": "blocked",
+    "error_code": "write_gate_closed",
+    "write_started": false,
+    "production_flag": false,
+    "contract_verified": false
+  },
+  "secrets_scan": "clean",
+  "notes": [
+    "远端测试文件在组织和 STRM 流程结束后均恢复原位置与原名称。",
+    "本证据不代表生产影视库已完成首次配置、计划预览或生产写入。",
+    "STRM 播放、生产清理和永久删除继续保持独立门禁。"
+  ]
+}
