@@ -120,4 +120,6 @@ API 返回顶层 workflow 和分页子任务，不返回敏感链接。REQ-003 �
 - 本轮补充 FLOW-006：工作流列表增加服务端 `subscription_id`、`stage`、`stage_status` 筛选，证据见 `evidence/2026-07-29-workflow-filtering.md`。
 - 本轮补充 FLOW-004/FLOW-005：增加受保护的人工确认和 fail-closed 取消接口，证据见 `evidence/2026-07-29-workflow-approval-cancel.md`。
 - 本轮补充 FLOW-007：`watchctl workflow approve|reject|cancel` 复用同一审批/取消 API，保留统一错误和审计关联。
+- 本轮补充 FLOW-002：整理 operation 可通过受保护 API 关联 workflow；排队、claim、成功、失败、
+  不确定、取消和重试会同步 `organization` 阶段，关联使用持久 `workflow_id` 和 operation ID。
 - 剩余阻断：真实 115 写入、STRM 真实播放契约及 PanSou/qB 外部网络基线仍按 `docs/requirements/BLOCKERS.md` 保持门禁关闭。

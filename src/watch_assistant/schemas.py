@@ -559,6 +559,7 @@ class OrganizationOperationQueueRequest(BaseModel):
     idempotency_key: str = Field(min_length=1, max_length=255)
     digest: str | None = Field(default=None, min_length=64, max_length=64)
     confirm: bool = False
+    workflow_id: str | None = Field(default=None, min_length=1, max_length=40)
 
 
 class OrganizationOperationBatchItem(BaseModel):
@@ -569,6 +570,7 @@ class OrganizationOperationBatchItem(BaseModel):
     idempotency_key: str = Field(min_length=1, max_length=255)
     digest: str | None = Field(default=None, min_length=64, max_length=64)
     confirm: bool = False
+    workflow_id: str | None = Field(default=None, min_length=1, max_length=40)
 
 
 class OrganizationOperationBatchRequest(BaseModel):

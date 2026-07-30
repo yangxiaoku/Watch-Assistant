@@ -255,6 +255,43 @@ async def test_queue_is_idempotent_and_rejects_unconfirmed_stale_or_expired_plan
 
 
 @pytest.mark.integration
+async def test_queue_can_link_organization_operation_to_workflow(tmp_path: Path):
+    client, database = await _client(tmp_path, execution_enabled=True)
+    headers = await _auth_headers(client)
+    workflow_response = await client.post(
+        "/api/v1/workflows", json={"media_type": "movie"}, headers=headers
+    )
+    assert workflow_response.status_code == 201
+    workflow_id = workflow_response.json()["id"]
+    queued = await client.post(
+        "/api/v1/organization-plans/plan-ready/operation",
+        json={
+            "expected_revision": 1,
+            "idempotency_key": "workflow-queue-key",
+            "workflow_id": workflow_id,
+        },
+        headers=headers,
+    )
+    assert queued.status_code == 200
+    operation_id = queued.json()["operation_id"]
+    async with database.session_factory() as session:
+        operation = await session.get(OrganizationOperation, operation_id)
+        assert operation is not None
+        assert operation.workflow_id == workflow_id
+    detail = await client.get(f"/api/v1/workflows/{workflow_id}", headers=headers)
+    assert detail.status_code == 200
+    organization = next(
+        stage
+        for stage in detail.json()["stages"]
+        if stage["stage"] == "organization"
+    )
+    assert organization["status"] == "pending"
+    assert organization["child_type"] == "organization_operation"
+    assert organization["child_id"] == operation_id
+    await _close(client, database)
+
+
+@pytest.mark.integration
 async def test_agent_operation_requires_confirmation_and_current_digest(tmp_path: Path):
     client, database = await _client(tmp_path, execution_enabled=True)
     raw_token = "wa_at_execute_contract"

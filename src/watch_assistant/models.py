@@ -701,6 +701,9 @@ class OrganizationOperation(Base):
         unique=True,
         index=True,
     )
+    workflow_id: Mapped[str | None] = mapped_column(
+        ForeignKey("workflows.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     plan_revision: Mapped[int] = mapped_column(Integer)
     idempotency_key: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     status: Mapped[OrganizationOperationStatus] = mapped_column(

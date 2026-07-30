@@ -343,6 +343,30 @@ def _create_directory_dirty_generation_table(connection: Connection) -> None:
     )
 
 
+def _add_organization_operation_workflow(connection: Connection) -> None:
+    """Add the optional top-level workflow link to organization operations."""
+
+    if not inspect(connection).has_table("organization_operations"):
+        return
+    columns = {
+        item["name"]
+        for item in inspect(connection).get_columns("organization_operations")
+    }
+    if "workflow_id" not in columns:
+        connection.execute(
+            text(
+                "ALTER TABLE organization_operations "
+                "ADD COLUMN workflow_id VARCHAR(40)"
+            )
+        )
+    connection.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_organization_operations_workflow_id "
+            "ON organization_operations (workflow_id)"
+        )
+    )
+
+
 def _create_audit_records_table(connection: Connection) -> None:
     """Create durable security audit storage for existing installations."""
 
@@ -762,6 +786,10 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(
         "047_directory_dirty_generations",
         _create_directory_dirty_generation_table,
+    ),
+    Migration(
+        "048_organization_operation_workflow",
+        _add_organization_operation_workflow,
     ),
 )
 

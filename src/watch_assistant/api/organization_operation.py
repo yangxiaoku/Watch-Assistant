@@ -80,6 +80,7 @@ async def queue_organization_operation(
             plan_id,
             idempotency_key=payload.idempotency_key,
             expected_plan_revision=payload.expected_revision,
+            workflow_id=payload.workflow_id,
         )
     except Exception as exc:  # noqa: BLE001 - map only stable local errors
         raise _http_error(exc) from None
@@ -109,6 +110,7 @@ async def queue_organization_operations_batch(
                 item.plan_id,
                 idempotency_key=item.idempotency_key,
                 expected_plan_revision=item.expected_revision,
+                workflow_id=item.workflow_id,
             )
         except Exception as exc:  # noqa: BLE001 - isolate each local item
             status_code, code, message = _error_values(exc)
@@ -225,6 +227,10 @@ _STATUSES = {
     "invalid_plan_id": 422,
     "invalid_idempotency_key": 422,
     "invalid_operation_id": 422,
+    "invalid_workflow_id": 422,
+    "workflow_not_found": 404,
+    "workflow_stage_missing": 409,
+    "workflow_id_conflict": 409,
     "operation_not_found": 404,
     "confirmation_required": 409,
     "plan_digest_required": 422,
@@ -245,6 +251,10 @@ _MESSAGES = {
     "invalid_plan_id": "计划标识无效",
     "invalid_idempotency_key": "幂等标识无效",
     "invalid_operation_id": "操作标识无效",
+    "invalid_workflow_id": "工作流标识无效",
+    "workflow_not_found": "工作流不存在",
+    "workflow_stage_missing": "工作流整理阶段不存在",
+    "workflow_id_conflict": "操作已关联其他工作流",
     "operation_not_found": "操作不存在",
     "confirmation_required": "缺少操作确认",
     "plan_digest_required": "缺少计划摘要",

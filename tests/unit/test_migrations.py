@@ -287,7 +287,7 @@ async def test_dirty_generation_migration_backfills_unconsumed_events(tmp_path):
                 "WHERE migration_id = '047_directory_dirty_generations'"
             )
         )
-        await connection.run_sync(run_migrations, MIGRATIONS[-1:])
+        await connection.run_sync(run_migrations, MIGRATIONS[-2:])
 
     async with database.session_factory() as session:
         generation = await session.get(
