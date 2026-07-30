@@ -32,6 +32,8 @@ import type {
   LogsResponse,
   P115SettingsResponse,
   P115ValidationResponse,
+  P115DirectoryItem,
+  P115LoginDevice,
   SettingsOverviewResponse,
 } from "../types";
 
@@ -110,6 +112,15 @@ const p115CredentialSaving = ref(false);
 const p115CredentialResetting = ref(false);
 const tmdbCredentialError = ref("");
 const p115CredentialError = ref("");
+const p115Devices = ref<P115LoginDevice[]>([]);
+const p115QrImage = ref("");
+const p115QrSessionId = ref("");
+const p115QrStatus = ref<"idle" | "waiting" | "scanned" | "ready" | "expired" | "error">("idle");
+const p115QrDeviceCode = ref("web");
+const p115QrDeviceName = ref("这台电脑");
+const p115QrError = ref("");
+const p115QrBusy = ref(false);
+let p115QrPollTimer: number | null = null;
 const credentialMutationBusy = computed(() => tmdbSaving.value || tmdbResetting.value || p115CredentialSaving.value || p115CredentialResetting.value);
 const p115MutationBusy = computed(() => p115CredentialSaving.value || p115CredentialResetting.value);
 const inspectionSettings = ref<InspectionSettingsResponse | null>(null);
@@ -132,6 +143,14 @@ const organizationSourceDraft = ref("");
 const organizationTargetDraft = ref("");
 const organizationVideoExtensionsDraft = ref("");
 const organizationMetadataExtensionsDraft = ref("");
+const directoryPickerOpen = ref(false);
+const directoryPickerMode = ref<"source" | "target">("source");
+const directoryPickerLoading = ref(false);
+const directoryPickerError = ref("");
+const directoryPickerItems = ref<P115DirectoryItem[]>([]);
+const directoryPickerCurrentId = ref("");
+const directoryPickerCurrentName = ref("当前配置根目录");
+const directoryPickerTrail = ref<P115DirectoryItem[]>([]);
 const organizationDraft = ref({
   schedule_enabled: false,
   scan_interval_minutes: 30,
@@ -244,6 +263,85 @@ async function loadP115() {
     if (settingsMounted) p115Error.value = exception instanceof ApiError ? exception.message : "115 状态加载失败，请稍后重试";
   } finally {
     if (settingsMounted) p115Loading.value = false;
+  }
+}
+
+async function loadP115Devices() {
+  try {
+    p115Devices.value = (await props.api.p115Devices()).items;
+  } catch {
+    p115Devices.value = [];
+  }
+}
+
+function stopP115QrPolling() {
+  if (p115QrPollTimer !== null) {
+    window.clearTimeout(p115QrPollTimer);
+    p115QrPollTimer = null;
+  }
+}
+
+async function startP115QrLogin() {
+  stopP115QrPolling();
+  p115QrBusy.value = true;
+  p115QrError.value = "";
+  p115QrStatus.value = "idle";
+  try {
+    const response = await props.api.createP115Qrcode(p115QrDeviceCode.value, p115QrDeviceName.value.trim() || "这台电脑");
+    p115QrImage.value = response.image_data_url;
+    p115QrSessionId.value = response.session_id;
+    p115QrStatus.value = "waiting";
+    await pollP115QrLogin();
+  } catch (exception) {
+    p115QrStatus.value = "error";
+    p115QrError.value = exception instanceof ApiError ? exception.message : "二维码生成失败，请稍后重试";
+    p115QrBusy.value = false;
+  }
+}
+
+async function pollP115QrLogin() {
+  if (!p115QrSessionId.value) return;
+  try {
+    const response = await props.api.pollP115Qrcode(p115QrSessionId.value);
+    p115QrStatus.value = response.status;
+    if (response.status === "ready") {
+      p115QrBusy.value = false;
+      p115QrError.value = "扫码设备已保存，并已切换为当前设备。";
+      await Promise.all([loadCredentials(), loadP115(), loadP115Devices()]);
+      return;
+    }
+    if (response.status === "expired") {
+      p115QrBusy.value = false;
+      p115QrError.value = "二维码已过期，请重新生成。";
+      return;
+    }
+    p115QrPollTimer = window.setTimeout(() => void pollP115QrLogin(), 2000);
+  } catch (exception) {
+    p115QrBusy.value = false;
+    p115QrStatus.value = "error";
+    p115QrError.value = exception instanceof ApiError ? exception.message : "二维码状态查询失败，请稍后重试";
+  }
+}
+
+async function activateP115Device(device: P115LoginDevice) {
+  if (!credentials.value || device.active || p115QrBusy.value) return;
+  p115QrError.value = "";
+  try {
+    p115Devices.value = (await props.api.activateP115Device(device.id, credentials.value.revision)).items;
+    await Promise.all([loadCredentials(), loadP115()]);
+    p115QrError.value = `已切换到“${device.name}”，其他设备仍保留。`;
+  } catch (exception) {
+    p115QrError.value = exception instanceof ApiError ? exception.message : "设备切换失败，请稍后重试";
+  }
+}
+
+async function revokeP115Device(device: P115LoginDevice) {
+  if (device.active || p115QrBusy.value) return;
+  try {
+    await props.api.revokeP115Device(device.id);
+    await loadP115Devices();
+  } catch (exception) {
+    p115QrError.value = exception instanceof ApiError ? exception.message : "设备移除失败，请稍后重试";
   }
 }
 
@@ -444,6 +542,56 @@ async function loadOrganization() {
   } finally {
     organizationLoading.value = false;
   }
+}
+
+async function openDirectoryPicker(mode: "source" | "target") {
+  directoryPickerMode.value = mode;
+  directoryPickerOpen.value = true;
+  directoryPickerTrail.value = [];
+  directoryPickerCurrentId.value = "";
+  directoryPickerCurrentName.value = "当前配置根目录";
+  await loadDirectoryPicker();
+}
+
+async function loadDirectoryPicker() {
+  directoryPickerLoading.value = true;
+  directoryPickerError.value = "";
+  try {
+    const response = await props.api.p115Directories(directoryPickerCurrentId.value || undefined);
+    directoryPickerCurrentId.value = response.parent_id;
+    directoryPickerItems.value = response.items;
+  } catch (exception) {
+    directoryPickerError.value = exception instanceof ApiError ? exception.message : "目录读取失败，请检查 115 登录状态";
+  } finally {
+    directoryPickerLoading.value = false;
+  }
+}
+
+async function enterDirectory(item: P115DirectoryItem) {
+  directoryPickerTrail.value.push({ id: directoryPickerCurrentId.value, name: directoryPickerCurrentName.value });
+  directoryPickerCurrentId.value = item.id;
+  directoryPickerCurrentName.value = item.name;
+  await loadDirectoryPicker();
+}
+
+async function leaveDirectory() {
+  const previous = directoryPickerTrail.value.pop();
+  if (!previous) return;
+  directoryPickerCurrentId.value = previous.id;
+  directoryPickerCurrentName.value = previous.name;
+  await loadDirectoryPicker();
+}
+
+function chooseDirectory() {
+  if (!directoryPickerCurrentId.value) return;
+  if (directoryPickerMode.value === "target") {
+    organizationTargetDraft.value = directoryPickerCurrentId.value;
+  } else {
+    const ids = organizationList(organizationSourceDraft.value);
+    if (!ids.includes(directoryPickerCurrentId.value)) ids.push(directoryPickerCurrentId.value);
+    organizationSourceDraft.value = ids.join(", ");
+  }
+  directoryPickerOpen.value = false;
 }
 
 const organizationDirty = computed(() => {
@@ -822,6 +970,7 @@ onMounted(() => {
   void loadLogging();
   void loadInspection();
   void loadP115();
+  void loadP115Devices();
   void loadOrganization();
   document.addEventListener("visibilitychange", onVisibilityChange);
   syncLogsRefreshTimer();
@@ -834,6 +983,7 @@ onBeforeUnmount(() => {
     window.clearInterval(logsRefreshTimer);
     logsRefreshTimer = null;
   }
+  stopP115QrPolling();
 });
 
 watch(autoRefreshLogs, syncLogsRefreshTimer);
@@ -876,9 +1026,15 @@ watch(autoRefreshLogs, syncLogsRefreshTimer);
               <header class="credential-panel-heading"><div><p class="eyebrow">P115</p><h3 id="p115-credential-title">P115 Cookie</h3></div><Cookie :size="20" /></header>
               <dl class="credential-status-grid"><div><dt>是否配置</dt><dd :class="credentials.p115_cookie.configured ? 'status-ok' : 'status-degraded'">{{ credentials.p115_cookie.configured ? '已配置' : '未配置' }}</dd></div><div><dt>来源</dt><dd>{{ credentialSourceLabel(credentials.p115_cookie.source) }}</dd></div><div><dt>结构状态</dt><dd :class="credentials.p115_cookie.structure_valid ? 'status-ok' : 'status-degraded'">{{ credentials.p115_cookie.structure_valid ? '结构正常' : '结构异常' }}</dd></div><div><dt>就绪状态</dt><dd :class="credentials.p115_cookie.ready ? 'status-ok' : 'status-degraded'">{{ credentials.p115_cookie.ready ? '已就绪' : '未就绪' }}</dd></div><div><dt>最后更新时间</dt><dd>{{ credentials.p115_cookie.last_updated_at ? formatTimestamp(credentials.p115_cookie.last_updated_at) : '未知' }}</dd></div></dl>
               <div class="credential-capabilities"><span>磁力云下载 <strong :class="p115?.capabilities.magnet ? 'status-ok' : 'status-degraded'">{{ p115 ? capabilityLabel(p115.capabilities.magnet) : '未知' }}</strong></span><span>115 分享转存 <strong :class="p115?.capabilities.share ? 'status-ok' : 'status-degraded'">{{ p115 ? (p115.capabilities.share ? '可用' : '未启用') : '未知' }}</strong></span></div>
-              <div class="credential-form"><label>Cookie<input v-model="p115CookieDraft" type="password" autocomplete="new-password" spellcheck="false" aria-label="P115 Cookie" placeholder="输入新的 Cookie" :disabled="credentialMutationBusy" /></label><div class="credential-actions"><button class="primary-button" type="button" :disabled="credentialMutationBusy || validationState === 'running'" @click="saveP115Credential"><LoaderCircle v-if="p115CredentialSaving" class="spin" :size="15" /><Save v-else :size="15" />保存并验证</button><button class="secondary-button" type="button" :disabled="credentialMutationBusy || validationState === 'running' || credentials.p115_cookie.source !== 'managed'" @click="resetP115Credential"><LoaderCircle v-if="p115CredentialResetting" class="spin" :size="15" /><RefreshCw v-else :size="15" />恢复 TgtoDrive</button><button class="secondary-button" type="button" :disabled="p115MutationBusy || validationState === 'running'" @click="validateP115"><LoaderCircle v-if="validationState === 'running'" class="spin" :size="15" /><Cookie v-else :size="15" />验证当前 Cookie</button></div></div>
+              <div class="credential-form"><label>高级：手动 Cookie<input v-model="p115CookieDraft" type="password" autocomplete="new-password" spellcheck="false" aria-label="P115 Cookie" placeholder="扫码不可用时再输入" :disabled="credentialMutationBusy" /></label><div class="credential-actions"><button class="primary-button" type="button" :disabled="credentialMutationBusy || validationState === 'running'" @click="saveP115Credential"><LoaderCircle v-if="p115CredentialSaving" class="spin" :size="15" /><Save v-else :size="15" />保存并验证</button><button class="secondary-button" type="button" :disabled="credentialMutationBusy || validationState === 'running' || credentials.p115_cookie.source !== 'managed'" @click="resetP115Credential"><LoaderCircle v-if="p115CredentialResetting" class="spin" :size="15" /><RefreshCw v-else :size="15" />恢复 TgtoDrive</button><button class="secondary-button" type="button" :disabled="p115MutationBusy || validationState === 'running'" @click="validateP115"><LoaderCircle v-if="validationState === 'running'" class="spin" :size="15" /><Cookie v-else :size="15" />验证当前 Cookie</button></div></div>
               <p v-if="p115CredentialError" class="settings-state settings-state-error credential-error" role="alert"><AlertTriangle :size="16" />{{ p115CredentialError }}<button v-if="p115CredentialError.includes('其他请求')" class="text-button" type="button" @click="loadCredentials">重新加载</button></p>
               <p v-if="validationMessage" :class="['settings-action-message', validationClass(validationState)]" role="status">{{ validationMessage }}</p>
+              <div class="p115-qr-box">
+                <div class="p115-qr-heading"><div><h4>扫码登录新设备</h4><p>每次扫码都会保存为独立设备，不会覆盖已保存的其他设备。</p></div><button class="secondary-button" type="button" :disabled="p115QrBusy" @click="startP115QrLogin">{{ p115QrBusy ? '等待扫码' : '生成二维码' }}</button></div>
+                <div v-if="p115QrImage" class="p115-qr-content"><img :src="p115QrImage" alt="115 登录二维码" /><div><label class="settings-form-label">设备名称<input v-model="p115QrDeviceName" maxlength="64" :disabled="p115QrBusy" /></label><label class="settings-form-label">115 设备类型<select v-model="p115QrDeviceCode" :disabled="p115QrBusy"><option value="web">网页端</option><option value="ios">iPhone / iPad</option><option value="android">安卓端</option><option value="qios">管理端 iPhone</option><option value="qipad">管理端 iPad</option><option value="qandroid">管理端安卓</option></select></label><p class="settings-note">请用 115 扫码确认。设备类型对应 115 的登录设备码；同一类型可能受 115 官方登录限制影响。</p><strong v-if="p115QrStatus === 'scanned'" class="status-ok">已扫码，等待确认</strong><strong v-else-if="p115QrStatus === 'waiting'" class="status-unknown">等待扫码</strong></div></div>
+                <p v-if="p115QrError" class="settings-action-message" role="status">{{ p115QrError }}</p>
+              </div>
+              <div class="p115-device-list"><div class="p115-device-list-heading"><h4>已保存的登录设备</h4><button class="text-button" type="button" @click="loadP115Devices">刷新</button></div><p v-if="!p115Devices.length" class="settings-note">暂无扫码设备。手动 Cookie 不会显示在这里。</p><div v-for="device in p115Devices" :key="device.id" class="p115-device-row"><div><strong>{{ device.name }}</strong><small>{{ device.device_code }} · {{ device.last_used_at ? formatTimestamp(device.last_used_at) : '未使用' }}</small></div><div><strong v-if="device.active" class="status-ok">当前使用</strong><button v-else class="text-button" type="button" @click="activateP115Device(device)">切换</button><button v-if="!device.active" class="text-button danger-text" type="button" @click="revokeP115Device(device)">移除</button></div></div></div>
             </section>
           </div>
         </section>
@@ -889,7 +1045,7 @@ watch(autoRefreshLogs, syncLogsRefreshTimer);
           <div v-else-if="organizationError" class="settings-state settings-state-error"><AlertTriangle :size="18" /><span>{{ organizationError }}</span><button class="text-button" type="button" @click="loadOrganization">重试</button></div>
           <template v-else-if="organizationSettings">
             <details class="settings-subsection" open><summary><h3>整理执行</h3><span class="settings-section-disclosure" aria-hidden="true">⌄</span></summary><label class="settings-toggle"><input v-model="organizationDraft.schedule_enabled" type="checkbox" />115 网盘定时整理开关：已启用时会按扫描间隔自动整理；关闭时不会自动整理，但手动立即整理不受影响</label><div class="settings-form-grid"><label>扫描频率（分钟）<input v-model.number="organizationDraft.scan_interval_minutes" type="number" min="5" max="1440" /></label></div><p class="settings-note">建议不低于 5 分钟。停止整理会自动关闭定时开关并保存，正在执行的远端操作不会被强行中断。</p></details>
-            <details class="settings-subsection" open><summary><h3>扫描来源与归档目录</h3><span class="settings-section-disclosure" aria-hidden="true">⌄</span></summary><p class="settings-note">源目录可以填写多个 CID，目标目录只能填写一个。源目录与目标目录不能相同；目录上下级关系会在只读范围验证时再次核对。</p><div class="settings-form-grid"><label>源目录 ID（逗号分隔）<input v-model="organizationSourceDraft" inputmode="numeric" placeholder="例如 3482085898508567892" /></label><label>目标目录 ID<input v-model="organizationTargetDraft" inputmode="numeric" placeholder="输入归档目录 CID" /></label></div></details>
+            <details class="settings-subsection" open><summary><h3>扫描来源与归档目录</h3><span class="settings-section-disclosure" aria-hidden="true">⌄</span></summary><p class="settings-note">从已配置的 115 目标根目录浏览并选择，保存时只写入目录 ID。源目录可以选择多个，目标目录只能选择一个；源目录与目标目录不能相同。</p><div class="directory-selection-grid"><div class="directory-selection-field"><span>扫描来源</span><div class="directory-chips"><span v-for="id in organizationList(organizationSourceDraft)" :key="id" class="directory-chip">{{ id }}<button type="button" aria-label="移除扫描来源" @click="organizationSourceDraft = organizationList(organizationSourceDraft).filter(item => item !== id).join(', ')">×</button></span><span v-if="!organizationList(organizationSourceDraft).length" class="settings-note">尚未选择</span></div><button class="secondary-button" type="button" @click="openDirectoryPicker('source')">📂 选择来源目录</button><label class="directory-manual">高级：手动填写 CID<input v-model="organizationSourceDraft" inputmode="numeric" placeholder="多个 CID 用逗号分隔" /></label></div><div class="directory-selection-field"><span>归档目标</span><span v-if="organizationTargetDraft" class="directory-chip">{{ organizationTargetDraft }}</span><span v-else class="settings-note">尚未选择</span><button class="secondary-button" type="button" @click="openDirectoryPicker('target')">📂 选择归档目录</button><label class="directory-manual">高级：手动填写 CID<input v-model="organizationTargetDraft" inputmode="numeric" placeholder="单个归档目录 CID" /></label></div></div></details>
             <details class="settings-subsection" open><summary><h3>识别与命名</h3><span class="settings-section-disclosure" aria-hidden="true">⌄</span></summary><div class="settings-form-grid"><label>视频文件类型（逗号分隔）<input v-model="organizationVideoExtensionsDraft" placeholder="mkv, mp4, avi" /></label><label>字幕/元数据类型（逗号分隔）<input v-model="organizationMetadataExtensionsDraft" placeholder="srt, ass, nfo" /></label></div><div class="settings-capability-list"><label class="settings-toggle"><input v-model="organizationDraft.rename_enabled" type="checkbox" />标准化重命名</label><label class="settings-toggle"><input v-model="organizationDraft.media_probe_enabled" type="checkbox" />媒体信息提取完善命名</label><label class="settings-toggle"><input v-model="organizationDraft.ai_identification_enabled" type="checkbox" />AI 辅助识别</label></div><p class="settings-note">AI 辅助识别需要先在实用工具完成 API 配置；未配置时不会调用 AI。</p></details>
             <details class="settings-subsection" open><summary><h3>整理规则</h3><span class="settings-section-disclosure" aria-hidden="true">⌄</span></summary><div class="settings-form-grid"><label>小文件过滤（MB）<input v-model.number="organizationDraft.small_file_threshold_mb" type="number" min="0" step="0.1" /></label><label>操作延时（秒）<input v-model.number="organizationDraft.operation_delay_seconds" type="number" min="0" max="60" step="0.1" /></label></div><div class="settings-capability-list"><label class="settings-toggle"><input v-model="organizationDraft.cleanup_empty_directories" type="checkbox" />整理后清理空文件夹</label><label class="settings-toggle"><input v-model="organizationDraft.strm_linkage_enabled" type="checkbox" />联动生成 STRM</label></div></details>
             <details class="settings-subsection" open><summary><h3>分类策略</h3><span class="settings-section-disclosure" aria-hidden="true">⌄</span></summary><div class="settings-capability-list"><label class="settings-toggle"><input v-model="organizationDraft.include_children_category" type="checkbox" />添加儿童节目分类</label><label class="settings-toggle"><input v-model="organizationDraft.include_concert_category" type="checkbox" />添加演唱会分类</label><label class="settings-toggle"><input v-model="organizationDraft.region_grouping_enabled" type="checkbox" />按地区二次分类</label><label class="settings-toggle"><input v-model="organizationDraft.year_grouping_enabled" type="checkbox" />按年份三次分类</label></div></details>
@@ -899,6 +1055,15 @@ watch(autoRefreshLogs, syncLogsRefreshTimer);
             <p v-if="organizationActionMessage" class="settings-action-message" role="status">{{ organizationActionMessage }}</p>
           </template>
         </section>
+
+        <div v-if="directoryPickerOpen" class="directory-picker-backdrop" role="presentation" @click.self="directoryPickerOpen = false">
+          <section class="directory-picker" role="dialog" aria-modal="true" aria-labelledby="directory-picker-title">
+            <header class="directory-picker-heading"><div><p class="eyebrow">115 网盘</p><h2 id="directory-picker-title">选择{{ directoryPickerMode === 'source' ? '扫描来源' : '归档目标' }}目录</h2><p>{{ directoryPickerCurrentName }}</p></div><button class="icon-button" type="button" aria-label="关闭目录选择器" title="关闭" @click="directoryPickerOpen = false">×</button></header>
+            <div v-if="directoryPickerLoading" class="settings-loading"><LoaderCircle class="spin" :size="20" />正在读取目录</div>
+            <div v-else-if="directoryPickerError" class="settings-state settings-state-error"><AlertTriangle :size="18" /><span>{{ directoryPickerError }}</span><button class="text-button" type="button" @click="loadDirectoryPicker">重试</button></div>
+            <template v-else><div class="directory-picker-toolbar"><button class="secondary-button" type="button" :disabled="!directoryPickerTrail.length" @click="leaveDirectory">返回上级</button><button class="primary-button" type="button" :disabled="!directoryPickerCurrentId" @click="chooseDirectory">选择当前目录</button></div><div v-if="!directoryPickerItems.length" class="settings-empty-block">当前目录没有可浏览的子目录。</div><div class="directory-picker-list"><button v-for="item in directoryPickerItems" :key="item.id" type="button" class="directory-picker-item" @click="enterDirectory(item)"><span>📁</span><span>{{ item.name }}</span><small>{{ item.id }}</small><span>进入</span></button></div></template>
+          </section>
+        </div>
 
         <section v-else-if="activeSection === 'logs'" class="settings-section" aria-labelledby="logs-title">
           <header class="settings-section-heading"><div><p class="eyebrow">事件流</p><h2 id="logs-title">日志</h2></div><div class="settings-section-actions"><label class="settings-toggle"><input v-model="autoRefreshLogs" type="checkbox" />自动刷新</label><button class="icon-button" type="button" title="刷新日志" aria-label="刷新日志" :disabled="logsLoading" @click="refreshLogs"><RefreshCw :size="16" :class="{ spin: logsLoading }" /></button></div></header>

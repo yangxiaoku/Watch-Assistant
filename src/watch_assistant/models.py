@@ -73,6 +73,25 @@ class ApplicationSettings(Base):
     )
 
 
+class P115LoginDevice(Base):
+    """Encrypted, independently switchable 115 login sessions."""
+
+    __tablename__ = "p115_login_devices"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(String(64), nullable=False)
+    device_code: Mapped[str] = mapped_column(String(32), nullable=False)
+    cookie_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    last_used_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+
+
 class AuditRecord(Base):
     """Durable record for security-sensitive mutations."""
 

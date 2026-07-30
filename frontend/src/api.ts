@@ -253,6 +253,38 @@ export class ApiClient {
     });
   }
 
+  async p115Directories(directoryId?: string, page = 1): Promise<import("./types").P115DirectoryListResponse> {
+    const params = new URLSearchParams({ page: String(page) });
+    if (directoryId) params.set("directory_id", directoryId);
+    return this.request<import("./types").P115DirectoryListResponse>(`/api/v1/settings/p115/directories?${params}`);
+  }
+
+  async p115Devices(): Promise<import("./types").P115LoginDeviceListResponse> {
+    return this.request<import("./types").P115LoginDeviceListResponse>("/api/v1/settings/p115/devices");
+  }
+
+  async createP115Qrcode(deviceCode: string, deviceName = "这台电脑"): Promise<import("./types").P115QrcodeCreateResponse> {
+    return this.request<import("./types").P115QrcodeCreateResponse>("/api/v1/settings/p115/qrcode", {
+      method: "POST",
+      body: JSON.stringify({ device_code: deviceCode, device_name: deviceName }),
+    });
+  }
+
+  async pollP115Qrcode(sessionId: string): Promise<import("./types").P115QrcodeStatusResponse> {
+    return this.request<import("./types").P115QrcodeStatusResponse>(`/api/v1/settings/p115/qrcode/${encodeURIComponent(sessionId)}`);
+  }
+
+  async activateP115Device(deviceId: string, revision: number): Promise<import("./types").P115LoginDeviceListResponse> {
+    return this.request<import("./types").P115LoginDeviceListResponse>(`/api/v1/settings/p115/devices/${encodeURIComponent(deviceId)}/activate`, {
+      method: "POST",
+      body: JSON.stringify({ revision }),
+    });
+  }
+
+  async revokeP115Device(deviceId: string): Promise<void> {
+    await this.request<void>(`/api/v1/settings/p115/devices/${encodeURIComponent(deviceId)}`, { method: "DELETE" });
+  }
+
   async search(
     tmdbId: number,
     mediaType: "movie" | "tv" = "movie",

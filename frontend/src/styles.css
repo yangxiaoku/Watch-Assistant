@@ -669,6 +669,40 @@ html, body, .app-shell { background: #151719; }
 .credential-capabilities strong { margin-left: 5px; font-size: 11px; }
 .credential-error { min-height: 42px; margin: 14px 0 0; }
 .credential-error .text-button { margin-left: auto; }
+.p115-qr-box, .p115-device-list { margin-top: 22px; padding-top: 18px; border-top: 1px solid #2b2e33; }
+.p115-qr-heading, .p115-device-list-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
+.p115-qr-heading h4, .p115-device-list-heading h4 { margin: 0; color: #d9dce2; font-size: 14px; }
+.p115-qr-heading p { margin: 6px 0 0; color: #858b95; font-size: 11px; line-height: 1.5; }
+.p115-qr-content { display: grid; grid-template-columns: 160px minmax(0, 1fr); gap: 18px; align-items: center; margin-top: 16px; }
+.p115-qr-content img { width: 160px; height: 160px; image-rendering: pixelated; background: #fff; }
+.settings-form-label { display: grid; gap: 7px; color: #858b95; font-size: 11px; font-weight: 700; }
+.settings-form-label select { min-height: 34px; padding: 0 10px; color: #f4f5f7; background: #1d2024; border: 1px solid #353940; border-radius: 4px; }
+.p115-device-list-heading { align-items: center; }
+.p115-device-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 54px; border-bottom: 1px solid #2b2e33; }
+.p115-device-row > div:first-child { min-width: 0; display: grid; gap: 5px; }
+.p115-device-row strong { color: #d9dce2; font-size: 12px; }
+.p115-device-row small { color: #858b95; font-size: 10px; }
+.p115-device-row > div:last-child { display: flex; align-items: center; gap: 10px; white-space: nowrap; }
+.danger-text { color: #ff9c9c !important; }
+.directory-selection-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 22px; }
+.directory-selection-field { display: grid; gap: 11px; min-width: 0; }
+.directory-selection-field > span:first-child { color: #d9dce2; font-size: 13px; font-weight: 700; }
+.directory-chips { display: flex; flex-wrap: wrap; gap: 7px; min-height: 28px; align-items: center; }
+.directory-chip { display: inline-flex; align-items: center; gap: 7px; max-width: 100%; padding: 5px 8px; color: #d9dce2; background: #252a31; border: 1px solid #3a424d; border-radius: 4px; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 11px; overflow-wrap: anywhere; }
+.directory-chip button { padding: 0; color: #aeb3bd; background: transparent; border: 0; cursor: pointer; font-size: 15px; line-height: 1; }
+.directory-manual { display: grid; gap: 7px; color: #858b95; font-size: 10px; font-weight: 700; }
+.directory-manual input { min-height: 32px; padding: 0 9px; color: #f4f5f7; background: #1d2024; border: 1px solid #353940; border-radius: 4px; }
+.directory-picker-backdrop { position: fixed; z-index: 30; inset: 0; display: grid; place-items: center; padding: 24px; background: rgb(0 0 0 / 72%); }
+.directory-picker { width: min(680px, 100%); max-height: min(720px, 90vh); overflow: auto; padding: 22px; background: #17191d; border: 1px solid #3a3d44; box-shadow: 0 20px 60px rgb(0 0 0 / 35%); }
+.directory-picker-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; padding-bottom: 16px; border-bottom: 1px solid #2b2e33; }
+.directory-picker-heading h2 { margin: 0; color: #f4f5f7; font-size: 19px; }
+.directory-picker-heading p:last-child { margin: 6px 0 0; color: #858b95; font-size: 11px; }
+.directory-picker-toolbar { display: flex; justify-content: space-between; gap: 10px; padding: 16px 0; }
+.directory-picker-list { border-top: 1px solid #2b2e33; }
+.directory-picker-item { display: grid; grid-template-columns: 24px minmax(0, 1fr) auto auto; align-items: center; gap: 10px; width: 100%; min-height: 48px; padding: 0 4px; color: #d9dce2; background: transparent; border: 0; border-bottom: 1px solid #2b2e33; text-align: left; cursor: pointer; }
+.directory-picker-item:hover { background: #22262c; }
+.directory-picker-item small { color: #858b95; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 10px; }
+.directory-picker-item span:last-child { color: #68a0ff; font-size: 11px; }
 
 @media (max-width: 760px) {
   .settings-view { padding-top: 24px; }
@@ -701,6 +735,15 @@ html, body, .app-shell { background: #151719; }
   .credential-panels { grid-template-columns: 1fr; gap: 24px; }
   .credential-actions { display: grid; grid-template-columns: 1fr; }
   .credential-actions button { width: 100%; }
+  .p115-qr-content { grid-template-columns: 1fr; }
+  .p115-qr-content img { width: 180px; height: 180px; }
+  .p115-device-row { align-items: flex-start; flex-direction: column; justify-content: center; padding: 10px 0; }
+  .directory-selection-grid { grid-template-columns: 1fr; }
+  .directory-picker-backdrop { padding: 12px; }
+  .directory-picker { padding: 16px; }
+  .directory-picker-item { grid-template-columns: 24px minmax(0, 1fr) auto; }
+  .directory-picker-item small { grid-column: 2; }
+  .directory-picker-item span:last-child { grid-column: 3; grid-row: 1 / span 2; }
   .organization-workbench { padding-top: 24px; }
   .organization-heading { margin-bottom: 20px; padding-bottom: 18px; }
   .organization-heading h1 { font-size: 28px; }

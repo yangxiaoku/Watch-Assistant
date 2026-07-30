@@ -101,6 +101,8 @@ from watch_assistant.services.p115_credentials import (
     CookieProvider,
 )
 from watch_assistant.services.p115_delete import P115DeleteService
+from watch_assistant.services.p115_login_devices import P115LoginDeviceService
+from watch_assistant.services.p115_qrcode import P115QrcodeService
 from watch_assistant.services.p115_settings import P115SettingsService
 from watch_assistant.services.pwa_devices import PwaDeviceService
 from watch_assistant.services.quality_profiles import QualityProfileService
@@ -468,6 +470,10 @@ def create_app(
             application.state.pwa_device_service = PwaDeviceService(
                 runtime_database.session_factory, runtime_crypto
             )
+            application.state.p115_login_device_service = P115LoginDeviceService(
+                runtime_database.session_factory, runtime_crypto
+            )
+            application.state.p115_qrcode_service = P115QrcodeService()
             application.state.agent_token_service = AgentTokenService(
                 runtime_database.session_factory,
                 event_logger=application.state.settings_service,
@@ -488,6 +494,9 @@ def create_app(
             composite_cookie_provider = CompositeCookieProvider(
                 fallback_cookie_provider
             )
+            active_device_cookie = await application.state.p115_login_device_service.active_cookie()
+            if active_device_cookie is not None:
+                composite_cookie_provider.set_managed(active_device_cookie)
             if application.state.strm_playback_gateway is None and settings.p115_enabled:
                 application.state.strm_playback_gateway = P115LivePlaybackGateway(
                     runtime_database.session_factory,
@@ -505,6 +514,8 @@ def create_app(
                 p115_runtime_callback=apply_p115_runtime,
             )
             managed_tmdb, _managed_cookie = await credential_service.load_managed()
+            if active_device_cookie is not None:
+                composite_cookie_provider.set_managed(active_device_cookie)
             runtime_tmdb = tmdb_client or TmdbClient(
                 managed_tmdb or settings.tmdb_api_key.get_secret_value(),
                 base_url=settings.tmdb_base_url,
@@ -623,6 +634,9 @@ def create_app(
                 if settings.p115_target_cid is not None and settings.p115_target_cid > 0
                 else None
             )
+            application.state.p115_browsed_directory_ids = {
+                application.state.organization_target_root_id
+            } if application.state.organization_target_root_id else set()
             application.state.p115_delete_service = P115DeleteService(
                 runtime_database.session_factory,
                 composite_cookie_provider,

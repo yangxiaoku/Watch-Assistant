@@ -51,6 +51,12 @@ def _add_organization_settings_column(connection: Connection) -> None:
         )
 
 
+def _create_p115_login_devices_table(connection: Connection) -> None:
+    from watch_assistant.models import P115LoginDevice
+
+    P115LoginDevice.__table__.create(connection, checkfirst=True)
+
+
 def _create_library_index_tables(connection: Connection) -> None:
     """Create the forward-only read/index tables for legacy SQLite databases."""
 
@@ -601,6 +607,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration("040_strm_manifest_entries", _create_strm_manifest_table),
     Migration("041_organization_settings", _add_organization_settings_column),
     Migration("042_directory_dirty_leases", _upgrade_directory_dirty_outbox),
+    Migration("043_p115_login_devices", _create_p115_login_devices_table),
 )
 
 

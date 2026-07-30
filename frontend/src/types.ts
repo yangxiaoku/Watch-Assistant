@@ -451,6 +451,44 @@ export interface P115ValidationResponse {
   checked_at: string;
 }
 
+export interface P115DirectoryItem {
+  id: string;
+  name: string;
+}
+
+export interface P115DirectoryListResponse {
+  parent_id: string;
+  items: P115DirectoryItem[];
+  has_more: boolean;
+  next_page: number | null;
+}
+
+export interface P115LoginDevice {
+  id: string;
+  name: string;
+  device_code: string;
+  active: boolean;
+  created_at: string;
+  last_used_at: string | null;
+}
+
+export interface P115LoginDeviceListResponse {
+  items: P115LoginDevice[];
+}
+
+export interface P115QrcodeCreateResponse {
+  session_id: string;
+  image_data_url: string;
+  expires_at: string;
+  status: "waiting";
+}
+
+export interface P115QrcodeStatusResponse {
+  session_id: string;
+  status: "waiting" | "scanned" | "ready" | "expired";
+  device: P115LoginDevice | null;
+}
+
 export interface LogEntry {
   id: number;
   timestamp: string;
