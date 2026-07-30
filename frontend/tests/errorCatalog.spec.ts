@@ -20,6 +20,13 @@ describe("中文错误目录", () => {
     expect(error.retryable).toBe(true);
   });
 
+  it("retries transient QR provider responses", () => {
+    expect(describeUiError("qrcode_provider_unavailable", 503)).toMatchObject({
+      retryable: true,
+      action: "retry",
+    });
+  });
+
   it("maps task error codes without rendering raw error text", () => {
     expect(taskErrorMessage("uncertain")).toContain("不要重复操作");
     expect(taskErrorMessage("raw_backend_exception")).toContain("操作暂时无法完成");

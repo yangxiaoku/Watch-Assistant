@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from secrets import token_urlsafe
@@ -14,6 +15,8 @@ import qrcode
 from watch_assistant.adapters.p115_c03_ipad_login import parse_qrcode_token_response
 from watch_assistant.services.p115_credentials import normalize_cookie_text
 from watch_assistant.services.p115_device_types import P115_DEVICE_CODE_SET
+
+logger = logging.getLogger(__name__)
 
 
 class P115QrcodeError(ValueError):
@@ -95,9 +98,16 @@ class P115QrcodeService:
             device_code = session.device_code
         response = await self._call_provider("status", token)
         status_value = _status_value(response)
-        if status_value == 0:
+        logger.info(
+            "115 二维码状态响应 device=%s state=%s code=%s status=%s",
+            device_code,
+            _response_value(response, "state"),
+            _response_value(response, "code"),
+            status_value,
+        )
+        if status_value == 0 and not _result_first_device(device_code):
             return "waiting", None
-        if status_value == 1:
+        if status_value == 1 and not _result_first_device(device_code):
             async with self._lock:
                 current = self._sessions.get(session_id)
                 if current is not None:
@@ -105,9 +115,24 @@ class P115QrcodeService:
             return "scanned", None
         if status_value in {-1, -2}:
             return "expired", None
-        if status_value != 2:
+        if status_value is None and not _result_first_device(device_code):
+            raise P115QrcodeError("qrcode_provider_unavailable")
+        if status_value not in {0, 1, 2, None}:
             raise P115QrcodeError("qrcode_provider_unavailable")
         response = await self._call_provider("result", (token["uid"], device_code))
+        logger.info(
+            "115 二维码登录结果响应 device=%s state=%s code=%s cookie=%s",
+            device_code,
+            _response_value(response, "state"),
+            _response_value(response, "code"),
+            _cookie_from_response(response) is not None,
+        )
+        if _result_pending(response):
+            async with self._lock:
+                current = self._sessions.get(session_id)
+                if current is not None:
+                    current.status = "scanned"
+            return "scanned", None
         cookie = _cookie_from_response(response)
         if cookie is None:
             raise P115QrcodeError("qrcode_result_invalid")
@@ -167,7 +192,32 @@ def _status_value(response: object) -> int | None:
     if not isinstance(data, dict):
         return None
     value = data.get("status")
-    return value if type(value) is int else None
+    if type(value) is int:
+        return value
+    return None
+
+
+def _result_first_device(device_code: str) -> bool:
+    return device_code in {"ipad", "115ipad", "qipad"}
+
+
+def _result_pending(response: object) -> bool:
+    if not isinstance(response, dict):
+        return False
+    if response.get("state") != 0:
+        return False
+    return response.get("code") in {40101017, "40101017"}
+
+
+def _response_value(response: object, name: str) -> int | str | None:
+    if not isinstance(response, dict):
+        return None
+    value = response.get(name)
+    if type(value) is int:
+        return value
+    if isinstance(value, str) and 0 < len(value) <= 32 and "\n" not in value and "\r" not in value:
+        return value
+    return None
 
 
 def _cookie_from_response(response: object) -> str | None:

@@ -96,6 +96,30 @@ async def test_missing_provider_status_is_retryable_instead_of_expired(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_ipad_like_device_falls_back_to_result_when_status_missing(monkeypatch):
+    service = P115QrcodeService()
+    calls: list[str] = []
+
+    async def fake_provider(action: str, value: object):
+        calls.append(action)
+        if action == "token":
+            return {"state": 1, "data": {"uid": "uid", "time": 1, "sign": "sign", "qrcode": "https://115.com/scan/test"}}
+        if action == "status":
+            return {"state": 1, "code": 0, "data": {}}
+        if calls.count("result") == 1:
+            return {"state": 0, "code": 40101017, "data": {}}
+        return {"state": 1, "code": 0, "data": {"cookie": COOKIE}}
+
+    monkeypatch.setattr(service, "_call_provider", fake_provider)
+    created = await service.create("115ipad")
+
+    assert await service.poll(str(created["session_id"])) == ("scanned", None)
+    status, cookie = await service.poll(str(created["session_id"]))
+    assert status == "ready"
+    assert cookie == "UID=uid-one; CID=cid-one; KID=kid-one; SEID=seid-one"
+
+
+@pytest.mark.asyncio
 async def test_provider_expired_status_is_reported_as_expired(monkeypatch):
     service = P115QrcodeService()
 

@@ -33,6 +33,7 @@ const RETRYABLE_CODES = new Set([
   "organization_operation_unavailable",
   "organization_schedule_unavailable",
   "p115_settings_unavailable",
+  "qrcode_provider_unavailable",
   "quality_profiles_unavailable",
   "season_metadata_unavailable",
   "settings_unavailable",
