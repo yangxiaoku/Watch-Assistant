@@ -42,5 +42,7 @@ build_time=${BUILD_TIME}
 branch=${BRANCH_NAME}
 EOF
 
-tar -czf "$OUTPUT_DIR/$PACKAGE_NAME" -C "$TEMP_DIR" "watch-assistant-${COMMIT_HASH}"
+PACKAGE_FILE="$TEMP_DIR/$PACKAGE_NAME"
+tar -czf "$PACKAGE_FILE" -C "$TEMP_DIR" "watch-assistant-${COMMIT_HASH}"
+cp "$PACKAGE_FILE" "$OUTPUT_DIR/$PACKAGE_NAME"
 echo "$OUTPUT_DIR/$PACKAGE_NAME"
