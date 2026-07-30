@@ -212,6 +212,7 @@ class StrmManifestService:
         source_scan_run_id: str,
         output_root: Path | str,
         playback_url_prefix: str,
+        retire_removed: bool = True,
     ) -> StrmGenerationSummary:
         """Reconcile only file-level changes from one complete current scan."""
 
@@ -221,6 +222,7 @@ class StrmManifestService:
             output_root=output_root,
             playback_url_prefix=playback_url_prefix,
             include_generation=True,
+            retire_removed=retire_removed,
         )
 
     async def cleanup(
@@ -239,6 +241,7 @@ class StrmManifestService:
             output_root=output_root,
             playback_url_prefix=playback_url_prefix,
             include_generation=False,
+            retire_removed=True,
         )
 
     async def _reconcile(
@@ -249,6 +252,7 @@ class StrmManifestService:
         output_root: Path | str,
         playback_url_prefix: str,
         include_generation: bool,
+        retire_removed: bool,
     ) -> StrmGenerationSummary:
         if not _valid_id(library_id) or not _valid_id(source_scan_run_id):
             raise StrmManifestError("invalid_request")
@@ -275,6 +279,8 @@ class StrmManifestService:
             # one file must not roll back already verified local files.
             for change in changes:
                 if change.change_kind == "removed":
+                    if not retire_removed:
+                        continue
                     try:
                         async with session.begin_nested():
                             did_retire = await self._retire_removed(

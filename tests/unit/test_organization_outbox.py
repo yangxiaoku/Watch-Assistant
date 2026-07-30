@@ -1,3 +1,4 @@
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,8 @@ from watch_assistant.services.organization_operations import (
     OrganizationOperationService,
 )
 from watch_assistant.services.organization_outbox import (
+    DIRTY_CONSUMED,
+    DIRTY_PENDING,
     DirectoryDirtyOutboxService,
     OrganizationOutboxError,
 )
@@ -220,6 +223,59 @@ async def test_outbox_service_is_idempotent_and_rejects_sensitive_shape(tmp_path
                 operation_id=operation.operation_id,
                 directory_ids=("cookie=secret",),
             )
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_dirty_lease_reclaims_and_retries_with_backoff(tmp_path: Path):
+    database = await _database(tmp_path)
+    service, operation, lease = await _claimed(database)
+    await service.finish(
+        operation.operation_id,
+        expected_revision=lease.revision,
+        lease_token=lease.lease_token,
+        status=OrganizationOperationStatus.ORGANIZED,
+        source_directory_id="source-directory",
+        target_directory_id="target-directory",
+    )
+    outbox = DirectoryDirtyOutboxService()
+    now = datetime.now(UTC) + timedelta(seconds=1)
+    first = await outbox.claim_next(database.session_factory, now=now)
+    assert first is not None
+    assert first.attempts == 1
+    async with database.session_factory() as session:
+        row = await session.get(DirectoryDirtyEvent, first.event_id)
+        assert row is not None
+        row.lease_expires_at = now - timedelta(seconds=1)
+        await session.commit()
+    reclaimed = await outbox.claim_next(database.session_factory, now=now)
+    assert reclaimed is not None
+    assert reclaimed.lease_token != first.lease_token
+    assert reclaimed.attempts == 2
+    assert await outbox.retry(
+        database.session_factory,
+        reclaimed,
+        error_code="scan_incomplete",
+        now=now,
+    )
+    async with database.session_factory() as session:
+        row = await session.get(DirectoryDirtyEvent, reclaimed.event_id)
+        assert row is not None
+        assert row.status == DIRTY_PENDING
+        assert row.available_at.replace(tzinfo=UTC) > now
+        row.available_at = now
+        await session.commit()
+    third = await outbox.claim_next(database.session_factory, now=now)
+    assert third is not None
+    assert await outbox.complete(
+        database.session_factory, third, status=DIRTY_CONSUMED, now=now
+    )
+    async with database.session_factory() as session:
+        row = await session.get(DirectoryDirtyEvent, third.event_id)
+        assert row is not None
+        assert row.status == DIRTY_CONSUMED
+        assert row.lease_token is None
+        assert row.lease_expires_at is None
     await database.engine.dispose()
 
 

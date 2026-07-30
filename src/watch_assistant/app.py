@@ -69,8 +69,10 @@ from watch_assistant.services.backups import BackupService
 from watch_assistant.services.cache_warm import CacheWarmer
 from watch_assistant.services.credentials import CredentialService
 from watch_assistant.services.deployment_diagnostics import DeploymentDiagnosticsService
+from watch_assistant.services.directory_dirty_worker import DirectoryDirtyWorker
 from watch_assistant.services.inspection import InspectionService, InspectionWorker
 from watch_assistant.services.inventory_push_guard import InventoryPushGuard
+from watch_assistant.services.library_index import LibraryIndexService
 from watch_assistant.services.maintenance import MaintenanceService
 from watch_assistant.services.manual_import import ManualImportService
 from watch_assistant.services.mcp import McpService
@@ -161,6 +163,64 @@ def create_app(
         webhook_task: asyncio.Task[None] | None = None
         organization_stop: asyncio.Event | None = None
         organization_task: asyncio.Task[None] | None = None
+        dirty_stop: asyncio.Event | None = None
+        dirty_task: asyncio.Task[None] | None = None
+
+        async def apply_dirty_runtime(ready: bool) -> None:
+            nonlocal dirty_stop, dirty_task
+            enabled = (
+                ready
+                and getattr(application.state, "strm_full_enabled", False)
+                and getattr(application.state, "strm_incremental_enabled", False)
+                and getattr(application.state, "organization_cookie_provider", None)
+                is not None
+            )
+            if not enabled:
+                if dirty_stop is not None:
+                    dirty_stop.set()
+                if dirty_task is not None:
+                    dirty_task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await dirty_task
+                dirty_stop = None
+                dirty_task = None
+                if hasattr(application.state, "directory_dirty_worker"):
+                    delattr(application.state, "directory_dirty_worker")
+                return
+            if dirty_task is not None:
+                return
+
+            def index_factory(library_id: str, root_directory_id: str) -> LibraryIndexService:
+                gateway = P115ReadOnlyDirectoryGateway(
+                    application.state.organization_cookie_provider,
+                    authorized_directory_ids=(root_directory_id,),
+                    request_timeout_seconds=30,
+                )
+                return LibraryIndexService(
+                    application.state.database.session_factory,
+                    gateway,
+                    library_id=library_id,
+                    root_directory_id=root_directory_id,
+                    page_size=1,
+                )
+
+            worker = DirectoryDirtyWorker(
+                application.state.database.session_factory,
+                application.state.strm_manifest_service,
+                index_factory,
+                output_root=application.state.strm_output_root,
+                playback_url_prefix=application.state.strm_playback_url_prefix,
+                cleanup_enabled=bool(
+                    getattr(application.state, "strm_cleanup_enabled", False)
+                ),
+                event_logger=application.state.settings_service,
+            )
+            application.state.directory_dirty_worker = worker
+            dirty_stop = asyncio.Event()
+            dirty_task = asyncio.create_task(
+                worker.run_forever(dirty_stop),
+                name="watch-assistant-directory-dirty-worker",
+            )
 
         async def apply_organization_runtime(ready: bool) -> None:
             nonlocal organization_stop, organization_task
@@ -262,6 +322,7 @@ def create_app(
             adapter = getattr(application.state, "task_adapter", None)
             if adapter is None:
                 await apply_organization_runtime(False)
+                await apply_dirty_runtime(False)
                 return
             if not ready:
                 if task_stop is not None:
@@ -275,6 +336,7 @@ def create_app(
                 if hasattr(application.state, "task_worker"):
                     delattr(application.state, "task_worker")
                 await apply_organization_runtime(False)
+                await apply_dirty_runtime(False)
                 return
             if getattr(application.state, "task_worker", None) is None:
                 worker = TaskWorker(
@@ -294,6 +356,7 @@ def create_app(
                     worker.run_forever(task_stop), name="watch-assistant-task-worker"
                 )
             await apply_organization_runtime(True)
+            await apply_dirty_runtime(True)
 
         existing_credentials = getattr(application.state, "credential_service", None)
         if existing_credentials is not None and not getattr(
@@ -689,6 +752,11 @@ def create_app(
                 task_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await task_task
+            if dirty_task is not None and dirty_stop is not None:
+                dirty_stop.set()
+                dirty_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await dirty_task
             if organization_task is not None and organization_stop is not None:
                 organization_stop.set()
                 organization_task.cancel()

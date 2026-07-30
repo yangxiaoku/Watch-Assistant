@@ -13,6 +13,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -713,7 +714,7 @@ class OrganizationOperation(Base):
 
 
 class DirectoryDirtyEvent(Base):
-    """Pending local invalidation event; no consumer is wired in this phase."""
+    """Durable directory invalidation event consumed by the STRM worker."""
 
     __tablename__ = "directory_dirty_events"
     __table_args__ = (
@@ -736,6 +737,18 @@ class DirectoryDirtyEvent(Base):
     status: Mapped[str] = mapped_column(
         String(16), default="pending", server_default="pending", index=True
     )
+    attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    lease_token: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    available_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, server_default=text("CURRENT_TIMESTAMP"), index=True
+    )
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now
     )
@@ -744,5 +757,6 @@ class DirectoryDirtyEvent(Base):
         return (
             "DirectoryDirtyEvent(id=<redacted>, operation_id=<redacted>, "
             "directory_id=<redacted>, "
-            f"event_kind={self.event_kind!r}, status={self.status!r})"
+            f"event_kind={self.event_kind!r}, status={self.status!r}, "
+            f"attempts={self.attempts!r})"
         )

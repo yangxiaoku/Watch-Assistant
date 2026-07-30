@@ -194,6 +194,7 @@ async def incremental_manifest(
                 "strm_playback_url_prefix",
                 "http://127.0.0.1:8115/api/v1/strm/play",
             ),
+            retire_removed=False,
         )
     except StrmManifestError as error:
         raise HTTPException(status_code=409, detail=str(error)) from None

@@ -228,6 +228,42 @@ def _create_directory_dirty_outbox_table(connection: Connection) -> None:
     DirectoryDirtyEvent.__table__.create(connection, checkfirst=True)
 
 
+def _upgrade_directory_dirty_outbox(connection: Connection) -> None:
+    """Add durable lease and retry state to existing dirty events."""
+
+    if not inspect(connection).has_table("directory_dirty_events"):
+        return
+    columns = {
+        item["name"] for item in inspect(connection).get_columns("directory_dirty_events")
+    }
+    additions = (
+        ("attempts", "INTEGER NOT NULL DEFAULT 0"),
+        ("lease_token", "VARCHAR(64)"),
+        ("lease_expires_at", "DATETIME"),
+        ("available_at", "DATETIME"),
+        ("error_code", "VARCHAR(64)"),
+        ("updated_at", "DATETIME"),
+    )
+    for name, definition in additions:
+        if name not in columns:
+            connection.execute(
+                text(f"ALTER TABLE directory_dirty_events ADD COLUMN {name} {definition}")
+            )
+    connection.execute(
+        text(
+            "UPDATE directory_dirty_events "
+            "SET available_at = COALESCE(available_at, created_at), "
+            "updated_at = COALESCE(updated_at, created_at)"
+        )
+    )
+    connection.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_directory_dirty_events_due "
+            "ON directory_dirty_events (status, available_at, lease_expires_at)"
+        )
+    )
+
+
 def _create_audit_records_table(connection: Connection) -> None:
     """Create durable security audit storage for existing installations."""
 
@@ -564,6 +600,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration("039_subscription_resource_observations", _create_subscription_resource_observations_table),
     Migration("040_strm_manifest_entries", _create_strm_manifest_table),
     Migration("041_organization_settings", _add_organization_settings_column),
+    Migration("042_directory_dirty_leases", _upgrade_directory_dirty_outbox),
 )
 
 

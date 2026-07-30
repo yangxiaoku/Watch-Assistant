@@ -183,6 +183,9 @@ EVENT_CATALOG: dict[str, EventDefinition] = {
     "strm.cleanup_blocked": _event(
         "strm.cleanup_blocked", LogCategory.STRM, "已阻止 STRM 清理", "本次云端扫描不完整，为避免误删已跳过清理阶段"
     ),
+    "strm.dirty_consumed": _event(
+        "strm.dirty_consumed", LogCategory.STRM, "目录变更已完成增量对账", "目录变更已完成增量对账，当前状态：{status}"
+    ),
     "library.identity.bound": _event(
         "library.identity.bound",
         LogCategory.LIBRARY,
