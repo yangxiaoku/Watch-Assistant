@@ -317,6 +317,12 @@ async function pollP115QrLogin() {
     }
     p115QrPollTimer = window.setTimeout(() => void pollP115QrLogin(), 2000);
   } catch (exception) {
+    if (exception instanceof ApiError && exception.retryable && p115QrSessionId.value) {
+      p115QrStatus.value = "waiting";
+      p115QrError.value = "二维码状态暂时未返回，正在重试。";
+      p115QrPollTimer = window.setTimeout(() => void pollP115QrLogin(), 2000);
+      return;
+    }
     p115QrBusy.value = false;
     p115QrStatus.value = "error";
     p115QrError.value = exception instanceof ApiError ? exception.message : "二维码状态查询失败，请稍后重试";

@@ -254,7 +254,9 @@ async def poll_p115_qrcode(session_id: str, request: Request) -> P115QrcodeStatu
     try:
         status_value, cookie = await _qrcode_service(request).poll(session_id)
     except P115QrcodeError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from None
+        error_code = str(exc)
+        status_code = 404 if error_code == "qrcode_session_not_found" else 503
+        raise HTTPException(status_code=status_code, detail=error_code) from None
     device = None
     if cookie is not None:
         credentials = getattr(request.app.state, "credential_service", None)

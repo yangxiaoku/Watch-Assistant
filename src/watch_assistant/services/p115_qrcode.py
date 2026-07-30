@@ -36,7 +36,7 @@ class _Session:
 class P115QrcodeService:
     """Keep provider authorization fields in memory and never return them."""
 
-    def __init__(self, *, ttl_seconds: int = 180, timeout_seconds: float = 15):
+    def __init__(self, *, ttl_seconds: int = 180, timeout_seconds: float = 35):
         self._ttl = timedelta(seconds=ttl_seconds)
         self._timeout = timeout_seconds
         self._sessions: dict[str, _Session] = {}
@@ -103,8 +103,10 @@ class P115QrcodeService:
                 if current is not None:
                     current.status = "scanned"
             return "scanned", None
-        if status_value != 2:
+        if status_value in {-1, -2}:
             return "expired", None
+        if status_value != 2:
+            raise P115QrcodeError("qrcode_provider_unavailable")
         response = await self._call_provider("result", (token["uid"], device_code))
         cookie = _cookie_from_response(response)
         if cookie is None:

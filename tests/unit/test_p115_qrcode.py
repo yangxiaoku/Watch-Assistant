@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from watch_assistant.services.p115_device_types import P115_DEVICE_CODES
-from watch_assistant.services.p115_qrcode import P115QrcodeService
+from watch_assistant.services.p115_qrcode import P115QrcodeError, P115QrcodeService
 
 COOKIE = {
     "UID": "uid-one",
@@ -75,3 +75,34 @@ async def test_provider_token_uses_selected_device_code(monkeypatch):
     await P115QrcodeService()._call_provider("token", "115android")
 
     assert calls == ["115android"]
+
+
+@pytest.mark.asyncio
+async def test_missing_provider_status_is_retryable_instead_of_expired(monkeypatch):
+    service = P115QrcodeService()
+
+    async def fake_provider(action: str, value: object):
+        if action == "token":
+            return {"state": 1, "data": {"uid": "uid", "time": 1, "sign": "sign", "qrcode": "https://115.com/scan/test"}}
+        return {"state": 1, "code": 0, "data": {}}
+
+    monkeypatch.setattr(service, "_call_provider", fake_provider)
+    created = await service.create("web")
+
+    with pytest.raises(P115QrcodeError, match="qrcode_provider_unavailable"):
+        await service.poll(str(created["session_id"]))
+
+
+@pytest.mark.asyncio
+async def test_provider_expired_status_is_reported_as_expired(monkeypatch):
+    service = P115QrcodeService()
+
+    async def fake_provider(action: str, value: object):
+        if action == "token":
+            return {"state": 1, "data": {"uid": "uid", "time": 1, "sign": "sign", "qrcode": "https://115.com/scan/test"}}
+        return {"state": 1, "data": {"status": -1}}
+
+    monkeypatch.setattr(service, "_call_provider", fake_provider)
+    created = await service.create("web")
+
+    assert await service.poll(str(created["session_id"])) == ("expired", None)
