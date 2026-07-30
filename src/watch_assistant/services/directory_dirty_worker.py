@@ -352,6 +352,7 @@ class DirectoryDirtyWorker:
                 status=status,
                 reason=reason,
                 error_code=error_code,
+                event_logger=self._event_logger,
             )
         except WorkflowNotFound:
             return

@@ -17,9 +17,29 @@ from watch_assistant.schemas import (
     NotificationResponse,
     NotificationSeverity,
 )
+from watch_assistant.services.event_catalog import get_event_definition
 from watch_assistant.services.observability import EventLogger, emit_event
 
 DEDUPLICATION_WINDOW = timedelta(minutes=30)
+_NOTIFIABLE_EVENTS = frozenset(
+    {
+        "task.accepted",
+        "task.failed",
+        "task.uncertain",
+        "p115.credentials_expired",
+        "organize.needs_review",
+        "organize.operation.uncertain",
+        "organize.operation.completed",
+        "strm.cleanup_blocked",
+        "strm.dirty_consumed",
+        "workflow.stage_changed",
+        "workflow.approval_decided",
+        "workflow.cancelled",
+    }
+)
+_WORKFLOW_VISIBLE_STATUSES = frozenset(
+    {"waiting_confirmation", "waiting_external", "succeeded", "skipped", "failed", "uncertain", "cancelled"}
+)
 
 
 class NotificationNotFound(LookupError):
@@ -39,6 +59,52 @@ class NotificationService:
     ) -> None:
         self._session_factory = session_factory
         self._event_logger = event_logger
+
+    async def handle_event(
+        self,
+        event_code: str,
+        *,
+        fields: dict[str, object] | None = None,
+        request_id: str | None = None,
+        correlation_id: str | None = None,
+        resource_type: str | None = None,
+        resource_id: str | None = None,
+        task_id: str | None = None,
+    ) -> None:
+        """Turn selected business events into durable, user-actionable notices."""
+        if event_code not in _NOTIFIABLE_EVENTS:
+            return
+        safe_fields = fields or {}
+        status = safe_fields.get("status")
+        if event_code == "workflow.stage_changed" and status not in _WORKFLOW_VISIBLE_STATUSES:
+            return
+        definition = get_event_definition(event_code)
+        if definition is None:
+            return
+        subject_id = task_id or resource_id or correlation_id or "global"
+        stage = safe_fields.get("stage")
+        stage_key = str(stage) if isinstance(stage, str) else ""
+        status_key = str(status) if isinstance(status, str) else ""
+        error_key = str(safe_fields.get("error_code")) if safe_fields.get("error_code") else ""
+        dedupe_key = ":".join(
+            part for part in (event_code, subject_id, stage_key, status_key, error_key) if part
+        )
+        action_type = (
+            "workflow"
+            if event_code.startswith("workflow.")
+            else "task"
+            if task_id
+            else resource_type
+        )
+        await self.notify(
+            event_code=event_code,
+            severity=_severity(event_code, status),
+            title_zh=definition.title_zh,
+            message_zh=definition.render(safe_fields),
+            dedupe_key=dedupe_key[:255],
+            action_type=action_type,
+            action_id=task_id or resource_id,
+        )
 
     async def notify(
         self,
@@ -202,6 +268,24 @@ def _decode_codes(value: str) -> set[str]:
     except json.JSONDecodeError:
         return set()
     return {item for item in decoded if isinstance(item, str)} if isinstance(decoded, list) else set()
+
+
+def _severity(event_code: str, status: object) -> NotificationSeverity:
+    if event_code in {
+        "task.failed",
+        "task.uncertain",
+        "p115.credentials_expired",
+        "organize.operation.uncertain",
+        "strm.cleanup_blocked",
+    }:
+        return NotificationSeverity.ERROR
+    if event_code in {"organize.needs_review", "workflow.approval_decided"}:
+        return NotificationSeverity.WARNING
+    if status in {"failed", "uncertain"}:
+        return NotificationSeverity.ERROR
+    if status in {"waiting_confirmation", "waiting_external"}:
+        return NotificationSeverity.WARNING
+    return NotificationSeverity.INFO
 
 
 def _response(item: Notification) -> NotificationResponse:

@@ -99,3 +99,32 @@ async def test_notifications_dedupe_read_state_and_preferences(tmp_path):
         await tmdb.aclose()
         await pansou.aclose()
         await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_business_events_create_actionable_notifications_without_log_noise(tmp_path):
+    client, database, tmdb, pansou, app = await _make_client(tmp_path)
+    try:
+        await app.state.settings_service.log_event(
+            "workflow.stage_changed",
+            fields={"stage": "strm", "status": "failed", "error_code": "scan_failed"},
+            correlation_id="corr_notice",
+            task_id="wf_notice",
+        )
+        await app.state.settings_service.log_event(
+            "application.startup", fields={"status": "started"}
+        )
+        response = await client.get("/api/v1/notifications")
+        assert response.status_code == 200
+        assert response.json()["unread_count"] == 1
+        item = response.json()["items"][0]
+        assert item["event_code"] == "workflow.stage_changed"
+        assert item["severity"] == "error"
+        assert item["action_type"] == "workflow"
+        assert item["action_id"] == "wf_notice"
+        assert "scan_failed" not in item["message_zh"]
+    finally:
+        await client.aclose()
+        await tmdb.aclose()
+        await pansou.aclose()
+        await database.engine.dispose()

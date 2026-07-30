@@ -118,6 +118,7 @@ async def _sync_workflow_stage(
             status=status,
             reason=reason,
             error_code=error_code,
+            event_logger=getattr(request.app.state, "settings_service", None),
         )
     except WorkflowNotFound:
         raise HTTPException(status_code=404, detail="workflow_not_found") from None

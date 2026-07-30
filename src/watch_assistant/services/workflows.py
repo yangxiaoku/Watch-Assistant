@@ -452,10 +452,11 @@ async def sync_child_stage_in_transaction(
     status: WorkflowStageStatus,
     reason: str | None = None,
     error_code: str | None = None,
+    event_logger: EventLogger | None = None,
 ) -> None:
     """Update a child stage for workers that do not own an open transaction."""
     async with session_factory() as session:
-        await sync_child_stage(
+        workflow = await sync_child_stage(
             session,
             workflow_id,
             stage_name,
@@ -466,6 +467,13 @@ async def sync_child_stage_in_transaction(
             error_code=error_code,
         )
         await session.commit()
+    await emit_event(
+        event_logger,
+        "workflow.stage_changed",
+        fields={"status": status.value, "stage": stage_name.value},
+        correlation_id=workflow.correlation_id,
+        task_id=workflow.id,
+    )
 
 
 def _derive_status(

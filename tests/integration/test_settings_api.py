@@ -336,6 +336,16 @@ async def test_strm_routes_enforce_independent_flags_and_reach_service(tmp_path)
         assert stage["status"] == "failed"
         assert stage["child_type"] == "strm_operation"
         assert stage["child_id"] == "strm_missing-scan"
+        notices = await client.get("/api/v1/notifications")
+        assert notices.status_code == 200
+        notice = next(
+            item
+            for item in notices.json()["items"]
+            if item["event_code"] == "workflow.stage_changed"
+        )
+        assert notice["action_type"] == "workflow"
+        assert notice["action_id"] == workflow_id
+        assert notice["severity"] == "error"
     finally:
         await client.aclose()
         await tmdb.aclose()

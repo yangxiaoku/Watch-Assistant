@@ -570,6 +570,9 @@ def create_app(
                 runtime_database.session_factory,
                 event_logger=application.state.settings_service,
             )
+            application.state.settings_service.bind_event_sink(
+                application.state.notification_service.handle_event
+            )
             application.state.backup_service = BackupService(
                 runtime_database.engine.url.database,
                 _state_directory(runtime_database) / "backups",
@@ -1051,6 +1054,9 @@ def create_app(
         application.state.notification_service = NotificationService(
             database.session_factory,
             event_logger=application.state.settings_service,
+        )
+        application.state.settings_service.bind_event_sink(
+            application.state.notification_service.handle_event
         )
         application.state.backup_service = BackupService(
             database.engine.url.database,
