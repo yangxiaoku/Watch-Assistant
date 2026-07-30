@@ -101,6 +101,24 @@ def test_animation_movie_defaults_to_anime_and_can_be_disabled():
     assert disabled.classification is ClassificationKind.MOVIE
 
 
+def test_optional_categories_and_year_grouping_are_applied_only_when_enabled():
+    children = plan_media(
+        parsed("\u513f\u7ae5\u6545\u4e8b 2024 1080p.mkv"),
+        accepted(candidate(title="\u513f\u7ae5\u6545\u4e8b")),
+        rules=NamingRuleConfig(include_children_category=True),
+    )
+    assert children.classification is ClassificationKind.CHILDREN
+    assert "/children/" in children.target_path
+
+    concert = plan_media(
+        parsed("Summer Concert 2024 1080p.mkv"),
+        accepted(candidate(title="Summer Concert")),
+        rules=NamingRuleConfig(include_concert_category=True, year_grouping_enabled=True),
+    )
+    assert concert.classification is ClassificationKind.CONCERT
+    assert "/concert/western/2024/" in concert.target_path
+
+
 @pytest.mark.parametrize(
     ("country", "expected"),
     (

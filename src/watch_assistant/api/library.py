@@ -375,10 +375,20 @@ async def create_organization_preview(
     service = getattr(request.app.state, "organization_preview_service", None)
     if not isinstance(service, OrganizationPreviewService):
         raise HTTPException(status_code=503, detail="organization_preview_unavailable")
+    settings_service = getattr(request.app.state, "settings_service", None)
+    settings = await settings_service.get_organization() if settings_service is not None else None
     try:
         plan = await service.create_preview(
             library_id=library_id,
             scan_run_id=payload.source_scan_run_id,
+            video_extensions=settings.video_extensions if settings else None,
+            metadata_extensions=settings.metadata_extensions if settings else None,
+            small_file_threshold_mb=settings.small_file_threshold_mb if settings else 0.0,
+            rename_enabled=settings.rename_enabled if settings else True,
+            region_grouping_enabled=settings.region_grouping_enabled if settings else True,
+            year_grouping_enabled=settings.year_grouping_enabled if settings else False,
+            include_children_category=settings.include_children_category if settings else False,
+            include_concert_category=settings.include_concert_category if settings else False,
         )
     except OrganizationPreviewError as error:
         statuses = {
@@ -391,7 +401,6 @@ async def create_organization_preview(
         ) from None
     except OrganizationPlanError as error:
         raise HTTPException(status_code=409, detail=error.code) from None
-    settings_service = getattr(request.app.state, "settings_service", None)
     if settings_service is not None:
         await settings_service.log_event(
             "organize.preview.created",

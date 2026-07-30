@@ -58,6 +58,26 @@ async def test_manual_run_wakes_scheduler_when_schedule_is_disabled():
     await asyncio.wait_for(task, timeout=1)
 
 
+@pytest.mark.asyncio
+async def test_enabled_schedule_waits_for_the_first_interval():
+    settings = SettingsStub(True)
+    calls = 0
+
+    async def run_once():
+        nonlocal calls
+        calls += 1
+        return True
+
+    scheduler = OrganizationScheduler(settings, run_once)
+    stop = asyncio.Event()
+    task = asyncio.create_task(scheduler.run_forever(stop))
+    await asyncio.sleep(0.05)
+    assert calls == 0
+    stop.set()
+    scheduler.stop_pending()
+    await asyncio.wait_for(task, timeout=1)
+
+
 async def _wait_for(predicate):
     while not predicate():
         await asyncio.sleep(0.01)

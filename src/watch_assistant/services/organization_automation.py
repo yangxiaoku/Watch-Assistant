@@ -166,9 +166,13 @@ class OrganizationAutomationService:
                     target_directory_id=target_id,
                     target_directories=catalog.by_path,
                     video_extensions=settings.video_extensions,
+                    metadata_extensions=settings.metadata_extensions,
                     small_file_threshold_mb=settings.small_file_threshold_mb,
                     rename_enabled=settings.rename_enabled,
                     region_grouping_enabled=settings.region_grouping_enabled,
+                    year_grouping_enabled=settings.year_grouping_enabled,
+                    include_children_category=settings.include_children_category,
+                    include_concert_category=settings.include_concert_category,
                 )
                 plans += 1
                 if (

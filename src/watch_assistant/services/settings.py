@@ -1146,6 +1146,43 @@ def _validate_organization_values(values: dict[str, object]) -> dict[str, object
         result[key] = list(dict.fromkeys(item.strip().lower() for item in extensions))
     result["source_directory_ids"] = normalized_sources
     result["target_directory_id"] = target
+    if (
+        not isinstance(result.get("scan_interval_minutes"), int)
+        or isinstance(result["scan_interval_minutes"], bool)
+        or not 5 <= result["scan_interval_minutes"] <= 1440
+    ):
+        raise ValueError("invalid_scan_interval_minutes")
+    for key in (
+        "schedule_enabled",
+        "rename_enabled",
+        "media_probe_enabled",
+        "ai_identification_enabled",
+        "cleanup_empty_directories",
+        "strm_linkage_enabled",
+        "include_children_category",
+        "include_concert_category",
+        "region_grouping_enabled",
+        "year_grouping_enabled",
+        "prefer_remux",
+        "prefer_resolution",
+        "prefer_dolby",
+        "multi_version_enabled",
+    ):
+        if not isinstance(result.get(key), bool):
+            raise ValueError(f"invalid_{key}")  # noqa: TRY004
+    for key, lower, upper in (
+        ("small_file_threshold_mb", 0, 10_240),
+        ("operation_delay_seconds", 0, 60),
+    ):
+        value = result.get(key)
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not lower <= value <= upper
+        ):
+            raise ValueError(f"invalid_{key}")
+    if result.get("conflict_mode") not in (0, 1, 2):
+        raise ValueError("invalid_conflict_mode")
     return result
 
 

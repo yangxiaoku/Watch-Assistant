@@ -137,3 +137,41 @@ async def test_preview_preserves_original_name_when_rename_is_disabled(tmp_path:
     assert action["target"] == "library/movie/western/The Office (2005) {tmdb-42}/The.Office.2005.1080p.mkv"
     assert json.loads(plan.preconditions_json)["target_directory_id"] == "target-root"
     await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_preview_moves_configured_metadata_companion_with_primary(tmp_path: Path):
+    database = await _database(tmp_path, target_exists=True)
+    async with database.session_factory() as session:
+        session.add(
+            LibraryScanEntry(
+                scan_run_id="scan-preview",
+                object_type="file",
+                object_id="nfo-preview",
+                parent_id="root-preview",
+                name="The.Office.2005.nfo",
+                path="incoming/The.Office.2005.nfo",
+                is_directory=False,
+            )
+        )
+        await session.commit()
+    service = OrganizationPreviewService(
+        database.session_factory, _TmdbClient(), OrganizationPlanService(database.session_factory)
+    )
+
+    result = await service.create_preview(
+        library_id="library-preview",
+        scan_run_id="scan-preview",
+        metadata_extensions=["nfo"],
+    )
+
+    assert result.status is OrganizationPlanStatus.PLANNED
+    async with database.session_factory() as session:
+        plan = await session.scalar(select(OrganizationPlan))
+    assert plan is not None
+    members = json.loads(plan.actions_json)[0]["execution"]["members"]
+    assert [member["object_id"] for member in members] == [
+        "file-preview",
+        "nfo-preview",
+    ]
+    await database.engine.dispose()

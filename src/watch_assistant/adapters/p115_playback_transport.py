@@ -6,6 +6,7 @@ import asyncio
 import math
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from functools import partial
 from typing import Any, Protocol
 
 from watch_assistant.adapters.p115_library_transport import (
@@ -16,6 +17,13 @@ from watch_assistant.adapters.p115_library_transport import (
 
 class P115PlaybackTransportUnavailable(RuntimeError):
     """The fixed client cannot provide a safe dynamic link."""
+
+
+P115_PLAYBACK_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/131.0.0.0 Safari/537.36"
+)
 
 
 class P115PlaybackClient(Protocol):
@@ -71,7 +79,10 @@ class P115FixedPlaybackTransport:
             value = await asyncio.wait_for(
                 asyncio.to_thread(
                     self._call_executor,
-                    self._client.download_url,
+                    partial(
+                        self._client.download_url,
+                        user_agent=P115_PLAYBACK_USER_AGENT,
+                    ),
                     file_id,
                     timeout_seconds=timeout,
                 ),
@@ -136,6 +147,7 @@ def _p115client_version() -> str | None:
 
 
 __all__ = [
+    "P115_PLAYBACK_USER_AGENT",
     "P115FixedPlaybackTransport",
     "P115PlaybackClient",
     "P115PlaybackTransportProtocol",

@@ -46,6 +46,7 @@ class OrganizationWorker:
         client_factory: P115ClientFactory | None = None,
         call_executor=None,
         event_logger=None,
+        settings_service=None,
     ) -> None:
         if not production_root_id.isdigit() or production_root_id.startswith("0"):
             raise ValueError("invalid_production_root_id")
@@ -61,6 +62,7 @@ class OrganizationWorker:
         self._client_factory = client_factory or _default_client_factory
         self._call_executor = call_executor or p115_c03_timeout_executor
         self._event_logger = event_logger
+        self._settings_service = settings_service
         self._stop = asyncio.Event()
 
     async def run_once(self) -> bool:
@@ -96,6 +98,13 @@ class OrganizationWorker:
             await self._finish_failed(lease, "remote_write_failed")
             return True
         try:
+            operation_delay = 0.25
+            if self._settings_service is not None:
+                try:
+                    organization_settings = await self._settings_service.get_organization()
+                    operation_delay = organization_settings.operation_delay_seconds
+                except Exception:  # noqa: BLE001 - retain the conservative fallback
+                    operation_delay = 0.25
             transport = create_live_p115_organization_transport(
                 client=client,
                 call_executor=self._call_executor,
@@ -109,7 +118,7 @@ class OrganizationWorker:
                 self._session_factory,
                 transport,
                 max_transport_calls=128,
-                min_call_interval=0.25,
+                min_call_interval=operation_delay,
             )
             await executor.execute(
                 lease.operation_id,

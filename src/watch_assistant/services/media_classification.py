@@ -25,6 +25,8 @@ class ClassificationKind(StrEnum):
     ANIME = "anime"
     DOCUMENTARY = "documentary"
     VARIETY = "variety"
+    CHILDREN = "children"
+    CONCERT = "concert"
 
 
 class RegionClass(StrEnum):
@@ -47,6 +49,8 @@ _CATEGORY_DIRS = {
     ClassificationKind.ANIME: "anime",
     ClassificationKind.DOCUMENTARY: "documentary",
     ClassificationKind.VARIETY: "variety",
+    ClassificationKind.CHILDREN: "children",
+    ClassificationKind.CONCERT: "concert",
 }
 _REGION_DIRS = {
     RegionClass.DOMESTIC: "domestic",
@@ -113,6 +117,9 @@ class NamingRuleConfig:
     rule_version: str = "i06-v1"
     library_root: str = "library"
     region_enabled: bool = True
+    year_grouping_enabled: bool = False
+    include_children_category: bool = False
+    include_concert_category: bool = False
     animation_as_anime: bool = True
     preserve_technical_tags: bool = True
     movie_directory_template: str = "{title}{year_label} {tmdb_tag}"
@@ -136,6 +143,12 @@ class NamingRuleConfig:
             raise ValueError("invalid library root")
         if not isinstance(self.region_enabled, bool):
             raise TypeError("invalid region setting")
+        if not isinstance(self.year_grouping_enabled, bool):
+            raise TypeError("invalid year setting")
+        if not isinstance(self.include_children_category, bool):
+            raise TypeError("invalid children category setting")
+        if not isinstance(self.include_concert_category, bool):
+            raise TypeError("invalid concert category setting")
         if not isinstance(self.animation_as_anime, bool):
             raise TypeError("invalid animation setting")
         if not isinstance(self.preserve_technical_tags, bool):
@@ -474,6 +487,19 @@ def _classify(
     if override is not None and override.classification is not None:
         return override.classification, "manual_override", ["manual_classification"]
     kind = selected.kind
+    title_signal = " ".join(
+        value
+        for value in (parsed.original_filename, selected.title)
+        if isinstance(value, str)
+    )
+    if config.include_children_category and _has_category_signal(
+        title_signal, ("kids", "children", "child", "cartoon", "\u513f\u7ae5", "\u5c11\u513f")
+    ):
+        return ClassificationKind.CHILDREN, "filename_signal", ["children_category"]
+    if config.include_concert_category and _has_category_signal(
+        title_signal, ("concert", "\u6f14\u5531\u4f1a", "\u97f3\u4e50\u4f1a")
+    ):
+        return ClassificationKind.CONCERT, "filename_signal", ["concert_category"]
     if kind is MediaKind.UNKNOWN:
         if selected.media_type is MediaType.TV:
             return ClassificationKind.TV, "tmdb_media_type", ["kind_unknown"]
@@ -595,6 +621,7 @@ def _render_target(
         config.library_root,
         category,
         region_part,
+        str(year) if config.year_grouping_enabled and year is not None else None,
         directory_name,
         season_name,
         file_name,
@@ -705,6 +732,15 @@ def _canonical_countries(values: Sequence[str]) -> tuple[str, ...]:
                 if isinstance(value, str) and value.strip()
             }
         )
+    )
+
+
+def _has_category_signal(value: str, tokens: Sequence[str]) -> bool:
+    normalized = value.casefold()
+    return any(
+        token.casefold() in normalized
+        for token in tokens
+        if isinstance(token, str) and token
     )
 
 

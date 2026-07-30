@@ -266,6 +266,7 @@ def create_app(
                     production_root_id=application.state.organization_target_root_id,
                     live_enabled=True,
                     event_logger=application.state.settings_service,
+                    settings_service=application.state.settings_service,
                 )
                 application.state.organization_worker = worker
 

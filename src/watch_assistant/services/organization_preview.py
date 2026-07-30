@@ -21,12 +21,14 @@ from watch_assistant.library_models import (
 from watch_assistant.services.library_index import ScanRunState
 from watch_assistant.services.media_classification import (
     ClassificationStatus,
+    CompanionFile,
     NamingRuleConfig,
     plan_media,
 )
 from watch_assistant.services.media_matcher import TmdbMatcher, build_match_input
 from watch_assistant.services.media_parser import parse_media_filename
 from watch_assistant.services.organization_plan import (
+    OrganizationPlanCompanion,
     OrganizationPlanItem,
     OrganizationPlanService,
     OrganizationPlanView,
@@ -63,9 +65,13 @@ class OrganizationPreviewService:
         target_directory_id: str | None = None,
         target_directories: Mapping[str, str] | None = None,
         video_extensions: Collection[str] | None = None,
+        metadata_extensions: Collection[str] | None = None,
         small_file_threshold_mb: float = 0.0,
         rename_enabled: bool = True,
         region_grouping_enabled: bool = True,
+        year_grouping_enabled: bool = False,
+        include_children_category: bool = False,
+        include_concert_category: bool = False,
         target_root: str = "",
         now: datetime | None = None,
     ) -> OrganizationPlanView:
@@ -81,6 +87,15 @@ class OrganizationPreviewService:
             else {
                 value.strip().lower()
                 for value in video_extensions
+                if isinstance(value, str) and value.strip()
+            }
+        )
+        normalized_metadata_extensions = (
+            None
+            if metadata_extensions is None
+            else {
+                value.strip().lower()
+                for value in metadata_extensions
                 if isinstance(value, str) and value.strip()
             }
         )
@@ -111,11 +126,23 @@ class OrganizationPreviewService:
         rules = NamingRuleConfig(
             library_root=target_root or "library",
             region_enabled=region_grouping_enabled,
+            year_grouping_enabled=year_grouping_enabled,
+            include_children_category=include_children_category,
+            include_concert_category=include_concert_category,
         )
         semaphore = asyncio.Semaphore(4)
 
         async def build_item(entry: LibraryScanEntry) -> OrganizationPlanItem:
             parsed = parse_media_filename(entry.name)
+            companion_entries = _find_companion_entries(
+                entry,
+                entries,
+                metadata_extensions=normalized_metadata_extensions,
+            )
+            companion_files = tuple(
+                CompanionFile(item.object_id, parse_media_filename(item.name))
+                for item in companion_entries
+            )
             async with semaphore:
                 decision = await self._matcher.match(build_match_input(parsed))
             naming_plan = plan_media(
@@ -123,6 +150,7 @@ class OrganizationPreviewService:
                 decision,
                 existing_targets=existing_targets,
                 rules=rules,
+                companions=companion_files,
             )
             if not rename_enabled and naming_plan.target_directory:
                 original_name = PurePosixPath(entry.name).name
@@ -169,6 +197,29 @@ class OrganizationPreviewService:
                 or not path
             ):
                 raise OrganizationPreviewError("scan_entry_invalid")
+            mapping_by_key = {
+                mapping.association_key: mapping
+                for mapping in naming_plan.companion_mappings
+            }
+            companions = tuple(
+                OrganizationPlanCompanion(
+                    source=PlanSource(
+                        object_type=item.object_type,
+                        object_id=item.object_id,
+                        parent_id=item.parent_id,
+                        path=item.path,
+                        remote_version=_remote_version(item),
+                        is_directory=False,
+                    ),
+                    target_parent_id=target_parent_id,
+                    target_name=mapping_by_key[item.object_id].target_name
+                    if item.object_id in mapping_by_key
+                    else None,
+                )
+                for item in companion_entries
+                if isinstance(item.parent_id, str)
+                and isinstance(item.path, str)
+            )
             return OrganizationPlanItem(
                 source=PlanSource(
                     object_type=entry.object_type,
@@ -182,6 +233,7 @@ class OrganizationPreviewService:
                 decision=decision,
                 target_parent_id=target_parent_id,
                 target_name=target_name,
+                companions=companions,
             )
 
         items = await asyncio.gather(*(build_item(entry) for entry in files))
@@ -270,6 +322,35 @@ def _is_video_entry(
         entry.size_bytes is not None
         and entry.size_bytes < small_file_threshold_mb * 1024 * 1024
     )
+
+
+def _find_companion_entries(
+    primary: LibraryScanEntry,
+    entries: Sequence[LibraryScanEntry],
+    *,
+    metadata_extensions: Collection[str] | None,
+) -> tuple[LibraryScanEntry, ...]:
+    if metadata_extensions is None:
+        return ()
+    primary_parsed = parse_media_filename(primary.name)
+    primary_stem = (primary_parsed.title or PurePosixPath(primary.name).stem).casefold()
+    result: list[LibraryScanEntry] = []
+    for entry in entries:
+        if (
+            entry.object_id == primary.object_id
+            or entry.is_directory
+            or entry.parent_id != primary.parent_id
+            or not isinstance(entry.name, str)
+        ):
+            continue
+        parsed = parse_media_filename(entry.name)
+        if parsed.container not in metadata_extensions or parsed.companion_type == "unknown":
+            continue
+        companion_parsed = parsed
+        companion_stem = (companion_parsed.title or PurePosixPath(entry.name).stem).casefold()
+        if companion_stem == primary_stem or companion_stem.startswith(primary_stem + "."):
+            result.append(entry)
+    return tuple(sorted(result, key=lambda item: item.object_id))
 
 
 def _join_target_path(directory: str, name: str) -> str | None:

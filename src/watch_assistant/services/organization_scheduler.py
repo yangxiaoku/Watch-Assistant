@@ -36,7 +36,7 @@ class OrganizationScheduler:
         self._wake.set()
 
     async def run_forever(self, stop_event: asyncio.Event) -> None:
-        next_scheduled_at = time.monotonic()
+        next_scheduled_at: float | None = None
         while not stop_event.is_set():
             if self._manual_runs:
                 self._manual_runs -= 1
@@ -44,13 +44,19 @@ class OrganizationScheduler:
                 continue
             current = await self._settings.get_organization()
             now = time.monotonic()
-            if current.schedule_enabled and now >= next_scheduled_at:
+            if not current.schedule_enabled:
+                next_scheduled_at = None
+            elif next_scheduled_at is None:
+                next_scheduled_at = now + current.scan_interval_minutes * 60
+            elif now >= next_scheduled_at:
                 await self._run_once()
                 next_scheduled_at = time.monotonic() + current.scan_interval_minutes * 60
                 continue
-            if not current.schedule_enabled:
-                next_scheduled_at = now + current.scan_interval_minutes * 60
-            timeout = max(0.1, next_scheduled_at - now)
+            timeout = (
+                None
+                if next_scheduled_at is None
+                else max(0.1, next_scheduled_at - now)
+            )
             self._wake.clear()
             try:
                 await asyncio.wait_for(self._wake.wait(), timeout=timeout)
