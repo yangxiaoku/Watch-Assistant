@@ -365,6 +365,44 @@ def test_webhook_test_command_only_enqueues_versioned_endpoint_test(capsys):
     assert seen == [("POST", "/api/v1/webhooks/endpoint-one/test", {})]
 
 
+def test_webhook_query_and_retry_commands_use_server_side_state_gate(capsys):
+    seen: list[tuple[str, str, str, dict[str, object] | None]] = []
+
+    class Transport(httpx.BaseTransport):
+        def handle_request(self, request):
+            seen.append((request.method, request.url.path, request.url.query.decode(), json.loads(request.content) if request.content else None))
+            if request.method == "GET" and request.url.path == "/api/v1/webhooks":
+                return httpx.Response(200, json={"items": []}, request=request)
+            if request.method == "GET":
+                return httpx.Response(200, json={"items": []}, request=request)
+            return httpx.Response(200, json={"id": "delivery-one", "status": "pending"}, request=request)
+
+    original = ApiClient.__init__
+    original_close = ApiClient.close
+    ApiClient.__init__ = lambda self, config: (
+        setattr(self, "config", config),
+        setattr(self, "_client", httpx.Client(base_url=config.server, transport=Transport())),
+    )[-1]
+    ApiClient.close = lambda self: self._client.close()
+    try:
+        for command in (
+            ["webhook", "list"],
+            ["webhook", "deliveries", "--endpoint-id", "endpoint-one", "--limit", "10"],
+            ["webhook", "retry", "delivery-one"],
+        ):
+            assert main(["--server", "http://app.test", "--token", "wa_at_test", "--output", "json", *command]) == EXIT_OK
+            assert json.loads(capsys.readouterr().out)["ok"] is True
+    finally:
+        ApiClient.__init__ = original
+        ApiClient.close = original_close
+
+    assert seen == [
+        ("GET", "/api/v1/webhooks", "", None),
+        ("GET", "/api/v1/webhooks/deliveries", "limit=10&endpoint_id=endpoint-one", None),
+        ("POST", "/api/v1/webhooks/deliveries/delivery-one/retry", "", {}),
+    ]
+
+
 def test_organize_apply_sends_digest_confirmation_and_generated_key(monkeypatch, capsys):
     digest = "a" * 64
     seen: list[tuple[str, str, dict[str, object] | None]] = []

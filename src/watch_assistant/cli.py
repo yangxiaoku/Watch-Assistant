@@ -390,6 +390,20 @@ def _command(args: argparse.Namespace, path: Path) -> tuple[Any, int]:
                 data=_data_for("/api/v1/webhooks", body),
                 request_id=_request_id(body),
             ), EXIT_OK
+        if args.command == "webhook":
+            if args.webhook_command == "list":
+                body = client.get("/api/v1/webhooks")
+            elif args.webhook_command == "deliveries":
+                params = {"limit": str(args.limit)}
+                if args.endpoint_id:
+                    params["endpoint_id"] = args.endpoint_id
+                body = client.get("/api/v1/webhooks/deliveries", params=params)
+            else:
+                body = client.post(f"/api/v1/webhooks/deliveries/{args.delivery_id}/retry")
+            return envelope(
+                data=_data_for("/api/v1/webhooks", body),
+                request_id=_request_id(body),
+            ), EXIT_OK
         if args.command == "backup":
             body = client.get("/api/v1/backups")
             return envelope(data=_data_for("/api/v1/backups", body), request_id=_request_id(body)), EXIT_OK
@@ -535,8 +549,14 @@ def _build_parser() -> argparse.ArgumentParser:
 
     webhook = sub.add_parser("webhook", help="Webhook 管理操作")
     webhook_sub = webhook.add_subparsers(dest="webhook_command", required=True)
+    webhook_sub.add_parser("list", help="列出 Webhook 端点")
+    webhook_deliveries = webhook_sub.add_parser("deliveries", help="列出投递记录")
+    webhook_deliveries.add_argument("--endpoint-id")
+    webhook_deliveries.add_argument("--limit", type=int, choices=range(1, 101), default=50)
     webhook_test = webhook_sub.add_parser("test", help="排队单端点测试通知")
     webhook_test.add_argument("endpoint_id")
+    webhook_retry = webhook_sub.add_parser("retry", help="重试死信投递")
+    webhook_retry.add_argument("delivery_id")
     sub.add_parser("backup", help="备份只读查询")
     sub.add_parser("deployment", help="部署诊断只读查询")
 

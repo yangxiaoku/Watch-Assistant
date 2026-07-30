@@ -106,4 +106,5 @@
   进入同一持久 Outbox，不直接发送请求。
 - 禁用端点拒绝测试排队；投递仍复用现有 HMAC、重试、死信和投递查询。
 - `watchctl webhook test <endpoint-id>` 已接入同一测试投递 API，复用 Agent 认证、Scope、错误码和统一 JSON/JSONL envelope。
+- `watchctl webhook list`、`webhook deliveries` 和 `webhook retry` 已接入端点、投递查询和服务端死信重试 API；重试资格仍由服务端状态机判断。
 - 真实接收端篡改/重放/重启恢复和完整业务事件矩阵仍未验收，不能宣称 REQ-019 已完成。

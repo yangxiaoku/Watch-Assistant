@@ -177,6 +177,9 @@ watchctl audit list [--actor <agent>] [--since <time>]
 watchctl audit show <audit-id>
 
 watchctl webhook test <endpoint-id>
+watchctl webhook list
+watchctl webhook deliveries [--endpoint-id <endpoint-id>] [--limit <n>]
+watchctl webhook retry <delivery-id>
 ```
 
 正式发布后命令遵循语义化兼容策略，删除或重命名必须经过弃用周期。
