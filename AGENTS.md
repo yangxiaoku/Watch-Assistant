@@ -97,17 +97,24 @@ ssh root@192.168.6.236 'curl -fsS http://127.0.0.1:8115/api/v1/health'
   `Task` 表或适配器扩展成通用文件系统。
 - SQLite 迁移必须向前、幂等、可由发布前备份回滚；前端列表采用分页/游标，不一次返回整库。
 
-## 工程纪律（2026-07-29 健康检查补充）
+## 工程纪律与发布治理
 
 以下规则由项目健康度审计导出，违反即导致分支失控和发布循环失效：
 
-1. **一功能一分支**：72h 内合并基线或删除；返工 rebase 最新基线，禁止开 clean2/current2/squashed2 变体。
-2. **未合并 = 未完成**：任务完成的标志是合入基线，不是"代码写完了"。合并后立即删枝。
-3. **提交先于发布**：禁止从未提交改动打 tar.gz；包名必须含 commit hash（`watch-assistant-<hash7>-<date>.tar.gz`）。
-4. **发布基线唯一**：当前 `codex/publish-main`；禁止两个 publish 分支并存，分叉时立即裁决并线。
-5. **凭据不进仓**：secrets 只放 `C:\Users\98275\.115ts-secrets\`；.gitignore 已覆盖 `*cookie*`、`authorization*.json`、`p115-prod-*.json`、`*.tar.gz` 等。
-6. **Python 环境**：worktree 内用 `.venv/Scripts/python.exe`，禁止系统 python（74 import error）、禁止 `uv sync`（删依赖）、禁止 PowerShell。全量 956 tests 分三批跑（unit/integration/contracts），单条全量超 120s 必超时。
-7. **验收脚本化**：合并前 `scripts/verify.sh` 全绿，不靠截图。离线测试 = 合并门禁，live 测试 = 每日单独跑。
+1. **一功能一分支**：72 小时内合并基线或删除；返工必须基于最新基线，禁止创建
+   `clean2`、`current2`、`squashed2` 等变体。
+2. **未合并 = 未完成**：任务完成的标志是合入基线，不是代码写完；合并后立即删枝。
+3. **提交先于发布**：禁止从未提交改动打包；发布包名必须包含
+   `watch-assistant-<hash7>-<date>.tar.gz`。
+4. **发布基线唯一**：唯一发布分支是 `codex/publish-main`。发布前必须核对该分支的
+   实际最新提交和部署状态，不在本文件硬编码可能过期的提交号。
+5. **凭据不进仓**：Secret 只放在 `C:\Users\98275\.115ts-secrets\`；不得进入代码、
+   文档、日志、测试 fixture、截图或发布包。
+6. **Python 环境**：worktree 内使用 `.venv/Scripts/python.exe`，禁止使用系统 Python、
+   `uv sync` 或 PowerShell 修改环境；全量测试分 unit/integration/contracts 三批运行，
+   单条全量超过 120 秒按超时处理。
+7. **验收脚本化**：合并前 `scripts/verify.sh` 必须通过，不以截图代替验收；离线测试是
+   合并门禁，live 测试单独按计划运行。
 
 ## 多会话协作
 
@@ -123,8 +130,8 @@ ssh root@192.168.6.236 'curl -fsS http://127.0.0.1:8115/api/v1/health'
 ## 验证
 
 ```bash
-python -m pytest -q
-python -m ruff check src tests scripts
+.venv/Scripts/python.exe -m pytest -q
+.venv/Scripts/python.exe -m ruff check src tests scripts
 npm --prefix frontend test -- --run
 npm --prefix frontend run build
 npm --prefix frontend run test:e2e
@@ -143,12 +150,3 @@ docker compose config
 - `_p115client_timeout_executor` 对 `errno=990009` 使用 3 秒重试。
 - C03 live 文件分页大小必须保持 `VERIFIED_FS_FILES_PAGE_SIZE=1`；fixture probe 必须先
 receipt 再 verify；live runner 保持 990009 重试。
-
-## 工程纪律
-
-- 一功能一分支：72 小时内合并基线或删除；返工必须基于最新基线，禁止重复的 clean/current/squashed 变体。
-- 未合并即未完成；提交先于发布，发布包名必须包含 commit hash。
-- 发布基线只允许 `codex/publish-main`；凭据只放在 `C:\Users\98275\.115ts-secrets\`。
-- 合并前运行 `scripts/verify.sh`；离线测试是门禁，live 测试单独每日运行。
-
-唯一生产发布基线 = `codex/publish-main` @ `a2bdfc8`，日期 2026-07-29；其后的提交仅更新治理/发布文档，不改变运行版本。
