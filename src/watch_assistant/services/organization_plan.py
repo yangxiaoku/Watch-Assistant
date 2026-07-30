@@ -866,17 +866,17 @@ def _execution_payload(
                 "target_name": member_target_name,
             }
         )
-    scope_directory_ids = sorted(
-        {
-            root_directory_id,
-            *(member["source_parent_id"] for member in members),
-            *(member["target_parent_id"] for member in members),
-        }
-    )
+    scope_directory_ids = {
+        root_directory_id,
+        *(member["source_parent_id"] for member in members),
+        *(member["target_parent_id"] for member in members),
+    }
+    if target_directory_id is not None:
+        scope_directory_ids.add(target_directory_id)
     return {
         "order": order,
         "kind": "move",
-        "scope_directory_ids": scope_directory_ids,
+        "scope_directory_ids": sorted(scope_directory_ids),
         "members": members,
     }
 
@@ -1309,6 +1309,8 @@ def _validate_persisted_step(
         *(member.source_parent_id for member in step.members),
         *(member.target_parent_id for member in step.members),
     }
+    if target_directory_id is not None:
+        expected_scope.add(target_directory_id)
     if (
         set(step.scope_directory_ids) != expected_scope
         or not expected_scope <= managed_directory_ids

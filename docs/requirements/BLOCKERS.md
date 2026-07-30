@@ -8,7 +8,7 @@
 
 - REQ-001：完成 P115 只读目录契约、分页断点索引、媒体文件名解析、TMDB 匹配、分类命名和整理计划预览；本轮在受管一次性夹具上完成双文件上传、移动、重命名、恢复和精确回收，证据见 `evidence/req-001-002-live-companion-20260730.json`；真实业务整理和生产写入仍关闭。
 - REQ-001：真实 C03 低风险测试目录写入验收已通过：10 次写操作逐次核对通过，完成建目录、移动、重命名、隔离/恢复组合和回收，15 次列表观察、28 页读取，cleanup 为 `complete`；未触碰生产目录，业务整理器仍未开启。生产目标根目录递归只读基线已完成：54 页、12 个目录、11 个子目录、43 个文件、54 个唯一对象身份，证据见 `evidence/req-001-production-inventory-20260729.json`。
-- REQ-001 本轮补充：新增受控 `LiveP115OrganizationTransport`，固定版本客户端、调用级超时、scope/计划摘要/一次性授权门禁和 receipt-before-read-after-write 已通过离线契约及 C03 测试目录真实验收；单文件 move/rename 循环 4 个 receipt，最终恢复原名，证据见 `evidence/req-001-live-organization-20260729.json`。生产业务整理仍未自动开启。
+- REQ-001 本轮补充：新增受控 `LiveP115OrganizationTransport`，固定版本客户端、调用级超时、scope/计划摘要/一次性授权门禁和 receipt-before-read-after-write 已通过离线契约及 C03 测试目录真实验收；本次进一步完成应用设置、只读扫描、计划确认、操作排队、真实 worker 移动/标准化重命名、恢复和测试树回收，证据见 `evidence/req-001-application-worker-live-20260730.json`。生产业务整理仍未自动开启。
 - REQ-004：完成结构化事件目录、中文字段、请求/关联 ID、状态/错误码、脱敏 JSONL、参数化日志查询、JSONL/CSV 导出和 `audit_records` 持久审计基础设施；隔离、整理操作及 STRM 清理开始/结束已接入同一事务审计；登录、登出、CSRF、限流和采样 Agent Token 认证事件已接入持久审计，推送任务生命周期日志和站内通知第一阶段已覆盖。本轮新增 Agent Token 创建、暂停、恢复、撤销、请求认证和 Scope 拒绝的结构化/持久审计，并修正整理操作审计不应伪装成 `settings.changed` 的事件目录错误，专项测试通过。外部通知渠道、完整业务事件矩阵和详情时间线仍未完成。
 - REQ-003：完成 `watchctl` 只读 CLI 阶段：系统状态/能力、Schema 发现、doctor、任务/工作流/通知/备份/部署诊断、媒体库、媒体条目、审计和整理计划列表/详情查询，统一 JSON/JSONL envelope 与退出码；本轮新增 `organize apply` 的 digest/confirm/自动幂等键、`task wait` 轮询和 `task retry`，并修正整理操作路径的 `organize:execute` Scope 校验；专项 CLI/Agent 契约回归通过。整理计划生成、STRM 查询/写入、Web 高风险批准、跨平台端到端验收仍未完成。
 - REQ-019：完成 Webhook 阶段实现：HTTPS 公网/DNS 私网拦截、端点独立加密 Secret、版本化事件 envelope、HMAC、持久投递记录、指数重试、死信状态和管理员手动死信重试；真实接收端篡改/重放/重启恢复验收和完整事件矩阵仍阻断。

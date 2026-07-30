@@ -1,0 +1,42 @@
+{
+  "date": "2026-07-30",
+  "status": "success",
+  "scope": "受管一次性 115 测试夹具",
+  "production_scope_touched": false,
+  "permanent_delete_used": false,
+  "code_change": {
+    "component": "organization_plan execution scope",
+    "result": "配置的目标根目录纳入持久化 scope，并在执行前重验",
+    "regression": "unit 514 passed, 3 skipped; contracts 162 passed; Ruff passed"
+  },
+  "application_flow": {
+    "settings_saved": true,
+    "readonly_scan_complete": true,
+    "plan_created": true,
+    "plan_confirmed": true,
+    "operation_queued": true,
+    "operation_status": "organized",
+    "operation_error_code": null,
+    "temporary_database": true
+  },
+  "remote_postconditions": {
+    "moved_to_target": true,
+    "standardized_name_observed": true,
+    "restored_to_original_parent": true,
+    "original_name_restored": true,
+    "target_file_absent_after_restore": true
+  },
+  "fixture_cleanup": {
+    "classification_directories_created": 5,
+    "classification_tree_recycled": true,
+    "residual_target_tree": false,
+    "parent_fixture_residual_target_prefix": false,
+    "permanent_delete": false
+  },
+  "related_offline_integration": {
+    "organization_tests": 34,
+    "organization_tests_status": "passed",
+    "full_integration_batch": "not_counted_due_to_windows_output_flush_timeout"
+  },
+  "sensitive_values_logged": false
+}

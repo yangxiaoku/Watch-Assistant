@@ -222,6 +222,26 @@ async def test_complete_execution_payload_is_persisted_and_parsed(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_execution_scope_includes_configured_target_root(tmp_path):
+    database = await _database(tmp_path)
+    service = OrganizationPlanService(database.session_factory)
+    plan_view = await service.create_plan(
+        library_id=LIBRARY_ID,
+        scan_run_id=SCAN_ID,
+        items=(_item(),),
+        target_directory_id="9000",
+        target_directories={"movie": "8000"},
+    )
+    async with database.session_factory() as session:
+        plan = await session.get(OrganizationPlan, plan_view.plan_id)
+        assert plan is not None
+        steps = await load_executable_steps(database.session_factory, plan)
+        assert steps is not None
+        assert steps[0].scope_directory_ids == (ROOT_ID, "8000", "9000")
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_companion_group_is_complete_and_target_identity_changes_hash(tmp_path):
     database = await _database(tmp_path)
     service = OrganizationPlanService(database.session_factory)
