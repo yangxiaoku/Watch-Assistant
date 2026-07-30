@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Bell, ClipboardCheck, Clock3, Film, Flame, Heart, Home, ListTodo, LoaderCircle, LogIn, PanelRight, Search, Settings, Tv, X } from "@lucide/vue";
+import { Bell, ClipboardCheck, Clock3, Database, Film, Flame, Heart, Home, ListTodo, LoaderCircle, LogIn, PanelRight, Search, Settings, Tv, X } from "@lucide/vue";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 import { ApiClient, ApiError, browserIsOnline, focusFirstFieldError } from "./api";
 import TaskDrawer from "./components/TaskDrawer.vue";
@@ -29,6 +29,7 @@ import MovieView from "./views/MovieView.vue";
 import SearchView from "./views/SearchView.vue";
 import SettingsView from "./views/SettingsView.vue";
 import OrganizationWorkbenchView from "./views/OrganizationWorkbenchView.vue";
+import LibraryWorkbenchView from "./views/LibraryWorkbenchView.vue";
 import WorkflowCenterView from "./views/WorkflowCenterView.vue";
 import NotificationCenterView from "./views/NotificationCenterView.vue";
 
@@ -69,6 +70,7 @@ const pushCapabilities = ref<PushCapabilities>({ ...NO_PUSH_CAPABILITIES });
 const inspectionSupported = ref(false);
 const inspectionAutoStartEnabled = ref<boolean | "unknown">("unknown");
 const organizationPlanEnabled = ref(false);
+const organizationExecutionEnabled = ref(false);
 const selectedSeason = ref<number | null>(null);
 const seasonDetail = ref<SeasonDetailResponse | null>(null);
 const seasonDetailLoading = ref(false);
@@ -468,6 +470,7 @@ const navItems = [
   { view: "tv" as const, label: "剧集", icon: Tv },
   { view: "popular" as const, label: "热门", icon: Flame },
   { view: "organization-plans" as const, label: "整理", icon: ClipboardCheck },
+  { view: "library" as const, label: "媒体库", icon: Database },
   { view: "workflows" as const, label: "任务中心", icon: ListTodo },
   { view: "notifications" as const, label: "通知", icon: Bell },
 ];
@@ -1376,6 +1379,7 @@ onMounted(async () => {
     inspectionSupported.value = health.inspection_supported === true;
     inspectionAutoStartEnabled.value = health.inspection_auto_start_enabled === true;
     organizationPlanEnabled.value = health.organization_plan_enabled === true;
+    organizationExecutionEnabled.value = health.organization_execution_enabled === true;
     await api.me();
     authenticated.value = true;
   } catch {
@@ -1427,7 +1431,8 @@ onBeforeUnmount(() => {
         <LibraryView v-else-if="activeView === 'movies' || activeView === 'tv'" :movies="catalogMovies" :loading="catalogLoading" :favorite-ids="favoriteIds" :genre-id="genreId" :year="year" :sort="sort" :media-type="activeView" :page="currentPage" :total-pages="totalPages" :total-results="totalResults" @open="openMovie" @favorite="toggleFavorite" @filters="loadDiscover" @page="loadPage" />
         <CollectionView v-else-if="activeView === 'favorites' || activeView === 'history'" :mode="activeView" :movies="activeView === 'favorites' ? favorites : history" :favorite-ids="favoriteIds" @open="openMovie" @favorite="toggleFavorite" />
         <SettingsView v-else-if="activeView === 'settings'" :api="api" @auto-start-enabled="inspectionAutoStartEnabled = $event" />
-        <OrganizationWorkbenchView v-else-if="activeView === 'organization-plans' && organizationPlanEnabled" :api="api" :enabled="organizationPlanEnabled" />
+        <OrganizationWorkbenchView v-else-if="activeView === 'organization-plans' && organizationPlanEnabled" :api="api" :enabled="organizationPlanEnabled" :execution-enabled="organizationExecutionEnabled" />
+        <LibraryWorkbenchView v-else-if="activeView === 'library'" :api="api" />
         <WorkflowCenterView v-else-if="activeView === 'workflows'" :api="api" />
         <NotificationCenterView v-else-if="activeView === 'notifications'" :api="api" @navigate="selectView" />
         <SearchView v-else v-model="searchInput" :loading="catalogLoading" :movies="catalogMovies" :heading="catalogHeading" :favorite-ids="favoriteIds" :page="currentPage" :total-pages="totalPages" :total-results="totalResults" @search="searchMovies" @reset="selectView('home')" @open="openMovie" @favorite="toggleFavorite" @page="loadPage" />

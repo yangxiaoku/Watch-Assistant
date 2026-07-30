@@ -190,6 +190,46 @@ describe("ApiClient season and inspection requests", () => {
     ]);
   });
 
+  it("connects the library scan and STRM workbench endpoints", async () => {
+    const responses = [
+      { items: [], next_cursor: null },
+      { library_id: "main", name: "115 媒体库", root_directory_id: "123", enabled: false, scope_verified: false, revision: 1, latest_scan: null },
+      { library: { library_id: "main", name: "115 媒体库", root_directory_id: "123", enabled: true, scope_verified: true, revision: 2, latest_scan: null }, verified: true, enabled: true },
+      { run_id: "scan-1", state: "completed", complete: true, snapshot_revision: 1, pages_read: 1, items_seen: 1, added_count: 1, changed_count: 0, removed_count: 0, error_code: null },
+      { items: [], next_cursor: null },
+      { items: [], page: 1, page_size: 50, total: 0, total_pages: 0 },
+      { library_id: "main", scan_run_id: "scan-1", generated: 1, unchanged: 0, skipped: 0, failed: 0, retired: 0 },
+      { library_id: "main", scan_run_id: "scan-1", generated: 0, unchanged: 1, skipped: 0, failed: 0, retired: 0 },
+      { library_id: "main", scan_run_id: "scan-1", generated: 0, unchanged: 0, skipped: 0, failed: 0, retired: 1 },
+    ];
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(new Response(JSON.stringify(responses.shift()), { status: 200 })));
+    vi.stubGlobal("fetch", fetchMock);
+    const api = new ApiClient();
+
+    await api.libraries();
+    await api.configureLibrary("main", { name: "115 媒体库", root_directory_id: "123", revision: 0 });
+    await api.verifyLibraryScope("main");
+    await api.scanLibrary("main");
+    await api.libraryMedia("main");
+    await api.strmManifest("main");
+    await api.generateStrm("main", "scan-1");
+    await api.incrementalStrm("main", "scan-1");
+    await api.cleanupStrm("main", "scan-1");
+
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "/api/v1/libraries?cursor=0&limit=50",
+      "/api/v1/libraries/main/configuration",
+      "/api/v1/libraries/main/verify-scope",
+      "/api/v1/libraries/main/scan",
+      "/api/v1/libraries/main/media?cursor=0&limit=50",
+      "/api/v1/libraries/main/strm-manifest?page=1&page_size=50",
+      "/api/v1/libraries/main/strm-generation",
+      "/api/v1/libraries/main/strm-incremental",
+      "/api/v1/libraries/main/strm-cleanup",
+    ]);
+    expect(JSON.parse(fetchMock.mock.calls[3][1].body as string).idempotency_key).toMatch(/^(wa-|[0-9a-f-]{36}$)/);
+  });
+
   it("sends workflow filters and guarded approval/cancel actions", async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({ items: [], page: 1, page_size: 20, total: 0 }), { status: 200 }))

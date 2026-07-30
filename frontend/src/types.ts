@@ -224,6 +224,91 @@ export interface SettingsOverviewResponse {
   };
 }
 
+export interface LibraryScanSummary {
+  run_id: string;
+  state: "queued" | "running" | "completed" | "failed" | "cancelled";
+  complete: boolean;
+  snapshot_revision: number | null;
+  pages_read: number;
+  items_seen: number;
+  added_count: number;
+  changed_count: number;
+  removed_count: number;
+  error_code: string | null;
+}
+
+export interface MediaLibraryResponse {
+  library_id: string;
+  name: string;
+  root_directory_id: string;
+  enabled: boolean;
+  scope_verified: boolean;
+  revision: number;
+  latest_scan: LibraryScanSummary | null;
+}
+
+export interface MediaLibraryListResponse {
+  items: MediaLibraryResponse[];
+  next_cursor: number | null;
+}
+
+export interface MediaEntryResponse {
+  media_id: string;
+  library_id: string;
+  scan_run_id: string;
+  object_type: "file";
+  object_id: string;
+  parent_id: string | null;
+  name: string;
+  size_bytes: number | null;
+  modified_at: string | null;
+  state: "indexed";
+}
+
+export interface MediaEntryListResponse {
+  items: MediaEntryResponse[];
+  next_cursor: number | null;
+}
+
+export interface StrmManifestItemResponse {
+  manifest_id: string;
+  library_id: string;
+  cloud_file_id: string;
+  cloud_relative_path: string;
+  local_relative_path: string;
+  status: "pending" | "verified" | "retired";
+  source_version: number;
+}
+
+export interface StrmManifestListResponse {
+  items: StrmManifestItemResponse[];
+  page: number;
+  page_size: number;
+  total: number;
+  total_pages: number;
+}
+
+export interface StrmGenerationResponse {
+  library_id: string;
+  scan_run_id: string;
+  generated: number;
+  unchanged: number;
+  skipped: number;
+  failed: number;
+  retired: number;
+}
+
+export type OrganizationOperationStatus = "planned" | "organizing" | "organized" | "failed" | "uncertain" | "cancelled";
+
+export interface OrganizationOperationResponse {
+  operation_id: string;
+  plan_id: string;
+  status: OrganizationOperationStatus;
+  revision: number;
+  attempts: number;
+  error_code: string | null;
+}
+
 export interface LoggingSettingsResponse {
   revision: number;
   level: LogLevel;

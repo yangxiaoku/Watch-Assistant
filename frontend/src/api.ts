@@ -33,6 +33,12 @@ import type {
   NotificationPreferenceResponse,
   OrganizationPlanListResponse,
   OrganizationPlanSummary,
+  OrganizationOperationResponse,
+  MediaLibraryListResponse,
+  MediaLibraryResponse,
+  MediaEntryListResponse,
+  StrmManifestListResponse,
+  StrmGenerationResponse,
   PwaDevice,
 } from "./types";
 import { describeUiError, type UiErrorAction } from "./errorCatalog";
@@ -553,6 +559,72 @@ export class ApiClient {
       }
       throw exception;
     }
+  }
+
+  async queueOrganizationOperation(planId: string, expectedRevision: number): Promise<OrganizationOperationResponse> {
+    return this.request<OrganizationOperationResponse>(`/api/v1/organization-plans/${encodeURIComponent(planId)}/operation`, {
+      method: "POST",
+      body: JSON.stringify({ expected_revision: expectedRevision, idempotency_key: createIdempotencyKey(), confirm: true }),
+    });
+  }
+
+  async organizationOperation(operationId: string): Promise<OrganizationOperationResponse> {
+    return this.request<OrganizationOperationResponse>(`/api/v1/organization-operations/${encodeURIComponent(operationId)}`);
+  }
+
+  async libraries(cursor = 0, limit = 50): Promise<MediaLibraryListResponse> {
+    return this.request<MediaLibraryListResponse>(`/api/v1/libraries?cursor=${cursor}&limit=${limit}`);
+  }
+
+  async configureLibrary(libraryId: string, payload: { name: string; root_directory_id: string; revision: number }): Promise<MediaLibraryResponse> {
+    return this.request<MediaLibraryResponse>(`/api/v1/libraries/${encodeURIComponent(libraryId)}/configuration`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async verifyLibraryScope(libraryId: string): Promise<{ library: MediaLibraryResponse; verified: boolean; enabled: boolean }> {
+    return this.request<{ library: MediaLibraryResponse; verified: boolean; enabled: boolean }>(`/api/v1/libraries/${encodeURIComponent(libraryId)}/verify-scope`, {
+      method: "POST",
+      body: "{}",
+    });
+  }
+
+  async scanLibrary(libraryId: string): Promise<MediaLibraryResponse["latest_scan"]> {
+    const response = await this.request<NonNullable<MediaLibraryResponse["latest_scan"]>>(`/api/v1/libraries/${encodeURIComponent(libraryId)}/scan`, {
+      method: "POST",
+      body: JSON.stringify({ idempotency_key: createIdempotencyKey() }),
+    });
+    return response;
+  }
+
+  async libraryMedia(libraryId: string, cursor = 0, limit = 50): Promise<MediaEntryListResponse> {
+    return this.request<MediaEntryListResponse>(`/api/v1/libraries/${encodeURIComponent(libraryId)}/media?cursor=${cursor}&limit=${limit}`);
+  }
+
+  async strmManifest(libraryId: string, page = 1, pageSize = 50): Promise<StrmManifestListResponse> {
+    return this.request<StrmManifestListResponse>(`/api/v1/libraries/${encodeURIComponent(libraryId)}/strm-manifest?page=${page}&page_size=${pageSize}`);
+  }
+
+  async generateStrm(libraryId: string, scanRunId: string): Promise<StrmGenerationResponse> {
+    return this.request<StrmGenerationResponse>(`/api/v1/libraries/${encodeURIComponent(libraryId)}/strm-generation`, {
+      method: "POST",
+      body: JSON.stringify({ source_scan_run_id: scanRunId }),
+    });
+  }
+
+  async incrementalStrm(libraryId: string, scanRunId: string): Promise<StrmGenerationResponse> {
+    return this.request<StrmGenerationResponse>(`/api/v1/libraries/${encodeURIComponent(libraryId)}/strm-incremental`, {
+      method: "POST",
+      body: JSON.stringify({ source_scan_run_id: scanRunId }),
+    });
+  }
+
+  async cleanupStrm(libraryId: string, scanRunId: string): Promise<StrmGenerationResponse> {
+    return this.request<StrmGenerationResponse>(`/api/v1/libraries/${encodeURIComponent(libraryId)}/strm-cleanup`, {
+      method: "POST",
+      body: JSON.stringify({ source_scan_run_id: scanRunId }),
+    });
   }
 }
 

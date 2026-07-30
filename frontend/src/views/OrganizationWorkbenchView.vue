@@ -4,8 +4,9 @@ import { computed, onMounted, ref } from "vue";
 import { ApiClient, ApiError, focusFirstFieldError } from "../api";
 import type { OrganizationPlanStatus, OrganizationPlanSummary } from "../types";
 
-const props = withDefaults(defineProps<{ api: ApiClient; enabled?: boolean }>(), {
+const props = withDefaults(defineProps<{ api: ApiClient; enabled?: boolean; executionEnabled?: boolean }>(), {
   enabled: true,
+  executionEnabled: false,
 });
 
 const activeStatus = ref<OrganizationPlanStatus>("needs_review");
@@ -71,6 +72,25 @@ async function saveAlias() {
   const plan = selected.value;
   if (!plan || busy.value || !selectedCanEdit.value) return;
   await mutate("alias", () => props.api.aliasOrganizationPlan(plan.plan_id, aliasInput.value, plan.revision));
+}
+
+async function queueOperation() {
+  const plan = selected.value;
+  if (!plan || busy.value || plan.status !== "planned" || !props.executionEnabled) return;
+  busy.value = true;
+  error.value = "";
+  notice.value = "";
+  try {
+    const operation = await props.api.queueOrganizationOperation(plan.plan_id, plan.revision);
+    notice.value = operation.status === "organized"
+      ? "整理已完成"
+      : `整理操作已排队，当前状态：${operation.status}`;
+  } catch (exception) {
+    focusFirstFieldError(exception);
+    error.value = exception instanceof ApiError ? exception.message : "整理操作排队失败，请稍后重试";
+  } finally {
+    busy.value = false;
+  }
 }
 
 async function mutate(action: "confirm" | "ignore" | "alias", operation: () => Promise<OrganizationPlanSummary>) {
@@ -148,8 +168,9 @@ onMounted(() => {
           <div><dt>前置条件</dt><dd>{{ selected.precondition_count }}</dd></div>
         </dl>
         <p class="organization-safe-note">预览只显示本地摘要。</p>
-        <div v-if="selectedCanEdit" class="organization-actions">
+        <div v-if="selectedCanEdit || (selected.status === 'planned' && executionEnabled)" class="organization-actions">
           <button v-if="selectedIsReviewable" class="primary-button" type="button" :disabled="busy" @click="confirmPlan"><Check :size="16" />确认本地计划</button>
+          <button v-if="selected.status === 'planned' && executionEnabled" class="primary-button" type="button" :disabled="busy" @click="queueOperation"><Check :size="16" />提交远端整理</button>
           <button class="secondary-button" type="button" :disabled="busy" @click="ignorePlan"><Ban :size="16" />忽略</button>
         </div>
         <form v-if="selectedCanEdit" class="organization-alias" @submit.prevent="saveAlias">

@@ -92,7 +92,7 @@ export function navigateHome(): void {
   window.history.pushState({}, "", "/");
 }
 
-export type BrowseView = "home" | "movies" | "tv" | "popular" | "favorites" | "history" | "search" | "settings" | "organization-plans" | "workflows" | "notifications";
+export type BrowseView = "home" | "movies" | "tv" | "popular" | "favorites" | "history" | "search" | "settings" | "organization-plans" | "library" | "workflows" | "notifications";
 export type CatalogView = "movies" | "tv" | "popular" | "search";
 export type CatalogSort = "popular" | "rating" | "release";
 export interface CatalogRoute {
@@ -119,6 +119,7 @@ const VIEW_PATHS: Record<Exclude<BrowseView, "search">, string> = {
   history: "/history",
   settings: "/settings",
   "organization-plans": "/organization-plans",
+  library: "/library",
   workflows: "/workflows",
   notifications: "/notifications",
 };
@@ -183,6 +184,7 @@ export function extractBrowseView(path: string): BrowseView {
   if (pathname === "/search") return "search";
   if (pathname === "/settings") return "settings";
   if (pathname === "/organization-plans") return "organization-plans";
+  if (pathname === "/library") return "library";
   if (pathname === "/workflows") return "workflows";
   if (pathname === "/notifications") return "notifications";
   return "home";

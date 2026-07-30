@@ -95,4 +95,21 @@ describe("OrganizationWorkbenchView", () => {
 
     expect(api.aliasOrganizationPlan).toHaveBeenCalledWith("plan-local-1", "本地标签", 4);
   });
+
+  it("queues a planned operation only when execution is enabled", async () => {
+    const planned = { ...plan, status: "planned" as const };
+    const api = makeApi({
+      organizationPlans: vi.fn().mockResolvedValue({ items: [planned], next_cursor: null }),
+      queueOrganizationOperation: vi.fn().mockResolvedValue({ operation_id: "op-1", plan_id: planned.plan_id, status: "planned", revision: 1, attempts: 0, error_code: null }),
+    });
+    const wrapper = mount(OrganizationWorkbenchView, { props: { api, executionEnabled: true } });
+    await flushPromises();
+
+    const operationButton = wrapper.findAll("button").find((button) => button.text().includes("提交远端整理"));
+    expect(operationButton).toBeDefined();
+    await operationButton!.trigger("click");
+    await flushPromises();
+    expect(api.queueOrganizationOperation).toHaveBeenCalledWith("plan-local-1", 4);
+    expect(wrapper.text()).toContain("整理操作已排队");
+  });
 });

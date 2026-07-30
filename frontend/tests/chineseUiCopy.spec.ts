@@ -8,6 +8,7 @@ const sourceFiles = [
   "../src/views/LibraryView.vue",
   "../src/views/SearchView.vue",
   "../src/views/OrganizationWorkbenchView.vue",
+  "../src/views/LibraryWorkbenchView.vue",
   "../src/views/SettingsView.vue",
 ].map((path) => readFileSync(new URL(path, import.meta.url), "utf8"));
 
