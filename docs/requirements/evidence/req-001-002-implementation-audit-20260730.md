@@ -1,7 +1,7 @@
 # REQ-001 / REQ-002 实施与验收证据矩阵
 
 更新时间：2026-07-30  
-审计基线：`codex/publish-main@187348b`
+审计基线：`codex/publish-main@02a359e`
 
 本矩阵区分四种状态：
 
@@ -51,6 +51,19 @@
 以上证据不授权生产影视库自动整理、STRM 播放、STRM 清理或永久删除。
 
 ## 2026-07-30 线上安全收敛
+
+## 2026-07-30 `02a359e` 发布验证
+
+- 发布包：`watch-assistant-02a359e-20260730.tar.gz`；本地与远端 SHA-256 一致。
+- 部署：`192.168.6.236` systemd，`/opt/watch-assistant/current` 已指向
+  `/opt/watch-assistant/releases/watch-assistant-02a359e`。
+- 数据库：切换前使用 SQLite online backup API 备份到
+  `/var/lib/watch-assistant/backups/pre-02a359e-20260730.db`，`PRAGMA integrity_check` 返回 `ok`。
+- 运行验证：systemd 为 `active`，`/api/v1/health` 返回 `status=ok`，网页入口返回 HTTP 200。
+- 离线门禁：unit `508 passed, 3 skipped`；integration `298 passed, 1 skipped`；contracts `162 passed`；前端 `105 passed`；Ruff 和生产构建通过。
+- 线上安全门禁保持关闭：真实 115 写入、永久删除、STRM 清理和 STRM 播放均未开启；整理计划和只读扫描保持可用。
+
+上述是发布与安全状态证据，不代表 REQ-001/REQ-002 已完成；需求矩阵中的未证明和阻断项仍然有效。
 
 审计发现发布环境的高风险开关与证据矩阵不一致，已在保留配置备份后修正
 `/etc/watch-assistant.env` 并重启服务。当前健康接口确认：
