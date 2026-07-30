@@ -5,7 +5,8 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-from collections.abc import Sequence
+from collections.abc import Collection, Mapping, Sequence
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
 
@@ -18,7 +19,11 @@ from watch_assistant.library_models import (
     MediaLibrary,
 )
 from watch_assistant.services.library_index import ScanRunState
-from watch_assistant.services.media_classification import plan_media
+from watch_assistant.services.media_classification import (
+    ClassificationStatus,
+    NamingRuleConfig,
+    plan_media,
+)
 from watch_assistant.services.media_matcher import TmdbMatcher, build_match_input
 from watch_assistant.services.media_parser import parse_media_filename
 from watch_assistant.services.organization_plan import (
@@ -55,8 +60,30 @@ class OrganizationPreviewService:
         *,
         library_id: str,
         scan_run_id: str,
+        target_directory_id: str | None = None,
+        target_directories: Mapping[str, str] | None = None,
+        video_extensions: Collection[str] | None = None,
+        small_file_threshold_mb: float = 0.0,
+        rename_enabled: bool = True,
+        region_grouping_enabled: bool = True,
+        target_root: str = "",
         now: datetime | None = None,
     ) -> OrganizationPlanView:
+        if (
+            isinstance(small_file_threshold_mb, bool)
+            or not isinstance(small_file_threshold_mb, (int, float))
+            or small_file_threshold_mb < 0
+        ):
+            raise OrganizationPreviewError("invalid_small_file_threshold")
+        normalized_extensions = (
+            None
+            if video_extensions is None
+            else {
+                value.strip().lower()
+                for value in video_extensions
+                if isinstance(value, str) and value.strip()
+            }
+        )
         library, run, entries = await self._load_verified_snapshot(
             library_id, scan_run_id
         )
@@ -64,7 +91,11 @@ class OrganizationPreviewService:
             entry
             for entry in entries
             if not entry.is_directory
-            and parse_media_filename(entry.name).companion_type == "video"
+            and _is_video_entry(
+                entry,
+                video_extensions=normalized_extensions,
+                small_file_threshold_mb=small_file_threshold_mb,
+            )
         ]
         if not files:
             raise OrganizationPreviewError("no_video_files")
@@ -72,7 +103,15 @@ class OrganizationPreviewService:
         existing_targets = tuple(
             entry.path for entry in entries if isinstance(entry.path, str) and entry.path
         )
-        target_parents = _target_parent_ids(entries)
+        target_parents = (
+            dict(target_directories)
+            if target_directories is not None
+            else _target_parent_ids(entries)
+        )
+        rules = NamingRuleConfig(
+            library_root=target_root or "library",
+            region_enabled=region_grouping_enabled,
+        )
         semaphore = asyncio.Semaphore(4)
 
         async def build_item(entry: LibraryScanEntry) -> OrganizationPlanItem:
@@ -83,7 +122,39 @@ class OrganizationPreviewService:
                 parsed,
                 decision,
                 existing_targets=existing_targets,
+                rules=rules,
             )
+            if not rename_enabled and naming_plan.target_directory:
+                original_name = PurePosixPath(entry.name).name
+                target_path = _join_target_path(
+                    naming_plan.target_directory, original_name
+                )
+                if target_path is None:
+                    naming_plan = replace(
+                        naming_plan,
+                        status=ClassificationStatus.REVIEW_REQUIRED,
+                        target_path=None,
+                        reasons=naming_plan.reasons + ("original_name_invalid",),
+                    )
+                else:
+                    normalized_target = _normalize_path(target_path)
+                    existing = {
+                        _normalize_path(value)
+                        for value in existing_targets
+                        if isinstance(value, str)
+                    }
+                    naming_plan = replace(
+                        naming_plan,
+                        status=(
+                            ClassificationStatus.CONFLICT
+                            if normalized_target in existing
+                            else naming_plan.status
+                        ),
+                        target_path=target_path,
+                        reasons=naming_plan.reasons
+                        + (("target_conflict",) if normalized_target in existing else ())
+                        + ("rename_disabled",),
+                    )
             target_parent_id: str | None = None
             target_name: str | None = None
             if naming_plan.target_path:
@@ -118,6 +189,9 @@ class OrganizationPreviewService:
             library_id=library.id,
             scan_run_id=run.id,
             items=items,
+            target_directory_id=target_directory_id,
+            target_directories=target_parents,
+            target_root="",
             now=now,
         )
 
@@ -179,6 +253,33 @@ def _target_parent_ids(entries: Sequence[LibraryScanEntry]) -> dict[str, str]:
 
 def _normalize_path(value: str) -> str:
     return value.strip().strip("/").replace("\\", "/")
+
+
+def _is_video_entry(
+    entry: LibraryScanEntry,
+    *,
+    video_extensions: Collection[str] | None,
+    small_file_threshold_mb: float,
+) -> bool:
+    parsed = parse_media_filename(entry.name)
+    if parsed.companion_type != "video":
+        return False
+    if video_extensions is not None and parsed.container not in video_extensions:
+        return False
+    return not (
+        entry.size_bytes is not None
+        and entry.size_bytes < small_file_threshold_mb * 1024 * 1024
+    )
+
+
+def _join_target_path(directory: str, name: str) -> str | None:
+    if not isinstance(directory, str) or not directory:
+        return None
+    if not isinstance(name, str) or not name or name in {".", ".."}:
+        return None
+    if any(part in {"", ".", ".."} for part in name.replace("\\", "/").split("/")):
+        return None
+    return f"{directory.rstrip('/')}/{name}"
 
 
 def _remote_version(entry: LibraryScanEntry) -> str:

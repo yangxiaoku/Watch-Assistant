@@ -209,6 +209,170 @@ class LibraryIndexService:
             await self._finish_incomplete(run.id, ScanRunState.CANCELLED, "cancelled")
             return await self._result_for_run(run.id)
 
+    async def scan_tree(
+        self, idempotency_key: str, *, max_directories: int = 10_000
+    ) -> LibraryScanResult:
+        """Scan the configured root and every discovered child directory.
+
+        Each page is validated against its own directory while the resulting
+        entries remain one immutable snapshot. Incomplete runs never update
+        the ledger or produce removal conclusions.
+        """
+
+        _validate_idempotency_key(idempotency_key)
+        if (
+            not isinstance(max_directories, int)
+            or isinstance(max_directories, bool)
+            or not 1 <= max_directories <= 100_000
+        ):
+            raise LibraryIndexError("invalid_directory_limit")
+        await self._verify_scope()
+        run = await self._get_or_create_run(idempotency_key)
+        if run.complete and run.state == ScanRunState.COMPLETED.value:
+            return await self._result_for_run(run.id)
+        await self._reset_tree_run(run.id)
+        try:
+            await self._mark_running(run.id)
+            pending = [self._root_directory_id]
+            visited = {self._root_directory_id}
+            pages_read = 0
+            while pending:
+                directory_id = pending.pop(0)
+                page_number = 1
+                expected_page_count: int | None = None
+                expected_total: int | None = None
+                while True:
+                    try:
+                        page = await self._gateway.list_directory(
+                            directory_id,
+                            page=page_number,
+                            page_size=self._page_size,
+                        )
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:  # noqa: BLE001 - remote details stay private
+                        await self._finish_incomplete(
+                            run.id, ScanRunState.FAILED, "gateway_error"
+                        )
+                        return await self._result_for_run(run.id)
+                    try:
+                        expected_page_count, expected_total, terminal = _validate_page(
+                            page,
+                            requested_page=page_number,
+                            root_directory_id=directory_id,
+                            expected_page_count=expected_page_count,
+                            expected_total=expected_total,
+                        )
+                        await self._persist_tree_page(
+                            run.id, page, pages_read=pages_read + 1
+                        )
+                    except LibraryIndexError as error:
+                        state = (
+                            ScanRunState.CANCELLED
+                            if error.code == "cancelled"
+                            else ScanRunState.FAILED
+                        )
+                        await self._finish_incomplete(run.id, state, error.code)
+                        return await self._result_for_run(run.id)
+                    except Exception:  # noqa: BLE001 - storage details stay private
+                        await self._finish_incomplete(
+                            run.id, ScanRunState.FAILED, "storage_error"
+                        )
+                        return await self._result_for_run(run.id)
+                    pages_read += 1
+                    for entry in page.items:
+                        if not entry.is_directory or entry.directory_id is None:
+                            continue
+                        child_id = entry.directory_id
+                        if child_id in visited:
+                            await self._finish_incomplete(
+                                run.id, ScanRunState.FAILED, "directory_cycle"
+                            )
+                            return await self._result_for_run(run.id)
+                        if len(visited) >= max_directories:
+                            await self._finish_incomplete(
+                                run.id, ScanRunState.FAILED, "directory_limit_exceeded"
+                            )
+                            return await self._result_for_run(run.id)
+                        visited.add(child_id)
+                        pending.append(child_id)
+                    if terminal:
+                        break
+                    page_number += 1
+            return await self._complete_run(run.id)
+        except asyncio.CancelledError:
+            await self._finish_incomplete(run.id, ScanRunState.CANCELLED, "cancelled")
+            return await self._result_for_run(run.id)
+
+    async def _reset_tree_run(self, run_id: str) -> None:
+        async with self._session_factory() as session:
+            run = await session.get(LibraryScanRun, run_id)
+            checkpoint = await session.get(LibraryScanCheckpoint, run_id)
+            if run is None or checkpoint is None:
+                raise LibraryIndexError("scan_run_missing")
+            if run.complete:
+                return
+            await session.execute(
+                delete(LibraryScanEntry).where(LibraryScanEntry.scan_run_id == run_id)
+            )
+            await session.execute(
+                delete(LibraryScanDiff).where(LibraryScanDiff.scan_run_id == run_id)
+            )
+            run.state = ScanRunState.QUEUED.value
+            run.error_code = None
+            run.pages_read = 0
+            run.items_seen = 0
+            run.expected_page_count = None
+            run.expected_total = None
+            checkpoint.page = 0
+            checkpoint.items_seen = 0
+            await session.commit()
+
+    async def _persist_tree_page(
+        self, run_id: str, page: DirectoryPage, *, pages_read: int
+    ) -> None:
+        async with self._session_factory() as session, session.begin():
+            run = await session.get(LibraryScanRun, run_id)
+            checkpoint = await session.get(LibraryScanCheckpoint, run_id)
+            if run is None or checkpoint is None:
+                raise LibraryIndexError("scan_run_missing")
+            seen: set[tuple[str, str]] = set()
+            for entry in page.items:
+                object_type, object_id = _entry_identity(entry)
+                identity = (object_type, object_id)
+                if identity in seen:
+                    raise LibraryIndexError("repeated_entry")
+                seen.add(identity)
+                existing = await session.get(
+                    LibraryScanEntry,
+                    {
+                        "scan_run_id": run_id,
+                        "object_type": object_type,
+                        "object_id": object_id,
+                    },
+                )
+                if existing is not None:
+                    raise LibraryIndexError("repeated_entry")
+                session.add(
+                    LibraryScanEntry(
+                        scan_run_id=run_id,
+                        object_type=object_type,
+                        object_id=object_id,
+                        parent_id=entry.parent_id,
+                        name=entry.name,
+                        path=entry.path,
+                        is_directory=entry.is_directory,
+                        size_bytes=entry.size_bytes,
+                        modified_at=entry.modified_at,
+                    )
+                )
+            run.expected_page_count = None
+            run.expected_total = None
+            run.pages_read = pages_read
+            run.items_seen = checkpoint.items_seen + len(page.items)
+            checkpoint.page = pages_read
+            checkpoint.items_seen = run.items_seen
+
     async def _verify_scope(self) -> None:
         async with self._session_factory() as session:
             library = await session.get(MediaLibrary, self._library_id)

@@ -1,12 +1,15 @@
+import json
 from pathlib import Path
 
 import pytest
+from sqlalchemy import select
 
 from watch_assistant.db import create_database, initialize_database
 from watch_assistant.library_models import (
     LibraryScanEntry,
     LibraryScanRun,
     MediaLibrary,
+    OrganizationPlan,
 )
 from watch_assistant.schemas import MediaType
 from watch_assistant.services.media_matcher import MediaKind, TmdbCandidate
@@ -105,4 +108,32 @@ async def test_preview_uses_scan_snapshot_and_requires_verified_target(
     assert result.status is expected
     assert result.source_count == 1
     assert client.calls == 1
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_preview_preserves_original_name_when_rename_is_disabled(tmp_path: Path):
+    database = await _database(tmp_path, target_exists=True)
+    service = OrganizationPreviewService(
+        database.session_factory, _TmdbClient(), OrganizationPlanService(database.session_factory)
+    )
+
+    result = await service.create_preview(
+        library_id="library-preview",
+        scan_run_id="scan-preview",
+        target_directory_id="target-root",
+        target_directories={
+            "library/movie/western/The Office (2005) {tmdb-42}": "target-preview"
+        },
+        video_extensions=["mkv"],
+        rename_enabled=False,
+    )
+
+    assert result.status is OrganizationPlanStatus.PLANNED
+    async with database.session_factory() as session:
+        plan = await session.scalar(select(OrganizationPlan))
+    assert plan is not None
+    action = json.loads(plan.actions_json)[0]
+    assert action["target"] == "library/movie/western/The Office (2005) {tmdb-42}/The.Office.2005.1080p.mkv"
+    assert json.loads(plan.preconditions_json)["target_directory_id"] == "target-root"
     await database.engine.dispose()

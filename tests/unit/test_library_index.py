@@ -61,6 +61,41 @@ class _ReadOnlyGateway:
         return "ReadOnlyGateway(calls=<redacted>, write_calls=<redacted>)"
 
 
+class _TreeGateway:
+    def __init__(self):
+        self.calls: list[tuple[str, int]] = []
+
+    async def list_directory(self, directory_id: str, *, page: int = 1, page_size=100):
+        del page_size
+        self.calls.append((directory_id, page))
+        if directory_id == ROOT_ID:
+            return _page(
+                page,
+                (
+                    LibraryEntry(
+                        directory_id="7100",
+                        file_id=None,
+                        parent_id=ROOT_ID,
+                        name="nested",
+                        is_directory=True,
+                        size_bytes=None,
+                        modified_at=None,
+                        pickcode=None,
+                        path="nested",
+                    ),
+                    _file_entry("1000", path="/remote/root.mkv"),
+                ),
+                1,
+                2,
+            )
+        return _page(
+            page,
+            (_file_entry("1001", path="/remote/nested/item.mkv", parent_id="7100"),),
+            1,
+            1,
+        )
+
+
 def _file_entry(file_id: str, *, path: str = SECRET_PATH, parent_id: str = ROOT_ID):
     return LibraryEntry(
         directory_id=None,
@@ -360,6 +395,24 @@ async def test_repeat_snapshot_is_idempotent_and_path_change_uses_stable_identit
     assert changed.changes[0].change_kind == "changed"
     assert changed.changes[0].path_changed is True
     assert changed.deletion_candidates == ()
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_tree_scan_includes_discovered_child_directories(tmp_path):
+    database = await _database(tmp_path)
+    gateway = _TreeGateway()
+
+    result = await _service(database, gateway, page_size=1).scan_tree("tree-scan")
+
+    assert result.state is ScanRunState.COMPLETED
+    assert result.complete is True
+    assert result.pages_read == 2
+    assert result.items_seen == 3
+    assert gateway.calls == [(ROOT_ID, 1), ("7100", 1)]
+    async with database.session_factory() as session:
+        entries = list(await session.scalars(select(LibraryScanEntry)))
+    assert {entry.object_id for entry in entries} == {"7100", "1000", "1001"}
     await database.engine.dispose()
 
 

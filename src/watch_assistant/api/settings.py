@@ -203,12 +203,17 @@ async def patch_organization(
     auth: Annotated[AuthContext, Depends(require_api_auth)],
 ) -> OrganizationSettingsResponse:
     try:
-        return await settings.update_organization(
+        response = await settings.update_organization(
             patch,
             actor_type="agent" if auth.via_bearer else "web",
             actor_id=auth.identity,
             request_id=request.headers.get("X-Request-ID"),
         )
+        controller = getattr(request.app.state, "organization_scheduler", None)
+        notify = getattr(controller, "notify_settings_changed", None)
+        if callable(notify):
+            notify()
+        return response
     except SettingsConflict as exc:
         raise HTTPException(status_code=409, detail="settings_conflict") from exc
     except OrganizationSettingsValidationError as exc:

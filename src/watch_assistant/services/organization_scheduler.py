@@ -26,6 +26,11 @@ class OrganizationScheduler:
         self._manual_runs += 1
         self._wake.set()
 
+    def notify_settings_changed(self) -> None:
+        """Wake the loop so a saved interval or schedule flag is re-read."""
+
+        self._wake.set()
+
     def stop_pending(self) -> None:
         self._manual_runs = 0
         self._wake.set()

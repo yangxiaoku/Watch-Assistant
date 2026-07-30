@@ -165,6 +165,8 @@ class OrganizationPlanService:
         scan_run_id: str,
         items: Sequence[OrganizationPlanItem],
         target_root: str = "",
+        target_directory_id: str | None = None,
+        target_directories: Mapping[str, str] | None = None,
         parser_version: str = "i04-v1",
         matcher_version: str = "i05-v1",
         expires_at: datetime | None = None,
@@ -174,6 +176,11 @@ class OrganizationPlanService:
         _validate_identity(library_id, "invalid_library")
         _validate_identity(scan_run_id, "invalid_scan_run")
         target_root = _validate_relative_path(target_root, allow_empty=True)
+        if target_directory_id is not None:
+            _validate_identity(target_directory_id, "invalid_target_directory")
+        normalized_target_directories = _validate_target_directories(
+            target_directories or {}
+        )
         parser_version = _validate_version(parser_version)
         matcher_version = _validate_version(matcher_version)
         normalized_items = _validate_items(items)
@@ -196,6 +203,8 @@ class OrganizationPlanService:
                 rows,
                 root_directory_id=library.root_directory_id,
                 target_root=target_root,
+                target_directory_id=target_directory_id,
+                target_directories=normalized_target_directories,
                 target_conflicts=target_conflicts,
                 source_snapshot_revision=run.snapshot_revision,
                 parser_version=parser_version,
@@ -210,6 +219,8 @@ class OrganizationPlanService:
             library_snapshot = _library_snapshot(library)
             preconditions_payload = {
                 "library": library_snapshot,
+                "target_directory_id": target_directory_id,
+                "target_directories": normalized_target_directories,
                 "items": preconditions,
             }
             # basis_json is display/audit evidence; it is intentionally excluded.
@@ -218,6 +229,8 @@ class OrganizationPlanService:
                 "library_snapshot": library_snapshot,
                 "source_snapshot": source_snapshot,
                 "target_root": target_root,
+                "target_directory_id": target_directory_id,
+                "target_directories": normalized_target_directories,
                 "actions": actions,
                 "preconditions": preconditions_payload,
                 "rule_version": rule_version,
@@ -302,6 +315,21 @@ class OrganizationPlanService:
             stale = current_time >= _utc(plan.expires_at)
             library = await session.get(MediaLibrary, plan.library_id)
             stored_preconditions = _load_json_object(plan.preconditions_json)
+            stored_target_directory_id = stored_preconditions.get(
+                "target_directory_id"
+            )
+            stored_target_directories: dict[str, str] = {}
+            try:
+                if stored_target_directory_id is not None:
+                    _validate_identity(
+                        stored_target_directory_id, "invalid_target_directory"
+                    )
+                stored_target_directories = _validate_target_directories(
+                    stored_preconditions.get("target_directories", {})
+                )
+            except OrganizationPlanError:
+                stale = True
+                stored_target_directory_id = None
             if library is None or stored_preconditions.get(
                 "library"
             ) != _library_snapshot(library):
@@ -348,6 +376,8 @@ class OrganizationPlanService:
                         if library is not None
                         else "",
                         target_root=plan.target_root,
+                        target_directory_id=stored_target_directory_id,
+                        target_directories=stored_target_directories,
                         target_conflicts=target_conflicts,
                         source_snapshot_revision=run.snapshot_revision,
                         parser_version=plan.parser_version,
@@ -594,6 +624,8 @@ def _build_payload(
     *,
     root_directory_id: str,
     target_root: str,
+    target_directory_id: str | None,
+    target_directories: Mapping[str, str],
     target_conflicts: Iterable[str],
     source_snapshot_revision: int | None,
     parser_version: str,
@@ -658,6 +690,8 @@ def _build_payload(
             companions=rows,
             directory_rows=directory_rows,
             root_directory_id=root_directory_id,
+            target_directory_id=target_directory_id,
+            target_directories=target_directories,
             target=target,
             order=index,
         )
@@ -761,6 +795,8 @@ def _execution_payload(
     companions: Mapping[tuple[str, str], LibraryScanEntry],
     directory_rows: Mapping[str, Sequence[LibraryScanEntry]],
     root_directory_id: str,
+    target_directory_id: str | None,
+    target_directories: Mapping[str, str],
     target: str | None,
     order: int,
 ) -> dict[str, object] | None:
@@ -777,6 +813,8 @@ def _execution_payload(
         target_parent_id=target_parent_id,
         directory_rows=directory_rows,
         root_directory_id=root_directory_id,
+        target_directory_id=target_directory_id,
+        target_directories=target_directories,
     ):
         return None
     members: list[dict[str, str]] = []
@@ -849,10 +887,15 @@ def _target_directory_matches(
     target_parent_id: str,
     directory_rows: Mapping[str, Sequence[LibraryScanEntry]],
     root_directory_id: str,
+    target_directory_id: str | None,
+    target_directories: Mapping[str, str],
 ) -> bool:
     parent_path = PurePosixPath(target).parent
     if str(parent_path) == ".":
-        return target_parent_id == root_directory_id
+        return target_parent_id in {root_directory_id, target_directory_id}
+    mapped = target_directories.get(_index_path(str(parent_path)))
+    if mapped is not None:
+        return mapped == target_parent_id
     directories = directory_rows.get(target_parent_id, ())
     if len(directories) != 1:
         return False
@@ -933,6 +976,15 @@ async def load_executable_steps(
         actions = _load_json_list(stored.actions_json)
         preconditions = _load_json_object(stored.preconditions_json)
         precondition_items = preconditions.get("items")
+        try:
+            target_directory_id = preconditions.get("target_directory_id")
+            if target_directory_id is not None:
+                _validate_identity(target_directory_id, "invalid_target_directory")
+            target_directories = _validate_target_directories(
+                preconditions.get("target_directories", {})
+            )
+        except OrganizationPlanError:
+            return None
         if (
             source_snapshot is None
             or not actions
@@ -959,6 +1011,8 @@ async def load_executable_steps(
             preconditions=precondition_items,
             steps=steps,
             rows=rows,
+            target_directory_id=target_directory_id,
+            target_directories=target_directories,
         ):
             return None
         canonical = {
@@ -966,6 +1020,8 @@ async def load_executable_steps(
             "library_snapshot": _library_snapshot(library),
             "source_snapshot": source_snapshot,
             "target_root": stored.target_root,
+            "target_directory_id": target_directory_id,
+            "target_directories": target_directories,
             "actions": actions,
             "preconditions": preconditions,
             "rule_version": stored.rule_version,
@@ -1099,6 +1155,8 @@ def _validate_persisted_execution(
     preconditions: list[object],
     steps: tuple[OrganizationPlanExecutionStep, ...],
     rows: Mapping[tuple[str, str], LibraryScanEntry],
+    target_directory_id: str | None,
+    target_directories: Mapping[str, str],
 ) -> bool:
     if len(source_snapshot) != len(actions) or len(steps) != len(actions):
         return False
@@ -1115,6 +1173,9 @@ def _validate_persisted_execution(
     managed_directory_ids.update(
         object_id for object_id, matches in directory_rows.items() if len(matches) == 1
     )
+    if target_directory_id is not None:
+        managed_directory_ids.add(target_directory_id)
+    managed_directory_ids.update(target_directories.values())
     try:
         _validate_relative_path(plan.target_root, allow_empty=True)
         _validate_version(plan.rule_version)
@@ -1176,6 +1237,8 @@ def _validate_persisted_execution(
             directory_rows=directory_rows,
             rows=rows,
             snapshot=snapshot,
+            target_directory_id=target_directory_id,
+            target_directories=target_directories,
         ):
             return False
     return run.snapshot_revision == plan.source_snapshot_revision
@@ -1190,6 +1253,8 @@ def _validate_persisted_step(
     directory_rows: Mapping[str, Sequence[LibraryScanEntry]],
     rows: Mapping[tuple[str, str], LibraryScanEntry],
     snapshot: dict[str, object],
+    target_directory_id: str | None,
+    target_directories: Mapping[str, str],
 ) -> bool:
     target = action.get("target")
     if not isinstance(target, str):
@@ -1216,6 +1281,8 @@ def _validate_persisted_step(
             target_parent_id=primary.target_parent_id,
             directory_rows=directory_rows,
             root_directory_id=library.root_directory_id,
+            target_directory_id=target_directory_id,
+            target_directories=target_directories,
         )
     ):
         return False
@@ -1430,6 +1497,22 @@ def _validate_identity(value: str, code: str) -> str:
     ):
         raise OrganizationPlanError(code)
     return value
+
+
+def _validate_target_directories(value: object) -> dict[str, str]:
+    if not isinstance(value, Mapping):
+        raise OrganizationPlanError("invalid_target_directories")
+    normalized: dict[str, str] = {}
+    for path, directory_id in value.items():
+        if not isinstance(path, str) or not isinstance(directory_id, str):
+            raise OrganizationPlanError("invalid_target_directories")
+        normalized_path = _validate_relative_path(path, allow_empty=True)
+        _validate_identity(directory_id, "invalid_target_directory")
+        existing = normalized.get(normalized_path)
+        if existing is not None and existing != directory_id:
+            raise OrganizationPlanError("target_directory_path_conflict")
+        normalized[normalized_path] = directory_id
+    return dict(sorted(normalized.items()))
 
 
 def _valid_source_version(value: object) -> bool:

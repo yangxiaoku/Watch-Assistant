@@ -20,6 +20,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.staticfiles import StaticFiles
 
 from watch_assistant.adapters.p115 import P115Adapter
+from watch_assistant.adapters.p115_library_gateway import P115ReadOnlyDirectoryGateway
 from watch_assistant.adapters.p115_playback_contract import P115PlaybackGateway
 from watch_assistant.adapters.p115_playback_gateway import P115LivePlaybackGateway
 from watch_assistant.adapters.pansou import PanSouClient
@@ -74,6 +75,9 @@ from watch_assistant.services.maintenance import MaintenanceService
 from watch_assistant.services.manual_import import ManualImportService
 from watch_assistant.services.mcp import McpService
 from watch_assistant.services.notifications import NotificationService
+from watch_assistant.services.organization_automation import (
+    OrganizationAutomationService,
+)
 from watch_assistant.services.organization_operations import (
     OrganizationOperationService,
 )
@@ -160,20 +164,15 @@ def create_app(
 
         async def apply_organization_runtime(ready: bool) -> None:
             nonlocal organization_stop, organization_task
-            enabled = (
+            planning_enabled = (
                 ready
                 and getattr(application.state, "organization_plan_enabled", False)
-                and getattr(application.state, "organization_execution_enabled", False)
-                and getattr(application.state, "organization_write_enabled", False)
-                and getattr(
-                    application.state, "organization_write_contract_verified", False
-                )
                 and getattr(application.state, "organization_cookie_provider", None)
                 is not None
                 and getattr(application.state, "organization_target_root_id", None)
                 is not None
             )
-            if not enabled:
+            if not planning_enabled:
                 if organization_stop is not None:
                     organization_stop.set()
                 if organization_task is not None:
@@ -186,21 +185,62 @@ def create_app(
                     delattr(application.state, "organization_worker")
                 if hasattr(application.state, "organization_scheduler"):
                     delattr(application.state, "organization_scheduler")
+                if hasattr(application.state, "organization_automation_service"):
+                    delattr(application.state, "organization_automation_service")
                 return
             if organization_task is not None:
                 return
-            worker = OrganizationWorker(
+            write_enabled = (
+                getattr(application.state, "organization_execution_enabled", False)
+                and getattr(application.state, "organization_write_enabled", False)
+                and getattr(
+                    application.state, "organization_write_contract_verified", False
+                )
+            )
+            worker = None
+            if write_enabled:
+                worker = OrganizationWorker(
+                    application.state.database.session_factory,
+                    application.state.organization_operation_service,
+                    application.state.organization_cookie_provider,
+                    production_root_id=application.state.organization_target_root_id,
+                    live_enabled=True,
+                    event_logger=application.state.settings_service,
+                )
+                application.state.organization_worker = worker
+
+            def gateway_factory(directory_ids):
+                return P115ReadOnlyDirectoryGateway(
+                    application.state.organization_cookie_provider,
+                    authorized_directory_ids=tuple(directory_ids),
+                    request_timeout_seconds=30,
+                )
+
+            automation = OrganizationAutomationService(
                 application.state.database.session_factory,
-                application.state.organization_operation_service,
-                application.state.organization_cookie_provider,
-                production_root_id=application.state.organization_target_root_id,
-                live_enabled=True,
+                application.state.settings_service,
+                application.state.organization_preview_service,
+                application.state.organization_plan_service,
+                gateway_factory,
+                operation_service=(
+                    application.state.organization_operation_service
+                    if write_enabled
+                    else None
+                ),
+                auto_execute=write_enabled,
                 event_logger=application.state.settings_service,
             )
-            application.state.organization_worker = worker
+            application.state.organization_automation_service = automation
+
+            async def run_organization_once() -> bool:
+                attempted = await automation.run_once()
+                if worker is not None:
+                    await worker.run_once()
+                return attempted
+
             scheduler = OrganizationScheduler(
                 application.state.settings_service,
-                worker.run_once,
+                run_organization_once,
             )
             application.state.organization_scheduler = scheduler
             organization_stop = asyncio.Event()
