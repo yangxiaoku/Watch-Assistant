@@ -26,12 +26,16 @@ _NOTIFIABLE_EVENTS = frozenset(
         "task.accepted",
         "task.failed",
         "task.uncertain",
+        "p115.readiness",
         "p115.credentials_expired",
+        "subscription.resources_observed",
         "organize.needs_review",
         "organize.operation.uncertain",
         "organize.operation.completed",
         "strm.cleanup_blocked",
         "strm.dirty_consumed",
+        "backup.failed",
+        "backup.restore_preview",
         "workflow.stage_changed",
         "workflow.approval_decided",
         "workflow.cancelled",
@@ -76,6 +80,14 @@ class NotificationService:
             return
         safe_fields = fields or {}
         status = safe_fields.get("status")
+        if event_code == "p115.readiness" and status == "ready":
+            return
+        if event_code == "subscription.resources_observed":
+            count = safe_fields.get("count")
+            if not isinstance(count, int) or count <= 0:
+                return
+        if event_code == "backup.restore_preview" and status == "ready":
+            return
         if event_code == "workflow.stage_changed" and status not in _WORKFLOW_VISIBLE_STATUSES:
             return
         definition = get_event_definition(event_code)
@@ -277,9 +289,13 @@ def _severity(event_code: str, status: object) -> NotificationSeverity:
         "p115.credentials_expired",
         "organize.operation.uncertain",
         "strm.cleanup_blocked",
+        "backup.failed",
+        "p115.readiness",
     }:
         return NotificationSeverity.ERROR
     if event_code in {"organize.needs_review", "workflow.approval_decided"}:
+        return NotificationSeverity.WARNING
+    if event_code == "backup.restore_preview":
         return NotificationSeverity.WARNING
     if status in {"failed", "uncertain"}:
         return NotificationSeverity.ERROR

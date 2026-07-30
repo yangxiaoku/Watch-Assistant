@@ -123,17 +123,28 @@ class TaskWorker:
                     error_code=result.error_code,
                 )
             await session.commit()
+        event_code = {
+            RemoteStatus.ACCEPTED: "task.accepted",
+            RemoteStatus.UNCERTAIN: "task.uncertain",
+            RemoteStatus.FAILED: "task.failed",
+            RemoteStatus.NEEDS_AUTH: "task.failed",
+        }[result.status]
         await emit_event(
             self._event_logger,
-            "task.accepted"
-            if result.status == RemoteStatus.ACCEPTED
-            else "task.failed",
+            event_code,
             level=(
                 LoggingLevel.INFO
                 if result.status == RemoteStatus.ACCEPTED
                 else LoggingLevel.WARNING
             ),
-            fields={"status": result.status.value, "count": 1},
+            fields={
+                "status": result.status.value,
+                "count": 1,
+                "error_code": result.error_code,
+            },
+            task_id=task.id,
+            resource_type="task",
+            resource_id=task.resource_id,
         )
         return True
 

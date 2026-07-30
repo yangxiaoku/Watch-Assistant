@@ -143,6 +143,9 @@ class TaskService:
                 self._event_logger,
                 "task.submitted",
                 fields={"status": "queued", "count": 1},
+                task_id=task.id,
+                resource_type="task",
+                resource_id=task.resource_id,
             )
             return task, False
 

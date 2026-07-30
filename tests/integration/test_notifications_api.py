@@ -128,3 +128,44 @@ async def test_business_events_create_actionable_notifications_without_log_noise
         await tmdb.aclose()
         await pansou.aclose()
         await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_high_value_business_events_are_filtered_and_notified(tmp_path):
+    client, database, tmdb, pansou, app = await _make_client(tmp_path)
+    try:
+        await app.state.settings_service.log_event(
+            "p115.readiness", fields={"status": "unavailable"}
+        )
+        await app.state.settings_service.log_event(
+            "p115.readiness", fields={"status": "ready"}
+        )
+        await app.state.settings_service.log_event(
+            "subscription.resources_observed",
+            fields={"status": "new", "count": 2, "hidden_count": 1},
+            resource_type="subscription",
+            resource_id="sub_notice",
+        )
+        await app.state.settings_service.log_event(
+            "subscription.resources_observed",
+            fields={"status": "deduplicated", "count": 0, "hidden_count": 2},
+            resource_type="subscription",
+            resource_id="sub_notice",
+        )
+        await app.state.settings_service.log_event(
+            "backup.failed", fields={"status": "failed", "error_code": "disk_full"}
+        )
+        response = await client.get("/api/v1/notifications")
+        assert response.status_code == 200
+        items = response.json()["items"]
+        assert {item["event_code"] for item in items} == {
+            "p115.readiness",
+            "subscription.resources_observed",
+            "backup.failed",
+        }
+        assert response.json()["unread_count"] == 3
+    finally:
+        await client.aclose()
+        await tmdb.aclose()
+        await pansou.aclose()
+        await database.engine.dispose()

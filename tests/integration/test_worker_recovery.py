@@ -36,6 +36,14 @@ class FakeAdapter:
         return self.remote_status
 
 
+class EventRecorder:
+    def __init__(self):
+        self.events = []
+
+    async def log_event(self, event, **kwargs):
+        self.events.append((event, kwargs))
+
+
 async def _database(tmp_path):
     database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'tasks.db'}")
     await initialize_database(database.engine)
@@ -177,6 +185,37 @@ async def test_local_decryption_failure_is_failed_without_submission(tmp_path):
     assert stored.state == TaskState.FAILED
     assert stored.error_code == "local_decryption_failed"
     assert adapter.submissions == 0
+    await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_uncertain_submission_emits_actionable_uncertain_event(tmp_path):
+    database = await _database(tmp_path)
+    crypto = SecretCrypto(Fernet.generate_key().decode("ascii"))
+    await _add_resource(database, crypto)
+    service = TaskService(database.session_factory)
+    task, _ = await service.create("res_magnet")
+
+    class UncertainAdapter(FakeAdapter):
+        async def submit_magnet(self, _url: str) -> SubmissionResult:
+            raise RuntimeError("remote outcome unavailable")
+
+    recorder = EventRecorder()
+    worker = TaskWorker(
+        database.session_factory,
+        crypto,
+        UncertainAdapter(),
+        owner="uncertain-worker",
+        event_logger=recorder,
+    )
+    assert await worker.run_once() is True
+    stored = await service.get(task.id)
+    assert stored.state == TaskState.UNCERTAIN
+    event, fields = recorder.events[-1]
+    assert event == "task.uncertain"
+    assert fields["task_id"] == task.id
+    assert fields["resource_id"] == "res_magnet"
+    assert fields["fields"]["error_code"] == "adapter_error"
     await database.engine.dispose()
 
 
