@@ -122,6 +122,18 @@ describe("SettingsView", () => {
     expect(p115DeviceOptions.map((option) => option.label)).toContain("115(鸿蒙端)");
   });
 
+  it("shows the QR device picker before generating a QR code", async () => {
+    const api = makeApi();
+    const wrapper = mount(SettingsView, { props: { api } });
+    await flushPromises();
+    await wrapper.findAll("button").find((button) => button.text().includes("连接配置"))?.trigger("click");
+    await flushPromises();
+
+    const picker = wrapper.get('select[aria-label="115 设备类型"]');
+    expect(picker.findAll("option")).toHaveLength(18);
+    expect(picker.element.value).toBe("web");
+  });
+
   it("keeps manual organization independent from the schedule switch", async () => {
     const api = makeApi();
     const wrapper = mount(SettingsView, { props: { api } });

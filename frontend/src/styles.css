@@ -673,6 +673,8 @@ html, body, .app-shell { background: #151719; }
 .p115-qr-heading, .p115-device-list-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
 .p115-qr-heading h4, .p115-device-list-heading h4 { margin: 0; color: #d9dce2; font-size: 14px; }
 .p115-qr-heading p { margin: 6px 0 0; color: #858b95; font-size: 11px; line-height: 1.5; }
+.p115-qr-options { display: grid; grid-template-columns: minmax(140px, 0.8fr) minmax(220px, 1.2fr) auto; gap: 10px; align-items: end; }
+.p115-qr-options .secondary-button { white-space: nowrap; }
 .p115-qr-content { display: grid; grid-template-columns: 160px minmax(0, 1fr); gap: 18px; align-items: center; margin-top: 16px; }
 .p115-qr-content img { width: 160px; height: 160px; image-rendering: pixelated; background: #fff; }
 .settings-form-label { display: grid; gap: 7px; color: #858b95; font-size: 11px; font-weight: 700; }
@@ -735,6 +737,9 @@ html, body, .app-shell { background: #151719; }
   .credential-panels { grid-template-columns: 1fr; gap: 24px; }
   .credential-actions { display: grid; grid-template-columns: 1fr; }
   .credential-actions button { width: 100%; }
+  .p115-qr-heading { flex-direction: column; }
+  .p115-qr-options { width: 100%; grid-template-columns: 1fr; }
+  .p115-qr-options .secondary-button { width: 100%; }
   .p115-qr-content { grid-template-columns: 1fr; }
   .p115-qr-content img { width: 180px; height: 180px; }
   .p115-device-row { align-items: flex-start; flex-direction: column; justify-content: center; padding: 10px 0; }
