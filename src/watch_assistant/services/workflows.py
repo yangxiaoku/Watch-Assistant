@@ -442,6 +442,32 @@ async def sync_child_stage(
     return workflow
 
 
+async def sync_child_stage_in_transaction(
+    session_factory: async_sessionmaker[AsyncSession],
+    workflow_id: str,
+    stage_name: WorkflowStageName,
+    *,
+    child_type: str,
+    child_id: str,
+    status: WorkflowStageStatus,
+    reason: str | None = None,
+    error_code: str | None = None,
+) -> None:
+    """Update a child stage for workers that do not own an open transaction."""
+    async with session_factory() as session:
+        await sync_child_stage(
+            session,
+            workflow_id,
+            stage_name,
+            child_type=child_type,
+            child_id=child_id,
+            status=status,
+            reason=reason,
+            error_code=error_code,
+        )
+        await session.commit()
+
+
 def _derive_status(
     stages: list[WorkflowStage],
 ) -> tuple[WorkflowStatus, str | None]:

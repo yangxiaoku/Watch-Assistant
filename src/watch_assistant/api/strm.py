@@ -21,11 +21,17 @@ from watch_assistant.schemas import (
     StrmGenerationResponse,
     StrmManifestItemResponse,
     StrmManifestListResponse,
+    WorkflowStageName,
+    WorkflowStageStatus,
 )
 from watch_assistant.security import AuthContext, require_api_auth, require_scope
 from watch_assistant.services.strm_manifest import (
     StrmManifestError,
     StrmManifestService,
+)
+from watch_assistant.services.workflows import (
+    WorkflowNotFound,
+    sync_child_stage_in_transaction,
 )
 
 router = APIRouter(prefix="/api/v1", dependencies=[Depends(require_api_auth)])
@@ -91,6 +97,32 @@ def _service(request: Request) -> StrmManifestService:
 ServiceDependency = Annotated[StrmManifestService, Depends(_service)]
 
 
+async def _sync_workflow_stage(
+    request: Request,
+    workflow_id: str | None,
+    *,
+    scan_run_id: str,
+    status: WorkflowStageStatus,
+    reason: str,
+    error_code: str | None = None,
+) -> None:
+    if workflow_id is None:
+        return
+    try:
+        await sync_child_stage_in_transaction(
+            request.app.state.database.session_factory,
+            workflow_id,
+            WorkflowStageName.STRM,
+            child_type="strm_operation",
+            child_id=f"strm_{scan_run_id}",
+            status=status,
+            reason=reason,
+            error_code=error_code,
+        )
+    except WorkflowNotFound:
+        raise HTTPException(status_code=404, detail="workflow_not_found") from None
+
+
 @router.get(
     "/libraries/{library_id}/strm-manifest",
     response_model=StrmManifestListResponse,
@@ -142,6 +174,13 @@ async def generate_manifest(
     service: ServiceDependency,
     request: Request,
 ) -> StrmGenerationResponse:
+    await _sync_workflow_stage(
+        request,
+        payload.workflow_id,
+        scan_run_id=payload.source_scan_run_id,
+        status=WorkflowStageStatus.RUNNING,
+        reason="strm_started",
+    )
     try:
         summary = await service.generate(
             library_id,
@@ -156,7 +195,27 @@ async def generate_manifest(
             ),
         )
     except StrmManifestError as error:
+        await _sync_workflow_stage(
+            request,
+            payload.workflow_id,
+            scan_run_id=payload.source_scan_run_id,
+            status=WorkflowStageStatus.FAILED,
+            reason="strm_failed",
+            error_code=str(error),
+        )
         raise HTTPException(status_code=409, detail=str(error)) from None
+    await _sync_workflow_stage(
+        request,
+        payload.workflow_id,
+        scan_run_id=summary.scan_run_id,
+        status=(
+            WorkflowStageStatus.FAILED
+            if summary.failed
+            else WorkflowStageStatus.SUCCEEDED
+        ),
+        reason="strm_finished",
+        error_code="strm_generation_failed" if summary.failed else None,
+    )
     return StrmGenerationResponse(
         library_id=summary.library_id,
         scan_run_id=summary.scan_run_id,
@@ -182,6 +241,13 @@ async def incremental_manifest(
     service: ServiceDependency,
     request: Request,
 ) -> StrmGenerationResponse:
+    await _sync_workflow_stage(
+        request,
+        payload.workflow_id,
+        scan_run_id=payload.source_scan_run_id,
+        status=WorkflowStageStatus.RUNNING,
+        reason="strm_started",
+    )
     try:
         summary = await service.incremental(
             library_id,
@@ -197,7 +263,27 @@ async def incremental_manifest(
             retire_removed=False,
         )
     except StrmManifestError as error:
+        await _sync_workflow_stage(
+            request,
+            payload.workflow_id,
+            scan_run_id=payload.source_scan_run_id,
+            status=WorkflowStageStatus.FAILED,
+            reason="strm_failed",
+            error_code=str(error),
+        )
         raise HTTPException(status_code=409, detail=str(error)) from None
+    await _sync_workflow_stage(
+        request,
+        payload.workflow_id,
+        scan_run_id=summary.scan_run_id,
+        status=(
+            WorkflowStageStatus.FAILED
+            if summary.failed
+            else WorkflowStageStatus.SUCCEEDED
+        ),
+        reason="strm_finished",
+        error_code="strm_incremental_failed" if summary.failed else None,
+    )
     return StrmGenerationResponse(
         library_id=summary.library_id,
         scan_run_id=summary.scan_run_id,
@@ -223,6 +309,13 @@ async def cleanup_manifest(
     service: ServiceDependency,
     request: Request,
 ) -> StrmGenerationResponse:
+    await _sync_workflow_stage(
+        request,
+        payload.workflow_id,
+        scan_run_id=payload.source_scan_run_id,
+        status=WorkflowStageStatus.RUNNING,
+        reason="strm_started",
+    )
     try:
         summary = await service.cleanup(
             library_id,
@@ -237,7 +330,27 @@ async def cleanup_manifest(
             ),
         )
     except StrmManifestError as error:
+        await _sync_workflow_stage(
+            request,
+            payload.workflow_id,
+            scan_run_id=payload.source_scan_run_id,
+            status=WorkflowStageStatus.FAILED,
+            reason="strm_failed",
+            error_code=str(error),
+        )
         raise HTTPException(status_code=409, detail=str(error)) from None
+    await _sync_workflow_stage(
+        request,
+        payload.workflow_id,
+        scan_run_id=summary.scan_run_id,
+        status=(
+            WorkflowStageStatus.FAILED
+            if summary.failed
+            else WorkflowStageStatus.SUCCEEDED
+        ),
+        reason="strm_finished",
+        error_code="strm_cleanup_failed" if summary.failed else None,
+    )
     return StrmGenerationResponse(
         library_id=summary.library_id,
         scan_run_id=summary.scan_run_id,

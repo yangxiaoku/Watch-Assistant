@@ -258,6 +258,7 @@ class StrmGenerationRequest(BaseModel):
     model_config = {"extra": "forbid"}
 
     source_scan_run_id: str = Field(min_length=1, max_length=128)
+    workflow_id: str | None = Field(default=None, min_length=1, max_length=40)
 
 
 class StrmManifestItemResponse(BaseModel):

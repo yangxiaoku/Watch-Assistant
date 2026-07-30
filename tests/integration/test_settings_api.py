@@ -316,6 +316,26 @@ async def test_strm_routes_enforce_independent_flags_and_reach_service(tmp_path)
             response = await client.post(path, json=payload, headers=headers)
             assert response.status_code == 409
             assert response.json()["detail"] == "source_snapshot_not_ready"
+
+        workflow_response = await client.post(
+            "/api/v1/workflows", json={"media_type": "movie"}, headers=headers
+        )
+        assert workflow_response.status_code == 201
+        workflow_id = workflow_response.json()["id"]
+        response = await client.post(
+            "/api/v1/libraries/library/strm-incremental",
+            json={**payload, "workflow_id": workflow_id},
+            headers=headers,
+        )
+        assert response.status_code == 409
+        workflow = await client.get(f"/api/v1/workflows/{workflow_id}")
+        assert workflow.status_code == 200
+        stage = next(
+            item for item in workflow.json()["stages"] if item["stage"] == "strm"
+        )
+        assert stage["status"] == "failed"
+        assert stage["child_type"] == "strm_operation"
+        assert stage["child_id"] == "strm_missing-scan"
     finally:
         await client.aclose()
         await tmdb.aclose()

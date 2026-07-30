@@ -5,16 +5,32 @@ import pytest
 from sqlalchemy import select
 from test_organization_operations import _database, _operation
 
-from watch_assistant.models import DirectoryDirtyEvent, OrganizationOperationStatus
+from watch_assistant.models import (
+    DirectoryDirtyEvent,
+    OrganizationOperation,
+    OrganizationOperationStatus,
+)
+from watch_assistant.schemas import (
+    MediaType,
+    WorkflowCreateRequest,
+    WorkflowStageName,
+    WorkflowStageStatus,
+)
 from watch_assistant.services.directory_dirty_worker import DirectoryDirtyWorker
 from watch_assistant.services.organization_operations import (
     OrganizationOperationService,
 )
+from watch_assistant.services.workflows import WorkflowService
 
 
-async def _claimed(database):
+async def _claimed(database, *, workflow_id=None):
     service = OrganizationOperationService(database.session_factory)
     operation = await _operation(database)
+    if workflow_id is not None:
+        async with database.session_factory() as session:
+            row = await session.get(OrganizationOperation, operation.operation_id)
+            row.workflow_id = workflow_id
+            await session.commit()
     lease = await service.claim(operation.operation_id, expected_revision=1)
     return service, operation, lease
 
@@ -49,7 +65,10 @@ class _Settings:
 @pytest.mark.asyncio
 async def test_dirty_worker_consumes_event_and_preserves_cleanup_gate(tmp_path: Path):
     database = await _database(tmp_path)
-    service, operation, lease = await _claimed(database)
+    workflow = await WorkflowService(database.session_factory).create(
+        WorkflowCreateRequest(media_type=MediaType.MOVIE, tmdb_id=1)
+    )
+    service, operation, lease = await _claimed(database, workflow_id=workflow.id)
     await service.finish(
         operation.operation_id,
         expected_revision=lease.revision,
@@ -85,6 +104,12 @@ async def test_dirty_worker_consumes_event_and_preserves_cleanup_gate(tmp_path: 
         assert current is not None
         assert current.status == "consumed"
         assert current.error_code is None
+    workflow_state = await WorkflowService(database.session_factory).get(workflow.id)
+    strm_stage = next(
+        stage for stage in workflow_state.stages if stage.stage is WorkflowStageName.STRM
+    )
+    assert strm_stage.status is WorkflowStageStatus.SUCCEEDED
+    assert strm_stage.child_type == "strm_dirty_generation"
     await database.engine.dispose()
 
 

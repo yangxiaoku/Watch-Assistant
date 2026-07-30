@@ -122,4 +122,8 @@ API 返回顶层 workflow 和分页子任务，不返回敏感链接。REQ-003 �
 - 本轮补充 FLOW-007：`watchctl workflow approve|reject|cancel` 复用同一审批/取消 API，保留统一错误和审计关联。
 - 本轮补充 FLOW-002：整理 operation 可通过受保护 API 关联 workflow；排队、claim、成功、失败、
   不确定、取消和重试会同步 `organization` 阶段，关联使用持久 `workflow_id` 和 operation ID。
+- 本轮补充 FLOW-002：STRM 全量/增量/清理 API 支持可选 `workflow_id`，在开始、成功和失败时
+  同步 `strm` 阶段；整理完成后的目录 dirty worker 会继承关联 workflow，并在成功、重试等待
+  外部、最终失败和功能跳过时同步阶段状态。原有 STRM 开关、Scope、完整扫描和清理安全门禁
+  保持不变。
 - 剩余阻断：真实 115 写入、STRM 真实播放契约及 PanSou/qB 外部网络基线仍按 `docs/requirements/BLOCKERS.md` 保持门禁关闭。
