@@ -156,6 +156,12 @@ EVENT_CATALOG: dict[str, EventDefinition] = {
     "organize.needs_review": _event(
         "organize.needs_review", LogCategory.ORGANIZE, "资源需要人工确认", "找到多个相近条目，请确认后继续整理"
     ),
+    "organize.preview.created": _event(
+        "organize.preview.created",
+        LogCategory.ORGANIZE,
+        "整理预览已生成",
+        "整理预览已生成，当前状态：{status}，涉及 {count} 个文件",
+    ),
     "organize.operation.queued": _event(
         "organize.operation.queued", LogCategory.ORGANIZE, "整理操作已排队", "整理操作已排队，结果：{status}"
     ),

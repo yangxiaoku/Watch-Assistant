@@ -219,6 +219,12 @@ class LibraryScanRequest(BaseModel):
     idempotency_key: str = Field(min_length=1, max_length=128)
 
 
+class OrganizationPreviewRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    source_scan_run_id: str = Field(min_length=1, max_length=128)
+
+
 class MediaLibraryListResponse(BaseModel):
     model_config = {"extra": "forbid"}
 

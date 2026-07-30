@@ -78,6 +78,7 @@ from watch_assistant.services.organization_operations import (
     OrganizationOperationService,
 )
 from watch_assistant.services.organization_plan import OrganizationPlanService
+from watch_assistant.services.organization_preview import OrganizationPreviewService
 from watch_assistant.services.organization_worker import OrganizationWorker
 from watch_assistant.services.p115_credentials import (
     CompositeCookieProvider,
@@ -345,6 +346,11 @@ def create_app(
             runtime_tmdb = tmdb_client or TmdbClient(
                 managed_tmdb or settings.tmdb_api_key.get_secret_value(),
                 base_url=settings.tmdb_base_url,
+            )
+            application.state.organization_preview_service = OrganizationPreviewService(
+                runtime_database.session_factory,
+                runtime_tmdb,
+                application.state.organization_plan_service,
             )
             if tmdb_client is not None and managed_tmdb is not None:
                 set_api_key = getattr(tmdb_client, "set_api_key", None)
@@ -886,6 +892,11 @@ def create_app(
         )
         application.state.organization_plan_service = OrganizationPlanService(
             database.session_factory
+        )
+        application.state.organization_preview_service = OrganizationPreviewService(
+            database.session_factory,
+            tmdb_client,
+            application.state.organization_plan_service,
         )
         application.state.organization_operation_service = OrganizationOperationService(
             database.session_factory,

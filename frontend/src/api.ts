@@ -598,6 +598,19 @@ export class ApiClient {
     return response;
   }
 
+  async createOrganizationPreview(
+    libraryId: string,
+    sourceScanRunId: string,
+  ): Promise<OrganizationPlanSummary> {
+    return this.request<OrganizationPlanSummary>(
+      `/api/v1/libraries/${encodeURIComponent(libraryId)}/organization-preview`,
+      {
+        method: "POST",
+        body: JSON.stringify({ source_scan_run_id: sourceScanRunId }),
+      },
+    );
+  }
+
   async libraryMedia(libraryId: string, cursor = 0, limit = 50): Promise<MediaEntryListResponse> {
     return this.request<MediaEntryListResponse>(`/api/v1/libraries/${encodeURIComponent(libraryId)}/media?cursor=${cursor}&limit=${limit}`);
   }

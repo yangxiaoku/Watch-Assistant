@@ -107,6 +107,7 @@ _CATALOG: dict[str, ApiErrorDescriptor] = {
     "library_identity_conflict": ApiErrorDescriptor("library_identity_conflict", "库存身份已变化", "本次身份确认未保存。", "请刷新库存后重新确认。", False, "refresh_snapshot"),
     "audit_not_found": ApiErrorDescriptor("audit_not_found", "审计记录不存在", "本次审计查询未完成。", "请刷新审计列表后再试。", False, "refresh_snapshot"),
     "organization_plan_unavailable": ApiErrorDescriptor("organization_plan_unavailable", "整理计划服务暂时不可用", "本次整理计划操作未完成。", "请稍后重试。", True, "retry"),
+    "organization_preview_unavailable": ApiErrorDescriptor("organization_preview_unavailable", "整理预览服务暂时不可用", "本次整理预览未完成。", "请稍后重试。", True, "retry"),
     "organization_execution_disabled": ApiErrorDescriptor("organization_execution_disabled", "整理执行功能未启用", "本次整理操作未执行。", "请查看整理功能配置。", False, "inspect_configuration"),
     "organization_write_disabled": ApiErrorDescriptor("organization_write_disabled", "真实整理写入未启用", "本次 115 写入操作未执行。", "请先检查真实写入开关。", False, "inspect_configuration"),
     "organization_write_unverified": ApiErrorDescriptor("organization_write_unverified", "真实整理写入契约未验收", "本次 115 写入操作未执行。", "请先完成受管测试目录的写入契约验收。", False, "inspect_configuration"),

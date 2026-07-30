@@ -39,6 +39,8 @@ from watch_assistant.schemas import (
     MediaLibraryListResponse,
     MediaLibraryResponse,
     MediaLibraryVerificationResponse,
+    OrganizationPlanResponse,
+    OrganizationPreviewRequest,
 )
 from watch_assistant.security import AuthContext, require_api_auth, require_scope
 from watch_assistant.services.library_index import (
@@ -50,6 +52,11 @@ from watch_assistant.services.library_inventory import (
     InventorySnapshot,
     build_snapshot,
     check_inventory,
+)
+from watch_assistant.services.organization_plan import OrganizationPlanError
+from watch_assistant.services.organization_preview import (
+    OrganizationPreviewError,
+    OrganizationPreviewService,
 )
 from watch_assistant.services.p115_delete import P115DeleteService
 
@@ -349,6 +356,53 @@ async def scan_library(
         removed_count=result.removed_count,
         error_code=result.error_code,
     )
+
+
+@router.post(
+    "/libraries/{library_id}/organization-preview",
+    response_model=OrganizationPlanResponse,
+)
+async def create_organization_preview(
+    library_id: str,
+    payload: OrganizationPreviewRequest,
+    request: Request,
+    context: LibraryReadDependency,
+) -> OrganizationPlanResponse:
+    if not getattr(request.app.state, "organization_plan_enabled", False):
+        raise HTTPException(status_code=503, detail="organization_plan_disabled")
+    if not _stable_library_id(library_id) or not _allowed(context, library_id):
+        raise HTTPException(status_code=404, detail="library_not_found")
+    service = getattr(request.app.state, "organization_preview_service", None)
+    if not isinstance(service, OrganizationPreviewService):
+        raise HTTPException(status_code=503, detail="organization_preview_unavailable")
+    try:
+        plan = await service.create_preview(
+            library_id=library_id,
+            scan_run_id=payload.source_scan_run_id,
+        )
+    except OrganizationPreviewError as error:
+        statuses = {
+            "scan_not_current": 409,
+            "no_video_files": 409,
+            "scan_entry_invalid": 409,
+        }
+        raise HTTPException(
+            status_code=statuses.get(error.code, 409), detail=error.code
+        ) from None
+    except OrganizationPlanError as error:
+        raise HTTPException(status_code=409, detail=error.code) from None
+    settings_service = getattr(request.app.state, "settings_service", None)
+    if settings_service is not None:
+        await settings_service.log_event(
+            "organize.preview.created",
+            fields={"status": plan.status.value},
+            counts={"count": plan.source_count},
+            actor_type="agent" if context.via_bearer else "web",
+            actor_id=context.identity,
+            resource_type="organization_plan",
+            resource_id=plan.plan_id,
+        )
+    return OrganizationPlanResponse.model_validate(plan.to_public_dict())
 
 
 @router.get("/libraries/{library_id}", response_model=MediaLibraryResponse)

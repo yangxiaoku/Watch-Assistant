@@ -145,6 +145,26 @@ async function syncStrm(action: "full" | "incremental" | "cleanup") {
   }
 }
 
+async function createOrganizationPreview() {
+  if (!selected.value || !scan.value || !readyForSync.value || busy.value) return;
+  busy.value = true;
+  error.value = "";
+  notice.value = "";
+  try {
+    const plan = await props.api.createOrganizationPreview(
+      selected.value.library_id,
+      scan.value.run_id,
+    );
+    notice.value = plan.status === "planned"
+      ? "整理预览已生成，可在整理页面确认后执行"
+      : "整理预览已生成，存在待确认项目，请到整理页面复核";
+  } catch (exception) {
+    setError(exception, "整理预览生成失败");
+  } finally {
+    busy.value = false;
+  }
+}
+
 function formatBytes(value: number | null) {
   if (value === null) return "未知大小";
   if (value < 1024) return `${value} B`;
@@ -197,6 +217,7 @@ onMounted(() => { void loadLibraries(); });
         </div>
         <div class="library-action-row">
           <button class="primary-button" type="button" :disabled="busy || !selected.enabled || !selected.scope_verified" @click="scanLibrary"><RefreshCw :size="16" />扫描目录</button>
+          <button class="secondary-button" type="button" :disabled="busy || !readyForSync" @click="createOrganizationPreview"><SlidersHorizontal :size="16" />生成整理预览</button>
           <button class="secondary-button" type="button" :disabled="busy || !readyForSync" @click="syncStrm('full')"><Database :size="16" />全量 STRM</button>
           <button class="secondary-button" type="button" :disabled="busy || !readyForSync" @click="syncStrm('incremental')"><RefreshCw :size="16" />增量同步</button>
           <button class="secondary-button" type="button" :disabled="busy || !readyForSync" @click="syncStrm('cleanup')"><Ban :size="16" />清理失效</button>

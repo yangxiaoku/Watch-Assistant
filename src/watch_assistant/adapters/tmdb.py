@@ -13,6 +13,11 @@ from watch_assistant.schemas import (
     SeasonEpisodeMetadata,
     SeasonMetadata,
 )
+from watch_assistant.services.media_matcher import (
+    MediaKind,
+    MediaMatchInput,
+    TmdbCandidate,
+)
 
 TMDB_BASE_URL = "https://api.themoviedb.org/3"
 ALTERNATIVE_TITLE_REGIONS = ("CN", "HK", "TW")
@@ -179,6 +184,70 @@ class TmdbClient:
             "/search/multi", params={"query": query, "page": page}
         )
         return _parse_multi_collection(payload)
+
+    async def search_candidates(
+        self, query: MediaMatchInput, *, limit: int = 8
+    ) -> list[TmdbCandidate]:
+        """Return bounded, redacted candidates for the organization matcher.
+
+        Search results do not consistently include country or season metadata,
+        so each bounded candidate is enriched with its read-only detail payload.
+        Missing enrichment is retained as incomplete evidence and is therefore
+        handled conservatively by ``TmdbMatcher``.
+        """
+
+        if not isinstance(query, MediaMatchInput) or not query.title:
+            return []
+        if limit < 1 or limit > 20:
+            raise ValueError("candidate limit out of range")
+        payload = await self._get(
+            "/search/multi", params={"query": query.title, "page": 1}
+        )
+        results = payload.get("results")
+        if not isinstance(results, list):
+            raise TmdbError("Unexpected TMDB response shape")
+        candidates: list[TmdbCandidate] = []
+        for item in results:
+            if not isinstance(item, dict) or not isinstance(item.get("id"), int):
+                continue
+            media_type = item.get("media_type")
+            if media_type not in {MediaType.MOVIE.value, MediaType.TV.value}:
+                continue
+            if (
+                query.media_type_hint in {MediaType.MOVIE.value, MediaType.TV.value}
+                and media_type != query.media_type_hint
+            ):
+                continue
+            detail = item
+            try:
+                detail = await self._get(f"/{media_type}/{item['id']}")
+            except TmdbError:
+                # The search result remains useful, but missing detail must
+                # leave the candidate incomplete so the matcher can review it.
+                detail = item
+            candidate_payload = dict(item)
+            candidate_payload.update(detail)
+            candidate_payload["id"] = item["id"]
+            candidate_payload["media_type"] = media_type
+            candidate_payload["kind"] = (
+                MediaKind.MOVIE.value
+                if media_type == MediaType.MOVIE.value
+                else MediaKind.TV.value
+            )
+            countries = _candidate_countries(detail)
+            if countries:
+                candidate_payload["origin_country"] = countries
+            if media_type == MediaType.TV.value:
+                seasons = detail.get("seasons")
+                if isinstance(seasons, list):
+                    candidate_payload["seasons"] = seasons
+            try:
+                candidates.append(TmdbCandidate.from_payload(candidate_payload))
+            except (TypeError, ValueError):
+                continue
+            if len(candidates) >= limit:
+                break
+        return candidates
 
     async def get_alternative_titles(
         self,
@@ -494,6 +563,22 @@ def _parse_season(
         fetched_at=datetime.now(UTC),
         episodes=episodes,
     )
+
+
+def _candidate_countries(payload: dict) -> list[str]:
+    values = payload.get("origin_country")
+    if isinstance(values, list):
+        countries = [item for item in values if isinstance(item, str)]
+        if countries:
+            return countries
+    values = payload.get("production_countries")
+    if not isinstance(values, list):
+        return []
+    return [
+        item["iso_3166_1"]
+        for item in values
+        if isinstance(item, dict) and isinstance(item.get("iso_3166_1"), str)
+    ]
 
 
 def _optional_text(value: object) -> str | None:
