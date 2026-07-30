@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "audit_date": "2026-07-30",
+  "baseline": "codex/publish-main@ef3af68",
+  "production_root_readonly_inventory": {
+    "complete": true,
+    "recursive": true,
+    "pages_read": 54,
+    "directories": 11,
+    "directories_scanned": 12,
+    "files": 43,
+    "unique_object_ids": 54,
+    "root_identity_verified": true
+  },
+  "organization_configuration": {
+    "media_library_rows": 0,
+    "organization_settings_json": "{}",
+    "source_directory_ids_configured": false,
+    "target_directory_id_configured": false,
+    "production_write_started": false
+  },
+  "runtime_capabilities": {
+    "organization_write_enabled": true,
+    "organization_write_contract_verified": true,
+    "strm_full_enabled": true,
+    "strm_incremental_enabled": true,
+    "strm_cleanup_enabled": false,
+    "strm_playback_enabled": false,
+    "permanent_delete_enabled": false
+  },
+  "conclusion": "生产根目录只读能力已复验；生产自动整理尚未绑定源/目标目录，不能执行生产计划或写入。"
+}
