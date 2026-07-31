@@ -29,6 +29,8 @@ from watch_assistant.adapters.p115_library_transport import (
 )
 
 VERIFIED_PAGE_SIZE = 1
+VIRTUAL_ROOT_PAGE_SIZE = 50
+VIRTUAL_ROOT_RESPONSE_LIMIT_DELTA = 2
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 30.0
 
 
@@ -115,13 +117,17 @@ class P115ReadOnlyDirectoryGateway:
         if page_size != VERIFIED_PAGE_SIZE or isinstance(page_size, bool):
             raise P115ReadOnlyGatewayError("page_size_unverified")
 
-        offset = page - 1
+        is_virtual_root = (
+            self._allow_virtual_root and normalized_directory_id == "0"
+        )
+        request_page_size = VIRTUAL_ROOT_PAGE_SIZE if is_virtual_root else page_size
+        offset = (page - 1) * request_page_size if is_virtual_root else page - 1
         deadline = self._deadline()
         response = await self._call(
             "fs_files",
             {
                 "cid": normalized_directory_id,
-                "limit": VERIFIED_PAGE_SIZE,
+                "limit": request_page_size,
                 "offset": offset,
                 "record_open_time": 0,
                 "show_dir": 1,
@@ -133,8 +139,10 @@ class P115ReadOnlyDirectoryGateway:
             page=page,
             offset=offset,
             allow_zero_parent=(
-                self._allow_virtual_root and normalized_directory_id == "0"
+                is_virtual_root
             ),
+            expected_limit=request_page_size,
+            virtual_root=is_virtual_root,
         )
         for entry in result.items:
             if entry.is_directory and entry.directory_id is not None:
@@ -259,18 +267,25 @@ def _parse_page(
     page: int,
     offset: int,
     allow_zero_parent: bool = False,
+    expected_limit: int = VERIFIED_PAGE_SIZE,
+    virtual_root: bool = False,
 ) -> DirectoryPage:
     records = _records(response)
     response_offset = _integer(response.get("offset"))
     response_limit = _integer(response.get("limit"))
     total = _integer(response.get("count"))
+    expected_response_limit = (
+        expected_limit - VIRTUAL_ROOT_RESPONSE_LIMIT_DELTA
+        if virtual_root
+        else expected_limit
+    )
     if (
         records is None
         or response_offset != offset
-        or response_limit != VERIFIED_PAGE_SIZE
+        or response_limit != expected_response_limit
         or total is None
         or total < offset + len(records)
-        or len(records) > VERIFIED_PAGE_SIZE
+        or len(records) > expected_limit
     ):
         raise P115ReadOnlyGatewayError("pagination_unverified")
     if not records and total > offset:
@@ -597,6 +612,7 @@ def _positive_timeout(value: object) -> float | None:
 __all__ = [
     "DEFAULT_REQUEST_TIMEOUT_SECONDS",
     "VERIFIED_PAGE_SIZE",
+    "VIRTUAL_ROOT_PAGE_SIZE",
     "P115CredentialSource",
     "P115ReadOnlyDirectoryGateway",
     "P115ReadOnlyGatewayError",

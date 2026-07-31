@@ -5,6 +5,7 @@ import pytest
 from watch_assistant.adapters.p115_library import ScanState, scan_directory
 from watch_assistant.adapters.p115_library_gateway import (
     VERIFIED_PAGE_SIZE,
+    VIRTUAL_ROOT_PAGE_SIZE,
     P115ReadOnlyDirectoryGateway,
     P115ReadOnlyGatewayError,
 )
@@ -385,7 +386,14 @@ def test_authorized_directory_set_must_be_nonempty_stable_nonroot_ids():
 
 @pytest.mark.asyncio
 async def test_virtual_root_can_list_children_only_when_explicitly_enabled():
-    client = _FsFilesClient((_page([_directory(cid="8", parent="0")]),))
+    client = _FsFilesClient(
+        (
+            _page(
+                [_directory(cid="8", parent="0"), _directory(cid="9", parent="0")],
+                limit=VIRTUAL_ROOT_PAGE_SIZE - 2,
+            ),
+        )
+    )
     gateway, _, _ = _gateway(
         client,
         authorized_directory_ids=("0",),
@@ -395,6 +403,9 @@ async def test_virtual_root_can_list_children_only_when_explicitly_enabled():
     result = await gateway.list_directory("0")
 
     assert client.calls[0]["cid"] == "0"
+    assert client.calls[0]["limit"] == VIRTUAL_ROOT_PAGE_SIZE
+    assert client.calls[0]["offset"] == 0
+    assert len(result.items) == 2
     assert result.items[0].directory_id == "8"
     assert result.items[0].parent_id == "0"
 
