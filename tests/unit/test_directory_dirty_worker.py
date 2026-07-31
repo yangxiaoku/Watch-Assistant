@@ -62,6 +62,14 @@ class _Settings:
         return _OrganizationSettings()
 
 
+class _Events:
+    def __init__(self):
+        self.events = []
+
+    async def log_event(self, event, **kwargs):
+        self.events.append((event, kwargs))
+
+
 @pytest.mark.asyncio
 async def test_dirty_worker_consumes_event_and_preserves_cleanup_gate(tmp_path: Path):
     database = await _database(tmp_path)
@@ -144,6 +152,51 @@ async def test_dirty_worker_retries_incomplete_scan(tmp_path: Path):
         assert row.status == "pending"
         assert row.error_code == "scan_incomplete"
         assert row.attempts == 1
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_dirty_worker_notifies_unlinked_terminal_failure(tmp_path: Path):
+    database = await _database(tmp_path)
+    service, operation, lease = await _claimed(database)
+    await service.finish(
+        operation.operation_id,
+        expected_revision=lease.revision,
+        lease_token=lease.lease_token,
+        status=OrganizationOperationStatus.ORGANIZED,
+        source_directory_id="7000",
+        target_directory_id="8000",
+    )
+
+    class _IncompleteIndex:
+        async def scan_tree(self, _key):
+            return SimpleNamespace(complete=False, run_id="scan-incomplete")
+
+    events = _Events()
+    worker = DirectoryDirtyWorker(
+        database.session_factory,
+        _FakeStrm(),
+        lambda _library_id, _root_id: _IncompleteIndex(),
+        output_root=tmp_path / "strm",
+        playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+        max_attempts=1,
+        event_logger=events,
+    )
+
+    assert await worker.run_once()
+    assert events.events == [
+        (
+            "strm.dirty_failed",
+            {
+                "fields": {
+                    "status": "STRM 增量对账失败",
+                    "error_code": "scan_incomplete",
+                },
+                "resource_type": "library",
+                "resource_id": "library-1",
+            },
+        )
+    ]
     await database.engine.dispose()
 
 
