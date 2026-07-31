@@ -1,4 +1,5 @@
 import asyncio
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -266,6 +267,43 @@ async def test_running_operation_cancel_is_durable_and_idempotent(tmp_path):
     )
     assert repeated.cancel_requested is True
     assert repeated.revision == lease.revision
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_create_rejects_planned_review_only_plan(tmp_path):
+    database = await _database(tmp_path)
+    plan = await _plan(database)
+    async with database.session_factory() as session:
+        row = await session.get(OrganizationPlan, plan.plan_id)
+        assert row is not None
+        row.actions_json = json.dumps([{"kind": "review"}])
+        await session.commit()
+
+    with pytest.raises(OrganizationOperationPrerequisiteError, match="plan_not_executable"):
+        await OrganizationOperationService(database.session_factory).create(
+            plan.plan_id, idempotency_key="review-only"
+        )
+    async with database.session_factory() as session:
+        assert await session.scalar(select(OrganizationOperation)) is None
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_claim_next_finishes_legacy_non_executable_operation(tmp_path):
+    database = await _database(tmp_path)
+    service = OrganizationOperationService(database.session_factory)
+    operation = await _operation(database, key="legacy-operation")
+    async with database.session_factory() as session:
+        row = await session.get(OrganizationPlan, operation.plan_id)
+        assert row is not None
+        row.actions_json = json.dumps([{"kind": "review"}])
+        await session.commit()
+
+    assert await service.claim_next() is None
+    current = await service.get(operation.operation_id)
+    assert current.status is OrganizationOperationStatus.FAILED
+    assert current.error_code == "plan_not_executable"
     await database.engine.dispose()
 
 

@@ -38,6 +38,7 @@ VALID_OPERATION_ERROR_CODES = frozenset(
         "local_failure",
         "outcome_unknown",
         "postcondition_mismatch",
+        "plan_not_executable",
         "plan_prerequisites_changed",
         "rate_limited",
         "remote_write_failed",
@@ -152,6 +153,9 @@ class OrganizationOperationService:
                     raise OrganizationOperationConflict("workflow_id_conflict")
                 return _summary(existing)
 
+            if not await self._has_executable_steps(plan_id):
+                raise OrganizationOperationPrerequisiteError("plan_not_executable")
+
             existing = await session.scalar(
                 select(OrganizationOperation).where(
                     OrganizationOperation.plan_id == plan_id
@@ -264,6 +268,62 @@ class OrganizationOperationService:
             )
         except OrganizationOperationLeaseUnavailable:
             return None
+        except OrganizationOperationPrerequisiteError as exc:
+            error_code = str(exc)
+            if error_code not in VALID_OPERATION_ERROR_CODES:
+                error_code = "plan_prerequisites_changed"
+            try:
+                await self.fail_planned(
+                    operation_id,
+                    expected_revision=revision,
+                    error_code=error_code,
+                )
+            except (
+                OrganizationOperationLeaseUnavailable,
+                OrganizationOperationNotFound,
+            ):
+                pass
+            return None
+
+    async def fail_planned(
+        self,
+        operation_id: str,
+        *,
+        expected_revision: int,
+        error_code: str,
+        now: datetime | None = None,
+    ) -> OrganizationOperationSummary:
+        """Finish an unclaimed operation that cannot safely be executed."""
+
+        _validate_identifier(operation_id, "invalid_operation_id", maximum=40)
+        _validate_error_code(error_code)
+        current_time = _as_utc(now or datetime.now(UTC))
+        async with self._session_factory() as session:
+            result = await session.execute(
+                update(OrganizationOperation)
+                .where(
+                    OrganizationOperation.id == operation_id,
+                    OrganizationOperation.revision == expected_revision,
+                    OrganizationOperation.status == OrganizationOperationStatus.PLANNED,
+                )
+                .values(
+                    status=OrganizationOperationStatus.FAILED,
+                    revision=expected_revision + 1,
+                    error_code=error_code,
+                    finished_at=current_time,
+                    updated_at=current_time,
+                )
+                .execution_options(synchronize_session=False)
+            )
+            if result.rowcount != 1:
+                raise OrganizationOperationLeaseUnavailable("operation_revision_changed")
+            await session.commit()
+            operation = await session.get(OrganizationOperation, operation_id)
+            if operation is None:
+                raise OrganizationOperationNotFound
+            summary = _summary(operation)
+        await self._audit("organize.operation.failed", "整理操作已失败")
+        return summary
 
     async def plan_execution_scope(self, operation_id: str) -> frozenset[str] | None:
         """Return the complete directory scope frozen by the approved plan."""
@@ -303,6 +363,12 @@ class OrganizationOperationService:
                 raise OrganizationOperationNotFound
             return plan.plan_hash
 
+    async def _has_executable_steps(self, plan_id: str) -> bool:
+        from watch_assistant.services.organization_plan import load_executable_steps
+
+        steps = await load_executable_steps(self._session_factory, plan_id)
+        return bool(steps)
+
     async def claim(
         self,
         operation_id: str,
@@ -321,6 +387,8 @@ class OrganizationOperationService:
             await self._ensure_planned_and_current(session, plan)
             if plan.revision != operation.plan_revision:
                 raise OrganizationOperationPrerequisiteError("plan_revision_changed")
+            if not await self._has_executable_steps(operation.plan_id):
+                raise OrganizationOperationPrerequisiteError("plan_not_executable")
             if operation.status is OrganizationOperationStatus.UNCERTAIN:
                 raise OrganizationOperationStateError("uncertain_requires_verification")
             if operation.status not in {

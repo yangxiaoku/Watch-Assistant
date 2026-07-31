@@ -110,7 +110,7 @@ describe("OrganizationWorkbenchView", () => {
     await operationButton!.trigger("click");
     await flushPromises();
     expect(api.queueOrganizationOperation).toHaveBeenCalledWith("plan-local-1", 4);
-    expect(wrapper.text()).toContain("整理操作已排队");
+    expect(wrapper.text()).toContain("整理已提交，后台正在执行");
   });
 
   it("shows the durable operation failure instead of a generic page error", async () => {

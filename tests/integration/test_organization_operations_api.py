@@ -13,6 +13,7 @@ from watch_assistant.app import create_app
 from watch_assistant.crypto import SecretCrypto
 from watch_assistant.db import create_database, initialize_database
 from watch_assistant.library_models import (
+    LibraryScanEntry,
     LibraryScanRun,
     MediaLibrary,
     OrganizationPlan,
@@ -22,7 +23,24 @@ from watch_assistant.models import (
     OrganizationOperation,
     OrganizationOperationStatus,
 )
+from watch_assistant.schemas import MediaType
 from watch_assistant.security import SecurityManager
+from watch_assistant.services.media_classification import (
+    ClassificationStatus,
+    NamingPlan,
+)
+from watch_assistant.services.media_matcher import (
+    MatchConfidence,
+    MatchDecision,
+    MatchStatus,
+    MediaKind,
+    TmdbCandidate,
+)
+from watch_assistant.services.organization_plan import (
+    OrganizationPlanItem,
+    OrganizationPlanService,
+    PlanSource,
+)
 
 WEB_PASSWORD = "organization-operation-password"
 REMOTE_SECRET = "remote-id-private"
@@ -105,9 +123,6 @@ async def _client(
         await session.flush()
         session.add_all(
             [
-                _plan("plan-ready", expires_at=now + timedelta(hours=1)),
-                _plan("plan-batch", expires_at=now + timedelta(hours=1)),
-                _plan("plan-cancel", expires_at=now + timedelta(hours=1)),
                 _plan(
                     "plan-stale",
                     revision=2,
@@ -130,6 +145,74 @@ async def _client(
             ]
         )
         await session.commit()
+        session.add_all(
+            [
+                LibraryScanEntry(
+                    scan_run_id="scan-operation",
+                    object_type="directory",
+                    object_id="target-operation",
+                    parent_id="root-operation",
+                    name="Movies",
+                    path="Movies",
+                    is_directory=True,
+                ),
+                LibraryScanEntry(
+                    scan_run_id="scan-operation",
+                    object_type="file",
+                    object_id="source-operation",
+                    parent_id="root-operation",
+                    name="movie.mkv",
+                    path="/private/movie.mkv",
+                    is_directory=False,
+                ),
+            ]
+        )
+        await session.commit()
+    plan_service = OrganizationPlanService(database.session_factory)
+    for plan_id in ("plan-ready", "plan-batch", "plan-cancel"):
+        plan = await plan_service.create_plan(
+            library_id="library-operation",
+            scan_run_id="scan-operation",
+            items=(
+                OrganizationPlanItem(
+                    source=PlanSource(
+                        object_type="file",
+                        object_id="source-operation",
+                        parent_id="root-operation",
+                        path="/private/movie.mkv",
+                        remote_version="remote-v1",
+                    ),
+                    naming_plan=NamingPlan(
+                        status=ClassificationStatus.PLANNED,
+                        target_path="Movies/movie.mkv",
+                        display_name="Movie",
+                        reasons=("accepted",),
+                        rule_version="rule-v1",
+                    ),
+                    decision=MatchDecision(
+                        status=MatchStatus.ACCEPTED,
+                        selected=TmdbCandidate(
+                            tmdb_id=1,
+                            media_type=MediaType.MOVIE,
+                            title="Movie",
+                            kind=MediaKind.MOVIE,
+                            release_year=2024,
+                            origin_countries=("US",),
+                        ),
+                        confidence=MatchConfidence.HIGH,
+                    ),
+                    target_parent_id="target-operation",
+                    target_name="movie.mkv",
+                ),
+            ),
+            target_directory_id="target-operation",
+            parser_version=f"parser-{plan_id}",
+        )
+        async with database.session_factory() as session:
+            stored = await session.get(OrganizationPlan, plan.plan_id)
+            assert stored is not None
+            stored.id = plan_id
+            await session.commit()
     password_hash = PasswordHash.recommended()
     security = SecurityManager(
         web_password_hash=password_hash.hash(WEB_PASSWORD),

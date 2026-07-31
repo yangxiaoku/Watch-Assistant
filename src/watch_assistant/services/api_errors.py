@@ -175,6 +175,7 @@ _CATALOG: dict[str, ApiErrorDescriptor] = {
     "invalid_operation_id": ApiErrorDescriptor("invalid_operation_id", "操作标识无效", "本次整理操作未执行。", "请刷新后再试。", False),
     "plan_is_not_planned": ApiErrorDescriptor("plan_is_not_planned", "计划尚未确认或已不可用", "本次整理操作未执行。", "请确认计划当前状态。", False),
     "plan_prerequisites_changed": ApiErrorDescriptor("plan_prerequisites_changed", "计划前置条件已变化", "本次整理操作未执行。", "请重新确认计划。", False, "reload_settings"),
+    "plan_not_executable": ApiErrorDescriptor("plan_not_executable", "计划尚无可执行整理步骤", "当前计划包含待复核项，不能执行真实整理。", "请返回计划预览，完成识别和人工确认后重新生成计划。", False, "reload_settings"),
     "plan_revision_changed": ApiErrorDescriptor("plan_revision_changed", "计划版本已变化", "本次整理操作未执行。", "请刷新后重新提交。", False, "reload_settings"),
     "idempotency_key_conflict": ApiErrorDescriptor("idempotency_key_conflict", "幂等请求发生冲突", "本次整理操作未执行。", "请查看已有操作后再试。", False, "view_task"),
     "plan_already_has_operation": ApiErrorDescriptor("plan_already_has_operation", "计划已有受控操作", "本次整理操作未创建。", "请查看已有操作状态。", False, "view_task"),
