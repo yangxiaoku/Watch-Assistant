@@ -58,6 +58,63 @@ async function loadOutputs(libraryId: string) {
   manifest.value = manifestResponse.items;
 }
 
+async function readConfiguredRoot() {
+  const response = await props.api.p115Directories();
+  const rootDirectoryId = response.parent_id.trim();
+  if (!rootDirectoryId) throw new Error("missing_configured_root");
+  form.value.rootDirectoryId = rootDirectoryId;
+  return rootDirectoryId;
+}
+
+async function useConfiguredRoot() {
+  if (busy.value) return;
+  busy.value = true;
+  error.value = "";
+  notice.value = "";
+  try {
+    await readConfiguredRoot();
+    notice.value = "已读取服务器配置的 115 受控根目录，请保存媒体库配置";
+  } catch (exception) {
+    setError(exception, "受控根目录读取失败，请先检查 115 目标目录配置");
+  } finally {
+    busy.value = false;
+  }
+}
+
+async function initializeLibrary() {
+  if (busy.value) return;
+  busy.value = true;
+  error.value = "";
+  notice.value = "";
+  try {
+    await readConfiguredRoot();
+    const current = libraries.value.find((item) => item.library_id === form.value.libraryId);
+    const saved = await props.api.configureLibrary(form.value.libraryId, {
+      name: form.value.name.trim(),
+      root_directory_id: form.value.rootDirectoryId,
+      revision: current?.revision ?? 0,
+    });
+    libraries.value = current
+      ? libraries.value.map((item) => item.library_id === saved.library_id ? saved : item)
+      : [...libraries.value, saved];
+    selectedId.value = saved.library_id;
+
+    const verification = await props.api.verifyLibraryScope(saved.library_id);
+    libraries.value = libraries.value.map((item) => item.library_id === verification.library.library_id ? verification.library : item);
+    const result = await props.api.scanLibrary(saved.library_id);
+    libraries.value = libraries.value.map((item) => item.library_id === saved.library_id ? { ...item, latest_scan: result } : item);
+    await loadOutputs(saved.library_id);
+    notice.value = result.complete
+      ? `媒体库已启用并完成首次扫描，共发现 ${result.items_seen} 项，现在可以重新推送`
+      : "媒体库已验证，但首次扫描未完成，推送仍保持阻断";
+  } catch (exception) {
+    focusFirstFieldError(exception);
+    setError(exception, "媒体库初始化失败，请检查 115 登录和目标目录配置");
+  } finally {
+    busy.value = false;
+  }
+}
+
 function selectLibrary(library: MediaLibraryResponse) {
   selectedId.value = library.library_id;
   form.value = { libraryId: library.library_id, name: library.name, rootDirectoryId: library.root_directory_id };
@@ -202,7 +259,7 @@ onMounted(() => { void loadLibraries(); });
         <form class="library-config-form" @submit.prevent="saveConfiguration">
           <label for="library-id">标识</label><input id="library-id" v-model="form.libraryId" name="libraryId" maxlength="128" :disabled="Boolean(selected)" required />
           <label for="library-name">名称</label><input id="library-name" v-model="form.name" name="name" maxlength="200" required />
-          <label for="library-root">115 根目录 ID</label><input id="library-root" v-model="form.rootDirectoryId" name="rootDirectoryId" inputmode="numeric" pattern="[1-9][0-9]*" required />
+          <label for="library-root">115 受控根目录</label><input id="library-root" v-model="form.rootDirectoryId" name="rootDirectoryId" inputmode="numeric" pattern="[1-9][0-9]*" placeholder="点击读取受控根目录" required /><button class="text-button" type="button" :disabled="busy" @click="useConfiguredRoot"><RefreshCw :size="14" />读取服务器配置的根目录</button>
           <button class="secondary-button" type="submit" :disabled="busy || !form.libraryId.trim() || !form.name.trim() || !form.rootDirectoryId.trim()"><SlidersHorizontal :size="16" />保存配置</button>
         </form>
       </aside>
@@ -227,7 +284,7 @@ onMounted(() => { void loadLibraries(); });
         <section class="library-output-section"><div class="library-section-heading"><div><p class="eyebrow">受管清单</p><h3>STRM 文件</h3></div><span>{{ manifest.length }} / 50</span></div><div v-if="manifest.length" class="library-table-wrap"><table><thead><tr><th>云端路径</th><th>本地路径</th><th>状态</th></tr></thead><tbody><tr v-for="item in manifest" :key="item.manifest_id"><td>{{ item.cloud_relative_path }}</td><td>{{ item.local_relative_path }}</td><td>{{ item.status }}</td></tr></tbody></table></div><p v-else class="library-muted">暂无受管 STRM。完成扫描后可以执行全量生成。</p></section>
         <section class="library-output-section"><div class="library-section-heading"><div><p class="eyebrow">最近扫描</p><h3>索引文件</h3></div><span>{{ media.length }} / 50</span></div><div v-if="media.length" class="library-table-wrap"><table><thead><tr><th>文件名</th><th>大小</th><th>修改时间</th></tr></thead><tbody><tr v-for="item in media" :key="item.media_id"><td>{{ item.name }}</td><td>{{ formatBytes(item.size_bytes) }}</td><td>{{ item.modified_at ? new Date(item.modified_at).toLocaleString() : "未知" }}</td></tr></tbody></table></div><p v-else class="library-muted">完成一次完整扫描后，这里会显示索引文件。</p></section>
       </main>
-      <div v-else class="library-empty"><Database :size="24" /><strong>先配置一个媒体库</strong><span>填写受控 115 根目录 ID 后保存并验证。</span></div>
+      <div v-else class="library-empty"><Database :size="24" /><strong>尚未配置库存媒体库</strong><span>系统会读取服务器已配置的 115 根目录，保存、验证并完成首次扫描。</span><button class="primary-button" type="button" :disabled="busy" @click="initializeLibrary"><Database :size="16" />初始化并扫描媒体库</button></div>
     </div>
   </section>
 </template>
