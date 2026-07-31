@@ -224,6 +224,18 @@ export interface SettingsOverviewResponse {
   };
 }
 
+export interface BackupConfigurationExportResponse {
+  schema_version: 1;
+  exported_at: string;
+  release: string;
+  logging: LoggingSettingsResponse;
+  inspection: InspectionSettingsResponse;
+  content_policy: ContentPolicyResponse;
+  organization: OrganizationSettingsResponse;
+  notifications: NotificationPreferenceResponse;
+  requires_reconfiguration: string[];
+}
+
 export interface LibraryScanSummary {
   run_id: string;
   state: "queued" | "running" | "completed" | "failed" | "cancelled";

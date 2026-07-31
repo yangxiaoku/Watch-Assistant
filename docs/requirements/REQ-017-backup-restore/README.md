@@ -104,7 +104,10 @@ Secret 默认只记录“需要重新配置”的占位信息。若支持 Secret
   快照，并通过临时文件、原子替换、sidecar 清理和校验失败回滚保护当前数据库。
 - 新增 `backup.restore_succeeded` 和 `backup.restore_failed` 结构化事件；错误目录覆盖停机、
   目标、摘要、完整性、恢复和回滚失败等稳定错误码。
-- 组合回归为 `187 passed`，其中备份/恢复专项为 `16 passed`；Ruff 通过。测试只使用临时
-  SQLite fixture，未执行真实部署恢复。
+- 新增 `GET /api/v1/backups/configuration` 和 `watchctl backup configuration`，导出日志、
+  检测、内容策略、整理规则和通知偏好等非敏感配置；响应包含配置格式版本、应用版本和
+  需要重新配置的 Secret 标识，不包含 Cookie、Token、密码、API Key、加密字段或数据库内容。
+- 本轮受影响后端回归为 `44 passed`，前端 API/设置页回归为 `51 passed`，Ruff 和前端生产
+  构建通过。测试只使用临时 SQLite fixture，未执行真实部署恢复。
 - Web 二次批准、在线任务排空证明、恢复后订阅/任务/库存/STRM 业务一致性校验、配置导入
-  导出和加密异地备份仍按 `BLOCKERS.md` 保持关闭。
+  和加密异地备份仍按 `BLOCKERS.md` 保持关闭。

@@ -329,6 +329,12 @@ EVENT_CATALOG: dict[str, EventDefinition] = {
     "backup.restore_preview": _event(
         "backup.restore_preview", LogCategory.SYSTEM, "恢复预览已完成", "备份恢复预览状态：{status}", suggestion="恢复覆盖前请确认服务已排空任务并保留当前快照"
     ),
+    "backup.configuration_exported": _event(
+        "backup.configuration_exported",
+        LogCategory.SYSTEM,
+        "配置导出已完成",
+        "已导出脱敏配置，状态：{status}，数量：{count}",
+    ),
     "backup.restore_succeeded": _event(
         "backup.restore_succeeded",
         LogCategory.SYSTEM,

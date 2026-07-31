@@ -2,6 +2,7 @@
 import {
   Activity,
   AlertTriangle,
+  Download,
   CheckCircle2,
   Cookie,
   ShieldAlert,
@@ -98,6 +99,8 @@ const activeSection = ref<SettingsSection>("overview");
 const overview = ref<SettingsOverviewResponse | null>(null);
 const overviewLoading = ref(true);
 const overviewError = ref("");
+const configurationExporting = ref(false);
+const configurationExportError = ref("");
 const p115 = ref<P115SettingsResponse | null>(null);
 const p115Loading = ref(true);
 const p115Error = ref("");
@@ -250,6 +253,26 @@ async function loadOverview() {
     overviewError.value = exception instanceof ApiError ? exception.message : "概览加载失败，请稍后重试";
   } finally {
     overviewLoading.value = false;
+  }
+}
+
+async function downloadConfiguration() {
+  configurationExporting.value = true;
+  configurationExportError.value = "";
+  try {
+    const configuration = await props.api.exportConfiguration();
+    const exportedAt = configuration.exported_at.replace(/[:.]/g, "-").replace(/Z$/, "");
+    const blob = new Blob([JSON.stringify(configuration, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `watch-assistant-configuration-${exportedAt || "export"}.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+  } catch (exception) {
+    configurationExportError.value = exception instanceof ApiError ? exception.message : "配置导出失败，请稍后重试";
+  } finally {
+    configurationExporting.value = false;
   }
 }
 
@@ -1011,7 +1034,8 @@ watch(autoRefreshLogs, syncLogsRefreshTimer);
         <div class="settings-section-kicker"><span>{{ currentSection?.label }}</span><span>观影助手</span></div>
 
         <section v-if="activeSection === 'overview'" class="settings-section" aria-labelledby="overview-title">
-          <header class="settings-section-heading"><div><p class="eyebrow">系统概览</p><h2 id="overview-title">概览</h2></div><button class="icon-button" type="button" title="刷新概览" aria-label="刷新概览" :disabled="overviewLoading" @click="loadOverview"><RefreshCw :size="16" :class="{ spin: overviewLoading }" /></button></header>
+          <header class="settings-section-heading"><div><p class="eyebrow">系统概览</p><h2 id="overview-title">概览</h2></div><div class="settings-section-actions"><button class="secondary-button" type="button" :disabled="configurationExporting" @click="downloadConfiguration"><LoaderCircle v-if="configurationExporting" class="spin" :size="15" /><Download v-else :size="15" />下载脱敏设置</button><button class="icon-button" type="button" title="刷新概览" aria-label="刷新概览" :disabled="overviewLoading" @click="loadOverview"><RefreshCw :size="16" :class="{ spin: overviewLoading }" /></button></div></header>
+          <p v-if="configurationExportError" class="settings-state settings-state-error" role="alert"><AlertTriangle :size="18" /><span>{{ configurationExportError }}</span></p>
           <div v-if="overviewLoading" class="settings-loading"><LoaderCircle class="spin" :size="20" />正在加载概览</div>
           <div v-else-if="overviewError" class="settings-state settings-state-error"><AlertTriangle :size="18" /><span>{{ overviewError }}</span><button class="text-button" type="button" @click="loadOverview">重试</button></div>
           <template v-else-if="overview">

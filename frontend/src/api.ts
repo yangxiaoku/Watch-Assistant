@@ -43,6 +43,7 @@ import type {
   StrmManifestListResponse,
   StrmGenerationResponse,
   PwaDevice,
+  BackupConfigurationExportResponse,
 } from "./types";
 import { describeUiError, type UiErrorAction } from "./errorCatalog";
 
@@ -119,6 +120,10 @@ export class ApiClient {
 
   async settingsOverview(): Promise<SettingsOverviewResponse> {
     return this.request<SettingsOverviewResponse>("/api/v1/settings/overview");
+  }
+
+  async exportConfiguration(): Promise<BackupConfigurationExportResponse> {
+    return this.request<BackupConfigurationExportResponse>("/api/v1/backups/configuration");
   }
 
   async loggingSettings(): Promise<LoggingSettingsResponse> {
