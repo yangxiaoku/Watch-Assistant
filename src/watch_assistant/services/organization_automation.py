@@ -14,6 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from watch_assistant.adapters.p115_library import P115LibraryGateway
+from watch_assistant.adapters.p115_library_gateway import P115ReadOnlyGatewayError
 from watch_assistant.library_models import (
     LibraryScanEntry,
     MediaLibrary,
@@ -24,6 +25,9 @@ from watch_assistant.schemas import OrganizationSettingsResponse
 from watch_assistant.services.library_index import (
     LibraryIndexError,
     LibraryIndexService,
+)
+from watch_assistant.services.organization_directory_provisioner import (
+    OrganizationDirectoryProvisionError,
 )
 from watch_assistant.services.organization_operations import (
     OrganizationOperationService,
@@ -276,9 +280,21 @@ class OrganizationAutomationService:
                         path for path in target_paths if path not in catalog.by_path
                     )
                     if missing_paths:
-                        await self._directory_provisioner(
-                            target_id, catalog.by_path, missing_paths
-                        )
+                        try:
+                            await self._directory_provisioner(
+                                target_id, catalog.by_path, missing_paths
+                            )
+                        except asyncio.CancelledError:
+                            raise
+                        except OrganizationDirectoryProvisionError:
+                            raise
+                        except Exception as error:  # noqa: BLE001 - keep remote details private
+                            error_code = _stable_error_code(error)
+                            raise OrganizationAutomationError(
+                                error_code
+                                if error_code != "automation_failed"
+                                else "target_directory_create_failed"
+                            ) from None
                         catalog = await read_target_catalog(gateway, target_id)
                         preview_kwargs["target_directories"] = catalog.by_path
                         preview_kwargs["existing_target_files"] = catalog.files
@@ -309,9 +325,12 @@ class OrganizationAutomationService:
             except asyncio.CancelledError:
                 raise
             except (
+                OrganizationAutomationError,
+                OrganizationDirectoryProvisionError,
                 LibraryIndexError,
                 OrganizationPlanError,
                 OrganizationPreviewError,
+                P115ReadOnlyGatewayError,
                 OrganizationTargetError,
             ) as error:
                 error_code = _stable_error_code(error)
@@ -424,7 +443,16 @@ class OrganizationAutomationService:
                 raise OrganizationAutomationError("source_scope_changed")
 
             if not library.scope_verified or not library.enabled:
-                page = await gateway.list_directory(source_id, page=1, page_size=1)
+                try:
+                    page = await gateway.list_directory(source_id, page=1, page_size=1)
+                except asyncio.CancelledError:
+                    raise
+                except P115ReadOnlyGatewayError as error:
+                    raise OrganizationAutomationError(
+                        _stable_error_code(error)
+                    ) from None
+                except Exception:  # noqa: BLE001 - scope verification stays fail-closed
+                    raise OrganizationAutomationError("gateway_error") from None
                 if page.state.value != "complete" or page.scan_complete is False:
                     raise OrganizationAutomationError("source_scope_unverified")
                 library.scope_verified = True
@@ -496,7 +524,45 @@ def _scan_idempotency_key(source_id: str) -> str:
 
 def _stable_error_code(error: Exception) -> str:
     code = getattr(error, "code", None)
-    return code if isinstance(code, str) and code else "automation_failed"
+    if isinstance(error, P115ReadOnlyGatewayError):
+        if code in {
+            "credentials_missing",
+            "credentials_unavailable",
+            "client_unavailable",
+            "blocked_environment",
+        }:
+            return code
+        return "gateway_error"
+    if isinstance(code, str) and code in _STABLE_AUTOMATION_ERROR_CODES:
+        return code
+    message = str(error)
+    return (
+        message
+        if message in _STABLE_AUTOMATION_ERROR_CODES
+        else "automation_failed"
+    )
+
+
+_STABLE_AUTOMATION_ERROR_CODES = frozenset(
+    {
+        "automation_failed",
+        "blocked_environment",
+        "candidate_target_unavailable",
+        "client_unavailable",
+        "credentials_missing",
+        "credentials_unavailable",
+        "gateway_error",
+        "organization_settings_incomplete",
+        "source_scope_changed",
+        "source_scope_unverified",
+        "source_target_overlap",
+        "target_directory_create_failed",
+        "target_directory_id_invalid",
+        "target_directory_incomplete",
+        "target_directory_parent_missing",
+        "target_directory_read_failed",
+    }
+)
 
 
 _BLOCKED_MESSAGES_ZH = {
@@ -505,14 +571,18 @@ _BLOCKED_MESSAGES_ZH = {
     "scan_incomplete": "源目录扫描未完成，已阻止生成整理预览。",
     "partial_page": "源目录分页扫描不完整，已阻止生成整理预览。",
     "gateway_error": "读取源目录失败，已阻止生成整理预览。",
+    "blocked_environment": "115 当前不可执行安全读取，已阻止整理。",
+    "client_unavailable": "115 客户端不可用，已阻止整理。",
+    "credentials_missing": "115 登录凭据未配置，已阻止整理。",
+    "credentials_unavailable": "115 登录状态不可用，已阻止整理。",
     "storage_error": "保存源目录扫描结果失败，已阻止生成整理预览。",
     "entry_path_invalid": "源目录扫描发现无效条目，已阻止生成整理预览。",
     "directory_cycle": "源目录扫描发现目录循环，已阻止生成整理预览。",
     "directory_limit_exceeded": "源目录超出扫描上限，已阻止生成整理预览。",
     "total_mismatch": "源目录扫描总数校验失败，已阻止生成整理预览。",
     "cancelled": "源目录扫描被取消，已阻止生成整理预览。",
-    "source_scope_unverified": "源目录范围未通过校验，已阻止整理。",
     "source_scope_changed": "源目录范围已变化，需要重新确认。",
+    "source_scope_unverified": "源目录范围未通过校验，已阻止整理。",
     "source_target_overlap": "扫描来源与整理目标重叠，已阻止生成整理预览。",
     "scan_not_current": "扫描快照不是最新完整快照，已阻止生成整理预览。",
     "scan_entry_invalid": "扫描快照包含无效条目，已阻止生成整理预览。",
@@ -520,8 +590,9 @@ _BLOCKED_MESSAGES_ZH = {
     "no_video_files": "扫描来源没有可整理的视频文件。",
     "target_directory_parent_missing": "归档目录父级不存在，已阻止整理。",
     "target_directory_create_failed": "归档目录创建失败，已阻止整理。",
+    "target_directory_id_invalid": "归档目录 ID 无效，已阻止整理。",
+    "target_directory_incomplete": "归档目录扫描未完成，已阻止整理。",
     "target_directory_read_failed": "读取归档目录失败，115 当前未返回完整目录；已停止本轮整理，请确认账号可访问该目录后重试。",
-    "credentials_unavailable": "115 登录状态不可用，已阻止整理。",
 }
 
 

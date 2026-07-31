@@ -13,6 +13,7 @@ from watch_assistant.library_models import MediaLibrary, OrganizationPlan
 from watch_assistant.schemas import MediaType, OrganizationSettingsResponse
 from watch_assistant.services.library_index import LibraryScanResult, ScanRunState
 from watch_assistant.services.organization_automation import (
+    OrganizationAutomationError,
     OrganizationAutomationService,
 )
 from watch_assistant.services.organization_plan import OrganizationPlanService
@@ -249,6 +250,36 @@ async def test_automation_does_not_read_when_settings_are_unconfigured(tmp_path:
 
     assert await service.run_once() is False
     assert called is False
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_automation_preserves_stable_inner_failure_code(
+    tmp_path: Path, monkeypatch
+):
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'automation-error.db'}")
+    await initialize_database(database.engine)
+    plan_service = OrganizationPlanService(database.session_factory)
+    preview = OrganizationPreviewService(
+        database.session_factory, _TmdbClient(), plan_service
+    )
+    service = OrganizationAutomationService(
+        database.session_factory,
+        _Settings(configured=True),
+        preview,
+        plan_service,
+        lambda _authorized: _Gateway(),
+    )
+
+    async def fail(_settings, *, manual_confirmation=False):
+        raise OrganizationAutomationError("source_scope_unverified")
+
+    monkeypatch.setattr(service, "_run", fail)
+
+    assert await service.run_once() is True
+    assert service.last_result is not None
+    assert service.last_result.blocked_details[0].error_code == "source_scope_unverified"
+    assert "范围未通过校验" in service.last_result.blocked_details[0].message_zh
     await database.engine.dispose()
 
 
