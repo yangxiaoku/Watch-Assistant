@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from watch_assistant.db import create_database, initialize_database
-from watch_assistant.models import Resource
+from watch_assistant.models import Resource, Subscription
 from watch_assistant.schemas import (
     MediaType,
     ResourceKind,
@@ -36,6 +36,27 @@ class FakeSearch:
         return SimpleNamespace(
             results=[SimpleNamespace(resource_id=resource_id) for resource_id in self.resource_ids],
         )
+
+
+class FailingSearch(FakeSearch):
+    async def search(self, tmdb_id, *, media_type, refresh, season_number):
+        self.calls.append(
+            {
+                "tmdb_id": tmdb_id,
+                "media_type": media_type,
+                "refresh": refresh,
+                "season_number": season_number,
+            }
+        )
+        raise RuntimeError("upstream unavailable")
+
+
+class EventRecorder:
+    def __init__(self):
+        self.events = []
+
+    async def log_event(self, event, **kwargs):
+        self.events.append((event, kwargs))
 
 
 async def _add_resource(database, resource_id: str, canonical_key: str) -> None:
@@ -150,4 +171,37 @@ async def test_subscription_scope_is_idempotently_unique(tmp_path):
     await service.create(request)
     with pytest.raises(SubscriptionConflict, match="subscription_exists"):
         await service.create(request)
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_subscription_check_failure_persists_backoff_and_emits_redacted_event(tmp_path):
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'subscriptions-failure.db'}")
+    await initialize_database(database.engine)
+    events = EventRecorder()
+    service = SubscriptionService(
+        database.session_factory, FailingSearch(), event_logger=events
+    )
+    created = await service.create(SubscriptionCreateRequest(tmdb_id=456))
+
+    with pytest.raises(SubscriptionConflict, match="subscription_check_failed"):
+        await service.check(created.id)
+
+    async with database.session_factory() as session:
+        item = await session.get(Subscription, created.id)
+        assert item is not None
+        assert item.last_error_code == "search_unavailable"
+        assert item.next_check_at is not None
+        assert item.next_check_at > datetime.now(UTC).replace(tzinfo=None)
+    assert any(
+        event == "subscription.check_failed"
+        and fields["fields"] == {
+            "status": "failed",
+            "error_code": "search_unavailable",
+            "media_type": "movie",
+        }
+        and fields["resource_type"] == "subscription"
+        and fields["resource_id"] == created.id
+        for event, fields in events.events
+    )
     await database.engine.dispose()

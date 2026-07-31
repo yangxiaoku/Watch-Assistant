@@ -292,3 +292,36 @@ async def test_unlinked_strm_failure_notifies_settings(tmp_path):
         await tmdb.aclose()
         await pansou.aclose()
         await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_subscription_check_failure_notifies_settings(tmp_path):
+    client, database, tmdb, pansou, app = await _make_client(tmp_path)
+    try:
+        await app.state.settings_service.log_event(
+            "subscription.checked",
+            fields={"status": "no_match", "count": 0, "media_type": "movie"},
+            resource_type="tmdb",
+            resource_id="movie:456",
+        )
+        await app.state.settings_service.log_event(
+            "subscription.check_failed",
+            fields={"status": "failed", "error_code": "search_unavailable"},
+            resource_type="subscription",
+            resource_id="subscription_failed",
+        )
+
+        response = await client.get("/api/v1/notifications")
+        assert response.status_code == 200
+        items = response.json()["items"]
+        assert len(items) == 1
+        assert items[0]["event_code"] == "subscription.check_failed"
+        assert items[0]["severity"] == "error"
+        assert items[0]["action_type"] == "settings"
+        assert items[0]["action_id"] == "subscription_failed"
+        assert "search_unavailable" in items[0]["message_zh"]
+    finally:
+        await client.aclose()
+        await tmdb.aclose()
+        await pansou.aclose()
+        await database.engine.dispose()
