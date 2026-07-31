@@ -1008,6 +1008,8 @@ def _replacement_from_execution(
 async def load_executable_steps(
     session_factory: async_sessionmaker[AsyncSession],
     plan: OrganizationPlan | str,
+    *,
+    allow_unconfirmed: bool = False,
 ) -> tuple[OrganizationPlanExecutionStep, ...] | None:
     """Load executable steps only after revalidating durable plan state."""
 
@@ -1016,7 +1018,10 @@ async def load_executable_steps(
         return None
     async with session_factory() as session:
         stored = await session.get(OrganizationPlan, plan_id)
-        if stored is None or stored.status != OrganizationPlanStatus.PLANNED.value:
+        if stored is None or (
+            not allow_unconfirmed
+            and stored.status != OrganizationPlanStatus.PLANNED.value
+        ):
             return None
         library = await session.get(MediaLibrary, stored.library_id)
         run = await session.get(LibraryScanRun, stored.source_scan_run_id)
@@ -1069,7 +1074,7 @@ async def load_executable_steps(
             or len(precondition_items) != len(actions)
         ):
             return None
-        steps = _parse_executable_steps(stored)
+        steps = _parse_executable_steps(stored, allow_unconfirmed=allow_unconfirmed)
         if steps is None:
             return None
         rows = {
@@ -1111,6 +1116,8 @@ async def load_executable_steps(
 
 def _parse_executable_steps(
     plan: OrganizationPlan,
+    *,
+    allow_unconfirmed: bool = False,
 ) -> tuple[OrganizationPlanExecutionStep, ...] | None:
     """Parse only the complete execution payload used by a future executor.
 
@@ -1118,7 +1125,7 @@ def _parse_executable_steps(
     here because they do not carry the stable directory and member identities.
     """
 
-    if plan.status != OrganizationPlanStatus.PLANNED.value:
+    if not allow_unconfirmed and plan.status != OrganizationPlanStatus.PLANNED.value:
         return None
     actions = _load_json_list(plan.actions_json)
     if not actions:

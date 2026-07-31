@@ -628,6 +628,27 @@ export class ApiClient {
     });
   }
 
+  async confirmAndQueueOrganizationOperation(planId: string, expectedRevision: number): Promise<OrganizationOperationResponse> {
+    return this.request<OrganizationOperationResponse>(`/api/v1/organization-plans/${encodeURIComponent(planId)}/confirm-and-operation`, {
+      method: "POST",
+      body: JSON.stringify({ expected_revision: expectedRevision, idempotency_key: createIdempotencyKey(), confirm: true }),
+    });
+  }
+
+  async confirmAndQueueOrganizationOperations(planIds: Array<{ planId: string; expectedRevision: number }>): Promise<import("./types").OrganizationOperationBatchResponse> {
+    return this.request<import("./types").OrganizationOperationBatchResponse>("/api/v1/organization-operations/confirm-and-batch", {
+      method: "POST",
+      body: JSON.stringify({
+        items: planIds.map(({ planId, expectedRevision }) => ({
+          plan_id: planId,
+          expected_revision: expectedRevision,
+          idempotency_key: createIdempotencyKey(),
+          confirm: true,
+        })),
+      }),
+    });
+  }
+
   async organizationPlanOperation(planId: string): Promise<OrganizationOperationResponse> {
     return this.request<OrganizationOperationResponse>(`/api/v1/organization-plans/${encodeURIComponent(planId)}/operation`);
   }

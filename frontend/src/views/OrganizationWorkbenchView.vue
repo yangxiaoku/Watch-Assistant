@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Ban, Check, ChevronRight, Eye, LoaderCircle, RefreshCw, Tag } from "@lucide/vue";
+import { Ban, Check, ChevronRight, Eye, ListChecks, LoaderCircle, Play, RefreshCw, Tag } from "@lucide/vue";
 import { computed, onMounted, ref } from "vue";
 import { ApiClient, ApiError, focusFirstFieldError } from "../api";
 import { describeUiError } from "../errorCatalog";
@@ -116,22 +116,74 @@ async function queueOperation() {
     const queuedOperation = await props.api.queueOrganizationOperation(plan.plan_id, plan.revision);
     await loadPlanOperation(plan);
     if (!operation.value) operation.value = queuedOperation;
-    if (queuedOperation.status === "organized") {
-      notice.value = "整理已完成";
-    } else if (queuedOperation.status === "failed" || queuedOperation.status === "uncertain") {
-      error.value = queuedOperation.error_code
-        ? describeUiError(queuedOperation.error_code, 409).message
-        : "后台整理未完成，请查看操作状态";
-    } else {
-      notice.value = "整理已提交，后台正在执行";
-      await pollOperation(queuedOperation.operation_id);
-    }
+    await handleQueuedOperation(queuedOperation);
   } catch (exception) {
     focusFirstFieldError(exception);
     if (exception instanceof ApiError && exception.code === "plan_prerequisites_changed") {
       await loadPlanOperation(plan);
     }
     error.value = exception instanceof ApiError ? exception.message : "整理操作排队失败，请稍后重试";
+  } finally {
+    busy.value = false;
+  }
+}
+
+async function confirmAndQueueOperation() {
+  const plan = selected.value;
+  if (!plan || busy.value || plan.status !== "needs_review" || !props.executionEnabled) return;
+  busy.value = true;
+  error.value = "";
+  notice.value = "";
+  try {
+    const queuedOperation = await props.api.confirmAndQueueOrganizationOperation(plan.plan_id, plan.revision);
+    selected.value = { ...plan, status: "planned", revision: plan.revision + 1 };
+    await loadPlanOperation(selected.value);
+    if (!operation.value) operation.value = queuedOperation;
+    await handleQueuedOperation(queuedOperation);
+  } catch (exception) {
+    focusFirstFieldError(exception);
+    if (exception instanceof ApiError && exception.status === 409) {
+      await refreshAfterConflict();
+    } else {
+      error.value = exception instanceof ApiError ? exception.message : "确认并整理失败，请稍后重试";
+    }
+  } finally {
+    busy.value = false;
+  }
+}
+
+async function handleQueuedOperation(queuedOperation: OrganizationOperationResponse) {
+  if (queuedOperation.status === "organized") {
+    notice.value = "整理已完成";
+  } else if (queuedOperation.status === "failed" || queuedOperation.status === "uncertain") {
+    error.value = queuedOperation.error_code
+      ? describeUiError(queuedOperation.error_code, 409).message
+      : "后台整理未完成，请查看操作状态";
+  } else {
+    notice.value = "整理已提交，后台正在执行";
+    await pollOperation(queuedOperation.operation_id);
+  }
+}
+
+async function confirmAndQueueCurrentPage() {
+  if (!props.executionEnabled || activeStatus.value !== "needs_review" || !items.value.length || busy.value) return;
+  busy.value = true;
+  error.value = "";
+  notice.value = "";
+  try {
+    const response = await props.api.confirmAndQueueOrganizationOperations(
+      items.value.map((item) => ({ planId: item.plan_id, expectedRevision: item.revision })),
+    );
+    const accepted = response.items.filter((item) => item.status !== "rejected").length;
+    const rejected = response.items.filter((item) => item.status === "rejected");
+    await loadPlans();
+    if (accepted) notice.value = `已确认并提交 ${accepted} 个整理计划，后台正在执行`;
+    if (rejected.length) {
+      error.value = `${rejected.length} 个计划未提交：${rejected[0].message}`;
+    }
+  } catch (exception) {
+    focusFirstFieldError(exception);
+    error.value = exception instanceof ApiError ? exception.message : "批量确认并整理失败，请稍后重试";
   } finally {
     busy.value = false;
   }
@@ -201,7 +253,7 @@ onMounted(() => {
       <div>
         <p class="eyebrow">本地审核</p>
         <h1>整理计划工作台</h1>
-        <p>这里只改变本地计划状态，不会自动执行远端操作。</p>
+        <p>{{ executionEnabled ? "可执行计划可一次确认并进入后台整理。" : "这里只改变本地计划状态，不会执行远端操作。" }}</p>
       </div>
       <button class="icon-button" type="button" title="刷新计划" aria-label="刷新计划" :disabled="loading || busy" @click="loadPlans()"><RefreshCw :size="17" :class="{ spin: loading }" /></button>
     </div>
@@ -220,6 +272,7 @@ onMounted(() => {
     <div v-else-if="!items.length" class="organization-empty"><Eye :size="22" /><strong>暂无计划</strong><span>当前状态没有可展示的本地计划。</span></div>
     <div v-else class="organization-layout">
       <div class="organization-list" aria-label="计划列表">
+        <button v-if="executionEnabled && activeStatus === 'needs_review'" class="primary-button organization-batch-action" type="button" :disabled="loading || busy" @click="confirmAndQueueCurrentPage"><ListChecks :size="16" />确认并整理当前页（{{ items.length }}）</button>
         <button v-for="plan in items" :key="plan.plan_id" type="button" class="organization-plan-row" :class="{ active: selected?.plan_id === plan.plan_id }" @click="selectPlan(plan)">
           <span class="organization-plan-row-main"><strong>{{ plan.alias || `计划 ${plan.plan_id.slice(0, 8)}` }}</strong><small>{{ statusLabel[plan.status] }}</small></span>
           <span class="organization-plan-row-meta"><span>版本 {{ plan.revision }}</span><ChevronRight :size="16" /></span>
@@ -244,8 +297,9 @@ onMounted(() => {
           <span v-else-if="operation.status === 'organizing'">后台正在执行，页面刷新后仍会保留当前状态。</span>
         </div>
         <div v-if="selectedCanEdit || (selected.status === 'planned' && executionEnabled)" class="organization-actions">
-          <button v-if="selectedIsReviewable" class="primary-button" type="button" :disabled="busy" @click="confirmPlan"><Check :size="16" />确认本地计划</button>
-          <button v-if="selected.status === 'planned' && executionEnabled" class="primary-button" type="button" :disabled="busy" @click="queueOperation"><Check :size="16" />提交远端整理</button>
+          <button v-if="selectedIsReviewable && executionEnabled" class="primary-button" type="button" :disabled="busy" @click="confirmAndQueueOperation"><Play :size="16" />确认并开始整理</button>
+          <button v-else-if="selectedIsReviewable" class="primary-button" type="button" :disabled="busy" @click="confirmPlan"><Check :size="16" />确认本地计划</button>
+          <button v-if="selected.status === 'planned' && executionEnabled" class="primary-button" type="button" :disabled="busy" @click="queueOperation"><Play :size="16" />立即整理</button>
           <button class="secondary-button" type="button" :disabled="busy" @click="ignorePlan"><Ban :size="16" />忽略</button>
         </div>
         <form v-if="selectedCanEdit" class="organization-alias" @submit.prevent="saveAlias">

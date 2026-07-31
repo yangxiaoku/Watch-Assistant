@@ -351,6 +351,84 @@ async def test_queue_is_idempotent_and_rejects_unconfirmed_stale_or_expired_plan
 
 
 @pytest.mark.integration
+async def test_confirm_and_queue_is_one_action_for_review_plan(tmp_path: Path):
+    client, database = await _client(tmp_path, execution_enabled=True)
+    headers = await _auth_headers(client)
+    async with database.session_factory() as session:
+        plan = await session.get(OrganizationPlan, "plan-ready")
+        assert plan is not None
+        plan.status = "needs_review"
+        plan.revision = 2
+        await session.commit()
+
+    queued = await client.post(
+        "/api/v1/organization-plans/plan-ready/confirm-and-operation",
+        json={"expected_revision": 2, "idempotency_key": "confirm-and-queue-key", "confirm": True},
+        headers=headers,
+    )
+
+    assert queued.status_code == 200
+    assert queued.json()["status"] == "planned"
+    async with database.session_factory() as session:
+        plan = await session.get(OrganizationPlan, "plan-ready")
+        assert plan is not None
+        assert plan.status == "planned"
+        assert plan.revision == 3
+        operation = await session.scalar(
+            select(OrganizationOperation).where(
+                OrganizationOperation.plan_id == "plan-ready"
+            )
+        )
+        assert operation is not None
+        assert operation.plan_revision == 3
+    await _close(client, database)
+
+
+@pytest.mark.integration
+async def test_confirm_and_queue_batch_isolates_review_only_plans(tmp_path: Path):
+    client, database = await _client(tmp_path, execution_enabled=True)
+    headers = await _auth_headers(client)
+    async with database.session_factory() as session:
+        plan = await session.get(OrganizationPlan, "plan-batch")
+        assert plan is not None
+        plan.status = "needs_review"
+        plan.revision = 2
+        await session.commit()
+
+    batch = await client.post(
+        "/api/v1/organization-operations/confirm-and-batch",
+        json={
+            "items": [
+                {
+                    "plan_id": "plan-batch",
+                    "expected_revision": 2,
+                    "idempotency_key": "confirm-batch-good",
+                    "confirm": True,
+                },
+                {
+                    "plan_id": "plan-review",
+                    "expected_revision": 1,
+                    "idempotency_key": "confirm-batch-review",
+                    "confirm": True,
+                },
+            ]
+        },
+        headers=headers,
+    )
+
+    assert batch.status_code == 200
+    items = batch.json()["items"]
+    assert items[0]["status"] == "planned"
+    assert items[1]["status"] == "rejected"
+    assert items[1]["error_code"] == "plan_not_executable"
+    async with database.session_factory() as session:
+        review_plan = await session.get(OrganizationPlan, "plan-review")
+        assert review_plan is not None
+        assert review_plan.status == "needs_review"
+    await _close(client, database)
+
+
+@pytest.mark.integration
 async def test_queue_can_link_organization_operation_to_workflow(tmp_path: Path):
     client, database = await _client(tmp_path, execution_enabled=True)
     headers = await _auth_headers(client)
