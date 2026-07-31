@@ -78,6 +78,40 @@ async def test_enabled_schedule_waits_for_the_first_interval():
     await asyncio.wait_for(task, timeout=1)
 
 
+@pytest.mark.asyncio
+async def test_manual_run_is_not_lost_while_settings_are_loading():
+    settings = BlockingSettingsStub(False)
+    calls = 0
+
+    async def run_once():
+        nonlocal calls
+        calls += 1
+        return True
+
+    scheduler = OrganizationScheduler(settings, run_once)
+    stop = asyncio.Event()
+    task = asyncio.create_task(scheduler.run_forever(stop))
+    await asyncio.wait_for(settings.started.wait(), timeout=1)
+    await scheduler.request_run_now()
+    settings.release.set()
+    await asyncio.wait_for(_wait_for(lambda: calls == 1), timeout=1)
+    stop.set()
+    scheduler.stop_pending()
+    await asyncio.wait_for(task, timeout=1)
+
+
+class BlockingSettingsStub(SettingsStub):
+    def __init__(self, enabled: bool):
+        super().__init__(enabled)
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def get_organization(self):
+        self.started.set()
+        await self.release.wait()
+        return await super().get_organization()
+
+
 async def _wait_for(predicate):
     while not predicate():
         await asyncio.sleep(0.01)

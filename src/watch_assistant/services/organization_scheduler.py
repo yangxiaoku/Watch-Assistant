@@ -45,6 +45,10 @@ class OrganizationScheduler:
                 await self._manual_run()
                 continue
             current = await self._settings.get_organization()
+            # A manual request may arrive while settings are being read. Check
+            # again before clearing the wake event so it cannot be lost.
+            if self._manual_runs:
+                continue
             now = time.monotonic()
             if not current.schedule_enabled:
                 next_scheduled_at = None
@@ -60,6 +64,8 @@ class OrganizationScheduler:
                 else max(0.1, next_scheduled_at - now)
             )
             self._wake.clear()
+            if self._manual_runs:
+                continue
             try:
                 await asyncio.wait_for(self._wake.wait(), timeout=timeout)
             except TimeoutError:
