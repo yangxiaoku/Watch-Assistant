@@ -3,7 +3,7 @@
 | 字段 | 内容 |
 |---|---|
 | 版本 | V1.0 |
-| 状态 | 开发中 |
+| 状态 | 本地实现完成，生产验收阻断 |
 | 优先级 | P1 |
 | 依赖 | SQLite、配置系统、各需求数据模型 |
 
@@ -115,6 +115,15 @@ Secret 默认只记录“需要重新配置”的占位信息。若支持 Secret
 - 新增持久化在线维护状态、任务/检测/整理/STRM worker 领取门禁，以及
   `POST /api/v1/backups/{backup_id}/restore-approval`、二次批准和只读批准报告接口；批准
   只生成短时有效的离线恢复授权状态，不在运行中的 Web 进程替换数据库。安全链路覆盖了
-  任务排空证明和不同管理员身份批准，但尚未完成真实部署演练。
-- 恢复后订阅/任务/库存/STRM 业务一致性校验、加密异地备份和真实部署恢复验收仍按
-  `BLOCKERS.md` 保持关闭。
+  任务排空证明和不同管理员身份批准；离线脚本对应用数据库强制要求 `--approval-id`，核对
+  批准摘要、双人身份、有效期和维护代次，并用一次性 journal 防止重复消费。
+- 恢复后校验已补齐 SQLite 外键、任务/订阅/整理/库存/STRM 引用、状态值、订阅范围和当前
+  STRM 身份唯一性，并在恢复前后比对业务摘要；备份历史、校验状态、保留序号和显式确认删除
+  已接入 API、`watchctl` 和设置页。
+- BAK-008 已实现默认关闭的受控目录加密副本：manifest 只保存摘要和版本，独立 Fernet
+  恢复密钥不写入数据库、日志或 manifest；支持 API 创建和离线脚本从 stdin 解密恢复。
+- 本地临时 SQLite fixture 回归为 `576 passed`（unit）、`168 passed`（contracts）、
+  `336 passed, 1 skipped`（integration），备份恢复专项 `25 passed`；Ruff、compileall
+  和 `git diff --check` 通过。前端 Vitest `120 passed`、Playwright `149 passed` 和生产构建
+  本轮均通过。系统 PATH 没有 Node/npm，但本轮使用隔离 runtime 完成前端门禁。真实部署停机
+  恢复、回滚/重启、恢复后业务核对和受控异地目标验收仍未完成。

@@ -903,10 +903,50 @@ class BackupResponse(BaseModel):
     sha256: str
     schema_migrations: list[str] = Field(default_factory=list)
     release: str
+    validation_status: Literal["verified", "invalid", "missing", "unchecked"] = "verified"
+    retention_rank: int | None = Field(default=None, ge=1)
+    retained: bool = True
 
 
 class BackupListResponse(BaseModel):
     items: list[BackupResponse]
+    retention_count: int = Field(ge=1)
+
+
+class BackupDeleteRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    confirmed: bool = False
+
+
+class BackupDeleteResponse(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    status: Literal["deleted"] = "deleted"
+    backup_id: str
+
+
+class EncryptedBackupRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    recovery_key: SecretStr = Field(min_length=1)
+    confirmed: bool = False
+
+
+class EncryptedBackupResponse(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    format_version: Literal[1] = 1
+    source_backup_id: str
+    created_at: datetime
+    file_name: str
+    manifest_file_name: str
+    size_bytes: int = Field(ge=0)
+    ciphertext_sha256: str
+    plaintext_sha256: str
+    schema_migrations: list[str] = Field(default_factory=list)
+    release: str
+    validation_status: Literal["verified", "invalid"]
 
 
 class BackupRestorePreviewResponse(BaseModel):
@@ -915,9 +955,11 @@ class BackupRestorePreviewResponse(BaseModel):
     sha256_valid: bool
     integrity_ok: bool
     migration_compatible: bool
+    business_consistency_ok: bool = True
     backup_release: str
     current_release: str
     missing_migrations: list[str] = Field(default_factory=list)
+    consistency_checks: list[dict[str, object]] = Field(default_factory=list)
     requires_reconfiguration: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
 

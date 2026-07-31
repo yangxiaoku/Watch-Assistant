@@ -25,6 +25,12 @@ class Settings(BaseSettings):
     script_token_hash: SecretStr = Field(
         min_length=1, validation_alias="SCRIPT_TOKEN_HASH"
     )
+    encrypted_backup_enabled: bool = Field(
+        default=False, validation_alias="ENCRYPTED_BACKUP_ENABLED"
+    )
+    encrypted_backup_destination: Path | None = Field(
+        default=None, validation_alias="ENCRYPTED_BACKUP_DESTINATION"
+    )
     pansou_base_url: str = Field(min_length=1, validation_alias="PANSOU_BASE_URL")
     tmdb_base_url: str = Field(
         default="https://api.themoviedb.org/3",

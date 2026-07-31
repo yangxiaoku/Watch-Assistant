@@ -611,6 +611,18 @@ html, body, .app-shell { background: #151719; }
 .status-unknown { color: #a0a5ae !important; }
 .settings-empty, .settings-empty-block { color: #7d838d; font-size: 12px; }
 .settings-empty { padding: 20px 0; }
+.settings-backup-policy { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px 18px; padding: 13px 0; border-bottom: 1px solid #2b2e33; color: #858b95; font-size: 11px; }
+.settings-backup-policy strong { color: #d9dce2; font-size: 13px; }
+.settings-backup-policy span:last-child { margin-left: auto; }
+.settings-backup-list { border-top: 1px solid #2b2e33; }
+.settings-backup-row { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 14px 0; border-bottom: 1px solid #2b2e33; }
+.settings-backup-main { display: grid; min-width: 0; gap: 5px; }
+.settings-backup-main strong { color: #d9dce2; font-size: 13px; }
+.settings-backup-main span, .settings-backup-main small { color: #858b95; font-size: 11px; overflow-wrap: anywhere; }
+.settings-backup-main small { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+.settings-backup-meta { display: flex; flex: 0 0 auto; align-items: center; gap: 14px; color: #858b95; font-size: 11px; }
+.danger-icon { color: #ff9c9c !important; }
+.danger-icon:disabled { color: #5d6068 !important; cursor: not-allowed; }
 .settings-filter-row { display: flex; flex-wrap: wrap; gap: 10px 16px; padding: 0 0 16px; border-bottom: 1px solid #2b2e33; }
 .settings-filter-row label, .settings-form-grid label { display: grid; gap: 7px; color: #858b95; font-size: 11px; font-weight: 700; }
 .settings-filter-row select, .settings-filter-row input, .settings-form-grid select, .settings-form-grid input { min-width: 148px; min-height: 34px; padding: 0 10px; color: #f4f5f7; background: #1d2024; border: 1px solid #353940; border-radius: 4px; }
@@ -726,6 +738,9 @@ html, body, .app-shell { background: #151719; }
   .settings-section-heading h2 { font-size: 20px; }
   .settings-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 14px; }
   .settings-metric strong { font-size: 14px; }
+  .settings-backup-row { align-items: flex-start; flex-direction: column; gap: 10px; }
+  .settings-backup-meta { width: 100%; justify-content: space-between; }
+  .settings-backup-policy span:last-child { margin-left: 0; }
   .settings-status-row, .p115-status-line { min-height: 54px; }
   .settings-status-value { max-width: 58%; flex-wrap: wrap; justify-content: flex-end; }
   .settings-status-value small { max-width: 100%; }

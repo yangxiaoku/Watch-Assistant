@@ -2,6 +2,7 @@
 import {
   Activity,
   AlertTriangle,
+  Archive,
   Download,
   Upload,
   CheckCircle2,
@@ -17,6 +18,7 @@ import {
   ScanSearch,
   ShieldCheck,
   StopCircle,
+  Trash2,
   Zap,
   XCircle,
 } from "@lucide/vue";
@@ -39,17 +41,19 @@ import type {
   P115LoginDevice,
   BackupConfigurationExportResponse,
   BackupConfigurationImportRequest,
+  BackupListResponse,
   SettingsOverviewResponse,
 } from "../types";
 
 const props = defineProps<{ api: ApiClient }>();
 const emit = defineEmits<{ "auto-start-enabled": [enabled: boolean] }>();
 
-type SettingsSection = "overview" | "credentials" | "logs" | "content" | "inspection" | "p115" | "organization";
+type SettingsSection = "overview" | "backups" | "credentials" | "logs" | "content" | "inspection" | "p115" | "organization";
 type ValidationState = "idle" | "running" | "error" | P115ValidationResponse["status"];
 
 const sections = [
   { id: "overview" as const, label: "概览", icon: Activity },
+  { id: "backups" as const, label: "备份", icon: Archive },
   { id: "credentials" as const, label: "连接配置", icon: KeyRound },
   { id: "logs" as const, label: "日志", icon: FileText },
   { id: "content" as const, label: "内容安全", icon: ShieldAlert },
@@ -102,6 +106,10 @@ const activeSection = ref<SettingsSection>("overview");
 const overview = ref<SettingsOverviewResponse | null>(null);
 const overviewLoading = ref(true);
 const overviewError = ref("");
+const backups = ref<BackupListResponse | null>(null);
+const backupsLoading = ref(false);
+const backupsError = ref("");
+const deletingBackupId = ref<string | null>(null);
 const configurationExporting = ref(false);
 const configurationExportError = ref("");
 const configurationImportInput = ref<HTMLInputElement | null>(null);
@@ -239,6 +247,7 @@ const hasMoreLogs = computed(() => logsLoaded.value && nextLogCursor.value !== n
 function selectSection(section: SettingsSection) {
   activeSection.value = section;
   if (section === "credentials" && !credentials.value && !credentialsLoading.value) void loadCredentials();
+  if (section === "backups" && !backups.value && !backupsLoading.value) void loadBackups();
   if (section === "logs" && !logsLoaded.value) void loadLogs();
   if (section === "content" && !contentPolicy.value) void loadContentPolicy();
   if (section === "organization" && !organizationSettings.value && !organizationLoading.value) void loadOrganization();
@@ -247,7 +256,7 @@ function selectSection(section: SettingsSection) {
 
 function selectMobileSection(event: Event) {
   const value = (event.target as HTMLSelectElement).value;
-  if (value === "overview" || value === "credentials" || value === "logs" || value === "content" || value === "inspection" || value === "p115" || value === "organization") selectSection(value);
+  if (value === "overview" || value === "backups" || value === "credentials" || value === "logs" || value === "content" || value === "inspection" || value === "p115" || value === "organization") selectSection(value);
 }
 
 async function loadOverview() {
@@ -259,6 +268,32 @@ async function loadOverview() {
     overviewError.value = exception instanceof ApiError ? exception.message : "概览加载失败，请稍后重试";
   } finally {
     overviewLoading.value = false;
+  }
+}
+
+async function loadBackups() {
+  backupsLoading.value = true;
+  backupsError.value = "";
+  try {
+    backups.value = await props.api.backups();
+  } catch (exception) {
+    backupsError.value = exception instanceof ApiError ? exception.message : "备份历史加载失败，请稍后重试";
+  } finally {
+    backupsLoading.value = false;
+  }
+}
+
+async function deleteBackup(backupId: string) {
+  if (!window.confirm("确认删除这份备份？删除后只能依靠其他备份恢复。")) return;
+  deletingBackupId.value = backupId;
+  backupsError.value = "";
+  try {
+    await props.api.deleteBackup(backupId);
+    await loadBackups();
+  } catch (exception) {
+    backupsError.value = exception instanceof ApiError ? exception.message : "备份删除失败，请稍后重试";
+  } finally {
+    deletingBackupId.value = null;
   }
 }
 
@@ -361,7 +396,8 @@ async function loadP115() {
 
 async function loadP115Devices() {
   try {
-    p115Devices.value = (await props.api.p115Devices()).items;
+    const response = await props.api.p115Devices();
+    p115Devices.value = Array.isArray(response.items) ? response.items : [];
   } catch {
     p115Devices.value = [];
   }
@@ -1040,6 +1076,14 @@ function capabilityClass(value: boolean) {
   return value ? "status-ok" : "status-degraded";
 }
 
+function backupValidationLabel(value: BackupListResponse["items"][number]["validation_status"]) {
+  return { verified: "已校验", invalid: "校验失败", missing: "文件缺失", unchecked: "未校验" }[value];
+}
+
+function backupValidationClass(value: BackupListResponse["items"][number]["validation_status"]) {
+  return value === "verified" ? "status-ok" : value === "unchecked" ? "status-unknown" : "status-down";
+}
+
 function levelLabel(level: LogLevel) {
   return levelOptions.find((option) => option.value === level)?.label ?? level;
 }
@@ -1113,6 +1157,23 @@ watch(autoRefreshLogs, syncLogsRefreshTimer);
             <div class="settings-subsection"><h3>能力</h3><div class="settings-capability-list"><div><span>内容检测</span><strong :class="capabilityClass(overview.capabilities.inspection)">{{ capabilityLabel(overview.capabilities.inspection) }}</strong></div><div><span>磁力云下载</span><strong :class="capabilityClass(overview.capabilities.magnet)">{{ capabilityLabel(overview.capabilities.magnet) }}</strong></div><div><span>115 分享转存</span><strong :class="capabilityClass(overview.capabilities.share)">{{ overview.capabilities.share ? '可用' : '未启用' }}</strong></div></div></div>
             <div class="settings-subsection"><h3>115 真实操作</h3><div class="settings-capability-list"><div><span>整理计划</span><strong :class="capabilityClass(overview.capabilities.organization_plan)">{{ capabilityLabel(overview.capabilities.organization_plan) }}</strong></div><div><span>移动与重命名</span><strong :class="capabilityClass(overview.capabilities.organization_write)">{{ capabilityLabel(overview.capabilities.organization_write) }}</strong></div><div><span>永久删除</span><strong :class="capabilityClass(overview.capabilities.permanent_delete)">{{ capabilityLabel(overview.capabilities.permanent_delete) }}</strong></div></div></div>
             <div class="settings-subsection"><h3>STRM</h3><div class="settings-capability-list"><div><span>全量生成</span><strong :class="capabilityClass(overview.capabilities.strm_full)">{{ capabilityLabel(overview.capabilities.strm_full) }}</strong></div><div><span>增量同步</span><strong :class="capabilityClass(overview.capabilities.strm_incremental)">{{ capabilityLabel(overview.capabilities.strm_incremental) }}</strong></div><div><span>失效清理</span><strong :class="capabilityClass(overview.capabilities.strm_cleanup)">{{ capabilityLabel(overview.capabilities.strm_cleanup) }}</strong></div><div><span>动态播放</span><strong :class="capabilityClass(overview.capabilities.strm_playback)">{{ capabilityLabel(overview.capabilities.strm_playback) }}</strong></div></div></div>
+          </template>
+        </section>
+
+        <section v-else-if="activeSection === 'backups'" class="settings-section" aria-labelledby="backups-title">
+          <header class="settings-section-heading"><div><p class="eyebrow">本地灾备</p><h2 id="backups-title">备份</h2><p>查看备份校验状态和保留策略。数据库恢复仍需停止服务并使用离线批准流程。</p></div><button class="icon-button" type="button" title="刷新备份历史" aria-label="刷新备份历史" :disabled="backupsLoading" @click="loadBackups"><RefreshCw :size="16" :class="{ spin: backupsLoading }" /></button></header>
+          <div v-if="backupsLoading && !backups" class="settings-loading"><LoaderCircle class="spin" :size="20" />正在加载备份历史</div>
+          <div v-else-if="backupsError && !backups" class="settings-state settings-state-error"><AlertTriangle :size="18" /><span>{{ backupsError }}</span><button class="text-button" type="button" @click="loadBackups">重试</button></div>
+          <template v-else-if="backups">
+            <div class="settings-backup-policy"><span>本地保留策略</span><strong>最近 {{ backups.retention_count }} 份</strong><span>{{ backups.items.length }} 份备份</span></div>
+            <div v-if="!backups.items.length" class="settings-empty-block">暂无备份记录。</div>
+            <div v-else class="settings-backup-list">
+              <article v-for="backup in backups.items" :key="backup.backup_id" class="settings-backup-row">
+                <div class="settings-backup-main"><strong>{{ formatTimestamp(backup.created_at) }}</strong><span>{{ formatBytes(backup.size_bytes) }} · {{ backup.release }}</span><small>{{ backup.backup_id }}</small></div>
+                <div class="settings-backup-meta"><span :class="backupValidationClass(backup.validation_status)">{{ backupValidationLabel(backup.validation_status) }}</span><span>保留序号 {{ backup.retention_rank ?? "-" }}</span><button class="icon-button danger-icon" type="button" title="删除这份备份" :aria-label="`删除 ${backup.backup_id}`" :disabled="deletingBackupId === backup.backup_id || backups.items.length <= 1" @click="deleteBackup(backup.backup_id)"><LoaderCircle v-if="deletingBackupId === backup.backup_id" class="spin" :size="15" /><Trash2 v-else :size="15" /></button></div>
+              </article>
+            </div>
+            <p v-if="backupsError" class="settings-state settings-state-error" role="alert"><AlertTriangle :size="18" /><span>{{ backupsError }}</span></p>
           </template>
         </section>
 

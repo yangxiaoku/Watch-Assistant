@@ -46,6 +46,8 @@ import type {
   BackupConfigurationExportResponse,
   BackupConfigurationImportRequest,
   BackupConfigurationImportResponse,
+  BackupListResponse,
+  BackupDeleteResponse,
 } from "./types";
 import { describeUiError, type UiErrorAction } from "./errorCatalog";
 
@@ -134,6 +136,17 @@ export class ApiClient {
     return this.request<BackupConfigurationImportResponse>("/api/v1/backups/configuration/import", {
       method: "POST",
       body: JSON.stringify(configuration),
+    });
+  }
+
+  async backups(): Promise<BackupListResponse> {
+    return this.request<BackupListResponse>("/api/v1/backups");
+  }
+
+  async deleteBackup(backupId: string): Promise<BackupDeleteResponse> {
+    return this.request<BackupDeleteResponse>(`/api/v1/backups/${encodeURIComponent(backupId)}`, {
+      method: "DELETE",
+      body: JSON.stringify({ confirmed: true }),
     });
   }
 

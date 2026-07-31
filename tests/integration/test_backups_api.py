@@ -41,7 +41,12 @@ def _read_sample(path: Path) -> str:
     return value
 
 
-async def _make_client(tmp_path: Path):
+async def _make_client(
+    tmp_path: Path,
+    *,
+    encrypted_backup_enabled: bool = False,
+    encrypted_backup_destination: Path | None = None,
+):
     database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'backup-api.db'}")
     await initialize_database(database.engine)
     tmdb = TmdbClient("unused")
@@ -51,6 +56,8 @@ async def _make_client(tmp_path: Path):
         crypto=SecretCrypto(Fernet.generate_key().decode("ascii")),
         tmdb_client=tmdb,
         pansou_client=pansou,
+        encrypted_backup_enabled=encrypted_backup_enabled,
+        encrypted_backup_destination=encrypted_backup_destination,
     )
     client = httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://app.test"
@@ -214,6 +221,152 @@ async def test_backup_service_applies_explicit_retention(tmp_path):
     listed = await service.list()
     assert len(listed.items) == 2
     assert len(list((tmp_path / "backups").glob("backup_*.db"))) == 2
+
+
+@pytest.mark.asyncio
+async def test_backup_service_lists_validation_and_deletes_only_with_confirmation(tmp_path):
+    database_path = tmp_path / "source.db"
+    _write_sample(database_path, "value")
+    service = BackupService(str(database_path), tmp_path / "backups", retention_count=3)
+    first = await service.create()
+    second = await service.create()
+
+    listed = await service.list()
+    assert listed.retention_count == 3
+    assert [item.validation_status for item in listed.items] == ["verified", "verified"]
+    assert listed.items[0].retention_rank == 1
+    assert listed.items[1].retention_rank == 2
+
+    with pytest.raises(BackupServiceError, match="backup_delete_confirmation_required"):
+        await service.delete(first.backup_id, confirmed=False)
+    deleted = await service.delete(first.backup_id, confirmed=True)
+    assert deleted.status == "deleted"
+    assert [item.backup_id for item in (await service.list()).items] == [second.backup_id]
+    with pytest.raises(BackupServiceError, match="backup_delete_last"):
+        await service.delete(second.backup_id, confirmed=True)
+
+
+@pytest.mark.asyncio
+async def test_backup_api_deletes_old_backup_and_protects_last_one(tmp_path):
+    client, database, tmdb, pansou, _app = await _make_client(tmp_path)
+    try:
+        first = (await client.post("/api/v1/backups")).json()
+        second = (await client.post("/api/v1/backups")).json()
+        missing_confirmation = await client.request(
+            "DELETE", f"/api/v1/backups/{first['backup_id']}", json={"confirmed": False}
+        )
+        assert missing_confirmation.status_code == 400
+        assert missing_confirmation.json()["detail"] == "backup_delete_confirmation_required"
+
+        deleted = await client.request(
+            "DELETE", f"/api/v1/backups/{first['backup_id']}", json={"confirmed": True}
+        )
+        assert deleted.status_code == 200
+        assert deleted.json() == {"status": "deleted", "backup_id": first["backup_id"]}
+
+        last = await client.request(
+            "DELETE", f"/api/v1/backups/{second['backup_id']}", json={"confirmed": True}
+        )
+        assert last.status_code == 409
+        assert last.json()["detail"] == "backup_delete_last"
+    finally:
+        await client.aclose()
+        await tmdb.aclose()
+        await pansou.aclose()
+        await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_encrypted_backup_copy_is_explicit_verifiable_and_restorable(tmp_path):
+    database_path = tmp_path / "source.db"
+    _write_sample(database_path, "before")
+    destination = tmp_path / "encrypted"
+    service = BackupService(
+        str(database_path),
+        tmp_path / "backups",
+        encrypted_backup_enabled=True,
+        encrypted_backup_destination=destination,
+    )
+    backup = await service.create()
+    recovery_key = Fernet.generate_key().decode("ascii")
+    encrypted = await service.create_encrypted_copy(
+        backup.backup_id, recovery_key=recovery_key
+    )
+
+    encrypted_path = destination / encrypted.file_name
+    manifest_path = destination / encrypted.manifest_file_name
+    assert encrypted.validation_status == "verified"
+    assert encrypted_path.is_file()
+    assert manifest_path.is_file()
+    manifest_text = manifest_path.read_text(encoding="utf-8")
+    assert recovery_key not in manifest_text
+    assert b"before" not in encrypted_path.read_bytes()
+
+    _write_sample(database_path, "after")
+    restored = await service.restore_encrypted_to(
+        manifest_path,
+        database_path,
+        recovery_key=recovery_key,
+        confirmed=True,
+        service_stopped=True,
+    )
+    assert restored.status == "restored"
+    assert _read_sample(database_path) == "before"
+
+    with pytest.raises(BackupServiceError, match="encrypted_backup_key_invalid"):
+        await service.restore_encrypted_to(
+            manifest_path,
+            database_path,
+            recovery_key=Fernet.generate_key().decode("ascii"),
+            confirmed=True,
+            service_stopped=True,
+        )
+
+
+@pytest.mark.asyncio
+async def test_encrypted_backup_copy_is_disabled_by_default(tmp_path):
+    database_path = tmp_path / "source.db"
+    _write_sample(database_path, "value")
+    service = BackupService(str(database_path), tmp_path / "backups")
+    backup = await service.create()
+    with pytest.raises(BackupServiceError, match="encrypted_backup_disabled"):
+        await service.create_encrypted_copy(
+            backup.backup_id,
+            recovery_key=Fernet.generate_key().decode("ascii"),
+        )
+
+
+@pytest.mark.asyncio
+async def test_encrypted_backup_copy_api_never_returns_recovery_key(tmp_path):
+    destination = tmp_path / "encrypted"
+    client, database, tmdb, pansou, _app = await _make_client(
+        tmp_path,
+        encrypted_backup_enabled=True,
+        encrypted_backup_destination=destination,
+    )
+    recovery_key = Fernet.generate_key().decode("ascii")
+    try:
+        backup = (await client.post("/api/v1/backups")).json()
+        missing_confirmation = await client.post(
+            f"/api/v1/backups/{backup['backup_id']}/encrypted-copy",
+            json={"recovery_key": recovery_key, "confirmed": False},
+        )
+        assert missing_confirmation.status_code == 400
+        created = await client.post(
+            f"/api/v1/backups/{backup['backup_id']}/encrypted-copy",
+            json={"recovery_key": recovery_key, "confirmed": True},
+        )
+        assert created.status_code == 201
+        assert created.json()["validation_status"] == "verified"
+        assert recovery_key not in created.text
+        assert recovery_key not in (destination / created.json()["manifest_file_name"]).read_text(
+            encoding="utf-8"
+        )
+    finally:
+        await client.aclose()
+        await tmdb.aclose()
+        await pansou.aclose()
+        await database.engine.dispose()
 
 
 @pytest.mark.asyncio

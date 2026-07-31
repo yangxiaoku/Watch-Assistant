@@ -27,7 +27,11 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--database", type=Path, required=True)
     parser.add_argument("--backup-directory", type=Path, required=True)
-    parser.add_argument("--backup-id", required=True)
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--backup-id")
+    source.add_argument("--encrypted-manifest", type=Path)
+    parser.add_argument("--approval-id")
+    parser.add_argument("--recovery-key-stdin", action="store_true")
     parser.add_argument("--confirm", action="store_true")
     parser.add_argument("--service-stopped", action="store_true")
     return parser
@@ -55,12 +59,28 @@ async def _run(args: argparse.Namespace) -> tuple[int, dict[str, object]]:
         args.backup_directory,
     )
     try:
-        result = await service.restore_to(
-            args.backup_id,
-            args.database,
-            confirmed=args.confirm,
-            service_stopped=args.service_stopped,
-        )
+        if args.encrypted_manifest is not None:
+            if not args.recovery_key_stdin:
+                return 2, _error_result("encrypted_backup_key_invalid")
+            recovery_key = sys.stdin.read().strip()
+            if not recovery_key:
+                return 2, _error_result("encrypted_backup_key_invalid")
+            result = await service.restore_encrypted_to(
+                args.encrypted_manifest,
+                args.database,
+                recovery_key=recovery_key,
+                confirmed=args.confirm,
+                service_stopped=args.service_stopped,
+                approval_id=args.approval_id,
+            )
+        else:
+            result = await service.restore_to(
+                args.backup_id,
+                args.database,
+                confirmed=args.confirm,
+                service_stopped=args.service_stopped,
+                approval_id=args.approval_id,
+            )
     except BackupServiceError as exc:
         return 2, _error_result(exc.code)
     except Exception:  # noqa: BLE001 - maintenance output must stay redacted
@@ -70,6 +90,7 @@ async def _run(args: argparse.Namespace) -> tuple[int, dict[str, object]]:
         "backup_id": result.backup_id,
         "pre_restore_backup_id": result.pre_restore_backup_id,
         "integrity_ok": result.integrity_ok,
+        "business_consistency_ok": result.business_consistency_ok,
         "restart_required": result.restart_required,
     }
 

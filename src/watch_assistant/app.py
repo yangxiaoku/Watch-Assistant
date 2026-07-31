@@ -160,6 +160,8 @@ def create_app(
     strm_playback_url_prefix: str | None = None,
     strm_playback_allowed_networks: tuple[str, ...] | None = None,
     strm_playback_gateway: P115PlaybackGateway | None = None,
+    encrypted_backup_enabled: bool | None = None,
+    encrypted_backup_destination: Path | None = None,
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
@@ -605,6 +607,8 @@ def create_app(
                 notification_service=application.state.notification_service,
                 session_factory=runtime_database.session_factory,
                 maintenance_gate=application.state.maintenance_gate,
+                encrypted_backup_enabled=settings.encrypted_backup_enabled,
+                encrypted_backup_destination=settings.encrypted_backup_destination,
             )
             application.state.deployment_diagnostics_service = (
                 DeploymentDiagnosticsService(runtime_database.engine, application.state)
@@ -1119,6 +1123,8 @@ def create_app(
             notification_service=application.state.notification_service,
             session_factory=database.session_factory,
             maintenance_gate=application.state.maintenance_gate,
+            encrypted_backup_enabled=bool(encrypted_backup_enabled),
+            encrypted_backup_destination=encrypted_backup_destination,
         )
         application.state.deployment_diagnostics_service = DeploymentDiagnosticsService(
             database.engine, application.state

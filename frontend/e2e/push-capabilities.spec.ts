@@ -33,6 +33,9 @@ test("routes push actions by resource capability", async ({ page }) => {
       cache_age_seconds: null,
     },
   }));
+  await page.route("**/api/v1/settings/organization", (route) =>
+    route.fulfill({ json: { push_directory_id: "push-dir-1" } }),
+  );
   await page.route("**/api/v1/tasks", async (route) => {
     taskPostCount += 1;
     return route.fulfill({

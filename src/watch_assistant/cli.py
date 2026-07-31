@@ -176,6 +176,25 @@ class ApiClient:
             raise CliFailure("服务响应格式无效", code=EXIT_UNAVAILABLE, error_code="invalid_response")
         return body
 
+    def delete(
+        self, path: str, *, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any] | list[Any]:
+        try:
+            response = self._client.delete(path, json=payload or {})
+        except httpx.TimeoutException:
+            raise CliFailure("请求超时", code=EXIT_TIMEOUT, error_code="request_timeout") from None
+        except httpx.HTTPError:
+            raise CliFailure("服务暂不可达", code=EXIT_UNAVAILABLE, error_code="service_unavailable") from None
+        try:
+            body = response.json()
+        except ValueError:
+            body = {"detail": "invalid_json"}
+        if response.status_code >= 400:
+            raise _failure_from_response(response.status_code, body)
+        if not isinstance(body, (dict, list)):
+            raise CliFailure("服务响应格式无效", code=EXIT_UNAVAILABLE, error_code="invalid_response")
+        return body
+
 
 def _failure_from_response(status: int, body: Any) -> CliFailure:
     error = body.get("error") if isinstance(body, dict) else None
@@ -456,12 +475,48 @@ def _command(args: argparse.Namespace, path: Path) -> tuple[Any, int]:
                 payload["confirmed"] = True
                 endpoint = "/api/v1/backups/configuration/import"
                 body = client.post(endpoint, payload=payload)
-            else:
-                endpoint = (
-                    "/api/v1/backups/configuration"
-                    if args.backup_command == "configuration"
-                    else "/api/v1/backups"
+            elif args.backup_command == "list":
+                endpoint = "/api/v1/backups"
+                body = client.get(endpoint)
+            elif args.backup_command == "create":
+                endpoint = "/api/v1/backups"
+                body = client.post(endpoint)
+            elif args.backup_command == "delete":
+                if not args.confirm:
+                    raise CliFailure(
+                        "备份删除需要明确确认",
+                        code=EXIT_USAGE,
+                        error_code="backup_delete_confirmation_required",
+                    )
+                endpoint = f"/api/v1/backups/{args.backup_id}"
+                body = client.delete(endpoint, payload={"confirmed": True})
+            elif args.backup_command == "encrypted-copy":
+                if not args.confirm:
+                    raise CliFailure(
+                        "加密备份副本需要明确确认",
+                        code=EXIT_USAGE,
+                        error_code="encrypted_backup_confirmation_required",
+                    )
+                if not args.recovery_key_stdin:
+                    raise CliFailure(
+                        "加密备份副本需要从标准输入提供恢复密钥",
+                        code=EXIT_USAGE,
+                        error_code="encrypted_backup_key_invalid",
+                    )
+                recovery_key = sys.stdin.readline().strip()
+                if not recovery_key:
+                    raise CliFailure(
+                        "恢复密钥不能为空",
+                        code=EXIT_USAGE,
+                        error_code="encrypted_backup_key_invalid",
+                    )
+                endpoint = f"/api/v1/backups/{args.backup_id}/encrypted-copy"
+                body = client.post(
+                    endpoint,
+                    payload={"recovery_key": recovery_key, "confirmed": True},
                 )
+            else:
+                endpoint = "/api/v1/backups/configuration"
                 body = client.get(endpoint)
             return envelope(data=_data_for(endpoint, body), request_id=_request_id(body)), EXIT_OK
         if args.command == "deployment":
@@ -781,9 +836,18 @@ def _build_parser() -> argparse.ArgumentParser:
     webhook_test.add_argument("endpoint_id")
     webhook_retry = webhook_sub.add_parser("retry", help="重试死信投递")
     webhook_retry.add_argument("delivery_id")
-    backup = sub.add_parser("backup", help="备份只读查询")
+    backup = sub.add_parser("backup", help="备份管理")
     backup_sub = backup.add_subparsers(dest="backup_command")
     backup_sub.add_parser("configuration", help="导出脱敏配置")
+    backup_sub.add_parser("list", help="列出备份历史")
+    backup_sub.add_parser("create", help="创建备份")
+    backup_delete = backup_sub.add_parser("delete", help="删除旧备份")
+    backup_delete.add_argument("backup_id")
+    backup_delete.add_argument("--confirm", action="store_true")
+    encrypted_copy = backup_sub.add_parser("encrypted-copy", help="创建加密备份副本")
+    encrypted_copy.add_argument("backup_id")
+    encrypted_copy.add_argument("--recovery-key-stdin", action="store_true")
+    encrypted_copy.add_argument("--confirm", action="store_true")
     configuration_import = backup_sub.add_parser(
         "configuration-import", help="导入脱敏配置"
     )

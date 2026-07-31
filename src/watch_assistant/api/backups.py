@@ -8,11 +8,15 @@ from watch_assistant.schemas import (
     BackupConfigurationExportResponse,
     BackupConfigurationImportRequest,
     BackupConfigurationImportResponse,
+    BackupDeleteRequest,
+    BackupDeleteResponse,
     BackupListResponse,
     BackupResponse,
     BackupRestoreApprovalRequest,
     BackupRestoreApprovalResponse,
     BackupRestorePreviewResponse,
+    EncryptedBackupRequest,
+    EncryptedBackupResponse,
 )
 from watch_assistant.security import AuthContext, require_api_auth
 from watch_assistant.services.backups import BackupService, BackupServiceError
@@ -117,6 +121,56 @@ async def list_backups(service: ServiceDependency) -> BackupListResponse:
     return await service.list()
 
 
+@router.delete("/backups/{backup_id}", response_model=BackupDeleteResponse)
+async def delete_backup(
+    backup_id: str,
+    payload: BackupDeleteRequest,
+    service: ServiceDependency,
+) -> BackupDeleteResponse:
+    try:
+        return await service.delete(backup_id, confirmed=payload.confirmed)
+    except BackupServiceError as exc:
+        status_by_code = {
+            "backup_delete_confirmation_required": 400,
+            "backup_not_found": 404,
+            "backup_database_missing": 404,
+            "backup_delete_last": 409,
+        }
+        raise HTTPException(
+            status_code=status_by_code.get(exc.code, 422), detail=exc.code
+        ) from exc
+
+
+@router.post(
+    "/backups/{backup_id}/encrypted-copy",
+    response_model=EncryptedBackupResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_encrypted_copy(
+    backup_id: str,
+    payload: EncryptedBackupRequest,
+    service: ServiceDependency,
+) -> EncryptedBackupResponse:
+    if payload.confirmed is not True:
+        raise HTTPException(
+            status_code=400, detail="encrypted_backup_confirmation_required"
+        )
+    try:
+        return await service.create_encrypted_copy(
+            backup_id,
+            recovery_key=payload.recovery_key.get_secret_value(),
+        )
+    except BackupServiceError as exc:
+        status_by_code = {
+            "encrypted_backup_disabled": 409,
+            "encrypted_backup_key_invalid": 422,
+            "encrypted_backup_invalid": 422,
+        }
+        raise HTTPException(
+            status_code=status_by_code.get(exc.code, 503), detail=exc.code
+        ) from exc
+
+
 @router.get("/backups/{backup_id}/restore-preview", response_model=BackupRestorePreviewResponse)
 async def preview_restore(
     backup_id: str, service: ServiceDependency
@@ -185,6 +239,7 @@ async def approve_restore(
             "maintenance_mode_required": 409,
             "restore_approval_conflict": 409,
             "restore_approval_unavailable": 503,
+            "restore_consistency_failed": 422,
         }
         raise HTTPException(
             status_code=status_by_code.get(exc.code, 422), detail=exc.code

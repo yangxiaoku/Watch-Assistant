@@ -252,6 +252,31 @@ export interface BackupConfigurationImportResponse {
   requires_reconfiguration: string[];
 }
 
+export type BackupValidationStatus = "verified" | "invalid" | "missing" | "unchecked";
+
+export interface BackupResponse {
+  backup_id: string;
+  created_at: string;
+  file_name: string;
+  size_bytes: number;
+  sha256: string;
+  schema_migrations: string[];
+  release: string;
+  validation_status: BackupValidationStatus;
+  retention_rank: number | null;
+  retained: boolean;
+}
+
+export interface BackupListResponse {
+  items: BackupResponse[];
+  retention_count: number;
+}
+
+export interface BackupDeleteResponse {
+  status: "deleted";
+  backup_id: string;
+}
+
 export interface LibraryScanSummary {
   run_id: string;
   state: "queued" | "running" | "completed" | "failed" | "cancelled";

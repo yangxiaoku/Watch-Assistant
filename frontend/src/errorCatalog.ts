@@ -101,14 +101,14 @@ const ACTION_BY_CODE: Record<string, UiErrorAction> = {
 };
 
 const ADDITIONAL_CODES = [
-  "auth_not_configured", "internal_error", "not_found", "backup_requires_file_database", "backup_failed", "backup_not_found",
+  "auth_not_configured", "internal_error", "not_found", "backup_requires_file_database", "backup_failed", "backup_delete_confirmation_required", "backup_delete_last", "backup_delete_failed", "encrypted_backup_confirmation_required", "encrypted_backup_disabled", "encrypted_backup_key_invalid", "encrypted_backup_invalid", "encrypted_backup_failed", "backup_not_found",
   "backup_manifest_invalid", "backup_database_missing", "backup_configuration_unavailable", "backup_configuration_confirmation_required", "backup_configuration_conflict", "backup_configuration_invalid", "invalid_backup_id", "restore_requires_service_stop",
-  "restore_target_invalid", "backup_digest_mismatch", "backup_integrity_failed", "restore_validation_failed",
+  "restore_target_invalid", "backup_digest_mismatch", "backup_integrity_failed", "restore_validation_failed", "restore_consistency_failed",
   "restore_failed", "restore_rollback_failed", "database_not_found",
   "restore_approval_confirmation_required", "restore_approval_unavailable", "restore_preview_not_ready",
   "restore_approval_not_found", "restore_approval_expired", "restore_second_approver_required",
   "restore_preview_changed", "restore_drain_incomplete", "maintenance_mode_required",
-  "restore_approval_conflict", "maintenance_mode_active", "maintenance_unavailable",
+  "restore_approval_conflict", "restore_approval_required", "restore_approval_invalid", "maintenance_mode_active", "maintenance_unavailable",
   "backups_unavailable", "credential_unavailable", "credentials_unavailable", "invalid_credential_request",
   "deployment_diagnostics_unavailable", "manual_import_unavailable", "confirmation_required",
   "resource_conflict", "invalid_resource", "media_mismatch", "invalid_magnet", "unsupported_url",
