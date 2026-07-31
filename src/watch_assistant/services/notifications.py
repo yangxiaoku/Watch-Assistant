@@ -38,6 +38,7 @@ _NOTIFIABLE_EVENTS = frozenset(
         "strm.dirty_consumed",
         "backup.failed",
         "backup.restore_preview",
+        "backup.restore_failed",
         "workflow.stage_changed",
         "workflow.approval_decided",
         "workflow.cancelled",
@@ -304,6 +305,7 @@ def _severity(event_code: str, status: object) -> NotificationSeverity:
         "organize.operation.uncertain",
         "strm.cleanup_blocked",
         "backup.failed",
+        "backup.restore_failed",
         "p115.readiness",
     }:
         return NotificationSeverity.ERROR
