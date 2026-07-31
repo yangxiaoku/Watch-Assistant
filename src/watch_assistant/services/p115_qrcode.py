@@ -52,7 +52,9 @@ class P115QrcodeService:
         device_name = device_name.strip()
         if not 1 <= len(device_name) <= 64:
             raise P115QrcodeError("invalid_device_name")
-        response = await self._call_provider("token", device_code)
+        # The verified client creates the QR token on the web endpoint. The
+        # selected device is applied only when exchanging the scanned token.
+        response = await self._call_provider("token", "web")
         parsed = parse_qrcode_token_response(response)
         if parsed is None:
             raise P115QrcodeError("qrcode_unavailable")
@@ -98,7 +100,7 @@ class P115QrcodeService:
             device_code = session.device_code
         response = await self._call_provider("status", token)
         status_value = _status_value(response)
-        logger.info(
+        logger.warning(
             "115 二维码状态响应 device=%s state=%s code=%s status=%s",
             device_code,
             _response_value(response, "state"),
@@ -120,7 +122,7 @@ class P115QrcodeService:
         if status_value not in {0, 1, 2, None}:
             raise P115QrcodeError("qrcode_provider_unavailable")
         response = await self._call_provider("result", (token["uid"], device_code))
-        logger.info(
+        logger.warning(
             "115 二维码登录结果响应 device=%s state=%s code=%s cookie=%s",
             device_code,
             _response_value(response, "state"),
@@ -164,7 +166,7 @@ class P115QrcodeService:
             from p115client import P115Client
 
             if action == "token":
-                return P115Client.login_qrcode_token(app=value)
+                return P115Client.login_qrcode_token()
             if action == "status":
                 return P115Client.login_qrcode_scan_status(value)  # type: ignore[arg-type]
             uid, device_code = value  # type: ignore[misc]
