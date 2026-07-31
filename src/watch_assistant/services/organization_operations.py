@@ -21,6 +21,7 @@ from watch_assistant.models import (
     OrganizationOperation,
     OrganizationOperationStatus,
     Workflow,
+    WorkflowStage,
 )
 from watch_assistant.schemas import WorkflowStageName, WorkflowStageStatus
 from watch_assistant.services.library_index import ScanRunState
@@ -112,10 +113,18 @@ class OrganizationOperationService:
         *,
         event_logger: object | None = None,
         outbox_service: DirectoryDirtyOutboxService | None = None,
+        high_risk_action_threshold: int = 10,
     ) -> None:
+        if (
+            isinstance(high_risk_action_threshold, bool)
+            or not isinstance(high_risk_action_threshold, int)
+            or not 1 <= high_risk_action_threshold <= 100_000
+        ):
+            raise ValueError("invalid_high_risk_action_threshold")
         self._session_factory = session_factory
         self._event_logger = event_logger
         self._outbox_service = outbox_service or DirectoryDirtyOutboxService()
+        self._high_risk_action_threshold = high_risk_action_threshold
 
     async def create(
         self,
@@ -154,6 +163,10 @@ class OrganizationOperationService:
                 if workflow_id is not None and existing.workflow_id != workflow_id:
                     raise OrganizationOperationConflict("workflow_id_conflict")
                 return _summary(existing)
+
+            await self._ensure_high_risk_approval(
+                session, plan, workflow_id=workflow_id
+            )
 
             existing = await session.scalar(
                 select(OrganizationOperation).where(
@@ -215,6 +228,36 @@ class OrganizationOperationService:
             ),
         )
         return summary
+
+    async def _ensure_high_risk_approval(
+        self,
+        session: AsyncSession,
+        plan: OrganizationPlan,
+        *,
+        workflow_id: str | None,
+    ) -> None:
+        action_count = _plan_action_count(plan)
+        if action_count <= self._high_risk_action_threshold:
+            return
+        if workflow_id is None:
+            raise OrganizationOperationPrerequisiteError(
+                "high_risk_approval_required"
+            )
+        approval = await session.scalar(
+            select(WorkflowStage).where(
+                WorkflowStage.workflow_id == workflow_id,
+                WorkflowStage.stage == WorkflowStageName.APPROVAL,
+            )
+        )
+        if (
+            approval is None
+            or approval.status is not WorkflowStageStatus.SUCCEEDED
+            or approval.child_type != "organization_plan"
+            or approval.child_id != plan.id
+        ):
+            raise OrganizationOperationPrerequisiteError(
+                "high_risk_approval_required"
+            )
 
     async def get(self, operation_id: str) -> OrganizationOperationSummary:
         _validate_identifier(operation_id, "invalid_operation_id", maximum=40)
@@ -947,6 +990,18 @@ def _plan_library_snapshot_matches(
         "scope_verified": library.scope_verified,
         "root_directory_id": library.root_directory_id,
     }
+
+
+def _plan_action_count(plan: OrganizationPlan) -> int:
+    try:
+        actions = json.loads(plan.actions_json)
+    except (TypeError, ValueError):
+        raise OrganizationOperationPrerequisiteError(
+            "plan_prerequisites_changed"
+        ) from None
+    if not isinstance(actions, list):
+        raise OrganizationOperationPrerequisiteError("plan_prerequisites_changed")
+    return len(actions)
 
 
 def _validate_identifier(value: str, error: str, *, maximum: int) -> None:

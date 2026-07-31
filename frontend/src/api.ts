@@ -566,6 +566,13 @@ export class ApiClient {
     });
   }
 
+  async createOrganizationApprovalWorkflow(planId: string, expectedRevision: number): Promise<WorkflowResponse> {
+    return this.request<WorkflowResponse>(`/api/v1/organization-plans/${encodeURIComponent(planId)}/approval-workflow`, {
+      method: "POST",
+      body: JSON.stringify({ expected_revision: expectedRevision }),
+    });
+  }
+
   private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
     const method = (init.method ?? "GET").toUpperCase();
     if (method !== "GET" && !browserIsOnline()) {
@@ -621,10 +628,15 @@ export class ApiClient {
     }
   }
 
-  async queueOrganizationOperation(planId: string, expectedRevision: number): Promise<OrganizationOperationResponse> {
+  async queueOrganizationOperation(planId: string, expectedRevision: number, workflowId?: string): Promise<OrganizationOperationResponse> {
     return this.request<OrganizationOperationResponse>(`/api/v1/organization-plans/${encodeURIComponent(planId)}/operation`, {
       method: "POST",
-      body: JSON.stringify({ expected_revision: expectedRevision, idempotency_key: createIdempotencyKey(), confirm: true }),
+      body: JSON.stringify({
+        expected_revision: expectedRevision,
+        idempotency_key: createIdempotencyKey(),
+        confirm: true,
+        ...(workflowId ? { workflow_id: workflowId } : {}),
+      }),
     });
   }
 

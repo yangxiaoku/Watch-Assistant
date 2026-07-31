@@ -308,6 +308,7 @@ export interface OrganizationOperationResponse {
   attempts: number;
   error_code: string | null;
   cancel_requested: boolean;
+  workflow_id: string | null;
 }
 
 export interface LoggingSettingsResponse {
@@ -528,6 +529,8 @@ export interface OrganizationPlanSummary {
   source_count: number;
   action_count: number;
   precondition_count: number;
+  requires_web_approval: boolean;
+  high_risk_action_threshold: number;
   alias: string | null;
 }
 

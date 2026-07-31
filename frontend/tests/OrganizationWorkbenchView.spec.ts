@@ -14,6 +14,8 @@ const plan: OrganizationPlanSummary = {
   source_count: 2,
   action_count: 1,
   precondition_count: 2,
+  requires_web_approval: false,
+  high_risk_action_threshold: 10,
   alias: null,
 };
 
@@ -111,5 +113,25 @@ describe("OrganizationWorkbenchView", () => {
     await flushPromises();
     expect(api.queueOrganizationOperation).toHaveBeenCalledWith("plan-local-1", 4);
     expect(wrapper.text()).toContain("整理操作已排队");
+  });
+
+  it("passes the Web approval workflow when queuing a high-risk plan", async () => {
+    const planned = { ...plan, status: "planned" as const, action_count: 11, requires_web_approval: true };
+    const api = makeApi({
+      organizationPlans: vi.fn().mockResolvedValue({ items: [planned], next_cursor: null }),
+      createOrganizationApprovalWorkflow: vi.fn().mockResolvedValue({ id: "wf-high-risk" }),
+      queueOrganizationOperation: vi.fn().mockResolvedValue({ operation_id: "op-2", plan_id: planned.plan_id, status: "planned", revision: 1, attempts: 0, error_code: null }),
+    });
+    const wrapper = mount(OrganizationWorkbenchView, { props: { api, executionEnabled: true } });
+    await flushPromises();
+
+    const approvalButton = wrapper.findAll("button").find((button) => button.text().includes("申请 Web 人工审批"));
+    expect(approvalButton).toBeDefined();
+    await approvalButton!.trigger("click");
+    await flushPromises();
+    await wrapper.findAll("button").find((button) => button.text().includes("提交远端整理"))!.trigger("click");
+    await flushPromises();
+
+    expect(api.queueOrganizationOperation).toHaveBeenCalledWith("plan-local-1", 4, "wf-high-risk");
   });
 });

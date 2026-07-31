@@ -8,6 +8,7 @@ from uuid import uuid4
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from watch_assistant.library_models import OrganizationPlan
 from watch_assistant.models import Workflow, WorkflowStage
 from watch_assistant.schemas import (
     MediaType,
@@ -111,6 +112,97 @@ class WorkflowService:
             task_id=workflow.id,
         )
         return _response(workflow)
+
+    async def create_organization_plan_approval(
+        self, plan_id: str, *, expected_revision: int
+    ) -> WorkflowResponse:
+        """Create or reuse the Web approval workflow for one high-risk plan."""
+        now = datetime.now(UTC)
+        async with self._session_factory() as session:
+            plan = await session.get(OrganizationPlan, plan_id)
+            if plan is None:
+                raise WorkflowConflict("organization_plan_not_found")
+            if plan.revision != expected_revision:
+                raise WorkflowConflict("organization_plan_revision_changed")
+            if plan.status != "planned":
+                raise WorkflowConflict("organization_plan_not_planned")
+
+            existing_stage = await session.scalar(
+                select(WorkflowStage)
+                .where(
+                    WorkflowStage.stage == WorkflowStageName.APPROVAL,
+                    WorkflowStage.child_type == "organization_plan",
+                    WorkflowStage.child_id == plan.id,
+                    WorkflowStage.status.in_(
+                        (
+                            WorkflowStageStatus.WAITING_CONFIRMATION,
+                            WorkflowStageStatus.SUCCEEDED,
+                        )
+                    ),
+                )
+                .order_by(WorkflowStage.updated_at.desc())
+            )
+            if existing_stage is not None:
+                workflow = await session.get(Workflow, existing_stage.workflow_id)
+                if workflow is not None:
+                    await session.refresh(workflow, ["stages"])
+                    return _response(workflow)
+
+            workflow = Workflow(
+                id="wf_" + uuid4().hex,
+                correlation_id="corr_" + uuid4().hex,
+                media_type=None,
+                tmdb_id=None,
+                subscription_id=None,
+                status=WorkflowStatus.WAITING_USER_CONFIRMATION,
+                state_reason="high_risk_approval_required",
+                created_at=now,
+                updated_at=now,
+            )
+            workflow.stages = [
+                WorkflowStage(
+                    id=f"{workflow.id}_{stage.value}",
+                    stage=stage,
+                    stage_key=(
+                        "search" if stage == WorkflowStageName.DISCOVERY else stage.value
+                    ),
+                    sequence=sequence,
+                    status=(
+                        WorkflowStageStatus.WAITING_CONFIRMATION
+                        if stage == WorkflowStageName.APPROVAL
+                        else WorkflowStageStatus.PENDING
+                    ),
+                    reason=(
+                        "high_risk_approval_required"
+                        if stage == WorkflowStageName.APPROVAL
+                        else None
+                    ),
+                    child_type=("organization_plan" if stage == WorkflowStageName.APPROVAL else None),
+                    child_id=(plan.id if stage == WorkflowStageName.APPROVAL else None),
+                    created_at=now,
+                    updated_at=now,
+                )
+                for sequence, stage in enumerate(_STAGE_ORDER)
+            ]
+            session.add(workflow)
+            await session.commit()
+            await session.refresh(workflow, ["stages"])
+            response = _response(workflow)
+        await emit_event(
+            self._event_logger,
+            "workflow.created",
+            fields={"status": response.status.value},
+            correlation_id=response.correlation_id,
+            task_id=response.id,
+        )
+        await emit_workflow_stage_changed(
+            self._event_logger,
+            workflow_id=response.id,
+            correlation_id=response.correlation_id,
+            stage_name=WorkflowStageName.APPROVAL,
+            status=WorkflowStageStatus.WAITING_CONFIRMATION,
+        )
+        return response
 
     async def get(self, workflow_id: str) -> WorkflowResponse:
         async with self._session_factory() as session:

@@ -607,7 +607,15 @@ class OrganizationPlanResponse(BaseModel):
     source_count: int = Field(ge=0)
     action_count: int = Field(ge=0)
     precondition_count: int = Field(ge=0)
+    requires_web_approval: bool = False
+    high_risk_action_threshold: int = Field(ge=1)
     alias: str | None = None
+
+
+class OrganizationApprovalWorkflowRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    expected_revision: int = Field(ge=1)
 
 
 class OrganizationPlanListResponse(BaseModel):
@@ -662,6 +670,7 @@ class OrganizationOperationResponse(BaseModel):
     attempts: int = Field(ge=0)
     error_code: str | None = None
     cancel_requested: bool = False
+    workflow_id: str | None = None
 
 
 class OrganizationOperationBatchResult(BaseModel):
@@ -682,6 +691,7 @@ class OrganizationOperationBatchResult(BaseModel):
     attempts: int | None = Field(default=None, ge=0)
     error_code: str | None = None
     message: str
+    workflow_id: str | None = None
 
 
 class OrganizationOperationBatchResponse(BaseModel):
