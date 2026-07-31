@@ -145,7 +145,14 @@ const organizationActionBusy = ref(false);
 const organizationActionMessage = ref("");
 const organizationResult = ref<OrganizationAutomationResultResponse | null>(null);
 const organizationResultLoading = ref(false);
-const organizationResultStatuses: OrganizationResultStatus[] = ["unknown", "success", "skipped", "deleted", "replace", "failed"];
+const organizationStatusLabels: Record<OrganizationResultStatus, string> = {
+  unknown: "尚未整理",
+  success: "整理完成",
+  skipped: "未执行",
+  deleted: "已删除",
+  replace: "已替换",
+  failed: "存在失败",
+};
 const organizationItemStatusLabels = {
   queued: "排队中",
   organizing: "整理中",
@@ -155,6 +162,48 @@ const organizationItemStatusLabels = {
   needs_review: "待确认",
   skipped: "未执行",
 } as const;
+const organizationResultHeadline = computed(() => {
+  const result = organizationResult.value;
+  if (!result || result.status === "unknown") return "尚未整理";
+  const statuses = (result.items ?? []).map((item) => item.status);
+  if (statuses.some((status) => status === "queued" || status === "organizing")) return "整理进行中";
+  if (statuses.some((status) => status === "needs_review" || status === "uncertain")) return "待确认，尚未移动文件";
+  if (result.blocked_count > 0 || statuses.some((status) => status === "failed")) return "存在失败或阻断";
+  if (result.queued_count > 0 && statuses.every((status) => status === "success" || status === "skipped")) return "整理完成";
+  if (result.plan_count > 0 && result.queued_count === 0) return "扫描完成，未执行移动";
+  return organizationStatusLabels[result.status];
+});
+const organizationResultStateClass = computed(() => {
+  const headline = organizationResultHeadline.value;
+  if (headline.includes("待确认")) return "is-needs-review";
+  if (headline.includes("失败") || headline.includes("阻断")) return "is-failed";
+  if (headline.includes("进行中")) return "is-running";
+  if (headline.includes("尚未")) return "is-unknown";
+  return "is-success";
+});
+const organizationResultSummary = computed(() => {
+  const result = organizationResult.value;
+  if (!result || result.status === "unknown") return "点击“开始整理”后，这里会显示扫描、识别和入库结果。";
+  const items = result.items ?? [];
+  const reviewCount = items.filter((item) => item.status === "needs_review" || item.status === "uncertain").length;
+  const successCount = items.filter((item) => item.status === "success").length;
+  if (reviewCount > 0) return `扫描已完成，${reviewCount} 个影片未完成识别，需要确认后才能移动。`;
+  if (successCount > 0) return `已完成 ${successCount} 个影片的整理并写入归档目录。`;
+  if (result.blocked_count > 0) return `扫描完成，但有 ${result.blocked_count} 个来源被阻断，未执行移动。`;
+  if (result.plan_count > 0 && result.queued_count === 0) return "已生成整理计划，但没有影片进入移动队列。";
+  return "本次扫描已完成。";
+});
+const organizationResultStatusBreakdown = computed(() => {
+  const counts = new Map<string, number>();
+  for (const item of organizationResult.value?.items ?? []) {
+    counts.set(item.status, (counts.get(item.status) ?? 0) + 1);
+  }
+  return [...counts.entries()].map(([status, count]) => ({
+    status,
+    count,
+    label: organizationItemStatusLabels[status as keyof typeof organizationItemStatusLabels] ?? status,
+  }));
+});
 const organizationSourceDraft = ref("");
 const organizationTargetDraft = ref("");
 const organizationPushDraft = ref("");
@@ -1108,7 +1157,35 @@ watch(autoRefreshLogs, syncLogsRefreshTimer);
           <div v-if="organizationLoading" class="settings-loading"><LoaderCircle class="spin" :size="20" />正在加载整理设置</div>
           <div v-else-if="organizationError" class="settings-state settings-state-error"><AlertTriangle :size="18" /><span>{{ organizationError }}</span><button class="text-button" type="button" @click="loadOrganization">重试</button></div>
           <template v-else-if="organizationSettings">
-            <details class="settings-subsection" open><summary><h3>整理执行</h3><span class="settings-section-disclosure" aria-hidden="true">⌄</span></summary><label class="settings-toggle"><input v-model="organizationDraft.schedule_enabled" type="checkbox" />定时整理：启用后按扫描间隔自动整理；关闭后不自动整理，但“开始整理”仍可手动触发</label><div class="settings-form-grid"><label>扫描频率（分钟）<input v-model.number="organizationDraft.scan_interval_minutes" type="number" min="5" max="1440" /></label></div><p class="settings-note">当前状态：{{ organizationDraft.schedule_enabled ? '定时整理已启用' : '定时整理已关闭' }}。停止定时会自动关闭开关并保存，正在执行的远端操作不会被强行中断。</p><div class="organization-result-panel" aria-live="polite"><div class="organization-result-heading"><strong>最近一次整理结果</strong><span v-if="organizationResultLoading">正在更新</span><span v-else>{{ organizationResult?.finished_at ? formatTimestamp(organizationResult.finished_at) : '尚未执行' }}</span></div><div class="organization-result-statuses" aria-label="整理结果状态"><span class="organization-result-status-label">全部状态</span><span v-for="status in organizationResultStatuses" :key="status" :class="['organization-result-status', `is-${status}`, { active: organizationResult?.status === status }]">{{ status }}</span></div><div v-if="organizationResult && organizationResult.status !== 'unknown'" class="organization-result-metrics"><span>扫描来源 <strong>{{ organizationResult.source_count }}</strong></span><span>扫描完成 <strong>{{ organizationResult.scanned_count }}</strong></span><span>生成计划 <strong>{{ organizationResult.plan_count }}</strong></span><span>已入队 <strong>{{ organizationResult.queued_count }}</strong></span><span>阻断 <strong>{{ organizationResult.blocked_count }}</strong></span></div><div v-if="organizationResult?.items?.length" class="organization-result-items"><strong>影片入库结果</strong><div v-for="item in organizationResult.items" :key="`${item.tmdb_id ?? item.title}-${item.target ?? ''}`" class="organization-result-item"><span><b>{{ item.title }}</b><small v-if="item.tmdb_id">TMDB {{ item.tmdb_id }}</small></span><span :class="['organization-result-item-status', `is-${item.status}`]">{{ organizationItemStatusLabels[item.status] }}</span><small v-if="item.target">{{ item.target }}</small><code v-if="item.error_code">{{ item.error_code }}</code></div></div><div v-if="organizationResult?.blocked_details.length" class="organization-blocked-details"><strong>阻断原因</strong><ul><li v-for="detail in organizationResult.blocked_details" :key="`${detail.source_directory_id ?? 'automation'}-${detail.error_code}`"><span>{{ detail.source_directory_id ? '来源目录 ' + detail.source_directory_id : '自动整理' }}：{{ detail.message_zh }}</span><code>{{ detail.error_code }}</code></li></ul></div><p v-if="!organizationResult || organizationResult.status === 'unknown'" class="settings-note">还没有整理结果。点击“开始整理”后，这里会显示扫描和处理统计。</p></div></details>
+            <details class="settings-subsection" open>
+              <summary><h3>整理执行</h3><span class="settings-section-disclosure" aria-hidden="true">⌄</span></summary>
+              <label class="settings-toggle"><input v-model="organizationDraft.schedule_enabled" type="checkbox" />定时整理：启用后按扫描间隔自动整理；关闭后不自动整理，但“开始整理”仍可手动触发</label>
+              <div class="settings-form-grid"><label>扫描频率（分钟）<input v-model.number="organizationDraft.scan_interval_minutes" type="number" min="5" max="1440" /></label></div>
+              <p class="settings-note">当前状态：{{ organizationDraft.schedule_enabled ? '定时整理已启用' : '定时整理已关闭' }}。停止定时会自动关闭开关并保存，正在执行的远端操作不会被强行中断。</p>
+              <div class="organization-result-panel" aria-live="polite">
+                <div class="organization-result-heading">
+                  <div><strong>最近一次整理结果</strong><p class="organization-result-summary">{{ organizationResultSummary }}</p></div>
+                  <div class="organization-result-meta"><span v-if="organizationResultLoading">正在更新</span><span v-else>{{ organizationResult?.finished_at ? formatTimestamp(organizationResult.finished_at) : '尚未执行' }}</span></div>
+                </div>
+                <div :class="['organization-result-state', organizationResultStateClass]">{{ organizationResultHeadline }}</div>
+                <div v-if="organizationResultStatusBreakdown.length" class="organization-result-statuses" aria-label="影片处理状态">
+                  <span v-for="entry in organizationResultStatusBreakdown" :key="entry.status" :class="['organization-result-status', `is-${entry.status}`]">{{ entry.label }} <strong>{{ entry.count }}</strong></span>
+                </div>
+                <div v-if="organizationResult && organizationResult.status !== 'unknown'" class="organization-result-metrics">
+                  <span>来源目录 <strong>{{ organizationResult.source_count }}</strong></span><span>扫描成功 <strong>{{ organizationResult.scanned_count }}</strong></span><span>识别计划 <strong>{{ organizationResult.plan_count }}</strong></span><span>已开始整理 <strong>{{ organizationResult.queued_count }}</strong></span><span>未执行/阻断 <strong>{{ organizationResult.blocked_count }}</strong></span>
+                </div>
+                <div v-if="organizationResult?.items?.length" class="organization-result-items">
+                  <strong>影片处理结果</strong>
+                  <div v-for="item in organizationResult.items" :key="`${item.tmdb_id ?? item.title}-${item.target ?? ''}`" class="organization-result-item">
+                    <span><b>{{ item.title }}</b><small v-if="item.tmdb_id">TMDB {{ item.tmdb_id }}</small></span>
+                    <span :class="['organization-result-item-status', `is-${item.status}`]">{{ organizationItemStatusLabels[item.status] }}</span>
+                    <small v-if="item.target" class="organization-result-item-target">归档：{{ item.target }}</small><small v-else-if="item.status === 'needs_review' || item.status === 'uncertain'" class="organization-result-item-target">未生成归档路径，未移动文件</small>
+                    <code v-if="item.error_code">错误：{{ item.error_code }}</code>
+                  </div>
+                </div>
+                <div v-if="organizationResult?.blocked_details.length" class="organization-blocked-details"><strong>未执行原因</strong><ul><li v-for="detail in organizationResult.blocked_details" :key="`${detail.source_directory_id ?? 'automation'}-${detail.error_code}`"><span>{{ detail.source_directory_id ? '来源目录 ' + detail.source_directory_id : '自动整理' }}：{{ detail.message_zh }}</span><code>{{ detail.error_code }}</code></li></ul></div>
+              </div>
+            </details>
             <details class="settings-subsection" open><summary><h3>扫描来源、归档与推送目录</h3><span class="settings-section-disclosure" aria-hidden="true">⌄</span></summary><p class="settings-note">目录选择器从 115 网盘根目录开始浏览。扫描来源可多选，整理归档目录和资源推送目录各选一个；三者保存后分别生效。账号根目录仅用于浏览，整理必须选择受管的实际文件夹。</p><div class="directory-selection-grid"><div class="directory-selection-field"><span>整理扫描来源</span><div class="directory-chips"><span v-for="id in organizationList(organizationSourceDraft)" :key="id" class="directory-chip">{{ id }}<button type="button" aria-label="移除扫描来源" @click="organizationSourceDraft = organizationList(organizationSourceDraft).filter(item => item !== id).join(', ')">×</button></span><span v-if="!organizationList(organizationSourceDraft).length" class="settings-note">尚未选择</span></div><button class="secondary-button" type="button" @click="openDirectoryPicker('source')">📂 选择扫描来源</button></div><div class="directory-selection-field"><span>整理归档目录</span><span v-if="organizationTargetDraft" class="directory-chip">{{ organizationTargetDraft }}</span><span v-else class="settings-note">尚未选择</span><button class="secondary-button" type="button" @click="openDirectoryPicker('target')">📂 选择归档目录</button></div><div class="directory-selection-field"><span>资源推送目录</span><span v-if="organizationPushDraft" class="directory-chip">{{ organizationPushDraft }}</span><span v-else class="settings-note">尚未选择</span><button class="secondary-button" type="button" @click="openDirectoryPicker('push')">📂 选择推送目录</button><p class="settings-note">资源页面点击“推送”时直接使用这里保存的目录，不再临时选择。</p></div></div></details>
             <details class="settings-subsection"><summary><h3>识别与命名</h3><span class="settings-section-disclosure" aria-hidden="true">⌄</span></summary><div class="settings-form-grid"><label>视频文件类型（逗号分隔）<input v-model="organizationVideoExtensionsDraft" placeholder="mkv, mp4, avi" /></label><label>字幕/元数据类型（逗号分隔）<input v-model="organizationMetadataExtensionsDraft" placeholder="srt, ass, nfo" /></label></div><div class="settings-capability-list"><label class="settings-toggle"><input v-model="organizationDraft.rename_enabled" type="checkbox" />标准化重命名</label><label class="settings-toggle"><input v-model="organizationDraft.media_probe_enabled" type="checkbox" />媒体信息提取完善命名</label><label class="settings-toggle"><input v-model="organizationDraft.ai_identification_enabled" type="checkbox" />AI 辅助识别</label></div><p class="settings-note">AI 辅助识别需要先在实用工具完成 API 配置；未配置时不会调用 AI。</p></details>
             <details class="settings-subsection"><summary><h3>整理规则</h3><span class="settings-section-disclosure" aria-hidden="true">⌄</span></summary><div class="settings-form-grid"><label>小文件过滤（MB）<input v-model.number="organizationDraft.small_file_threshold_mb" type="number" min="0" step="0.1" /></label><label>操作延时（秒）<input v-model.number="organizationDraft.operation_delay_seconds" type="number" min="0" max="60" step="0.1" /></label></div><div class="settings-capability-list"><label class="settings-toggle"><input v-model="organizationDraft.cleanup_empty_directories" type="checkbox" />整理后清理空文件夹</label><label class="settings-toggle"><input v-model="organizationDraft.strm_linkage_enabled" type="checkbox" />联动生成 STRM</label></div></details>

@@ -179,16 +179,41 @@ describe("SettingsView", () => {
     expect(api.stopOrganization).toHaveBeenCalledTimes(1);
   });
 
-  it("shows the requested organization result statuses", async () => {
+  it("shows a readable organization result conclusion", async () => {
     const api = makeApi();
     const wrapper = mount(SettingsView, { props: { api } });
     await flushPromises();
     await wrapper.findAll("button").find((button) => button.text().includes("115 整理"))?.trigger("click");
     await flushPromises();
 
-    expect(wrapper.find(".organization-result-statuses").text()).toContain(
-      "全部状态unknownsuccessskippeddeletedreplacefailed",
-    );
+    expect(wrapper.get(".organization-result-state").text()).toContain("尚未整理");
+    expect(wrapper.find(".organization-result-statuses").exists()).toBe(false);
+  });
+
+  it("explains that review items were not moved", async () => {
+    const api = makeApi({
+      organizationResult: vi.fn().mockResolvedValue({
+        status: "skipped",
+        available_statuses: ["unknown", "success", "skipped", "deleted", "replace", "failed"],
+        source_count: 1,
+        scanned_count: 1,
+        plan_count: 1,
+        queued_count: 0,
+        blocked_count: 0,
+        blocked_details: [],
+        items: [{ title: "未识别影片", tmdb_id: null, target: null, status: "needs_review", error_code: null }],
+        finished_at: "2026-07-31T12:33:25Z",
+      }),
+    });
+    const wrapper = mount(SettingsView, { props: { api } });
+    await flushPromises();
+    await wrapper.findAll("button").find((button) => button.text().includes("115 整理"))?.trigger("click");
+    await flushPromises();
+
+    expect(wrapper.get(".organization-result-state").text()).toContain("待确认，尚未移动文件");
+    expect(wrapper.get(".organization-result-summary").text()).toContain("需要确认后才能移动");
+    expect(wrapper.get(".organization-result-statuses").text()).toContain("待确认 1");
+    expect(wrapper.get(".organization-result-item-target").text()).toContain("未生成归档路径，未移动文件");
   });
 
   it("shows reasons for blocked organization sources", async () => {
