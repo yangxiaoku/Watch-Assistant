@@ -30,6 +30,7 @@ _CATALOG: dict[str, ApiErrorDescriptor] = {
     "auth_not_configured": ApiErrorDescriptor("auth_not_configured", "登录服务暂时不可用", "本次登录未执行。", "请稍后重试或联系管理员。", True, "retry"),
     "uncertain": ApiErrorDescriptor("uncertain", "结果待确认", "远端可能已经接受，本次结果尚未确认。", "请先查看任务状态，不要重复提交。", False, "view_task"),
     "task_not_retryable": ApiErrorDescriptor("task_not_retryable", "当前任务不能直接重试", "原任务状态未改变。", "请查看任务状态后再决定下一步。", False, "view_task"),
+    "task_not_cancellable": ApiErrorDescriptor("task_not_cancellable", "当前任务不能取消", "任务状态未改变，远端结果不会被伪造撤回。", "请查看任务状态；如果远端结果不确定，请先核对后再决定下一步。", False, "view_task"),
     "inspection_unsupported": ApiErrorDescriptor("inspection_unsupported", "当前环境无法检测资源", "未创建资源检测任务。", "请查看资源检测配置。", False, "inspect_configuration"),
     "request_failed": ApiErrorDescriptor("request_failed", "请求未完成", "本次请求未完成，当前页面没有更新。", "请检查输入和当前状态后再试。", False),
     "credentials_unavailable": ApiErrorDescriptor("credentials_unavailable", "连接配置暂时不可用", "连接配置没有更新。", "请稍后重新加载配置。", True, "retry"),

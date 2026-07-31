@@ -25,6 +25,7 @@ DEDUPLICATION_WINDOW = timedelta(minutes=30)
 _NOTIFIABLE_EVENTS = frozenset(
     {
         "task.accepted",
+        "task.cancelled",
         "task.failed",
         "task.uncertain",
         "p115.readiness",

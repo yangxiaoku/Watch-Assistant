@@ -232,6 +232,44 @@ def test_task_wait_polls_without_resubmitting(monkeypatch, capsys):
     assert seen == [("GET", "/api/v1/tasks/task-one"), ("GET", "/api/v1/tasks/task-one")]
 
 
+def test_task_cancel_uses_safe_cancel_endpoint(capsys):
+    seen: list[tuple[str, str]] = []
+
+    class Transport(httpx.BaseTransport):
+        def handle_request(self, request):
+            seen.append((request.method, request.url.path))
+            return httpx.Response(200, json={"id": "task-one", "state": "cancelled"}, request=request)
+
+    original = ApiClient.__init__
+    original_close = ApiClient.close
+    ApiClient.__init__ = lambda self, config: (
+        setattr(self, "config", config),
+        setattr(self, "_client", httpx.Client(base_url=config.server, transport=Transport())),
+    )[-1]
+    ApiClient.close = lambda self: self._client.close()
+    try:
+        code = main(
+            [
+                "--server",
+                "http://app.test",
+                "--token",
+                "wa_at_test",
+                "--output",
+                "json",
+                "task",
+                "cancel",
+                "task-one",
+            ]
+        )
+    finally:
+        ApiClient.__init__ = original
+        ApiClient.close = original_close
+    body = json.loads(capsys.readouterr().out)
+    assert code == EXIT_OK
+    assert body["data"]["state"] == "cancelled"
+    assert seen == [("POST", "/api/v1/tasks/task-one/cancel")]
+
+
 def test_workflow_actions_use_shared_approval_and_cancel_endpoints(capsys):
     seen: list[tuple[str, str, dict[str, object] | None]] = []
 

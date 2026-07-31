@@ -1,9 +1,12 @@
+from datetime import UTC, datetime, timedelta
+
 import pytest
 
 from tests.unit.factories import make_task
-from watch_assistant.models import TaskState
+from watch_assistant.models import Resource, TaskState
 from watch_assistant.schemas import RemoteStatus
 from watch_assistant.services.tasks import (
+    InvalidCancelState,
     InvalidRetryState,
     choose_existing_task,
     prepare_manual_retry,
@@ -65,3 +68,38 @@ def test_manual_retry_is_explicit_and_clears_remote_outcome():
 
     with pytest.raises(InvalidRetryState):
         prepare_manual_retry(make_task(state=TaskState.ACCEPTED))
+
+
+@pytest.mark.asyncio
+async def test_task_service_cancels_only_queued_tasks(tmp_path):
+    from watch_assistant.db import create_database, initialize_database
+    from watch_assistant.services.tasks import TaskService
+
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'tasks.db'}")
+    await initialize_database(database.engine)
+    try:
+        async with database.session_factory() as session:
+            resource = Resource(
+                id="res_test",
+                kind="magnet",
+                canonical_key="magnet:test",
+                encrypted_url="encrypted",
+                name="Test",
+                source="test",
+                captured_at=datetime.now(UTC),
+                expires_at=datetime.now(UTC) + timedelta(days=1),
+            )
+            session.add(resource)
+            await session.flush()
+            queued = make_task(resource_id=resource.id)
+            running = make_task(resource_id=resource.id, state=TaskState.SUBMITTING)
+            session.add_all([queued, running])
+            await session.commit()
+        service = TaskService(database.session_factory)
+        cancelled = await service.cancel(queued.id)
+        assert cancelled.state == TaskState.CANCELLED
+        assert cancelled.error_code == "cancelled"
+        with pytest.raises(InvalidCancelState):
+            await service.cancel(running.id)
+    finally:
+        await database.engine.dispose()

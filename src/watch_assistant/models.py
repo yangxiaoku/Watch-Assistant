@@ -263,6 +263,7 @@ class TaskState(StrEnum):
     NEEDS_AUTH = "needs_auth"
     FAILED = "failed"
     UNCERTAIN = "uncertain"
+    CANCELLED = "cancelled"
 
 
 class Resource(Base):

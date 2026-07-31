@@ -79,6 +79,28 @@ async def test_task_api_reuses_duplicate_and_rejects_arbitrary_url(tmp_path):
 
 
 @pytest.mark.integration
+async def test_task_cancel_only_changes_unclaimed_task(tmp_path):
+    client, database, tmdb, pansou, _app = await _make_task_client(tmp_path)
+    created = await client.post("/api/v1/tasks", json={"resource_id": "res_task_api"})
+    task_id = created.json()["id"]
+
+    cancelled = await client.post(f"/api/v1/tasks/{task_id}/cancel")
+    repeated = await client.post(f"/api/v1/tasks/{task_id}/cancel")
+
+    assert cancelled.status_code == 200
+    assert cancelled.json()["state"] == "cancelled"
+    assert repeated.status_code == 409
+    assert repeated.json()["error"]["code"] == "task_not_cancellable"
+    async with database.session_factory() as session:
+        task = await session.get(Task, task_id)
+    assert task.state == TaskState.CANCELLED
+    await client.aclose()
+    await tmdb.aclose()
+    await pansou.aclose()
+    await database.engine.dispose()
+
+
+@pytest.mark.integration
 async def test_retry_is_blocked_when_push_is_unsupported(tmp_path):
     client, database, tmdb, pansou, app = await _make_task_client(tmp_path)
     created = await client.post("/api/v1/tasks", json={"resource_id": "res_task_api"})

@@ -4,7 +4,7 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from watch_assistant.models import Resource, Task, TaskState
@@ -25,6 +25,10 @@ class ResourceNotFound(LookupError):
 
 
 class InvalidRetryState(ValueError):
+    pass
+
+
+class InvalidCancelState(ValueError):
     pass
 
 
@@ -191,6 +195,61 @@ class TaskService:
                 )
             await session.commit()
             return task
+
+    async def cancel(
+        self,
+        task_id: str,
+        *,
+        allowed_actions: frozenset[TaskAction] | None = None,
+    ) -> Task:
+        now = datetime.now(UTC)
+        async with self._session_factory() as session:
+            task = await session.get(Task, task_id)
+            if task is None:
+                raise ResourceNotFound(task_id)
+            if allowed_actions is not None and task.action not in allowed_actions:
+                raise PushKindUnsupported("push kind is not supported")
+            result = await session.execute(
+                update(Task)
+                .where(
+                    Task.id == task_id,
+                    Task.state == TaskState.QUEUED,
+                    Task.lease_owner.is_(None),
+                )
+                .values(
+                    state=TaskState.CANCELLED,
+                    error_code="cancelled",
+                    error_message="task_cancelled",
+                    updated_at=now,
+                )
+                .execution_options(synchronize_session=False)
+            )
+            if result.rowcount != 1:
+                raise InvalidCancelState("task is not cancellable")
+            task.state = TaskState.CANCELLED
+            task.error_code = "cancelled"
+            task.error_message = "task_cancelled"
+            task.updated_at = now
+            if task.workflow_id is not None:
+                await sync_child_stage(
+                    session,
+                    task.workflow_id,
+                    WorkflowStageName.PUSH,
+                    child_type="task",
+                    child_id=task.id,
+                    status=WorkflowStageStatus.CANCELLED,
+                    reason="task_cancelled",
+                )
+            await session.commit()
+        await emit_event(
+            self._event_logger,
+            "task.cancelled",
+            fields={"status": TaskState.CANCELLED.value},
+            task_id=task.id,
+            resource_type="task",
+            resource_id=task.resource_id,
+        )
+        return task
 
 
 def _as_utc(value: datetime) -> datetime:

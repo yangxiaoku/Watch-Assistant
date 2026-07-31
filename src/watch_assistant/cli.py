@@ -341,6 +341,9 @@ def _command(args: argparse.Namespace, path: Path) -> tuple[Any, int]:
             if args.task_command == "retry":
                 body = client.post(f"/api/v1/tasks/{args.task_id}/retry")
                 return envelope(data=_data_for("/api/v1/tasks", body), request_id=_request_id(body)), EXIT_OK
+            if args.task_command == "cancel":
+                body = client.post(f"/api/v1/tasks/{args.task_id}/cancel")
+                return envelope(data=_data_for("/api/v1/tasks", body), request_id=_request_id(body)), EXIT_OK
             if args.task_command == "wait":
                 return _wait_for_task(client, args.task_id, args.wait_timeout)
         if args.command == "workflow":
@@ -522,6 +525,8 @@ def _build_parser() -> argparse.ArgumentParser:
     wait.add_argument("--timeout", dest="wait_timeout", type=float, default=60.0)
     retry = task_sub.add_parser("retry")
     retry.add_argument("task_id")
+    cancel = task_sub.add_parser("cancel")
+    cancel.add_argument("task_id")
 
     workflow = sub.add_parser("workflow", help="工作流只读查询")
     workflow_sub = workflow.add_subparsers(dest="workflow_command", required=True)

@@ -132,6 +132,9 @@ EVENT_CATALOG: dict[str, EventDefinition] = {
     "task.uncertain": _event(
         "task.uncertain", LogCategory.TASK, "推送结果待确认", "请求已超时，暂时无法确认远端是否接受任务", suggestion="请先查询任务状态，不要重复提交"
     ),
+    "task.cancelled": _event(
+        "task.cancelled", LogCategory.TASK, "推送任务已取消", "尚未提交的推送任务已取消"
+    ),
     "settings.changed": _event(
         "settings.changed", LogCategory.SETTINGS, "设置已修改", "已修改设置分组“{status}”，变更字段：{changed_fields}"
     ),
