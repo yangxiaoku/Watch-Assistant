@@ -270,6 +270,48 @@ def test_task_cancel_uses_safe_cancel_endpoint(capsys):
     assert seen == [("POST", "/api/v1/tasks/task-one/cancel")]
 
 
+def test_strm_status_uses_read_only_health_and_manifest_endpoints(capsys):
+    seen: list[tuple[str, str, str]] = []
+
+    class Transport(httpx.BaseTransport):
+        def handle_request(self, request):
+            seen.append((request.method, request.url.path, request.url.query.decode()))
+            if request.url.path == "/api/v1/health":
+                return httpx.Response(
+                    200,
+                    json={"strm_capabilities": {"full": False, "playback": False}},
+                    request=request,
+                )
+            return httpx.Response(
+                200,
+                json={"items": [], "page": 1, "page_size": 1, "total": 0, "total_pages": 0},
+                request=request,
+            )
+
+    original = ApiClient.__init__
+    original_close = ApiClient.close
+    ApiClient.__init__ = lambda self, config: (
+        setattr(self, "config", config),
+        setattr(self, "_client", httpx.Client(base_url=config.server, transport=Transport())),
+    )[-1]
+    ApiClient.close = lambda self: self._client.close()
+    try:
+        for command in (
+            ["strm", "status"],
+            ["strm", "status", "--library", "library-one"],
+        ):
+            assert main(["--server", "http://app.test", "--token", "wa_at_test", "--output", "json", *command]) == EXIT_OK
+            assert json.loads(capsys.readouterr().out)["ok"] is True
+    finally:
+        ApiClient.__init__ = original
+        ApiClient.close = original_close
+
+    assert seen == [
+        ("GET", "/api/v1/health", ""),
+        ("GET", "/api/v1/libraries/library-one/strm-manifest", "page=1&page_size=1"),
+    ]
+
+
 def test_workflow_actions_use_shared_approval_and_cancel_endpoints(capsys):
     seen: list[tuple[str, str, dict[str, object] | None]] = []
 

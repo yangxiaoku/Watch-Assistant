@@ -482,6 +482,25 @@ def _command(args: argparse.Namespace, path: Path) -> tuple[Any, int]:
                 if isinstance(data, dict):
                     data = {**data, "idempotency_key": key}
                 return envelope(data=data, request_id=_request_id(body)), EXIT_OK
+        if args.command == "strm" and args.strm_command == "status":
+            if args.library:
+                body = client.get(
+                    f"/api/v1/libraries/{args.library}/strm-manifest",
+                    params={"page": "1", "page_size": "1"},
+                )
+                manifest = _data_for("/api/v1/libraries", body)
+                data = {"library_id": args.library, "manifest": manifest}
+            else:
+                body = client.get("/api/v1/health")
+                health = _data_for("/api/v1/health", body)
+                data = {
+                    "strm_capabilities": (
+                        health.get("strm_capabilities", {})
+                        if isinstance(health, dict)
+                        else {}
+                    )
+                }
+            return envelope(data=data, request_id=_request_id(body)), EXIT_OK
         raise CliFailure("命令尚未开放", code=EXIT_UNAVAILABLE, error_code="command_unavailable")
     finally:
         client.close()
@@ -606,6 +625,11 @@ def _build_parser() -> argparse.ArgumentParser:
     apply.add_argument("--digest", required=True)
     apply.add_argument("--confirm", action="store_true")
     apply.add_argument("--idempotency-key")
+
+    strm = sub.add_parser("strm", help="STRM 只读查询")
+    strm_sub = strm.add_subparsers(dest="strm_command", required=True)
+    strm_status = strm_sub.add_parser("status", help="查看 STRM 能力或媒体库清单摘要")
+    strm_status.add_argument("--library")
     return parser
 
 
