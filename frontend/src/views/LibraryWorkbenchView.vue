@@ -2,7 +2,8 @@
 import { Ban, Check, Database, LoaderCircle, RefreshCw, SlidersHorizontal } from "@lucide/vue";
 import { computed, onMounted, ref } from "vue";
 import { ApiClient, ApiError, focusFirstFieldError } from "../api";
-import type { MediaEntryResponse, MediaLibraryResponse, StrmGenerationResponse, StrmManifestItemResponse } from "../types";
+import { describeUiError } from "../errorCatalog";
+import type { MediaEntryResponse, MediaLibraryResponse, StrmGenerationResponse, StrmManifestItemResponse, StrmOperationResponse } from "../types";
 
 const props = defineProps<{ api: ApiClient }>();
 
@@ -16,6 +17,7 @@ const error = ref("");
 const notice = ref("");
 const form = ref({ libraryId: "main", name: "115 媒体库", rootDirectoryId: "" });
 const latestResult = ref<StrmGenerationResponse | null>(null);
+const latestOperation = ref<StrmOperationResponse | null>(null);
 
 const selected = computed(() => libraries.value.find((item) => item.library_id === selectedId.value) ?? null);
 const scan = computed(() => selected.value?.latest_scan ?? null);
@@ -119,6 +121,7 @@ function selectLibrary(library: MediaLibraryResponse) {
   selectedId.value = library.library_id;
   form.value = { libraryId: library.library_id, name: library.name, rootDirectoryId: library.root_directory_id };
   latestResult.value = null;
+  latestOperation.value = null;
   notice.value = "";
   void loadOutputs(library.library_id);
 }
@@ -190,6 +193,7 @@ async function syncStrm(action: "full" | "incremental" | "cleanup") {
       : action === "incremental"
         ? await props.api.incrementalStrm(selected.value.library_id, scan.value.run_id)
         : await props.api.cleanupStrm(selected.value.library_id, scan.value.run_id);
+    latestOperation.value = await props.api.strmOperation(latestResult.value.operation_id);
     await loadOutputs(selected.value.library_id);
     const result = latestResult.value;
     notice.value = action === "cleanup"
@@ -200,6 +204,25 @@ async function syncStrm(action: "full" | "incremental" | "cleanup") {
   } finally {
     busy.value = false;
   }
+}
+
+const operationLabels: Record<StrmOperationResponse["kind"], string> = {
+  full: "全量生成",
+  incremental: "增量同步",
+  cleanup: "失效清理",
+};
+
+const operationStatusLabels: Record<StrmOperationResponse["status"], string> = {
+  queued: "已排队",
+  running: "执行中",
+  succeeded: "已完成",
+  failed: "失败",
+};
+
+function operationError(operation: StrmOperationResponse): string | null {
+  if (!operation.error_code) return null;
+  const descriptor = describeUiError(operation.error_code);
+  return `${descriptor.title}：${descriptor.suggestion}`;
 }
 
 async function createOrganizationPreview() {
@@ -281,6 +304,12 @@ onMounted(() => { void loadLibraries(); });
         </div>
         <p v-if="busy" class="library-progress"><LoaderCircle class="spin" :size="16" />正在处理当前媒体库</p>
         <div v-if="latestResult" class="library-result"><strong>最近一次同步</strong><span>生成 {{ latestResult.generated }}</span><span>未变化 {{ latestResult.unchanged }}</span><span>跳过 {{ latestResult.skipped }}</span><span>失败 {{ latestResult.failed }}</span><span>退休 {{ latestResult.retired }}</span></div>
+        <section v-if="latestOperation" class="library-operation-section" :class="`is-${latestOperation.status}`">
+          <div class="library-section-heading"><div><p class="eyebrow">持久操作账本</p><h3>{{ operationLabels[latestOperation.kind] }}</h3></div><strong>{{ operationStatusLabels[latestOperation.status] }}</strong></div>
+          <div class="library-operation-stats"><span>生成 {{ latestOperation.generated }}</span><span>未变化 {{ latestOperation.unchanged }}</span><span>跳过 {{ latestOperation.skipped }}</span><span>失败 {{ latestOperation.failed }}</span><span>退休 {{ latestOperation.retired }}</span></div>
+          <p v-if="operationError(latestOperation)" class="library-operation-error">{{ operationError(latestOperation) }}</p>
+          <small>操作 {{ latestOperation.operation_id }}</small>
+        </section>
         <section class="library-output-section"><div class="library-section-heading"><div><p class="eyebrow">受管清单</p><h3>STRM 文件</h3></div><span>{{ manifest.length }} / 50</span></div><div v-if="manifest.length" class="library-table-wrap"><table><thead><tr><th>云端路径</th><th>本地路径</th><th>状态</th></tr></thead><tbody><tr v-for="item in manifest" :key="item.manifest_id"><td>{{ item.cloud_relative_path }}</td><td>{{ item.local_relative_path }}</td><td>{{ item.status }}</td></tr></tbody></table></div><p v-else class="library-muted">暂无受管 STRM。完成扫描后可以执行全量生成。</p></section>
         <section class="library-output-section"><div class="library-section-heading"><div><p class="eyebrow">最近扫描</p><h3>索引文件</h3></div><span>{{ media.length }} / 50</span></div><div v-if="media.length" class="library-table-wrap"><table><thead><tr><th>文件名</th><th>大小</th><th>修改时间</th></tr></thead><tbody><tr v-for="item in media" :key="item.media_id"><td>{{ item.name }}</td><td>{{ formatBytes(item.size_bytes) }}</td><td>{{ item.modified_at ? new Date(item.modified_at).toLocaleString() : "未知" }}</td></tr></tbody></table></div><p v-else class="library-muted">完成一次完整扫描后，这里会显示索引文件。</p></section>
       </main>
