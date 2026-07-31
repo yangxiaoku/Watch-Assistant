@@ -16,9 +16,11 @@ class OrganizationScheduler:
         self,
         settings: SettingsService,
         run_once: Callable[[], Awaitable[bool]],
+        manual_run: Callable[[], Awaitable[bool]] | None = None,
     ) -> None:
         self._settings = settings
         self._run_once = run_once
+        self._manual_run = manual_run or run_once
         self._wake = asyncio.Event()
         self._manual_runs = 0
 
@@ -40,7 +42,7 @@ class OrganizationScheduler:
         while not stop_event.is_set():
             if self._manual_runs:
                 self._manual_runs -= 1
-                await self._run_once()
+                await self._manual_run()
                 continue
             current = await self._settings.get_organization()
             now = time.monotonic()

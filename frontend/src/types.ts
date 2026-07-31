@@ -415,6 +415,20 @@ export interface OrganizationScheduleActionResponse {
 
 export type OrganizationResultStatus = "unknown" | "success" | "skipped" | "deleted" | "replace" | "failed";
 
+export interface OrganizationBlockedDetail {
+  source_directory_id: string | null;
+  error_code: string;
+  message_zh: string;
+}
+
+export interface OrganizationResultItem {
+  title: string;
+  tmdb_id: number | null;
+  target: string | null;
+  status: "queued" | "organizing" | "success" | "failed" | "uncertain" | "needs_review" | "skipped";
+  error_code: string | null;
+}
+
 export interface OrganizationAutomationResultResponse {
   status: OrganizationResultStatus;
   available_statuses: OrganizationResultStatus[];
@@ -423,6 +437,8 @@ export interface OrganizationAutomationResultResponse {
   plan_count: number;
   queued_count: number;
   blocked_count: number;
+  blocked_details: OrganizationBlockedDetail[];
+  items: OrganizationResultItem[];
   finished_at: string | null;
 }
 

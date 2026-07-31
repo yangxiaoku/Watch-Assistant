@@ -665,6 +665,17 @@ html, body, .app-shell { background: #151719; }
 .organization-result-metrics { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; margin-top: 14px; }
 .organization-result-metrics span { display: grid; gap: 3px; color: #858a94; font-size: 11px; }
 .organization-result-metrics strong { color: #eef0f3; font-size: 15px; }
+.organization-result-items { display: grid; gap: 7px; margin-top: 14px; }
+.organization-result-item { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 8px 0; border-top: 1px solid #2c3037; color: #dce0e7; font-size: 12px; }
+.organization-result-item span:first-child { display: grid; gap: 3px; min-width: 0; }
+.organization-result-item small { overflow: hidden; color: #858a94; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.organization-result-item-status { color: #b9ec68 !important; font-weight: 700; white-space: nowrap; }
+.organization-result-item-status.is-failed, .organization-result-item-status.is-uncertain, .organization-result-item-status.is-needs_review { color: #f3b56e !important; }
+.organization-result-item code { color: #f3b56e; font-size: 10px; }
+.organization-blocked-details { display: grid; gap: 8px; margin-top: 14px; color: #f0c2c2; font-size: 12px; }
+.organization-blocked-details ul { display: grid; gap: 6px; margin: 0; padding-left: 18px; }
+.organization-blocked-details li { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.organization-blocked-details code { color: #d6a5a5; font-size: 11px; }
 .settings-note { display: flex; align-items: flex-start; gap: 7px; margin: 18px 0 0; color: #858b95; font-size: 11px; line-height: 1.5; }
 .settings-note svg { flex: 0 0 auto; margin-top: 1px; }
 .credential-panels { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 30px; }
@@ -774,6 +785,8 @@ html, body, .app-shell { background: #151719; }
   .organization-preview { margin-top: 16px; padding: 17px; }
   .organization-facts { grid-template-columns: 1fr 1fr; gap: 11px 15px; }
   .organization-result-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .organization-result-item { grid-template-columns: minmax(0, 1fr) auto; }
+  .organization-result-item > small, .organization-result-item > code { grid-column: 1 / -1; }
   .organization-actions { display: grid; grid-template-columns: 1fr; }
   .organization-actions button { width: 100%; }
   .library-workbench { padding-top: 24px; }

@@ -106,6 +106,7 @@ function makeApi(overrides: Partial<Record<keyof ApiClient, unknown>> = {}) {
       plan_count: 0,
       queued_count: 0,
       blocked_count: 0,
+      blocked_details: [],
       finished_at: null,
     }),
     updateOrganizationSettings: vi.fn().mockResolvedValue({ ...organization, revision: 5 }),
@@ -188,6 +189,33 @@ describe("SettingsView", () => {
     expect(wrapper.find(".organization-result-statuses").text()).toContain(
       "全部状态unknownsuccessskippeddeletedreplacefailed",
     );
+  });
+
+  it("shows reasons for blocked organization sources", async () => {
+    const api = makeApi({
+      organizationResult: vi.fn().mockResolvedValue({
+        status: "failed",
+        available_statuses: ["unknown", "success", "skipped", "deleted", "replace", "failed"],
+        source_count: 1,
+        scanned_count: 0,
+        plan_count: 0,
+        queued_count: 0,
+        blocked_count: 1,
+        blocked_details: [{
+          source_directory_id: "source-1",
+          error_code: "scan_incomplete",
+          message_zh: "源目录扫描未完成，已阻止生成整理预览。",
+        }],
+        finished_at: null,
+      }),
+    });
+    const wrapper = mount(SettingsView, { props: { api } });
+    await flushPromises();
+    await wrapper.findAll("button").find((button) => button.text().includes("115 整理"))?.trigger("click");
+    await flushPromises();
+
+    expect(wrapper.get(".organization-blocked-details").text()).toContain("源目录扫描未完成");
+    expect(wrapper.get(".organization-blocked-details").text()).toContain("scan_incomplete");
   });
 
   it("selects and persists a separate push directory from the managed scope", async () => {

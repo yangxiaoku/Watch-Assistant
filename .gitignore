@@ -28,6 +28,13 @@ p115-prod-*.json
 managed_scope.json
 .artifacts/
 .release-staging-*/
+.release-build-*/
+.release-temp-*/
+.release-stage-*/
+release-stage-*/
+release-temp-*/
+.workbuddy/
+mcclone/
 deployment-evidence/
 evidence/
 release-archive/

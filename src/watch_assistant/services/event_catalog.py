@@ -19,9 +19,15 @@ class EventDefinition:
     allowed_fields: frozenset[str] = frozenset()
     version: int = 1
 
-    def render(self, fields: dict[str, Any]) -> str:
+    def render(
+        self,
+        fields: dict[str, Any],
+        counts: dict[str, Any] | None = None,
+    ) -> str:
         try:
-            return self.message_template_zh.format_map(_FormatMap(fields))
+            render_fields = dict(fields)
+            render_fields.update(counts or {})
+            return self.message_template_zh.format_map(_FormatMap(render_fields))
         except (KeyError, ValueError):
             return f"{self.title_zh}，部分详情暂不可用"
 
@@ -164,6 +170,14 @@ EVENT_CATALOG: dict[str, EventDefinition] = {
         LogCategory.ORGANIZE,
         "整理预览已生成",
         "整理预览已生成，当前状态：{status}，涉及 {count} 个文件",
+    ),
+    "organize.automation.blocked": _event(
+        "organize.automation.blocked",
+        LogCategory.ORGANIZE,
+        "自动整理已阻断",
+        "自动整理已阻断，来源：{source_directory_id}，原因：{message_zh}（错误码：{error_code}）",
+        suggestion="请先核对来源目录扫描状态和整理配置，再重新运行",
+        fields=frozenset({"source_directory_id", "message_zh"}),
     ),
     "organize.operation.queued": _event(
         "organize.operation.queued", LogCategory.ORGANIZE, "整理操作已排队", "整理操作已排队，结果：{status}"

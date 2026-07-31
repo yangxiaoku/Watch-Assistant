@@ -348,6 +348,32 @@ class MatchDecision:
         return f"MatchDecision(status={self.status.value!r}, selected={selected!r})"
 
 
+def confirm_selected_candidate(decision: MatchDecision) -> MatchDecision:
+    """Promote one selected TMDB candidate after an explicit user action.
+
+    This never invents a candidate.  Empty, unavailable, or malformed matches
+    stay reviewable and cannot enter a write plan.
+    """
+
+    selected = decision.selected
+    if selected is None and decision.ranked_candidates:
+        top = decision.ranked_candidates[0]
+        if top.eligible:
+            selected = top.candidate
+    if decision.status is not MatchStatus.NEEDS_REVIEW or selected is None:
+        return decision
+    return MatchDecision(
+        status=MatchStatus.ACCEPTED,
+        selected=selected,
+        confidence=MatchConfidence.HIGH,
+        score=decision.score,
+        margin=decision.margin,
+        ranked_candidates=decision.ranked_candidates,
+        reasons=tuple(dict.fromkeys((*decision.reasons, MatchReason.MANUAL_LOCK))),
+        source=MatchSource.MANUAL,
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class ManualMatch:
     """An immutable, previously confirmed identity."""

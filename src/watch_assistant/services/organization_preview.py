@@ -25,7 +25,11 @@ from watch_assistant.services.media_classification import (
     NamingRuleConfig,
     plan_media,
 )
-from watch_assistant.services.media_matcher import TmdbMatcher, build_match_input
+from watch_assistant.services.media_matcher import (
+    TmdbMatcher,
+    build_match_input,
+    confirm_selected_candidate,
+)
 from watch_assistant.services.media_parser import parse_media_filename
 from watch_assistant.services.organization_plan import (
     OrganizationPlanCompanion,
@@ -91,6 +95,7 @@ class OrganizationPreviewService:
         prefer_dolby: bool = False,
         conflict_mode: int = 2,
         multi_version_enabled: bool = False,
+        manual_confirmation: bool = False,
         target_root: str = "",
         now: datetime | None = None,
     ) -> OrganizationPlanView:
@@ -201,6 +206,8 @@ class OrganizationPreviewService:
             )
             async with semaphore:
                 decision = await self._matcher.match(build_match_input(parsed))
+            if manual_confirmation:
+                decision = confirm_selected_candidate(decision)
             naming_plan = plan_media(
                 parsed,
                 decision,

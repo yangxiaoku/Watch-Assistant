@@ -883,7 +883,7 @@ class SettingsService:
                 event_code=definition.code,
                 event_version=definition.version,
                 title_zh=definition.title_zh,
-                message_zh=definition.render(safe_fields),
+                message_zh=definition.render(safe_fields, counts),
                 suggestion_zh=definition.suggestion_zh if level in {LoggingLevel.WARNING, LoggingLevel.ERROR} else None,
                 status=status,
                 request_id=request_id,

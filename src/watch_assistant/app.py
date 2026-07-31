@@ -85,6 +85,9 @@ from watch_assistant.services.notifications import NotificationService
 from watch_assistant.services.organization_automation import (
     OrganizationAutomationService,
 )
+from watch_assistant.services.organization_directory_provisioner import (
+    OrganizationDirectoryProvisioner,
+)
 from watch_assistant.services.organization_operations import (
     OrganizationOperationService,
 )
@@ -321,6 +324,7 @@ def create_app(
                 )
             )
             worker = None
+            directory_provisioner = None
             if write_enabled:
                 worker = OrganizationWorker(
                     application.state.database.session_factory,
@@ -332,6 +336,32 @@ def create_app(
                     settings_service=application.state.settings_service,
                 )
                 application.state.organization_worker = worker
+
+                async def provision_organization_directories(
+                    target_root_id: str,
+                    existing_directories,
+                    paths,
+                ) -> None:
+                    cookie = await asyncio.to_thread(
+                        application.state.organization_cookie_provider.load
+                    )
+                    if not cookie:
+                        raise RuntimeError("credentials_unavailable")
+                    client = await asyncio.to_thread(_default_client_factory, cookie)
+                    try:
+                        provisioner = OrganizationDirectoryProvisioner(
+                            client,
+                            call_executor=p115_c03_timeout_executor,
+                        )
+                        await provisioner.ensure(
+                            target_root_id=target_root_id,
+                            existing_directories=existing_directories,
+                            paths=paths,
+                        )
+                    finally:
+                        await _close_client(client)
+
+                directory_provisioner = provision_organization_directories
 
             def gateway_factory(directory_ids):
                 return P115ReadOnlyDirectoryGateway(
@@ -352,6 +382,7 @@ def create_app(
                     else None
                 ),
                 auto_execute=write_enabled,
+                directory_provisioner=directory_provisioner,
                 event_logger=application.state.settings_service,
             )
             application.state.organization_automation_service = automation
@@ -359,9 +390,13 @@ def create_app(
             async def run_organization_once() -> bool:
                 return await automation.run_once()
 
+            async def run_organization_manual() -> bool:
+                return await automation.run_once(manual_confirmation=True)
+
             scheduler = OrganizationScheduler(
                 application.state.settings_service,
                 run_organization_once,
+                run_organization_manual,
             )
             application.state.organization_scheduler = scheduler
             organization_stop = asyncio.Event()

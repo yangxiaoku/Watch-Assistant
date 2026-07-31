@@ -5,10 +5,13 @@ from pathlib import Path
 import pytest
 from sqlalchemy import select
 
+import watch_assistant.services.organization_automation as automation_module
 from watch_assistant.adapters.p115_library import DirectoryPage, LibraryEntry, ScanState
+from watch_assistant.api.settings import _organization_result_response
 from watch_assistant.db import create_database, initialize_database
 from watch_assistant.library_models import MediaLibrary, OrganizationPlan
 from watch_assistant.schemas import MediaType, OrganizationSettingsResponse
+from watch_assistant.services.library_index import LibraryScanResult, ScanRunState
 from watch_assistant.services.organization_automation import (
     OrganizationAutomationService,
 )
@@ -32,6 +35,29 @@ class _TmdbClient:
         ]
 
 
+class _ReviewTmdbClient(_TmdbClient):
+    async def search_candidates(self, _query):
+        candidates = await super().search_candidates(_query)
+        return [
+            {
+                "id": candidates[0].tmdb_id,
+                "media_type": candidates[0].media_type.value,
+                "title": candidates[0].title,
+                "release_year": candidates[0].release_year,
+                "origin_countries": list(candidates[0].origin_countries),
+                "kind": "movie",
+            },
+            {
+                "id": 43,
+                "media_type": "movie",
+                "title": "The Office",
+                "release_year": 2005,
+                "origin_countries": ["US"],
+                "kind": "movie",
+            },
+        ]
+
+
 class _Gateway:
     def __init__(self):
         self.calls: list[tuple[str, int, int]] = []
@@ -45,7 +71,14 @@ class _Gateway:
             ("8001", 1): _page(
                 _entry(name="western", directory_id="8002", parent_id="8001")
             ),
-            ("8002", 1): _page(),
+            ("8002", 1): _page(
+                _entry(
+                    name="The Office (2005) {tmdb-42}",
+                    directory_id="8003",
+                    parent_id="8002",
+                )
+            ),
+            ("8003", 1): _page(),
             ("1000", 1): _page(
                 _entry(
                     name="The.Office.2005.1080p.mkv",
@@ -253,4 +286,97 @@ async def test_automation_confirms_and_queues_planned_work_when_write_gate_is_op
     assert service.last_result.queued_count == 1
     assert len(operations.calls) == 1
     assert operations.calls[0][1]["idempotency_key"].startswith("organization-auto:")
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_manual_automation_confirms_selected_tmdb_candidate_once(
+    tmp_path: Path,
+):
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'automation-manual.db'}")
+    await initialize_database(database.engine)
+    operations = _Operations()
+    plan_service = OrganizationPlanService(database.session_factory)
+    preview = OrganizationPreviewService(
+        database.session_factory, _ReviewTmdbClient(), plan_service
+    )
+    service = OrganizationAutomationService(
+        database.session_factory,
+        _Settings(configured=True),
+        preview,
+        plan_service,
+        lambda _authorized: _Gateway(),
+        operation_service=operations,
+        auto_execute=True,
+    )
+
+    assert await service.run_once(manual_confirmation=True) is True
+    assert service.last_result is not None
+    assert service.last_result.queued_count == 1
+    assert len(operations.calls) == 1
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_automation_exposes_incomplete_scan_block_reason_and_event(
+    tmp_path: Path, monkeypatch
+):
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'automation-blocked.db'}")
+    await initialize_database(database.engine)
+    events = _Events()
+
+    class _IncompleteScanner:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def scan_tree(self, _idempotency_key):
+            return LibraryScanResult(
+                run_id="scan-blocked",
+                state=ScanRunState.FAILED,
+                complete=False,
+                pages_read=1,
+                items_seen=0,
+                snapshot_revision=None,
+                added_count=0,
+                changed_count=0,
+                removed_count=0,
+                changes=(),
+                error_code="scan_incomplete",
+            )
+
+    monkeypatch.setattr(automation_module, "LibraryIndexService", _IncompleteScanner)
+    plan_service = OrganizationPlanService(database.session_factory)
+    preview = OrganizationPreviewService(
+        database.session_factory, _TmdbClient(), plan_service
+    )
+    service = OrganizationAutomationService(
+        database.session_factory,
+        _Settings(configured=True),
+        preview,
+        plan_service,
+        lambda _authorized: _Gateway(),
+        event_logger=events,
+    )
+
+    assert await service.run_once() is True
+    assert service.last_result is not None
+    assert service.last_result.blocked_count == 1
+    assert service.last_result.blocked_details[0].source_directory_id == "1000"
+    assert service.last_result.blocked_details[0].error_code == "scan_incomplete"
+    assert "扫描未完成" in service.last_result.blocked_details[0].message_zh
+    response = _organization_result_response(service.last_result)
+    assert response.blocked_details[0].source_directory_id == "1000"
+    assert response.blocked_details[0].message_zh == "源目录扫描未完成，已阻止生成整理预览。"
+    assert events.events == [
+        (
+            "organize.automation.blocked",
+            {
+                "status": "blocked",
+                "error_code": "scan_incomplete",
+                "source_directory_id": "1000",
+                "message_zh": "源目录扫描未完成，已阻止生成整理预览。",
+                "count": 0,
+            },
+        )
+    ]
     await database.engine.dispose()

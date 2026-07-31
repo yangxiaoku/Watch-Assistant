@@ -598,6 +598,26 @@ class OrganizationScheduleActionResponse(BaseModel):
     message_zh: str
 
 
+class OrganizationBlockedDetailResponse(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    source_directory_id: str | None = None
+    error_code: str
+    message_zh: str
+
+
+class OrganizationResultItemResponse(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    title: str
+    tmdb_id: int | None = None
+    target: str | None = None
+    status: Literal[
+        "queued", "organizing", "success", "failed", "uncertain", "needs_review", "skipped"
+    ]
+    error_code: str | None = None
+
+
 class OrganizationAutomationResultResponse(BaseModel):
     model_config = {"extra": "forbid"}
 
@@ -612,6 +632,8 @@ class OrganizationAutomationResultResponse(BaseModel):
     plan_count: int = Field(ge=0)
     queued_count: int = Field(ge=0)
     blocked_count: int = Field(ge=0)
+    blocked_details: list[OrganizationBlockedDetailResponse] = Field(default_factory=list)
+    items: list[OrganizationResultItemResponse] = Field(default_factory=list)
     finished_at: datetime | None = None
 
 

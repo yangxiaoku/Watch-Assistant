@@ -472,6 +472,24 @@ class OrganizationPlanService:
                 raise OrganizationPlanError("plan_not_found")
             return plan.library_id
 
+    async def plan_target_directory_paths(self, plan_id: str) -> tuple[str, ...]:
+        """Return target parent paths recorded by a persisted preview."""
+
+        _validate_identity(plan_id, "invalid_plan")
+        async with self._session_factory() as session:
+            plan = await session.get(OrganizationPlan, plan_id)
+            if plan is None:
+                raise OrganizationPlanError("plan_not_found")
+            actions = _load_json_list(plan.actions_json)
+        paths: set[str] = set()
+        for action in actions:
+            if not isinstance(action, dict) or not isinstance(action.get("target"), str):
+                continue
+            parent = str(PurePosixPath(action["target"]).parent)
+            if parent != ".":
+                paths.add(parent)
+        return tuple(sorted(paths))
+
     async def confirm_plan(
         self, plan_id: str, *, expected_revision: int
     ) -> OrganizationPlanView:
@@ -775,6 +793,16 @@ def _build_payload(
         basis.append(
             {
                 "source_index": index,
+                "tmdb_id": (
+                    item.decision.selected.tmdb_id
+                    if item.decision.selected is not None
+                    else None
+                ),
+                "title": (
+                    item.decision.selected.title
+                    if item.decision.selected is not None
+                    else None
+                ),
                 "classification_status": item.naming_plan.status.value,
                 "match_status": item.decision.status.value,
                 "match_confidence": (

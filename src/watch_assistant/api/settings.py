@@ -23,6 +23,8 @@ from watch_assistant.schemas import (
     LogItem,
     LogsResponse,
     OrganizationAutomationResultResponse,
+    OrganizationBlockedDetailResponse,
+    OrganizationResultItemResponse,
     OrganizationScheduleActionResponse,
     OrganizationSettingsPatch,
     OrganizationSettingsResponse,
@@ -58,15 +60,26 @@ def _organization_result_response(result) -> OrganizationAutomationResultRespons
             plan_count=0,
             queued_count=0,
             blocked_count=0,
+            blocked_details=[],
         )
     return OrganizationAutomationResultResponse(
-        status="failed" if result.blocked_count else "success",
+        status=(
+            "failed"
+            if result.blocked_count
+            else "skipped"
+            if result.plan_count and result.queued_count == 0
+            else "success"
+        ),
         available_statuses=ORGANIZATION_RESULT_STATUSES,
         source_count=result.source_count,
         scanned_count=result.scanned_count,
         plan_count=result.plan_count,
         queued_count=result.queued_count,
         blocked_count=result.blocked_count,
+        blocked_details=[
+            OrganizationBlockedDetailResponse.model_validate(detail.to_public_dict())
+            for detail in result.blocked_details
+        ],
         finished_at=result.finished_at,
     )
 
@@ -295,9 +308,22 @@ async def get_organization_result(
     request: Request,
 ) -> OrganizationAutomationResultResponse:
     automation = getattr(request.app.state, "organization_automation_service", None)
-    return _organization_result_response(
+    response = _organization_result_response(
         getattr(automation, "last_result", None) if automation is not None else None
     )
+    get_items = getattr(automation, "result_items", None)
+    if callable(get_items):
+        response.items = [
+            OrganizationResultItemResponse(
+                title=item.title,
+                tmdb_id=item.tmdb_id,
+                target=item.target,
+                status=item.status,
+                error_code=item.error_code,
+            )
+            for item in await get_items()
+        ]
+    return response
 
 
 @router.post(
