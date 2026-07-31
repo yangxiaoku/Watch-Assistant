@@ -112,4 +112,26 @@ describe("OrganizationWorkbenchView", () => {
     expect(api.queueOrganizationOperation).toHaveBeenCalledWith("plan-local-1", 4);
     expect(wrapper.text()).toContain("整理操作已排队");
   });
+
+  it("shows the durable operation failure instead of a generic page error", async () => {
+    const invalidated = { ...plan, status: "invalidated" as const, revision: 5 };
+    const api = makeApi({
+      organizationPlans: vi.fn().mockResolvedValue({ items: [invalidated], next_cursor: null }),
+      organizationPlanOperation: vi.fn().mockResolvedValue({
+        operation_id: "op-stale",
+        plan_id: invalidated.plan_id,
+        status: "failed",
+        revision: 3,
+        attempts: 1,
+        error_code: "plan_prerequisites_changed",
+        cancel_requested: false,
+      }),
+    });
+    const wrapper = mount(OrganizationWorkbenchView, { props: { api, executionEnabled: true } });
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("整理操作：已失败");
+    expect(wrapper.text()).toContain("扫描快照已更新，原计划已失效");
+    expect(wrapper.text()).not.toContain("本次操作未完成，当前页面没有更新");
+  });
 });

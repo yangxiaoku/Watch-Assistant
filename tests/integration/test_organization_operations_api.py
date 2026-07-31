@@ -216,6 +216,18 @@ async def test_queue_is_idempotent_and_rejects_unconfirmed_stale_or_expired_plan
         "error_code",
         "cancel_requested",
     }
+    operation_detail = await client.get(
+        "/api/v1/organization-plans/plan-ready/operation",
+        headers=headers,
+    )
+    assert operation_detail.status_code == 200
+    assert operation_detail.json()["operation_id"] == first_body["operation_id"]
+    missing_operation = await client.get(
+        "/api/v1/organization-plans/plan-review/operation",
+        headers=headers,
+    )
+    assert missing_operation.status_code == 404
+    assert missing_operation.json()["detail"]["code"] == "operation_not_found"
     repeated = await client.post(
         "/api/v1/organization-plans/plan-ready/operation",
         json=payload,

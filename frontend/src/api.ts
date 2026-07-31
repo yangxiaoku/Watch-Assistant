@@ -628,6 +628,10 @@ export class ApiClient {
     });
   }
 
+  async organizationPlanOperation(planId: string): Promise<OrganizationOperationResponse> {
+    return this.request<OrganizationOperationResponse>(`/api/v1/organization-plans/${encodeURIComponent(planId)}/operation`);
+  }
+
   async organizationOperation(operationId: string): Promise<OrganizationOperationResponse> {
     return this.request<OrganizationOperationResponse>(`/api/v1/organization-operations/${encodeURIComponent(operationId)}`);
   }

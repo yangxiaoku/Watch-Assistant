@@ -207,6 +207,33 @@ async def test_organization_operation_updates_linked_workflow_stage(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_prerequisite_failure_invalidates_plan_and_can_be_queried_by_plan(
+    tmp_path,
+):
+    database = await _database(tmp_path)
+    service = OrganizationOperationService(database.session_factory)
+    operation = await _operation(database, key="stale-plan-operation")
+    lease = await service.claim(operation.operation_id, expected_revision=1)
+
+    finished = await service.finish(
+        operation.operation_id,
+        expected_revision=lease.revision,
+        lease_token=lease.lease_token,
+        status=OrganizationOperationStatus.FAILED,
+        error_code="plan_prerequisites_changed",
+    )
+
+    assert finished.error_code == "plan_prerequisites_changed"
+    assert (await service.get_for_plan(operation.plan_id)).operation_id == operation.operation_id
+    async with database.session_factory() as session:
+        plan = await session.get(OrganizationPlan, operation.plan_id)
+        assert plan is not None
+        assert plan.status == OrganizationPlanStatus.INVALIDATED.value
+        assert plan.revision == 2
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_create_rejects_needs_review_without_creating_operation(tmp_path):
     database = await _database(tmp_path)
     plan = await _plan(database, confidence=MatchConfidence.LOW)

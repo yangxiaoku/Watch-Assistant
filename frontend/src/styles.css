@@ -150,6 +150,9 @@ input { outline: none; }
 .organization-facts dt { color: #858a94; font-size: 11px; }
 .organization-facts dd { margin: 4px 0 0; overflow: hidden; color: #f4f5f7; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
 .organization-safe-note { margin: 0; padding: 11px 12px; color: #f5d98d; background: #322c1f; border-left: 2px solid #f5d98d; font-size: 12px; line-height: 1.5; }
+.organization-operation-status { display: grid; gap: 5px; margin-top: 12px; padding: 11px 12px; color: #c8d9ef; background: #202b39; border-left: 2px solid #68a0ff; font-size: 12px; line-height: 1.5; }
+.organization-operation-status.failed, .organization-operation-status.uncertain { color: #ffd1d7; background: #342126; border-left-color: #ff8193; }
+.organization-operation-status strong { color: inherit; }
 .organization-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 20px; }
 .organization-alias { margin-top: 22px; padding-top: 17px; border-top: 1px solid #2b2e34; }
 .organization-alias label { display: flex; align-items: center; gap: 7px; margin-bottom: 8px; color: #aeb2bb; font-size: 12px; font-weight: 750; }

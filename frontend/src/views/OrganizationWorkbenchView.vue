@@ -2,7 +2,7 @@
 import { Ban, Check, ChevronRight, Eye, LoaderCircle, RefreshCw, Tag } from "@lucide/vue";
 import { computed, onMounted, ref } from "vue";
 import { ApiClient, ApiError, focusFirstFieldError } from "../api";
-import type { OrganizationPlanStatus, OrganizationPlanSummary } from "../types";
+import type { OrganizationOperationResponse, OrganizationPlanStatus, OrganizationPlanSummary } from "../types";
 
 const props = withDefaults(defineProps<{ api: ApiClient; enabled?: boolean; executionEnabled?: boolean }>(), {
   enabled: true,
@@ -13,6 +13,7 @@ const activeStatus = ref<OrganizationPlanStatus>("needs_review");
 const items = ref<OrganizationPlanSummary[]>([]);
 const nextCursor = ref<number | null>(null);
 const selected = ref<OrganizationPlanSummary | null>(null);
+const operation = ref<OrganizationOperationResponse | null>(null);
 const aliasInput = ref("");
 const loading = ref(false);
 const busy = ref(false);
@@ -29,6 +30,35 @@ const statusLabel: Record<OrganizationPlanStatus, string> = {
   ignored: "已忽略",
 };
 
+const operationStatusLabel: Record<OrganizationOperationResponse["status"], string> = {
+  planned: "已排队",
+  organizing: "执行中",
+  organized: "已完成",
+  failed: "已失败",
+  uncertain: "结果待确认",
+  cancelled: "已取消",
+};
+
+function operationFailureMessage(code: string | null): string {
+  if (code === "plan_prerequisites_changed") return "扫描快照已更新，原计划已失效。请重新扫描并生成新的整理计划后再确认。";
+  if (code === "postcondition_mismatch") return "远端结果未满足计划预期，系统已停止后续写入，请先核对 115 当前状态。";
+  if (code === "uncertain" || code === "outcome_unknown") return "远端结果暂时无法确认，请先核对 115 当前状态，不要重复提交。";
+  return "整理操作未完成，请查看当前状态后再决定下一步。";
+}
+
+async function loadPlanOperation(plan: OrganizationPlanSummary | null) {
+  operation.value = null;
+  const getter = props.api.organizationPlanOperation;
+  if (!plan || typeof getter !== "function") return;
+  try {
+    operation.value = await getter.call(props.api, plan.plan_id);
+  } catch (exception) {
+    if (!(exception instanceof ApiError) || exception.code !== "operation_not_found") {
+      operation.value = null;
+    }
+  }
+}
+
 async function loadPlans(cursor?: number) {
   loading.value = true;
   error.value = "";
@@ -38,6 +68,7 @@ async function loadPlans(cursor?: number) {
     nextCursor.value = response.next_cursor;
     selected.value = response.items[0] ?? null;
     aliasInput.value = selected.value?.alias ?? "";
+    await loadPlanOperation(selected.value);
   } catch (exception) {
     error.value = exception instanceof ApiError ? exception.message : "计划列表加载失败，请稍后重试";
   } finally {
@@ -81,12 +112,17 @@ async function queueOperation() {
   error.value = "";
   notice.value = "";
   try {
-    const operation = await props.api.queueOrganizationOperation(plan.plan_id, plan.revision);
-    notice.value = operation.status === "organized"
+    const queuedOperation = await props.api.queueOrganizationOperation(plan.plan_id, plan.revision);
+    await loadPlanOperation(plan);
+    if (!operation.value) operation.value = queuedOperation;
+    notice.value = queuedOperation.status === "organized"
       ? "整理已完成"
-      : `整理操作已排队，当前状态：${operation.status}`;
+      : `整理操作已排队，当前状态：${operationStatusLabel[queuedOperation.status]}`;
   } catch (exception) {
     focusFirstFieldError(exception);
+    if (exception instanceof ApiError && exception.code === "plan_prerequisites_changed") {
+      await loadPlanOperation(plan);
+    }
     error.value = exception instanceof ApiError ? exception.message : "整理操作排队失败，请稍后重试";
   } finally {
     busy.value = false;
@@ -101,6 +137,7 @@ async function mutate(action: "confirm" | "ignore" | "alias", operation: () => P
     const updated = await operation();
     selected.value = updated;
     aliasInput.value = updated.alias ?? "";
+    await loadPlanOperation(updated);
     items.value = items.value.map((item) => item.plan_id === updated.plan_id ? updated : item);
     notice.value = action === "confirm" ? "已确认本地计划，未执行远端写操作" : action === "ignore" ? "已忽略本地计划" : "本地别名已保存";
   } catch (exception) {
@@ -168,6 +205,12 @@ onMounted(() => {
           <div><dt>前置条件</dt><dd>{{ selected.precondition_count }}</dd></div>
         </dl>
         <p class="organization-safe-note">预览只显示本地摘要。</p>
+        <div v-if="operation" class="organization-operation-status" :class="{ failed: operation.status === 'failed', uncertain: operation.status === 'uncertain' }">
+          <strong>整理操作：{{ operationStatusLabel[operation.status] }}</strong>
+          <span v-if="operation.status === 'failed'">{{ operationFailureMessage(operation.error_code) }}</span>
+          <span v-else-if="operation.status === 'uncertain'">{{ operationFailureMessage(operation.error_code) }}</span>
+          <span v-else-if="operation.status === 'organizing'">后台正在执行，页面刷新后仍会保留当前状态。</span>
+        </div>
         <div v-if="selectedCanEdit || (selected.status === 'planned' && executionEnabled)" class="organization-actions">
           <button v-if="selectedIsReviewable" class="primary-button" type="button" :disabled="busy" @click="confirmPlan"><Check :size="16" />确认本地计划</button>
           <button v-if="selected.status === 'planned' && executionEnabled" class="primary-button" type="button" :disabled="busy" @click="queueOperation"><Check :size="16" />提交远端整理</button>

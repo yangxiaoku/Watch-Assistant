@@ -87,6 +87,25 @@ async def queue_organization_operation(
     return _response(summary)
 
 
+@router.get(
+    "/organization-plans/{plan_id}/operation",
+    response_model=OrganizationOperationResponse,
+)
+async def get_plan_organization_operation(
+    plan_id: str, service: ServiceDependency
+) -> OrganizationOperationResponse:
+    try:
+        summary = await service.get_for_plan(plan_id)
+    except Exception as exc:  # noqa: BLE001 - map only stable local errors
+        raise _http_error(exc) from None
+    if summary is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "operation_not_found", "message": "整理操作不存在"},
+        )
+    return _response(summary)
+
+
 @router.post(
     "/organization-operations/batch",
     response_model=OrganizationOperationBatchResponse,

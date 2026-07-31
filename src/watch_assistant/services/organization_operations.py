@@ -213,6 +213,20 @@ class OrganizationOperationService:
                 raise OrganizationOperationNotFound
             return _summary(operation)
 
+    async def get_for_plan(
+        self, plan_id: str
+    ) -> OrganizationOperationSummary | None:
+        """Return the single durable operation associated with a plan, if any."""
+
+        _validate_identifier(plan_id, "invalid_plan_id", maximum=64)
+        async with self._session_factory() as session:
+            operation = await session.scalar(
+                select(OrganizationOperation)
+                .where(OrganizationOperation.plan_id == plan_id)
+                .limit(1)
+            )
+            return _summary(operation) if operation is not None else None
+
     async def cancel_requested(self, operation_id: str) -> bool:
         async with self._session_factory() as session:
             value = await session.scalar(
@@ -466,6 +480,14 @@ class OrganizationOperationService:
             operation = await session.get(OrganizationOperation, operation_id)
             if operation is None:
                 raise OrganizationOperationNotFound
+            if (
+                status is OrganizationOperationStatus.FAILED
+                and error_code == "plan_prerequisites_changed"
+            ):
+                plan = await session.get(OrganizationPlan, operation.plan_id)
+                if plan is not None and plan.status == OrganizationPlanStatus.PLANNED.value:
+                    plan.status = OrganizationPlanStatus.INVALIDATED.value
+                    plan.revision += 1
             await _sync_workflow_stage(
                 session,
                 operation.workflow_id,

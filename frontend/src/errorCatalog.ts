@@ -173,6 +173,8 @@ const CATALOG: Record<string, Omit<UiErrorDescriptor, "code">> = {
   ...Object.fromEntries(ADDITIONAL_CODES.map((code) => [code, additionalDescriptor(code)])),
   tmdb_unavailable: { title: "影视信息暂时无法加载", message: "本次影视资料没有更新，资源区和已有页面仍可查看。", suggestion: "请重新加载影视资料。", retryable: true, action: "retry" },
   rate_limited: { title: "请求过于频繁", message: "本次请求未执行，当前页面内容没有改变。", suggestion: "请稍后再试。", retryable: true, action: "retry" },
+  plan_prerequisites_changed: { title: "整理计划已失效", message: "扫描快照已更新，本次整理未执行。", suggestion: "请重新扫描并生成新的整理计划后再确认。", retryable: false, action: "reload_settings" },
+  operation_plan_conflict: { title: "计划已有整理操作", message: "本次没有重复创建整理操作。", suggestion: "请查看该计划关联的操作状态。", retryable: false, action: "view_task" },
   settings_conflict: { title: "设置已在其他位置更新", message: "本次修改未保存，当前页面不是最新版本。", suggestion: "请加载最新设置后重新提交。", retryable: false, action: "reload_settings" },
   credential_rejected: { title: "凭据验证未通过", message: "新凭据未生效，原配置保持不变。", suggestion: "请检查凭据后重新验证。", retryable: false, action: "reauthenticate" },
   credential_validation_unavailable: { title: "暂时无法验证凭据", message: "本次验证未完成，原配置保持不变。", suggestion: "请稍后重新验证。", retryable: true, action: "retry" },
