@@ -317,6 +317,11 @@ export interface StrmOperationResponse {
   finished_at: string | null;
 }
 
+export interface StrmOperationListResponse {
+  items: StrmOperationResponse[];
+  next_cursor: number | null;
+}
+
 export type OrganizationOperationStatus = "planned" | "organizing" | "organized" | "failed" | "uncertain" | "cancelled";
 
 export interface OrganizationOperationResponse {

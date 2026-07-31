@@ -25,6 +25,7 @@ from watch_assistant.schemas import (
     StrmGenerationResponse,
     StrmManifestItemResponse,
     StrmManifestListResponse,
+    StrmOperationListResponse,
     StrmOperationResponse,
     StrmVerifyRequest,
     StrmVerifyResponse,
@@ -314,6 +315,29 @@ async def get_strm_operation(
     except StrmOperationError as error:
         raise HTTPException(status_code=422, detail=error.code) from None
     return _operation_response(summary)
+
+
+@router.get(
+    "/libraries/{library_id}/strm-operations",
+    response_model=StrmOperationListResponse,
+    dependencies=[Depends(require_strm_enabled)],
+)
+async def list_strm_operations(
+    library_id: str,
+    request: Request,
+    cursor: int = Query(default=0, ge=0),
+    limit: int = Query(default=20, ge=1, le=100),
+) -> StrmOperationListResponse:
+    try:
+        items, next_cursor = await _operation_service(request).list(
+            library_id, cursor=cursor, limit=limit
+        )
+    except StrmOperationError as error:
+        raise HTTPException(status_code=422, detail=error.code) from None
+    return StrmOperationListResponse(
+        items=[_operation_response(item) for item in items],
+        next_cursor=next_cursor,
+    )
 
 
 @router.post(

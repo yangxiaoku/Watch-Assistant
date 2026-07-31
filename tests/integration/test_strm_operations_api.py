@@ -116,6 +116,26 @@ async def test_strm_requests_persist_independent_operations_and_workflow_link(
         assert cleanup.status_code == 200
         assert incremental.json()["operation_id"] != cleanup.json()["operation_id"]
 
+        history = await client.get(
+            "/api/v1/libraries/library/strm-operations",
+            params={"limit": 2},
+        )
+        assert history.status_code == 200
+        assert len(history.json()["items"]) == 2
+        assert {item["kind"] for item in history.json()["items"]} == {
+            "incremental",
+            "cleanup",
+        }
+        assert history.json()["next_cursor"] == 2
+
+        second_page = await client.get(
+            "/api/v1/libraries/library/strm-operations",
+            params={"cursor": 2, "limit": 2},
+        )
+        assert second_page.status_code == 200
+        assert {item["kind"] for item in second_page.json()["items"]} == {"full"}
+        assert second_page.json()["next_cursor"] is None
+
         async with database.session_factory() as session:
             operations = list((await session.scalars(select(StrmOperation))).all())
         assert {operation.kind for operation in operations} == {

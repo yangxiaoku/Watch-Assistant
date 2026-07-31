@@ -16,6 +16,7 @@ describe("LibraryWorkbenchView", () => {
       scanLibrary: vi.fn().mockResolvedValue(scanned),
       libraryMedia: vi.fn().mockResolvedValue({ items: [], next_cursor: null }),
       strmManifest: vi.fn().mockResolvedValue({ items: [], page: 1, page_size: 50, total: 0, total_pages: 0 }),
+      strmOperations: vi.fn().mockResolvedValue({ items: [], next_cursor: null }),
     };
     const wrapper = mount(LibraryWorkbenchView, { props: { api: api as never } });
     await flushPromises();

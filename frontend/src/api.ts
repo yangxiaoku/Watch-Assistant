@@ -42,6 +42,7 @@ import type {
   MediaEntryListResponse,
   StrmManifestListResponse,
   StrmGenerationResponse,
+  StrmOperationListResponse,
   StrmOperationResponse,
   PwaDevice,
 } from "./types";
@@ -715,6 +716,10 @@ export class ApiClient {
 
   async strmOperation(operationId: string): Promise<StrmOperationResponse> {
     return this.request<StrmOperationResponse>(`/api/v1/strm-operations/${encodeURIComponent(operationId)}`);
+  }
+
+  async strmOperations(libraryId: string, cursor = 0, limit = 20): Promise<StrmOperationListResponse> {
+    return this.request<StrmOperationListResponse>(`/api/v1/libraries/${encodeURIComponent(libraryId)}/strm-operations?cursor=${cursor}&limit=${limit}`);
   }
 }
 

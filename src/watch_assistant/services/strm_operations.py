@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import uuid4
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from watch_assistant.models import (
@@ -155,6 +156,35 @@ class StrmOperationService:
     async def get(self, operation_id: str) -> StrmOperationSummary:
         operation = await self._load(operation_id)
         return _summary(operation)
+
+    async def list(
+        self, library_id: str, *, cursor: int = 0, limit: int = 20
+    ) -> tuple[list[StrmOperationSummary], int | None]:
+        _validate_identifier(library_id, "library_id", maximum=128)
+        if not isinstance(cursor, int) or isinstance(cursor, bool) or cursor < 0:
+            raise StrmOperationError("invalid_cursor")
+        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 100:
+            raise StrmOperationError("invalid_limit")
+        async with self._session_factory() as session:
+            rows = list(
+                (
+                    await session.scalars(
+                        select(StrmOperation)
+                        .where(StrmOperation.library_id == library_id)
+                        .order_by(
+                            StrmOperation.created_at.desc(),
+                            StrmOperation.id.desc(),
+                        )
+                        .offset(cursor)
+                        .limit(limit + 1)
+                    )
+                ).all()
+            )
+        has_more = len(rows) > limit
+        rows = rows[:limit]
+        return [
+            _summary(operation) for operation in rows
+        ], cursor + limit if has_more else None
 
     async def _load(self, operation_id: str) -> StrmOperation:
         _validate_identifier(operation_id, "operation_id", maximum=64)

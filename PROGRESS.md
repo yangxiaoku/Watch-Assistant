@@ -59,7 +59,7 @@
   `running -> dirty -> queued` 重入队、租约
   恢复和旧事件迁移回填（专项 25 项测试通过）。本轮进一步为 STRM API 和 dirty worker
   接入可选 workflow `strm` 阶段关联；后续仍需生产影视库首次扫描、稳定播放入口和用户
-  目录级回归。当前开发分支还将最近一次 STRM operation 的状态和统计接入媒体库工作台，
+  目录级回归。当前开发分支还将最近一次 STRM operation 的状态、统计和按媒体库分页历史接入媒体库工作台，
   证据见 `docs/requirements/REQ-002-115-strm-sync/evidence/2026-07-31-strm-operation-workbench.md`；
   该切片尚未合入发布基线。
 - `REQ-009`：整理 operation 已支持通过受保护 API 关联 workflow，并在排队、claim、成功、

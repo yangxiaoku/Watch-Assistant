@@ -318,6 +318,13 @@ class StrmOperationResponse(BaseModel):
     finished_at: datetime | None = None
 
 
+class StrmOperationListResponse(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    items: list[StrmOperationResponse]
+    next_cursor: int | None = Field(default=None, ge=0)
+
+
 class StrmCleanupPlanRequest(BaseModel):
     model_config = {"extra": "forbid"}
 

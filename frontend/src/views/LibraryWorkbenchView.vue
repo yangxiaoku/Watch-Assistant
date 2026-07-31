@@ -11,6 +11,7 @@ const libraries = ref<MediaLibraryResponse[]>([]);
 const selectedId = ref<string | null>(null);
 const media = ref<MediaEntryResponse[]>([]);
 const manifest = ref<StrmManifestItemResponse[]>([]);
+const operations = ref<StrmOperationResponse[]>([]);
 const loading = ref(false);
 const busy = ref(false);
 const error = ref("");
@@ -52,12 +53,14 @@ async function loadLibraries(preferredId = selectedId.value) {
 }
 
 async function loadOutputs(libraryId: string) {
-  const [mediaResponse, manifestResponse] = await Promise.all([
+  const [mediaResponse, manifestResponse, operationsResponse] = await Promise.all([
     props.api.libraryMedia(libraryId).catch(() => ({ items: [], next_cursor: null })),
     props.api.strmManifest(libraryId).catch(() => ({ items: [], page: 1, page_size: 50, total: 0, total_pages: 0 })),
+    props.api.strmOperations(libraryId).catch(() => ({ items: [], next_cursor: null })),
   ]);
   media.value = mediaResponse.items;
   manifest.value = manifestResponse.items;
+  operations.value = operationsResponse.items;
 }
 
 async function readConfiguredRoot() {
@@ -122,6 +125,7 @@ function selectLibrary(library: MediaLibraryResponse) {
   form.value = { libraryId: library.library_id, name: library.name, rootDirectoryId: library.root_directory_id };
   latestResult.value = null;
   latestOperation.value = null;
+  operations.value = [];
   notice.value = "";
   void loadOutputs(library.library_id);
 }
@@ -310,6 +314,7 @@ onMounted(() => { void loadLibraries(); });
           <p v-if="operationError(latestOperation)" class="library-operation-error">{{ operationError(latestOperation) }}</p>
           <small>操作 {{ latestOperation.operation_id }}</small>
         </section>
+        <section v-if="operations.length" class="library-output-section"><div class="library-section-heading"><div><p class="eyebrow">操作历史</p><h3>STRM 操作</h3></div><span>{{ operations.length }} 条</span></div><div class="library-operation-list"><div v-for="operation in operations" :key="operation.operation_id" class="library-operation-row"><span><strong>{{ operationLabels[operation.kind] }}</strong><small>{{ operationStatusLabels[operation.status] }} · {{ new Date(operation.created_at).toLocaleString() }}</small></span><span>生成 {{ operation.generated }} · 失败 {{ operation.failed }}</span></div></div></section>
         <section class="library-output-section"><div class="library-section-heading"><div><p class="eyebrow">受管清单</p><h3>STRM 文件</h3></div><span>{{ manifest.length }} / 50</span></div><div v-if="manifest.length" class="library-table-wrap"><table><thead><tr><th>云端路径</th><th>本地路径</th><th>状态</th></tr></thead><tbody><tr v-for="item in manifest" :key="item.manifest_id"><td>{{ item.cloud_relative_path }}</td><td>{{ item.local_relative_path }}</td><td>{{ item.status }}</td></tr></tbody></table></div><p v-else class="library-muted">暂无受管 STRM。完成扫描后可以执行全量生成。</p></section>
         <section class="library-output-section"><div class="library-section-heading"><div><p class="eyebrow">最近扫描</p><h3>索引文件</h3></div><span>{{ media.length }} / 50</span></div><div v-if="media.length" class="library-table-wrap"><table><thead><tr><th>文件名</th><th>大小</th><th>修改时间</th></tr></thead><tbody><tr v-for="item in media" :key="item.media_id"><td>{{ item.name }}</td><td>{{ formatBytes(item.size_bytes) }}</td><td>{{ item.modified_at ? new Date(item.modified_at).toLocaleString() : "未知" }}</td></tr></tbody></table></div><p v-else class="library-muted">完成一次完整扫描后，这里会显示索引文件。</p></section>
       </main>
