@@ -40,6 +40,7 @@ _CATALOG: dict[str, ApiErrorDescriptor] = {
     "backups_unavailable": ApiErrorDescriptor("backups_unavailable", "备份服务暂时不可用", "本次备份操作未完成。", "请稍后重试。", True, "retry"),
     "backup_requires_file_database": ApiErrorDescriptor("backup_requires_file_database", "当前数据库不可备份", "未创建备份文件。", "请使用文件数据库后再创建备份。", False),
     "backup_failed": ApiErrorDescriptor("backup_failed", "备份创建失败", "未创建完整备份文件。", "请检查磁盘空间后重试。", True, "retry"),
+    "backup_configuration_unavailable": ApiErrorDescriptor("backup_configuration_unavailable", "配置导出暂时不可用", "本次脱敏配置没有导出。", "请稍后重试。", True, "retry"),
     "backup_not_found": ApiErrorDescriptor("backup_not_found", "备份不存在", "本次恢复预览未完成。", "请刷新备份列表后再试。", False, "retry"),
     "backup_manifest_invalid": ApiErrorDescriptor("backup_manifest_invalid", "备份清单无效", "该备份不能用于恢复。", "请选择其他备份。", False),
     "backup_database_missing": ApiErrorDescriptor("backup_database_missing", "备份文件缺失", "该备份不能用于恢复。", "请选择其他备份。", False),

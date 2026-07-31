@@ -69,6 +69,7 @@ def test_domain_codes_used_by_http_error_mappers_are_in_central_catalog():
     domain_codes = {
         "backup_requires_file_database",
         "backup_failed",
+        "backup_configuration_unavailable",
         "backup_not_found",
         "backup_manifest_invalid",
         "backup_database_missing",

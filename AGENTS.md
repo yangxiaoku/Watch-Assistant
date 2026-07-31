@@ -74,6 +74,18 @@ ssh root@192.168.6.236 'curl -fsS http://127.0.0.1:8115/api/v1/health'
 备份前确认实际运行模式：Compose 使用 `scripts/backup_db.ps1`（容器 `/data/backups`，
 保留 7 份）；systemd SQLite 的备份路径和运行命令待确认，不能套用 Compose 脚本。
 
+## 当前本地开发环境
+
+- 当前 macOS 工作树为 `/Users/apple/workspaces/Watch-Assistant`，使用 `zsh`；旧路径
+  `/Volumes/BOOTCAMP/115ts` 当前未挂载，不能据此查找仓库或运行脚本。
+- 本地 Python 环境使用 `.venv/bin/python` 和 `.venv/bin/ruff`。`.venv/Scripts/python.exe`
+  只适用于 Windows 工作树；禁止在当前 macOS 环境调用系统 Python 或 `uv sync`。
+- 当前环境没有 `node`、`npm` 或 `pwsh`。前端 Vitest、构建和 Playwright 不能在本机宣称
+  已通过；需在具备 Node/npm 的环境中执行，并记录真实结果。Windows PowerShell 备份命令
+  只适用于对应 Windows 主机，不作为 macOS 本地命令执行。
+- 当前本地验证只允许离线数据库和脱敏 fixture；不要从其他 worktree 复制未提交改动、
+  发布包或凭据。实际发布分支、部署状态、数据目录和外部依赖仍须在操作前重新核对。
+
 ## 强制安全规则
 
 - 不猜测第三方 API；不调用内部 `.pyc`；不直接修改 TgtoDrive 数据库。
@@ -110,9 +122,9 @@ ssh root@192.168.6.236 'curl -fsS http://127.0.0.1:8115/api/v1/health'
    实际最新提交和部署状态，不在本文件硬编码可能过期的提交号。
 5. **凭据不进仓**：Secret 只放在 `C:\Users\98275\.115ts-secrets\`；不得进入代码、
    文档、日志、测试 fixture、截图或发布包。
-6. **Python 环境**：worktree 内使用 `.venv/Scripts/python.exe`，禁止使用系统 Python、
-   `uv sync` 或 PowerShell 修改环境；全量测试分 unit/integration/contracts 三批运行，
-   单条全量超过 120 秒按超时处理。
+6. **Python 环境**：Windows worktree 使用 `.venv/Scripts/python.exe`，macOS/Linux
+   worktree 使用 `.venv/bin/python`；禁止使用系统 Python、`uv sync` 或 PowerShell 修改
+   环境。全量测试分 unit/integration/contracts 三批运行，单条全量超过 120 秒按超时处理。
 7. **验收脚本化**：合并前 `scripts/verify.sh` 必须通过，不以截图代替验收；离线测试是
    合并门禁，live 测试单独按计划运行。
 
@@ -130,8 +142,15 @@ ssh root@192.168.6.236 'curl -fsS http://127.0.0.1:8115/api/v1/health'
 ## 验证
 
 ```bash
+# macOS/Linux
+.venv/bin/python -m pytest -q
+.venv/bin/python -m ruff check src tests scripts
+
+# Windows
 .venv/Scripts/python.exe -m pytest -q
 .venv/Scripts/python.exe -m ruff check src tests scripts
+
+# 前端：仅在 node/npm 已安装的环境执行
 npm --prefix frontend test -- --run
 npm --prefix frontend run build
 npm --prefix frontend run test:e2e

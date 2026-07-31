@@ -5,11 +5,12 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from watch_assistant.schemas import (
+    BackupConfigurationExportResponse,
     BackupListResponse,
     BackupResponse,
     BackupRestorePreviewResponse,
 )
-from watch_assistant.security import require_api_auth
+from watch_assistant.security import AuthContext, require_api_auth
 from watch_assistant.services.backups import BackupService, BackupServiceError
 
 router = APIRouter(prefix="/api/v1", dependencies=[Depends(require_api_auth)])
@@ -23,6 +24,35 @@ def get_backup_service(request: Request) -> BackupService:
 
 
 ServiceDependency = Annotated[BackupService, Depends(get_backup_service)]
+
+
+@router.get(
+    "/backups/configuration",
+    response_model=BackupConfigurationExportResponse,
+)
+async def export_configuration(
+    service: ServiceDependency,
+    auth: Annotated[AuthContext, Depends(require_api_auth)],
+    request: Request,
+) -> BackupConfigurationExportResponse:
+    if (
+        auth.via_bearer
+        and auth.identity != "internal"
+        and not auth.has_scope("settings:read")
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail={"code": "missing_scope", "missing_scopes": ["settings:read"]},
+        )
+    try:
+        return await service.export_configuration(
+            actor_type="agent" if auth.via_bearer else "web",
+            actor_id=auth.identity,
+            request_id=request.headers.get("X-Request-ID"),
+        )
+    except BackupServiceError as exc:
+        status_code = 503 if exc.code == "backup_configuration_unavailable" else 422
+        raise HTTPException(status_code=status_code, detail=exc.code) from exc
 
 
 @router.post(

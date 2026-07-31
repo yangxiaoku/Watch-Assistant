@@ -922,6 +922,22 @@ class BackupRestorePreviewResponse(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class BackupConfigurationExportResponse(BaseModel):
+    """Non-sensitive settings that can be recreated after a restore."""
+
+    model_config = {"extra": "forbid"}
+
+    schema_version: Literal[1] = 1
+    exported_at: datetime
+    release: str
+    logging: LoggingSettingsResponse
+    inspection: InspectionSettingsResponse
+    content_policy: ContentPolicyResponse
+    organization: OrganizationSettingsResponse
+    notifications: NotificationPreferenceResponse
+    requires_reconfiguration: list[str] = Field(default_factory=list)
+
+
 class ManualImportRequest(BaseModel):
     model_config = {"extra": "forbid"}
 

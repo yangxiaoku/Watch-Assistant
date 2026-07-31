@@ -101,3 +101,9 @@ Secret 默认只记录“需要重新配置”的占位信息。若支持 Secret
 - 备份服务已记录 `backup.created`、`backup.failed` 和 `backup.restore_preview` 结构化事件；日志只包含状态、错误码和数量，不写入备份路径、数据库内容或 Secret。
 - 备份与日志回归测试 `161 passed`，Ruff 通过。
 - 实际停机恢复、恢复前快照、失败回滚、配置导入导出和 Web 二次批准仍按 `BLOCKERS.md` 保持关闭。
+
+## 11. 本轮实现证据（2026-07-31）
+
+- 新增 `GET /api/v1/backups/configuration` 和 `watchctl backup configuration`，导出日志、检测、内容策略、整理规则和通知偏好等非敏感配置。
+- 导出响应包含配置格式版本、应用版本和需要重新配置的 Secret 标识，但不包含 Cookie、Token、密码、API Key、加密字段或备份数据库内容。
+- 配置导出使用现有认证、`settings:read` Agent Scope、请求 ID 和结构化 `backup.configuration_exported` 审计事件；配置导入和实际数据库恢复仍保持关闭。

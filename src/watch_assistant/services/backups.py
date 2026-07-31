@@ -11,15 +11,21 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from watch_assistant.schemas import (
+    BackupConfigurationExportResponse,
     BackupListResponse,
     BackupResponse,
     BackupRestorePreviewResponse,
     LoggingLevel,
 )
 from watch_assistant.services.observability import EventLogger, emit_event
+
+if TYPE_CHECKING:
+    from watch_assistant.services.notifications import NotificationService
+    from watch_assistant.services.settings import SettingsService
 
 
 class BackupServiceError(ValueError):
@@ -43,6 +49,8 @@ class BackupService:
         release: str = "unknown",
         retention_count: int = 7,
         event_logger: EventLogger | None = None,
+        settings_service: SettingsService | None = None,
+        notification_service: NotificationService | None = None,
     ) -> None:
         self._database_path = (
             None if database_path in (None, ":memory:") else Path(database_path)
@@ -51,6 +59,8 @@ class BackupService:
         self._release = release
         self._retention_count = retention_count
         self._event_logger = event_logger
+        self._settings_service = settings_service
+        self._notification_service = notification_service
         self._lock = asyncio.Lock()
 
     async def create(self) -> BackupResponse:
@@ -77,6 +87,41 @@ class BackupService:
 
     async def list(self) -> BackupListResponse:
         return await asyncio.to_thread(self._list_sync)
+
+    async def export_configuration(
+        self,
+        *,
+        actor_type: str | None = None,
+        actor_id: str | None = None,
+        request_id: str | None = None,
+    ) -> BackupConfigurationExportResponse:
+        if self._settings_service is None or self._notification_service is None:
+            raise BackupServiceError("backup_configuration_unavailable")
+        async with self._lock:
+            response = BackupConfigurationExportResponse(
+                exported_at=datetime.now(UTC),
+                release=self._release,
+                logging=await self._settings_service.get_logging(),
+                inspection=await self._settings_service.get_inspection(),
+                content_policy=await self._settings_service.get_content_policy(),
+                organization=await self._settings_service.get_organization(),
+                notifications=await self._notification_service.get_preferences(),
+                requires_reconfiguration=[
+                    "tmdb_api_key",
+                    "p115_cookie",
+                    "web_password",
+                    "agent_token",
+                ],
+            )
+        await emit_event(
+            self._event_logger,
+            "backup.configuration_exported",
+            fields={"status": "ready", "count": 1},
+            request_id=request_id,
+            actor_type=actor_type,
+            actor_id=actor_id,
+        )
+        return response
 
     async def preview_restore(self, backup_id: str) -> BackupRestorePreviewResponse:
         _validate_backup_id(backup_id)
