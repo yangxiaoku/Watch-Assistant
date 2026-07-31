@@ -1554,6 +1554,12 @@ class WebhookEndpointResponse(BaseModel):
     last_success_at: datetime | None
     last_failure_at: datetime | None
     failure_count: int
+    delivery_total: int = Field(ge=0)
+    delivered_count: int = Field(ge=0)
+    pending_count: int = Field(ge=0)
+    dead_letter_count: int = Field(ge=0)
+    failure_rate: float | None = Field(default=None, ge=0, le=1)
+    next_retry_at: datetime | None
 
 
 class WebhookEndpointCreateResponse(BaseModel):
