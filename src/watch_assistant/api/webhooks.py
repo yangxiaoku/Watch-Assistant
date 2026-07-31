@@ -2,7 +2,7 @@
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
 from watch_assistant.api.agent import require_web_auth
 from watch_assistant.schemas import (
@@ -95,9 +95,12 @@ async def delete_webhook(
 
 @router.get("/deliveries", response_model=WebhookDeliveryListResponse)
 async def list_deliveries(
-    _: WebAuthDependency, service: ServiceDependency
+    _: WebAuthDependency,
+    service: ServiceDependency,
+    endpoint_id: Annotated[str | None, Query(min_length=1, max_length=40)] = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
 ) -> WebhookDeliveryListResponse:
-    return await service.deliveries()
+    return await service.deliveries(endpoint_id=endpoint_id, limit=limit)
 
 
 @router.post("/publish-due")
