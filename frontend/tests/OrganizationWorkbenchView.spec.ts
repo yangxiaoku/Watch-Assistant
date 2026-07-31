@@ -22,6 +22,8 @@ function makeApi(overrides: Partial<Record<keyof ApiClient, unknown>> = {}) {
   return {
     organizationPlans: vi.fn().mockResolvedValue(response),
     confirmOrganizationPlan: vi.fn().mockResolvedValue({ ...plan, status: "planned", revision: 5 }),
+    confirmAndQueueOrganizationOperation: vi.fn().mockResolvedValue({ operation_id: "op-confirm", plan_id: plan.plan_id, status: "planned", revision: 1, attempts: 0, error_code: null, cancel_requested: false }),
+    confirmAndQueueOrganizationOperations: vi.fn().mockResolvedValue({ items: [] }),
     ignoreOrganizationPlan: vi.fn().mockResolvedValue({ ...plan, status: "ignored", revision: 5 }),
     aliasOrganizationPlan: vi.fn().mockResolvedValue({ ...plan, alias: "本地标签", revision: 5 }),
     ...overrides,
@@ -45,7 +47,7 @@ describe("OrganizationWorkbenchView", () => {
         next_cursor: null,
       }),
     });
-    const wrapper = mount(OrganizationWorkbenchView, { props: { api } });
+    const wrapper = mount(OrganizationWorkbenchView, { props: { api, executionEnabled: true } });
     await flushPromises();
 
     expect(wrapper.get(".organization-status").text()).toContain("已失效");
@@ -55,7 +57,7 @@ describe("OrganizationWorkbenchView", () => {
 
   it("loads a safe cursor page and sends the current revision for local actions", async () => {
     const api = makeApi();
-    const wrapper = mount(OrganizationWorkbenchView, { props: { api } });
+    const wrapper = mount(OrganizationWorkbenchView, { props: { api, executionEnabled: true } });
     await flushPromises();
 
     expect(api.organizationPlans).toHaveBeenCalledWith({ status: "needs_review", cursor: undefined, limit: 20 });
@@ -64,24 +66,50 @@ describe("OrganizationWorkbenchView", () => {
     expect(wrapper.text()).not.toContain("pickcode");
     expect(wrapper.text()).not.toContain("/private/");
 
-    await wrapper.get(".primary-button").trigger("click");
+    await wrapper.findAll(".primary-button").find((button) => button.text().includes("确认并开始整理"))!.trigger("click");
     await flushPromises();
-    expect(api.confirmOrganizationPlan).toHaveBeenCalledWith("plan-local-1", 4);
-    expect(wrapper.text()).toContain("已确认本地计划");
+    expect(api.confirmAndQueueOrganizationOperation).toHaveBeenCalledWith("plan-local-1", 4);
+    expect(wrapper.text()).toContain("整理已提交，后台正在执行");
   });
 
   it("refreshes after a stale revision and never reports success", async () => {
     const api = makeApi({
-      confirmOrganizationPlan: vi.fn().mockRejectedValue(new ApiError("计划版本已变化，请刷新后重试", 409, "stale_revision")),
+      confirmAndQueueOrganizationOperation: vi.fn().mockRejectedValue(new ApiError("计划版本已变化，请刷新后重试", 409, "stale_revision")),
     });
-    const wrapper = mount(OrganizationWorkbenchView, { props: { api } });
+    const wrapper = mount(OrganizationWorkbenchView, { props: { api, executionEnabled: true } });
     await flushPromises();
-    await wrapper.get(".primary-button").trigger("click");
+    await wrapper.findAll(".primary-button").find((button) => button.text().includes("确认并开始整理"))!.trigger("click");
     await flushPromises();
 
     expect(api.organizationPlans).toHaveBeenCalledTimes(2);
     expect(wrapper.text()).toContain("计划版本已变化，已刷新当前列表");
     expect(wrapper.text()).not.toContain("已确认本地计划，未执行远端写操作");
+  });
+
+  it("confirms and queues all visible review plans in one action", async () => {
+    const second = { ...plan, plan_id: "plan-local-2", revision: 2 };
+    const api = makeApi({
+      organizationPlans: vi.fn()
+        .mockResolvedValueOnce({ items: [plan, second], next_cursor: null })
+        .mockResolvedValueOnce({ items: [], next_cursor: null }),
+      confirmAndQueueOrganizationOperations: vi.fn().mockResolvedValue({
+        items: [
+          { plan_id: plan.plan_id, operation_id: "op-1", status: "planned", revision: 1, attempts: 0, error_code: null, message: "整理操作已排队" },
+          { plan_id: second.plan_id, operation_id: "op-2", status: "planned", revision: 1, attempts: 0, error_code: null, message: "整理操作已排队" },
+        ],
+      }),
+    });
+    const wrapper = mount(OrganizationWorkbenchView, { props: { api, executionEnabled: true } });
+    await flushPromises();
+
+    await wrapper.get(".organization-batch-action").trigger("click");
+    await flushPromises();
+
+    expect(api.confirmAndQueueOrganizationOperations).toHaveBeenCalledWith([
+      { planId: plan.plan_id, expectedRevision: plan.revision },
+      { planId: second.plan_id, expectedRevision: second.revision },
+    ]);
+    expect(wrapper.text()).toContain("已确认并提交 2 个整理计划");
   });
 
   it("passes the selected revision when saving a local alias", async () => {
@@ -105,7 +133,7 @@ describe("OrganizationWorkbenchView", () => {
     const wrapper = mount(OrganizationWorkbenchView, { props: { api, executionEnabled: true } });
     await flushPromises();
 
-    const operationButton = wrapper.findAll("button").find((button) => button.text().includes("提交远端整理"));
+    const operationButton = wrapper.findAll("button").find((button) => button.text().includes("立即整理"));
     expect(operationButton).toBeDefined();
     await operationButton!.trigger("click");
     await flushPromises();

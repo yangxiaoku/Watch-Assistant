@@ -20,6 +20,10 @@ from watch_assistant.services.organization_operations import (
     OrganizationOperationService,
     OrganizationOperationSummary,
 )
+from watch_assistant.services.organization_plan import (
+    OrganizationPlanError,
+    OrganizationPlanService,
+)
 
 
 async def require_organization_execution_enabled(request: Request) -> None:
@@ -59,6 +63,24 @@ def _get_operation_service(request: Request) -> OrganizationOperationService:
 ServiceDependency = Annotated[
     OrganizationOperationService, Depends(_get_operation_service)
 ]
+
+
+def _get_plan_service(request: Request) -> OrganizationPlanService:
+    service = getattr(request.app.state, "organization_plan_service", None)
+    if service is None:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "organization_plan_unavailable",
+                "message": "整理计划服务暂不可用",
+            },
+        )
+    return service
+
+
+PlanServiceDependency = Annotated[
+    OrganizationPlanService, Depends(_get_plan_service)
+]
 AuthDependency = Annotated[AuthContext, Depends(require_api_auth)]
 
 
@@ -80,6 +102,39 @@ async def queue_organization_operation(
             plan_id,
             idempotency_key=payload.idempotency_key,
             expected_plan_revision=payload.expected_revision,
+            workflow_id=payload.workflow_id,
+        )
+    except Exception as exc:  # noqa: BLE001 - map only stable local errors
+        raise _http_error(exc) from None
+    return _response(summary)
+
+
+@router.post(
+    "/organization-plans/{plan_id}/confirm-and-operation",
+    response_model=OrganizationOperationResponse,
+)
+async def confirm_and_queue_organization_operation(
+    plan_id: str,
+    payload: OrganizationOperationQueueRequest,
+    context: AuthDependency,
+    plan_service: PlanServiceDependency,
+    service: ServiceDependency,
+) -> OrganizationOperationResponse:
+    """Confirm a local preview and enqueue its operation in one action."""
+
+    try:
+        await _validate_agent_confirmation(
+            context, service, plan_id, digest=payload.digest, confirm=payload.confirm
+        )
+        if not await service.has_executable_steps(plan_id, allow_unconfirmed=True):
+            raise ValueError("plan_not_executable")
+        confirmed = await plan_service.confirm_plan(
+            plan_id, expected_revision=payload.expected_revision
+        )
+        summary = await service.create(
+            plan_id,
+            idempotency_key=payload.idempotency_key,
+            expected_plan_revision=confirmed.revision,
             workflow_id=payload.workflow_id,
         )
     except Exception as exc:  # noqa: BLE001 - map only stable local errors
@@ -134,6 +189,56 @@ async def queue_organization_operations_batch(
         except Exception as exc:  # noqa: BLE001 - isolate each local item
             status_code, code, message = _error_values(exc)
             del status_code
+            results.append(
+                OrganizationOperationBatchResult(
+                    plan_id=item.plan_id,
+                    status="rejected",
+                    error_code=code,
+                    message=message,
+                )
+            )
+        else:
+            results.append(_batch_result(summary))
+    return OrganizationOperationBatchResponse(items=results)
+
+
+@router.post(
+    "/organization-operations/confirm-and-batch",
+    response_model=OrganizationOperationBatchResponse,
+)
+async def confirm_and_queue_organization_operations_batch(
+    payload: OrganizationOperationBatchRequest,
+    context: AuthDependency,
+    plan_service: PlanServiceDependency,
+    service: ServiceDependency,
+) -> OrganizationOperationBatchResponse:
+    """Confirm and enqueue each current-page plan while isolating failures."""
+
+    results: list[OrganizationOperationBatchResult] = []
+    for item in payload.items:
+        try:
+            await _validate_agent_confirmation(
+                context,
+                service,
+                item.plan_id,
+                digest=item.digest,
+                confirm=item.confirm,
+            )
+            if not await service.has_executable_steps(
+                item.plan_id, allow_unconfirmed=True
+            ):
+                raise ValueError("plan_not_executable")
+            confirmed = await plan_service.confirm_plan(
+                item.plan_id, expected_revision=item.expected_revision
+            )
+            summary = await service.create(
+                item.plan_id,
+                idempotency_key=item.idempotency_key,
+                expected_plan_revision=confirmed.revision,
+                workflow_id=item.workflow_id,
+            )
+        except Exception as exc:  # noqa: BLE001 - isolate each local item
+            _status_code, code, message = _error_values(exc)
             results.append(
                 OrganizationOperationBatchResult(
                     plan_id=item.plan_id,
@@ -216,6 +321,8 @@ def _http_error(error: Exception) -> HTTPException:
 def _error_values(error: Exception) -> tuple[int, str, str]:
     if isinstance(error, OrganizationOperationNotFound):
         code = "operation_not_found"
+    elif isinstance(error, OrganizationPlanError):
+        code = error.code if error.code in _MESSAGES else "operation_unavailable"
     elif isinstance(error, ValueError):
         code = str(error) if str(error) in _MESSAGES else "operation_unavailable"
     else:
@@ -255,6 +362,10 @@ _STATUSES = {
     "confirmation_required": 409,
     "plan_digest_required": 422,
     "plan_digest_mismatch": 409,
+    "stale_revision": 409,
+    "plan_not_reviewable": 409,
+    "invalid_revision": 422,
+    "plan_not_found": 404,
 }
 _MESSAGES = {
     "plan_not_found": "计划不存在",
@@ -280,6 +391,9 @@ _MESSAGES = {
     "confirmation_required": "缺少操作确认",
     "plan_digest_required": "缺少计划摘要",
     "plan_digest_mismatch": "计划摘要已变化，请刷新后重试",
+    "stale_revision": "计划版本已变化，请刷新后重试",
+    "plan_not_reviewable": "计划当前状态不可确认",
+    "invalid_revision": "计划版本无效",
     "operation_unavailable": "整理操作暂不可用",
 }
 

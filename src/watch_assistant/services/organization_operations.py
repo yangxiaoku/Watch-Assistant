@@ -369,6 +369,18 @@ class OrganizationOperationService:
         steps = await load_executable_steps(self._session_factory, plan_id)
         return bool(steps)
 
+    async def has_executable_steps(
+        self, plan_id: str, *, allow_unconfirmed: bool = False
+    ) -> bool:
+        """Preflight a plan without changing its review status."""
+
+        from watch_assistant.services.organization_plan import load_executable_steps
+
+        steps = await load_executable_steps(
+            self._session_factory, plan_id, allow_unconfirmed=allow_unconfirmed
+        )
+        return bool(steps)
+
     async def claim(
         self,
         operation_id: str,

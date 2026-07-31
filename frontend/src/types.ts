@@ -310,6 +310,20 @@ export interface OrganizationOperationResponse {
   cancel_requested: boolean;
 }
 
+export interface OrganizationOperationBatchResult {
+  plan_id: string;
+  operation_id: string | null;
+  status: OrganizationOperationStatus | "rejected";
+  revision: number | null;
+  attempts: number | null;
+  error_code: string | null;
+  message: string;
+}
+
+export interface OrganizationOperationBatchResponse {
+  items: OrganizationOperationBatchResult[];
+}
+
 export interface LoggingSettingsResponse {
   revision: number;
   level: LogLevel;
