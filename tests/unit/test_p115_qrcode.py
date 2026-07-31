@@ -60,23 +60,23 @@ async def test_qrcode_supports_all_verified_device_codes(monkeypatch):
     for device_code in P115_DEVICE_CODES:
         await service.create(device_code, f"设备-{device_code}")
 
-    assert calls == [("token", "web") for _ in P115_DEVICE_CODES]
+    assert calls == [("token", device_code) for device_code in P115_DEVICE_CODES]
 
 
 @pytest.mark.asyncio
-async def test_provider_token_uses_verified_web_endpoint(monkeypatch):
+async def test_provider_token_uses_selected_device_code(monkeypatch):
     calls: list[str] = []
 
     class FakeP115Client:
         @staticmethod
-        def login_qrcode_token():
-            calls.append("web")
+        def login_qrcode_token(*, app: str):
+            calls.append(app)
             return {"state": 1, "data": {}}
 
     monkeypatch.setitem(sys.modules, "p115client", SimpleNamespace(P115Client=FakeP115Client))
     await P115QrcodeService()._call_provider("token", "115android")
 
-    assert calls == ["web"]
+    assert calls == ["115android"]
 
 
 @pytest.mark.asyncio
