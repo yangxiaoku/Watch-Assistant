@@ -273,6 +273,11 @@ class OrganizationAutomationService:
                 fields={"status": status},
                 counts={"count": count},
             )
+            if status == "needs_review":
+                await method(
+                    "organize.needs_review",
+                    fields={"status": status, "count": count},
+                )
 
     async def _log_blocked(self, error_code: str) -> None:
         logger = self._event_logger

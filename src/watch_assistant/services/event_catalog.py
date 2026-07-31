@@ -157,7 +157,11 @@ EVENT_CATALOG: dict[str, EventDefinition] = {
         "pansou.partial_failure", LogCategory.SEARCH, "部分搜索来源失败", "部分搜索来源不可用，已返回可用结果，共 {count} 条"
     ),
     "organize.needs_review": _event(
-        "organize.needs_review", LogCategory.ORGANIZE, "资源需要人工确认", "找到多个相近条目，请确认后继续整理"
+        "organize.needs_review",
+        LogCategory.ORGANIZE,
+        "整理预览需要人工确认",
+        "整理预览涉及 {count} 个文件，需要人工确认后继续",
+        suggestion="请打开整理预览，核对匹配和目标冲突后再确认",
     ),
     "organize.preview.created": _event(
         "organize.preview.created",

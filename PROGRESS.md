@@ -71,6 +71,7 @@
   推送创建、重试、取消、worker 终态和重启恢复也会发出同一 push 阶段事件；
   整理 operation 审计和 `organization` 阶段事件补齐 operation/workflow/correlation ID；
   独立内容检测失败现在进入站内错误通知，关联 workflow 时复用阶段通知避免重复；
+  整理预览进入 `needs_review` 时新增可行动通知，重复预览按计划聚合并可跳转整理工作台；
   本轮已将 workflow 阶段的可行动状态接入站内通知，
   通知继续复用偏好、去重和 Webhook Outbox；本轮修正任务 worker 将 `uncertain` 误报为
   `failed` 的问题，并补齐任务 ID、115 不可用、订阅新资源和备份失败通知。

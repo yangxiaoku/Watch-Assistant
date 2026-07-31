@@ -5,7 +5,7 @@ import { ApiClient, ApiError } from "../api";
 import type { NotificationResponse, NotificationSeverity } from "../types";
 
 const props = defineProps<{ api: ApiClient }>();
-const emit = defineEmits<{ navigate: [view: "settings" | "workflows"] }>();
+const emit = defineEmits<{ navigate: [view: "settings" | "workflows" | "organization-plans"] }>();
 
 const filter = ref<"all" | "unread" | "actionable" | "error">("all");
 const items = ref<NotificationResponse[]>([]);
@@ -46,6 +46,7 @@ function formatTimestamp(value: string): string {
 function actionLabel(item: NotificationResponse): string {
   if (item.action_type === "workflow" || item.action_type === "task") return "查看任务";
   if (item.action_type === "settings") return "查看设置";
+  if (item.action_type === "organization_plan") return "查看整理";
   return "查看详情";
 }
 
@@ -153,6 +154,7 @@ function openAction(item: NotificationResponse) {
   void markRead(item);
   if (item.action_type === "workflow" || item.action_type === "task") emit("navigate", "workflows");
   else if (item.action_type === "settings") emit("navigate", "settings");
+  else if (item.action_type === "organization_plan") emit("navigate", "organization-plans");
 }
 
 onMounted(() => { void loadNotifications(); void loadPreferences(); });
