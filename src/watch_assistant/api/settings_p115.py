@@ -60,6 +60,7 @@ class P115DirectoryResponse(BaseModel):
 
 
 class P115DirectoryListResponse(BaseModel):
+    root_id: str
     parent_id: str
     items: list[P115DirectoryResponse]
     has_more: bool
@@ -221,6 +222,7 @@ async def list_p115_directories(
                 break
             current_page += 1
         return P115DirectoryListResponse(
+            root_id=root_id,
             parent_id=parent_id,
             items=directories,
             has_more=not result.terminal,

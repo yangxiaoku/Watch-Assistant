@@ -1227,6 +1227,9 @@ class TaskCreateRequest(BaseModel):
     resource_id: str = Field(min_length=1, max_length=40)
     force: bool = False
     workflow_id: str | None = Field(default=None, min_length=1, max_length=40)
+    target_directory_id: str | None = Field(
+        default=None, min_length=1, max_length=128, pattern=r"^[1-9][0-9]*$"
+    )
 
 
 class InspectionStartRequest(BaseModel):
@@ -1458,6 +1461,7 @@ class TaskResponse(BaseModel):
     id: str
     resource_id: str | None
     workflow_id: str | None
+    target_directory_id: str | None
     action: TaskAction
     state: str
     attempts: int

@@ -19,11 +19,15 @@ from watch_assistant.worker import TaskWorker
 class FakeAdapter:
     def __init__(self):
         self.submissions = 0
+        self.target_cids = []
         self.remote_status = None
         self.status_lookups = 0
 
-    async def submit_magnet(self, url: str) -> SubmissionResult:
+    async def submit_magnet(
+        self, url: str, *, target_cid: str | None = None
+    ) -> SubmissionResult:
         self.submissions += 1
+        self.target_cids.append(target_cid)
         assert url.startswith("magnet:")
         return SubmissionResult(status=RemoteStatus.ACCEPTED, remote_ref="remote-123")
 
@@ -110,6 +114,23 @@ async def test_task_creation_is_idempotent_and_worker_accepts_submission(tmp_pat
     assert task.state == TaskState.ACCEPTED
     assert task.remote_ref == "remote-123"
     assert adapter.submissions == 1
+    await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_worker_forwards_persisted_target_directory(tmp_path):
+    database = await _database(tmp_path)
+    crypto = SecretCrypto(Fernet.generate_key().decode("ascii"))
+    await _add_resource(database, crypto)
+    service = TaskService(database.session_factory)
+    task, _ = await service.create("res_magnet", target_directory_id="314159")
+
+    adapter = FakeAdapter()
+    worker = TaskWorker(database.session_factory, crypto, adapter, owner="test-worker")
+    assert await worker.run_once() is True
+
+    assert adapter.target_cids == ["314159"]
+    assert (await service.get(task.id)).target_directory_id == "314159"
     await database.engine.dispose()
 
 

@@ -821,6 +821,27 @@ def _upgrade_workflow_stage_created_at(connection: Connection) -> None:
     )
 
 
+def _add_task_target_directory(connection: Connection) -> None:
+    """Persist the user-selected P115 destination for queued push tasks."""
+
+    if not inspect(connection).has_table("tasks"):
+        return
+    columns = {item["name"] for item in inspect(connection).get_columns("tasks")}
+    if "target_directory_id" not in columns:
+        connection.execute(
+            text(
+                "ALTER TABLE tasks ADD COLUMN target_directory_id "
+                "VARCHAR(128)"
+            )
+        )
+    connection.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_tasks_target_directory_id "
+            "ON tasks (target_directory_id)"
+        )
+    )
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration("001_application_settings_columns", _add_application_settings_columns),
     Migration("002_library_index_tables", _create_library_index_tables),
@@ -867,6 +888,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration("049_notification_quiet_hours", _add_notification_quiet_hours),
     Migration("050_strm_cleanup_plans", _create_strm_cleanup_plan_table),
     Migration("051_organization_cancel_requested", _add_organization_cancel_requested),
+    Migration("052_task_target_directory", _add_task_target_directory),
 )
 
 

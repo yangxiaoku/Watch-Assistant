@@ -458,6 +458,7 @@ export interface P115DirectoryItem {
 }
 
 export interface P115DirectoryListResponse {
+  root_id: string;
   parent_id: string;
   items: P115DirectoryItem[];
   has_more: boolean;
@@ -540,6 +541,7 @@ export interface TaskResponse {
   id: string;
   resource_id: string | null;
   workflow_id: string | null;
+  target_directory_id: string | null;
   action: "offline_download" | "save_share";
   state: TaskState;
   attempts: number;

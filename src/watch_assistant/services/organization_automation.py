@@ -163,6 +163,7 @@ class OrganizationAutomationService:
                 plan = await self._preview.create_preview(
                     library_id=library_id,
                     scan_run_id=scan.run_id,
+                    source_directory_ids=(source_id,),
                     target_directory_id=target_id,
                     target_directories=catalog.by_path,
                     existing_target_files=catalog.files,

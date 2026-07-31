@@ -70,6 +70,7 @@ class OrganizationPreviewService:
         library_id: str,
         scan_run_id: str,
         source_directory_id: str | None = None,
+        source_directory_ids: Collection[str] | None = None,
         target_directory_id: str | None = None,
         target_directories: Mapping[str, str] | None = None,
         existing_target_files: Sequence[OrganizationTargetFile] = (),
@@ -120,7 +121,6 @@ class OrganizationPreviewService:
         library, run, entries = await self._load_verified_snapshot(
             library_id, scan_run_id
         )
-        source_entries = entries
         if source_directory_id is not None:
             if (
                 not isinstance(source_directory_id, str)
@@ -131,34 +131,16 @@ class OrganizationPreviewService:
                 or "\x00" in source_directory_id
             ):
                 raise OrganizationPreviewError("source_directory_not_found")
-            directory_ids = {
-                entry.object_id
-                for entry in entries
-                if entry.is_directory and isinstance(entry.object_id, str)
-            }
-            if source_directory_id != library.root_directory_id and source_directory_id not in directory_ids:
-                raise OrganizationPreviewError("source_directory_not_found")
-            descendants = {source_directory_id}
-            changed = True
-            while changed:
-                changed = False
-                for entry in entries:
-                    if (
-                        entry.is_directory
-                        and isinstance(entry.object_id, str)
-                        and entry.object_id not in descendants
-                        and entry.parent_id in descendants
-                    ):
-                        descendants.add(entry.object_id)
-                        changed = True
-            source_entries = [
-                entry
-                for entry in entries
-                if entry.is_directory or entry.parent_id in descendants
-            ]
+            source_directory_ids = (source_directory_id,)
+        entries = _scope_entries(
+            entries,
+            source_directory_ids=source_directory_ids,
+            root_directory_id=library.root_directory_id,
+            target_directory_id=target_directory_id,
+        )
         files = [
             entry
-            for entry in source_entries
+            for entry in entries
             if not entry.is_directory
             and _is_video_entry(
                 entry,
@@ -210,7 +192,7 @@ class OrganizationPreviewService:
             parsed = parse_media_filename(entry.name)
             companion_entries = _find_companion_entries(
                 entry,
-                source_entries,
+                entries,
                 metadata_extensions=normalized_metadata_extensions,
             )
             companion_files = tuple(
@@ -413,7 +395,53 @@ class OrganizationPreviewService:
                     )
                 ).all()
             )
-            return library, run, entries
+        return library, run, entries
+
+
+def _scope_entries(
+    entries: Sequence[LibraryScanEntry],
+    *,
+    source_directory_ids: Collection[str] | None,
+    root_directory_id: str,
+    target_directory_id: str | None,
+) -> list[LibraryScanEntry]:
+    """Limit a root snapshot to configured source subtrees."""
+
+    source_ids = {
+        value
+        for value in (source_directory_ids or ())
+        if isinstance(value, str) and value
+    }
+    if not source_ids or root_directory_id in source_ids:
+        return list(entries)
+
+    child_ids: dict[str, set[str]] = {}
+    for entry in entries:
+        if entry.is_directory and isinstance(entry.parent_id, str):
+            child_ids.setdefault(entry.parent_id, set()).add(entry.object_id)
+    scope_ids = set(source_ids)
+    pending = list(source_ids)
+    while pending:
+        parent_id = pending.pop()
+        for child_id in child_ids.get(parent_id, ()):
+            if child_id not in scope_ids:
+                scope_ids.add(child_id)
+                pending.append(child_id)
+    if target_directory_id is not None and target_directory_id in scope_ids:
+        raise OrganizationPreviewError("source_target_overlap")
+
+    scoped = [
+        entry
+        for entry in entries
+        if (
+            entry.is_directory and entry.object_id in scope_ids
+        ) or (
+            not entry.is_directory and entry.parent_id in scope_ids
+        )
+    ]
+    if not scoped:
+        raise OrganizationPreviewError("source_scope_unverified")
+    return scoped
 
 
 def _target_parent_ids(entries: Sequence[LibraryScanEntry]) -> dict[str, str]:

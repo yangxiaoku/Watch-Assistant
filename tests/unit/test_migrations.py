@@ -353,7 +353,12 @@ async def test_running_operation_cancel_column_migrates_legacy_table(tmp_path):
         await connection.exec_driver_sql(
             "CREATE TABLE organization_operations (id VARCHAR(40) PRIMARY KEY)"
         )
-        await connection.run_sync(run_migrations, MIGRATIONS[-1:])
+        cancel_migration = tuple(
+            migration
+            for migration in MIGRATIONS
+            if migration.id == "051_organization_cancel_requested"
+        )
+        await connection.run_sync(run_migrations, cancel_migration)
         columns = await connection.run_sync(
             lambda sync: {
                 item["name"]

@@ -103,7 +103,9 @@ class P115Adapter:
         self._client_lock = asyncio.Lock()
         self._semaphore = asyncio.Semaphore(max_concurrency)
 
-    async def submit_magnet(self, url: str) -> SubmissionResult:
+    async def submit_magnet(
+        self, url: str, *, target_cid: str | None = None
+    ) -> SubmissionResult:
         infohash = _magnet_infohash(url)
         if infohash is None:
             return _failed("invalid_magnet", "magnet URL is invalid")
@@ -117,7 +119,7 @@ class P115Adapter:
                 response = await self._call(
                     client,
                     "clouddownload_task_add_url",
-                    {"url": url, "wp_path_id": self._target_cid},
+                    {"url": url, "wp_path_id": self._resolve_target_cid(target_cid)},
                 )
             except asyncio.CancelledError:
                 raise
@@ -127,7 +129,13 @@ class P115Adapter:
                 response, fallback_ref=f"{INFOHASH_REMOTE_REF_PREFIX}{infohash}"
             )
 
-    async def save_share(self, url: str, password: str | None) -> SubmissionResult:
+    async def save_share(
+        self,
+        url: str,
+        password: str | None,
+        *,
+        target_cid: str | None = None,
+    ) -> SubmissionResult:
         share = _share_target(url, password)
         if share is None:
             return _failed("invalid_share", "115 share URL is invalid")
@@ -157,7 +165,7 @@ class P115Adapter:
                         "share_code": share[0],
                         "receive_code": share[1],
                         "file_id": ",".join(file_ids),
-                        "cid": self._target_cid,
+                        "cid": self._resolve_target_cid(target_cid),
                     },
                 )
             except asyncio.CancelledError:
@@ -165,6 +173,17 @@ class P115Adapter:
             except Exception as error:  # noqa: BLE001 - remote outcome is opaque
                 return _exception_result(error)
             return _submission_result(response, allow_missing_ref=True)
+
+    def _resolve_target_cid(self, target_cid: str | None) -> int | str:
+        if target_cid is None:
+            return self._target_cid
+        if (
+            not isinstance(target_cid, str)
+            or not target_cid.isdigit()
+            or target_cid.startswith("0")
+        ):
+            raise ValueError("target_cid must be a positive integer")
+        return target_cid
 
     async def get_status(self, remote_ref: str) -> RemoteStatus | None:
         if not isinstance(remote_ref, str) or not remote_ref or len(remote_ref) > 255:

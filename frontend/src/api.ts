@@ -428,10 +428,10 @@ export class ApiClient {
     return this.request<MovieCollectionResponse>(`/api/v1/media/search?${params}`);
   }
 
-  async createTask(resourceId: string, force = false, workflowId?: string | null): Promise<TaskResponse> {
+  async createTask(resourceId: string, force = false, workflowId?: string | null, targetDirectoryId?: string | null): Promise<TaskResponse> {
     return this.request<TaskResponse>("/api/v1/tasks", {
       method: "POST",
-      body: JSON.stringify({ resource_id: resourceId, force, ...(workflowId ? { workflow_id: workflowId } : {}) }),
+      body: JSON.stringify({ resource_id: resourceId, force, ...(workflowId ? { workflow_id: workflowId } : {}), ...(targetDirectoryId ? { target_directory_id: targetDirectoryId } : {}) }),
     });
   }
 

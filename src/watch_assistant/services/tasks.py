@@ -47,12 +47,15 @@ def recover_after_restart(task: Task, remote_status: RemoteStatus | None) -> Non
     )
 
 
-def choose_existing_task(tasks, resource_id: str) -> Task | None:
+def choose_existing_task(
+    tasks, resource_id: str, target_directory_id: str | None = None
+) -> Task | None:
     cutoff = datetime.now(UTC) - timedelta(hours=24)
     candidates = [
         task
         for task in tasks
         if task.resource_id == resource_id
+        and task.target_directory_id == target_directory_id
         and task.state in REUSABLE_STATES
         and _as_utc(task.created_at) >= cutoff
     ]
@@ -93,6 +96,7 @@ class TaskService:
         force: bool = False,
         allowed_actions: frozenset[TaskAction] | None = None,
         workflow_id: str | None = None,
+        target_directory_id: str | None = None,
     ):
         async with self._create_lock, self._session_factory() as session:
             resource = await session.get(Resource, resource_id)
@@ -109,7 +113,9 @@ class TaskService:
                 existing_tasks = await session.scalars(
                     select(Task).where(Task.resource_id == resource_id)
                 )
-                existing = choose_existing_task(existing_tasks, resource_id)
+                existing = choose_existing_task(
+                    existing_tasks, resource_id, target_directory_id
+                )
                 if existing is not None:
                     if workflow_id is not None and existing.workflow_id is None:
                         existing.workflow_id = workflow_id
@@ -126,6 +132,7 @@ class TaskService:
             task = Task(
                 id="task_" + uuid4().hex,
                 workflow_id=workflow_id,
+                target_directory_id=target_directory_id,
                 resource_id=resource.id,
                 action=action,
                 encrypted_url_snapshot=resource.encrypted_url,

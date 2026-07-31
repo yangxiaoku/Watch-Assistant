@@ -581,6 +581,9 @@ class Task(Base):
     workflow_id: Mapped[str | None] = mapped_column(
         String(40), nullable=True, index=True
     )
+    target_directory_id: Mapped[str | None] = mapped_column(
+        String(128), nullable=True, index=True
+    )
     resource_id: Mapped[str | None] = mapped_column(
         ForeignKey("resources.id", ondelete="SET NULL"), nullable=True, index=True
     )
