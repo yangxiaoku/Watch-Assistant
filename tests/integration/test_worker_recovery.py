@@ -11,6 +11,7 @@ from watch_assistant.schemas import (
     SubmissionResult,
     WorkflowCreateRequest,
 )
+from watch_assistant.services.inventory_push_guard import InventoryPushCheck
 from watch_assistant.services.tasks import TaskService
 from watch_assistant.services.workflows import WorkflowService
 from watch_assistant.worker import TaskWorker
@@ -46,6 +47,23 @@ class EventRecorder:
 
     async def log_event(self, event, **kwargs):
         self.events.append((event, kwargs))
+
+
+class RefreshingInventoryGuard:
+    def __init__(
+        self,
+        after_refresh: InventoryPushCheck,
+        initial_code: str = "inventory_index_stale",
+    ):
+        self.after_refresh = after_refresh
+        self.initial_code = initial_code
+        self.checks = 0
+
+    async def check(self, _resource_id):
+        self.checks += 1
+        if self.checks == 1:
+            return InventoryPushCheck(False, self.initial_code)
+        return self.after_refresh
 
 
 async def _database(tmp_path):
@@ -131,6 +149,113 @@ async def test_worker_forwards_persisted_target_directory(tmp_path):
 
     assert adapter.target_cids == ["314159"]
     assert (await service.get(task.id)).target_directory_id == "314159"
+    await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_worker_refreshes_stale_inventory_before_submission(tmp_path):
+    database = await _database(tmp_path)
+    crypto = SecretCrypto(Fernet.generate_key().decode("ascii"))
+    await _add_resource(database, crypto)
+    service = TaskService(database.session_factory)
+    task, _ = await service.create("res_magnet")
+    guard = RefreshingInventoryGuard(
+        InventoryPushCheck(True, "inventory_not_found")
+    )
+    refreshes = 0
+
+    async def refresh_inventory():
+        nonlocal refreshes
+        refreshes += 1
+        return True
+
+    adapter = FakeAdapter()
+    worker = TaskWorker(
+        database.session_factory,
+        crypto,
+        adapter,
+        owner="test-worker",
+        inventory_guard=guard,
+        inventory_refresh=refresh_inventory,
+    )
+
+    assert await worker.run_once() is True
+    stored = await service.get(task.id)
+    assert stored.state == TaskState.ACCEPTED
+    assert adapter.submissions == 1
+    assert refreshes == 1
+    assert guard.checks == 2
+    await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_worker_keeps_stale_inventory_blocked_when_refresh_fails(tmp_path):
+    database = await _database(tmp_path)
+    crypto = SecretCrypto(Fernet.generate_key().decode("ascii"))
+    await _add_resource(database, crypto)
+    service = TaskService(database.session_factory)
+    task, _ = await service.create("res_magnet")
+    guard = RefreshingInventoryGuard(
+        InventoryPushCheck(False, "inventory_index_stale")
+    )
+    adapter = FakeAdapter()
+
+    async def refresh_inventory():
+        return False
+
+    worker = TaskWorker(
+        database.session_factory,
+        crypto,
+        adapter,
+        owner="test-worker",
+        inventory_guard=guard,
+        inventory_refresh=refresh_inventory,
+    )
+
+    assert await worker.run_once() is True
+    stored = await service.get(task.id)
+    assert stored.state == TaskState.FAILED
+    assert stored.error_code == "inventory_index_stale"
+    assert adapter.submissions == 0
+    assert guard.checks == 1
+    await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_worker_never_refreshes_for_duplicate_inventory(tmp_path):
+    database = await _database(tmp_path)
+    crypto = SecretCrypto(Fernet.generate_key().decode("ascii"))
+    await _add_resource(database, crypto)
+    service = TaskService(database.session_factory)
+    task, _ = await service.create("res_magnet")
+    guard = RefreshingInventoryGuard(
+        InventoryPushCheck(False, "inventory_exact_duplicate"),
+        initial_code="inventory_exact_duplicate",
+    )
+    adapter = FakeAdapter()
+    refreshes = 0
+
+    async def refresh_inventory():
+        nonlocal refreshes
+        refreshes += 1
+        return True
+
+    worker = TaskWorker(
+        database.session_factory,
+        crypto,
+        adapter,
+        owner="test-worker",
+        inventory_guard=guard,
+        inventory_refresh=refresh_inventory,
+    )
+
+    assert await worker.run_once() is True
+    stored = await service.get(task.id)
+    assert stored.state == TaskState.FAILED
+    assert stored.error_code == "inventory_exact_duplicate"
+    assert adapter.submissions == 0
+    assert refreshes == 0
+    assert guard.checks == 1
     await database.engine.dispose()
 
 

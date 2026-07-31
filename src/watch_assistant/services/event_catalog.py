@@ -141,6 +141,25 @@ EVENT_CATALOG: dict[str, EventDefinition] = {
     "task.cancelled": _event(
         "task.cancelled", LogCategory.TASK, "推送任务已取消", "尚未提交的推送任务已取消"
     ),
+    "inventory.refresh.started": _event(
+        "inventory.refresh.started",
+        LogCategory.LIBRARY,
+        "媒体库库存自动刷新开始",
+        "推送前正在自动刷新媒体库库存，共 {total} 个范围",
+    ),
+    "inventory.refresh.completed": _event(
+        "inventory.refresh.completed",
+        LogCategory.LIBRARY,
+        "媒体库库存自动刷新完成",
+        "媒体库库存自动刷新完成，已刷新 {count} 个范围",
+    ),
+    "inventory.refresh.failed": _event(
+        "inventory.refresh.failed",
+        LogCategory.LIBRARY,
+        "媒体库库存自动刷新失败",
+        "媒体库库存自动刷新失败，失败范围：{hidden_count}，错误码：{error_code}",
+        suggestion="请检查 115 登录状态和媒体库范围配置后重试",
+    ),
     "settings.changed": _event(
         "settings.changed", LogCategory.SETTINGS, "设置已修改", "已修改设置分组“{status}”，变更字段：{changed_fields}"
     ),

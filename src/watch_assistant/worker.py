@@ -1,6 +1,7 @@
 """Single-process SQLite-leased task worker."""
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
 
@@ -21,6 +22,14 @@ from watch_assistant.services.inventory_push_guard import InventoryPushGuard
 from watch_assistant.services.observability import EventLogger, emit_event
 from watch_assistant.services.tasks import recover_after_restart
 from watch_assistant.services.workflows import sync_child_stage
+
+_AUTO_REFRESH_INVENTORY_CODES = frozenset(
+    {
+        "inventory_index_stale",
+        "inventory_index_incomplete",
+        "inventory_index_unknown",
+    }
+)
 
 
 class TaskAdapter(Protocol):
@@ -50,6 +59,7 @@ class TaskWorker:
         lease_seconds: int = 60,
         event_logger: EventLogger | None = None,
         inventory_guard: InventoryPushGuard | None = None,
+        inventory_refresh: Callable[[], Awaitable[bool]] | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._crypto = crypto
@@ -58,6 +68,7 @@ class TaskWorker:
         self._lease_seconds = lease_seconds
         self._event_logger = event_logger
         self._inventory_guard = inventory_guard
+        self._inventory_refresh = inventory_refresh
 
     async def run_once(self) -> bool:
         task_id = await self._claim_one()
@@ -80,6 +91,22 @@ class TaskWorker:
                         gate = await self._inventory_guard.check(task.resource_id)
                     except Exception:  # noqa: BLE001 - fail closed before remote submission
                         gate = None
+                if (
+                    self._inventory_guard is not None
+                    and gate is not None
+                    and not gate.allowed
+                    and gate.code in _AUTO_REFRESH_INVENTORY_CODES
+                    and self._inventory_refresh is not None
+                ):
+                    try:
+                        refreshed = await self._inventory_refresh()
+                    except Exception:  # noqa: BLE001 - fail closed before remote submission
+                        refreshed = False
+                    if refreshed:
+                        try:
+                            gate = await self._inventory_guard.check(task.resource_id)
+                        except Exception:  # noqa: BLE001 - fail closed before remote submission
+                            gate = None
                 if self._inventory_guard is not None and (
                     gate is None or not gate.allowed
                 ):

@@ -16,6 +16,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
+from sqlalchemy import select
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.staticfiles import StaticFiles
 
@@ -62,6 +63,8 @@ from watch_assistant.api.workflows import router as workflows_router
 from watch_assistant.config import Settings, load_tgto_contract
 from watch_assistant.crypto import SecretCrypto
 from watch_assistant.db import Database, create_database, initialize_database
+from watch_assistant.library_models import MediaLibrary
+from watch_assistant.schemas import LoggingLevel
 from watch_assistant.security import SecurityManager
 from watch_assistant.services.agent_tokens import AgentTokenService
 from watch_assistant.services.api_errors import (
@@ -85,6 +88,7 @@ from watch_assistant.services.maintenance import MaintenanceService
 from watch_assistant.services.manual_import import ManualImportService
 from watch_assistant.services.mcp import McpService
 from watch_assistant.services.notifications import NotificationService
+from watch_assistant.services.observability import emit_event
 from watch_assistant.services.organization_automation import (
     OrganizationAutomationService,
 )
@@ -135,6 +139,95 @@ _DEFAULT_PLAYBACK_NETWORKS = (
     "100.64.0.0/10",
     "fc00::/7",
 )
+
+
+async def _refresh_inventory_before_push(application: FastAPI) -> bool:
+    """Refresh every enabled inventory scope using read-only 115 access."""
+    database = getattr(application.state, "database", None)
+    provider = getattr(application.state, "organization_cookie_provider", None)
+    event_logger = getattr(application.state, "settings_service", None)
+    if database is None or provider is None:
+        await emit_event(
+            event_logger,
+            "inventory.refresh.failed",
+            level=LoggingLevel.WARNING,
+            fields={
+                "hidden_count": 1,
+                "error_code": "inventory_refresh_unavailable",
+            },
+        )
+        return False
+
+    async with database.session_factory() as session:
+        libraries = list(
+            (
+                await session.scalars(
+                    select(MediaLibrary)
+                    .where(MediaLibrary.enabled.is_(True))
+                    .order_by(MediaLibrary.id)
+                )
+            ).all()
+        )
+    if not libraries:
+        await emit_event(
+            event_logger,
+            "inventory.refresh.failed",
+            level=LoggingLevel.WARNING,
+            fields={
+                "hidden_count": 1,
+                "error_code": "inventory_scope_unconfigured",
+            },
+        )
+        return False
+
+    await emit_event(
+        event_logger,
+        "inventory.refresh.started",
+        fields={"total": len(libraries)},
+    )
+    for library in libraries:
+        try:
+            gateway = P115ReadOnlyDirectoryGateway(
+                provider,
+                authorized_directory_ids=(library.root_directory_id,),
+                request_timeout_seconds=30,
+            )
+            result = await LibraryIndexService(
+                database.session_factory,
+                gateway,
+                library_id=library.id,
+                root_directory_id=library.root_directory_id,
+                page_size=1,
+            ).scan(f"push-inventory-{uuid4().hex}")
+        except Exception:  # noqa: BLE001 - remote details stay private
+            await emit_event(
+                event_logger,
+                "inventory.refresh.failed",
+                level=LoggingLevel.WARNING,
+                fields={
+                    "hidden_count": 1,
+                    "error_code": "inventory_refresh_failed",
+                },
+            )
+            return False
+        if not result.complete or result.state.value != "completed":
+            await emit_event(
+                event_logger,
+                "inventory.refresh.failed",
+                level=LoggingLevel.WARNING,
+                fields={
+                    "hidden_count": 1,
+                    "error_code": result.error_code or "inventory_index_incomplete",
+                },
+            )
+            return False
+
+    await emit_event(
+        event_logger,
+        "inventory.refresh.completed",
+        fields={"count": len(libraries)},
+    )
+    return True
 
 
 def create_app(
@@ -454,6 +547,9 @@ def create_app(
                     inventory_guard=getattr(
                         application.state, "inventory_push_guard", None
                     ),
+                    inventory_refresh=lambda: _refresh_inventory_before_push(
+                        application
+                    ),
                 )
                 await worker.recover_expired()
                 application.state.task_worker = worker
@@ -740,6 +836,9 @@ def create_app(
                         owner=_worker_owner(),
                         event_logger=application.state.settings_service,
                         inventory_guard=application.state.inventory_push_guard,
+                        inventory_refresh=lambda: _refresh_inventory_before_push(
+                            application
+                        ),
                     )
                     application.state.push_capabilities = {
                         "magnet": True,
@@ -1240,6 +1339,7 @@ def create_app(
                 inventory_guard=getattr(
                     application.state, "inventory_push_guard", inventory_guard
                 ),
+                inventory_refresh=lambda: _refresh_inventory_before_push(application),
             )
 
     @application.get("/api/v1/health")
