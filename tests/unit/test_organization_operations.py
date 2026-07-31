@@ -228,6 +228,41 @@ async def test_organization_operation_updates_linked_workflow_stage(tmp_path):
         and fields["fields"]["status"] == "failed"
         for event, fields in recorder.events
     )
+    assert not any(
+        event == "organize.operation.failed" for event, _fields in recorder.events
+    )
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_unlinked_failed_operation_emits_failure_event(tmp_path):
+    database = await _database(tmp_path)
+    recorder = EventRecorder()
+    service = OrganizationOperationService(
+        database.session_factory, event_logger=recorder
+    )
+    operation = await _operation(database, key="unlinked-failure")
+    lease = await service.claim(operation.operation_id, expected_revision=1)
+
+    finished = await service.finish(
+        operation.operation_id,
+        expected_revision=lease.revision,
+        lease_token=lease.lease_token,
+        status=OrganizationOperationStatus.FAILED,
+        error_code="remote_write_failed",
+    )
+
+    assert finished.status is OrganizationOperationStatus.FAILED
+    assert any(
+        event == "organize.operation.failed"
+        and fields["fields"] == {
+            "status": "整理操作失败",
+            "error_code": "remote_write_failed",
+        }
+        and fields["task_id"] == operation.operation_id
+        and fields["resource_type"] == "organization_operation"
+        for event, fields in recorder.events
+    )
     await database.engine.dispose()
 
 
