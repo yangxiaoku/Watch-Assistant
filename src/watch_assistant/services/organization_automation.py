@@ -506,6 +506,7 @@ _BLOCKED_MESSAGES_ZH = {
     "no_video_files": "扫描来源没有可整理的视频文件。",
     "target_directory_parent_missing": "归档目录父级不存在，已阻止整理。",
     "target_directory_create_failed": "归档目录创建失败，已阻止整理。",
+    "target_directory_read_failed": "读取归档目录失败，115 当前未返回完整目录；已停止本轮整理，请确认账号可访问该目录后重试。",
     "credentials_unavailable": "115 登录状态不可用，已阻止整理。",
 }
 

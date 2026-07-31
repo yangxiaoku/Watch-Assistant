@@ -15,8 +15,9 @@ from watch_assistant.adapters.p115_library_gateway import (
 class OrganizationTargetError(ValueError):
     """Stable target-scope error without remote values."""
 
-    def __init__(self, code: str) -> None:
+    def __init__(self, code: str, *, cause_code: str | None = None) -> None:
         self.code = code
+        self.cause_code = cause_code
         super().__init__(code)
 
 
@@ -90,16 +91,9 @@ async def read_target_catalog(
         directory_id, parent_path = pending.pop(0)
         page = 1
         while True:
-            try:
-                result = await gateway.list_directory(
-                    directory_id, page=page, page_size=1
-                )
-            except asyncio.CancelledError:
-                raise
-            except P115ReadOnlyGatewayError:
-                raise OrganizationTargetError("target_directory_read_failed") from None
-            except Exception:  # noqa: BLE001 - remote details stay opaque
-                raise OrganizationTargetError("target_directory_read_failed") from None
+            result = await _read_directory_page_with_retry(
+                gateway, directory_id, page
+            )
             if result.state.value != "complete" or not isinstance(
                 result.terminal, bool
             ):
@@ -153,6 +147,30 @@ async def read_target_catalog(
         directories=tuple(sorted(by_path.items())),
         files=tuple(sorted(files, key=lambda item: item.object_id)),
     )
+
+
+async def _read_directory_page_with_retry(
+    gateway: P115ReadOnlyDirectoryGateway,
+    directory_id: str,
+    page: int,
+):
+    """Retry one bounded read once when the provider fails transiently."""
+
+    for attempt in range(2):
+        try:
+            return await gateway.list_directory(directory_id, page=page, page_size=1)
+        except asyncio.CancelledError:
+            raise
+        except P115ReadOnlyGatewayError as error:
+            if attempt == 1:
+                raise OrganizationTargetError(
+                    "target_directory_read_failed", cause_code=error.code
+                ) from None
+            await asyncio.sleep(0.5)
+        except Exception:  # noqa: BLE001 - remote details stay opaque
+            if attempt == 1:
+                raise OrganizationTargetError("target_directory_read_failed") from None
+            await asyncio.sleep(0.5)
 
 
 def _stable_id(value: object) -> bool:

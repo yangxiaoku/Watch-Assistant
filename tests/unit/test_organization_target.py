@@ -9,6 +9,7 @@ from watch_assistant.adapters.p115_library import (
     LibraryEntry,
     ScanState,
 )
+from watch_assistant.adapters.p115_library_gateway import P115ReadOnlyGatewayError
 from watch_assistant.services.organization_target import (
     OrganizationTargetError,
     read_target_catalog,
@@ -43,6 +44,21 @@ class _DirectoryGateway:
         self, directory_id: str, *, page: int = 1, page_size: int = 100
     ) -> DirectoryPage:
         self.calls.append((directory_id, page, page_size))
+        return self.pages[(directory_id, page)]
+
+
+class _RetryingDirectoryGateway(_DirectoryGateway):
+    def __init__(self, pages):
+        super().__init__(pages)
+        self.failures = 1
+
+    async def list_directory(
+        self, directory_id: str, *, page: int = 1, page_size: int = 100
+    ) -> DirectoryPage:
+        self.calls.append((directory_id, page, page_size))
+        if self.failures:
+            self.failures -= 1
+            raise P115ReadOnlyGatewayError("fs_files_failed")
         return self.pages[(directory_id, page)]
 
 
@@ -101,6 +117,32 @@ async def test_reads_complete_recursive_catalog_and_ignores_files():
         ("200", 1, 1),
         ("400", 1, 1),
     ]
+
+
+@pytest.mark.asyncio
+async def test_retries_transient_target_directory_read_once():
+    gateway = _RetryingDirectoryGateway({("100", 1): _page()})
+
+    catalog = await read_target_catalog(gateway, "100")
+
+    assert catalog.root_directory_id == "100"
+    assert gateway.calls == [("100", 1, 1), ("100", 1, 1)]
+
+
+@pytest.mark.asyncio
+async def test_exposes_target_read_failure_without_remote_details():
+    class _AlwaysFailedGateway(_DirectoryGateway):
+        async def list_directory(self, directory_id: str, *, page: int = 1, page_size: int = 100):
+            self.calls.append((directory_id, page, page_size))
+            raise P115ReadOnlyGatewayError("fs_files_failed")
+
+    gateway = _AlwaysFailedGateway({})
+    with pytest.raises(OrganizationTargetError) as error:
+        await read_target_catalog(gateway, "100")
+
+    assert error.value.code == "target_directory_read_failed"
+    assert error.value.cause_code == "fs_files_failed"
+    assert gateway.calls == [("100", 1, 1), ("100", 1, 1)]
 
 
 @pytest.mark.asyncio
