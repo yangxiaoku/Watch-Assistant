@@ -24,3 +24,10 @@ git diff --check
 ```
 
 本证据不包含 Cookie、Token、磁力链接、pickcode、完整播放 token 或真实直链。
+
+## STRM CLI 补充
+
+`watchctl strm generate --library <id> --full` 与 `watchctl strm sync --library <id>`
+只读取最新完整扫描 ID，再调用对应正式 API；CLI 不直接写本地文件、不读取 Cookie，
+也不绕过服务端的 `strm:write` Scope 或 feature flag。清理计划、校验和 `path-id`
+范围同步仍保持未开放，避免把不存在的服务端契约描述为已实现。

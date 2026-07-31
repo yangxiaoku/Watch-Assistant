@@ -535,6 +535,34 @@ def _command(args: argparse.Namespace, path: Path) -> tuple[Any, int]:
                     )
                 }
             return envelope(data=data, request_id=_request_id(body)), EXIT_OK
+        if args.command == "strm" and args.strm_command in {"generate", "sync"}:
+            library = client.get(f"/api/v1/libraries/{args.library_id}")
+            library_data = _data_for("/api/v1/libraries", library)
+            latest_scan = library_data.get("latest_scan") if isinstance(library_data, dict) else None
+            scan_run_id = latest_scan.get("run_id") if isinstance(latest_scan, dict) else None
+            if (
+                not isinstance(scan_run_id, str)
+                or latest_scan.get("state") != "completed"
+                or latest_scan.get("complete") is not True
+            ):
+                raise CliFailure(
+                    "媒体库没有可用的完整扫描",
+                    code=EXIT_CONFLICT,
+                    error_code="library_scan_required",
+                    suggestion_zh="请先完成媒体库扫描后再同步 STRM。",
+                )
+            payload: dict[str, Any] = {"source_scan_run_id": scan_run_id}
+            if args.workflow_id:
+                payload["workflow_id"] = args.workflow_id
+            endpoint = "strm-generation" if args.strm_command == "generate" else "strm-incremental"
+            body = client.post(
+                f"/api/v1/libraries/{args.library_id}/{endpoint}",
+                payload=payload,
+            )
+            return envelope(
+                data=_data_for("/api/v1/libraries", body),
+                request_id=_request_id(body),
+            ), EXIT_OK
         raise CliFailure("命令尚未开放", code=EXIT_UNAVAILABLE, error_code="command_unavailable")
     finally:
         client.close()
@@ -663,10 +691,17 @@ def _build_parser() -> argparse.ArgumentParser:
     apply.add_argument("--confirm", action="store_true")
     apply.add_argument("--idempotency-key")
 
-    strm = sub.add_parser("strm", help="STRM 只读查询")
+    strm = sub.add_parser("strm", help="STRM 查询与受保护同步")
     strm_sub = strm.add_subparsers(dest="strm_command", required=True)
     strm_status = strm_sub.add_parser("status", help="查看 STRM 能力或媒体库清单摘要")
     strm_status.add_argument("--library")
+    generate = strm_sub.add_parser("generate", help="请求受保护的 STRM 全量生成")
+    generate.add_argument("--library", dest="library_id", required=True)
+    generate.add_argument("--full", action="store_true", required=True)
+    generate.add_argument("--workflow-id")
+    sync = strm_sub.add_parser("sync", help="请求受保护的 STRM 增量同步")
+    sync.add_argument("--library", dest="library_id", required=True)
+    sync.add_argument("--workflow-id")
     return parser
 
 

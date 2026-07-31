@@ -312,6 +312,68 @@ def test_strm_status_uses_read_only_health_and_manifest_endpoints(capsys):
     ]
 
 
+def test_strm_generate_and_sync_use_latest_scan_and_formal_write_endpoints(capsys):
+    seen: list[tuple[str, str, dict[str, object] | None]] = []
+
+    class Transport(httpx.BaseTransport):
+        def handle_request(self, request):
+            payload = json.loads(request.content) if request.content else None
+            seen.append((request.method, request.url.path, payload))
+            if request.method == "GET":
+                return httpx.Response(
+                    200,
+                    json={
+                        "library_id": "library-one",
+                        "latest_scan": {
+                            "run_id": "scan-one",
+                            "state": "completed",
+                            "complete": True,
+                        },
+                    },
+                    request=request,
+                )
+            return httpx.Response(
+                200,
+                json={"library_id": "library-one", "scan_run_id": "scan-one", "generated": 1},
+                request=request,
+            )
+
+    original = ApiClient.__init__
+    original_close = ApiClient.close
+    ApiClient.__init__ = lambda self, config: (
+        setattr(self, "config", config),
+        setattr(self, "_client", httpx.Client(base_url=config.server, transport=Transport())),
+    )[-1]
+    ApiClient.close = lambda self: self._client.close()
+    try:
+        for command in (
+            ["strm", "generate", "--library", "library-one", "--full"],
+            ["strm", "sync", "--library", "library-one", "--workflow-id", "workflow-one"],
+        ):
+            assert main(
+                ["--server", "http://app.test", "--token", "wa_at_test", "--output", "json", *command]
+            ) == EXIT_OK
+            assert json.loads(capsys.readouterr().out)["ok"] is True
+    finally:
+        ApiClient.__init__ = original
+        ApiClient.close = original_close
+
+    assert seen == [
+        ("GET", "/api/v1/libraries/library-one", None),
+        (
+            "POST",
+            "/api/v1/libraries/library-one/strm-generation",
+            {"source_scan_run_id": "scan-one"},
+        ),
+        ("GET", "/api/v1/libraries/library-one", None),
+        (
+            "POST",
+            "/api/v1/libraries/library-one/strm-incremental",
+            {"source_scan_run_id": "scan-one", "workflow_id": "workflow-one"},
+        ),
+    ]
+
+
 def test_workflow_actions_use_shared_approval_and_cancel_endpoints(capsys):
     seen: list[tuple[str, str, dict[str, object] | None]] = []
 
