@@ -1386,6 +1386,7 @@ class InspectionResultResponse(BaseModel):
 
 class InspectionBatchResponse(BaseModel):
     batch_id: str
+    workflow_id: str | None = None
     status: InspectionBatchStatus
     submitted_count: int
     completed_count: int

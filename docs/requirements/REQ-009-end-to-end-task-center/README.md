@@ -131,6 +131,9 @@ API 返回顶层 workflow 和分页子任务，不返回敏感链接。REQ-003 �
 - 本轮补充 FLOW-002：资源搜索任务支持可选持久 `workflow_id`，在创建、恢复、运行和终态
   保存时同步 workflow 的 `discovery` 阶段；已有搜索任务关联其他 workflow 时返回稳定冲突，
   不覆盖原有关联。
+- 本轮补充 FLOW-002：内容检测批次响应返回持久 `workflow_id`；缓存命中、worker 正常完成、
+  部分结果和依赖失败都会在同一事务内同步 `inspection` 阶段及稳定原因码，服务重启后的批次
+  仍沿用原关联。
 - 本轮补充 FLOW-002：STRM 全量/增量/清理 API 支持可选 `workflow_id`，在开始、成功和失败时
   同步 `strm` 阶段；整理完成后的目录 dirty worker 会继承关联 workflow，并在成功、重试等待
   外部、最终失败和功能跳过时同步阶段状态。原有 STRM 开关、Scope、完整扫描和清理安全门禁
