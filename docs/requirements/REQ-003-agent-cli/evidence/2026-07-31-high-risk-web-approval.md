@@ -8,6 +8,7 @@
 - 超过阈值的计划必须先由 Web 会话创建并批准专属 workflow。
 - 整理操作服务端在排队前再次校验批准 workflow、approval 阶段、计划身份和批准状态。
 - Bearer Agent 调用 workflow 批准接口会被拒绝；CLI/MCP 不能绕过 Web 批准门禁。
+- 通用 workflow 阶段 PATCH 不能由 Bearer Agent 将 approval 阶段改为终态；终态决定必须经过专用批准接口。
 - 阈值默认只影响本地排队门禁，不开启任何生产 115 写入。
 
 ## 验证
@@ -24,8 +25,9 @@ tests/integration/test_organization_plan_api.py PASSED
 
 1. 11 个整理动作在没有批准 workflow 时返回 `high_risk_approval_required`。
 2. Bearer Agent 批准请求返回 `web_approval_required`，不改变 approval 阶段。
-3. Web 批准后，带正确 `workflow_id` 的整理操作才会排队。
-4. workflow 的 approval 阶段绑定内部计划 ID，不能借用其他计划的批准。
+3. Bearer Agent 通过通用阶段 PATCH 终结 approval 同样返回 `web_approval_required`，不改变阶段。
+4. Web 批准后，带正确 `workflow_id` 的整理操作才会排队。
+5. workflow 的 approval 阶段绑定内部计划 ID，不能借用其他计划的批准。
 
 ## 未覆盖
 
