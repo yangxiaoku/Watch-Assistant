@@ -69,6 +69,7 @@
   内容检测批次现在持久关联 workflow 的 `inspection` 阶段，缓存终态、正常完成、部分失败和依赖失败均同步；
   搜索和检测状态提交后会发出带 workflow/correlation ID 的阶段事件，可行动终态进入站内通知；
   推送创建、重试、取消、worker 终态和重启恢复也会发出同一 push 阶段事件；
+  整理 operation 审计和 `organization` 阶段事件补齐 operation/workflow/correlation ID；
   本轮已将 workflow 阶段的可行动状态接入站内通知，
   通知继续复用偏好、去重和 Webhook Outbox；本轮修正任务 worker 将 `uncertain` 误报为
   `failed` 的问题，并补齐任务 ID、115 不可用、订阅新资源和备份失败通知。

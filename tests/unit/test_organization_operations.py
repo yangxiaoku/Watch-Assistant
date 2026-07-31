@@ -53,6 +53,14 @@ ROOT_ID = "7000"
 SCAN_ID = "scan-1"
 
 
+class EventRecorder:
+    def __init__(self):
+        self.events = []
+
+    async def log_event(self, event, **kwargs):
+        self.events.append((event, kwargs))
+
+
 def _item(
     *, confidence: MatchConfidence = MatchConfidence.HIGH
 ) -> OrganizationPlanItem:
@@ -162,7 +170,10 @@ async def test_organization_operation_updates_linked_workflow_stage(tmp_path):
         WorkflowCreateRequest(media_type=MediaType.MOVIE, tmdb_id=1)
     )
     plan = await _plan(database)
-    service = OrganizationOperationService(database.session_factory)
+    recorder = EventRecorder()
+    service = OrganizationOperationService(
+        database.session_factory, event_logger=recorder
+    )
     operation = await service.create(
         plan.plan_id,
         idempotency_key="workflow-organization",
@@ -203,6 +214,20 @@ async def test_organization_operation_updates_linked_workflow_stage(tmp_path):
     )
     assert organization_stage.status is WorkflowStageStatus.FAILED
     assert organization_stage.error_code == "local_failure"
+    assert any(
+        event == "organize.operation.queued"
+        and fields["task_id"] == operation.operation_id
+        and fields["correlation_id"] == workflow.correlation_id
+        for event, fields in recorder.events
+    )
+    assert any(
+        event == "workflow.stage_changed"
+        and fields["task_id"] == workflow.id
+        and fields["correlation_id"] == workflow.correlation_id
+        and fields["fields"]["stage"] == "organization"
+        and fields["fields"]["status"] == "failed"
+        for event, fields in recorder.events
+    )
     await database.engine.dispose()
 
 
