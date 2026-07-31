@@ -404,6 +404,7 @@ async def create_organization_preview(
         plan = await service.create_preview(
             library_id=library_id,
             scan_run_id=payload.source_scan_run_id,
+            source_directory_id=payload.source_directory_id,
             target_directory_id=settings.target_directory_id if settings else None,
             target_directories=target_directories,
             existing_target_files=existing_target_files,
@@ -430,6 +431,7 @@ async def create_organization_preview(
             "scan_not_current": 409,
             "no_video_files": 409,
             "scan_entry_invalid": 409,
+            "source_directory_not_found": 409,
         }
         raise HTTPException(
             status_code=statuses.get(error.code, 409), detail=error.code

@@ -112,6 +112,49 @@ async def test_preview_uses_scan_snapshot_and_requires_verified_target(
 
 
 @pytest.mark.asyncio
+async def test_preview_can_limit_sources_to_a_verified_directory(tmp_path: Path):
+    database = await _database(tmp_path, target_exists=False)
+    async with database.session_factory() as session:
+        session.add_all(
+            [
+                LibraryScanEntry(
+                    scan_run_id="scan-preview",
+                    object_type="directory",
+                    object_id="source-directory",
+                    parent_id="root-preview",
+                    name="Selected",
+                    path="incoming/Selected",
+                    is_directory=True,
+                ),
+                LibraryScanEntry(
+                    scan_run_id="scan-preview",
+                    object_type="file",
+                    object_id="file-selected",
+                    parent_id="source-directory",
+                    name="The.Office.2005.720p.mkv",
+                    path="incoming/Selected/The.Office.2005.720p.mkv",
+                    is_directory=False,
+                ),
+            ]
+        )
+        await session.commit()
+    client = _TmdbClient()
+    service = OrganizationPreviewService(
+        database.session_factory, client, OrganizationPlanService(database.session_factory)
+    )
+
+    result = await service.create_preview(
+        library_id="library-preview",
+        scan_run_id="scan-preview",
+        source_directory_id="source-directory",
+    )
+
+    assert result.source_count == 1
+    assert client.calls == 1
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_preview_preserves_original_name_when_rename_is_disabled(tmp_path: Path):
     database = await _database(tmp_path, target_exists=True)
     service = OrganizationPreviewService(

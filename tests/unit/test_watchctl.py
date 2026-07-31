@@ -559,3 +559,106 @@ def test_organize_apply_requires_explicit_confirmation(capsys):
     body = json.loads(capsys.readouterr().out)
     assert code == 5
     assert body["error"]["code"] == "confirmation_required"
+
+
+def test_organize_plan_uses_latest_scan_and_source_directory(capsys):
+    seen: list[tuple[str, str, dict[str, object] | None]] = []
+
+    class Transport(httpx.BaseTransport):
+        def handle_request(self, request):
+            payload = json.loads(request.content) if request.content else None
+            seen.append((request.method, request.url.path, payload))
+            if request.method == "GET":
+                return httpx.Response(
+                    200,
+                    json={
+                        "library_id": "library-one",
+                        "latest_scan": {
+                            "run_id": "scan-one",
+                            "state": "completed",
+                            "complete": True,
+                        },
+                    },
+                    request=request,
+                )
+            return httpx.Response(
+                200,
+                json={"plan_id": "plan-one", "status": "needs_review"},
+                request=request,
+            )
+
+    original = ApiClient.__init__
+    original_close = ApiClient.close
+    ApiClient.__init__ = lambda self, config: (
+        setattr(self, "config", config),
+        setattr(self, "_client", httpx.Client(base_url=config.server, transport=Transport())),
+    )[-1]
+    ApiClient.close = lambda self: self._client.close()
+    try:
+        code = main(
+            [
+                "--server",
+                "http://app.test",
+                "--token",
+                "wa_at_test",
+                "--output",
+                "json",
+                "organize",
+                "plan",
+                "--library",
+                "library-one",
+                "--path-id",
+                "directory-one",
+            ]
+        )
+    finally:
+        ApiClient.__init__ = original
+        ApiClient.close = original_close
+
+    body = json.loads(capsys.readouterr().out)
+    assert code == EXIT_OK
+    assert body["data"]["plan_id"] == "plan-one"
+    assert seen == [
+        ("GET", "/api/v1/libraries/library-one", None),
+        (
+            "POST",
+            "/api/v1/libraries/library-one/organization-preview",
+            {"source_scan_run_id": "scan-one", "source_directory_id": "directory-one"},
+        ),
+    ]
+
+
+def test_organize_plan_requires_a_completed_scan(capsys):
+    class Transport(httpx.BaseTransport):
+        def handle_request(self, request):
+            return httpx.Response(200, json={"library_id": "library-one", "latest_scan": None}, request=request)
+
+    original = ApiClient.__init__
+    original_close = ApiClient.close
+    ApiClient.__init__ = lambda self, config: (
+        setattr(self, "config", config),
+        setattr(self, "_client", httpx.Client(base_url=config.server, transport=Transport())),
+    )[-1]
+    ApiClient.close = lambda self: self._client.close()
+    try:
+        code = main(
+            [
+                "--server",
+                "http://app.test",
+                "--token",
+                "wa_at_test",
+                "--output",
+                "json",
+                "organize",
+                "plan",
+                "--library",
+                "library-one",
+            ]
+        )
+    finally:
+        ApiClient.__init__ = original
+        ApiClient.close = original_close
+
+    body = json.loads(capsys.readouterr().out)
+    assert code == EXIT_CONFLICT
+    assert body["error"]["code"] == "library_scan_required"

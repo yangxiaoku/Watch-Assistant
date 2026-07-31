@@ -99,7 +99,10 @@ async def test_organization_preview_api_is_local_idempotent_and_redacted(tmp_pat
         first = await client.post(
             "/api/v1/libraries/library-preview-api/organization-preview",
             headers=headers,
-            json={"source_scan_run_id": "scan-preview-api"},
+            json={
+                "source_scan_run_id": "scan-preview-api",
+                "source_directory_id": "root-preview-api",
+            },
         )
         second = await client.post(
             "/api/v1/libraries/library-preview-api/organization-preview",

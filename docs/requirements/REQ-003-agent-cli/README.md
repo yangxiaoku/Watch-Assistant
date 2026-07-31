@@ -310,6 +310,7 @@ CLI 必须使用正式版本化 API，与 Web 共用校验和状态机。不得�
 - `watchctl webhook test <endpoint-id>` 仅调用正式的单端点测试投递 API，不直接访问第三方接收端。
 - `watchctl task cancel <task-id>` 仅取消尚未被 worker claim 的 queued 任务；已提交、运行中或结果不确定的任务返回稳定 `task_not_cancellable` 错误。
 - `watchctl strm status [--library <id>]` 仅读取 health capability 或受保护的 manifest 列表摘要，不开启 STRM 写入或播放。
+- `watchctl organize plan --library <id> [--path-id <directory-id>]` 读取最新完整扫描并调用正式整理预览 API，仅持久化本地计划，不执行 115 写入；扫描未完成或目录不在快照范围内时拒绝生成计划。
 - Token 撤销后不能提交新操作。
 - 每个操作可追踪到 Agent、计划、任务和最终结果。
 - CLI 无法获得 Cookie、真实直链、Web 密码或其他 Token。

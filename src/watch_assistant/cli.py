@@ -445,6 +445,40 @@ def _command(args: argparse.Namespace, path: Path) -> tuple[Any, int]:
                 body = client.get(f"/api/v1/audit/{args.audit_id}")
             return envelope(data=_data_for("/api/v1/audit", body), request_id=_request_id(body)), EXIT_OK
         if args.command == "organize":
+            if args.organize_command == "plan":
+                library = client.get(f"/api/v1/libraries/{args.library_id}")
+                library_data = _data_for("/api/v1/libraries", library)
+                latest_scan = library_data.get("latest_scan") if isinstance(library_data, dict) else None
+                if not isinstance(latest_scan, dict):
+                    raise CliFailure(
+                        "媒体库没有可用的完整扫描",
+                        code=EXIT_CONFLICT,
+                        error_code="library_scan_required",
+                        suggestion_zh="请先完成媒体库扫描后再生成整理计划。",
+                    )
+                scan_run_id = latest_scan.get("run_id")
+                if (
+                    not isinstance(scan_run_id, str)
+                    or latest_scan.get("state") != "completed"
+                    or latest_scan.get("complete") is not True
+                ):
+                    raise CliFailure(
+                        "媒体库扫描尚未完成",
+                        code=EXIT_CONFLICT,
+                        error_code="library_scan_required",
+                        suggestion_zh="请等待完整扫描完成后再生成整理计划。",
+                    )
+                payload = {"source_scan_run_id": scan_run_id}
+                if args.path_id:
+                    payload["source_directory_id"] = args.path_id
+                body = client.post(
+                    f"/api/v1/libraries/{args.library_id}/organization-preview",
+                    payload=payload,
+                )
+                return envelope(
+                    data=_data_for("/api/v1/libraries", body),
+                    request_id=_request_id(body),
+                ), EXIT_OK
             if args.organize_command == "plans":
                 params = {"cursor": str(args.cursor), "limit": str(args.limit)}
                 if args.status:
@@ -612,8 +646,11 @@ def _build_parser() -> argparse.ArgumentParser:
     audit_show = audit_sub.add_parser("show")
     audit_show.add_argument("audit_id")
 
-    organize = sub.add_parser("organize", help="整理计划只读查询")
+    organize = sub.add_parser("organize", help="整理计划查询与本地预览")
     organize_sub = organize.add_subparsers(dest="organize_command", required=True)
+    plan = organize_sub.add_parser("plan", help="基于最新完整扫描生成本地整理计划")
+    plan.add_argument("--library", dest="library_id", required=True)
+    plan.add_argument("--path-id", help="仅规划指定源目录及其子目录")
     plans = organize_sub.add_parser("plans")
     plans.add_argument("--status", choices=("needs_review", "planned", "invalidated", "ignored"))
     plans.add_argument("--cursor", type=int, default=0)

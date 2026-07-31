@@ -69,6 +69,7 @@ class OrganizationPreviewService:
         *,
         library_id: str,
         scan_run_id: str,
+        source_directory_id: str | None = None,
         target_directory_id: str | None = None,
         target_directories: Mapping[str, str] | None = None,
         existing_target_files: Sequence[OrganizationTargetFile] = (),
@@ -119,9 +120,45 @@ class OrganizationPreviewService:
         library, run, entries = await self._load_verified_snapshot(
             library_id, scan_run_id
         )
+        source_entries = entries
+        if source_directory_id is not None:
+            if (
+                not isinstance(source_directory_id, str)
+                or not source_directory_id
+                or len(source_directory_id) > 128
+                or "/" in source_directory_id
+                or "\\" in source_directory_id
+                or "\x00" in source_directory_id
+            ):
+                raise OrganizationPreviewError("source_directory_not_found")
+            directory_ids = {
+                entry.object_id
+                for entry in entries
+                if entry.is_directory and isinstance(entry.object_id, str)
+            }
+            if source_directory_id != library.root_directory_id and source_directory_id not in directory_ids:
+                raise OrganizationPreviewError("source_directory_not_found")
+            descendants = {source_directory_id}
+            changed = True
+            while changed:
+                changed = False
+                for entry in entries:
+                    if (
+                        entry.is_directory
+                        and isinstance(entry.object_id, str)
+                        and entry.object_id not in descendants
+                        and entry.parent_id in descendants
+                    ):
+                        descendants.add(entry.object_id)
+                        changed = True
+            source_entries = [
+                entry
+                for entry in entries
+                if entry.is_directory or entry.parent_id in descendants
+            ]
         files = [
             entry
-            for entry in entries
+            for entry in source_entries
             if not entry.is_directory
             and _is_video_entry(
                 entry,
@@ -173,7 +210,7 @@ class OrganizationPreviewService:
             parsed = parse_media_filename(entry.name)
             companion_entries = _find_companion_entries(
                 entry,
-                entries,
+                source_entries,
                 metadata_extensions=normalized_metadata_extensions,
             )
             companion_files = tuple(

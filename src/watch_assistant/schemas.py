@@ -224,6 +224,7 @@ class OrganizationPreviewRequest(BaseModel):
     model_config = {"extra": "forbid"}
 
     source_scan_run_id: str = Field(min_length=1, max_length=128)
+    source_directory_id: str | None = Field(default=None, min_length=1, max_length=128)
 
 
 class MediaLibraryListResponse(BaseModel):
