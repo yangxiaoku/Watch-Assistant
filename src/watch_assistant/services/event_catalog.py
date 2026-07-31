@@ -224,6 +224,13 @@ EVENT_CATALOG: dict[str, EventDefinition] = {
     "strm.dirty_consumed": _event(
         "strm.dirty_consumed", LogCategory.STRM, "目录变更已完成增量对账", "目录变更已完成增量对账，当前状态：{status}"
     ),
+    "strm.dirty_failed": _event(
+        "strm.dirty_failed",
+        LogCategory.STRM,
+        "STRM 增量对账失败",
+        "STRM 增量对账失败，错误码：{error_code}",
+        suggestion="请检查媒体库扫描和 STRM 设置，确认失败原因后再重试",
+    ),
     "strm.dirty_skipped": _event(
         "strm.dirty_skipped", LogCategory.STRM, "已跳过目录增量对账", "整理完成后未启用 STRM 联动"
     ),

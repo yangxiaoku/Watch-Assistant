@@ -38,6 +38,7 @@ _NOTIFIABLE_EVENTS = frozenset(
         "organize.operation.completed",
         "strm.cleanup_blocked",
         "strm.dirty_consumed",
+        "strm.dirty_failed",
         "backup.failed",
         "backup.restore_preview",
         "workflow.stage_changed",
@@ -112,7 +113,7 @@ class NotificationService:
             "workflow"
             if event_code.startswith("workflow.")
             else "settings"
-            if event_code == "inspection.batch_failed"
+            if event_code in {"inspection.batch_failed", "strm.dirty_failed"}
             else "organization_plan"
             if event_code in {"organize.operation.failed", "organize.operation.uncertain"}
             else "task"
@@ -317,6 +318,7 @@ def _severity(event_code: str, status: object) -> NotificationSeverity:
         "p115.credentials_expired",
         "organize.operation.uncertain",
         "strm.cleanup_blocked",
+        "strm.dirty_failed",
         "backup.failed",
         "p115.readiness",
     }:

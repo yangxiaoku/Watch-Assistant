@@ -119,6 +119,9 @@
 - 无 workflow 关联的整理 operation 失败现在使用独立的 `organize.operation.failed` 事件生成
   错误级站内通知，并跳转整理工作台；关联 workflow 的失败继续只由 `workflow.stage_changed`
   通知，避免同一次失败重复提醒。错误详情仅使用白名单错误码。
+- STRM dirty worker 在重试耗尽或增量结果明确含失败项时，为无 workflow 的媒体库生成
+  `strm.dirty_failed` 错误通知并跳转设置；关联 workflow 时仍只保留 `workflow.stage_changed`
+  通知，错误详情同样只使用稳定错误码。
 - 无 workflow 关联的内容检测批次失败现在生成错误通知并跳转资源检测设置；已关联 workflow 的
   批次失败只保留 workflow 阶段通知，避免同一失败重复提醒。
 - 整理预览进入 `needs_review` 时，API 预览和自动预览都会发出 `organize.needs_review`；同一计划的重复预览复用 30 分钟去重并累加次数，通知可跳转整理工作台。

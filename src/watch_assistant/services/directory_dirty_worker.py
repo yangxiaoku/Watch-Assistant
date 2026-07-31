@@ -99,6 +99,8 @@ class DirectoryDirtyWorker:
         lease = await self._outbox.claim_generation(self._session_factory)
         if lease is None:
             return False
+        library_id: str | None = None
+        workflow_id: str | None = None
         try:
             context = await self._load_context(lease)
             if context is None:
@@ -127,6 +129,12 @@ class DirectoryDirtyWorker:
                         lease,
                         error_code="settings_unavailable",
                         max_attempts=self._max_attempts,
+                    )
+                    await self._audit_failure(
+                        workflow_id=workflow_id,
+                        library_id=library_id,
+                        attempts=lease.attempts,
+                        error_code="settings_unavailable",
                     )
                     return True
                 strm_linkage_enabled = organization_settings.strm_linkage_enabled
@@ -166,6 +174,12 @@ class DirectoryDirtyWorker:
                     reason="strm_scan_incomplete",
                     error_code="scan_incomplete",
                 )
+                await self._audit_failure(
+                    workflow_id=workflow_id,
+                    library_id=library_id,
+                    attempts=lease.attempts,
+                    error_code="scan_incomplete",
+                )
                 return True
             if strm_linkage_enabled:
                 summary = await self._strm.incremental(
@@ -182,6 +196,14 @@ class DirectoryDirtyWorker:
                     reason="strm_finished",
                     error_code="strm_incremental_failed" if getattr(summary, "failed", 0) else None,
                 )
+                if getattr(summary, "failed", 0):
+                    await self._audit_failure(
+                        workflow_id=workflow_id,
+                        library_id=library_id,
+                        attempts=lease.attempts,
+                        error_code="strm_incremental_failed",
+                        terminal_only=False,
+                    )
             if cleanup_empty_directories:
                 candidates = await self._cleanup_candidates(
                     scan.run_id, root_directory_id, actions_json
@@ -202,6 +224,12 @@ class DirectoryDirtyWorker:
                             else WorkflowStageStatus.WAITING_EXTERNAL
                         ),
                         reason="empty_directory_cleanup_unavailable",
+                        error_code="empty_directory_cleanup_unavailable",
+                    )
+                    await self._audit_failure(
+                        workflow_id=workflow_id,
+                        library_id=library_id,
+                        attempts=lease.attempts,
                         error_code="empty_directory_cleanup_unavailable",
                     )
                     return True
@@ -230,6 +258,12 @@ class DirectoryDirtyWorker:
                             reason="empty_directory_cleanup_failed",
                             error_code="empty_directory_cleanup_failed",
                         )
+                        await self._audit_failure(
+                            workflow_id=workflow_id,
+                            library_id=library_id,
+                            attempts=lease.attempts,
+                            error_code="empty_directory_cleanup_failed",
+                        )
                         return True
                     if result is EmptyDirectoryCleanupStatus.UNCERTAIN:
                         await self._outbox.retry(
@@ -247,6 +281,12 @@ class DirectoryDirtyWorker:
                                 else WorkflowStageStatus.WAITING_EXTERNAL
                             ),
                             reason="empty_directory_cleanup_uncertain",
+                            error_code="empty_directory_cleanup_uncertain",
+                        )
+                        await self._audit_failure(
+                            workflow_id=workflow_id,
+                            library_id=library_id,
+                            attempts=lease.attempts,
                             error_code="empty_directory_cleanup_uncertain",
                         )
                         return True
@@ -272,6 +312,12 @@ class DirectoryDirtyWorker:
                 reason="strm_reconcile_failed",
                 error_code="reconcile_failed",
             )
+            await self._audit_failure(
+                workflow_id=workflow_id,
+                library_id=library_id,
+                attempts=lease.attempts,
+                error_code="reconcile_failed",
+            )
         except Exception:  # noqa: BLE001 - details never cross the worker boundary
             await self._outbox.retry(
                 self._session_factory,
@@ -288,6 +334,12 @@ class DirectoryDirtyWorker:
                     else WorkflowStageStatus.WAITING_EXTERNAL
                 ),
                 reason="strm_worker_failed",
+                error_code="worker_failed",
+            )
+            await self._audit_failure(
+                workflow_id=workflow_id,
+                library_id=library_id,
+                attempts=lease.attempts,
                 error_code="worker_failed",
             )
         return True
@@ -387,13 +439,48 @@ class DirectoryDirtyWorker:
             and row.object_id not in occupied
         )
 
-    async def _audit(self, event: str, status: str) -> None:
+    async def _audit_failure(
+        self,
+        *,
+        workflow_id: str | None,
+        library_id: str | None,
+        attempts: int,
+        error_code: str,
+        terminal_only: bool = True,
+    ) -> None:
+        if workflow_id is not None or (terminal_only and attempts < self._max_attempts):
+            return
+        await self._audit(
+            "strm.dirty_failed",
+            "STRM 增量对账失败",
+            error_code=error_code,
+            resource_type="library",
+            resource_id=library_id,
+        )
+
+    async def _audit(
+        self,
+        event: str,
+        status: str,
+        *,
+        error_code: str | None = None,
+        resource_type: str | None = None,
+        resource_id: str | None = None,
+    ) -> None:
         logger = self._event_logger
         log_event = getattr(logger, "log_event", None)
         if not callable(log_event):
             return
         try:
-            await log_event(event, fields={"status": status})
+            await log_event(
+                event,
+                fields={
+                    "status": status,
+                    **({"error_code": error_code} if error_code is not None else {}),
+                },
+                resource_type=resource_type,
+                resource_id=resource_id,
+            )
         except Exception:  # noqa: BLE001 - audit failure cannot block reconciliation
             return
 
