@@ -521,11 +521,8 @@ def _upgrade_legacy_workflow_schema(connection: Connection) -> None:
     }
     for name, definition in (
         ("stage", "VARCHAR(32)"),
-        ("reason", "TEXT"),
-        ("error_code", "VARCHAR(100)"),
         ("child_type", "VARCHAR(64)"),
         ("child_id", "VARCHAR(128)"),
-        ("started_at", "DATETIME"),
         ("completed_at", "DATETIME"),
     ):
         if name not in stage_columns:
@@ -582,6 +579,23 @@ def _upgrade_legacy_workflow_schema(connection: Connection) -> None:
         )
 
 
+def _upgrade_workflow_schema_compatibility_followup(connection: Connection) -> None:
+    """Add current stage columns for databases that already ran migration 031."""
+
+    stage_columns = {
+        item["name"] for item in inspect(connection).get_columns("workflow_stages")
+    }
+    for name, definition in (
+        ("reason", "TEXT"),
+        ("error_code", "VARCHAR(100)"),
+        ("started_at", "DATETIME"),
+    ):
+        if name not in stage_columns:
+            connection.execute(
+                text(f"ALTER TABLE workflow_stages ADD COLUMN {name} {definition}")
+            )
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration("001_application_settings_columns", _add_application_settings_columns),
     Migration("002_library_index_tables", _create_library_index_tables),
@@ -611,6 +625,10 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration("041_organization_settings", _add_organization_settings_column),
     Migration("042_directory_dirty_leases", _upgrade_directory_dirty_outbox),
     Migration("043_p115_login_devices", _create_p115_login_devices_table),
+    Migration(
+        "044_workflow_schema_compatibility_followup",
+        _upgrade_workflow_schema_compatibility_followup,
+    ),
 )
 
 
