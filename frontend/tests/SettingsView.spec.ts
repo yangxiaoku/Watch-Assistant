@@ -202,6 +202,8 @@ describe("SettingsView", () => {
 
     expect(api.p115Directories).toHaveBeenCalledWith(undefined);
     expect(wrapper.text()).toContain("115 网盘根目录");
+    expect(wrapper.text()).toContain("115 网盘");
+    expect(wrapper.text()).not.toContain("当前配置的 115 受管目录");
     expect(wrapper.get(".directory-picker-toolbar .primary-button").text()).toContain("根目录不可直接选择");
     expect(wrapper.get(".directory-picker-toolbar .primary-button").attributes("disabled")).toBeDefined();
   });
