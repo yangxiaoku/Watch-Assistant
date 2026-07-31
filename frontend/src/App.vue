@@ -28,7 +28,6 @@ import LibraryView from "./views/LibraryView.vue";
 import MovieView from "./views/MovieView.vue";
 import SearchView from "./views/SearchView.vue";
 import SettingsView from "./views/SettingsView.vue";
-import OrganizationWorkbenchView from "./views/OrganizationWorkbenchView.vue";
 import LibraryWorkbenchView from "./views/LibraryWorkbenchView.vue";
 import WorkflowCenterView from "./views/WorkflowCenterView.vue";
 import NotificationCenterView from "./views/NotificationCenterView.vue";
@@ -1449,7 +1448,7 @@ onBeforeUnmount(() => {
         <LibraryView v-else-if="activeView === 'movies' || activeView === 'tv'" :movies="catalogMovies" :loading="catalogLoading" :favorite-ids="favoriteIds" :genre-id="genreId" :year="year" :sort="sort" :media-type="activeView" :page="currentPage" :total-pages="totalPages" :total-results="totalResults" @open="openMovie" @favorite="toggleFavorite" @filters="loadDiscover" @page="loadPage" />
         <CollectionView v-else-if="activeView === 'favorites' || activeView === 'history'" :mode="activeView" :movies="activeView === 'favorites' ? favorites : history" :favorite-ids="favoriteIds" @open="openMovie" @favorite="toggleFavorite" />
         <SettingsView v-else-if="activeView === 'settings'" :api="api" @auto-start-enabled="inspectionAutoStartEnabled = $event" />
-        <OrganizationWorkbenchView v-else-if="activeView === 'organization-plans' && organizationPlanEnabled" :api="api" :enabled="organizationPlanEnabled" :execution-enabled="organizationExecutionEnabled" />
+        <SettingsView v-else-if="activeView === 'organization-plans' && organizationPlanEnabled" :api="api" initial-section="organization" @auto-start-enabled="inspectionAutoStartEnabled = $event" />
         <LibraryWorkbenchView v-else-if="activeView === 'library'" :api="api" />
         <WorkflowCenterView v-else-if="activeView === 'workflows'" :api="api" />
         <NotificationCenterView v-else-if="activeView === 'notifications'" :api="api" @navigate="selectView" />

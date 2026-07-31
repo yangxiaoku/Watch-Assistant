@@ -22,6 +22,7 @@ from watch_assistant.schemas import (
     LoggingSettingsResponse,
     LogItem,
     LogsResponse,
+    OrganizationAutomationResultResponse,
     OrganizationScheduleActionResponse,
     OrganizationSettingsPatch,
     OrganizationSettingsResponse,
@@ -36,6 +37,38 @@ from watch_assistant.services.settings import (
 )
 
 router = APIRouter(prefix="/api/v1", dependencies=[Depends(require_api_auth)])
+
+ORGANIZATION_RESULT_STATUSES = [
+    "unknown",
+    "success",
+    "skipped",
+    "deleted",
+    "replace",
+    "failed",
+]
+
+
+def _organization_result_response(result) -> OrganizationAutomationResultResponse:
+    if result is None:
+        return OrganizationAutomationResultResponse(
+            status="unknown",
+            available_statuses=ORGANIZATION_RESULT_STATUSES,
+            source_count=0,
+            scanned_count=0,
+            plan_count=0,
+            queued_count=0,
+            blocked_count=0,
+        )
+    return OrganizationAutomationResultResponse(
+        status="failed" if result.blocked_count else "success",
+        available_statuses=ORGANIZATION_RESULT_STATUSES,
+        source_count=result.source_count,
+        scanned_count=result.scanned_count,
+        plan_count=result.plan_count,
+        queued_count=result.queued_count,
+        blocked_count=result.blocked_count,
+        finished_at=result.finished_at,
+    )
 
 
 def get_settings_service(request: Request) -> SettingsService:
@@ -251,6 +284,19 @@ async def run_organization_now(
         queued=True,
         schedule_enabled=current.schedule_enabled,
         message_zh="整理已排队，当前任务完成后将立即执行。",
+    )
+
+
+@router.get(
+    "/settings/organization/result",
+    response_model=OrganizationAutomationResultResponse,
+)
+async def get_organization_result(
+    request: Request,
+) -> OrganizationAutomationResultResponse:
+    automation = getattr(request.app.state, "organization_automation_service", None)
+    return _organization_result_response(
+        getattr(automation, "last_result", None) if automation is not None else None
     )
 
 

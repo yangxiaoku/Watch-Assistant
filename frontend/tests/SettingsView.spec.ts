@@ -98,6 +98,16 @@ function makeApi(overrides: Partial<Record<keyof ApiClient, unknown>> = {}) {
     contentPolicy: vi.fn().mockResolvedValue(contentPolicy),
     updateContentPolicy: vi.fn().mockResolvedValue({ ...contentPolicy, revision: 4 }),
     organizationSettings: vi.fn().mockResolvedValue(organization),
+    organizationResult: vi.fn().mockResolvedValue({
+      status: "unknown",
+      available_statuses: ["unknown", "success", "skipped", "deleted", "replace", "failed"],
+      source_count: 0,
+      scanned_count: 0,
+      plan_count: 0,
+      queued_count: 0,
+      blocked_count: 0,
+      finished_at: null,
+    }),
     updateOrganizationSettings: vi.fn().mockResolvedValue({ ...organization, revision: 5 }),
     p115Directories: vi.fn().mockImplementation(async (directoryId?: string) => ({
       root_id: "0",
@@ -162,10 +172,22 @@ describe("SettingsView", () => {
       push_directory_id: "3500",
       revision: 4,
     }));
-    await wrapper.findAll("button").find((button) => button.text().includes("立即整理"))?.trigger("click");
+    await wrapper.findAll("button").find((button) => button.text().includes("开始整理"))?.trigger("click");
     expect(api.runOrganizationNow).toHaveBeenCalledTimes(1);
-    await wrapper.findAll("button").find((button) => button.text().includes("停止整理"))?.trigger("click");
+    await wrapper.findAll("button").find((button) => button.text().includes("停止定时"))?.trigger("click");
     expect(api.stopOrganization).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows the requested organization result statuses", async () => {
+    const api = makeApi();
+    const wrapper = mount(SettingsView, { props: { api } });
+    await flushPromises();
+    await wrapper.findAll("button").find((button) => button.text().includes("115 整理"))?.trigger("click");
+    await flushPromises();
+
+    expect(wrapper.find(".organization-result-statuses").text()).toContain(
+      "全部状态unknownsuccessskippeddeletedreplacefailed",
+    );
   });
 
   it("selects and persists a separate push directory from the managed scope", async () => {

@@ -413,6 +413,19 @@ export interface OrganizationScheduleActionResponse {
   message_zh: string;
 }
 
+export type OrganizationResultStatus = "unknown" | "success" | "skipped" | "deleted" | "replace" | "failed";
+
+export interface OrganizationAutomationResultResponse {
+  status: OrganizationResultStatus;
+  available_statuses: OrganizationResultStatus[];
+  source_count: number;
+  scanned_count: number;
+  plan_count: number;
+  queued_count: number;
+  blocked_count: number;
+  finished_at: string | null;
+}
+
 export interface PatchInspectionSettingsRequest {
   auto_start_enabled: boolean;
   revision: number;

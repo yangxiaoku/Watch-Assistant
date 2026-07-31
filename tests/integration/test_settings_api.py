@@ -546,6 +546,13 @@ async def test_organization_manual_run_is_independent_from_schedule_and_stop_cle
         assert run_now.json()["queued"] is True
         assert scheduler.requested == 1
 
+        result = await client.get("/api/v1/settings/organization/result")
+        assert result.status_code == 200
+        assert result.json()["status"] == "unknown"
+        assert result.json()["available_statuses"] == [
+            "unknown", "success", "skipped", "deleted", "replace", "failed"
+        ]
+
         stopped = await client.post(
             "/api/v1/settings/organization/stop", json={}, headers=headers
         )

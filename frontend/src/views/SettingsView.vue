@@ -29,6 +29,8 @@ import type {
   CredentialSettingsResponse,
   LoggingSettingsResponse,
   InspectionSettingsResponse,
+  OrganizationAutomationResultResponse,
+  OrganizationResultStatus,
   OrganizationSettingsResponse,
   LogsResponse,
   P115SettingsResponse,
@@ -38,7 +40,9 @@ import type {
   SettingsOverviewResponse,
 } from "../types";
 
-const props = defineProps<{ api: ApiClient }>();
+const props = withDefaults(defineProps<{ api: ApiClient; initialSection?: SettingsSection }>(), {
+  initialSection: "overview" as SettingsSection,
+});
 const emit = defineEmits<{ "auto-start-enabled": [enabled: boolean] }>();
 
 type SettingsSection = "overview" | "credentials" | "logs" | "content" | "inspection" | "p115" | "organization";
@@ -94,7 +98,7 @@ const actorTypeOptions = [
   { value: "agent", label: "Agent" },
   { value: "userscript", label: "用户脚本" },
 ];
-const activeSection = ref<SettingsSection>("overview");
+const activeSection = ref<SettingsSection>(props.initialSection);
 const overview = ref<SettingsOverviewResponse | null>(null);
 const overviewLoading = ref(true);
 const overviewError = ref("");
@@ -139,6 +143,9 @@ const organizationSaveError = ref("");
 const organizationSaving = ref(false);
 const organizationActionBusy = ref(false);
 const organizationActionMessage = ref("");
+const organizationResult = ref<OrganizationAutomationResultResponse | null>(null);
+const organizationResultLoading = ref(false);
+const organizationResultStatuses: OrganizationResultStatus[] = ["unknown", "success", "skipped", "deleted", "replace", "failed"];
 const organizationSourceDraft = ref("");
 const organizationTargetDraft = ref("");
 const organizationPushDraft = ref("");
@@ -552,6 +559,32 @@ async function loadOrganization() {
   }
 }
 
+async function loadOrganizationResult() {
+  organizationResultLoading.value = true;
+  try {
+    organizationResult.value = await props.api.organizationResult();
+  } catch (exception) {
+    if (!organizationActionMessage.value) {
+      organizationActionMessage.value = exception instanceof ApiError ? exception.message : "整理结果加载失败，请稍后重试";
+    }
+  } finally {
+    organizationResultLoading.value = false;
+  }
+}
+
+async function pollOrganizationResult(previousFinishedAt: string | null) {
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    await new Promise((resolve) => window.setTimeout(resolve, 500));
+    try {
+      const response = await props.api.organizationResult();
+      organizationResult.value = response;
+      if (response.finished_at && response.finished_at !== previousFinishedAt) return;
+    } catch {
+      return;
+    }
+  }
+}
+
 async function openDirectoryPicker(mode: "source" | "target" | "push") {
   directoryPickerMode.value = mode;
   directoryPickerOpen.value = true;
@@ -669,10 +702,16 @@ async function runOrganizationNow() {
   organizationActionBusy.value = true;
   organizationActionMessage.value = "";
   try {
+    if (organizationDirty.value) {
+      await saveOrganization();
+      if (organizationDirty.value || organizationSaveError.value) return;
+    }
+    const previousFinishedAt = organizationResult.value?.finished_at ?? null;
     const response = await props.api.runOrganizationNow();
     organizationActionMessage.value = response.message_zh;
+    void pollOrganizationResult(previousFinishedAt);
   } catch (exception) {
-    organizationActionMessage.value = exception instanceof ApiError ? exception.message : "立即整理排队失败，请稍后重试";
+    organizationActionMessage.value = exception instanceof ApiError ? exception.message : "开始整理失败，请稍后重试";
   } finally {
     organizationActionBusy.value = false;
   }
@@ -984,6 +1023,7 @@ onMounted(() => {
   void loadP115();
   void loadP115Devices();
   void loadOrganization();
+  void loadOrganizationResult();
   document.addEventListener("visibilitychange", onVisibilityChange);
   syncLogsRefreshTimer();
 });
@@ -1052,16 +1092,16 @@ watch(autoRefreshLogs, syncLogsRefreshTimer);
         </section>
 
         <section v-else-if="activeSection === 'organization'" class="settings-section" aria-labelledby="organization-title">
-          <header class="settings-section-heading"><div><p class="eyebrow">115 网盘</p><h2 id="organization-title">自动整理</h2><p>定时整理只控制自动触发；手动立即整理始终可以单独排队。</p></div><div class="settings-section-actions"><button class="primary-button" type="button" :disabled="organizationActionBusy" @click="runOrganizationNow"><LoaderCircle v-if="organizationActionBusy" class="spin" :size="15" /><Zap v-else :size="15" />立即整理</button><button class="secondary-button" type="button" :disabled="organizationActionBusy" @click="stopOrganization"><StopCircle :size="15" />停止整理</button></div></header>
+          <header class="settings-section-heading"><div><p class="eyebrow">115 网盘</p><h2 id="organization-title">自动整理</h2><p>点击“开始整理”立即扫描已配置来源；定时开关只控制自动触发。</p></div><div class="settings-section-actions"><button class="primary-button" type="button" :disabled="organizationActionBusy" @click="runOrganizationNow"><LoaderCircle v-if="organizationActionBusy" class="spin" :size="15" /><Zap v-else :size="15" />开始整理</button><button class="secondary-button" type="button" :disabled="organizationActionBusy" @click="stopOrganization"><StopCircle :size="15" />停止定时</button></div></header>
           <div v-if="organizationLoading" class="settings-loading"><LoaderCircle class="spin" :size="20" />正在加载整理设置</div>
           <div v-else-if="organizationError" class="settings-state settings-state-error"><AlertTriangle :size="18" /><span>{{ organizationError }}</span><button class="text-button" type="button" @click="loadOrganization">重试</button></div>
           <template v-else-if="organizationSettings">
-            <details class="settings-subsection" open><summary><h3>整理执行</h3><span class="settings-section-disclosure" aria-hidden="true">⌄</span></summary><label class="settings-toggle"><input v-model="organizationDraft.schedule_enabled" type="checkbox" />115 网盘定时整理开关：已启用时会按扫描间隔自动整理；关闭时不会自动整理，但手动立即整理不受影响</label><div class="settings-form-grid"><label>扫描频率（分钟）<input v-model.number="organizationDraft.scan_interval_minutes" type="number" min="5" max="1440" /></label></div><p class="settings-note">建议不低于 5 分钟。停止整理会自动关闭定时开关并保存，正在执行的远端操作不会被强行中断。</p></details>
+            <details class="settings-subsection" open><summary><h3>整理执行</h3><span class="settings-section-disclosure" aria-hidden="true">⌄</span></summary><label class="settings-toggle"><input v-model="organizationDraft.schedule_enabled" type="checkbox" />定时整理：启用后按扫描间隔自动整理；关闭后不自动整理，但“开始整理”仍可手动触发</label><div class="settings-form-grid"><label>扫描频率（分钟）<input v-model.number="organizationDraft.scan_interval_minutes" type="number" min="5" max="1440" /></label></div><p class="settings-note">当前状态：{{ organizationDraft.schedule_enabled ? '定时整理已启用' : '定时整理已关闭' }}。停止定时会自动关闭开关并保存，正在执行的远端操作不会被强行中断。</p><div class="organization-result-panel" aria-live="polite"><div class="organization-result-heading"><strong>最近一次整理结果</strong><span v-if="organizationResultLoading">正在更新</span><span v-else>{{ organizationResult?.finished_at ? formatTimestamp(organizationResult.finished_at) : '尚未执行' }}</span></div><div class="organization-result-statuses" aria-label="整理结果状态"><span class="organization-result-status-label">全部状态</span><span v-for="status in organizationResultStatuses" :key="status" :class="['organization-result-status', `is-${status}`, { active: organizationResult?.status === status }]">{{ status }}</span></div><div v-if="organizationResult && organizationResult.status !== 'unknown'" class="organization-result-metrics"><span>扫描来源 <strong>{{ organizationResult.source_count }}</strong></span><span>扫描完成 <strong>{{ organizationResult.scanned_count }}</strong></span><span>生成计划 <strong>{{ organizationResult.plan_count }}</strong></span><span>已入队 <strong>{{ organizationResult.queued_count }}</strong></span><span>阻断 <strong>{{ organizationResult.blocked_count }}</strong></span></div><p v-else class="settings-note">还没有整理结果。点击“开始整理”后，这里会显示扫描和处理统计。</p></div></details>
             <details class="settings-subsection" open><summary><h3>扫描来源、归档与推送目录</h3><span class="settings-section-disclosure" aria-hidden="true">⌄</span></summary><p class="settings-note">目录选择器从 115 网盘根目录开始浏览。扫描来源可多选，整理归档目录和资源推送目录各选一个；三者保存后分别生效。账号根目录仅用于浏览，整理必须选择受管的实际文件夹。</p><div class="directory-selection-grid"><div class="directory-selection-field"><span>整理扫描来源</span><div class="directory-chips"><span v-for="id in organizationList(organizationSourceDraft)" :key="id" class="directory-chip">{{ id }}<button type="button" aria-label="移除扫描来源" @click="organizationSourceDraft = organizationList(organizationSourceDraft).filter(item => item !== id).join(', ')">×</button></span><span v-if="!organizationList(organizationSourceDraft).length" class="settings-note">尚未选择</span></div><button class="secondary-button" type="button" @click="openDirectoryPicker('source')">📂 选择扫描来源</button></div><div class="directory-selection-field"><span>整理归档目录</span><span v-if="organizationTargetDraft" class="directory-chip">{{ organizationTargetDraft }}</span><span v-else class="settings-note">尚未选择</span><button class="secondary-button" type="button" @click="openDirectoryPicker('target')">📂 选择归档目录</button></div><div class="directory-selection-field"><span>资源推送目录</span><span v-if="organizationPushDraft" class="directory-chip">{{ organizationPushDraft }}</span><span v-else class="settings-note">尚未选择</span><button class="secondary-button" type="button" @click="openDirectoryPicker('push')">📂 选择推送目录</button><p class="settings-note">资源页面点击“推送”时直接使用这里保存的目录，不再临时选择。</p></div></div></details>
-            <details class="settings-subsection" open><summary><h3>识别与命名</h3><span class="settings-section-disclosure" aria-hidden="true">⌄</span></summary><div class="settings-form-grid"><label>视频文件类型（逗号分隔）<input v-model="organizationVideoExtensionsDraft" placeholder="mkv, mp4, avi" /></label><label>字幕/元数据类型（逗号分隔）<input v-model="organizationMetadataExtensionsDraft" placeholder="srt, ass, nfo" /></label></div><div class="settings-capability-list"><label class="settings-toggle"><input v-model="organizationDraft.rename_enabled" type="checkbox" />标准化重命名</label><label class="settings-toggle"><input v-model="organizationDraft.media_probe_enabled" type="checkbox" />媒体信息提取完善命名</label><label class="settings-toggle"><input v-model="organizationDraft.ai_identification_enabled" type="checkbox" />AI 辅助识别</label></div><p class="settings-note">AI 辅助识别需要先在实用工具完成 API 配置；未配置时不会调用 AI。</p></details>
-            <details class="settings-subsection" open><summary><h3>整理规则</h3><span class="settings-section-disclosure" aria-hidden="true">⌄</span></summary><div class="settings-form-grid"><label>小文件过滤（MB）<input v-model.number="organizationDraft.small_file_threshold_mb" type="number" min="0" step="0.1" /></label><label>操作延时（秒）<input v-model.number="organizationDraft.operation_delay_seconds" type="number" min="0" max="60" step="0.1" /></label></div><div class="settings-capability-list"><label class="settings-toggle"><input v-model="organizationDraft.cleanup_empty_directories" type="checkbox" />整理后清理空文件夹</label><label class="settings-toggle"><input v-model="organizationDraft.strm_linkage_enabled" type="checkbox" />联动生成 STRM</label></div></details>
-            <details class="settings-subsection" open><summary><h3>分类策略</h3><span class="settings-section-disclosure" aria-hidden="true">⌄</span></summary><div class="settings-capability-list"><label class="settings-toggle"><input v-model="organizationDraft.include_children_category" type="checkbox" />添加儿童节目分类</label><label class="settings-toggle"><input v-model="organizationDraft.include_concert_category" type="checkbox" />添加演唱会分类</label><label class="settings-toggle"><input v-model="organizationDraft.region_grouping_enabled" type="checkbox" />按地区二次分类</label><label class="settings-toggle"><input v-model="organizationDraft.year_grouping_enabled" type="checkbox" />按年份三次分类</label></div></details>
-            <details class="settings-subsection" open><summary><h3>覆盖策略</h3><span class="settings-section-disclosure" aria-hidden="true">⌄</span></summary><div class="settings-capability-list"><label class="settings-toggle"><input v-model="organizationDraft.prefer_remux" type="checkbox" />Remux/蓝光优先</label><label class="settings-toggle"><input v-model="organizationDraft.prefer_resolution" type="checkbox" />大分辨率优先</label><label class="settings-toggle"><input v-model="organizationDraft.prefer_dolby" type="checkbox" />杜比优先</label><label>冲突处理方式<select v-model.number="organizationDraft.conflict_mode"><option :value="2">不主动覆盖（仅检查同名）</option><option :value="1">进行覆盖：大文件优先</option><option :value="0">进行覆盖：小文件优先</option></select></label><label class="settings-toggle"><input v-model="organizationDraft.multi_version_enabled" type="checkbox" />保留杜比 + 非杜比多版本</label></div><p class="settings-note">真实移动、重命名和覆盖仍需经过已确认计划、远端前置条件核对、幂等和审计门禁。</p></details>
+            <details class="settings-subsection"><summary><h3>识别与命名</h3><span class="settings-section-disclosure" aria-hidden="true">⌄</span></summary><div class="settings-form-grid"><label>视频文件类型（逗号分隔）<input v-model="organizationVideoExtensionsDraft" placeholder="mkv, mp4, avi" /></label><label>字幕/元数据类型（逗号分隔）<input v-model="organizationMetadataExtensionsDraft" placeholder="srt, ass, nfo" /></label></div><div class="settings-capability-list"><label class="settings-toggle"><input v-model="organizationDraft.rename_enabled" type="checkbox" />标准化重命名</label><label class="settings-toggle"><input v-model="organizationDraft.media_probe_enabled" type="checkbox" />媒体信息提取完善命名</label><label class="settings-toggle"><input v-model="organizationDraft.ai_identification_enabled" type="checkbox" />AI 辅助识别</label></div><p class="settings-note">AI 辅助识别需要先在实用工具完成 API 配置；未配置时不会调用 AI。</p></details>
+            <details class="settings-subsection"><summary><h3>整理规则</h3><span class="settings-section-disclosure" aria-hidden="true">⌄</span></summary><div class="settings-form-grid"><label>小文件过滤（MB）<input v-model.number="organizationDraft.small_file_threshold_mb" type="number" min="0" step="0.1" /></label><label>操作延时（秒）<input v-model.number="organizationDraft.operation_delay_seconds" type="number" min="0" max="60" step="0.1" /></label></div><div class="settings-capability-list"><label class="settings-toggle"><input v-model="organizationDraft.cleanup_empty_directories" type="checkbox" />整理后清理空文件夹</label><label class="settings-toggle"><input v-model="organizationDraft.strm_linkage_enabled" type="checkbox" />联动生成 STRM</label></div></details>
+            <details class="settings-subsection"><summary><h3>分类策略</h3><span class="settings-section-disclosure" aria-hidden="true">⌄</span></summary><div class="settings-capability-list"><label class="settings-toggle"><input v-model="organizationDraft.include_children_category" type="checkbox" />添加儿童节目分类</label><label class="settings-toggle"><input v-model="organizationDraft.include_concert_category" type="checkbox" />添加演唱会分类</label><label class="settings-toggle"><input v-model="organizationDraft.region_grouping_enabled" type="checkbox" />按地区二次分类</label><label class="settings-toggle"><input v-model="organizationDraft.year_grouping_enabled" type="checkbox" />按年份三次分类</label></div></details>
+            <details class="settings-subsection"><summary><h3>覆盖策略</h3><span class="settings-section-disclosure" aria-hidden="true">⌄</span></summary><div class="settings-capability-list"><label class="settings-toggle"><input v-model="organizationDraft.prefer_remux" type="checkbox" />Remux/蓝光优先</label><label class="settings-toggle"><input v-model="organizationDraft.prefer_resolution" type="checkbox" />大分辨率优先</label><label class="settings-toggle"><input v-model="organizationDraft.prefer_dolby" type="checkbox" />杜比优先</label><label>冲突处理方式<select v-model.number="organizationDraft.conflict_mode"><option :value="2">不主动覆盖（仅检查同名）</option><option :value="1">进行覆盖：大文件优先</option><option :value="0">进行覆盖：小文件优先</option></select></label><label class="settings-toggle"><input v-model="organizationDraft.multi_version_enabled" type="checkbox" />保留杜比 + 非杜比多版本</label></div><p class="settings-note">真实移动、重命名和覆盖仍需经过已确认计划、远端前置条件核对、幂等和审计门禁。</p></details>
             <div v-if="organizationDirty" class="settings-save-bar"><span>有未保存的整理设置</span><div><button class="secondary-button" type="button" :disabled="organizationSaving" @click="loadOrganization">取消</button><button class="primary-button" type="button" :disabled="organizationSaving" @click="saveOrganization"><LoaderCircle v-if="organizationSaving" class="spin" :size="15" /><Save v-else :size="15" />保存</button></div></div>
             <div v-if="organizationSaveError" class="settings-state settings-state-error settings-save-error"><AlertTriangle :size="17" /><span>{{ organizationSaveError }}</span><button class="text-button" type="button" @click="loadOrganization">重新加载</button></div>
             <p v-if="organizationActionMessage" class="settings-action-message" role="status">{{ organizationActionMessage }}</p>

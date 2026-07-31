@@ -232,6 +232,10 @@ export class ApiClient {
     return this.request<OrganizationSettingsResponse>("/api/v1/settings/organization");
   }
 
+  async organizationResult(): Promise<import("./types").OrganizationAutomationResultResponse> {
+    return this.request<import("./types").OrganizationAutomationResultResponse>("/api/v1/settings/organization/result");
+  }
+
   async updateOrganizationSettings(settings: PatchOrganizationSettingsRequest): Promise<OrganizationSettingsResponse> {
     return this.request<OrganizationSettingsResponse>("/api/v1/settings/organization", {
       method: "PATCH",

@@ -53,13 +53,14 @@ class OrganizationAutomationResult:
     plan_count: int
     queued_count: int
     blocked_count: int
+    finished_at: datetime | None = None
 
     def __repr__(self) -> str:
         return (
             "OrganizationAutomationResult(source_count="
             f"{self.source_count}, scanned_count={self.scanned_count}, "
             f"plan_count={self.plan_count}, queued_count={self.queued_count}, "
-            f"blocked_count={self.blocked_count})"
+            f"blocked_count={self.blocked_count}, finished_at={self.finished_at!r})"
         )
 
 
@@ -104,6 +105,7 @@ class OrganizationAutomationService:
                     plan_count=0,
                     queued_count=0,
                     blocked_count=1,
+                    finished_at=datetime.now(UTC),
                 )
                 return False
             try:
@@ -118,9 +120,17 @@ class OrganizationAutomationService:
                     plan_count=0,
                     queued_count=0,
                     blocked_count=1,
+                    finished_at=datetime.now(UTC),
                 )
                 return True
-            self.last_result = result
+            self.last_result = OrganizationAutomationResult(
+                source_count=result.source_count,
+                scanned_count=result.scanned_count,
+                plan_count=result.plan_count,
+                queued_count=result.queued_count,
+                blocked_count=result.blocked_count,
+                finished_at=datetime.now(UTC),
+            )
             return True
 
     async def _run(

@@ -654,6 +654,17 @@ html, body, .app-shell { background: #151719; }
 .settings-action-row { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding-top: 22px; }
 .settings-action-row .secondary-button { min-height: 36px; }
 .settings-action-message { font-size: 12px; }
+.organization-result-panel { margin-top: 16px; padding: 14px; background: #1b1d21; border: 1px solid #30343b; border-radius: 4px; }
+.organization-result-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: #dce0e7; font-size: 12px; }
+.organization-result-heading span { color: #858a94; font-size: 11px; }
+.organization-result-statuses { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+.organization-result-status-label, .organization-result-status { padding: 4px 7px; border: 1px solid #3a3e46; border-radius: 3px; color: #aeb3bd; background: #23262b; font-size: 11px; }
+.organization-result-status-label { color: #f0f2f5; background: #30343b; }
+.organization-result-status.active { color: #10141a; background: #b9ec68; border-color: #b9ec68; font-weight: 800; }
+.organization-result-status.is-failed { border-color: #60404a; }
+.organization-result-metrics { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; margin-top: 14px; }
+.organization-result-metrics span { display: grid; gap: 3px; color: #858a94; font-size: 11px; }
+.organization-result-metrics strong { color: #eef0f3; font-size: 15px; }
 .settings-note { display: flex; align-items: flex-start; gap: 7px; margin: 18px 0 0; color: #858b95; font-size: 11px; line-height: 1.5; }
 .settings-note svg { flex: 0 0 auto; margin-top: 1px; }
 .credential-panels { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 30px; }
@@ -762,6 +773,7 @@ html, body, .app-shell { background: #151719; }
   .organization-layout { display: block; }
   .organization-preview { margin-top: 16px; padding: 17px; }
   .organization-facts { grid-template-columns: 1fr 1fr; gap: 11px 15px; }
+  .organization-result-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .organization-actions { display: grid; grid-template-columns: 1fr; }
   .organization-actions button { width: 100%; }
   .library-workbench { padding-top: 24px; }

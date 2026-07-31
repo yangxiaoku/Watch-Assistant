@@ -598,6 +598,23 @@ class OrganizationScheduleActionResponse(BaseModel):
     message_zh: str
 
 
+class OrganizationAutomationResultResponse(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    status: Literal[
+        "unknown", "success", "skipped", "deleted", "replace", "failed"
+    ]
+    available_statuses: list[
+        Literal["unknown", "success", "skipped", "deleted", "replace", "failed"]
+    ]
+    source_count: int = Field(ge=0)
+    scanned_count: int = Field(ge=0)
+    plan_count: int = Field(ge=0)
+    queued_count: int = Field(ge=0)
+    blocked_count: int = Field(ge=0)
+    finished_at: datetime | None = None
+
+
 class OrganizationPlanResponse(BaseModel):
     model_config = {"extra": "forbid"}
 
