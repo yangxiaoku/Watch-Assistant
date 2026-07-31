@@ -42,6 +42,7 @@ import type {
   MediaEntryListResponse,
   StrmManifestListResponse,
   StrmGenerationResponse,
+  StrmOperationResponse,
   PwaDevice,
 } from "./types";
 import { describeUiError, type UiErrorAction } from "./errorCatalog";
@@ -710,6 +711,10 @@ export class ApiClient {
       method: "POST",
       body: JSON.stringify({ source_scan_run_id: scanRunId }),
     });
+  }
+
+  async strmOperation(operationId: string): Promise<StrmOperationResponse> {
+    return this.request<StrmOperationResponse>(`/api/v1/strm-operations/${encodeURIComponent(operationId)}`);
   }
 }
 

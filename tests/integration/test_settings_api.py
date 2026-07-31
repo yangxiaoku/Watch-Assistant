@@ -4,10 +4,12 @@ import httpx
 import pytest
 from cryptography.fernet import Fernet
 from pwdlib import PasswordHash
+from sqlalchemy import select
 
 from watch_assistant.app import create_app
 from watch_assistant.crypto import SecretCrypto
 from watch_assistant.db import create_database, initialize_database
+from watch_assistant.models import StrmOperation
 from watch_assistant.schemas import LogCategory, LoggingLevel
 from watch_assistant.security import SecurityManager
 
@@ -353,6 +355,12 @@ async def test_strm_routes_enforce_independent_flags_and_reach_service(tmp_path)
             headers=headers,
         )
         assert response.status_code == 409
+        async with database.session_factory() as session:
+            operation = await session.scalar(
+                select(StrmOperation).where(StrmOperation.workflow_id == workflow_id)
+            )
+        assert operation is not None
+        operation_id = operation.id
         workflow = await client.get(f"/api/v1/workflows/{workflow_id}")
         assert workflow.status_code == 200
         stage = next(
@@ -360,7 +368,10 @@ async def test_strm_routes_enforce_independent_flags_and_reach_service(tmp_path)
         )
         assert stage["status"] == "failed"
         assert stage["child_type"] == "strm_operation"
-        assert stage["child_id"] == "strm_missing-scan"
+        assert stage["child_id"] == operation_id
+        operation_response = await client.get(f"/api/v1/strm-operations/{operation_id}")
+        assert operation_response.status_code == 200
+        assert operation_response.json()["status"] == "failed"
         notices = await client.get("/api/v1/notifications")
         assert notices.status_code == 200
         notice = next(

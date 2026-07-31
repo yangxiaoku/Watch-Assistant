@@ -383,6 +383,14 @@ def _create_strm_manifest_table(connection: Connection) -> None:
     StrmManifestEntry.__table__.create(connection, checkfirst=True)
 
 
+def _create_strm_operations_table(connection: Connection) -> None:
+    """Create the durable ledger for STRM synchronization requests."""
+
+    from watch_assistant.models import StrmOperation
+
+    StrmOperation.__table__.create(connection, checkfirst=True)
+
+
 def _upgrade_audit_records_schema(connection: Connection) -> None:
     """Bridge the pre-REQ-004 audit table to the current event schema."""
 
@@ -913,6 +921,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration("051_organization_cancel_requested", _add_organization_cancel_requested),
     Migration("052_task_target_directory", _add_task_target_directory),
     Migration("053_resource_search_workflow", _add_resource_search_workflow),
+    Migration("054_strm_operations", _create_strm_operations_table),
 )
 
 

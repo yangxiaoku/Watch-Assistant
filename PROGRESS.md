@@ -53,8 +53,10 @@
 ## 待验收
 
 - `REQ-001`：生产影视库的业务整理仍需先走预览、确认和审计；受管 fixture 的移动/重命名闭环已验收。
-- `REQ-002`：受管视频夹具的正式 API STRM 全量/增量/清理验收已完成；本轮补齐整理完成
-  事件的目录 generation 队列、同目录去重、`running -> dirty -> queued` 重入队、租约
+- `REQ-002`：受管视频夹具的正式 API STRM 全量/增量/清理验收已完成；本轮补齐 STRM
+  全量/增量/清理请求的独立 `strm_operations` 持久账本，保存 queued/running/终态、统计、
+  错误和 workflow 关联；本轮同时补齐整理完成事件的目录 generation 队列、同目录去重、
+  `running -> dirty -> queued` 重入队、租约
   恢复和旧事件迁移回填（专项 25 项测试通过）。本轮进一步为 STRM API 和 dirty worker
   接入可选 workflow `strm` 阶段关联；后续仍需生产影视库首次扫描、稳定播放入口和用户
   目录级回归。
@@ -62,8 +64,10 @@
   失败、不确定、取消和重试时同步 `organization` 阶段；STRM API 和整理完成后的 dirty
   worker 已在开始、成功、失败、等待外部和跳过时同步 `strm` 阶段；同一目录 coalesced
   generation 现在会把领取前的所有 dirty 事件绑定到同一 lease，并向所有关联 workflow
-  扇出 STRM 子阶段状态。可靠通知完整矩阵、独立 STRM 操作子任务和其他跨任务
-  关联仍待完成；本轮取消 workflow 时可停止未开始阶段，运行中或
+  扇出 STRM 子阶段状态。本轮在开发分支新增独立 STRM 操作子任务账本：全量、增量、清理
+  API 在执行前创建 operation，持久记录 queued/running/succeeded/failed、统计和错误；GET
+  查询接口及 workflow `strm` 阶段真实 child ID 已接入，失败终态幂等且成功后不被迟到错误覆盖。
+  该切片尚未合入发布基线；可靠通知完整矩阵和其他跨任务关联仍待完成；本轮取消 workflow 时可停止未开始阶段，运行中或
   `uncertain` 子任务保持原状态；推送任务新增 queued 未 claim 的安全取消及 CLI 命令；
   本轮新增运行中整理 operation 的持久取消请求：未开始远端写入时进入 `cancelled`，写入
   已开始时保持 `uncertain`，不伪造远端撤回；

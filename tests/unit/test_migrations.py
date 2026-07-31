@@ -376,7 +376,14 @@ async def test_resource_search_workflow_column_migrates_legacy_table(tmp_path):
         await connection.exec_driver_sql(
             "CREATE TABLE resource_search_jobs (task_id VARCHAR(64) PRIMARY KEY)"
         )
-        await connection.run_sync(run_migrations, MIGRATIONS[-1:])
+        await connection.run_sync(
+            run_migrations,
+            tuple(
+                migration
+                for migration in MIGRATIONS
+                if migration.id == "052_resource_search_workflow"
+            ),
+        )
         columns = await connection.run_sync(
             lambda sync: {
                 item["name"]

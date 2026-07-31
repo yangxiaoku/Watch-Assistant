@@ -25,6 +25,7 @@ from watch_assistant.schemas import (
     StrmGenerationResponse,
     StrmManifestItemResponse,
     StrmManifestListResponse,
+    StrmOperationResponse,
     StrmVerifyRequest,
     StrmVerifyResponse,
     WorkflowStageName,
@@ -36,8 +37,16 @@ from watch_assistant.services.strm_cleanup_plan import (
     StrmCleanupPlanService,
 )
 from watch_assistant.services.strm_manifest import (
+    StrmGenerationSummary,
     StrmManifestError,
     StrmManifestService,
+)
+from watch_assistant.services.strm_operations import (
+    StrmOperationError,
+    StrmOperationKind,
+    StrmOperationNotFound,
+    StrmOperationService,
+    StrmOperationSummary,
 )
 from watch_assistant.services.strm_verification import (
     StrmVerificationError,
@@ -115,7 +124,7 @@ async def _sync_workflow_stage(
     request: Request,
     workflow_id: str | None,
     *,
-    scan_run_id: str,
+    operation_id: str,
     status: WorkflowStageStatus,
     reason: str,
     error_code: str | None = None,
@@ -128,7 +137,7 @@ async def _sync_workflow_stage(
             workflow_id,
             WorkflowStageName.STRM,
             child_type="strm_operation",
-            child_id=f"strm_{scan_run_id}",
+            child_id=operation_id,
             status=status,
             reason=reason,
             error_code=error_code,
@@ -136,6 +145,122 @@ async def _sync_workflow_stage(
         )
     except WorkflowNotFound:
         raise HTTPException(status_code=404, detail="workflow_not_found") from None
+
+
+def _operation_service(request: Request) -> StrmOperationService:
+    return StrmOperationService(request.app.state.database.session_factory)
+
+
+def _operation_response(summary: StrmOperationSummary) -> StrmOperationResponse:
+    return StrmOperationResponse(
+        operation_id=summary.operation_id,
+        library_id=summary.library_id,
+        source_scan_run_id=summary.source_scan_run_id,
+        workflow_id=summary.workflow_id,
+        kind=summary.kind,
+        status=summary.status,
+        generated=summary.generated,
+        unchanged=summary.unchanged,
+        skipped=summary.skipped,
+        failed=summary.failed,
+        retired=summary.retired,
+        error_code=summary.error_code,
+        created_at=summary.created_at,
+        started_at=summary.started_at,
+        finished_at=summary.finished_at,
+    )
+
+
+async def _begin_operation(
+    request: Request,
+    *,
+    library_id: str,
+    payload: StrmGenerationRequest,
+    kind: StrmOperationKind,
+) -> tuple[StrmOperationService, StrmOperationSummary]:
+    operations = _operation_service(request)
+    queued = await operations.create(
+        library_id=library_id,
+        source_scan_run_id=payload.source_scan_run_id,
+        kind=kind,
+        workflow_id=payload.workflow_id,
+    )
+    running = await operations.start(queued.operation_id)
+    try:
+        await _sync_workflow_stage(
+            request,
+            payload.workflow_id,
+            operation_id=running.operation_id,
+            status=WorkflowStageStatus.RUNNING,
+            reason="strm_started",
+        )
+    except HTTPException as error:
+        detail = error.detail if isinstance(error.detail, str) else "workflow_not_found"
+        await operations.fail(running.operation_id, error_code=detail)
+        raise
+    return operations, running
+
+
+async def _finish_operation(
+    request: Request,
+    operations: StrmOperationService,
+    operation_id: str,
+    *,
+    workflow_id: str | None,
+    kind: StrmOperationKind,
+    summary: StrmGenerationSummary,
+) -> StrmOperationSummary:
+    if summary.failed:
+        operation = await operations.fail(
+            operation_id,
+            error_code=f"strm_{kind.value}_failed",
+            generated=summary.generated,
+            unchanged=summary.unchanged,
+            skipped=summary.skipped,
+            failed=summary.failed,
+            retired=summary.retired,
+        )
+        status = WorkflowStageStatus.FAILED
+        error_code = operation.error_code
+    else:
+        operation = await operations.complete(
+            operation_id,
+            generated=summary.generated,
+            unchanged=summary.unchanged,
+            skipped=summary.skipped,
+            failed=summary.failed,
+            retired=summary.retired,
+        )
+        status = WorkflowStageStatus.SUCCEEDED
+        error_code = None
+    await _sync_workflow_stage(
+        request,
+        workflow_id,
+        operation_id=operation_id,
+        status=status,
+        reason="strm_finished",
+        error_code=error_code,
+    )
+    return operation
+
+
+async def _fail_operation(
+    request: Request,
+    operations: StrmOperationService,
+    operation_id: str,
+    *,
+    workflow_id: str | None,
+    error_code: str,
+) -> None:
+    await operations.fail(operation_id, error_code=error_code)
+    await _sync_workflow_stage(
+        request,
+        workflow_id,
+        operation_id=operation_id,
+        status=WorkflowStageStatus.FAILED,
+        reason="strm_failed",
+        error_code=error_code,
+    )
 
 
 @router.get(
@@ -175,6 +300,22 @@ async def list_manifest(
     )
 
 
+@router.get(
+    "/strm-operations/{operation_id}",
+    response_model=StrmOperationResponse,
+)
+async def get_strm_operation(
+    operation_id: str, request: Request
+) -> StrmOperationResponse:
+    try:
+        summary = await _operation_service(request).get(operation_id)
+    except StrmOperationNotFound:
+        raise HTTPException(status_code=404, detail="strm_operation_not_found") from None
+    except StrmOperationError as error:
+        raise HTTPException(status_code=422, detail=error.code) from None
+    return _operation_response(summary)
+
+
 @router.post(
     "/libraries/{library_id}/strm-generation",
     response_model=StrmGenerationResponse,
@@ -189,12 +330,11 @@ async def generate_manifest(
     service: ServiceDependency,
     request: Request,
 ) -> StrmGenerationResponse:
-    await _sync_workflow_stage(
+    operations, running = await _begin_operation(
         request,
-        payload.workflow_id,
-        scan_run_id=payload.source_scan_run_id,
-        status=WorkflowStageStatus.RUNNING,
-        reason="strm_started",
+        library_id=library_id,
+        payload=payload,
+        kind=StrmOperationKind.FULL,
     )
     try:
         summary = await service.generate(
@@ -210,28 +350,24 @@ async def generate_manifest(
             ),
         )
     except StrmManifestError as error:
-        await _sync_workflow_stage(
+        await _fail_operation(
             request,
-            payload.workflow_id,
-            scan_run_id=payload.source_scan_run_id,
-            status=WorkflowStageStatus.FAILED,
-            reason="strm_failed",
+            operations,
+            running.operation_id,
+            workflow_id=payload.workflow_id,
             error_code=str(error),
         )
         raise HTTPException(status_code=409, detail=str(error)) from None
-    await _sync_workflow_stage(
+    operation = await _finish_operation(
         request,
-        payload.workflow_id,
-        scan_run_id=summary.scan_run_id,
-        status=(
-            WorkflowStageStatus.FAILED
-            if summary.failed
-            else WorkflowStageStatus.SUCCEEDED
-        ),
-        reason="strm_finished",
-        error_code="strm_generation_failed" if summary.failed else None,
+        operations,
+        running.operation_id,
+        workflow_id=payload.workflow_id,
+        kind=StrmOperationKind.FULL,
+        summary=summary,
     )
     return StrmGenerationResponse(
+        operation_id=operation.operation_id,
         library_id=summary.library_id,
         scan_run_id=summary.scan_run_id,
         generated=summary.generated,
@@ -256,12 +392,11 @@ async def incremental_manifest(
     service: ServiceDependency,
     request: Request,
 ) -> StrmGenerationResponse:
-    await _sync_workflow_stage(
+    operations, running = await _begin_operation(
         request,
-        payload.workflow_id,
-        scan_run_id=payload.source_scan_run_id,
-        status=WorkflowStageStatus.RUNNING,
-        reason="strm_started",
+        library_id=library_id,
+        payload=payload,
+        kind=StrmOperationKind.INCREMENTAL,
     )
     try:
         summary = await service.incremental(
@@ -278,28 +413,24 @@ async def incremental_manifest(
             retire_removed=False,
         )
     except StrmManifestError as error:
-        await _sync_workflow_stage(
+        await _fail_operation(
             request,
-            payload.workflow_id,
-            scan_run_id=payload.source_scan_run_id,
-            status=WorkflowStageStatus.FAILED,
-            reason="strm_failed",
+            operations,
+            running.operation_id,
+            workflow_id=payload.workflow_id,
             error_code=str(error),
         )
         raise HTTPException(status_code=409, detail=str(error)) from None
-    await _sync_workflow_stage(
+    operation = await _finish_operation(
         request,
-        payload.workflow_id,
-        scan_run_id=summary.scan_run_id,
-        status=(
-            WorkflowStageStatus.FAILED
-            if summary.failed
-            else WorkflowStageStatus.SUCCEEDED
-        ),
-        reason="strm_finished",
-        error_code="strm_incremental_failed" if summary.failed else None,
+        operations,
+        running.operation_id,
+        workflow_id=payload.workflow_id,
+        kind=StrmOperationKind.INCREMENTAL,
+        summary=summary,
     )
     return StrmGenerationResponse(
+        operation_id=operation.operation_id,
         library_id=summary.library_id,
         scan_run_id=summary.scan_run_id,
         generated=summary.generated,
@@ -482,12 +613,11 @@ async def cleanup_manifest(
     service: ServiceDependency,
     request: Request,
 ) -> StrmGenerationResponse:
-    await _sync_workflow_stage(
+    operations, running = await _begin_operation(
         request,
-        payload.workflow_id,
-        scan_run_id=payload.source_scan_run_id,
-        status=WorkflowStageStatus.RUNNING,
-        reason="strm_started",
+        library_id=library_id,
+        payload=payload,
+        kind=StrmOperationKind.CLEANUP,
     )
     try:
         summary = await service.cleanup(
@@ -503,28 +633,24 @@ async def cleanup_manifest(
             ),
         )
     except StrmManifestError as error:
-        await _sync_workflow_stage(
+        await _fail_operation(
             request,
-            payload.workflow_id,
-            scan_run_id=payload.source_scan_run_id,
-            status=WorkflowStageStatus.FAILED,
-            reason="strm_failed",
+            operations,
+            running.operation_id,
+            workflow_id=payload.workflow_id,
             error_code=str(error),
         )
         raise HTTPException(status_code=409, detail=str(error)) from None
-    await _sync_workflow_stage(
+    operation = await _finish_operation(
         request,
-        payload.workflow_id,
-        scan_run_id=summary.scan_run_id,
-        status=(
-            WorkflowStageStatus.FAILED
-            if summary.failed
-            else WorkflowStageStatus.SUCCEEDED
-        ),
-        reason="strm_finished",
-        error_code="strm_cleanup_failed" if summary.failed else None,
+        operations,
+        running.operation_id,
+        workflow_id=payload.workflow_id,
+        kind=StrmOperationKind.CLEANUP,
+        summary=summary,
     )
     return StrmGenerationResponse(
+        operation_id=operation.operation_id,
         library_id=summary.library_id,
         scan_run_id=summary.scan_run_id,
         generated=summary.generated,

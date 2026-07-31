@@ -289,6 +289,7 @@ export interface StrmManifestListResponse {
 }
 
 export interface StrmGenerationResponse {
+  operation_id: string;
   library_id: string;
   scan_run_id: string;
   generated: number;
@@ -296,6 +297,24 @@ export interface StrmGenerationResponse {
   skipped: number;
   failed: number;
   retired: number;
+}
+
+export interface StrmOperationResponse {
+  operation_id: string;
+  library_id: string;
+  source_scan_run_id: string;
+  workflow_id: string | null;
+  kind: "full" | "incremental" | "cleanup";
+  status: "queued" | "running" | "succeeded" | "failed";
+  generated: number;
+  unchanged: number;
+  skipped: number;
+  failed: number;
+  retired: number;
+  error_code: string | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
 }
 
 export type OrganizationOperationStatus = "planned" | "organizing" | "organized" | "failed" | "uncertain" | "cancelled";

@@ -134,6 +134,7 @@ _CATALOG: dict[str, ApiErrorDescriptor] = {
     "strm_full_disabled": ApiErrorDescriptor("strm_full_disabled", "STRM 功能未启用", "本次 STRM 操作未执行。", "请查看 STRM 功能配置。", False, "inspect_configuration"),
     "strm_incremental_disabled": ApiErrorDescriptor("strm_incremental_disabled", "STRM 增量同步未启用", "本次 STRM 增量操作未执行。", "请查看 STRM 功能配置。", False, "inspect_configuration"),
     "strm_cleanup_disabled": ApiErrorDescriptor("strm_cleanup_disabled", "STRM 失效清理未启用", "本次 STRM 清理未执行。", "请查看 STRM 功能配置。", False, "inspect_configuration"),
+    "strm_operation_not_found": ApiErrorDescriptor("strm_operation_not_found", "STRM 操作不存在", "本次 STRM 操作记录无法读取。", "请刷新任务状态后再试。", False, "retry"),
     "strm_unavailable": ApiErrorDescriptor("strm_unavailable", "STRM 服务暂时不可用", "本次 STRM 操作未完成。", "请稍后重试。", True, "retry"),
     "source_snapshot_not_ready": ApiErrorDescriptor("source_snapshot_not_ready", "扫描快照尚未就绪", "本次 STRM 清理计划未生成。", "请先完成一次完整且受保护的媒体库扫描。", False, "refresh_snapshot"),
     "source_snapshot_not_current": ApiErrorDescriptor("source_snapshot_not_current", "扫描快照已过期", "本次 STRM 清理计划未生成。", "请刷新媒体库后重新生成计划。", False, "refresh_snapshot"),

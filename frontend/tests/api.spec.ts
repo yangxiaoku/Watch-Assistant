@@ -199,9 +199,9 @@ describe("ApiClient season and inspection requests", () => {
       { plan_id: "plan-1", plan_hash: "a".repeat(64), status: "needs_review", revision: 1, expires_at: "2026-08-01T00:00:00Z", source_count: 1, action_count: 1, precondition_count: 1, alias: null },
       { items: [], next_cursor: null },
       { items: [], page: 1, page_size: 50, total: 0, total_pages: 0 },
-      { library_id: "main", scan_run_id: "scan-1", generated: 1, unchanged: 0, skipped: 0, failed: 0, retired: 0 },
-      { library_id: "main", scan_run_id: "scan-1", generated: 0, unchanged: 1, skipped: 0, failed: 0, retired: 0 },
-      { library_id: "main", scan_run_id: "scan-1", generated: 0, unchanged: 0, skipped: 0, failed: 0, retired: 1 },
+      { operation_id: "strm_op_1", library_id: "main", scan_run_id: "scan-1", generated: 1, unchanged: 0, skipped: 0, failed: 0, retired: 0 },
+      { operation_id: "strm_op_2", library_id: "main", scan_run_id: "scan-1", generated: 0, unchanged: 1, skipped: 0, failed: 0, retired: 0 },
+      { operation_id: "strm_op_3", library_id: "main", scan_run_id: "scan-1", generated: 0, unchanged: 0, skipped: 0, failed: 0, retired: 1 },
     ];
     const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(new Response(JSON.stringify(responses.shift()), { status: 200 })));
     vi.stubGlobal("fetch", fetchMock);
