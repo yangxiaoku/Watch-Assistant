@@ -58,7 +58,7 @@ Declare FastAPI, Uvicorn, SQLAlchemy, aiosqlite, httpx, pydantic-settings, crypt
 
 - [ ] **Step 3: Run the bootstrap checks**
 
-Run: `python -m pytest tests/unit/test_bootstrap.py -q`  
+Run: `./.venv/bin/python -m pytest tests/unit/test_bootstrap.py -q`
 Expected: `1 passed`.
 
 - [ ] **Step 4: Add the frontend package**
@@ -166,7 +166,7 @@ Keep resources for 30 days; do not delete resources referenced by non-terminal t
 
 - [ ] **Step 5: Run tests and commit**
 
-Run: `python -m pytest tests/unit/test_crypto.py tests/unit/test_models.py -q`  
+Run: `./.venv/bin/python -m pytest tests/unit/test_crypto.py tests/unit/test_models.py -q`
 Expected: all tests pass. Commit with `feat: add encrypted sqlite persistence`.
 
 ### Task 4: Implement TMDB, PanSou, and Resource Normalization Adapters
@@ -194,7 +194,7 @@ Fetch title, original title, and release year. Generate at most two unique queri
 
 - [ ] **Step 4: Test timeout and stale-cache behavior with HTTP fakes**
 
-Run: `python -m pytest tests/unit/test_normalize.py tests/integration/test_pansou_adapter.py -q`  
+Run: `./.venv/bin/python -m pytest tests/unit/test_normalize.py tests/integration/test_pansou_adapter.py -q`
 Expected: normalization, timeout, and response-shape tests pass.
 
 - [ ] **Step 5: Commit**
@@ -229,7 +229,7 @@ Implement `GET /api/v1/movies/{tmdb_id}` and `POST /api/v1/search`. Never includ
 
 - [ ] **Step 4: Run the API tests**
 
-Run: `python -m pytest tests/integration/test_search_api.py -q`  
+Run: `./.venv/bin/python -m pytest tests/integration/test_search_api.py -q`
 Expected: `200` for a valid search and `502` with stale-cache warning when the upstream is unavailable and no cache exists.
 
 - [ ] **Step 5: Commit**
@@ -300,7 +300,7 @@ On startup inspect expired leases. Query `get_status(remote_ref)` when possible;
 
 - [ ] **Step 5: Run tests and commit**
 
-Run: `python -m pytest tests/unit/test_tasks.py tests/integration/test_worker_recovery.py -q`  
+Run: `./.venv/bin/python -m pytest tests/unit/test_tasks.py tests/integration/test_worker_recovery.py -q`
 Expected: all transition and duplicate-submission tests pass.
 
 ```bash
@@ -329,7 +329,7 @@ Use the method/path recorded by Task 2. Map authentication failures to `needs_au
 
 - [ ] **Step 3: Run the real test with one disposable resource**
 
-Run: `python -m pytest -m integration tests/integration/test_tgto_adapter.py -q`  
+Run: `./.venv/bin/python -m pytest -m integration tests/integration/test_tgto_adapter.py -q`
 Expected: one known test magnet and one known 115 share are accepted, or the configured unsupported gate remains explicit and push tests stay disabled.
 
 - [ ] **Step 4: Commit**
@@ -368,7 +368,7 @@ Assert that encrypted URL/password, TMDB API Key, session cookie, and Bearer Tok
 
 - [ ] **Step 4: Run tests and commit**
 
-Run: `python -m pytest tests/unit/test_security.py tests/integration/test_auth_api.py -q`  
+Run: `./.venv/bin/python -m pytest tests/unit/test_security.py tests/integration/test_auth_api.py -q`
 Expected: authentication, CSRF, rate-limit, and redaction tests pass.
 
 ### Task 9: Implement the Vue Web UI
@@ -400,7 +400,7 @@ Poll every 2 seconds only while a task is `queued` or `submitting`; stop on term
 
 - [ ] **Step 5: Run frontend tests and commit**
 
-Run: `npm --prefix frontend test -- --run`  
+Run: `pnpm --dir frontend test -- --run`
 Expected: component tests pass. Commit with `feat: add watch assistant web ui`.
 
 ### Task 10: Implement and Test the TMDB Userscript
@@ -428,7 +428,7 @@ On API failure, show a compact error state inside the panel and leave the TMDB p
 
 - [ ] **Step 4: Run userscript tests and commit**
 
-Run: `npm --prefix frontend test -- --run userscript.spec.ts`  
+Run: `pnpm --dir frontend test -- --run userscript.spec.ts`
 Expected: route, dedupe, and failure-isolation tests pass.
 
 ### Task 11: Package and Deploy the Single Runtime Container
@@ -469,17 +469,17 @@ git commit -m "ops: package watch assistant"
 
 - [ ] **Step 1: Run all Python checks**
 
-Run: `python -m pytest -q` and `ruff check src tests`.  
+Run: `./.venv/bin/python -m pytest -q` and `./.venv/bin/python -m ruff check src tests`.
 Expected: zero failures and zero lint errors.
 
 - [ ] **Step 2: Run frontend checks**
 
-Run: `npm --prefix frontend test -- --run && npm --prefix frontend run build`.  
+Run: `pnpm --dir frontend test -- --run && pnpm --dir frontend run build`.
 Expected: tests pass and Vite emits both Web assets and the userscript bundle.
 
 - [ ] **Step 3: Run browser acceptance tests**
 
-Run: `npm --prefix frontend run test:e2e`.  
+Run: `pnpm --dir frontend run test:e2e`.
 Expected: desktop/mobile search, filter, push, polling, and TMDB fixture injection pass.
 
 - [ ] **Step 4: Run operational checks**

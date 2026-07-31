@@ -16,7 +16,7 @@
 
 - `master`：根工作树仍有未跟踪的健康评估和环境文件，暂不切换或合并。
 - 关联 worktree 的分支：仍有未提交修改或生产验收资产，必须逐个确认后处理。
-- 未注册的 `D:/115ts/.worktrees/library-workbench-audit` 残留目录：含未登记资产，暂不删除。
+- 未注册的 `D:/115ts/.worktrees/library-workbench-audit` 残留目录：含未登记资产，暂不删除；该路径是本次历史审计记录中的旧 Windows worktree，不是当前 macOS 桌面工作区 `/Users/apple/Desktop/115ts`。
 - `origin/codex/publish-20260729`：包含独立的旧发布说明提交 `05f22e7`，尚未与当前发布基线完全合并，暂不删除远端引用。
 
 ## 后续规则

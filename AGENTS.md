@@ -5,6 +5,16 @@
 Watch Assistant 是轻量自托管影视资源管理系统，后端为 Python/FastAPI/
 SQLAlchemy/SQLite，前端为 Vue 3/TypeScript/Vite。
 
+## 当前本地工作区
+
+- 当前 macOS 本地仓库根目录：`/Users/apple/Desktop/115ts`。
+- 后续本地命令、相对路径和文档链接均以该目录为准；旧外置卷工作区不再使用。
+- 当前工作区检出的分支和提交只代表本地开发状态；生产发布仍只认
+  `origin/codex/publish-main`，且必须另行核对实际部署状态。
+- 当前工作区未包含 `.venv`、Docker CLI 或 PowerShell 运行时。运行 Python 验证前，必须在
+  当前工作区准备 `.venv/bin/python`；禁止把另一工作树的已安装包或 `/usr/bin/python3`
+  当作默认项目环境。
+
 - 已实现并以 `README.md` 为准：TMDB 发现、季度资料、PanSou 聚合搜索、磁力内容检测、
   质量/语义筛选、P115 Cookie readiness 与受限适配、任务状态机、SQLite、Web 会话、
   设置中心、中文界面和本地日志。
@@ -61,6 +71,7 @@ docker compose stop watch-assistant
 docker compose logs -f --tail=200 watch-assistant
 # `.env.example` 使用 8115；实际端口以部署 `.env` 为准
 curl -fsS http://127.0.0.1:8115/api/v1/health
+# 当前 macOS 未安装 pwsh；仅在具备 PowerShell 7 的维护机上执行
 pwsh ./scripts/backup_db.ps1
 
 # 服务器 systemd：检查、启动、停止、日志和健康
@@ -110,7 +121,8 @@ ssh root@192.168.6.236 'curl -fsS http://127.0.0.1:8115/api/v1/health'
    实际最新提交和部署状态，不在本文件硬编码可能过期的提交号。
 5. **凭据不进仓**：Secret 只放在 `C:\Users\98275\.115ts-secrets\`；不得进入代码、
    文档、日志、测试 fixture、截图或发布包。
-6. **Python 环境**：worktree 内使用 `.venv/Scripts/python.exe`，禁止使用系统 Python、
+6. **Python 环境**：当前 macOS worktree 使用 `.venv/bin/python`（Windows 使用
+   `.venv/Scripts/python.exe`），禁止使用系统 Python、
    `uv sync` 或 PowerShell 修改环境；全量测试分 unit/integration/contracts 三批运行，
    单条全量超过 120 秒按超时处理。
 7. **验收脚本化**：合并前 `scripts/verify.sh` 必须通过，不以截图代替验收；离线测试是
@@ -130,11 +142,11 @@ ssh root@192.168.6.236 'curl -fsS http://127.0.0.1:8115/api/v1/health'
 ## 验证
 
 ```bash
-.venv/Scripts/python.exe -m pytest -q
-.venv/Scripts/python.exe -m ruff check src tests scripts
-npm --prefix frontend test -- --run
-npm --prefix frontend run build
-npm --prefix frontend run test:e2e
+./.venv/bin/python -m pytest -q
+./.venv/bin/python -m ruff check src tests scripts
+pnpm --dir frontend test -- --run
+pnpm --dir frontend run build
+pnpm --dir frontend run test:e2e
 docker compose config
 ```
 

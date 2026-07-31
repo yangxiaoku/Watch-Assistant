@@ -29,22 +29,26 @@ TgtoDrive 当前没有验证通过的稳定提交/状态 HTTP 契约，`config/t
 
 ## 部署
 
+本地开发工作区为 macOS 桌面目录 `/Users/apple/Desktop/115ts`。以下部署主机、容器和
+systemd 路径是远程运行环境，不是本地仓库路径；不要把它们替换成桌面路径，也不要把
+本地工作区描述成已部署版本。
+
 要求：Docker Engine、Docker Compose，以及已存在的外部网络 `pansou_default`。服务器已确认 `pansou-app` 与 `TgtoDrive` 都连接到该网络。
 
 1. 从示例创建 `.env`，并建立 `secrets` 目录。
 2. 生成四个只读 Secret 文件：
 
-```powershell
-New-Item -ItemType Directory -Force secrets
-python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())" | Set-Content -NoNewline secrets/encryption_key
-Set-Content -NoNewline secrets/tmdb_api_key "你的 TMDB API Key"
-python -c "from pwdlib import PasswordHash; print(PasswordHash.recommended().hash(input('Web password: ')))" | Set-Content -NoNewline secrets/web_password_hash
-python -c "from pwdlib import PasswordHash; print(PasswordHash.recommended().hash(input('Userscript token: ')))" | Set-Content -NoNewline secrets/script_token_hash
+```bash
+mkdir -p secrets
+./.venv/bin/python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())" > secrets/encryption_key
+printf '%s' '你的 TMDB API Key' > secrets/tmdb_api_key
+./.venv/bin/python -c "from pwdlib import PasswordHash; print(PasswordHash.recommended().hash(input('Web password: ')), end='')" > secrets/web_password_hash
+./.venv/bin/python -c "from pwdlib import PasswordHash; print(PasswordHash.recommended().hash(input('Userscript token: ')), end='')" > secrets/script_token_hash
 ```
 
 3. 检查并启动：
 
-```powershell
+```bash
 docker compose config
 docker compose up -d --build
 curl http://127.0.0.1:8000/api/v1/health
@@ -87,17 +91,24 @@ tailscale serve --bg http://127.0.0.1:8000
 
 `scripts/backup_db.ps1` 使用 SQLite 在线备份 API 在 `/data/backups` 中创建一致快照，并只保留最近 7 份。可通过 Windows 任务计划或 cron 每天执行：
 
-```powershell
+当前 macOS 工作区未安装 `pwsh`；该命令仅适用于已安装 PowerShell 7 的维护机，不代表
+当前本地环境已经可以执行备份。
+
+```bash
 pwsh ./scripts/backup_db.ps1
 ```
 
 ## 本地验证
 
-```powershell
-python -m pytest -q
-python -m ruff check src tests scripts
-npm --prefix frontend test -- --run
-npm --prefix frontend run build
+当前工作区尚未提交 `.venv`。准备好当前工作区的虚拟环境后，在
+`/Users/apple/Desktop/115ts` 执行：
+
+```bash
+cd /Users/apple/Desktop/115ts
+./.venv/bin/python -m pytest -q
+./.venv/bin/python -m ruff check src tests scripts
+pnpm --dir frontend test -- --run
+pnpm --dir frontend run build
 ```
 
 ## 验收记录
