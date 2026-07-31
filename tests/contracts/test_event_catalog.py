@@ -2,6 +2,10 @@ import ast
 from pathlib import Path
 
 from watch_assistant.services.event_catalog import EVENT_CATALOG
+from watch_assistant.services.notifications import (
+    _NOTIFIABLE_EVENTS,
+    REQUIRED_NOTIFICATION_EVENTS,
+)
 
 
 def _literal_event_calls() -> set[str]:
@@ -35,3 +39,8 @@ def _literal_event_calls() -> set[str]:
 
 def test_literal_business_events_are_registered():
     assert _literal_event_calls() <= set(EVENT_CATALOG)
+
+
+def test_required_business_events_have_notification_policy():
+    assert REQUIRED_NOTIFICATION_EVENTS <= _NOTIFIABLE_EVENTS
+    assert _NOTIFIABLE_EVENTS <= set(EVENT_CATALOG)
