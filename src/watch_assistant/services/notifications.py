@@ -28,6 +28,7 @@ _NOTIFIABLE_EVENTS = frozenset(
         "task.cancelled",
         "task.failed",
         "task.uncertain",
+        "inspection.batch_failed",
         "p115.readiness",
         "p115.credentials_expired",
         "subscription.resources_observed",
@@ -92,6 +93,9 @@ class NotificationService:
             return
         if event_code == "workflow.stage_changed" and status not in _WORKFLOW_VISIBLE_STATUSES:
             return
+        if event_code == "inspection.batch_failed" and correlation_id is not None:
+            # Linked batches already produce an actionable workflow notification.
+            return
         definition = get_event_definition(event_code)
         if definition is None:
             return
@@ -106,9 +110,16 @@ class NotificationService:
         action_type = (
             "workflow"
             if event_code.startswith("workflow.")
+            else "settings"
+            if event_code == "inspection.batch_failed"
             else "task"
             if task_id
             else resource_type
+        )
+        action_id = (
+            "inspection"
+            if event_code == "inspection.batch_failed"
+            else task_id or resource_id
         )
         await self.notify(
             event_code=event_code,
@@ -117,7 +128,7 @@ class NotificationService:
             message_zh=definition.render(safe_fields),
             dedupe_key=dedupe_key[:255],
             action_type=action_type,
-            action_id=task_id or resource_id,
+            action_id=action_id,
         )
 
     async def notify(

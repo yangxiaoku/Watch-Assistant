@@ -195,3 +195,45 @@ async def test_high_value_business_events_are_filtered_and_notified(tmp_path):
         await tmdb.aclose()
         await pansou.aclose()
         await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_unlinked_inspection_failure_notifies_settings_and_linked_failure_dedupes(
+    tmp_path,
+):
+    client, database, tmdb, pansou, app = await _make_client(tmp_path)
+    try:
+        await app.state.settings_service.log_event(
+            "inspection.batch_failed",
+            fields={
+                "status": "failed",
+                "count": 2,
+                "hidden_count": 2,
+                "error_code": "inspection_failed",
+            },
+            task_id="inspect_failed",
+        )
+        await app.state.settings_service.log_event(
+            "inspection.batch_failed",
+            fields={
+                "status": "failed",
+                "count": 1,
+                "hidden_count": 1,
+                "error_code": "inspection_failed",
+            },
+            correlation_id="corr_linked",
+            task_id="inspect_linked",
+        )
+        response = await client.get("/api/v1/notifications")
+        assert response.status_code == 200
+        items = response.json()["items"]
+        assert len(items) == 1
+        assert items[0]["event_code"] == "inspection.batch_failed"
+        assert items[0]["severity"] == "error"
+        assert items[0]["action_type"] == "settings"
+        assert items[0]["action_id"] == "inspection"
+    finally:
+        await client.aclose()
+        await tmdb.aclose()
+        await pansou.aclose()
+        await database.engine.dispose()

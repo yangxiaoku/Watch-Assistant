@@ -234,7 +234,22 @@ class InspectionService:
                         if batch.status == InspectionBatchStatus.FAILED
                         else LoggingLevel.INFO
                     ),
-                    fields={"status": batch.status.value, "count": len(resource_ids)},
+                    fields={
+                        "status": batch.status.value,
+                        "count": len(resource_ids),
+                        "hidden_count": len(resource_ids),
+                        "error_code": (
+                            "inspection_failed"
+                            if batch.status == InspectionBatchStatus.FAILED
+                            else None
+                        ),
+                    },
+                    task_id=batch.id,
+                    correlation_id=(
+                        stage_workflow.correlation_id
+                        if stage_workflow is not None
+                        else None
+                    ),
                 )
             return InspectionBatchResponse(
                 batch_id=batch.id,
@@ -422,7 +437,18 @@ class InspectionWorker:
                             self._event_logger,
                             "inspection.batch_failed",
                             level=LoggingLevel.ERROR,
-                            fields={"status": "dependency_failed"},
+                            fields={
+                                "status": "dependency_failed",
+                                "count": 0,
+                                "hidden_count": 0,
+                                "error_code": "inspection_dependency_failed",
+                            },
+                            correlation_id=(
+                                stage_workflow.correlation_id
+                                if stage_workflow is not None
+                                else None
+                            ),
+                            task_id=batch.id,
                         )
                         return False
             return True
@@ -588,7 +614,15 @@ class InspectionWorker:
                 fields={
                     "status": batch.status.value,
                     "count": len(items),
+                    "hidden_count": len(items) - successes,
+                    "error_code": stage_error_code,
                 },
+                correlation_id=(
+                    stage_workflow.correlation_id
+                    if stage_workflow is not None
+                    else None
+                ),
+                task_id=batch.id,
             )
 
 
