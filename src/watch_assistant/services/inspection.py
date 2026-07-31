@@ -28,6 +28,7 @@ from watch_assistant.schemas import (
     ResourceKind,
     WorkflowStageName,
 )
+from watch_assistant.services.maintenance_gate import MaintenanceActive, MaintenanceGate
 from watch_assistant.services.observability import EventLogger, emit_event
 from watch_assistant.services.workflows import link_child
 
@@ -87,10 +88,12 @@ class InspectionService:
         session_factory: async_sessionmaker[AsyncSession],
         *,
         event_logger: EventLogger | None = None,
+        maintenance_gate: MaintenanceGate | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._create_lock = asyncio.Lock()
         self._event_logger = event_logger
+        self._maintenance_gate = maintenance_gate
 
     async def create(
         self,
@@ -100,7 +103,12 @@ class InspectionService:
         workflow_id: str | None = None,
     ) -> InspectionBatchResponse:
         now = datetime.now(UTC)
-        async with self._create_lock, self._session_factory() as session:
+        gate_lock = self._maintenance_gate.lock if self._maintenance_gate else asyncio.Lock()
+        async with self._create_lock, gate_lock, self._session_factory() as session:
+            if self._maintenance_gate is not None:
+                state = await self._maintenance_gate.is_active()
+                if state:
+                    raise MaintenanceActive("maintenance_mode_active")
             resources = list(
                 await session.scalars(
                     select(Resource).where(Resource.id.in_(resource_ids))
@@ -242,12 +250,14 @@ class InspectionWorker:
         client: InspectionClient,
         *,
         event_logger: EventLogger | None = None,
+        maintenance_gate: MaintenanceGate | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._crypto = crypto
         self._client = client
         self._write_lock = asyncio.Lock()
         self._event_logger = event_logger
+        self._maintenance_gate = maintenance_gate
 
     async def recover_after_restart(self) -> int:
         async with self._session_factory() as session:
@@ -316,7 +326,10 @@ class InspectionWorker:
         return True
 
     async def _claim_batch(self) -> str | None:
-        async with self._session_factory() as session:
+        gate_lock = self._maintenance_gate.lock if self._maintenance_gate else asyncio.Lock()
+        async with gate_lock, self._session_factory() as session:
+            if self._maintenance_gate is not None and await self._maintenance_gate.is_active():
+                return None
             batch = await session.scalar(
                 select(InspectionBatch)
                 .where(InspectionBatch.status == InspectionBatchStatus.QUEUED)

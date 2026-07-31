@@ -7,13 +7,14 @@ from uuid import uuid4
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from watch_assistant.models import Resource, Task, TaskState
+from watch_assistant.models import OnlineMaintenanceState, Resource, Task, TaskState
 from watch_assistant.schemas import (
     RemoteStatus,
     TaskAction,
     WorkflowStageName,
     WorkflowStageStatus,
 )
+from watch_assistant.services.maintenance_gate import MaintenanceActive, MaintenanceGate
 from watch_assistant.services.observability import EventLogger, emit_event
 from watch_assistant.services.workflows import link_child, sync_child_stage
 
@@ -84,10 +85,13 @@ class TaskService:
         session_factory: async_sessionmaker[AsyncSession],
         *,
         event_logger: EventLogger | None = None,
+        maintenance_gate: MaintenanceGate | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._create_lock = asyncio.Lock()
+        self._gate_lock = maintenance_gate.lock if maintenance_gate else asyncio.Lock()
         self._event_logger = event_logger
+        self._maintenance_gate = maintenance_gate
 
     async def create(
         self,
@@ -98,7 +102,11 @@ class TaskService:
         workflow_id: str | None = None,
         target_directory_id: str | None = None,
     ):
-        async with self._create_lock, self._session_factory() as session:
+        async with self._create_lock, self._gate_lock, self._session_factory() as session:
+            if self._maintenance_gate is not None:
+                state = await session.get(OnlineMaintenanceState, "default")
+                if state is not None and state.active:
+                    raise MaintenanceActive("maintenance_mode_active")
             resource = await session.get(Resource, resource_id)
             if resource is None:
                 raise ResourceNotFound(resource_id)
@@ -183,6 +191,8 @@ class TaskService:
         *,
         allowed_actions: frozenset[TaskAction] | None = None,
     ) -> Task:
+        if self._maintenance_gate is not None:
+            await self._maintenance_gate.assert_writable()
         async with self._session_factory() as session:
             task = await session.get(Task, task_id)
             if task is None:

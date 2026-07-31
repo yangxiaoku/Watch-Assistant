@@ -358,6 +358,20 @@ EVENT_CATALOG: dict[str, EventDefinition] = {
         "数据库恢复失败，错误码：{error_code}",
         suggestion="请保留恢复前快照，不要重复覆盖数据库并先核对当前状态",
     ),
+    "backup.restore_approval_requested": _event(
+        "backup.restore_approval_requested",
+        LogCategory.SECURITY,
+        "恢复批准已申请",
+        "数据库恢复已申请二次批准，当前状态：{status}",
+        suggestion="请先确认任务和后台队列已到安全点，再由另一位管理员批准",
+    ),
+    "backup.restore_approved": _event(
+        "backup.restore_approved",
+        LogCategory.SECURITY,
+        "恢复批准已完成",
+        "数据库恢复已通过二次批准，当前状态：{status}",
+        suggestion="请停止服务后使用离线维护脚本执行恢复",
+    ),
     "media.detail.performance": _event(
         "media.detail.performance",
         LogCategory.SEARCH,

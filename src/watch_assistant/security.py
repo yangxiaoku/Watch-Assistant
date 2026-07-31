@@ -34,6 +34,11 @@ AGENT_SCOPES = frozenset(
         "cleanup:execute",
         "settings:read",
         "settings:write",
+        "backup:read",
+        "backup:write",
+        "backup:restore",
+        "maintenance:read",
+        "maintenance:write",
         "audit:read",
     }
 )
@@ -468,6 +473,14 @@ def _required_scope(request: Request) -> str:
         return "task:read" if method in {"GET", "HEAD"} else "organize:execute"
     if path.startswith("/api/v1/backups/configuration"):
         return "settings:read" if method in {"GET", "HEAD"} else "settings:write"
+    if path.startswith("/api/v1/backups/restore-approvals") or path.endswith(
+        "/restore-approval"
+    ):
+        return "backup:restore"
+    if path.startswith("/api/v1/backups"):
+        return "backup:read" if method in {"GET", "HEAD"} else "backup:write"
+    if path.startswith("/api/v1/maintenance"):
+        return "maintenance:read" if method in {"GET", "HEAD"} else "maintenance:write"
     if path.startswith("/api/v1/organization-plans/") and path.endswith("/operation"):
         return "organize:execute"
     if path.startswith("/api/v1/organization-plans"):

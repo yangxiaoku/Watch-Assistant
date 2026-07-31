@@ -36,6 +36,7 @@ from watch_assistant.api.deployment import router as deployment_router
 from watch_assistant.api.inspection import router as inspection_router
 from watch_assistant.api.library import router as library_router
 from watch_assistant.api.maintenance import router as maintenance_router
+from watch_assistant.api.maintenance_mode import router as maintenance_mode_router
 from watch_assistant.api.manual_import import router as manual_import_router
 from watch_assistant.api.mcp import router as mcp_router
 from watch_assistant.api.notifications import router as notifications_router
@@ -79,6 +80,7 @@ from watch_assistant.services.inspection import InspectionService, InspectionWor
 from watch_assistant.services.inventory_push_guard import InventoryPushGuard
 from watch_assistant.services.library_index import LibraryIndexService
 from watch_assistant.services.maintenance import MaintenanceService
+from watch_assistant.services.maintenance_gate import MaintenanceGate
 from watch_assistant.services.manual_import import ManualImportService
 from watch_assistant.services.mcp import McpService
 from watch_assistant.services.notifications import NotificationService
@@ -268,6 +270,7 @@ def create_app(
                 settings_service=application.state.settings_service,
                 empty_directory_cleaner=empty_directory_cleaner,
                 event_logger=application.state.settings_service,
+                maintenance_gate=application.state.maintenance_gate,
             )
             application.state.directory_dirty_worker = worker
             dirty_stop = asyncio.Event()
@@ -330,6 +333,7 @@ def create_app(
                     live_enabled=True,
                     event_logger=application.state.settings_service,
                     settings_service=application.state.settings_service,
+                    maintenance_gate=application.state.maintenance_gate,
                 )
                 application.state.organization_worker = worker
 
@@ -415,6 +419,7 @@ def create_app(
                     inventory_guard=getattr(
                         application.state, "inventory_push_guard", None
                     ),
+                    maintenance_gate=application.state.maintenance_gate,
                 )
                 await worker.recover_expired()
                 application.state.task_worker = worker
@@ -472,6 +477,10 @@ def create_app(
             application.state.settings_service = SettingsService(
                 runtime_database.session_factory,
                 state_directory=_state_directory(runtime_database),
+            )
+            application.state.maintenance_gate = MaintenanceGate(
+                runtime_database.session_factory,
+                event_logger=application.state.settings_service,
             )
             application.state.webhook_service = WebhookService(
                 runtime_database.session_factory,
@@ -594,6 +603,8 @@ def create_app(
                 event_logger=application.state.settings_service,
                 settings_service=application.state.settings_service,
                 notification_service=application.state.notification_service,
+                session_factory=runtime_database.session_factory,
+                maintenance_gate=application.state.maintenance_gate,
             )
             application.state.deployment_diagnostics_service = (
                 DeploymentDiagnosticsService(runtime_database.engine, application.state)
@@ -604,6 +615,7 @@ def create_app(
             application.state.task_service = TaskService(
                 runtime_database.session_factory,
                 event_logger=application.state.settings_service,
+                maintenance_gate=application.state.maintenance_gate,
             )
             application.state.mcp_service = McpService(
                 task_service=application.state.task_service,
@@ -700,6 +712,7 @@ def create_app(
                         owner=_worker_owner(),
                         event_logger=application.state.settings_service,
                         inventory_guard=application.state.inventory_push_guard,
+                        maintenance_gate=application.state.maintenance_gate,
                     )
                     application.state.push_capabilities = {
                         "magnet": True,
@@ -1044,6 +1057,10 @@ def create_app(
             database.session_factory,
             state_directory=_state_directory(database),
         )
+        application.state.maintenance_gate = MaintenanceGate(
+            database.session_factory,
+            event_logger=application.state.settings_service,
+        )
         application.state.webhook_service = WebhookService(
             database.session_factory,
             crypto,
@@ -1100,6 +1117,8 @@ def create_app(
             event_logger=application.state.settings_service,
             settings_service=application.state.settings_service,
             notification_service=application.state.notification_service,
+            session_factory=database.session_factory,
+            maintenance_gate=application.state.maintenance_gate,
         )
         application.state.deployment_diagnostics_service = DeploymentDiagnosticsService(
             database.engine, application.state
@@ -1110,6 +1129,7 @@ def create_app(
         application.state.task_service = TaskService(
             database.session_factory,
             event_logger=application.state.settings_service,
+            maintenance_gate=application.state.maintenance_gate,
         )
         application.state.maintenance_service = MaintenanceService(
             database.session_factory
@@ -1172,12 +1192,14 @@ def create_app(
             application.state.inspection_service = InspectionService(
                 database.session_factory,
                 event_logger=application.state.settings_service,
+                maintenance_gate=getattr(application.state, "maintenance_gate", None),
             )
             application.state.inspection_worker = InspectionWorker(
                 database.session_factory,
                 crypto,
                 qbittorrent_client,
                 event_logger=application.state.settings_service,
+                maintenance_gate=getattr(application.state, "maintenance_gate", None),
             )
         if security_manager is not None:
             security_manager.configure_session_store(database.session_factory)
@@ -1199,6 +1221,7 @@ def create_app(
                 inventory_guard=getattr(
                     application.state, "inventory_push_guard", inventory_guard
                 ),
+                maintenance_gate=getattr(application.state, "maintenance_gate", None),
             )
 
     @application.get("/api/v1/health")
@@ -1294,6 +1317,7 @@ def create_app(
     application.include_router(mcp_router)
     application.include_router(pwa_router)
     application.include_router(maintenance_router)
+    application.include_router(maintenance_mode_router)
     application.include_router(inspection_router)
     application.include_router(library_router)
     application.include_router(manual_import_router)

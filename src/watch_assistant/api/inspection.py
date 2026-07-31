@@ -11,6 +11,7 @@ from watch_assistant.services.inspection import (
     InspectionResourceInvalid,
     InspectionService,
 )
+from watch_assistant.services.maintenance_gate import MaintenanceActive
 from watch_assistant.services.workflows import WorkflowNotFound
 
 router = APIRouter(prefix="/api/v1", dependencies=[Depends(require_api_auth)])
@@ -47,6 +48,8 @@ async def start_inspection(
         raise HTTPException(status_code=422, detail="resource_not_inspectable") from exc
     except WorkflowNotFound as exc:
         raise HTTPException(status_code=404, detail="workflow_not_found") from exc
+    except MaintenanceActive as exc:
+        raise HTTPException(status_code=409, detail="maintenance_mode_active") from exc
 
 
 @router.get(

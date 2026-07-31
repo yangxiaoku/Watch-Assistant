@@ -16,6 +16,7 @@ from watch_assistant.adapters.p115_organization_transport import (
     create_live_p115_organization_transport,
 )
 from watch_assistant.models import OrganizationOperationStatus
+from watch_assistant.services.maintenance_gate import MaintenanceGate
 from watch_assistant.services.organization_executor import OrganizationExecutor
 from watch_assistant.services.organization_operations import (
     OrganizationOperationService,
@@ -47,6 +48,7 @@ class OrganizationWorker:
         call_executor=None,
         event_logger=None,
         settings_service=None,
+        maintenance_gate: MaintenanceGate | None = None,
     ) -> None:
         if not production_root_id.isdigit() or production_root_id.startswith("0"):
             raise ValueError("invalid_production_root_id")
@@ -63,10 +65,17 @@ class OrganizationWorker:
         self._call_executor = call_executor or p115_c03_timeout_executor
         self._event_logger = event_logger
         self._settings_service = settings_service
+        self._maintenance_gate = maintenance_gate
         self._stop = asyncio.Event()
 
     async def run_once(self) -> bool:
-        lease = await self._operations.claim_next()
+        if self._maintenance_gate is None:
+            lease = await self._operations.claim_next()
+        else:
+            async with self._maintenance_gate.lock:
+                if await self._maintenance_gate.is_active():
+                    return False
+                lease = await self._operations.claim_next()
         if lease is None:
             return False
         plan_scope = await self._operations.plan_execution_scope(lease.operation_id)

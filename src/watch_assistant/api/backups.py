@@ -10,6 +10,8 @@ from watch_assistant.schemas import (
     BackupConfigurationImportResponse,
     BackupListResponse,
     BackupResponse,
+    BackupRestoreApprovalRequest,
+    BackupRestoreApprovalResponse,
     BackupRestorePreviewResponse,
 )
 from watch_assistant.security import AuthContext, require_api_auth
@@ -123,4 +125,82 @@ async def preview_restore(
         return await service.preview_restore(backup_id)
     except BackupServiceError as exc:
         status_code = 404 if exc.code == "backup_not_found" else 422
+        raise HTTPException(status_code=status_code, detail=exc.code) from exc
+
+
+@router.post(
+    "/backups/{backup_id}/restore-approval",
+    response_model=BackupRestoreApprovalResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def request_restore_approval(
+    backup_id: str,
+    payload: BackupRestoreApprovalRequest,
+    service: ServiceDependency,
+    auth: Annotated[AuthContext, Depends(require_api_auth)],
+) -> BackupRestoreApprovalResponse:
+    try:
+        return await service.request_restore_approval(
+            backup_id,
+            confirmed=payload.confirmed,
+            requester_identity=auth.identity,
+            actor_type="agent" if auth.via_bearer else "web",
+        )
+    except BackupServiceError as exc:
+        status_by_code = {
+            "restore_approval_confirmation_required": 400,
+            "restore_approval_unavailable": 503,
+            "restore_preview_not_ready": 409,
+        }
+        raise HTTPException(
+            status_code=status_by_code.get(exc.code, 422), detail=exc.code
+        ) from exc
+
+
+@router.post(
+    "/backups/restore-approvals/{approval_id}/approve",
+    response_model=BackupRestoreApprovalResponse,
+)
+async def approve_restore(
+    approval_id: str,
+    payload: BackupRestoreApprovalRequest,
+    service: ServiceDependency,
+    auth: Annotated[AuthContext, Depends(require_api_auth)],
+) -> BackupRestoreApprovalResponse:
+    try:
+        return await service.approve_restore(
+            approval_id,
+            confirmed=payload.confirmed,
+            approver_identity=auth.identity,
+            actor_type="agent" if auth.via_bearer else "web",
+        )
+    except BackupServiceError as exc:
+        status_by_code = {
+            "restore_approval_confirmation_required": 400,
+            "restore_approval_not_found": 404,
+            "restore_approval_expired": 409,
+            "restore_second_approver_required": 403,
+            "restore_preview_changed": 409,
+            "restore_drain_incomplete": 409,
+            "maintenance_mode_required": 409,
+            "restore_approval_conflict": 409,
+            "restore_approval_unavailable": 503,
+        }
+        raise HTTPException(
+            status_code=status_by_code.get(exc.code, 422), detail=exc.code
+        ) from exc
+
+
+@router.get(
+    "/backups/restore-approvals/{approval_id}",
+    response_model=BackupRestoreApprovalResponse,
+)
+async def get_restore_approval(
+    approval_id: str,
+    service: ServiceDependency,
+) -> BackupRestoreApprovalResponse:
+    try:
+        return await service.get_restore_approval(approval_id)
+    except BackupServiceError as exc:
+        status_code = 404 if exc.code == "restore_approval_not_found" else 503
         raise HTTPException(status_code=status_code, detail=exc.code) from exc

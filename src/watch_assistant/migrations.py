@@ -842,6 +842,19 @@ def _add_task_target_directory(connection: Connection) -> None:
     )
 
 
+def _create_backup_restore_safety_tables(connection: Connection) -> None:
+    from watch_assistant.models import BackupRestoreApproval, OnlineMaintenanceState
+
+    OnlineMaintenanceState.__table__.create(connection, checkfirst=True)
+    BackupRestoreApproval.__table__.create(connection, checkfirst=True)
+    connection.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_backup_restore_approvals_status_expires "
+            "ON backup_restore_approvals (status, expires_at)"
+        )
+    )
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration("001_application_settings_columns", _add_application_settings_columns),
     Migration("002_library_index_tables", _create_library_index_tables),
@@ -889,6 +902,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration("050_strm_cleanup_plans", _create_strm_cleanup_plan_table),
     Migration("051_organization_cancel_requested", _add_organization_cancel_requested),
     Migration("052_task_target_directory", _add_task_target_directory),
+    Migration("053_backup_restore_safety", _create_backup_restore_safety_tables),
 )
 
 

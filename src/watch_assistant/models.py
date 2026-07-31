@@ -256,6 +256,50 @@ class AgentToken(Base):
     call_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
 
+class OnlineMaintenanceState(Base):
+    """Durable singleton used to stop new work before offline maintenance."""
+
+    __tablename__ = "online_maintenance_state"
+
+    id: Mapped[str] = mapped_column(String(16), primary_key=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    generation: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    requested_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    entered_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    released_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    requested_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+
+class BackupRestoreApproval(Base):
+    """Short-lived, two-party authorization for an offline restore."""
+
+    __tablename__ = "backup_restore_approvals"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    backup_id: Mapped[str] = mapped_column(String(64), index=True)
+    backup_sha256: Mapped[str] = mapped_column(String(64))
+    requester_identity: Mapped[str] = mapped_column(String(128))
+    approver_identity: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    maintenance_generation: Mapped[int] = mapped_column(Integer)
+    drain_report_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    approved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    rejected_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
 class TaskState(StrEnum):
     QUEUED = "queued"
     SUBMITTING = "submitting"

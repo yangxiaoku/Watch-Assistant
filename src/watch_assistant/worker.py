@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from watch_assistant.crypto import SecretCrypto
-from watch_assistant.models import Task, TaskState
+from watch_assistant.models import OnlineMaintenanceState, Task, TaskState
 from watch_assistant.schemas import (
     LoggingLevel,
     RemoteStatus,
@@ -18,6 +18,7 @@ from watch_assistant.schemas import (
     WorkflowStageStatus,
 )
 from watch_assistant.services.inventory_push_guard import InventoryPushGuard
+from watch_assistant.services.maintenance_gate import MaintenanceGate
 from watch_assistant.services.observability import EventLogger, emit_event
 from watch_assistant.services.tasks import recover_after_restart
 from watch_assistant.services.workflows import sync_child_stage
@@ -50,6 +51,7 @@ class TaskWorker:
         lease_seconds: int = 60,
         event_logger: EventLogger | None = None,
         inventory_guard: InventoryPushGuard | None = None,
+        maintenance_gate: MaintenanceGate | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._crypto = crypto
@@ -58,6 +60,8 @@ class TaskWorker:
         self._lease_seconds = lease_seconds
         self._event_logger = event_logger
         self._inventory_guard = inventory_guard
+        self._maintenance_gate = maintenance_gate
+        self._gate_lock = maintenance_gate.lock if maintenance_gate else asyncio.Lock()
 
     async def run_once(self) -> bool:
         task_id = await self._claim_one()
@@ -225,7 +229,11 @@ class TaskWorker:
 
     async def _claim_one(self) -> str | None:
         now = datetime.now(UTC)
-        async with self._session_factory() as session:
+        async with self._gate_lock, self._session_factory() as session:
+            if self._maintenance_gate is not None:
+                maintenance = await session.get(OnlineMaintenanceState, "default")
+                if maintenance is not None and maintenance.active:
+                    return None
             task = await session.scalar(
                 select(Task)
                 .where(

@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from watch_assistant.schemas import TaskAction, TaskCreateRequest, TaskResponse
 from watch_assistant.security import require_api_auth
+from watch_assistant.services.maintenance_gate import MaintenanceActive
 from watch_assistant.services.tasks import (
     InvalidCancelState,
     InvalidRetryState,
@@ -64,6 +65,8 @@ async def create_task(
         raise HTTPException(status_code=404, detail="resource_not_found") from exc
     except PushKindUnsupported as exc:
         raise HTTPException(status_code=503, detail="push_kind_unsupported") from exc
+    except MaintenanceActive as exc:
+        raise HTTPException(status_code=409, detail="maintenance_mode_active") from exc
     except WorkflowNotFound as exc:
         raise HTTPException(status_code=404, detail="workflow_not_found") from exc
     return task
@@ -96,6 +99,8 @@ async def retry_task(
         raise HTTPException(status_code=409, detail="task_not_retryable") from exc
     except PushKindUnsupported as exc:
         raise HTTPException(status_code=503, detail="push_kind_unsupported") from exc
+    except MaintenanceActive as exc:
+        raise HTTPException(status_code=409, detail="maintenance_mode_active") from exc
 
 
 @router.post("/tasks/{task_id}/cancel", response_model=TaskResponse)

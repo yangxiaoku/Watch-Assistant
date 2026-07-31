@@ -28,6 +28,7 @@ from watch_assistant.services.library_index import (
     LibraryIndexError,
     LibraryIndexService,
 )
+from watch_assistant.services.maintenance_gate import MaintenanceGate
 from watch_assistant.services.organization_outbox import (
     DirectoryDirtyLease,
     DirectoryDirtyOutboxService,
@@ -76,6 +77,7 @@ class DirectoryDirtyWorker:
         poll_interval_seconds: float = 5.0,
         max_attempts: int = 5,
         event_logger=None,
+        maintenance_gate: MaintenanceGate | None = None,
     ) -> None:
         if poll_interval_seconds <= 0:
             raise ValueError("invalid_poll_interval")
@@ -93,10 +95,17 @@ class DirectoryDirtyWorker:
         self._poll_interval_seconds = float(poll_interval_seconds)
         self._max_attempts = max_attempts
         self._event_logger = event_logger
+        self._maintenance_gate = maintenance_gate
         self._stop = asyncio.Event()
 
     async def run_once(self) -> bool:
-        lease = await self._outbox.claim_generation(self._session_factory)
+        if self._maintenance_gate is None:
+            lease = await self._outbox.claim_generation(self._session_factory)
+        else:
+            async with self._maintenance_gate.lock:
+                if await self._maintenance_gate.is_active():
+                    return False
+                lease = await self._outbox.claim_generation(self._session_factory)
         if lease is None:
             return False
         try:

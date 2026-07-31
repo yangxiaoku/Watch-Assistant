@@ -922,6 +922,48 @@ class BackupRestorePreviewResponse(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class MaintenanceStatusResponse(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    active: bool
+    generation: int = Field(ge=0)
+    reason: str | None = None
+    entered_at: datetime | None = None
+    released_at: datetime | None = None
+    task_counts: dict[str, int] = Field(default_factory=dict)
+    queue_counts: dict[str, int] = Field(default_factory=dict)
+    safe_point: bool
+    blocking_reasons: list[str] = Field(default_factory=list)
+
+
+class MaintenanceEnterRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    reason: str = Field(min_length=1, max_length=255)
+
+
+class BackupRestoreApprovalRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    confirmed: bool = False
+
+
+class BackupRestoreApprovalResponse(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    approval_id: str
+    backup_id: str
+    status: Literal["pending", "approved", "expired", "rejected"]
+    created_at: datetime
+    expires_at: datetime
+    requester_identity: str
+    approver_identity: str | None = None
+    maintenance_generation: int = Field(ge=0)
+    safe_point: bool
+    drain_report: MaintenanceStatusResponse
+    offline_restore_required: bool = True
+
+
 class BackupConfigurationExportResponse(BaseModel):
     """Non-sensitive settings that can be recreated after a restore."""
 

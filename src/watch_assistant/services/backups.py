@@ -10,19 +10,29 @@ import re
 import shutil
 import sqlite3
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 from uuid import uuid4
 
+from watch_assistant.models import BackupRestoreApproval
 from watch_assistant.schemas import (
     BackupConfigurationExportResponse,
     BackupConfigurationImportRequest,
     BackupConfigurationImportResponse,
     BackupListResponse,
     BackupResponse,
+    BackupRestoreApprovalResponse,
     BackupRestorePreviewResponse,
     LoggingLevel,
+)
+from watch_assistant.services.maintenance_gate import (
+    MaintenanceDrainIncomplete,
+    MaintenanceGate,
+    MaintenanceNotActive,
+    approval_response,
+    encode_drain_report,
+    new_approval_id,
 )
 from watch_assistant.services.observability import EventLogger, emit_event
 from watch_assistant.services.settings import (
@@ -70,6 +80,8 @@ class BackupService:
         event_logger: EventLogger | None = None,
         settings_service: SettingsService | None = None,
         notification_service: NotificationService | None = None,
+        session_factory=None,
+        maintenance_gate: MaintenanceGate | None = None,
     ) -> None:
         self._database_path = (
             None if database_path in (None, ":memory:") else Path(database_path)
@@ -80,6 +92,8 @@ class BackupService:
         self._event_logger = event_logger
         self._settings_service = settings_service
         self._notification_service = notification_service
+        self._session_factory = session_factory
+        self._maintenance_gate = maintenance_gate
         self._lock = asyncio.Lock()
 
     async def create(self) -> BackupResponse:
@@ -174,6 +188,129 @@ class BackupService:
             actor_id=actor_id,
         )
         return response
+
+    async def request_restore_approval(
+        self,
+        backup_id: str,
+        *,
+        confirmed: bool,
+        requester_identity: str,
+        actor_type: str = "web",
+    ) -> BackupRestoreApprovalResponse:
+        if confirmed is not True:
+            raise BackupServiceError("restore_approval_confirmation_required")
+        if self._session_factory is None or self._maintenance_gate is None:
+            raise BackupServiceError("restore_approval_unavailable")
+        preview = await self.preview_restore(backup_id)
+        if preview.status != "ready":
+            raise BackupServiceError("restore_preview_not_ready")
+        manifest, _source = await asyncio.to_thread(self._load_backup_sync, backup_id)
+        maintenance = await self._maintenance_gate.enter(
+            reason="database_restore", actor_id=requester_identity
+        )
+        now = datetime.now(UTC)
+        approval = BackupRestoreApproval(
+            id=new_approval_id(),
+            backup_id=backup_id,
+            backup_sha256=manifest.sha256,
+            requester_identity=requester_identity,
+            status="pending",
+            maintenance_generation=maintenance.generation,
+            drain_report_json=encode_drain_report(maintenance),
+            created_at=now,
+            expires_at=now + timedelta(minutes=5),
+        )
+        async with self._session_factory() as session:
+            session.add(approval)
+            await session.commit()
+        await emit_event(
+            self._event_logger,
+            "backup.restore_approval_requested",
+            level=LoggingLevel.WARNING,
+            fields={"status": "pending"},
+            actor_type=actor_type,
+            actor_id=requester_identity,
+            resource_type="backup",
+            resource_id=backup_id,
+        )
+        return approval_response(approval, maintenance)
+
+    async def approve_restore(
+        self,
+        approval_id: str,
+        *,
+        confirmed: bool,
+        approver_identity: str,
+        actor_type: str = "web",
+    ) -> BackupRestoreApprovalResponse:
+        if confirmed is not True:
+            raise BackupServiceError("restore_approval_confirmation_required")
+        if self._session_factory is None or self._maintenance_gate is None:
+            raise BackupServiceError("restore_approval_unavailable")
+        async with self._session_factory() as session:
+            approval = await session.get(BackupRestoreApproval, approval_id)
+        if approval is None:
+            raise BackupServiceError("restore_approval_not_found")
+        now = datetime.now(UTC)
+        if approval.status != "pending":
+            status = await self._maintenance_gate.status()
+            return approval_response(approval, status)
+        if _as_utc(approval.expires_at) <= now:
+            async with self._session_factory() as session:
+                current = await session.get(BackupRestoreApproval, approval_id)
+                if current is not None and current.status == "pending":
+                    current.status = "expired"
+                    await session.commit()
+                    approval = current
+            raise BackupServiceError("restore_approval_expired")
+        if approver_identity == approval.requester_identity:
+            raise BackupServiceError("restore_second_approver_required")
+        preview = await self.preview_restore(approval.backup_id)
+        if preview.status != "ready":
+            raise BackupServiceError("restore_preview_changed")
+        try:
+            maintenance = await self._maintenance_gate.require_safe_point()
+        except MaintenanceNotActive as exc:
+            raise BackupServiceError("maintenance_mode_required") from exc
+        except MaintenanceDrainIncomplete as exc:
+            raise BackupServiceError("restore_drain_incomplete") from exc
+        manifest, _source = await asyncio.to_thread(
+            self._load_backup_sync, approval.backup_id
+        )
+        if manifest.sha256 != approval.backup_sha256:
+            raise BackupServiceError("restore_preview_changed")
+        async with self._session_factory() as session:
+            current = await session.get(BackupRestoreApproval, approval_id)
+            if current is None or current.status != "pending":
+                raise BackupServiceError("restore_approval_conflict")
+            current.status = "approved"
+            current.approver_identity = approver_identity
+            current.approved_at = now
+            current.drain_report_json = encode_drain_report(maintenance)
+            await session.commit()
+            approval = current
+        await emit_event(
+            self._event_logger,
+            "backup.restore_approved",
+            fields={"status": "approved"},
+            actor_type=actor_type,
+            actor_id=approver_identity,
+            resource_type="backup",
+            resource_id=approval.backup_id,
+        )
+        return approval_response(approval, maintenance)
+
+    async def get_restore_approval(
+        self, approval_id: str
+    ) -> BackupRestoreApprovalResponse:
+        if self._session_factory is None or self._maintenance_gate is None:
+            raise BackupServiceError("restore_approval_unavailable")
+        async with self._session_factory() as session:
+            approval = await session.get(BackupRestoreApproval, approval_id)
+        if approval is None:
+            raise BackupServiceError("restore_approval_not_found")
+        status = await self._maintenance_gate.status()
+        return approval_response(approval, status)
 
     async def restore_to(
         self,
@@ -581,3 +718,9 @@ def _remove_if_exists(path: Path) -> None:
         path.unlink()
     except FileNotFoundError:
         pass
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
