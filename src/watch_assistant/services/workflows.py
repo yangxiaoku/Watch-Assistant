@@ -90,6 +90,9 @@ class WorkflowService:
             WorkflowStage(
                 id=f"{workflow.id}_{stage.value}",
                 stage=stage,
+                stage_key=(
+                    "search" if stage == WorkflowStageName.DISCOVERY else stage.value
+                ),
                 status=WorkflowStageStatus.PENDING,
                 updated_at=now,
             )

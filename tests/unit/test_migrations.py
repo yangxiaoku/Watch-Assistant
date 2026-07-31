@@ -13,7 +13,8 @@ from watch_assistant.models import (
     Task,
     WebSession,
 )
-from watch_assistant.schemas import ResourceKind, TaskAction
+from watch_assistant.schemas import ResourceKind, TaskAction, WorkflowCreateRequest
+from watch_assistant.services.workflows import WorkflowService
 
 APPLICATION_SETTINGS_COLUMNS = {
     "id",
@@ -283,6 +284,11 @@ async def test_legacy_workflow_schema_is_upgraded_without_losing_rows(tmp_path):
 
     assert {"media_type", "tmdb_id", "state_reason"} <= workflow_columns
     assert stage == ("discovery", "succeeded", "task", "task_legacy", stage[4])
+
+    created = await WorkflowService(database.session_factory).create(
+        WorkflowCreateRequest(media_type="movie")
+    )
+    assert created.id.startswith("wf_")
     await database.engine.dispose()
 
 

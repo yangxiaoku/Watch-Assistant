@@ -653,6 +653,8 @@ class WorkflowStage(Base):
     stage: Mapped[WorkflowStageName] = mapped_column(
         Enum(WorkflowStageName, values_callable=enum_values, native_enum=False)
     )
+    # Legacy workflow databases still require this column on inserts.
+    stage_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
     status: Mapped[WorkflowStageStatus] = mapped_column(
         Enum(WorkflowStageStatus, values_callable=enum_values, native_enum=False),
         default=WorkflowStageStatus.PENDING,

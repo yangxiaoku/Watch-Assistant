@@ -521,8 +521,11 @@ def _upgrade_legacy_workflow_schema(connection: Connection) -> None:
     }
     for name, definition in (
         ("stage", "VARCHAR(32)"),
+        ("reason", "TEXT"),
+        ("error_code", "VARCHAR(100)"),
         ("child_type", "VARCHAR(64)"),
         ("child_id", "VARCHAR(128)"),
+        ("started_at", "DATETIME"),
         ("completed_at", "DATETIME"),
     ):
         if name not in stage_columns:
