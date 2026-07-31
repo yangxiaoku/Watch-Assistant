@@ -60,7 +60,9 @@
   目录级回归。
 - `REQ-009`：整理 operation 已支持通过受保护 API 关联 workflow，并在排队、claim、成功、
   失败、不确定、取消和重试时同步 `organization` 阶段；STRM API 和整理完成后的 dirty
-  worker 已在开始、成功、失败、等待外部和跳过时同步 `strm` 阶段。可靠通知、跨任务
+  worker 已在开始、成功、失败、等待外部和跳过时同步 `strm` 阶段；同一目录 coalesced
+  generation 现在会把领取前的所有 dirty 事件绑定到同一 lease，并向所有关联 workflow
+  扇出 STRM 子阶段状态。可靠通知完整矩阵、独立 STRM 操作子任务和其他跨任务
   关联仍待完成；本轮取消 workflow 时可停止未开始阶段，运行中或
   `uncertain` 子任务保持原状态；推送任务新增 queued 未 claim 的安全取消及 CLI 命令；
   本轮新增运行中整理 operation 的持久取消请求：未开始远端写入时进入 `cancelled`，写入
