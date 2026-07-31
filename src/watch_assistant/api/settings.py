@@ -202,6 +202,19 @@ async def patch_organization(
     request: Request,
     auth: Annotated[AuthContext, Depends(require_api_auth)],
 ) -> OrganizationSettingsResponse:
+    configured_root_id = getattr(request.app.state, "organization_target_root_id", None)
+    browsed_directory_ids = getattr(request.app.state, "p115_browsed_directory_ids", set())
+    if isinstance(configured_root_id, str) and configured_root_id:
+        requested_directory_ids: set[str] = set()
+        patch_values = patch.model_dump(exclude_unset=True)
+        for key in ("source_directory_ids", "target_directory_id", "push_directory_id"):
+            value = patch_values.get(key)
+            if isinstance(value, list):
+                requested_directory_ids.update(item for item in value if isinstance(item, str))
+            elif isinstance(value, str):
+                requested_directory_ids.add(value)
+        if not requested_directory_ids.issubset({configured_root_id, *browsed_directory_ids}):
+            raise HTTPException(status_code=403, detail="p115_directory_out_of_scope")
     try:
         response = await settings.update_organization(
             patch,

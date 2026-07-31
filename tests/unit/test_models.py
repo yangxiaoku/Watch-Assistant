@@ -25,6 +25,7 @@ def test_task_states_are_explicit():
         "needs_auth",
         "failed",
         "uncertain",
+        "cancelled",
     }
 
 

@@ -58,6 +58,7 @@ const organization = {
   scan_interval_minutes: 30,
   source_directory_ids: ["1000"],
   target_directory_id: "2000",
+  push_directory_id: "3500",
   video_extensions: ["mkv", "mp4"],
   metadata_extensions: ["srt", "nfo"],
   rename_enabled: true,
@@ -98,6 +99,13 @@ function makeApi(overrides: Partial<Record<keyof ApiClient, unknown>> = {}) {
     updateContentPolicy: vi.fn().mockResolvedValue({ ...contentPolicy, revision: 4 }),
     organizationSettings: vi.fn().mockResolvedValue(organization),
     updateOrganizationSettings: vi.fn().mockResolvedValue({ ...organization, revision: 5 }),
+    p115Directories: vi.fn().mockImplementation(async (directoryId?: string) => ({
+      root_id: "1000",
+      parent_id: directoryId || "1000",
+      items: directoryId ? [] : [{ id: "3000", name: "推送目录" }],
+      has_more: false,
+      next_page: null,
+    })),
     runOrganizationNow: vi.fn().mockResolvedValue({ action: "run_now", queued: true, schedule_enabled: false, message_zh: "整理已排队" }),
     stopOrganization: vi.fn().mockResolvedValue({ action: "stop", queued: false, schedule_enabled: false, message_zh: "已停止整理" }),
     ...overrides,
@@ -151,12 +159,35 @@ describe("SettingsView", () => {
     expect(api.updateOrganizationSettings).toHaveBeenCalledWith(expect.objectContaining({
       schedule_enabled: false,
       scan_interval_minutes: 10,
+      push_directory_id: "3500",
       revision: 4,
     }));
     await wrapper.findAll("button").find((button) => button.text().includes("立即整理"))?.trigger("click");
     expect(api.runOrganizationNow).toHaveBeenCalledTimes(1);
     await wrapper.findAll("button").find((button) => button.text().includes("停止整理"))?.trigger("click");
     expect(api.stopOrganization).toHaveBeenCalledTimes(1);
+  });
+
+  it("selects and persists a separate push directory from the managed scope", async () => {
+    const api = makeApi();
+    const wrapper = mount(SettingsView, { props: { api } });
+    await flushPromises();
+    await wrapper.findAll("button").find((button) => button.text().includes("115 整理"))?.trigger("click");
+    await flushPromises();
+
+    await wrapper.findAll("button").find((button) => button.text().includes("选择推送目录"))?.trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("选择资源推送目录");
+    await wrapper.findAll(".directory-picker-item")[0].trigger("click");
+    await flushPromises();
+    await wrapper.find(".directory-picker-toolbar .primary-button").trigger("click");
+    await wrapper.get(".settings-save-bar .primary-button").trigger("click");
+    await flushPromises();
+
+    expect(api.updateOrganizationSettings).toHaveBeenCalledWith(expect.objectContaining({
+      push_directory_id: "3000",
+      revision: 4,
+    }));
   });
 
   it("renders the real overview fields and p115 settings without a cookie input", async () => {

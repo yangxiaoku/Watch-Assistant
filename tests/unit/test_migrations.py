@@ -5,9 +5,16 @@ from sqlalchemy import inspect, text
 
 import watch_assistant.db as database_module
 from watch_assistant.db import create_database, initialize_database
+from watch_assistant.library_models import (
+    LibraryScanRun,
+    MediaLibrary,
+    OrganizationPlan,
+)
 from watch_assistant.migrations import MIGRATIONS, Migration, run_migrations
 from watch_assistant.models import (
     ApplicationSettings,
+    DirectoryDirtyEvent,
+    DirectoryDirtyGeneration,
     OrganizationOperation,
     Resource,
     Task,
@@ -198,6 +205,114 @@ async def test_initialize_database_is_idempotent(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_dirty_generation_migration_backfills_unconsumed_events(tmp_path):
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'watch.db'}")
+    await initialize_database(database.engine)
+    now = datetime.now(UTC)
+    async with database.session_factory() as session:
+        session.add(
+            MediaLibrary(
+                id="legacy-library",
+                name="legacy",
+                root_directory_id="legacy-root",
+                scope_verified=True,
+                enabled=True,
+            )
+        )
+        await session.flush()
+        session.add(
+            LibraryScanRun(
+                id="legacy-scan",
+                library_id="legacy-library",
+                root_directory_id="legacy-root",
+                idempotency_key="legacy-scan-key",
+                state="completed",
+                complete=True,
+                snapshot_revision=1,
+            )
+        )
+        await session.flush()
+        session.add(
+            OrganizationPlan(
+                id="legacy-plan",
+                library_id="legacy-library",
+                source_scan_run_id="legacy-scan",
+                source_snapshot_revision=1,
+                source_snapshot_json="{}",
+                target_root="",
+                actions_json="[]",
+                basis_json="{}",
+                preconditions_json="{}",
+                rule_version="test-v1",
+                parser_version="test-v1",
+                matcher_version="test-v1",
+                status="planned",
+                revision=1,
+                expires_at=now + timedelta(hours=1),
+                plan_hash="legacy-plan-hash",
+            )
+        )
+        await session.flush()
+        session.add(
+            OrganizationOperation(
+                id="legacy-operation",
+                plan_id="legacy-plan",
+                plan_revision=1,
+                idempotency_key="legacy-operation-key",
+            )
+        )
+        await session.flush()
+        session.add(
+            DirectoryDirtyEvent(
+                id="legacy-event",
+                operation_id="legacy-operation",
+                directory_id="legacy-directory",
+                status="pending",
+                created_at=now,
+                updated_at=now,
+                available_at=now,
+            )
+        )
+        await session.commit()
+
+    async with database.engine.begin() as connection:
+        await connection.run_sync(
+            lambda sync: DirectoryDirtyGeneration.__table__.drop(
+                sync, checkfirst=True
+            )
+        )
+        await connection.execute(
+            text(
+                "DELETE FROM schema_migrations "
+                "WHERE migration_id = '047_directory_dirty_generations'"
+            )
+        )
+        await connection.run_sync(
+            run_migrations,
+            tuple(
+                migration
+                for migration in MIGRATIONS
+                if migration.id
+                in {
+                    "047_directory_dirty_generations",
+                    "048_organization_operation_workflow",
+                }
+            ),
+        )
+
+    async with database.session_factory() as session:
+        generation = await session.get(
+            DirectoryDirtyGeneration, "gen_legacy_legacy-event"
+        )
+        assert generation is not None
+        assert generation.library_id == "legacy-library"
+        assert generation.directory_id == "legacy-directory"
+        assert generation.generation == 1
+        assert generation.status == "queued"
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_organization_operation_migration_preserves_existing_data(tmp_path):
     database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'watch.db'}")
     await initialize_database(database.engine)
@@ -228,6 +343,29 @@ async def test_organization_operation_migration_preserves_existing_data(tmp_path
         )
     assert marker == "preserved"
     assert has_operations is True
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_running_operation_cancel_column_migrates_legacy_table(tmp_path):
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'legacy.db'}")
+    async with database.engine.begin() as connection:
+        await connection.exec_driver_sql(
+            "CREATE TABLE organization_operations (id VARCHAR(40) PRIMARY KEY)"
+        )
+        cancel_migration = tuple(
+            migration
+            for migration in MIGRATIONS
+            if migration.id == "051_organization_cancel_requested"
+        )
+        await connection.run_sync(run_migrations, cancel_migration)
+        columns = await connection.run_sync(
+            lambda sync: {
+                item["name"]
+                for item in inspect(sync).get_columns("organization_operations")
+            }
+        )
+    assert "cancel_requested" in columns
     await database.engine.dispose()
 
 

@@ -307,6 +307,7 @@ export interface OrganizationOperationResponse {
   revision: number;
   attempts: number;
   error_code: string | null;
+  cancel_requested: boolean;
 }
 
 export interface LoggingSettingsResponse {
@@ -342,6 +343,7 @@ export interface OrganizationSettingsResponse {
   scan_interval_minutes: number;
   source_directory_ids: string[];
   target_directory_id: string | null;
+  push_directory_id: string | null;
   video_extensions: string[];
   metadata_extensions: string[];
   rename_enabled: boolean;
@@ -368,6 +370,7 @@ export interface PatchOrganizationSettingsRequest {
   scan_interval_minutes?: number;
   source_directory_ids?: string[];
   target_directory_id?: string | null;
+  push_directory_id?: string | null;
   video_extensions?: string[];
   metadata_extensions?: string[];
   rename_enabled?: boolean;
@@ -615,6 +618,11 @@ export interface NotificationListResponse {
 export interface NotificationPreferenceResponse {
   enabled: boolean;
   muted_event_codes: string[];
+  quiet_hours_enabled: boolean;
+  quiet_hours_start: string;
+  quiet_hours_end: string;
+  quiet_hours_timezone: string;
+  error_bypass_quiet_hours: boolean;
   revision: number;
 }
 

@@ -321,12 +321,6 @@ class WorkflowService:
                 WorkflowStatus.FAILED,
             }:
                 raise WorkflowConflict("workflow_not_cancellable")
-            if any(
-                stage.status
-                in {WorkflowStageStatus.RUNNING, WorkflowStageStatus.UNCERTAIN}
-                for stage in stages
-            ):
-                raise WorkflowConflict("workflow_not_cancellable")
             cancellable = [
                 stage
                 for stage in stages
@@ -440,6 +434,40 @@ async def sync_child_stage(
     workflow.status, workflow.state_reason = _derive_status(stages)
     workflow.updated_at = now
     return workflow
+
+
+async def sync_child_stage_in_transaction(
+    session_factory: async_sessionmaker[AsyncSession],
+    workflow_id: str,
+    stage_name: WorkflowStageName,
+    *,
+    child_type: str,
+    child_id: str,
+    status: WorkflowStageStatus,
+    reason: str | None = None,
+    error_code: str | None = None,
+    event_logger: EventLogger | None = None,
+) -> None:
+    """Update a child stage for workers that do not own an open transaction."""
+    async with session_factory() as session:
+        workflow = await sync_child_stage(
+            session,
+            workflow_id,
+            stage_name,
+            child_type=child_type,
+            child_id=child_id,
+            status=status,
+            reason=reason,
+            error_code=error_code,
+        )
+        await session.commit()
+    await emit_event(
+        event_logger,
+        "workflow.stage_changed",
+        fields={"status": status.value, "stage": stage_name.value},
+        correlation_id=workflow.correlation_id,
+        task_id=workflow.id,
+    )
 
 
 def _derive_status(

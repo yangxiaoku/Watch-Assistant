@@ -214,6 +214,7 @@ async def test_queue_is_idempotent_and_rejects_unconfirmed_stale_or_expired_plan
         "revision",
         "attempts",
         "error_code",
+        "cancel_requested",
     }
     repeated = await client.post(
         "/api/v1/organization-plans/plan-ready/operation",
@@ -251,6 +252,43 @@ async def test_queue_is_idempotent_and_rejects_unconfirmed_stale_or_expired_plan
             "plan_is_not_planned",
             "plan_prerequisites_changed",
         }
+    await _close(client, database)
+
+
+@pytest.mark.integration
+async def test_queue_can_link_organization_operation_to_workflow(tmp_path: Path):
+    client, database = await _client(tmp_path, execution_enabled=True)
+    headers = await _auth_headers(client)
+    workflow_response = await client.post(
+        "/api/v1/workflows", json={"media_type": "movie"}, headers=headers
+    )
+    assert workflow_response.status_code == 201
+    workflow_id = workflow_response.json()["id"]
+    queued = await client.post(
+        "/api/v1/organization-plans/plan-ready/operation",
+        json={
+            "expected_revision": 1,
+            "idempotency_key": "workflow-queue-key",
+            "workflow_id": workflow_id,
+        },
+        headers=headers,
+    )
+    assert queued.status_code == 200
+    operation_id = queued.json()["operation_id"]
+    async with database.session_factory() as session:
+        operation = await session.get(OrganizationOperation, operation_id)
+        assert operation is not None
+        assert operation.workflow_id == workflow_id
+    detail = await client.get(f"/api/v1/workflows/{workflow_id}", headers=headers)
+    assert detail.status_code == 200
+    organization = next(
+        stage
+        for stage in detail.json()["stages"]
+        if stage["stage"] == "organization"
+    )
+    assert organization["status"] == "pending"
+    assert organization["child_type"] == "organization_operation"
+    assert organization["child_id"] == operation_id
     await _close(client, database)
 
 
@@ -366,7 +404,7 @@ async def test_batch_isolates_item_failures_and_cancel_is_local(tmp_path: Path):
 
 
 @pytest.mark.integration
-async def test_cancel_rejects_organizing_and_uncertain_without_remote_calls(
+async def test_cancel_requests_organizing_and_rejects_uncertain_without_remote_calls(
     tmp_path: Path,
 ):
     client, database = await _client(tmp_path, execution_enabled=True)
@@ -388,8 +426,17 @@ async def test_cancel_rejects_organizing_and_uncertain_without_remote_calls(
         json={"expected_revision": 2},
         headers=headers,
     )
-    assert organizing.status_code == 409
-    assert organizing.json()["detail"]["code"] == "operation_is_not_cancellable"
+    assert organizing.status_code == 200
+    assert organizing.json()["status"] == "organizing"
+    assert organizing.json()["cancel_requested"] is True
+
+    repeated = await client.post(
+        f"/api/v1/organization-operations/{operation_id}/cancel",
+        json={"expected_revision": 2},
+        headers=headers,
+    )
+    assert repeated.status_code == 200
+    assert repeated.json()["cancel_requested"] is True
 
     async with database.session_factory() as session:
         operation = await session.get(OrganizationOperation, operation_id)

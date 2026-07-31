@@ -147,6 +147,11 @@ class NotificationPreference(Base):
     id: Mapped[str] = mapped_column(String(16), primary_key=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1")
     muted_event_codes_json: Mapped[str] = mapped_column(Text, default="[]")
+    quiet_hours_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1")
+    quiet_hours_start: Mapped[str] = mapped_column(String(5), default="23:00", server_default="23:00")
+    quiet_hours_end: Mapped[str] = mapped_column(String(5), default="08:00", server_default="08:00")
+    quiet_hours_timezone: Mapped[str] = mapped_column(String(64), default="Asia/Shanghai", server_default="Asia/Shanghai")
+    error_bypass_quiet_hours: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1")
     revision: Mapped[int] = mapped_column(Integer, default=1)
 
 
@@ -258,6 +263,7 @@ class TaskState(StrEnum):
     NEEDS_AUTH = "needs_auth"
     FAILED = "failed"
     UNCERTAIN = "uncertain"
+    CANCELLED = "cancelled"
 
 
 class Resource(Base):
@@ -704,6 +710,9 @@ class OrganizationOperation(Base):
         unique=True,
         index=True,
     )
+    workflow_id: Mapped[str | None] = mapped_column(
+        ForeignKey("workflows.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     plan_revision: Mapped[int] = mapped_column(Integer)
     idempotency_key: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     status: Mapped[OrganizationOperationStatus] = mapped_column(
@@ -715,6 +724,9 @@ class OrganizationOperation(Base):
         default=OrganizationOperationStatus.PLANNED,
         server_default=OrganizationOperationStatus.PLANNED.value,
         index=True,
+    )
+    cancel_requested: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="0", nullable=False
     )
     revision: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
     attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
@@ -787,4 +799,51 @@ class DirectoryDirtyEvent(Base):
             "directory_id=<redacted>, "
             f"event_kind={self.event_kind!r}, status={self.status!r}, "
             f"attempts={self.attempts!r})"
+        )
+
+
+class DirectoryDirtyGeneration(Base):
+    """One coalesced dirty lease per managed library directory."""
+
+    __tablename__ = "directory_dirty_generations"
+    __table_args__ = (
+        UniqueConstraint(
+            "library_id",
+            "directory_id",
+            name="uq_directory_dirty_generation_scope",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    library_id: Mapped[str] = mapped_column(
+        ForeignKey("media_libraries.id", ondelete="CASCADE"), index=True
+    )
+    directory_id: Mapped[str] = mapped_column(String(128), index=True)
+    operation_id: Mapped[str] = mapped_column(
+        ForeignKey("organization_operations.id", ondelete="RESTRICT"), index=True
+    )
+    generation: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    claimed_generation: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(16), default="queued", server_default="queued", index=True
+    )
+    attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    lease_token: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    available_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, server_default=text("CURRENT_TIMESTAMP"), index=True
+    )
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+
+    def __repr__(self) -> str:
+        return (
+            "DirectoryDirtyGeneration(id=<redacted>, library_id=<redacted>, "
+            "directory_id=<redacted>, "
+            f"generation={self.generation!r}, status={self.status!r})"
         )

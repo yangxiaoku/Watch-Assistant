@@ -20,13 +20,16 @@ from watch_assistant.library_models import (
 from watch_assistant.models import (
     OrganizationOperation,
     OrganizationOperationStatus,
+    Workflow,
 )
+from watch_assistant.schemas import WorkflowStageName, WorkflowStageStatus
 from watch_assistant.services.library_index import ScanRunState
 from watch_assistant.services.organization_outbox import (
     DirectoryDirtyOutboxService,
     OrganizationOutboxError,
 )
 from watch_assistant.services.organization_plan import OrganizationPlanStatus
+from watch_assistant.services.workflows import sync_child_stage
 
 VALID_OPERATION_ERROR_CODES = frozenset(
     {
@@ -71,6 +74,8 @@ class OrganizationOperationSummary:
     revision: int
     attempts: int
     error_code: str | None
+    workflow_id: str | None
+    cancel_requested: bool
 
     def __repr__(self) -> str:
         return (
@@ -115,12 +120,20 @@ class OrganizationOperationService:
         *,
         idempotency_key: str,
         expected_plan_revision: int | None = None,
+        workflow_id: str | None = None,
     ) -> OrganizationOperationSummary:
         _validate_identifier(plan_id, "invalid_plan_id", maximum=64)
         _validate_identifier(idempotency_key, "invalid_idempotency_key", maximum=255)
+        if workflow_id is not None:
+            _validate_identifier(workflow_id, "invalid_workflow_id", maximum=40)
         async with self._session_factory() as session:
             plan = await session.get(OrganizationPlan, plan_id)
             await self._ensure_planned_and_current(session, plan)
+            workflow = None
+            if workflow_id is not None:
+                workflow = await session.get(Workflow, workflow_id)
+                if workflow is None:
+                    raise OrganizationOperationPrerequisiteError("workflow_not_found")
             if (
                 expected_plan_revision is not None
                 and plan.revision != expected_plan_revision
@@ -135,6 +148,8 @@ class OrganizationOperationService:
             if existing is not None:
                 if existing.plan_id != plan_id:
                     raise OrganizationOperationConflict("idempotency_key_conflict")
+                if workflow_id is not None and existing.workflow_id != workflow_id:
+                    raise OrganizationOperationConflict("workflow_id_conflict")
                 return _summary(existing)
 
             existing = await session.scalar(
@@ -147,6 +162,7 @@ class OrganizationOperationService:
             operation = OrganizationOperation(
                 id="op_" + uuid.uuid4().hex,
                 plan_id=plan.id,
+                workflow_id=workflow_id,
                 plan_revision=plan.revision,
                 idempotency_key=idempotency_key,
                 status=OrganizationOperationStatus.PLANNED,
@@ -154,6 +170,14 @@ class OrganizationOperationService:
                 attempts=0,
             )
             session.add(operation)
+            if workflow is not None:
+                await _sync_workflow_stage(
+                    session,
+                    workflow.id,
+                    status=WorkflowStageStatus.PENDING,
+                    child_id=operation.id,
+                    reason="organization_queued",
+                )
             try:
                 await session.commit()
             except IntegrityError:
@@ -188,6 +212,15 @@ class OrganizationOperationService:
             if operation is None:
                 raise OrganizationOperationNotFound
             return _summary(operation)
+
+    async def cancel_requested(self, operation_id: str) -> bool:
+        async with self._session_factory() as session:
+            value = await session.scalar(
+                select(OrganizationOperation.cancel_requested).where(
+                    OrganizationOperation.id == operation_id
+                )
+            )
+        return value is True
 
     async def claim_next(
         self,
@@ -317,6 +350,13 @@ class OrganizationOperationService:
             )
             if result.rowcount != 1:
                 raise OrganizationOperationLeaseUnavailable("lease_claim_lost")
+            await _sync_workflow_stage(
+                session,
+                operation.workflow_id,
+                status=WorkflowStageStatus.RUNNING,
+                child_id=operation.id,
+                reason="organization_started",
+            )
             await session.commit()
             return OrganizationOperationLease(
                 operation_id=operation_id,
@@ -382,6 +422,7 @@ class OrganizationOperationService:
             OrganizationOperationStatus.ORGANIZED,
             OrganizationOperationStatus.FAILED,
             OrganizationOperationStatus.UNCERTAIN,
+            OrganizationOperationStatus.CANCELLED,
         }:
             raise OrganizationOperationStateError("invalid_terminal_status")
         if status is OrganizationOperationStatus.ORGANIZED:
@@ -422,10 +463,18 @@ class OrganizationOperationService:
             )
             if result.rowcount != 1:
                 raise OrganizationOperationLeaseUnavailable("lease_is_not_owned")
-            await session.commit()
             operation = await session.get(OrganizationOperation, operation_id)
             if operation is None:
                 raise OrganizationOperationNotFound
+            await _sync_workflow_stage(
+                session,
+                operation.workflow_id,
+                status=_workflow_stage_status(status),
+                child_id=operation.id,
+                reason="organization_finished",
+                error_code=error_code,
+            )
+            await session.commit()
             summary = _summary(operation)
         await self._audit("organize.operation.updated", "整理操作状态已更新")
         return summary
@@ -466,10 +515,18 @@ class OrganizationOperationService:
             )
             if result.rowcount != 1:
                 raise OrganizationOperationLeaseUnavailable("lease_is_not_owned")
-            await session.commit()
             operation = await session.get(OrganizationOperation, operation_id)
             if operation is None:
                 raise OrganizationOperationNotFound
+            await _sync_workflow_stage(
+                session,
+                operation.workflow_id,
+                status=WorkflowStageStatus.UNCERTAIN,
+                child_id=operation.id,
+                reason="organization_uncertain",
+                error_code="lease_lost",
+            )
+            await session.commit()
             summary = _summary(operation)
         await self._audit("organize.operation.uncertain", "整理操作已标记为结果不确定")
         return summary
@@ -524,6 +581,16 @@ class OrganizationOperationService:
                         else directory_ids
                     ),
                 )
+                operation = await session.get(OrganizationOperation, operation_id)
+                if operation is None:
+                    raise OrganizationOperationNotFound
+                await _sync_workflow_stage(
+                    session,
+                    operation.workflow_id,
+                    status=WorkflowStageStatus.SUCCEEDED,
+                    child_id=operation.id,
+                    reason="organization_finished",
+                )
                 await session.commit()
             except OrganizationOperationLeaseUnavailable:
                 await session.rollback()
@@ -548,27 +615,36 @@ class OrganizationOperationService:
         _validate_identifier(operation_id, "invalid_operation_id", maximum=40)
         current_time = datetime.now(UTC)
         async with self._session_factory() as session:
-            result = await session.execute(
-                update(OrganizationOperation)
-                .where(
-                    OrganizationOperation.id == operation_id,
-                    OrganizationOperation.revision == expected_revision,
-                    OrganizationOperation.status == OrganizationOperationStatus.PLANNED,
-                )
-                .values(
-                    status=OrganizationOperationStatus.CANCELLED,
-                    revision=expected_revision + 1,
-                    finished_at=current_time,
-                    updated_at=current_time,
-                )
-                .execution_options(synchronize_session=False)
-            )
-            if result.rowcount != 1:
-                raise OrganizationOperationStateError("operation_is_not_cancellable")
-            await session.commit()
             operation = await session.get(OrganizationOperation, operation_id)
             if operation is None:
                 raise OrganizationOperationNotFound
+            if operation.revision != expected_revision:
+                raise OrganizationOperationConflict("operation_revision_changed")
+            if operation.status is OrganizationOperationStatus.ORGANIZING:
+                if operation.cancel_requested:
+                    return _summary(operation)
+                operation.cancel_requested = True
+                operation.updated_at = current_time
+                await session.commit()
+                summary = _summary(operation)
+                await self._audit(
+                    "organize.operation.cancel_requested", "整理操作已请求本地中止"
+                )
+                return summary
+            if operation.status is not OrganizationOperationStatus.PLANNED:
+                raise OrganizationOperationStateError("operation_is_not_cancellable")
+            operation.status = OrganizationOperationStatus.CANCELLED
+            operation.revision = expected_revision + 1
+            operation.finished_at = current_time
+            operation.updated_at = current_time
+            await _sync_workflow_stage(
+                session,
+                operation.workflow_id,
+                status=WorkflowStageStatus.CANCELLED,
+                child_id=operation.id,
+                reason="organization_cancelled",
+            )
+            await session.commit()
             summary = _summary(operation)
         await self._audit("organize.operation.cancelled", "整理操作已取消")
         return summary
@@ -597,6 +673,7 @@ class OrganizationOperationService:
                 .values(
                     status=OrganizationOperationStatus.PLANNED,
                     revision=expected_revision + 1,
+                    cancel_requested=False,
                     error_code=None,
                     finished_at=None,
                     updated_at=current_time,
@@ -605,6 +682,13 @@ class OrganizationOperationService:
             )
             if result.rowcount != 1:
                 raise OrganizationOperationConflict("operation_revision_changed")
+            await _sync_workflow_stage(
+                session,
+                operation.workflow_id,
+                status=WorkflowStageStatus.PENDING,
+                child_id=operation.id,
+                reason="organization_retried",
+            )
             await session.commit()
             await session.refresh(operation)
             summary = _summary(operation)
@@ -671,7 +755,40 @@ def _summary(operation: OrganizationOperation) -> OrganizationOperationSummary:
         revision=operation.revision,
         attempts=operation.attempts,
         error_code=operation.error_code,
+        workflow_id=operation.workflow_id,
+        cancel_requested=operation.cancel_requested,
     )
+
+
+async def _sync_workflow_stage(
+    session: AsyncSession,
+    workflow_id: str | None,
+    *,
+    status: WorkflowStageStatus,
+    child_id: str,
+    reason: str,
+    error_code: str | None = None,
+) -> None:
+    if workflow_id is None:
+        return
+    await sync_child_stage(
+        session,
+        workflow_id,
+        WorkflowStageName.ORGANIZATION,
+        child_type="organization_operation",
+        child_id=child_id,
+        status=status,
+        reason=reason,
+        error_code=error_code,
+    )
+
+
+def _workflow_stage_status(status: OrganizationOperationStatus) -> WorkflowStageStatus:
+    return {
+        OrganizationOperationStatus.FAILED: WorkflowStageStatus.FAILED,
+        OrganizationOperationStatus.UNCERTAIN: WorkflowStageStatus.UNCERTAIN,
+        OrganizationOperationStatus.CANCELLED: WorkflowStageStatus.CANCELLED,
+    }[status]
 
 
 def _plan_library_snapshot_matches(

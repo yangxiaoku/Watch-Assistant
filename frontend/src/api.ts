@@ -508,7 +508,7 @@ export class ApiClient {
     return this.request<NotificationPreferenceResponse>("/api/v1/notification-preferences");
   }
 
-  async updateNotificationPreferences(patch: { enabled?: boolean; muted_event_codes?: string[]; revision: number }): Promise<NotificationPreferenceResponse> {
+  async updateNotificationPreferences(patch: { enabled?: boolean; muted_event_codes?: string[]; quiet_hours_enabled?: boolean; quiet_hours_start?: string; quiet_hours_end?: string; quiet_hours_timezone?: string; error_bypass_quiet_hours?: boolean; revision: number }): Promise<NotificationPreferenceResponse> {
     return this.request<NotificationPreferenceResponse>("/api/v1/notification-preferences", { method: "PATCH", body: JSON.stringify(patch) });
   }
 

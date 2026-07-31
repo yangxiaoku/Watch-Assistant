@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from watch_assistant.schemas import TaskAction, TaskCreateRequest, TaskResponse
 from watch_assistant.security import require_api_auth
 from watch_assistant.services.tasks import (
+    InvalidCancelState,
     InvalidRetryState,
     PushKindUnsupported,
     ResourceNotFound,
@@ -93,5 +94,21 @@ async def retry_task(
         raise HTTPException(status_code=404, detail="task_not_found") from exc
     except InvalidRetryState as exc:
         raise HTTPException(status_code=409, detail="task_not_retryable") from exc
+    except PushKindUnsupported as exc:
+        raise HTTPException(status_code=503, detail="push_kind_unsupported") from exc
+
+
+@router.post("/tasks/{task_id}/cancel", response_model=TaskResponse)
+async def cancel_task(
+    task_id: str, raw_request: Request, service: TaskServiceDependency
+) -> TaskResponse:
+    try:
+        return await service.cancel(
+            task_id, allowed_actions=allowed_push_actions(raw_request)
+        )
+    except ResourceNotFound as exc:
+        raise HTTPException(status_code=404, detail="task_not_found") from exc
+    except InvalidCancelState as exc:
+        raise HTTPException(status_code=409, detail="task_not_cancellable") from exc
     except PushKindUnsupported as exc:
         raise HTTPException(status_code=503, detail="push_kind_unsupported") from exc

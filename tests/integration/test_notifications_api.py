@@ -69,12 +69,38 @@ async def test_notifications_dedupe_read_state_and_preferences(tmp_path):
 
         preferences = await client.get("/api/v1/notification-preferences")
         assert preferences.status_code == 200
+        assert preferences.json()["quiet_hours_enabled"] is True
+        assert preferences.json()["quiet_hours_start"] == "23:00"
+        assert preferences.json()["quiet_hours_end"] == "08:00"
+        assert preferences.json()["quiet_hours_timezone"] == "Asia/Shanghai"
+        assert preferences.json()["error_bypass_quiet_hours"] is True
         revision = preferences.json()["revision"]
         muted = await client.patch(
             "/api/v1/notification-preferences",
-            json={"revision": revision, "muted_event_codes": ["task.failed"]},
+            json={
+                "revision": revision,
+                "muted_event_codes": ["task.failed"],
+                "quiet_hours_start": "22:30",
+                "quiet_hours_end": "07:30",
+                "quiet_hours_timezone": "Asia/Tokyo",
+                "error_bypass_quiet_hours": False,
+            },
         )
         assert muted.status_code == 200
+        assert muted.json()["quiet_hours_start"] == "22:30"
+        assert muted.json()["quiet_hours_end"] == "07:30"
+        assert muted.json()["quiet_hours_timezone"] == "Asia/Tokyo"
+        assert muted.json()["error_bypass_quiet_hours"] is False
+        invalid_clock = await client.patch(
+            "/api/v1/notification-preferences",
+            json={"revision": muted.json()["revision"], "quiet_hours_start": "25:00"},
+        )
+        assert invalid_clock.status_code == 422
+        invalid_timezone = await client.patch(
+            "/api/v1/notification-preferences",
+            json={"revision": muted.json()["revision"], "quiet_hours_timezone": "Not/AZone"},
+        )
+        assert invalid_timezone.status_code == 422
         suppressed = await service.notify(
             event_code="task.failed",
             severity=NotificationSeverity.ERROR,
@@ -94,6 +120,76 @@ async def test_notifications_dedupe_read_state_and_preferences(tmp_path):
             "notification.read",
             "notification.preferences_changed",
         } <= event_codes
+    finally:
+        await client.aclose()
+        await tmdb.aclose()
+        await pansou.aclose()
+        await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_business_events_create_actionable_notifications_without_log_noise(tmp_path):
+    client, database, tmdb, pansou, app = await _make_client(tmp_path)
+    try:
+        await app.state.settings_service.log_event(
+            "workflow.stage_changed",
+            fields={"stage": "strm", "status": "failed", "error_code": "scan_failed"},
+            correlation_id="corr_notice",
+            task_id="wf_notice",
+        )
+        await app.state.settings_service.log_event(
+            "application.startup", fields={"status": "started"}
+        )
+        response = await client.get("/api/v1/notifications")
+        assert response.status_code == 200
+        assert response.json()["unread_count"] == 1
+        item = response.json()["items"][0]
+        assert item["event_code"] == "workflow.stage_changed"
+        assert item["severity"] == "error"
+        assert item["action_type"] == "workflow"
+        assert item["action_id"] == "wf_notice"
+        assert "scan_failed" not in item["message_zh"]
+    finally:
+        await client.aclose()
+        await tmdb.aclose()
+        await pansou.aclose()
+        await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_high_value_business_events_are_filtered_and_notified(tmp_path):
+    client, database, tmdb, pansou, app = await _make_client(tmp_path)
+    try:
+        await app.state.settings_service.log_event(
+            "p115.readiness", fields={"status": "unavailable"}
+        )
+        await app.state.settings_service.log_event(
+            "p115.readiness", fields={"status": "ready"}
+        )
+        await app.state.settings_service.log_event(
+            "subscription.resources_observed",
+            fields={"status": "new", "count": 2, "hidden_count": 1},
+            resource_type="subscription",
+            resource_id="sub_notice",
+        )
+        await app.state.settings_service.log_event(
+            "subscription.resources_observed",
+            fields={"status": "deduplicated", "count": 0, "hidden_count": 2},
+            resource_type="subscription",
+            resource_id="sub_notice",
+        )
+        await app.state.settings_service.log_event(
+            "backup.failed", fields={"status": "failed", "error_code": "disk_full"}
+        )
+        response = await client.get("/api/v1/notifications")
+        assert response.status_code == 200
+        items = response.json()["items"]
+        assert {item["event_code"] for item in items} == {
+            "p115.readiness",
+            "subscription.resources_observed",
+            "backup.failed",
+        }
+        assert response.json()["unread_count"] == 3
     finally:
         await client.aclose()
         await tmdb.aclose()

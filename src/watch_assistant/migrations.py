@@ -270,6 +270,103 @@ def _upgrade_directory_dirty_outbox(connection: Connection) -> None:
     )
 
 
+def _create_directory_dirty_generation_table(connection: Connection) -> None:
+    """Create the coalesced directory queue used by incremental reconciliation."""
+
+    from watch_assistant.models import DirectoryDirtyGeneration
+
+    DirectoryDirtyGeneration.__table__.create(connection, checkfirst=True)
+    connection.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_directory_dirty_generations_due "
+            "ON directory_dirty_generations (status, available_at, lease_expires_at)"
+        )
+    )
+    if not inspect(connection).has_table("directory_dirty_events"):
+        return
+    connection.execute(
+        text(
+            """
+            INSERT OR IGNORE INTO directory_dirty_generations (
+                id, library_id, directory_id, operation_id, generation,
+                claimed_generation, status, attempts, lease_token,
+                lease_expires_at, available_at, error_code, created_at, updated_at
+            )
+            WITH legacy_events AS (
+                SELECT
+                    event.id,
+                    plan.library_id,
+                    event.directory_id,
+                    event.operation_id,
+                    event.status,
+                    event.attempts,
+                    event.lease_token,
+                    event.lease_expires_at,
+                    event.available_at,
+                    event.error_code,
+                    event.created_at,
+                    event.updated_at,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY plan.library_id, event.directory_id
+                        ORDER BY event.created_at DESC, event.id DESC
+                    ) AS event_rank,
+                    COUNT(*) OVER (
+                        PARTITION BY plan.library_id, event.directory_id
+                    ) AS generation_count
+                FROM directory_dirty_events AS event
+                JOIN organization_operations AS operation
+                  ON operation.id = event.operation_id
+                JOIN organization_plans AS plan
+                  ON plan.id = operation.plan_id
+                WHERE event.event_kind = 'directory_dirty'
+                  AND event.status IN ('pending', 'running')
+            )
+            SELECT
+                'gen_legacy_' || id,
+                library_id,
+                directory_id,
+                operation_id,
+                generation_count,
+                CASE WHEN status = 'running' THEN generation_count ELSE NULL END,
+                CASE WHEN status = 'running' THEN 'running' ELSE 'queued' END,
+                COALESCE(attempts, 0),
+                lease_token,
+                lease_expires_at,
+                COALESCE(available_at, created_at),
+                error_code,
+                created_at,
+                COALESCE(updated_at, created_at)
+            FROM legacy_events
+            WHERE event_rank = 1
+            """
+        )
+    )
+
+
+def _add_organization_operation_workflow(connection: Connection) -> None:
+    """Add the optional top-level workflow link to organization operations."""
+
+    if not inspect(connection).has_table("organization_operations"):
+        return
+    columns = {
+        item["name"]
+        for item in inspect(connection).get_columns("organization_operations")
+    }
+    if "workflow_id" not in columns:
+        connection.execute(
+            text(
+                "ALTER TABLE organization_operations "
+                "ADD COLUMN workflow_id VARCHAR(40)"
+            )
+        )
+    connection.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_organization_operations_workflow_id "
+            "ON organization_operations (workflow_id)"
+        )
+    )
+
+
 def _create_audit_records_table(connection: Connection) -> None:
     """Create durable security audit storage for existing installations."""
 
@@ -456,6 +553,79 @@ def _create_notification_tables(connection: Connection) -> None:
 
     Notification.__table__.create(connection, checkfirst=True)
     NotificationPreference.__table__.create(connection, checkfirst=True)
+
+
+def _add_notification_quiet_hours(connection: Connection) -> None:
+    columns = {
+        item["name"] for item in inspect(connection).get_columns("notification_preferences")
+    }
+    additions = (
+        ("quiet_hours_enabled", "BOOLEAN NOT NULL DEFAULT 1"),
+        ("quiet_hours_start", "VARCHAR(5) NOT NULL DEFAULT '23:00'"),
+        ("quiet_hours_end", "VARCHAR(5) NOT NULL DEFAULT '08:00'"),
+        ("quiet_hours_timezone", "VARCHAR(64) NOT NULL DEFAULT 'Asia/Shanghai'"),
+        ("error_bypass_quiet_hours", "BOOLEAN NOT NULL DEFAULT 1"),
+    )
+    for name, definition in additions:
+        if name not in columns:
+            connection.execute(
+                text(
+                    "ALTER TABLE notification_preferences "
+                    f"ADD COLUMN {name} {definition}"
+                )
+            )
+
+
+def _create_strm_cleanup_plan_table(connection: Connection) -> None:
+    """Persist non-destructive STRM cleanup previews for later review."""
+
+    connection.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS strm_cleanup_plans (
+                id VARCHAR(64) PRIMARY KEY,
+                library_id VARCHAR(128) NOT NULL
+                    REFERENCES media_libraries(id),
+                source_scan_run_id VARCHAR(64) NOT NULL
+                    REFERENCES library_scan_runs(id),
+                source_snapshot_revision INTEGER NOT NULL,
+                candidates_json TEXT NOT NULL,
+                status VARCHAR(16) NOT NULL DEFAULT 'needs_review',
+                revision INTEGER NOT NULL DEFAULT 1,
+                expires_at DATETIME NOT NULL,
+                plan_hash VARCHAR(64) NOT NULL UNIQUE,
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL
+            )
+            """
+        )
+    )
+    connection.execute(
+        text(
+            """
+            CREATE INDEX IF NOT EXISTS ix_strm_cleanup_plans_library_id
+                ON strm_cleanup_plans (library_id)
+            """
+        )
+    )
+
+
+def _add_organization_cancel_requested(connection: Connection) -> None:
+    """Add a durable, local cancellation request for running operations."""
+
+    if not inspect(connection).has_table("organization_operations"):
+        return
+    columns = {
+        item["name"]
+        for item in inspect(connection).get_columns("organization_operations")
+    }
+    if "cancel_requested" not in columns:
+        connection.execute(
+            text(
+                "ALTER TABLE organization_operations "
+                "ADD COLUMN cancel_requested BOOLEAN NOT NULL DEFAULT 0"
+            )
+        )
 
 
 def _create_season_metadata_cache_table(connection: Connection) -> None:
@@ -654,6 +824,8 @@ def _upgrade_workflow_stage_created_at(connection: Connection) -> None:
 def _add_task_target_directory(connection: Connection) -> None:
     """Persist the user-selected P115 destination for queued push tasks."""
 
+    if not inspect(connection).has_table("tasks"):
+        return
     columns = {item["name"] for item in inspect(connection).get_columns("tasks")}
     if "target_directory_id" not in columns:
         connection.execute(
@@ -705,7 +877,18 @@ MIGRATIONS: tuple[Migration, ...] = (
     ),
     Migration("045_workflow_stage_sequence", _upgrade_workflow_stage_sequence),
     Migration("046_workflow_stage_created_at", _upgrade_workflow_stage_created_at),
-    Migration("047_task_target_directory", _add_task_target_directory),
+    Migration(
+        "047_directory_dirty_generations",
+        _create_directory_dirty_generation_table,
+    ),
+    Migration(
+        "048_organization_operation_workflow",
+        _add_organization_operation_workflow,
+    ),
+    Migration("049_notification_quiet_hours", _add_notification_quiet_hours),
+    Migration("050_strm_cleanup_plans", _create_strm_cleanup_plan_table),
+    Migration("051_organization_cancel_requested", _add_organization_cancel_requested),
+    Migration("052_task_target_directory", _add_task_target_directory),
 )
 
 

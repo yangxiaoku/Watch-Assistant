@@ -579,6 +579,8 @@ class OrganizationExecutor:
             if elapsed < self._min_call_interval:
                 await self._sleep(self._min_call_interval - elapsed)
         self._check_cancel(cancel_event)
+        if await self._operation_service.cancel_requested(context.lease.operation_id):
+            raise _ExecutionCancelled
         if not await self._renew(context, now=now):
             raise _LeaseLost
         self._check_cancel(cancel_event)
@@ -587,8 +589,15 @@ class OrganizationExecutor:
         context.transport_calls += 1
         context.last_call_at = time.monotonic()
         try:
-            return await method(*args)
+            result = await method(*args)
+            if await self._operation_service.cancel_requested(
+                context.lease.operation_id
+            ):
+                raise _ExecutionCancelled
+            return result
         except asyncio.CancelledError:
+            raise
+        except _ExecutionCancelled:
             raise
         except TimeoutError:
             raise _TransportFailure("timeout") from None
@@ -667,13 +676,18 @@ class OrganizationExecutor:
                 )
             else:
                 operation_status = (
-                    OrganizationOperationStatus.UNCERTAIN
-                    if status
-                    in {
-                        OrganizationExecutionStatus.UNCERTAIN,
-                        OrganizationExecutionStatus.CANCELLED,
-                    }
-                    else OrganizationOperationStatus.FAILED
+                    OrganizationOperationStatus.CANCELLED
+                    if status is OrganizationExecutionStatus.CANCELLED
+                    and not context.write_started
+                    else (
+                        OrganizationOperationStatus.UNCERTAIN
+                        if status
+                        in {
+                            OrganizationExecutionStatus.UNCERTAIN,
+                            OrganizationExecutionStatus.CANCELLED,
+                        }
+                        else OrganizationOperationStatus.FAILED
+                    )
                 )
                 await self._operation_service.finish(
                     context.lease.operation_id,

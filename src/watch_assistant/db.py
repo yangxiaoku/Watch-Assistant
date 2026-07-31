@@ -46,7 +46,7 @@ PROTECTED_TASK_STATES = (
     TaskState.NEEDS_AUTH,
     TaskState.UNCERTAIN,
 )
-TERMINAL_TASK_STATES = (TaskState.ACCEPTED, TaskState.FAILED)
+TERMINAL_TASK_STATES = (TaskState.ACCEPTED, TaskState.FAILED, TaskState.CANCELLED)
 
 
 def create_database(url: str) -> Database:

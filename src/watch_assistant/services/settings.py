@@ -117,6 +117,7 @@ _ORGANIZATION_DEFAULTS: dict[str, object] = {
     "scan_interval_minutes": 30,
     "source_directory_ids": [],
     "target_directory_id": None,
+    "push_directory_id": None,
     "video_extensions": ["mkv", "mp4", "avi", "mov", "ts", "m2ts", "wmv", "flv", "webm"],
     "metadata_extensions": ["srt", "ass", "ssa", "sub", "vtt", "nfo", "jpg", "jpeg", "png", "webp"],
     "rename_enabled": True,
@@ -622,11 +623,12 @@ class SettingsService:
         self.log_store = LogStore(state_directory)
         self._settings_lock = shared_settings_mutation_lock(session_factory)
         self._write_windows: dict[str, deque[datetime]] = {}
-        self._event_sink: Callable[..., Awaitable[object]] | None = None
+        self._event_sinks: list[Callable[..., Awaitable[object]]] = []
 
     def bind_event_sink(self, event_sink: Callable[..., Awaitable[object]]) -> None:
         """Attach an optional durable event consumer without changing callers."""
-        self._event_sink = event_sink
+        if event_sink not in self._event_sinks:
+            self._event_sinks.append(event_sink)
 
     async def get_logging(self) -> LoggingSettingsResponse:
         async with self._settings_lock, self._session_factory() as session:
@@ -850,9 +852,9 @@ class SettingsService:
             for key, value in safe_fields.items()
             if key not in {"status", "error_code", "duration_ms", "count", "total", "hidden_count", "hidden_suspicious", "hidden_low_quality", "hidden_keyword", "changed_fields"}
         }
-        if self._event_sink is not None:
+        for event_sink in self._event_sinks:
             try:
-                await self._event_sink(
+                await event_sink(
                     definition.code,
                     fields=safe_fields,
                     request_id=request_id,
@@ -861,8 +863,8 @@ class SettingsService:
                     resource_id=resource_id,
                     task_id=task_id,
                 )
-            except Exception:  # noqa: BLE001 - outbound automation never breaks logging
-                logger.warning("webhook event enqueue failed")
+            except Exception:  # noqa: BLE001 - event consumers never break logging
+                logger.warning("business event consumer failed")
         legacy_message = _legacy_event_message(event, safe_fields)
         try:
             async with self._settings_lock, self._session_factory() as session:
@@ -1135,6 +1137,13 @@ def _validate_organization_values(values: dict[str, object]) -> dict[str, object
         raise ValueError("invalid_target_directory_id")
     if target is not None and target in normalized_sources:
         raise ValueError("source_target_same")
+    push_target = result.get("push_directory_id")
+    if push_target == "":
+        push_target = None
+    if push_target is not None and (
+        not isinstance(push_target, str) or _CID_PATTERN.fullmatch(push_target) is None
+    ):
+        raise ValueError("invalid_push_directory_id")
     for key in ("video_extensions", "metadata_extensions"):
         extensions = result.get(key)
         if not isinstance(extensions, list) or any(
@@ -1146,6 +1155,7 @@ def _validate_organization_values(values: dict[str, object]) -> dict[str, object
         result[key] = list(dict.fromkeys(item.strip().lower() for item in extensions))
     result["source_directory_ids"] = normalized_sources
     result["target_directory_id"] = target
+    result["push_directory_id"] = push_target
     if (
         not isinstance(result.get("scan_interval_minutes"), int)
         or isinstance(result["scan_interval_minutes"], bool)

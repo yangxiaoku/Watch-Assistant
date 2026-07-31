@@ -10,13 +10,24 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from watch_assistant.models import DirectoryDirtyEvent
+from watch_assistant.library_models import OrganizationPlan
+from watch_assistant.models import (
+    DirectoryDirtyEvent,
+    DirectoryDirtyGeneration,
+    OrganizationOperation,
+)
 
 DIRECTORY_DIRTY_EVENT_KIND = "directory_dirty"
 DIRTY_PENDING = "pending"
 DIRTY_RUNNING = "running"
 DIRTY_CONSUMED = "consumed"
 DIRTY_FAILED = "failed"
+GENERATION_QUEUED = "queued"
+GENERATION_RUNNING = "running"
+GENERATION_DIRTY = "dirty"
+GENERATION_RETRY_WAIT = "retry_wait"
+GENERATION_CLEAN = "clean"
+GENERATION_FAILED = "failed"
 
 
 class OrganizationOutboxError(ValueError):
@@ -31,6 +42,8 @@ class DirectoryDirtyLease:
     lease_token: str
     attempts: int
     lease_expires_at: datetime
+    queue_id: str | None = None
+    generation: int | None = None
 
 
 class DirectoryDirtyOutboxService:
@@ -56,7 +69,15 @@ class DirectoryDirtyOutboxService:
                 )
             )
         )
+        library_id = await session.scalar(
+            select(OrganizationPlan.library_id)
+            .join(OrganizationOperation, OrganizationOperation.plan_id == OrganizationPlan.id)
+            .where(OrganizationOperation.id == operation_id)
+        )
+        if library_id is None:
+            raise OrganizationOutboxError("operation_library_missing")
         added = 0
+        current = datetime.now(UTC)
         for directory_id in normalized:
             if directory_id in existing:
                 continue
@@ -69,8 +90,160 @@ class DirectoryDirtyOutboxService:
                     status="pending",
                 )
             )
+            queue = await session.scalar(
+                select(DirectoryDirtyGeneration).where(
+                    DirectoryDirtyGeneration.library_id == library_id,
+                    DirectoryDirtyGeneration.directory_id == directory_id,
+                )
+            )
+            if queue is None:
+                session.add(
+                    DirectoryDirtyGeneration(
+                        id="gen_" + uuid.uuid4().hex,
+                        library_id=library_id,
+                        directory_id=directory_id,
+                        operation_id=operation_id,
+                        generation=1,
+                        status=GENERATION_QUEUED,
+                        available_at=current,
+                        updated_at=current,
+                    )
+                )
+            else:
+                queue.operation_id = operation_id
+                queue.generation += 1
+                queue.error_code = None
+                queue.updated_at = current
+                if queue.status == GENERATION_RUNNING:
+                    queue.status = GENERATION_DIRTY
+                else:
+                    queue.status = GENERATION_QUEUED
+                    queue.available_at = current
             added += 1
         return added
+
+    async def claim_generation(
+        self,
+        session_factory,
+        *,
+        lease_seconds: int = 300,
+        now: datetime | None = None,
+    ) -> DirectoryDirtyLease | None:
+        """Claim one coalesced directory generation and its latest event."""
+
+        if isinstance(lease_seconds, bool) or not 1 <= lease_seconds <= 3600:
+            raise OrganizationOutboxError("invalid_lease_duration")
+        current = _as_utc(now or datetime.now(UTC))
+        expires = current + timedelta(seconds=lease_seconds)
+        claimable = (GENERATION_QUEUED, GENERATION_RETRY_WAIT)
+        for _ in range(3):
+            async with session_factory() as session:
+                queue = await session.scalar(
+                    select(DirectoryDirtyGeneration)
+                    .where(
+                        DirectoryDirtyGeneration.available_at <= current,
+                        or_(
+                            DirectoryDirtyGeneration.status.in_(claimable),
+                            (
+                                (DirectoryDirtyGeneration.status == GENERATION_DIRTY)
+                                & DirectoryDirtyGeneration.lease_token.is_(None)
+                            ),
+                            (
+                                (DirectoryDirtyGeneration.status == GENERATION_RUNNING)
+                                & (DirectoryDirtyGeneration.lease_expires_at <= current)
+                            ),
+                        ),
+                    )
+                    .order_by(
+                        DirectoryDirtyGeneration.created_at,
+                        DirectoryDirtyGeneration.id,
+                    )
+                    .limit(1)
+                )
+                if queue is None:
+                    return None
+                token = uuid.uuid4().hex
+                result = await session.execute(
+                    update(DirectoryDirtyGeneration)
+                    .where(
+                        DirectoryDirtyGeneration.id == queue.id,
+                        DirectoryDirtyGeneration.generation == queue.generation,
+                        or_(
+                            DirectoryDirtyGeneration.status.in_(claimable),
+                            (
+                                (DirectoryDirtyGeneration.status == GENERATION_DIRTY)
+                                & DirectoryDirtyGeneration.lease_token.is_(None)
+                            ),
+                            (
+                                (DirectoryDirtyGeneration.status == GENERATION_RUNNING)
+                                & (DirectoryDirtyGeneration.lease_expires_at <= current)
+                            ),
+                        ),
+                    )
+                    .values(
+                        status=GENERATION_RUNNING,
+                        claimed_generation=queue.generation,
+                        attempts=DirectoryDirtyGeneration.attempts + 1,
+                        lease_token=token,
+                        lease_expires_at=expires,
+                        updated_at=current,
+                    )
+                    .execution_options(synchronize_session=False)
+                )
+                if result.rowcount != 1:
+                    await session.rollback()
+                    continue
+                event = await session.scalar(
+                    select(DirectoryDirtyEvent)
+                    .where(
+                        DirectoryDirtyEvent.operation_id == queue.operation_id,
+                        DirectoryDirtyEvent.directory_id == queue.directory_id,
+                        DirectoryDirtyEvent.event_kind == DIRECTORY_DIRTY_EVENT_KIND,
+                    )
+                    .order_by(
+                        DirectoryDirtyEvent.created_at.desc(),
+                        DirectoryDirtyEvent.id.desc(),
+                    )
+                    .limit(1)
+                )
+                if event is None:
+                    await session.execute(
+                        update(DirectoryDirtyGeneration)
+                        .where(DirectoryDirtyGeneration.id == queue.id)
+                        .values(
+                            status=GENERATION_CLEAN,
+                            lease_token=None,
+                            lease_expires_at=None,
+                            claimed_generation=None,
+                            error_code="event_missing",
+                            updated_at=current,
+                        )
+                    )
+                    await session.commit()
+                    return None
+                await session.execute(
+                    update(DirectoryDirtyEvent)
+                    .where(DirectoryDirtyEvent.id == event.id)
+                    .values(
+                        status=DIRTY_RUNNING,
+                        attempts=DirectoryDirtyEvent.attempts + 1,
+                        lease_token=token,
+                        lease_expires_at=expires,
+                        updated_at=current,
+                    )
+                )
+                await session.commit()
+                return DirectoryDirtyLease(
+                    event.id,
+                    queue.operation_id,
+                    queue.directory_id,
+                    token,
+                    queue.attempts + 1,
+                    expires,
+                    queue_id=queue.id,
+                    generation=queue.generation,
+                )
+        return None
 
     async def claim_next(
         self,
@@ -153,6 +326,50 @@ class DirectoryDirtyOutboxService:
         _validate_error_code(error_code)
         current = _as_utc(now or datetime.now(UTC))
         async with session_factory() as session:
+            if lease.queue_id is not None:
+                queue = await session.get(DirectoryDirtyGeneration, lease.queue_id)
+                if (
+                    queue is None
+                    or queue.status not in (GENERATION_RUNNING, GENERATION_DIRTY)
+                    or queue.lease_token != lease.lease_token
+                ):
+                    await session.rollback()
+                    return False
+                has_newer_generation = (
+                    lease.generation is not None and queue.generation > lease.generation
+                )
+                await session.execute(
+                    update(DirectoryDirtyGeneration)
+                    .where(
+                        DirectoryDirtyGeneration.id == lease.queue_id,
+                        DirectoryDirtyGeneration.lease_token == lease.lease_token,
+                    )
+                    .values(
+                        status=GENERATION_QUEUED if has_newer_generation else GENERATION_CLEAN,
+                        claimed_generation=None,
+                        lease_token=None,
+                        lease_expires_at=None,
+                        available_at=current,
+                        error_code=None if status == DIRTY_CONSUMED else error_code,
+                        updated_at=current,
+                    )
+                )
+                await session.execute(
+                    update(DirectoryDirtyEvent)
+                    .where(
+                        DirectoryDirtyEvent.id == lease.event_id,
+                        DirectoryDirtyEvent.lease_token == lease.lease_token,
+                    )
+                    .values(
+                        status=status,
+                        lease_token=None,
+                        lease_expires_at=None,
+                        error_code=error_code,
+                        updated_at=current,
+                    )
+                )
+                await session.commit()
+                return True
             result = await session.execute(
                 update(DirectoryDirtyEvent)
                 .where(
@@ -188,6 +405,56 @@ class DirectoryDirtyOutboxService:
         terminal = lease.attempts >= max_attempts
         delay = min(3600, 2 ** max(0, lease.attempts - 1))
         async with session_factory() as session:
+            if lease.queue_id is not None:
+                queue = await session.get(DirectoryDirtyGeneration, lease.queue_id)
+                if (
+                    queue is None
+                    or queue.status not in (GENERATION_RUNNING, GENERATION_DIRTY)
+                    or queue.lease_token != lease.lease_token
+                ):
+                    await session.rollback()
+                    return False
+                has_newer_generation = (
+                    lease.generation is not None and queue.generation > lease.generation
+                )
+                next_status = (
+                    GENERATION_QUEUED
+                    if has_newer_generation
+                    else GENERATION_FAILED if terminal else GENERATION_RETRY_WAIT
+                )
+                await session.execute(
+                    update(DirectoryDirtyGeneration)
+                    .where(
+                        DirectoryDirtyGeneration.id == lease.queue_id,
+                        DirectoryDirtyGeneration.lease_token == lease.lease_token,
+                    )
+                    .values(
+                        status=next_status,
+                        claimed_generation=None,
+                        lease_token=None,
+                        lease_expires_at=None,
+                        available_at=current if has_newer_generation else current + timedelta(seconds=delay),
+                        error_code=error_code,
+                        updated_at=current,
+                    )
+                )
+                await session.execute(
+                    update(DirectoryDirtyEvent)
+                    .where(
+                        DirectoryDirtyEvent.id == lease.event_id,
+                        DirectoryDirtyEvent.lease_token == lease.lease_token,
+                    )
+                    .values(
+                        status=DIRTY_FAILED if terminal and not has_newer_generation else DIRTY_PENDING,
+                        lease_token=None,
+                        lease_expires_at=None,
+                        available_at=current + timedelta(seconds=delay),
+                        error_code=error_code,
+                        updated_at=current,
+                    )
+                )
+                await session.commit()
+                return True
             result = await session.execute(
                 update(DirectoryDirtyEvent)
                 .where(
@@ -265,6 +532,11 @@ __all__ = [
     "DIRTY_FAILED",
     "DIRTY_PENDING",
     "DIRTY_RUNNING",
+    "GENERATION_CLEAN",
+    "GENERATION_DIRTY",
+    "GENERATION_FAILED",
+    "GENERATION_QUEUED",
+    "GENERATION_RETRY_WAIT",
     "DirectoryDirtyLease",
     "DirectoryDirtyOutboxService",
     "OrganizationOutboxError",

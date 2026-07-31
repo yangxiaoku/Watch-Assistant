@@ -381,7 +381,7 @@ async def test_postcondition_mismatch_is_uncertain_and_stops(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_cancel_point_finishes_uncertain_without_transport_call(tmp_path: Path):
+async def test_cancel_point_finishes_cancelled_without_transport_call(tmp_path: Path):
     database = await _database(tmp_path)
     transport = FakeOrganizationTransport()
     executor, operation, lease = await _claimed_executor(database, transport)
@@ -403,7 +403,7 @@ async def test_cancel_point_finishes_uncertain_without_transport_call(tmp_path: 
     current = await OrganizationOperationService(database.session_factory).get(
         operation.operation_id
     )
-    assert current.status is OrganizationOperationStatus.UNCERTAIN
+    assert current.status is OrganizationOperationStatus.CANCELLED
     await database.engine.dispose()
 
 
@@ -466,7 +466,31 @@ async def test_call_rechecks_cancel_after_rate_limit_sleep(tmp_path: Path):
     current = await OrganizationOperationService(database.session_factory).get(
         operation.operation_id
     )
-    assert current.status is OrganizationOperationStatus.UNCERTAIN
+    assert current.status is OrganizationOperationStatus.CANCELLED
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_persistent_cancel_request_stops_before_transport(tmp_path: Path):
+    database = await _database(tmp_path)
+    transport = FakeOrganizationTransport()
+    executor, operation, lease = await _claimed_executor(database, transport)
+    service = OrganizationOperationService(database.session_factory)
+    await service.cancel(operation.operation_id, expected_revision=lease.revision)
+
+    result = await executor.execute(
+        operation.operation_id,
+        expected_revision=lease.revision,
+        lease_token=lease.lease_token,
+    )
+
+    assert (result.status, result.error_code) == (
+        OrganizationExecutionStatus.CANCELLED,
+        "cancelled",
+    )
+    assert transport.calls == []
+    current = await service.get(operation.operation_id)
+    assert current.status is OrganizationOperationStatus.CANCELLED
     await database.engine.dispose()
 
 

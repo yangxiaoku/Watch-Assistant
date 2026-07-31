@@ -292,7 +292,11 @@ async def test_inspection_setting_persists_and_is_authenticated(tmp_path):
 
 @pytest.mark.integration
 async def test_strm_routes_enforce_independent_flags_and_reach_service(tmp_path):
-    app, client, database, tmdb, pansou = await _app(tmp_path)
+    output_root = tmp_path / "strm"
+    output_root.mkdir()
+    app, client, database, tmdb, pansou = await _app(
+        tmp_path, strm_output_root=output_root
+    )
     payload = {"source_scan_run_id": "missing-scan"}
     try:
         login = await client.post(
@@ -316,6 +320,57 @@ async def test_strm_routes_enforce_independent_flags_and_reach_service(tmp_path)
             response = await client.post(path, json=payload, headers=headers)
             assert response.status_code == 409
             assert response.json()["detail"] == "source_snapshot_not_ready"
+
+        cleanup_plan = await client.post(
+            "/api/v1/libraries/library/strm-cleanup-plan",
+            json=payload,
+            headers=headers,
+        )
+        assert cleanup_plan.status_code == 409
+        assert cleanup_plan.json()["detail"] == "source_snapshot_not_ready"
+
+        cleanup_apply = await client.post(
+            "/api/v1/strm-cleanup-plans/missing-plan/apply",
+            json={
+                "expected_revision": 1,
+                "digest": "a" * 64,
+                "confirm": True,
+                "idempotency_key": "cleanup-key",
+            },
+            headers=headers,
+        )
+        assert cleanup_apply.status_code == 404
+        assert cleanup_apply.json()["detail"] == "plan_not_found"
+
+        workflow_response = await client.post(
+            "/api/v1/workflows", json={"media_type": "movie"}, headers=headers
+        )
+        assert workflow_response.status_code == 201
+        workflow_id = workflow_response.json()["id"]
+        response = await client.post(
+            "/api/v1/libraries/library/strm-incremental",
+            json={**payload, "workflow_id": workflow_id},
+            headers=headers,
+        )
+        assert response.status_code == 409
+        workflow = await client.get(f"/api/v1/workflows/{workflow_id}")
+        assert workflow.status_code == 200
+        stage = next(
+            item for item in workflow.json()["stages"] if item["stage"] == "strm"
+        )
+        assert stage["status"] == "failed"
+        assert stage["child_type"] == "strm_operation"
+        assert stage["child_id"] == "strm_missing-scan"
+        notices = await client.get("/api/v1/notifications")
+        assert notices.status_code == 200
+        notice = next(
+            item
+            for item in notices.json()["items"]
+            if item["event_code"] == "workflow.stage_changed"
+        )
+        assert notice["action_type"] == "workflow"
+        assert notice["action_id"] == workflow_id
+        assert notice["severity"] == "error"
     finally:
         await client.aclose()
         await tmdb.aclose()
@@ -382,6 +437,7 @@ async def test_organization_settings_persist_and_validate_cid_scope(tmp_path):
                 "scan_interval_minutes": 5,
                 "source_directory_ids": ["3482085898508567892"],
                 "target_directory_id": "2988794667098701570",
+                "push_directory_id": "3988794667098701570",
                 "video_extensions": ["MKV", "mp4"],
                 "metadata_extensions": ["SRT", "nfo"],
                 "operation_delay_seconds": 2.0,
@@ -392,6 +448,7 @@ async def test_organization_settings_persist_and_validate_cid_scope(tmp_path):
         assert updated.json()["schedule_enabled"] is True
         assert updated.json()["video_extensions"] == ["mkv", "mp4"]
         assert updated.json()["metadata_extensions"] == ["srt", "nfo"]
+        assert updated.json()["push_directory_id"] == "3988794667098701570"
 
         invalid = await client.patch(
             "/api/v1/settings/organization",
@@ -407,11 +464,54 @@ async def test_organization_settings_persist_and_validate_cid_scope(tmp_path):
 
         cleared = await client.patch(
             "/api/v1/settings/organization",
-            json={"revision": updated.json()["revision"], "target_directory_id": None},
+            json={
+                "revision": updated.json()["revision"],
+                "target_directory_id": None,
+                "push_directory_id": None,
+            },
             headers=headers,
         )
         assert cleared.status_code == 200
         assert cleared.json()["target_directory_id"] is None
+        assert cleared.json()["push_directory_id"] is None
+    finally:
+        await client.aclose()
+        await tmdb.aclose()
+        await pansou.aclose()
+        await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_organization_directory_settings_reject_unbrowsed_ids(tmp_path):
+    app, client, database, tmdb, pansou = await _app(tmp_path)
+    try:
+        app.state.organization_target_root_id = "100"
+        app.state.p115_browsed_directory_ids = {"100", "200"}
+        login = await client.post("/api/v1/auth/login", json={"password": WEB_PASSWORD})
+        headers = {"X-CSRF-Token": login.json()["csrf_token"]}
+        current = await client.get("/api/v1/settings/organization")
+
+        rejected = await client.patch(
+            "/api/v1/settings/organization",
+            json={
+                "revision": current.json()["revision"],
+                "push_directory_id": "300",
+            },
+            headers=headers,
+        )
+        assert rejected.status_code == 403, rejected.text
+        assert rejected.json()["detail"] == "p115_directory_out_of_scope"
+
+        accepted = await client.patch(
+            "/api/v1/settings/organization",
+            json={
+                "revision": current.json()["revision"],
+                "push_directory_id": "200",
+            },
+            headers=headers,
+        )
+        assert accepted.status_code == 200
+        assert accepted.json()["push_directory_id"] == "200"
     finally:
         await client.aclose()
         await tmdb.aclose()

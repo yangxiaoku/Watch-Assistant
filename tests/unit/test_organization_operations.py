@@ -16,7 +16,12 @@ from watch_assistant.models import (
     OrganizationOperation,
     OrganizationOperationStatus,
 )
-from watch_assistant.schemas import MediaType
+from watch_assistant.schemas import (
+    MediaType,
+    WorkflowCreateRequest,
+    WorkflowStageName,
+    WorkflowStageStatus,
+)
 from watch_assistant.services.media_classification import (
     ClassificationStatus,
     NamingPlan,
@@ -41,6 +46,7 @@ from watch_assistant.services.organization_plan import (
     OrganizationPlanStatus,
     PlanSource,
 )
+from watch_assistant.services.workflows import WorkflowService
 
 LIBRARY_ID = "library-1"
 ROOT_ID = "7000"
@@ -150,6 +156,57 @@ async def _operation(database, *, key: str = "operation-1"):
 
 
 @pytest.mark.asyncio
+async def test_organization_operation_updates_linked_workflow_stage(tmp_path):
+    database = await _database(tmp_path)
+    workflow = await WorkflowService(database.session_factory).create(
+        WorkflowCreateRequest(media_type=MediaType.MOVIE, tmdb_id=1)
+    )
+    plan = await _plan(database)
+    service = OrganizationOperationService(database.session_factory)
+    operation = await service.create(
+        plan.plan_id,
+        idempotency_key="workflow-organization",
+        workflow_id=workflow.id,
+    )
+    assert operation.workflow_id == workflow.id
+
+    queued = await WorkflowService(database.session_factory).get(workflow.id)
+    organization_stage = next(
+        stage for stage in queued.stages if stage.stage is WorkflowStageName.ORGANIZATION
+    )
+    assert organization_stage.status is WorkflowStageStatus.PENDING
+    assert organization_stage.child_type == "organization_operation"
+    assert organization_stage.child_id == operation.operation_id
+
+    lease = await service.claim(operation.operation_id, expected_revision=1)
+    running = await WorkflowService(database.session_factory).get(workflow.id)
+    organization_stage = next(
+        stage
+        for stage in running.stages
+        if stage.stage is WorkflowStageName.ORGANIZATION
+    )
+    assert organization_stage.status is WorkflowStageStatus.RUNNING
+
+    finished = await service.finish(
+        operation.operation_id,
+        expected_revision=lease.revision,
+        lease_token=lease.lease_token,
+        status=OrganizationOperationStatus.FAILED,
+        error_code="local_failure",
+    )
+    assert finished.status is OrganizationOperationStatus.FAILED
+    failed = await WorkflowService(database.session_factory).get(workflow.id)
+    organization_stage = next(
+        stage
+        for stage in failed.stages
+        if stage.stage is WorkflowStageName.ORGANIZATION
+    )
+    assert organization_stage.status is WorkflowStageStatus.FAILED
+    assert organization_stage.error_code == "local_failure"
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_create_rejects_needs_review_without_creating_operation(tmp_path):
     database = await _database(tmp_path)
     plan = await _plan(database, confidence=MatchConfidence.LOW)
@@ -160,6 +217,28 @@ async def test_create_rejects_needs_review_without_creating_operation(tmp_path):
 
     async with database.session_factory() as session:
         assert await session.scalar(select(OrganizationOperation)) is None
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_running_operation_cancel_is_durable_and_idempotent(tmp_path):
+    database = await _database(tmp_path)
+    service = OrganizationOperationService(database.session_factory)
+    operation = await _operation(database, key="running-cancel")
+    lease = await service.claim(operation.operation_id, expected_revision=1)
+
+    requested = await service.cancel(
+        operation.operation_id, expected_revision=lease.revision
+    )
+    assert requested.status is OrganizationOperationStatus.ORGANIZING
+    assert requested.cancel_requested is True
+    assert await service.cancel_requested(operation.operation_id) is True
+
+    repeated = await service.cancel(
+        operation.operation_id, expected_revision=lease.revision
+    )
+    assert repeated.cancel_requested is True
+    assert repeated.revision == lease.revision
     await database.engine.dispose()
 
 

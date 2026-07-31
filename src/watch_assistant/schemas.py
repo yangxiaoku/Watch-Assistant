@@ -3,8 +3,9 @@
 from datetime import datetime
 from enum import StrEnum
 from typing import Any, Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import BaseModel, Field, PositiveInt, SecretStr
+from pydantic import BaseModel, Field, PositiveInt, SecretStr, field_validator
 
 
 class ResourceKind(StrEnum):
@@ -223,6 +224,7 @@ class OrganizationPreviewRequest(BaseModel):
     model_config = {"extra": "forbid"}
 
     source_scan_run_id: str = Field(min_length=1, max_length=128)
+    source_directory_id: str | None = Field(default=None, min_length=1, max_length=128)
 
 
 class MediaLibraryListResponse(BaseModel):
@@ -258,6 +260,7 @@ class StrmGenerationRequest(BaseModel):
     model_config = {"extra": "forbid"}
 
     source_scan_run_id: str = Field(min_length=1, max_length=128)
+    workflow_id: str | None = Field(default=None, min_length=1, max_length=40)
 
 
 class StrmManifestItemResponse(BaseModel):
@@ -292,6 +295,74 @@ class StrmGenerationResponse(BaseModel):
     skipped: int = Field(ge=0)
     failed: int = Field(ge=0)
     retired: int = Field(default=0, ge=0)
+
+
+class StrmCleanupPlanRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    source_scan_run_id: str = Field(min_length=1, max_length=128)
+
+
+class StrmCleanupPlanResponse(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    plan_id: str
+    library_id: str
+    source_scan_run_id: str
+    source_snapshot_revision: int = Field(ge=0)
+    plan_hash: str = Field(min_length=64, max_length=64)
+    status: Literal["needs_review", "invalidated", "applied"]
+    revision: int = Field(ge=1)
+    expires_at: datetime
+    candidate_count: int = Field(ge=0)
+    executable_count: int = Field(ge=0)
+    blocked_count: int = Field(ge=0)
+
+
+class StrmCleanupPlanApplyRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    expected_revision: int = Field(ge=1)
+    digest: str = Field(min_length=64, max_length=64)
+    confirm: bool = False
+    idempotency_key: str = Field(min_length=1, max_length=128)
+
+
+class StrmCleanupPlanApplyResponse(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    plan: StrmCleanupPlanResponse
+    retired: int = Field(ge=0)
+
+
+class StrmVerifyRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    source_scan_run_id: str = Field(min_length=1, max_length=128)
+
+
+class StrmVerifyIssueResponse(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    kind: str
+    object_id: str
+    manifest_id: str | None = None
+
+
+class StrmVerifyResponse(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    library_id: str
+    scan_run_id: str
+    snapshot_revision: int = Field(ge=0)
+    status: Literal["verified", "issues"]
+    checked_count: int = Field(ge=0)
+    valid_count: int = Field(ge=0)
+    missing_count: int = Field(ge=0)
+    invalid_count: int = Field(ge=0)
+    orphan_count: int = Field(ge=0)
+    path_mismatch_count: int = Field(ge=0)
+    issues: list[StrmVerifyIssueResponse]
 
 
 class LibraryDeleteRequest(BaseModel):
@@ -467,6 +538,7 @@ class OrganizationSettingsResponse(BaseModel):
     scan_interval_minutes: int = Field(ge=5, le=1440)
     source_directory_ids: list[str] = Field(max_length=50)
     target_directory_id: str | None = None
+    push_directory_id: str | None = None
     video_extensions: list[str] = Field(max_length=50)
     metadata_extensions: list[str] = Field(max_length=50)
     rename_enabled: bool
@@ -495,6 +567,7 @@ class OrganizationSettingsPatch(BaseModel):
     scan_interval_minutes: int | None = Field(default=None, ge=5, le=1440)
     source_directory_ids: list[str] | None = Field(default=None, max_length=50)
     target_directory_id: str | None = None
+    push_directory_id: str | None = None
     video_extensions: list[str] | None = Field(default=None, max_length=50)
     metadata_extensions: list[str] | None = Field(default=None, max_length=50)
     rename_enabled: bool | None = None
@@ -559,6 +632,7 @@ class OrganizationOperationQueueRequest(BaseModel):
     idempotency_key: str = Field(min_length=1, max_length=255)
     digest: str | None = Field(default=None, min_length=64, max_length=64)
     confirm: bool = False
+    workflow_id: str | None = Field(default=None, min_length=1, max_length=40)
 
 
 class OrganizationOperationBatchItem(BaseModel):
@@ -569,6 +643,7 @@ class OrganizationOperationBatchItem(BaseModel):
     idempotency_key: str = Field(min_length=1, max_length=255)
     digest: str | None = Field(default=None, min_length=64, max_length=64)
     confirm: bool = False
+    workflow_id: str | None = Field(default=None, min_length=1, max_length=40)
 
 
 class OrganizationOperationBatchRequest(BaseModel):
@@ -588,6 +663,7 @@ class OrganizationOperationResponse(BaseModel):
     revision: int = Field(ge=1)
     attempts: int = Field(ge=0)
     error_code: str | None = None
+    cancel_requested: bool = False
 
 
 class OrganizationOperationBatchResult(BaseModel):
@@ -776,12 +852,46 @@ class NotificationPreferencePatch(BaseModel):
 
     enabled: bool | None = None
     muted_event_codes: list[str] | None = Field(default=None, max_length=100)
+    quiet_hours_enabled: bool | None = None
+    quiet_hours_start: str | None = None
+    quiet_hours_end: str | None = None
+    quiet_hours_timezone: str | None = None
+    error_bypass_quiet_hours: bool | None = None
     revision: int = Field(ge=1)
+
+    @field_validator("quiet_hours_start", "quiet_hours_end")
+    @classmethod
+    def validate_quiet_hours_clock(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        try:
+            hour, minute = (int(part) for part in value.split(":", 1))
+        except (ValueError, TypeError):
+            raise ValueError("静默时段必须使用 HH:MM 格式") from None
+        if not (0 <= hour <= 23 and 0 <= minute <= 59) or len(value) != 5:
+            raise ValueError("静默时段必须使用 HH:MM 格式")
+        return value
+
+    @field_validator("quiet_hours_timezone")
+    @classmethod
+    def validate_quiet_hours_timezone(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        try:
+            ZoneInfo(value)
+        except (ZoneInfoNotFoundError, ValueError):
+            raise ValueError("静默时区无效") from None
+        return value
 
 
 class NotificationPreferenceResponse(BaseModel):
     enabled: bool
     muted_event_codes: list[str]
+    quiet_hours_enabled: bool
+    quiet_hours_start: str
+    quiet_hours_end: str
+    quiet_hours_timezone: str
+    error_bypass_quiet_hours: bool
     revision: int
 
 
@@ -1434,6 +1544,7 @@ class WebhookEndpointResponse(BaseModel):
     secret_prefix: str
     event_codes: list[str]
     enabled: bool
+    health_status: Literal["disabled", "unknown", "healthy", "degraded", "failed"]
     revision: int
     created_at: datetime
     updated_at: datetime

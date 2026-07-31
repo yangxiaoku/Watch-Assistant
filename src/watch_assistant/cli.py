@@ -341,6 +341,9 @@ def _command(args: argparse.Namespace, path: Path) -> tuple[Any, int]:
             if args.task_command == "retry":
                 body = client.post(f"/api/v1/tasks/{args.task_id}/retry")
                 return envelope(data=_data_for("/api/v1/tasks", body), request_id=_request_id(body)), EXIT_OK
+            if args.task_command == "cancel":
+                body = client.post(f"/api/v1/tasks/{args.task_id}/cancel")
+                return envelope(data=_data_for("/api/v1/tasks", body), request_id=_request_id(body)), EXIT_OK
             if args.task_command == "wait":
                 return _wait_for_task(client, args.task_id, args.wait_timeout)
         if args.command == "workflow":
@@ -363,8 +366,47 @@ def _command(args: argparse.Namespace, path: Path) -> tuple[Any, int]:
                 body = client.get(f"/api/v1/workflows/{args.workflow_id}")
             return envelope(data=_data_for("/api/v1/workflows", body), request_id=_request_id(body)), EXIT_OK
         if args.command == "notification":
-            body = client.get("/api/v1/notifications")
-            return envelope(data=_data_for("/api/v1/notifications", body), request_id=_request_id(body)), EXIT_OK
+            notification_command = args.notification_command or "list"
+            if notification_command == "list":
+                unread_only = getattr(args, "unread_only", False)
+                limit = getattr(args, "limit", 50)
+                params = {"unread_only": "true"} if unread_only else None
+                if limit != 50:
+                    params = params or {}
+                    params["limit"] = str(limit)
+                body = client.get("/api/v1/notifications", params=params)
+                return envelope(
+                    data=_data_for("/api/v1/notifications", body),
+                    request_id=_request_id(body),
+                ), EXIT_OK
+            if notification_command == "read":
+                body = client.post(f"/api/v1/notifications/{args.notification_id}/read")
+            else:
+                body = client.post("/api/v1/notifications/read-all")
+            return envelope(
+                data=_data_for("/api/v1/notifications", body),
+                request_id=_request_id(body),
+            ), EXIT_OK
+        if args.command == "webhook" and args.webhook_command == "test":
+            body = client.post(f"/api/v1/webhooks/{args.endpoint_id}/test")
+            return envelope(
+                data=_data_for("/api/v1/webhooks", body),
+                request_id=_request_id(body),
+            ), EXIT_OK
+        if args.command == "webhook":
+            if args.webhook_command == "list":
+                body = client.get("/api/v1/webhooks")
+            elif args.webhook_command == "deliveries":
+                params = {"limit": str(args.limit)}
+                if args.endpoint_id:
+                    params["endpoint_id"] = args.endpoint_id
+                body = client.get("/api/v1/webhooks/deliveries", params=params)
+            else:
+                body = client.post(f"/api/v1/webhooks/deliveries/{args.delivery_id}/retry")
+            return envelope(
+                data=_data_for("/api/v1/webhooks", body),
+                request_id=_request_id(body),
+            ), EXIT_OK
         if args.command == "backup":
             body = client.get("/api/v1/backups")
             return envelope(data=_data_for("/api/v1/backups", body), request_id=_request_id(body)), EXIT_OK
@@ -403,6 +445,40 @@ def _command(args: argparse.Namespace, path: Path) -> tuple[Any, int]:
                 body = client.get(f"/api/v1/audit/{args.audit_id}")
             return envelope(data=_data_for("/api/v1/audit", body), request_id=_request_id(body)), EXIT_OK
         if args.command == "organize":
+            if args.organize_command == "plan":
+                library = client.get(f"/api/v1/libraries/{args.library_id}")
+                library_data = _data_for("/api/v1/libraries", library)
+                latest_scan = library_data.get("latest_scan") if isinstance(library_data, dict) else None
+                if not isinstance(latest_scan, dict):
+                    raise CliFailure(
+                        "媒体库没有可用的完整扫描",
+                        code=EXIT_CONFLICT,
+                        error_code="library_scan_required",
+                        suggestion_zh="请先完成媒体库扫描后再生成整理计划。",
+                    )
+                scan_run_id = latest_scan.get("run_id")
+                if (
+                    not isinstance(scan_run_id, str)
+                    or latest_scan.get("state") != "completed"
+                    or latest_scan.get("complete") is not True
+                ):
+                    raise CliFailure(
+                        "媒体库扫描尚未完成",
+                        code=EXIT_CONFLICT,
+                        error_code="library_scan_required",
+                        suggestion_zh="请等待完整扫描完成后再生成整理计划。",
+                    )
+                payload = {"source_scan_run_id": scan_run_id}
+                if args.path_id:
+                    payload["source_directory_id"] = args.path_id
+                body = client.post(
+                    f"/api/v1/libraries/{args.library_id}/organization-preview",
+                    payload=payload,
+                )
+                return envelope(
+                    data=_data_for("/api/v1/libraries", body),
+                    request_id=_request_id(body),
+                ), EXIT_OK
             if args.organize_command == "plans":
                 params = {"cursor": str(args.cursor), "limit": str(args.limit)}
                 if args.status:
@@ -440,6 +516,137 @@ def _command(args: argparse.Namespace, path: Path) -> tuple[Any, int]:
                 if isinstance(data, dict):
                     data = {**data, "idempotency_key": key}
                 return envelope(data=data, request_id=_request_id(body)), EXIT_OK
+        if args.command == "strm" and args.strm_command == "status":
+            if args.library:
+                body = client.get(
+                    f"/api/v1/libraries/{args.library}/strm-manifest",
+                    params={"page": "1", "page_size": "1"},
+                )
+                manifest = _data_for("/api/v1/libraries", body)
+                data = {"library_id": args.library, "manifest": manifest}
+            else:
+                body = client.get("/api/v1/health")
+                health = _data_for("/api/v1/health", body)
+                data = {
+                    "strm_capabilities": (
+                        health.get("strm_capabilities", {})
+                        if isinstance(health, dict)
+                        else {}
+                    )
+                }
+            return envelope(data=data, request_id=_request_id(body)), EXIT_OK
+        if args.command == "strm" and args.strm_command == "cleanup-plan":
+            library = client.get(f"/api/v1/libraries/{args.library_id}")
+            library_data = _data_for("/api/v1/libraries", library)
+            latest_scan = library_data.get("latest_scan") if isinstance(library_data, dict) else None
+            scan_run_id = latest_scan.get("run_id") if isinstance(latest_scan, dict) else None
+            if (
+                not isinstance(scan_run_id, str)
+                or latest_scan.get("state") != "completed"
+                or latest_scan.get("complete") is not True
+            ):
+                raise CliFailure(
+                    "媒体库没有可用的完整扫描",
+                    code=EXIT_CONFLICT,
+                    error_code="library_scan_required",
+                    suggestion_zh="请先完成完整扫描后再生成 STRM 清理计划。",
+                )
+            body = client.post(
+                f"/api/v1/libraries/{args.library_id}/strm-cleanup-plan",
+                payload={"source_scan_run_id": scan_run_id},
+            )
+            return envelope(
+                data=_data_for("/api/v1/libraries", body),
+                request_id=_request_id(body),
+            ), EXIT_OK
+        if args.command == "strm" and args.strm_command == "cleanup-apply":
+            if not args.confirm:
+                raise CliFailure(
+                    "缺少确认参数",
+                    code=EXIT_CONFLICT,
+                    error_code="confirmation_required",
+                )
+            plan = client.get(f"/api/v1/strm-cleanup-plans/{args.plan_id}")
+            plan_data = _data_for("/api/v1/strm-cleanup-plans", plan)
+            if not isinstance(plan_data, dict):
+                raise CliFailure(
+                    "服务响应格式无效",
+                    code=EXIT_UNAVAILABLE,
+                    error_code="invalid_response",
+                )
+            expected_revision = plan_data.get("revision")
+            if not isinstance(expected_revision, int):
+                raise CliFailure(
+                    "计划版本无效",
+                    code=EXIT_CONFLICT,
+                    error_code="plan_revision_changed",
+                )
+            key = args.idempotency_key or f"watchctl-{uuid.uuid4().hex}"
+            body = client.post(
+                f"/api/v1/strm-cleanup-plans/{args.plan_id}/apply",
+                payload={
+                    "expected_revision": expected_revision,
+                    "digest": args.digest,
+                    "confirm": True,
+                    "idempotency_key": key,
+                },
+            )
+            data = _data_for("/api/v1/strm-cleanup-plans", body)
+            if isinstance(data, dict):
+                data = {**data, "idempotency_key": key}
+            return envelope(data=data, request_id=_request_id(body)), EXIT_OK
+        if args.command == "strm" and args.strm_command == "verify":
+            library = client.get(f"/api/v1/libraries/{args.library_id}")
+            library_data = _data_for("/api/v1/libraries", library)
+            latest_scan = library_data.get("latest_scan") if isinstance(library_data, dict) else None
+            scan_run_id = latest_scan.get("run_id") if isinstance(latest_scan, dict) else None
+            if (
+                not isinstance(scan_run_id, str)
+                or latest_scan.get("state") != "completed"
+                or latest_scan.get("complete") is not True
+            ):
+                raise CliFailure(
+                    "媒体库没有可用的完整扫描",
+                    code=EXIT_CONFLICT,
+                    error_code="library_scan_required",
+                    suggestion_zh="请先完成完整扫描后再校验 STRM。",
+                )
+            body = client.post(
+                f"/api/v1/libraries/{args.library_id}/strm-verify",
+                payload={"source_scan_run_id": scan_run_id},
+            )
+            return envelope(
+                data=_data_for("/api/v1/libraries", body),
+                request_id=_request_id(body),
+            ), EXIT_OK
+        if args.command == "strm" and args.strm_command in {"generate", "sync"}:
+            library = client.get(f"/api/v1/libraries/{args.library_id}")
+            library_data = _data_for("/api/v1/libraries", library)
+            latest_scan = library_data.get("latest_scan") if isinstance(library_data, dict) else None
+            scan_run_id = latest_scan.get("run_id") if isinstance(latest_scan, dict) else None
+            if (
+                not isinstance(scan_run_id, str)
+                or latest_scan.get("state") != "completed"
+                or latest_scan.get("complete") is not True
+            ):
+                raise CliFailure(
+                    "媒体库没有可用的完整扫描",
+                    code=EXIT_CONFLICT,
+                    error_code="library_scan_required",
+                    suggestion_zh="请先完成媒体库扫描后再同步 STRM。",
+                )
+            payload: dict[str, Any] = {"source_scan_run_id": scan_run_id}
+            if args.workflow_id:
+                payload["workflow_id"] = args.workflow_id
+            endpoint = "strm-generation" if args.strm_command == "generate" else "strm-incremental"
+            body = client.post(
+                f"/api/v1/libraries/{args.library_id}/{endpoint}",
+                payload=payload,
+            )
+            return envelope(
+                data=_data_for("/api/v1/libraries", body),
+                request_id=_request_id(body),
+            ), EXIT_OK
         raise CliFailure("命令尚未开放", code=EXIT_UNAVAILABLE, error_code="command_unavailable")
     finally:
         client.close()
@@ -483,6 +690,8 @@ def _build_parser() -> argparse.ArgumentParser:
     wait.add_argument("--timeout", dest="wait_timeout", type=float, default=60.0)
     retry = task_sub.add_parser("retry")
     retry.add_argument("task_id")
+    cancel = task_sub.add_parser("cancel")
+    cancel.add_argument("task_id")
 
     workflow = sub.add_parser("workflow", help="工作流只读查询")
     workflow_sub = workflow.add_subparsers(dest="workflow_command", required=True)
@@ -499,7 +708,25 @@ def _build_parser() -> argparse.ArgumentParser:
     workflow_cancel.add_argument("workflow_id")
     workflow_cancel.add_argument("--reason", help="操作原因（最多 255 字符）")
 
-    sub.add_parser("notification", help="通知只读查询")
+    notification = sub.add_parser("notification", help="通知查询和已读操作")
+    notification_sub = notification.add_subparsers(dest="notification_command")
+    notification_list = notification_sub.add_parser("list", help="列出通知")
+    notification_list.add_argument("--unread-only", action="store_true")
+    notification_list.add_argument("--limit", type=int, choices=range(1, 101), default=50)
+    notification_read = notification_sub.add_parser("read", help="标记单条通知已读")
+    notification_read.add_argument("notification_id")
+    notification_sub.add_parser("read-all", help="标记全部通知已读")
+
+    webhook = sub.add_parser("webhook", help="Webhook 管理操作")
+    webhook_sub = webhook.add_subparsers(dest="webhook_command", required=True)
+    webhook_sub.add_parser("list", help="列出 Webhook 端点")
+    webhook_deliveries = webhook_sub.add_parser("deliveries", help="列出投递记录")
+    webhook_deliveries.add_argument("--endpoint-id")
+    webhook_deliveries.add_argument("--limit", type=int, choices=range(1, 101), default=50)
+    webhook_test = webhook_sub.add_parser("test", help="排队单端点测试通知")
+    webhook_test.add_argument("endpoint_id")
+    webhook_retry = webhook_sub.add_parser("retry", help="重试死信投递")
+    webhook_retry.add_argument("delivery_id")
     sub.add_parser("backup", help="备份只读查询")
     sub.add_parser("deployment", help="部署诊断只读查询")
 
@@ -531,8 +758,11 @@ def _build_parser() -> argparse.ArgumentParser:
     audit_show = audit_sub.add_parser("show")
     audit_show.add_argument("audit_id")
 
-    organize = sub.add_parser("organize", help="整理计划只读查询")
+    organize = sub.add_parser("organize", help="整理计划查询与本地预览")
     organize_sub = organize.add_subparsers(dest="organize_command", required=True)
+    plan = organize_sub.add_parser("plan", help="基于最新完整扫描生成本地整理计划")
+    plan.add_argument("--library", dest="library_id", required=True)
+    plan.add_argument("--path-id", help="仅规划指定源目录及其子目录")
     plans = organize_sub.add_parser("plans")
     plans.add_argument("--status", choices=("needs_review", "planned", "invalidated", "ignored"))
     plans.add_argument("--cursor", type=int, default=0)
@@ -544,6 +774,27 @@ def _build_parser() -> argparse.ArgumentParser:
     apply.add_argument("--digest", required=True)
     apply.add_argument("--confirm", action="store_true")
     apply.add_argument("--idempotency-key")
+
+    strm = sub.add_parser("strm", help="STRM 查询与受保护同步")
+    strm_sub = strm.add_subparsers(dest="strm_command", required=True)
+    strm_status = strm_sub.add_parser("status", help="查看 STRM 能力或媒体库清单摘要")
+    strm_status.add_argument("--library")
+    generate = strm_sub.add_parser("generate", help="请求受保护的 STRM 全量生成")
+    generate.add_argument("--library", dest="library_id", required=True)
+    generate.add_argument("--full", action="store_true", required=True)
+    generate.add_argument("--workflow-id")
+    sync = strm_sub.add_parser("sync", help="请求受保护的 STRM 增量同步")
+    sync.add_argument("--library", dest="library_id", required=True)
+    sync.add_argument("--workflow-id")
+    cleanup_plan = strm_sub.add_parser("cleanup-plan", help="生成只读 STRM 清理计划")
+    cleanup_plan.add_argument("--library", dest="library_id", required=True)
+    cleanup_apply = strm_sub.add_parser("cleanup-apply", help="确认并执行 STRM 清理计划")
+    cleanup_apply.add_argument("plan_id")
+    cleanup_apply.add_argument("--digest", required=True)
+    cleanup_apply.add_argument("--confirm", action="store_true")
+    cleanup_apply.add_argument("--idempotency-key")
+    verify = strm_sub.add_parser("verify", help="只读校验 STRM 清单和文件")
+    verify.add_argument("--library", dest="library_id", required=True)
     return parser
 
 

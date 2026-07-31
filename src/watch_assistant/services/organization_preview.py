@@ -69,6 +69,7 @@ class OrganizationPreviewService:
         *,
         library_id: str,
         scan_run_id: str,
+        source_directory_id: str | None = None,
         source_directory_ids: Collection[str] | None = None,
         target_directory_id: str | None = None,
         target_directories: Mapping[str, str] | None = None,
@@ -120,6 +121,17 @@ class OrganizationPreviewService:
         library, run, entries = await self._load_verified_snapshot(
             library_id, scan_run_id
         )
+        if source_directory_id is not None:
+            if (
+                not isinstance(source_directory_id, str)
+                or not source_directory_id
+                or len(source_directory_id) > 128
+                or "/" in source_directory_id
+                or "\\" in source_directory_id
+                or "\x00" in source_directory_id
+            ):
+                raise OrganizationPreviewError("source_directory_not_found")
+            source_directory_ids = (source_directory_id,)
         entries = _scope_entries(
             entries,
             source_directory_ids=source_directory_ids,

@@ -132,6 +132,9 @@ EVENT_CATALOG: dict[str, EventDefinition] = {
     "task.uncertain": _event(
         "task.uncertain", LogCategory.TASK, "推送结果待确认", "请求已超时，暂时无法确认远端是否接受任务", suggestion="请先查询任务状态，不要重复提交"
     ),
+    "task.cancelled": _event(
+        "task.cancelled", LogCategory.TASK, "推送任务已取消", "尚未提交的推送任务已取消"
+    ),
     "settings.changed": _event(
         "settings.changed", LogCategory.SETTINGS, "设置已修改", "已修改设置分组“{status}”，变更字段：{changed_fields}"
     ),
@@ -177,11 +180,35 @@ EVENT_CATALOG: dict[str, EventDefinition] = {
     "organize.operation.cancelled": _event(
         "organize.operation.cancelled", LogCategory.ORGANIZE, "整理操作已取消", "整理操作已取消，结果：{status}"
     ),
+    "organize.operation.cancel_requested": _event(
+        "organize.operation.cancel_requested",
+        LogCategory.ORGANIZE,
+        "已请求中止整理操作",
+        "已请求中止正在运行的整理操作，结果：{status}",
+    ),
     "organize.operation.retried": _event(
         "organize.operation.retried", LogCategory.ORGANIZE, "整理操作已重试", "整理操作已重新排队，结果：{status}"
     ),
     "strm.cleanup_blocked": _event(
         "strm.cleanup_blocked", LogCategory.STRM, "已阻止 STRM 清理", "本次云端扫描不完整，为避免误删已跳过清理阶段"
+    ),
+    "strm.cleanup.plan.created": _event(
+        "strm.cleanup.plan.created",
+        LogCategory.STRM,
+        "STRM 清理计划已生成",
+        "STRM 清理计划已生成，包含 {count} 个候选项",
+    ),
+    "strm.cleanup.applied": _event(
+        "strm.cleanup.applied",
+        LogCategory.STRM,
+        "STRM 清理计划已执行",
+        "STRM 清理计划已执行，处理 {count} 个受管项",
+    ),
+    "strm.verify.completed": _event(
+        "strm.verify.completed",
+        LogCategory.STRM,
+        "STRM 校验已完成",
+        "STRM 校验已完成，结果：{status}，检查 {count} 个条目",
     ),
     "strm.dirty_consumed": _event(
         "strm.dirty_consumed", LogCategory.STRM, "目录变更已完成增量对账", "目录变更已完成增量对账，当前状态：{status}"
@@ -289,6 +316,9 @@ EVENT_CATALOG: dict[str, EventDefinition] = {
     ),
     "notification.preferences_changed": _event(
         "notification.preferences_changed", LogCategory.TASK, "通知偏好已更新", "站内通知当前状态：{status}"
+    ),
+    "webhook.test": _event(
+        "webhook.test", LogCategory.NOTIFICATION, "Webhook 测试通知", "Webhook 测试通知已排队发送"
     ),
     "backup.created": _event(
         "backup.created", LogCategory.SYSTEM, "备份已创建", "数据库备份已创建，状态：{status}，数量：{count}"

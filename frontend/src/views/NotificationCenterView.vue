@@ -16,6 +16,11 @@ const error = ref("");
 const preferencesEnabled = ref(true);
 const preferenceRevision = ref(1);
 const preferenceBusy = ref(false);
+const quietHoursEnabled = ref(true);
+const quietHoursStart = ref("23:00");
+const quietHoursEnd = ref("08:00");
+const quietHoursTimezone = ref("Asia/Shanghai");
+const errorBypassQuietHours = ref(true);
 
 const visibleItems = computed(() => items.value.filter((item) => {
   if (filter.value === "unread") return !item.read_at;
@@ -63,8 +68,38 @@ async function loadPreferences() {
     const response = await props.api.notificationPreferences();
     preferencesEnabled.value = response.enabled;
     preferenceRevision.value = response.revision;
+    quietHoursEnabled.value = response.quiet_hours_enabled ?? true;
+    quietHoursStart.value = response.quiet_hours_start ?? "23:00";
+    quietHoursEnd.value = response.quiet_hours_end ?? "08:00";
+    quietHoursTimezone.value = response.quiet_hours_timezone ?? "Asia/Shanghai";
+    errorBypassQuietHours.value = response.error_bypass_quiet_hours ?? true;
   } catch {
     // Notification preferences are optional; the list remains usable.
+  }
+}
+
+async function saveQuietHours() {
+  if (preferenceBusy.value) return;
+  preferenceBusy.value = true;
+  try {
+    const response = await props.api.updateNotificationPreferences({
+      quiet_hours_enabled: quietHoursEnabled.value,
+      quiet_hours_start: quietHoursStart.value,
+      quiet_hours_end: quietHoursEnd.value,
+      quiet_hours_timezone: quietHoursTimezone.value,
+      error_bypass_quiet_hours: errorBypassQuietHours.value,
+      revision: preferenceRevision.value,
+    });
+    preferenceRevision.value = response.revision;
+    quietHoursEnabled.value = response.quiet_hours_enabled ?? quietHoursEnabled.value;
+    quietHoursStart.value = response.quiet_hours_start ?? quietHoursStart.value;
+    quietHoursEnd.value = response.quiet_hours_end ?? quietHoursEnd.value;
+    quietHoursTimezone.value = response.quiet_hours_timezone ?? quietHoursTimezone.value;
+    errorBypassQuietHours.value = response.error_bypass_quiet_hours ?? errorBypassQuietHours.value;
+  } catch (exception) {
+    error.value = exception instanceof ApiError ? exception.message : "静默时段暂时无法保存";
+  } finally {
+    preferenceBusy.value = false;
   }
 }
 
@@ -126,7 +161,7 @@ onMounted(() => { void loadNotifications(); void loadPreferences(); });
 <template>
   <section class="notification-center" aria-labelledby="notification-title">
     <header class="library-heading notification-heading"><div><p class="eyebrow">站内消息</p><h1 id="notification-title">通知中心 <span v-if="unreadCount" class="notification-count">{{ unreadCount }}</span></h1><p>查看任务、授权和系统状态的重要变化。</p></div><div class="notification-toolbar"><button class="icon-button" type="button" title="刷新通知" aria-label="刷新通知" :disabled="loading" @click="loadNotifications"><RefreshCw :size="17" :class="{ spin: loading }" /></button><button class="secondary-button" type="button" :disabled="!unreadCount || busy" @click="markAllRead"><CheckCheck :size="16" />全部已读</button></div></header>
-    <div class="notification-controls"><div class="segmented" role="tablist" aria-label="通知筛选"><button v-for="option in filterOptions" :key="option.value" type="button" :class="{ active: filter === option.value }" @click="filter = option.value">{{ option.label }}</button></div><label class="notification-preference"><input type="checkbox" :checked="preferencesEnabled" :disabled="preferenceBusy" @change="togglePreferences" />接收站内通知</label></div>
+    <div class="notification-controls"><div class="segmented" role="tablist" aria-label="通知筛选"><button v-for="option in filterOptions" :key="option.value" type="button" :class="{ active: filter === option.value }" @click="filter = option.value">{{ option.label }}</button></div><label class="notification-preference"><input type="checkbox" :checked="preferencesEnabled" :disabled="preferenceBusy" @change="togglePreferences" />接收站内通知</label><label class="notification-preference"><input v-model="quietHoursEnabled" type="checkbox" :disabled="preferenceBusy" @change="saveQuietHours" />静默时段</label><label class="notification-time"><span>开始</span><input v-model="quietHoursStart" type="time" :disabled="!quietHoursEnabled || preferenceBusy" @change="saveQuietHours" /></label><label class="notification-time"><span>结束</span><input v-model="quietHoursEnd" type="time" :disabled="!quietHoursEnabled || preferenceBusy" @change="saveQuietHours" /></label><label class="notification-preference"><input v-model="errorBypassQuietHours" type="checkbox" :disabled="!quietHoursEnabled || preferenceBusy" @change="saveQuietHours" />错误突破静默</label></div>
     <div v-if="error" class="settings-state settings-state-error" role="alert"><AlertTriangle :size="18" /><span>{{ error }}</span><button class="text-button" type="button" @click="loadNotifications">重试</button></div>
     <div v-else-if="loading && !items.length" class="notification-empty" role="status"><LoaderCircle class="spin" :size="22" />正在加载通知</div>
     <div v-else-if="!visibleItems.length" class="notification-empty"><Bell :size="22" />当前筛选没有通知</div>

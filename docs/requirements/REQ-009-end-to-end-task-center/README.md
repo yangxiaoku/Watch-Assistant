@@ -4,6 +4,7 @@
 |---|---|
 | 版本 | V1.0 |
 | 状态 | 开发中 |
+| 更新日期 | 2026-07-31 |
 | 优先级 | P0 |
 | 依赖 | 现有任务状态机、REQ-001、REQ-002、REQ-004 |
 
@@ -120,4 +121,18 @@ API 返回顶层 workflow 和分页子任务，不返回敏感链接。REQ-003 �
 - 本轮补充 FLOW-006：工作流列表增加服务端 `subscription_id`、`stage`、`stage_status` 筛选，证据见 `evidence/2026-07-29-workflow-filtering.md`。
 - 本轮补充 FLOW-004/FLOW-005：增加受保护的人工确认和 fail-closed 取消接口，证据见 `evidence/2026-07-29-workflow-approval-cancel.md`。
 - 本轮补充 FLOW-007：`watchctl workflow approve|reject|cancel` 复用同一审批/取消 API，保留统一错误和审计关联。
+- workflow 取消现在会取消尚未开始的阶段，即使另一个阶段正在运行；运行中或 `uncertain` 子任务保持原状态，不伪造远端撤回。
+- 推送任务新增原子 `queued -> cancelled` 取消接口和 `watchctl task cancel`，worker 已 claim 或远端结果可能已存在时 fail-closed 返回 `task_not_cancellable`。
+- 本轮补充运行中整理操作的本地中止请求：排队操作立即取消，运行中操作持久化
+  `cancel_requested` 并由 executor 在 transport 边界检查；远端写入尚未开始时最终为
+  `cancelled`，写入已经开始时最终为 `uncertain`，不伪造远端撤回。
+- 本轮补充 FLOW-002：整理 operation 可通过受保护 API 关联 workflow；排队、claim、成功、失败、
+  不确定、取消和重试会同步 `organization` 阶段，关联使用持久 `workflow_id` 和 operation ID。
+- 本轮补充 FLOW-002：STRM 全量/增量/清理 API 支持可选 `workflow_id`，在开始、成功和失败时
+  同步 `strm` 阶段；整理完成后的目录 dirty worker 会继承关联 workflow，并在成功、重试等待
+  外部、最终失败和功能跳过时同步阶段状态。原有 STRM 开关、Scope、完整扫描和清理安全门禁
+  保持不变。
+- 本轮补充 FLOW-007：提交后的可行动 workflow 阶段事件（等待确认、等待外部、成功、跳过、失败、
+  不确定、取消）会通过统一事件目录生成站内通知，复用通知偏好、30 分钟去重和 Webhook Outbox；
+  普通启动/读取日志不会自动生成通知。
 - 剩余阻断：真实 115 写入、STRM 真实播放契约及 PanSou/qB 外部网络基线仍按 `docs/requirements/BLOCKERS.md` 保持门禁关闭。

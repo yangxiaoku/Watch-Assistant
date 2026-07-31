@@ -570,6 +570,9 @@ def create_app(
                 runtime_database.session_factory,
                 event_logger=application.state.settings_service,
             )
+            application.state.settings_service.bind_event_sink(
+                application.state.notification_service.handle_event
+            )
             application.state.backup_service = BackupService(
                 runtime_database.engine.url.database,
                 _state_directory(runtime_database) / "backups",
@@ -634,9 +637,19 @@ def create_app(
                 if settings.p115_target_cid is not None and settings.p115_target_cid > 0
                 else None
             )
-            application.state.p115_browsed_directory_ids = {
-                application.state.organization_target_root_id
-            } if application.state.organization_target_root_id else set()
+            organization_settings = await application.state.settings_service.get_organization()
+            configured_directory_ids = {
+                directory_id
+                for directory_id in (
+                    *organization_settings.source_directory_ids,
+                    organization_settings.target_directory_id,
+                    organization_settings.push_directory_id,
+                )
+                if isinstance(directory_id, str) and directory_id.isdigit()
+            }
+            if application.state.organization_target_root_id:
+                configured_directory_ids.add(application.state.organization_target_root_id)
+            application.state.p115_browsed_directory_ids = configured_directory_ids
             application.state.p115_delete_service = P115DeleteService(
                 runtime_database.session_factory,
                 composite_cookie_provider,
@@ -1051,6 +1064,9 @@ def create_app(
         application.state.notification_service = NotificationService(
             database.session_factory,
             event_logger=application.state.settings_service,
+        )
+        application.state.settings_service.bind_event_sink(
+            application.state.notification_service.handle_event
         )
         application.state.backup_service = BackupService(
             database.engine.url.database,

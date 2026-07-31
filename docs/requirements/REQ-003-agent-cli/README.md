@@ -5,7 +5,7 @@
 | 版本 | V1.0 |
 | 状态 | 开发中 |
 | 创建日期 | 2026-07-26 |
-| 更新日期 | 2026-07-29 |
+| 更新日期 | 2026-07-31 |
 | 负责人 | 待指定 |
 | 优先级 | P1 |
 | 依赖 | 版本化管理 API、Agent Token、REQ-004 |
@@ -175,6 +175,11 @@ watchctl task cancel <task-id>
 
 watchctl audit list [--actor <agent>] [--since <time>]
 watchctl audit show <audit-id>
+
+watchctl webhook test <endpoint-id>
+watchctl webhook list
+watchctl webhook deliveries [--endpoint-id <endpoint-id>] [--limit <n>]
+watchctl webhook retry <delivery-id>
 ```
 
 正式发布后命令遵循语义化兼容策略，删除或重命名必须经过弃用周期。
@@ -301,10 +306,21 @@ CLI 必须使用正式版本化 API，与 Web 共用校验和状态机。不得�
 - 相同幂等键只创建一个任务。
 - 网络超时返回可查询标识，不自动重写。
 - JSON、JSONL、退出码和错误码符合固定契约。
+- `watchctl notification list [--unread-only]`、`notification read <id>` 和 `notification read-all` 使用正式通知 API，并保持统一 JSON/JSONL envelope。
+- `watchctl webhook test <endpoint-id>` 仅调用正式的单端点测试投递 API，不直接访问第三方接收端。
+- `watchctl task cancel <task-id>` 仅取消尚未被 worker claim 的 queued 任务；已提交、运行中或结果不确定的任务返回稳定 `task_not_cancellable` 错误。
+- `watchctl strm status [--library <id>]` 仅读取 health capability 或受保护的 manifest 列表摘要，不开启 STRM 写入或播放。
+- `watchctl organize plan --library <id> [--path-id <directory-id>]` 读取最新完整扫描并调用正式整理预览 API，仅持久化本地计划，不执行 115 写入；扫描未完成或目录不在快照范围内时拒绝生成计划。
+- `watchctl strm generate --library <id> --full` 和 `watchctl strm sync --library <id>` 只调用正式 STRM 全量/增量 API；服务端仍负责 `strm:write` Scope、独立 feature flag、完整最新扫描和播放入口门禁。
+- `watchctl strm cleanup-plan --library <id>` 只创建基于完整扫描和受管清单状态的持久清理预览，不删除文件或退休清单。
+- `watchctl strm cleanup-apply <plan-id> --digest <digest> --confirm` 只执行已确认的清理计划，服务端会再次校验扫描快照、计划版本、有效期、digest 和受管 STRM 内容；重复提交已应用计划不会重复退休清单。
+- `watchctl strm verify --library <id>` 只读取最新完整扫描、当前受管 manifest 和本地 STRM 内容，检查缺失、孤儿、路径不一致和稳定播放入口内容错误；校验不会修复文件、退休 manifest 或执行任何 115 写入。
 - Token 撤销后不能提交新操作。
 - 每个操作可追踪到 Agent、计划、任务和最终结果。
 - CLI 无法获得 Cookie、真实直链、Web 密码或其他 Token。
 - 三个桌面系统的核心流程通过测试。
+
+当前 `strm verify` 已完成服务端只读 API、CLI 入口和离线契约测试；生产媒体库清单、稳定播放入口实际可用性、媒体服务器兼容性和跨平台端到端验收仍属于阻断项。
 
 ## 12. 分期建议
 

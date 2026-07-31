@@ -232,6 +232,355 @@ def test_task_wait_polls_without_resubmitting(monkeypatch, capsys):
     assert seen == [("GET", "/api/v1/tasks/task-one"), ("GET", "/api/v1/tasks/task-one")]
 
 
+def test_task_cancel_uses_safe_cancel_endpoint(capsys):
+    seen: list[tuple[str, str]] = []
+
+    class Transport(httpx.BaseTransport):
+        def handle_request(self, request):
+            seen.append((request.method, request.url.path))
+            return httpx.Response(200, json={"id": "task-one", "state": "cancelled"}, request=request)
+
+    original = ApiClient.__init__
+    original_close = ApiClient.close
+    ApiClient.__init__ = lambda self, config: (
+        setattr(self, "config", config),
+        setattr(self, "_client", httpx.Client(base_url=config.server, transport=Transport())),
+    )[-1]
+    ApiClient.close = lambda self: self._client.close()
+    try:
+        code = main(
+            [
+                "--server",
+                "http://app.test",
+                "--token",
+                "wa_at_test",
+                "--output",
+                "json",
+                "task",
+                "cancel",
+                "task-one",
+            ]
+        )
+    finally:
+        ApiClient.__init__ = original
+        ApiClient.close = original_close
+    body = json.loads(capsys.readouterr().out)
+    assert code == EXIT_OK
+    assert body["data"]["state"] == "cancelled"
+    assert seen == [("POST", "/api/v1/tasks/task-one/cancel")]
+
+
+def test_strm_status_uses_read_only_health_and_manifest_endpoints(capsys):
+    seen: list[tuple[str, str, str]] = []
+
+    class Transport(httpx.BaseTransport):
+        def handle_request(self, request):
+            seen.append((request.method, request.url.path, request.url.query.decode()))
+            if request.url.path == "/api/v1/health":
+                return httpx.Response(
+                    200,
+                    json={"strm_capabilities": {"full": False, "playback": False}},
+                    request=request,
+                )
+            return httpx.Response(
+                200,
+                json={"items": [], "page": 1, "page_size": 1, "total": 0, "total_pages": 0},
+                request=request,
+            )
+
+    original = ApiClient.__init__
+    original_close = ApiClient.close
+    ApiClient.__init__ = lambda self, config: (
+        setattr(self, "config", config),
+        setattr(self, "_client", httpx.Client(base_url=config.server, transport=Transport())),
+    )[-1]
+    ApiClient.close = lambda self: self._client.close()
+    try:
+        for command in (
+            ["strm", "status"],
+            ["strm", "status", "--library", "library-one"],
+        ):
+            assert main(["--server", "http://app.test", "--token", "wa_at_test", "--output", "json", *command]) == EXIT_OK
+            assert json.loads(capsys.readouterr().out)["ok"] is True
+    finally:
+        ApiClient.__init__ = original
+        ApiClient.close = original_close
+
+    assert seen == [
+        ("GET", "/api/v1/health", ""),
+        ("GET", "/api/v1/libraries/library-one/strm-manifest", "page=1&page_size=1"),
+    ]
+
+
+def test_strm_generate_and_sync_use_latest_scan_and_formal_write_endpoints(capsys):
+    seen: list[tuple[str, str, dict[str, object] | None]] = []
+
+    class Transport(httpx.BaseTransport):
+        def handle_request(self, request):
+            payload = json.loads(request.content) if request.content else None
+            seen.append((request.method, request.url.path, payload))
+            if request.method == "GET":
+                return httpx.Response(
+                    200,
+                    json={
+                        "library_id": "library-one",
+                        "latest_scan": {
+                            "run_id": "scan-one",
+                            "state": "completed",
+                            "complete": True,
+                        },
+                    },
+                    request=request,
+                )
+            return httpx.Response(
+                200,
+                json={"library_id": "library-one", "scan_run_id": "scan-one", "generated": 1},
+                request=request,
+            )
+
+    original = ApiClient.__init__
+    original_close = ApiClient.close
+    ApiClient.__init__ = lambda self, config: (
+        setattr(self, "config", config),
+        setattr(self, "_client", httpx.Client(base_url=config.server, transport=Transport())),
+    )[-1]
+    ApiClient.close = lambda self: self._client.close()
+    try:
+        for command in (
+            ["strm", "generate", "--library", "library-one", "--full"],
+            ["strm", "sync", "--library", "library-one", "--workflow-id", "workflow-one"],
+        ):
+            assert main(
+                ["--server", "http://app.test", "--token", "wa_at_test", "--output", "json", *command]
+            ) == EXIT_OK
+            assert json.loads(capsys.readouterr().out)["ok"] is True
+    finally:
+        ApiClient.__init__ = original
+        ApiClient.close = original_close
+
+    assert seen == [
+        ("GET", "/api/v1/libraries/library-one", None),
+        (
+            "POST",
+            "/api/v1/libraries/library-one/strm-generation",
+            {"source_scan_run_id": "scan-one"},
+        ),
+        ("GET", "/api/v1/libraries/library-one", None),
+        (
+            "POST",
+            "/api/v1/libraries/library-one/strm-incremental",
+            {"source_scan_run_id": "scan-one", "workflow_id": "workflow-one"},
+        ),
+    ]
+
+
+def test_strm_cleanup_plan_uses_latest_scan_without_delete_endpoint(capsys):
+    seen: list[tuple[str, str, dict[str, object] | None]] = []
+
+    class Transport(httpx.BaseTransport):
+        def handle_request(self, request):
+            payload = json.loads(request.content) if request.content else None
+            seen.append((request.method, request.url.path, payload))
+            if request.method == "GET":
+                return httpx.Response(
+                    200,
+                    json={
+                        "library_id": "library-one",
+                        "latest_scan": {
+                            "run_id": "scan-one",
+                            "state": "completed",
+                            "complete": True,
+                        },
+                    },
+                    request=request,
+                )
+            return httpx.Response(
+                200,
+                json={
+                    "plan_id": "strm_cleanup_one",
+                    "library_id": "library-one",
+                    "candidate_count": 1,
+                    "executable_count": 1,
+                    "blocked_count": 0,
+                },
+                request=request,
+            )
+
+    original = ApiClient.__init__
+    original_close = ApiClient.close
+    ApiClient.__init__ = lambda self, config: (
+        setattr(self, "config", config),
+        setattr(self, "_client", httpx.Client(base_url=config.server, transport=Transport())),
+    )[-1]
+    ApiClient.close = lambda self: self._client.close()
+    try:
+        assert main(
+            [
+                "--server",
+                "http://app.test",
+                "--token",
+                "wa_at_test",
+                "--output",
+                "json",
+                "strm",
+                "cleanup-plan",
+                "--library",
+                "library-one",
+            ]
+        ) == EXIT_OK
+    finally:
+        ApiClient.__init__ = original
+        ApiClient.close = original_close
+
+    assert json.loads(capsys.readouterr().out)["data"]["plan_id"] == "strm_cleanup_one"
+    assert seen == [
+        ("GET", "/api/v1/libraries/library-one", None),
+        (
+            "POST",
+            "/api/v1/libraries/library-one/strm-cleanup-plan",
+            {"source_scan_run_id": "scan-one"},
+        ),
+    ]
+
+
+def test_strm_cleanup_apply_fetches_revision_and_requires_confirmation(capsys):
+    digest = "a" * 64
+    seen: list[tuple[str, str, dict[str, object] | None]] = []
+
+    class Transport(httpx.BaseTransport):
+        def handle_request(self, request):
+            payload = json.loads(request.content) if request.content else None
+            seen.append((request.method, request.url.path, payload))
+            if request.method == "GET":
+                return httpx.Response(
+                    200,
+                    json={"plan_id": "strm_cleanup_one", "plan_hash": digest, "revision": 1},
+                    request=request,
+                )
+            return httpx.Response(
+                200,
+                json={
+                    "plan": {
+                        "plan_id": "strm_cleanup_one",
+                        "status": "applied",
+                        "revision": 2,
+                    },
+                    "retired": 1,
+                },
+                request=request,
+            )
+
+    original = ApiClient.__init__
+    original_close = ApiClient.close
+    ApiClient.__init__ = lambda self, config: (
+        setattr(self, "config", config),
+        setattr(self, "_client", httpx.Client(base_url=config.server, transport=Transport())),
+    )[-1]
+    ApiClient.close = lambda self: self._client.close()
+    try:
+        assert main(
+            [
+                "--server",
+                "http://app.test",
+                "--token",
+                "wa_at_test",
+                "--output",
+                "json",
+                "strm",
+                "cleanup-apply",
+                "strm_cleanup_one",
+                "--digest",
+                digest,
+                "--confirm",
+                "--idempotency-key",
+                "cleanup-key",
+            ]
+        ) == EXIT_OK
+    finally:
+        ApiClient.__init__ = original
+        ApiClient.close = original_close
+
+    body = json.loads(capsys.readouterr().out)
+    assert body["data"]["retired"] == 1
+    assert body["data"]["idempotency_key"] == "cleanup-key"
+    assert seen == [
+        ("GET", "/api/v1/strm-cleanup-plans/strm_cleanup_one", None),
+        (
+            "POST",
+            "/api/v1/strm-cleanup-plans/strm_cleanup_one/apply",
+            {
+                "expected_revision": 1,
+                "digest": digest,
+                "confirm": True,
+                "idempotency_key": "cleanup-key",
+            },
+        ),
+    ]
+
+
+def test_strm_verify_uses_latest_scan_and_read_endpoint(capsys):
+    seen: list[tuple[str, str, dict[str, object] | None]] = []
+
+    class Transport(httpx.BaseTransport):
+        def handle_request(self, request):
+            payload = json.loads(request.content) if request.content else None
+            seen.append((request.method, request.url.path, payload))
+            if request.method == "GET":
+                return httpx.Response(
+                    200,
+                    json={
+                        "library_id": "library-one",
+                        "latest_scan": {
+                            "run_id": "scan-one",
+                            "state": "completed",
+                            "complete": True,
+                        },
+                    },
+                    request=request,
+                )
+            return httpx.Response(
+                200,
+                json={"status": "verified", "checked_count": 1, "issues": []},
+                request=request,
+            )
+
+    original = ApiClient.__init__
+    original_close = ApiClient.close
+    ApiClient.__init__ = lambda self, config: (
+        setattr(self, "config", config),
+        setattr(self, "_client", httpx.Client(base_url=config.server, transport=Transport())),
+    )[-1]
+    ApiClient.close = lambda self: self._client.close()
+    try:
+        assert main(
+            [
+                "--server",
+                "http://app.test",
+                "--token",
+                "wa_at_test",
+                "--output",
+                "json",
+                "strm",
+                "verify",
+                "--library",
+                "library-one",
+            ]
+        ) == EXIT_OK
+    finally:
+        ApiClient.__init__ = original
+        ApiClient.close = original_close
+
+    assert json.loads(capsys.readouterr().out)["data"]["status"] == "verified"
+    assert seen == [
+        ("GET", "/api/v1/libraries/library-one", None),
+        (
+            "POST",
+            "/api/v1/libraries/library-one/strm-verify",
+            {"source_scan_run_id": "scan-one"},
+        ),
+    ]
+
+
 def test_workflow_actions_use_shared_approval_and_cancel_endpoints(capsys):
     seen: list[tuple[str, str, dict[str, object] | None]] = []
 
@@ -271,6 +620,135 @@ def test_workflow_actions_use_shared_approval_and_cancel_endpoints(capsys):
         ("POST", "/api/v1/workflows/wf-one/approval", {"decision": "approve", "reason": "用户确认"}),
         ("POST", "/api/v1/workflows/wf-one/approval", {"decision": "reject"}),
         ("POST", "/api/v1/workflows/wf-one/cancel", {"reason": "用户取消"}),
+    ]
+
+
+def test_notification_commands_list_read_and_read_all_use_versioned_endpoints(capsys):
+    seen: list[tuple[str, str, str, dict[str, object] | None]] = []
+
+    class Transport(httpx.BaseTransport):
+        def handle_request(self, request):
+            seen.append((request.method, request.url.path, request.url.query.decode(), json.loads(request.content) if request.content else None))
+            if request.method == "GET":
+                return httpx.Response(
+                    200,
+                    json={"items": [{"id": "notice-one", "read": False}], "unread_count": 1},
+                    request=request,
+                )
+            if request.url.path.endswith("/read-all"):
+                return httpx.Response(200, json={"marked_count": 1}, request=request)
+            return httpx.Response(200, json={"id": "notice-one", "read": True}, request=request)
+
+    original = ApiClient.__init__
+    original_close = ApiClient.close
+    ApiClient.__init__ = lambda self, config: (
+        setattr(self, "config", config),
+        setattr(self, "_client", httpx.Client(base_url=config.server, transport=Transport())),
+    )[-1]
+    ApiClient.close = lambda self: self._client.close()
+    try:
+        assert main(["--server", "http://app.test", "--token", "wa_at_test", "--output", "json", "notification", "list", "--unread-only"]) == EXIT_OK
+        assert json.loads(capsys.readouterr().out)["data"]["unread_count"] == 1
+        assert main(["--server", "http://app.test", "--token", "wa_at_test", "--output", "json", "notification"]) == EXIT_OK
+        assert json.loads(capsys.readouterr().out)["data"]["unread_count"] == 1
+        assert main(["--server", "http://app.test", "--token", "wa_at_test", "--output", "json", "notification", "read", "notice-one"]) == EXIT_OK
+        assert json.loads(capsys.readouterr().out)["data"]["read"] is True
+        assert main(["--server", "http://app.test", "--token", "wa_at_test", "--output", "json", "notification", "read-all"]) == EXIT_OK
+        assert json.loads(capsys.readouterr().out)["data"]["marked_count"] == 1
+    finally:
+        ApiClient.__init__ = original
+        ApiClient.close = original_close
+
+    assert seen == [
+        ("GET", "/api/v1/notifications", "unread_only=true", None),
+        ("GET", "/api/v1/notifications", "", None),
+        ("POST", "/api/v1/notifications/notice-one/read", "", {}),
+        ("POST", "/api/v1/notifications/read-all", "", {}),
+    ]
+
+
+def test_webhook_test_command_only_enqueues_versioned_endpoint_test(capsys):
+    seen: list[tuple[str, str, dict[str, object] | None]] = []
+
+    class Transport(httpx.BaseTransport):
+        def handle_request(self, request):
+            seen.append((request.method, request.url.path, json.loads(request.content) if request.content else None))
+            return httpx.Response(
+                200,
+                json={"id": "delivery-one", "event_code": "webhook.test", "status": "queued"},
+                request=request,
+            )
+
+    original = ApiClient.__init__
+    original_close = ApiClient.close
+    ApiClient.__init__ = lambda self, config: (
+        setattr(self, "config", config),
+        setattr(self, "_client", httpx.Client(base_url=config.server, transport=Transport())),
+    )[-1]
+    ApiClient.close = lambda self: self._client.close()
+    try:
+        code = main(
+            [
+                "--server",
+                "http://app.test",
+                "--token",
+                "wa_at_test",
+                "--output",
+                "json",
+                "webhook",
+                "test",
+                "endpoint-one",
+            ]
+        )
+    finally:
+        ApiClient.__init__ = original
+        ApiClient.close = original_close
+
+    body = json.loads(capsys.readouterr().out)
+    assert code == EXIT_OK
+    assert body["data"] == {
+        "id": "delivery-one",
+        "event_code": "webhook.test",
+        "status": "queued",
+    }
+    assert seen == [("POST", "/api/v1/webhooks/endpoint-one/test", {})]
+
+
+def test_webhook_query_and_retry_commands_use_server_side_state_gate(capsys):
+    seen: list[tuple[str, str, str, dict[str, object] | None]] = []
+
+    class Transport(httpx.BaseTransport):
+        def handle_request(self, request):
+            seen.append((request.method, request.url.path, request.url.query.decode(), json.loads(request.content) if request.content else None))
+            if request.method == "GET" and request.url.path == "/api/v1/webhooks":
+                return httpx.Response(200, json={"items": []}, request=request)
+            if request.method == "GET":
+                return httpx.Response(200, json={"items": []}, request=request)
+            return httpx.Response(200, json={"id": "delivery-one", "status": "pending"}, request=request)
+
+    original = ApiClient.__init__
+    original_close = ApiClient.close
+    ApiClient.__init__ = lambda self, config: (
+        setattr(self, "config", config),
+        setattr(self, "_client", httpx.Client(base_url=config.server, transport=Transport())),
+    )[-1]
+    ApiClient.close = lambda self: self._client.close()
+    try:
+        for command in (
+            ["webhook", "list"],
+            ["webhook", "deliveries", "--endpoint-id", "endpoint-one", "--limit", "10"],
+            ["webhook", "retry", "delivery-one"],
+        ):
+            assert main(["--server", "http://app.test", "--token", "wa_at_test", "--output", "json", *command]) == EXIT_OK
+            assert json.loads(capsys.readouterr().out)["ok"] is True
+    finally:
+        ApiClient.__init__ = original
+        ApiClient.close = original_close
+
+    assert seen == [
+        ("GET", "/api/v1/webhooks", "", None),
+        ("GET", "/api/v1/webhooks/deliveries", "limit=10&endpoint_id=endpoint-one", None),
+        ("POST", "/api/v1/webhooks/deliveries/delivery-one/retry", "", {}),
     ]
 
 
@@ -350,3 +828,106 @@ def test_organize_apply_requires_explicit_confirmation(capsys):
     body = json.loads(capsys.readouterr().out)
     assert code == 5
     assert body["error"]["code"] == "confirmation_required"
+
+
+def test_organize_plan_uses_latest_scan_and_source_directory(capsys):
+    seen: list[tuple[str, str, dict[str, object] | None]] = []
+
+    class Transport(httpx.BaseTransport):
+        def handle_request(self, request):
+            payload = json.loads(request.content) if request.content else None
+            seen.append((request.method, request.url.path, payload))
+            if request.method == "GET":
+                return httpx.Response(
+                    200,
+                    json={
+                        "library_id": "library-one",
+                        "latest_scan": {
+                            "run_id": "scan-one",
+                            "state": "completed",
+                            "complete": True,
+                        },
+                    },
+                    request=request,
+                )
+            return httpx.Response(
+                200,
+                json={"plan_id": "plan-one", "status": "needs_review"},
+                request=request,
+            )
+
+    original = ApiClient.__init__
+    original_close = ApiClient.close
+    ApiClient.__init__ = lambda self, config: (
+        setattr(self, "config", config),
+        setattr(self, "_client", httpx.Client(base_url=config.server, transport=Transport())),
+    )[-1]
+    ApiClient.close = lambda self: self._client.close()
+    try:
+        code = main(
+            [
+                "--server",
+                "http://app.test",
+                "--token",
+                "wa_at_test",
+                "--output",
+                "json",
+                "organize",
+                "plan",
+                "--library",
+                "library-one",
+                "--path-id",
+                "directory-one",
+            ]
+        )
+    finally:
+        ApiClient.__init__ = original
+        ApiClient.close = original_close
+
+    body = json.loads(capsys.readouterr().out)
+    assert code == EXIT_OK
+    assert body["data"]["plan_id"] == "plan-one"
+    assert seen == [
+        ("GET", "/api/v1/libraries/library-one", None),
+        (
+            "POST",
+            "/api/v1/libraries/library-one/organization-preview",
+            {"source_scan_run_id": "scan-one", "source_directory_id": "directory-one"},
+        ),
+    ]
+
+
+def test_organize_plan_requires_a_completed_scan(capsys):
+    class Transport(httpx.BaseTransport):
+        def handle_request(self, request):
+            return httpx.Response(200, json={"library_id": "library-one", "latest_scan": None}, request=request)
+
+    original = ApiClient.__init__
+    original_close = ApiClient.close
+    ApiClient.__init__ = lambda self, config: (
+        setattr(self, "config", config),
+        setattr(self, "_client", httpx.Client(base_url=config.server, transport=Transport())),
+    )[-1]
+    ApiClient.close = lambda self: self._client.close()
+    try:
+        code = main(
+            [
+                "--server",
+                "http://app.test",
+                "--token",
+                "wa_at_test",
+                "--output",
+                "json",
+                "organize",
+                "plan",
+                "--library",
+                "library-one",
+            ]
+        )
+    finally:
+        ApiClient.__init__ = original
+        ApiClient.close = original_close
+
+    body = json.loads(capsys.readouterr().out)
+    assert code == EXIT_CONFLICT
+    assert body["error"]["code"] == "library_scan_required"

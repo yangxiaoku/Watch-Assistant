@@ -17,15 +17,35 @@ from watch_assistant.adapters.p115_playback_contract import (
     make_playback_request,
 )
 from watch_assistant.schemas import (
+    StrmCleanupPlanApplyRequest,
+    StrmCleanupPlanApplyResponse,
+    StrmCleanupPlanRequest,
+    StrmCleanupPlanResponse,
     StrmGenerationRequest,
     StrmGenerationResponse,
     StrmManifestItemResponse,
     StrmManifestListResponse,
+    StrmVerifyRequest,
+    StrmVerifyResponse,
+    WorkflowStageName,
+    WorkflowStageStatus,
 )
 from watch_assistant.security import AuthContext, require_api_auth, require_scope
+from watch_assistant.services.strm_cleanup_plan import (
+    StrmCleanupPlanError,
+    StrmCleanupPlanService,
+)
 from watch_assistant.services.strm_manifest import (
     StrmManifestError,
     StrmManifestService,
+)
+from watch_assistant.services.strm_verification import (
+    StrmVerificationError,
+    StrmVerificationService,
+)
+from watch_assistant.services.workflows import (
+    WorkflowNotFound,
+    sync_child_stage_in_transaction,
 )
 
 router = APIRouter(prefix="/api/v1", dependencies=[Depends(require_api_auth)])
@@ -91,6 +111,33 @@ def _service(request: Request) -> StrmManifestService:
 ServiceDependency = Annotated[StrmManifestService, Depends(_service)]
 
 
+async def _sync_workflow_stage(
+    request: Request,
+    workflow_id: str | None,
+    *,
+    scan_run_id: str,
+    status: WorkflowStageStatus,
+    reason: str,
+    error_code: str | None = None,
+) -> None:
+    if workflow_id is None:
+        return
+    try:
+        await sync_child_stage_in_transaction(
+            request.app.state.database.session_factory,
+            workflow_id,
+            WorkflowStageName.STRM,
+            child_type="strm_operation",
+            child_id=f"strm_{scan_run_id}",
+            status=status,
+            reason=reason,
+            error_code=error_code,
+            event_logger=getattr(request.app.state, "settings_service", None),
+        )
+    except WorkflowNotFound:
+        raise HTTPException(status_code=404, detail="workflow_not_found") from None
+
+
 @router.get(
     "/libraries/{library_id}/strm-manifest",
     response_model=StrmManifestListResponse,
@@ -142,6 +189,13 @@ async def generate_manifest(
     service: ServiceDependency,
     request: Request,
 ) -> StrmGenerationResponse:
+    await _sync_workflow_stage(
+        request,
+        payload.workflow_id,
+        scan_run_id=payload.source_scan_run_id,
+        status=WorkflowStageStatus.RUNNING,
+        reason="strm_started",
+    )
     try:
         summary = await service.generate(
             library_id,
@@ -156,7 +210,27 @@ async def generate_manifest(
             ),
         )
     except StrmManifestError as error:
+        await _sync_workflow_stage(
+            request,
+            payload.workflow_id,
+            scan_run_id=payload.source_scan_run_id,
+            status=WorkflowStageStatus.FAILED,
+            reason="strm_failed",
+            error_code=str(error),
+        )
         raise HTTPException(status_code=409, detail=str(error)) from None
+    await _sync_workflow_stage(
+        request,
+        payload.workflow_id,
+        scan_run_id=summary.scan_run_id,
+        status=(
+            WorkflowStageStatus.FAILED
+            if summary.failed
+            else WorkflowStageStatus.SUCCEEDED
+        ),
+        reason="strm_finished",
+        error_code="strm_generation_failed" if summary.failed else None,
+    )
     return StrmGenerationResponse(
         library_id=summary.library_id,
         scan_run_id=summary.scan_run_id,
@@ -182,6 +256,13 @@ async def incremental_manifest(
     service: ServiceDependency,
     request: Request,
 ) -> StrmGenerationResponse:
+    await _sync_workflow_stage(
+        request,
+        payload.workflow_id,
+        scan_run_id=payload.source_scan_run_id,
+        status=WorkflowStageStatus.RUNNING,
+        reason="strm_started",
+    )
     try:
         summary = await service.incremental(
             library_id,
@@ -197,7 +278,27 @@ async def incremental_manifest(
             retire_removed=False,
         )
     except StrmManifestError as error:
+        await _sync_workflow_stage(
+            request,
+            payload.workflow_id,
+            scan_run_id=payload.source_scan_run_id,
+            status=WorkflowStageStatus.FAILED,
+            reason="strm_failed",
+            error_code=str(error),
+        )
         raise HTTPException(status_code=409, detail=str(error)) from None
+    await _sync_workflow_stage(
+        request,
+        payload.workflow_id,
+        scan_run_id=summary.scan_run_id,
+        status=(
+            WorkflowStageStatus.FAILED
+            if summary.failed
+            else WorkflowStageStatus.SUCCEEDED
+        ),
+        reason="strm_finished",
+        error_code="strm_incremental_failed" if summary.failed else None,
+    )
     return StrmGenerationResponse(
         library_id=summary.library_id,
         scan_run_id=summary.scan_run_id,
@@ -207,6 +308,164 @@ async def incremental_manifest(
         failed=summary.failed,
         retired=summary.retired,
     )
+
+
+@router.post(
+    "/libraries/{library_id}/strm-cleanup-plan",
+    response_model=StrmCleanupPlanResponse,
+    dependencies=[Depends(require_strm_enabled)],
+)
+async def create_cleanup_plan(
+    library_id: str,
+    payload: StrmCleanupPlanRequest,
+    request: Request,
+    context: AuthDependency,
+) -> StrmCleanupPlanResponse:
+    service = StrmCleanupPlanService(request.app.state.database.session_factory)
+    try:
+        plan = await service.create_plan(
+            library_id=library_id,
+            source_scan_run_id=payload.source_scan_run_id,
+            output_root=getattr(request.app.state, "strm_output_root", "./data/strm"),
+            playback_url_prefix=getattr(
+                request.app.state,
+                "strm_playback_url_prefix",
+                "http://127.0.0.1:8115/api/v1/strm/play",
+            ),
+        )
+    except StrmCleanupPlanError as error:
+        raise HTTPException(status_code=409, detail=error.code) from None
+    settings_service = getattr(request.app.state, "settings_service", None)
+    if settings_service is not None:
+        await settings_service.log_event(
+            "strm.cleanup.plan.created",
+            fields={"status": plan.status},
+            counts={"count": plan.candidate_count},
+            actor_type="agent" if context.via_bearer else "web",
+            actor_id=context.identity,
+            resource_type="strm_cleanup_plan",
+            resource_id=plan.plan_id,
+        )
+    return StrmCleanupPlanResponse.model_validate(plan.to_public_dict())
+
+
+@router.post(
+    "/strm-cleanup-plans/{plan_id}/apply",
+    response_model=StrmCleanupPlanApplyResponse,
+    dependencies=[
+        Depends(require_strm_cleanup_enabled),
+        Depends(require_scope("strm:write")),
+    ],
+)
+async def apply_cleanup_plan(
+    plan_id: str,
+    payload: StrmCleanupPlanApplyRequest,
+    request: Request,
+    context: AuthDependency,
+) -> StrmCleanupPlanApplyResponse:
+    if not payload.confirm:
+        raise HTTPException(status_code=409, detail="confirmation_required")
+    service = StrmCleanupPlanService(request.app.state.database.session_factory)
+    try:
+        result = await service.apply_plan(
+            plan_id=plan_id,
+            expected_revision=payload.expected_revision,
+            digest=payload.digest,
+            confirm=payload.confirm,
+            idempotency_key=payload.idempotency_key,
+            output_root=getattr(request.app.state, "strm_output_root", "./data/strm"),
+            playback_url_prefix=getattr(
+                request.app.state,
+                "strm_playback_url_prefix",
+                "http://127.0.0.1:8115/api/v1/strm/play",
+            ),
+        )
+    except StrmCleanupPlanError as error:
+        statuses = {
+            "plan_not_found": 404,
+            "cleanup_plan_expired": 409,
+            "cleanup_plan_blocked": 409,
+            "cleanup_plan_changed": 409,
+            "cleanup_plan_not_reviewable": 409,
+            "plan_revision_changed": 409,
+            "plan_digest_mismatch": 409,
+        }
+        raise HTTPException(
+            status_code=statuses.get(error.code, 409), detail=error.code
+        ) from None
+    settings_service = getattr(request.app.state, "settings_service", None)
+    if settings_service is not None:
+        await settings_service.log_event(
+            "strm.cleanup.applied",
+            fields={"status": result.plan.status},
+            counts={"count": result.retired},
+            actor_type="agent" if context.via_bearer else "web",
+            actor_id=context.identity,
+            resource_type="strm_cleanup_plan",
+            resource_id=result.plan.plan_id,
+        )
+    return StrmCleanupPlanApplyResponse(
+        plan=StrmCleanupPlanResponse.model_validate(result.plan.to_public_dict()),
+        retired=result.retired,
+    )
+
+
+@router.get(
+    "/strm-cleanup-plans/{plan_id}",
+    response_model=StrmCleanupPlanResponse,
+    dependencies=[Depends(require_strm_enabled)],
+)
+async def get_cleanup_plan(plan_id: str, request: Request) -> StrmCleanupPlanResponse:
+    service = StrmCleanupPlanService(request.app.state.database.session_factory)
+    try:
+        plan = await service.get_plan(plan_id)
+    except StrmCleanupPlanError as error:
+        status = 404 if error.code == "plan_not_found" else 409
+        raise HTTPException(status_code=status, detail=error.code) from None
+    return StrmCleanupPlanResponse.model_validate(plan.to_public_dict())
+
+
+@router.post(
+    "/libraries/{library_id}/strm-verify",
+    response_model=StrmVerifyResponse,
+    dependencies=[
+        Depends(require_strm_enabled),
+        Depends(require_scope("strm:read")),
+    ],
+)
+async def verify_manifest(
+    library_id: str,
+    payload: StrmVerifyRequest,
+    request: Request,
+    context: AuthDependency,
+) -> StrmVerifyResponse:
+    try:
+        result = await StrmVerificationService(
+            request.app.state.database.session_factory
+        ).verify(
+            library_id=library_id,
+            source_scan_run_id=payload.source_scan_run_id,
+            output_root=getattr(request.app.state, "strm_output_root", "./data/strm"),
+            playback_url_prefix=getattr(
+                request.app.state,
+                "strm_playback_url_prefix",
+                "http://127.0.0.1:8115/api/v1/strm/play",
+            ),
+        )
+    except StrmVerificationError as error:
+        raise HTTPException(status_code=409, detail=error.code) from None
+    settings_service = getattr(request.app.state, "settings_service", None)
+    if settings_service is not None:
+        await settings_service.log_event(
+            "strm.verify.completed",
+            fields={"status": result.status},
+            counts={"count": result.checked_count},
+            actor_type="agent" if context.via_bearer else "web",
+            actor_id=context.identity,
+            resource_type="library",
+            resource_id=library_id,
+        )
+    return StrmVerifyResponse.model_validate(result.to_public_dict())
 
 
 @router.post(
@@ -223,6 +482,13 @@ async def cleanup_manifest(
     service: ServiceDependency,
     request: Request,
 ) -> StrmGenerationResponse:
+    await _sync_workflow_stage(
+        request,
+        payload.workflow_id,
+        scan_run_id=payload.source_scan_run_id,
+        status=WorkflowStageStatus.RUNNING,
+        reason="strm_started",
+    )
     try:
         summary = await service.cleanup(
             library_id,
@@ -237,7 +503,27 @@ async def cleanup_manifest(
             ),
         )
     except StrmManifestError as error:
+        await _sync_workflow_stage(
+            request,
+            payload.workflow_id,
+            scan_run_id=payload.source_scan_run_id,
+            status=WorkflowStageStatus.FAILED,
+            reason="strm_failed",
+            error_code=str(error),
+        )
         raise HTTPException(status_code=409, detail=str(error)) from None
+    await _sync_workflow_stage(
+        request,
+        payload.workflow_id,
+        scan_run_id=summary.scan_run_id,
+        status=(
+            WorkflowStageStatus.FAILED
+            if summary.failed
+            else WorkflowStageStatus.SUCCEEDED
+        ),
+        reason="strm_finished",
+        error_code="strm_cleanup_failed" if summary.failed else None,
+    )
     return StrmGenerationResponse(
         library_id=summary.library_id,
         scan_run_id=summary.scan_run_id,

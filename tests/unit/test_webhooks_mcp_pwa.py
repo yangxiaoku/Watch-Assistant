@@ -3,7 +3,8 @@ from cryptography.fernet import Fernet
 
 from watch_assistant.crypto import SecretCrypto
 from watch_assistant.db import create_database, initialize_database
-from watch_assistant.schemas import WebhookEndpointCreateRequest
+from watch_assistant.models import WebhookDelivery
+from watch_assistant.schemas import WebhookEndpointCreateRequest, WebhookEndpointPatch
 from watch_assistant.security import AuthContext
 from watch_assistant.services.mcp import McpService
 from watch_assistant.services.pwa_devices import PwaDeviceService
@@ -36,6 +37,39 @@ async def test_webhook_stores_secret_only_encrypted_and_enqueues_stable_event(mo
     deliveries = await service.deliveries()
     assert len(deliveries.items) == 1
     assert deliveries.items[0].event_id.startswith("event_")
+    await service.aclose()
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_webhook_test_delivery_is_scoped_and_contains_no_secret(monkeypatch):
+    monkeypatch.setattr(
+        "socket.getaddrinfo",
+        lambda *_args, **_kwargs: [(2, 1, 6, "", ("93.184.216.34", 443))],
+    )
+    database = await _database()
+    service = WebhookService(
+        database.session_factory,
+        SecretCrypto(Fernet.generate_key().decode("ascii")),
+    )
+    created = await service.create(
+        WebhookEndpointCreateRequest(name="测试端点", url="https://example.com/hook")
+    )
+    delivery = await service.enqueue_test(created.item.id)
+    assert delivery.event_code == "webhook.test"
+    assert delivery.status == "pending"
+    deliveries = await service.deliveries(endpoint_id=created.item.id)
+    assert len(deliveries.items) == 1
+    async with database.session_factory() as session:
+        stored = await session.get(WebhookDelivery, delivery.id)
+        assert stored is not None
+        assert "whsec_" not in stored.payload_json
+    await service.patch(
+        created.item.id,
+        WebhookEndpointPatch(revision=1, enabled=False),
+    )
+    with pytest.raises(WebhookError, match="webhook_endpoint_disabled"):
+        await service.enqueue_test(created.item.id)
     await service.aclose()
     await database.engine.dispose()
 
