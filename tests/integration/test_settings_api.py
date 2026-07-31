@@ -292,7 +292,11 @@ async def test_inspection_setting_persists_and_is_authenticated(tmp_path):
 
 @pytest.mark.integration
 async def test_strm_routes_enforce_independent_flags_and_reach_service(tmp_path):
-    app, client, database, tmdb, pansou = await _app(tmp_path)
+    output_root = tmp_path / "strm"
+    output_root.mkdir()
+    app, client, database, tmdb, pansou = await _app(
+        tmp_path, strm_output_root=output_root
+    )
     payload = {"source_scan_run_id": "missing-scan"}
     try:
         login = await client.post(
@@ -316,6 +320,14 @@ async def test_strm_routes_enforce_independent_flags_and_reach_service(tmp_path)
             response = await client.post(path, json=payload, headers=headers)
             assert response.status_code == 409
             assert response.json()["detail"] == "source_snapshot_not_ready"
+
+        cleanup_plan = await client.post(
+            "/api/v1/libraries/library/strm-cleanup-plan",
+            json=payload,
+            headers=headers,
+        )
+        assert cleanup_plan.status_code == 409
+        assert cleanup_plan.json()["detail"] == "source_snapshot_not_ready"
 
         workflow_response = await client.post(
             "/api/v1/workflows", json={"media_type": "movie"}, headers=headers

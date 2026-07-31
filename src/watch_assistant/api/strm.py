@@ -17,6 +17,8 @@ from watch_assistant.adapters.p115_playback_contract import (
     make_playback_request,
 )
 from watch_assistant.schemas import (
+    StrmCleanupPlanRequest,
+    StrmCleanupPlanResponse,
     StrmGenerationRequest,
     StrmGenerationResponse,
     StrmManifestItemResponse,
@@ -25,6 +27,10 @@ from watch_assistant.schemas import (
     WorkflowStageStatus,
 )
 from watch_assistant.security import AuthContext, require_api_auth, require_scope
+from watch_assistant.services.strm_cleanup_plan import (
+    StrmCleanupPlanError,
+    StrmCleanupPlanService,
+)
 from watch_assistant.services.strm_manifest import (
     StrmManifestError,
     StrmManifestService,
@@ -294,6 +300,48 @@ async def incremental_manifest(
         failed=summary.failed,
         retired=summary.retired,
     )
+
+
+@router.post(
+    "/libraries/{library_id}/strm-cleanup-plan",
+    response_model=StrmCleanupPlanResponse,
+    dependencies=[Depends(require_strm_enabled)],
+)
+async def create_cleanup_plan(
+    library_id: str,
+    payload: StrmCleanupPlanRequest,
+    request: Request,
+) -> StrmCleanupPlanResponse:
+    service = StrmCleanupPlanService(request.app.state.database.session_factory)
+    try:
+        plan = await service.create_plan(
+            library_id=library_id,
+            source_scan_run_id=payload.source_scan_run_id,
+            output_root=getattr(request.app.state, "strm_output_root", "./data/strm"),
+            playback_url_prefix=getattr(
+                request.app.state,
+                "strm_playback_url_prefix",
+                "http://127.0.0.1:8115/api/v1/strm/play",
+            ),
+        )
+    except StrmCleanupPlanError as error:
+        raise HTTPException(status_code=409, detail=error.code) from None
+    return StrmCleanupPlanResponse.model_validate(plan.to_public_dict())
+
+
+@router.get(
+    "/strm-cleanup-plans/{plan_id}",
+    response_model=StrmCleanupPlanResponse,
+    dependencies=[Depends(require_strm_enabled)],
+)
+async def get_cleanup_plan(plan_id: str, request: Request) -> StrmCleanupPlanResponse:
+    service = StrmCleanupPlanService(request.app.state.database.session_factory)
+    try:
+        plan = await service.get_plan(plan_id)
+    except StrmCleanupPlanError as error:
+        status = 404 if error.code == "plan_not_found" else 409
+        raise HTTPException(status_code=status, detail=error.code) from None
+    return StrmCleanupPlanResponse.model_validate(plan.to_public_dict())
 
 
 @router.post(

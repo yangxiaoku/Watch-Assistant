@@ -535,6 +535,30 @@ def _command(args: argparse.Namespace, path: Path) -> tuple[Any, int]:
                     )
                 }
             return envelope(data=data, request_id=_request_id(body)), EXIT_OK
+        if args.command == "strm" and args.strm_command == "cleanup-plan":
+            library = client.get(f"/api/v1/libraries/{args.library_id}")
+            library_data = _data_for("/api/v1/libraries", library)
+            latest_scan = library_data.get("latest_scan") if isinstance(library_data, dict) else None
+            scan_run_id = latest_scan.get("run_id") if isinstance(latest_scan, dict) else None
+            if (
+                not isinstance(scan_run_id, str)
+                or latest_scan.get("state") != "completed"
+                or latest_scan.get("complete") is not True
+            ):
+                raise CliFailure(
+                    "媒体库没有可用的完整扫描",
+                    code=EXIT_CONFLICT,
+                    error_code="library_scan_required",
+                    suggestion_zh="请先完成完整扫描后再生成 STRM 清理计划。",
+                )
+            body = client.post(
+                f"/api/v1/libraries/{args.library_id}/strm-cleanup-plan",
+                payload={"source_scan_run_id": scan_run_id},
+            )
+            return envelope(
+                data=_data_for("/api/v1/libraries", body),
+                request_id=_request_id(body),
+            ), EXIT_OK
         if args.command == "strm" and args.strm_command in {"generate", "sync"}:
             library = client.get(f"/api/v1/libraries/{args.library_id}")
             library_data = _data_for("/api/v1/libraries", library)
@@ -702,6 +726,8 @@ def _build_parser() -> argparse.ArgumentParser:
     sync = strm_sub.add_parser("sync", help="请求受保护的 STRM 增量同步")
     sync.add_argument("--library", dest="library_id", required=True)
     sync.add_argument("--workflow-id")
+    cleanup_plan = strm_sub.add_parser("cleanup-plan", help="生成只读 STRM 清理计划")
+    cleanup_plan.add_argument("--library", dest="library_id", required=True)
     return parser
 
 

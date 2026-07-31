@@ -297,6 +297,28 @@ class StrmGenerationResponse(BaseModel):
     retired: int = Field(default=0, ge=0)
 
 
+class StrmCleanupPlanRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    source_scan_run_id: str = Field(min_length=1, max_length=128)
+
+
+class StrmCleanupPlanResponse(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    plan_id: str
+    library_id: str
+    source_scan_run_id: str
+    source_snapshot_revision: int = Field(ge=0)
+    plan_hash: str = Field(min_length=64, max_length=64)
+    status: Literal["needs_review", "invalidated", "applied"]
+    revision: int = Field(ge=1)
+    expires_at: datetime
+    candidate_count: int = Field(ge=0)
+    executable_count: int = Field(ge=0)
+    blocked_count: int = Field(ge=0)
+
+
 class LibraryDeleteRequest(BaseModel):
     model_config = {"extra": "forbid"}
 

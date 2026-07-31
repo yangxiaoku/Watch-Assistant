@@ -576,6 +576,40 @@ def _add_notification_quiet_hours(connection: Connection) -> None:
             )
 
 
+def _create_strm_cleanup_plan_table(connection: Connection) -> None:
+    """Persist non-destructive STRM cleanup previews for later review."""
+
+    connection.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS strm_cleanup_plans (
+                id VARCHAR(64) PRIMARY KEY,
+                library_id VARCHAR(128) NOT NULL
+                    REFERENCES media_libraries(id),
+                source_scan_run_id VARCHAR(64) NOT NULL
+                    REFERENCES library_scan_runs(id),
+                source_snapshot_revision INTEGER NOT NULL,
+                candidates_json TEXT NOT NULL,
+                status VARCHAR(16) NOT NULL DEFAULT 'needs_review',
+                revision INTEGER NOT NULL DEFAULT 1,
+                expires_at DATETIME NOT NULL,
+                plan_hash VARCHAR(64) NOT NULL UNIQUE,
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL
+            )
+            """
+        )
+    )
+    connection.execute(
+        text(
+            """
+            CREATE INDEX IF NOT EXISTS ix_strm_cleanup_plans_library_id
+                ON strm_cleanup_plans (library_id)
+            """
+        )
+    )
+
+
 def _create_season_metadata_cache_table(connection: Connection) -> None:
     from watch_assistant.models import SeasonMetadataCache
 
@@ -813,6 +847,7 @@ MIGRATIONS: tuple[Migration, ...] = (
         _add_organization_operation_workflow,
     ),
     Migration("049_notification_quiet_hours", _add_notification_quiet_hours),
+    Migration("050_strm_cleanup_plans", _create_strm_cleanup_plan_table),
 )
 
 

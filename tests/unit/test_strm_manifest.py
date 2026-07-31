@@ -10,6 +10,7 @@ from watch_assistant.library_models import (
     MediaLibrary,
     StrmManifestEntry,
 )
+from watch_assistant.services.strm_cleanup_plan import StrmCleanupPlanService
 from watch_assistant.services.strm_manifest import StrmManifestService
 
 
@@ -138,6 +139,67 @@ async def test_generation_rejects_local_path_collision(tmp_path: Path):
         items, total = await service.list_current("library-strm")
         assert total == 1
         assert items[0].cloud_file_id == "100"
+    finally:
+        await database.engine.dispose()
+
+
+async def test_cleanup_plan_is_persistent_read_only_and_idempotent(tmp_path: Path):
+    database = await _database(tmp_path)
+    try:
+        manifest_service = StrmManifestService(database.session_factory)
+        await manifest_service.generate(
+            "library-strm",
+            source_scan_run_id="scan-strm",
+            output_root=tmp_path / "output",
+            playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+        )
+        await _add_removed_episode_scan(database)
+        service = StrmCleanupPlanService(database.session_factory)
+        first = await service.create_plan(
+            library_id="library-strm",
+            source_scan_run_id="scan-strm-2",
+            output_root=tmp_path / "output",
+            playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+        )
+        second = await service.create_plan(
+            library_id="library-strm",
+            source_scan_run_id="scan-strm-2",
+            output_root=tmp_path / "output",
+            playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+        )
+
+        assert first.plan_id == second.plan_id
+        assert first.candidate_count == 1
+        assert first.executable_count == 1
+        assert first.blocked_count == 0
+        assert (tmp_path / "output/Show/Episode.strm").exists()
+    finally:
+        await database.engine.dispose()
+
+
+async def test_cleanup_plan_marks_user_modified_strm_blocked(tmp_path: Path):
+    database = await _database(tmp_path)
+    try:
+        manifest_service = StrmManifestService(database.session_factory)
+        await manifest_service.generate(
+            "library-strm",
+            source_scan_run_id="scan-strm",
+            output_root=tmp_path / "output",
+            playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+        )
+        (tmp_path / "output/Show/Episode.strm").write_text("user content\n")
+        await _add_removed_episode_scan(database)
+        plan = await StrmCleanupPlanService(database.session_factory).create_plan(
+            library_id="library-strm",
+            source_scan_run_id="scan-strm-2",
+            output_root=tmp_path / "output",
+            playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+        )
+
+        assert plan.candidate_count == 1
+        assert plan.executable_count == 0
+        assert plan.blocked_count == 1
+        assert (tmp_path / "output/Show/Episode.strm").read_text() == "user content\n"
     finally:
         await database.engine.dispose()
 

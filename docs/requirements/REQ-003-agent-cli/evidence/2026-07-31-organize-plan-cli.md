@@ -31,3 +31,10 @@ git diff --check
 只读取最新完整扫描 ID，再调用对应正式 API；CLI 不直接写本地文件、不读取 Cookie，
 也不绕过服务端的 `strm:write` Scope 或 feature flag。清理计划、校验和 `path-id`
 范围同步仍保持未开放，避免把不存在的服务端契约描述为已实现。
+
+## 清理计划补充
+
+`watchctl strm cleanup-plan --library <id>` 调用正式清理计划 API。计划以完整扫描的
+受管 manifest 和本地 STRM 文件状态为依据，持久化候选、摘要、哈希、版本和有效期；
+生成计划不会删除文件、退休 manifest 或调用 115 写接口。用户修改过、不可读或不安全
+的本地 STRM 会被标记为阻断候选，不能被后续执行阶段直接处理。
