@@ -93,7 +93,7 @@ describe("NotificationCenterView", () => {
     const wrapper = mount(NotificationCenterView, { props: { api } });
     await flushPromises();
 
-    await wrapper.getAll(".notification-preference input")[1].setValue(false);
+    await wrapper.findAll(".notification-preference input")[1].setValue(false);
     await flushPromises();
 
     expect(api.updateNotificationPreferences).toHaveBeenCalledWith({
