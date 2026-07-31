@@ -221,6 +221,28 @@ async def test_create_rejects_needs_review_without_creating_operation(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_running_operation_cancel_is_durable_and_idempotent(tmp_path):
+    database = await _database(tmp_path)
+    service = OrganizationOperationService(database.session_factory)
+    operation = await _operation(database, key="running-cancel")
+    lease = await service.claim(operation.operation_id, expected_revision=1)
+
+    requested = await service.cancel(
+        operation.operation_id, expected_revision=lease.revision
+    )
+    assert requested.status is OrganizationOperationStatus.ORGANIZING
+    assert requested.cancel_requested is True
+    assert await service.cancel_requested(operation.operation_id) is True
+
+    repeated = await service.cancel(
+        operation.operation_id, expected_revision=lease.revision
+    )
+    assert repeated.cancel_requested is True
+    assert repeated.revision == lease.revision
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_claim_rejects_non_planned_plan_without_lease(tmp_path):
     database = await _database(tmp_path)
     plan = await _plan(database)

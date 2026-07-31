@@ -168,6 +168,7 @@ def _response(summary: OrganizationOperationSummary) -> OrganizationOperationRes
         revision=summary.revision,
         attempts=summary.attempts,
         error_code=summary.error_code,
+        cancel_requested=summary.cancel_requested,
     )
 
 

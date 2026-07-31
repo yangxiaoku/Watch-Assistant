@@ -347,6 +347,24 @@ async def test_organization_operation_migration_preserves_existing_data(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_running_operation_cancel_column_migrates_legacy_table(tmp_path):
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'legacy.db'}")
+    async with database.engine.begin() as connection:
+        await connection.exec_driver_sql(
+            "CREATE TABLE organization_operations (id VARCHAR(40) PRIMARY KEY)"
+        )
+        await connection.run_sync(run_migrations, MIGRATIONS[-1:])
+        columns = await connection.run_sync(
+            lambda sync: {
+                item["name"]
+                for item in inspect(sync).get_columns("organization_operations")
+            }
+        )
+    assert "cancel_requested" in columns
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_legacy_workflow_schema_is_upgraded_without_losing_rows(tmp_path):
     database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'watch.db'}")
     async with database.engine.begin() as connection:

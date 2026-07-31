@@ -180,6 +180,12 @@ EVENT_CATALOG: dict[str, EventDefinition] = {
     "organize.operation.cancelled": _event(
         "organize.operation.cancelled", LogCategory.ORGANIZE, "整理操作已取消", "整理操作已取消，结果：{status}"
     ),
+    "organize.operation.cancel_requested": _event(
+        "organize.operation.cancel_requested",
+        LogCategory.ORGANIZE,
+        "已请求中止整理操作",
+        "已请求中止正在运行的整理操作，结果：{status}",
+    ),
     "organize.operation.retried": _event(
         "organize.operation.retried", LogCategory.ORGANIZE, "整理操作已重试", "整理操作已重新排队，结果：{status}"
     ),

@@ -722,6 +722,9 @@ class OrganizationOperation(Base):
         server_default=OrganizationOperationStatus.PLANNED.value,
         index=True,
     )
+    cancel_requested: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="0", nullable=False
+    )
     revision: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
     attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     lease_token: Mapped[str | None] = mapped_column(String(64), nullable=True)

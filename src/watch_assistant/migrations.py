@@ -610,6 +610,24 @@ def _create_strm_cleanup_plan_table(connection: Connection) -> None:
     )
 
 
+def _add_organization_cancel_requested(connection: Connection) -> None:
+    """Add a durable, local cancellation request for running operations."""
+
+    if not inspect(connection).has_table("organization_operations"):
+        return
+    columns = {
+        item["name"]
+        for item in inspect(connection).get_columns("organization_operations")
+    }
+    if "cancel_requested" not in columns:
+        connection.execute(
+            text(
+                "ALTER TABLE organization_operations "
+                "ADD COLUMN cancel_requested BOOLEAN NOT NULL DEFAULT 0"
+            )
+        )
+
+
 def _create_season_metadata_cache_table(connection: Connection) -> None:
     from watch_assistant.models import SeasonMetadataCache
 
@@ -848,6 +866,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     ),
     Migration("049_notification_quiet_hours", _add_notification_quiet_hours),
     Migration("050_strm_cleanup_plans", _create_strm_cleanup_plan_table),
+    Migration("051_organization_cancel_requested", _add_organization_cancel_requested),
 )
 
 

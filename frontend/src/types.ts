@@ -307,6 +307,7 @@ export interface OrganizationOperationResponse {
   revision: number;
   attempts: number;
   error_code: string | null;
+  cancel_requested: boolean;
 }
 
 export interface LoggingSettingsResponse {

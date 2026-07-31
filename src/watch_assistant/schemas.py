@@ -661,6 +661,7 @@ class OrganizationOperationResponse(BaseModel):
     revision: int = Field(ge=1)
     attempts: int = Field(ge=0)
     error_code: str | None = None
+    cancel_requested: bool = False
 
 
 class OrganizationOperationBatchResult(BaseModel):

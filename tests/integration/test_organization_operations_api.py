@@ -214,6 +214,7 @@ async def test_queue_is_idempotent_and_rejects_unconfirmed_stale_or_expired_plan
         "revision",
         "attempts",
         "error_code",
+        "cancel_requested",
     }
     repeated = await client.post(
         "/api/v1/organization-plans/plan-ready/operation",
@@ -403,7 +404,7 @@ async def test_batch_isolates_item_failures_and_cancel_is_local(tmp_path: Path):
 
 
 @pytest.mark.integration
-async def test_cancel_rejects_organizing_and_uncertain_without_remote_calls(
+async def test_cancel_requests_organizing_and_rejects_uncertain_without_remote_calls(
     tmp_path: Path,
 ):
     client, database = await _client(tmp_path, execution_enabled=True)
@@ -425,8 +426,17 @@ async def test_cancel_rejects_organizing_and_uncertain_without_remote_calls(
         json={"expected_revision": 2},
         headers=headers,
     )
-    assert organizing.status_code == 409
-    assert organizing.json()["detail"]["code"] == "operation_is_not_cancellable"
+    assert organizing.status_code == 200
+    assert organizing.json()["status"] == "organizing"
+    assert organizing.json()["cancel_requested"] is True
+
+    repeated = await client.post(
+        f"/api/v1/organization-operations/{operation_id}/cancel",
+        json={"expected_revision": 2},
+        headers=headers,
+    )
+    assert repeated.status_code == 200
+    assert repeated.json()["cancel_requested"] is True
 
     async with database.session_factory() as session:
         operation = await session.get(OrganizationOperation, operation_id)

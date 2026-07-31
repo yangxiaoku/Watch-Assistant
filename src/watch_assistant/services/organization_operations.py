@@ -75,6 +75,7 @@ class OrganizationOperationSummary:
     attempts: int
     error_code: str | None
     workflow_id: str | None
+    cancel_requested: bool
 
     def __repr__(self) -> str:
         return (
@@ -211,6 +212,15 @@ class OrganizationOperationService:
             if operation is None:
                 raise OrganizationOperationNotFound
             return _summary(operation)
+
+    async def cancel_requested(self, operation_id: str) -> bool:
+        async with self._session_factory() as session:
+            value = await session.scalar(
+                select(OrganizationOperation.cancel_requested).where(
+                    OrganizationOperation.id == operation_id
+                )
+            )
+        return value is True
 
     async def claim_next(
         self,
@@ -412,6 +422,7 @@ class OrganizationOperationService:
             OrganizationOperationStatus.ORGANIZED,
             OrganizationOperationStatus.FAILED,
             OrganizationOperationStatus.UNCERTAIN,
+            OrganizationOperationStatus.CANCELLED,
         }:
             raise OrganizationOperationStateError("invalid_terminal_status")
         if status is OrganizationOperationStatus.ORGANIZED:
@@ -604,26 +615,28 @@ class OrganizationOperationService:
         _validate_identifier(operation_id, "invalid_operation_id", maximum=40)
         current_time = datetime.now(UTC)
         async with self._session_factory() as session:
-            result = await session.execute(
-                update(OrganizationOperation)
-                .where(
-                    OrganizationOperation.id == operation_id,
-                    OrganizationOperation.revision == expected_revision,
-                    OrganizationOperation.status == OrganizationOperationStatus.PLANNED,
-                )
-                .values(
-                    status=OrganizationOperationStatus.CANCELLED,
-                    revision=expected_revision + 1,
-                    finished_at=current_time,
-                    updated_at=current_time,
-                )
-                .execution_options(synchronize_session=False)
-            )
-            if result.rowcount != 1:
-                raise OrganizationOperationStateError("operation_is_not_cancellable")
             operation = await session.get(OrganizationOperation, operation_id)
             if operation is None:
                 raise OrganizationOperationNotFound
+            if operation.revision != expected_revision:
+                raise OrganizationOperationConflict("operation_revision_changed")
+            if operation.status is OrganizationOperationStatus.ORGANIZING:
+                if operation.cancel_requested:
+                    return _summary(operation)
+                operation.cancel_requested = True
+                operation.updated_at = current_time
+                await session.commit()
+                summary = _summary(operation)
+                await self._audit(
+                    "organize.operation.cancel_requested", "整理操作已请求本地中止"
+                )
+                return summary
+            if operation.status is not OrganizationOperationStatus.PLANNED:
+                raise OrganizationOperationStateError("operation_is_not_cancellable")
+            operation.status = OrganizationOperationStatus.CANCELLED
+            operation.revision = expected_revision + 1
+            operation.finished_at = current_time
+            operation.updated_at = current_time
             await _sync_workflow_stage(
                 session,
                 operation.workflow_id,
@@ -660,6 +673,7 @@ class OrganizationOperationService:
                 .values(
                     status=OrganizationOperationStatus.PLANNED,
                     revision=expected_revision + 1,
+                    cancel_requested=False,
                     error_code=None,
                     finished_at=None,
                     updated_at=current_time,
@@ -742,6 +756,7 @@ def _summary(operation: OrganizationOperation) -> OrganizationOperationSummary:
         attempts=operation.attempts,
         error_code=operation.error_code,
         workflow_id=operation.workflow_id,
+        cancel_requested=operation.cancel_requested,
     )
 
 
@@ -772,6 +787,7 @@ def _workflow_stage_status(status: OrganizationOperationStatus) -> WorkflowStage
     return {
         OrganizationOperationStatus.FAILED: WorkflowStageStatus.FAILED,
         OrganizationOperationStatus.UNCERTAIN: WorkflowStageStatus.UNCERTAIN,
+        OrganizationOperationStatus.CANCELLED: WorkflowStageStatus.CANCELLED,
     }[status]
 
 
