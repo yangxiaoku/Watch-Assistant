@@ -233,6 +233,16 @@ describe("ApiClient season and inspection requests", () => {
     expect(JSON.parse(fetchMock.mock.calls[3][1].body as string).idempotency_key).toMatch(/^(wa-|[0-9a-f-]{36}$)/);
   });
 
+  it("reads the server-configured P115 root for library setup", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ parent_id: "123", items: [], has_more: false, next_page: null }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const api = new ApiClient();
+
+    await api.p115Directories();
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/v1/settings/p115/directories?page=1");
+  });
+
   it("sends workflow filters and guarded approval/cancel actions", async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({ items: [], page: 1, page_size: 20, total: 0 }), { status: 200 }))
