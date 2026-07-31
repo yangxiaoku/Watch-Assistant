@@ -5,6 +5,7 @@ export type UiErrorAction =
   | "view_task"
   | "refresh_snapshot"
   | "inspect_configuration"
+  | "open_library"
   | null;
 
 export interface UiErrorDescriptor {
@@ -59,6 +60,12 @@ const ACTION_BY_CODE: Record<string, UiErrorAction> = {
   library_scope_unavailable: "inspect_configuration",
   library_scope_verification_failed: "retry",
   target_catalog_unavailable: "retry",
+  inventory_scope_unconfigured: "open_library",
+  inventory_index_incomplete: "open_library",
+  inventory_index_stale: "open_library",
+  inventory_index_unknown: "open_library",
+  inventory_exact_duplicate: "open_library",
+  inventory_review_required: "open_library",
   lease_claim_lost: "view_task",
   lease_is_not_owned: "view_task",
   operation_is_not_retryable: "view_task",
@@ -185,6 +192,12 @@ const CATALOG: Record<string, Omit<UiErrorDescriptor, "code">> = {
   workflow_not_cancellable: { title: "工作流当前不可取消", message: "本次取消未执行，运行中或远端结果不会被伪造撤回。", suggestion: "请先查看工作流阶段和远端任务状态。", retryable: false, action: "view_task" },
   library_inventory_incomplete: { title: "库存索引不完整", message: "本次库存身份确认未保存。", suggestion: "请先完成一次完整库存扫描。", retryable: false, action: "refresh_snapshot" },
   library_identity_conflict: { title: "库存身份已变化", message: "本次库存身份确认未保存。", suggestion: "请刷新库存后重新确认。", retryable: false, action: "refresh_snapshot" },
+  inventory_scope_unconfigured: { title: "未配置 115 媒体库范围", message: "本次推送未提交到 115，系统还没有可核对的媒体库库存范围。", suggestion: "请前往“媒体库”配置生产根目录，验证范围并完成一次完整扫描后再重试。", retryable: false, action: "open_library" },
+  inventory_index_incomplete: { title: "115 媒体库库存未完成", message: "本次推送未提交到 115，系统无法确认媒体库中是否已有该资源。", suggestion: "请前往“媒体库”完成一次完整扫描后再重试。", retryable: false, action: "open_library" },
+  inventory_index_stale: { title: "115 媒体库库存已过期", message: "本次推送未提交到 115，当前库存索引不能作为去重依据。", suggestion: "请前往“媒体库”重新扫描库存后再重试。", retryable: false, action: "open_library" },
+  inventory_index_unknown: { title: "115 媒体库库存状态未知", message: "本次推送未提交到 115，当前库存扫描状态不可靠。", suggestion: "请前往“媒体库”确认扫描状态并重新扫描后再重试。", retryable: false, action: "open_library" },
+  inventory_exact_duplicate: { title: "资源已在 115 媒体库中", message: "本次推送未提交到 115，库存中已经存在相同资源。", suggestion: "请前往“媒体库”查看现有资源，不要重复提交。", retryable: false, action: "open_library" },
+  inventory_review_required: { title: "115 媒体库存在相近资源", message: "本次推送未提交到 115，库存中存在相同媒体或待确认版本。", suggestion: "请前往“媒体库”查看库存后完成人工确认。", retryable: false, action: "open_library" },
 };
 
 export const UI_ERROR_CODES = Object.freeze(Object.keys(CATALOG));

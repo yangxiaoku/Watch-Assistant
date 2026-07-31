@@ -325,6 +325,8 @@ input { outline: none; }
 .task-copy strong, .task-copy small { display: block; }
 .task-copy strong { color: #f4f5f7; font-size: 13px; }
 .task-copy small { margin-top: 4px; overflow: hidden; color: #7f838c; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.task-copy .task-action { margin-top: 10px; color: #68a0ff; white-space: normal; }
+.task-copy .task-action:hover { color: #a8c8ff; }
 
 .auth-gate { width: 100%; max-width: 430px; min-width: 0; margin: 14vh auto 0; padding: 34px; background: #191b1f; border: 1px solid #303238; }
 .auth-mark { display: grid; place-items: center; width: 40px; height: 40px; margin-bottom: 24px; color: #10141a; background: #68a0ff; border-radius: 4px; }
