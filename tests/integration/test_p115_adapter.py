@@ -113,6 +113,19 @@ async def test_submit_magnet_uses_fixed_target_and_remote_task_id(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_submit_magnet_uses_verified_task_target_when_supplied(tmp_path):
+    provider, _path = _provider(tmp_path)
+    fake = FakeP115Client()
+    adapter = P115Adapter(provider, 42, client_factory=lambda _cookie: fake)
+
+    result = await adapter.submit_magnet(MAGNET, target_cid="314159")
+
+    assert result.status == RemoteStatus.ACCEPTED
+    assert fake.add_payloads == [{"url": MAGNET, "wp_path_id": "314159"}]
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
 async def test_submit_magnet_freezes_infohash_remote_ref_fallback(tmp_path):
     provider, _path = _provider(tmp_path)
     fake = FakeP115Client(response={"state": True, "data": {}})

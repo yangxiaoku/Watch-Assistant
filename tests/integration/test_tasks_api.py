@@ -129,3 +129,32 @@ async def test_task_creation_links_push_stage_to_workflow(tmp_path):
     await tmdb.aclose()
     await pansou.aclose()
     await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_task_creation_persists_only_browsed_target_directory(tmp_path):
+    client, database, tmdb, pansou, app = await _make_task_client(tmp_path)
+    app.state.organization_target_root_id = "100"
+    app.state.p115_browsed_directory_ids = {"100", "200"}
+
+    selected = await client.post(
+        "/api/v1/tasks",
+        json={"resource_id": "res_task_api", "target_directory_id": "200"},
+    )
+    rejected = await client.post(
+        "/api/v1/tasks",
+        json={"resource_id": "res_task_api", "target_directory_id": "300"},
+    )
+
+    assert selected.status_code == 202
+    assert selected.json()["target_directory_id"] == "200"
+    assert rejected.status_code == 403
+    assert rejected.json()["detail"] == "p115_directory_out_of_scope"
+    async with database.session_factory() as session:
+        stored = await session.get(Task, selected.json()["id"])
+    assert stored is not None
+    assert stored.target_directory_id == "200"
+    await client.aclose()
+    await tmdb.aclose()
+    await pansou.aclose()
+    await database.engine.dispose()

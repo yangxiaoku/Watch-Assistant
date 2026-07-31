@@ -44,12 +44,20 @@ async def create_task(
     raw_request: Request,
     service: TaskServiceDependency,
 ) -> TaskResponse:
+    if request.target_directory_id is not None:
+        root_id = getattr(raw_request.app.state, "organization_target_root_id", None)
+        browsed_ids = getattr(raw_request.app.state, "p115_browsed_directory_ids", set())
+        if not isinstance(root_id, str) or not root_id:
+            raise HTTPException(status_code=503, detail="p115_directory_scope_unavailable")
+        if request.target_directory_id not in {root_id, *browsed_ids}:
+            raise HTTPException(status_code=403, detail="p115_directory_out_of_scope")
     try:
         task, _reused = await service.create(
             request.resource_id,
             force=request.force,
             allowed_actions=allowed_push_actions(raw_request),
             workflow_id=request.workflow_id,
+            target_directory_id=request.target_directory_id,
         )
     except ResourceNotFound as exc:
         raise HTTPException(status_code=404, detail="resource_not_found") from exc

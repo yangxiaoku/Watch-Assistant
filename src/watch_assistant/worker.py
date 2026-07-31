@@ -24,9 +24,17 @@ from watch_assistant.services.workflows import sync_child_stage
 
 
 class TaskAdapter(Protocol):
-    async def submit_magnet(self, url: str) -> SubmissionResult: ...
+    async def submit_magnet(
+        self, url: str, *, target_cid: str | None = None
+    ) -> SubmissionResult: ...
 
-    async def save_share(self, url: str, password: str | None) -> SubmissionResult: ...
+    async def save_share(
+        self,
+        url: str,
+        password: str | None,
+        *,
+        target_cid: str | None = None,
+    ) -> SubmissionResult: ...
 
     async def get_status(self, remote_ref: str) -> RemoteStatus | None: ...
 
@@ -93,7 +101,12 @@ class TaskWorker:
                         )
                     else:
                         try:
-                            result = await self._adapter.submit_magnet(url)
+                            if task.target_directory_id is None:
+                                result = await self._adapter.submit_magnet(url)
+                            else:
+                                result = await self._adapter.submit_magnet(
+                                    url, target_cid=task.target_directory_id
+                                )
                         except Exception:  # noqa: BLE001 - remote outcome may be ambiguous
                             result = SubmissionResult(
                                 status=RemoteStatus.UNCERTAIN,

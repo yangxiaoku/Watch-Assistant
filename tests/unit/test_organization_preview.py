@@ -17,7 +17,11 @@ from watch_assistant.services.organization_plan import (
     OrganizationPlanService,
     OrganizationPlanStatus,
 )
-from watch_assistant.services.organization_preview import OrganizationPreviewService
+from watch_assistant.services.organization_preview import (
+    OrganizationPreviewError,
+    OrganizationPreviewService,
+    _scope_entries,
+)
 
 
 class _TmdbClient:
@@ -36,6 +40,43 @@ class _TmdbClient:
                 origin_countries=("US",),
             )
         ]
+
+
+def _entry(object_id: str, parent_id: str, *, is_directory: bool) -> LibraryScanEntry:
+    return LibraryScanEntry(
+        scan_run_id="scan-scope",
+        object_type="directory" if is_directory else "file",
+        object_id=object_id,
+        parent_id=parent_id,
+        name=object_id,
+        path=object_id,
+        is_directory=is_directory,
+    )
+
+
+def test_preview_scope_uses_selected_source_subtree_and_rejects_nested_target():
+    entries = [
+        _entry("source", "root-preview", is_directory=True),
+        _entry("nested", "source", is_directory=True),
+        _entry("inside", "nested", is_directory=False),
+        _entry("outside", "root-preview", is_directory=False),
+    ]
+
+    scoped = _scope_entries(
+        entries,
+        source_directory_ids=("source",),
+        root_directory_id="root-preview",
+        target_directory_id="other",
+    )
+
+    assert {entry.object_id for entry in scoped} == {"source", "nested", "inside"}
+    with pytest.raises(OrganizationPreviewError, match="source_target_overlap"):
+        _scope_entries(
+            entries,
+            source_directory_ids=("source",),
+            root_directory_id="root-preview",
+            target_directory_id="nested",
+        )
 
 
 async def _database(tmp_path: Path, *, target_exists: bool):
