@@ -632,6 +632,8 @@ class Workflow(Base):
     )
     tmdb_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     subscription_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    actor_type: Mapped[str | None] = mapped_column(String(16), nullable=True, index=True)
+    actor_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     status: Mapped[WorkflowStatus] = mapped_column(
         Enum(WorkflowStatus, values_callable=enum_values, native_enum=False),
         default=WorkflowStatus.IN_PROGRESS,

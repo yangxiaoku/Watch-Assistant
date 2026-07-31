@@ -157,6 +157,10 @@ API 返回顶层 workflow 和分页子任务，不返回敏感链接。REQ-003 �
   `updated_before` 时间筛选，筛选发生在分页前，反向时间范围返回 `422 invalid_request`；
   `watchctl workflow list` 可透传同一组筛选参数。证据见
   `evidence/2026-07-31-workflow-time-filters.md`。
+- 本轮补充 FLOW-006（开发分支切片）：workflow 创建从认证上下文记录 `agent` 类型和非敏感
+  Agent ID，API、`watchctl` 和 MCP `workflow.list` 均支持 Agent 筛选；旧数据库通过幂等迁移
+  055 增加字段，Web Session 不保存原始 Session/Cookie。证据见
+  `evidence/2026-07-31-workflow-agent-filter.md`。
 - 本轮补充 FLOW-007：提交后的可行动 workflow 阶段事件（等待确认、等待外部、成功、跳过、失败、
   不确定、取消）会通过统一事件目录生成站内通知，复用通知偏好、30 分钟去重和 Webhook Outbox；
   普通启动/读取日志不会自动生成通知。

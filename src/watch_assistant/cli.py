@@ -350,7 +350,7 @@ def _command(args: argparse.Namespace, path: Path) -> tuple[Any, int]:
             if args.workflow_command == "list":
                 params = {
                     key: value
-                    for key in ("updated_after", "updated_before")
+                    for key in ("agent_id", "updated_after", "updated_before")
                     if (value := getattr(args, key, None)) is not None
                 }
                 body = client.get("/api/v1/workflows", params=params or None)
@@ -701,6 +701,7 @@ def _build_parser() -> argparse.ArgumentParser:
     workflow = sub.add_parser("workflow", help="工作流只读查询")
     workflow_sub = workflow.add_subparsers(dest="workflow_command", required=True)
     workflow_list = workflow_sub.add_parser("list")
+    workflow_list.add_argument("--agent-id", dest="agent_id")
     workflow_list.add_argument("--updated-after", dest="updated_after")
     workflow_list.add_argument("--updated-before", dest="updated_before")
     workflow_show = workflow_sub.add_parser("show")

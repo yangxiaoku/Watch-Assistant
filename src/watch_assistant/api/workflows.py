@@ -49,6 +49,7 @@ def get_workflow_service(request: Request) -> WorkflowService:
 
 WorkflowServiceDependency = Annotated[WorkflowService, Depends(get_workflow_service)]
 WebAuthDependency = Annotated[AuthContext, Depends(require_web_auth)]
+AuthDependency = Annotated[AuthContext, Depends(require_api_auth)]
 
 
 @router.post(
@@ -57,8 +58,20 @@ WebAuthDependency = Annotated[AuthContext, Depends(require_web_auth)]
 async def create_workflow(
     payload: WorkflowCreateRequest,
     service: WorkflowServiceDependency,
+    auth: AuthDependency,
 ) -> WorkflowResponse:
-    return await service.create(payload)
+    actor_type = (
+        "agent"
+        if auth.agent_token_id is not None
+        else "session"
+        if not auth.via_bearer
+        else "internal"
+    )
+    return await service.create(
+        payload,
+        actor_type=actor_type,
+        actor_id=auth.agent_token_id,
+    )
 
 
 @router.get("/workflows", response_model=WorkflowListResponse)
@@ -71,6 +84,7 @@ async def list_workflows(
     subscription_id: Annotated[str | None, Query(max_length=64)] = None,
     stage: WorkflowStageName | None = None,
     stage_status: WorkflowStageStatus | None = None,
+    agent_id: Annotated[str | None, Query(max_length=128)] = None,
     updated_after: datetime | None = None,
     updated_before: datetime | None = None,
     page: Annotated[int, Query(ge=1, le=10000)] = 1,
@@ -88,6 +102,7 @@ async def list_workflows(
         subscription_id=subscription_id,
         stage=stage,
         stage_status=stage_status,
+        agent_id=agent_id,
         updated_after=updated_after,
         updated_before=updated_before,
         page=page,

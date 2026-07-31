@@ -226,7 +226,18 @@ class McpService:
         if self._workflows is None:
             raise McpError("mcp_unavailable")
         limit, cursor = _page_from_uri(uri)
-        page = await self._workflows.list(page=(cursor // limit) + 1, page_size=limit)
+        parsed = urlsplit(uri)
+        values = parse_qs(parsed.query, keep_blank_values=True)
+        agent_id = values.get("agent_id", [None])[0]
+        if agent_id is not None and _IDENTIFIER.fullmatch(agent_id) is None:
+            raise McpError("invalid_request")
+        page_args: dict[str, Any] = {
+            "page": (cursor // limit) + 1,
+            "page_size": limit,
+        }
+        if agent_id is not None:
+            page_args["agent_id"] = agent_id
+        page = await self._workflows.list(**page_args)
         items = list(page.items)
         has_more = cursor + len(items) < page.total
         return {
@@ -407,7 +418,7 @@ def _tools(context: AuthContext) -> list[dict[str, Any]]:
             {"name": "tasks.list", "description": "读取任务摘要", "inputSchema": {"type": "object", "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 100}, "cursor": {"type": "integer", "minimum": 0}}, "additionalProperties": False}},
             {"name": "task.get", "description": "读取单个任务", "inputSchema": {"type": "object", "properties": {"task_id": {"type": "string", "maxLength": 64}}, "required": ["task_id"], "additionalProperties": False}},
             {"name": "notifications.unread", "description": "读取未读通知", "inputSchema": {"type": "object", "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 100}, "cursor": {"type": "integer", "minimum": 0}}, "additionalProperties": False}},
-            {"name": "workflow.list", "description": "读取工作流状态", "inputSchema": {"type": "object", "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 100}, "cursor": {"type": "integer", "minimum": 0}}, "additionalProperties": False}},
+            {"name": "workflow.list", "description": "读取工作流状态", "inputSchema": {"type": "object", "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 100}, "cursor": {"type": "integer", "minimum": 0}, "agent_id": {"type": "string", "maxLength": 255}}, "additionalProperties": False}},
             {"name": "workflow.get", "description": "读取工作流详情", "inputSchema": {"type": "object", "properties": {"workflow_id": {"type": "string", "maxLength": 255}}, "required": ["workflow_id"], "additionalProperties": False}},
         ])
     if context.has_scope("organize:plan"):
@@ -512,7 +523,7 @@ def _paged_uri(uri: str, arguments: Any) -> str:
         arguments = {}
     values = {
         key: str(arguments[key])
-        for key in ("limit", "cursor")
+        for key in ("limit", "cursor", "agent_id")
         if key in arguments
     }
     if not values:

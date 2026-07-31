@@ -1,16 +1,20 @@
+import hashlib
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
 import pytest
 from cryptography.fernet import Fernet
+from pwdlib import PasswordHash
 
 from watch_assistant.adapters.pansou import PanSouClient
 from watch_assistant.adapters.tmdb import TmdbClient
 from watch_assistant.app import create_app
 from watch_assistant.crypto import SecretCrypto
 from watch_assistant.db import create_database, initialize_database
-from watch_assistant.models import Resource
+from watch_assistant.models import AgentToken, Resource, Workflow
+from watch_assistant.security import SecurityManager
 
 
 class FakeTaskAdapter:
@@ -24,7 +28,7 @@ class FakeTaskAdapter:
         return None
 
 
-async def _make_client(tmp_path: Path):
+async def _make_client(tmp_path: Path, *, with_security: bool = False):
     database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'workflow-api.db'}")
     await initialize_database(database.engine)
     crypto = SecretCrypto(Fernet.generate_key().decode("ascii"))
@@ -44,12 +48,20 @@ async def _make_client(tmp_path: Path):
         await session.commit()
     tmdb = TmdbClient("unused")
     pansou = PanSouClient("http://pansou.test")
+    app_kwargs = {}
+    if with_security:
+        password_hash = PasswordHash.recommended()
+        app_kwargs["security_manager"] = SecurityManager(
+            web_password_hash=password_hash.hash("workflow-test-password"),
+            script_token_hash=password_hash.hash("unused-script-token"),
+        )
     app = create_app(
         database=database,
         crypto=crypto,
         tmdb_client=tmdb,
         pansou_client=pansou,
         task_adapter=FakeTaskAdapter(),
+        **app_kwargs,
     )
     client = httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://app.test"
@@ -144,6 +156,60 @@ async def test_workflow_timeline_aggregates_stage_state_and_child_task(tmp_path)
             "/api/v1/workflows", params={"stage_status": "not-a-stage-status"}
         )
         assert invalid_stage_status.status_code == 422
+    finally:
+        await client.aclose()
+        await tmdb.aclose()
+        await pansou.aclose()
+        await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_workflow_agent_identity_is_persisted_and_filterable(tmp_path):
+    client, database, tmdb, pansou = await _make_client(tmp_path, with_security=True)
+    raw_token = "wa_at_workflow_agent"
+    try:
+        async with database.session_factory() as session:
+            session.add(
+                AgentToken(
+                    id="agent-workflow",
+                    name="workflow agent",
+                    token_digest=hashlib.sha256(raw_token.encode()).hexdigest(),
+                    token_prefix=raw_token[:16],
+                    scopes_json=json.dumps(["task:read", "task:write"]),
+                    library_ids_json="[]",
+                    created_at=datetime.now(UTC),
+                )
+            )
+            await session.commit()
+
+        created = await client.post(
+            "/api/v1/workflows",
+            headers={"Authorization": f"Bearer {raw_token}"},
+            json={"media_type": "movie"},
+        )
+        assert created.status_code == 201
+        async with database.session_factory() as session:
+            stored = await session.get(Workflow, created.json()["id"])
+        assert stored is not None
+        assert (stored.actor_type, stored.actor_id) == ("agent", "agent-workflow")
+        assert created.json()["agent_id"] == "agent-workflow"
+
+        filtered = await client.get(
+            "/api/v1/workflows",
+            params={"agent_id": "agent-workflow"},
+            headers={"Authorization": f"Bearer {raw_token}"},
+        )
+        assert filtered.status_code == 200
+        assert filtered.json()["total"] == 1
+        assert filtered.json()["items"][0]["agent_id"] == "agent-workflow"
+
+        missing = await client.get(
+            "/api/v1/workflows",
+            params={"agent_id": "agent-other"},
+            headers={"Authorization": f"Bearer {raw_token}"},
+        )
+        assert missing.status_code == 200
+        assert missing.json()["total"] == 0
     finally:
         await client.aclose()
         await tmdb.aclose()

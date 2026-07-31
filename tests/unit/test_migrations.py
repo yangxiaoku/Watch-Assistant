@@ -454,7 +454,7 @@ async def test_legacy_workflow_schema_is_upgraded_without_losing_rows(tmp_path):
             )
         ).one()
 
-    assert {"media_type", "tmdb_id", "state_reason"} <= workflow_columns
+    assert {"media_type", "tmdb_id", "state_reason", "actor_type", "actor_id"} <= workflow_columns
     assert "sequence" in stage_columns
     assert stage == ("discovery", 0, "succeeded", "task", "task_legacy", stage[5], stage[6])
 

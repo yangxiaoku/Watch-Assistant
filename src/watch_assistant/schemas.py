@@ -1483,6 +1483,7 @@ class WorkflowResponse(BaseModel):
     media_type: MediaType | None
     tmdb_id: int | None
     subscription_id: str | None
+    agent_id: str | None
     status: WorkflowStatus
     status_zh: str
     state_reason: str | None

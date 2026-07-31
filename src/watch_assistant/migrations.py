@@ -873,6 +873,24 @@ def _add_task_target_directory(connection: Connection) -> None:
     )
 
 
+def _add_workflow_actor(connection: Connection) -> None:
+    """Persist the non-secret Agent identity that created a workflow."""
+
+    if not inspect(connection).has_table("workflows"):
+        return
+    columns = {item["name"] for item in inspect(connection).get_columns("workflows")}
+    if "actor_type" not in columns:
+        connection.execute(text("ALTER TABLE workflows ADD COLUMN actor_type VARCHAR(16)"))
+    if "actor_id" not in columns:
+        connection.execute(text("ALTER TABLE workflows ADD COLUMN actor_id VARCHAR(128)"))
+    connection.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_workflows_actor "
+            "ON workflows (actor_type, actor_id)"
+        )
+    )
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration("001_application_settings_columns", _add_application_settings_columns),
     Migration("002_library_index_tables", _create_library_index_tables),
@@ -922,6 +940,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration("052_task_target_directory", _add_task_target_directory),
     Migration("053_resource_search_workflow", _add_resource_search_workflow),
     Migration("054_strm_operations", _create_strm_operations_table),
+    Migration("055_workflow_actor", _add_workflow_actor),
 )
 
 

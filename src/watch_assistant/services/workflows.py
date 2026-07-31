@@ -74,7 +74,13 @@ class WorkflowService:
         self._session_factory = session_factory
         self._event_logger = event_logger
 
-    async def create(self, request: WorkflowCreateRequest) -> WorkflowResponse:
+    async def create(
+        self,
+        request: WorkflowCreateRequest,
+        *,
+        actor_type: str | None = None,
+        actor_id: str | None = None,
+    ) -> WorkflowResponse:
         now = datetime.now(UTC)
         workflow = Workflow(
             id="wf_" + uuid4().hex,
@@ -82,6 +88,8 @@ class WorkflowService:
             media_type=request.media_type,
             tmdb_id=request.tmdb_id,
             subscription_id=request.subscription_id,
+            actor_type=actor_type,
+            actor_id=actor_id,
             status=WorkflowStatus.IN_PROGRESS,
             state_reason="workflow_created",
             created_at=now,
@@ -220,6 +228,7 @@ class WorkflowService:
         subscription_id: str | None = None,
         stage: WorkflowStageName | None = None,
         stage_status: WorkflowStageStatus | None = None,
+        agent_id: str | None = None,
         updated_after: datetime | None = None,
         updated_before: datetime | None = None,
         page: int = 1,
@@ -232,6 +241,13 @@ class WorkflowService:
             filters.append(Workflow.media_type == media_type)
         if subscription_id is not None:
             filters.append(Workflow.subscription_id == subscription_id)
+        if agent_id is not None:
+            filters.extend(
+                (
+                    Workflow.actor_type == "agent",
+                    Workflow.actor_id == agent_id,
+                )
+            )
         if updated_after is not None:
             filters.append(Workflow.updated_at >= updated_after)
         if updated_before is not None:
@@ -624,6 +640,7 @@ def _response(workflow: Workflow) -> WorkflowResponse:
         media_type=workflow.media_type,
         tmdb_id=workflow.tmdb_id,
         subscription_id=workflow.subscription_id,
+        agent_id=(workflow.actor_id if workflow.actor_type == "agent" else None),
         status=workflow.status,
         status_zh=_STATUS_ZH[workflow.status],
         state_reason=workflow.state_reason,

@@ -653,6 +653,8 @@ def test_workflow_list_passes_time_filters_to_versioned_api(capsys):
                 "json",
                 "workflow",
                 "list",
+                "--agent-id",
+                "agent-one",
                 "--updated-after",
                 "2026-07-31T00:00:00+08:00",
                 "--updated-before",
@@ -667,7 +669,7 @@ def test_workflow_list_passes_time_filters_to_versioned_api(capsys):
         (
             "GET",
             "/api/v1/workflows",
-            "updated_after=2026-07-31T00%3A00%3A00%2B08%3A00&updated_before=2026-08-01T00%3A00%3A00%2B08%3A00",
+            "agent_id=agent-one&updated_after=2026-07-31T00%3A00%3A00%2B08%3A00&updated_before=2026-08-01T00%3A00%3A00%2B08%3A00",
         )
     ]
 

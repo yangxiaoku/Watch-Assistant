@@ -75,7 +75,11 @@ class _OrganizationOperations:
 
 
 class _Workflows:
-    async def list(self, *, page=1, page_size=50):
+    def __init__(self):
+        self.agent_ids = []
+
+    async def list(self, *, page=1, page_size=50, agent_id=None):
+        self.agent_ids.append(agent_id)
         item = SimpleNamespace(
             model_dump=lambda **_: {"id": "wf_one", "status": "in_progress"}
         )
@@ -152,12 +156,13 @@ async def test_mcp_list_resources_exposes_cursor_pagination():
 
 @pytest.mark.asyncio
 async def test_mcp_organization_tools_require_scope_library_digest_and_confirmation():
+    workflows_service = _Workflows()
     service = McpService(
         task_service=_Tasks(),
         notification_service=_Notifications(),
         organization_plan_service=_OrganizationPlans(),
         organization_operation_service=_OrganizationOperations(),
-        workflow_service=_Workflows(),
+        workflow_service=workflows_service,
     )
     context = _context(
         "organize:plan", "organize:execute", library_ids={"library_one"}
@@ -257,11 +262,15 @@ async def test_mcp_organization_tools_require_scope_library_digest_and_confirmat
             "jsonrpc": "2.0",
             "id": 11,
             "method": "tools/call",
-            "params": {"name": "workflow.list", "arguments": {"limit": 1}},
+            "params": {
+                "name": "workflow.list",
+                "arguments": {"limit": 1, "agent_id": "agent_one"},
+            },
         },
         context=_context("task:read"),
     )
     assert "wf_one" in workflows["result"]["data"]["content"][0]["text"]
+    assert workflows_service.agent_ids == ["agent_one"]
 
 
 @pytest.mark.asyncio
