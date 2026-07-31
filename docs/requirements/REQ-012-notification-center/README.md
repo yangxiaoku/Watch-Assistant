@@ -122,6 +122,8 @@
 - STRM dirty worker 在重试耗尽或增量结果明确含失败项时，为无 workflow 的媒体库生成
   `strm.dirty_failed` 错误通知并跳转设置；关联 workflow 时仍只保留 `workflow.stage_changed`
   通知，错误详情同样只使用稳定错误码。
+- 订阅搜索失败在持久化退避时间和 `search_unavailable` 后生成 `subscription.check_failed` 错误
+  通知并跳转设置；正常无匹配检查不会进入错误通知链。
 - 无 workflow 关联的内容检测批次失败现在生成错误通知并跳转资源检测设置；已关联 workflow 的
   批次失败只保留 workflow 阶段通知，避免同一失败重复提醒。
 - 整理预览进入 `needs_review` 时，API 预览和自动预览都会发出 `organize.needs_review`；同一计划的重复预览复用 30 分钟去重并累加次数，通知可跳转整理工作台。

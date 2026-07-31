@@ -290,6 +290,13 @@ EVENT_CATALOG: dict[str, EventDefinition] = {
         "订阅资源观察完成",
         "订阅本次发现 {count} 条新资源，已去重 {hidden_count} 条",
     ),
+    "subscription.check_failed": _event(
+        "subscription.check_failed",
+        LogCategory.SUBSCRIPTION,
+        "订阅检查失败",
+        "订阅检查失败，错误码：{error_code}",
+        suggestion="请检查搜索服务状态，系统将在下一次检查时间自动重试",
+    ),
     "subscription.scheduler_started": _event(
         "subscription.scheduler_started", LogCategory.SUBSCRIPTION, "订阅调度开始", "订阅调度已开始，本次到期检查 {total} 项"
     ),
