@@ -260,6 +260,7 @@ _MESSAGES = {
     "plan_not_found": "计划不存在",
     "plan_is_not_planned": "计划尚未确认或已不可用",
     "plan_prerequisites_changed": "计划前置条件已变化，请重新确认",
+    "plan_not_executable": "当前计划包含待复核项，不能执行真实整理",
     "plan_revision_changed": "计划版本已变化，请刷新后重试",
     "idempotency_key_conflict": "幂等请求与既有操作冲突",
     "plan_already_has_operation": "计划已有受控操作",

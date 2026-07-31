@@ -174,6 +174,8 @@ def create_app(
         webhook_task: asyncio.Task[None] | None = None
         organization_stop: asyncio.Event | None = None
         organization_task: asyncio.Task[None] | None = None
+        organization_worker_stop: asyncio.Event | None = None
+        organization_worker_task: asyncio.Task[None] | None = None
         dirty_stop: asyncio.Event | None = None
         dirty_task: asyncio.Task[None] | None = None
 
@@ -276,6 +278,7 @@ def create_app(
 
         async def apply_organization_runtime(ready: bool) -> None:
             nonlocal organization_stop, organization_task
+            nonlocal organization_worker_stop, organization_worker_task
             planning_enabled = (
                 ready
                 and getattr(application.state, "organization_plan_enabled", False)
@@ -291,8 +294,16 @@ def create_app(
                     organization_task.cancel()
                     with suppress(asyncio.CancelledError):
                         await organization_task
+                if organization_worker_stop is not None:
+                    organization_worker_stop.set()
+                if organization_worker_task is not None:
+                    organization_worker_task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await organization_worker_task
                 organization_stop = None
                 organization_task = None
+                organization_worker_stop = None
+                organization_worker_task = None
                 if hasattr(application.state, "organization_worker"):
                     delattr(application.state, "organization_worker")
                 if hasattr(application.state, "organization_scheduler"):
@@ -346,10 +357,7 @@ def create_app(
             application.state.organization_automation_service = automation
 
             async def run_organization_once() -> bool:
-                attempted = await automation.run_once()
-                if worker is not None:
-                    await worker.run_once()
-                return attempted
+                return await automation.run_once()
 
             scheduler = OrganizationScheduler(
                 application.state.settings_service,
@@ -361,6 +369,12 @@ def create_app(
                 scheduler.run_forever(organization_stop),
                 name="watch-assistant-organization-scheduler",
             )
+            if worker is not None:
+                organization_worker_stop = asyncio.Event()
+                organization_worker_task = asyncio.create_task(
+                    worker.run_forever(organization_worker_stop),
+                    name="watch-assistant-organization-worker",
+                )
 
         async def apply_p115_runtime(ready: bool) -> None:
             nonlocal task_stop, task_task
@@ -841,6 +855,14 @@ def create_app(
                 organization_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await organization_task
+            if (
+                organization_worker_task is not None
+                and organization_worker_stop is not None
+            ):
+                organization_worker_stop.set()
+                organization_worker_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await organization_worker_task
             if inspection_task is not None and inspection_stop is not None:
                 inspection_stop.set()
                 inspection_task.cancel()

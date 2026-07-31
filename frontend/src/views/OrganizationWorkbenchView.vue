@@ -2,6 +2,7 @@
 import { Ban, Check, ChevronRight, Eye, LoaderCircle, RefreshCw, Tag } from "@lucide/vue";
 import { computed, onMounted, ref } from "vue";
 import { ApiClient, ApiError, focusFirstFieldError } from "../api";
+import { describeUiError } from "../errorCatalog";
 import type { OrganizationOperationResponse, OrganizationPlanStatus, OrganizationPlanSummary } from "../types";
 
 const props = withDefaults(defineProps<{ api: ApiClient; enabled?: boolean; executionEnabled?: boolean }>(), {
@@ -115,9 +116,16 @@ async function queueOperation() {
     const queuedOperation = await props.api.queueOrganizationOperation(plan.plan_id, plan.revision);
     await loadPlanOperation(plan);
     if (!operation.value) operation.value = queuedOperation;
-    notice.value = queuedOperation.status === "organized"
-      ? "整理已完成"
-      : `整理操作已排队，当前状态：${operationStatusLabel[queuedOperation.status]}`;
+    if (queuedOperation.status === "organized") {
+      notice.value = "整理已完成";
+    } else if (queuedOperation.status === "failed" || queuedOperation.status === "uncertain") {
+      error.value = queuedOperation.error_code
+        ? describeUiError(queuedOperation.error_code, 409).message
+        : "后台整理未完成，请查看操作状态";
+    } else {
+      notice.value = "整理已提交，后台正在执行";
+      await pollOperation(queuedOperation.operation_id);
+    }
   } catch (exception) {
     focusFirstFieldError(exception);
     if (exception instanceof ApiError && exception.code === "plan_prerequisites_changed") {
@@ -126,6 +134,30 @@ async function queueOperation() {
     error.value = exception instanceof ApiError ? exception.message : "整理操作排队失败，请稍后重试";
   } finally {
     busy.value = false;
+  }
+}
+
+async function pollOperation(operationId: string) {
+  if (typeof props.api.organizationOperation !== "function") return;
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    await new Promise((resolve) => window.setTimeout(resolve, 1000));
+    try {
+      const current = await props.api.organizationOperation(operationId);
+      operation.value = current;
+      if (current.status === "organized") {
+        notice.value = "整理已完成";
+        return;
+      }
+      if (current.status === "failed" || current.status === "uncertain") {
+        error.value = current.error_code
+          ? describeUiError(current.error_code, 409).message
+          : "后台整理未完成，请查看操作状态";
+        notice.value = "";
+        return;
+      }
+    } catch {
+      return;
+    }
   }
 }
 
