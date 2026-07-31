@@ -84,6 +84,21 @@ async def test_backup_api_creates_consistent_snapshot_manifest_without_secrets(t
         assert "p115_cookie" in preview.json()["requires_reconfiguration"]
         assert preview.json()["warnings"] == ["restore_requires_service_stop_and_confirmation"]
 
+        exported = await client.get("/api/v1/backups/configuration")
+        assert exported.status_code == 200
+        configuration = exported.json()
+        assert configuration["schema_version"] == 1
+        assert configuration["logging"]["level"] == "INFO"
+        assert configuration["organization"]["schedule_enabled"] is False
+        assert configuration["requires_reconfiguration"] == [
+            "tmdb_api_key",
+            "p115_cookie",
+            "web_password",
+            "agent_token",
+        ]
+        assert "managed_tmdb_key_encrypted" not in exported.text
+        assert "managed_p115_cookie_encrypted" not in exported.text
+
         listed = await client.get("/api/v1/backups")
         assert listed.status_code == 200
         assert listed.json()["items"][0]["backup_id"] == body["backup_id"]
@@ -92,7 +107,11 @@ async def test_backup_api_creates_consistent_snapshot_manifest_without_secrets(t
             cursor=None, limit=50, category=None
         )
         event_codes = {item["event_code"] for item in log_items}
-        assert {"backup.created", "backup.restore_preview"} <= event_codes
+        assert {
+            "backup.created",
+            "backup.restore_preview",
+            "backup.configuration_exported",
+        } <= event_codes
     finally:
         await client.aclose()
         await tmdb.aclose()
@@ -105,6 +124,15 @@ async def test_backup_service_rejects_memory_database(tmp_path):
     service = BackupService(":memory:", tmp_path / "backups")
     with pytest.raises(BackupServiceError, match="backup_requires_file_database"):
         await service.create()
+
+
+@pytest.mark.asyncio
+async def test_backup_service_requires_configuration_dependencies(tmp_path):
+    service = BackupService(":memory:", tmp_path / "backups")
+    with pytest.raises(
+        BackupServiceError, match="backup_configuration_unavailable"
+    ):
+        await service.export_configuration()
 
 
 @pytest.mark.asyncio

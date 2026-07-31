@@ -377,6 +377,18 @@ describe("ApiClient season and inspection requests", () => {
     expect(fetchMock.mock.calls[6][1].method).toBe("POST");
   });
 
+  it("uses the redacted configuration export endpoint", async () => {
+    const response = { schema_version: 1, exported_at: "2026-07-25T02:00:00Z", release: "2026.07.25", logging: {}, inspection: {}, content_policy: {}, organization: {}, notifications: {}, requires_reconfiguration: ["tmdb_api_key"] };
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(response), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const api = new ApiClient();
+
+    await api.exportConfiguration();
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/v1/backups/configuration");
+    expect(fetchMock.mock.calls[0][1].method).toBeUndefined();
+  });
+
   it("uses the managed credentials endpoints without expecting secret response fields", async () => {
     const response = { revision: 3, tmdb: { configured: true, source: "managed", last_updated_at: "2026-07-25T03:00:00Z" }, p115_cookie: { configured: true, source: "managed", last_updated_at: "2026-07-25T03:00:00Z", structure_valid: true, ready: true } };
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(response), { status: 200 }));

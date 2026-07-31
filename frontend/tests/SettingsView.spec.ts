@@ -83,6 +83,17 @@ const organization = {
 function makeApi(overrides: Partial<Record<keyof ApiClient, unknown>> = {}) {
   return {
     settingsOverview: vi.fn().mockResolvedValue(overview),
+    exportConfiguration: vi.fn().mockResolvedValue({
+      schema_version: 1,
+      exported_at: "2026-07-25T02:00:00Z",
+      release: "2026.07.25",
+      logging,
+      inspection,
+      content_policy: contentPolicy,
+      organization,
+      notifications: { enabled: true, muted_event_codes: [], revision: 1 },
+      requires_reconfiguration: ["tmdb_api_key", "p115_cookie", "web_password", "agent_token"],
+    }),
     loggingSettings: vi.fn().mockResolvedValue(logging),
     inspectionSettings: vi.fn().mockResolvedValue(inspection),
     updateInspectionSettings: vi.fn().mockResolvedValue({ ...inspection, revision: 1 }),
@@ -229,6 +240,25 @@ describe("SettingsView", () => {
     expect(wrapper.text()).toContain("TgtoDrive");
     expect(wrapper.text()).toContain("结构正常");
     expect(wrapper.text()).toContain("页面不会回显已保存的 Cookie 原文");
+  });
+
+  it("downloads the non-sensitive configuration export without rendering its contents", async () => {
+    const api = makeApi();
+    const createObjectURL = vi.fn().mockReturnValue("blob:configuration");
+    const revokeObjectURL = vi.fn();
+    vi.stubGlobal("URL", { ...URL, createObjectURL, revokeObjectURL });
+    const wrapper = mount(SettingsView, { props: { api } });
+    await flushPromises();
+
+    await wrapper.findAll("button").find((button) => button.text().includes("下载脱敏设置"))?.trigger("click");
+    await flushPromises();
+
+    expect(api.exportConfiguration).toHaveBeenCalledTimes(1);
+    expect(createObjectURL).toHaveBeenCalledTimes(1);
+    expect(createObjectURL.mock.calls[0][0]).toBeInstanceOf(Blob);
+    expect(wrapper.text()).not.toContain("tmdb_api_key");
+    expect(wrapper.text()).not.toContain("p115_cookie");
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:configuration");
   });
 
   it("loads the first cursor page and appends later pages with id de-duplication", async () => {

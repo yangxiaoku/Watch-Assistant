@@ -592,6 +592,8 @@ def create_app(
                 _state_directory(runtime_database) / "backups",
                 release=application.state.release,
                 event_logger=application.state.settings_service,
+                settings_service=application.state.settings_service,
+                notification_service=application.state.notification_service,
             )
             application.state.deployment_diagnostics_service = (
                 DeploymentDiagnosticsService(runtime_database.engine, application.state)
@@ -1096,6 +1098,8 @@ def create_app(
             _state_directory(database) / "backups",
             release=application.state.release,
             event_logger=application.state.settings_service,
+            settings_service=application.state.settings_service,
+            notification_service=application.state.notification_service,
         )
         application.state.deployment_diagnostics_service = DeploymentDiagnosticsService(
             database.engine, application.state

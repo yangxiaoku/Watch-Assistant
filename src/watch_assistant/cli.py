@@ -408,8 +408,13 @@ def _command(args: argparse.Namespace, path: Path) -> tuple[Any, int]:
                 request_id=_request_id(body),
             ), EXIT_OK
         if args.command == "backup":
-            body = client.get("/api/v1/backups")
-            return envelope(data=_data_for("/api/v1/backups", body), request_id=_request_id(body)), EXIT_OK
+            endpoint = (
+                "/api/v1/backups/configuration"
+                if args.backup_command == "configuration"
+                else "/api/v1/backups"
+            )
+            body = client.get(endpoint)
+            return envelope(data=_data_for(endpoint, body), request_id=_request_id(body)), EXIT_OK
         if args.command == "deployment":
             body = client.get("/api/v1/deployment/diagnostics")
             return envelope(data=_data_for("/api/v1/deployment/diagnostics", body), request_id=_request_id(body)), EXIT_OK
@@ -727,7 +732,9 @@ def _build_parser() -> argparse.ArgumentParser:
     webhook_test.add_argument("endpoint_id")
     webhook_retry = webhook_sub.add_parser("retry", help="重试死信投递")
     webhook_retry.add_argument("delivery_id")
-    sub.add_parser("backup", help="备份只读查询")
+    backup = sub.add_parser("backup", help="备份只读查询")
+    backup_sub = backup.add_subparsers(dest="backup_command")
+    backup_sub.add_parser("configuration", help="导出脱敏配置")
     sub.add_parser("deployment", help="部署诊断只读查询")
 
     library = sub.add_parser("library", help="媒体库只读查询")

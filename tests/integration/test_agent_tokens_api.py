@@ -102,11 +102,17 @@ async def test_agent_token_is_one_time_secret_and_scope_is_enforced(tmp_path):
         json={"resource_id": "res_agent"},
         headers=headers,
     )
+    backup_denied = await client.get(
+        "/api/v1/backups/configuration", headers=headers
+    )
     assert capabilities.status_code == 200
     assert capabilities.json()["scopes"] == ["system:read"]
     assert denied.status_code == 403
     assert denied.json()["error"]["code"] == "missing_scope"
     assert denied.json()["error"]["missing_scopes"] == ["task:write"]
+    assert backup_denied.status_code == 403
+    assert backup_denied.json()["error"]["code"] == "missing_scope"
+    assert backup_denied.json()["error"]["missing_scopes"] == ["settings:read"]
     await _close(client, database, tmdb, pansou)
 
 

@@ -51,6 +51,48 @@ def test_system_status_has_stable_json_envelope(capsys, tmp_path: Path):
     assert body["data"]["status"] == "ok"
 
 
+def test_backup_configuration_command_uses_redacted_configuration_endpoint(capsys):
+    seen: list[str] = []
+
+    class Transport(httpx.BaseTransport):
+        def handle_request(self, request):
+            seen.append(request.url.path)
+            return httpx.Response(
+                200,
+                json={"schema_version": 1, "requires_reconfiguration": ["p115_cookie"]},
+                request=request,
+            )
+
+    original = ApiClient.__init__
+    original_close = ApiClient.close
+    ApiClient.__init__ = lambda self, config: (
+        setattr(self, "config", config),
+        setattr(self, "_client", httpx.Client(base_url=config.server, transport=Transport())),
+    )[-1]
+    ApiClient.close = lambda self: self._client.close()
+    try:
+        code = main(
+            [
+                "--server",
+                "http://app.test",
+                "--token",
+                "wa_at_test",
+                "--output",
+                "json",
+                "backup",
+                "configuration",
+            ]
+        )
+    finally:
+        ApiClient.__init__ = original
+        ApiClient.close = original_close
+
+    body = json.loads(capsys.readouterr().out)
+    assert code == EXIT_OK
+    assert body["data"]["schema_version"] == 1
+    assert seen == ["/api/v1/backups/configuration"]
+
+
 def test_auth_failure_maps_to_exit_code(capsys, tmp_path: Path):
     class Transport(httpx.BaseTransport):
         def handle_request(self, request):
