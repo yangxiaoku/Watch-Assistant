@@ -1468,6 +1468,7 @@ class WebhookEndpointResponse(BaseModel):
     secret_prefix: str
     event_codes: list[str]
     enabled: bool
+    health_status: Literal["disabled", "unknown", "healthy", "degraded", "failed"]
     revision: int
     created_at: datetime
     updated_at: datetime

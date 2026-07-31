@@ -485,6 +485,7 @@ def _endpoint_response(item: WebhookEndpoint) -> WebhookEndpointResponse:
         secret_prefix=item.secret_prefix,
         event_codes=sorted(_decode_codes(item.event_codes_json)),
         enabled=item.enabled,
+        health_status=_endpoint_health_status(item),
         revision=item.revision,
         created_at=item.created_at,
         updated_at=item.updated_at,
@@ -492,6 +493,18 @@ def _endpoint_response(item: WebhookEndpoint) -> WebhookEndpointResponse:
         last_failure_at=item.last_failure_at,
         failure_count=item.failure_count,
     )
+
+
+def _endpoint_health_status(item: WebhookEndpoint) -> str:
+    if not item.enabled:
+        return "disabled"
+    if item.last_success_at is None and item.last_failure_at is None:
+        return "unknown"
+    if item.failure_count >= MAX_ATTEMPTS:
+        return "failed"
+    if item.last_failure_at is None or item.last_success_at is not None and item.last_success_at >= item.last_failure_at:
+        return "healthy"
+    return "degraded"
 
 
 def _delivery_response(item: WebhookDelivery) -> WebhookDeliveryResponse:
