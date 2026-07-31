@@ -171,6 +171,9 @@ EVENT_CATALOG: dict[str, EventDefinition] = {
     "organize.operation.updated": _event(
         "organize.operation.updated", LogCategory.ORGANIZE, "整理操作状态已更新", "整理操作状态已更新，结果：{status}"
     ),
+    "organize.operation.failed": _event(
+        "organize.operation.failed", LogCategory.ORGANIZE, "整理操作已失败", "整理操作已失败，结果：{status}"
+    ),
     "organize.operation.uncertain": _event(
         "organize.operation.uncertain", LogCategory.ORGANIZE, "整理结果待确认", "整理操作已标记为结果不确定，结果：{status}", suggestion="请先核对远端目录，不要直接重复提交"
     ),
