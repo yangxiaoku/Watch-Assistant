@@ -177,6 +177,8 @@ async def test_plan_review_cursor_is_bounded_and_confirm_is_local_only(tmp_path)
         "source_count",
         "action_count",
         "precondition_count",
+        "requires_web_approval",
+        "high_risk_action_threshold",
         "alias",
     }
     ignored = await client.post(

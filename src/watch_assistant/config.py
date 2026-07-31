@@ -100,6 +100,12 @@ class Settings(BaseSettings):
     organization_execution_enabled: bool = Field(
         default=False, validation_alias="ORGANIZATION_EXECUTION_ENABLED"
     )
+    organization_high_risk_action_threshold: int = Field(
+        default=10,
+        ge=1,
+        le=100_000,
+        validation_alias="ORGANIZATION_HIGH_RISK_ACTION_THRESHOLD",
+    )
     organization_write_enabled: bool = Field(
         default=False, validation_alias="ORGANIZATION_WRITE_ENABLED"
     )

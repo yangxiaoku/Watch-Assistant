@@ -147,4 +147,7 @@ API 返回顶层 workflow 和分页子任务，不返回敏感链接。REQ-003 �
 - 本轮补充 FLOW-007：提交后的可行动 workflow 阶段事件（等待确认、等待外部、成功、跳过、失败、
   不确定、取消）会通过统一事件目录生成站内通知，复用通知偏好、30 分钟去重和 Webhook Outbox；
   普通启动/读取日志不会自动生成通知。
+- 开发分支已补充高风险整理计划的 Web-only approval workflow：超过影响数量阈值的计划在
+  approval 阶段批准前不能进入整理 operation，批准后仍使用原有 digest、Scope、幂等和
+  `organization` 阶段状态机；Bearer Agent 不能替代 Web 批准。生产写入仍保持门控。
 - 剩余阻断：真实 115 写入、STRM 真实播放契约及 PanSou/qB 外部网络基线仍按 `docs/requirements/BLOCKERS.md` 保持门禁关闭。

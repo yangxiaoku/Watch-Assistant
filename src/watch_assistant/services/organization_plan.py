@@ -110,6 +110,8 @@ class OrganizationPlanView:
     source_count: int
     action_count: int
     precondition_count: int
+    requires_web_approval: bool
+    high_risk_action_threshold: int
     alias: str | None = None
 
     def __repr__(self) -> str:
@@ -130,6 +132,8 @@ class OrganizationPlanView:
             "source_count": self.source_count,
             "action_count": self.action_count,
             "precondition_count": self.precondition_count,
+            "requires_web_approval": self.requires_web_approval,
+            "high_risk_action_threshold": self.high_risk_action_threshold,
             "alias": self.alias,
         }
 
@@ -169,8 +173,20 @@ class OrganizationPlanExecutionStep:
 class OrganizationPlanService:
     """Create and invalidate local previews without a write-capable seam."""
 
-    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+    def __init__(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        *,
+        high_risk_action_threshold: int = 10,
+    ) -> None:
+        if (
+            isinstance(high_risk_action_threshold, bool)
+            or not isinstance(high_risk_action_threshold, int)
+            or not 1 <= high_risk_action_threshold <= 100_000
+        ):
+            raise ValueError("invalid_high_risk_action_threshold")
         self._session_factory = session_factory
+        self._high_risk_action_threshold = high_risk_action_threshold
 
     async def create_plan(
         self,
@@ -263,7 +279,7 @@ class OrganizationPlanService:
                 )
             )
             if existing is not None:
-                return _view(existing)
+                return self._view(existing)
             plan = OrganizationPlan(
                 id=uuid.uuid4().hex,
                 library_id=library.id,
@@ -295,8 +311,8 @@ class OrganizationPlanService:
                 )
                 if existing is None:
                     raise OrganizationPlanError("plan_persistence_failed") from None
-                return _view(existing)
-            return _view(plan)
+                return self._view(existing)
+            return self._view(plan)
 
     async def refresh_plan(
         self,
@@ -327,9 +343,9 @@ class OrganizationPlanService:
                 plan.status = OrganizationPlanStatus.INVALIDATED.value
                 plan.revision += 1
                 await session.commit()
-                return _view(plan)
+                return self._view(plan)
             if plan.status == OrganizationPlanStatus.IGNORED.value:
-                return _view(plan)
+                return self._view(plan)
             stale = current_time >= _utc(plan.expires_at)
             library = await session.get(MediaLibrary, plan.library_id)
             stored_preconditions = _load_json_object(plan.preconditions_json)
@@ -422,7 +438,7 @@ class OrganizationPlanService:
                 plan.status = OrganizationPlanStatus.INVALIDATED.value
                 plan.revision += 1
                 await session.commit()
-            return _view(plan)
+            return self._view(plan)
 
     async def ignore_plan(
         self, plan_id: str, *, expected_revision: int
@@ -452,7 +468,7 @@ class OrganizationPlanService:
             has_more = len(rows) > limit
             rows = rows[:limit]
             next_cursor = cursor + limit if has_more else None
-            return [_view(row) for row in rows], next_cursor
+            return [self._view(row) for row in rows], next_cursor
 
     async def get_plan(self, plan_id: str) -> OrganizationPlanView:
         _validate_identity(plan_id, "invalid_plan")
@@ -460,7 +476,7 @@ class OrganizationPlanService:
             plan = await session.get(OrganizationPlan, plan_id)
             if plan is None:
                 raise OrganizationPlanError("plan_not_found")
-            return _view(plan)
+            return self._view(plan)
 
     async def plan_library_id(self, plan_id: str) -> str:
         """Return the owning library ID for a scope check at an adapter boundary."""
@@ -514,7 +530,7 @@ class OrganizationPlanService:
             }:
                 raise OrganizationPlanError("plan_not_reviewable")
             if plan.alias == alias:
-                return _view(plan)
+                return self._view(plan)
             result = await session.execute(
                 update(OrganizationPlan)
                 .where(
@@ -536,7 +552,7 @@ class OrganizationPlanService:
             refreshed = await session.get(OrganizationPlan, plan_id)
             if refreshed is None:
                 raise OrganizationPlanError("plan_not_found")
-            return _view(refreshed)
+            return self._view(refreshed)
 
     async def _transition_plan(
         self,
@@ -556,7 +572,7 @@ class OrganizationPlanService:
             if plan.revision != expected_revision:
                 raise OrganizationPlanError("stale_revision")
             if plan.status == target.value:
-                return _view(plan)
+                return self._view(plan)
             if plan.status not in {item.value for item in allowed}:
                 raise OrganizationPlanError("plan_not_reviewable")
             result = await session.execute(
@@ -574,7 +590,13 @@ class OrganizationPlanService:
             refreshed = await session.get(OrganizationPlan, plan_id)
             if refreshed is None:
                 raise OrganizationPlanError("plan_not_found")
-            return _view(refreshed)
+            return self._view(refreshed)
+
+    def _view(self, plan: OrganizationPlan) -> OrganizationPlanView:
+        return _view(
+            plan,
+            high_risk_action_threshold=self._high_risk_action_threshold,
+        )
 
     async def _verified_scan(
         self,
@@ -1767,8 +1789,11 @@ def _utc(value: datetime | None) -> datetime:
     return current.astimezone(UTC)
 
 
-def _view(plan: OrganizationPlan) -> OrganizationPlanView:
+def _view(
+    plan: OrganizationPlan, *, high_risk_action_threshold: int = 10
+) -> OrganizationPlanView:
     source_snapshot = _load_source_snapshot(plan.source_snapshot_json) or []
+    action_count = len(_load_json_list(plan.actions_json))
     preconditions = _load_json_object(plan.preconditions_json)
     if isinstance(preconditions, dict):
         precondition_count = len(preconditions.get("items", ()))
@@ -1781,8 +1806,10 @@ def _view(plan: OrganizationPlan) -> OrganizationPlanView:
         revision=plan.revision,
         expires_at=_utc(plan.expires_at),
         source_count=len(source_snapshot),
-        action_count=len(_load_json_list(plan.actions_json)),
+        action_count=action_count,
         precondition_count=precondition_count,
+        requires_web_approval=action_count > high_risk_action_threshold,
+        high_risk_action_threshold=high_risk_action_threshold,
         alias=plan.alias,
     )
 

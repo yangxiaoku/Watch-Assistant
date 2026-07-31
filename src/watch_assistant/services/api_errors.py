@@ -124,6 +124,8 @@ _CATALOG: dict[str, ApiErrorDescriptor] = {
     "organization_preview_unavailable": ApiErrorDescriptor("organization_preview_unavailable", "整理预览服务暂时不可用", "本次整理预览未完成。", "请稍后重试。", True, "retry"),
     "target_catalog_unavailable": ApiErrorDescriptor("target_catalog_unavailable", "目标目录暂时无法读取", "本次整理预览未完成，目标目录清单没有得到可靠验证。", "请检查 115 连接和目标目录后重试。", True, "retry"),
     "organization_execution_disabled": ApiErrorDescriptor("organization_execution_disabled", "整理执行功能未启用", "本次整理操作未执行。", "请查看整理功能配置。", False, "inspect_configuration"),
+    "high_risk_approval_required": ApiErrorDescriptor("high_risk_approval_required", "需要 Web 人工批准", "影响数量超过阈值，本次整理未排队。", "请在任务中心完成人工批准后再提交。", False, "view_task"),
+    "web_approval_required": ApiErrorDescriptor("web_approval_required", "需要 Web 人工批准", "Agent 不能直接批准高风险计划。", "请使用已登录的 Web 会话完成批准。", False, "view_task"),
     "organization_write_disabled": ApiErrorDescriptor("organization_write_disabled", "真实整理写入未启用", "本次 115 写入操作未执行。", "请先检查真实写入开关。", False, "inspect_configuration"),
     "organization_write_unverified": ApiErrorDescriptor("organization_write_unverified", "真实整理写入契约未验收", "本次 115 写入操作未执行。", "请先完成受管测试目录的写入契约验收。", False, "inspect_configuration"),
     "permanent_delete_disabled": ApiErrorDescriptor("permanent_delete_disabled", "永久删除未启用", "本次删除操作未执行。", "请先检查永久删除开关。", False, "inspect_configuration"),

@@ -39,6 +39,7 @@ def _plan(
     status: str = "planned",
     revision: int = 1,
     expires_at: datetime,
+    action_count: int = 0,
 ) -> OrganizationPlan:
     return OrganizationPlan(
         id=plan_id,
@@ -49,7 +50,12 @@ def _plan(
             [{"object_id": REMOTE_SECRET, "object_type": "file"}]
         ),
         target_root="Movies",
-        actions_json="[]",
+        actions_json=json.dumps(
+            [
+                {"object_id": f"remote-{index}", "target": "Movies/title"}
+                for index in range(action_count)
+            ]
+        ),
         basis_json=json.dumps([{"reason": "pickcode-private"}]),
         preconditions_json=json.dumps(
             {
@@ -107,6 +113,11 @@ async def _client(
             [
                 _plan("plan-ready", expires_at=now + timedelta(hours=1)),
                 _plan("plan-batch", expires_at=now + timedelta(hours=1)),
+                _plan(
+                    "plan-high-risk",
+                    expires_at=now + timedelta(hours=1),
+                    action_count=11,
+                ),
                 _plan("plan-cancel", expires_at=now + timedelta(hours=1)),
                 _plan(
                     "plan-stale",
@@ -215,6 +226,7 @@ async def test_queue_is_idempotent_and_rejects_unconfirmed_stale_or_expired_plan
         "attempts",
         "error_code",
         "cancel_requested",
+        "workflow_id",
     }
     repeated = await client.post(
         "/api/v1/organization-plans/plan-ready/operation",
@@ -338,6 +350,82 @@ async def test_agent_operation_requires_confirmation_and_current_digest(tmp_path
     assert accepted.status_code == 200
     assert accepted.json()["status"] == "planned"
     await _close(client, database)
+
+
+@pytest.mark.integration
+async def test_high_risk_operation_requires_web_approval(tmp_path: Path):
+    client, database = await _client(tmp_path, execution_enabled=True)
+    web_headers = await _auth_headers(client)
+    try:
+        blocked = await client.post(
+            "/api/v1/organization-plans/plan-high-risk/operation",
+            json={"expected_revision": 1, "idempotency_key": "high-risk-blocked"},
+            headers=web_headers,
+        )
+        assert blocked.status_code == 409
+        assert blocked.json()["error"]["code"] == "high_risk_approval_required"
+
+        approval = await client.post(
+            "/api/v1/organization-plans/plan-high-risk/approval-workflow",
+            json={"expected_revision": 1},
+            headers=web_headers,
+        )
+        assert approval.status_code == 200
+        workflow_id = approval.json()["id"]
+        approval_stage = next(
+            stage for stage in approval.json()["stages"] if stage["stage"] == "approval"
+        )
+        assert approval_stage["status"] == "waiting_confirmation"
+        assert approval_stage["child_type"] == "organization_plan"
+        assert approval_stage["child_id"] == "plan-high-risk"
+
+        raw_token = "wa_at_high_risk_agent"
+        async with database.session_factory() as session:
+            session.add(
+                AgentToken(
+                    id="agent-high-risk",
+                    name="high-risk-agent",
+                    token_digest=hashlib.sha256(raw_token.encode()).hexdigest(),
+                    token_prefix=raw_token[:16],
+                    scopes_json=json.dumps(["organize:execute", "task:write"]),
+                    library_ids_json="[]",
+                    expires_at=datetime.now(UTC) + timedelta(hours=1),
+                    created_at=datetime.now(UTC),
+                )
+            )
+            await session.commit()
+        agent_approval = await client.post(
+            f"/api/v1/workflows/{workflow_id}/approval",
+            json={"decision": "approve"},
+            headers={"Authorization": f"Bearer {raw_token}"},
+        )
+        assert agent_approval.status_code == 403
+        assert agent_approval.json()["error"]["code"] == "web_approval_required"
+
+        approved = await client.post(
+            f"/api/v1/workflows/{workflow_id}/approval",
+            json={"decision": "approve", "reason": "Web 人工确认"},
+            headers=web_headers,
+        )
+        assert approved.status_code == 200
+        assert next(
+            stage for stage in approved.json()["stages"] if stage["stage"] == "approval"
+        )["status"] == "succeeded"
+
+        queued = await client.post(
+            "/api/v1/organization-plans/plan-high-risk/operation",
+            json={
+                "expected_revision": 1,
+                "idempotency_key": "high-risk-approved",
+                "workflow_id": workflow_id,
+            },
+            headers=web_headers,
+        )
+        assert queued.status_code == 200
+        assert queued.json()["workflow_id"] == workflow_id
+        assert queued.json()["status"] == "planned"
+    finally:
+        await _close(client, database)
 
 
 @pytest.mark.integration

@@ -169,6 +169,7 @@ def _response(summary: OrganizationOperationSummary) -> OrganizationOperationRes
         attempts=summary.attempts,
         error_code=summary.error_code,
         cancel_requested=summary.cancel_requested,
+        workflow_id=summary.workflow_id,
     )
 
 
@@ -183,6 +184,7 @@ def _batch_result(
         attempts=summary.attempts,
         error_code=summary.error_code,
         message="整理操作已排队",
+        workflow_id=summary.workflow_id,
     )
 
 
@@ -236,6 +238,7 @@ _STATUSES = {
     "confirmation_required": 409,
     "plan_digest_required": 422,
     "plan_digest_mismatch": 409,
+    "high_risk_approval_required": 409,
 }
 _MESSAGES = {
     "plan_not_found": "计划不存在",
@@ -260,6 +263,7 @@ _MESSAGES = {
     "confirmation_required": "缺少操作确认",
     "plan_digest_required": "缺少计划摘要",
     "plan_digest_mismatch": "计划摘要已变化，请刷新后重试",
+    "high_risk_approval_required": "影响数量超过阈值，请先完成 Web 人工批准",
     "operation_unavailable": "整理操作暂不可用",
 }
 

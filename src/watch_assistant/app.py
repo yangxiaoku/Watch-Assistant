@@ -145,6 +145,7 @@ def create_app(
     frontend_dir: Path | None = None,
     organization_plan_enabled: bool | None = None,
     organization_execution_enabled: bool | None = None,
+    organization_high_risk_action_threshold: int | None = None,
     organization_write_enabled: bool | None = None,
     organization_write_contract_verified: bool | None = None,
     permanent_delete_enabled: bool | None = None,
@@ -441,6 +442,10 @@ def create_app(
                 application.state.organization_execution_enabled = (
                     settings.organization_execution_enabled
                 )
+            if organization_high_risk_action_threshold is None:
+                application.state.organization_high_risk_action_threshold = (
+                    settings.organization_high_risk_action_threshold
+                )
             if settings.p115_enabled and settings.p115_target_cid is None:
                 raise RuntimeError("P115_ENABLED requires P115_TARGET_CID")
             contract = load_tgto_contract(settings.tgto_contract_path)
@@ -479,12 +484,18 @@ def create_app(
                 event_logger=application.state.settings_service,
             )
             application.state.organization_plan_service = OrganizationPlanService(
-                runtime_database.session_factory
+                runtime_database.session_factory,
+                high_risk_action_threshold=(
+                    application.state.organization_high_risk_action_threshold
+                ),
             )
             application.state.organization_operation_service = (
                 OrganizationOperationService(
                     runtime_database.session_factory,
                     event_logger=application.state.settings_service,
+                    high_risk_action_threshold=(
+                        application.state.organization_high_risk_action_threshold
+                    ),
                 )
             )
             application.state.strm_manifest_service = StrmManifestService(
@@ -955,6 +966,11 @@ def create_app(
         if organization_execution_enabled is not None
         else _env_flag("ORGANIZATION_EXECUTION_ENABLED")
     )
+    application.state.organization_high_risk_action_threshold = (
+        organization_high_risk_action_threshold
+        if organization_high_risk_action_threshold is not None
+        else _env_int("ORGANIZATION_HIGH_RISK_ACTION_THRESHOLD", default=10)
+    )
     application.state.organization_write_enabled = (
         organization_write_enabled
         if organization_write_enabled is not None
@@ -1089,7 +1105,10 @@ def create_app(
             database.session_factory
         )
         application.state.organization_plan_service = OrganizationPlanService(
-            database.session_factory
+            database.session_factory,
+            high_risk_action_threshold=(
+                application.state.organization_high_risk_action_threshold
+            ),
         )
         application.state.organization_preview_service = OrganizationPreviewService(
             database.session_factory,
@@ -1099,6 +1118,9 @@ def create_app(
         application.state.organization_operation_service = OrganizationOperationService(
             database.session_factory,
             event_logger=application.state.settings_service,
+            high_risk_action_threshold=(
+                application.state.organization_high_risk_action_threshold
+            ),
         )
         application.state.strm_manifest_service = StrmManifestService(
             database.session_factory
@@ -1204,6 +1226,13 @@ def create_app(
             ),
             "organization_execution_enabled": bool(
                 getattr(application.state, "organization_execution_enabled", False)
+            ),
+            "organization_high_risk_action_threshold": int(
+                getattr(
+                    application.state,
+                    "organization_high_risk_action_threshold",
+                    10,
+                )
             ),
             "organization_write_enabled": bool(
                 getattr(application.state, "organization_write_enabled", False)
@@ -1324,6 +1353,19 @@ def _worker_owner() -> str:
 
 def _env_flag(name: str) -> bool:
     return os.environ.get(name, "").strip().casefold() in {"1", "true", "yes", "on"}
+
+
+def _env_int(name: str, *, default: int) -> int:
+    value = os.environ.get(name, "").strip()
+    if not value:
+        return default
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be an integer") from exc
+    if not 1 <= parsed <= 100_000:
+        raise RuntimeError(f"{name} is outside the supported range")
+    return parsed
 
 
 def _parse_networks(value: str | tuple[str, ...]) -> tuple[object, ...]:

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Ban, Check, ChevronRight, Eye, LoaderCircle, RefreshCw, Tag } from "@lucide/vue";
+import { Ban, Check, ChevronRight, Eye, LoaderCircle, RefreshCw, Tag, ShieldCheck } from "@lucide/vue";
 import { computed, onMounted, ref } from "vue";
 import { ApiClient, ApiError, focusFirstFieldError } from "../api";
 import type { OrganizationPlanStatus, OrganizationPlanSummary } from "../types";
@@ -13,6 +13,7 @@ const activeStatus = ref<OrganizationPlanStatus>("needs_review");
 const items = ref<OrganizationPlanSummary[]>([]);
 const nextCursor = ref<number | null>(null);
 const selected = ref<OrganizationPlanSummary | null>(null);
+const approvalWorkflowId = ref<string | null>(null);
 const aliasInput = ref("");
 const loading = ref(false);
 const busy = ref(false);
@@ -37,6 +38,7 @@ async function loadPlans(cursor?: number) {
     items.value = response.items;
     nextCursor.value = response.next_cursor;
     selected.value = response.items[0] ?? null;
+    approvalWorkflowId.value = null;
     aliasInput.value = selected.value?.alias ?? "";
   } catch (exception) {
     error.value = exception instanceof ApiError ? exception.message : "计划列表加载失败，请稍后重试";
@@ -47,6 +49,7 @@ async function loadPlans(cursor?: number) {
 
 function selectPlan(plan: OrganizationPlanSummary) {
   selected.value = plan;
+  approvalWorkflowId.value = null;
   aliasInput.value = plan.alias ?? "";
   notice.value = "";
 }
@@ -81,13 +84,33 @@ async function queueOperation() {
   error.value = "";
   notice.value = "";
   try {
-    const operation = await props.api.queueOrganizationOperation(plan.plan_id, plan.revision);
+    const operation = approvalWorkflowId.value
+      ? await props.api.queueOrganizationOperation(plan.plan_id, plan.revision, approvalWorkflowId.value)
+      : await props.api.queueOrganizationOperation(plan.plan_id, plan.revision);
     notice.value = operation.status === "organized"
       ? "整理已完成"
       : `整理操作已排队，当前状态：${operation.status}`;
   } catch (exception) {
     focusFirstFieldError(exception);
     error.value = exception instanceof ApiError ? exception.message : "整理操作排队失败，请稍后重试";
+  } finally {
+    busy.value = false;
+  }
+}
+
+async function requestApproval() {
+  const plan = selected.value;
+  if (!plan || busy.value || plan.status !== "planned" || !plan.requires_web_approval) return;
+  busy.value = true;
+  error.value = "";
+  notice.value = "";
+  try {
+    const workflow = await props.api.createOrganizationApprovalWorkflow(plan.plan_id, plan.revision);
+    approvalWorkflowId.value = workflow.id;
+    notice.value = `已创建 Web 人工审批，请前往任务中心确认（${workflow.id}）`;
+  } catch (exception) {
+    focusFirstFieldError(exception);
+    error.value = exception instanceof ApiError ? exception.message : "创建人工审批失败，请稍后重试";
   } finally {
     busy.value = false;
   }
@@ -167,9 +190,11 @@ onMounted(() => {
           <div><dt>预览动作</dt><dd>{{ selected.action_count }}</dd></div>
           <div><dt>前置条件</dt><dd>{{ selected.precondition_count }}</dd></div>
         </dl>
+        <p v-if="selected.requires_web_approval" class="organization-safe-note"><ShieldCheck :size="15" />影响动作超过 {{ selected.high_risk_action_threshold }} 条，提交远端整理前必须完成 Web 人工审批。</p>
         <p class="organization-safe-note">预览只显示本地摘要。</p>
         <div v-if="selectedCanEdit || (selected.status === 'planned' && executionEnabled)" class="organization-actions">
           <button v-if="selectedIsReviewable" class="primary-button" type="button" :disabled="busy" @click="confirmPlan"><Check :size="16" />确认本地计划</button>
+          <button v-if="selected.status === 'planned' && executionEnabled && selected.requires_web_approval" class="secondary-button" type="button" :disabled="busy" @click="requestApproval"><ShieldCheck :size="16" />申请 Web 人工审批</button>
           <button v-if="selected.status === 'planned' && executionEnabled" class="primary-button" type="button" :disabled="busy" @click="queueOperation"><Check :size="16" />提交远端整理</button>
           <button class="secondary-button" type="button" :disabled="busy" @click="ignorePlan"><Ban :size="16" />忽略</button>
         </div>
