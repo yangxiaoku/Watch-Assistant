@@ -113,6 +113,18 @@ async def test_agent_token_is_one_time_secret_and_scope_is_enforced(tmp_path):
     assert backup_denied.status_code == 403
     assert backup_denied.json()["error"]["code"] == "missing_scope"
     assert backup_denied.json()["error"]["missing_scopes"] == ["settings:read"]
+    write_token = await client.post(
+        "/api/v1/agent/tokens",
+        json={"name": "settings-writer", "scopes": ["settings:write"]},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert write_token.status_code == 201
+    import_scope_check = await client.post(
+        "/api/v1/backups/configuration/import",
+        json={},
+        headers={"Authorization": f"Bearer {write_token.json()['token']}"},
+    )
+    assert import_scope_check.status_code == 422
     await _close(client, database, tmdb, pansou)
 
 

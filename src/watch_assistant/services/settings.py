@@ -17,8 +17,15 @@ from uuid import uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from watch_assistant.models import ApplicationSettings, AuditRecord, utc_now
+from watch_assistant.models import (
+    ApplicationSettings,
+    AuditRecord,
+    NotificationPreference,
+    utc_now,
+)
 from watch_assistant.schemas import (
+    BackupConfigurationImportRequest,
+    BackupConfigurationImportResponse,
     ContentPolicyPatch,
     ContentPolicyResponse,
     InspectionSettingsPatch,
@@ -27,6 +34,7 @@ from watch_assistant.schemas import (
     LoggingLevel,
     LoggingSettingsPatch,
     LoggingSettingsResponse,
+    NotificationPreferencePatch,
     OrganizationSettingsPatch,
     OrganizationSettingsResponse,
 )
@@ -107,6 +115,18 @@ class ContentPolicyValidationError(ValueError):
 
 
 class OrganizationSettingsValidationError(ValueError):
+    pass
+
+
+class ConfigurationImportConfirmationRequired(ValueError):
+    pass
+
+
+class ConfigurationImportConflict(ValueError):
+    pass
+
+
+class ConfigurationImportValidationError(ValueError):
     pass
 
 
@@ -992,6 +1012,111 @@ class SettingsService:
             "settings.changed",
             level=LoggingLevel.INFO,
             fields={"status": "organization"},
+            actor_type=actor_type,
+            actor_id=actor_id,
+            request_id=request_id,
+        )
+        return response
+
+    async def import_configuration(
+        self,
+        payload: BackupConfigurationImportRequest,
+        *,
+        release: str,
+        actor_type: str | None = None,
+        actor_id: str | None = None,
+        request_id: str | None = None,
+    ) -> BackupConfigurationImportResponse:
+        """Apply all non-sensitive settings in one transaction."""
+        if payload.confirmed is not True:
+            raise ConfigurationImportConfirmationRequired
+        async with self._settings_lock, self._session_factory() as session:
+            settings = await self._get_or_create(session)
+            preference = await session.get(NotificationPreference, "default")
+            if preference is None:
+                preference = NotificationPreference(id="default")
+                session.add(preference)
+                await session.flush()
+            if settings.revision != payload.expected_settings_revision:
+                raise ConfigurationImportConflict("settings_revision")
+            if preference.revision != payload.expected_notification_revision:
+                raise ConfigurationImportConflict("notification_revision")
+            try:
+                blocked_keywords = normalize_keywords(
+                    payload.content_policy.blocked_keywords
+                )
+                organization_values = _validate_organization_values(
+                    payload.organization.model_dump(exclude={"revision"})
+                )
+                notification_patch = NotificationPreferencePatch(
+                    enabled=payload.notifications.enabled,
+                    muted_event_codes=payload.notifications.muted_event_codes,
+                    quiet_hours_enabled=payload.notifications.quiet_hours_enabled,
+                    quiet_hours_start=payload.notifications.quiet_hours_start,
+                    quiet_hours_end=payload.notifications.quiet_hours_end,
+                    quiet_hours_timezone=payload.notifications.quiet_hours_timezone,
+                    error_bypass_quiet_hours=payload.notifications.error_bypass_quiet_hours,
+                    revision=preference.revision,
+                )
+            except (ValueError, TypeError) as exc:
+                raise ConfigurationImportValidationError(str(exc)) from None
+
+            settings.logging_level = payload.logging.level.value
+            settings.retention_days = payload.logging.retention_days
+            settings.max_file_mb = payload.logging.max_file_mb
+            settings.inspection_auto_start_enabled = payload.inspection.auto_start_enabled
+            settings.content_policy_json = json.dumps(
+                {
+                    "hide_adult_media": payload.content_policy.hide_adult_media,
+                    "hide_suspicious_resources": payload.content_policy.hide_suspicious_resources,
+                    "hide_low_quality_resources": payload.content_policy.hide_low_quality_resources,
+                    "blocked_keywords": list(blocked_keywords),
+                },
+                ensure_ascii=False,
+            )
+            settings.organization_settings_json = json.dumps(
+                organization_values, ensure_ascii=False, separators=(",", ":")
+            )
+            settings.revision += 1
+            preference.enabled = notification_patch.enabled
+            preference.muted_event_codes_json = json.dumps(
+                sorted(set(notification_patch.muted_event_codes or [])),
+                ensure_ascii=False,
+            )
+            preference.quiet_hours_enabled = notification_patch.quiet_hours_enabled
+            preference.quiet_hours_start = notification_patch.quiet_hours_start
+            preference.quiet_hours_end = notification_patch.quiet_hours_end
+            preference.quiet_hours_timezone = notification_patch.quiet_hours_timezone
+            preference.error_bypass_quiet_hours = notification_patch.error_bypass_quiet_hours
+            sections = ["logging", "inspection", "content_policy", "organization", "notifications"]
+            self._add_audit_record(
+                session,
+                event="settings.changed",
+                fields={
+                    "status": "configuration_import",
+                    "changed_fields": sections,
+                },
+                actor_type=actor_type,
+                actor_id=actor_id,
+                request_id=request_id,
+            )
+            await session.commit()
+            response = BackupConfigurationImportResponse(
+                release=release,
+                settings_revision=settings.revision,
+                notification_revision=preference.revision,
+                imported_sections=sections,
+                requires_reconfiguration=[
+                    "tmdb_api_key",
+                    "p115_cookie",
+                    "web_password",
+                    "agent_token",
+                ],
+            )
+        await self.log_event(
+            "settings.changed",
+            level=LoggingLevel.INFO,
+            fields={"status": "configuration_import", "changed_fields": sections},
             actor_type=actor_type,
             actor_id=actor_id,
             request_id=request_id,

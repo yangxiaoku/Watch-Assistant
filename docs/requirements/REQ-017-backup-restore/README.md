@@ -107,7 +107,10 @@ Secret 默认只记录“需要重新配置”的占位信息。若支持 Secret
 - 新增 `GET /api/v1/backups/configuration` 和 `watchctl backup configuration`，导出日志、
   检测、内容策略、整理规则和通知偏好等非敏感配置；响应包含配置格式版本、应用版本和
   需要重新配置的 Secret 标识，不包含 Cookie、Token、密码、API Key、加密字段或数据库内容。
-- 本轮受影响后端回归为 `44 passed`，前端 API/设置页回归为 `51 passed`，Ruff 和前端生产
+- 新增 `POST /api/v1/backups/configuration/import`、`watchctl backup configuration-import`
+  和设置页文件导入；导入只接受脱敏配置字段，要求显式确认并校验设置/通知 revision，所有
+  设置在一个 SQLite 事务中提交，失败不会产生部分写入；固定保留需重新配置的 Secret 标识。
+- 本轮受影响后端回归为 `45 passed`，前端 API/设置页回归为 `53 passed`，Ruff 和前端生产
   构建通过。测试只使用临时 SQLite fixture，未执行真实部署恢复。
-- Web 二次批准、在线任务排空证明、恢复后订阅/任务/库存/STRM 业务一致性校验、配置导入
-  和加密异地备份仍按 `BLOCKERS.md` 保持关闭。
+- Web 二次批准、在线任务排空证明、恢复后订阅/任务/库存/STRM 业务一致性校验和加密异地
+  备份仍按 `BLOCKERS.md` 保持关闭。

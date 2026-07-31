@@ -284,6 +284,24 @@ def _data_for(path: str, body: Any) -> Any:
     return body
 
 
+def _load_configuration_import(path: Path) -> dict[str, Any]:
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        raise CliFailure(
+            "脱敏配置文件不可读取",
+            code=EXIT_USAGE,
+            error_code="backup_configuration_invalid",
+        ) from None
+    if not isinstance(raw, dict):
+        raise CliFailure(
+            "脱敏配置文件格式无效",
+            code=EXIT_USAGE,
+            error_code="backup_configuration_invalid",
+        )
+    return raw
+
+
 def _command(args: argparse.Namespace, path: Path) -> tuple[Any, int]:
     if args.command == "configure":
         if not _valid_server(args.server):
@@ -408,12 +426,43 @@ def _command(args: argparse.Namespace, path: Path) -> tuple[Any, int]:
                 request_id=_request_id(body),
             ), EXIT_OK
         if args.command == "backup":
-            endpoint = (
-                "/api/v1/backups/configuration"
-                if args.backup_command == "configuration"
-                else "/api/v1/backups"
-            )
-            body = client.get(endpoint)
+            if args.backup_command == "configuration-import":
+                if not args.confirm:
+                    raise CliFailure(
+                        "配置导入需要明确确认",
+                        code=EXIT_USAGE,
+                        error_code="backup_configuration_confirmation_required",
+                    )
+                payload = _load_configuration_import(Path(args.file).expanduser())
+                current = _data_for(
+                    "/api/v1/backups/configuration",
+                    client.get("/api/v1/backups/configuration"),
+                )
+                if not isinstance(current, dict):
+                    raise CliFailure(
+                        "当前配置响应格式无效",
+                        code=EXIT_UNAVAILABLE,
+                        error_code="backup_configuration_invalid",
+                    )
+                try:
+                    payload["expected_settings_revision"] = current["logging"]["revision"]
+                    payload["expected_notification_revision"] = current["notifications"]["revision"]
+                except (KeyError, TypeError):
+                    raise CliFailure(
+                        "当前配置响应格式无效",
+                        code=EXIT_UNAVAILABLE,
+                        error_code="backup_configuration_invalid",
+                    ) from None
+                payload["confirmed"] = True
+                endpoint = "/api/v1/backups/configuration/import"
+                body = client.post(endpoint, payload=payload)
+            else:
+                endpoint = (
+                    "/api/v1/backups/configuration"
+                    if args.backup_command == "configuration"
+                    else "/api/v1/backups"
+                )
+                body = client.get(endpoint)
             return envelope(data=_data_for(endpoint, body), request_id=_request_id(body)), EXIT_OK
         if args.command == "deployment":
             body = client.get("/api/v1/deployment/diagnostics")
@@ -735,6 +784,11 @@ def _build_parser() -> argparse.ArgumentParser:
     backup = sub.add_parser("backup", help="备份只读查询")
     backup_sub = backup.add_subparsers(dest="backup_command")
     backup_sub.add_parser("configuration", help="导出脱敏配置")
+    configuration_import = backup_sub.add_parser(
+        "configuration-import", help="导入脱敏配置"
+    )
+    configuration_import.add_argument("--file", required=True)
+    configuration_import.add_argument("--confirm", action="store_true")
     sub.add_parser("deployment", help="部署诊断只读查询")
 
     library = sub.add_parser("library", help="媒体库只读查询")

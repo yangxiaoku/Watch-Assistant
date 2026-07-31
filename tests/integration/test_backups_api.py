@@ -99,6 +99,66 @@ async def test_backup_api_creates_consistent_snapshot_manifest_without_secrets(t
         assert "managed_tmdb_key_encrypted" not in exported.text
         assert "managed_p115_cookie_encrypted" not in exported.text
 
+        import_payload = configuration | {
+            "expected_settings_revision": configuration["logging"]["revision"],
+            "expected_notification_revision": configuration["notifications"]["revision"],
+            "confirmed": True,
+        }
+        import_payload["logging"] = configuration["logging"] | {"retention_days": 20}
+        import_payload["notifications"] = configuration["notifications"] | {"enabled": False}
+        imported = await client.post(
+            "/api/v1/backups/configuration/import", json=import_payload
+        )
+        assert imported.status_code == 200
+        assert imported.json()["status"] == "imported"
+        assert imported.json()["imported_sections"] == [
+            "logging",
+            "inspection",
+            "content_policy",
+            "organization",
+            "notifications",
+        ]
+        assert imported.json()["requires_reconfiguration"] == [
+            "tmdb_api_key",
+            "p115_cookie",
+            "web_password",
+            "agent_token",
+        ]
+        assert (await client.get("/api/v1/settings/logging")).json()["retention_days"] == 20
+        assert (await client.get("/api/v1/notification-preferences")).json()["enabled"] is False
+
+        missing_confirmation = await client.post(
+            "/api/v1/backups/configuration/import",
+            json=import_payload | {"confirmed": False},
+        )
+        assert missing_confirmation.status_code == 422
+        assert missing_confirmation.json()["error"]["code"] == "backup_configuration_confirmation_required"
+
+        invalid = import_payload | {
+            "expected_settings_revision": imported.json()["settings_revision"],
+            "expected_notification_revision": imported.json()["notification_revision"],
+            "organization": import_payload["organization"] | {
+                "source_directory_ids": ["100"],
+                "target_directory_id": "100",
+            },
+        }
+        invalid_response = await client.post(
+            "/api/v1/backups/configuration/import", json=invalid
+        )
+        assert invalid_response.status_code == 422
+        assert invalid_response.json()["error"]["code"] == "backup_configuration_invalid"
+        assert (await client.get("/api/v1/settings/logging")).json()["retention_days"] == 20
+
+        conflict = await client.post(
+            "/api/v1/backups/configuration/import",
+            json=import_payload | {
+                "expected_settings_revision": 0,
+                "expected_notification_revision": 1,
+            },
+        )
+        assert conflict.status_code == 409
+        assert conflict.json()["error"]["code"] == "backup_configuration_conflict"
+
         listed = await client.get("/api/v1/backups")
         assert listed.status_code == 200
         assert listed.json()["items"][0]["backup_id"] == body["backup_id"]
@@ -111,6 +171,7 @@ async def test_backup_api_creates_consistent_snapshot_manifest_without_secrets(t
             "backup.created",
             "backup.restore_preview",
             "backup.configuration_exported",
+            "backup.configuration_imported",
         } <= event_codes
     finally:
         await client.aclose()

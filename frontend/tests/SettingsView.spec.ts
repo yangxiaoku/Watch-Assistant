@@ -94,6 +94,15 @@ function makeApi(overrides: Partial<Record<keyof ApiClient, unknown>> = {}) {
       notifications: { enabled: true, muted_event_codes: [], revision: 1 },
       requires_reconfiguration: ["tmdb_api_key", "p115_cookie", "web_password", "agent_token"],
     }),
+    importConfiguration: vi.fn().mockResolvedValue({
+      schema_version: 1,
+      status: "imported",
+      release: "2026.07.25",
+      settings_revision: 8,
+      notification_revision: 2,
+      imported_sections: ["logging", "inspection", "content_policy", "organization", "notifications"],
+      requires_reconfiguration: ["tmdb_api_key", "p115_cookie", "web_password", "agent_token"],
+    }),
     loggingSettings: vi.fn().mockResolvedValue(logging),
     inspectionSettings: vi.fn().mockResolvedValue(inspection),
     updateInspectionSettings: vi.fn().mockResolvedValue({ ...inspection, revision: 1 }),
@@ -259,6 +268,30 @@ describe("SettingsView", () => {
     expect(wrapper.text()).not.toContain("tmdb_api_key");
     expect(wrapper.text()).not.toContain("p115_cookie");
     expect(revokeObjectURL).toHaveBeenCalledWith("blob:configuration");
+  });
+
+  it("imports a configuration file through the redacted field allow-list", async () => {
+    const api = makeApi();
+    const wrapper = mount(SettingsView, { props: { api } });
+    await flushPromises();
+    const input = wrapper.get('input[type="file"]');
+    const file = new File([JSON.stringify({
+      ...await api.exportConfiguration(),
+      unexpected_secret: "must-not-be-sent",
+      logging: { ...(await api.exportConfiguration()).logging, retention_days: 21 },
+    })], "configuration.json", { type: "application/json" });
+    Object.defineProperty(input.element, "files", { value: [file] });
+
+    await input.trigger("change");
+    await flushPromises();
+
+    expect(api.importConfiguration).toHaveBeenCalledTimes(1);
+    const payload = (api.importConfiguration as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(payload.logging.retention_days).toBe(21);
+    expect(payload.confirmed).toBe(true);
+    expect(payload.expected_settings_revision).toBe(logging.revision);
+    expect(payload).not.toHaveProperty("unexpected_secret");
+    expect(wrapper.text()).not.toContain("must-not-be-sent");
   });
 
   it("loads the first cursor page and appends later pages with id de-duplication", async () => {

@@ -938,6 +938,37 @@ class BackupConfigurationExportResponse(BaseModel):
     requires_reconfiguration: list[str] = Field(default_factory=list)
 
 
+class BackupConfigurationImportRequest(BaseModel):
+    """A complete, non-sensitive configuration payload for an explicit import."""
+
+    model_config = {"extra": "forbid"}
+
+    schema_version: Literal[1] = 1
+    exported_at: datetime
+    release: str = Field(min_length=1, max_length=128)
+    logging: LoggingSettingsResponse
+    inspection: InspectionSettingsResponse
+    content_policy: ContentPolicyResponse
+    organization: OrganizationSettingsResponse
+    notifications: NotificationPreferenceResponse
+    requires_reconfiguration: list[str] = Field(default_factory=list)
+    expected_settings_revision: int = Field(ge=0)
+    expected_notification_revision: int = Field(ge=1)
+    confirmed: bool = False
+
+
+class BackupConfigurationImportResponse(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    schema_version: Literal[1] = 1
+    status: Literal["imported"] = "imported"
+    release: str
+    settings_revision: int = Field(ge=0)
+    notification_revision: int = Field(ge=1)
+    imported_sections: list[str] = Field(min_length=1)
+    requires_reconfiguration: list[str] = Field(default_factory=list)
+
+
 class ManualImportRequest(BaseModel):
     model_config = {"extra": "forbid"}
 

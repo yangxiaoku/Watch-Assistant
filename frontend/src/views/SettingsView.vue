@@ -3,6 +3,7 @@ import {
   Activity,
   AlertTriangle,
   Download,
+  Upload,
   CheckCircle2,
   Cookie,
   ShieldAlert,
@@ -36,6 +37,8 @@ import type {
   P115ValidationResponse,
   P115DirectoryItem,
   P115LoginDevice,
+  BackupConfigurationExportResponse,
+  BackupConfigurationImportRequest,
   SettingsOverviewResponse,
 } from "../types";
 
@@ -101,6 +104,9 @@ const overviewLoading = ref(true);
 const overviewError = ref("");
 const configurationExporting = ref(false);
 const configurationExportError = ref("");
+const configurationImportInput = ref<HTMLInputElement | null>(null);
+const configurationImporting = ref(false);
+const configurationImportError = ref("");
 const p115 = ref<P115SettingsResponse | null>(null);
 const p115Loading = ref(true);
 const p115Error = ref("");
@@ -273,6 +279,69 @@ async function downloadConfiguration() {
     configurationExportError.value = exception instanceof ApiError ? exception.message : "配置导出失败，请稍后重试";
   } finally {
     configurationExporting.value = false;
+  }
+}
+
+function openConfigurationImport() {
+  configurationImportInput.value?.click();
+}
+
+function pickConfigurationSection(value: unknown, keys: string[]): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const record = value as Record<string, unknown>;
+  return Object.fromEntries(keys.map((key) => [key, record[key]]));
+}
+
+function sanitizeConfigurationImport(value: unknown): BackupConfigurationExportResponse {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("配置文件格式无效");
+  const record = value as Record<string, unknown>;
+  return {
+    schema_version: record.schema_version as 1,
+    exported_at: String(record.exported_at ?? ""),
+    release: String(record.release ?? ""),
+    logging: pickConfigurationSection(record.logging, ["level", "retention_days", "max_file_mb", "revision"]) as BackupConfigurationExportResponse["logging"],
+    inspection: pickConfigurationSection(record.inspection, ["auto_start_enabled", "revision"]) as BackupConfigurationExportResponse["inspection"],
+    content_policy: pickConfigurationSection(record.content_policy, ["hide_adult_media", "hide_suspicious_resources", "hide_low_quality_resources", "blocked_keywords", "revision"]) as BackupConfigurationExportResponse["content_policy"],
+    organization: pickConfigurationSection(record.organization, [
+      "schedule_enabled", "scan_interval_minutes", "source_directory_ids", "target_directory_id", "push_directory_id",
+      "video_extensions", "metadata_extensions", "rename_enabled", "media_probe_enabled", "ai_identification_enabled",
+      "small_file_threshold_mb", "cleanup_empty_directories", "strm_linkage_enabled", "operation_delay_seconds",
+      "include_children_category", "include_concert_category", "region_grouping_enabled", "year_grouping_enabled",
+      "prefer_remux", "prefer_resolution", "prefer_dolby", "conflict_mode", "multi_version_enabled", "revision",
+    ]) as BackupConfigurationExportResponse["organization"],
+    notifications: pickConfigurationSection(record.notifications, [
+      "enabled", "muted_event_codes", "quiet_hours_enabled", "quiet_hours_start", "quiet_hours_end",
+      "quiet_hours_timezone", "error_bypass_quiet_hours", "revision",
+    ]) as BackupConfigurationExportResponse["notifications"],
+    requires_reconfiguration: [],
+  };
+}
+
+async function importConfigurationFile(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = "";
+  if (!file) return;
+  configurationImporting.value = true;
+  configurationImportError.value = "";
+  try {
+    const configuration = sanitizeConfigurationImport(JSON.parse(await file.text()));
+    if (configuration.schema_version !== 1 || !configuration.release || !configuration.exported_at) {
+      throw new Error("配置文件版本无效");
+    }
+    const current = await props.api.exportConfiguration();
+    const payload: BackupConfigurationImportRequest = {
+      ...configuration,
+      expected_settings_revision: current.logging.revision,
+      expected_notification_revision: current.notifications.revision,
+      confirmed: true,
+    };
+    await props.api.importConfiguration(payload);
+    await loadOverview();
+  } catch (exception) {
+    configurationImportError.value = exception instanceof ApiError ? exception.message : exception instanceof Error ? exception.message : "配置导入失败，请稍后重试";
+  } finally {
+    configurationImporting.value = false;
   }
 }
 
@@ -1034,8 +1103,9 @@ watch(autoRefreshLogs, syncLogsRefreshTimer);
         <div class="settings-section-kicker"><span>{{ currentSection?.label }}</span><span>观影助手</span></div>
 
         <section v-if="activeSection === 'overview'" class="settings-section" aria-labelledby="overview-title">
-          <header class="settings-section-heading"><div><p class="eyebrow">系统概览</p><h2 id="overview-title">概览</h2></div><div class="settings-section-actions"><button class="secondary-button" type="button" :disabled="configurationExporting" @click="downloadConfiguration"><LoaderCircle v-if="configurationExporting" class="spin" :size="15" /><Download v-else :size="15" />下载脱敏设置</button><button class="icon-button" type="button" title="刷新概览" aria-label="刷新概览" :disabled="overviewLoading" @click="loadOverview"><RefreshCw :size="16" :class="{ spin: overviewLoading }" /></button></div></header>
+          <header class="settings-section-heading"><div><p class="eyebrow">系统概览</p><h2 id="overview-title">概览</h2></div><div class="settings-section-actions"><button class="secondary-button" type="button" :disabled="configurationExporting || configurationImporting" @click="downloadConfiguration"><LoaderCircle v-if="configurationExporting" class="spin" :size="15" /><Download v-else :size="15" />下载脱敏设置</button><button class="secondary-button" type="button" :disabled="configurationExporting || configurationImporting" @click="openConfigurationImport"><LoaderCircle v-if="configurationImporting" class="spin" :size="15" /><Upload v-else :size="15" />导入脱敏设置</button><input ref="configurationImportInput" class="sr-only" type="file" accept="application/json,.json" @change="importConfigurationFile" /><button class="icon-button" type="button" title="刷新概览" aria-label="刷新概览" :disabled="overviewLoading" @click="loadOverview"><RefreshCw :size="16" :class="{ spin: overviewLoading }" /></button></div></header>
           <p v-if="configurationExportError" class="settings-state settings-state-error" role="alert"><AlertTriangle :size="18" /><span>{{ configurationExportError }}</span></p>
+          <p v-if="configurationImportError" class="settings-state settings-state-error" role="alert"><AlertTriangle :size="18" /><span>{{ configurationImportError }}</span></p>
           <div v-if="overviewLoading" class="settings-loading"><LoaderCircle class="spin" :size="20" />正在加载概览</div>
           <div v-else-if="overviewError" class="settings-state settings-state-error"><AlertTriangle :size="18" /><span>{{ overviewError }}</span><button class="text-button" type="button" @click="loadOverview">重试</button></div>
           <template v-else-if="overview">

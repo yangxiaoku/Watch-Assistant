@@ -236,6 +236,22 @@ export interface BackupConfigurationExportResponse {
   requires_reconfiguration: string[];
 }
 
+export interface BackupConfigurationImportRequest extends BackupConfigurationExportResponse {
+  expected_settings_revision: number;
+  expected_notification_revision: number;
+  confirmed: boolean;
+}
+
+export interface BackupConfigurationImportResponse {
+  schema_version: 1;
+  status: "imported";
+  release: string;
+  settings_revision: number;
+  notification_revision: number;
+  imported_sections: string[];
+  requires_reconfiguration: string[];
+}
+
 export interface LibraryScanSummary {
   run_id: string;
   state: "queued" | "running" | "completed" | "failed" | "cancelled";

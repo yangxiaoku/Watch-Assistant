@@ -44,6 +44,8 @@ import type {
   StrmGenerationResponse,
   PwaDevice,
   BackupConfigurationExportResponse,
+  BackupConfigurationImportRequest,
+  BackupConfigurationImportResponse,
 } from "./types";
 import { describeUiError, type UiErrorAction } from "./errorCatalog";
 
@@ -124,6 +126,15 @@ export class ApiClient {
 
   async exportConfiguration(): Promise<BackupConfigurationExportResponse> {
     return this.request<BackupConfigurationExportResponse>("/api/v1/backups/configuration");
+  }
+
+  async importConfiguration(
+    configuration: BackupConfigurationImportRequest,
+  ): Promise<BackupConfigurationImportResponse> {
+    return this.request<BackupConfigurationImportResponse>("/api/v1/backups/configuration/import", {
+      method: "POST",
+      body: JSON.stringify(configuration),
+    });
   }
 
   async loggingSettings(): Promise<LoggingSettingsResponse> {

@@ -338,6 +338,12 @@ EVENT_CATALOG: dict[str, EventDefinition] = {
         "配置导出已完成",
         "已导出脱敏配置，状态：{status}，数量：{count}",
     ),
+    "backup.configuration_imported": _event(
+        "backup.configuration_imported",
+        LogCategory.SYSTEM,
+        "配置导入已完成",
+        "已导入脱敏配置，状态：{status}，数量：{count}",
+    ),
     "backup.restore_succeeded": _event(
         "backup.restore_succeeded",
         LogCategory.SYSTEM,

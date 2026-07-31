@@ -93,6 +93,73 @@ def test_backup_configuration_command_uses_redacted_configuration_endpoint(capsy
     assert seen == ["/api/v1/backups/configuration"]
 
 
+def test_backup_configuration_import_command_confirms_and_uses_current_revisions(capsys, tmp_path: Path):
+    seen: list[tuple[str, dict[str, object] | None]] = []
+    configuration = {
+        "schema_version": 1,
+        "exported_at": "2026-07-31T00:00:00Z",
+        "release": "test",
+        "logging": {"level": "INFO", "retention_days": 14, "max_file_mb": 10, "revision": 4},
+        "inspection": {"auto_start_enabled": True, "revision": 4},
+        "content_policy": {"hide_adult_media": True, "hide_suspicious_resources": True, "hide_low_quality_resources": True, "blocked_keywords": [], "revision": 4},
+        "organization": {
+            "schedule_enabled": False, "scan_interval_minutes": 30, "source_directory_ids": [],
+            "target_directory_id": None, "push_directory_id": None, "video_extensions": ["mkv"],
+            "metadata_extensions": ["srt"], "rename_enabled": True, "media_probe_enabled": True,
+            "ai_identification_enabled": False, "small_file_threshold_mb": 0, "cleanup_empty_directories": False,
+            "strm_linkage_enabled": False, "operation_delay_seconds": 1.5, "include_children_category": False,
+            "include_concert_category": False, "region_grouping_enabled": True, "year_grouping_enabled": False,
+            "prefer_remux": True, "prefer_resolution": True, "prefer_dolby": False, "conflict_mode": 2,
+            "multi_version_enabled": False, "revision": 4,
+        },
+        "notifications": {
+            "enabled": True, "muted_event_codes": [], "quiet_hours_enabled": True,
+            "quiet_hours_start": "23:00", "quiet_hours_end": "08:00", "quiet_hours_timezone": "Asia/Shanghai",
+            "error_bypass_quiet_hours": True, "revision": 2,
+        },
+        "requires_reconfiguration": ["p115_cookie"],
+    }
+    file_path = tmp_path / "configuration.json"
+    file_path.write_text(json.dumps(configuration), encoding="utf-8")
+
+    class Transport(httpx.BaseTransport):
+        def handle_request(self, request):
+            if request.url.path == "/api/v1/backups/configuration":
+                return httpx.Response(200, json={
+                    "logging": {"revision": 9},
+                    "notifications": {"revision": 6},
+                }, request=request)
+            payload = json.loads(request.content)
+            seen.append((request.url.path, payload))
+            return httpx.Response(200, json={"status": "imported"}, request=request)
+
+    original = ApiClient.__init__
+    original_close = ApiClient.close
+    ApiClient.__init__ = lambda self, config: (
+        setattr(self, "config", config),
+        setattr(self, "_client", httpx.Client(base_url=config.server, transport=Transport())),
+    )[-1]
+    ApiClient.close = lambda self: self._client.close()
+    try:
+        code = main([
+            "--server", "http://app.test", "--token", "wa_at_test", "--output", "json",
+            "backup", "configuration-import", "--file", str(file_path), "--confirm",
+        ])
+    finally:
+        ApiClient.__init__ = original
+        ApiClient.close = original_close
+
+    body = json.loads(capsys.readouterr().out)
+    assert code == EXIT_OK
+    assert body["data"]["status"] == "imported"
+    assert seen == [("/api/v1/backups/configuration/import", {
+        **configuration,
+        "expected_settings_revision": 9,
+        "expected_notification_revision": 6,
+        "confirmed": True,
+    })]
+
+
 def test_auth_failure_maps_to_exit_code(capsys, tmp_path: Path):
     class Transport(httpx.BaseTransport):
         def handle_request(self, request):

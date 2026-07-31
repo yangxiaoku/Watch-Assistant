@@ -6,6 +6,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from watch_assistant.schemas import (
     BackupConfigurationExportResponse,
+    BackupConfigurationImportRequest,
+    BackupConfigurationImportResponse,
     BackupListResponse,
     BackupResponse,
     BackupRestorePreviewResponse,
@@ -53,6 +55,47 @@ async def export_configuration(
     except BackupServiceError as exc:
         status_code = 503 if exc.code == "backup_configuration_unavailable" else 422
         raise HTTPException(status_code=status_code, detail=exc.code) from exc
+
+
+@router.post(
+    "/backups/configuration/import",
+    response_model=BackupConfigurationImportResponse,
+)
+async def import_configuration(
+    payload: BackupConfigurationImportRequest,
+    service: ServiceDependency,
+    auth: Annotated[AuthContext, Depends(require_api_auth)],
+    request: Request,
+) -> BackupConfigurationImportResponse:
+    if (
+        auth.via_bearer
+        and auth.identity != "internal"
+        and not auth.has_scope("settings:write")
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail={"code": "missing_scope", "missing_scopes": ["settings:write"]},
+        )
+    try:
+        response = await service.import_configuration(
+            payload,
+            actor_type="agent" if auth.via_bearer else "web",
+            actor_id=auth.identity,
+            request_id=request.headers.get("X-Request-ID"),
+        )
+        controller = getattr(request.app.state, "organization_scheduler", None)
+        notify = getattr(controller, "notify_settings_changed", None)
+        if callable(notify):
+            notify()
+        return response
+    except BackupServiceError as exc:
+        status_by_code = {
+            "backup_configuration_conflict": 409,
+            "backup_configuration_unavailable": 503,
+        }
+        raise HTTPException(
+            status_code=status_by_code.get(exc.code, 422), detail=exc.code
+        ) from exc
 
 
 @router.post(

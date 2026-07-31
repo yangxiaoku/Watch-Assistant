@@ -17,12 +17,19 @@ from uuid import uuid4
 
 from watch_assistant.schemas import (
     BackupConfigurationExportResponse,
+    BackupConfigurationImportRequest,
+    BackupConfigurationImportResponse,
     BackupListResponse,
     BackupResponse,
     BackupRestorePreviewResponse,
     LoggingLevel,
 )
 from watch_assistant.services.observability import EventLogger, emit_event
+from watch_assistant.services.settings import (
+    ConfigurationImportConfirmationRequired,
+    ConfigurationImportConflict,
+    ConfigurationImportValidationError,
+)
 
 if TYPE_CHECKING:
     from watch_assistant.services.notifications import NotificationService
@@ -128,6 +135,40 @@ class BackupService:
             self._event_logger,
             "backup.configuration_exported",
             fields={"status": "ready", "count": 1},
+            request_id=request_id,
+            actor_type=actor_type,
+            actor_id=actor_id,
+        )
+        return response
+
+    async def import_configuration(
+        self,
+        payload: BackupConfigurationImportRequest,
+        *,
+        actor_type: str | None = None,
+        actor_id: str | None = None,
+        request_id: str | None = None,
+    ) -> BackupConfigurationImportResponse:
+        if self._settings_service is None or self._notification_service is None:
+            raise BackupServiceError("backup_configuration_unavailable")
+        try:
+            response = await self._settings_service.import_configuration(
+                payload,
+                release=self._release,
+                actor_type=actor_type,
+                actor_id=actor_id,
+                request_id=request_id,
+            )
+        except ConfigurationImportConfirmationRequired as exc:
+            raise BackupServiceError("backup_configuration_confirmation_required") from exc
+        except ConfigurationImportConflict as exc:
+            raise BackupServiceError("backup_configuration_conflict") from exc
+        except ConfigurationImportValidationError as exc:
+            raise BackupServiceError("backup_configuration_invalid") from exc
+        await emit_event(
+            self._event_logger,
+            "backup.configuration_imported",
+            fields={"status": "imported", "count": len(response.imported_sections)},
             request_id=request_id,
             actor_type=actor_type,
             actor_id=actor_id,
