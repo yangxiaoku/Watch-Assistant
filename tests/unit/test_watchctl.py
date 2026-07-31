@@ -623,6 +623,54 @@ def test_workflow_actions_use_shared_approval_and_cancel_endpoints(capsys):
     ]
 
 
+def test_workflow_children_uses_paginated_endpoint(capsys):
+    seen: list[tuple[str, str, str]] = []
+
+    class Transport(httpx.BaseTransport):
+        def handle_request(self, request):
+            seen.append((request.method, request.url.path, request.url.query.decode()))
+            return httpx.Response(
+                200,
+                json={"items": [], "page": 2, "page_size": 10, "total": 0},
+                request=request,
+            )
+
+    original = ApiClient.__init__
+    original_close = ApiClient.close
+    ApiClient.__init__ = lambda self, config: (
+        setattr(self, "config", config),
+        setattr(self, "_client", httpx.Client(base_url=config.server, transport=Transport())),
+    )[-1]
+    ApiClient.close = lambda self: self._client.close()
+    try:
+        code = main(
+            [
+                "--server",
+                "http://app.test",
+                "--token",
+                "wa_at_test",
+                "--output",
+                "json",
+                "workflow",
+                "children",
+                "wf-one",
+                "--page",
+                "2",
+                "--page-size",
+                "10",
+            ]
+        )
+    finally:
+        ApiClient.__init__ = original
+        ApiClient.close = original_close
+
+    assert code == EXIT_OK
+    assert json.loads(capsys.readouterr().out)["data"]["page"] == 2
+    assert seen == [
+        ("GET", "/api/v1/workflows/wf-one/children", "page=2&page_size=10")
+    ]
+
+
 def test_notification_commands_list_read_and_read_all_use_versioned_endpoints(capsys):
     seen: list[tuple[str, str, str, dict[str, object] | None]] = []
 

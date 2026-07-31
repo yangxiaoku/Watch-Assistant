@@ -135,4 +135,10 @@ API 返回顶层 workflow 和分页子任务，不返回敏感链接。REQ-003 �
 - 本轮补充 FLOW-007：提交后的可行动 workflow 阶段事件（等待确认、等待外部、成功、跳过、失败、
   不确定、取消）会通过统一事件目录生成站内通知，复用通知偏好、30 分钟去重和 Webhook Outbox；
   普通启动/读取日志不会自动生成通知。
+- 本轮补充 FLOW-002：新增 `GET /api/v1/workflows/{workflow_id}/children` 分页接口，聚合推送任务、
+  内容检测批次、整理操作和没有独立持久表的 STRM 阶段子任务；返回子任务原始状态与 workflow 阶段状态，
+  不返回资源 URL、磁力、Cookie 或播放直链。`watchctl workflow children` 和任务中心详情页已接入。
+- 本轮验收：workflow API/CLI 后端定向测试 `26 passed`，前端 Vitest `120 passed`，Ruff、生产构建和
+  `git diff --check` 通过。该实现仍属于本地离线能力，真实 115 写入、STRM 播放契约、外部通知投递和
+  跨系统生产验收继续保持阻断。
 - 剩余阻断：真实 115 写入、STRM 真实播放契约及 PanSou/qB 外部网络基线仍按 `docs/requirements/BLOCKERS.md` 保持门禁关闭。

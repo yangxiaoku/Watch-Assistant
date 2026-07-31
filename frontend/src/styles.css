@@ -235,6 +235,18 @@ input { outline: none; }
 .workflow-stage-succeeded { border-left-color: #9bcf5a; }
 .workflow-stage-failed, .workflow-stage-uncertain { border-left-color: #ff7474; }
 .workflow-stage-running, .workflow-stage-waiting_external, .workflow-stage-waiting_confirmation { border-left-color: #f5d98d; }
+.workflow-children { margin-top: 18px; padding-top: 16px; border-top: 1px solid #2b2e34; }
+.workflow-children > header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.workflow-children h3 { margin: 0; color: #e8eaee; font-size: 14px; }
+.workflow-children header p { margin: 4px 0 0; color: #858a94; font-size: 11px; }
+.workflow-children header > span { color: #858a94; font-size: 11px; white-space: nowrap; }
+.workflow-child-list { display: grid; gap: 8px; margin: 0 0 10px; padding: 0; list-style: none; }
+.workflow-child-list li { display: flex; justify-content: space-between; gap: 12px; padding: 10px 11px; background: #202328; border-left: 2px solid #56606c; }
+.workflow-child-list li > div { display: grid; gap: 3px; min-width: 0; }
+.workflow-child-list strong { color: #e8eaee; font-size: 12px; }
+.workflow-child-list span { color: #b9ec68; font-size: 12px; }
+.workflow-child-list small, .workflow-child-list time { color: #858a94; font-size: 11px; line-height: 1.4; overflow-wrap: anywhere; }
+.workflow-child-list time { flex: 0 0 auto; white-space: nowrap; }
 .workflow-empty { display: grid; min-height: 280px; place-items: center; align-content: center; gap: 9px; margin-top: 22px; color: #6f7580; text-align: center; border: 1px dashed #35383e; }
 .notification-center { max-width: 1180px; margin: 0 auto; }
 .offline-strip, .offline-data-strip { margin: 0; padding: 9px 18px; color: #161a14; background: #f5d98d; font-size: 12px; text-align: center; }

@@ -172,21 +172,25 @@ describe("ApiClient season and inspection requests", () => {
     });
   });
 
-  it("loads workflow summaries and a workflow timeline through separate endpoints", async () => {
+  it("loads workflow summaries, timeline, and paginated child tasks", async () => {
     const list = { items: [], page: 1, page_size: 20, total: 0 };
     const detail = { id: "wf_1", correlation_id: "corr_1", media_type: "movie", tmdb_id: 1, subscription_id: null, status: "completed", status_zh: "已完成", state_reason: null, created_at: "2026-07-29T00:00:00Z", updated_at: "2026-07-29T00:00:00Z", stages: [] };
+    const children = { items: [], page: 1, page_size: 20, total: 0 };
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify(list), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify(detail), { status: 200 }));
+      .mockResolvedValueOnce(new Response(JSON.stringify(detail), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(children), { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
     const api = new ApiClient();
 
     await api.workflows({ status: "in_progress" });
     await api.workflow("wf_1");
+    await api.workflowChildren("wf_1", 2, 10);
 
     expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
       "/api/v1/workflows?page=1&page_size=20&status=in_progress",
       "/api/v1/workflows/wf_1",
+      "/api/v1/workflows/wf_1/children?page=2&page_size=10",
     ]);
   });
 

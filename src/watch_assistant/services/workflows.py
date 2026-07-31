@@ -8,11 +8,21 @@ from uuid import uuid4
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from watch_assistant.models import Workflow, WorkflowStage
+from watch_assistant.models import (
+    InspectionBatch,
+    OrganizationOperation,
+    Task,
+    TaskState,
+    Workflow,
+    WorkflowStage,
+)
 from watch_assistant.schemas import (
+    InspectionBatchStatus,
     MediaType,
     WorkflowApprovalRequest,
     WorkflowCancelRequest,
+    WorkflowChildListResponse,
+    WorkflowChildResponse,
     WorkflowCreateRequest,
     WorkflowListResponse,
     WorkflowResponse,
@@ -52,6 +62,30 @@ _STAGE_STATUS_ZH = {
     WorkflowStageStatus.FAILED: "已失败",
     WorkflowStageStatus.UNCERTAIN: "结果待确认",
     WorkflowStageStatus.CANCELLED: "已取消",
+}
+_TASK_STATUS_ZH = {
+    TaskState.QUEUED: "排队中",
+    TaskState.SUBMITTING: "提交中",
+    TaskState.ACCEPTED: "已接受",
+    TaskState.NEEDS_AUTH: "需要认证",
+    TaskState.FAILED: "已失败",
+    TaskState.UNCERTAIN: "结果待确认",
+    TaskState.CANCELLED: "已取消",
+}
+_INSPECTION_STATUS_ZH = {
+    InspectionBatchStatus.QUEUED: "排队中",
+    InspectionBatchStatus.RUNNING: "检测中",
+    InspectionBatchStatus.COMPLETED: "已完成",
+    InspectionBatchStatus.PARTIAL: "部分完成",
+    InspectionBatchStatus.FAILED: "已失败",
+}
+_ORGANIZATION_STATUS_ZH = {
+    "planned": "已计划",
+    "organizing": "整理中",
+    "organized": "已完成",
+    "failed": "已失败",
+    "uncertain": "结果待确认",
+    "cancelled": "已取消",
 }
 
 
@@ -119,6 +153,174 @@ class WorkflowService:
                 raise WorkflowNotFound(workflow_id)
             await session.refresh(workflow, ["stages"])
             return _response(workflow)
+
+    async def children(
+        self, workflow_id: str, *, page: int = 1, page_size: int = 50
+    ) -> WorkflowChildListResponse:
+        """Return sanitized child operations without merging module state machines."""
+        async with self._session_factory() as session:
+            workflow = await session.get(Workflow, workflow_id)
+            if workflow is None:
+                raise WorkflowNotFound(workflow_id)
+            await session.refresh(workflow, ["stages"])
+            stages = {stage.stage: stage for stage in workflow.stages}
+            children: list[WorkflowChildResponse] = []
+            linked: set[tuple[str, str]] = set()
+
+            tasks = list(
+                await session.scalars(
+                    select(Task)
+                    .where(Task.workflow_id == workflow_id)
+                    .order_by(Task.updated_at.desc(), Task.id.desc())
+                )
+            )
+            for task in tasks:
+                stage = stages.get(WorkflowStageName.PUSH)
+                if stage is None:
+                    continue
+                linked.add(("task", task.id))
+                children.append(
+                    _child_response(
+                        id=f"task:{task.id}",
+                        stage=stage,
+                        child_type="task",
+                        child_id=task.id,
+                        status=task.state.value,
+                        status_zh=_TASK_STATUS_ZH[task.state],
+                        reason=None,
+                        error_code=task.error_code,
+                        created_at=task.created_at,
+                        started_at=task.submitted_at,
+                        completed_at=(
+                            task.updated_at
+                            if task.state
+                            in {
+                                TaskState.ACCEPTED,
+                                TaskState.NEEDS_AUTH,
+                                TaskState.FAILED,
+                                TaskState.UNCERTAIN,
+                                TaskState.CANCELLED,
+                            }
+                            else None
+                        ),
+                        updated_at=task.updated_at,
+                    )
+                )
+
+            batches = list(
+                await session.scalars(
+                    select(InspectionBatch)
+                    .where(InspectionBatch.workflow_id == workflow_id)
+                    .order_by(InspectionBatch.updated_at.desc(), InspectionBatch.id.desc())
+                )
+            )
+            for batch in batches:
+                stage = stages.get(WorkflowStageName.INSPECTION)
+                if stage is None:
+                    continue
+                linked.add(("inspection_batch", batch.id))
+                children.append(
+                    _child_response(
+                        id=f"inspection_batch:{batch.id}",
+                        stage=stage,
+                        child_type="inspection_batch",
+                        child_id=batch.id,
+                        status=batch.status.value,
+                        status_zh=_INSPECTION_STATUS_ZH[batch.status],
+                        reason=None,
+                        error_code=None,
+                        created_at=batch.created_at,
+                        started_at=(
+                            batch.created_at
+                            if batch.status != InspectionBatchStatus.QUEUED
+                            else None
+                        ),
+                        completed_at=(
+                            batch.updated_at
+                            if batch.status
+                            in {
+                                InspectionBatchStatus.COMPLETED,
+                                InspectionBatchStatus.PARTIAL,
+                                InspectionBatchStatus.FAILED,
+                            }
+                            else None
+                        ),
+                        updated_at=batch.updated_at,
+                    )
+                )
+
+            operations = list(
+                await session.scalars(
+                    select(OrganizationOperation)
+                    .where(OrganizationOperation.workflow_id == workflow_id)
+                    .order_by(
+                        OrganizationOperation.updated_at.desc(),
+                        OrganizationOperation.id.desc(),
+                    )
+                )
+            )
+            for operation in operations:
+                stage = stages.get(WorkflowStageName.ORGANIZATION)
+                if stage is None:
+                    continue
+                status = operation.status.value
+                linked.add(("organization_operation", operation.id))
+                children.append(
+                    _child_response(
+                        id=f"organization_operation:{operation.id}",
+                        stage=stage,
+                        child_type="organization_operation",
+                        child_id=operation.id,
+                        status=status,
+                        status_zh=_ORGANIZATION_STATUS_ZH[status],
+                        reason=None,
+                        error_code=operation.error_code,
+                        created_at=operation.created_at,
+                        started_at=operation.created_at if status != "planned" else None,
+                        completed_at=(
+                            operation.finished_at
+                            if status
+                            in {"organized", "failed", "uncertain", "cancelled"}
+                            else None
+                        ),
+                        updated_at=operation.updated_at,
+                    )
+                )
+
+            # STRM and future modules may only have a durable stage link. Keep
+            # those links visible instead of inventing a second persistence model.
+            for stage in workflow.stages:
+                if not stage.child_id:
+                    continue
+                child_type = stage.child_type or f"{stage.stage.value}_stage"
+                if (child_type, stage.child_id) in linked:
+                    continue
+                children.append(
+                    _child_response(
+                        id=f"{child_type}:{stage.child_id}",
+                        stage=stage,
+                        child_type=child_type,
+                        child_id=stage.child_id,
+                        status=stage.status.value,
+                        status_zh=_STAGE_STATUS_ZH[stage.status],
+                        reason=stage.reason,
+                        error_code=stage.error_code,
+                        created_at=stage.created_at,
+                        started_at=stage.started_at,
+                        completed_at=stage.completed_at,
+                        updated_at=stage.updated_at,
+                    )
+                )
+
+        children.sort(key=lambda item: (item.updated_at, item.id), reverse=True)
+        total = len(children)
+        start = (page - 1) * page_size
+        return WorkflowChildListResponse(
+            items=children[start : start + page_size],
+            page=page,
+            page_size=page_size,
+            total=total,
+        )
 
     async def list(
         self,
@@ -493,6 +695,39 @@ def _derive_status(
     if WorkflowStageStatus.CANCELLED in statuses:
         return WorkflowStatus.PARTIAL, "workflow_cancelled"
     return WorkflowStatus.COMPLETED, "all_stages_terminal"
+
+
+def _child_response(
+    *,
+    id: str,
+    stage: WorkflowStage,
+    child_type: str,
+    child_id: str,
+    status: str,
+    status_zh: str,
+    reason: str | None,
+    error_code: str | None,
+    created_at: datetime,
+    started_at: datetime | None,
+    completed_at: datetime | None,
+    updated_at: datetime,
+) -> WorkflowChildResponse:
+    return WorkflowChildResponse(
+        id=id,
+        stage=stage.stage,
+        stage_status=stage.status,
+        stage_status_zh=_STAGE_STATUS_ZH[stage.status],
+        child_type=child_type,
+        child_id=child_id,
+        status=status,
+        status_zh=status_zh,
+        reason=reason,
+        error_code=error_code,
+        created_at=created_at,
+        started_at=started_at,
+        completed_at=completed_at,
+        updated_at=updated_at,
+    )
 
 
 def _response(workflow: Workflow) -> WorkflowResponse:

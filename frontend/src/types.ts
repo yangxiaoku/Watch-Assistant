@@ -637,6 +637,30 @@ export interface WorkflowListResponse {
   total: number;
 }
 
+export interface WorkflowChildResponse {
+  id: string;
+  stage: WorkflowStageName;
+  stage_status: WorkflowStageStatus;
+  stage_status_zh: string;
+  child_type: string;
+  child_id: string;
+  status: string;
+  status_zh: string;
+  reason: string | null;
+  error_code: string | null;
+  created_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  updated_at: string;
+}
+
+export interface WorkflowChildListResponse {
+  items: WorkflowChildResponse[];
+  page: number;
+  page_size: number;
+  total: number;
+}
+
 export type NotificationSeverity = "info" | "warning" | "error" | "security";
 
 export interface NotificationResponse {

@@ -27,6 +27,7 @@ import type {
   ResourceSort,
   SettingsOverviewResponse,
   TaskResponse,
+  WorkflowChildListResponse,
   WorkflowListResponse,
   WorkflowResponse,
   WorkflowStageName,
@@ -455,6 +456,13 @@ export class ApiClient {
 
   async workflow(workflowId: string): Promise<WorkflowResponse> {
     return this.request<WorkflowResponse>(`/api/v1/workflows/${encodeURIComponent(workflowId)}`);
+  }
+
+  async workflowChildren(workflowId: string, page = 1, pageSize = 20): Promise<WorkflowChildListResponse> {
+    const params = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
+    return this.request<WorkflowChildListResponse>(
+      `/api/v1/workflows/${encodeURIComponent(workflowId)}/children?${params}`,
+    );
   }
 
   async createWorkflow(input: { mediaType: "movie" | "tv"; tmdbId: number }): Promise<WorkflowResponse> {

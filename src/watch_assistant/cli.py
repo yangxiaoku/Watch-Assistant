@@ -349,6 +349,14 @@ def _command(args: argparse.Namespace, path: Path) -> tuple[Any, int]:
         if args.command == "workflow":
             if args.workflow_command == "list":
                 body = client.get("/api/v1/workflows")
+            elif args.workflow_command == "children":
+                body = client.get(
+                    f"/api/v1/workflows/{args.workflow_id}/children",
+                    params={
+                        "page": str(args.page),
+                        "page_size": str(args.page_size),
+                    },
+                )
             elif args.workflow_command in {"approve", "reject"}:
                 payload = {"decision": "approve" if args.workflow_command == "approve" else "reject"}
                 if args.reason:
@@ -698,6 +706,10 @@ def _build_parser() -> argparse.ArgumentParser:
     workflow_sub.add_parser("list")
     workflow_show = workflow_sub.add_parser("show")
     workflow_show.add_argument("workflow_id")
+    workflow_children = workflow_sub.add_parser("children", help="列出工作流子任务")
+    workflow_children.add_argument("workflow_id")
+    workflow_children.add_argument("--page", type=int, choices=range(1, 10001), default=1)
+    workflow_children.add_argument("--page-size", type=int, choices=range(1, 101), default=50)
     workflow_approve = workflow_sub.add_parser("approve")
     workflow_approve.add_argument("workflow_id")
     workflow_approve.add_argument("--reason", help="操作原因（最多 255 字符）")

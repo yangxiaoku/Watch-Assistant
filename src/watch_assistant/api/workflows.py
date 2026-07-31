@@ -8,6 +8,7 @@ from watch_assistant.schemas import (
     MediaType,
     WorkflowApprovalRequest,
     WorkflowCancelRequest,
+    WorkflowChildListResponse,
     WorkflowCreateRequest,
     WorkflowListResponse,
     WorkflowResponse,
@@ -76,6 +77,21 @@ async def get_workflow(
 ) -> WorkflowResponse:
     try:
         return await service.get(workflow_id)
+    except WorkflowNotFound as exc:
+        raise HTTPException(status_code=404, detail="workflow_not_found") from exc
+
+
+@router.get(
+    "/workflows/{workflow_id}/children", response_model=WorkflowChildListResponse
+)
+async def list_workflow_children(
+    workflow_id: str,
+    service: WorkflowServiceDependency,
+    page: Annotated[int, Query(ge=1, le=10000)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=100)] = 50,
+) -> WorkflowChildListResponse:
+    try:
+        return await service.children(workflow_id, page=page, page_size=page_size)
     except WorkflowNotFound as exc:
         raise HTTPException(status_code=404, detail="workflow_not_found") from exc
 

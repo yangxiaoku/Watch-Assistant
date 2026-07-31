@@ -124,6 +124,55 @@ async def test_workflow_timeline_aggregates_stage_state_and_child_task(tmp_path)
 
 
 @pytest.mark.integration
+async def test_workflow_children_returns_paginated_sanitized_child_timeline(tmp_path):
+    client, database, tmdb, pansou = await _make_client(tmp_path)
+    try:
+        created = await client.post(
+            "/api/v1/workflows", json={"media_type": "movie", "tmdb_id": 7}
+        )
+        workflow_id = created.json()["id"]
+        task = await client.post(
+            "/api/v1/tasks",
+            json={"resource_id": "res_workflow_api", "workflow_id": workflow_id},
+        )
+        assert task.status_code == 202
+        await client.patch(
+            f"/api/v1/workflows/{workflow_id}/stages/strm",
+            json={
+                "status": "succeeded",
+                "child_type": "strm_operation",
+                "child_id": "strm_scan_1",
+            },
+        )
+
+        first = await client.get(
+            f"/api/v1/workflows/{workflow_id}/children",
+            params={"page": 1, "page_size": 1},
+        )
+        assert first.status_code == 200
+        body = first.json()
+        assert body["total"] == 2
+        assert body["page"] == 1
+        assert body["page_size"] == 1
+        assert body["items"][0]["child_type"] in {"task", "strm_operation"}
+        assert "magnet:?" not in first.text
+        assert "encrypted_url" not in first.text
+
+        second = await client.get(
+            f"/api/v1/workflows/{workflow_id}/children",
+            params={"page": 2, "page_size": 1},
+        )
+        assert second.status_code == 200
+        assert second.json()["items"][0]["id"] != body["items"][0]["id"]
+        assert "stage_status" in second.json()["items"][0]
+    finally:
+        await client.aclose()
+        await tmdb.aclose()
+        await pansou.aclose()
+        await database.engine.dispose()
+
+
+@pytest.mark.integration
 async def test_workflow_stage_terminal_aggregation_preserves_uncertain_priority(tmp_path):
     client, database, tmdb, pansou = await _make_client(tmp_path)
     try:

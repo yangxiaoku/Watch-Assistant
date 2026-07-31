@@ -2,7 +2,7 @@
 import { AlertTriangle, Ban, CheckCircle2, Clock3, LoaderCircle, RefreshCw, XCircle } from "@lucide/vue";
 import { computed, onMounted, ref } from "vue";
 import { ApiClient, ApiError } from "../api";
-import type { WorkflowResponse, WorkflowStageResponse, WorkflowStatus } from "../types";
+import type { WorkflowChildResponse, WorkflowResponse, WorkflowStageResponse, WorkflowStatus } from "../types";
 
 const props = defineProps<{ api: ApiClient }>();
 
@@ -16,6 +16,11 @@ const loading = ref(false);
 const error = ref("");
 const detailLoading = ref(false);
 const detailError = ref("");
+const childItems = ref<WorkflowChildResponse[]>([]);
+const childTotal = ref(0);
+const childPage = ref(1);
+const childLoading = ref(false);
+const childError = ref("");
 const actionLoading = ref(false);
 const actionError = ref("");
 
@@ -63,6 +68,13 @@ const stageStatusOptions = computed(() => [
 
 function statusLabel(status: WorkflowStatus): string { return statusLabels[status] ?? "状态待确认"; }
 function stageLabel(stage: WorkflowStageResponse["stage"]): string { return stageLabels[stage] ?? "未命名阶段"; }
+function childTypeLabel(child: WorkflowChildResponse): string {
+  if (child.child_type === "task") return "推送任务";
+  if (child.child_type === "inspection_batch") return "检测批次";
+  if (child.child_type === "organization_operation") return "整理操作";
+  if (child.child_type.startsWith("strm")) return "STRM 子任务";
+  return "阶段子任务";
+}
 function formatTimestamp(value: string): string {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? "时间未知" : date.toLocaleString("zh-CN", { dateStyle: "short", timeStyle: "short" });
@@ -107,8 +119,13 @@ async function selectWorkflow(workflow: WorkflowResponse) {
   selected.value = workflow;
   detailLoading.value = true;
   detailError.value = "";
+  childItems.value = [];
+  childTotal.value = 0;
+  childPage.value = 1;
+  childError.value = "";
   try {
     selected.value = await props.api.workflow(workflow.id);
+    await loadChildren(workflow.id);
   } catch (exception) {
     detailError.value = exception instanceof ApiError ? exception.message : "任务详情暂时无法加载";
   } finally {
@@ -116,7 +133,22 @@ async function selectWorkflow(workflow: WorkflowResponse) {
   }
 }
 
-function clearSelection() { selected.value = null; detailError.value = ""; actionError.value = ""; }
+async function loadChildren(workflowId: string, page = 1) {
+  childLoading.value = true;
+  childError.value = "";
+  try {
+    const response = await props.api.workflowChildren(workflowId, page, 20);
+    childItems.value = page === 1 ? response.items : [...childItems.value, ...response.items];
+    childTotal.value = response.total;
+    childPage.value = page;
+  } catch (exception) {
+    childError.value = exception instanceof ApiError ? exception.message : "关联子任务暂时无法加载";
+  } finally {
+    childLoading.value = false;
+  }
+}
+
+function clearSelection() { selected.value = null; detailError.value = ""; childItems.value = []; childError.value = ""; actionError.value = ""; }
 
 async function decideApproval(decision: "approve" | "reject") {
   if (!selected.value || actionLoading.value) return;
@@ -175,6 +207,19 @@ onMounted(() => { void loadWorkflows(); });
         </div>
         <dl class="workflow-identifiers"><div><dt>任务 ID</dt><dd>{{ selected.id }}</dd></div><div><dt>关联 ID</dt><dd>{{ selected.correlation_id }}</dd></div><div><dt>创建时间</dt><dd>{{ formatTimestamp(selected.created_at) }}</dd></div></dl>
         <ol class="workflow-timeline"><li v-for="stage in selected.stages" :key="stage.id" class="workflow-stage" :class="stageClass(stage.status)"><component :is="statusIcon(stage.status)" :size="17" :class="{ spin: stage.status === 'running' }" /><div><strong>{{ stageLabel(stage.stage) }}</strong><span>{{ stage.status_zh || stage.status }}</span><small v-if="stage.reason">{{ stage.reason }}</small><small v-if="stage.error_code">错误码：{{ stage.error_code }}</small><small v-if="stage.updated_at">更新于 {{ formatTimestamp(stage.updated_at) }}</small></div></li></ol>
+        <section class="workflow-children" aria-labelledby="workflow-children-title">
+          <header><div><h3 id="workflow-children-title">关联子任务</h3><p>显示各模块自己的任务状态，不替代原模块的重试规则。</p></div><span>{{ childItems.length }} / {{ childTotal }}</span></header>
+          <p v-if="childError" class="error-text" role="alert">{{ childError }}</p>
+          <p v-else-if="childLoading && !childItems.length" class="workflow-detail-loading" role="status"><LoaderCircle class="spin" :size="16" />正在加载关联子任务</p>
+          <p v-else-if="!childItems.length" class="workflow-detail-loading">当前没有独立子任务</p>
+          <ul v-else class="workflow-child-list">
+            <li v-for="child in childItems" :key="child.id">
+              <div><strong>{{ childTypeLabel(child) }} · {{ stageLabel(child.stage) }}</strong><span>{{ child.status_zh || child.status }}</span><small>子任务 ID：{{ child.child_id }}</small><small>阶段状态：{{ child.stage_status_zh }}</small><small v-if="child.reason">{{ child.reason }}</small><small v-if="child.error_code">错误码：{{ child.error_code }}</small></div>
+              <time :datetime="child.updated_at">{{ formatTimestamp(child.updated_at) }}</time>
+            </li>
+          </ul>
+          <button v-if="childItems.length < childTotal" class="text-button" type="button" :disabled="childLoading" @click="loadChildren(selected.id, childPage + 1)"><LoaderCircle v-if="childLoading" class="spin" :size="15" /><span>{{ childLoading ? "正在加载" : "加载更多" }}</span></button>
+        </section>
       </article>
     </div>
   </section>

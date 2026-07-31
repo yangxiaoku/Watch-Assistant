@@ -1496,6 +1496,32 @@ class WorkflowListResponse(BaseModel):
     total: int
 
 
+class WorkflowChildResponse(BaseModel):
+    """A paginated, sanitized view of one workflow child operation."""
+
+    id: str
+    stage: WorkflowStageName
+    stage_status: WorkflowStageStatus
+    stage_status_zh: str
+    child_type: str
+    child_id: str
+    status: str
+    status_zh: str
+    reason: str | None
+    error_code: str | None
+    created_at: datetime
+    started_at: datetime | None
+    completed_at: datetime | None
+    updated_at: datetime
+
+
+class WorkflowChildListResponse(BaseModel):
+    items: list[WorkflowChildResponse]
+    page: int
+    page_size: int
+    total: int
+
+
 class TaskResponse(BaseModel):
     model_config = {"from_attributes": True}
 
