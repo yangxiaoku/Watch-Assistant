@@ -116,6 +116,8 @@
   但 workflow 通知使用 workflow/correlation ID 作为跳转和去重主体。
 - 整理 operation 的状态事件和 `organization` 阶段事件现在带 operation/workflow/correlation ID，
   取消请求仍只记录本地中止意图，不伪造远端撤回。
+- 无 workflow 关联的内容检测批次失败现在生成错误通知并跳转资源检测设置；已关联 workflow 的
+  批次失败只保留 workflow 阶段通知，避免同一失败重复提醒。
 - 任务 worker 的远端 `uncertain` 现在发出 `task.uncertain`（不再误报为失败），并携带任务
   ID；任务失败、115 不可用、订阅发现新资源、备份失败和异常恢复预览已接入通知过滤。
 - Webhook 管理接口提供单端点测试通知；测试载荷只包含 `webhook.test`、版本和中文摘要，
