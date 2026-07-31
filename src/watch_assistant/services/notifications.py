@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -136,6 +137,8 @@ class NotificationService:
                 preference.muted_event_codes_json
             ):
                 return None
+            if _quiet_hours_suppress(preference, severity, now):
+                return None
             existing = await session.scalar(
                 select(Notification)
                 .where(
@@ -254,6 +257,16 @@ class NotificationService:
                     sorted(set(patch.muted_event_codes)),
                     ensure_ascii=False,
                 )
+            for field in (
+                "quiet_hours_enabled",
+                "quiet_hours_start",
+                "quiet_hours_end",
+                "quiet_hours_timezone",
+                "error_bypass_quiet_hours",
+            ):
+                value = getattr(patch, field)
+                if value is not None:
+                    setattr(preference, field, value)
             preference.revision += 1
             await session.commit()
             response = _preference_response(preference)
@@ -324,5 +337,36 @@ def _preference_response(item: NotificationPreference) -> NotificationPreference
     return NotificationPreferenceResponse(
         enabled=item.enabled,
         muted_event_codes=sorted(_decode_codes(item.muted_event_codes_json)),
+        quiet_hours_enabled=item.quiet_hours_enabled,
+        quiet_hours_start=item.quiet_hours_start,
+        quiet_hours_end=item.quiet_hours_end,
+        quiet_hours_timezone=item.quiet_hours_timezone,
+        error_bypass_quiet_hours=item.error_bypass_quiet_hours,
         revision=item.revision,
     )
+
+
+def _quiet_hours_suppress(
+    preference: NotificationPreference,
+    severity: NotificationSeverity,
+    now: datetime,
+) -> bool:
+    if not preference.quiet_hours_enabled:
+        return False
+    if preference.error_bypass_quiet_hours and severity in {
+        NotificationSeverity.ERROR,
+        NotificationSeverity.SECURITY,
+    }:
+        return False
+    try:
+        timezone = ZoneInfo(preference.quiet_hours_timezone)
+        start_hour, start_minute = (int(part) for part in preference.quiet_hours_start.split(":", 1))
+        end_hour, end_minute = (int(part) for part in preference.quiet_hours_end.split(":", 1))
+    except (ValueError, TypeError, ZoneInfoNotFoundError):
+        return False
+    current = now.astimezone(timezone).hour * 60 + now.astimezone(timezone).minute
+    start = start_hour * 60 + start_minute
+    end = end_hour * 60 + end_minute
+    if start == end:
+        return False
+    return current >= start or current < end if start > end else start <= current < end

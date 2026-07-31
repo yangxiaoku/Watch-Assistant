@@ -69,12 +69,38 @@ async def test_notifications_dedupe_read_state_and_preferences(tmp_path):
 
         preferences = await client.get("/api/v1/notification-preferences")
         assert preferences.status_code == 200
+        assert preferences.json()["quiet_hours_enabled"] is True
+        assert preferences.json()["quiet_hours_start"] == "23:00"
+        assert preferences.json()["quiet_hours_end"] == "08:00"
+        assert preferences.json()["quiet_hours_timezone"] == "Asia/Shanghai"
+        assert preferences.json()["error_bypass_quiet_hours"] is True
         revision = preferences.json()["revision"]
         muted = await client.patch(
             "/api/v1/notification-preferences",
-            json={"revision": revision, "muted_event_codes": ["task.failed"]},
+            json={
+                "revision": revision,
+                "muted_event_codes": ["task.failed"],
+                "quiet_hours_start": "22:30",
+                "quiet_hours_end": "07:30",
+                "quiet_hours_timezone": "Asia/Tokyo",
+                "error_bypass_quiet_hours": False,
+            },
         )
         assert muted.status_code == 200
+        assert muted.json()["quiet_hours_start"] == "22:30"
+        assert muted.json()["quiet_hours_end"] == "07:30"
+        assert muted.json()["quiet_hours_timezone"] == "Asia/Tokyo"
+        assert muted.json()["error_bypass_quiet_hours"] is False
+        invalid_clock = await client.patch(
+            "/api/v1/notification-preferences",
+            json={"revision": muted.json()["revision"], "quiet_hours_start": "25:00"},
+        )
+        assert invalid_clock.status_code == 422
+        invalid_timezone = await client.patch(
+            "/api/v1/notification-preferences",
+            json={"revision": muted.json()["revision"], "quiet_hours_timezone": "Not/AZone"},
+        )
+        assert invalid_timezone.status_code == 422
         suppressed = await service.notify(
             event_code="task.failed",
             severity=NotificationSeverity.ERROR,

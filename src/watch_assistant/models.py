@@ -147,6 +147,11 @@ class NotificationPreference(Base):
     id: Mapped[str] = mapped_column(String(16), primary_key=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1")
     muted_event_codes_json: Mapped[str] = mapped_column(Text, default="[]")
+    quiet_hours_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1")
+    quiet_hours_start: Mapped[str] = mapped_column(String(5), default="23:00", server_default="23:00")
+    quiet_hours_end: Mapped[str] = mapped_column(String(5), default="08:00", server_default="08:00")
+    quiet_hours_timezone: Mapped[str] = mapped_column(String(64), default="Asia/Shanghai", server_default="Asia/Shanghai")
+    error_bypass_quiet_hours: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1")
     revision: Mapped[int] = mapped_column(Integer, default=1)
 
 

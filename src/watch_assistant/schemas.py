@@ -3,8 +3,9 @@
 from datetime import datetime
 from enum import StrEnum
 from typing import Any, Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import BaseModel, Field, PositiveInt, SecretStr
+from pydantic import BaseModel, Field, PositiveInt, SecretStr, field_validator
 
 
 class ResourceKind(StrEnum):
@@ -779,12 +780,46 @@ class NotificationPreferencePatch(BaseModel):
 
     enabled: bool | None = None
     muted_event_codes: list[str] | None = Field(default=None, max_length=100)
+    quiet_hours_enabled: bool | None = None
+    quiet_hours_start: str | None = None
+    quiet_hours_end: str | None = None
+    quiet_hours_timezone: str | None = None
+    error_bypass_quiet_hours: bool | None = None
     revision: int = Field(ge=1)
+
+    @field_validator("quiet_hours_start", "quiet_hours_end")
+    @classmethod
+    def validate_quiet_hours_clock(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        try:
+            hour, minute = (int(part) for part in value.split(":", 1))
+        except (ValueError, TypeError):
+            raise ValueError("静默时段必须使用 HH:MM 格式") from None
+        if not (0 <= hour <= 23 and 0 <= minute <= 59) or len(value) != 5:
+            raise ValueError("静默时段必须使用 HH:MM 格式")
+        return value
+
+    @field_validator("quiet_hours_timezone")
+    @classmethod
+    def validate_quiet_hours_timezone(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        try:
+            ZoneInfo(value)
+        except (ZoneInfoNotFoundError, ValueError):
+            raise ValueError("静默时区无效") from None
+        return value
 
 
 class NotificationPreferenceResponse(BaseModel):
     enabled: bool
     muted_event_codes: list[str]
+    quiet_hours_enabled: bool
+    quiet_hours_start: str
+    quiet_hours_end: str
+    quiet_hours_timezone: str
+    error_bypass_quiet_hours: bool
     revision: int
 
 

@@ -555,6 +555,27 @@ def _create_notification_tables(connection: Connection) -> None:
     NotificationPreference.__table__.create(connection, checkfirst=True)
 
 
+def _add_notification_quiet_hours(connection: Connection) -> None:
+    columns = {
+        item["name"] for item in inspect(connection).get_columns("notification_preferences")
+    }
+    additions = (
+        ("quiet_hours_enabled", "BOOLEAN NOT NULL DEFAULT 1"),
+        ("quiet_hours_start", "VARCHAR(5) NOT NULL DEFAULT '23:00'"),
+        ("quiet_hours_end", "VARCHAR(5) NOT NULL DEFAULT '08:00'"),
+        ("quiet_hours_timezone", "VARCHAR(64) NOT NULL DEFAULT 'Asia/Shanghai'"),
+        ("error_bypass_quiet_hours", "BOOLEAN NOT NULL DEFAULT 1"),
+    )
+    for name, definition in additions:
+        if name not in columns:
+            connection.execute(
+                text(
+                    "ALTER TABLE notification_preferences "
+                    f"ADD COLUMN {name} {definition}"
+                )
+            )
+
+
 def _create_season_metadata_cache_table(connection: Connection) -> None:
     from watch_assistant.models import SeasonMetadataCache
 
@@ -791,6 +812,7 @@ MIGRATIONS: tuple[Migration, ...] = (
         "048_organization_operation_workflow",
         _add_organization_operation_workflow,
     ),
+    Migration("049_notification_quiet_hours", _add_notification_quiet_hours),
 )
 
 

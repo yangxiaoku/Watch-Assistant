@@ -87,4 +87,22 @@ describe("NotificationCenterView", () => {
     expect(wrapper.text()).toContain("连接需要重新授权");
     expect(wrapper.text()).not.toContain("任务已完成");
   });
+
+  it("persists quiet-hour controls", async () => {
+    const api = makeApi();
+    const wrapper = mount(NotificationCenterView, { props: { api } });
+    await flushPromises();
+
+    await wrapper.getAll(".notification-preference input")[1].setValue(false);
+    await flushPromises();
+
+    expect(api.updateNotificationPreferences).toHaveBeenCalledWith({
+      quiet_hours_enabled: false,
+      quiet_hours_start: "23:00",
+      quiet_hours_end: "08:00",
+      quiet_hours_timezone: "Asia/Shanghai",
+      error_bypass_quiet_hours: true,
+      revision: 3,
+    });
+  });
 });
