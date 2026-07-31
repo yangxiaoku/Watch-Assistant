@@ -443,6 +443,81 @@ def test_strm_cleanup_plan_uses_latest_scan_without_delete_endpoint(capsys):
     ]
 
 
+def test_strm_cleanup_apply_fetches_revision_and_requires_confirmation(capsys):
+    digest = "a" * 64
+    seen: list[tuple[str, str, dict[str, object] | None]] = []
+
+    class Transport(httpx.BaseTransport):
+        def handle_request(self, request):
+            payload = json.loads(request.content) if request.content else None
+            seen.append((request.method, request.url.path, payload))
+            if request.method == "GET":
+                return httpx.Response(
+                    200,
+                    json={"plan_id": "strm_cleanup_one", "plan_hash": digest, "revision": 1},
+                    request=request,
+                )
+            return httpx.Response(
+                200,
+                json={
+                    "plan": {
+                        "plan_id": "strm_cleanup_one",
+                        "status": "applied",
+                        "revision": 2,
+                    },
+                    "retired": 1,
+                },
+                request=request,
+            )
+
+    original = ApiClient.__init__
+    original_close = ApiClient.close
+    ApiClient.__init__ = lambda self, config: (
+        setattr(self, "config", config),
+        setattr(self, "_client", httpx.Client(base_url=config.server, transport=Transport())),
+    )[-1]
+    ApiClient.close = lambda self: self._client.close()
+    try:
+        assert main(
+            [
+                "--server",
+                "http://app.test",
+                "--token",
+                "wa_at_test",
+                "--output",
+                "json",
+                "strm",
+                "cleanup-apply",
+                "strm_cleanup_one",
+                "--digest",
+                digest,
+                "--confirm",
+                "--idempotency-key",
+                "cleanup-key",
+            ]
+        ) == EXIT_OK
+    finally:
+        ApiClient.__init__ = original
+        ApiClient.close = original_close
+
+    body = json.loads(capsys.readouterr().out)
+    assert body["data"]["retired"] == 1
+    assert body["data"]["idempotency_key"] == "cleanup-key"
+    assert seen == [
+        ("GET", "/api/v1/strm-cleanup-plans/strm_cleanup_one", None),
+        (
+            "POST",
+            "/api/v1/strm-cleanup-plans/strm_cleanup_one/apply",
+            {
+                "expected_revision": 1,
+                "digest": digest,
+                "confirm": True,
+                "idempotency_key": "cleanup-key",
+            },
+        ),
+    ]
+
+
 def test_workflow_actions_use_shared_approval_and_cancel_endpoints(capsys):
     seen: list[tuple[str, str, dict[str, object] | None]] = []
 

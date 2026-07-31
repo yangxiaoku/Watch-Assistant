@@ -186,6 +186,18 @@ EVENT_CATALOG: dict[str, EventDefinition] = {
     "strm.cleanup_blocked": _event(
         "strm.cleanup_blocked", LogCategory.STRM, "已阻止 STRM 清理", "本次云端扫描不完整，为避免误删已跳过清理阶段"
     ),
+    "strm.cleanup.plan.created": _event(
+        "strm.cleanup.plan.created",
+        LogCategory.STRM,
+        "STRM 清理计划已生成",
+        "STRM 清理计划已生成，包含 {count} 个候选项",
+    ),
+    "strm.cleanup.applied": _event(
+        "strm.cleanup.applied",
+        LogCategory.STRM,
+        "STRM 清理计划已执行",
+        "STRM 清理计划已执行，处理 {count} 个受管项",
+    ),
     "strm.dirty_consumed": _event(
         "strm.dirty_consumed", LogCategory.STRM, "目录变更已完成增量对账", "目录变更已完成增量对账，当前状态：{status}"
     ),

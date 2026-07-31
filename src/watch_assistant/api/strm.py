@@ -17,6 +17,8 @@ from watch_assistant.adapters.p115_playback_contract import (
     make_playback_request,
 )
 from watch_assistant.schemas import (
+    StrmCleanupPlanApplyRequest,
+    StrmCleanupPlanApplyResponse,
     StrmCleanupPlanRequest,
     StrmCleanupPlanResponse,
     StrmGenerationRequest,
@@ -311,6 +313,7 @@ async def create_cleanup_plan(
     library_id: str,
     payload: StrmCleanupPlanRequest,
     request: Request,
+    context: AuthDependency,
 ) -> StrmCleanupPlanResponse:
     service = StrmCleanupPlanService(request.app.state.database.session_factory)
     try:
@@ -326,7 +329,79 @@ async def create_cleanup_plan(
         )
     except StrmCleanupPlanError as error:
         raise HTTPException(status_code=409, detail=error.code) from None
+    settings_service = getattr(request.app.state, "settings_service", None)
+    if settings_service is not None:
+        await settings_service.log_event(
+            "strm.cleanup.plan.created",
+            fields={"status": plan.status},
+            counts={"count": plan.candidate_count},
+            actor_type="agent" if context.via_bearer else "web",
+            actor_id=context.identity,
+            resource_type="strm_cleanup_plan",
+            resource_id=plan.plan_id,
+        )
     return StrmCleanupPlanResponse.model_validate(plan.to_public_dict())
+
+
+@router.post(
+    "/strm-cleanup-plans/{plan_id}/apply",
+    response_model=StrmCleanupPlanApplyResponse,
+    dependencies=[
+        Depends(require_strm_cleanup_enabled),
+        Depends(require_scope("strm:write")),
+    ],
+)
+async def apply_cleanup_plan(
+    plan_id: str,
+    payload: StrmCleanupPlanApplyRequest,
+    request: Request,
+    context: AuthDependency,
+) -> StrmCleanupPlanApplyResponse:
+    if not payload.confirm:
+        raise HTTPException(status_code=409, detail="confirmation_required")
+    service = StrmCleanupPlanService(request.app.state.database.session_factory)
+    try:
+        result = await service.apply_plan(
+            plan_id=plan_id,
+            expected_revision=payload.expected_revision,
+            digest=payload.digest,
+            confirm=payload.confirm,
+            idempotency_key=payload.idempotency_key,
+            output_root=getattr(request.app.state, "strm_output_root", "./data/strm"),
+            playback_url_prefix=getattr(
+                request.app.state,
+                "strm_playback_url_prefix",
+                "http://127.0.0.1:8115/api/v1/strm/play",
+            ),
+        )
+    except StrmCleanupPlanError as error:
+        statuses = {
+            "plan_not_found": 404,
+            "cleanup_plan_expired": 409,
+            "cleanup_plan_blocked": 409,
+            "cleanup_plan_changed": 409,
+            "cleanup_plan_not_reviewable": 409,
+            "plan_revision_changed": 409,
+            "plan_digest_mismatch": 409,
+        }
+        raise HTTPException(
+            status_code=statuses.get(error.code, 409), detail=error.code
+        ) from None
+    settings_service = getattr(request.app.state, "settings_service", None)
+    if settings_service is not None:
+        await settings_service.log_event(
+            "strm.cleanup.applied",
+            fields={"status": result.plan.status},
+            counts={"count": result.retired},
+            actor_type="agent" if context.via_bearer else "web",
+            actor_id=context.identity,
+            resource_type="strm_cleanup_plan",
+            resource_id=result.plan.plan_id,
+        )
+    return StrmCleanupPlanApplyResponse(
+        plan=StrmCleanupPlanResponse.model_validate(result.plan.to_public_dict()),
+        retired=result.retired,
+    )
 
 
 @router.get(

@@ -559,6 +559,42 @@ def _command(args: argparse.Namespace, path: Path) -> tuple[Any, int]:
                 data=_data_for("/api/v1/libraries", body),
                 request_id=_request_id(body),
             ), EXIT_OK
+        if args.command == "strm" and args.strm_command == "cleanup-apply":
+            if not args.confirm:
+                raise CliFailure(
+                    "缺少确认参数",
+                    code=EXIT_CONFLICT,
+                    error_code="confirmation_required",
+                )
+            plan = client.get(f"/api/v1/strm-cleanup-plans/{args.plan_id}")
+            plan_data = _data_for("/api/v1/strm-cleanup-plans", plan)
+            if not isinstance(plan_data, dict):
+                raise CliFailure(
+                    "服务响应格式无效",
+                    code=EXIT_UNAVAILABLE,
+                    error_code="invalid_response",
+                )
+            expected_revision = plan_data.get("revision")
+            if not isinstance(expected_revision, int):
+                raise CliFailure(
+                    "计划版本无效",
+                    code=EXIT_CONFLICT,
+                    error_code="plan_revision_changed",
+                )
+            key = args.idempotency_key or f"watchctl-{uuid.uuid4().hex}"
+            body = client.post(
+                f"/api/v1/strm-cleanup-plans/{args.plan_id}/apply",
+                payload={
+                    "expected_revision": expected_revision,
+                    "digest": args.digest,
+                    "confirm": True,
+                    "idempotency_key": key,
+                },
+            )
+            data = _data_for("/api/v1/strm-cleanup-plans", body)
+            if isinstance(data, dict):
+                data = {**data, "idempotency_key": key}
+            return envelope(data=data, request_id=_request_id(body)), EXIT_OK
         if args.command == "strm" and args.strm_command in {"generate", "sync"}:
             library = client.get(f"/api/v1/libraries/{args.library_id}")
             library_data = _data_for("/api/v1/libraries", library)
@@ -728,6 +764,11 @@ def _build_parser() -> argparse.ArgumentParser:
     sync.add_argument("--workflow-id")
     cleanup_plan = strm_sub.add_parser("cleanup-plan", help="生成只读 STRM 清理计划")
     cleanup_plan.add_argument("--library", dest="library_id", required=True)
+    cleanup_apply = strm_sub.add_parser("cleanup-apply", help="确认并执行 STRM 清理计划")
+    cleanup_apply.add_argument("plan_id")
+    cleanup_apply.add_argument("--digest", required=True)
+    cleanup_apply.add_argument("--confirm", action="store_true")
+    cleanup_apply.add_argument("--idempotency-key")
     return parser
 
 

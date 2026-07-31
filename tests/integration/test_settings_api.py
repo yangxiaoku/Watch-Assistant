@@ -329,6 +329,19 @@ async def test_strm_routes_enforce_independent_flags_and_reach_service(tmp_path)
         assert cleanup_plan.status_code == 409
         assert cleanup_plan.json()["detail"] == "source_snapshot_not_ready"
 
+        cleanup_apply = await client.post(
+            "/api/v1/strm-cleanup-plans/missing-plan/apply",
+            json={
+                "expected_revision": 1,
+                "digest": "a" * 64,
+                "confirm": True,
+                "idempotency_key": "cleanup-key",
+            },
+            headers=headers,
+        )
+        assert cleanup_apply.status_code == 404
+        assert cleanup_apply.json()["detail"] == "plan_not_found"
+
         workflow_response = await client.post(
             "/api/v1/workflows", json={"media_type": "movie"}, headers=headers
         )

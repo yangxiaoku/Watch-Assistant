@@ -118,7 +118,7 @@ const ADDITIONAL_CODES = [
   "target_catalog_unavailable",
   "organization_schedule_unavailable", "source_target_same", "invalid_source_directory_ids", "invalid_target_directory_id",
   "invalid_video_extensions", "invalid_metadata_extensions",
-  "organization_execution_disabled", "organization_write_disabled", "organization_write_unverified", "permanent_delete_disabled", "permanent_delete_unverified", "delete_unavailable", "strm_full_disabled", "strm_incremental_disabled", "strm_cleanup_disabled", "strm_unavailable", "source_snapshot_not_ready", "source_snapshot_not_current", "strm_output_unavailable", "invalid_playback_url_prefix", "plan_invalid", "organization_operation_unavailable", "plan_not_found",
+  "organization_execution_disabled", "organization_write_disabled", "organization_write_unverified", "permanent_delete_disabled", "permanent_delete_unverified", "delete_unavailable", "strm_full_disabled", "strm_incremental_disabled", "strm_cleanup_disabled", "strm_unavailable", "source_snapshot_not_ready", "source_snapshot_not_current", "strm_output_unavailable", "invalid_playback_url_prefix", "plan_invalid", "cleanup_plan_expired", "cleanup_plan_blocked", "cleanup_plan_changed", "cleanup_plan_not_reviewable", "organization_operation_unavailable", "plan_not_found",
   "invalid_plan", "invalid_pagination", "invalid_revision", "invalid_alias", "stale_revision",
   "plan_not_reviewable", "operation_not_found", "operation_unavailable", "invalid_plan_id",
   "invalid_idempotency_key", "invalid_operation_id", "plan_is_not_planned", "plan_prerequisites_changed",

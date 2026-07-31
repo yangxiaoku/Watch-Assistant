@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import uuid
 from dataclasses import dataclass
@@ -20,6 +21,7 @@ from watch_assistant.library_models import (
     StrmCleanupPlan,
     StrmManifestEntry,
 )
+from watch_assistant.services.strm_manifest import StrmManifestError, _remove_managed
 
 
 class StrmCleanupPlanError(ValueError):
@@ -58,6 +60,12 @@ class StrmCleanupPlanView:
             "executable_count": self.executable_count,
             "blocked_count": self.blocked_count,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class StrmCleanupApplyView:
+    plan: StrmCleanupPlanView
+    retired: int
 
 
 class StrmCleanupPlanService:
@@ -167,6 +175,97 @@ class StrmCleanupPlanService:
                 raise StrmCleanupPlanError("plan_not_found")
             return _view(plan)
 
+    async def apply_plan(
+        self,
+        *,
+        plan_id: str,
+        expected_revision: int,
+        digest: str,
+        confirm: bool,
+        idempotency_key: str,
+        output_root: Path | str,
+        playback_url_prefix: str,
+        now: datetime | None = None,
+    ) -> StrmCleanupApplyView:
+        if (
+            not _valid_id(plan_id)
+            or not isinstance(expected_revision, int)
+            or isinstance(expected_revision, bool)
+            or expected_revision < 1
+            or not isinstance(digest, str)
+            or len(digest) != 64
+            or not all(char in "0123456789abcdef" for char in digest.lower())
+            or not confirm
+            or not _valid_id(idempotency_key)
+        ):
+            raise StrmCleanupPlanError("invalid_request")
+        root = _readable_root(output_root)
+        prefix = _safe_prefix(playback_url_prefix)
+        current_time = _utc(now)
+        async with self._session_factory() as session:
+            plan = await session.get(StrmCleanupPlan, plan_id)
+            if plan is None:
+                raise StrmCleanupPlanError("plan_not_found")
+            if not hmac.compare_digest(plan.plan_hash, digest.lower()):
+                raise StrmCleanupPlanError("plan_digest_mismatch")
+            if plan.status == "applied":
+                return StrmCleanupApplyView(_view(plan), 0)
+            if plan.revision != expected_revision:
+                raise StrmCleanupPlanError("plan_revision_changed")
+            if plan.status != "needs_review":
+                raise StrmCleanupPlanError("cleanup_plan_not_reviewable")
+            if _utc(plan.expires_at) <= current_time:
+                raise StrmCleanupPlanError("cleanup_plan_expired")
+            library, _run = await self._validated_current_run(
+                session, plan.library_id, plan.source_scan_run_id
+            )
+            candidates = _candidates(plan)
+            manifest_ids = [item["manifest_id"] for item in candidates]
+            manifests = {
+                item.manifest_id: item
+                for item in (
+                    await session.scalars(
+                        select(StrmManifestEntry).where(
+                            StrmManifestEntry.library_id == library.id,
+                            StrmManifestEntry.manifest_id.in_(manifest_ids),
+                            StrmManifestEntry.is_current.is_(True),
+                        )
+                    )
+                ).all()
+            } if manifest_ids else {}
+            preflight: list[tuple[StrmManifestEntry, str]] = []
+            for item in candidates:
+                manifest = manifests.get(item["manifest_id"])
+                if manifest is None or manifest.cloud_file_id != item["cloud_file_id"]:
+                    raise StrmCleanupPlanError("cleanup_plan_changed")
+                state = _managed_state(
+                    root,
+                    manifest.local_relative_path,
+                    f"{prefix}{manifest.manifest_id}\n",
+                )
+                if state not in {"ready", "missing"}:
+                    raise StrmCleanupPlanError("cleanup_plan_blocked")
+                preflight.append((manifest, state))
+            retired = 0
+            for manifest, state in preflight:
+                if state == "ready":
+                    try:
+                        _remove_managed(
+                            root,
+                            manifest.local_relative_path,
+                            f"{prefix}{manifest.manifest_id}\n".encode(),
+                        )
+                    except StrmManifestError:
+                        raise StrmCleanupPlanError("cleanup_plan_blocked") from None
+                manifest.is_current = False
+                manifest.status = "retired"
+                retired += 1
+            plan.status = "applied"
+            plan.revision += 1
+            await session.commit()
+            await session.refresh(plan)
+            return StrmCleanupApplyView(_view(plan), retired)
+
     async def _validated_current_run(
         self, session: AsyncSession, library_id: str, scan_run_id: str
     ) -> tuple[MediaLibrary, LibraryScanRun]:
@@ -200,12 +299,7 @@ class StrmCleanupPlanService:
 
 
 def _view(plan: StrmCleanupPlan) -> StrmCleanupPlanView:
-    try:
-        candidates = json.loads(plan.candidates_json)
-    except (TypeError, json.JSONDecodeError):
-        raise StrmCleanupPlanError("plan_invalid") from None
-    if not isinstance(candidates, list):
-        raise StrmCleanupPlanError("plan_invalid")
+    candidates = _candidates(plan)
     executable = sum(
         isinstance(item, dict) and item.get("state") in {"ready", "missing"}
         for item in candidates
@@ -223,6 +317,28 @@ def _view(plan: StrmCleanupPlan) -> StrmCleanupPlanView:
         executable_count=executable,
         blocked_count=len(candidates) - executable,
     )
+
+
+def _candidates(plan: StrmCleanupPlan) -> list[dict[str, str]]:
+    try:
+        candidates = json.loads(plan.candidates_json)
+    except (TypeError, json.JSONDecodeError):
+        raise StrmCleanupPlanError("plan_invalid") from None
+    if not isinstance(candidates, list) or any(
+        not isinstance(item, dict)
+        or not all(
+            isinstance(item.get(key), str)
+            for key in (
+                "manifest_id",
+                "cloud_file_id",
+                "local_relative_path",
+                "state",
+            )
+        )
+        for item in candidates
+    ):
+        raise StrmCleanupPlanError("plan_invalid")
+    return candidates
 
 
 def _managed_state(root: Path, relative_path: str, expected: str) -> str:
@@ -296,4 +412,9 @@ def _utc(value: datetime | None) -> datetime:
     return value.astimezone(UTC) if value.tzinfo else value.replace(tzinfo=UTC)
 
 
-__all__ = ["StrmCleanupPlanError", "StrmCleanupPlanService", "StrmCleanupPlanView"]
+__all__ = [
+    "StrmCleanupApplyView",
+    "StrmCleanupPlanError",
+    "StrmCleanupPlanService",
+    "StrmCleanupPlanView",
+]

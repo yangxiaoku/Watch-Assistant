@@ -313,6 +313,7 @@ CLI 必须使用正式版本化 API，与 Web 共用校验和状态机。不得�
 - `watchctl organize plan --library <id> [--path-id <directory-id>]` 读取最新完整扫描并调用正式整理预览 API，仅持久化本地计划，不执行 115 写入；扫描未完成或目录不在快照范围内时拒绝生成计划。
 - `watchctl strm generate --library <id> --full` 和 `watchctl strm sync --library <id>` 只调用正式 STRM 全量/增量 API；服务端仍负责 `strm:write` Scope、独立 feature flag、完整最新扫描和播放入口门禁。
 - `watchctl strm cleanup-plan --library <id>` 只创建基于完整扫描和受管清单状态的持久清理预览，不删除文件或退休清单。
+- `watchctl strm cleanup-apply <plan-id> --digest <digest> --confirm` 只执行已确认的清理计划，服务端会再次校验扫描快照、计划版本、有效期、digest 和受管 STRM 内容；重复提交已应用计划不会重复退休清单。
 - Token 撤销后不能提交新操作。
 - 每个操作可追踪到 Agent、计划、任务和最终结果。
 - CLI 无法获得 Cookie、真实直链、Web 密码或其他 Token。

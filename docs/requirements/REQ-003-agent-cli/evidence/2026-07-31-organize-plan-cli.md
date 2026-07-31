@@ -38,3 +38,7 @@ git diff --check
 受管 manifest 和本地 STRM 文件状态为依据，持久化候选、摘要、哈希、版本和有效期；
 生成计划不会删除文件、退休 manifest 或调用 115 写接口。用户修改过、不可读或不安全
 的本地 STRM 会被标记为阻断候选，不能被后续执行阶段直接处理。
+
+`watchctl strm cleanup-apply <plan-id> --digest <digest> --confirm` 会在服务端再次校验
+计划版本、digest、有效期、最新完整扫描和每个受管文件内容。任何候选 preflight 失败都
+不会退休 manifest；已应用计划的重复请求不会再次删除文件。

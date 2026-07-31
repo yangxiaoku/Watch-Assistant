@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import pytest
 from sqlalchemy import select
 
 from watch_assistant.db import create_database, initialize_database
@@ -200,6 +201,95 @@ async def test_cleanup_plan_marks_user_modified_strm_blocked(tmp_path: Path):
         assert plan.executable_count == 0
         assert plan.blocked_count == 1
         assert (tmp_path / "output/Show/Episode.strm").read_text() == "user content\n"
+    finally:
+        await database.engine.dispose()
+
+
+async def test_cleanup_plan_apply_requires_digest_and_retires_only_managed_file(
+    tmp_path: Path,
+):
+    database = await _database(tmp_path)
+    try:
+        manifest_service = StrmManifestService(database.session_factory)
+        await manifest_service.generate(
+            "library-strm",
+            source_scan_run_id="scan-strm",
+            output_root=tmp_path / "output",
+            playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+        )
+        await _add_removed_episode_scan(database)
+        plan_service = StrmCleanupPlanService(database.session_factory)
+        plan = await plan_service.create_plan(
+            library_id="library-strm",
+            source_scan_run_id="scan-strm-2",
+            output_root=tmp_path / "output",
+            playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+        )
+
+        result = await plan_service.apply_plan(
+            plan_id=plan.plan_id,
+            expected_revision=plan.revision,
+            digest=plan.plan_hash,
+            confirm=True,
+            idempotency_key="cleanup-apply-one",
+            output_root=tmp_path / "output",
+            playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+        )
+        repeated = await plan_service.apply_plan(
+            plan_id=plan.plan_id,
+            expected_revision=result.plan.revision,
+            digest=plan.plan_hash,
+            confirm=True,
+            idempotency_key="cleanup-apply-one",
+            output_root=tmp_path / "output",
+            playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+        )
+
+        assert result.retired == 1
+        assert result.plan.status == "applied"
+        assert repeated.retired == 0
+        assert not (tmp_path / "output/Show/Episode.strm").exists()
+        items, total = await manifest_service.list_current("library-strm")
+        assert total == 0
+        assert items == ()
+    finally:
+        await database.engine.dispose()
+
+
+async def test_cleanup_plan_apply_rejects_modified_candidate_without_partial_retirement(
+    tmp_path: Path,
+):
+    database = await _database(tmp_path)
+    try:
+        manifest_service = StrmManifestService(database.session_factory)
+        await manifest_service.generate(
+            "library-strm",
+            source_scan_run_id="scan-strm",
+            output_root=tmp_path / "output",
+            playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+        )
+        await _add_removed_episode_scan(database)
+        plan_service = StrmCleanupPlanService(database.session_factory)
+        plan = await plan_service.create_plan(
+            library_id="library-strm",
+            source_scan_run_id="scan-strm-2",
+            output_root=tmp_path / "output",
+            playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+        )
+        (tmp_path / "output/Show/Episode.strm").write_text("changed\n")
+
+        with pytest.raises(Exception) as error:
+            await plan_service.apply_plan(
+                plan_id=plan.plan_id,
+                expected_revision=plan.revision,
+                digest=plan.plan_hash,
+                confirm=True,
+                idempotency_key="cleanup-apply-two",
+                output_root=tmp_path / "output",
+                playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+            )
+        assert str(error.value) == "cleanup_plan_blocked"
+        assert (tmp_path / "output/Show/Episode.strm").read_text() == "changed\n"
     finally:
         await database.engine.dispose()
 

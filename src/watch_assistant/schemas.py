@@ -319,6 +319,22 @@ class StrmCleanupPlanResponse(BaseModel):
     blocked_count: int = Field(ge=0)
 
 
+class StrmCleanupPlanApplyRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    expected_revision: int = Field(ge=1)
+    digest: str = Field(min_length=64, max_length=64)
+    confirm: bool = False
+    idempotency_key: str = Field(min_length=1, max_length=128)
+
+
+class StrmCleanupPlanApplyResponse(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    plan: StrmCleanupPlanResponse
+    retired: int = Field(ge=0)
+
+
 class LibraryDeleteRequest(BaseModel):
     model_config = {"extra": "forbid"}
 
