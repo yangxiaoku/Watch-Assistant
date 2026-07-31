@@ -518,6 +518,69 @@ def test_strm_cleanup_apply_fetches_revision_and_requires_confirmation(capsys):
     ]
 
 
+def test_strm_verify_uses_latest_scan_and_read_endpoint(capsys):
+    seen: list[tuple[str, str, dict[str, object] | None]] = []
+
+    class Transport(httpx.BaseTransport):
+        def handle_request(self, request):
+            payload = json.loads(request.content) if request.content else None
+            seen.append((request.method, request.url.path, payload))
+            if request.method == "GET":
+                return httpx.Response(
+                    200,
+                    json={
+                        "library_id": "library-one",
+                        "latest_scan": {
+                            "run_id": "scan-one",
+                            "state": "completed",
+                            "complete": True,
+                        },
+                    },
+                    request=request,
+                )
+            return httpx.Response(
+                200,
+                json={"status": "verified", "checked_count": 1, "issues": []},
+                request=request,
+            )
+
+    original = ApiClient.__init__
+    original_close = ApiClient.close
+    ApiClient.__init__ = lambda self, config: (
+        setattr(self, "config", config),
+        setattr(self, "_client", httpx.Client(base_url=config.server, transport=Transport())),
+    )[-1]
+    ApiClient.close = lambda self: self._client.close()
+    try:
+        assert main(
+            [
+                "--server",
+                "http://app.test",
+                "--token",
+                "wa_at_test",
+                "--output",
+                "json",
+                "strm",
+                "verify",
+                "--library",
+                "library-one",
+            ]
+        ) == EXIT_OK
+    finally:
+        ApiClient.__init__ = original
+        ApiClient.close = original_close
+
+    assert json.loads(capsys.readouterr().out)["data"]["status"] == "verified"
+    assert seen == [
+        ("GET", "/api/v1/libraries/library-one", None),
+        (
+            "POST",
+            "/api/v1/libraries/library-one/strm-verify",
+            {"source_scan_run_id": "scan-one"},
+        ),
+    ]
+
+
 def test_workflow_actions_use_shared_approval_and_cancel_endpoints(capsys):
     seen: list[tuple[str, str, dict[str, object] | None]] = []
 

@@ -198,6 +198,12 @@ EVENT_CATALOG: dict[str, EventDefinition] = {
         "STRM 清理计划已执行",
         "STRM 清理计划已执行，处理 {count} 个受管项",
     ),
+    "strm.verify.completed": _event(
+        "strm.verify.completed",
+        LogCategory.STRM,
+        "STRM 校验已完成",
+        "STRM 校验已完成，结果：{status}，检查 {count} 个条目",
+    ),
     "strm.dirty_consumed": _event(
         "strm.dirty_consumed", LogCategory.STRM, "目录变更已完成增量对账", "目录变更已完成增量对账，当前状态：{status}"
     ),

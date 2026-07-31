@@ -595,6 +595,30 @@ def _command(args: argparse.Namespace, path: Path) -> tuple[Any, int]:
             if isinstance(data, dict):
                 data = {**data, "idempotency_key": key}
             return envelope(data=data, request_id=_request_id(body)), EXIT_OK
+        if args.command == "strm" and args.strm_command == "verify":
+            library = client.get(f"/api/v1/libraries/{args.library_id}")
+            library_data = _data_for("/api/v1/libraries", library)
+            latest_scan = library_data.get("latest_scan") if isinstance(library_data, dict) else None
+            scan_run_id = latest_scan.get("run_id") if isinstance(latest_scan, dict) else None
+            if (
+                not isinstance(scan_run_id, str)
+                or latest_scan.get("state") != "completed"
+                or latest_scan.get("complete") is not True
+            ):
+                raise CliFailure(
+                    "媒体库没有可用的完整扫描",
+                    code=EXIT_CONFLICT,
+                    error_code="library_scan_required",
+                    suggestion_zh="请先完成完整扫描后再校验 STRM。",
+                )
+            body = client.post(
+                f"/api/v1/libraries/{args.library_id}/strm-verify",
+                payload={"source_scan_run_id": scan_run_id},
+            )
+            return envelope(
+                data=_data_for("/api/v1/libraries", body),
+                request_id=_request_id(body),
+            ), EXIT_OK
         if args.command == "strm" and args.strm_command in {"generate", "sync"}:
             library = client.get(f"/api/v1/libraries/{args.library_id}")
             library_data = _data_for("/api/v1/libraries", library)
@@ -769,6 +793,8 @@ def _build_parser() -> argparse.ArgumentParser:
     cleanup_apply.add_argument("--digest", required=True)
     cleanup_apply.add_argument("--confirm", action="store_true")
     cleanup_apply.add_argument("--idempotency-key")
+    verify = strm_sub.add_parser("verify", help="只读校验 STRM 清单和文件")
+    verify.add_argument("--library", dest="library_id", required=True)
     return parser
 
 

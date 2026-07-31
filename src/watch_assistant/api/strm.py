@@ -25,6 +25,8 @@ from watch_assistant.schemas import (
     StrmGenerationResponse,
     StrmManifestItemResponse,
     StrmManifestListResponse,
+    StrmVerifyRequest,
+    StrmVerifyResponse,
     WorkflowStageName,
     WorkflowStageStatus,
 )
@@ -36,6 +38,10 @@ from watch_assistant.services.strm_cleanup_plan import (
 from watch_assistant.services.strm_manifest import (
     StrmManifestError,
     StrmManifestService,
+)
+from watch_assistant.services.strm_verification import (
+    StrmVerificationError,
+    StrmVerificationService,
 )
 from watch_assistant.services.workflows import (
     WorkflowNotFound,
@@ -417,6 +423,49 @@ async def get_cleanup_plan(plan_id: str, request: Request) -> StrmCleanupPlanRes
         status = 404 if error.code == "plan_not_found" else 409
         raise HTTPException(status_code=status, detail=error.code) from None
     return StrmCleanupPlanResponse.model_validate(plan.to_public_dict())
+
+
+@router.post(
+    "/libraries/{library_id}/strm-verify",
+    response_model=StrmVerifyResponse,
+    dependencies=[
+        Depends(require_strm_enabled),
+        Depends(require_scope("strm:read")),
+    ],
+)
+async def verify_manifest(
+    library_id: str,
+    payload: StrmVerifyRequest,
+    request: Request,
+    context: AuthDependency,
+) -> StrmVerifyResponse:
+    try:
+        result = await StrmVerificationService(
+            request.app.state.database.session_factory
+        ).verify(
+            library_id=library_id,
+            source_scan_run_id=payload.source_scan_run_id,
+            output_root=getattr(request.app.state, "strm_output_root", "./data/strm"),
+            playback_url_prefix=getattr(
+                request.app.state,
+                "strm_playback_url_prefix",
+                "http://127.0.0.1:8115/api/v1/strm/play",
+            ),
+        )
+    except StrmVerificationError as error:
+        raise HTTPException(status_code=409, detail=error.code) from None
+    settings_service = getattr(request.app.state, "settings_service", None)
+    if settings_service is not None:
+        await settings_service.log_event(
+            "strm.verify.completed",
+            fields={"status": result.status},
+            counts={"count": result.checked_count},
+            actor_type="agent" if context.via_bearer else "web",
+            actor_id=context.identity,
+            resource_type="library",
+            resource_id=library_id,
+        )
+    return StrmVerifyResponse.model_validate(result.to_public_dict())
 
 
 @router.post(

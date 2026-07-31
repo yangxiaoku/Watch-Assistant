@@ -335,6 +335,36 @@ class StrmCleanupPlanApplyResponse(BaseModel):
     retired: int = Field(ge=0)
 
 
+class StrmVerifyRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    source_scan_run_id: str = Field(min_length=1, max_length=128)
+
+
+class StrmVerifyIssueResponse(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    kind: str
+    object_id: str
+    manifest_id: str | None = None
+
+
+class StrmVerifyResponse(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    library_id: str
+    scan_run_id: str
+    snapshot_revision: int = Field(ge=0)
+    status: Literal["verified", "issues"]
+    checked_count: int = Field(ge=0)
+    valid_count: int = Field(ge=0)
+    missing_count: int = Field(ge=0)
+    invalid_count: int = Field(ge=0)
+    orphan_count: int = Field(ge=0)
+    path_mismatch_count: int = Field(ge=0)
+    issues: list[StrmVerifyIssueResponse]
+
+
 class LibraryDeleteRequest(BaseModel):
     model_config = {"extra": "forbid"}
 

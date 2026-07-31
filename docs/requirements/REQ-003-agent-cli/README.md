@@ -5,7 +5,7 @@
 | 版本 | V1.0 |
 | 状态 | 开发中 |
 | 创建日期 | 2026-07-26 |
-| 更新日期 | 2026-07-29 |
+| 更新日期 | 2026-07-31 |
 | 负责人 | 待指定 |
 | 优先级 | P1 |
 | 依赖 | 版本化管理 API、Agent Token、REQ-004 |
@@ -314,10 +314,13 @@ CLI 必须使用正式版本化 API，与 Web 共用校验和状态机。不得�
 - `watchctl strm generate --library <id> --full` 和 `watchctl strm sync --library <id>` 只调用正式 STRM 全量/增量 API；服务端仍负责 `strm:write` Scope、独立 feature flag、完整最新扫描和播放入口门禁。
 - `watchctl strm cleanup-plan --library <id>` 只创建基于完整扫描和受管清单状态的持久清理预览，不删除文件或退休清单。
 - `watchctl strm cleanup-apply <plan-id> --digest <digest> --confirm` 只执行已确认的清理计划，服务端会再次校验扫描快照、计划版本、有效期、digest 和受管 STRM 内容；重复提交已应用计划不会重复退休清单。
+- `watchctl strm verify --library <id>` 只读取最新完整扫描、当前受管 manifest 和本地 STRM 内容，检查缺失、孤儿、路径不一致和稳定播放入口内容错误；校验不会修复文件、退休 manifest 或执行任何 115 写入。
 - Token 撤销后不能提交新操作。
 - 每个操作可追踪到 Agent、计划、任务和最终结果。
 - CLI 无法获得 Cookie、真实直链、Web 密码或其他 Token。
 - 三个桌面系统的核心流程通过测试。
+
+当前 `strm verify` 已完成服务端只读 API、CLI 入口和离线契约测试；生产媒体库清单、稳定播放入口实际可用性、媒体服务器兼容性和跨平台端到端验收仍属于阻断项。
 
 ## 12. 分期建议
 

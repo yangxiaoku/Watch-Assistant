@@ -13,6 +13,7 @@ from watch_assistant.library_models import (
 )
 from watch_assistant.services.strm_cleanup_plan import StrmCleanupPlanService
 from watch_assistant.services.strm_manifest import StrmManifestService
+from watch_assistant.services.strm_verification import StrmVerificationService
 
 
 async def _database(tmp_path: Path, *, include_second_video: bool = False):
@@ -290,6 +291,74 @@ async def test_cleanup_plan_apply_rejects_modified_candidate_without_partial_ret
             )
         assert str(error.value) == "cleanup_plan_blocked"
         assert (tmp_path / "output/Show/Episode.strm").read_text() == "changed\n"
+    finally:
+        await database.engine.dispose()
+
+
+async def test_strm_verify_reports_valid_and_invalid_managed_content(tmp_path: Path):
+    database = await _database(tmp_path)
+    try:
+        manifest_service = StrmManifestService(database.session_factory)
+        await manifest_service.generate(
+            "library-strm",
+            source_scan_run_id="scan-strm",
+            output_root=tmp_path / "output",
+            playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+        )
+        service = StrmVerificationService(database.session_factory)
+        valid = await service.verify(
+            library_id="library-strm",
+            source_scan_run_id="scan-strm",
+            output_root=tmp_path / "output",
+            playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+        )
+        (tmp_path / "output/Show/Episode.strm").write_text("changed\n")
+        invalid = await service.verify(
+            library_id="library-strm",
+            source_scan_run_id="scan-strm",
+            output_root=tmp_path / "output",
+            playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+        )
+
+        assert valid.status == "verified"
+        assert valid.checked_count == 1
+        assert valid.valid_count == 1
+        assert invalid.status == "issues"
+        assert invalid.invalid_count == 1
+        assert invalid.issues[0].kind == "invalid_content"
+    finally:
+        await database.engine.dispose()
+
+
+async def test_strm_verify_reports_missing_and_orphan_manifest(tmp_path: Path):
+    database = await _database(tmp_path)
+    try:
+        service = StrmVerificationService(database.session_factory)
+        missing = await service.verify(
+            library_id="library-strm",
+            source_scan_run_id="scan-strm",
+            output_root=tmp_path,
+            playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+        )
+        manifest_service = StrmManifestService(database.session_factory)
+        await manifest_service.generate(
+            "library-strm",
+            source_scan_run_id="scan-strm",
+            output_root=tmp_path / "output",
+            playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+        )
+        await _add_removed_episode_scan(database)
+        orphan = await service.verify(
+            library_id="library-strm",
+            source_scan_run_id="scan-strm-2",
+            output_root=tmp_path / "output",
+            playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+        )
+
+        assert missing.missing_count == 1
+        assert missing.status == "issues"
+        assert orphan.orphan_count == 1
+        assert orphan.issues[0].kind == "orphan_manifest"
     finally:
         await database.engine.dispose()
 
