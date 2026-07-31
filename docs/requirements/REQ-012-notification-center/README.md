@@ -112,6 +112,8 @@
   workflow ID 关联；同一事件仍通过现有 Webhook Outbox 投递，不阻塞业务事务。
 - 搜索 `discovery` 和内容检测 `inspection` 子任务现在在各自状态事务提交后发出同一事件，
   通知只对完成、失败、跳过、不确定和取消等可行动状态生效，运行中状态不会生成用户通知。
+- 推送任务的 `push` 阶段也在创建、重试、取消、终态和恢复后发出同一事件；任务事件仍保留，
+  但 workflow 通知使用 workflow/correlation ID 作为跳转和去重主体。
 - 任务 worker 的远端 `uncertain` 现在发出 `task.uncertain`（不再误报为失败），并携带任务
   ID；任务失败、115 不可用、订阅发现新资源、备份失败和异常恢复预览已接入通知过滤。
 - Webhook 管理接口提供单端点测试通知；测试载荷只包含 `webhook.test`、版本和中文摘要，

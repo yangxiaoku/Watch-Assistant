@@ -118,7 +118,8 @@ async def test_worker_terminal_state_updates_linked_workflow_stage(tmp_path):
     database = await _database(tmp_path)
     crypto = SecretCrypto(Fernet.generate_key().decode("ascii"))
     await _add_resource(database, crypto)
-    task_service = TaskService(database.session_factory)
+    recorder = EventRecorder()
+    task_service = TaskService(database.session_factory, event_logger=recorder)
     workflow_service = WorkflowService(database.session_factory)
     workflow = await workflow_service.create(
         WorkflowCreateRequest(media_type="movie", tmdb_id=27205)
@@ -130,6 +131,7 @@ async def test_worker_terminal_state_updates_linked_workflow_stage(tmp_path):
         crypto,
         FakeAdapter(),
         owner="workflow-worker",
+        event_logger=recorder,
     )
     assert await worker.run_once() is True
 
@@ -137,6 +139,14 @@ async def test_worker_terminal_state_updates_linked_workflow_stage(tmp_path):
     push_stage = next(stage for stage in updated.stages if stage.stage.value == "push")
     assert push_stage.status.value == "succeeded"
     assert push_stage.child_id == task.id
+    assert any(
+        event == "workflow.stage_changed"
+        and fields["task_id"] == workflow.id
+        and fields["correlation_id"] == workflow.correlation_id
+        and fields["fields"]["stage"] == "push"
+        and fields["fields"]["status"] == "succeeded"
+        for event, fields in recorder.events
+    )
     await database.engine.dispose()
 
 

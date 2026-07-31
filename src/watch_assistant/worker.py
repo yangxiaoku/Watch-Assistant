@@ -20,7 +20,10 @@ from watch_assistant.schemas import (
 from watch_assistant.services.inventory_push_guard import InventoryPushGuard
 from watch_assistant.services.observability import EventLogger, emit_event
 from watch_assistant.services.tasks import recover_after_restart
-from watch_assistant.services.workflows import sync_child_stage
+from watch_assistant.services.workflows import (
+    emit_workflow_stage_changed,
+    sync_child_stage,
+)
 
 
 class TaskAdapter(Protocol):
@@ -59,6 +62,8 @@ class TaskWorker:
             task = await session.get(Task, task_id)
             if task is None:
                 return False
+            stage_workflow = None
+            stage_status = None
             if task.action != TaskAction.OFFLINE_DOWNLOAD:
                 result = SubmissionResult(
                     status=RemoteStatus.FAILED,
@@ -112,17 +117,27 @@ class TaskWorker:
             task.lease_expires_at = None
             task.updated_at = datetime.now(UTC)
             if task.workflow_id is not None:
-                await sync_child_stage(
+                stage_status = _workflow_stage_status(result.status)
+                stage_workflow = await sync_child_stage(
                     session,
                     task.workflow_id,
                     WorkflowStageName.PUSH,
                     child_type="task",
                     child_id=task.id,
-                    status=_workflow_stage_status(result.status),
+                    status=stage_status,
                     reason=f"task_{result.status.value}",
                     error_code=result.error_code,
                 )
             await session.commit()
+        if stage_workflow is not None and stage_status is not None:
+            await emit_workflow_stage_changed(
+                self._event_logger,
+                workflow_id=stage_workflow.id,
+                correlation_id=stage_workflow.correlation_id,
+                stage_name=WorkflowStageName.PUSH,
+                status=stage_status,
+                error_code=result.error_code,
+            )
         event_code = {
             RemoteStatus.ACCEPTED: "task.accepted",
             RemoteStatus.UNCERTAIN: "task.uncertain",
@@ -150,6 +165,7 @@ class TaskWorker:
 
     async def recover_expired(self) -> int:
         now = datetime.now(UTC)
+        stage_events = []
         async with self._session_factory() as session:
             tasks = list(
                 await session.scalars(
@@ -170,7 +186,7 @@ class TaskWorker:
                     task.lease_expires_at = None
                     task.updated_at = now
                     if task.workflow_id is not None:
-                        await sync_child_stage(
+                        workflow = await sync_child_stage(
                             session,
                             task.workflow_id,
                             WorkflowStageName.PUSH,
@@ -179,6 +195,14 @@ class TaskWorker:
                             status=WorkflowStageStatus.FAILED,
                             reason="task_failed",
                             error_code=task.error_code,
+                        )
+                        stage_events.append(
+                            (
+                                workflow.id,
+                                workflow.correlation_id,
+                                WorkflowStageStatus.FAILED,
+                                task.error_code,
+                            )
                         )
                     continue
                 remote_status = None
@@ -189,18 +213,36 @@ class TaskWorker:
                         remote_status = None
                 recover_after_restart(task, remote_status)
                 if task.workflow_id is not None:
-                    await sync_child_stage(
+                    stage_status = _workflow_stage_status(task.state)
+                    workflow = await sync_child_stage(
                         session,
                         task.workflow_id,
                         WorkflowStageName.PUSH,
                         child_type="task",
                         child_id=task.id,
-                        status=_workflow_stage_status(task.state),
+                        status=stage_status,
                         reason=f"task_{task.state.value}",
                         error_code=task.error_code,
                     )
+                    stage_events.append(
+                        (
+                            workflow.id,
+                            workflow.correlation_id,
+                            stage_status,
+                            task.error_code,
+                        )
+                    )
             await session.commit()
-            return len(tasks)
+        for workflow_id, correlation_id, status, error_code in stage_events:
+            await emit_workflow_stage_changed(
+                self._event_logger,
+                workflow_id=workflow_id,
+                correlation_id=correlation_id,
+                stage_name=WorkflowStageName.PUSH,
+                status=status,
+                error_code=error_code,
+            )
+        return len(tasks)
 
     async def run_forever(self, stop_event: asyncio.Event, *, interval: float = 1.0):
         while not stop_event.is_set():
