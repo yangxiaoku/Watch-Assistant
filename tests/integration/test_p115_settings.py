@@ -7,7 +7,9 @@ import pytest
 from fastapi import FastAPI
 from pwdlib import PasswordHash
 
+from watch_assistant.adapters import p115_library_gateway
 from watch_assistant.adapters.p115 import P115Adapter
+from watch_assistant.adapters.p115_library import DirectoryPage, LibraryEntry, ScanState
 from watch_assistant.api.settings_p115 import router
 from watch_assistant.security import SESSION_COOKIE, SecurityManager
 from watch_assistant.services.p115_credentials import CookieProvider
@@ -133,6 +135,69 @@ async def test_get_settings_requires_auth_and_hides_state_without_session(tmp_pa
     assert anonymous.status_code == 401
     assert set(anonymous.json()) == {"detail"}
     assert authenticated.status_code == 200
+
+
+@pytest.mark.integration
+async def test_directory_picker_starts_at_the_115_account_root(monkeypatch, tmp_path):
+    path = tmp_path / "p115-cookie"
+    _write_cookie(path)
+    service = P115SettingsService(
+        enabled=True,
+        cookie_provider=CookieProvider(path),
+        cookie_path=path,
+        target_configured=True,
+        max_concurrency=1,
+    )
+    security = _security()
+    app = _settings_app(service, security)
+    app.state.p115_browsed_directory_ids = set()
+    app.state.organization_cookie_provider = object()
+    captured: dict[str, object] = {}
+
+    class FakeGateway:
+        def __init__(self, _provider, _factory=object, **kwargs):
+            captured.update(kwargs)
+
+        async def list_directory(self, directory_id, *, page, page_size):
+            assert directory_id == "0"
+            assert page == 1
+            assert page_size == 1
+            return DirectoryPage(
+                items=(
+                    LibraryEntry(
+                        directory_id="8",
+                        file_id=None,
+                        parent_id="0",
+                        name="媒体库",
+                        is_directory=True,
+                        size_bytes=0,
+                        modified_at=None,
+                        pickcode=None,
+                    ),
+                ),
+                page=1,
+                page_count=None,
+                total=1,
+                scan_complete=True,
+                state=ScanState.COMPLETE,
+                has_more=False,
+                next_page=None,
+                terminal=True,
+            )
+
+    monkeypatch.setattr(
+        p115_library_gateway, "P115ReadOnlyDirectoryGateway", FakeGateway
+    )
+    async with await _client(app) as client:
+        session_id, _csrf_token = await security.login_async("web-secret")
+        client.cookies.set(SESSION_COOKIE, session_id)
+        response = await client.get("/api/v1/settings/p115/directories")
+
+    assert response.status_code == 200
+    assert response.json()["root_id"] == "0"
+    assert response.json()["parent_id"] == "0"
+    assert response.json()["items"] == [{"id": "8", "name": "媒体库"}]
+    assert captured["allow_virtual_root"] is True
 
 
 @pytest.mark.integration
