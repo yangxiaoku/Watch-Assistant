@@ -33,6 +33,7 @@ _NOTIFIABLE_EVENTS = frozenset(
         "p115.credentials_expired",
         "subscription.resources_observed",
         "organize.needs_review",
+        "organize.operation.failed",
         "organize.operation.uncertain",
         "organize.operation.completed",
         "strm.cleanup_blocked",
@@ -112,6 +113,8 @@ class NotificationService:
             if event_code.startswith("workflow.")
             else "settings"
             if event_code == "inspection.batch_failed"
+            else "organization_plan"
+            if event_code in {"organize.operation.failed", "organize.operation.uncertain"}
             else "task"
             if task_id
             else resource_type

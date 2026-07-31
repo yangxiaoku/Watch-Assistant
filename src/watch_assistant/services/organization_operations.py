@@ -499,8 +499,18 @@ class OrganizationOperationService:
             await session.commit()
             summary = _summary(operation)
         await self._audit_operation(
-            "organize.operation.updated",
-            "整理操作状态已更新",
+            (
+                "organize.operation.failed"
+                if status is OrganizationOperationStatus.FAILED
+                and summary.workflow_id is None
+                else "organize.operation.updated"
+            ),
+            (
+                "整理操作失败"
+                if status is OrganizationOperationStatus.FAILED
+                and summary.workflow_id is None
+                else "整理操作状态已更新"
+            ),
             operation_id=summary.operation_id,
             workflow_id=summary.workflow_id,
             stage_status=(
@@ -843,6 +853,7 @@ class OrganizationOperationService:
             task_id=operation_id,
             resource_type="organization_operation",
             resource_id=operation_id,
+            error_code=error_code,
         )
 
     async def _audit(
@@ -854,6 +865,7 @@ class OrganizationOperationService:
         task_id: str | None = None,
         resource_type: str | None = None,
         resource_id: str | None = None,
+        error_code: str | None = None,
     ) -> None:
         logger = self._event_logger
         log_event = getattr(logger, "log_event", None)
@@ -862,7 +874,10 @@ class OrganizationOperationService:
         try:
             await log_event(
                 event,
-                fields={"status": status},
+                fields={
+                    "status": status,
+                    **({"error_code": error_code} if error_code is not None else {}),
+                },
                 correlation_id=correlation_id,
                 task_id=task_id,
                 resource_type=resource_type,

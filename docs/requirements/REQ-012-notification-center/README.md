@@ -116,6 +116,9 @@
   但 workflow 通知使用 workflow/correlation ID 作为跳转和去重主体。
 - 整理 operation 的状态事件和 `organization` 阶段事件现在带 operation/workflow/correlation ID，
   取消请求仍只记录本地中止意图，不伪造远端撤回。
+- 无 workflow 关联的整理 operation 失败现在使用独立的 `organize.operation.failed` 事件生成
+  错误级站内通知，并跳转整理工作台；关联 workflow 的失败继续只由 `workflow.stage_changed`
+  通知，避免同一次失败重复提醒。错误详情仅使用白名单错误码。
 - 无 workflow 关联的内容检测批次失败现在生成错误通知并跳转资源检测设置；已关联 workflow 的
   批次失败只保留 workflow 阶段通知，避免同一失败重复提醒。
 - 整理预览进入 `needs_review` 时，API 预览和自动预览都会发出 `organize.needs_review`；同一计划的重复预览复用 30 分钟去重并累加次数，通知可跳转整理工作台。
