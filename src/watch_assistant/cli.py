@@ -419,6 +419,16 @@ def _command(args: argparse.Namespace, path: Path) -> tuple[Any, int]:
                     "/api/v1/libraries",
                     params={"cursor": str(args.cursor), "limit": str(args.limit)},
                 )
+            elif args.library_command == "scan":
+                key = args.idempotency_key or f"watchctl-scan-{uuid.uuid4().hex}"
+                body = client.post(
+                    f"/api/v1/libraries/{args.library_id}/scan",
+                    payload={"idempotency_key": key},
+                )
+                data = _data_for("/api/v1/libraries", body)
+                if isinstance(data, dict):
+                    data = {**data, "idempotency_key": key}
+                return envelope(data=data, request_id=_request_id(body)), EXIT_OK
             else:
                 body = client.get(f"/api/v1/libraries/{args.library_id}")
             return envelope(data=_data_for("/api/v1/libraries", body), request_id=_request_id(body)), EXIT_OK
@@ -735,6 +745,9 @@ def _build_parser() -> argparse.ArgumentParser:
     library_list = library_sub.add_parser("list")
     library_list.add_argument("--cursor", type=int, default=0)
     library_list.add_argument("--limit", type=int, default=50)
+    library_scan = library_sub.add_parser("scan", help="请求媒体库完整扫描")
+    library_scan.add_argument("library_id")
+    library_scan.add_argument("--idempotency-key")
     library_show = library_sub.add_parser("show")
     library_show.add_argument("library_id")
 

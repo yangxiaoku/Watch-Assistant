@@ -143,7 +143,7 @@ watchctl system capabilities
 
 watchctl library list
 watchctl library show <library-id>
-watchctl library scan <library-id> [--path-id <directory-id>] [--dry-run]
+watchctl library scan <library-id> [--idempotency-key <key>]
 
 watchctl media list [--library <id>] [--state <state>]
 watchctl media show <media-id>
@@ -309,6 +309,7 @@ CLI 必须使用正式版本化 API，与 Web 共用校验和状态机。不得�
 - `watchctl notification list [--unread-only]`、`notification read <id>` 和 `notification read-all` 使用正式通知 API，并保持统一 JSON/JSONL envelope。
 - `watchctl webhook test <endpoint-id>` 仅调用正式的单端点测试投递 API，不直接访问第三方接收端。
 - `watchctl task cancel <task-id>` 仅取消尚未被 worker claim 的 queued 任务；已提交、运行中或结果不确定的任务返回稳定 `task_not_cancellable` 错误。
+- `watchctl library scan <library-id>` 仅调用正式媒体库扫描 API；CLI 未提供幂等键时自动生成并回显，服务端继续负责媒体库 Scope、范围验证、完整扫描和远端只读契约门禁。当前 API 只支持媒体库根目录完整扫描，`--path-id` 和 `--dry-run` 待后续契约冻结后再开放。
 - `watchctl strm status [--library <id>]` 仅读取 health capability 或受保护的 manifest 列表摘要，不开启 STRM 写入或播放。
 - `watchctl organize plan --library <id> [--path-id <directory-id>]` 读取最新完整扫描并调用正式整理预览 API，仅持久化本地计划，不执行 115 写入；扫描未完成或目录不在快照范围内时拒绝生成计划。
 - `watchctl strm generate --library <id> --full` 和 `watchctl strm sync --library <id>` 只调用正式 STRM 全量/增量 API；服务端仍负责 `strm:write` Scope、独立 feature flag、完整最新扫描和播放入口门禁。

@@ -185,6 +185,90 @@ def test_read_only_library_media_and_audit_commands_use_versioned_resources(caps
     assert seen == ["/api/v1/libraries", "/api/v1/media/file:one", "/api/v1/audit", "/api/v1/organization-plans"]
 
 
+def test_library_scan_uses_formal_endpoint_and_returns_idempotency_key(capsys):
+    seen: list[tuple[str, str, dict[str, object] | None]] = []
+
+    class Transport(httpx.BaseTransport):
+        def handle_request(self, request):
+            payload = json.loads(request.content) if request.content else None
+            seen.append((request.method, request.url.path, payload))
+            return httpx.Response(
+                200,
+                json={
+                    "run_id": "scan-one",
+                    "state": "queued",
+                    "complete": False,
+                    "pages_read": 0,
+                    "items_seen": 0,
+                    "added_count": 0,
+                    "changed_count": 0,
+                    "removed_count": 0,
+                },
+                request=request,
+            )
+
+    original = ApiClient.__init__
+    original_close = ApiClient.close
+    ApiClient.__init__ = lambda self, config: (
+        setattr(self, "config", config),
+        setattr(self, "_client", httpx.Client(base_url=config.server, transport=Transport())),
+    )[-1]
+    ApiClient.close = lambda self: self._client.close()
+    try:
+        code = main(
+            [
+                "--server",
+                "http://app.test",
+                "--token",
+                "wa_at_test",
+                "--output",
+                "json",
+                "library",
+                "scan",
+                "library-one",
+                "--idempotency-key",
+                "scan-key",
+            ]
+        )
+        explicit_body = json.loads(capsys.readouterr().out)
+        automatic_code = main(
+            [
+                "--server",
+                "http://app.test",
+                "--token",
+                "wa_at_test",
+                "--output",
+                "json",
+                "library",
+                "scan",
+                "library-one",
+            ]
+        )
+        automatic_body = json.loads(capsys.readouterr().out)
+    finally:
+        ApiClient.__init__ = original
+        ApiClient.close = original_close
+
+    assert code == EXIT_OK
+    assert automatic_code == EXIT_OK
+    assert explicit_body["data"]["run_id"] == "scan-one"
+    assert explicit_body["data"]["idempotency_key"] == "scan-key"
+    automatic_key = automatic_body["data"]["idempotency_key"]
+    assert automatic_key.startswith("watchctl-scan-")
+    assert seen == [
+        (
+            "POST",
+            "/api/v1/libraries/library-one/scan",
+            {"idempotency_key": "scan-key"},
+        ),
+        (
+            "POST",
+            "/api/v1/libraries/library-one/scan",
+            {"idempotency_key": automatic_key},
+        ),
+    ]
+
+
 def test_task_wait_polls_without_resubmitting(monkeypatch, capsys):
     responses = iter(
         [
