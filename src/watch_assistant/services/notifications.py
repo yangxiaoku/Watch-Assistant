@@ -101,6 +101,13 @@ class NotificationService:
             # Linked batches already produce an actionable workflow notification.
             return
         if (
+            event_code == "task.failed"
+            and safe_fields.get("error_code") == "needs_auth"
+        ):
+            # Authentication loss is represented by one global dependency notice;
+            # keep the task event in the audit log without notifying per task.
+            return
+        if (
             event_code == "inspection.batch_failed"
             and safe_fields.get("error_code") == "inspection_dependency_failed"
         ):
@@ -113,6 +120,8 @@ class NotificationService:
         subject_id = task_id or resource_id or correlation_id or "global"
         if event_code == "inspection.dependency_failed":
             subject_id = "dependency:qbittorrent"
+        elif event_code == "p115.credentials_expired":
+            subject_id = "dependency:p115"
         stage = safe_fields.get("stage")
         stage_key = str(stage) if isinstance(stage, str) else ""
         status_key = str(status) if isinstance(status, str) else ""
@@ -128,6 +137,7 @@ class NotificationService:
             in {
                 "inspection.batch_failed",
                 "inspection.dependency_failed",
+                "p115.credentials_expired",
                 "strm.dirty_failed",
                 "subscription.check_failed",
             }
@@ -140,6 +150,8 @@ class NotificationService:
         action_id = (
             "inspection"
             if event_code in {"inspection.batch_failed", "inspection.dependency_failed"}
+            else "p115"
+            if event_code == "p115.credentials_expired"
             else task_id or resource_id
         )
         await self.notify(

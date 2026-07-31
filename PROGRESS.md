@@ -78,6 +78,7 @@
   搜索和检测状态提交后会发出带 workflow/correlation ID 的阶段事件，可行动终态进入站内通知；
   qBittorrent 依赖失败现在额外发出全局 `inspection.dependency_failed` 通知，多批次故障按固定依赖主体聚合，
   不再为同一依赖逐批重复提醒；
+  115 `needs_auth` 现在发出全局 `p115.credentials_expired` 通知，多个任务按固定依赖主体聚合，逐任务失败日志不再重复提醒；
   推送创建、重试、取消、worker 终态和重启恢复也会发出同一 push 阶段事件；
   整理 operation 审计和 `organization` 阶段事件补齐 operation/workflow/correlation ID；
   独立内容检测失败现在进入站内错误通知，关联 workflow 时复用阶段通知避免重复；

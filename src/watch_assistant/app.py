@@ -715,6 +715,7 @@ def create_app(
                 target_configured=settings.p115_target_cid is not None,
                 max_concurrency=settings.p115_max_concurrency,
                 adapter=runtime_task_adapter,
+                event_logger=application.state.settings_service,
             )
             if runtime_task_adapter is None:
                 credential_service.bind_runtime(

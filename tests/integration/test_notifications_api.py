@@ -286,6 +286,44 @@ async def test_inspection_dependency_failure_is_global_and_batch_failure_is_supp
 
 
 @pytest.mark.integration
+async def test_p115_auth_failure_is_global_and_task_failure_is_suppressed(tmp_path):
+    client, database, tmdb, pansou, app = await _make_client(tmp_path)
+    try:
+        await app.state.settings_service.log_event(
+            "task.failed",
+            fields={"status": "needs_auth", "error_code": "needs_auth"},
+            task_id="task_auth_one",
+        )
+        await app.state.settings_service.log_event(
+            "p115.credentials_expired",
+            fields={"status": "needs_auth"},
+            resource_type="dependency",
+            resource_id="p115",
+        )
+        await app.state.settings_service.log_event(
+            "p115.credentials_expired",
+            fields={"status": "needs_auth"},
+            resource_type="dependency",
+            resource_id="p115",
+            task_id="task_auth_two",
+        )
+
+        response = await client.get("/api/v1/notifications")
+        assert response.status_code == 200
+        items = response.json()["items"]
+        assert len(items) == 1
+        assert items[0]["event_code"] == "p115.credentials_expired"
+        assert items[0]["aggregate_count"] == 2
+        assert items[0]["action_type"] == "settings"
+        assert items[0]["action_id"] == "p115"
+    finally:
+        await client.aclose()
+        await tmdb.aclose()
+        await pansou.aclose()
+        await database.engine.dispose()
+
+
+@pytest.mark.integration
 async def test_unlinked_organization_failure_notifies_organization_workbench(tmp_path):
     client, database, tmdb, pansou, app = await _make_client(tmp_path)
     try:

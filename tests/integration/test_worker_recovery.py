@@ -40,6 +40,17 @@ class FakeAdapter:
         return self.remote_status
 
 
+class NeedsAuthAdapter(FakeAdapter):
+    async def submit_magnet(
+        self, url: str, *, target_cid: str | None = None
+    ) -> SubmissionResult:
+        return SubmissionResult(
+            status=RemoteStatus.NEEDS_AUTH,
+            error_code="needs_auth",
+            error_message="credentials unavailable",
+        )
+
+
 class EventRecorder:
     def __init__(self):
         self.events = []
@@ -247,6 +258,35 @@ async def test_uncertain_submission_emits_actionable_uncertain_event(tmp_path):
     assert fields["task_id"] == task.id
     assert fields["resource_id"] == "res_magnet"
     assert fields["fields"]["error_code"] == "adapter_error"
+    await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_needs_auth_submission_emits_global_credential_event(tmp_path):
+    database = await _database(tmp_path)
+    crypto = SecretCrypto(Fernet.generate_key().decode("ascii"))
+    await _add_resource(database, crypto)
+    service = TaskService(database.session_factory)
+    task, _ = await service.create("res_magnet")
+    recorder = EventRecorder()
+    worker = TaskWorker(
+        database.session_factory,
+        crypto,
+        NeedsAuthAdapter(),
+        owner="auth-worker",
+        event_logger=recorder,
+    )
+
+    assert await worker.run_once() is True
+    stored = await service.get(task.id)
+    assert stored.state == TaskState.NEEDS_AUTH
+    assert any(
+        event == "p115.credentials_expired"
+        and fields["resource_type"] == "dependency"
+        and fields["resource_id"] == "p115"
+        and fields["fields"]["status"] == "needs_auth"
+        for event, fields in recorder.events
+    )
     await database.engine.dispose()
 
 

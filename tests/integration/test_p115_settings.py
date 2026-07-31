@@ -41,6 +41,14 @@ class FakeValidationAdapter:
             raise self.error
 
 
+class EventRecorder:
+    def __init__(self):
+        self.events = []
+
+    async def log_event(self, event, **kwargs):
+        self.events.append((event, kwargs))
+
+
 def _settings_app(
     service: P115SettingsService,
     security: SecurityManager | None = None,
@@ -520,6 +528,7 @@ async def test_validate_maps_adapter_failures_without_leaking_errors(
 ):
     path = tmp_path / "p115-cookie"
     _write_cookie(path)
+    recorder = EventRecorder()
     service = P115SettingsService(
         enabled=True,
         cookie_provider=CookieProvider(path),
@@ -527,12 +536,17 @@ async def test_validate_maps_adapter_failures_without_leaking_errors(
         target_configured=True,
         max_concurrency=1,
         adapter=FakeValidationAdapter(error),
+        event_logger=recorder,
     )
 
     result = await service.validate()
 
     assert result.status == expected
     assert isinstance(result.checked_at, datetime)
+    assert (
+        any(event == "p115.credentials_expired" for event, _ in recorder.events)
+        == (expected == "needs_auth")
+    )
     assert result.checked_at.tzinfo == UTC
     assert "opaque" not in repr(result)
 

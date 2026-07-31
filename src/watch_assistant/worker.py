@@ -174,6 +174,15 @@ class TaskWorker:
             resource_type="task",
             resource_id=task.resource_id,
         )
+        if result.status == RemoteStatus.NEEDS_AUTH:
+            await emit_event(
+                self._event_logger,
+                "p115.credentials_expired",
+                level=LoggingLevel.ERROR,
+                fields={"status": "needs_auth"},
+                resource_type="dependency",
+                resource_id="p115",
+            )
         return True
 
     async def recover_expired(self) -> int:

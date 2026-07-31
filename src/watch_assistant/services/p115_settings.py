@@ -9,6 +9,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Protocol
 
+from watch_assistant.schemas import LoggingLevel
+from watch_assistant.services.observability import EventLogger, emit_event
 from watch_assistant.services.p115_credentials import (
     CompositeCookieProvider,
     CookieProvider,
@@ -81,6 +83,7 @@ class P115SettingsService:
         validation_limit: int = 6,
         validation_window: timedelta = timedelta(minutes=1),
         validation_timeout_seconds: float = 10,
+        event_logger: EventLogger | None = None,
     ) -> None:
         if max_concurrency < 1:
             raise ValueError("max_concurrency must be positive")
@@ -103,6 +106,7 @@ class P115SettingsService:
         self._validation_limit = validation_limit
         self._validation_window = validation_window
         self._validation_timeout_seconds = validation_timeout_seconds
+        self._event_logger = event_logger
         self._validation_windows: dict[str, deque[datetime]] = {}
 
     def snapshot(
@@ -140,24 +144,37 @@ class P115SettingsService:
         window.append(checked_at)
 
     async def validate(self) -> P115ValidationResult:
+        status = "unavailable"
         if not self._enabled or not self._target_configured:
-            return self._validation_result("unavailable")
-        if not self._cookie_snapshot().structure_valid:
-            return self._validation_result("needs_auth")
-        if self._adapter is None:
-            return self._validation_result("unavailable")
-        try:
-            await asyncio.wait_for(
-                self._adapter.validate_read_only(),
-                timeout=self._validation_timeout_seconds,
+            status = "unavailable"
+        elif not self._cookie_snapshot().structure_valid:
+            status = "needs_auth"
+        elif self._adapter is None:
+            status = "unavailable"
+        else:
+            try:
+                await asyncio.wait_for(
+                    self._adapter.validate_read_only(),
+                    timeout=self._validation_timeout_seconds,
+                )
+            except P115NeedsAuthError:
+                status = "needs_auth"
+            except P115UnavailableError:
+                status = "unavailable"
+            except Exception:  # noqa: BLE001 - validation must not leak adapter errors
+                status = "unavailable"
+            else:
+                status = "ready"
+        if status == "needs_auth":
+            await emit_event(
+                self._event_logger,
+                "p115.credentials_expired",
+                level=LoggingLevel.ERROR,
+                fields={"status": status},
+                resource_type="dependency",
+                resource_id="p115",
             )
-        except P115NeedsAuthError:
-            return self._validation_result("needs_auth")
-        except P115UnavailableError:
-            return self._validation_result("unavailable")
-        except Exception:  # noqa: BLE001 - validation must not leak adapter errors
-            return self._validation_result("unavailable")
-        return self._validation_result("ready")
+        return self._validation_result(status)
 
     def _cookie_snapshot(self) -> P115CookieSnapshot:
         configured = False
