@@ -448,6 +448,15 @@ async def create_organization_preview(
             resource_type="organization_plan",
             resource_id=plan.plan_id,
         )
+        if plan.status.value == "needs_review":
+            await settings_service.log_event(
+                "organize.needs_review",
+                fields={"status": plan.status.value, "count": plan.source_count},
+                actor_type="agent" if context.via_bearer else "web",
+                actor_id=context.identity,
+                resource_type="organization_plan",
+                resource_id=plan.plan_id,
+            )
     return OrganizationPlanResponse.model_validate(plan.to_public_dict())
 
 

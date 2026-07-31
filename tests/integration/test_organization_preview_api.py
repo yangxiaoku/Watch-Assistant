@@ -109,10 +109,19 @@ async def test_organization_preview_api_is_local_idempotent_and_redacted(tmp_pat
             headers=headers,
             json={"source_scan_run_id": "scan-preview-api"},
         )
+        notifications = await client.get("/api/v1/notifications")
 
     assert first.status_code == 200
     assert second.status_code == 200
     assert first.json()["plan_id"] == second.json()["plan_id"]
     assert first.json()["status"] == "needs_review"
     assert "incoming/The.Office" not in first.text
+    assert notifications.status_code == 200
+    items = notifications.json()["items"]
+    assert len(items) == 1
+    assert items[0]["event_code"] == "organize.needs_review"
+    assert items[0]["aggregate_count"] == 2
+    assert items[0]["action_type"] == "organization_plan"
+    assert items[0]["action_id"] == first.json()["plan_id"]
+    assert "1 个文件" in items[0]["message_zh"]
     await database.engine.dispose()
