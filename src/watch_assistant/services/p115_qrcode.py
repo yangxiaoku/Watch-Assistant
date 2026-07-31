@@ -131,8 +131,8 @@ class P115QrcodeService:
             async with self._lock:
                 current = self._sessions.get(session_id)
                 if current is not None:
-                    current.status = "scanned"
-            return "scanned", None
+                    current.status = "waiting"
+            return "waiting", None
         cookie = _cookie_from_response(response)
         if cookie is None:
             raise P115QrcodeError("qrcode_result_invalid")

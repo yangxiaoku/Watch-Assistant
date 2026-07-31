@@ -113,7 +113,7 @@ async def test_ipad_like_device_falls_back_to_result_when_status_missing(monkeyp
     monkeypatch.setattr(service, "_call_provider", fake_provider)
     created = await service.create("115ipad")
 
-    assert await service.poll(str(created["session_id"])) == ("scanned", None)
+    assert await service.poll(str(created["session_id"])) == ("waiting", None)
     status, cookie = await service.poll(str(created["session_id"]))
     assert status == "ready"
     assert cookie == "UID=uid-one; CID=cid-one; KID=kid-one; SEID=seid-one"
