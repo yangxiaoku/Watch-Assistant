@@ -59,7 +59,11 @@ from watch_assistant.services.validation import (
     resource_matches_media,
     validate_and_rank_resources,
 )
-from watch_assistant.services.workflows import WorkflowNotFound, sync_child_stage
+from watch_assistant.services.workflows import (
+    WorkflowNotFound,
+    emit_workflow_stage_changed,
+    sync_child_stage,
+)
 
 FRESH_CACHE_AGE = timedelta(hours=24)
 NEGATIVE_CACHE_AGE = timedelta(minutes=30)
@@ -433,6 +437,8 @@ class SearchService:
         return _resource_search_task_from_row(row) if row is not None else None
 
     async def _save_resource_search_task(self, task: _ResourceSearchTask) -> None:
+        stage_workflow = None
+        stage_status = None
         async with self._session_factory() as session:
             row = await session.get(ResourceSearchJob, task.task_id)
             if row is None:
@@ -455,7 +461,7 @@ class SearchService:
             row.updated_at = task.updated_at
             if task.workflow_id is not None:
                 stage_status = _resource_search_stage_status(task.status)
-                await sync_child_stage(
+                stage_workflow = await sync_child_stage(
                     session,
                     task.workflow_id,
                     WorkflowStageName.DISCOVERY,
@@ -466,6 +472,15 @@ class SearchService:
                     error_code=task.error_code,
                 )
             await session.commit()
+        if stage_workflow is not None and stage_status is not None:
+            await emit_workflow_stage_changed(
+                self._event_logger,
+                workflow_id=stage_workflow.id,
+                correlation_id=stage_workflow.correlation_id,
+                stage_name=WorkflowStageName.DISCOVERY,
+                status=stage_status,
+                error_code=task.error_code,
+            )
 
     async def _ensure_workflow(self, workflow_id: str) -> None:
         async with self._session_factory() as session:

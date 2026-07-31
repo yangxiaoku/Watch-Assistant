@@ -67,6 +67,7 @@
   已开始时保持 `uncertain`，不伪造远端撤回；
   资源搜索任务现在持久关联 workflow 的 `discovery` 阶段，冲突关联会 fail-closed；
   内容检测批次现在持久关联 workflow 的 `inspection` 阶段，缓存终态、正常完成、部分失败和依赖失败均同步；
+  搜索和检测状态提交后会发出带 workflow/correlation ID 的阶段事件，可行动终态进入站内通知；
   本轮已将 workflow 阶段的可行动状态接入站内通知，
   通知继续复用偏好、去重和 Webhook Outbox；本轮修正任务 worker 将 `uncertain` 误报为
   `failed` 的问题，并补齐任务 ID、115 不可用、订阅新资源和备份失败通知。

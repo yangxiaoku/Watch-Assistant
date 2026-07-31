@@ -848,6 +848,12 @@ async def test_inspection_batch_syncs_workflow_stage_and_response(tmp_path):
     assert stage.child_type == "inspection_batch"
     assert stage.child_id == accepted.json()["batch_id"]
     assert stage.status.value == "succeeded"
+    notices = await client.get("/api/v1/notifications")
+    assert any(
+        item["event_code"] == "workflow.stage_changed"
+        and item["action_id"] == workflow.id
+        for item in notices.json()["items"]
+    )
     await _close(client, database, tmdb, pansou)
 
 
