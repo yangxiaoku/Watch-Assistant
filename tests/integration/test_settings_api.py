@@ -437,6 +437,7 @@ async def test_organization_settings_persist_and_validate_cid_scope(tmp_path):
                 "scan_interval_minutes": 5,
                 "source_directory_ids": ["3482085898508567892"],
                 "target_directory_id": "2988794667098701570",
+                "push_directory_id": "3988794667098701570",
                 "video_extensions": ["MKV", "mp4"],
                 "metadata_extensions": ["SRT", "nfo"],
                 "operation_delay_seconds": 2.0,
@@ -447,6 +448,7 @@ async def test_organization_settings_persist_and_validate_cid_scope(tmp_path):
         assert updated.json()["schedule_enabled"] is True
         assert updated.json()["video_extensions"] == ["mkv", "mp4"]
         assert updated.json()["metadata_extensions"] == ["srt", "nfo"]
+        assert updated.json()["push_directory_id"] == "3988794667098701570"
 
         invalid = await client.patch(
             "/api/v1/settings/organization",
@@ -462,11 +464,54 @@ async def test_organization_settings_persist_and_validate_cid_scope(tmp_path):
 
         cleared = await client.patch(
             "/api/v1/settings/organization",
-            json={"revision": updated.json()["revision"], "target_directory_id": None},
+            json={
+                "revision": updated.json()["revision"],
+                "target_directory_id": None,
+                "push_directory_id": None,
+            },
             headers=headers,
         )
         assert cleared.status_code == 200
         assert cleared.json()["target_directory_id"] is None
+        assert cleared.json()["push_directory_id"] is None
+    finally:
+        await client.aclose()
+        await tmdb.aclose()
+        await pansou.aclose()
+        await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_organization_directory_settings_reject_unbrowsed_ids(tmp_path):
+    app, client, database, tmdb, pansou = await _app(tmp_path)
+    try:
+        app.state.organization_target_root_id = "100"
+        app.state.p115_browsed_directory_ids = {"100", "200"}
+        login = await client.post("/api/v1/auth/login", json={"password": WEB_PASSWORD})
+        headers = {"X-CSRF-Token": login.json()["csrf_token"]}
+        current = await client.get("/api/v1/settings/organization")
+
+        rejected = await client.patch(
+            "/api/v1/settings/organization",
+            json={
+                "revision": current.json()["revision"],
+                "push_directory_id": "300",
+            },
+            headers=headers,
+        )
+        assert rejected.status_code == 403, rejected.text
+        assert rejected.json()["detail"] == "p115_directory_out_of_scope"
+
+        accepted = await client.patch(
+            "/api/v1/settings/organization",
+            json={
+                "revision": current.json()["revision"],
+                "push_directory_id": "200",
+            },
+            headers=headers,
+        )
+        assert accepted.status_code == 200
+        assert accepted.json()["push_directory_id"] == "200"
     finally:
         await client.aclose()
         await tmdb.aclose()

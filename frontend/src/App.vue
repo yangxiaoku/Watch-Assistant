@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { AlertTriangle, Bell, ClipboardCheck, Clock3, Database, Film, Flame, FolderOpen, Heart, Home, ListTodo, LoaderCircle, LogIn, PanelRight, Search, Settings, Tv, X } from "@lucide/vue";
+import { Bell, ClipboardCheck, Clock3, Database, Film, Flame, Heart, Home, ListTodo, LoaderCircle, LogIn, PanelRight, Search, Settings, Tv, X } from "@lucide/vue";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 import { ApiClient, ApiError, browserIsOnline, focusFirstFieldError } from "./api";
 import TaskDrawer from "./components/TaskDrawer.vue";
@@ -21,7 +21,7 @@ import { canPushResource, NO_PUSH_CAPABILITIES, resolvePushCapabilities, submitP
 import { finalizeInspectionResources, inspectionProgress as getInspectionProgress, inspectionResultEnded, inspectionState as getInspectionBatchState, MAX_INSPECTABLE_MAGNETS, mergeInspectionResult, nextInspectionResourceIds, pollInspectionBatch } from "./inspection";
 import { describeUiError } from "./errorCatalog";
 import { waitForResourceSearch as pollResourceSearch } from "./resourceSearchPolling";
-import type { HomeCatalogResponse, MovieMetadata, P115DirectoryItem, ResourceFacets, ResourcePageResponse, ResourceQuality, ResourceSearchResponse, ResourceSort, ResourceSummary, SearchResponse, SeasonDetailResponse, TaskResponse } from "./types";
+import type { HomeCatalogResponse, MovieMetadata, ResourceFacets, ResourcePageResponse, ResourceQuality, ResourceSearchResponse, ResourceSort, ResourceSummary, SearchResponse, SeasonDetailResponse, TaskResponse } from "./types";
 import CollectionView from "./views/CollectionView.vue";
 import HomeView from "./views/HomeView.vue";
 import LibraryView from "./views/LibraryView.vue";
@@ -65,14 +65,6 @@ const history = ref<MovieMetadata[]>(readStoredMovies(HISTORY_KEY));
 const tasks = ref<TaskResponse[]>([]);
 const activeWorkflowId = ref<string | null>(null);
 const pushingId = ref<string | null>(null);
-const pushDirectoryPickerOpen = ref(false);
-const pushDirectoryPickerLoading = ref(false);
-const pushDirectoryPickerError = ref("");
-const pushDirectoryPickerItems = ref<P115DirectoryItem[]>([]);
-const pushDirectoryPickerCurrentId = ref("");
-const pushDirectoryPickerCurrentName = ref("配置的 115 目标根目录");
-const pushDirectoryPickerTrail = ref<P115DirectoryItem[]>([]);
-const pendingPushResource = ref<ResourceSummary | null>(null);
 const drawerOpen = ref(false);
 const pushCapabilities = ref<PushCapabilities>({ ...NO_PUSH_CAPABILITIES });
 const inspectionSupported = ref(false);
@@ -1142,46 +1134,21 @@ async function login() {
   }
 }
 
-async function openPushDirectoryPicker(resource: ResourceSummary) {
+async function startPush(resource: ResourceSummary) {
   if (!canPushResource(resource, pushCapabilities.value)) {
     error.value = resource.kind === "115_share" ? "115 分享转存尚未验证" : "磁力云下载不可用";
     return;
   }
-  pendingPushResource.value = resource;
-  pushDirectoryPickerOpen.value = true;
-  pushDirectoryPickerTrail.value = [];
-  pushDirectoryPickerCurrentId.value = "";
-  pushDirectoryPickerCurrentName.value = "配置的 115 目标根目录";
-  await loadPushDirectoryPicker();
-}
-
-async function loadPushDirectoryPicker() {
-  pushDirectoryPickerLoading.value = true;
-  pushDirectoryPickerError.value = "";
   try {
-    const response = await api.p115Directories(pushDirectoryPickerCurrentId.value || undefined);
-    pushDirectoryPickerCurrentId.value = response.parent_id;
-    pushDirectoryPickerItems.value = response.items;
+    const settings = await api.organizationSettings();
+    if (!settings.push_directory_id) {
+      error.value = "请先在设置的“资源推送目录”中选择目录并保存。";
+      return;
+    }
+    void submitPush(resource, settings.push_directory_id);
   } catch (exception) {
-    pushDirectoryPickerError.value = exception instanceof ApiError ? exception.message : "目录读取失败，请检查 115 登录状态";
-  } finally {
-    pushDirectoryPickerLoading.value = false;
+    error.value = exception instanceof ApiError ? exception.message : "推送目录读取失败，请前往设置检查目录配置。";
   }
-}
-
-async function enterPushDirectory(item: P115DirectoryItem) {
-  pushDirectoryPickerTrail.value.push({ id: pushDirectoryPickerCurrentId.value, name: pushDirectoryPickerCurrentName.value });
-  pushDirectoryPickerCurrentId.value = item.id;
-  pushDirectoryPickerCurrentName.value = item.name;
-  await loadPushDirectoryPicker();
-}
-
-async function leavePushDirectory() {
-  const previous = pushDirectoryPickerTrail.value.pop();
-  if (!previous) return;
-  pushDirectoryPickerCurrentId.value = previous.id;
-  pushDirectoryPickerCurrentName.value = previous.name;
-  await loadPushDirectoryPicker();
 }
 
 async function submitPush(resource: ResourceSummary, targetDirectoryId: string) {
@@ -1202,15 +1169,6 @@ async function submitPush(resource: ResourceSummary, targetDirectoryId: string) 
   } finally {
     pushingId.value = null;
   }
-}
-
-function choosePushDirectory() {
-  const resource = pendingPushResource.value;
-  const targetDirectoryId = pushDirectoryPickerCurrentId.value;
-  if (!resource || !targetDirectoryId) return;
-  pendingPushResource.value = null;
-  pushDirectoryPickerOpen.value = false;
-  void submitPush(resource, targetDirectoryId);
 }
 
 function applyInspectionResponse(response: Parameters<typeof getInspectionProgress>[0], resourceIds: string[]) {
@@ -1500,16 +1458,8 @@ onBeforeUnmount(() => {
       <section v-else-if="loading && !result" class="detail-loading" aria-busy="true"><LoaderCircle class="spin" :size="24" /><strong>正在加载影视资料</strong><span>资源将在资料下方独立加载</span></section>
        <p v-if="result && !pushCapabilities.magnet && !pushCapabilities.share" class="warning-strip">115 推送当前不可用，推送按钮已禁用。</p>
        <p v-else-if="result && pushCapabilities.magnet && !pushCapabilities.share" class="warning-strip">磁力云下载可用，115 分享转存尚未验证</p>
-       <section v-if="result" class="detail-workspace"><MovieView :result="result" :resources="resourceItems" :resource-facets="resourceFacets" :resource-total="resourceTotal" :resource-hidden-total="resourceHiddenTotal" :resource-page="resourcePage" :resource-page-size="resourcePageSize" :resource-total-pages="resourceTotalPages" :resource-kind="resourceKind" :resource-quality="resourceQuality" :resource-query="resourceQuery" :resource-sort="resourceSort" :resource-loading="resourceLoading" :resource-error="resourceError" :metadata-loading="metadataLoading" :metadata-error="metadataError" :metadata-stale="metadataStale" :pagination-unavailable="resourcePaginationUnavailable" :media-type="detailMediaType" :season-number="selectedSeason" :season-detail="seasonDetail" :season-detail-loading="seasonDetailLoading" :season-detail-error="seasonDetailError" :pushing-id="pushingId" :push-capabilities="pushCapabilities" :favorite="detailFavorite" :inspection-supported="inspectionSupported" :inspection-state="inspectionState" :inspection-completed="inspectionCompleted" :inspection-total="inspectionTotal" :inspection-failed="inspectionFailed" :inspection-error="inspectionError" :inspection-more-available="inspectionMoreAvailable" :inspection-retry-available="inspectionRetryAvailable" :inspection-started="inspectionSeenIds.size > 0" @push="openPushDirectoryPicker" @favorite="toggleFavorite(result.movie)" @refresh="refreshResources" @retry-metadata="loadMetadata(detailMediaType, result.movie.tmdb_id, result.movie.title === '正在加载影视资料' ? undefined : result.movie)" @season="selectSeason" @inspect-more="inspectMore" @retry-failed="retryFailed" @retry-page="resourcePaginationUnavailable ? () => loadResourcePage(currentResourceRoute(), 'replace') : refreshResources" @page="changeResourcePage" @kind="(value) => changeResourceFilter({ kind: value })" @quality="(value) => changeResourceFilter({ quality: value })" @query="changeResourceQuery" @sort="(value) => changeResourceFilter({ sort: value })" @page-size="(value) => changeResourceFilter({ pageSize: value })" @back="returnToBrowse" /></section>
+       <section v-if="result" class="detail-workspace"><MovieView :result="result" :resources="resourceItems" :resource-facets="resourceFacets" :resource-total="resourceTotal" :resource-hidden-total="resourceHiddenTotal" :resource-page="resourcePage" :resource-page-size="resourcePageSize" :resource-total-pages="resourceTotalPages" :resource-kind="resourceKind" :resource-quality="resourceQuality" :resource-query="resourceQuery" :resource-sort="resourceSort" :resource-loading="resourceLoading" :resource-error="resourceError" :metadata-loading="metadataLoading" :metadata-error="metadataError" :metadata-stale="metadataStale" :pagination-unavailable="resourcePaginationUnavailable" :media-type="detailMediaType" :season-number="selectedSeason" :season-detail="seasonDetail" :season-detail-loading="seasonDetailLoading" :season-detail-error="seasonDetailError" :pushing-id="pushingId" :push-capabilities="pushCapabilities" :favorite="detailFavorite" :inspection-supported="inspectionSupported" :inspection-state="inspectionState" :inspection-completed="inspectionCompleted" :inspection-total="inspectionTotal" :inspection-failed="inspectionFailed" :inspection-error="inspectionError" :inspection-more-available="inspectionMoreAvailable" :inspection-retry-available="inspectionRetryAvailable" :inspection-started="inspectionSeenIds.size > 0" @push="startPush" @favorite="toggleFavorite(result.movie)" @refresh="refreshResources" @retry-metadata="loadMetadata(detailMediaType, result.movie.tmdb_id, result.movie.title === '正在加载影视资料' ? undefined : result.movie)" @season="selectSeason" @inspect-more="inspectMore" @retry-failed="retryFailed" @retry-page="resourcePaginationUnavailable ? () => loadResourcePage(currentResourceRoute(), 'replace') : refreshResources" @page="changeResourcePage" @kind="(value) => changeResourceFilter({ kind: value })" @quality="(value) => changeResourceFilter({ quality: value })" @query="changeResourceQuery" @sort="(value) => changeResourceFilter({ sort: value })" @page-size="(value) => changeResourceFilter({ pageSize: value })" @back="returnToBrowse" /></section>
     </template>
-    <div v-if="pushDirectoryPickerOpen" class="directory-picker-backdrop" role="presentation" @click.self="pushDirectoryPickerOpen = false">
-      <section class="directory-picker" role="dialog" aria-modal="true" aria-labelledby="push-directory-picker-title">
-        <header class="directory-picker-heading"><div><p class="eyebrow">115 网盘</p><h2 id="push-directory-picker-title">选择推送目录</h2><p>{{ pushDirectoryPickerCurrentName }}</p></div><button class="icon-button" type="button" aria-label="关闭目录选择器" title="关闭" @click="pushDirectoryPickerOpen = false">×</button></header>
-        <div v-if="pushDirectoryPickerLoading" class="settings-loading"><LoaderCircle class="spin" :size="20" />正在读取目录</div>
-        <div v-else-if="pushDirectoryPickerError" class="settings-state settings-state-error"><AlertTriangle :size="18" /><span>{{ pushDirectoryPickerError }}</span><button class="text-button" type="button" @click="loadPushDirectoryPicker">重试</button></div>
-        <template v-else><div class="directory-picker-toolbar"><button class="secondary-button" type="button" :disabled="!pushDirectoryPickerTrail.length" @click="leavePushDirectory">返回上级</button><button class="primary-button" type="button" :disabled="!pushDirectoryPickerCurrentId" @click="choosePushDirectory"><FolderOpen :size="16" />推送到当前目录</button></div><div v-if="!pushDirectoryPickerItems.length" class="settings-empty-block">当前目录没有可浏览的子目录。</div><div class="directory-picker-list"><button v-for="item in pushDirectoryPickerItems" :key="item.id" type="button" class="directory-picker-item" @click="enterPushDirectory(item)"><FolderOpen :size="17" /><span>{{ item.name }}</span><small>{{ item.id }}</small><span>进入</span></button></div></template>
-      </section>
-    </div>
     <TaskDrawer :tasks="tasks" :open="drawerOpen" @close="drawerOpen = false" @navigate="navigateFromTaskDrawer" />
   </main>
 </template>

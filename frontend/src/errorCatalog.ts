@@ -116,7 +116,7 @@ const ADDITIONAL_CODES = [
   "quality_profile_conflict", "invalid_quality_rules", "unknown_quality_rule", "invalid_min_resolution",
   "invalid_filename", "organization_plan_disabled", "organization_plan_unavailable", "organization_preview_unavailable",
   "target_catalog_unavailable",
-  "organization_schedule_unavailable", "source_target_same", "invalid_source_directory_ids", "invalid_target_directory_id",
+  "organization_schedule_unavailable", "source_target_same", "invalid_source_directory_ids", "invalid_target_directory_id", "invalid_push_directory_id",
   "invalid_video_extensions", "invalid_metadata_extensions",
   "organization_execution_disabled", "organization_write_disabled", "organization_write_unverified", "permanent_delete_disabled", "permanent_delete_unverified", "delete_unavailable", "strm_full_disabled", "strm_incremental_disabled", "strm_cleanup_disabled", "strm_unavailable", "source_snapshot_not_ready", "source_snapshot_not_current", "strm_output_unavailable", "invalid_playback_url_prefix", "plan_invalid", "cleanup_plan_expired", "cleanup_plan_blocked", "cleanup_plan_changed", "cleanup_plan_not_reviewable", "organization_operation_unavailable", "plan_not_found",
   "invalid_plan", "invalid_pagination", "invalid_revision", "invalid_alias", "stale_revision",

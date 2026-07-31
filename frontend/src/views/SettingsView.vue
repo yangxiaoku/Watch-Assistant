@@ -141,15 +141,16 @@ const organizationActionBusy = ref(false);
 const organizationActionMessage = ref("");
 const organizationSourceDraft = ref("");
 const organizationTargetDraft = ref("");
+const organizationPushDraft = ref("");
 const organizationVideoExtensionsDraft = ref("");
 const organizationMetadataExtensionsDraft = ref("");
 const directoryPickerOpen = ref(false);
-const directoryPickerMode = ref<"source" | "target">("source");
+const directoryPickerMode = ref<"source" | "target" | "push">("source");
 const directoryPickerLoading = ref(false);
 const directoryPickerError = ref("");
 const directoryPickerItems = ref<P115DirectoryItem[]>([]);
 const directoryPickerCurrentId = ref("");
-const directoryPickerCurrentName = ref("当前配置根目录");
+const directoryPickerCurrentName = ref("当前配置的 115 受管目录");
 const directoryPickerTrail = ref<P115DirectoryItem[]>([]);
 const organizationDraft = ref({
   schedule_enabled: false,
@@ -533,6 +534,7 @@ function applyOrganization(value: OrganizationSettingsResponse) {
   };
   organizationSourceDraft.value = value.source_directory_ids.join(", ");
   organizationTargetDraft.value = value.target_directory_id ?? "";
+  organizationPushDraft.value = value.push_directory_id ?? "";
   organizationVideoExtensionsDraft.value = value.video_extensions.join(", ");
   organizationMetadataExtensionsDraft.value = value.metadata_extensions.join(", ");
 }
@@ -550,12 +552,12 @@ async function loadOrganization() {
   }
 }
 
-async function openDirectoryPicker(mode: "source" | "target") {
+async function openDirectoryPicker(mode: "source" | "target" | "push") {
   directoryPickerMode.value = mode;
   directoryPickerOpen.value = true;
   directoryPickerTrail.value = [];
   directoryPickerCurrentId.value = "";
-  directoryPickerCurrentName.value = "当前配置根目录";
+  directoryPickerCurrentName.value = "当前配置的 115 受管目录";
   await loadDirectoryPicker();
 }
 
@@ -592,6 +594,8 @@ function chooseDirectory() {
   if (!directoryPickerCurrentId.value) return;
   if (directoryPickerMode.value === "target") {
     organizationTargetDraft.value = directoryPickerCurrentId.value;
+  } else if (directoryPickerMode.value === "push") {
+    organizationPushDraft.value = directoryPickerCurrentId.value;
   } else {
     const ids = organizationList(organizationSourceDraft.value);
     if (!ids.includes(directoryPickerCurrentId.value)) ids.push(directoryPickerCurrentId.value);
@@ -630,6 +634,7 @@ function organizationDraftChanged() {
     || organizationSettings.value.conflict_mode !== draft.conflict_mode
     || organizationSettings.value.multi_version_enabled !== draft.multi_version_enabled
     || organizationSettings.value.target_directory_id !== (organizationTargetDraft.value.trim() || null)
+    || organizationSettings.value.push_directory_id !== (organizationPushDraft.value.trim() || null)
     || organizationSettings.value.source_directory_ids.join(",") !== organizationList(organizationSourceDraft.value).join(",")
     || organizationSettings.value.video_extensions.join(",") !== organizationList(organizationVideoExtensionsDraft.value).join(",")
     || organizationSettings.value.metadata_extensions.join(",") !== organizationList(organizationMetadataExtensionsDraft.value).join(",");
@@ -644,6 +649,7 @@ async function saveOrganization() {
       ...organizationDraft.value,
       source_directory_ids: organizationList(organizationSourceDraft.value),
       target_directory_id: organizationTargetDraft.value.trim() || null,
+      push_directory_id: organizationPushDraft.value.trim() || null,
       video_extensions: organizationList(organizationVideoExtensionsDraft.value),
       metadata_extensions: organizationList(organizationMetadataExtensionsDraft.value),
       revision: organizationSettings.value.revision,
@@ -1051,7 +1057,7 @@ watch(autoRefreshLogs, syncLogsRefreshTimer);
           <div v-else-if="organizationError" class="settings-state settings-state-error"><AlertTriangle :size="18" /><span>{{ organizationError }}</span><button class="text-button" type="button" @click="loadOrganization">重试</button></div>
           <template v-else-if="organizationSettings">
             <details class="settings-subsection" open><summary><h3>整理执行</h3><span class="settings-section-disclosure" aria-hidden="true">⌄</span></summary><label class="settings-toggle"><input v-model="organizationDraft.schedule_enabled" type="checkbox" />115 网盘定时整理开关：已启用时会按扫描间隔自动整理；关闭时不会自动整理，但手动立即整理不受影响</label><div class="settings-form-grid"><label>扫描频率（分钟）<input v-model.number="organizationDraft.scan_interval_minutes" type="number" min="5" max="1440" /></label></div><p class="settings-note">建议不低于 5 分钟。停止整理会自动关闭定时开关并保存，正在执行的远端操作不会被强行中断。</p></details>
-            <details class="settings-subsection" open><summary><h3>扫描来源与归档目录</h3><span class="settings-section-disclosure" aria-hidden="true">⌄</span></summary><p class="settings-note">从已配置的 115 目标根目录浏览并选择，保存时只写入目录 ID。源目录可以选择多个，目标目录只能选择一个；源目录与目标目录不能相同。</p><div class="directory-selection-grid"><div class="directory-selection-field"><span>扫描来源</span><div class="directory-chips"><span v-for="id in organizationList(organizationSourceDraft)" :key="id" class="directory-chip">{{ id }}<button type="button" aria-label="移除扫描来源" @click="organizationSourceDraft = organizationList(organizationSourceDraft).filter(item => item !== id).join(', ')">×</button></span><span v-if="!organizationList(organizationSourceDraft).length" class="settings-note">尚未选择</span></div><button class="secondary-button" type="button" @click="openDirectoryPicker('source')">📂 选择来源目录</button><label class="directory-manual">高级：手动填写 CID<input v-model="organizationSourceDraft" inputmode="numeric" placeholder="多个 CID 用逗号分隔" /></label></div><div class="directory-selection-field"><span>归档目标</span><span v-if="organizationTargetDraft" class="directory-chip">{{ organizationTargetDraft }}</span><span v-else class="settings-note">尚未选择</span><button class="secondary-button" type="button" @click="openDirectoryPicker('target')">📂 选择归档目录</button><label class="directory-manual">高级：手动填写 CID<input v-model="organizationTargetDraft" inputmode="numeric" placeholder="单个归档目录 CID" /></label></div></div></details>
+            <details class="settings-subsection" open><summary><h3>扫描来源、归档与推送目录</h3><span class="settings-section-disclosure" aria-hidden="true">⌄</span></summary><p class="settings-note">目录选择器从当前配置的 115 受管目录开始浏览。扫描来源可多选，整理归档目录和资源推送目录各选一个；三者保存后分别生效。</p><div class="directory-selection-grid"><div class="directory-selection-field"><span>整理扫描来源</span><div class="directory-chips"><span v-for="id in organizationList(organizationSourceDraft)" :key="id" class="directory-chip">{{ id }}<button type="button" aria-label="移除扫描来源" @click="organizationSourceDraft = organizationList(organizationSourceDraft).filter(item => item !== id).join(', ')">×</button></span><span v-if="!organizationList(organizationSourceDraft).length" class="settings-note">尚未选择</span></div><button class="secondary-button" type="button" @click="openDirectoryPicker('source')">📂 选择扫描来源</button></div><div class="directory-selection-field"><span>整理归档目录</span><span v-if="organizationTargetDraft" class="directory-chip">{{ organizationTargetDraft }}</span><span v-else class="settings-note">尚未选择</span><button class="secondary-button" type="button" @click="openDirectoryPicker('target')">📂 选择归档目录</button></div><div class="directory-selection-field"><span>资源推送目录</span><span v-if="organizationPushDraft" class="directory-chip">{{ organizationPushDraft }}</span><span v-else class="settings-note">尚未选择</span><button class="secondary-button" type="button" @click="openDirectoryPicker('push')">📂 选择推送目录</button><p class="settings-note">资源页面点击“推送”时直接使用这里保存的目录，不再临时选择。</p></div></div></details>
             <details class="settings-subsection" open><summary><h3>识别与命名</h3><span class="settings-section-disclosure" aria-hidden="true">⌄</span></summary><div class="settings-form-grid"><label>视频文件类型（逗号分隔）<input v-model="organizationVideoExtensionsDraft" placeholder="mkv, mp4, avi" /></label><label>字幕/元数据类型（逗号分隔）<input v-model="organizationMetadataExtensionsDraft" placeholder="srt, ass, nfo" /></label></div><div class="settings-capability-list"><label class="settings-toggle"><input v-model="organizationDraft.rename_enabled" type="checkbox" />标准化重命名</label><label class="settings-toggle"><input v-model="organizationDraft.media_probe_enabled" type="checkbox" />媒体信息提取完善命名</label><label class="settings-toggle"><input v-model="organizationDraft.ai_identification_enabled" type="checkbox" />AI 辅助识别</label></div><p class="settings-note">AI 辅助识别需要先在实用工具完成 API 配置；未配置时不会调用 AI。</p></details>
             <details class="settings-subsection" open><summary><h3>整理规则</h3><span class="settings-section-disclosure" aria-hidden="true">⌄</span></summary><div class="settings-form-grid"><label>小文件过滤（MB）<input v-model.number="organizationDraft.small_file_threshold_mb" type="number" min="0" step="0.1" /></label><label>操作延时（秒）<input v-model.number="organizationDraft.operation_delay_seconds" type="number" min="0" max="60" step="0.1" /></label></div><div class="settings-capability-list"><label class="settings-toggle"><input v-model="organizationDraft.cleanup_empty_directories" type="checkbox" />整理后清理空文件夹</label><label class="settings-toggle"><input v-model="organizationDraft.strm_linkage_enabled" type="checkbox" />联动生成 STRM</label></div></details>
             <details class="settings-subsection" open><summary><h3>分类策略</h3><span class="settings-section-disclosure" aria-hidden="true">⌄</span></summary><div class="settings-capability-list"><label class="settings-toggle"><input v-model="organizationDraft.include_children_category" type="checkbox" />添加儿童节目分类</label><label class="settings-toggle"><input v-model="organizationDraft.include_concert_category" type="checkbox" />添加演唱会分类</label><label class="settings-toggle"><input v-model="organizationDraft.region_grouping_enabled" type="checkbox" />按地区二次分类</label><label class="settings-toggle"><input v-model="organizationDraft.year_grouping_enabled" type="checkbox" />按年份三次分类</label></div></details>
@@ -1064,7 +1070,7 @@ watch(autoRefreshLogs, syncLogsRefreshTimer);
 
         <div v-if="directoryPickerOpen" class="directory-picker-backdrop" role="presentation" @click.self="directoryPickerOpen = false">
           <section class="directory-picker" role="dialog" aria-modal="true" aria-labelledby="directory-picker-title">
-            <header class="directory-picker-heading"><div><p class="eyebrow">115 网盘</p><h2 id="directory-picker-title">选择{{ directoryPickerMode === 'source' ? '扫描来源' : '归档目标' }}目录</h2><p>{{ directoryPickerCurrentName }}</p></div><button class="icon-button" type="button" aria-label="关闭目录选择器" title="关闭" @click="directoryPickerOpen = false">×</button></header>
+            <header class="directory-picker-heading"><div><p class="eyebrow">115 受管目录</p><h2 id="directory-picker-title">选择{{ directoryPickerMode === 'source' ? '扫描来源' : directoryPickerMode === 'target' ? '归档目标' : '资源推送' }}目录</h2><p>{{ directoryPickerCurrentName }}</p></div><button class="icon-button" type="button" aria-label="关闭目录选择器" title="关闭" @click="directoryPickerOpen = false">×</button></header>
             <div v-if="directoryPickerLoading" class="settings-loading"><LoaderCircle class="spin" :size="20" />正在读取目录</div>
             <div v-else-if="directoryPickerError" class="settings-state settings-state-error"><AlertTriangle :size="18" /><span>{{ directoryPickerError }}</span><button class="text-button" type="button" @click="loadDirectoryPicker">重试</button></div>
             <template v-else><div class="directory-picker-toolbar"><button class="secondary-button" type="button" :disabled="!directoryPickerTrail.length" @click="leaveDirectory">返回上级</button><button class="primary-button" type="button" :disabled="!directoryPickerCurrentId" @click="chooseDirectory">选择当前目录</button></div><div v-if="!directoryPickerItems.length" class="settings-empty-block">当前目录没有可浏览的子目录。</div><div class="directory-picker-list"><button v-for="item in directoryPickerItems" :key="item.id" type="button" class="directory-picker-item" @click="enterDirectory(item)"><span>📁</span><span>{{ item.name }}</span><small>{{ item.id }}</small><span>进入</span></button></div></template>

@@ -117,6 +117,7 @@ _ORGANIZATION_DEFAULTS: dict[str, object] = {
     "scan_interval_minutes": 30,
     "source_directory_ids": [],
     "target_directory_id": None,
+    "push_directory_id": None,
     "video_extensions": ["mkv", "mp4", "avi", "mov", "ts", "m2ts", "wmv", "flv", "webm"],
     "metadata_extensions": ["srt", "ass", "ssa", "sub", "vtt", "nfo", "jpg", "jpeg", "png", "webp"],
     "rename_enabled": True,
@@ -1136,6 +1137,13 @@ def _validate_organization_values(values: dict[str, object]) -> dict[str, object
         raise ValueError("invalid_target_directory_id")
     if target is not None and target in normalized_sources:
         raise ValueError("source_target_same")
+    push_target = result.get("push_directory_id")
+    if push_target == "":
+        push_target = None
+    if push_target is not None and (
+        not isinstance(push_target, str) or _CID_PATTERN.fullmatch(push_target) is None
+    ):
+        raise ValueError("invalid_push_directory_id")
     for key in ("video_extensions", "metadata_extensions"):
         extensions = result.get(key)
         if not isinstance(extensions, list) or any(
@@ -1147,6 +1155,7 @@ def _validate_organization_values(values: dict[str, object]) -> dict[str, object
         result[key] = list(dict.fromkeys(item.strip().lower() for item in extensions))
     result["source_directory_ids"] = normalized_sources
     result["target_directory_id"] = target
+    result["push_directory_id"] = push_target
     if (
         not isinstance(result.get("scan_interval_minutes"), int)
         or isinstance(result["scan_interval_minutes"], bool)

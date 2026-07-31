@@ -151,6 +151,7 @@ _CATALOG: dict[str, ApiErrorDescriptor] = {
     "source_target_same": ApiErrorDescriptor("source_target_same", "整理目录配置有误", "源目录和目标目录不能相同。", "请填写不同的 115 目录。", False),
     "invalid_source_directory_ids": ApiErrorDescriptor("invalid_source_directory_ids", "源目录 ID 无效", "本次整理设置未保存。", "请填写纯数字的 115 目录 CID。", False),
     "invalid_target_directory_id": ApiErrorDescriptor("invalid_target_directory_id", "目标目录 ID 无效", "本次整理设置未保存。", "请填写纯数字的 115 目录 CID。", False),
+    "invalid_push_directory_id": ApiErrorDescriptor("invalid_push_directory_id", "推送目录 ID 无效", "本次整理设置未保存。", "请从 115 目录选择器选择推送目录。", False),
     "invalid_page": ApiErrorDescriptor("invalid_page", "页码无效", "本次目录读取未执行。", "请重新打开目录选择器。", False),
     "invalid_video_extensions": ApiErrorDescriptor("invalid_video_extensions", "视频扩展名无效", "本次整理设置未保存。", "请使用不带点号的文件扩展名。", False),
     "invalid_metadata_extensions": ApiErrorDescriptor("invalid_metadata_extensions", "元数据扩展名无效", "本次整理设置未保存。", "请使用不带点号的文件扩展名。", False),

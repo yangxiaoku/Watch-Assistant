@@ -343,6 +343,7 @@ export interface OrganizationSettingsResponse {
   scan_interval_minutes: number;
   source_directory_ids: string[];
   target_directory_id: string | null;
+  push_directory_id: string | null;
   video_extensions: string[];
   metadata_extensions: string[];
   rename_enabled: boolean;
@@ -369,6 +370,7 @@ export interface PatchOrganizationSettingsRequest {
   scan_interval_minutes?: number;
   source_directory_ids?: string[];
   target_directory_id?: string | null;
+  push_directory_id?: string | null;
   video_extensions?: string[];
   metadata_extensions?: string[];
   rename_enabled?: boolean;

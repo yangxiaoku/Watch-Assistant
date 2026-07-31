@@ -538,6 +538,7 @@ class OrganizationSettingsResponse(BaseModel):
     scan_interval_minutes: int = Field(ge=5, le=1440)
     source_directory_ids: list[str] = Field(max_length=50)
     target_directory_id: str | None = None
+    push_directory_id: str | None = None
     video_extensions: list[str] = Field(max_length=50)
     metadata_extensions: list[str] = Field(max_length=50)
     rename_enabled: bool
@@ -566,6 +567,7 @@ class OrganizationSettingsPatch(BaseModel):
     scan_interval_minutes: int | None = Field(default=None, ge=5, le=1440)
     source_directory_ids: list[str] | None = Field(default=None, max_length=50)
     target_directory_id: str | None = None
+    push_directory_id: str | None = None
     video_extensions: list[str] | None = Field(default=None, max_length=50)
     metadata_extensions: list[str] | None = Field(default=None, max_length=50)
     rename_enabled: bool | None = None
