@@ -29,7 +29,10 @@ from watch_assistant.services.organization_outbox import (
     OrganizationOutboxError,
 )
 from watch_assistant.services.organization_plan import OrganizationPlanStatus
-from watch_assistant.services.workflows import sync_child_stage
+from watch_assistant.services.workflows import (
+    emit_workflow_stage_changed,
+    sync_child_stage,
+)
 
 VALID_OPERATION_ERROR_CODES = frozenset(
     {
@@ -202,7 +205,15 @@ class OrganizationOperationService:
                     "operation_creation_conflict"
                 ) from None
             summary = _summary(operation)
-        await self._audit("organize.operation.queued", "整理操作已排队")
+        await self._audit_operation(
+            "organize.operation.queued",
+            "整理操作已排队",
+            operation_id=summary.operation_id,
+            workflow_id=summary.workflow_id,
+            stage_status=(
+                WorkflowStageStatus.PENDING if summary.workflow_id is not None else None
+            ),
+        )
         return summary
 
     async def get(self, operation_id: str) -> OrganizationOperationSummary:
@@ -358,12 +369,23 @@ class OrganizationOperationService:
                 reason="organization_started",
             )
             await session.commit()
-            return OrganizationOperationLease(
+            lease = OrganizationOperationLease(
                 operation_id=operation_id,
                 revision=expected_revision + 1,
                 lease_token=token,
                 lease_expires_at=expires_at,
             )
+            workflow_id = operation.workflow_id
+        await self._audit_operation(
+            "organize.operation.updated",
+            "整理操作已开始",
+            operation_id=operation_id,
+            workflow_id=workflow_id,
+            stage_status=(
+                WorkflowStageStatus.RUNNING if workflow_id is not None else None
+            ),
+        )
+        return lease
 
     async def renew_lease(
         self,
@@ -476,7 +498,18 @@ class OrganizationOperationService:
             )
             await session.commit()
             summary = _summary(operation)
-        await self._audit("organize.operation.updated", "整理操作状态已更新")
+        await self._audit_operation(
+            "organize.operation.updated",
+            "整理操作状态已更新",
+            operation_id=summary.operation_id,
+            workflow_id=summary.workflow_id,
+            stage_status=(
+                _workflow_stage_status(status)
+                if summary.workflow_id is not None
+                else None
+            ),
+            error_code=error_code,
+        )
         return summary
 
     async def finish_after_lease_loss(
@@ -528,7 +561,18 @@ class OrganizationOperationService:
             )
             await session.commit()
             summary = _summary(operation)
-        await self._audit("organize.operation.uncertain", "整理操作已标记为结果不确定")
+        await self._audit_operation(
+            "organize.operation.uncertain",
+            "整理操作已标记为结果不确定",
+            operation_id=summary.operation_id,
+            workflow_id=summary.workflow_id,
+            stage_status=(
+                WorkflowStageStatus.UNCERTAIN
+                if summary.workflow_id is not None
+                else None
+            ),
+            error_code="lease_lost",
+        )
         return summary
 
     async def complete_organized_with_dirty_events(
@@ -606,7 +650,17 @@ class OrganizationOperationService:
             if operation is None:
                 raise OrganizationOperationNotFound
             summary = _summary(operation)
-        await self._audit("organize.operation.completed", "整理操作已完成")
+        await self._audit_operation(
+            "organize.operation.completed",
+            "整理操作已完成",
+            operation_id=summary.operation_id,
+            workflow_id=summary.workflow_id,
+            stage_status=(
+                WorkflowStageStatus.SUCCEEDED
+                if summary.workflow_id is not None
+                else None
+            ),
+        )
         return summary
 
     async def cancel(
@@ -627,8 +681,11 @@ class OrganizationOperationService:
                 operation.updated_at = current_time
                 await session.commit()
                 summary = _summary(operation)
-                await self._audit(
-                    "organize.operation.cancel_requested", "整理操作已请求本地中止"
+                await self._audit_operation(
+                    "organize.operation.cancel_requested",
+                    "整理操作已请求本地中止",
+                    operation_id=summary.operation_id,
+                    workflow_id=summary.workflow_id,
                 )
                 return summary
             if operation.status is not OrganizationOperationStatus.PLANNED:
@@ -646,7 +703,17 @@ class OrganizationOperationService:
             )
             await session.commit()
             summary = _summary(operation)
-        await self._audit("organize.operation.cancelled", "整理操作已取消")
+        await self._audit_operation(
+            "organize.operation.cancelled",
+            "整理操作已取消",
+            operation_id=summary.operation_id,
+            workflow_id=summary.workflow_id,
+            stage_status=(
+                WorkflowStageStatus.CANCELLED
+                if summary.workflow_id is not None
+                else None
+            ),
+        )
         return summary
 
     async def retry(
@@ -692,7 +759,15 @@ class OrganizationOperationService:
             await session.commit()
             await session.refresh(operation)
             summary = _summary(operation)
-        await self._audit("organize.operation.retried", "整理操作已重试")
+        await self._audit_operation(
+            "organize.operation.retried",
+            "整理操作已重试",
+            operation_id=summary.operation_id,
+            workflow_id=summary.workflow_id,
+            stage_status=(
+                WorkflowStageStatus.PENDING if summary.workflow_id is not None else None
+            ),
+        )
         return summary
 
     async def _load_operation(
@@ -736,13 +811,63 @@ class OrganizationOperationService:
             await session.commit()
         raise OrganizationOperationPrerequisiteError("plan_prerequisites_changed")
 
-    async def _audit(self, event: str, status: str) -> None:
+    async def _audit_operation(
+        self,
+        event: str,
+        status: str,
+        *,
+        operation_id: str,
+        workflow_id: str | None,
+        stage_status: WorkflowStageStatus | None = None,
+        error_code: str | None = None,
+    ) -> None:
+        correlation_id = None
+        if workflow_id is not None:
+            async with self._session_factory() as session:
+                workflow = await session.get(Workflow, workflow_id)
+            if workflow is not None:
+                correlation_id = workflow.correlation_id
+                if stage_status is not None:
+                    await emit_workflow_stage_changed(
+                        self._event_logger,
+                        workflow_id=workflow.id,
+                        correlation_id=workflow.correlation_id,
+                        stage_name=WorkflowStageName.ORGANIZATION,
+                        status=stage_status,
+                        error_code=error_code,
+                    )
+        await self._audit(
+            event,
+            status,
+            correlation_id=correlation_id,
+            task_id=operation_id,
+            resource_type="organization_operation",
+            resource_id=operation_id,
+        )
+
+    async def _audit(
+        self,
+        event: str,
+        status: str,
+        *,
+        correlation_id: str | None = None,
+        task_id: str | None = None,
+        resource_type: str | None = None,
+        resource_id: str | None = None,
+    ) -> None:
         logger = self._event_logger
         log_event = getattr(logger, "log_event", None)
         if not callable(log_event):
             return
         try:
-            await log_event(event, fields={"status": status})
+            await log_event(
+                event,
+                fields={"status": status},
+                correlation_id=correlation_id,
+                task_id=task_id,
+                resource_type=resource_type,
+                resource_id=resource_id,
+            )
         except Exception:  # noqa: BLE001 - audit failure cannot alter local state
             return
 
