@@ -461,12 +461,35 @@ async def sync_child_stage_in_transaction(
             error_code=error_code,
         )
         await session.commit()
+    await emit_workflow_stage_changed(
+        event_logger,
+        workflow_id=workflow.id,
+        correlation_id=workflow.correlation_id,
+        stage_name=stage_name,
+        status=status,
+        error_code=error_code,
+    )
+
+
+async def emit_workflow_stage_changed(
+    event_logger: EventLogger | None,
+    *,
+    workflow_id: str,
+    correlation_id: str,
+    stage_name: WorkflowStageName,
+    status: WorkflowStageStatus,
+    error_code: str | None = None,
+) -> None:
+    """Emit a stage event only after the child state transaction commits."""
+    fields: dict[str, object] = {"status": status.value, "stage": stage_name.value}
+    if error_code is not None:
+        fields["error_code"] = error_code
     await emit_event(
         event_logger,
         "workflow.stage_changed",
-        fields={"status": status.value, "stage": stage_name.value},
-        correlation_id=workflow.correlation_id,
-        task_id=workflow.id,
+        fields=fields,
+        correlation_id=correlation_id,
+        task_id=workflow_id,
     )
 
 

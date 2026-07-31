@@ -271,6 +271,13 @@ async def test_resource_search_persists_workflow_discovery_link(tmp_path):
     assert discovery.child_id == task["task_id"]
     assert discovery.status.value == "succeeded"
 
+    notices = await client.get("/api/v1/notifications")
+    assert any(
+        item["event_code"] == "workflow.stage_changed"
+        and item["action_id"] == workflow.id
+        for item in notices.json()["items"]
+    )
+
     other_workflow = await WorkflowService(database.session_factory).create(
         WorkflowCreateRequest(media_type=MediaType.MOVIE, tmdb_id=12345)
     )

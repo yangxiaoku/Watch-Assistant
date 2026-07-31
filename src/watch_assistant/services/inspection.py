@@ -30,7 +30,11 @@ from watch_assistant.schemas import (
     WorkflowStageStatus,
 )
 from watch_assistant.services.observability import EventLogger, emit_event
-from watch_assistant.services.workflows import link_child, sync_child_stage
+from watch_assistant.services.workflows import (
+    emit_workflow_stage_changed,
+    link_child,
+    sync_child_stage,
+)
 
 INSPECTION_RETENTION = timedelta(days=7)
 TERMINAL_ITEM_STATUSES = (
@@ -164,30 +168,36 @@ class InspectionService:
             batch.status = _batch_status(item.status for item in items)
             session.add(batch)
             session.add_all(items)
+            stage_workflow = None
+            stage_status = None
+            stage_error_code = None
             if workflow_id is not None:
                 if batch.status in {
                     InspectionBatchStatus.COMPLETED,
                     InspectionBatchStatus.PARTIAL,
                     InspectionBatchStatus.FAILED,
                 }:
-                    await sync_child_stage(
+                    stage_status = _inspection_stage_status(batch.status)
+                    stage_error_code = (
+                        "inspection_partial"
+                        if batch.status == InspectionBatchStatus.PARTIAL
+                        else "inspection_failed"
+                        if batch.status == InspectionBatchStatus.FAILED
+                        else None
+                    )
+                    stage_workflow = await sync_child_stage(
                         session,
                         workflow_id,
                         WorkflowStageName.INSPECTION,
                         child_type="inspection_batch",
                         child_id=batch.id,
-                        status=_inspection_stage_status(batch.status),
+                        status=stage_status,
                         reason=f"inspection_{batch.status.value}",
-                        error_code=(
-                            "inspection_partial"
-                            if batch.status == InspectionBatchStatus.PARTIAL
-                            else "inspection_failed"
-                            if batch.status == InspectionBatchStatus.FAILED
-                            else None
-                        ),
+                        error_code=stage_error_code,
                     )
                 else:
-                    await link_child(
+                    stage_status = WorkflowStageStatus.RUNNING
+                    stage_workflow = await link_child(
                         session,
                         workflow_id,
                         WorkflowStageName.INSPECTION,
@@ -195,6 +205,15 @@ class InspectionService:
                         batch.id,
                     )
             await session.commit()
+            if stage_workflow is not None and stage_status is not None:
+                await emit_workflow_stage_changed(
+                    self._event_logger,
+                    workflow_id=stage_workflow.id,
+                    correlation_id=stage_workflow.correlation_id,
+                    stage_name=WorkflowStageName.INSPECTION,
+                    status=stage_status,
+                    error_code=stage_error_code,
+                )
             await emit_event(
                 self._event_logger,
                 "inspection.batch_started",
@@ -377,8 +396,9 @@ class InspectionWorker:
                     if batch is not None:
                         batch.status = InspectionBatchStatus.FAILED
                         batch.updated_at = datetime.now(UTC)
+                        stage_workflow = None
                         if batch.workflow_id is not None:
-                            await sync_child_stage(
+                            stage_workflow = await sync_child_stage(
                                 session,
                                 batch.workflow_id,
                                 WorkflowStageName.INSPECTION,
@@ -389,6 +409,15 @@ class InspectionWorker:
                                 error_code="inspection_dependency_failed",
                             )
                         await session.commit()
+                        if stage_workflow is not None:
+                            await emit_workflow_stage_changed(
+                                self._event_logger,
+                                workflow_id=stage_workflow.id,
+                                correlation_id=stage_workflow.correlation_id,
+                                stage_name=WorkflowStageName.INSPECTION,
+                                status=WorkflowStageStatus.FAILED,
+                                error_code="inspection_dependency_failed",
+                            )
                         await emit_event(
                             self._event_logger,
                             "inspection.batch_failed",
@@ -512,24 +541,38 @@ class InspectionWorker:
                 else InspectionBatchStatus.FAILED
             )
             batch.updated_at = datetime.now(UTC)
+            stage_workflow = None
+            stage_status = None
+            stage_error_code = None
             if batch.workflow_id is not None:
-                await sync_child_stage(
+                stage_status = _inspection_stage_status(batch.status)
+                stage_error_code = (
+                    "inspection_partial"
+                    if batch.status == InspectionBatchStatus.PARTIAL
+                    else "inspection_failed"
+                    if batch.status == InspectionBatchStatus.FAILED
+                    else None
+                )
+                stage_workflow = await sync_child_stage(
                     session,
                     batch.workflow_id,
                     WorkflowStageName.INSPECTION,
                     child_type="inspection_batch",
                     child_id=batch.id,
-                    status=_inspection_stage_status(batch.status),
+                    status=stage_status,
                     reason=f"inspection_{batch.status.value}",
-                    error_code=(
-                        "inspection_partial"
-                        if batch.status == InspectionBatchStatus.PARTIAL
-                        else "inspection_failed"
-                        if batch.status == InspectionBatchStatus.FAILED
-                        else None
-                    ),
+                    error_code=stage_error_code,
                 )
             await session.commit()
+            if stage_workflow is not None and stage_status is not None:
+                await emit_workflow_stage_changed(
+                    self._event_logger,
+                    workflow_id=stage_workflow.id,
+                    correlation_id=stage_workflow.correlation_id,
+                    stage_name=WorkflowStageName.INSPECTION,
+                    status=stage_status,
+                    error_code=stage_error_code,
+                )
             await emit_event(
                 self._event_logger,
                 "inspection.batch_completed"

@@ -134,6 +134,8 @@ API 返回顶层 workflow 和分页子任务，不返回敏感链接。REQ-003 �
 - 本轮补充 FLOW-002：内容检测批次响应返回持久 `workflow_id`；缓存命中、worker 正常完成、
   部分结果和依赖失败都会在同一事务内同步 `inspection` 阶段及稳定原因码，服务重启后的批次
   仍沿用原关联。
+- 本轮补充 FLOW-007：搜索和内容检测在子任务状态事务提交后发出带 workflow/correlation ID 的
+  `workflow.stage_changed` 事件；仅可行动终态进入站内通知，运行中事件仍保留结构化日志但不打扰用户。
 - 本轮补充 FLOW-002：STRM 全量/增量/清理 API 支持可选 `workflow_id`，在开始、成功和失败时
   同步 `strm` 阶段；整理完成后的目录 dirty worker 会继承关联 workflow，并在成功、重试等待
   外部、最终失败和功能跳过时同步阶段状态。原有 STRM 开关、Scope、完整扫描和清理安全门禁
