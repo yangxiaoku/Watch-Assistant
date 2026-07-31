@@ -202,6 +202,7 @@ _CATALOG: dict[str, ApiErrorDescriptor] = {
     "inventory_check_failed": ApiErrorDescriptor("inventory_check_failed", "库存检查未完成", "本次远端提交已阻止，库存检查没有得到可靠结果。", "刷新库存后再重试；不要重复提交可能已在途的任务。", True, "retry"),
     "task_not_found": ApiErrorDescriptor("task_not_found", "任务不存在", "本次任务操作未完成。", "请刷新任务列表后再试。", False, "retry"),
     "workflow_not_found": ApiErrorDescriptor("workflow_not_found", "关联工作流不存在", "本次任务未创建。", "请刷新页面后重新操作。", False, "retry"),
+    "workflow_id_conflict": ApiErrorDescriptor("workflow_id_conflict", "任务已关联其他工作流", "本次任务未改动现有关联。", "请查看原工作流或创建新的搜索任务。", False, "view_task"),
     "workflows_unavailable": ApiErrorDescriptor("workflows_unavailable", "工作流服务暂时不可用", "本次工作流操作未完成。", "请稍后重试。", True, "retry"),
     "workflow_conflict": ApiErrorDescriptor("workflow_conflict", "工作流状态发生冲突", "本次工作流操作未执行。", "请刷新工作流状态后再试。", False, "reload_settings"),
     "workflow_not_awaiting_confirmation": ApiErrorDescriptor("workflow_not_awaiting_confirmation", "工作流当前不需要确认", "本次确认未执行。", "请查看当前阶段状态后再操作。", False, "view_task"),
