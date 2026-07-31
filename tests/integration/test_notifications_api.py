@@ -240,6 +240,52 @@ async def test_unlinked_inspection_failure_notifies_settings_and_linked_failure_
 
 
 @pytest.mark.integration
+async def test_inspection_dependency_failure_is_global_and_batch_failure_is_suppressed(
+    tmp_path,
+):
+    client, database, tmdb, pansou, app = await _make_client(tmp_path)
+    try:
+        await app.state.settings_service.log_event(
+            "inspection.batch_failed",
+            fields={
+                "status": "dependency_failed",
+                "count": 0,
+                "hidden_count": 0,
+                "error_code": "inspection_dependency_failed",
+            },
+            task_id="inspect_batch_one",
+        )
+        await app.state.settings_service.log_event(
+            "inspection.dependency_failed",
+            fields={"status": "unavailable", "error_code": "inspection_dependency_failed"},
+            resource_type="dependency",
+            resource_id="qbittorrent",
+        )
+        await app.state.settings_service.log_event(
+            "inspection.dependency_failed",
+            fields={"status": "unavailable", "error_code": "inspection_dependency_failed"},
+            resource_type="dependency",
+            resource_id="qbittorrent",
+            task_id="inspect_batch_two",
+        )
+
+        response = await client.get("/api/v1/notifications")
+        assert response.status_code == 200
+        items = response.json()["items"]
+        assert len(items) == 1
+        assert items[0]["event_code"] == "inspection.dependency_failed"
+        assert items[0]["aggregate_count"] == 2
+        assert items[0]["action_type"] == "settings"
+        assert items[0]["action_id"] == "inspection"
+        assert "inspection_dependency_failed" in items[0]["message_zh"]
+    finally:
+        await client.aclose()
+        await tmdb.aclose()
+        await pansou.aclose()
+        await database.engine.dispose()
+
+
+@pytest.mark.integration
 async def test_unlinked_organization_failure_notifies_organization_workbench(tmp_path):
     client, database, tmdb, pansou, app = await _make_client(tmp_path)
     try:

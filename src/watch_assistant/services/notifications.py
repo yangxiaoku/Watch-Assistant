@@ -29,6 +29,7 @@ _NOTIFIABLE_EVENTS = frozenset(
         "task.failed",
         "task.uncertain",
         "inspection.batch_failed",
+        "inspection.dependency_failed",
         "p115.readiness",
         "p115.credentials_expired",
         "subscription.resources_observed",
@@ -99,10 +100,19 @@ class NotificationService:
         if event_code == "inspection.batch_failed" and correlation_id is not None:
             # Linked batches already produce an actionable workflow notification.
             return
+        if (
+            event_code == "inspection.batch_failed"
+            and safe_fields.get("error_code") == "inspection_dependency_failed"
+        ):
+            # The global dependency event below is the actionable notice. Do not
+            # repeat it once per affected batch.
+            return
         definition = get_event_definition(event_code)
         if definition is None:
             return
         subject_id = task_id or resource_id or correlation_id or "global"
+        if event_code == "inspection.dependency_failed":
+            subject_id = "dependency:qbittorrent"
         stage = safe_fields.get("stage")
         stage_key = str(stage) if isinstance(stage, str) else ""
         status_key = str(status) if isinstance(status, str) else ""
@@ -115,7 +125,12 @@ class NotificationService:
             if event_code.startswith("workflow.")
             else "settings"
             if event_code
-            in {"inspection.batch_failed", "strm.dirty_failed", "subscription.check_failed"}
+            in {
+                "inspection.batch_failed",
+                "inspection.dependency_failed",
+                "strm.dirty_failed",
+                "subscription.check_failed",
+            }
             else "organization_plan"
             if event_code in {"organize.operation.failed", "organize.operation.uncertain"}
             else "task"
@@ -124,7 +139,7 @@ class NotificationService:
         )
         action_id = (
             "inspection"
-            if event_code == "inspection.batch_failed"
+            if event_code in {"inspection.batch_failed", "inspection.dependency_failed"}
             else task_id or resource_id
         )
         await self.notify(
@@ -317,6 +332,7 @@ def _severity(event_code: str, status: object) -> NotificationSeverity:
     if event_code in {
         "task.failed",
         "task.uncertain",
+        "inspection.dependency_failed",
         "p115.credentials_expired",
         "organize.operation.uncertain",
         "strm.cleanup_blocked",

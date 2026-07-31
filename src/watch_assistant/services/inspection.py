@@ -450,6 +450,14 @@ class InspectionWorker:
                             ),
                             task_id=batch.id,
                         )
+                        await emit_event(
+                            self._event_logger,
+                            "inspection.dependency_failed",
+                            level=LoggingLevel.ERROR,
+                            fields={"status": "unavailable", "error_code": "inspection_dependency_failed"},
+                            resource_type="dependency",
+                            resource_id="qbittorrent",
+                        )
                         return False
             return True
 

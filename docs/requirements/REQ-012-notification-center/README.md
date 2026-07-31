@@ -126,6 +126,9 @@
   通知并跳转设置；正常无匹配检查不会进入错误通知链。
 - 无 workflow 关联的内容检测批次失败现在生成错误通知并跳转资源检测设置；已关联 workflow 的
   批次失败只保留 workflow 阶段通知，避免同一失败重复提醒。
+- qBittorrent 内容检测依赖不可用时，检测 worker 额外发出全局
+  `inspection.dependency_failed` 事件；通知以 `dependency:qbittorrent` 作为固定聚合主体，30 分钟内
+  的多批次失败合并为一条错误通知，并抑制对应的逐批 `inspection.batch_failed` 重复提醒。
 - 整理预览进入 `needs_review` 时，API 预览和自动预览都会发出 `organize.needs_review`；同一计划的重复预览复用 30 分钟去重并累加次数，通知可跳转整理工作台。
 - 任务 worker 的远端 `uncertain` 现在发出 `task.uncertain`（不再误报为失败），并携带任务
   ID；任务失败、115 不可用、订阅发现新资源、备份失败和异常恢复预览已接入通知过滤。

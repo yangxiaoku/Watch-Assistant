@@ -114,6 +114,13 @@ EVENT_CATALOG: dict[str, EventDefinition] = {
     "inspection.batch_failed": _event(
         "inspection.batch_failed", LogCategory.INSPECTION, "内容检测失败", "内容检测批次失败，失败数量：{hidden_count}，错误码：{error_code}", suggestion="请稍后重试内容检测"
     ),
+    "inspection.dependency_failed": _event(
+        "inspection.dependency_failed",
+        LogCategory.INSPECTION,
+        "内容检测依赖不可用",
+        "内容检测依赖服务不可用，错误码：{error_code}",
+        suggestion="请检查 qBittorrent 服务状态和版本配置，确认后再重试内容检测",
+    ),
     "p115.readiness": _event(
         "p115.readiness", LogCategory.P115, "115 就绪状态变化", "115 服务状态为“{status}”", suggestion="请在设置中重新验证 115 Cookie"
     ),
