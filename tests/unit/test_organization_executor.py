@@ -8,7 +8,11 @@ import pytest
 from sqlalchemy import select
 from test_organization_operations import _database, _item, _operation
 
-from watch_assistant.library_models import LibraryScanEntry, OrganizationPlan
+from watch_assistant.library_models import (
+    LibraryScanEntry,
+    OrganizationHistoryEntry,
+    OrganizationPlan,
+)
 from watch_assistant.models import (
     DirectoryDirtyEvent,
     OrganizationOperation,
@@ -148,7 +152,11 @@ async def test_executor_success_is_ordered_and_completes_outbox(tmp_path: Path):
     ]
     async with database.session_factory() as session:
         events = list(await session.scalars(select(DirectoryDirtyEvent)))
+        history = list(await session.scalars(select(OrganizationHistoryEntry)))
     assert {event.directory_id for event in events} == {"7000", "8000"}
+    assert len(history) == 1
+    assert history[0].title == "Movie"
+    assert history[0].target_path == "movie/movie.mkv"
     await database.engine.dispose()
 
 

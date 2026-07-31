@@ -26,12 +26,17 @@ from watch_assistant.services.library_index import ScanRunState
 from watch_assistant.services.media_classification import (
     ClassificationStatus,
     NamingPlan,
+    NamingRuleConfig,
+    plan_media,
 )
 from watch_assistant.services.media_matcher import (
     MatchConfidence,
     MatchDecision,
+    MatchSource,
     MatchStatus,
+    TmdbCandidate,
 )
+from watch_assistant.services.media_parser import parse_media_filename
 from watch_assistant.services.organization_policy import (
     OrganizationConflictPolicy,
     VersionDecision,
@@ -111,6 +116,7 @@ class OrganizationPlanView:
     action_count: int
     precondition_count: int
     alias: str | None = None
+    candidates: tuple[dict[str, object], ...] = ()
 
     def __repr__(self) -> str:
         return (
@@ -131,6 +137,25 @@ class OrganizationPlanView:
             "action_count": self.action_count,
             "precondition_count": self.precondition_count,
             "alias": self.alias,
+            "candidates": list(self.candidates),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class OrganizationPlanCandidate:
+    source_object_id: str
+    tmdb_id: int
+    title: str
+    media_type: str
+    release_year: int | None = None
+
+    def to_public_dict(self) -> dict[str, object]:
+        return {
+            "source_object_id": self.source_object_id,
+            "tmdb_id": self.tmdb_id,
+            "title": self.title,
+            "media_type": self.media_type,
+            "release_year": self.release_year,
         }
 
 
@@ -461,6 +486,115 @@ class OrganizationPlanService:
             if plan is None:
                 raise OrganizationPlanError("plan_not_found")
             return _view(plan)
+
+    async def select_candidate(
+        self,
+        plan_id: str,
+        *,
+        source_object_id: str,
+        tmdb_id: int,
+        expected_revision: int,
+    ) -> OrganizationPlanView:
+        """Create a fresh executable plan after an explicit TMDB choice."""
+
+        _validate_identity(plan_id, "invalid_plan")
+        _validate_identity(source_object_id, "invalid_source_object")
+        if isinstance(tmdb_id, bool) or not isinstance(tmdb_id, int) or tmdb_id <= 0:
+            raise OrganizationPlanError("invalid_tmdb_candidate")
+        async with self._session_factory() as session:
+            stored = await session.get(OrganizationPlan, plan_id)
+            if stored is None:
+                raise OrganizationPlanError("plan_not_found")
+            if stored.revision != expected_revision:
+                raise OrganizationPlanError("stale_revision")
+            if stored.status != OrganizationPlanStatus.NEEDS_REVIEW.value:
+                raise OrganizationPlanError("plan_not_reviewable")
+            basis = _load_json_list(stored.basis_json)
+            source_snapshot = _load_source_snapshot(stored.source_snapshot_json) or []
+            selected_payload = None
+            for evidence in basis:
+                if not isinstance(evidence, dict):
+                    continue
+                evidence_source_id = evidence.get("source_object_id")
+                if not isinstance(evidence_source_id, str):
+                    index = evidence.get("source_index")
+                    source = source_snapshot[index] if isinstance(index, int) and index < len(source_snapshot) else None
+                    evidence_source_id = source.get("object_id") if isinstance(source, dict) else None
+                if evidence_source_id != source_object_id:
+                    continue
+                selected_payload = next(
+                    (
+                        candidate
+                        for candidate in evidence.get("candidates", [])
+                        if isinstance(candidate, dict) and candidate.get("tmdb_id") == tmdb_id
+                    ),
+                    None,
+                )
+                break
+            if not isinstance(selected_payload, dict):
+                raise OrganizationPlanError("tmdb_candidate_not_found")
+            row = await session.scalar(
+                select(LibraryScanEntry).where(
+                    LibraryScanEntry.scan_run_id == stored.source_scan_run_id,
+                    LibraryScanEntry.object_id == source_object_id,
+                    LibraryScanEntry.is_directory.is_(False),
+                )
+            )
+            if row is None or not isinstance(row.parent_id, str) or not isinstance(row.path, str):
+                raise OrganizationPlanError("source_snapshot_mismatch")
+            target_config = _load_json_object(stored.preconditions_json)
+            target_directory_id = target_config.get("target_directory_id")
+            target_directories = target_config.get("target_directories", {})
+            policy = target_config.get("organization_policy", {})
+            library_id = stored.library_id
+            scan_run_id = stored.source_scan_run_id
+        try:
+            candidate = TmdbCandidate.from_payload(selected_payload)
+        except (TypeError, ValueError):
+            raise OrganizationPlanError("invalid_tmdb_candidate") from None
+        decision = MatchDecision(
+            status=MatchStatus.ACCEPTED,
+            selected=candidate,
+            confidence=MatchConfidence.HIGH,
+            source=MatchSource.MANUAL,
+        )
+        parsed = parse_media_filename(row.name)
+        naming_plan = plan_media(
+            parsed,
+            decision,
+            rules=NamingRuleConfig(library_root=stored.target_root or "library"),
+        )
+        if (
+            not naming_plan.executable
+            or not naming_plan.target_path
+            or not isinstance(target_directories, dict)
+        ):
+            raise OrganizationPlanError("candidate_target_unavailable")
+        target_parent_id = _directory_id_for_path(target_directories, str(PurePosixPath(naming_plan.target_path).parent))
+        if target_parent_id is None:
+            raise OrganizationPlanError("candidate_target_unavailable")
+        item = OrganizationPlanItem(
+            source=PlanSource(
+                object_type=row.object_type,
+                object_id=row.object_id,
+                parent_id=row.parent_id,
+                path=row.path,
+                remote_version=_entry_remote_version(row),
+            ),
+            naming_plan=naming_plan,
+            decision=decision,
+            target_parent_id=target_parent_id,
+            target_name=PurePosixPath(naming_plan.target_path).name,
+        )
+        return await self.create_plan(
+            library_id=library_id,
+            scan_run_id=scan_run_id,
+            items=(item,),
+            target_directory_id=target_directory_id if isinstance(target_directory_id, str) else None,
+            target_directories=target_directories,
+            organization_policy=policy if isinstance(policy, Mapping) else None,
+            target_root=stored.target_root,
+        )
 
     async def plan_library_id(self, plan_id: str) -> str:
         """Return the owning library ID for a scope check at an adapter boundary."""
@@ -793,11 +927,38 @@ def _build_payload(
         basis.append(
             {
                 "source_index": index,
+                "source_object_id": source.object_id,
                 "tmdb_id": (
                     item.decision.selected.tmdb_id
                     if item.decision.selected is not None
                     else None
                 ),
+                "media_type": (
+                    item.decision.selected.media_type.value
+                    if item.decision.selected is not None
+                    else None
+                ),
+                "candidates": [
+                    {
+                        "tmdb_id": ranked.candidate.tmdb_id,
+                        "title": ranked.candidate.title,
+                        "media_type": ranked.candidate.media_type.value,
+                        "release_year": ranked.candidate.release_year,
+                        "original_title": ranked.candidate.original_title,
+                        "origin_countries": list(ranked.candidate.origin_countries),
+                        "kind": ranked.candidate.kind.value,
+                        "special_kind": ranked.candidate.special_kind.value,
+                        "seasons": [
+                            {
+                                "season_number": season.season_number,
+                                "episode_count": season.episode_count,
+                                "episode_numbers": list(season.episode_numbers),
+                            }
+                            for season in ranked.candidate.seasons
+                        ],
+                    }
+                    for ranked in item.decision.ranked_candidates[:8]
+                ],
                 "title": (
                     item.decision.selected.title
                     if item.decision.selected is not None
@@ -1776,6 +1937,28 @@ def _source_key(value: Mapping[str, object]) -> tuple[str, str]:
     return str(value["object_type"]), str(value["object_id"])
 
 
+def _directory_id_for_path(directories: Mapping[str, object], path: str) -> str | None:
+    normalized = path.strip().strip("/").casefold()
+    for key, value in directories.items():
+        if isinstance(key, str) and key.strip().strip("/").casefold() == normalized:
+            return value if isinstance(value, str) and value else None
+    return None
+
+
+def _entry_remote_version(entry: LibraryScanEntry) -> str:
+    modified = entry.modified_at.astimezone(UTC).isoformat() if entry.modified_at else None
+    payload = {
+        "object_type": entry.object_type,
+        "object_id": entry.object_id,
+        "parent_id": entry.parent_id,
+        "path": entry.path,
+        "name": entry.name,
+        "size_bytes": entry.size_bytes,
+        "modified_at": modified,
+    }
+    return hashlib.sha256(_json(payload).encode("utf-8")).hexdigest()
+
+
 def _normalize_target(value: str) -> str:
     return value.casefold()
 
@@ -1805,6 +1988,35 @@ def _utc(value: datetime | None) -> datetime:
 def _view(plan: OrganizationPlan) -> OrganizationPlanView:
     source_snapshot = _load_source_snapshot(plan.source_snapshot_json) or []
     preconditions = _load_json_object(plan.preconditions_json)
+    basis = _load_json_list(plan.basis_json)
+    candidates: list[dict[str, object]] = []
+    for evidence in basis:
+        if not isinstance(evidence, dict) or not isinstance(evidence.get("candidates"), list):
+            continue
+        source_object_id = evidence.get("source_object_id")
+        if not isinstance(source_object_id, str):
+            source_index = evidence.get("source_index")
+            source = (
+                source_snapshot[source_index]
+                if isinstance(source_index, int) and 0 <= source_index < len(source_snapshot)
+                else None
+            )
+            source_object_id = source.get("object_id") if isinstance(source, dict) else None
+        if not isinstance(source_object_id, str):
+            continue
+        for candidate in evidence["candidates"]:
+            if not isinstance(candidate, dict):
+                continue
+            public = {
+                key: candidate.get(key)
+                for key in ("tmdb_id", "title", "media_type", "release_year")
+            }
+            if (
+                isinstance(public["tmdb_id"], int)
+                and isinstance(public["title"], str)
+                and public["media_type"] in {"movie", "tv"}
+            ):
+                candidates.append({"source_object_id": source_object_id, **public})
     if isinstance(preconditions, dict):
         precondition_count = len(preconditions.get("items", ()))
     else:
@@ -1819,6 +2031,7 @@ def _view(plan: OrganizationPlan) -> OrganizationPlanView:
         action_count=len(_load_json_list(plan.actions_json)),
         precondition_count=precondition_count,
         alias=plan.alias,
+        candidates=tuple(candidates),
     )
 
 

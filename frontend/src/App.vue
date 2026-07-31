@@ -31,6 +31,7 @@ import SettingsView from "./views/SettingsView.vue";
 import LibraryWorkbenchView from "./views/LibraryWorkbenchView.vue";
 import WorkflowCenterView from "./views/WorkflowCenterView.vue";
 import NotificationCenterView from "./views/NotificationCenterView.vue";
+import OrganizationHistoryView from "./views/OrganizationHistoryView.vue";
 
 const FAVORITES_KEY = "watch-assistant:favorites";
 const HISTORY_KEY = "watch-assistant:history";
@@ -469,6 +470,7 @@ const navItems = [
   { view: "tv" as const, label: "剧集", icon: Tv },
   { view: "popular" as const, label: "热门", icon: Flame },
   { view: "organization-plans" as const, label: "整理", icon: ClipboardCheck },
+  { view: "organization-history" as const, label: "整理历史", icon: Clock3 },
   { view: "library" as const, label: "媒体库", icon: Database },
   { view: "workflows" as const, label: "任务中心", icon: ListTodo },
   { view: "notifications" as const, label: "通知", icon: Bell },
@@ -558,7 +560,7 @@ async function loadView(view: BrowseView, historyMode: "push" | "none" = "none")
 }
 
 async function selectView(view: Exclude<BrowseView, "search">) {
-  if (view === "organization-plans" && !organizationPlanEnabled.value) {
+  if ((view === "organization-plans" || view === "organization-history") && !organizationPlanEnabled.value) {
     await selectView("home");
     return;
   }
@@ -1079,7 +1081,7 @@ async function returnToBrowse() {
 }
 
 async function initializeWorkspace() {
-  if (window.location.pathname === "/organization-plans" && !organizationPlanEnabled.value) {
+  if ((window.location.pathname === "/organization-plans" || window.location.pathname === "/organization-history") && !organizationPlanEnabled.value) {
     activeView.value = "home";
     previousView.value = "home";
     navigateToView("home", true);
@@ -1424,7 +1426,7 @@ onBeforeUnmount(() => {
       <a class="brand" href="/">WATCH<span>/</span>ASSISTANT</a>
       <template v-if="authenticated">
         <nav class="primary-nav" aria-label="主导航">
-          <template v-for="item in navItems" :key="item.view"><button v-if="item.view !== 'organization-plans' || organizationPlanEnabled" type="button" :class="{ active: activeView === item.view && !result }" @click="selectView(item.view)"><component :is="item.icon" :size="16" />{{ item.label }}</button></template>
+          <template v-for="item in navItems" :key="item.view"><button v-if="(item.view !== 'organization-plans' && item.view !== 'organization-history') || organizationPlanEnabled" type="button" :class="{ active: activeView === item.view && !result }" @click="selectView(item.view)"><component :is="item.icon" :size="16" />{{ item.label }}</button></template>
         </nav>
         <form class="top-search" role="search" @submit.prevent="searchMovies"><Search :size="17" /><input v-model="searchInput" type="search" aria-label="搜索电影或电视剧" placeholder="搜索电影或电视剧" /><button type="submit" aria-label="提交搜索" title="搜索"><Search :size="17" /></button></form>
         <div class="topbar-actions">
@@ -1449,6 +1451,7 @@ onBeforeUnmount(() => {
         <CollectionView v-else-if="activeView === 'favorites' || activeView === 'history'" :mode="activeView" :movies="activeView === 'favorites' ? favorites : history" :favorite-ids="favoriteIds" @open="openMovie" @favorite="toggleFavorite" />
         <SettingsView v-else-if="activeView === 'settings'" :api="api" @auto-start-enabled="inspectionAutoStartEnabled = $event" />
         <SettingsView v-else-if="activeView === 'organization-plans' && organizationPlanEnabled" :api="api" initial-section="organization" @auto-start-enabled="inspectionAutoStartEnabled = $event" />
+        <OrganizationHistoryView v-else-if="activeView === 'organization-history' && organizationPlanEnabled" :api="api" />
         <LibraryWorkbenchView v-else-if="activeView === 'library'" :api="api" />
         <WorkflowCenterView v-else-if="activeView === 'workflows'" :api="api" />
         <NotificationCenterView v-else-if="activeView === 'notifications'" :api="api" @navigate="selectView" />

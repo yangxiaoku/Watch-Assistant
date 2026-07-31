@@ -36,6 +36,7 @@ import type {
   NotificationPreferenceResponse,
   OrganizationPlanListResponse,
   OrganizationPlanSummary,
+  OrganizationHistoryListResponse,
   OrganizationOperationResponse,
   MediaLibraryListResponse,
   MediaLibraryResponse,
@@ -545,6 +546,12 @@ export class ApiClient {
     return this.request<OrganizationPlanListResponse>(`/api/v1/organization-plans?${params}`);
   }
 
+  async organizationHistory(cursor?: number, limit = 20): Promise<OrganizationHistoryListResponse> {
+    const params = new URLSearchParams({ limit: String(limit) });
+    if (cursor !== undefined) params.set("cursor", String(cursor));
+    return this.request<OrganizationHistoryListResponse>(`/api/v1/organization-history?${params}`);
+  }
+
   async organizationPlan(planId: string): Promise<OrganizationPlanSummary> {
     return this.request<OrganizationPlanSummary>(`/api/v1/organization-plans/${encodeURIComponent(planId)}`);
   }
@@ -553,6 +560,13 @@ export class ApiClient {
     return this.request<OrganizationPlanSummary>(`/api/v1/organization-plans/${encodeURIComponent(planId)}/confirm`, {
       method: "POST",
       body: JSON.stringify({ expected_revision: expectedRevision }),
+    });
+  }
+
+  async selectOrganizationCandidate(planId: string, expectedRevision: number, sourceObjectId: string, tmdbId: number): Promise<OrganizationPlanSummary> {
+    return this.request<OrganizationPlanSummary>(`/api/v1/organization-plans/${encodeURIComponent(planId)}/candidate`, {
+      method: "POST",
+      body: JSON.stringify({ expected_revision: expectedRevision, source_object_id: sourceObjectId, tmdb_id: tmdbId }),
     });
   }
 

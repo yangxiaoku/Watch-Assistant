@@ -637,6 +637,42 @@ class OrganizationAutomationResultResponse(BaseModel):
     finished_at: datetime | None = None
 
 
+class OrganizationHistoryResponse(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    id: str
+    operation_id: str
+    plan_id: str
+    source_object_id: str
+    source_directory_id: str
+    target_directory_id: str
+    tmdb_id: int | None = None
+    title: str
+    media_type: Literal["movie", "tv"] | None = None
+    source_name: str
+    target_path: str
+    status: Literal["organized", "failed", "uncertain"]
+    error_code: str | None = None
+    completed_at: datetime
+
+
+class OrganizationHistoryListResponse(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    items: list[OrganizationHistoryResponse]
+    next_cursor: int | None = Field(default=None, ge=0)
+
+
+class OrganizationPlanCandidateResponse(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    source_object_id: str
+    tmdb_id: int
+    title: str
+    media_type: Literal["movie", "tv"]
+    release_year: int | None = None
+
+
 class OrganizationPlanResponse(BaseModel):
     model_config = {"extra": "forbid"}
 
@@ -649,6 +685,7 @@ class OrganizationPlanResponse(BaseModel):
     action_count: int = Field(ge=0)
     precondition_count: int = Field(ge=0)
     alias: str | None = None
+    candidates: list[OrganizationPlanCandidateResponse] = Field(default_factory=list)
 
 
 class OrganizationPlanListResponse(BaseModel):
@@ -662,6 +699,11 @@ class OrganizationPlanMutationRequest(BaseModel):
     model_config = {"extra": "forbid"}
 
     expected_revision: int = Field(ge=1)
+
+
+class OrganizationPlanCandidateRequest(OrganizationPlanMutationRequest):
+    source_object_id: str = Field(min_length=1, max_length=128)
+    tmdb_id: int = Field(gt=0)
 
 
 class OrganizationOperationQueueRequest(BaseModel):

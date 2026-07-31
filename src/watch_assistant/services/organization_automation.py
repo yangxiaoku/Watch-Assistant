@@ -259,10 +259,18 @@ class OrganizationAutomationService:
                     "multi_version_enabled": settings.multi_version_enabled,
                     "manual_confirmation": manual_confirmation,
                 }
-                plan = await self._preview.create_preview(**preview_kwargs)
-                if manual_confirmation and self._directory_provisioner is not None:
-                    target_paths = await self._plans.plan_target_directory_paths(
-                        plan.plan_id
+                create_previews = getattr(self._preview, "create_previews", None)
+                if callable(create_previews):
+                    preview_plans = list(await create_previews(**preview_kwargs))
+                else:
+                    preview_plans = [await self._preview.create_preview(**preview_kwargs)]
+                if self._directory_provisioner is not None:
+                    target_paths = tuple(
+                        path
+                        for preview_plan in preview_plans
+                        for path in await self._plans.plan_target_directory_paths(
+                            preview_plan.plan_id
+                        )
                     )
                     missing_paths = tuple(
                         path for path in target_paths if path not in catalog.by_path
@@ -274,24 +282,30 @@ class OrganizationAutomationService:
                         catalog = await read_target_catalog(gateway, target_id)
                         preview_kwargs["target_directories"] = catalog.by_path
                         preview_kwargs["existing_target_files"] = catalog.files
-                        plan = await self._preview.create_preview(**preview_kwargs)
-                plans += 1
-                plan_ids.append(plan.plan_id)
-                if (
-                    self._auto_execute
-                    and self._operations is not None
-                    and plan.status is OrganizationPlanStatus.PLANNED
-                ):
-                    confirmed = await self._plans.confirm_plan(
-                        plan.plan_id, expected_revision=plan.revision
-                    )
-                    await self._operations.create(
-                        plan.plan_id,
-                        idempotency_key=f"organization-auto:{plan.plan_id}",
-                        expected_plan_revision=confirmed.revision,
-                    )
-                    queued += 1
-                await self._log_preview(plan.status.value, plan.source_count)
+                        if callable(create_previews):
+                            preview_plans = list(await create_previews(**preview_kwargs))
+                        else:
+                            preview_plans = [
+                                await self._preview.create_preview(**preview_kwargs)
+                            ]
+                plans += len(preview_plans)
+                for plan in preview_plans:
+                    plan_ids.append(plan.plan_id)
+                    if (
+                        self._auto_execute
+                        and self._operations is not None
+                        and plan.status is OrganizationPlanStatus.PLANNED
+                    ):
+                        confirmed = await self._plans.confirm_plan(
+                            plan.plan_id, expected_revision=plan.revision
+                        )
+                        await self._operations.create(
+                            plan.plan_id,
+                            idempotency_key=f"organization-auto:{plan.plan_id}",
+                            expected_plan_revision=confirmed.revision,
+                        )
+                        queued += 1
+                    await self._log_preview(plan.status.value, plan.source_count)
             except asyncio.CancelledError:
                 raise
             except (

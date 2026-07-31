@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from watch_assistant.library_models import (
     LibraryScanRun,
     MediaLibrary,
+    OrganizationHistoryEntry,
     OrganizationPlan,
 )
 from watch_assistant.models import (
@@ -686,6 +687,13 @@ class OrganizationOperationService:
                 operation = await session.get(OrganizationOperation, operation_id)
                 if operation is None:
                     raise OrganizationOperationNotFound
+                await self._record_history(
+                    session,
+                    operation,
+                    source_directory_id=source_directory_id,
+                    target_directory_id=target_directory_id,
+                    completed_at=current_time,
+                )
                 await _sync_workflow_stage(
                     session,
                     operation.workflow_id,
@@ -710,6 +718,79 @@ class OrganizationOperationService:
             summary = _summary(operation)
         await self._audit("organize.operation.completed", "整理操作已完成")
         return summary
+
+    async def _record_history(
+        self,
+        session: AsyncSession,
+        operation: OrganizationOperation,
+        *,
+        source_directory_id: str,
+        target_directory_id: str,
+        completed_at: datetime,
+    ) -> None:
+        """Write completed primary media actions in the same transaction."""
+
+        plan = await session.get(OrganizationPlan, operation.plan_id)
+        if plan is None:
+            raise OrganizationOperationConflict("plan_not_found")
+        try:
+            actions = json.loads(plan.actions_json)
+            basis = json.loads(plan.basis_json)
+        except (TypeError, ValueError):
+            raise OrganizationOperationConflict("plan_history_invalid") from None
+        if not isinstance(actions, list) or not isinstance(basis, list):
+            raise OrganizationOperationConflict("plan_history_invalid")
+        basis_by_index = {
+            item.get("source_index"): item
+            for item in basis
+            if isinstance(item, dict) and isinstance(item.get("source_index"), int)
+        }
+        for action in actions:
+            if not isinstance(action, dict) or action.get("kind") != "move":
+                continue
+            source_object_id = action.get("object_id")
+            target_path = action.get("target")
+            source_name = action.get("source_name")
+            if not all(
+                isinstance(value, str) and value
+                for value in (source_object_id, target_path, source_name)
+            ):
+                raise OrganizationOperationConflict("plan_history_invalid")
+            existing = await session.scalar(
+                select(OrganizationHistoryEntry).where(
+                    OrganizationHistoryEntry.operation_id == operation.id,
+                    OrganizationHistoryEntry.source_object_id == source_object_id,
+                )
+            )
+            if existing is not None:
+                continue
+            evidence = basis_by_index.get(action.get("order"), {})
+            title = evidence.get("title") if isinstance(evidence, dict) else None
+            if not isinstance(title, str) or not title:
+                title = source_name
+            tmdb_id = evidence.get("tmdb_id") if isinstance(evidence, dict) else None
+            if not isinstance(tmdb_id, int) or isinstance(tmdb_id, bool):
+                tmdb_id = None
+            media_type = evidence.get("media_type") if isinstance(evidence, dict) else None
+            if media_type not in {"movie", "tv"}:
+                media_type = None
+            session.add(
+                OrganizationHistoryEntry(
+                    id="hist_" + uuid.uuid4().hex,
+                    operation_id=operation.id,
+                    plan_id=operation.plan_id,
+                    source_object_id=source_object_id,
+                    source_directory_id=source_directory_id,
+                    target_directory_id=target_directory_id,
+                    tmdb_id=tmdb_id,
+                    title=title,
+                    media_type=media_type,
+                    source_name=source_name,
+                    target_path=target_path,
+                    status=OrganizationOperationStatus.ORGANIZED.value,
+                    completed_at=completed_at,
+                )
+            )
 
     async def cancel(
         self, operation_id: str, *, expected_revision: int

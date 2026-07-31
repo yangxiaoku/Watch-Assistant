@@ -39,6 +39,9 @@ from watch_assistant.api.maintenance import router as maintenance_router
 from watch_assistant.api.manual_import import router as manual_import_router
 from watch_assistant.api.mcp import router as mcp_router
 from watch_assistant.api.notifications import router as notifications_router
+from watch_assistant.api.organization_history import (
+    router as organization_history_router,
+)
 from watch_assistant.api.organization_operation import (
     router as organization_operation_router,
 )
@@ -88,6 +91,7 @@ from watch_assistant.services.organization_automation import (
 from watch_assistant.services.organization_directory_provisioner import (
     OrganizationDirectoryProvisioner,
 )
+from watch_assistant.services.organization_history import OrganizationHistoryService
 from watch_assistant.services.organization_operations import (
     OrganizationOperationService,
 )
@@ -391,7 +395,7 @@ def create_app(
                 return await automation.run_once()
 
             async def run_organization_manual() -> bool:
-                return await automation.run_once(manual_confirmation=True)
+                return await automation.run_once()
 
             scheduler = OrganizationScheduler(
                 application.state.settings_service,
@@ -528,6 +532,9 @@ def create_app(
                 event_logger=application.state.settings_service,
             )
             application.state.organization_plan_service = OrganizationPlanService(
+                runtime_database.session_factory
+            )
+            application.state.organization_history_service = OrganizationHistoryService(
                 runtime_database.session_factory
             )
             application.state.organization_operation_service = (
@@ -1148,6 +1155,9 @@ def create_app(
         application.state.organization_plan_service = OrganizationPlanService(
             database.session_factory
         )
+        application.state.organization_history_service = OrganizationHistoryService(
+            database.session_factory
+        )
         application.state.organization_preview_service = OrganizationPreviewService(
             database.session_factory,
             tmdb_client,
@@ -1329,6 +1339,7 @@ def create_app(
     application.include_router(library_router)
     application.include_router(manual_import_router)
     application.include_router(organization_plan_router)
+    application.include_router(organization_history_router)
     application.include_router(organization_operation_router)
     application.include_router(strm_router)
     static_path = frontend_dir or Path(

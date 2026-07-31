@@ -26,15 +26,17 @@ from watch_assistant.services.media_classification import (
     plan_media,
 )
 from watch_assistant.services.media_matcher import (
+    MatchConfidence,
+    MatchStatus,
     TmdbMatcher,
     build_match_input,
-    confirm_selected_candidate,
 )
 from watch_assistant.services.media_parser import parse_media_filename
 from watch_assistant.services.organization_plan import (
     OrganizationPlanCompanion,
     OrganizationPlanItem,
     OrganizationPlanService,
+    OrganizationPlanStatus,
     OrganizationPlanView,
     PlanSource,
 )
@@ -68,7 +70,7 @@ class OrganizationPreviewService:
         self._matcher = TmdbMatcher(tmdb_client)
         self._plan_service = plan_service
 
-    async def create_preview(
+    async def create_previews(
         self,
         *,
         library_id: str,
@@ -98,7 +100,7 @@ class OrganizationPreviewService:
         manual_confirmation: bool = False,
         target_root: str = "",
         now: datetime | None = None,
-    ) -> OrganizationPlanView:
+    ) -> tuple[OrganizationPlanView, ...]:
         if (
             isinstance(small_file_threshold_mb, bool)
             or not isinstance(small_file_threshold_mb, (int, float))
@@ -206,8 +208,6 @@ class OrganizationPreviewService:
             )
             async with semaphore:
                 decision = await self._matcher.match(build_match_input(parsed))
-            if manual_confirmation:
-                decision = confirm_selected_candidate(decision)
             naming_plan = plan_media(
                 parsed,
                 decision,
@@ -351,15 +351,35 @@ class OrganizationPreviewService:
             )
 
         items = await asyncio.gather(*(build_item(entry) for entry in files))
-        return await self._plan_service.create_plan(
-            library_id=library.id,
-            scan_run_id=run.id,
-            items=items,
-            target_directory_id=target_directory_id,
-            target_directories=target_parents,
-            organization_policy=policy.to_dict(),
-            target_root="",
-            now=now,
+        auto_items = tuple(item for item in items if _auto_executable_item(item))
+        review_items = tuple(item for item in items if not _auto_executable_item(item))
+        plans: list[OrganizationPlanView] = []
+        for partition in (auto_items, review_items):
+            if not partition:
+                continue
+            plans.append(
+                await self._plan_service.create_plan(
+                    library_id=library.id,
+                    scan_run_id=run.id,
+                    items=partition,
+                    target_directory_id=target_directory_id,
+                    target_directories=target_parents,
+                    organization_policy=policy.to_dict(),
+                    target_root="",
+                    now=now,
+                )
+            )
+        return tuple(plans)
+
+    async def create_preview(self, **kwargs) -> OrganizationPlanView:
+        """Return the review plan when present, preserving the legacy API shape."""
+
+        plans = await self.create_previews(**kwargs)
+        if not plans:
+            raise OrganizationPreviewError("no_video_files")
+        return next(
+            (plan for plan in plans if plan.status is OrganizationPlanStatus.NEEDS_REVIEW),
+            plans[0],
         )
 
     async def _load_verified_snapshot(
@@ -466,6 +486,20 @@ def _target_parent_ids(entries: Sequence[LibraryScanEntry]) -> dict[str, str]:
 
 def _normalize_path(value: str) -> str:
     return value.strip().strip("/").replace("\\", "/")
+
+
+def _auto_executable_item(item: OrganizationPlanItem) -> bool:
+    """Only high-confidence, fully materialized matches may enter auto execution."""
+
+    return (
+        item.naming_plan.status is ClassificationStatus.PLANNED
+        and item.decision.status is MatchStatus.ACCEPTED
+        and item.decision.confidence is MatchConfidence.HIGH
+        and item.decision.selected is not None
+        and item.naming_plan.target_path is not None
+        and item.target_parent_id is not None
+        and item.target_name is not None
+    )
 
 
 def _is_video_entry(

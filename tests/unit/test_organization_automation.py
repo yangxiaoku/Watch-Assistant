@@ -290,7 +290,7 @@ async def test_automation_confirms_and_queues_planned_work_when_write_gate_is_op
 
 
 @pytest.mark.asyncio
-async def test_manual_automation_confirms_selected_tmdb_candidate_once(
+async def test_manual_automation_keeps_ambiguous_tmdb_candidate_for_review(
     tmp_path: Path,
 ):
     database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'automation-manual.db'}")
@@ -312,8 +312,12 @@ async def test_manual_automation_confirms_selected_tmdb_candidate_once(
 
     assert await service.run_once(manual_confirmation=True) is True
     assert service.last_result is not None
-    assert service.last_result.queued_count == 1
-    assert len(operations.calls) == 1
+    assert service.last_result.queued_count == 0
+    assert len(operations.calls) == 0
+    async with database.session_factory() as session:
+        plan = await session.scalar(select(OrganizationPlan))
+        assert plan is not None
+        assert plan.status == "needs_review"
     await database.engine.dispose()
 
 

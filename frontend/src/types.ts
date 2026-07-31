@@ -575,10 +575,41 @@ export interface OrganizationPlanSummary {
   action_count: number;
   precondition_count: number;
   alias: string | null;
+  candidates: OrganizationPlanCandidate[];
+}
+
+export interface OrganizationPlanCandidate {
+  source_object_id: string;
+  tmdb_id: number;
+  title: string;
+  media_type: "movie" | "tv";
+  release_year: number | null;
 }
 
 export interface OrganizationPlanListResponse {
   items: OrganizationPlanSummary[];
+  next_cursor: number | null;
+}
+
+export interface OrganizationHistoryItem {
+  id: string;
+  operation_id: string;
+  plan_id: string;
+  source_object_id: string;
+  source_directory_id: string;
+  target_directory_id: string;
+  tmdb_id: number | null;
+  title: string;
+  media_type: "movie" | "tv" | null;
+  source_name: string;
+  target_path: string;
+  status: "organized" | "failed" | "uncertain";
+  error_code: string | null;
+  completed_at: string;
+}
+
+export interface OrganizationHistoryListResponse {
+  items: OrganizationHistoryItem[];
   next_cursor: number | null;
 }
 

@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from watch_assistant.schemas import (
     OrganizationPlanAliasRequest,
+    OrganizationPlanCandidateRequest,
     OrganizationPlanListResponse,
     OrganizationPlanMutationRequest,
     OrganizationPlanResponse,
@@ -95,6 +96,26 @@ async def confirm_organization_plan(
 
 
 @router.post(
+    "/organization-plans/{plan_id}/candidate", response_model=OrganizationPlanResponse
+)
+async def select_organization_candidate(
+    plan_id: str,
+    payload: OrganizationPlanCandidateRequest,
+    service: ServiceDependency,
+) -> OrganizationPlanResponse:
+    try:
+        item = await service.select_candidate(
+            plan_id,
+            source_object_id=payload.source_object_id,
+            tmdb_id=payload.tmdb_id,
+            expected_revision=payload.expected_revision,
+        )
+    except OrganizationPlanError as exc:
+        raise _http_error(exc) from None
+    return OrganizationPlanResponse.model_validate(item.to_public_dict())
+
+
+@router.post(
     "/organization-plans/{plan_id}/ignore", response_model=OrganizationPlanResponse
 )
 async def ignore_organization_plan(
@@ -139,6 +160,11 @@ def _http_error(error: OrganizationPlanError) -> HTTPException:
         "invalid_alias": 422,
         "stale_revision": 409,
         "plan_not_reviewable": 409,
+        "invalid_source_object": 422,
+        "invalid_tmdb_candidate": 422,
+        "tmdb_candidate_not_found": 404,
+        "candidate_target_unavailable": 409,
+        "source_snapshot_mismatch": 409,
     }
     messages = {
         "plan_not_found": "计划不存在",
@@ -148,6 +174,11 @@ def _http_error(error: OrganizationPlanError) -> HTTPException:
         "invalid_alias": "别名格式不受支持",
         "stale_revision": "计划版本已变化，请刷新后重试",
         "plan_not_reviewable": "计划当前状态不可修改",
+        "invalid_source_object": "来源影片标识无效",
+        "invalid_tmdb_candidate": "TMDB 候选无效",
+        "tmdb_candidate_not_found": "TMDB 候选不存在，请刷新后重试",
+        "candidate_target_unavailable": "候选影片无法生成安全归档路径",
+        "source_snapshot_mismatch": "来源扫描快照已变化，请重新扫描",
     }
     code = error.code if error.code in messages else "organization_plan_unavailable"
     status = statuses.get(code, 409)

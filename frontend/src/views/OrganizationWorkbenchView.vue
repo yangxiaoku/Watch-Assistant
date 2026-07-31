@@ -40,6 +40,10 @@ const operationStatusLabel: Record<OrganizationOperationResponse["status"], stri
   cancelled: "已取消",
 };
 
+function normalizePlan(plan: OrganizationPlanSummary): OrganizationPlanSummary {
+  return { ...plan, candidates: Array.isArray(plan.candidates) ? plan.candidates : [] };
+}
+
 function operationFailureMessage(code: string | null): string {
   if (code === "plan_prerequisites_changed") return "扫描快照已更新，原计划已失效。请重新扫描并生成新的整理计划后再确认。";
   if (code === "postcondition_mismatch") return "远端结果未满足计划预期，系统已停止后续写入，请先核对 115 当前状态。";
@@ -65,9 +69,9 @@ async function loadPlans(cursor?: number) {
   error.value = "";
   try {
     const response = await props.api.organizationPlans({ status: activeStatus.value, cursor, limit: 20 });
-    items.value = response.items;
+    items.value = response.items.map(normalizePlan);
     nextCursor.value = response.next_cursor;
-    selected.value = response.items[0] ?? null;
+    selected.value = items.value[0] ?? null;
     aliasInput.value = selected.value?.alias ?? "";
     await loadPlanOperation(selected.value);
   } catch (exception) {
@@ -152,6 +156,35 @@ async function confirmAndQueueOperation() {
   }
 }
 
+async function selectCandidate(candidate: OrganizationPlanSummary["candidates"][number]) {
+  const plan = selected.value;
+  if (!plan || busy.value || plan.status !== "needs_review") return;
+  busy.value = true;
+  error.value = "";
+  notice.value = "";
+  try {
+    const updated = await props.api.selectOrganizationCandidate(
+      plan.plan_id,
+      plan.revision,
+      candidate.source_object_id,
+      candidate.tmdb_id,
+    );
+    selected.value = normalizePlan(updated);
+    items.value = items.value.map((item) => item.plan_id === plan.plan_id ? normalizePlan(updated) : item);
+    if (updated.status === "planned" && props.executionEnabled) {
+      const queued = await props.api.queueOrganizationOperation(updated.plan_id, updated.revision);
+      await loadPlanOperation(updated);
+      await handleQueuedOperation(queued);
+    } else {
+      notice.value = updated.status === "planned" ? "已生成可执行计划" : "已选择影片，但分类或归档路径仍需检查";
+    }
+  } catch (exception) {
+    error.value = exception instanceof ApiError ? exception.message : "选择影片失败，请稍后重试";
+  } finally {
+    busy.value = false;
+  }
+}
+
 async function handleQueuedOperation(queuedOperation: OrganizationOperationResponse) {
   if (queuedOperation.status === "organized") {
     notice.value = "整理已完成";
@@ -219,10 +252,10 @@ async function mutate(action: "confirm" | "ignore" | "alias", operation: () => P
   notice.value = "";
   try {
     const updated = await operation();
-    selected.value = updated;
+    selected.value = normalizePlan(updated);
     aliasInput.value = updated.alias ?? "";
     await loadPlanOperation(updated);
-    items.value = items.value.map((item) => item.plan_id === updated.plan_id ? updated : item);
+    items.value = items.value.map((item) => item.plan_id === updated.plan_id ? normalizePlan(updated) : item);
     notice.value = action === "confirm" ? "已确认本地计划，未执行远端写操作" : action === "ignore" ? "已忽略本地计划" : "本地别名已保存";
   } catch (exception) {
     focusFirstFieldError(exception);
@@ -289,6 +322,12 @@ onMounted(() => {
           <div><dt>预览动作</dt><dd>{{ selected.action_count }}</dd></div>
           <div><dt>前置条件</dt><dd>{{ selected.precondition_count }}</dd></div>
         </dl>
+        <div v-if="selected.status === 'needs_review' && selected.candidates.length" class="organization-candidate-list">
+          <strong>请选择识别结果</strong>
+          <button v-for="candidate in selected.candidates" :key="`${candidate.source_object_id}-${candidate.tmdb_id}`" type="button" class="organization-candidate" :disabled="busy" @click="selectCandidate(candidate)">
+            <span>{{ candidate.title }}</span><small>{{ candidate.media_type === 'tv' ? '剧集' : '电影' }}<template v-if="candidate.release_year"> · {{ candidate.release_year }}</template></small>
+          </button>
+        </div>
         <p class="organization-safe-note">预览只显示本地摘要。</p>
         <div v-if="operation" class="organization-operation-status" :class="{ failed: operation.status === 'failed', uncertain: operation.status === 'uncertain' }">
           <strong>整理操作：{{ operationStatusLabel[operation.status] }}</strong>
@@ -297,7 +336,7 @@ onMounted(() => {
           <span v-else-if="operation.status === 'organizing'">后台正在执行，页面刷新后仍会保留当前状态。</span>
         </div>
         <div v-if="selectedCanEdit || (selected.status === 'planned' && executionEnabled)" class="organization-actions">
-          <button v-if="selectedIsReviewable && executionEnabled" class="primary-button" type="button" :disabled="busy" @click="confirmAndQueueOperation"><Play :size="16" />确认并开始整理</button>
+          <button v-if="selectedIsReviewable && executionEnabled && !selected.candidates.length" class="primary-button" type="button" :disabled="busy" @click="confirmAndQueueOperation"><Play :size="16" />确认并开始整理</button>
           <button v-else-if="selectedIsReviewable" class="primary-button" type="button" :disabled="busy" @click="confirmPlan"><Check :size="16" />确认本地计划</button>
           <button v-if="selected.status === 'planned' && executionEnabled" class="primary-button" type="button" :disabled="busy" @click="queueOperation"><Play :size="16" />立即整理</button>
           <button class="secondary-button" type="button" :disabled="busy" @click="ignorePlan"><Ban :size="16" />忽略</button>

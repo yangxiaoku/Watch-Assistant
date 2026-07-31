@@ -178,6 +178,7 @@ async def test_plan_review_cursor_is_bounded_and_confirm_is_local_only(tmp_path)
         "action_count",
         "precondition_count",
         "alias",
+        "candidates",
     }
     ignored = await client.post(
         "/api/v1/organization-plans/plan-review/ignore",

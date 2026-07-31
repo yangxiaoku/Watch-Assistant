@@ -842,6 +842,14 @@ def _add_task_target_directory(connection: Connection) -> None:
     )
 
 
+def _create_organization_history_table(connection: Connection) -> None:
+    """Persist one row per media item completed by an organization operation."""
+
+    from watch_assistant.library_models import OrganizationHistoryEntry
+
+    OrganizationHistoryEntry.__table__.create(connection, checkfirst=True)
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration("001_application_settings_columns", _add_application_settings_columns),
     Migration("002_library_index_tables", _create_library_index_tables),
@@ -889,6 +897,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration("050_strm_cleanup_plans", _create_strm_cleanup_plan_table),
     Migration("051_organization_cancel_requested", _add_organization_cancel_requested),
     Migration("052_task_target_directory", _add_task_target_directory),
+    Migration("053_organization_history", _create_organization_history_table),
 )
 
 

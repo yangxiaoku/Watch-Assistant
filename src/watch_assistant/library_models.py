@@ -345,3 +345,40 @@ class OrganizationPlan(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utc_now, onupdate=_utc_now
     )
+
+
+class OrganizationHistoryEntry(Base):
+    """One durable media result produced by a completed organization operation."""
+
+    __tablename__ = "organization_history"
+    __table_args__ = (
+        UniqueConstraint(
+            "operation_id",
+            "source_object_id",
+            name="uq_organization_history_operation_source",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    operation_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("organization_operations.id"), index=True
+    )
+    plan_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("organization_plans.id"), index=True
+    )
+    source_object_id: Mapped[str] = mapped_column(String(128), index=True)
+    source_directory_id: Mapped[str] = mapped_column(String(128))
+    target_directory_id: Mapped[str] = mapped_column(String(128))
+    tmdb_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    title: Mapped[str] = mapped_column(Text)
+    media_type: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    source_name: Mapped[str] = mapped_column(Text)
+    target_path: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(16), default="organized")
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    completed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utc_now, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utc_now
+    )
