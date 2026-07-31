@@ -5,6 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
+from watch_assistant.services.episode_completeness import (
+    EpisodeCompletenessMatrix,
+    EpisodeMatrixStatus,
+)
+
 
 class HealthError(ValueError):
     def __init__(self, code: str) -> None:
@@ -102,6 +107,7 @@ class HealthSnapshot:
     subtitles: tuple[SubtitleEvidence, ...] = ()
     naming: tuple[NamingEvidence, ...] = ()
     tasks: tuple[TaskEvidence, ...] = ()
+    episode_matrix: EpisodeCompletenessMatrix | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -254,6 +260,69 @@ def build_health_report(snapshot: HealthSnapshot) -> HealthReport:
                 )
             )
 
+    if snapshot.episode_matrix is not None:
+        for item in snapshot.episode_matrix.items:
+            episode_id = f"episode:{item.episode_number}"
+            if item.status == EpisodeMatrixStatus.MISSING:
+                issues.append(
+                    _issue(
+                        f"episode:missing:{item.episode_number}",
+                        "CHK-003",
+                        HealthSeverity.WARNING,
+                        "missing_episode",
+                        "剧集缺少一集",
+                        "当前季集可能不完整，自动追更尚未执行。",
+                        "核对播出状态和库存后，再生成补集计划。",
+                        RepairMode.NONE,
+                        (episode_id,),
+                        requires_complete_inventory=True,
+                    )
+                )
+            elif item.status == EpisodeMatrixStatus.MULTIPLE:
+                issues.append(
+                    _issue(
+                        f"episode:multiple:{item.episode_number}",
+                        "CHK-003",
+                        HealthSeverity.WARNING,
+                        "multiple_episode_versions",
+                        "剧集存在多个版本",
+                        "当前集数有多个已识别文件，需要确认保留版本。",
+                        "先比较质量和来源，再通过整理计划处理重复版本。",
+                        RepairMode.CONFIRM,
+                        item.file_ids or (episode_id,),
+                        requires_complete_inventory=True,
+                    )
+                )
+            elif item.status == EpisodeMatrixStatus.UNKNOWN:
+                issues.append(
+                    _issue(
+                        f"episode:unknown:{item.episode_number}",
+                        "CHK-003",
+                        HealthSeverity.WARNING,
+                        "episode_unknown",
+                        "剧集完整度暂不可确认",
+                        "库存扫描不完整，当前不能判断该集是否缺失。",
+                        "完成新鲜的完整库存扫描后重新检查。",
+                        RepairMode.NONE,
+                        (episode_id,),
+                        requires_complete_inventory=True,
+                    )
+                )
+        if snapshot.episode_matrix.unrecognized_file_ids:
+            issues.append(
+                _issue(
+                    "episode:unrecognized-files",
+                    "CHK-003",
+                    HealthSeverity.INFO,
+                    "unrecognized_episode_files",
+                    "存在无法映射的剧集文件",
+                    "部分文件尚未能可靠映射到季集。",
+                    "补充人工映射或保留为待确认文件，不要据此删除源文件。",
+                    RepairMode.NONE,
+                    snapshot.episode_matrix.unrecognized_file_ids,
+                )
+            )
+
     if not snapshot.inventory_complete:
         issues.append(
             _issue(
@@ -354,6 +423,7 @@ def _module_scores(issues: list[HealthIssue]) -> dict[str, int]:
         module = {
             "CHK-001": "inventory",
             "CHK-002": "metadata",
+            "CHK-003": "inventory",
             "CHK-004": "strm",
             "CHK-005": "subtitles",
             "CHK-006": "tasks",

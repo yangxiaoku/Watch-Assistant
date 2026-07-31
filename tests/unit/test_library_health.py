@@ -1,5 +1,11 @@
 import pytest
 
+from watch_assistant.services.episode_completeness import (
+    EpisodeBaseline,
+    EpisodeFileReference,
+    EpisodeMatrixStatus,
+    build_episode_matrix,
+)
 from watch_assistant.services.library_health import (
     HealthError,
     HealthSeverity,
@@ -100,3 +106,65 @@ def test_health_trend_is_deterministic():
     assert trend.delta < 0
     assert trend.direction == TrendDirection.REGRESSED
     assert HealthSeverity.WARNING.value in after.issue_counts
+
+
+def test_report_includes_episode_completeness_issues_without_auto_repair():
+    matrix = build_episode_matrix(
+        (
+            EpisodeBaseline(1, aired=True),
+            EpisodeBaseline(2, aired=True),
+            EpisodeBaseline(3, aired=True),
+        ),
+        (
+            EpisodeFileReference("file-a", (1,)),
+            EpisodeFileReference("file-b", (1,)),
+        ),
+        inventory_complete=True,
+    )
+    report = build_health_report(
+        HealthSnapshot(7, True, episode_matrix=matrix)
+    )
+
+    issues = {item.reason_code: item for item in report.issues}
+    assert matrix.items[0].status is EpisodeMatrixStatus.MULTIPLE
+    assert {"multiple_episode_versions", "missing_episode"} <= issues.keys()
+    assert issues["missing_episode"].repair_mode == RepairMode.NONE
+    assert issues["multiple_episode_versions"].repair_mode == RepairMode.CONFIRM
+    with pytest.raises(HealthError, match="issue_not_repairable"):
+        plan_repairs(HealthSnapshot(7, True, episode_matrix=matrix), (issues["missing_episode"].issue_id,))
+    with pytest.raises(HealthError, match="confirmation_required"):
+        plan_repairs(
+            HealthSnapshot(7, True, episode_matrix=matrix),
+            (issues["multiple_episode_versions"].issue_id,),
+        )
+
+
+def test_report_keeps_unrecognized_episode_files_as_read_only_notice():
+    matrix = build_episode_matrix(
+        (EpisodeBaseline(1, aired=True),),
+        (EpisodeFileReference("file-unmapped", (), recognized=False),),
+        inventory_complete=True,
+    )
+
+    report = build_health_report(HealthSnapshot(9, True, episode_matrix=matrix))
+
+    issue = next(
+        item for item in report.issues if item.reason_code == "unrecognized_episode_files"
+    )
+    assert issue.check_code == "CHK-003"
+    assert issue.repair_mode == RepairMode.NONE
+    assert issue.object_ids == ("file-unmapped",)
+
+
+def test_incomplete_episode_matrix_reports_unknown_instead_of_missing():
+    matrix = build_episode_matrix(
+        (EpisodeBaseline(1, aired=True),),
+        (EpisodeFileReference("file-special", (), special=True),),
+        inventory_complete=False,
+    )
+    report = build_health_report(
+        HealthSnapshot(8, False, episode_matrix=matrix)
+    )
+
+    assert any(item.reason_code == "episode_unknown" for item in report.issues)
+    assert not any(item.reason_code == "missing_episode" for item in report.issues)
