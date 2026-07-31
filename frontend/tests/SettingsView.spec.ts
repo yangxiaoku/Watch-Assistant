@@ -101,7 +101,7 @@ function makeApi(overrides: Partial<Record<keyof ApiClient, unknown>> = {}) {
     updateOrganizationSettings: vi.fn().mockResolvedValue({ ...organization, revision: 5 }),
     p115Directories: vi.fn().mockImplementation(async (directoryId?: string) => ({
       root_id: "0",
-      parent_id: directoryId || "1000",
+      parent_id: directoryId || "0",
       items: directoryId ? [] : [{ id: "3000", name: "推送目录" }],
       has_more: false,
       next_page: null,
