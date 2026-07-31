@@ -655,6 +655,7 @@ class WorkflowStage(Base):
     )
     # Legacy workflow databases still require this column on inserts.
     stage_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     status: Mapped[WorkflowStageStatus] = mapped_column(
         Enum(WorkflowStageStatus, values_callable=enum_values, native_enum=False),
         default=WorkflowStageStatus.PENDING,

@@ -596,6 +596,40 @@ def _upgrade_workflow_schema_compatibility_followup(connection: Connection) -> N
             )
 
 
+def _upgrade_workflow_stage_sequence(connection: Connection) -> None:
+    """Make inserts compatible with the older ordered stage table."""
+
+    stage_columns = {
+        item["name"] for item in inspect(connection).get_columns("workflow_stages")
+    }
+    if "sequence" not in stage_columns:
+        connection.execute(
+            text(
+                "ALTER TABLE workflow_stages "
+                "ADD COLUMN sequence INTEGER NOT NULL DEFAULT 0"
+            )
+        )
+    connection.execute(
+        text(
+            """
+            UPDATE workflow_stages
+            SET sequence = CASE COALESCE(stage, stage_key)
+                WHEN 'discovery' THEN 0
+                WHEN 'search' THEN 0
+                WHEN 'inspection' THEN 1
+                WHEN 'approval' THEN 2
+                WHEN 'push' THEN 3
+                WHEN 'availability' THEN 4
+                WHEN 'organization' THEN 5
+                WHEN 'strm' THEN 6
+                ELSE sequence
+            END
+            WHERE sequence = 0
+            """
+        )
+    )
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration("001_application_settings_columns", _add_application_settings_columns),
     Migration("002_library_index_tables", _create_library_index_tables),
@@ -629,6 +663,7 @@ MIGRATIONS: tuple[Migration, ...] = (
         "044_workflow_schema_compatibility_followup",
         _upgrade_workflow_schema_compatibility_followup,
     ),
+    Migration("045_workflow_stage_sequence", _upgrade_workflow_stage_sequence),
 )
 
 

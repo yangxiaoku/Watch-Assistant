@@ -93,10 +93,11 @@ class WorkflowService:
                 stage_key=(
                     "search" if stage == WorkflowStageName.DISCOVERY else stage.value
                 ),
+                sequence=sequence,
                 status=WorkflowStageStatus.PENDING,
                 updated_at=now,
             )
-            for stage in _STAGE_ORDER
+            for sequence, stage in enumerate(_STAGE_ORDER)
         ]
         async with self._session_factory() as session:
             session.add(workflow)
@@ -482,6 +483,7 @@ def _response(workflow: Workflow) -> WorkflowResponse:
             WorkflowStageResponse(
                 id=stage.id,
                 stage=stage.stage,
+                sequence=stage.sequence,
                 status=stage.status,
                 status_zh=_STAGE_STATUS_ZH[stage.status],
                 reason=stage.reason,

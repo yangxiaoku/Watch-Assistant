@@ -70,6 +70,7 @@ async def test_workflow_timeline_aggregates_stage_state_and_child_task(tmp_path)
         workflow_id = workflow["id"]
         assert workflow["correlation_id"].startswith("corr_")
         assert len(workflow["stages"]) == 7
+        assert [stage["sequence"] for stage in workflow["stages"]] == list(range(7))
         assert "magnet:?" not in created.text
 
         discovery = await client.patch(

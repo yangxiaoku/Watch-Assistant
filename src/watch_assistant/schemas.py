@@ -1311,6 +1311,7 @@ class WorkflowCancelRequest(BaseModel):
 class WorkflowStageResponse(BaseModel):
     id: str
     stage: WorkflowStageName
+    sequence: int
     status: WorkflowStageStatus
     status_zh: str
     reason: str | None
