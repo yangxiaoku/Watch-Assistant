@@ -1113,10 +1113,12 @@ class ResourceSearchRequest(BaseModel):
 
     season_number: int | None = Field(default=None, ge=0)
     refresh: bool = False
+    workflow_id: str | None = Field(default=None, min_length=1, max_length=40)
 
 
 class ResourceSearchResponse(BaseModel):
     task_id: str
+    workflow_id: str | None = None
     tmdb_id: int = Field(ge=1)
     media_type: MediaType
     season_number: int | None = Field(default=None, ge=0)
