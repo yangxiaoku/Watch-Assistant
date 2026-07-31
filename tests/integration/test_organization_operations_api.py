@@ -401,6 +401,13 @@ async def test_high_risk_operation_requires_web_approval(tmp_path: Path):
         )
         assert agent_approval.status_code == 403
         assert agent_approval.json()["error"]["code"] == "web_approval_required"
+        agent_stage_patch = await client.patch(
+            f"/api/v1/workflows/{workflow_id}/stages/approval",
+            json={"status": "succeeded"},
+            headers={"Authorization": f"Bearer {raw_token}"},
+        )
+        assert agent_stage_patch.status_code == 403
+        assert agent_stage_patch.json()["error"]["code"] == "web_approval_required"
 
         approved = await client.post(
             f"/api/v1/workflows/{workflow_id}/approval",

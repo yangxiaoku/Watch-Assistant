@@ -138,10 +138,21 @@ async def test_workflow_stage_terminal_aggregation_preserves_uncertain_priority(
             "organization",
             "strm",
         ):
-            response = await client.patch(
-                f"/api/v1/workflows/{workflow_id}/stages/{stage}",
-                json={"status": "succeeded"},
-            )
+            if stage == "approval":
+                waiting = await client.patch(
+                    f"/api/v1/workflows/{workflow_id}/stages/{stage}",
+                    json={"status": "waiting_confirmation"},
+                )
+                assert waiting.status_code == 200
+                response = await client.post(
+                    f"/api/v1/workflows/{workflow_id}/approval",
+                    json={"decision": "approve"},
+                )
+            else:
+                response = await client.patch(
+                    f"/api/v1/workflows/{workflow_id}/stages/{stage}",
+                    json={"status": "succeeded"},
+                )
             assert response.status_code == 200
         assert response.json()["status"] == "completed"
 
@@ -236,7 +247,6 @@ async def test_workflow_approval_and_cancel_are_guarded(tmp_path):
         for stage in (
             "discovery",
             "inspection",
-            "approval",
             "availability",
             "organization",
             "strm",
@@ -245,6 +255,16 @@ async def test_workflow_approval_and_cancel_are_guarded(tmp_path):
                 f"/api/v1/workflows/{no_pending_id}/stages/{stage}",
                 json={"status": "cancelled"},
             )
+        approval_waiting = await client.patch(
+            f"/api/v1/workflows/{no_pending_id}/stages/approval",
+            json={"status": "waiting_confirmation"},
+        )
+        assert approval_waiting.status_code == 200
+        approval_rejected = await client.post(
+            f"/api/v1/workflows/{no_pending_id}/approval",
+            json={"decision": "reject"},
+        )
+        assert approval_rejected.status_code == 200
         blocked = await client.post(f"/api/v1/workflows/{no_pending_id}/cancel", json={})
         assert blocked.status_code == 409
         assert blocked.json()["error"]["code"] == "workflow_not_cancellable"
