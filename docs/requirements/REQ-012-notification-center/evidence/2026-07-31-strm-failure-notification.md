@@ -8,6 +8,8 @@
   `strm.dirty_failed` 错误级站内通知。
 - STRM 增量结果明确包含失败项时，即使本地 outbox 已完成消费，也会生成一次可去重的错误通知。
 - 关联 workflow 的失败仍由 `workflow.stage_changed` 承载，不额外生成重复的 STRM 通知。
+- 设置读取失败会先更新关联 workflow 的 `strm` 阶段为等待外部或失败，再按关联关系决定通知来源，
+  不会留下运行中的悬挂阶段。
 - 通知跳转到现有设置入口，错误详情只包含稳定错误码，不包含远端路径、Cookie、Token、pickcode、
   磁力链接、完整播放 token 或真实直链。
 

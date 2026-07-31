@@ -130,6 +130,17 @@ class DirectoryDirtyWorker:
                         error_code="settings_unavailable",
                         max_attempts=self._max_attempts,
                     )
+                    await self._sync_workflow(
+                        workflow_id,
+                        lease,
+                        status=(
+                            WorkflowStageStatus.FAILED
+                            if lease.attempts >= self._max_attempts
+                            else WorkflowStageStatus.WAITING_EXTERNAL
+                        ),
+                        reason="strm_settings_unavailable",
+                        error_code="settings_unavailable",
+                    )
                     await self._audit_failure(
                         workflow_id=workflow_id,
                         library_id=library_id,

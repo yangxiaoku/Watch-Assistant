@@ -62,6 +62,11 @@ class _Settings:
         return _OrganizationSettings()
 
 
+class _FailingSettings:
+    async def get_organization(self):
+        raise RuntimeError("settings unavailable")
+
+
 class _Events:
     def __init__(self):
         self.events = []
@@ -197,6 +202,44 @@ async def test_dirty_worker_notifies_unlinked_terminal_failure(tmp_path: Path):
             },
         )
     ]
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_dirty_worker_marks_linked_settings_failure_on_workflow(tmp_path: Path):
+    database = await _database(tmp_path)
+    workflow = await WorkflowService(database.session_factory).create(
+        WorkflowCreateRequest(media_type=MediaType.MOVIE, tmdb_id=1)
+    )
+    service, operation, lease = await _claimed(database, workflow_id=workflow.id)
+    await service.finish(
+        operation.operation_id,
+        expected_revision=lease.revision,
+        lease_token=lease.lease_token,
+        status=OrganizationOperationStatus.ORGANIZED,
+        source_directory_id="7000",
+        target_directory_id="8000",
+    )
+    events = _Events()
+    worker = DirectoryDirtyWorker(
+        database.session_factory,
+        _FakeStrm(),
+        lambda _library_id, _root_id: _FakeIndex(),
+        output_root=tmp_path / "strm",
+        playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+        settings_service=_FailingSettings(),
+        max_attempts=1,
+        event_logger=events,
+    )
+
+    assert await worker.run_once()
+    state = await WorkflowService(database.session_factory).get(workflow.id)
+    strm_stage = next(
+        stage for stage in state.stages if stage.stage is WorkflowStageName.STRM
+    )
+    assert strm_stage.status is WorkflowStageStatus.FAILED
+    assert strm_stage.error_code == "settings_unavailable"
+    assert not any(event == "strm.dirty_failed" for event, _fields in events.events)
     await database.engine.dispose()
 
 
