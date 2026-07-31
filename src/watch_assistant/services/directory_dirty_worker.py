@@ -29,6 +29,7 @@ from watch_assistant.services.library_index import (
     LibraryIndexService,
 )
 from watch_assistant.services.organization_outbox import (
+    DIRECTORY_DIRTY_EVENT_KIND,
     DirectoryDirtyLease,
     DirectoryDirtyOutboxService,
 )
@@ -100,7 +101,8 @@ class DirectoryDirtyWorker:
         if lease is None:
             return False
         library_id: str | None = None
-        workflow_id: str | None = None
+        workflow_ids: tuple[str, ...] = ()
+        has_unlinked_workflow = False
         try:
             context = await self._load_context(lease)
             if context is None:
@@ -111,9 +113,15 @@ class DirectoryDirtyWorker:
                     error_code="event_scope_unverified",
                 )
                 return True
-            library_id, root_directory_id, actions_json, workflow_id = context
+            (
+                library_id,
+                root_directory_id,
+                actions_json,
+                workflow_ids,
+                has_unlinked_workflow,
+            ) = context
             await self._sync_workflow(
-                workflow_id,
+                workflow_ids,
                 lease,
                 status=WorkflowStageStatus.RUNNING,
                 reason="strm_started",
@@ -131,7 +139,7 @@ class DirectoryDirtyWorker:
                         max_attempts=self._max_attempts,
                     )
                     await self._sync_workflow(
-                        workflow_id,
+                        workflow_ids,
                         lease,
                         status=(
                             WorkflowStageStatus.FAILED
@@ -142,7 +150,8 @@ class DirectoryDirtyWorker:
                         error_code="settings_unavailable",
                     )
                     await self._audit_failure(
-                        workflow_id=workflow_id,
+                        workflow_ids=workflow_ids,
+                        has_unlinked_workflow=has_unlinked_workflow,
                         library_id=library_id,
                         attempts=lease.attempts,
                         error_code="settings_unavailable",
@@ -152,7 +161,7 @@ class DirectoryDirtyWorker:
                 cleanup_empty_directories = organization_settings.cleanup_empty_directories
                 if not strm_linkage_enabled:
                     await self._sync_workflow(
-                        workflow_id,
+                        workflow_ids,
                         lease,
                         status=WorkflowStageStatus.SKIPPED,
                         reason="strm_linkage_disabled",
@@ -175,7 +184,7 @@ class DirectoryDirtyWorker:
                     max_attempts=self._max_attempts,
                 )
                 await self._sync_workflow(
-                    workflow_id,
+                    workflow_ids,
                     lease,
                     status=(
                         WorkflowStageStatus.FAILED
@@ -186,7 +195,8 @@ class DirectoryDirtyWorker:
                     error_code="scan_incomplete",
                 )
                 await self._audit_failure(
-                    workflow_id=workflow_id,
+                    workflow_ids=workflow_ids,
+                    has_unlinked_workflow=has_unlinked_workflow,
                     library_id=library_id,
                     attempts=lease.attempts,
                     error_code="scan_incomplete",
@@ -201,7 +211,7 @@ class DirectoryDirtyWorker:
                     retire_removed=self._cleanup_enabled,
                 )
                 await self._sync_workflow(
-                    workflow_id,
+                    workflow_ids,
                     lease,
                     status=(WorkflowStageStatus.FAILED if getattr(summary, "failed", 0) else WorkflowStageStatus.SUCCEEDED),
                     reason="strm_finished",
@@ -209,7 +219,8 @@ class DirectoryDirtyWorker:
                 )
                 if getattr(summary, "failed", 0):
                     await self._audit_failure(
-                        workflow_id=workflow_id,
+                        workflow_ids=workflow_ids,
+                        has_unlinked_workflow=has_unlinked_workflow,
                         library_id=library_id,
                         attempts=lease.attempts,
                         error_code="strm_incremental_failed",
@@ -227,7 +238,7 @@ class DirectoryDirtyWorker:
                         max_attempts=self._max_attempts,
                     )
                     await self._sync_workflow(
-                        workflow_id,
+                        workflow_ids,
                         lease,
                         status=(
                             WorkflowStageStatus.FAILED
@@ -238,7 +249,8 @@ class DirectoryDirtyWorker:
                         error_code="empty_directory_cleanup_unavailable",
                     )
                     await self._audit_failure(
-                        workflow_id=workflow_id,
+                        workflow_ids=workflow_ids,
+                        has_unlinked_workflow=has_unlinked_workflow,
                         library_id=library_id,
                         attempts=lease.attempts,
                         error_code="empty_directory_cleanup_unavailable",
@@ -259,7 +271,7 @@ class DirectoryDirtyWorker:
                             max_attempts=self._max_attempts,
                         )
                         await self._sync_workflow(
-                            workflow_id,
+                            workflow_ids,
                             lease,
                             status=(
                                 WorkflowStageStatus.FAILED
@@ -270,7 +282,8 @@ class DirectoryDirtyWorker:
                             error_code="empty_directory_cleanup_failed",
                         )
                         await self._audit_failure(
-                            workflow_id=workflow_id,
+                            workflow_ids=workflow_ids,
+                            has_unlinked_workflow=has_unlinked_workflow,
                             library_id=library_id,
                             attempts=lease.attempts,
                             error_code="empty_directory_cleanup_failed",
@@ -284,7 +297,7 @@ class DirectoryDirtyWorker:
                             max_attempts=self._max_attempts,
                         )
                         await self._sync_workflow(
-                            workflow_id,
+                            workflow_ids,
                             lease,
                             status=(
                                 WorkflowStageStatus.FAILED
@@ -295,7 +308,8 @@ class DirectoryDirtyWorker:
                             error_code="empty_directory_cleanup_uncertain",
                         )
                         await self._audit_failure(
-                            workflow_id=workflow_id,
+                            workflow_ids=workflow_ids,
+                            has_unlinked_workflow=has_unlinked_workflow,
                             library_id=library_id,
                             attempts=lease.attempts,
                             error_code="empty_directory_cleanup_uncertain",
@@ -313,7 +327,7 @@ class DirectoryDirtyWorker:
                 max_attempts=self._max_attempts,
             )
             await self._sync_workflow(
-                workflow_id,
+                workflow_ids,
                 lease,
                 status=(
                     WorkflowStageStatus.FAILED
@@ -324,7 +338,8 @@ class DirectoryDirtyWorker:
                 error_code="reconcile_failed",
             )
             await self._audit_failure(
-                workflow_id=workflow_id,
+                workflow_ids=workflow_ids,
+                has_unlinked_workflow=has_unlinked_workflow,
                 library_id=library_id,
                 attempts=lease.attempts,
                 error_code="reconcile_failed",
@@ -337,7 +352,7 @@ class DirectoryDirtyWorker:
                 max_attempts=self._max_attempts,
             )
             await self._sync_workflow(
-                workflow_id,
+                workflow_ids,
                 lease,
                 status=(
                     WorkflowStageStatus.FAILED
@@ -348,7 +363,8 @@ class DirectoryDirtyWorker:
                 error_code="worker_failed",
             )
             await self._audit_failure(
-                workflow_id=workflow_id,
+                workflow_ids=workflow_ids,
+                has_unlinked_workflow=has_unlinked_workflow,
                 library_id=library_id,
                 attempts=lease.attempts,
                 error_code="worker_failed",
@@ -368,14 +384,13 @@ class DirectoryDirtyWorker:
 
     async def _load_context(
         self, lease: DirectoryDirtyLease
-    ) -> tuple[str, str, str, str | None] | None:
+    ) -> tuple[str, str, str, tuple[str, ...], bool] | None:
         async with self._session_factory() as session:
             row = await session.execute(
                 select(
                     MediaLibrary.id,
                     MediaLibrary.root_directory_id,
                     OrganizationPlan.actions_json,
-                    OrganizationOperation.workflow_id,
                 )
                 .join(OrganizationPlan, OrganizationPlan.library_id == MediaLibrary.id)
                 .join(OrganizationOperation, OrganizationOperation.plan_id == OrganizationPlan.id)
@@ -387,38 +402,71 @@ class DirectoryDirtyWorker:
                 )
             )
             item = row.one_or_none()
+            if item is not None:
+                workflow_rows = await session.scalars(
+                    select(OrganizationOperation.workflow_id)
+                    .join(
+                        OrganizationPlan,
+                        OrganizationPlan.id == OrganizationOperation.plan_id,
+                    )
+                    .join(
+                        DirectoryDirtyEvent,
+                        DirectoryDirtyEvent.operation_id == OrganizationOperation.id,
+                    )
+                    .where(
+                        DirectoryDirtyEvent.directory_id == lease.directory_id,
+                        DirectoryDirtyEvent.event_kind == DIRECTORY_DIRTY_EVENT_KIND,
+                        DirectoryDirtyEvent.lease_token == lease.lease_token,
+                        OrganizationPlan.library_id == item[0],
+                    )
+                )
+                workflow_values = tuple(workflow_rows)
+                workflow_ids = tuple(
+                    dict.fromkeys(value for value in workflow_values if value)
+                )
+                has_unlinked_workflow = any(
+                    value is None for value in workflow_values
+                )
+            else:
+                workflow_ids = ()
+                has_unlinked_workflow = False
         if item is None:
             return None
-        library_id, root_directory_id, actions_json, workflow_id = item
+        library_id, root_directory_id, actions_json = item
         if not _directory_in_plan_scope(lease.directory_id, root_directory_id, actions_json):
             return None
-        return library_id, root_directory_id, actions_json, workflow_id
+        return (
+            library_id,
+            root_directory_id,
+            actions_json,
+            workflow_ids,
+            has_unlinked_workflow,
+        )
 
     async def _sync_workflow(
         self,
-        workflow_id: str | None,
+        workflow_ids: tuple[str, ...],
         lease: DirectoryDirtyLease,
         *,
         status: WorkflowStageStatus,
         reason: str,
         error_code: str | None = None,
     ) -> None:
-        if workflow_id is None:
-            return
-        try:
-            await sync_child_stage_in_transaction(
-                self._session_factory,
-                workflow_id,
-                WorkflowStageName.STRM,
-                child_type="strm_dirty_generation",
-                child_id=lease.queue_id or lease.event_id,
-                status=status,
-                reason=reason,
-                error_code=error_code,
-                event_logger=self._event_logger,
-            )
-        except WorkflowNotFound:
-            return
+        for workflow_id in workflow_ids:
+            try:
+                await sync_child_stage_in_transaction(
+                    self._session_factory,
+                    workflow_id,
+                    WorkflowStageName.STRM,
+                    child_type="strm_dirty_generation",
+                    child_id=lease.queue_id or lease.event_id,
+                    status=status,
+                    reason=reason,
+                    error_code=error_code,
+                    event_logger=self._event_logger,
+                )
+            except WorkflowNotFound:
+                continue
 
     async def _cleanup_candidates(
         self, scan_run_id: str, root_directory_id: str, actions_json: str
@@ -453,13 +501,16 @@ class DirectoryDirtyWorker:
     async def _audit_failure(
         self,
         *,
-        workflow_id: str | None,
+        workflow_ids: tuple[str, ...],
+        has_unlinked_workflow: bool,
         library_id: str | None,
         attempts: int,
         error_code: str,
         terminal_only: bool = True,
     ) -> None:
-        if workflow_id is not None or (terminal_only and attempts < self._max_attempts):
+        if not has_unlinked_workflow or (
+            terminal_only and attempts < self._max_attempts
+        ):
             return
         await self._audit(
             "strm.dirty_failed",

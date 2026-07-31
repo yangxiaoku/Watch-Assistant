@@ -223,7 +223,19 @@ class DirectoryDirtyOutboxService:
                     return None
                 await session.execute(
                     update(DirectoryDirtyEvent)
-                    .where(DirectoryDirtyEvent.id == event.id)
+                    .where(
+                        DirectoryDirtyEvent.directory_id == queue.directory_id,
+                        DirectoryDirtyEvent.event_kind == DIRECTORY_DIRTY_EVENT_KIND,
+                        DirectoryDirtyEvent.status == DIRTY_PENDING,
+                        DirectoryDirtyEvent.operation_id.in_(
+                            select(OrganizationOperation.id)
+                            .join(
+                                OrganizationPlan,
+                                OrganizationPlan.id == OrganizationOperation.plan_id,
+                            )
+                            .where(OrganizationPlan.library_id == queue.library_id)
+                        ),
+                    )
                     .values(
                         status=DIRTY_RUNNING,
                         attempts=DirectoryDirtyEvent.attempts + 1,
@@ -357,7 +369,7 @@ class DirectoryDirtyOutboxService:
                 await session.execute(
                     update(DirectoryDirtyEvent)
                     .where(
-                        DirectoryDirtyEvent.id == lease.event_id,
+                        DirectoryDirtyEvent.directory_id == lease.directory_id,
                         DirectoryDirtyEvent.lease_token == lease.lease_token,
                     )
                     .values(
@@ -441,7 +453,7 @@ class DirectoryDirtyOutboxService:
                 await session.execute(
                     update(DirectoryDirtyEvent)
                     .where(
-                        DirectoryDirtyEvent.id == lease.event_id,
+                        DirectoryDirtyEvent.directory_id == lease.directory_id,
                         DirectoryDirtyEvent.lease_token == lease.lease_token,
                     )
                     .values(

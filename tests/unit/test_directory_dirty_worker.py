@@ -1,9 +1,10 @@
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import select
-from test_organization_operations import _database, _operation
+from test_organization_operations import _database, _item, _operation
 
 from watch_assistant.models import (
     DirectoryDirtyEvent,
@@ -20,12 +21,13 @@ from watch_assistant.services.directory_dirty_worker import DirectoryDirtyWorker
 from watch_assistant.services.organization_operations import (
     OrganizationOperationService,
 )
+from watch_assistant.services.organization_plan import OrganizationPlanService
 from watch_assistant.services.workflows import WorkflowService
 
 
-async def _claimed(database, *, workflow_id=None):
+async def _claimed(database, *, workflow_id=None, key: str = "operation-1"):
     service = OrganizationOperationService(database.session_factory)
-    operation = await _operation(database)
+    operation = await _operation(database, key=key)
     if workflow_id is not None:
         async with database.session_factory() as session:
             row = await session.get(OrganizationOperation, operation.operation_id)
@@ -123,6 +125,95 @@ async def test_dirty_worker_consumes_event_and_preserves_cleanup_gate(tmp_path: 
     )
     assert strm_stage.status is WorkflowStageStatus.SUCCEEDED
     assert strm_stage.child_type == "strm_dirty_generation"
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_dirty_worker_fans_out_coalesced_generation_to_all_workflows(
+    tmp_path: Path,
+):
+    database = await _database(tmp_path)
+    workflow_one = await WorkflowService(database.session_factory).create(
+        WorkflowCreateRequest(media_type=MediaType.MOVIE, tmdb_id=1)
+    )
+    workflow_two = await WorkflowService(database.session_factory).create(
+        WorkflowCreateRequest(media_type=MediaType.MOVIE, tmdb_id=2)
+    )
+    service_one, operation_one, lease_one = await _claimed(
+        database, workflow_id=workflow_one.id
+    )
+    await service_one.finish(
+        operation_one.operation_id,
+        expected_revision=lease_one.revision,
+        lease_token=lease_one.lease_token,
+        status=OrganizationOperationStatus.ORGANIZED,
+        source_directory_id="7000",
+        target_directory_id="8000",
+    )
+    second_item = _item()
+    second_item = replace(
+        second_item,
+        source=replace(second_item.source, remote_version="remote-v2"),
+    )
+    second_plan = await OrganizationPlanService(
+        database.session_factory
+    ).create_plan(
+        library_id="library-1",
+        scan_run_id="scan-1",
+        items=(second_item,),
+    )
+    service_two = OrganizationOperationService(database.session_factory)
+    operation_two = await service_two.create(
+        second_plan.plan_id,
+        idempotency_key="operation-2",
+        workflow_id=workflow_two.id,
+    )
+    lease_two = await service_two.claim(operation_two.operation_id, expected_revision=1)
+    await service_two.finish(
+        operation_two.operation_id,
+        expected_revision=lease_two.revision,
+        lease_token=lease_two.lease_token,
+        status=OrganizationOperationStatus.ORGANIZED,
+        source_directory_id="7000",
+        target_directory_id="8000",
+    )
+
+    worker = DirectoryDirtyWorker(
+        database.session_factory,
+        _FakeStrm(),
+        lambda _library_id, _root_id: _FakeIndex(),
+        output_root=tmp_path / "strm",
+        playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+    )
+    assert await worker.run_once()
+
+    workflow_service = WorkflowService(database.session_factory)
+    states = [
+        await workflow_service.get(workflow_one.id),
+        await workflow_service.get(workflow_two.id),
+    ]
+    strm_stages = [
+        next(stage for stage in state.stages if stage.stage is WorkflowStageName.STRM)
+        for state in states
+    ]
+    assert [stage.status for stage in strm_stages] == [
+        WorkflowStageStatus.SUCCEEDED,
+        WorkflowStageStatus.SUCCEEDED,
+    ]
+    assert strm_stages[0].child_type == "strm_dirty_generation"
+    assert strm_stages[0].child_id == strm_stages[1].child_id
+    async with database.session_factory() as session:
+        events = list(
+            (
+                await session.scalars(
+                    select(DirectoryDirtyEvent).where(
+                        DirectoryDirtyEvent.directory_id == "7000"
+                    )
+                )
+            ).all()
+        )
+    assert len(events) == 2
+    assert {event.status for event in events} == {"consumed"}
     await database.engine.dispose()
 
 

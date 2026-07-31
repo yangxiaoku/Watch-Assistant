@@ -144,6 +144,10 @@ API 返回顶层 workflow 和分页子任务，不返回敏感链接。REQ-003 �
   同步 `strm` 阶段；整理完成后的目录 dirty worker 会继承关联 workflow，并在成功、重试等待
   外部、最终失败和功能跳过时同步阶段状态。原有 STRM 开关、Scope、完整扫描和清理安全门禁
   保持不变。
+- 本轮补充 FLOW-002：同一目录的 coalesced dirty generation 会在领取时绑定所有领取前的
+  dirty 事件，并将同一个 STRM 子任务状态扇出到全部关联 workflow；新增事件留在下一代，
+  不会被当前 generation 错误消费。事件完成/重试也按 lease token 一起收敛，避免旧 workflow
+  或 dirty 事件永久悬挂。
 - 本轮补充 FLOW-007：提交后的可行动 workflow 阶段事件（等待确认、等待外部、成功、跳过、失败、
   不确定、取消）会通过统一事件目录生成站内通知，复用通知偏好、30 分钟去重和 Webhook Outbox；
   普通启动/读取日志不会自动生成通知。
