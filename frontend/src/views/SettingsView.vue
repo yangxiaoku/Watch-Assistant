@@ -582,12 +582,15 @@ async function loadOrganizationResult() {
 }
 
 async function pollOrganizationResult(previousFinishedAt: string | null) {
-  for (let attempt = 0; attempt < 30; attempt += 1) {
+  for (let attempt = 0; attempt < 60; attempt += 1) {
     await new Promise((resolve) => window.setTimeout(resolve, 500));
     try {
       const response = await props.api.organizationResult();
       organizationResult.value = response;
-      if (response.finished_at && response.finished_at !== previousFinishedAt) return;
+      const pending = response.items?.some(
+        (item) => item.status === "queued" || item.status === "organizing",
+      );
+      if (response.finished_at && response.finished_at !== previousFinishedAt && !pending) return;
     } catch {
       return;
     }
