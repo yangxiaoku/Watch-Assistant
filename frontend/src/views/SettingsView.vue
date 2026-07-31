@@ -557,7 +557,7 @@ async function openDirectoryPicker(mode: "source" | "target" | "push") {
   directoryPickerOpen.value = true;
   directoryPickerTrail.value = [];
   directoryPickerCurrentId.value = "";
-  directoryPickerCurrentName.value = "当前配置的 115 受管目录";
+  directoryPickerCurrentName.value = "115 网盘根目录";
   await loadDirectoryPicker();
 }
 
@@ -1073,7 +1073,7 @@ watch(autoRefreshLogs, syncLogsRefreshTimer);
             <header class="directory-picker-heading"><div><p class="eyebrow">115 受管目录</p><h2 id="directory-picker-title">选择{{ directoryPickerMode === 'source' ? '扫描来源' : directoryPickerMode === 'target' ? '归档目标' : '资源推送' }}目录</h2><p>{{ directoryPickerCurrentName }}</p></div><button class="icon-button" type="button" aria-label="关闭目录选择器" title="关闭" @click="directoryPickerOpen = false">×</button></header>
             <div v-if="directoryPickerLoading" class="settings-loading"><LoaderCircle class="spin" :size="20" />正在读取目录</div>
             <div v-else-if="directoryPickerError" class="settings-state settings-state-error"><AlertTriangle :size="18" /><span>{{ directoryPickerError }}</span><button class="text-button" type="button" @click="loadDirectoryPicker">重试</button></div>
-            <template v-else><div class="directory-picker-toolbar"><button class="secondary-button" type="button" :disabled="!directoryPickerTrail.length" @click="leaveDirectory">返回上级</button><button class="primary-button" type="button" :disabled="!directoryPickerCurrentId" @click="chooseDirectory">选择当前目录</button></div><div v-if="!directoryPickerItems.length" class="settings-empty-block">当前目录没有可浏览的子目录。</div><div class="directory-picker-list"><button v-for="item in directoryPickerItems" :key="item.id" type="button" class="directory-picker-item" @click="enterDirectory(item)"><span>📁</span><span>{{ item.name }}</span><small>{{ item.id }}</small><span>进入</span></button></div></template>
+            <template v-else><div class="directory-picker-toolbar"><button class="secondary-button" type="button" :disabled="!directoryPickerTrail.length" @click="leaveDirectory">返回上级</button><button class="primary-button" type="button" :disabled="!directoryPickerCurrentId || directoryPickerCurrentId === '0'" @click="chooseDirectory">{{ directoryPickerCurrentId === '0' ? '根目录不可直接选择' : '选择当前目录' }}</button></div><div v-if="!directoryPickerItems.length" class="settings-empty-block">当前目录没有可浏览的子目录。</div><div class="directory-picker-list"><button v-for="item in directoryPickerItems" :key="item.id" type="button" class="directory-picker-item" @click="enterDirectory(item)"><span>📁</span><span>{{ item.name }}</span><small>{{ item.id }}</small><span>进入</span></button></div></template>
           </section>
         </div>
 

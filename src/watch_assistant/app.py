@@ -632,6 +632,7 @@ def create_app(
                 else InventoryPushGuard(runtime_database.session_factory)
             )
             application.state.organization_cookie_provider = composite_cookie_provider
+            application.state.p115_directory_picker_root_id = "0"
             application.state.organization_target_root_id = (
                 str(settings.p115_target_cid)
                 if settings.p115_target_cid is not None and settings.p115_target_cid > 0

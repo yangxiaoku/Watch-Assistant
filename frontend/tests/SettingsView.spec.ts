@@ -100,7 +100,7 @@ function makeApi(overrides: Partial<Record<keyof ApiClient, unknown>> = {}) {
     organizationSettings: vi.fn().mockResolvedValue(organization),
     updateOrganizationSettings: vi.fn().mockResolvedValue({ ...organization, revision: 5 }),
     p115Directories: vi.fn().mockImplementation(async (directoryId?: string) => ({
-      root_id: "1000",
+      root_id: "0",
       parent_id: directoryId || "1000",
       items: directoryId ? [] : [{ id: "3000", name: "推送目录" }],
       has_more: false,
@@ -188,6 +188,22 @@ describe("SettingsView", () => {
       push_directory_id: "3000",
       revision: 4,
     }));
+  });
+
+  it("opens the directory picker at the real 115 root", async () => {
+    const api = makeApi();
+    const wrapper = mount(SettingsView, { props: { api } });
+    await flushPromises();
+    await wrapper.findAll("button").find((button) => button.text().includes("115 整理"))?.trigger("click");
+    await flushPromises();
+
+    await wrapper.findAll("button").find((button) => button.text().includes("选择推送目录"))?.trigger("click");
+    await flushPromises();
+
+    expect(api.p115Directories).toHaveBeenCalledWith(undefined);
+    expect(wrapper.text()).toContain("115 网盘根目录");
+    expect(wrapper.get(".directory-picker-toolbar .primary-button").text()).toContain("根目录不可直接选择");
+    expect(wrapper.get(".directory-picker-toolbar .primary-button").attributes("disabled")).toBeDefined();
   });
 
   it("renders the real overview fields and p115 settings without a cookie input", async () => {

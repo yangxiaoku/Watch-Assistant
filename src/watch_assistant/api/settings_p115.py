@@ -24,6 +24,8 @@ router = APIRouter(
     dependencies=[Depends(require_api_auth)],
 )
 
+P115_DIRECTORY_ROOT_ID = "0"
+
 
 class P115CookieResponse(BaseModel):
     source: Literal["managed", "tgtodrive"]
@@ -181,15 +183,17 @@ async def list_p115_directories(
     directory_id: str | None = None,
     page: int = 1,
 ) -> P115DirectoryListResponse:
-    """Return bounded child directories from the configured 115 root."""
-    root_id = getattr(request.app.state, "organization_target_root_id", None)
-    if not isinstance(root_id, str) or not root_id.isdigit() or root_id.startswith("0"):
+    """Return bounded child directories from the actual 115 account root."""
+    root_id = getattr(
+        request.app.state, "p115_directory_picker_root_id", P115_DIRECTORY_ROOT_ID
+    )
+    if root_id != P115_DIRECTORY_ROOT_ID:
         raise HTTPException(status_code=503, detail="p115_directory_scope_unavailable")
     parent_id = directory_id or root_id
-    if not isinstance(parent_id, str) or not parent_id.isdigit() or parent_id.startswith("0"):
+    if not isinstance(parent_id, str) or not parent_id.isdigit():
         raise HTTPException(status_code=503, detail="p115_directory_scope_unavailable")
     allowed_ids = getattr(request.app.state, "p115_browsed_directory_ids", set())
-    if parent_id not in allowed_ids:
+    if parent_id != root_id and parent_id not in allowed_ids:
         raise HTTPException(status_code=403, detail="p115_directory_out_of_scope")
     if page < 1 or page > 100:
         raise HTTPException(status_code=422, detail="invalid_page")
@@ -203,8 +207,9 @@ async def list_p115_directories(
 
     gateway = P115ReadOnlyDirectoryGateway(
         provider,
-        authorized_directory_ids=tuple(dict.fromkeys((str(root_id), parent_id))),
+        authorized_directory_ids=tuple(dict.fromkeys((root_id, parent_id))),
         request_timeout_seconds=30,
+        allow_virtual_root=True,
     )
     try:
         # The verified transport contract intentionally uses one record per request.

@@ -64,11 +64,13 @@ class P115ReadOnlyDirectoryGateway:
         authorized_file_ids: Collection[str] = (),
         request_timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS,
         clock: Callable[[], float] = time.monotonic,
+        allow_virtual_root: bool = False,
     ) -> None:
         authorized_directories = frozenset(authorized_directory_ids)
         authorized_files = frozenset(authorized_file_ids)
         if not authorized_directories or any(
-            _stable_id(value) != value for value in authorized_directories
+            _directory_id(value, allow_zero=allow_virtual_root) != value
+            for value in authorized_directories
         ):
             raise ValueError("invalid_authorized_directories")
         if any(_stable_id(value) != value for value in authorized_files):
@@ -83,6 +85,7 @@ class P115ReadOnlyDirectoryGateway:
         self._observed_files: dict[str, LibraryEntry] = {}
         self._request_timeout_seconds = float(request_timeout_seconds)
         self._clock = clock
+        self._allow_virtual_root = allow_virtual_root
         self._transport: P115ReadOnlyTransportProtocol | None = None
 
     def __repr__(self) -> str:
@@ -97,7 +100,9 @@ class P115ReadOnlyDirectoryGateway:
     ) -> DirectoryPage:
         """Read one proven-safe page or fail closed before exposing entries."""
 
-        normalized_directory_id = _stable_id(directory_id)
+        normalized_directory_id = _directory_id(
+            directory_id, allow_zero=self._allow_virtual_root
+        )
         if normalized_directory_id is None:
             raise P115ReadOnlyGatewayError("directory_id_unverified")
         if (
@@ -123,7 +128,14 @@ class P115ReadOnlyDirectoryGateway:
             },
             deadline=deadline,
         )
-        result = _parse_page(response, page=page, offset=offset)
+        result = _parse_page(
+            response,
+            page=page,
+            offset=offset,
+            allow_zero_parent=(
+                self._allow_virtual_root and normalized_directory_id == "0"
+            ),
+        )
         for entry in result.items:
             if entry.is_directory and entry.directory_id is not None:
                 self._observed_directories[entry.directory_id] = entry
@@ -242,7 +254,11 @@ class P115ReadOnlyDirectoryGateway:
 
 
 def _parse_page(
-    response: Mapping[str, Any], *, page: int, offset: int
+    response: Mapping[str, Any],
+    *,
+    page: int,
+    offset: int,
+    allow_zero_parent: bool = False,
 ) -> DirectoryPage:
     records = _records(response)
     response_offset = _integer(response.get("offset"))
@@ -261,7 +277,10 @@ def _parse_page(
         raise P115ReadOnlyGatewayError("pagination_unverified")
 
     try:
-        entries = tuple(_parse_entry(record) for record in records)
+        entries = tuple(
+            _parse_entry(record, allow_zero_parent=allow_zero_parent)
+            for record in records
+        )
     except P115ReadOnlyGatewayError:
         raise
     except LibraryContractError:
@@ -296,7 +315,9 @@ def _records(response: Mapping[str, Any]) -> tuple[Mapping[str, Any], ...] | Non
     return tuple(records)
 
 
-def _parse_entry(record: Mapping[str, Any]) -> LibraryEntry:
+def _parse_entry(
+    record: Mapping[str, Any], *, allow_zero_parent: bool = False
+) -> LibraryEntry:
     is_directory = _directory_marker(record)
     if is_directory is None:
         raise P115ReadOnlyGatewayError("entry_unverified")
@@ -312,7 +333,7 @@ def _parse_entry(record: Mapping[str, Any]) -> LibraryEntry:
     elif file_id is None:
         raise P115ReadOnlyGatewayError("entry_unverified")
     parent_names = ("parent_id", "pid") if is_directory else ("parent_id", "pid", "cid")
-    parent_id = _single_id(record, parent_names)
+    parent_id = _single_id(record, parent_names, allow_zero=allow_zero_parent)
     size = _single_nonnegative_int(
         record, ("size_bytes", "size", "s", "fs", "file_size")
     )
@@ -438,12 +459,14 @@ def _single_text(record: Mapping[str, Any], names: tuple[str, ...]) -> str | Non
     return values[0]
 
 
-def _single_id(record: Mapping[str, Any], names: tuple[str, ...]) -> str | None:
+def _single_id(
+    record: Mapping[str, Any], names: tuple[str, ...], *, allow_zero: bool = False
+) -> str | None:
     values = []
     for name in names:
         if name not in record:
             continue
-        value = _stable_id(record[name])
+        value = _directory_id(record[name], allow_zero=allow_zero)
         if value is None:
             return None
         values.append(value)
@@ -497,6 +520,12 @@ def _stable_id(value: Any) -> str | None:
     return (
         normalized if normalized.isdigit() and not normalized.startswith("0") else None
     )
+
+
+def _directory_id(value: Any, *, allow_zero: bool = False) -> str | None:
+    if allow_zero and value in (0, "0"):
+        return "0"
+    return _stable_id(value)
 
 
 def _nonnegative_int(value: Any) -> int | None:

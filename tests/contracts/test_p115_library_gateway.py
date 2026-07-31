@@ -76,6 +76,7 @@ def _gateway(
     *,
     authorized_directory_ids=("7",),
     authorized_file_ids=(),
+    allow_virtual_root=False,
 ):
     source = credential_source or _CredentialSource()
     factory_calls = []
@@ -107,6 +108,7 @@ def _gateway(
             factory,
             authorized_directory_ids=authorized_directory_ids,
             authorized_file_ids=authorized_file_ids,
+            allow_virtual_root=allow_virtual_root,
         ),
         source,
         factory_calls,
@@ -379,6 +381,22 @@ def test_authorized_directory_set_must_be_nonempty_stable_nonroot_ids():
         P115ReadOnlyDirectoryGateway(
             source, lambda _credential: client, authorized_directory_ids=("0",)
         )
+
+
+@pytest.mark.asyncio
+async def test_virtual_root_can_list_children_only_when_explicitly_enabled():
+    client = _FsFilesClient((_page([_directory(cid="8", parent="0")]),))
+    gateway, _, _ = _gateway(
+        client,
+        authorized_directory_ids=("0",),
+        allow_virtual_root=True,
+    )
+
+    result = await gateway.list_directory("0")
+
+    assert client.calls[0]["cid"] == "0"
+    assert result.items[0].directory_id == "8"
+    assert result.items[0].parent_id == "0"
 
 
 @pytest.mark.asyncio
