@@ -1,5 +1,6 @@
 """Authenticated workflow aggregation routes."""
 
+from datetime import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -70,15 +71,25 @@ async def list_workflows(
     subscription_id: Annotated[str | None, Query(max_length=64)] = None,
     stage: WorkflowStageName | None = None,
     stage_status: WorkflowStageStatus | None = None,
+    updated_after: datetime | None = None,
+    updated_before: datetime | None = None,
     page: Annotated[int, Query(ge=1, le=10000)] = 1,
     page_size: Annotated[int, Query(ge=1, le=100)] = 50,
 ) -> WorkflowListResponse:
+    if (
+        updated_after is not None
+        and updated_before is not None
+        and updated_after > updated_before
+    ):
+        raise HTTPException(status_code=422, detail="invalid_request")
     return await service.list(
         status=workflow_status,
         media_type=media_type,
         subscription_id=subscription_id,
         stage=stage,
         stage_status=stage_status,
+        updated_after=updated_after,
+        updated_before=updated_before,
         page=page,
         page_size=page_size,
     )

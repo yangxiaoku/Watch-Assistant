@@ -348,7 +348,12 @@ def _command(args: argparse.Namespace, path: Path) -> tuple[Any, int]:
                 return _wait_for_task(client, args.task_id, args.wait_timeout)
         if args.command == "workflow":
             if args.workflow_command == "list":
-                body = client.get("/api/v1/workflows")
+                params = {
+                    key: value
+                    for key in ("updated_after", "updated_before")
+                    if (value := getattr(args, key, None)) is not None
+                }
+                body = client.get("/api/v1/workflows", params=params or None)
             elif args.workflow_command in {"approve", "reject"}:
                 payload = {"decision": "approve" if args.workflow_command == "approve" else "reject"}
                 if args.reason:
@@ -695,7 +700,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
     workflow = sub.add_parser("workflow", help="工作流只读查询")
     workflow_sub = workflow.add_subparsers(dest="workflow_command", required=True)
-    workflow_sub.add_parser("list")
+    workflow_list = workflow_sub.add_parser("list")
+    workflow_list.add_argument("--updated-after", dest="updated_after")
+    workflow_list.add_argument("--updated-before", dest="updated_before")
     workflow_show = workflow_sub.add_parser("show")
     workflow_show.add_argument("workflow_id")
     workflow_approve = workflow_sub.add_parser("approve")

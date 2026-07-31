@@ -112,6 +112,34 @@ async def test_workflow_timeline_aggregates_stage_state_and_child_task(tmp_path)
         assert by_stage.status_code == 200
         assert by_stage.json()["total"] == 1
 
+        updated_at = datetime.fromisoformat(detail.json()["updated_at"])
+        by_recent_update = await client.get(
+            "/api/v1/workflows",
+            params={
+                "updated_after": (updated_at - timedelta(seconds=1)).isoformat(),
+                "updated_before": (updated_at + timedelta(seconds=1)).isoformat(),
+            },
+        )
+        assert by_recent_update.status_code == 200
+        assert by_recent_update.json()["total"] == 1
+
+        outside_window = await client.get(
+            "/api/v1/workflows",
+            params={"updated_after": (updated_at + timedelta(days=1)).isoformat()},
+        )
+        assert outside_window.status_code == 200
+        assert outside_window.json()["total"] == 0
+
+        invalid_time_range = await client.get(
+            "/api/v1/workflows",
+            params={
+                "updated_after": (updated_at + timedelta(seconds=2)).isoformat(),
+                "updated_before": updated_at.isoformat(),
+            },
+        )
+        assert invalid_time_range.status_code == 422
+        assert invalid_time_range.json()["detail"] == "invalid_request"
+
         invalid_stage_status = await client.get(
             "/api/v1/workflows", params={"stage_status": "not-a-stage-status"}
         )

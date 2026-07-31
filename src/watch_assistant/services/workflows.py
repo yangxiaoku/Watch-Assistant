@@ -220,6 +220,8 @@ class WorkflowService:
         subscription_id: str | None = None,
         stage: WorkflowStageName | None = None,
         stage_status: WorkflowStageStatus | None = None,
+        updated_after: datetime | None = None,
+        updated_before: datetime | None = None,
         page: int = 1,
         page_size: int = 50,
     ) -> WorkflowListResponse:
@@ -230,6 +232,10 @@ class WorkflowService:
             filters.append(Workflow.media_type == media_type)
         if subscription_id is not None:
             filters.append(Workflow.subscription_id == subscription_id)
+        if updated_after is not None:
+            filters.append(Workflow.updated_at >= updated_after)
+        if updated_before is not None:
+            filters.append(Workflow.updated_at <= updated_before)
         if stage is not None and stage_status is not None:
             filters.append(
                 Workflow.stages.any(

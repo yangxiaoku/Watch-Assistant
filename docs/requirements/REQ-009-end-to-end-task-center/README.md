@@ -153,6 +153,10 @@ API 返回顶层 workflow 和分页子任务，不返回敏感链接。REQ-003 �
   succeeded/failed、统计、错误和时间；响应返回 operation ID，新增受保护的 operation 查询接口，
   workflow 的 `strm` 阶段使用真实 operation ID。失败终态幂等，成功后不会被迟到失败覆盖。
   该切片尚未合入 `codex/publish-main`，不能描述为当前发布能力。
+- 本轮补充 FLOW-006（开发分支切片）：workflow 列表支持服务端 `updated_after` /
+  `updated_before` 时间筛选，筛选发生在分页前，反向时间范围返回 `422 invalid_request`；
+  `watchctl workflow list` 可透传同一组筛选参数。证据见
+  `evidence/2026-07-31-workflow-time-filters.md`。
 - 本轮补充 FLOW-007：提交后的可行动 workflow 阶段事件（等待确认、等待外部、成功、跳过、失败、
   不确定、取消）会通过统一事件目录生成站内通知，复用通知偏好、30 分钟去重和 Webhook Outbox；
   普通启动/读取日志不会自动生成通知。
