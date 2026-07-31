@@ -212,9 +212,40 @@ async def test_workflow_approval_and_cancel_are_guarded(tmp_path):
             f"/api/v1/workflows/{running_id}/stages/push",
             json={"status": "running"},
         )
-        blocked = await client.post(
+        partially_cancelled = await client.post(
             f"/api/v1/workflows/{running_id}/cancel", json={}
         )
+        assert partially_cancelled.status_code == 200
+        assert partially_cancelled.json()["status"] == "in_progress"
+        stages = {
+            item["stage"]: item["status"]
+            for item in partially_cancelled.json()["stages"]
+        }
+        assert stages["push"] == "running"
+        assert stages["discovery"] == "cancelled"
+        assert stages["strm"] == "cancelled"
+
+        no_pending = await client.post(
+            "/api/v1/workflows", json={"media_type": "movie"}
+        )
+        no_pending_id = no_pending.json()["id"]
+        await client.patch(
+            f"/api/v1/workflows/{no_pending_id}/stages/push",
+            json={"status": "running"},
+        )
+        for stage in (
+            "discovery",
+            "inspection",
+            "approval",
+            "availability",
+            "organization",
+            "strm",
+        ):
+            await client.patch(
+                f"/api/v1/workflows/{no_pending_id}/stages/{stage}",
+                json={"status": "cancelled"},
+            )
+        blocked = await client.post(f"/api/v1/workflows/{no_pending_id}/cancel", json={})
         assert blocked.status_code == 409
         assert blocked.json()["error"]["code"] == "workflow_not_cancellable"
     finally:

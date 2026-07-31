@@ -321,12 +321,6 @@ class WorkflowService:
                 WorkflowStatus.FAILED,
             }:
                 raise WorkflowConflict("workflow_not_cancellable")
-            if any(
-                stage.status
-                in {WorkflowStageStatus.RUNNING, WorkflowStageStatus.UNCERTAIN}
-                for stage in stages
-            ):
-                raise WorkflowConflict("workflow_not_cancellable")
             cancellable = [
                 stage
                 for stage in stages

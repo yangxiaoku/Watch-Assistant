@@ -61,7 +61,8 @@
 - `REQ-009`：整理 operation 已支持通过受保护 API 关联 workflow，并在排队、claim、成功、
   失败、不确定、取消和重试时同步 `organization` 阶段；STRM API 和整理完成后的 dirty
   worker 已在开始、成功、失败、等待外部和跳过时同步 `strm` 阶段。可靠通知、运行中子
-  任务取消和跨任务关联仍待完成；本轮已将 workflow 阶段的可行动状态接入站内通知，
+  任务取消和跨任务关联仍待完成；本轮取消 workflow 时可停止未开始阶段，运行中或
+  `uncertain` 子任务保持原状态；本轮已将 workflow 阶段的可行动状态接入站内通知，
   通知继续复用偏好、去重和 Webhook Outbox；本轮修正任务 worker 将 `uncertain` 误报为
   `failed` 的问题，并补齐任务 ID、115 不可用、订阅新资源和备份失败通知。
 - `REQ-012/REQ-019`：Webhook 已提供管理员保护的单端点测试通知入口，测试事件只进入该端点
