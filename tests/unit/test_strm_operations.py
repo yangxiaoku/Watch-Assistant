@@ -127,10 +127,10 @@ async def test_operation_migration_is_present_and_idempotent(tmp_path: Path):
             migration_id = await connection.scalar(
                 text(
                     "SELECT migration_id FROM schema_migrations "
-                    "WHERE migration_id = '053_strm_operations'"
+                    "WHERE migration_id = '054_strm_operations'"
                 )
             )
-        assert migration_id == "053_strm_operations"
+        assert migration_id == "054_strm_operations"
     finally:
         await database.engine.dispose()
 

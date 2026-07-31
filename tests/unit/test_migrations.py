@@ -381,7 +381,7 @@ async def test_resource_search_workflow_column_migrates_legacy_table(tmp_path):
             tuple(
                 migration
                 for migration in MIGRATIONS
-                if migration.id == "052_resource_search_workflow"
+                if migration.id == "053_resource_search_workflow"
             ),
         )
         columns = await connection.run_sync(
