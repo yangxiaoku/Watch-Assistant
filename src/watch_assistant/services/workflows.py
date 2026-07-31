@@ -95,6 +95,7 @@ class WorkflowService:
                 ),
                 sequence=sequence,
                 status=WorkflowStageStatus.PENDING,
+                created_at=now,
                 updated_at=now,
             )
             for sequence, stage in enumerate(_STAGE_ORDER)

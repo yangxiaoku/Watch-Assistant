@@ -630,6 +630,27 @@ def _upgrade_workflow_stage_sequence(connection: Connection) -> None:
     )
 
 
+def _upgrade_workflow_stage_created_at(connection: Connection) -> None:
+    """Add the creation timestamp required by the ordered stage table."""
+
+    stage_columns = {
+        item["name"] for item in inspect(connection).get_columns("workflow_stages")
+    }
+    if "created_at" not in stage_columns:
+        connection.execute(
+            text("ALTER TABLE workflow_stages ADD COLUMN created_at DATETIME")
+        )
+    connection.execute(
+        text(
+            """
+            UPDATE workflow_stages
+            SET created_at = COALESCE(created_at, updated_at, CURRENT_TIMESTAMP)
+            WHERE created_at IS NULL
+            """
+        )
+    )
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration("001_application_settings_columns", _add_application_settings_columns),
     Migration("002_library_index_tables", _create_library_index_tables),
@@ -664,6 +685,7 @@ MIGRATIONS: tuple[Migration, ...] = (
         _upgrade_workflow_schema_compatibility_followup,
     ),
     Migration("045_workflow_stage_sequence", _upgrade_workflow_stage_sequence),
+    Migration("046_workflow_stage_created_at", _upgrade_workflow_stage_created_at),
 )
 
 

@@ -281,13 +281,13 @@ async def test_legacy_workflow_schema_is_upgraded_without_losing_rows(tmp_path):
         )
         stage = (
             await connection.execute(
-                text("SELECT stage, sequence, status, child_type, child_id, completed_at FROM workflow_stages")
+                text("SELECT stage, sequence, status, child_type, child_id, completed_at, created_at FROM workflow_stages")
             )
         ).one()
 
     assert {"media_type", "tmdb_id", "state_reason"} <= workflow_columns
     assert "sequence" in stage_columns
-    assert stage == ("discovery", 0, "succeeded", "task", "task_legacy", stage[5])
+    assert stage == ("discovery", 0, "succeeded", "task", "task_legacy", stage[5], stage[6])
 
     created = await WorkflowService(database.session_factory).create(
         WorkflowCreateRequest(media_type="movie")
