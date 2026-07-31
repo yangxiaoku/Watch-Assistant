@@ -329,6 +329,20 @@ EVENT_CATALOG: dict[str, EventDefinition] = {
     "backup.restore_preview": _event(
         "backup.restore_preview", LogCategory.SYSTEM, "恢复预览已完成", "备份恢复预览状态：{status}", suggestion="恢复覆盖前请确认服务已排空任务并保留当前快照"
     ),
+    "backup.restore_succeeded": _event(
+        "backup.restore_succeeded",
+        LogCategory.SYSTEM,
+        "数据库恢复已完成",
+        "数据库恢复已完成，状态：{status}，服务需要重启",
+        suggestion="请确认服务已重启并检查恢复后的任务、库存和 STRM 状态",
+    ),
+    "backup.restore_failed": _event(
+        "backup.restore_failed",
+        LogCategory.SYSTEM,
+        "数据库恢复失败",
+        "数据库恢复失败，错误码：{error_code}",
+        suggestion="请保留恢复前快照，不要重复覆盖数据库并先核对当前状态",
+    ),
     "media.detail.performance": _event(
         "media.detail.performance",
         LogCategory.SEARCH,

@@ -96,8 +96,15 @@ Secret 默认只记录“需要重新配置”的占位信息。若支持 Secret
 | 恢复 | Web 二次批准 |
 | 恢复前快照 | 强制 |
 
-## 10. 本轮实现证据（2026-07-29）
+## 10. 本轮实现证据（2026-07-31）
 
-- 备份服务已记录 `backup.created`、`backup.failed` 和 `backup.restore_preview` 结构化事件；日志只包含状态、错误码和数量，不写入备份路径、数据库内容或 Secret。
-- 备份与日志回归测试 `161 passed`，Ruff 通过。
-- 实际停机恢复、恢复前快照、失败回滚、配置导入导出和 Web 二次批准仍按 `BLOCKERS.md` 保持关闭。
+- 离线维护命令 `scripts/restore_backup.py`（使用 `.venv/bin/python` 执行）要求同时提供
+  `--confirm` 和 `--service-stopped`；它不会代替服务管理器停机，也不会输出数据库路径或内容。
+- 恢复执行在覆盖前校验 SHA-256、SQLite `integrity_check` 和迁移兼容性，强制创建恢复前
+  快照，并通过临时文件、原子替换、sidecar 清理和校验失败回滚保护当前数据库。
+- 新增 `backup.restore_succeeded` 和 `backup.restore_failed` 结构化事件；错误目录覆盖停机、
+  目标、摘要、完整性、恢复和回滚失败等稳定错误码。
+- 组合回归为 `187 passed`，其中备份/恢复专项为 `16 passed`；Ruff 通过。测试只使用临时
+  SQLite fixture，未执行真实部署恢复。
+- Web 二次批准、在线任务排空证明、恢复后订阅/任务/库存/STRM 业务一致性校验、配置导入
+  导出和加密异地备份仍按 `BLOCKERS.md` 保持关闭。
