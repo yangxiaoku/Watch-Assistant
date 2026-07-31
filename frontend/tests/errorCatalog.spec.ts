@@ -33,6 +33,16 @@ describe("中文错误目录", () => {
     expect(taskErrorMessage(null)).toBeNull();
   });
 
+  it("explains inventory push gates and opens the media library", () => {
+    expect(describeUiError("inventory_scope_unconfigured")).toMatchObject({
+      title: "未配置 115 媒体库范围",
+      message: "本次推送未提交到 115，系统还没有可核对的媒体库库存范围。",
+      action: "open_library",
+      retryable: false,
+    });
+    expect(taskErrorMessage("inventory_scope_unconfigured")).toContain("完成一次完整扫描");
+  });
+
   it("keeps actions available for backend operational codes", () => {
     expect(UI_ERROR_CODES).toContain("cache_warm_disabled");
     expect(describeUiError("cache_warm_disabled")).toMatchObject({
