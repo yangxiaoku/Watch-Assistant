@@ -48,6 +48,8 @@ const RETRYABLE_CODES = new Set([
   "workflows_unavailable",
   "library_scope_verification_failed",
   "library_scope_unverified",
+  "library_health_unavailable",
+  "library_health_report_corrupt",
 ]);
 
 const ACTION_BY_CODE: Record<string, UiErrorAction> = {
@@ -150,6 +152,8 @@ const ADDITIONAL_CODES = [
   "library_configuration_conflict", "library_scope_mismatch", "library_scope_unavailable",
   "library_scope_verification_failed",
   "library_scope_unverified",
+  "library_health_scan_unavailable", "library_health_scan_not_found",
+  "library_health_report_not_found",
   "invalid_playback_request", "strm_playback_disabled", "strm_playback_unverified",
   "strm_playback_unavailable", "playback_file_not_found", "playback_network_forbidden",
   "playback_timeout", "playback_remote_failed",
@@ -193,6 +197,11 @@ const CATALOG: Record<string, Omit<UiErrorDescriptor, "code">> = {
   workflow_not_cancellable: { title: "工作流当前不可取消", message: "本次取消未执行，运行中或远端结果不会被伪造撤回。", suggestion: "请先查看工作流阶段和远端任务状态。", retryable: false, action: "view_task" },
   library_inventory_incomplete: { title: "库存索引不完整", message: "本次库存身份确认未保存。", suggestion: "请先完成一次完整库存扫描。", retryable: false, action: "refresh_snapshot" },
   library_identity_conflict: { title: "库存身份已变化", message: "本次库存身份确认未保存。", suggestion: "请刷新库存后重新确认。", retryable: false, action: "refresh_snapshot" },
+  library_health_unavailable: { title: "媒体库体检暂时不可用", message: "本次健康报告未生成。", suggestion: "请稍后重试。", retryable: true, action: "retry" },
+  library_health_scan_unavailable: { title: "缺少可用库存扫描", message: "本次健康报告未生成，当前没有可核对的库存快照。", suggestion: "请先完成一次只读库存扫描。", retryable: false, action: "open_library" },
+  library_health_scan_not_found: { title: "库存扫描不存在", message: "本次健康报告未生成，指定的库存快照不存在。", suggestion: "请重新加载媒体库后再试。", retryable: false, action: "open_library" },
+  library_health_report_not_found: { title: "健康报告不存在", message: "当前媒体库还没有已保存的健康报告。", suggestion: "请先运行一次媒体库体检。", retryable: false, action: "open_library" },
+  library_health_report_corrupt: { title: "健康报告不可读取", message: "已保存的健康报告无法读取。", suggestion: "请重新运行媒体库体检。", retryable: true, action: "retry" },
   inventory_scope_unconfigured: { title: "未配置 115 媒体库范围", message: "本次推送未提交到 115，系统还没有可核对的媒体库库存范围。", suggestion: "请前往“媒体库”配置生产根目录，验证范围并完成一次完整扫描后再重试。", retryable: false, action: "open_library" },
   inventory_index_incomplete: { title: "115 媒体库库存未完成", message: "本次推送未提交到 115，系统无法确认媒体库中是否已有该资源。", suggestion: "请前往“媒体库”完成一次完整扫描后再重试。", retryable: false, action: "open_library" },
   inventory_index_stale: { title: "115 媒体库库存已过期", message: "本次推送未提交到 115，当前库存索引不能作为去重依据。", suggestion: "请前往“媒体库”重新扫描库存后再重试。", retryable: false, action: "open_library" },

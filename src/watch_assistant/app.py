@@ -77,6 +77,7 @@ from watch_assistant.services.empty_directory_cleanup import (
 )
 from watch_assistant.services.inspection import InspectionService, InspectionWorker
 from watch_assistant.services.inventory_push_guard import InventoryPushGuard
+from watch_assistant.services.library_health_service import LibraryHealthService
 from watch_assistant.services.library_index import LibraryIndexService
 from watch_assistant.services.maintenance import MaintenanceService
 from watch_assistant.services.manual_import import ManualImportService
@@ -567,6 +568,10 @@ def create_app(
                 event_logger=application.state.settings_service,
             )
             application.state.notification_service = NotificationService(
+                runtime_database.session_factory,
+                event_logger=application.state.settings_service,
+            )
+            application.state.library_health_service = LibraryHealthService(
                 runtime_database.session_factory,
                 event_logger=application.state.settings_service,
             )
@@ -1063,6 +1068,10 @@ def create_app(
             event_logger=application.state.settings_service,
         )
         application.state.notification_service = NotificationService(
+            database.session_factory,
+            event_logger=application.state.settings_service,
+        )
+        application.state.library_health_service = LibraryHealthService(
             database.session_factory,
             event_logger=application.state.settings_service,
         )

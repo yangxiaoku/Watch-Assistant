@@ -30,6 +30,9 @@ from watch_assistant.schemas import (
     InventoryIdentityResponse,
     LibraryDeleteRequest,
     LibraryDeleteResponse,
+    LibraryHealthIssueResponse,
+    LibraryHealthReportResponse,
+    LibraryHealthTrendResponse,
     LibraryInventoryResponse,
     LibraryScanRequest,
     LibraryScanSummary,
@@ -43,6 +46,11 @@ from watch_assistant.schemas import (
     OrganizationPreviewRequest,
 )
 from watch_assistant.security import AuthContext, require_api_auth, require_scope
+from watch_assistant.services.library_health_service import (
+    HealthRun,
+    LibraryHealthService,
+    LibraryHealthServiceError,
+)
 from watch_assistant.services.library_index import (
     LibraryIndexError,
     LibraryIndexService,
@@ -360,6 +368,56 @@ async def scan_library(
         removed_count=result.removed_count,
         error_code=result.error_code,
     )
+
+
+@router.post(
+    "/libraries/{library_id}/health-check",
+    response_model=LibraryHealthReportResponse,
+)
+async def run_library_health_check(
+    library_id: str,
+    request: Request,
+    context: LibraryReadDependency,
+) -> LibraryHealthReportResponse:
+    if not _stable_library_id(library_id) or not _allowed(context, library_id):
+        raise HTTPException(status_code=404, detail="library_not_found")
+    service = getattr(request.app.state, "library_health_service", None)
+    if not isinstance(service, LibraryHealthService):
+        raise HTTPException(status_code=503, detail="library_health_unavailable")
+    try:
+        result = await service.run(library_id)
+    except LibraryHealthServiceError as error:
+        status_code = (
+            404
+            if error.code in {"library_not_found", "library_health_report_not_found"}
+            else 503
+            if error.code in {"library_health_unavailable", "library_health_report_corrupt"}
+            else 409
+        )
+        raise HTTPException(status_code=status_code, detail=error.code) from None
+    return _health_response(result)
+
+
+@router.get(
+    "/libraries/{library_id}/health",
+    response_model=LibraryHealthReportResponse,
+)
+async def get_library_health(
+    library_id: str,
+    request: Request,
+    context: LibraryReadDependency,
+) -> LibraryHealthReportResponse:
+    if not _stable_library_id(library_id) or not _allowed(context, library_id):
+        raise HTTPException(status_code=404, detail="library_not_found")
+    service = getattr(request.app.state, "library_health_service", None)
+    if not isinstance(service, LibraryHealthService):
+        raise HTTPException(status_code=503, detail="library_health_unavailable")
+    try:
+        result = await service.latest(library_id)
+    except LibraryHealthServiceError as error:
+        status_code = 404 if error.code == "library_health_report_not_found" else 503
+        raise HTTPException(status_code=status_code, detail=error.code) from None
+    return _health_response(result)
 
 
 @router.post(
@@ -990,6 +1048,46 @@ def _matched_count(
             )
         )
         for item in snapshot.files
+    )
+
+
+def _health_response(result: HealthRun) -> LibraryHealthReportResponse:
+    trend = result.trend
+    return LibraryHealthReportResponse(
+        report_id=result.report_id,
+        library_id=result.library_id,
+        source_scan_run_id=result.source_scan_run_id,
+        snapshot_revision=result.report.snapshot_revision,
+        inventory_complete=result.report.inventory_complete,
+        score=result.report.score,
+        module_scores=result.report.module_scores,
+        issue_counts=result.report.issue_counts,
+        issues=[
+            LibraryHealthIssueResponse(
+                issue_id=issue.issue_id,
+                check_code=issue.check_code,
+                severity=issue.severity.value,
+                reason_code=issue.reason_code,
+                title_zh=issue.title_zh,
+                impact_zh=issue.impact_zh,
+                suggestion_zh=issue.suggestion_zh,
+                repair_mode=issue.repair_mode.value,
+                object_ids=list(issue.object_ids),
+                requires_complete_inventory=issue.requires_complete_inventory,
+            )
+            for issue in result.report.issues
+        ],
+        trend=(
+            None
+            if trend is None
+            else LibraryHealthTrendResponse(
+                previous_score=trend.previous_score,
+                current_score=trend.current_score,
+                delta=trend.delta,
+                direction=trend.direction.value,
+            )
+        ),
+        created_at=result.created_at,
     )
 
 

@@ -184,6 +184,46 @@ class LibraryScanSummary(BaseModel):
     error_code: str | None = None
 
 
+class LibraryHealthIssueResponse(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    issue_id: str
+    check_code: str
+    severity: Literal["critical", "error", "warning", "info"]
+    reason_code: str
+    title_zh: str
+    impact_zh: str
+    suggestion_zh: str
+    repair_mode: Literal["none", "auto", "confirm"]
+    object_ids: list[str] = Field(default_factory=list)
+    requires_complete_inventory: bool
+
+
+class LibraryHealthTrendResponse(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    previous_score: int = Field(ge=0, le=100)
+    current_score: int = Field(ge=0, le=100)
+    delta: int
+    direction: Literal["improved", "unchanged", "regressed"]
+
+
+class LibraryHealthReportResponse(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    report_id: str
+    library_id: str
+    source_scan_run_id: str
+    snapshot_revision: int | None = Field(default=None, ge=0)
+    inventory_complete: bool
+    score: int = Field(ge=0, le=100)
+    module_scores: dict[str, int]
+    issue_counts: dict[str, int]
+    issues: list[LibraryHealthIssueResponse]
+    trend: LibraryHealthTrendResponse | None = None
+    created_at: datetime
+
+
 class MediaLibraryResponse(BaseModel):
     model_config = {"extra": "forbid"}
 

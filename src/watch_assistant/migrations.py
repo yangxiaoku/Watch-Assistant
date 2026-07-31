@@ -145,6 +145,18 @@ def _create_library_media_identity_table(connection: Connection) -> None:
     LibraryMediaIdentity.__table__.create(connection, checkfirst=True)
 
 
+def _create_library_health_report_table(connection: Connection) -> None:
+    from watch_assistant.library_models import LibraryHealthReport
+
+    LibraryHealthReport.__table__.create(connection, checkfirst=True)
+    connection.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_library_health_reports_library_created "
+            "ON library_health_reports (library_id, created_at)"
+        )
+    )
+
+
 def _create_library_inventory_ledger_tables(connection: Connection) -> None:
     """Persist complete-scan availability evidence and recovery events."""
 
@@ -889,6 +901,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration("050_strm_cleanup_plans", _create_strm_cleanup_plan_table),
     Migration("051_organization_cancel_requested", _add_organization_cancel_requested),
     Migration("052_task_target_directory", _add_task_target_directory),
+    Migration("053_library_health_reports", _create_library_health_report_table),
 )
 
 

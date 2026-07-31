@@ -236,6 +236,13 @@ EVENT_CATALOG: dict[str, EventDefinition] = {
         "媒体库范围校验已完成，当前状态：{status}，媒体库已启用：{enabled}",
         fields=frozenset({"enabled"}),
     ),
+    "library.health.critical": _event(
+        "library.health.critical",
+        LogCategory.LIBRARY,
+        "媒体库发现严重问题",
+        "媒体库体检发现 {count} 个严重问题，请查看健康报告",
+        suggestion="请先核对库存和 STRM 状态，再决定是否生成修复计划",
+    ),
     "agent.permission_denied": _event(
         "agent.permission_denied", LogCategory.AGENT, "Agent 权限不足", "当前 Agent 缺少执行所需权限，未执行操作"
     ),

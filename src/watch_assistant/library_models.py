@@ -135,6 +135,34 @@ class LibraryScanDiff(Base):
     )
 
 
+class LibraryHealthReport(Base):
+    """Immutable result of one read-only health evaluation."""
+
+    __tablename__ = "library_health_reports"
+    __table_args__ = (
+        UniqueConstraint("source_scan_run_id", name="uq_library_health_source_scan"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    library_id: Mapped[str] = mapped_column(
+        String(128), ForeignKey("media_libraries.id", ondelete="CASCADE"), index=True
+    )
+    source_scan_run_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("library_scan_runs.id"), nullable=False
+    )
+    source_snapshot_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    inventory_complete: Mapped[bool] = mapped_column(Boolean)
+    score: Mapped[int] = mapped_column(Integer)
+    module_scores_json: Mapped[str] = mapped_column(Text)
+    issue_counts_json: Mapped[str] = mapped_column(Text)
+    issues_json: Mapped[str] = mapped_column(Text)
+    previous_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    trend_direction: Mapped[str] = mapped_column(String(16), default="unchanged")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utc_now, index=True
+    )
+
+
 class LibraryObjectLedger(Base):
     """Latest availability state for one stable cloud object identity."""
 
