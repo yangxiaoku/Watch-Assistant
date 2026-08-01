@@ -124,6 +124,7 @@ class ProwlarrSettingsService:
                 settings = await self._get_or_create(session)
                 if settings.revision != revision:
                     raise ProwlarrSettingsConflict
+                next_revision = settings.revision
                 if "base_url" in fields_set:
                     settings.managed_prowlarr_base_url = _normalize_base_url(base_url)
                 if "api_key" in fields_set:

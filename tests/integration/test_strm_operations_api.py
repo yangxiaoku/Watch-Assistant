@@ -171,7 +171,8 @@ async def test_strm_operations_are_visible_and_legacy_cleanup_is_preview_only(
             headers=headers,
         )
         assert cancelled_history.status_code == 200
-        assert cancelled_history.json()["items"][0]["status"] == "failed"
+        assert cancelled_history.json()["items"][0]["status"] == "cancelled"
+        assert cancelled_history.json()["items"][0]["error_code"] == "strm_operation_cancelled"
         assert (
             cancelled_history.json()["items"][0]["error_code"]
             == "strm_operation_cancelled"

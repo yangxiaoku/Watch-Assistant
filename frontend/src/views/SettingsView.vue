@@ -241,8 +241,11 @@ const organizationResultStatusBreakdown = computed(() => {
   }));
 });
 const organizationSourceDraft = ref("");
+const organizationSourceLabelsDraft = ref<string[]>([]);
 const organizationTargetDraft = ref("");
+const organizationTargetLabelDraft = ref("");
 const organizationPushDraft = ref("");
+const organizationPushLabelDraft = ref("");
 const organizationVideoExtensionsDraft = ref("");
 const organizationMetadataExtensionsDraft = ref("");
 const directoryPickerOpen = ref(false);
@@ -252,7 +255,8 @@ const directoryPickerError = ref("");
 const directoryPickerItems = ref<P115DirectoryItem[]>([]);
 const directoryPickerCurrentId = ref("");
 const directoryPickerCurrentName = ref("115 网盘根目录");
-const directoryPickerTrail = ref<P115DirectoryItem[]>([]);
+const directoryPickerCurrentPath = ref("");
+const directoryPickerTrail = ref<Array<P115DirectoryItem & { relative_path: string }>>([]);
 const organizationDraft = ref({
   schedule_enabled: false,
   scan_interval_minutes: 30,
@@ -715,8 +719,11 @@ function applyOrganization(value: OrganizationSettingsResponse) {
     multi_version_enabled: value.multi_version_enabled,
   };
   organizationSourceDraft.value = value.source_directory_ids.join(", ");
+  organizationSourceLabelsDraft.value = (value.source_directory_labels ?? []).slice(0, value.source_directory_ids.length);
   organizationTargetDraft.value = value.target_directory_id ?? "";
+  organizationTargetLabelDraft.value = value.target_directory_label ?? "";
   organizationPushDraft.value = value.push_directory_id ?? "";
+  organizationPushLabelDraft.value = value.push_directory_label ?? "";
   organizationVideoExtensionsDraft.value = value.video_extensions.join(", ");
   organizationMetadataExtensionsDraft.value = value.metadata_extensions.join(", ");
 }
@@ -774,6 +781,7 @@ async function openDirectoryPicker(mode: "source" | "target" | "push") {
   directoryPickerTrail.value = [];
   directoryPickerCurrentId.value = "";
   directoryPickerCurrentName.value = "115 网盘根目录";
+  directoryPickerCurrentPath.value = "";
   await loadDirectoryPicker();
 }
 
@@ -792,9 +800,10 @@ async function loadDirectoryPicker() {
 }
 
 async function enterDirectory(item: P115DirectoryItem) {
-  directoryPickerTrail.value.push({ id: directoryPickerCurrentId.value, name: directoryPickerCurrentName.value });
+  directoryPickerTrail.value.push({ id: directoryPickerCurrentId.value, name: directoryPickerCurrentName.value, relative_path: directoryPickerCurrentPath.value });
   directoryPickerCurrentId.value = item.id;
   directoryPickerCurrentName.value = item.name;
+  directoryPickerCurrentPath.value = [directoryPickerCurrentPath.value, safeDirectorySegment(item.name)].filter(Boolean).join("/");
   await loadDirectoryPicker();
 }
 
@@ -803,21 +812,43 @@ async function leaveDirectory() {
   if (!previous) return;
   directoryPickerCurrentId.value = previous.id;
   directoryPickerCurrentName.value = previous.name;
+  directoryPickerCurrentPath.value = previous.relative_path;
   await loadDirectoryPicker();
 }
 
 function chooseDirectory() {
   if (!directoryPickerCurrentId.value) return;
+  const label = directoryPickerCurrentPath.value || safeDirectorySegment(directoryPickerCurrentName.value);
   if (directoryPickerMode.value === "target") {
     organizationTargetDraft.value = directoryPickerCurrentId.value;
+    organizationTargetLabelDraft.value = label;
   } else if (directoryPickerMode.value === "push") {
     organizationPushDraft.value = directoryPickerCurrentId.value;
+    organizationPushLabelDraft.value = label;
   } else {
     const ids = organizationList(organizationSourceDraft.value);
-    if (!ids.includes(directoryPickerCurrentId.value)) ids.push(directoryPickerCurrentId.value);
+    if (!ids.includes(directoryPickerCurrentId.value)) {
+      ids.push(directoryPickerCurrentId.value);
+      organizationSourceLabelsDraft.value.push(label);
+    }
     organizationSourceDraft.value = ids.join(", ");
   }
   directoryPickerOpen.value = false;
+}
+
+function safeDirectorySegment(value: string) {
+  return value.replace(/[\\/:*?"<>|\r\n]/g, " ").replace(/\s+/g, " ").trim() || "未命名目录";
+}
+
+function sourceDirectoryDisplayLabel(index: number) {
+  return organizationSourceLabelsDraft.value[index] || "目录名称待确认";
+}
+
+function removeOrganizationSource(index: number) {
+  const ids = organizationList(organizationSourceDraft.value);
+  ids.splice(index, 1);
+  organizationSourceLabelsDraft.value.splice(index, 1);
+  organizationSourceDraft.value = ids.join(", ");
 }
 
 const organizationDirty = computed(() => {
@@ -850,8 +881,11 @@ function organizationDraftChanged() {
     || organizationSettings.value.conflict_mode !== draft.conflict_mode
     || organizationSettings.value.multi_version_enabled !== draft.multi_version_enabled
     || organizationSettings.value.target_directory_id !== (organizationTargetDraft.value.trim() || null)
+    || (organizationSettings.value.target_directory_label ?? "") !== (organizationTargetLabelDraft.value.trim() || "")
     || organizationSettings.value.push_directory_id !== (organizationPushDraft.value.trim() || null)
+    || (organizationSettings.value.push_directory_label ?? "") !== (organizationPushLabelDraft.value.trim() || "")
     || organizationSettings.value.source_directory_ids.join(",") !== organizationList(organizationSourceDraft.value).join(",")
+    || (organizationSettings.value.source_directory_labels ?? []).join(",") !== organizationSourceLabelsDraft.value.join(",")
     || organizationSettings.value.video_extensions.join(",") !== organizationList(organizationVideoExtensionsDraft.value).join(",")
     || organizationSettings.value.metadata_extensions.join(",") !== organizationList(organizationMetadataExtensionsDraft.value).join(",");
 }
@@ -861,11 +895,15 @@ async function saveOrganization() {
   organizationSaving.value = true;
   organizationSaveError.value = "";
   try {
+    const sourceDirectoryIds = organizationList(organizationSourceDraft.value);
     const response = await props.api.updateOrganizationSettings({
       ...organizationDraft.value,
-      source_directory_ids: organizationList(organizationSourceDraft.value),
+      source_directory_ids: sourceDirectoryIds,
+      source_directory_labels: sourceDirectoryIds.map((_, index) => organizationSourceLabelsDraft.value[index] ?? ""),
       target_directory_id: organizationTargetDraft.value.trim() || null,
+      target_directory_label: organizationTargetDraft.value.trim() ? organizationTargetLabelDraft.value.trim() || null : null,
       push_directory_id: organizationPushDraft.value.trim() || null,
+      push_directory_label: organizationPushDraft.value.trim() ? organizationPushLabelDraft.value.trim() || null : null,
       video_extensions: organizationList(organizationVideoExtensionsDraft.value),
       metadata_extensions: organizationList(organizationMetadataExtensionsDraft.value),
       revision: organizationSettings.value.revision,
@@ -1359,7 +1397,7 @@ watch(autoRefreshLogs, syncLogsRefreshTimer);
           <div v-if="prowlarrLoading" class="settings-loading"><LoaderCircle class="spin" :size="20" />正在加载 Prowlarr 状态</div>
           <div v-else-if="prowlarrError" class="settings-state settings-state-error"><AlertTriangle :size="18" /><span>{{ prowlarrError }}</span><button class="text-button" type="button" @click="loadProwlarr">重试</button></div>
           <template v-else-if="prowlarr">
-            <div class="p15-status-line prowlarr-status-line"><span class="settings-status-name"><Radio :size="17" />服务端配置</span><span :class="prowlarrStatusClass(prowlarr)">{{ prowlarrStatusLabel(prowlarr) }}</span><span :class="prowlarr.enabled ? 'status-ok' : 'status-degraded'">{{ prowlarr.enabled ? '已启用' : '未启用' }}</span></div>
+            <div class="p15-status-line prowlarr-status-line"><span class="settings-status-name"><Radio :size="17" />服务端配置</span><span :class="prowlarrStatusClass(prowlarr)">{{ prowlarrStatusLabel(prowlarr) }}</span></div>
             <div class="settings-metrics prowlarr-metrics"><div class="settings-metric"><span>配置来源</span><strong>{{ prowlarrSourceLabel(prowlarr.source) }}</strong></div><div class="settings-metric"><span>API Key</span><strong :class="prowlarr.api_key_configured ? 'status-ok' : 'status-degraded'">{{ prowlarr.api_key_configured ? `已配置（${prowlarrApiKeySourceLabel(prowlarr.api_key_source)}）` : '未配置' }}</strong></div><div class="settings-metric"><span>配置版本</span><strong>{{ prowlarr.revision }}</strong></div><div class="settings-metric"><span>最后更新</span><strong>{{ prowlarr.last_updated_at ? formatTimestamp(prowlarr.last_updated_at) : '未知' }}</strong></div></div>
             <div class="settings-subsection"><h3>服务端配置</h3><div class="settings-form-grid"><label for="prowlarr-base-url">服务地址<input id="prowlarr-base-url" v-model="prowlarrBaseUrlDraft" type="url" inputmode="url" autocomplete="url" spellcheck="false" placeholder="例如 http://prowlarr:9696" :disabled="prowlarrMutationBusy" /></label><label for="prowlarr-api-key">API Key<input id="prowlarr-api-key" v-model="prowlarrApiKeyDraft" name="prowlarr_api_key" type="password" autocomplete="new-password" spellcheck="false" placeholder="输入新的 API Key（可留空以保留现有配置）" :disabled="prowlarrMutationBusy" /></label></div><label class="settings-toggle"><input v-model="prowlarrEnabledDraft" type="checkbox" :disabled="prowlarrMutationBusy" />启用 Prowlarr 搜索来源</label><div class="settings-action-row"><button class="primary-button" type="button" :disabled="prowlarrMutationBusy || prowlarrValidationState === 'running'" @click="saveProwlarr"><LoaderCircle v-if="prowlarrSaving" class="spin" :size="15" /><Save v-else :size="15" />保存 Prowlarr 配置</button><button class="secondary-button" type="button" :disabled="prowlarrMutationBusy || prowlarrValidationState === 'running' || prowlarr.source !== 'managed'" @click="resetProwlarr"><LoaderCircle v-if="prowlarrResetting" class="spin" :size="15" /><RefreshCw v-else :size="15" />恢复环境配置</button></div><p class="settings-note"><ShieldCheck :size="15" />API Key 仅在填写后随保存请求提交；服务端响应、状态和日志不会包含 Key 原文。</p></div>
             <p v-if="prowlarrSaveMessage" class="settings-action-message status-ok" role="status">{{ prowlarrSaveMessage }}</p><p v-if="prowlarrSaveError" class="settings-state settings-state-error settings-save-error" role="alert"><AlertTriangle :size="17" />{{ prowlarrSaveError }}<button v-if="prowlarrConflict" class="text-button" type="button" @click="loadProwlarr">重新加载</button></p>
@@ -1401,7 +1439,7 @@ watch(autoRefreshLogs, syncLogsRefreshTimer);
                 <div v-if="organizationResult?.blocked_details?.length" class="organization-blocked-details"><strong>未执行原因</strong><ul><li v-for="detail in organizationResult.blocked_details" :key="`${detail.source_directory_id ?? 'automation'}-${detail.error_code}`"><span>{{ detail.source_directory_id ? '来源目录 ' + detail.source_directory_id : '自动整理' }}：{{ detail.message_zh }} 下一步：{{ detail.next_step_zh }}</span><details><summary>诊断信息</summary><small>阶段：{{ detail.phase }}；错误码：{{ detail.error_code }}</small></details></li></ul></div>
               </div>
             </details>
-            <details class="settings-subsection" open><summary><h3>扫描来源、归档与推送目录</h3><span class="settings-section-disclosure" aria-hidden="true">⌄</span></summary><p class="settings-note">目录选择器从 115 网盘根目录开始浏览。扫描来源可多选，整理归档目录和资源推送目录各选一个；三者保存后分别生效。账号根目录仅用于浏览，整理必须选择受管的实际文件夹。</p><div class="directory-selection-grid"><div class="directory-selection-field"><span>整理扫描来源</span><div class="directory-chips"><span v-for="id in organizationList(organizationSourceDraft)" :key="id" class="directory-chip">{{ id }}<button type="button" aria-label="移除扫描来源" @click="organizationSourceDraft = organizationList(organizationSourceDraft).filter(item => item !== id).join(', ')">×</button></span><span v-if="!organizationList(organizationSourceDraft).length" class="settings-note">尚未选择</span></div><button class="secondary-button" type="button" @click="openDirectoryPicker('source')">📂 选择扫描来源</button></div><div class="directory-selection-field"><span>整理归档目录</span><span v-if="organizationTargetDraft" class="directory-chip">{{ organizationTargetDraft }}</span><span v-else class="settings-note">尚未选择</span><button class="secondary-button" type="button" @click="openDirectoryPicker('target')">📂 选择归档目录</button></div><div class="directory-selection-field"><span>资源推送目录</span><span v-if="organizationPushDraft" class="directory-chip">{{ organizationPushDraft }}</span><span v-else class="settings-note">尚未选择</span><button class="secondary-button" type="button" @click="openDirectoryPicker('push')">📂 选择推送目录</button><p class="settings-note">资源页面点击“推送”时直接使用这里保存的目录，不再临时选择。</p></div></div></details>
+            <details class="settings-subsection" open><summary><h3>扫描来源、归档与推送目录</h3><span class="settings-section-disclosure" aria-hidden="true">⌄</span></summary><p class="settings-note">目录选择器从 115 网盘根目录开始浏览。扫描来源可多选，整理归档目录和资源推送目录各选一个；三者保存后分别生效。页面主显示使用可复核的目录名称/相对路径，CID 只作为辅助核对信息。</p><div class="directory-selection-grid"><div class="directory-selection-field"><span>整理扫描来源</span><div class="directory-chips"><span v-for="(id, index) in organizationList(organizationSourceDraft)" :key="id" class="directory-chip"><span>{{ sourceDirectoryDisplayLabel(index) }}</span><small>CID {{ id }}</small><button type="button" aria-label="移除扫描来源" @click="removeOrganizationSource(index)">×</button></span><span v-if="!organizationList(organizationSourceDraft).length" class="settings-note">尚未选择</span></div><button class="secondary-button" type="button" @click="openDirectoryPicker('source')">📂 选择扫描来源</button></div><div class="directory-selection-field"><span>整理归档目录</span><span v-if="organizationTargetDraft" class="directory-chip"><span>{{ organizationTargetLabelDraft || '目录名称待确认' }}</span><small>CID {{ organizationTargetDraft }}</small></span><span v-else class="settings-note">尚未选择</span><button class="secondary-button" type="button" @click="openDirectoryPicker('target')">📂 选择归档目录</button></div><div class="directory-selection-field"><span>资源推送目录</span><span v-if="organizationPushDraft" class="directory-chip"><span>{{ organizationPushLabelDraft || '目录名称待确认' }}</span><small>CID {{ organizationPushDraft }}</small></span><span v-else class="settings-note">尚未选择</span><button class="secondary-button" type="button" @click="openDirectoryPicker('push')">📂 选择推送目录</button><p class="settings-note">资源页面点击“推送”时直接使用这里保存的目录，不再临时选择。</p></div></div></details>
             <details class="settings-subsection"><summary><h3>识别与命名</h3><span class="settings-section-disclosure" aria-hidden="true">⌄</span></summary><div class="settings-form-grid"><label>视频文件类型（逗号分隔）<input v-model="organizationVideoExtensionsDraft" placeholder="mkv, mp4, avi" /></label><label>字幕/元数据类型（逗号分隔）<input v-model="organizationMetadataExtensionsDraft" placeholder="srt, ass, nfo" /></label></div><div class="settings-capability-list"><label class="settings-toggle"><input v-model="organizationDraft.rename_enabled" type="checkbox" />标准化重命名</label><label class="settings-toggle"><input v-model="organizationDraft.media_probe_enabled" type="checkbox" />媒体信息提取完善命名</label><label class="settings-toggle"><input v-model="organizationDraft.ai_identification_enabled" type="checkbox" />AI 辅助识别</label></div><p class="settings-note">AI 辅助识别需要先在实用工具完成 API 配置；未配置时不会调用 AI。</p></details>
             <details class="settings-subsection"><summary><h3>整理规则</h3><span class="settings-section-disclosure" aria-hidden="true">⌄</span></summary><div class="settings-form-grid"><label>小文件过滤（MB）<input v-model.number="organizationDraft.small_file_threshold_mb" type="number" min="0" step="0.1" /></label><label>操作延时（秒）<input v-model.number="organizationDraft.operation_delay_seconds" type="number" min="0" max="60" step="0.1" /></label></div><div class="settings-capability-list"><label class="settings-toggle"><input v-model="organizationDraft.cleanup_empty_directories" type="checkbox" />整理后清理空文件夹</label><label class="settings-toggle"><input v-model="organizationDraft.strm_linkage_enabled" type="checkbox" />联动生成 STRM</label></div></details>
             <details class="settings-subsection"><summary><h3>分类策略</h3><span class="settings-section-disclosure" aria-hidden="true">⌄</span></summary><div class="settings-capability-list"><label class="settings-toggle"><input v-model="organizationDraft.include_children_category" type="checkbox" />添加儿童节目分类</label><label class="settings-toggle"><input v-model="organizationDraft.include_concert_category" type="checkbox" />添加演唱会分类</label><label class="settings-toggle"><input v-model="organizationDraft.region_grouping_enabled" type="checkbox" />按地区二次分类</label><label class="settings-toggle"><input v-model="organizationDraft.year_grouping_enabled" type="checkbox" />按年份三次分类</label></div></details>
@@ -1414,10 +1452,10 @@ watch(autoRefreshLogs, syncLogsRefreshTimer);
 
         <div v-if="directoryPickerOpen" class="directory-picker-backdrop" role="presentation" @click.self="directoryPickerOpen = false">
           <section class="directory-picker" role="dialog" aria-modal="true" aria-labelledby="directory-picker-title">
-            <header class="directory-picker-heading"><div><p class="eyebrow">115 网盘</p><h2 id="directory-picker-title">选择{{ directoryPickerMode === 'source' ? '扫描来源' : directoryPickerMode === 'target' ? '归档目标' : '资源推送' }}目录</h2><p>{{ directoryPickerCurrentName }}（CID {{ directoryPickerCurrentId || '0' }}）</p></div><button class="icon-button" type="button" aria-label="关闭目录选择器" title="关闭" @click="directoryPickerOpen = false">×</button></header>
+            <header class="directory-picker-heading"><div><p class="eyebrow">115 网盘</p><h2 id="directory-picker-title">选择{{ directoryPickerMode === 'source' ? '扫描来源' : directoryPickerMode === 'target' ? '归档目标' : '资源推送' }}目录</h2><p>相对路径：{{ directoryPickerCurrentPath || '根目录' }}</p><small>CID 仅供核对：{{ directoryPickerCurrentId || '0' }}</small></div><button class="icon-button" type="button" aria-label="关闭目录选择器" title="关闭" @click="directoryPickerOpen = false">×</button></header>
             <div v-if="directoryPickerLoading" class="settings-loading"><LoaderCircle class="spin" :size="20" />正在读取目录</div>
             <div v-else-if="directoryPickerError" class="settings-state settings-state-error"><AlertTriangle :size="18" /><span>{{ directoryPickerError }}</span><button class="text-button" type="button" @click="loadDirectoryPicker">重试</button></div>
-            <template v-else><div class="directory-picker-toolbar"><button class="secondary-button" type="button" :disabled="!directoryPickerTrail.length" @click="leaveDirectory">返回上级</button><button class="primary-button" type="button" :disabled="!directoryPickerCurrentId || directoryPickerCurrentId === '0'" @click="chooseDirectory">{{ directoryPickerCurrentId === '0' ? '根目录不可直接选择' : '选择当前目录' }}</button></div><div v-if="!directoryPickerItems.length" class="settings-empty-block">当前目录没有可浏览的子目录。</div><div class="directory-picker-list"><button v-for="item in directoryPickerItems" :key="item.id" type="button" class="directory-picker-item" @click="enterDirectory(item)"><span>📁</span><span>{{ item.name }}</span><small>{{ item.id }}</small><span>进入</span></button></div></template>
+            <template v-else><div class="directory-picker-toolbar"><button class="secondary-button" type="button" :disabled="!directoryPickerTrail.length" @click="leaveDirectory">返回上级</button><button class="primary-button" type="button" :disabled="!directoryPickerCurrentId || directoryPickerCurrentId === '0'" @click="chooseDirectory">{{ directoryPickerCurrentId === '0' ? '根目录不可直接选择' : '选择当前目录' }}</button></div><div v-if="!directoryPickerItems.length" class="settings-empty-block">当前目录没有可浏览的子目录。</div><div class="directory-picker-list"><button v-for="item in directoryPickerItems" :key="item.id" type="button" class="directory-picker-item" @click="enterDirectory(item)"><span>📁</span><span>{{ item.name }}</span><small>CID {{ item.id }}</small><span>进入</span></button></div></template>
           </section>
         </div>
 

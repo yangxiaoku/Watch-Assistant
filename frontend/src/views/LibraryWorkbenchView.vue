@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { Ban, Check, Database, LoaderCircle, RefreshCw, SlidersHorizontal } from "@lucide/vue";
-import { computed, onMounted, ref } from "vue";
+import { Ban, Check, Database, LoaderCircle, RefreshCw, SlidersHorizontal, Trash2 } from "@lucide/vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { ApiClient, ApiError, createIdempotencyKey, focusFirstFieldError } from "../api";
 import { describeUiError } from "../errorCatalog";
 import type {
   MediaEntryResponse,
   MediaLibraryResponse,
+  EmptyDirectoryCleanupPlanResponse,
   StrmCleanupPlanResponse,
   StrmGenerationResponse,
   StrmManifestItemResponse,
@@ -19,6 +20,7 @@ const selectedId = ref<string | null>(null);
 const media = ref<MediaEntryResponse[]>([]);
 const manifest = ref<StrmManifestItemResponse[]>([]);
 const operations = ref<StrmOperationResponse[]>([]);
+const operationsError = ref("");
 const loading = ref(false);
 const busy = ref(false);
 const error = ref("");
@@ -28,6 +30,11 @@ const latestResult = ref<StrmGenerationResponse | null>(null);
 const latestOperation = ref<StrmOperationResponse | null>(null);
 const cleanupPlan = ref<StrmCleanupPlanResponse | null>(null);
 const cleanupIdempotencyKey = ref<string | null>(null);
+const emptyCleanupPlan = ref<EmptyDirectoryCleanupPlanResponse | null>(null);
+const emptyCleanupIdempotencyKey = ref<string | null>(null);
+const operationDetailOpen = ref(false);
+let operationPollGeneration = 0;
+let operationPollTimer: number | null = null;
 
 const selected = computed(() => libraries.value.find((item) => item.library_id === selectedId.value) ?? null);
 const scan = computed(() => selected.value?.latest_scan ?? null);
@@ -62,14 +69,23 @@ async function loadLibraries(preferredId = selectedId.value) {
 }
 
 async function loadOutputs(libraryId: string) {
-  const [mediaResponse, manifestResponse, operationsResponse] = await Promise.all([
+  operationsError.value = "";
+  const [mediaResponse, manifestResponse] = await Promise.all([
     props.api.libraryMedia(libraryId).catch(() => ({ items: [], next_cursor: null })),
     props.api.strmManifest(libraryId).catch(() => ({ items: [], page: 1, page_size: 50, total: 0, total_pages: 0 })),
-    props.api.strmOperations(libraryId).catch(() => ({ items: [], next_cursor: null })),
   ]);
   media.value = mediaResponse.items;
   manifest.value = manifestResponse.items;
-  operations.value = operationsResponse.items;
+  try {
+    const operationsResponse = await props.api.strmOperations(libraryId);
+    operations.value = operationsResponse.items;
+  } catch {
+    operationsError.value = "STRM 操作历史加载失败，请重试";
+  }
+}
+
+async function retryOutputs() {
+  if (selected.value) await loadOutputs(selected.value.library_id);
 }
 
 async function readConfiguredRoot() {
@@ -130,12 +146,21 @@ async function initializeLibrary() {
 }
 
 function selectLibrary(library: MediaLibraryResponse) {
+  operationPollGeneration += 1;
+  if (operationPollTimer !== null) {
+    window.clearTimeout(operationPollTimer);
+    operationPollTimer = null;
+  }
   selectedId.value = library.library_id;
   form.value = { libraryId: library.library_id, name: library.name, rootDirectoryId: library.root_directory_id };
   latestResult.value = null;
   latestOperation.value = null;
   cleanupPlan.value = null;
   cleanupIdempotencyKey.value = null;
+  emptyCleanupPlan.value = null;
+  emptyCleanupIdempotencyKey.value = null;
+  operationDetailOpen.value = false;
+  operationsError.value = "";
   operations.value = [];
   notice.value = "";
   void loadOutputs(library.library_id);
@@ -202,19 +227,92 @@ async function syncStrm(action: "full" | "incremental") {
   busy.value = true;
   error.value = "";
   notice.value = "";
+  operationDetailOpen.value = false;
+  const pollGeneration = ++operationPollGeneration;
   try {
-    latestResult.value = action === "full"
+    const result = action === "full"
       ? await props.api.generateStrm(selected.value.library_id, scan.value.run_id)
       : await props.api.incrementalStrm(selected.value.library_id, scan.value.run_id);
-    latestOperation.value = await props.api.strmOperation(latestResult.value.operation_id);
+    const operation = await pollStrmOperation(result.operation_id, pollGeneration, action);
+    if (!operation || pollGeneration !== operationPollGeneration) return;
+    if (operation.status === "succeeded") {
+      latestResult.value = result;
+      notice.value = operationStatusMessage(operation, action);
+    } else {
+      latestResult.value = null;
+      error.value = operationStatusMessage(operation, action);
+    }
     await loadOutputs(selected.value.library_id);
-    const result = latestResult.value;
-    notice.value = `STRM ${action === "full" ? "全量" : "增量"}同步完成，生成 ${result.generated} 个，未变化 ${result.unchanged} 个`;
   } catch (exception) {
     setError(exception, "STRM 操作失败");
   } finally {
     busy.value = false;
   }
+}
+
+function waitForOperationPoll() {
+  return new Promise<void>((resolve) => {
+    operationPollTimer = window.setTimeout(() => {
+      operationPollTimer = null;
+      resolve();
+    }, 500);
+  });
+}
+
+async function pollStrmOperation(
+  operationId: string,
+  pollGeneration: number,
+  action: "full" | "incremental",
+): Promise<StrmOperationResponse | null> {
+  for (let attempt = 0; attempt < 120; attempt += 1) {
+    if (pollGeneration !== operationPollGeneration) return null;
+    const operation = await props.api.strmOperation(operationId);
+    if (pollGeneration !== operationPollGeneration) return null;
+    latestOperation.value = operation;
+    if (operation.status === "queued" || operation.status === "running") {
+      notice.value = operationStatusMessage(operation, action);
+      await waitForOperationPoll();
+      continue;
+    }
+    return operation;
+  }
+  return latestOperation.value;
+}
+
+function operationStatusMessage(
+  operation: StrmOperationResponse,
+  action: "full" | "incremental" = operation.kind === "incremental" ? "incremental" : "full",
+): string {
+  const label = action === "full" ? "全量" : "增量";
+  switch (operation.status) {
+    case "queued":
+      return `STRM ${label}同步已排队，正在等待执行`;
+    case "running":
+      return `STRM ${label}同步执行中，请稍候`;
+    case "succeeded":
+      return `STRM ${label}同步完成，生成 ${operation.generated} 个，未变化 ${operation.unchanged} 个`;
+    case "failed":
+      return `STRM ${label}同步失败，请查看详情后重试`;
+    case "timeout":
+      return `STRM ${label}同步超时，请查看详情后重试`;
+    case "cancelled":
+      return `STRM ${label}同步已取消，可重试`;
+  }
+}
+
+async function refreshLatestOperation() {
+  if (!latestOperation.value) return;
+  try {
+    latestOperation.value = await props.api.strmOperation(latestOperation.value.operation_id);
+  } catch (exception) {
+    setError(exception, "STRM 操作详情加载失败，请重试");
+  }
+}
+
+async function retryLatestOperation() {
+  const operation = latestOperation.value;
+  if (!operation || (operation.status !== "failed" && operation.status !== "timeout" && operation.status !== "cancelled")) return;
+  await syncStrm(operation.kind === "incremental" ? "incremental" : "full");
 }
 
 async function previewCleanup() {
@@ -264,6 +362,61 @@ async function confirmCleanup() {
   }
 }
 
+async function previewEmptyDirectoryCleanup() {
+  if (!selected.value || !scan.value || !readyForSync.value || busy.value) return;
+  busy.value = true;
+  error.value = "";
+  notice.value = "";
+  try {
+    emptyCleanupPlan.value = await props.api.createEmptyDirectoryCleanupPlan(
+      selected.value.library_id,
+      scan.value.run_id,
+    );
+    emptyCleanupIdempotencyKey.value = null;
+    const plan = emptyCleanupPlan.value;
+    notice.value = plan.candidate_count
+      ? `空目录清理预览已生成，共 ${plan.candidate_count} 项，${plan.executable_count} 项可回收`
+      : "空目录清理预览已生成，没有符合保护规则的受管空目录";
+  } catch (exception) {
+    setError(exception, "空目录清理预览失败，请先完成一次完整扫描");
+  } finally {
+    busy.value = false;
+  }
+}
+
+async function confirmEmptyDirectoryCleanup() {
+  const plan = emptyCleanupPlan.value;
+  if (!plan || plan.status !== "needs_review" || plan.executable_count === 0 || busy.value) return;
+  if (typeof window !== "undefined" && !window.confirm("确认将预览中的受管空目录可恢复回收到 115 回收站？永久删除保持关闭。")) return;
+  busy.value = true;
+  error.value = "";
+  notice.value = "";
+  try {
+    const idempotencyKey = emptyCleanupIdempotencyKey.value ?? createIdempotencyKey();
+    emptyCleanupIdempotencyKey.value = idempotencyKey;
+    const result = await props.api.applyEmptyDirectoryCleanupPlan(plan.plan_id, {
+      expectedRevision: plan.revision,
+      digest: plan.plan_hash,
+      idempotencyKey,
+    });
+    emptyCleanupPlan.value = result.plan;
+    notice.value = `空目录清理已完成，可恢复回收 ${result.deleted} 个受管目录`;
+  } catch (exception) {
+    setError(exception, "空目录清理未执行，请重新扫描并生成预览");
+  } finally {
+    busy.value = false;
+  }
+}
+
+function emptyCleanupStatusLabel(status: EmptyDirectoryCleanupPlanResponse["status"]): string {
+  switch (status) {
+    case "needs_review": return "待确认";
+    case "applying": return "执行中";
+    case "applied": return "已完成";
+    case "invalidated": return "已失效";
+  }
+}
+
 const operationLabels: Record<StrmOperationResponse["kind"], string> = {
   full: "全量生成",
   incremental: "增量同步",
@@ -275,6 +428,8 @@ const operationStatusLabels: Record<StrmOperationResponse["status"], string> = {
   running: "执行中",
   succeeded: "已完成",
   failed: "失败",
+  timeout: "已超时",
+  cancelled: "已取消",
 };
 
 function operationError(operation: StrmOperationResponse): string | null {
@@ -312,6 +467,10 @@ function formatBytes(value: number | null) {
 }
 
 onMounted(() => { void loadLibraries(); });
+onBeforeUnmount(() => {
+  operationPollGeneration += 1;
+  if (operationPollTimer !== null) window.clearTimeout(operationPollTimer);
+});
 </script>
 
 <template>
@@ -357,8 +516,9 @@ onMounted(() => { void loadLibraries(); });
           <button class="primary-button" type="button" :disabled="busy || !selected.enabled || !selected.scope_verified" @click="scanLibrary"><RefreshCw :size="16" />扫描目录</button>
           <button class="secondary-button" type="button" :disabled="busy || !readyForSync" @click="createOrganizationPreview"><SlidersHorizontal :size="16" />生成整理预览</button>
           <button class="secondary-button" type="button" :disabled="busy || !readyForSync" @click="syncStrm('full')"><Database :size="16" />全量 STRM</button>
-          <button class="secondary-button" type="button" :disabled="busy || !readyForSync" @click="syncStrm('incremental')"><RefreshCw :size="16" />增量同步</button>
-          <button class="secondary-button" type="button" :disabled="busy || !readyForSync" @click="previewCleanup"><Ban :size="16" />预览失效清理</button>
+           <button class="secondary-button" type="button" :disabled="busy || !readyForSync" @click="syncStrm('incremental')"><RefreshCw :size="16" />增量同步</button>
+           <button class="secondary-button" type="button" :disabled="busy || !readyForSync" @click="previewCleanup"><Ban :size="16" />预览失效清理</button>
+           <button class="secondary-button" type="button" :disabled="busy || !readyForSync" @click="previewEmptyDirectoryCleanup"><Trash2 :size="16" />预览空目录清理</button>
         </div>
         <p v-if="busy" class="library-progress"><LoaderCircle class="spin" :size="16" />正在处理当前媒体库</p>
         <div v-if="latestResult" class="library-result"><strong>最近一次同步</strong><span>生成 {{ latestResult.generated }}</span><span>未变化 {{ latestResult.unchanged }}</span><span>跳过 {{ latestResult.skipped }}</span><span>失败 {{ latestResult.failed }}</span><span>退休 {{ latestResult.retired }}</span></div>
@@ -366,16 +526,29 @@ onMounted(() => { void loadLibraries(); });
           <div class="library-section-heading"><div><p class="eyebrow">持久操作状态</p><h3>{{ operationLabels[latestOperation.kind] }}</h3></div><strong>{{ operationStatusLabels[latestOperation.status] }}</strong></div>
           <div class="library-operation-stats"><span>生成 {{ latestOperation.generated }}</span><span>未变化 {{ latestOperation.unchanged }}</span><span>跳过 {{ latestOperation.skipped }}</span><span>失败 {{ latestOperation.failed }}</span><span>退休 {{ latestOperation.retired }}</span></div>
           <p v-if="operationError(latestOperation)" class="library-operation-error">{{ operationError(latestOperation) }}</p>
-          <small>操作 {{ latestOperation.operation_id }}</small>
+          <div class="library-operation-actions"><button class="text-button" type="button" @click="operationDetailOpen = !operationDetailOpen">{{ operationDetailOpen ? "收起详情" : "查看详情" }}</button><button v-if="['failed', 'timeout', 'cancelled'].includes(latestOperation.status)" class="text-button" type="button" @click="retryLatestOperation">重试</button><button class="text-button" type="button" @click="refreshLatestOperation">刷新状态</button></div>
+          <div v-if="operationDetailOpen" class="library-operation-detail"><small>操作 {{ latestOperation.operation_id }}</small><small>创建 {{ new Date(latestOperation.created_at).toLocaleString() }}</small><small v-if="latestOperation.finished_at">结束 {{ new Date(latestOperation.finished_at).toLocaleString() }}</small></div>
         </section>
-        <section v-if="cleanupPlan" class="library-cleanup-plan" :class="`is-${cleanupPlan.status}`">
+         <section v-if="cleanupPlan" class="library-cleanup-plan" :class="`is-${cleanupPlan.status}`">
           <div class="library-section-heading"><div><p class="eyebrow">失效清理预览</p><h3>受管 STRM 退休计划</h3></div><strong>{{ cleanupPlan.status === "needs_review" ? "待确认" : cleanupPlan.status === "applied" ? "已完成" : "已失效" }}</strong></div>
           <div class="library-operation-stats"><span>候选 {{ cleanupPlan.candidate_count }}</span><span>可执行 {{ cleanupPlan.executable_count }}</span><span>已阻断 {{ cleanupPlan.blocked_count }}</span><span>快照修订 {{ cleanupPlan.source_snapshot_revision }}</span></div>
           <p class="library-cleanup-note">仅处理系统受管且内容未被用户修改的 STRM；扫描不完整或清单变化时会自动阻断。</p>
           <button v-if="cleanupPlan.status === 'needs_review' && cleanupPlan.executable_count" class="danger-button" type="button" :disabled="busy" @click="confirmCleanup"><Check :size="16" />确认执行清理</button>
-          <p v-else-if="cleanupPlan.status === 'needs_review'" class="library-muted">当前没有可执行的清理项。</p>
-        </section>
-        <section v-if="operations.length" class="library-output-section"><div class="library-section-heading"><div><p class="eyebrow">操作历史</p><h3>STRM 操作</h3></div><span>{{ operations.length }} 条</span></div><div class="library-operation-list"><div v-for="operation in operations" :key="operation.operation_id" class="library-operation-row"><span><strong>{{ operationLabels[operation.kind] }}</strong><small>{{ operationStatusLabels[operation.status] }} · {{ new Date(operation.created_at).toLocaleString() }}</small></span><span>生成 {{ operation.generated }} · 失败 {{ operation.failed }}</span></div></div></section>
+           <p v-else-if="cleanupPlan.status === 'needs_review'" class="library-muted">当前没有可执行的清理项。</p>
+         </section>
+         <section v-if="emptyCleanupPlan" class="library-cleanup-plan" :class="`is-${emptyCleanupPlan.status}`">
+           <div class="library-section-heading"><div><p class="eyebrow">空目录清理预览</p><h3>受管目录可恢复回收</h3></div><strong>{{ emptyCleanupStatusLabel(emptyCleanupPlan.status) }}</strong></div>
+           <div class="library-operation-stats"><span>候选 {{ emptyCleanupPlan.candidate_count }}</span><span>可回收 {{ emptyCleanupPlan.executable_count }}</span><span>已阻断 {{ emptyCleanupPlan.blocked_count }}</span><span>快照修订 {{ emptyCleanupPlan.source_snapshot_revision }}</span></div>
+           <p class="library-cleanup-note">仅使用同一媒体库最新完整扫描中的系统受管目录，并遵守根目录、源目录、归档目录和推送目录保护规则；确认后只进入可恢复回收站，永久删除保持关闭。</p>
+           <div v-if="emptyCleanupPlan.candidates.length" class="library-empty-directory-list">
+             <div v-for="candidate in emptyCleanupPlan.candidates" :key="candidate.directory_id" class="library-empty-directory-row">
+               <span><strong>{{ candidate.name }}</strong><small>{{ candidate.path || "相对路径不可用" }}</small></span><small>{{ candidate.state === "ready" ? "可回收" : "已阻断" }}</small>
+             </div>
+           </div>
+           <button v-if="emptyCleanupPlan.status === 'needs_review' && emptyCleanupPlan.executable_count" class="danger-button" type="button" :disabled="busy" @click="confirmEmptyDirectoryCleanup"><Check :size="16" />确认可恢复回收</button>
+           <p v-else-if="emptyCleanupPlan.status === 'needs_review'" class="library-muted">当前没有可执行的受管空目录。</p>
+         </section>
+        <section v-if="operationsError || operations.length" class="library-output-section"><div class="library-section-heading"><div><p class="eyebrow">操作历史</p><h3>STRM 操作</h3></div><span v-if="operations.length">{{ operations.length }} 条</span></div><p v-if="operationsError" class="library-operation-history-error" role="alert">{{ operationsError }} <button class="text-button" type="button" @click="retryOutputs">重试</button></p><div v-else class="library-operation-list"><div v-for="operation in operations" :key="operation.operation_id" class="library-operation-row"><span><strong>{{ operationLabels[operation.kind] }}</strong><small>{{ operationStatusLabels[operation.status] }} · {{ new Date(operation.created_at).toLocaleString() }}</small></span><span>生成 {{ operation.generated }} · 失败 {{ operation.failed }}</span></div></div></section>
         <section class="library-output-section"><div class="library-section-heading"><div><p class="eyebrow">受管清单</p><h3>STRM 文件</h3></div><span>{{ manifest.length }} / 50</span></div><div v-if="manifest.length" class="library-table-wrap"><table><thead><tr><th>云端路径</th><th>本地路径</th><th>状态</th></tr></thead><tbody><tr v-for="item in manifest" :key="item.manifest_id"><td>{{ item.cloud_relative_path }}</td><td>{{ item.local_relative_path }}</td><td>{{ item.status }}</td></tr></tbody></table></div><p v-else class="library-muted">暂无受管 STRM。完成扫描后可以执行全量生成。</p></section>
         <section class="library-output-section"><div class="library-section-heading"><div><p class="eyebrow">最近扫描</p><h3>索引文件</h3></div><span>{{ media.length }} / 50</span></div><div v-if="media.length" class="library-table-wrap"><table><thead><tr><th>文件名</th><th>大小</th><th>修改时间</th></tr></thead><tbody><tr v-for="item in media" :key="item.media_id"><td>{{ item.name }}</td><td>{{ formatBytes(item.size_bytes) }}</td><td>{{ item.modified_at ? new Date(item.modified_at).toLocaleString() : "未知" }}</td></tr></tbody></table></div><p v-else class="library-muted">完成一次完整扫描后，这里会显示索引文件。</p></section>
       </main>

@@ -21,6 +21,7 @@ from watch_assistant.services.search import (
     _quality_matches,
     _resource_facets,
     _resource_sort_key,
+    _resource_summary,
     make_cache_key,
     source_penalty,
 )
@@ -81,6 +82,40 @@ def test_legacy_search_response_explains_magnet_truncation():
 
     assert len(response.results) == 30
     assert "resource_results_truncated" in response.warnings
+
+
+def test_resource_summary_preserves_normalized_source_evidence_with_legacy_fallback():
+    now = datetime.now(UTC)
+    resource = Resource(
+        id="res_sources",
+        kind=ResourceKind.MAGNET,
+        canonical_key="magnet:sources",
+        encrypted_url="encrypted",
+        name="Movie 2010 1080p",
+        source="plugin:prowlarr",
+        captured_at=now,
+        expires_at=now,
+        metadata_json='{"sources":["plugin:pansou", "plugin:prowlarr", "plugin:custom"]}',
+    )
+
+    summary = _resource_summary(resource, None)
+
+    assert summary.sources == ["plugin:pansou", "plugin:prowlarr", "plugin:custom"]
+    assert summary.source_count == 3
+
+    legacy = Resource(
+        id="res_legacy",
+        kind=ResourceKind.MAGNET,
+        canonical_key="magnet:legacy",
+        encrypted_url="encrypted",
+        name="Legacy",
+        source="plugin:prowlarr",
+        captured_at=now,
+        expires_at=now,
+    )
+    legacy_summary = _resource_summary(legacy, None)
+    assert legacy_summary.sources == ["plugin:prowlarr"]
+    assert legacy_summary.source_count == 1
 
 
 @pytest.mark.asyncio

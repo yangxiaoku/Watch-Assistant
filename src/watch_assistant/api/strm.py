@@ -293,12 +293,8 @@ async def _cancel_operation(
     """Persist cancellation in an independent task before returning."""
 
     cleanup_task = asyncio.create_task(
-        _fail_operation(
-            request,
-            operations,
-            operation_id,
-            workflow_id=workflow_id,
-            error_code="strm_operation_cancelled",
+        _cancel_operation_state(
+            request, operations, operation_id, workflow_id=workflow_id
         ),
         name=f"watch-assistant-strm-cancel-{operation_id}",
     )
@@ -318,6 +314,70 @@ async def _cancel_operation(
         # A process stop can still interrupt the event loop itself. Startup
         # recovery handles that case; the original request cancellation wins.
         return
+
+
+async def _cancel_operation_state(
+    request: Request | None,
+    operations: StrmOperationService,
+    operation_id: str,
+    *,
+    workflow_id: str | None,
+) -> StrmOperationSummary:
+    cancel = getattr(operations, "cancel", None)
+    if callable(cancel):
+        operation = await cancel(operation_id)
+        if operation.status == "cancelled" and request is not None:
+            await _sync_workflow_stage(
+                request,
+                workflow_id,
+                operation_id=operation_id,
+                status=WorkflowStageStatus.FAILED,
+                reason="strm_cancelled",
+                error_code=operation.error_code,
+            )
+        return operation
+    return await _fail_operation(
+        request,
+        operations,
+        operation_id,
+        workflow_id=workflow_id,
+        error_code="strm_operation_cancelled",
+    )
+
+
+async def _run_operation_heartbeat(
+    operations: StrmOperationService,
+    operation_id: str,
+    stop: asyncio.Event,
+) -> None:
+    """Renew the local lease while a manifest operation is doing I/O."""
+
+    while not stop.is_set():
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=60)
+        except TimeoutError:
+            try:
+                await operations.heartbeat(operation_id)
+            except (StrmOperationNotFound, StrmOperationError):
+                return
+
+
+def _start_operation_heartbeat(
+    operations: StrmOperationService, operation_id: str
+) -> tuple[asyncio.Event, asyncio.Task[None]]:
+    stop = asyncio.Event()
+    task = asyncio.create_task(
+        _run_operation_heartbeat(operations, operation_id, stop),
+        name=f"watch-assistant-strm-heartbeat-{operation_id}",
+    )
+    return stop, task
+
+
+async def _stop_operation_heartbeat(stop: asyncio.Event, task: asyncio.Task[None]) -> None:
+    stop.set()
+    if not task.done():
+        task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
 
 
 @router.get(
@@ -428,6 +488,9 @@ async def generate_manifest(
         payload=payload,
         kind=StrmOperationKind.FULL,
     )
+    heartbeat_stop, heartbeat_task = _start_operation_heartbeat(
+        operations, running.operation_id
+    )
     try:
         summary = await service.generate(
             library_id,
@@ -475,6 +538,8 @@ async def generate_manifest(
             error_code="strm_operation_failed",
         )
         raise HTTPException(status_code=409, detail="strm_operation_failed") from None
+    finally:
+        await _stop_operation_heartbeat(heartbeat_stop, heartbeat_task)
     return StrmGenerationResponse(
         operation_id=operation.operation_id,
         library_id=summary.library_id,
@@ -506,6 +571,9 @@ async def incremental_manifest(
         library_id=library_id,
         payload=payload,
         kind=StrmOperationKind.INCREMENTAL,
+    )
+    heartbeat_stop, heartbeat_task = _start_operation_heartbeat(
+        operations, running.operation_id
     )
     try:
         summary = await service.incremental(
@@ -555,6 +623,8 @@ async def incremental_manifest(
             error_code="strm_operation_failed",
         )
         raise HTTPException(status_code=409, detail="strm_operation_failed") from None
+    finally:
+        await _stop_operation_heartbeat(heartbeat_stop, heartbeat_task)
     return StrmGenerationResponse(
         operation_id=operation.operation_id,
         library_id=summary.library_id,

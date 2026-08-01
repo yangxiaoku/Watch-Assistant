@@ -306,7 +306,9 @@ class StrmOperationResponse(BaseModel):
     source_scan_run_id: str
     workflow_id: str | None = None
     kind: Literal["full", "incremental", "cleanup"]
-    status: Literal["queued", "running", "succeeded", "failed"]
+    status: Literal[
+        "queued", "running", "succeeded", "failed", "timeout", "cancelled"
+    ]
     generated: int = Field(ge=0)
     unchanged: int = Field(ge=0)
     skipped: int = Field(ge=0)
@@ -361,6 +363,55 @@ class StrmCleanupPlanApplyResponse(BaseModel):
 
     plan: StrmCleanupPlanResponse
     retired: int = Field(ge=0)
+
+
+class EmptyDirectoryCleanupPlanRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    source_scan_run_id: str = Field(min_length=1, max_length=128)
+
+
+class EmptyDirectoryCleanupCandidateResponse(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    directory_id: str
+    parent_id: str
+    name: str
+    path: str
+    state: Literal["ready", "blocked"]
+
+
+class EmptyDirectoryCleanupPlanResponse(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    plan_id: str
+    library_id: str
+    source_scan_run_id: str
+    source_snapshot_revision: int = Field(ge=0)
+    plan_hash: str = Field(min_length=64, max_length=64)
+    status: Literal["needs_review", "applying", "invalidated", "applied"]
+    revision: int = Field(ge=1)
+    expires_at: datetime
+    candidate_count: int = Field(ge=0)
+    executable_count: int = Field(ge=0)
+    blocked_count: int = Field(ge=0)
+    candidates: list[EmptyDirectoryCleanupCandidateResponse]
+
+
+class EmptyDirectoryCleanupPlanApplyRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    expected_revision: int = Field(ge=1)
+    digest: str = Field(min_length=64, max_length=64)
+    confirm: bool = False
+    idempotency_key: str = Field(min_length=1, max_length=128)
+
+
+class EmptyDirectoryCleanupPlanApplyResponse(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    plan: EmptyDirectoryCleanupPlanResponse
+    deleted: int = Field(ge=0)
 
 
 class StrmVerifyRequest(BaseModel):
@@ -565,8 +616,11 @@ class OrganizationSettingsResponse(BaseModel):
     schedule_enabled: bool
     scan_interval_minutes: int = Field(ge=5, le=1440)
     source_directory_ids: list[str] = Field(max_length=50)
+    source_directory_labels: list[str] = Field(default_factory=list, max_length=50)
     target_directory_id: str | None = None
+    target_directory_label: str | None = None
     push_directory_id: str | None = None
+    push_directory_label: str | None = None
     video_extensions: list[str] = Field(max_length=50)
     metadata_extensions: list[str] = Field(max_length=50)
     rename_enabled: bool
@@ -594,8 +648,11 @@ class OrganizationSettingsPatch(BaseModel):
     schedule_enabled: bool | None = None
     scan_interval_minutes: int | None = Field(default=None, ge=5, le=1440)
     source_directory_ids: list[str] | None = Field(default=None, max_length=50)
+    source_directory_labels: list[str] | None = Field(default=None, max_length=50)
     target_directory_id: str | None = None
+    target_directory_label: str | None = None
     push_directory_id: str | None = None
+    push_directory_label: str | None = None
     video_extensions: list[str] | None = Field(default=None, max_length=50)
     metadata_extensions: list[str] | None = Field(default=None, max_length=50)
     rename_enabled: bool | None = None
@@ -1269,6 +1326,8 @@ class ResourceSummary(BaseModel):
     size_bytes: int | None
     seeders: int | None
     source: str
+    sources: list[str] = Field(default_factory=list)
+    source_count: int = Field(default=0, ge=0)
     captured_at: datetime
     size_source: Literal["pansou", "inspection"] | None = None
     seeders_source: Literal["pansou"] | None = None

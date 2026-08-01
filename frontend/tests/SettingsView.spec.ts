@@ -57,8 +57,11 @@ const organization = {
   schedule_enabled: true,
   scan_interval_minutes: 30,
   source_directory_ids: ["1000"],
+  source_directory_labels: ["待整理/来源"],
   target_directory_id: "2000",
+  target_directory_label: "媒体库/归档",
   push_directory_id: "3500",
+  push_directory_label: "媒体库/推送",
   video_extensions: ["mkv", "mp4"],
   metadata_extensions: ["srt", "nfo"],
   rename_enabled: true,
@@ -145,6 +148,14 @@ async function openLogs(wrapper: ReturnType<typeof mount>) {
 }
 
 describe("SettingsView", () => {
+  it("does not repeat the disabled Prowlarr status", async () => {
+    const wrapper = mount(SettingsView, { props: { api: makeApi(), initialSection: "prowlarr" } });
+    await flushPromises();
+
+    const statusText = wrapper.get(".prowlarr-status-line").text();
+    expect(statusText.match(/未启用/g)?.length).toBe(1);
+  });
+
   it("keeps all verified 115 QR device types available", () => {
     expect(p115DeviceOptions).toHaveLength(18);
     expect(p115DeviceOptions.map((option) => option.value)).toEqual([
@@ -401,6 +412,7 @@ describe("SettingsView", () => {
 
     expect(api.updateOrganizationSettings).toHaveBeenCalledWith(expect.objectContaining({
       push_directory_id: "3000",
+      push_directory_label: "推送目录",
       revision: 4,
     }));
   });

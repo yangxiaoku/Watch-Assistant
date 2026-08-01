@@ -113,11 +113,30 @@ describe("MovieView seasons", () => {
     });
 
     const warning = wrapper.get(".warning-strip").text();
-    expect(warning).toContain("部分搜索来源暂不可用");
-    expect(warning).toContain("部分搜索请求失败");
     expect(warning).toContain("结果较多");
+    expect(warning).not.toContain("部分搜索来源暂不可用");
     expect(warning).not.toContain("partial_upstream");
     expect(warning).not.toContain("pansou_query_failed");
+    expect(wrapper.get(".source-diagnostics").text()).toContain("部分搜索来源暂不可用");
+    expect(wrapper.get(".source-diagnostics").text()).toContain("PanSou 查询失败");
+  });
+
+  it("renders the Prowlarr truncation detail once in source diagnostics", () => {
+    const result = response("movie");
+    result.warnings = ["partial_upstream", "prowlarr_results_truncated"];
+    const wrapper = mount(MovieView, {
+      props: {
+        result,
+        mediaType: "movie",
+        pushingId: null,
+        pushCapabilities: { magnet: true, share: true },
+        favorite: false,
+      },
+    });
+
+    expect(wrapper.find(".warning-strip").exists()).toBe(false);
+    expect(wrapper.get(".source-diagnostics").text()).toContain("连续满页");
+    expect(wrapper.findAll(".source-diagnostics")).toHaveLength(1);
   });
 
   it("shows all seasons and emits the selected season", async () => {

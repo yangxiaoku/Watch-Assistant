@@ -112,12 +112,16 @@ class OrganizationSettingsValidationError(ValueError):
 
 _CID_PATTERN = re.compile(r"^[1-9][0-9]{0,127}$")
 _EXTENSION_PATTERN = re.compile(r"^[a-z0-9][a-z0-9+_-]{0,15}$")
+_DIRECTORY_LABEL_SEGMENT = re.compile(r"^[^\\/:*?\"<>|\r\n]+$")
 _ORGANIZATION_DEFAULTS: dict[str, object] = {
     "schedule_enabled": False,
     "scan_interval_minutes": 30,
     "source_directory_ids": [],
+    "source_directory_labels": [],
     "target_directory_id": None,
+    "target_directory_label": None,
     "push_directory_id": None,
+    "push_directory_label": None,
     "video_extensions": ["mkv", "mp4", "avi", "mov", "ts", "m2ts", "wmv", "flv", "webm"],
     "metadata_extensions": ["srt", "ass", "ssa", "sub", "vtt", "nfo", "jpg", "jpeg", "png", "webp"],
     "rename_enabled": True,
@@ -1119,6 +1123,47 @@ def _organization_values(settings: ApplicationSettings) -> dict[str, object]:
     return _validate_organization_values(values)
 
 
+def _validate_directory_label(value: object, field: str) -> str | None:
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str):
+        raise TypeError(f"invalid_{field}")
+    label = value.strip()
+    if (
+        not label
+        or len(label) > 240
+        or label.startswith(("/", "\\"))
+        or re.match(r"^[A-Za-z]:", label)
+        or "://" in label
+    ):
+        raise ValueError(f"invalid_{field}")
+    segments = [segment.strip() for segment in label.split("/")]
+    if any(
+        not segment
+        or segment in {".", ".."}
+        or _DIRECTORY_LABEL_SEGMENT.fullmatch(segment) is None
+        for segment in segments
+    ):
+        raise ValueError(f"invalid_{field}")
+    return "/".join(segments)
+
+
+def _validate_directory_labels(
+    value: object, *, expected_count: int, field: str
+) -> list[str]:
+    if value is None or value == []:
+        return []
+    if not isinstance(value, list) or len(value) != expected_count:
+        raise ValueError(f"invalid_{field}")
+    labels: list[str] = []
+    for item in value:
+        label = _validate_directory_label(item, field)
+        if label is None:
+            raise ValueError(f"invalid_{field}")
+        labels.append(label)
+    return labels
+
+
 def _validate_organization_values(values: dict[str, object]) -> dict[str, object]:
     result = dict(_ORGANIZATION_DEFAULTS)
     result.update(values)
@@ -1128,6 +1173,11 @@ def _validate_organization_values(values: dict[str, object]) -> dict[str, object
     ):
         raise ValueError("invalid_source_directory_ids")
     normalized_sources = list(dict.fromkeys(sources))
+    source_labels = _validate_directory_labels(
+        result.get("source_directory_labels"),
+        expected_count=len(normalized_sources),
+        field="source_directory_labels",
+    )
     target = result.get("target_directory_id")
     if target == "":
         target = None
@@ -1137,6 +1187,11 @@ def _validate_organization_values(values: dict[str, object]) -> dict[str, object
         raise ValueError("invalid_target_directory_id")
     if target is not None and target in normalized_sources:
         raise ValueError("source_target_same")
+    target_label = _validate_directory_label(
+        result.get("target_directory_label"), "target_directory_label"
+    )
+    if target is None:
+        target_label = None
     push_target = result.get("push_directory_id")
     if push_target == "":
         push_target = None
@@ -1144,6 +1199,11 @@ def _validate_organization_values(values: dict[str, object]) -> dict[str, object
         not isinstance(push_target, str) or _CID_PATTERN.fullmatch(push_target) is None
     ):
         raise ValueError("invalid_push_directory_id")
+    push_label = _validate_directory_label(
+        result.get("push_directory_label"), "push_directory_label"
+    )
+    if push_target is None:
+        push_label = None
     for key in ("video_extensions", "metadata_extensions"):
         extensions = result.get(key)
         if not isinstance(extensions, list) or any(
@@ -1154,8 +1214,11 @@ def _validate_organization_values(values: dict[str, object]) -> dict[str, object
             raise ValueError(f"invalid_{key}")
         result[key] = list(dict.fromkeys(item.strip().lower() for item in extensions))
     result["source_directory_ids"] = normalized_sources
+    result["source_directory_labels"] = source_labels
     result["target_directory_id"] = target
+    result["target_directory_label"] = target_label
     result["push_directory_id"] = push_target
+    result["push_directory_label"] = push_label
     if (
         not isinstance(result.get("scan_interval_minutes"), int)
         or isinstance(result["scan_interval_minutes"], bool)

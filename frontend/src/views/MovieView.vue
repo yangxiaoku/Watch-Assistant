@@ -54,6 +54,16 @@ const resourceCounts = computed(() => ({
   shares: props.resourceFacets?.share ?? (props.resources ?? props.result.results).filter((resource) => resource.kind === "115_share").length,
   verified: (props.resources ?? props.result.results).filter((resource) => resource.inspection_status === "verified").length,
 }));
+const sourceWarningPrefixes = ["pansou_query_failed:", "prowlarr_query_failed:"];
+
+function isSourceWarning(value: string): boolean {
+  return value === "partial_upstream"
+    || value === "prowlarr_unsupported_results"
+    || value === "prowlarr_results_truncated"
+    || sourceWarningPrefixes.some((prefix) => value.startsWith(prefix));
+}
+
+const summaryWarnings = computed(() => props.result.warnings.filter((warning) => !isSourceWarning(warning)));
 
 function seasonFromValue(value: string): number | null {
   return value ? Number(value) : null;
@@ -107,7 +117,7 @@ function warningLabel(value: string): string {
     </section>
     <section v-if="seasonNumber !== null" class="overview-section season-detail-section" aria-live="polite"><h2>{{ seasonDetail?.name || `第 ${seasonNumber} 季` }}</h2><p class="season-detail-meta">{{ seasonDetail?.air_date || '播出日期待定' }} · {{ seasonDetail?.episode_count ?? '集数待定' }} 集</p><p v-if="seasonDetail?.overview">{{ seasonDetail.overview }}<span v-if="seasonDetail.overview_language" class="season-detail-source">（{{ seasonDetail.overview_language }}）</span></p><p v-else-if="seasonDetailLoading">正在加载本季资料</p><p v-else-if="seasonDetailError" class="error-text">{{ seasonDetailError }}</p><p v-else>本季暂无独立简介</p><p v-if="seasonDetail?.stale" class="season-detail-source">当前显示最近成功缓存的季度资料</p><p v-if="seasonDetail && !seasonDetail.poster_path" class="season-detail-source">本季暂无独立海报，当前使用剧集海报</p></section>
     <section v-else-if="result.movie.overview" class="overview-section"><h2>简介</h2><p>{{ result.movie.overview }}</p></section>
-    <div v-if="result.warnings.length" class="warning-strip">{{ result.warnings.map(warningLabel).join(' · ') }}</div>
+    <div v-if="summaryWarnings.length" class="warning-strip">{{ summaryWarnings.map(warningLabel).join(' · ') }}</div>
     <SourceDiagnostics :warnings="result.warnings" />
     <ResourceTable :resources="resources ?? result.results" :facets="resourceFacets" :total="resourceTotal" :hidden-total="resourceHiddenTotal" :page="resourcePage" :page-size="resourcePageSize" :total-pages="resourceTotalPages" :source-names="sourceNames" :resource-kind="resourceKind" :resource-quality="resourceQuality" :resource-query="resourceQuery" :resource-sort="resourceSort" :resource-loading="resourceLoading" :resource-error="resourceError" :pagination-unavailable="paginationUnavailable" :pushing-id="pushingId" :push-capabilities="pushCapabilities" :inspection-supported="inspectionSupported" :inspection-state="inspectionState" :inspection-completed="inspectionCompleted" :inspection-total="inspectionTotal" :inspection-failed="inspectionFailed" :inspection-error="inspectionError" :inspection-more-available="inspectionMoreAvailable" :inspection-retry-available="inspectionRetryAvailable" :inspection-started="inspectionStarted" @push="$emit('push', $event)" @inspect-more="$emit('inspectMore')" @retry-failed="$emit('retryFailed')" @retry-page="$emit('retryPage')" @page="$emit('page', $event)" @kind="$emit('kind', $event)" @quality="$emit('quality', $event)" @query="$emit('query', $event)" @sort="$emit('sort', $event)" @page-size="$emit('pageSize', $event)" />
   </section>

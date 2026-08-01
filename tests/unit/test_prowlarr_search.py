@@ -123,6 +123,21 @@ async def test_prowlarr_results_are_kept_when_pansou_fails():
 
 
 @pytest.mark.asyncio
+async def test_truncated_prowlarr_results_propagate_as_partial_warning():
+    pansou = _Pansou()
+    prowlarr = _Prowlarr(ProwlarrSearchResult((), truncated=True))
+
+    successful_pansou, successful_prowlarr, warnings, complete = (
+        await _service(pansou, prowlarr)._query_sources(("Movie",))
+    )
+
+    assert successful_pansou == [("Movie", pansou.response)]
+    assert len(successful_prowlarr) == 1
+    assert warnings == ["prowlarr_results_truncated", "partial_upstream"]
+    assert complete is False
+
+
+@pytest.mark.asyncio
 async def test_pansou_and_prowlarr_results_dedupe_by_infohash():
     info_hash = "abcdef0123456789abcdef0123456789abcdef01"
     pansou = _Pansou(

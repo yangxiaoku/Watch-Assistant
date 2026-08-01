@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import SourceDiagnostics from "../src/components/SourceDiagnostics.vue";
 import ResourceTable from "../src/components/ResourceTable.vue";
-import { resourceSourceLabel, sourceNameList } from "../src/resourceSources";
+import { resourceSourceCount, resourceSourceLabel, resourceSourceNames, sourceNameList } from "../src/resourceSources";
 
 const resource = {
   resource_id: "resource-1",
@@ -43,5 +43,19 @@ describe("Prowlarr source presentation", () => {
 
     expect(wrapper.get(".resource-source-summary").text()).toBe("来源 2 个：PanSou / Prowlarr");
     expect(wrapper.get(".source-badge").text()).toBe("Prowlarr");
+  });
+
+  it("keeps source evidence on canonical resources and falls back to legacy source", () => {
+    const multiSource = { ...resource, sources: ["plugin:pansou", "plugin:prowlarr"], source_count: 2 };
+    expect(resourceSourceNames(multiSource)).toEqual(["PanSou", "Prowlarr"]);
+    expect(resourceSourceCount(multiSource)).toBe(2);
+
+    const wrapper = mount(ResourceTable, {
+      props: { resources: [multiSource], onPush: () => undefined },
+    });
+    expect(wrapper.get(".source-evidence").text()).toContain("2 个来源");
+    expect(wrapper.get(".source-evidence").text()).toContain("PanSou / Prowlarr");
+    expect(resourceSourceNames(resource)).toEqual(["Prowlarr"]);
+    expect(resourceSourceCount(resource)).toBe(1);
   });
 });

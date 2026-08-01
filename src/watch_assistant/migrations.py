@@ -419,6 +419,31 @@ def _add_strm_cleanup_idempotency(connection: Connection) -> None:
         )
 
 
+def _add_strm_operation_leases(connection: Connection) -> None:
+    """Add forward-compatible lease state for long-running STRM work."""
+
+    if not inspect(connection).has_table("strm_operations"):
+        return
+    columns = {
+        item["name"] for item in inspect(connection).get_columns("strm_operations")
+    }
+    for name, definition in (
+        ("lease_owner", "VARCHAR(100)"),
+        ("lease_expires_at", "DATETIME"),
+        ("heartbeat_at", "DATETIME"),
+    ):
+        if name not in columns:
+            connection.execute(
+                text(f"ALTER TABLE strm_operations ADD COLUMN {name} {definition}")
+            )
+    connection.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_strm_operations_lease_expires_at "
+            "ON strm_operations (lease_expires_at)"
+        )
+    )
+
+
 def _upgrade_audit_records_schema(connection: Connection) -> None:
     """Bridge the pre-REQ-004 audit table to the current event schema."""
 
@@ -641,6 +666,42 @@ def _create_strm_cleanup_plan_table(connection: Connection) -> None:
             """
             CREATE INDEX IF NOT EXISTS ix_strm_cleanup_plans_library_id
                 ON strm_cleanup_plans (library_id)
+            """
+        )
+    )
+
+
+def _create_empty_directory_cleanup_plan_table(connection: Connection) -> None:
+    """Persist reviewed, reversible empty-directory cleanup previews."""
+
+    connection.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS empty_directory_cleanup_plans (
+                id VARCHAR(64) PRIMARY KEY,
+                library_id VARCHAR(128) NOT NULL
+                    REFERENCES media_libraries(id),
+                source_scan_run_id VARCHAR(64) NOT NULL
+                    REFERENCES library_scan_runs(id),
+                source_snapshot_revision INTEGER NOT NULL,
+                candidates_json TEXT NOT NULL,
+                status VARCHAR(16) NOT NULL DEFAULT 'needs_review',
+                revision INTEGER NOT NULL DEFAULT 1,
+                expires_at DATETIME NOT NULL,
+                plan_hash VARCHAR(64) NOT NULL UNIQUE,
+                applied_idempotency_key VARCHAR(128),
+                applied_deleted INTEGER NOT NULL DEFAULT 0,
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL
+            )
+            """
+        )
+    )
+    connection.execute(
+        text(
+            """
+            CREATE INDEX IF NOT EXISTS ix_empty_directory_cleanup_plans_library_id
+                ON empty_directory_cleanup_plans (library_id)
             """
         )
     )
@@ -936,6 +997,8 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration("053_organization_history", _create_organization_history_table),
     Migration("054_strm_operations", _create_strm_operations_table),
     Migration("055_strm_cleanup_idempotency", _add_strm_cleanup_idempotency),
+    Migration("056_strm_operation_leases", _add_strm_operation_leases),
+    Migration("057_empty_directory_cleanup_plans", _create_empty_directory_cleanup_plan_table),
 )
 
 

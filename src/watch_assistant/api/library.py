@@ -21,6 +21,10 @@ from watch_assistant.library_models import (
     MediaLibrary,
 )
 from watch_assistant.schemas import (
+    EmptyDirectoryCleanupPlanApplyRequest,
+    EmptyDirectoryCleanupPlanApplyResponse,
+    EmptyDirectoryCleanupPlanRequest,
+    EmptyDirectoryCleanupPlanResponse,
     InventoryCheckResponse,
     InventoryDuplicateGroupResponse,
     InventoryEventListResponse,
@@ -43,6 +47,10 @@ from watch_assistant.schemas import (
     OrganizationPreviewRequest,
 )
 from watch_assistant.security import AuthContext, require_api_auth, require_scope
+from watch_assistant.services.empty_directory_cleanup_plan import (
+    EmptyDirectoryCleanupPlanError,
+    EmptyDirectoryCleanupPlanService,
+)
 from watch_assistant.services.library_index import (
     LibraryIndexError,
     LibraryIndexService,
@@ -359,6 +367,184 @@ async def scan_library(
         changed_count=result.changed_count,
         removed_count=result.removed_count,
         error_code=result.error_code,
+    )
+
+
+async def require_empty_directory_cleanup(request: Request) -> None:
+    settings_service = getattr(request.app.state, "settings_service", None)
+    if settings_service is None:
+        raise HTTPException(status_code=503, detail="empty_directory_cleanup_unavailable")
+    try:
+        settings = await settings_service.get_organization()
+    except Exception:  # noqa: BLE001 - settings detail stays private
+        raise HTTPException(
+            status_code=503, detail="empty_directory_cleanup_unavailable"
+        ) from None
+    if not settings.cleanup_empty_directories:
+        raise HTTPException(status_code=503, detail="empty_directory_cleanup_disabled")
+
+
+async def require_empty_directory_cleanup_apply(request: Request) -> None:
+    await require_empty_directory_cleanup(request)
+    if not getattr(request.app.state, "organization_execution_enabled", False):
+        raise HTTPException(status_code=503, detail="organization_execution_disabled")
+    if not getattr(request.app.state, "organization_write_enabled", False):
+        raise HTTPException(status_code=503, detail="organization_write_disabled")
+    if not getattr(
+        request.app.state, "organization_write_contract_verified", False
+    ):
+        raise HTTPException(status_code=503, detail="organization_write_unverified")
+
+
+async def _empty_cleanup_settings(request: Request):
+    settings_service = getattr(request.app.state, "settings_service", None)
+    if settings_service is None:
+        raise HTTPException(status_code=503, detail="empty_directory_cleanup_unavailable")
+    try:
+        return await settings_service.get_organization()
+    except Exception:  # noqa: BLE001 - settings detail stays private
+        raise HTTPException(
+            status_code=503, detail="empty_directory_cleanup_unavailable"
+        ) from None
+
+
+def _empty_cleanup_protected_ids(library: MediaLibrary, settings) -> frozenset[str]:
+    protected = set(settings.source_directory_ids)
+    protected.add(library.root_directory_id)
+    for directory_id in (settings.target_directory_id, settings.push_directory_id):
+        if directory_id:
+            protected.add(directory_id)
+    return frozenset(protected)
+
+
+def _empty_cleanup_error_status(code: str) -> int:
+    return 404 if code == "plan_not_found" else 409
+
+
+@router.post(
+    "/libraries/{library_id}/empty-directory-cleanup-plan",
+    response_model=EmptyDirectoryCleanupPlanResponse,
+    dependencies=[Depends(require_empty_directory_cleanup)],
+)
+async def create_empty_directory_cleanup_plan(
+    library_id: str,
+    payload: EmptyDirectoryCleanupPlanRequest,
+    request: Request,
+    context: LibraryReadDependency,
+) -> EmptyDirectoryCleanupPlanResponse:
+    if not _stable_library_id(library_id) or not _allowed(context, library_id):
+        raise HTTPException(status_code=404, detail="library_not_found")
+    settings = await _empty_cleanup_settings(request)
+    async with request.app.state.database.session_factory() as session:
+        library = await session.get(MediaLibrary, library_id)
+    if library is None:
+        raise HTTPException(status_code=404, detail="library_not_found")
+    try:
+        plan = await EmptyDirectoryCleanupPlanService(
+            request.app.state.database.session_factory
+        ).create_plan(
+            library_id=library_id,
+            source_scan_run_id=payload.source_scan_run_id,
+            protected_directory_ids=_empty_cleanup_protected_ids(library, settings),
+        )
+    except EmptyDirectoryCleanupPlanError as error:
+        raise HTTPException(
+            status_code=_empty_cleanup_error_status(error.code), detail=error.code
+        ) from None
+    settings_service = getattr(request.app.state, "settings_service", None)
+    if settings_service is not None:
+        await settings_service.log_event(
+            "library.empty_directory_cleanup.plan.created",
+            fields={"status": plan.status},
+            counts={"count": plan.candidate_count},
+            actor_type="agent" if context.via_bearer else "web",
+            actor_id=context.identity,
+            resource_type="empty_directory_cleanup_plan",
+            resource_id=plan.plan_id,
+        )
+    return EmptyDirectoryCleanupPlanResponse.model_validate(plan.to_public_dict())
+
+
+@router.get(
+    "/empty-directory-cleanup-plans/{plan_id}",
+    response_model=EmptyDirectoryCleanupPlanResponse,
+)
+async def get_empty_directory_cleanup_plan(
+    plan_id: str, request: Request, context: AuthDependency
+) -> EmptyDirectoryCleanupPlanResponse:
+    try:
+        plan = await EmptyDirectoryCleanupPlanService(
+            request.app.state.database.session_factory
+        ).get_plan(plan_id)
+    except EmptyDirectoryCleanupPlanError as error:
+        raise HTTPException(
+            status_code=_empty_cleanup_error_status(error.code), detail=error.code
+        ) from None
+    if context.via_bearer and context.library_ids and plan.library_id not in context.library_ids:
+        raise HTTPException(status_code=404, detail="plan_not_found")
+    return EmptyDirectoryCleanupPlanResponse.model_validate(plan.to_public_dict())
+
+
+@router.post(
+    "/empty-directory-cleanup-plans/{plan_id}/apply",
+    response_model=EmptyDirectoryCleanupPlanApplyResponse,
+    dependencies=[Depends(require_empty_directory_cleanup_apply)],
+)
+async def apply_empty_directory_cleanup_plan(
+    plan_id: str,
+    payload: EmptyDirectoryCleanupPlanApplyRequest,
+    request: Request,
+    context: OrganizeWriteDependency,
+) -> EmptyDirectoryCleanupPlanApplyResponse:
+    if not payload.confirm:
+        raise HTTPException(status_code=409, detail="confirmation_required")
+    executor = getattr(request.app.state, "empty_directory_cleanup_executor", None)
+    if not callable(executor):
+        raise HTTPException(status_code=503, detail="empty_directory_cleanup_unavailable")
+    service = EmptyDirectoryCleanupPlanService(
+        request.app.state.database.session_factory
+    )
+    try:
+        current_plan = await service.get_plan(plan_id)
+    except EmptyDirectoryCleanupPlanError as error:
+        raise HTTPException(
+            status_code=_empty_cleanup_error_status(error.code), detail=error.code
+        ) from None
+    if (
+        context.via_bearer
+        and context.library_ids
+        and current_plan.library_id not in context.library_ids
+    ):
+        raise HTTPException(status_code=404, detail="plan_not_found")
+    try:
+        result = await service.apply_plan(
+            plan_id=plan_id,
+            expected_revision=payload.expected_revision,
+            digest=payload.digest,
+            confirm=payload.confirm,
+            idempotency_key=payload.idempotency_key,
+            executor=executor,
+        )
+    except EmptyDirectoryCleanupPlanError as error:
+        raise HTTPException(
+            status_code=_empty_cleanup_error_status(error.code), detail=error.code
+        ) from None
+    settings_service = getattr(request.app.state, "settings_service", None)
+    if settings_service is not None:
+        await settings_service.log_event(
+            "library.empty_directory_cleanup.applied",
+            fields={"status": result.plan.status},
+            counts={"count": result.deleted},
+            actor_type="agent" if context.via_bearer else "web",
+            actor_id=context.identity,
+            resource_type="empty_directory_cleanup_plan",
+            resource_id=result.plan.plan_id,
+        )
+    return EmptyDirectoryCleanupPlanApplyResponse(
+        plan=EmptyDirectoryCleanupPlanResponse.model_validate(
+            result.plan.to_public_dict()
+        ),
+        deleted=result.deleted,
     )
 
 

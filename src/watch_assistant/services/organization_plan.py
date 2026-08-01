@@ -423,6 +423,9 @@ class OrganizationPlanService:
                 or latest is None
                 or not _scan_is_valid_for_library(library, run)
                 or not _scan_is_valid_for_library(library, latest)
+                or not _plan_scan_binding_is_current(
+                    plan, library=library, run=run, latest=latest
+                )
             ):
                 stale = True
             if parser_version is not None and parser_version != plan.parser_version:
@@ -433,11 +436,18 @@ class OrganizationPlanService:
                 stale = True
             if source_items is not None:
                 items = _validate_items(source_items)
-                if latest is None:
+                if (
+                    library is None
+                    or run is None
+                    or latest is None
+                    or not _plan_scan_binding_is_current(
+                        plan, library=library, run=run, latest=latest
+                    )
+                ):
                     stale = True
                 else:
                     rows = await self._load_source_rows(
-                        session, latest.id, items, verify_snapshot=False
+                        session, run.id, items, verify_snapshot=False
                     )
                     current_snapshot, _, _, current_basis, _ = _build_payload(
                         items,
@@ -450,7 +460,7 @@ class OrganizationPlanService:
                         target_directories=stored_target_directories,
                         target_conflicts=target_conflicts,
                         organization_policy=stored_policy,
-                        source_snapshot_revision=latest.snapshot_revision,
+                        source_snapshot_revision=run.snapshot_revision,
                         parser_version=plan.parser_version,
                         matcher_version=plan.matcher_version,
                     )
@@ -574,13 +584,16 @@ class OrganizationPlanService:
                 or latest is None
                 or not _scan_is_valid_for_library(library, original_run)
                 or not _scan_is_valid_for_library(library, latest)
+                or not _plan_scan_binding_is_current(
+                    stored, library=library, run=original_run, latest=latest
+                )
             ):
                 raise OrganizationPlanError("source_snapshot_mismatch")
             rows = {
                 (row.object_type, row.object_id): row
                 for row in await session.scalars(
                     select(LibraryScanEntry).where(
-                        LibraryScanEntry.scan_run_id == latest.id
+                        LibraryScanEntry.scan_run_id == original_run.id
                     )
                 )
             }
@@ -674,13 +687,16 @@ class OrganizationPlanService:
                 or latest is None
                 or not _scan_is_valid_for_library(library, original_run)
                 or not _scan_is_valid_for_library(library, latest)
+                or not _plan_scan_binding_is_current(
+                    stored, library=library, run=original_run, latest=latest
+                )
             ):
                 raise OrganizationPlanError("source_snapshot_mismatch")
             rows = {
                 (row.object_type, row.object_id): row
                 for row in await session.scalars(
                     select(LibraryScanEntry).where(
-                        LibraryScanEntry.scan_run_id == latest.id
+                        LibraryScanEntry.scan_run_id == original_run.id
                     )
                 )
             }
@@ -764,7 +780,7 @@ class OrganizationPlanService:
                     organization_policy=(
                         policy if isinstance(policy, Mapping) else {}
                     ),
-                    source_snapshot_revision=latest.snapshot_revision,
+                    source_snapshot_revision=original_run.snapshot_revision,
                     parser_version=stored.parser_version,
                     matcher_version=stored.matcher_version,
                 )
@@ -828,8 +844,8 @@ class OrganizationPlanService:
                 "parser_version": stored.parser_version,
                 "matcher_version": stored.matcher_version,
             }
-            stored.source_scan_run_id = latest.id
-            stored.source_snapshot_revision = latest.snapshot_revision
+            stored.source_scan_run_id = original_run.id
+            stored.source_snapshot_revision = original_run.snapshot_revision
             stored.source_snapshot_json = _json(old_source_snapshot)
             stored.actions_json = _json(old_actions)
             stored.basis_json = _json(old_basis)
@@ -1471,6 +1487,7 @@ async def load_executable_steps(
             or run.root_directory_id != library.root_directory_id
             or run.state != ScanRunState.COMPLETED.value
             or not run.complete
+            or run.snapshot_revision != stored.source_snapshot_revision
             or _utc(stored.expires_at) <= datetime.now(UTC)
         ):
             return None
@@ -1479,7 +1496,13 @@ async def load_executable_steps(
             library_id=stored.library_id,
             root_directory_id=library.root_directory_id,
         )
-        if latest is None or not _scan_is_valid_for_library(library, latest):
+        if (
+            latest is None
+            or not _scan_is_valid_for_library(library, latest)
+            or not _plan_scan_binding_is_current(
+                stored, library=library, run=run, latest=latest
+            )
+        ):
             return None
         source_snapshot = _load_source_snapshot(
             stored.source_snapshot_json, require_name=True
@@ -1510,13 +1533,13 @@ async def load_executable_steps(
         rows = {
             (row.object_type, row.object_id): row
             for row in await session.scalars(
-                select(LibraryScanEntry).where(LibraryScanEntry.scan_run_id == latest.id)
+                select(LibraryScanEntry).where(LibraryScanEntry.scan_run_id == run.id)
             )
         }
         if not _validate_persisted_execution(
             stored,
             library=library,
-            run=latest,
+            run=run,
             source_snapshot=source_snapshot,
             actions=actions,
             preconditions=precondition_items,
@@ -1905,6 +1928,23 @@ async def _latest_completed_scan(
         )
         .order_by(LibraryScanRun.snapshot_revision.desc(), LibraryScanRun.id.desc())
         .limit(1)
+    )
+
+
+def _plan_scan_binding_is_current(
+    plan: OrganizationPlan,
+    *,
+    library: MediaLibrary,
+    run: LibraryScanRun,
+    latest: LibraryScanRun,
+) -> bool:
+    return (
+        _scan_is_valid_for_library(library, run)
+        and _scan_is_valid_for_library(library, latest)
+        and run.id == plan.source_scan_run_id
+        and run.snapshot_revision == plan.source_snapshot_revision
+        and latest.id == run.id
+        and latest.snapshot_revision == run.snapshot_revision
     )
 
 
@@ -2519,7 +2559,9 @@ def _view(plan: OrganizationPlan) -> OrganizationPlanView:
         executable_action_count=executable_action_count,
         review_action_count=review_action_count,
         can_execute=(
-            executable_action_count == len(actions)
+            plan.status == OrganizationPlanStatus.PLANNED.value
+            and _utc(plan.expires_at) > datetime.now(UTC)
+            and executable_action_count == len(actions)
             and complete_preconditions
             and strict_source_versions
         ),

@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from watch_assistant.models import (
@@ -92,15 +92,72 @@ class StrmOperationService:
             await session.commit()
         return _summary(operation)
 
-    async def start(self, operation_id: str) -> StrmOperationSummary:
+    async def start(
+        self,
+        operation_id: str,
+        *,
+        lease_owner: str | None = None,
+        lease_duration: timedelta = timedelta(minutes=5),
+        now: datetime | None = None,
+    ) -> StrmOperationSummary:
+        duration = _validate_lease_duration(lease_duration)
+        _validate_optional_owner(lease_owner)
         operation = await self._load(operation_id)
         if operation.status is StrmOperationStatus.QUEUED:
-            now = datetime.now(UTC)
+            current_time = _as_utc(now) or datetime.now(UTC)
             operation.status = StrmOperationStatus.RUNNING
-            operation.started_at = now
-            operation.updated_at = now
+            operation.started_at = current_time
+            operation.updated_at = current_time
+            operation.heartbeat_at = current_time
+            operation.lease_expires_at = current_time + duration
+            operation.lease_owner = lease_owner or operation.id
             await self._commit(operation)
         return _summary(operation)
+
+    async def heartbeat(
+        self,
+        operation_id: str,
+        *,
+        lease_owner: str | None = None,
+        lease_duration: timedelta = timedelta(minutes=5),
+        now: datetime | None = None,
+    ) -> StrmOperationSummary:
+        duration = _validate_lease_duration(lease_duration)
+        _validate_optional_owner(lease_owner)
+        current_time = _as_utc(now) or datetime.now(UTC)
+        _validate_identifier(operation_id, "operation_id", maximum=64)
+        async with self._session_factory() as session:
+            current = await session.get(StrmOperation, operation_id)
+            if current is None:
+                raise StrmOperationNotFound(operation_id)
+            if current.status is not StrmOperationStatus.RUNNING:
+                return _summary(current)
+            predicates = [
+                StrmOperation.id == operation_id,
+                StrmOperation.status == StrmOperationStatus.RUNNING,
+            ]
+            if lease_owner is not None:
+                predicates.append(StrmOperation.lease_owner == lease_owner)
+            result = await session.execute(
+                update(StrmOperation)
+                .where(*predicates)
+                .values(
+                    heartbeat_at=current_time,
+                    lease_expires_at=current_time + duration,
+                    updated_at=current_time,
+                )
+            )
+            if result.rowcount != 1:
+                await session.rollback()
+                current = await session.get(StrmOperation, operation_id)
+                if current is None:
+                    raise StrmOperationNotFound(operation_id)
+                if current.status is not StrmOperationStatus.RUNNING:
+                    return _summary(current)
+                raise StrmOperationError("strm_operation_lease_lost")
+            await session.commit()
+            await session.refresh(current)
+            return _summary(current)
 
     async def complete(
         self,
@@ -117,6 +174,8 @@ class StrmOperationService:
         if operation.status in {
             StrmOperationStatus.SUCCEEDED,
             StrmOperationStatus.FAILED,
+            StrmOperationStatus.TIMEOUT,
+            StrmOperationStatus.CANCELLED,
         }:
             return _summary(operation)
         now = datetime.now(UTC)
@@ -125,6 +184,7 @@ class StrmOperationService:
         operation.started_at = operation.started_at or now
         operation.finished_at = now
         operation.updated_at = now
+        _clear_lease(operation)
         await self._commit(operation)
         return _summary(operation)
 
@@ -146,6 +206,8 @@ class StrmOperationService:
         if operation.status in {
             StrmOperationStatus.SUCCEEDED,
             StrmOperationStatus.FAILED,
+            StrmOperationStatus.TIMEOUT,
+            StrmOperationStatus.CANCELLED,
         }:
             return _summary(operation)
         now = datetime.now(UTC)
@@ -155,6 +217,32 @@ class StrmOperationService:
         operation.started_at = operation.started_at or now
         operation.finished_at = now
         operation.updated_at = now
+        _clear_lease(operation)
+        await self._commit(operation)
+        return _summary(operation)
+
+    async def cancel(
+        self,
+        operation_id: str,
+        *,
+        error_code: str = "strm_operation_cancelled",
+    ) -> StrmOperationSummary:
+        _validate_error_code(error_code)
+        operation = await self._load(operation_id)
+        if operation.status in {
+            StrmOperationStatus.SUCCEEDED,
+            StrmOperationStatus.FAILED,
+            StrmOperationStatus.TIMEOUT,
+            StrmOperationStatus.CANCELLED,
+        }:
+            return _summary(operation)
+        now = datetime.now(UTC)
+        operation.status = StrmOperationStatus.CANCELLED
+        operation.error_code = error_code
+        operation.started_at = operation.started_at or now
+        operation.finished_at = now
+        operation.updated_at = now
+        _clear_lease(operation)
         await self._commit(operation)
         return _summary(operation)
 
@@ -175,6 +263,7 @@ class StrmOperationService:
             current_time=current_time,
             error_code=error_code,
             cutoff=None,
+            respect_lease=False,
         )
 
     async def recover_stale(
@@ -194,6 +283,7 @@ class StrmOperationService:
             current_time=current_time,
             error_code=error_code,
             cutoff=current_time - max_age,
+            respect_lease=True,
         )
 
     async def list(
@@ -244,9 +334,12 @@ class StrmOperationService:
             if current is None:
                 raise StrmOperationNotFound(operation.id)
             if (
-                current.status in {
+                current.status
+                in {
                     StrmOperationStatus.SUCCEEDED,
                     StrmOperationStatus.FAILED,
+                    StrmOperationStatus.TIMEOUT,
+                    StrmOperationStatus.CANCELLED,
                 }
                 and current.status != operation.status
             ):
@@ -262,6 +355,9 @@ class StrmOperationService:
             current.skipped = operation.skipped
             current.failed = operation.failed
             current.retired = operation.retired
+            current.lease_owner = operation.lease_owner
+            current.lease_expires_at = operation.lease_expires_at
+            current.heartbeat_at = operation.heartbeat_at
             await session.commit()
             _copy_state(operation, current)
 
@@ -271,6 +367,7 @@ class StrmOperationService:
         current_time: datetime,
         error_code: str,
         cutoff: datetime | None,
+        respect_lease: bool,
     ) -> int:
         query = select(StrmOperation).where(
             StrmOperation.status.in_(
@@ -278,18 +375,66 @@ class StrmOperationService:
             )
         )
         if cutoff is not None:
-            query = query.where(StrmOperation.updated_at <= cutoff)
+            query = query.where(
+                or_(
+                    and_(
+                        StrmOperation.status == StrmOperationStatus.QUEUED,
+                        StrmOperation.updated_at <= cutoff,
+                    ),
+                    and_(
+                        StrmOperation.status == StrmOperationStatus.RUNNING,
+                        or_(
+                            StrmOperation.lease_expires_at <= current_time,
+                            and_(
+                                StrmOperation.lease_expires_at.is_(None),
+                                StrmOperation.updated_at <= cutoff,
+                            ),
+                        ),
+                    ),
+                )
+            )
+        elif respect_lease:
+            query = query.where(
+                or_(
+                    StrmOperation.lease_expires_at.is_(None),
+                    StrmOperation.lease_expires_at <= current_time,
+                )
+            )
         async with self._session_factory() as session:
             operations = list((await session.scalars(query)).all())
+            recovered = 0
             for operation in operations:
-                operation.status = StrmOperationStatus.FAILED
-                operation.error_code = error_code
-                operation.started_at = operation.started_at or current_time
-                operation.finished_at = current_time
-                operation.updated_at = current_time
-            if operations:
+                terminal_status = (
+                    StrmOperationStatus.TIMEOUT
+                    if error_code == "strm_operation_timeout"
+                    else StrmOperationStatus.FAILED
+                )
+                result = await session.execute(
+                    update(StrmOperation)
+                    .where(
+                        StrmOperation.id == operation.id,
+                        StrmOperation.status.in_(
+                            (StrmOperationStatus.QUEUED, StrmOperationStatus.RUNNING)
+                        ),
+                        StrmOperation.updated_at == operation.updated_at,
+                    )
+                    .values(
+                        status=terminal_status,
+                        error_code=error_code,
+                        started_at=operation.started_at or current_time,
+                        finished_at=current_time,
+                        updated_at=current_time,
+                        lease_owner=None,
+                        lease_expires_at=None,
+                        heartbeat_at=None,
+                    )
+                )
+                recovered += int(result.rowcount == 1)
+            if recovered:
                 await session.commit()
-            return len(operations)
+            else:
+                await session.rollback()
+            return recovered
 
 
 def _summary(operation: StrmOperation) -> StrmOperationSummary:
@@ -332,6 +477,9 @@ def _copy_state(target: StrmOperation, source: StrmOperation) -> None:
     target.started_at = source.started_at
     target.finished_at = source.finished_at
     target.updated_at = source.updated_at
+    target.lease_owner = source.lease_owner
+    target.lease_expires_at = source.lease_expires_at
+    target.heartbeat_at = source.heartbeat_at
     target.error_code = source.error_code
     target.generated = source.generated
     target.unchanged = source.unchanged
@@ -351,6 +499,36 @@ def _validate_counts(*values: int) -> None:
 def _validate_error_code(value: object) -> None:
     if not isinstance(value, str) or not value or len(value) > 100:
         raise StrmOperationError("invalid_error_code")
+
+
+def _validate_lease_duration(value: object) -> timedelta:
+    if (
+        not isinstance(value, timedelta)
+        or value <= timedelta(0)
+        or value > timedelta(hours=24)
+    ):
+        raise StrmOperationError("invalid_operation_lease")
+    return value
+
+
+def _validate_optional_owner(value: object) -> None:
+    if value is None:
+        return
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value) > 100
+        or not value.isascii()
+        or "/" in value
+        or "\\" in value
+    ):
+        raise StrmOperationError("invalid_operation_lease_owner")
+
+
+def _clear_lease(operation: StrmOperation) -> None:
+    operation.lease_owner = None
+    operation.lease_expires_at = None
+    operation.heartbeat_at = None
 
 
 def _encode_cursor(summary: StrmOperationSummary) -> str:

@@ -417,6 +417,21 @@ async def test_target_adapter_stops_pagination_after_short_page():
     assert result.unsupported_count == 1
 
 
+async def test_target_adapter_marks_continuous_full_page_as_truncated():
+    page = load_fixture("search_page_1.json")[:1]
+    mock = ProwlarrMock([MockResponse.json(page) for _ in range(20)])
+    adapter, transport_client = _new_target_adapter(mock, max_results=50)
+    try:
+        result = await adapter.search(
+            "Example Show", search_type="tvsearch", page_size=1
+        )
+    finally:
+        await _close_target_adapter(adapter, transport_client)
+
+    assert len(mock.requests) == 20
+    assert result.truncated is True
+
+
 async def test_target_maps_prowlarr_upstream_failure_to_chinese_error_code():
     mock = ProwlarrMock([MockResponse.failure(429, {"error": "fixture_rate_limited"})])
     adapter, transport_client = _new_target_adapter(mock)

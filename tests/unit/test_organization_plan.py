@@ -219,6 +219,32 @@ async def test_plan_hash_is_stable_and_persistence_is_idempotent(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_plan_can_execute_requires_planned_and_unexpired_state(tmp_path):
+    database = await _database(tmp_path)
+    service = OrganizationPlanService(database.session_factory)
+    plan_view = await service.create_plan(
+        library_id=LIBRARY_ID, scan_run_id=SCAN_ID, items=(_item(),)
+    )
+    assert plan_view.can_execute is True
+
+    async with database.session_factory() as session:
+        plan = await session.get(OrganizationPlan, plan_view.plan_id)
+        assert plan is not None
+        plan.status = OrganizationPlanStatus.NEEDS_REVIEW.value
+        await session.commit()
+    assert (await service.get_plan(plan_view.plan_id)).can_execute is False
+
+    async with database.session_factory() as session:
+        plan = await session.get(OrganizationPlan, plan_view.plan_id)
+        assert plan is not None
+        plan.status = OrganizationPlanStatus.PLANNED.value
+        plan.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+        await session.commit()
+    assert (await service.get_plan(plan_view.plan_id)).can_execute is False
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_complete_execution_payload_is_persisted_and_parsed(tmp_path):
     database = await _database(tmp_path)
     service = OrganizationPlanService(database.session_factory)
@@ -319,7 +345,7 @@ async def test_source_size_or_mtime_change_blocks_execution(tmp_path, field, val
 
 
 @pytest.mark.asyncio
-async def test_unrelated_new_scan_does_not_invalidate_plan_but_source_change_does(tmp_path):
+async def test_unrelated_new_scan_invalidates_bound_plan(tmp_path):
     database = await _database(tmp_path)
     service = OrganizationPlanService(database.session_factory)
     plan_view = await service.create_plan(
@@ -381,19 +407,6 @@ async def test_unrelated_new_scan_does_not_invalidate_plan_but_source_change_doe
         await session.commit()
         stored = await session.get(OrganizationPlan, plan_view.plan_id)
         assert stored is not None
-        assert await load_executable_steps(database.session_factory, stored)
-
-        changed = await session.get(
-            LibraryScanEntry,
-            {
-                "scan_run_id": "scan-2",
-                "object_type": "file",
-                "object_id": "100",
-            },
-        )
-        assert changed is not None
-        changed.path = "renamed/private-title.mkv"
-        await session.commit()
         assert await load_executable_steps(database.session_factory, stored) is None
     await database.engine.dispose()
 

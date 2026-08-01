@@ -1044,6 +1044,7 @@ class SearchService:
         successful_pansou: list[tuple[str, dict]] = []
         successful_prowlarr: list[tuple[str, ProwlarrSearchResult]] = []
         warnings: list[str] = []
+        upstream_partial = False
         for index, (pansou_result, prowlarr_result) in enumerate(
             query_results, start=1
         ):
@@ -1057,6 +1058,10 @@ class SearchService:
                 successful_prowlarr.append((queries[index - 1], prowlarr_result))
                 if prowlarr_result.unsupported_count:
                     warnings.append("prowlarr_unsupported_results")
+                if prowlarr_result.truncated:
+                    upstream_partial = True
+                    warnings.append("prowlarr_results_truncated")
+                    warnings.append("partial_upstream")
             else:
                 warnings.append(
                     f"prowlarr_query_failed:{warning_offset + index}"
@@ -1065,7 +1070,8 @@ class SearchService:
             successful_pansou,
             successful_prowlarr,
             _merge_warnings(warnings, []),
-            not any("_query_failed:" in warning for warning in warnings),
+            not any("_query_failed:" in warning for warning in warnings)
+            and not upstream_partial,
         )
 
     def _normalize_results(
@@ -1545,13 +1551,25 @@ def _resource_summary(
     size_source = metadata.get("size_source")
     seeders_source = metadata.get("seeders_source")
     observed_at = metadata.get("seeders_observed_at")
+    normalized_source = normalize_source_id(item.source)
+    sources: list[str] = []
+    raw_sources = metadata.get("sources")
+    if isinstance(raw_sources, list):
+        for source in raw_sources:
+            normalized = normalize_source_id(source)
+            if normalized not in sources:
+                sources.append(normalized)
+    if normalized_source not in sources:
+        sources.append(normalized_source)
     return ResourceSummary(
         resource_id=item.id,
         kind=item.kind,
         name=item.name,
         size_bytes=item.size_bytes,
         seeders=item.seeders,
-        source=normalize_source_id(item.source),
+        source=normalized_source,
+        sources=sources,
+        source_count=len(sources),
         captured_at=_as_utc(item.captured_at),
         size_source=(size_source if size_source in {"pansou", "inspection"} else None),
         seeders_source=seeders_source if seeders_source == "pansou" else None,
