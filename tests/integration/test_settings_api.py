@@ -48,7 +48,7 @@ async def _noop():
 
 @pytest.mark.integration
 async def test_settings_overview_logging_patch_and_redacted_logs(tmp_path, monkeypatch):
-    monkeypatch.setenv("WATCH_ASSISTANT_RELEASE", "test-release")
+    monkeypatch.setenv("WATCH_ASSISTANT_RELEASE", "0123456")
     app, client, database, tmdb, pansou = await _app(tmp_path)
 
     unauthorized = await client.get("/api/v1/settings/overview")
@@ -62,7 +62,10 @@ async def test_settings_overview_logging_patch_and_redacted_logs(tmp_path, monke
 
     overview = await client.get("/api/v1/settings/overview")
     assert overview.status_code == 200
-    assert overview.json()["release"] == "test-release"
+    assert overview.json()["release"] == "0123456"
+    health = await client.get("/api/v1/health")
+    assert health.status_code == 200
+    assert health.json()["release"] == overview.json()["release"]
     assert set(overview.json()["capabilities"]) == {
         "inspection",
         "magnet",
@@ -90,6 +93,12 @@ async def test_settings_overview_logging_patch_and_redacted_logs(tmp_path, monke
             "strm_playback",
         )
     )
+    capability_statuses = overview.json()["capability_statuses"]
+    assert capability_statuses["organization_plan"] == {
+        "state": "unconfigured",
+        "state_zh": "未配置",
+        "last_success_at": None,
+    }
 
     current = await client.get("/api/v1/settings/logging")
     assert current.status_code == 200
@@ -347,6 +356,20 @@ async def test_strm_routes_enforce_independent_flags_and_reach_service(tmp_path)
         )
         assert workflow_response.status_code == 201
         workflow_id = workflow_response.json()["id"]
+        for stage in (
+            "discovery",
+            "inspection",
+            "approval",
+            "push",
+            "availability",
+            "organization",
+        ):
+            advanced = await client.patch(
+                f"/api/v1/workflows/{workflow_id}/stages/{stage}",
+                json={"status": "succeeded"},
+                headers=headers,
+            )
+            assert advanced.status_code == 200
         response = await client.post(
             "/api/v1/libraries/library/strm-incremental",
             json={**payload, "workflow_id": workflow_id},

@@ -32,6 +32,7 @@ import LibraryWorkbenchView from "./views/LibraryWorkbenchView.vue";
 import WorkflowCenterView from "./views/WorkflowCenterView.vue";
 import NotificationCenterView from "./views/NotificationCenterView.vue";
 import OrganizationHistoryView from "./views/OrganizationHistoryView.vue";
+import OrganizationWorkbenchView from "./views/OrganizationWorkbenchView.vue";
 
 const FAVORITES_KEY = "watch-assistant:favorites";
 const HISTORY_KEY = "watch-assistant:history";
@@ -1450,7 +1451,7 @@ onBeforeUnmount(() => {
         <LibraryView v-else-if="activeView === 'movies' || activeView === 'tv'" :movies="catalogMovies" :loading="catalogLoading" :favorite-ids="favoriteIds" :genre-id="genreId" :year="year" :sort="sort" :media-type="activeView" :page="currentPage" :total-pages="totalPages" :total-results="totalResults" @open="openMovie" @favorite="toggleFavorite" @filters="loadDiscover" @page="loadPage" />
         <CollectionView v-else-if="activeView === 'favorites' || activeView === 'history'" :mode="activeView" :movies="activeView === 'favorites' ? favorites : history" :favorite-ids="favoriteIds" @open="openMovie" @favorite="toggleFavorite" />
         <SettingsView v-else-if="activeView === 'settings'" :api="api" @auto-start-enabled="inspectionAutoStartEnabled = $event" />
-        <SettingsView v-else-if="activeView === 'organization-plans' && organizationPlanEnabled" :api="api" initial-section="organization" @auto-start-enabled="inspectionAutoStartEnabled = $event" />
+        <OrganizationWorkbenchView v-else-if="activeView === 'organization-plans' && organizationPlanEnabled" :api="api" />
         <OrganizationHistoryView v-else-if="activeView === 'organization-history' && organizationPlanEnabled" :api="api" />
         <LibraryWorkbenchView v-else-if="activeView === 'library'" :api="api" />
         <WorkflowCenterView v-else-if="activeView === 'workflows'" :api="api" />

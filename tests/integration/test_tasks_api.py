@@ -133,6 +133,12 @@ async def test_task_creation_links_push_stage_to_workflow(tmp_path):
     )
     assert workflow_response.status_code == 201
     workflow_id = workflow_response.json()["id"]
+    for stage in ("discovery", "inspection", "approval"):
+        advanced = await client.patch(
+            f"/api/v1/workflows/{workflow_id}/stages/{stage}",
+            json={"status": "succeeded"},
+        )
+        assert advanced.status_code == 200
 
     task_response = await client.post(
         "/api/v1/tasks",

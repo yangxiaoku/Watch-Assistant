@@ -811,25 +811,26 @@ async def test_lifespan_runs_the_single_worker_and_closes_the_qb_client(tmp_path
         health = await client.get("/api/v1/health")
         assert health.json() == {
             "status": "ok",
+            "release": "unknown",
             "push_supported": False,
             "push_capabilities": {"magnet": False, "share": False},
             "inspection_supported": True,
             "inspection_auto_start_enabled": True,
-                "organization_plan_enabled": False,
-                "organization_execution_enabled": False,
-                "organization_write_enabled": False,
-                "organization_write_contract_verified": False,
-                "permanent_delete_enabled": False,
-                "permanent_delete_contract_verified": False,
-                "organization_execution_supported": False,
-                "strm_capabilities": {
-                    "full": False,
-                    "incremental": False,
-                    "cleanup": False,
-                    "playback": False,
-                    "playback_contract_verified": False,
-                },
-            }
+            "organization_plan_enabled": False,
+            "organization_execution_enabled": False,
+            "organization_write_enabled": False,
+            "organization_write_contract_verified": False,
+            "permanent_delete_enabled": False,
+            "permanent_delete_contract_verified": False,
+            "organization_execution_supported": False,
+            "strm_capabilities": {
+                "full": False,
+                "incremental": False,
+                "cleanup": False,
+                "playback": False,
+                "playback_contract_verified": False,
+            },
+        }
         assert fake.closed is False
 
     assert fake.closed is True

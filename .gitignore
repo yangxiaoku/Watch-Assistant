@@ -1,5 +1,7 @@
 .superpowers/
 .worktrees/
+.tools/
+.watch-assistant-state/
 
 # Python
 __pycache__/

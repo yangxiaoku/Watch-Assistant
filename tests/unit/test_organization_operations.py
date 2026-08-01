@@ -21,6 +21,7 @@ from watch_assistant.schemas import (
     MediaType,
     WorkflowCreateRequest,
     WorkflowStageName,
+    WorkflowStagePatch,
     WorkflowStageStatus,
 )
 from watch_assistant.services.media_classification import (
@@ -179,6 +180,32 @@ async def test_organization_operation_updates_linked_workflow_stage(tmp_path):
     assert organization_stage.child_type == "organization_operation"
     assert organization_stage.child_id == operation.operation_id
 
+    workflow_service = WorkflowService(database.session_factory)
+    for stage_name in (
+        WorkflowStageName.DISCOVERY,
+        WorkflowStageName.INSPECTION,
+        WorkflowStageName.APPROVAL,
+        WorkflowStageName.PUSH,
+        WorkflowStageName.AVAILABILITY,
+    ):
+        await workflow_service.patch_stage(
+            workflow.id,
+            stage_name,
+            WorkflowStagePatch(status=WorkflowStageStatus.RUNNING),
+        )
+        if stage_name is WorkflowStageName.APPROVAL:
+            await workflow_service.patch_stage(
+                workflow.id,
+                stage_name,
+                WorkflowStagePatch(status=WorkflowStageStatus.SUCCEEDED),
+            )
+        else:
+            await workflow_service.patch_stage(
+                workflow.id,
+                stage_name,
+                WorkflowStagePatch(status=WorkflowStageStatus.SUCCEEDED),
+            )
+
     lease = await service.claim(operation.operation_id, expected_revision=1)
     running = await WorkflowService(database.session_factory).get(workflow.id)
     organization_stage = next(
@@ -304,6 +331,28 @@ async def test_claim_next_finishes_legacy_non_executable_operation(tmp_path):
     current = await service.get(operation.operation_id)
     assert current.status is OrganizationOperationStatus.FAILED
     assert current.error_code == "plan_not_executable"
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_claim_next_marks_expired_organizing_operation_uncertain(tmp_path):
+    database = await _database(tmp_path)
+    service = OrganizationOperationService(database.session_factory)
+    operation = await _operation(database, key="expired-organizing")
+    first = await service.claim(
+        operation.operation_id,
+        expected_revision=1,
+        lease_duration=timedelta(seconds=1),
+        now=datetime(2026, 7, 28, tzinfo=UTC),
+    )
+
+    recovered = await service.claim_next(now=datetime(2026, 7, 28, 0, 0, 2, tzinfo=UTC))
+    assert recovered is None
+    current = await service.get(operation.operation_id)
+    assert current.status is OrganizationOperationStatus.UNCERTAIN
+    assert current.revision == first.revision + 1
+    assert current.attempts == 1
+    assert current.error_code == "outcome_unknown"
     await database.engine.dispose()
 
 

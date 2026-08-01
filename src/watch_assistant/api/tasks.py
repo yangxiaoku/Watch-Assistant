@@ -13,7 +13,7 @@ from watch_assistant.services.tasks import (
     ResourceNotFound,
     TaskService,
 )
-from watch_assistant.services.workflows import WorkflowNotFound
+from watch_assistant.services.workflows import WorkflowConflict, WorkflowNotFound
 
 router = APIRouter(prefix="/api/v1", dependencies=[Depends(require_api_auth)])
 
@@ -66,6 +66,15 @@ async def create_task(
         raise HTTPException(status_code=503, detail="push_kind_unsupported") from exc
     except WorkflowNotFound as exc:
         raise HTTPException(status_code=404, detail="workflow_not_found") from exc
+    except WorkflowConflict as exc:
+        code = str(exc)
+        if code not in {
+            "workflow_prerequisite_not_met",
+            "workflow_stage_regression",
+            "workflow_stage_terminal",
+        }:
+            code = "workflow_conflict"
+        raise HTTPException(status_code=409, detail=code) from None
     return task
 
 

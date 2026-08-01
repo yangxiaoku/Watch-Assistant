@@ -49,7 +49,10 @@ test("settings contract, cursor logs, validation states, and responsive layout",
   await page.route("**/api/v1/settings/credentials**", async (route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
-    if (request.method() === "GET" && path.endsWith("/settings/credentials")) return route.fulfill({ json: credentialsSnapshot(credentialRevision) });
+    if (request.method() === "GET" && path.endsWith("/settings/credentials")) {
+      await route.fulfill({ json: credentialsSnapshot(credentialRevision) });
+      return;
+    }
     expect(request.method()).toMatch(/PUT|POST/);
     credentialSaveCount += 1;
     credentialBodies.push(request.postDataJSON());
@@ -84,6 +87,45 @@ test("settings contract, cursor logs, validation states, and responsive layout",
     return route.fulfill({ json: { status, checked_at: "2026-07-25T02:00:00Z" } });
   });
   await page.route("**/api/v1/settings/p115", (route) => route.fulfill({ json: p115 }));
+  await page.route("**/api/v1/settings/p115/devices", (route) => route.fulfill({ json: { items: [] } }));
+  await page.route("**/api/v1/settings/organization", (route) => route.fulfill({ json: {
+    revision: 0,
+    schedule_enabled: false,
+    scan_interval_minutes: 60,
+    source_directory_ids: [],
+    target_directory_id: null,
+    push_directory_id: null,
+    video_extensions: ["mkv"],
+    metadata_extensions: ["srt"],
+    rename_enabled: false,
+    media_probe_enabled: false,
+    ai_identification_enabled: false,
+    small_file_threshold_mb: 0,
+    cleanup_empty_directories: false,
+    strm_linkage_enabled: false,
+    operation_delay_seconds: 0,
+    include_children_category: false,
+    include_concert_category: false,
+    region_grouping_enabled: false,
+    year_grouping_enabled: false,
+    prefer_remux: false,
+    prefer_resolution: false,
+    prefer_dolby: false,
+    conflict_mode: 2,
+    multi_version_enabled: false,
+  } }));
+  await page.route("**/api/v1/settings/organization/result", (route) => route.fulfill({ json: {
+    status: "unknown",
+    available_statuses: ["unknown", "success", "skipped", "deleted", "replace", "failed"],
+    source_count: 0,
+    scanned_count: 0,
+    plan_count: 0,
+    queued_count: 0,
+    blocked_count: 0,
+    blocked_details: [],
+    items: [],
+    finished_at: null,
+  } }));
   await page.route("**/api/v1/logs?**", (route) => {
     logsCount += 1;
     const params = new URL(route.request().url()).searchParams;

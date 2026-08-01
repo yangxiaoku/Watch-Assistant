@@ -10,6 +10,9 @@ from watch_assistant.schemas import (
     RemoteStatus,
     SubmissionResult,
     WorkflowCreateRequest,
+    WorkflowStageName,
+    WorkflowStagePatch,
+    WorkflowStageStatus,
 )
 from watch_assistant.services.inventory_push_guard import InventoryPushCheck
 from watch_assistant.services.tasks import TaskService
@@ -269,6 +272,16 @@ async def test_worker_terminal_state_updates_linked_workflow_stage(tmp_path):
     workflow = await workflow_service.create(
         WorkflowCreateRequest(media_type="movie", tmdb_id=27205)
     )
+    for stage in (
+        WorkflowStageName.DISCOVERY,
+        WorkflowStageName.INSPECTION,
+        WorkflowStageName.APPROVAL,
+    ):
+        await workflow_service.patch_stage(
+            workflow.id,
+            stage,
+            WorkflowStagePatch(status=WorkflowStageStatus.SUCCEEDED),
+        )
     task, _ = await task_service.create("res_magnet", workflow_id=workflow.id)
 
     worker = TaskWorker(

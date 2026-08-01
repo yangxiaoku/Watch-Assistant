@@ -13,7 +13,7 @@ from watch_assistant.security import SecurityManager
 
 @pytest.mark.integration
 async def test_deployment_diagnostics_is_authenticated_and_conservative(tmp_path: Path, monkeypatch):
-    monkeypatch.setenv("WATCH_ASSISTANT_RELEASE", "test-release")
+    monkeypatch.setenv("WATCH_ASSISTANT_RELEASE", "0123456")
     database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'diagnostics.db'}")
     await initialize_database(database.engine)
     password_hash = PasswordHash.recommended()
@@ -43,7 +43,7 @@ async def test_deployment_diagnostics_is_authenticated_and_conservative(tmp_path
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["release"] == "test-release"
+    assert payload["release"] == "0123456"
     assert payload["pending_migrations"] == []
     assert payload["database_integrity"] == "supported"
     assert payload["write_safe"] is False
@@ -61,4 +61,3 @@ async def test_deployment_diagnostics_is_authenticated_and_conservative(tmp_path
 
 async def _noop():
     return None
-

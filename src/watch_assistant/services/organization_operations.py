@@ -247,12 +247,42 @@ class OrganizationOperationService:
         lease_duration: timedelta = timedelta(minutes=5),
         now: datetime | None = None,
     ) -> OrganizationOperationLease | None:
-        """Claim the oldest approved operation, if one is available."""
+        """Claim the oldest approved operation, never replaying an expired write."""
 
+        current_time = _as_utc(now or datetime.now(UTC))
         async with self._session_factory() as session:
+            expired = list(
+                await session.scalars(
+                    select(OrganizationOperation).where(
+                        OrganizationOperation.status
+                        == OrganizationOperationStatus.ORGANIZING,
+                        OrganizationOperation.lease_expires_at <= current_time,
+                    )
+                )
+            )
+            for operation in expired:
+                operation.status = OrganizationOperationStatus.UNCERTAIN
+                operation.revision += 1
+                operation.lease_token = None
+                operation.lease_expires_at = None
+                operation.error_code = "outcome_unknown"
+                operation.finished_at = current_time
+                operation.updated_at = current_time
+                await _sync_workflow_stage(
+                    session,
+                    operation.workflow_id,
+                    status=WorkflowStageStatus.UNCERTAIN,
+                    child_id=operation.id,
+                    reason="organization_uncertain",
+                    error_code="outcome_unknown",
+                )
+            if expired:
+                await session.commit()
             operation = await session.scalar(
                 select(OrganizationOperation)
-                .where(OrganizationOperation.status == OrganizationOperationStatus.PLANNED)
+                .where(
+                    OrganizationOperation.status == OrganizationOperationStatus.PLANNED
+                )
                 .order_by(OrganizationOperation.created_at.asc(), OrganizationOperation.id.asc())
                 .limit(1)
             )

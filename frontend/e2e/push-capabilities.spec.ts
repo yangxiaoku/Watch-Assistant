@@ -21,6 +21,9 @@ test("routes push actions by resource capability", async ({ page }) => {
   await page.route("**/api/v1/auth/me", (route) =>
     route.fulfill({ json: { authenticated: true, via_bearer: false, csrf_token: "csrf-test" } }),
   );
+  await page.route("**/api/v1/settings/organization", (route) =>
+    route.fulfill({ json: { push_directory_id: "push-directory-test" } }),
+  );
   await page.route("**/api/v1/search", (route) => route.fulfill({
     json: {
       movie,

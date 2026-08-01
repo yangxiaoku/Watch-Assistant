@@ -409,7 +409,9 @@ async def test_automation_exposes_incomplete_scan_block_reason_and_event(
                 "status": "blocked",
                 "error_code": "scan_incomplete",
                 "source_directory_id": "1000",
+                "phase": "scan",
                 "message_zh": "源目录扫描未完成，已阻止生成整理预览。",
+                "next_step_zh": "请重新执行一次完整扫描；扫描未完成前不会生成或执行计划。",
                 "count": 0,
             },
         )

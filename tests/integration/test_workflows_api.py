@@ -4,13 +4,16 @@ from pathlib import Path
 import httpx
 import pytest
 from cryptography.fernet import Fernet
+from sqlalchemy import select
 
 from watch_assistant.adapters.pansou import PanSouClient
 from watch_assistant.adapters.tmdb import TmdbClient
 from watch_assistant.app import create_app
 from watch_assistant.crypto import SecretCrypto
 from watch_assistant.db import create_database, initialize_database
-from watch_assistant.models import Resource
+from watch_assistant.models import Resource, WorkflowStage
+from watch_assistant.schemas import WorkflowStageStatus
+from watch_assistant.services.workflows import WorkflowService
 
 
 class FakeTaskAdapter:
@@ -80,6 +83,13 @@ async def test_workflow_timeline_aggregates_stage_state_and_child_task(tmp_path)
         assert discovery.status_code == 200
         assert discovery.json()["status"] == "in_progress"
 
+        for stage in ("inspection", "approval"):
+            advanced = await client.patch(
+                f"/api/v1/workflows/{workflow_id}/stages/{stage}",
+                json={"status": "succeeded"},
+            )
+            assert advanced.status_code == 200
+
         task = await client.post(
             "/api/v1/tasks",
             json={"resource_id": "res_workflow_api", "workflow_id": workflow_id},
@@ -124,26 +134,17 @@ async def test_workflow_timeline_aggregates_stage_state_and_child_task(tmp_path)
 
 
 @pytest.mark.integration
-async def test_workflow_stage_terminal_aggregation_preserves_uncertain_priority(tmp_path):
+async def test_workflow_stage_order_and_uncertain_priority(tmp_path):
     client, database, tmdb, pansou = await _make_client(tmp_path)
     try:
         created = await client.post("/api/v1/workflows", json={"media_type": "movie"})
         workflow_id = created.json()["id"]
-        for stage in (
-            "discovery",
-            "inspection",
-            "approval",
-            "push",
-            "availability",
-            "organization",
-            "strm",
-        ):
+        for stage in ("discovery", "inspection", "approval"):
             response = await client.patch(
                 f"/api/v1/workflows/{workflow_id}/stages/{stage}",
                 json={"status": "succeeded"},
             )
             assert response.status_code == 200
-        assert response.json()["status"] == "completed"
 
         uncertain = await client.patch(
             f"/api/v1/workflows/{workflow_id}/stages/push",
@@ -152,6 +153,13 @@ async def test_workflow_stage_terminal_aggregation_preserves_uncertain_priority(
         assert uncertain.status_code == 200
         assert uncertain.json()["status"] == "result_pending_confirmation"
         assert uncertain.json()["status_zh"] == "结果待确认"
+
+        terminal = await client.patch(
+            f"/api/v1/workflows/{workflow_id}/stages/push",
+            json={"status": "running"},
+        )
+        assert terminal.status_code == 409
+        assert terminal.json()["error"]["code"] == "workflow_stage_regression"
     finally:
         await client.aclose()
         await tmdb.aclose()
@@ -165,6 +173,12 @@ async def test_workflow_approval_and_cancel_are_guarded(tmp_path):
     try:
         awaiting = await client.post("/api/v1/workflows", json={"media_type": "movie"})
         workflow_id = awaiting.json()["id"]
+        for stage in ("discovery", "inspection"):
+            advanced = await client.patch(
+                f"/api/v1/workflows/{workflow_id}/stages/{stage}",
+                json={"status": "succeeded"},
+            )
+            assert advanced.status_code == 200
         waiting = await client.patch(
             f"/api/v1/workflows/{workflow_id}/stages/approval",
             json={"status": "waiting_confirmation", "reason": "需要用户选择"},
@@ -183,6 +197,12 @@ async def test_workflow_approval_and_cancel_are_guarded(tmp_path):
 
         rejected = await client.post("/api/v1/workflows", json={"media_type": "movie"})
         rejected_id = rejected.json()["id"]
+        for stage in ("discovery", "inspection"):
+            advanced = await client.patch(
+                f"/api/v1/workflows/{rejected_id}/stages/{stage}",
+                json={"status": "succeeded"},
+            )
+            assert advanced.status_code == 200
         await client.patch(
             f"/api/v1/workflows/{rejected_id}/stages/approval",
             json={"status": "waiting_confirmation"},
@@ -192,11 +212,15 @@ async def test_workflow_approval_and_cancel_are_guarded(tmp_path):
             json={"decision": "reject"},
         )
         assert rejected_result.status_code == 200
-        assert rejected_result.json()["status"] == "cancelled"
-        assert all(
-            stage["status"] == "cancelled"
+        assert rejected_result.json()["status"] == "partial"
+        rejected_stages = {
+            stage["stage"]: stage["status"]
             for stage in rejected_result.json()["stages"]
-        )
+        }
+        assert rejected_stages["discovery"] == "succeeded"
+        assert rejected_stages["inspection"] == "succeeded"
+        assert rejected_stages["approval"] == "cancelled"
+        assert rejected_stages["push"] == "cancelled"
 
         cancellable = await client.post("/api/v1/workflows", json={"media_type": "movie"})
         cancelled = await client.post(
@@ -208,10 +232,12 @@ async def test_workflow_approval_and_cancel_are_guarded(tmp_path):
 
         running = await client.post("/api/v1/workflows", json={"media_type": "movie"})
         running_id = running.json()["id"]
-        await client.patch(
-            f"/api/v1/workflows/{running_id}/stages/push",
-            json={"status": "running"},
-        )
+        for stage in ("discovery", "inspection", "approval", "push"):
+            advanced = await client.patch(
+                f"/api/v1/workflows/{running_id}/stages/{stage}",
+                json={"status": "succeeded" if stage != "push" else "running"},
+            )
+            assert advanced.status_code == 200
         partially_cancelled = await client.post(
             f"/api/v1/workflows/{running_id}/cancel", json={}
         )
@@ -222,32 +248,71 @@ async def test_workflow_approval_and_cancel_are_guarded(tmp_path):
             for item in partially_cancelled.json()["stages"]
         }
         assert stages["push"] == "running"
-        assert stages["discovery"] == "cancelled"
+        assert stages["discovery"] == "succeeded"
+        assert stages["inspection"] == "succeeded"
+        assert stages["approval"] == "succeeded"
+        assert stages["availability"] == "cancelled"
         assert stages["strm"] == "cancelled"
 
         no_pending = await client.post(
             "/api/v1/workflows", json={"media_type": "movie"}
         )
         no_pending_id = no_pending.json()["id"]
-        await client.patch(
-            f"/api/v1/workflows/{no_pending_id}/stages/push",
-            json={"status": "running"},
-        )
         for stage in (
             "discovery",
             "inspection",
             "approval",
+            "push",
             "availability",
             "organization",
             "strm",
         ):
             await client.patch(
                 f"/api/v1/workflows/{no_pending_id}/stages/{stage}",
-                json={"status": "cancelled"},
+                json={"status": "succeeded"},
             )
         blocked = await client.post(f"/api/v1/workflows/{no_pending_id}/cancel", json={})
         assert blocked.status_code == 409
         assert blocked.json()["error"]["code"] == "workflow_not_cancellable"
+    finally:
+        await client.aclose()
+        await tmdb.aclose()
+        await pansou.aclose()
+        await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_workflow_rejects_late_stage_and_recovers_stale_child(tmp_path):
+    client, database, tmdb, pansou = await _make_client(tmp_path)
+    try:
+        created = await client.post("/api/v1/workflows", json={"media_type": "movie"})
+        workflow_id = created.json()["id"]
+        late = await client.patch(
+            f"/api/v1/workflows/{workflow_id}/stages/push",
+            json={"status": "succeeded"},
+        )
+        assert late.status_code == 409
+        assert late.json()["error"]["code"] == "workflow_prerequisite_not_met"
+
+        async with database.session_factory() as session:
+            stage = await session.scalar(
+                select(WorkflowStage).where(
+                    WorkflowStage.workflow_id == workflow_id,
+                    WorkflowStage.stage == "discovery",
+                )
+            )
+            assert stage is not None
+            stage.status = WorkflowStageStatus.RUNNING
+            stage.child_id = "child-restart"
+            stage.updated_at = datetime.now(UTC) - timedelta(days=2)
+            await session.commit()
+
+        recovered = await WorkflowService(database.session_factory).recover_stale()
+        assert recovered == 1
+        detail = (await client.get(f"/api/v1/workflows/{workflow_id}")).json()
+        discovery = next(item for item in detail["stages"] if item["stage"] == "discovery")
+        assert discovery["status"] == "uncertain"
+        assert discovery["reason_zh"] == "阶段长时间没有更新，已暂停并等待核对。"
     finally:
         await client.aclose()
         await tmdb.aclose()

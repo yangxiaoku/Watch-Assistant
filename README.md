@@ -16,16 +16,15 @@
 - SQLite WAL、Fernet 敏感字段加密和保留期清理。
 - 持久任务状态机与崩溃后的 `uncertain` 防重复提交。
 
-## 115 影视库整理进度
+## 115 影视库整理与 STRM 状态
 
-当前发布版本为 `4e46e85`，已部署到 `192.168.6.236:8115`。只读索引、组织计划/执行、
-真实移动/重命名、永久删除和受管 STRM 播放入口已接入；整理移动/重命名和永久删除使用
-固定测试 CID 完成真实闭环，播放直链完成 `HEAD`、单段 `Range GET` 验收。
+REQ-001（115 影视库自动整理）和 REQ-002（STRM 全量与增量同步）当前均为“待评审”，
+相关代码和开关不代表已验收或已上线。生产能力、实际版本和部署方式必须以发布前的只读核对
+以及 `/api/v1/health` 返回为准；本文不硬编码生产 commit 或开关状态。
 
-STRM 全量、增量和清理代码已部署并开启。受控视频夹具已完成完整扫描后全量生成、重命名
-后的增量对账、删除后的失效清理，且 `.strm` 内容只包含稳定播放入口。TgtoDrive 仍保持禁用。
-
-TgtoDrive 当前没有验证通过的稳定提交/状态 HTTP 契约，`config/tgto-contract.json` 明确为 `supported:false`。因此生产部署会禁用真实推送并返回 `503 push_unsupported`，不会猜测接口、写 TgtoDrive 数据库或调用内部 `.pyc`。
+TgtoDrive 当前没有验证通过的稳定提交/状态 HTTP 契约，`config/tgto-contract.json` 明确为
+`supported:false`。真实推送保持禁用并返回 `push_unsupported`，不会猜测接口、写 TgtoDrive
+数据库或调用内部 `.pyc`。
 
 ## 部署
 
@@ -67,9 +66,9 @@ curl http://127.0.0.1:8000/api/v1/health
 `STRM_CLEANUP_ENABLED` 和 `STRM_PLAYBACK_ENABLED` 控制；所有开关默认关闭。
 真实移动/重命名还必须有 `ORGANIZATION_WRITE_CONTRACT_VERIFIED=true`，删除还必须有
 `PERMANENT_DELETE_CONTRACT_VERIFIED=true`。契约未验收时，即使功能开关被误设为 true，
-应用也不会启动真实 worker 或删除入口。当前生产实际状态以 `GET /api/v1/health` 为准：
-整理计划/执行、移动/重命名、永久删除、STRM 全量/增量/清理、播放及播放契约均已开启。
-STRM 增量接口使用完整扫描差异，失效清理会校验受管文件内容。
+应用也不会启动真实 worker 或删除入口。发布时构建参数 `WATCH_ASSISTANT_RELEASE` 注入镜像
+环境；健康接口和设置页使用同一版本值。缺少构建注入时安全回退为 `unknown`，不能据此判断
+生产版本。
 
 使用 systemd 部署时，`watch-assistant.service` 可独立重启。qBittorrent sidecar 的升级或重启必须作为独立维护操作执行；不得通过重启应用隐式管理 qBittorrent 的生命周期。
 
@@ -93,9 +92,10 @@ pwsh ./scripts/backup_db.ps1
 
 ## 本地验证
 
-```powershell
-python -m pytest -q
-python -m ruff check src tests scripts
+```bash
+./.venv/bin/python -m pytest -q tests/unit
+./.venv/bin/python -m pytest -q tests/contracts
+./.venv/bin/python -m ruff check src tests scripts
 npm --prefix frontend test -- --run
 npm --prefix frontend run build
 ```

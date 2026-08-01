@@ -2,7 +2,7 @@ import importlib
 import os
 
 
-def test_release_prefers_environment_and_falls_back_only_to_full_sha(
+def test_release_accepts_only_a_safe_commit_hash(
     tmp_path, monkeypatch
 ):
     module = importlib.import_module("watch_assistant.app")
@@ -13,8 +13,11 @@ def test_release_prefers_environment_and_falls_back_only_to_full_sha(
 
     assert module._resolve_release(release_path) == sha
 
+    monkeypatch.setenv("WATCH_ASSISTANT_RELEASE", "ABCDEF1")
+    assert module._resolve_release(tmp_path / "missing") == "abcdef1"
+
     monkeypatch.setenv("WATCH_ASSISTANT_RELEASE", "configured-release")
-    assert module._resolve_release(tmp_path / "missing") == "configured-release"
+    assert module._resolve_release(tmp_path / "missing") == "unknown"
 
     monkeypatch.delenv("WATCH_ASSISTANT_RELEASE", raising=False)
     for name in (
