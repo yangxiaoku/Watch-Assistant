@@ -147,6 +147,14 @@ test("settings contract, cursor logs, validation states, and responsive layout",
 
   const mobileSectionSelect = page.locator(".settings-mobile-select select");
   const mobileLayout = await mobileSectionSelect.isVisible();
+  if (mobileLayout) await mobileSectionSelect.selectOption("prowlarr");
+  else await page.getByRole("button", { name: "搜索来源" }).click();
+  await expect(page.getByRole("heading", { name: "Prowlarr" })).toBeVisible();
+  await expect(page.getByText("后端接口待对接")).toBeVisible();
+  await page.getByRole("button", { name: "验证 Prowlarr 连接" }).click();
+  await expect(page.getByText("Prowlarr 后端验证接口待对接")).toBeVisible();
+  await expect(page.locator('[name="api_key"]')).toHaveCount(0);
+
   if (mobileLayout) await mobileSectionSelect.selectOption("logs");
   else await page.getByRole("button", { name: "日志" }).click();
   const logMessage = mobileLayout ? page.locator(".settings-log-item p").filter({ hasText: "服务已启动" }) : page.locator(".settings-log-table td").filter({ hasText: "服务已启动" });

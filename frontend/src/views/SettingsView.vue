@@ -10,6 +10,7 @@ import {
   LoaderCircle,
   RefreshCw,
   Save,
+  Radio,
   Server,
   Settings2,
   ScanSearch,
@@ -21,6 +22,7 @@ import {
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { ApiClient, ApiError, focusFirstFieldError } from "../api";
 import { p115DeviceOptions } from "../p115DeviceTypes";
+import { pendingProwlarrSettingsClient, type ProwlarrSettingsClient } from "../prowlarr";
 import type {
   CapabilityState,
   CapabilityStatusResponse,
@@ -40,19 +42,22 @@ import type {
   P115DirectoryItem,
   P115LoginDevice,
   SettingsOverviewResponse,
+  ProwlarrSettingsState,
+  ProwlarrValidationState,
 } from "../types";
 
-const props = withDefaults(defineProps<{ api: ApiClient; initialSection?: SettingsSection }>(), {
+const props = withDefaults(defineProps<{ api: ApiClient; initialSection?: SettingsSection; prowlarr?: ProwlarrSettingsClient }>(), {
   initialSection: "overview" as SettingsSection,
 });
 const emit = defineEmits<{ "auto-start-enabled": [enabled: boolean] }>();
 
-type SettingsSection = "overview" | "credentials" | "logs" | "content" | "inspection" | "p115" | "organization";
+type SettingsSection = "overview" | "credentials" | "prowlarr" | "logs" | "content" | "inspection" | "p115" | "organization";
 type ValidationState = "idle" | "running" | "error" | P115ValidationResponse["status"];
 
 const sections = [
   { id: "overview" as const, label: "概览", icon: Activity },
   { id: "credentials" as const, label: "连接配置", icon: KeyRound },
+  { id: "prowlarr" as const, label: "搜索来源", icon: Radio },
   { id: "logs" as const, label: "日志", icon: FileText },
   { id: "content" as const, label: "内容安全", icon: ShieldAlert },
   { id: "inspection" as const, label: "资源检测", icon: ScanSearch },
@@ -101,6 +106,7 @@ const actorTypeOptions = [
   { value: "userscript", label: "用户脚本" },
 ];
 const activeSection = ref<SettingsSection>(props.initialSection);
+const prowlarrClient = computed(() => props.prowlarr ?? pendingProwlarrSettingsClient);
 const overview = ref<SettingsOverviewResponse | null>(null);
 const overviewLoading = ref(true);
 const overviewError = ref("");
@@ -110,6 +116,11 @@ const p115Error = ref("");
 const credentials = ref<CredentialSettingsResponse | null>(null);
 const credentialsLoading = ref(false);
 const credentialsError = ref("");
+const prowlarr = ref<ProwlarrSettingsState | null>(null);
+const prowlarrLoading = ref(true);
+const prowlarrError = ref("");
+const prowlarrValidationState = ref<"idle" | "running" | ProwlarrValidationState["status"] | "error">("idle");
+const prowlarrValidationMessage = ref("");
 const tmdbDraft = ref("");
 const p115CookieDraft = ref("");
 const tmdbSaving = ref(false);
@@ -312,6 +323,7 @@ const hasMoreLogs = computed(() => logsLoaded.value && nextLogCursor.value !== n
 function selectSection(section: SettingsSection) {
   activeSection.value = section;
   if (section === "credentials" && !credentials.value && !credentialsLoading.value) void loadCredentials();
+  if (section === "prowlarr" && !prowlarr.value && !prowlarrLoading.value) void loadProwlarr();
   if (section === "logs" && !logsLoaded.value) void loadLogs();
   if (section === "content" && !contentPolicy.value) void loadContentPolicy();
   if (section === "organization" && !organizationSettings.value && !organizationLoading.value) void loadOrganization();
@@ -320,7 +332,7 @@ function selectSection(section: SettingsSection) {
 
 function selectMobileSection(event: Event) {
   const value = (event.target as HTMLSelectElement).value;
-  if (value === "overview" || value === "credentials" || value === "logs" || value === "content" || value === "inspection" || value === "p115" || value === "organization") selectSection(value);
+  if (value === "overview" || value === "credentials" || value === "prowlarr" || value === "logs" || value === "content" || value === "inspection" || value === "p115" || value === "organization") selectSection(value);
 }
 
 async function loadOverview() {
@@ -346,6 +358,20 @@ async function loadP115() {
     if (settingsMounted) p115Error.value = exception instanceof ApiError ? exception.message : "115 状态加载失败，请稍后重试";
   } finally {
     if (settingsMounted) p115Loading.value = false;
+  }
+}
+
+async function loadProwlarr() {
+  prowlarrLoading.value = true;
+  prowlarrError.value = "";
+  try {
+    const response = await prowlarrClient.value.settings();
+    if (!settingsMounted) return;
+    prowlarr.value = response;
+  } catch (exception) {
+    if (settingsMounted) prowlarrError.value = exception instanceof ApiError ? exception.message : "Prowlarr 状态加载失败，请稍后重试";
+  } finally {
+    if (settingsMounted) prowlarrLoading.value = false;
   }
 }
 
@@ -1043,6 +1069,25 @@ async function validateP115() {
   }
 }
 
+async function validateProwlarr() {
+  if (prowlarrValidationState.value === "running") return;
+  prowlarrValidationState.value = "running";
+  prowlarrValidationMessage.value = "正在验证 Prowlarr 连接";
+  try {
+    const response = await prowlarrClient.value.validateConnection();
+    if (!settingsMounted) return;
+    prowlarrValidationState.value = response.status;
+    prowlarrValidationMessage.value = response.checked_at
+      ? `${response.message_zh}（${formatTimestamp(response.checked_at)}）`
+      : response.message_zh;
+    await loadProwlarr();
+  } catch (exception) {
+    if (!settingsMounted) return;
+    prowlarrValidationState.value = "error";
+    prowlarrValidationMessage.value = exception instanceof ApiError ? exception.message : "Prowlarr 连接验证失败，请稍后重试";
+  }
+}
+
 function formatBytes(value: number) {
   if (!Number.isFinite(value)) return "未知";
   if (value < 1024 * 1024) return `${Math.round(value / 1024)} KB`;
@@ -1122,12 +1167,21 @@ function validationClass(value: ValidationState) {
   return value === "ready" ? "status-ok" : value === "needs_auth" ? "status-degraded" : "status-down";
 }
 
+function prowlarrStatusClass(value: ProwlarrSettingsState["status"]) {
+  return value === "configured" ? "status-ok" : value === "unavailable" ? "status-down" : value === "unsupported" ? "status-unknown" : "status-degraded";
+}
+
+function prowlarrValidationClass(value: typeof prowlarrValidationState.value) {
+  return value === "success" ? "status-ok" : value === "unsupported" || value === "unavailable" ? "status-unknown" : "status-down";
+}
+
 onMounted(() => {
   settingsMounted = true;
   void loadOverview();
   void loadLogging();
   void loadInspection();
   void loadP115();
+  void loadProwlarr();
   void loadP115Devices();
   void loadOrganization();
   void loadOrganizationResult();
@@ -1196,6 +1250,17 @@ watch(autoRefreshLogs, syncLogsRefreshTimer);
               <div class="p115-device-list"><div class="p115-device-list-heading"><h4>已保存的登录设备</h4><button class="text-button" type="button" @click="loadP115Devices">刷新</button></div><p v-if="!p115Devices.length" class="settings-note">暂无扫码设备。手动 Cookie 不会显示在这里。</p><div v-for="device in p115Devices" :key="device.id" class="p115-device-row"><div><strong>{{ device.name }}</strong><small>{{ device.device_code }} · {{ device.last_used_at ? formatTimestamp(device.last_used_at) : '未使用' }}</small></div><div><strong v-if="device.active" class="status-ok">当前使用</strong><button v-else class="text-button" type="button" @click="activateP115Device(device)">切换</button><button v-if="!device.active" class="text-button danger-text" type="button" @click="revokeP115Device(device)">移除</button></div></div></div>
             </section>
           </div>
+        </section>
+
+        <section v-else-if="activeSection === 'prowlarr'" class="settings-section" aria-labelledby="prowlarr-title">
+          <header class="settings-section-heading"><div><p class="eyebrow">多来源搜索</p><h2 id="prowlarr-title">Prowlarr</h2><p>仅显示服务端安全摘要，API Key 不会返回到浏览器。</p></div><button class="icon-button" type="button" title="刷新 Prowlarr 状态" aria-label="刷新 Prowlarr 状态" :disabled="prowlarrLoading" @click="loadProwlarr"><RefreshCw :size="16" :class="{ spin: prowlarrLoading }" /></button></header>
+          <div v-if="prowlarrLoading" class="settings-loading"><LoaderCircle class="spin" :size="20" />正在加载 Prowlarr 状态</div>
+          <div v-else-if="prowlarrError" class="settings-state settings-state-error"><AlertTriangle :size="18" /><span>{{ prowlarrError }}</span><button class="text-button" type="button" @click="loadProwlarr">重试</button></div>
+          <template v-else-if="prowlarr">
+            <div class="p15-status-line prowlarr-status-line"><span class="settings-status-name"><Radio :size="17" />服务端配置</span><span :class="prowlarrStatusClass(prowlarr.status)">{{ prowlarr.status_zh }}</span><span :class="prowlarr.enabled ? 'status-ok' : 'status-degraded'">{{ prowlarr.enabled ? '已启用' : '未启用' }}</span></div>
+            <div class="settings-metrics prowlarr-metrics"><div class="settings-metric"><span>是否已配置</span><strong :class="prowlarr.configured ? 'status-ok' : 'status-degraded'">{{ prowlarr.configured ? '已配置' : '未配置' }}</strong></div><div class="settings-metric"><span>最近验证</span><strong>{{ prowlarr.last_checked_at ? formatTimestamp(prowlarr.last_checked_at) : '未知' }}</strong></div><div class="settings-metric"><span>最近成功</span><strong>{{ prowlarr.last_success_at ? formatTimestamp(prowlarr.last_success_at) : '未知' }}</strong></div></div>
+            <div class="settings-subsection"><h3>连接验证</h3><div class="settings-action-row"><button class="secondary-button" type="button" :disabled="prowlarrValidationState === 'running'" @click="validateProwlarr"><LoaderCircle v-if="prowlarrValidationState === 'running'" class="spin" :size="16" /><Radio v-else :size="16" />验证 Prowlarr 连接</button><span v-if="prowlarrValidationMessage" :class="['settings-action-message', prowlarrValidationClass(prowlarrValidationState)]" role="status">{{ prowlarrValidationMessage }}</span></div><p class="settings-note"><ShieldCheck :size="15" />连接验证只使用服务端已保存的配置；浏览器不会接收或提交 API Key。</p></div>
+          </template>
         </section>
 
         <section v-else-if="activeSection === 'organization'" class="settings-section" aria-labelledby="organization-title">

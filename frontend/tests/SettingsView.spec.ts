@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { ApiClient, ApiError } from "../src/api";
 import { p115DeviceOptions } from "../src/p115DeviceTypes";
+import type { ProwlarrSettingsClient } from "../src/prowlarr";
 import type { LogsResponse } from "../src/types";
 import SettingsView from "../src/views/SettingsView.vue";
 
@@ -870,5 +871,36 @@ describe("SettingsView", () => {
     resolveSave?.({ ...credentials, revision: 1 });
     await flushPromises();
     expect(api.updateTmdbCredential).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders redacted Prowlarr status and validates through the injected client", async () => {
+    const api = makeApi();
+    const prowlarr: ProwlarrSettingsClient = {
+      settings: vi.fn().mockResolvedValue({
+        enabled: true,
+        configured: true,
+        status: "configured",
+        status_zh: "已配置",
+        last_checked_at: "2026-08-01T10:00:00Z",
+        last_success_at: "2026-08-01T09:58:00Z",
+      }),
+      validateConnection: vi.fn().mockResolvedValue({
+        status: "success",
+        message_zh: "连接验证成功",
+        checked_at: "2026-08-01T10:01:00Z",
+      }),
+    };
+    const wrapper = mount(SettingsView, { props: { api, initialSection: "prowlarr", prowlarr } });
+    await flushPromises();
+
+    expect(wrapper.get("#prowlarr-title").text()).toBe("Prowlarr");
+    expect(wrapper.text()).toContain("已配置");
+    expect(wrapper.text()).toContain("最近验证");
+    expect(wrapper.find('[name="api_key"]').exists()).toBe(false);
+
+    await wrapper.findAll("button").find((button) => button.text().includes("验证 Prowlarr 连接"))?.trigger("click");
+    await flushPromises();
+    expect(prowlarr.validateConnection).toHaveBeenCalledTimes(1);
+    expect(wrapper.text()).toContain("连接验证成功");
   });
 });

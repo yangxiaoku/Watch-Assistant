@@ -1,6 +1,27 @@
 export type ResourceKind = "magnet" | "115_share";
 export type InspectionResultStatus = "verified" | "timeout" | "failed" | "unsupported";
 export type InspectionBatchStatus = "queued" | "running" | "completed" | "partial" | "failed";
+export type ProwlarrConfigStatus = "configured" | "unconfigured" | "disabled" | "unavailable" | "unsupported";
+
+/** Frontend-only view model until the server settings route is frozen. */
+export interface ProwlarrSettingsState {
+  enabled: boolean;
+  configured: boolean;
+  status: ProwlarrConfigStatus;
+  status_zh: string;
+  last_checked_at: string | null;
+  last_success_at: string | null;
+}
+
+export type ProwlarrValidationStatus = "success" | "auth_required" | "unavailable" | "unsupported";
+
+/** Frontend-only validation result; never contains credentials. */
+export interface ProwlarrValidationState {
+  status: ProwlarrValidationStatus;
+  message_zh: string;
+  checked_at: string | null;
+}
+
 export type TaskState =
   | "queued"
   | "submitting"
@@ -149,7 +170,9 @@ export interface ResourceSearchResponse {
   status: "queued" | "running" | "ready" | "failed";
   snapshot_revision: string | null;
   selected_season: number | null;
+  sources: string[];
   warnings: string[];
+  cache_age_seconds: number | null;
   error_code: string | null;
   created_at: string;
   updated_at: string;
