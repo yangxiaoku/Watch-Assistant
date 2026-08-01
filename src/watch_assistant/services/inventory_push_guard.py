@@ -39,8 +39,9 @@ class InventoryPushGuard:
     """Check every enabled library and fail closed on missing evidence.
 
     A worker may proceed only when all configured library scopes have a fresh,
-    complete snapshot and the candidate is not a duplicate or an unconfirmed
-    identity match.  The guard is read-only and never touches the 115 adapter.
+    complete snapshot and the candidate is not an exact duplicate.  Media,
+    version, and filename-candidate matches remain advisory.  The guard is
+    read-only and never touches the 115 adapter.
     """
 
     def __init__(
@@ -74,7 +75,7 @@ class InventoryPushGuard:
                 return InventoryPushCheck(False, "inventory_scope_unconfigured")
 
             probe = _resource_probe(resource)
-            review_decision: InventoryDecision | None = None
+            advisory_decision: InventoryDecision | None = None
             for library in libraries:
                 run = await session.scalar(
                     select(LibraryScanRun)
@@ -101,11 +102,23 @@ class InventoryPushGuard:
                     InventoryDecision.MEDIA_DUPLICATE,
                     InventoryDecision.VERSION_DUPLICATE,
                     InventoryDecision.NEEDS_REVIEW,
-                }:
-                    review_decision = decision
-            if review_decision is not None:
+                } and (
+                    advisory_decision is None
+                    or decision is InventoryDecision.VERSION_DUPLICATE
+                    or (
+                        decision is InventoryDecision.MEDIA_DUPLICATE
+                        and advisory_decision is InventoryDecision.NEEDS_REVIEW
+                    )
+                ):
+                    advisory_decision = decision
+            if advisory_decision is not None:
+                code_by_decision = {
+                    InventoryDecision.MEDIA_DUPLICATE: "inventory_media_duplicate",
+                    InventoryDecision.VERSION_DUPLICATE: "inventory_version_duplicate",
+                    InventoryDecision.NEEDS_REVIEW: "inventory_review_required",
+                }
                 return InventoryPushCheck(
-                    False, "inventory_review_required", review_decision
+                    True, code_by_decision[advisory_decision], advisory_decision
                 )
             return InventoryPushCheck(True, "inventory_not_found", InventoryDecision.NOT_FOUND)
 

@@ -115,6 +115,7 @@ class OrganizationAutomationResult:
     blocked_details: tuple[OrganizationBlockedDetail, ...] = ()
     plan_ids: tuple[str, ...] = ()
     finished_at: datetime | None = None
+    run_id: str | None = None
 
     def __repr__(self) -> str:
         return (
@@ -124,7 +125,8 @@ class OrganizationAutomationResult:
             f"blocked_count={self.blocked_count}, "
             f"blocked_detail_count={len(self.blocked_details)}, "
             f"plan_count={len(self.plan_ids)}, "
-            f"finished_at={self.finished_at!r})"
+            f"finished_at={self.finished_at!r}, "
+            f"run_id_present={self.run_id is not None})"
         )
 
 
@@ -160,9 +162,15 @@ class OrganizationAutomationService:
         self._lock = asyncio.Lock()
         self.last_result: OrganizationAutomationResult | None = None
 
-    async def run_once(self, *, manual_confirmation: bool = False) -> bool:
+    async def run_once(
+        self,
+        *,
+        manual_confirmation: bool = False,
+        run_id: str | None = None,
+    ) -> bool:
         """Run one bounded planning pass; return whether work was attempted."""
 
+        run_id = run_id or f"org_{uuid.uuid4().hex}"
         async with self._lock:
             settings = await self._settings.get_organization()
             if not settings.source_directory_ids or not settings.target_directory_id:
@@ -174,6 +182,7 @@ class OrganizationAutomationService:
                     blocked_count=1,
                     blocked_details=(_blocked_detail(None, "organization_settings_incomplete"),),
                     finished_at=datetime.now(UTC),
+                    run_id=run_id,
                 )
                 await self._log_blocked(None, "organization_settings_incomplete")
                 return False
@@ -193,6 +202,7 @@ class OrganizationAutomationService:
                     blocked_count=1,
                     blocked_details=(_blocked_detail(None, error_code, phase=phase),),
                     finished_at=datetime.now(UTC),
+                    run_id=run_id,
                 )
                 await self._log_blocked(None, error_code, phase=phase)
                 return True
@@ -205,6 +215,7 @@ class OrganizationAutomationService:
                 blocked_details=result.blocked_details,
                 plan_ids=result.plan_ids,
                 finished_at=datetime.now(UTC),
+                run_id=run_id,
             )
             return True
 

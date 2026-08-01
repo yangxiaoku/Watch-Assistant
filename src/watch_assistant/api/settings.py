@@ -65,6 +65,7 @@ def _organization_result_response(result) -> OrganizationAutomationResultRespons
             queued_count=0,
             blocked_count=0,
             blocked_details=[],
+            run_id=None,
         )
     return OrganizationAutomationResultResponse(
         status=(
@@ -85,6 +86,7 @@ def _organization_result_response(result) -> OrganizationAutomationResultRespons
             for detail in result.blocked_details
         ],
         finished_at=result.finished_at,
+        run_id=result.run_id,
     )
 
 
@@ -411,13 +413,16 @@ async def run_organization_now(
     controller = getattr(request.app.state, "organization_scheduler", None)
     if controller is None:
         raise HTTPException(status_code=503, detail="organization_schedule_unavailable")
-    await controller.request_run_now()
+    run_id = await controller.request_run_now()
+    if not isinstance(run_id, str) or not run_id:
+        run_id = None
     current = await settings.get_organization()
     return OrganizationScheduleActionResponse(
         action="run_now",
         queued=True,
         schedule_enabled=current.schedule_enabled,
         message_zh="整理已排队，当前任务完成后将立即执行。",
+        run_id=run_id,
     )
 
 
@@ -471,6 +476,7 @@ async def stop_organization(
         queued=False,
         schedule_enabled=False,
         message_zh="已关闭定时整理，并停止尚未开始的整理请求；正在执行的远端操作继续按安全流程收尾。",
+        run_id=None,
     )
 
 

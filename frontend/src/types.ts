@@ -421,6 +421,7 @@ export interface OrganizationScheduleActionResponse {
   queued: boolean;
   schedule_enabled: boolean;
   message_zh: string;
+  run_id: string | null;
 }
 
 export type OrganizationResultStatus = "unknown" | "success" | "skipped" | "deleted" | "replace" | "failed";
@@ -452,6 +453,7 @@ export interface OrganizationAutomationResultResponse {
   blocked_details: OrganizationBlockedDetail[];
   items: OrganizationResultItem[];
   finished_at: string | null;
+  run_id: string | null;
 }
 
 export interface PatchInspectionSettingsRequest {

@@ -647,7 +647,7 @@ async function loadOrganizationResult() {
   }
 }
 
-async function pollOrganizationResult(previousFinishedAt: string | null) {
+async function pollOrganizationResult(runId: string | null) {
   for (let attempt = 0; attempt < 60; attempt += 1) {
     await new Promise((resolve) => window.setTimeout(resolve, 500));
     try {
@@ -656,7 +656,7 @@ async function pollOrganizationResult(previousFinishedAt: string | null) {
       const pending = response.items?.some(
         (item) => item.status === "queued" || item.status === "organizing",
       );
-      if (response.finished_at && response.finished_at !== previousFinishedAt && !pending) {
+      if (runId && response.run_id === runId && response.finished_at && !pending) {
         organizationActionMessage.value = organizationResultActionMessage(response);
         return;
       }
@@ -789,10 +789,9 @@ async function runOrganizationNow() {
       await saveOrganization();
       if (organizationDirty.value || organizationSaveError.value) return;
     }
-    const previousFinishedAt = organizationResult.value?.finished_at ?? null;
     const response = await props.api.runOrganizationNow();
     organizationActionMessage.value = response.message_zh;
-    void pollOrganizationResult(previousFinishedAt);
+    void pollOrganizationResult(response.run_id);
   } catch (exception) {
     organizationActionMessage.value = exception instanceof ApiError
       ? `${exception.message}${exception.suggestion ? ` ${exception.suggestion}` : ""}`

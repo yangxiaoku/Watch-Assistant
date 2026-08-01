@@ -596,6 +596,7 @@ class OrganizationScheduleActionResponse(BaseModel):
     queued: bool
     schedule_enabled: bool
     message_zh: str
+    run_id: str | None = None
 
 
 class OrganizationBlockedDetailResponse(BaseModel):
@@ -637,6 +638,7 @@ class OrganizationAutomationResultResponse(BaseModel):
     blocked_details: list[OrganizationBlockedDetailResponse] = Field(default_factory=list)
     items: list[OrganizationResultItemResponse] = Field(default_factory=list)
     finished_at: datetime | None = None
+    run_id: str | None = None
 
 
 class OrganizationHistoryResponse(BaseModel):
