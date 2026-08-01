@@ -1,0 +1,16 @@
+[
+  {
+    "guid": "fixture:torrent:duplicate",
+    "size": 3221225472,
+    "indexerId": 303,
+    "indexer": "fixture-torrent-two",
+    "title": "Example Show S01E01 1080p WEB-DL",
+    "publishDate": "2026-07-26T00:00:00Z",
+    "infoHash": "0123456789abcdef0123456789abcdef01234567",
+    "seeders": 25,
+    "leechers": 3,
+    "protocol": "torrent",
+    "magnetUrl": null,
+    "downloadUrl": null
+  }
+]
