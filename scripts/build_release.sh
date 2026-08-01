@@ -44,5 +44,19 @@ EOF
 
 PACKAGE_FILE="$TEMP_DIR/$PACKAGE_NAME"
 tar -czf "$PACKAGE_FILE" -C "$TEMP_DIR" "watch-assistant-${COMMIT_HASH}"
+
+if [[ -x "$ROOT_DIR/.venv/bin/python" ]]; then
+    RELEASE_SMOKE_PYTHON="$ROOT_DIR/.venv/bin/python"
+elif [[ -x "$ROOT_DIR/.venv/Scripts/python.exe" ]]; then
+    RELEASE_SMOKE_PYTHON="$ROOT_DIR/.venv/Scripts/python.exe"
+else
+    RELEASE_SMOKE_PYTHON="${PYTHON_BIN:-python}"
+fi
+SMOKE_DIR="$TEMP_DIR/release-smoke"
+mkdir -p "$SMOKE_DIR"
+tar -xzf "$PACKAGE_FILE" -C "$SMOKE_DIR"
+"$RELEASE_SMOKE_PYTHON" \
+    "$SMOKE_DIR/watch-assistant-${COMMIT_HASH}/scripts/release_startup_smoke.py" \
+    --release-root "$SMOKE_DIR/watch-assistant-${COMMIT_HASH}"
 cp "$PACKAGE_FILE" "$OUTPUT_DIR/$PACKAGE_NAME"
 echo "$OUTPUT_DIR/$PACKAGE_NAME"
