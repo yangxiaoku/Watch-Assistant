@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -22,15 +23,71 @@ from watch_assistant.release_metadata import (
     read_release_commit,
 )
 
-_EFFECTIVE_RELEASE = re.compile(
-    r"(?:^|\s)WATCH_ASSISTANT_RELEASE=([0-9a-f]{7}|[0-9a-f]{40})(?:\s|$)",
-    re.IGNORECASE,
-)
+_RELEASE_ENV_NAME = "WATCH_ASSISTANT_RELEASE"
+_DEFAULT_RELEASE_ENV = Path("/var/lib/watch-assistant/release.env")
+_SYSTEMD_PROPERTIES = ("EnvironmentFiles", "MainPID", "WorkingDirectory")
 
 
-def _effective_release(systemctl_output: str) -> str | None:
-    match = _EFFECTIVE_RELEASE.search(systemctl_output.strip())
-    return normalize_release(match.group(1)) if match else None
+def _parse_systemd_properties(output: str) -> dict[str, str]:
+    properties: dict[str, str] = {}
+    for line in output.splitlines():
+        name, separator, value = line.partition("=")
+        if separator and name in _SYSTEMD_PROPERTIES:
+            properties[name] = value.strip()
+    return properties
+
+
+def _path_key(path: Path | str) -> str:
+    return os.path.normcase(os.path.abspath(os.path.normpath(os.fspath(path))))
+
+
+def _environment_file_paths(value: str) -> tuple[str, ...]:
+    paths: list[str] = []
+    for token in value.split():
+        if token.startswith("EnvironmentFiles="):
+            token = token.split("=", 1)[1]
+        if token.startswith("("):
+            continue
+        token = token.removeprefix("-")
+        if token.startswith("/") or re.match(r"^[A-Za-z]:[\\/]", token):
+            paths.append(_path_key(token))
+    return tuple(paths)
+
+
+def _read_release_env(path: Path) -> tuple[str | None, str]:
+    try:
+        content = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return None, "release_env_missing"
+
+    release: str | None = None
+    for line in content.splitlines():
+        name, separator, value = line.partition("=")
+        if separator and name.strip() == _RELEASE_ENV_NAME:
+            if release is not None:
+                return None, "release_env_invalid"
+            release = normalize_release(value.strip())
+            if release is None:
+                return None, "release_env_invalid"
+    if release is None:
+        return None, "release_env_invalid"
+    return release, "ok"
+
+
+def _read_service_identity(
+    properties: dict[str, str], current_root: Path
+) -> tuple[bool, str]:
+    try:
+        main_pid = int(properties.get("MainPID", "0"))
+    except ValueError:
+        return False, "main_pid_invalid"
+    if main_pid <= 0:
+        return False, "service_not_running"
+
+    working_directory = properties.get("WorkingDirectory", "").strip()
+    if not working_directory or _path_key(working_directory) != _path_key(current_root):
+        return False, "service_path_mismatch"
+    return True, "ok"
 
 
 def _read_health(url: str, timeout: float) -> str | None:
@@ -50,16 +107,30 @@ def check_release_consistency(
     health_url: str,
     systemctl_bin: str = "systemctl",
     stale_drop_in: Path | None = None,
+    release_env: Path = _DEFAULT_RELEASE_ENV,
+    current_root: Path | None = None,
     timeout: float = 5.0,
 ) -> tuple[bool, str]:
     expected = read_release_commit(version_file)
     if expected is None:
         return False, "version_invalid"
+    current_root = current_root or version_file.parent
+    current_release = read_release_commit(current_root / "VERSION")
+    if current_release is None:
+        return False, "current_version_invalid"
+    if current_release != expected:
+        return False, "current_release_mismatch"
     if stale_drop_in is not None and stale_drop_in.exists():
         return False, "stale_release_drop_in"
     try:
         result = subprocess.run(
-            [systemctl_bin, "show", unit, "--property=Environment", "--value", "--no-pager"],
+            [
+                systemctl_bin,
+                "show",
+                unit,
+                *[f"--property={name}" for name in _SYSTEMD_PROPERTIES],
+                "--no-pager",
+            ],
             capture_output=True,
             check=False,
             text=True,
@@ -69,11 +140,25 @@ def check_release_consistency(
         return False, "systemctl_unavailable"
     if result.returncode != 0:
         return False, "systemctl_show_failed"
-    effective = _effective_release(result.stdout)
+
+    properties = _parse_systemd_properties(result.stdout)
+    loaded_files = _environment_file_paths(properties.get("EnvironmentFiles", ""))
+    if _path_key(release_env) not in loaded_files:
+        return False, "release_env_not_loaded"
+    configured_release, release_env_code = _read_release_env(release_env)
+    if configured_release is None:
+        return False, release_env_code
+    if configured_release != expected:
+        return False, "release_env_mismatch"
+
+    service_ok, service_code = _read_service_identity(properties, current_root)
+    if not service_ok:
+        return False, service_code
+
     health = _read_health(health_url, timeout)
-    if effective is None or health is None:
-        return False, "release_not_reported"
-    if not (expected == effective == health):
+    if health is None:
+        return False, "health_not_reported"
+    if health != expected:
         return False, "release_mismatch"
     return True, "ok"
 
@@ -85,6 +170,8 @@ def main() -> int:
     parser.add_argument("--health-url", required=True)
     parser.add_argument("--systemctl-bin", default="systemctl")
     parser.add_argument("--stale-drop-in", type=Path)
+    parser.add_argument("--release-env", type=Path, default=_DEFAULT_RELEASE_ENV)
+    parser.add_argument("--current-root", type=Path)
     parser.add_argument("--timeout", type=float, default=5.0)
     args = parser.parse_args()
     passed, code = check_release_consistency(
@@ -93,6 +180,8 @@ def main() -> int:
         health_url=args.health_url,
         systemctl_bin=args.systemctl_bin,
         stale_drop_in=args.stale_drop_in,
+        release_env=args.release_env,
+        current_root=args.current_root,
         timeout=args.timeout,
     )
     if not passed:

@@ -53,3 +53,32 @@ def test_release_version_file_is_the_authoritative_source(tmp_path, monkeypatch)
     monkeypatch.setenv("WATCH_ASSISTANT_RELEASE", "0123456")
 
     assert module._resolve_release(release_root) == "abcdef1"
+
+
+def test_explicit_release_root_isolated_from_host_release_environment(
+    tmp_path, monkeypatch
+):
+    module = importlib.import_module("watch_assistant.app")
+    staging_root = tmp_path / "staging"
+    staging_root.mkdir()
+    staging_root.joinpath("VERSION").write_text(
+        "commit=abcdef1\nbuild_time=2026-08-02T00:00:00Z\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("WATCH_ASSISTANT_RELEASE", "0123456")
+
+    assert module._resolve_release(staging_root) == "abcdef1"
+
+
+def test_production_release_resolution_still_prefers_trusted_current_version(
+    tmp_path, monkeypatch
+):
+    module = importlib.import_module("watch_assistant.app")
+    current_root = tmp_path / "current"
+    current_root.mkdir()
+    current_root.joinpath("VERSION").write_text(
+        "commit=abcdef1\nbuild_time=2026-08-02T00:00:00Z\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(module, "_TRUSTED_RELEASE_PATH", current_root)
+    monkeypatch.setenv("WATCH_ASSISTANT_RELEASE", "0123456")
+
+    assert module._resolve_release() == "abcdef1"

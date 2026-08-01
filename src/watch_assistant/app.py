@@ -309,6 +309,7 @@ def create_app(
     task_adapter: TaskAdapter | None = None,
     inventory_guard: InventoryPushGuard | None = None,
     frontend_dir: Path | None = None,
+    release_root: Path | None = None,
     organization_plan_enabled: bool | None = None,
     organization_execution_enabled: bool | None = None,
     organization_write_enabled: bool | None = None,
@@ -1278,7 +1279,9 @@ def create_app(
             correlation_id=correlation_id,
         )
         return JSONResponse(status_code=500, content={"error": payload, "detail": "internal_error"})
-    application.state.release = _resolve_release()
+    # Only offline startup smoke injects an extracted release root. Production
+    # keeps the trusted /opt/watch-assistant/current/VERSION default.
+    application.state.release = _resolve_release(release_root)
     application.state.started_at = time.monotonic()
     application.state.organization_plan_enabled = (
         organization_plan_enabled
