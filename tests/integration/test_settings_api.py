@@ -383,7 +383,7 @@ async def test_strm_routes_enforce_independent_flags_and_reach_service(tmp_path)
         )
         assert stage["status"] == "failed"
         assert stage["child_type"] == "strm_operation"
-        assert stage["child_id"] == "strm_missing-scan"
+        assert stage["child_id"].startswith("strm_op_")
         notices = await client.get("/api/v1/notifications")
         assert notices.status_code == 200
         notice = next(

@@ -288,6 +288,7 @@ class StrmManifestListResponse(BaseModel):
 class StrmGenerationResponse(BaseModel):
     model_config = {"extra": "forbid"}
 
+    operation_id: str
     library_id: str
     scan_run_id: str
     generated: int = Field(ge=0)
@@ -295,6 +296,33 @@ class StrmGenerationResponse(BaseModel):
     skipped: int = Field(ge=0)
     failed: int = Field(ge=0)
     retired: int = Field(default=0, ge=0)
+
+
+class StrmOperationResponse(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    operation_id: str
+    library_id: str
+    source_scan_run_id: str
+    workflow_id: str | None = None
+    kind: Literal["full", "incremental", "cleanup"]
+    status: Literal["queued", "running", "succeeded", "failed"]
+    generated: int = Field(ge=0)
+    unchanged: int = Field(ge=0)
+    skipped: int = Field(ge=0)
+    failed: int = Field(ge=0)
+    retired: int = Field(ge=0)
+    error_code: str | None = None
+    created_at: datetime
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+
+
+class StrmOperationListResponse(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    items: list[StrmOperationResponse]
+    next_cursor: str | None = None
 
 
 class StrmCleanupPlanRequest(BaseModel):

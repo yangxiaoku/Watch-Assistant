@@ -191,6 +191,19 @@ input { outline: none; }
 .library-progress { display: inline-flex; align-items: center; gap: 7px; margin: 13px 0 0; color: #b9ec68; font-size: 12px; }
 .library-result { display: flex; flex-wrap: wrap; gap: 10px 18px; margin-top: 16px; padding: 12px; color: #bdc1ca; background: #202328; font-size: 12px; }
 .library-result strong { color: #f4f5f7; }
+.library-operation-section, .library-cleanup-plan { display: grid; gap: 11px; margin-top: 16px; padding: 14px; color: #c8d9ef; background: #202b39; border-left: 2px solid #68a0ff; }
+.library-operation-section.is-failed, .library-cleanup-plan.is-invalidated { color: #ffd1d7; background: #342126; border-left-color: #ff8193; }
+.library-cleanup-plan.is-applied { color: #d9edbb; background: #253021; border-left-color: #b9ec68; }
+.library-operation-section small { color: #8994a4; font-size: 10px; }
+.library-operation-stats { display: flex; flex-wrap: wrap; gap: 8px 16px; color: inherit; font-size: 12px; }
+.library-operation-error, .library-cleanup-note { margin: 0; color: inherit; font-size: 12px; line-height: 1.5; }
+.library-operation-list { display: grid; gap: 6px; }
+.library-operation-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 11px; color: #c8cbd2; background: #202328; font-size: 12px; }
+.library-operation-row > span { min-width: 0; }
+.library-operation-row strong, .library-operation-row small { display: block; }
+.library-operation-row small { margin-top: 4px; color: #858a94; font-size: 10px; }
+.danger-button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 38px; padding: 0 12px; color: #fff; background: #963f52; border: 1px solid #be6173; border-radius: 4px; font-size: 12px; font-weight: 750; }
+.danger-button:hover { background: #ad4a5f; }
 .library-output-section { margin-top: 24px; padding-top: 18px; border-top: 1px solid #2b2e34; }
 .library-section-heading { align-items: flex-end; margin-bottom: 11px; }
 .library-section-heading h3 { font-size: 16px; }
@@ -827,4 +840,7 @@ html, body, .app-shell { background: #151719; }
   .library-action-row button { width: 100%; }
   .library-detail-heading { align-items: stretch; flex-direction: column; }
   .library-detail-heading button { width: 100%; }
+  .library-operation-row { align-items: flex-start; flex-direction: column; }
+  .library-operation-row > span:last-child { color: #aeb2bb; }
+  .danger-button { width: 100%; }
 }

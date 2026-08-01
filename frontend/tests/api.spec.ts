@@ -32,6 +32,25 @@ describe("ApiClient season and inspection requests", () => {
     });
   });
 
+  it("parses the legacy structured STRM cleanup conflict as an ApiError", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      detail: {
+        code: "cleanup_plan_required",
+        message: "STRM 失效清理必须先预览并确认清理计划",
+        plan_id: "strm_cleanup_plan_private",
+      },
+    }), { status: 409 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const api = new ApiClient();
+
+    await expect(api.cleanupStrm("main", "scan-1")).rejects.toMatchObject({
+      status: 409,
+      code: "cleanup_plan_required",
+      message: "本次清理没有执行任何退休操作。",
+    });
+    await expect(api.cleanupStrm("main", "scan-1")).rejects.not.toHaveProperty("message", expect.stringContaining("strm_cleanup_plan_private"));
+  });
+
   it("uses notification list, read, and preference endpoints", async () => {
     const responses = [
       { items: [], unread_count: 0 },
@@ -199,9 +218,13 @@ describe("ApiClient season and inspection requests", () => {
       { plan_id: "plan-1", plan_hash: "a".repeat(64), status: "needs_review", revision: 1, expires_at: "2026-08-01T00:00:00Z", source_count: 1, action_count: 1, precondition_count: 1, alias: null },
       { items: [], next_cursor: null },
       { items: [], page: 1, page_size: 50, total: 0, total_pages: 0 },
-      { library_id: "main", scan_run_id: "scan-1", generated: 1, unchanged: 0, skipped: 0, failed: 0, retired: 0 },
-      { library_id: "main", scan_run_id: "scan-1", generated: 0, unchanged: 1, skipped: 0, failed: 0, retired: 0 },
-      { library_id: "main", scan_run_id: "scan-1", generated: 0, unchanged: 0, skipped: 0, failed: 0, retired: 1 },
+      { items: [], next_cursor: null },
+      { operation_id: "strm_op_full", library_id: "main", source_scan_run_id: "scan-1", workflow_id: null, kind: "full", status: "succeeded", generated: 1, unchanged: 0, skipped: 0, failed: 0, retired: 0, error_code: null, created_at: "2026-08-01T00:00:00Z", started_at: "2026-08-01T00:00:00Z", finished_at: "2026-08-01T00:00:01Z" },
+      { operation_id: "strm_op_full", library_id: "main", scan_run_id: "scan-1", generated: 1, unchanged: 0, skipped: 0, failed: 0, retired: 0 },
+      { operation_id: "strm_op_incremental", library_id: "main", scan_run_id: "scan-1", generated: 0, unchanged: 1, skipped: 0, failed: 0, retired: 0 },
+      { plan_id: "strm_cleanup_plan_1", library_id: "main", source_scan_run_id: "scan-1", source_snapshot_revision: 1, plan_hash: "a".repeat(64), status: "needs_review", revision: 1, expires_at: "2026-08-01T00:00:00Z", candidate_count: 1, executable_count: 1, blocked_count: 0 },
+      { plan_id: "strm_cleanup_plan_1", library_id: "main", source_scan_run_id: "scan-1", source_snapshot_revision: 1, plan_hash: "a".repeat(64), status: "needs_review", revision: 1, expires_at: "2026-08-01T00:00:00Z", candidate_count: 1, executable_count: 1, blocked_count: 0 },
+      { plan: { plan_id: "strm_cleanup_plan_1", library_id: "main", source_scan_run_id: "scan-1", source_snapshot_revision: 1, plan_hash: "a".repeat(64), status: "applied", revision: 2, expires_at: "2026-08-01T00:00:00Z", candidate_count: 1, executable_count: 1, blocked_count: 0 }, retired: 1 },
     ];
     const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(new Response(JSON.stringify(responses.shift()), { status: 200 })));
     vi.stubGlobal("fetch", fetchMock);
@@ -214,9 +237,13 @@ describe("ApiClient season and inspection requests", () => {
     await api.createOrganizationPreview("main", "scan-1");
     await api.libraryMedia("main");
     await api.strmManifest("main");
+    await api.strmOperations("main");
+    await api.strmOperation("strm_op_full");
     await api.generateStrm("main", "scan-1");
     await api.incrementalStrm("main", "scan-1");
-    await api.cleanupStrm("main", "scan-1");
+    await api.createStrmCleanupPlan("main", "scan-1");
+    await api.strmCleanupPlan("strm_cleanup_plan_1");
+    await api.applyStrmCleanupPlan("strm_cleanup_plan_1", { expectedRevision: 1, digest: "a".repeat(64), idempotencyKey: "cleanup-key" });
 
     expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
       "/api/v1/libraries?cursor=0&limit=50",
@@ -226,11 +253,21 @@ describe("ApiClient season and inspection requests", () => {
       "/api/v1/libraries/main/organization-preview",
       "/api/v1/libraries/main/media?cursor=0&limit=50",
       "/api/v1/libraries/main/strm-manifest?page=1&page_size=50",
+      "/api/v1/libraries/main/strm-operations?limit=20",
+      "/api/v1/strm-operations/strm_op_full",
       "/api/v1/libraries/main/strm-generation",
       "/api/v1/libraries/main/strm-incremental",
-      "/api/v1/libraries/main/strm-cleanup",
+      "/api/v1/libraries/main/strm-cleanup-plan",
+      "/api/v1/strm-cleanup-plans/strm_cleanup_plan_1",
+      "/api/v1/strm-cleanup-plans/strm_cleanup_plan_1/apply",
     ]);
     expect(JSON.parse(fetchMock.mock.calls[3][1].body as string).idempotency_key).toMatch(/^(wa-|[0-9a-f-]{36}$)/);
+    expect(JSON.parse(fetchMock.mock.calls[13][1].body as string)).toMatchObject({
+      expected_revision: 1,
+      digest: "a".repeat(64),
+      confirm: true,
+      idempotency_key: "cleanup-key",
+    });
   });
 
   it("reads the server-configured P115 root for library setup", async () => {

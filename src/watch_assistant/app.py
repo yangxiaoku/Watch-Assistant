@@ -63,7 +63,11 @@ from watch_assistant.api.workflows import router as workflows_router
 from watch_assistant.config import Settings, load_tgto_contract
 from watch_assistant.crypto import SecretCrypto
 from watch_assistant.db import Database, create_database, initialize_database
-from watch_assistant.library_models import MediaLibrary
+from watch_assistant.library_models import (
+    LibraryScanEntry,
+    LibraryScanRun,
+    MediaLibrary,
+)
 from watch_assistant.schemas import LoggingLevel
 from watch_assistant.security import SecurityManager
 from watch_assistant.services.agent_tokens import AgentTokenService
@@ -121,6 +125,7 @@ from watch_assistant.services.search import SearchService
 from watch_assistant.services.season_metadata import SeasonMetadataService
 from watch_assistant.services.settings import SettingsService
 from watch_assistant.services.strm_manifest import StrmManifestService
+from watch_assistant.services.strm_operations import StrmOperationService
 from watch_assistant.services.subscription_scheduler import SubscriptionScheduler
 from watch_assistant.services.subscriptions import SubscriptionService
 from watch_assistant.services.tasks import TaskService
@@ -139,6 +144,8 @@ _DEFAULT_PLAYBACK_NETWORKS = (
     "100.64.0.0/10",
     "fc00::/7",
 )
+_STRM_OPERATION_RECOVERY_INTERVAL_SECONDS = 60.0
+_STRM_OPERATION_STALE_AFTER = timedelta(minutes=30)
 
 
 async def _refresh_inventory_before_push(application: FastAPI) -> bool:
@@ -230,6 +237,59 @@ async def _refresh_inventory_before_push(application: FastAPI) -> bool:
     return True
 
 
+async def _current_managed_directory_ids(
+    session_factory,
+    directory_id: str,
+    parent_id: str,
+) -> frozenset[str]:
+    """Return one library's latest complete directory scope for a candidate."""
+
+    async with session_factory() as session:
+        runs = list(
+            (
+                await session.scalars(
+                    select(LibraryScanRun)
+                    .join(MediaLibrary, MediaLibrary.id == LibraryScanRun.library_id)
+                    .where(
+                        MediaLibrary.enabled.is_(True),
+                        MediaLibrary.scope_verified.is_(True),
+                        LibraryScanRun.root_directory_id
+                        == MediaLibrary.root_directory_id,
+                        LibraryScanRun.state == "completed",
+                        LibraryScanRun.complete.is_(True),
+                        LibraryScanRun.snapshot_revision.is_not(None),
+                    )
+                )
+            ).all()
+        )
+        latest: dict[str, LibraryScanRun] = {}
+        for run in runs:
+            current = latest.get(run.library_id)
+            if current is None or (
+                run.snapshot_revision or -1,
+                run.id,
+            ) > (
+                current.snapshot_revision or -1,
+                current.id,
+            ):
+                latest[run.library_id] = run
+        for run in latest.values():
+            directory_ids = set(
+                (
+                    await session.scalars(
+                        select(LibraryScanEntry.object_id).where(
+                            LibraryScanEntry.scan_run_id == run.id,
+                            LibraryScanEntry.is_directory.is_(True),
+                        )
+                    )
+                ).all()
+            )
+            scope = directory_ids | {run.root_directory_id}
+            if directory_id in scope and parent_id in scope:
+                return frozenset(scope)
+    return frozenset()
+
+
 def create_app(
     *,
     database: Database | None = None,
@@ -278,6 +338,8 @@ def create_app(
         organization_worker_task: asyncio.Task[None] | None = None
         dirty_stop: asyncio.Event | None = None
         dirty_task: asyncio.Task[None] | None = None
+        strm_recovery_stop: asyncio.Event | None = None
+        strm_recovery_task: asyncio.Task[None] | None = None
 
         async def apply_dirty_runtime(ready: bool) -> None:
             nonlocal dirty_stop, dirty_task
@@ -336,10 +398,19 @@ def create_app(
                         if not cookie:
                             raise EmptyDirectoryCleanupError("credentials_unavailable")
                         client = await asyncio.to_thread(_default_client_factory, cookie)
+                        managed_directory_ids = await _current_managed_directory_ids(
+                            application.state.database.session_factory,
+                            directory_id,
+                            parent_id,
+                        )
+                        if not managed_directory_ids:
+                            raise EmptyDirectoryCleanupError(
+                                "cleanup_scope_unverified"
+                            )
                         cleaner = LiveP115EmptyDirectoryCleaner(
                             client=client,
                             call_executor=p115_c03_timeout_executor,
-                            managed_directory_ids=(directory_id, parent_id),
+                            managed_directory_ids=managed_directory_ids,
                             scope_confirmed=True,
                         )
                         return await cleaner.cleanup(directory_id, parent_id, name)
@@ -779,6 +850,9 @@ def create_app(
             }
             application.state.p115_ready = False
             application.state.database = runtime_database
+            application.state.strm_operation_service = StrmOperationService(
+                runtime_database.session_factory
+            )
             application.state.inventory_push_guard = (
                 inventory_guard
                 if inventory_guard is not None
@@ -918,6 +992,41 @@ def create_app(
                     ),
                     name="watch-assistant-subscription-scheduler",
                 )
+        operation_database = getattr(application.state, "database", None)
+        if operation_database is not None:
+            operation_service = getattr(
+                application.state, "strm_operation_service", None
+            )
+            if not isinstance(operation_service, StrmOperationService):
+                operation_service = StrmOperationService(
+                    operation_database.session_factory
+                )
+                application.state.strm_operation_service = operation_service
+            await operation_service.recover_incomplete()
+            strm_recovery_stop = asyncio.Event()
+
+            async def run_strm_operation_recovery() -> None:
+                while not strm_recovery_stop.is_set():
+                    try:
+                        await operation_service.recover_stale(
+                            max_age=_STRM_OPERATION_STALE_AFTER
+                        )
+                    except Exception:  # noqa: BLE001 - recovery retries next tick
+                        await asyncio.sleep(_STRM_OPERATION_RECOVERY_INTERVAL_SECONDS)
+                        continue
+                    try:
+                        await asyncio.wait_for(
+                            strm_recovery_stop.wait(),
+                            timeout=_STRM_OPERATION_RECOVERY_INTERVAL_SECONDS,
+                        )
+                    except TimeoutError:
+                        continue
+
+            strm_recovery_task = asyncio.create_task(
+                run_strm_operation_recovery(),
+                name="watch-assistant-strm-operation-recovery",
+            )
+
         task_adapter_resource = getattr(application.state, "task_adapter", None)
         if task_adapter_resource is not None and not hasattr(
             application.state, "p115_ready"
@@ -992,6 +1101,11 @@ def create_app(
                 dirty_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await dirty_task
+            if strm_recovery_task is not None and strm_recovery_stop is not None:
+                strm_recovery_stop.set()
+                strm_recovery_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await strm_recovery_task
             if organization_task is not None and organization_stop is not None:
                 organization_stop.set()
                 organization_task.cancel()
@@ -1268,6 +1382,9 @@ def create_app(
             event_logger=application.state.settings_service,
         )
         application.state.strm_manifest_service = StrmManifestService(
+            database.session_factory
+        )
+        application.state.strm_operation_service = StrmOperationService(
             database.session_factory
         )
         application.state.mcp_service = McpService(

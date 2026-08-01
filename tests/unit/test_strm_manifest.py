@@ -248,7 +248,7 @@ async def test_cleanup_plan_apply_requires_digest_and_retires_only_managed_file(
 
         assert result.retired == 1
         assert result.plan.status == "applied"
-        assert repeated.retired == 0
+        assert repeated.retired == 1
         assert not (tmp_path / "output/Show/Episode.strm").exists()
         items, total = await manifest_service.list_current("library-strm")
         assert total == 0

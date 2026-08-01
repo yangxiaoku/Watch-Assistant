@@ -345,7 +345,7 @@ async def scan_library(
         page_size=1,
     )
     try:
-        result = await service.scan(payload.idempotency_key)
+        result = await service.scan_tree(payload.idempotency_key)
     except LibraryIndexError as error:
         raise HTTPException(status_code=409, detail=error.code) from None
     return LibraryScanSummary(
