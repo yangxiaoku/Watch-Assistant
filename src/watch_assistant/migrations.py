@@ -30,12 +30,34 @@ APPLICATION_SETTINGS_COLUMN_ADDITIONS = (
     ("managed_prowlarr_updated_at", "DATETIME"),
 )
 
+PROWLARR_APPLICATION_SETTINGS_COLUMN_ADDITIONS = (
+    ("managed_prowlarr_enabled", "BOOLEAN"),
+    ("managed_prowlarr_base_url", "TEXT"),
+    ("managed_prowlarr_api_key_encrypted", "TEXT"),
+    ("managed_prowlarr_updated_at", "DATETIME"),
+)
+
 
 def _add_application_settings_columns(connection: Connection) -> None:
     columns = {
         item["name"] for item in inspect(connection).get_columns("application_settings")
     }
     for name, definition in APPLICATION_SETTINGS_COLUMN_ADDITIONS:
+        if name not in columns:
+            connection.execute(
+                text(f"ALTER TABLE application_settings ADD COLUMN {name} {definition}")
+            )
+
+
+def _add_prowlarr_application_settings_columns(connection: Connection) -> None:
+    """Repair databases that recorded migration 001 before Prowlarr existed."""
+
+    if not inspect(connection).has_table("application_settings"):
+        return
+    columns = {
+        item["name"] for item in inspect(connection).get_columns("application_settings")
+    }
+    for name, definition in PROWLARR_APPLICATION_SETTINGS_COLUMN_ADDITIONS:
         if name not in columns:
             connection.execute(
                 text(f"ALTER TABLE application_settings ADD COLUMN {name} {definition}")
@@ -999,6 +1021,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration("055_strm_cleanup_idempotency", _add_strm_cleanup_idempotency),
     Migration("056_strm_operation_leases", _add_strm_operation_leases),
     Migration("057_empty_directory_cleanup_plans", _create_empty_directory_cleanup_plan_table),
+    Migration("058_prowlarr_application_settings_columns", _add_prowlarr_application_settings_columns),
 )
 
 

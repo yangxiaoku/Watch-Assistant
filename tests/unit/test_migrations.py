@@ -201,6 +201,79 @@ async def test_initialize_database_upgrades_legacy_settings_idempotently_without
 
 
 @pytest.mark.asyncio
+async def test_initialize_database_repairs_prowlarr_columns_after_recorded_legacy_migration(
+    tmp_path,
+):
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'watch.db'}")
+    legacy_migration_ids = [
+        migration.id
+        for migration in MIGRATIONS
+        if migration.id != "058_prowlarr_application_settings_columns"
+    ]
+    async with database.engine.begin() as connection:
+        await connection.exec_driver_sql(
+            """
+            CREATE TABLE application_settings (
+                id VARCHAR(16) PRIMARY KEY,
+                logging_level VARCHAR(16) NOT NULL,
+                retention_days INTEGER NOT NULL,
+                max_file_mb INTEGER NOT NULL,
+                inspection_auto_start_enabled BOOLEAN NOT NULL DEFAULT 1,
+                revision INTEGER NOT NULL,
+                content_policy_json TEXT NOT NULL DEFAULT '{}',
+                organization_settings_json TEXT NOT NULL DEFAULT '{}',
+                managed_tmdb_key_encrypted TEXT,
+                managed_tmdb_updated_at DATETIME,
+                managed_p115_cookie_encrypted TEXT,
+                managed_p115_updated_at DATETIME,
+                updated_at DATETIME NOT NULL
+            )
+            """
+        )
+        await connection.exec_driver_sql(
+            """
+            CREATE TABLE schema_migrations (
+                migration_id TEXT PRIMARY KEY,
+                applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        await connection.execute(
+            text(
+                "INSERT INTO schema_migrations (migration_id) VALUES (:migration_id)"
+            ),
+            [{"migration_id": migration_id} for migration_id in legacy_migration_ids],
+        )
+
+    await initialize_database(database.engine)
+
+    async with database.engine.connect() as connection:
+        columns = await connection.run_sync(
+            lambda sync_connection: {
+                item["name"]
+                for item in inspect(sync_connection).get_columns("application_settings")
+            }
+        )
+        migration_ids = list(
+            await connection.scalars(
+                text("SELECT migration_id FROM schema_migrations ORDER BY migration_id")
+            )
+        )
+
+    assert {
+        "managed_prowlarr_enabled",
+        "managed_prowlarr_base_url",
+        "managed_prowlarr_api_key_encrypted",
+        "managed_prowlarr_updated_at",
+    } <= columns
+    assert "058_prowlarr_application_settings_columns" in migration_ids
+
+    await initialize_database(database.engine)
+    assert await _applied_migration_ids(database) == [migration.id for migration in MIGRATIONS]
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_initialize_database_is_idempotent(tmp_path):
     database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'watch.db'}")
 
