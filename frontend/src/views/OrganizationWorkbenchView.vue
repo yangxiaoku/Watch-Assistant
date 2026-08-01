@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Ban, Check, ChevronRight, Eye, ListChecks, LoaderCircle, Play, RefreshCw, Tag } from "@lucide/vue";
+import { Ban, Check, ChevronRight, Eye, ListChecks, LoaderCircle, Play, RefreshCw, Search, Tag } from "@lucide/vue";
 import { computed, onMounted, ref } from "vue";
 import { ApiClient, ApiError, focusFirstFieldError } from "../api";
 import { describeUiError } from "../errorCatalog";
@@ -16,6 +16,8 @@ const nextCursor = ref<number | null>(null);
 const selected = ref<OrganizationPlanSummary | null>(null);
 const operation = ref<OrganizationOperationResponse | null>(null);
 const aliasInput = ref("");
+const searchQuery = ref("");
+const searchSourceIndex = ref(0);
 const loading = ref(false);
 const busy = ref(false);
 const error = ref("");
@@ -23,6 +25,8 @@ const notice = ref("");
 
 const selectedIsReviewable = computed(() => selected.value?.status === "needs_review");
 const selectedCanEdit = computed(() => selected.value?.status === "needs_review" || selected.value?.status === "planned");
+const selectedCanExecute = computed(() => selected.value?.can_execute === true);
+const executableItems = computed(() => items.value.filter((item) => item.can_execute));
 
 const statusLabel: Record<OrganizationPlanStatus, string> = {
   needs_review: "待确认",
@@ -84,6 +88,8 @@ async function loadPlans(cursor?: number) {
 function selectPlan(plan: OrganizationPlanSummary) {
   selected.value = plan;
   aliasInput.value = plan.alias ?? "";
+  searchQuery.value = "";
+  searchSourceIndex.value = 0;
   notice.value = "";
 }
 
@@ -94,7 +100,7 @@ async function refreshAfterConflict() {
 
 async function confirmPlan() {
   const plan = selected.value;
-  if (!plan || busy.value || !selectedIsReviewable.value) return;
+  if (!plan || busy.value || !selectedIsReviewable.value || !selectedCanExecute.value) return;
   await mutate("confirm", () => props.api.confirmOrganizationPlan(plan.plan_id, plan.revision));
 }
 
@@ -112,7 +118,7 @@ async function saveAlias() {
 
 async function queueOperation() {
   const plan = selected.value;
-  if (!plan || busy.value || plan.status !== "planned" || !props.executionEnabled) return;
+  if (!plan || busy.value || plan.status !== "planned" || !selectedCanExecute.value || !props.executionEnabled) return;
   busy.value = true;
   error.value = "";
   notice.value = "";
@@ -134,7 +140,7 @@ async function queueOperation() {
 
 async function confirmAndQueueOperation() {
   const plan = selected.value;
-  if (!plan || busy.value || plan.status !== "needs_review" || !props.executionEnabled) return;
+  if (!plan || busy.value || plan.status !== "needs_review" || !selectedCanExecute.value || !props.executionEnabled) return;
   busy.value = true;
   error.value = "";
   notice.value = "";
@@ -171,15 +177,45 @@ async function selectCandidate(candidate: OrganizationPlanSummary["candidates"][
     );
     selected.value = normalizePlan(updated);
     items.value = items.value.map((item) => item.plan_id === plan.plan_id ? normalizePlan(updated) : item);
-    if (updated.status === "planned" && props.executionEnabled) {
-      const queued = await props.api.queueOrganizationOperation(updated.plan_id, updated.revision);
-      await loadPlanOperation(updated);
-      await handleQueuedOperation(queued);
-    } else {
-      notice.value = updated.status === "planned" ? "已生成可执行计划" : "已选择影片，但分类或归档路径仍需检查";
-    }
+    notice.value = updated.status === "planned"
+      ? "已生成可执行计划，请确认后开始整理"
+      : "已选择影片，但分类或归档路径仍需检查";
   } catch (exception) {
     error.value = exception instanceof ApiError ? exception.message : "选择影片失败，请稍后重试";
+  } finally {
+    busy.value = false;
+  }
+}
+
+async function searchCandidates() {
+  const plan = selected.value;
+  const search = props.api.searchOrganizationCandidates;
+  if (
+    !plan
+    || busy.value
+    || plan.status !== "needs_review"
+    || typeof search !== "function"
+    || !searchQuery.value.trim()
+  ) return;
+  busy.value = true;
+  error.value = "";
+  notice.value = "";
+  try {
+    const updated = await search.call(
+      props.api,
+      plan.plan_id,
+      plan.revision,
+      searchQuery.value.trim(),
+      searchSourceIndex.value,
+    );
+    selected.value = normalizePlan(updated);
+    items.value = items.value.map((item) => item.plan_id === plan.plan_id ? normalizePlan(updated) : item);
+    notice.value = updated.candidates.length
+      ? "已找到候选，请选择正确影片"
+      : "未找到候选，请尝试更具体的片名或年份";
+  } catch (exception) {
+    focusFirstFieldError(exception);
+    error.value = exception instanceof ApiError ? exception.message : "候选搜索失败，请稍后重试";
   } finally {
     busy.value = false;
   }
@@ -199,18 +235,21 @@ async function handleQueuedOperation(queuedOperation: OrganizationOperationRespo
 }
 
 async function confirmAndQueueCurrentPage() {
-  if (!props.executionEnabled || activeStatus.value !== "needs_review" || !items.value.length || busy.value) return;
+  const executable = executableItems.value;
+  if (!props.executionEnabled || activeStatus.value !== "needs_review" || !executable.length || busy.value) return;
   busy.value = true;
   error.value = "";
   notice.value = "";
+  const skipped = items.value.length - executable.length;
   try {
     const response = await props.api.confirmAndQueueOrganizationOperations(
-      items.value.map((item) => ({ planId: item.plan_id, expectedRevision: item.revision })),
+      executable.map((item) => ({ planId: item.plan_id, expectedRevision: item.revision })),
     );
     const accepted = response.items.filter((item) => item.status !== "rejected").length;
     const rejected = response.items.filter((item) => item.status === "rejected");
     await loadPlans();
-    if (accepted) notice.value = `已确认并提交 ${accepted} 个整理计划，后台正在执行`;
+    if (accepted) notice.value = `已确认并提交 ${accepted} 个整理计划，后台正在执行${skipped ? `，跳过 ${skipped} 个待搜索或复核计划` : ""}`;
+    else if (skipped) notice.value = `当前页没有新的整理操作，已跳过 ${skipped} 个待搜索或复核计划`;
     if (rejected.length) {
       error.value = `${rejected.length} 个计划未提交：${rejected[0].message}`;
     }
@@ -320,6 +359,8 @@ onMounted(() => {
           <div><dt>版本</dt><dd>{{ selected.revision }}</dd></div>
           <div><dt>来源条目</dt><dd>{{ selected.source_count }}</dd></div>
           <div><dt>预览动作</dt><dd>{{ selected.action_count }}</dd></div>
+          <div><dt>可执行移动</dt><dd>{{ selected.executable_action_count }}</dd></div>
+          <div><dt>待复核动作</dt><dd>{{ selected.review_action_count }}</dd></div>
           <div><dt>前置条件</dt><dd>{{ selected.precondition_count }}</dd></div>
         </dl>
         <div v-if="selected.status === 'needs_review' && selected.candidates.length" class="organization-candidate-list">
@@ -328,6 +369,15 @@ onMounted(() => {
             <span>{{ candidate.title }}</span><small>{{ candidate.media_type === 'tv' ? '剧集' : '电影' }}<template v-if="candidate.release_year"> · {{ candidate.release_year }}</template></small>
           </button>
         </div>
+        <form v-if="selected.status === 'needs_review'" class="organization-candidate-search" @submit.prevent="searchCandidates">
+          <div class="organization-candidate-search-heading"><strong>没有合适结果？手动搜索 TMDB</strong><small>搜索结果只用于本地预览，选择后再确认整理</small></div>
+          <label v-if="selected.source_count > 1" for="organization-source-index">来源条目
+            <select id="organization-source-index" v-model.number="searchSourceIndex" :disabled="busy">
+              <option v-for="index in selected.source_count" :key="index - 1" :value="index - 1">来源条目 {{ index }}</option>
+            </select>
+          </label>
+          <div class="organization-candidate-search-controls"><input id="organization-candidate-query" v-model="searchQuery" type="search" maxlength="200" placeholder="输入片名或年份" autocomplete="off" /><button class="secondary-button" type="submit" :disabled="busy || !searchQuery.trim()"><LoaderCircle v-if="busy" class="spin" :size="15" /><Search v-else :size="15" />搜索候选</button></div>
+        </form>
         <p class="organization-safe-note">预览只显示本地摘要。</p>
         <div v-if="operation" class="organization-operation-status" :class="{ failed: operation.status === 'failed', uncertain: operation.status === 'uncertain' }">
           <strong>整理操作：{{ operationStatusLabel[operation.status] }}</strong>
@@ -336,9 +386,9 @@ onMounted(() => {
           <span v-else-if="operation.status === 'organizing'">后台正在执行，页面刷新后仍会保留当前状态。</span>
         </div>
         <div v-if="selectedCanEdit || (selected.status === 'planned' && executionEnabled)" class="organization-actions">
-          <button v-if="selectedIsReviewable && executionEnabled && !selected.candidates.length" class="primary-button" type="button" :disabled="busy" @click="confirmAndQueueOperation"><Play :size="16" />确认并开始整理</button>
-          <button v-else-if="selectedIsReviewable" class="primary-button" type="button" :disabled="busy" @click="confirmPlan"><Check :size="16" />确认本地计划</button>
-          <button v-if="selected.status === 'planned' && executionEnabled" class="primary-button" type="button" :disabled="busy" @click="queueOperation"><Play :size="16" />立即整理</button>
+          <button v-if="selectedIsReviewable && executionEnabled && selectedCanExecute" class="primary-button" type="button" :disabled="busy" @click="confirmAndQueueOperation"><Play :size="16" />确认并开始整理</button>
+          <button v-else-if="selectedIsReviewable && selectedCanExecute" class="primary-button" type="button" :disabled="busy" @click="confirmPlan"><Check :size="16" />确认本地计划</button>
+          <button v-if="selected.status === 'planned' && executionEnabled && selectedCanExecute" class="primary-button" type="button" :disabled="busy" @click="queueOperation"><Play :size="16" />立即整理</button>
           <button class="secondary-button" type="button" :disabled="busy" @click="ignorePlan"><Ban :size="16" />忽略</button>
         </div>
         <form v-if="selectedCanEdit" class="organization-alias" @submit.prevent="saveAlias">

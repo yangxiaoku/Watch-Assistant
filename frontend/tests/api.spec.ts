@@ -196,7 +196,7 @@ describe("ApiClient season and inspection requests", () => {
       { library_id: "main", name: "115 媒体库", root_directory_id: "123", enabled: false, scope_verified: false, revision: 1, latest_scan: null },
       { library: { library_id: "main", name: "115 媒体库", root_directory_id: "123", enabled: true, scope_verified: true, revision: 2, latest_scan: null }, verified: true, enabled: true },
       { run_id: "scan-1", state: "completed", complete: true, snapshot_revision: 1, pages_read: 1, items_seen: 1, added_count: 1, changed_count: 0, removed_count: 0, error_code: null },
-      { plan_id: "plan-1", plan_hash: "a".repeat(64), status: "needs_review", revision: 1, expires_at: "2026-08-01T00:00:00Z", source_count: 1, action_count: 1, precondition_count: 1, alias: null },
+      { plan_id: "plan-1", plan_hash: "a".repeat(64), status: "needs_review", revision: 1, expires_at: "2026-08-01T00:00:00Z", source_count: 1, action_count: 1, precondition_count: 1, executable_action_count: 0, review_action_count: 1, can_execute: false, alias: null },
       { items: [], next_cursor: null },
       { items: [], page: 1, page_size: 50, total: 0, total_pages: 0 },
       { library_id: "main", scan_run_id: "scan-1", generated: 1, unchanged: 0, skipped: 0, failed: 0, retired: 0 },

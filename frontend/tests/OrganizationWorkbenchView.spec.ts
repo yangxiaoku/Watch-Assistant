@@ -13,7 +13,10 @@ const plan: OrganizationPlanSummary = {
   expires_at: "2026-08-01T00:00:00Z",
   source_count: 2,
   action_count: 1,
-  precondition_count: 2,
+  precondition_count: 1,
+  executable_action_count: 1,
+  review_action_count: 0,
+  can_execute: true,
   alias: null,
 };
 
@@ -87,7 +90,14 @@ describe("OrganizationWorkbenchView", () => {
   });
 
   it("confirms and queues all visible review plans in one action", async () => {
-    const second = { ...plan, plan_id: "plan-local-2", revision: 2 };
+    const second = {
+      ...plan,
+      plan_id: "plan-local-2",
+      revision: 2,
+      executable_action_count: 0,
+      review_action_count: 1,
+      can_execute: false,
+    };
     const api = makeApi({
       organizationPlans: vi.fn()
         .mockResolvedValueOnce({ items: [plan, second], next_cursor: null })
@@ -95,7 +105,6 @@ describe("OrganizationWorkbenchView", () => {
       confirmAndQueueOrganizationOperations: vi.fn().mockResolvedValue({
         items: [
           { plan_id: plan.plan_id, operation_id: "op-1", status: "planned", revision: 1, attempts: 0, error_code: null, message: "整理操作已排队" },
-          { plan_id: second.plan_id, operation_id: "op-2", status: "planned", revision: 1, attempts: 0, error_code: null, message: "整理操作已排队" },
         ],
       }),
     });
@@ -107,9 +116,9 @@ describe("OrganizationWorkbenchView", () => {
 
     expect(api.confirmAndQueueOrganizationOperations).toHaveBeenCalledWith([
       { planId: plan.plan_id, expectedRevision: plan.revision },
-      { planId: second.plan_id, expectedRevision: second.revision },
     ]);
-    expect(wrapper.text()).toContain("已确认并提交 2 个整理计划");
+    expect(wrapper.text()).toContain("已确认并提交 1 个整理计划");
+    expect(wrapper.text()).toContain("跳过 1 个待搜索或复核计划");
   });
 
   it("passes the selected revision when saving a local alias", async () => {
@@ -139,6 +148,106 @@ describe("OrganizationWorkbenchView", () => {
     await flushPromises();
     expect(api.queueOrganizationOperation).toHaveBeenCalledWith("plan-local-1", 4);
     expect(wrapper.text()).toContain("整理已提交，后台正在执行");
+  });
+
+  it("does not queue immediately after selecting a candidate", async () => {
+    const reviewPlan = {
+      ...plan,
+      candidates: [{
+        source_object_id: "source-1",
+        tmdb_id: 42,
+        title: "The Office",
+        media_type: "movie" as const,
+        release_year: 2005,
+      }],
+    };
+    const api = makeApi({
+      organizationPlans: vi.fn().mockResolvedValue({ items: [reviewPlan], next_cursor: null }),
+      selectOrganizationCandidate: vi.fn().mockResolvedValue({
+        ...reviewPlan,
+        status: "planned",
+        revision: 5,
+        candidates: [],
+        executable_action_count: 1,
+        review_action_count: 0,
+        can_execute: true,
+      }),
+      queueOrganizationOperation: vi.fn().mockResolvedValue({
+        operation_id: "op-after-selection",
+        plan_id: plan.plan_id,
+        status: "organized",
+        revision: 1,
+        attempts: 1,
+        error_code: null,
+        cancel_requested: false,
+      }),
+    });
+    const wrapper = mount(OrganizationWorkbenchView, { props: { api, executionEnabled: true } });
+    await flushPromises();
+
+    await wrapper.get(".organization-candidate").trigger("click");
+    await flushPromises();
+
+    expect(api.selectOrganizationCandidate).toHaveBeenCalledWith("plan-local-1", 4, "source-1", 42);
+    expect(api.queueOrganizationOperation).not.toHaveBeenCalled();
+    expect(wrapper.text()).toContain("已生成可执行计划，请确认后开始整理");
+
+    await wrapper.findAll("button").find((button) => button.text().includes("立即整理"))!.trigger("click");
+    await flushPromises();
+    expect(api.queueOrganizationOperation).toHaveBeenCalledWith("plan-local-1", 5);
+    expect(wrapper.text()).toContain("整理已完成");
+  });
+
+  it("keeps a no-candidate plan review-only until manual search and selection create a move", async () => {
+    const reviewOnly = {
+      ...plan,
+      candidates: [],
+      executable_action_count: 0,
+      review_action_count: 1,
+      can_execute: false,
+    };
+    const searched = {
+      ...reviewOnly,
+      revision: 5,
+      candidates: [{
+        source_object_id: "source-1",
+        tmdb_id: 42,
+        title: "The Office",
+        media_type: "movie" as const,
+        release_year: 2005,
+      }],
+    };
+    const planned = {
+      ...searched,
+      status: "planned" as const,
+      revision: 6,
+      candidates: [],
+      executable_action_count: 1,
+      review_action_count: 0,
+      can_execute: true,
+    };
+    const api = makeApi({
+      organizationPlans: vi.fn().mockResolvedValue({ items: [reviewOnly], next_cursor: null }),
+      searchOrganizationCandidates: vi.fn().mockResolvedValue(searched),
+      selectOrganizationCandidate: vi.fn().mockResolvedValue(planned),
+      queueOrganizationOperation: vi.fn().mockResolvedValue({ operation_id: "op-manual", plan_id: plan.plan_id, status: "organized", revision: 1, attempts: 1, error_code: null, cancel_requested: false }),
+    });
+    const wrapper = mount(OrganizationWorkbenchView, { props: { api, executionEnabled: true } });
+    await flushPromises();
+
+    expect(wrapper.findAll("button").some((button) => button.text().includes("确认并开始整理"))).toBe(false);
+    await wrapper.get("#organization-candidate-query").setValue("The Office 2005");
+    await wrapper.get(".organization-candidate-search").trigger("submit");
+    await flushPromises();
+    expect(api.searchOrganizationCandidates).toHaveBeenCalledWith("plan-local-1", 4, "The Office 2005", 0);
+
+    await wrapper.get(".organization-candidate").trigger("click");
+    await flushPromises();
+    expect(api.selectOrganizationCandidate).toHaveBeenCalledWith("plan-local-1", 5, "source-1", 42);
+    expect(wrapper.text()).toContain("可执行移动");
+    await wrapper.findAll("button").find((button) => button.text().includes("立即整理"))!.trigger("click");
+    await flushPromises();
+    expect(api.queueOrganizationOperation).toHaveBeenCalledWith("plan-local-1", 6);
   });
 
   it("shows the durable operation failure instead of a generic page error", async () => {

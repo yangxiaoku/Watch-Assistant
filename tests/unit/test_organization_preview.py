@@ -153,6 +153,25 @@ async def test_preview_uses_scan_snapshot_and_requires_verified_target(
 
 
 @pytest.mark.asyncio
+async def test_manual_preview_keeps_high_confidence_plan_waiting_for_confirmation(
+    tmp_path: Path,
+):
+    database = await _database(tmp_path, target_exists=True)
+    service = OrganizationPreviewService(
+        database.session_factory, _TmdbClient(), OrganizationPlanService(database.session_factory)
+    )
+
+    result = await service.create_preview(
+        library_id="library-preview",
+        scan_run_id="scan-preview",
+        manual_confirmation=True,
+    )
+
+    assert result.status is OrganizationPlanStatus.NEEDS_REVIEW
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_preview_can_limit_sources_to_a_verified_directory(tmp_path: Path):
     database = await _database(tmp_path, target_exists=False)
     async with database.session_factory() as session:

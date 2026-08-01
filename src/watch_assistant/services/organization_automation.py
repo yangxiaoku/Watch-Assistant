@@ -380,6 +380,7 @@ class OrganizationAutomationService:
                     plan_ids.append(plan.plan_id)
                     if (
                         self._auto_execute
+                        and not manual_confirmation
                         and self._operations is not None
                         and plan.status is OrganizationPlanStatus.PLANNED
                     ):

@@ -360,3 +360,13 @@ async def test_probe_is_explicitly_offline_only_and_protocol_has_no_writes():
         "get_directory_detail",
     }
     assert not any(name.startswith("write") for name in P115LibraryGateway.__dict__)
+
+
+def test_read_only_library_contract_has_no_organization_write_surface():
+    public_methods = {
+        name for name in P115LibraryGateway.__dict__ if not name.startswith("_")
+    }
+
+    assert public_methods.isdisjoint(
+        {"move", "rename", "recycle", "delete", "create_directory"}
+    )

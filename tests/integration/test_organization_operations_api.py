@@ -40,10 +40,25 @@ from watch_assistant.services.organization_plan import (
     OrganizationPlanItem,
     OrganizationPlanService,
     PlanSource,
+    _entry_remote_version,
 )
 
 WEB_PASSWORD = "organization-operation-password"
 REMOTE_SECRET = "remote-id-private"
+
+
+def _source_version() -> str:
+    return _entry_remote_version(
+        LibraryScanEntry(
+            scan_run_id="scan-operation",
+            object_type="file",
+            object_id="source-operation",
+            parent_id="root-operation",
+            name="movie.mkv",
+            path="/private/movie.mkv",
+            is_directory=False,
+        )
+    )
 
 
 class _FakeClient:
@@ -180,7 +195,7 @@ async def _client(
                         object_id="source-operation",
                         parent_id="root-operation",
                         path="/private/movie.mkv",
-                        remote_version="remote-v1",
+                        remote_version=_source_version(),
                     ),
                     naming_plan=NamingPlan(
                         status=ClassificationStatus.PLANNED,
