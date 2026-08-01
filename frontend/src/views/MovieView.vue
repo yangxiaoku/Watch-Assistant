@@ -67,7 +67,12 @@ function posterUrl(path: string | null): string | null {
 }
 
 function warningLabel(value: string): string {
-  return value === "resource_mismatch_filtered" ? "已隐藏与当前影视不匹配的资源" : value;
+  if (value === "resource_mismatch_filtered") return "已隐藏与当前影视不匹配的资源";
+  if (value === "partial_upstream") return "部分搜索来源暂时不可用";
+  if (value === "prowlarr_unsupported_results") return "Prowlarr 返回了不支持的资源类型，已跳过";
+  if (value.startsWith("prowlarr_query_failed:")) return "Prowlarr 搜索暂时不可用";
+  if (value.startsWith("pansou_query_failed:")) return "PanSou 部分查询暂时不可用";
+  return value;
 }
 </script>
 

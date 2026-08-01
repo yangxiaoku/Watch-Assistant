@@ -3,10 +3,12 @@
 import base64
 import binascii
 import re
+from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+from watch_assistant.adapters.prowlarr import ProwlarrRelease
 from watch_assistant.schemas import NormalizedResource, ResourceKind
 
 HEX_INFOHASH = re.compile(r"[0-9A-Fa-f]{40}")
@@ -62,6 +64,50 @@ def normalize_pansou(
                     existing, resource
                 )
     return [resources_by_key[key] for key in ordered_keys]
+
+
+def normalize_prowlarr(
+    releases: Iterable[ProwlarrRelease],
+    *,
+    captured_at: datetime | None = None,
+) -> list[NormalizedResource]:
+    """Map verified torrent releases into the common magnet resource shape."""
+    fallback_time = captured_at or datetime.now(UTC)
+    resources: list[NormalizedResource] = []
+    for release in releases:
+        magnet = _parse_magnet(release.magnet_url)
+        if magnet is None:
+            continue
+        canonical_key, display_name = magnet
+        url = release.magnet_url
+        if display_name is None:
+            url = _add_magnet_dn(url, release.title)
+        metadata: dict[str, Any] = {
+            "category": "magnet",
+            "prowlarr_protocol": release.protocol,
+        }
+        if release.indexer:
+            metadata["prowlarr_indexer"] = release.indexer
+        if release.indexer_id is not None:
+            metadata["prowlarr_indexer_id"] = release.indexer_id
+        if release.size_bytes is not None:
+            metadata["size_source"] = "prowlarr"
+        if release.seeders is not None:
+            metadata["seeders_source"] = "prowlarr"
+        resources.append(
+            NormalizedResource(
+                kind=ResourceKind.MAGNET,
+                canonical_key=canonical_key,
+                name=release.title,
+                url=url,
+                size_bytes=release.size_bytes,
+                seeders=release.seeders,
+                source="prowlarr",
+                captured_at=_parse_datetime(release.publish_date) or fallback_time,
+                metadata=metadata,
+            )
+        )
+    return resources
 
 
 def _normalize_item(

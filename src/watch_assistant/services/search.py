@@ -20,6 +20,7 @@ from watch_assistant.adapters.pansou import (
     PanSouClient,
     PanSouError,
 )
+from watch_assistant.adapters.prowlarr import ProwlarrClient, ProwlarrSearchResult
 from watch_assistant.adapters.tmdb import TmdbClient, TmdbError, build_search_queries
 from watch_assistant.crypto import SecretCrypto
 from watch_assistant.models import (
@@ -50,6 +51,7 @@ from watch_assistant.services.content_policy import (
 from watch_assistant.services.normalize import (
     merge_normalized_resources,
     normalize_pansou,
+    normalize_prowlarr,
 )
 from watch_assistant.services.observability import EventLogger, emit_event
 from watch_assistant.services.validation import (
@@ -128,18 +130,25 @@ class SearchService:
         *,
         tmdb_client: TmdbClient,
         pansou_client: PanSouClient,
+        prowlarr_client: ProwlarrClient | None = None,
         crypto: SecretCrypto,
         share_domains: tuple[str, ...] = ("115.com", "115cdn.com"),
         pansou_max_concurrency: int = 6,
+        prowlarr_max_concurrency: int = 4,
         event_logger: EventLogger | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._tmdb = tmdb_client
         self._pansou = pansou_client
+        self._prowlarr = prowlarr_client
         self._crypto = crypto
         self._share_domains = share_domains
         self._event_logger = event_logger
         self._pansou_limit = asyncio.Semaphore(max(1, pansou_max_concurrency))
+        self._prowlarr_limit = asyncio.Semaphore(max(1, prowlarr_max_concurrency))
+        self._prowlarr_state_lock = asyncio.Lock()
+        self._prowlarr_usage: dict[int, int] = {}
+        self._prowlarr_idle: dict[int, asyncio.Event] = {}
         self._search_locks: dict[tuple[MediaType, int], asyncio.Lock] = {}
         self._resource_search_tasks: dict[
             tuple[MediaType, int, int | None], _ResourceSearchTask
@@ -657,21 +666,10 @@ class SearchService:
                 )
 
         queries = build_search_queries(media, season_number)
-        query_results = await asyncio.gather(
-            *(self._query_pansou(query) for query in queries),
-            return_exceptions=True,
+        successful_pansou, successful_prowlarr, warnings, complete = (
+            await self._query_sources(queries)
         )
-        successful = [
-            (query, result)
-            for query, result in zip(queries, query_results, strict=True)
-            if isinstance(result, dict)
-        ]
-        warnings = [
-            f"pansou_query_failed:{index + 1}"
-            for index, result in enumerate(query_results)
-            if isinstance(result, Exception)
-        ]
-        if not successful:
+        if not successful_pansou and not successful_prowlarr:
             if cache_usable and cache is not None:
                 return self._response(
                     media,
@@ -684,10 +682,17 @@ class SearchService:
                     score_snapshot=cached_scores,
                     policy=policy,
                 )
-            raise SearchUnavailable("pansou_unavailable")
+            raise SearchUnavailable(
+                "resource_search_unavailable"
+                if self._prowlarr is not None
+                else "pansou_unavailable"
+            )
 
-        complete = len(successful) == len(query_results)
-        normalized = self._normalize_results(successful, now)
+        normalized = self._normalize_results(successful_pansou, now)
+        normalized = self._merge_normalized_results(
+            normalized,
+            self._normalize_prowlarr_results(successful_prowlarr, now),
+        )
         alternative_titles: tuple[str, ...] = ()
         candidates, rejected = validate_and_rank_resources(
             media,
@@ -708,22 +713,27 @@ class SearchService:
                 )
                 alternative_titles = tuple(fallback_queries)
                 if fallback_queries:
-                    fallback_results = await asyncio.gather(
-                        *(self._query_pansou(query) for query in fallback_queries),
-                        return_exceptions=True,
-                    )
-                    fallback_successful = [
-                        (query, result)
-                        for query, result in zip(
-                            fallback_queries, fallback_results, strict=True
+                    (
+                        fallback_pansou,
+                        fallback_prowlarr,
+                        fallback_warnings,
+                        fallback_complete,
+                    ) = await self._query_sources(fallback_queries)
+                    warnings = _merge_warnings(warnings, fallback_warnings)
+                    complete = fallback_complete
+                    if fallback_pansou or fallback_prowlarr:
+                        fallback_normalized = self._normalize_results(
+                            fallback_pansou, now
                         )
-                        if isinstance(result, dict)
-                    ]
-                    complete = len(fallback_successful) == len(fallback_results)
-                    if fallback_successful:
+                        fallback_normalized = self._merge_normalized_results(
+                            fallback_normalized,
+                            self._normalize_prowlarr_results(
+                                fallback_prowlarr, now
+                            ),
+                        )
                         normalized = self._merge_normalized_results(
                             normalized,
-                            self._normalize_results(fallback_successful, now),
+                            fallback_normalized,
                         )
                         candidates, rejected = validate_and_rank_resources(
                             media,
@@ -876,6 +886,112 @@ class SearchService:
         async with self._pansou_limit:
             return await self._pansou.search(query)
 
+    async def _query_prowlarr(self, query: str) -> ProwlarrSearchResult:
+        async with self._prowlarr_state_lock:
+            client = self._prowlarr
+            if client is None:
+                raise RuntimeError("Prowlarr client is not configured")
+            client_key = id(client)
+            self._prowlarr_usage[client_key] = (
+                self._prowlarr_usage.get(client_key, 0) + 1
+            )
+            idle = self._prowlarr_idle.setdefault(client_key, asyncio.Event())
+            idle.clear()
+        try:
+            async with self._prowlarr_limit:
+                return await client.search(query)
+        finally:
+            async with self._prowlarr_state_lock:
+                usage = self._prowlarr_usage[client_key] - 1
+                if usage:
+                    self._prowlarr_usage[client_key] = usage
+                else:
+                    self._prowlarr_usage.pop(client_key, None)
+                    self._prowlarr_idle[client_key].set()
+
+    async def replace_prowlarr_client(
+        self, client: ProwlarrClient | None
+    ) -> None:
+        async with self._prowlarr_state_lock:
+            previous = self._prowlarr
+            self._prowlarr = client
+            if previous is None or previous is client:
+                idle = None
+            else:
+                idle = self._prowlarr_idle.setdefault(id(previous), asyncio.Event())
+                if not self._prowlarr_usage.get(id(previous), 0):
+                    idle.set()
+        if previous is not None and previous is not client and idle is not None:
+            await idle.wait()
+            close = getattr(previous, "aclose", None)
+            if callable(close):
+                await close()
+
+    async def _query_sources(
+        self, queries: tuple[str, ...]
+    ) -> tuple[
+        list[tuple[str, dict]],
+        list[tuple[str, ProwlarrSearchResult]],
+        list[str],
+        bool,
+    ]:
+        async def safe_pansou(query: str) -> dict | BaseException:
+            try:
+                return await self._query_pansou(query)
+            except Exception as exc:  # noqa: BLE001 - source failure is degraded
+                return exc
+
+        if self._prowlarr is None:
+            pansou_results = await asyncio.gather(
+                *(safe_pansou(query) for query in queries)
+            )
+            successful = [
+                (query, result)
+                for query, result in zip(queries, pansou_results, strict=True)
+                if isinstance(result, dict)
+            ]
+            warnings = [
+                f"pansou_query_failed:{index + 1}"
+                for index, result in enumerate(pansou_results)
+                if isinstance(result, BaseException)
+            ]
+            return successful, [], warnings, not warnings
+
+        async def safe_prowlarr(query: str) -> ProwlarrSearchResult | BaseException:
+            try:
+                return await self._query_prowlarr(query)
+            except Exception as exc:  # noqa: BLE001 - source failure is degraded
+                return exc
+
+        query_results = await asyncio.gather(
+            *(
+                asyncio.gather(safe_pansou(query), safe_prowlarr(query))
+                for query in queries
+            )
+        )
+        successful_pansou: list[tuple[str, dict]] = []
+        successful_prowlarr: list[tuple[str, ProwlarrSearchResult]] = []
+        warnings: list[str] = []
+        for index, (pansou_result, prowlarr_result) in enumerate(
+            query_results, start=1
+        ):
+            if isinstance(pansou_result, dict):
+                successful_pansou.append((queries[index - 1], pansou_result))
+            else:
+                warnings.append(f"pansou_query_failed:{index}")
+            if isinstance(prowlarr_result, ProwlarrSearchResult):
+                successful_prowlarr.append((queries[index - 1], prowlarr_result))
+                if prowlarr_result.unsupported_count:
+                    warnings.append("prowlarr_unsupported_results")
+            else:
+                warnings.append(f"prowlarr_query_failed:{index}")
+        return (
+            successful_pansou,
+            successful_prowlarr,
+            _merge_warnings(warnings, []),
+            not any("_query_failed:" in warning for warning in warnings),
+        )
+
     def _normalize_results(
         self,
         results: list[tuple[str, dict]],
@@ -888,6 +1004,24 @@ class SearchService:
                 share_domains=self._share_domains,
                 captured_at=now,
             ):
+                resource.metadata["search_queries"] = [query]
+                resource.metadata["sources"] = [resource.source]
+                existing = normalized_by_key.get(resource.canonical_key)
+                normalized_by_key[resource.canonical_key] = (
+                    resource
+                    if existing is None
+                    else _merge_normalized(existing, resource)
+                )
+        return list(normalized_by_key.values())
+
+    def _normalize_prowlarr_results(
+        self,
+        results: list[tuple[str, ProwlarrSearchResult]],
+        now: datetime,
+    ) -> list[NormalizedResource]:
+        normalized_by_key: dict[str, NormalizedResource] = {}
+        for query, result in results:
+            for resource in normalize_prowlarr(result.releases, captured_at=now):
                 resource.metadata["search_queries"] = [query]
                 resource.metadata["sources"] = [resource.source]
                 existing = normalized_by_key.get(resource.canonical_key)

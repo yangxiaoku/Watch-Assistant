@@ -229,8 +229,11 @@ async def search(
         )
     except TmdbError as exc:
         raise HTTPException(status_code=502, detail="tmdb_unavailable") from exc
-    except SearchUnavailable:
-        raise HTTPException(status_code=502, detail="pansou_unavailable") from None
+    except SearchUnavailable as exc:
+        code = str(exc)
+        if code not in {"pansou_unavailable", "resource_search_unavailable"}:
+            code = "resource_search_unavailable"
+        raise HTTPException(status_code=502, detail=code) from None
     except InvalidSeasonRequest as exc:
         code = str(exc)
         if code not in {"season_requires_tv", "season_not_found"}:

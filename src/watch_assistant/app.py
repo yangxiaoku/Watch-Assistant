@@ -26,6 +26,7 @@ from watch_assistant.adapters.p115_library_gateway import P115ReadOnlyDirectoryG
 from watch_assistant.adapters.p115_playback_contract import P115PlaybackGateway
 from watch_assistant.adapters.p115_playback_gateway import P115LivePlaybackGateway
 from watch_assistant.adapters.pansou import PanSouClient
+from watch_assistant.adapters.prowlarr import ProwlarrClient
 from watch_assistant.adapters.qbittorrent import QbittorrentClient
 from watch_assistant.adapters.tmdb import TmdbClient
 from watch_assistant.api.agent import router as agent_router
@@ -50,6 +51,7 @@ from watch_assistant.api.organization_plan import router as organization_plan_ro
 from watch_assistant.api.pwa import router as pwa_router
 from watch_assistant.api.quality_profiles import router as quality_profiles_router
 from watch_assistant.api.search import router as search_router
+from watch_assistant.api.search_sources import router as search_sources_router
 from watch_assistant.api.seasons import router as seasons_router
 from watch_assistant.api.settings import router as settings_router
 from watch_assistant.api.settings_p115 import router as p115_settings_router
@@ -115,6 +117,7 @@ from watch_assistant.services.p115_delete import P115DeleteService
 from watch_assistant.services.p115_login_devices import P115LoginDeviceService
 from watch_assistant.services.p115_qrcode import P115QrcodeService
 from watch_assistant.services.p115_settings import P115SettingsService
+from watch_assistant.services.prowlarr_settings import ProwlarrSettingsService
 from watch_assistant.services.pwa_devices import PwaDeviceService
 from watch_assistant.services.quality_profiles import QualityProfileService
 from watch_assistant.services.search import SearchService
@@ -236,6 +239,7 @@ def create_app(
     crypto: SecretCrypto | None = None,
     tmdb_client: TmdbClient | None = None,
     pansou_client: PanSouClient | None = None,
+    prowlarr_client: ProwlarrClient | None = None,
     security_manager: SecurityManager | None = None,
     share_domains: tuple[str, ...] = ("115.com", "115cdn.com"),
     push_supported: bool | None = None,
@@ -608,6 +612,20 @@ def create_app(
                 runtime_database.session_factory,
                 state_directory=_state_directory(runtime_database),
             )
+            prowlarr_settings_service = ProwlarrSettingsService(
+                runtime_database.session_factory,
+                runtime_crypto,
+                environment_enabled=settings.prowlarr_enabled,
+                environment_base_url=settings.prowlarr_base_url,
+                environment_api_key=settings.prowlarr_api_key.get_secret_value(),
+                timeout_seconds=settings.prowlarr_timeout_seconds,
+                event_logger=application.state.settings_service,
+                runtime_state=application.state,
+            )
+            application.state.prowlarr_settings_service = prowlarr_settings_service
+            runtime_prowlarr = prowlarr_client or await (
+                prowlarr_settings_service.runtime_client()
+            )
             application.state.webhook_service = WebhookService(
                 runtime_database.session_factory,
                 runtime_crypto,
@@ -689,9 +707,11 @@ def create_app(
                 runtime_database.session_factory,
                 tmdb_client=runtime_tmdb,
                 pansou_client=runtime_pansou,
+                prowlarr_client=runtime_prowlarr,
                 crypto=runtime_crypto,
                 share_domains=share_domains,
                 pansou_max_concurrency=settings.pansou_max_concurrency,
+                prowlarr_max_concurrency=settings.prowlarr_max_concurrency,
                 event_logger=application.state.settings_service,
             )
             application.state.manual_import_service = ManualImportService(
@@ -809,6 +829,8 @@ def create_app(
                 composite_cookie_provider,
             )
             owned = [runtime_database, runtime_tmdb, runtime_pansou]
+            if runtime_prowlarr is not None:
+                owned.append(runtime_prowlarr)
             cookie_provider = composite_cookie_provider
             runtime_task_adapter: TaskAdapter | None = None
             if settings.p115_enabled:
@@ -1044,6 +1066,14 @@ def create_app(
                     await resource.engine.dispose()
                 elif hasattr(resource, "aclose"):
                     await resource.aclose()
+            search_service = getattr(application.state, "search_service", None)
+            active_prowlarr = getattr(search_service, "_prowlarr", None)
+            if (
+                active_prowlarr is not None
+                and active_prowlarr not in owned
+                and hasattr(active_prowlarr, "aclose")
+            ):
+                await active_prowlarr.aclose()
             webhook_service = getattr(application.state, "webhook_service", None)
             if webhook_service is not None and webhook_service not in owned:
                 await webhook_service.aclose()
@@ -1199,10 +1229,21 @@ def create_app(
             database.session_factory,
             event_logger=application.state.settings_service,
         )
+        application.state.prowlarr_settings_service = ProwlarrSettingsService(
+            database.session_factory,
+            crypto,
+            environment_enabled=_env_flag("PROWLARR_ENABLED"),
+            environment_base_url=os.environ.get("PROWLARR_BASE_URL", ""),
+            environment_api_key=os.environ.get("PROWLARR_API_KEY", ""),
+            timeout_seconds=float(os.environ.get("PROWLARR_TIMEOUT_SECONDS", "12")),
+            event_logger=application.state.settings_service,
+            runtime_state=application.state,
+        )
         application.state.search_service = SearchService(
             database.session_factory,
             tmdb_client=tmdb_client,
             pansou_client=pansou_client,
+            prowlarr_client=prowlarr_client,
             crypto=crypto,
             share_domains=share_domains,
             event_logger=application.state.settings_service,
@@ -1417,6 +1458,7 @@ def create_app(
         }
 
     application.include_router(search_router)
+    application.include_router(search_sources_router)
     application.include_router(settings_router)
     application.include_router(credentials_router)
     application.include_router(deployment_router)
