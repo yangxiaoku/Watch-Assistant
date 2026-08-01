@@ -22,6 +22,7 @@ describe("App capability wiring", () => {
       action_count: 1,
       precondition_count: 1,
       alias: null,
+      can_execute: true,
       candidates: [],
     };
 

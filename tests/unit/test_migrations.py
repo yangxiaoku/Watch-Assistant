@@ -101,7 +101,7 @@ async def test_initialize_database_creates_schema_records_migration_and_defaults
 
 
 @pytest.mark.asyncio
-async def test_initialize_database_upgrades_legacy_settings_without_losing_data(
+async def test_initialize_database_upgrades_legacy_settings_idempotently_without_losing_data(
     tmp_path,
 ):
     database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'watch.db'}")
@@ -174,6 +174,7 @@ async def test_initialize_database_upgrades_legacy_settings_without_losing_data(
         )
         await session.commit()
 
+    await initialize_database(database.engine)
     await initialize_database(database.engine)
 
     async with database.session_factory() as session:

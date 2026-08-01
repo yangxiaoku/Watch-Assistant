@@ -60,8 +60,8 @@ docs/requirements/
 
 | 编号 | 名称 | 状态 | 主文档 |
 |---|---|---|---|
-| REQ-001 | 115 影视库自动整理 | 待评审 | [查看](./REQ-001-115-library-organization/README.md) |
-| REQ-002 | 115 STRM 全量与增量同步 | 待评审 | [查看](./REQ-002-115-strm-sync/README.md) |
+| REQ-001 | 115 影视库自动整理 | 开发中 | [查看](./REQ-001-115-library-organization/README.md) |
+| REQ-002 | 115 STRM 全量与增量同步 | 开发中 | [查看](./REQ-002-115-strm-sync/README.md) |
 | REQ-003 | Agent CLI 管理入口 | 待评审 | [查看](./REQ-003-agent-cli/README.md) |
 | REQ-004 | 中文结构化日志与审计完善 | 开发中 | [查看](./REQ-004-chinese-structured-logging/README.md) |
 | REQ-005 | 资源搜索召回与 PanSou 一致性提升 | 开发中 | [查看](./REQ-005-resource-search-recall/README.md) |
@@ -82,7 +82,7 @@ docs/requirements/
 | REQ-020 | Agent MCP 服务端 | 待评审 | [查看](./REQ-020-mcp-server/README.md) |
 | REQ-021 | PWA 移动端管理 | 待评审 | [查看](./REQ-021-pwa-mobile/README.md) |
 | REQ-022 | 影视合集与系列管理 | 待评审 | [查看](./REQ-022-collection-management/README.md) |
-| REQ-023 | 多搜索源接入与聚合 | 待评审 | [查看](./REQ-023-multi-source-search/README.md) |
+| REQ-023 | 多搜索源接入与聚合 | 开发中 | [查看](./REQ-023-multi-source-search/README.md) |
 | REQ-024 | 部署、升级与兼容性中心 | 开发中 | [查看](./REQ-024-upgrade-compatibility-center/README.md) |
 | REQ-025 | 动漫元数据与集序映射 | 开发中 | [查看](./REQ-025-anime-metadata-mapping/README.md) |
 | REQ-026 | 媒体技术检测与损坏风险检查 | 开发中 | [查看](./REQ-026-media-technical-inspection/README.md) |
