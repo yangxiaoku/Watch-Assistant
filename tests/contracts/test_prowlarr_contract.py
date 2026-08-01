@@ -22,7 +22,7 @@ from watch_assistant.schemas import (
     SearchSourcesResponse,
 )
 from watch_assistant.services.api_errors import build_error_payload
-from watch_assistant.services.search import SearchService
+from watch_assistant.services.search import SearchService, SearchUnavailable
 
 TORRENT_INFOHASH = "0123456789abcdef0123456789abcdef01234567"
 
@@ -70,7 +70,22 @@ class _Pansou:
         return self.response
 
 
-def _new_search_service(pansou: _Pansou, prowlarr: ProwlarrClient) -> SearchService:
+class _EventLogger:
+    def __init__(self) -> None:
+        self.events: list[tuple[str, dict[str, object]]] = []
+
+    async def log_event(
+        self, event: str, *, fields: dict[str, object] | None = None, **_kwargs: object
+    ) -> None:
+        self.events.append((event, dict(fields or {})))
+
+
+def _new_search_service(
+    pansou: _Pansou,
+    prowlarr: ProwlarrClient,
+    *,
+    event_logger: _EventLogger | None = None,
+) -> SearchService:
     service = SearchService.__new__(SearchService)
     service._pansou = pansou
     service._prowlarr = prowlarr
@@ -81,6 +96,7 @@ def _new_search_service(pansou: _Pansou, prowlarr: ProwlarrClient) -> SearchServ
     service._prowlarr_usage = {}
     service._prowlarr_idle = {}
     service._share_domains = ("115.com",)
+    service._event_logger = event_logger
     return service
 
 
@@ -357,6 +373,7 @@ async def test_search_service_merges_duplicate_infohash_and_keeps_sources():
     "failure",
     [
         MockResponse.upstream_timeout(),
+        MockResponse.failure(429, {"error": "fixture_rate_limited"}),
         MockResponse.failure(500, {"error": "fixture_failure"}),
     ],
 )
@@ -365,6 +382,7 @@ async def test_search_service_keeps_healthy_source_on_prowlarr_failure(
 ):
     mock = ProwlarrMock([failure])
     adapter, transport_client = _new_target_adapter(mock)
+    event_logger = _EventLogger()
     service = _new_search_service(
         _Pansou(
             {
@@ -380,6 +398,7 @@ async def test_search_service_keeps_healthy_source_on_prowlarr_failure(
             }
         ),
         adapter,
+        event_logger=event_logger,
     )
     try:
         successful_pansou, successful_prowlarr, warnings, complete = (
@@ -392,6 +411,17 @@ async def test_search_service_keeps_healthy_source_on_prowlarr_failure(
     assert successful_prowlarr == []
     assert "prowlarr_query_failed:1" in warnings
     assert complete is False
+    assert event_logger.events == [
+        (
+            "search.source_degraded",
+            {
+                "source": "Prowlarr",
+                "status": "degraded",
+                "count": 1,
+                "total": 1,
+            },
+        )
+    ]
 
 
 async def test_target_adapter_stops_pagination_after_short_page():
@@ -457,3 +487,28 @@ async def test_target_maps_prowlarr_upstream_failure_to_chinese_error_code():
     assert complete is False
     assert payload["code"] == "resource_search_unavailable"
     assert any("\u4e00" <= character <= "\u9fff" for character in payload["message_zh"])
+
+
+async def test_search_failure_log_uses_safe_chinese_error_code():
+    event_logger = _EventLogger()
+    service = SearchService.__new__(SearchService)
+    service._event_logger = event_logger
+
+    async def fail(*_args: object, **_kwargs: object):
+        raise SearchUnavailable("resource_search_unavailable")
+
+    service._search_impl = fail
+    with pytest.raises(SearchUnavailable):
+        await service.search(123)
+
+    assert event_logger.events[0][0] == "search.started"
+    assert event_logger.events[1] == (
+        "search.failed",
+        {
+            "media_type": "movie",
+            "season": "all",
+            "status": "failed",
+            "error_code": "resource_search_unavailable",
+            "duration_ms": event_logger.events[1][1]["duration_ms"],
+        },
+    )

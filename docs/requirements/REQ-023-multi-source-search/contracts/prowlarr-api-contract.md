@@ -54,6 +54,10 @@ service:
 - `SearchService` normalization exposes the common magnet canonical key and
   preserves source observations in metadata. NZB/usenet releases remain
   unsupported and never enter the magnet push path.
+- Source degradation emits the registered Chinese `search.source_degraded`
+  event with only the source, status, and query counts; terminal search
+  failures use an allowlisted Chinese `error_code` and never render exception
+  text.
 
 This is a Watch Assistant test seam, not an assertion about an undocumented
 Prowlarr endpoint.

@@ -105,6 +105,14 @@ EVENT_CATALOG: dict[str, EventDefinition] = {
     "search.failed": _event(
         "search.failed", LogCategory.SEARCH, "资源搜索失败", "{media_type}资源搜索失败，错误码：{error_code}", suggestion="请稍后重试并检查搜索来源状态"
     ),
+    "search.source_degraded": _event(
+        "search.source_degraded",
+        LogCategory.SEARCH,
+        "搜索来源已降级",
+        "已将{source}搜索来源标记为暂不可用",
+        suggestion="请检查搜索来源状态后重试",
+        fields=frozenset({"source"}),
+    ),
     "search.cache_hit": _event(
         "search.cache_hit", LogCategory.CACHE, "命中搜索缓存", "已使用缓存中的{media_type}资源结果，共 {count} 条"
     ),

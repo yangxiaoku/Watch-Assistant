@@ -80,6 +80,27 @@ class InvalidSeasonRequest(ValueError):
     pass
 
 
+def _search_error_code_for_log(exc: BaseException) -> str:
+    """Map exceptions to allowlisted log codes without rendering their text."""
+    if isinstance(exc, TmdbError):
+        return "tmdb_unavailable"
+    if isinstance(exc, InvalidSeasonRequest):
+        code = str(exc)
+        return (
+            code
+            if code in {"season_requires_tv", "season_not_found"}
+            else "invalid_season_request"
+        )
+    if isinstance(exc, SearchUnavailable):
+        code = str(exc)
+        return (
+            code
+            if code in {"pansou_unavailable", "resource_search_unavailable"}
+            else "resource_search_unavailable"
+        )
+    return "resource_search_failed"
+
+
 @dataclass(slots=True)
 class _ResourceSearchTask:
     task_id: str
@@ -253,7 +274,7 @@ class SearchService:
                 refresh=refresh,
                 season_number=season_number,
             )
-        except Exception:
+        except Exception as exc:
             await emit_event(
                 self._event_logger,
                 "search.failed",
@@ -262,6 +283,7 @@ class SearchService:
                     "media_type": media_type.value,
                     "season": season_number if season_number is not None else "all",
                     "status": "failed",
+                    "error_code": _search_error_code_for_log(exc),
                     "duration_ms": int((monotonic() - started) * 1000),
                 },
             )
@@ -1027,6 +1049,19 @@ class SearchService:
                 for index, result in enumerate(pansou_results)
                 if isinstance(result, BaseException)
             ]
+            failed_count = len(warnings)
+            if failed_count:
+                await emit_event(
+                    getattr(self, "_event_logger", None),
+                    "search.source_degraded",
+                    level=LoggingLevel.WARNING,
+                    fields={
+                        "source": "PanSou",
+                        "status": "degraded",
+                        "count": failed_count,
+                        "total": len(queries),
+                    },
+                )
             return successful, [], warnings, not warnings
 
         async def safe_prowlarr(query: str) -> ProwlarrSearchResult | BaseException:
@@ -1045,12 +1080,14 @@ class SearchService:
         successful_prowlarr: list[tuple[str, ProwlarrSearchResult]] = []
         warnings: list[str] = []
         upstream_partial = False
+        failed_counts = {"pansou": 0, "prowlarr": 0}
         for index, (pansou_result, prowlarr_result) in enumerate(
             query_results, start=1
         ):
             if isinstance(pansou_result, dict):
                 successful_pansou.append((queries[index - 1], pansou_result))
             else:
+                failed_counts["pansou"] += 1
                 warnings.append(
                     f"pansou_query_failed:{warning_offset + index}"
                 )
@@ -1063,8 +1100,25 @@ class SearchService:
                     warnings.append("prowlarr_results_truncated")
                     warnings.append("partial_upstream")
             else:
+                failed_counts["prowlarr"] += 1
                 warnings.append(
                     f"prowlarr_query_failed:{warning_offset + index}"
+                )
+        for source, count in failed_counts.items():
+            if count:
+                await emit_event(
+                    getattr(self, "_event_logger", None),
+                    "search.source_degraded",
+                    level=LoggingLevel.WARNING,
+                    fields={
+                        "source": {
+                            "pansou": "PanSou",
+                            "prowlarr": "Prowlarr",
+                        }[source],
+                        "status": "degraded",
+                        "count": count,
+                        "total": len(queries),
+                    },
                 )
         return (
             successful_pansou,
