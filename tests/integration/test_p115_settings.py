@@ -302,21 +302,26 @@ async def test_native_validation_timeout_cancels_probe_and_releases_semaphore(
     class BlockingClient:
         def __init__(self):
             self.active = 0
+            self.calls = 0
             self.started = asyncio.Event()
             self.cancelled = asyncio.Event()
 
         def clouddownload_task_list(self, payload, *, async_):
             assert payload == {"page": 1}
             assert async_ is True
+            self.calls += 1
 
             async def probe():
                 self.active += 1
                 self.started.set()
                 try:
-                    await asyncio.Event().wait()
+                    if self.calls == 1:
+                        await asyncio.Event().wait()
+                    return {"state": True, "data": []}
                 finally:
                     self.active -= 1
-                    self.cancelled.set()
+                    if self.calls == 1:
+                        self.cancelled.set()
 
             return probe()
 
@@ -325,6 +330,7 @@ async def test_native_validation_timeout_cancels_probe_and_releases_semaphore(
 
     fake = BlockingClient()
     adapter = P115Adapter(CookieProvider(path), 1, client_factory=lambda _cookie: fake)
+    assert await adapter.ensure_available()
     service = P115SettingsService(
         enabled=True,
         cookie_provider=CookieProvider(path),
@@ -339,6 +345,22 @@ async def test_native_validation_timeout_cancels_probe_and_releases_semaphore(
     await asyncio.wait_for(fake.cancelled.wait(), timeout=1)
 
     assert result.status == "unavailable"
+    assert fake.started.is_set()
+    assert fake.active == 0
+
+    repeat_service = P115SettingsService(
+        enabled=True,
+        cookie_provider=CookieProvider(path),
+        cookie_path=path,
+        target_configured=True,
+        max_concurrency=1,
+        adapter=adapter,
+        validation_timeout_seconds=1,
+    )
+    repeated = await repeat_service.validate()
+
+    assert repeated.status == "ready"
+    assert fake.calls == 2
     assert fake.active == 0
 
 

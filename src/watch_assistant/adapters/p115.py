@@ -252,7 +252,7 @@ class P115Adapter:
                 response = method({"page": 1}, async_=True)
                 if not inspect.isawaitable(response):
                     raise P115UnavailableError
-                response = await response
+                response = await self._await_native_probe(response)
             except asyncio.CancelledError:
                 raise
             except P115UnavailableError:
@@ -267,6 +267,17 @@ class P115Adapter:
                 raise P115NeedsAuthError
             if not _response_ok(response):
                 raise P115UnavailableError
+
+    @staticmethod
+    async def _await_native_probe(response: Any) -> Any:
+        """Drain a cancelled native probe before releasing the operation slot."""
+        probe_task = asyncio.ensure_future(response)
+        try:
+            return await probe_task
+        except asyncio.CancelledError:
+            probe_task.cancel()
+            await asyncio.gather(probe_task, return_exceptions=True)
+            raise
 
     async def validate_cookie(self, cookie: str) -> None:
         """Validate a candidate cookie with one native async read-only request."""
