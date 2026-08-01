@@ -322,6 +322,42 @@ async def test_automation_confirms_and_queues_planned_work_when_write_gate_is_op
 
 
 @pytest.mark.asyncio
+async def test_manual_automation_never_queues_even_when_write_gate_is_open(
+    tmp_path: Path,
+):
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'automation-manual-write.db'}")
+    await initialize_database(database.engine)
+    operations = _Operations()
+    plan_service = OrganizationPlanService(database.session_factory)
+    preview = OrganizationPreviewService(
+        database.session_factory, _TmdbClient(), plan_service
+    )
+
+    class _ConfirmedPreview:
+        async def create_preview(self, **kwargs):
+            plan = await preview.create_preview(**kwargs)
+            return await plan_service.confirm_plan(
+                plan.plan_id, expected_revision=plan.revision
+            )
+
+    service = OrganizationAutomationService(
+        database.session_factory,
+        _Settings(configured=True),
+        _ConfirmedPreview(),
+        plan_service,
+        lambda _authorized: _Gateway(),
+        operation_service=operations,
+        auto_execute=True,
+    )
+
+    assert await service.run_once(manual_confirmation=True) is True
+    assert service.last_result is not None
+    assert service.last_result.queued_count == 0
+    assert operations.calls == []
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_manual_automation_keeps_ambiguous_tmdb_candidate_for_review(
     tmp_path: Path,
 ):

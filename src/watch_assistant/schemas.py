@@ -688,6 +688,9 @@ class OrganizationPlanResponse(BaseModel):
     source_count: int = Field(ge=0)
     action_count: int = Field(ge=0)
     precondition_count: int = Field(ge=0)
+    executable_action_count: int = Field(ge=0)
+    review_action_count: int = Field(ge=0)
+    can_execute: bool
     alias: str | None = None
     candidates: list[OrganizationPlanCandidateResponse] = Field(default_factory=list)
 
@@ -708,6 +711,13 @@ class OrganizationPlanMutationRequest(BaseModel):
 class OrganizationPlanCandidateRequest(OrganizationPlanMutationRequest):
     source_object_id: str = Field(min_length=1, max_length=128)
     tmdb_id: int = Field(gt=0)
+
+
+class OrganizationPlanCandidateSearchRequest(OrganizationPlanMutationRequest):
+    source_object_id: str | None = Field(default=None, min_length=1, max_length=128)
+    source_index: int | None = Field(default=None, ge=0, le=100)
+    query: str | None = Field(default=None, max_length=200)
+    limit: int = Field(default=8, ge=1, le=20)
 
 
 class OrganizationOperationQueueRequest(BaseModel):

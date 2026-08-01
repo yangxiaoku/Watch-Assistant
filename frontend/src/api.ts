@@ -598,6 +598,17 @@ export class ApiClient {
     });
   }
 
+  async searchOrganizationCandidates(planId: string, expectedRevision: number, query: string, sourceIndex?: number): Promise<OrganizationPlanSummary> {
+    return this.request<OrganizationPlanSummary>(`/api/v1/organization-plans/${encodeURIComponent(planId)}/candidate-search`, {
+      method: "POST",
+      body: JSON.stringify({
+        expected_revision: expectedRevision,
+        query,
+        ...(sourceIndex === undefined ? {} : { source_index: sourceIndex }),
+      }),
+    });
+  }
+
   async ignoreOrganizationPlan(planId: string, expectedRevision: number): Promise<OrganizationPlanSummary> {
     return this.request<OrganizationPlanSummary>(`/api/v1/organization-plans/${encodeURIComponent(planId)}/ignore`, {
       method: "POST",

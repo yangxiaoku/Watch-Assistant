@@ -32,8 +32,23 @@ from watch_assistant.services.organization_plan import (
     OrganizationPlanCompanion,
     OrganizationPlanService,
     PlanSource,
+    _entry_remote_version,
 )
 from watch_assistant.services.organization_policy import VersionDecision
+
+
+def _source_version(object_id: str, path: str, name: str) -> str:
+    return _entry_remote_version(
+        LibraryScanEntry(
+            scan_run_id="scan-1",
+            object_type="file",
+            object_id=object_id,
+            parent_id="7000",
+            name=name,
+            path=path,
+            is_directory=False,
+        )
+    )
 
 
 class FakeOrganizationTransport:
@@ -622,7 +637,9 @@ async def test_companion_partial_failure_does_not_continue_group(tmp_path: Path)
             object_id="102",
             parent_id="7000",
             path="/private/movie.srt",
-            remote_version="remote-v1",
+            remote_version=_source_version(
+                "102", "/private/movie.srt", "movie.srt"
+            ),
         ),
         target_parent_id="8000",
         target_name="movie.srt",
@@ -682,7 +699,9 @@ async def test_companion_partial_replay_is_uncertain_without_writes(tmp_path: Pa
             object_id="102",
             parent_id="7000",
             path="/private/movie.srt",
-            remote_version="remote-v1",
+            remote_version=_source_version(
+                "102", "/private/movie.srt", "movie.srt"
+            ),
         ),
         target_parent_id="8000",
         target_name="movie.srt",

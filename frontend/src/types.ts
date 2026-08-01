@@ -621,6 +621,9 @@ export interface OrganizationPlanSummary {
   source_count: number;
   action_count: number;
   precondition_count: number;
+  executable_action_count: number;
+  review_action_count: number;
+  can_execute: boolean;
   alias: string | null;
   candidates: OrganizationPlanCandidate[];
 }

@@ -380,50 +380,65 @@ def create_app(
                 name="watch-assistant-directory-dirty-worker",
             )
 
+        async def stop_organization_runtime() -> None:
+            nonlocal organization_stop, organization_task
+            nonlocal organization_worker_stop, organization_worker_task
+            if organization_stop is not None:
+                organization_stop.set()
+            if organization_task is not None:
+                organization_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await organization_task
+            if organization_worker_stop is not None:
+                organization_worker_stop.set()
+            if organization_worker_task is not None:
+                organization_worker_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await organization_worker_task
+            organization_stop = None
+            organization_task = None
+            organization_worker_stop = None
+            organization_worker_task = None
+            if hasattr(application.state, "organization_worker"):
+                delattr(application.state, "organization_worker")
+            if hasattr(application.state, "organization_scheduler"):
+                delattr(application.state, "organization_scheduler")
+            if hasattr(application.state, "organization_automation_service"):
+                delattr(application.state, "organization_automation_service")
+            if hasattr(application.state, "_organization_runtime_write_enabled"):
+                delattr(application.state, "_organization_runtime_write_enabled")
+
         async def apply_organization_runtime(ready: bool) -> None:
             nonlocal organization_stop, organization_task
             nonlocal organization_worker_stop, organization_worker_task
             planning_enabled = (
-                ready
-                and getattr(application.state, "organization_plan_enabled", False)
+                getattr(application.state, "organization_plan_enabled", False)
                 and getattr(application.state, "organization_cookie_provider", None)
                 is not None
                 and getattr(application.state, "organization_target_root_id", None)
                 is not None
             )
             if not planning_enabled:
-                if organization_stop is not None:
-                    organization_stop.set()
-                if organization_task is not None:
-                    organization_task.cancel()
-                    with suppress(asyncio.CancelledError):
-                        await organization_task
-                if organization_worker_stop is not None:
-                    organization_worker_stop.set()
-                if organization_worker_task is not None:
-                    organization_worker_task.cancel()
-                    with suppress(asyncio.CancelledError):
-                        await organization_worker_task
-                organization_stop = None
-                organization_task = None
-                organization_worker_stop = None
-                organization_worker_task = None
-                if hasattr(application.state, "organization_worker"):
-                    delattr(application.state, "organization_worker")
-                if hasattr(application.state, "organization_scheduler"):
-                    delattr(application.state, "organization_scheduler")
-                if hasattr(application.state, "organization_automation_service"):
-                    delattr(application.state, "organization_automation_service")
-                return
-            if organization_task is not None:
+                await stop_organization_runtime()
                 return
             write_enabled = (
-                getattr(application.state, "organization_execution_enabled", False)
+                ready
+                and getattr(application.state, "organization_execution_enabled", False)
                 and getattr(application.state, "organization_write_enabled", False)
                 and getattr(
                     application.state, "organization_write_contract_verified", False
                 )
             )
+            if (
+                organization_task is not None
+                and getattr(
+                    application.state, "_organization_runtime_write_enabled", None
+                )
+                == write_enabled
+            ):
+                return
+            if organization_task is not None:
+                await stop_organization_runtime()
             worker = None
             directory_provisioner = None
             if write_enabled:
@@ -487,12 +502,15 @@ def create_app(
                 event_logger=application.state.settings_service,
             )
             application.state.organization_automation_service = automation
+            application.state._organization_runtime_write_enabled = write_enabled
 
             async def run_organization_once() -> bool:
                 return await automation.run_once()
 
             async def run_organization_manual(run_id: str) -> bool:
-                return await automation.run_once(run_id=run_id)
+                return await automation.run_once(
+                    manual_confirmation=True, run_id=run_id
+                )
 
             scheduler = OrganizationScheduler(
                 application.state.settings_service,
@@ -689,6 +707,9 @@ def create_app(
             runtime_tmdb = tmdb_client or TmdbClient(
                 managed_tmdb or settings.tmdb_api_key.get_secret_value(),
                 base_url=settings.tmdb_base_url,
+            )
+            application.state.organization_plan_service.bind_candidate_search_client(
+                runtime_tmdb
             )
             application.state.organization_preview_service = OrganizationPreviewService(
                 runtime_database.session_factory,
@@ -960,8 +981,9 @@ def create_app(
             and application.state.strm_playback_gateway is None
         ):
             application.state.strm_playback_supported = False
-        if getattr(application.state, "p115_ready", False):
-            await apply_organization_runtime(True)
+        await apply_organization_runtime(
+            bool(getattr(application.state, "p115_ready", False))
+        )
         worker = getattr(application.state, "inspection_worker", None)
         if worker is not None:
             inspection_stop = asyncio.Event()
@@ -1294,7 +1316,7 @@ def create_app(
             database.session_factory
         )
         application.state.organization_plan_service = OrganizationPlanService(
-            database.session_factory
+            database.session_factory, tmdb_client=tmdb_client
         )
         application.state.organization_history_service = OrganizationHistoryService(
             database.session_factory

@@ -367,6 +367,7 @@ class OrganizationPreviewService:
                     organization_policy=policy.to_dict(),
                     target_root="",
                     now=now,
+                    manual_confirmation=manual_confirmation,
                 )
             )
         return tuple(plans)
