@@ -362,10 +362,14 @@ def _magnet_infohash(value: object) -> str | None:
             continue
         infohash = raw[9:]
         if re.fullmatch(r"[0-9a-fA-F]{40}", infohash):
-            return infohash.casefold()
-        if re.fullmatch(r"[A-Z2-7a-z2-7]{32}", infohash):
+            decoded = infohash.casefold()
+        elif re.fullmatch(r"[A-Z2-7a-z2-7]{32}", infohash):
             try:
-                return base64.b32decode(infohash.upper()).hex()
+                decoded = base64.b32decode(infohash.upper()).hex()
             except (binascii.Error, ValueError):
-                return None
+                continue
+        else:
+            continue
+        if decoded != "0" * 40:
+            return decoded
     return None

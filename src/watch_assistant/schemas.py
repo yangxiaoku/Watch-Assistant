@@ -1224,7 +1224,7 @@ class ResourceSearchResponse(BaseModel):
     season_number: int | None = Field(default=None, ge=0)
     status: Literal["queued", "running", "ready", "failed"]
     snapshot_revision: str | None = None
-    query_plan_version: str = "v4"
+    query_plan_version: str = "v5"
     cache_age_seconds: int | None = Field(default=None, ge=0)
     sources: list[str] = Field(default_factory=list)
     selected_season: int | None = Field(default=None, ge=0)

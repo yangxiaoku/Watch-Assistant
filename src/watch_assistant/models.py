@@ -399,7 +399,7 @@ class ResourceSearchJob(Base):
     refresh: Mapped[bool] = mapped_column(Boolean, default=False)
     status: Mapped[str] = mapped_column(String(16), index=True)
     snapshot_revision: Mapped[str | None] = mapped_column(Text, nullable=True)
-    query_plan_version: Mapped[str] = mapped_column(String(16), default="v4")
+    query_plan_version: Mapped[str] = mapped_column(String(16), default="v5")
     cache_age_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     sources_json: Mapped[str] = mapped_column(Text, default="[]")
     selected_season: Mapped[int | None] = mapped_column(Integer, nullable=True)

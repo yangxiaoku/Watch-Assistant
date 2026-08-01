@@ -4,6 +4,7 @@ import base64
 import binascii
 import re
 from datetime import UTC, datetime
+from hashlib import sha256
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -28,6 +29,7 @@ SIZE_MULTIPLIERS = {
     "TIB": 1024**4,
 }
 LABEL_PRIORITY = {"dn": 1, "note": 2, "name": 3}
+SAFE_SOURCE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}")
 
 
 def normalize_pansou(
@@ -97,7 +99,7 @@ def _normalize_item(
     else:
         name = note.strip() or "PanSou resource"
         label_source = None
-    source = item.get("source") if isinstance(item.get("source"), str) else "PanSou"
+    source = normalize_source_id(item.get("source"))
     raw_datetime = item.get("datetime")
     password = item.get("password")
     if not isinstance(password, str) or not password:
@@ -169,7 +171,7 @@ def _parse_magnet(url: str) -> tuple[str, str | None] | None:
                 continue
         else:
             continue
-        if decoded != "0" * 40:
+        if canonical_key is None and decoded != "0" * 40:
             canonical_key = f"magnet:{decoded}"
     if canonical_key is None:
         return None
@@ -315,6 +317,15 @@ def _share_key(url: str, allowed_domains: tuple[str, ...]) -> str | None:
 def _normalize_domain(domain: str) -> str:
     normalized = domain.casefold().strip().rstrip(".")
     return normalized.removeprefix("www.")
+
+
+def normalize_source_id(value: object) -> str:
+    if not isinstance(value, str) or not value.strip():
+        return "PanSou"
+    source = value.strip()
+    if SAFE_SOURCE.fullmatch(source):
+        return source
+    return "source:" + sha256(source.encode("utf-8")).hexdigest()[:16]
 
 
 def _parse_datetime(value: object) -> datetime | None:

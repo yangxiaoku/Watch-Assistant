@@ -67,7 +67,17 @@ function posterUrl(path: string | null): string | null {
 }
 
 function warningLabel(value: string): string {
-  return value === "resource_mismatch_filtered" ? "已隐藏与当前影视不匹配的资源" : value;
+  if (value.startsWith("pansou_query_failed:")) return "部分搜索请求失败，已保留其他来源结果";
+  return {
+    alternative_titles_used: "已使用其他译名补充搜索",
+    link_check_inconclusive: "部分分享链接暂无法确认，已保留待核对结果",
+    new_resources_found: "发现新资源",
+    partial_upstream: "部分搜索来源暂不可用，已保留其他来源结果",
+    resource_mismatch_filtered: "已隐藏与当前影视不匹配的资源",
+    resource_results_truncated: "结果较多，当前仅展示部分资源，可使用分页查看其余结果",
+    stale_cache: "部分结果来自缓存，搜索来源未完全可用",
+    watching_for_resources: "暂未找到可用资源，系统会继续等待新结果",
+  }[value] ?? "搜索结果存在待核对提示";
 }
 </script>
 

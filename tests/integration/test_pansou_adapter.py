@@ -9,6 +9,7 @@ from watch_assistant.adapters.pansou import (
     LinkCheckState,
     PanSouClient,
     PanSouError,
+    _magnet_infohash,
     _parse_plugin_result,
 )
 from watch_assistant.adapters.tmdb import (
@@ -164,6 +165,18 @@ def test_pansou_tpb_size_labels_are_strict(content, expected_size):
     else:
         assert parsed["size"] == expected_size
     assert parsed["seeders"] == 34
+
+
+def test_pansou_infohash_skips_zero_value_before_valid_identity():
+    valid_hash = "a" * 40
+    url = (
+        "magnet:?xt=urn:btih:"
+        + "0" * 40
+        + "&xt=urn:btih:"
+        + valid_hash
+    )
+
+    assert _magnet_infohash(url) == valid_hash
 
 
 @respx.mock
