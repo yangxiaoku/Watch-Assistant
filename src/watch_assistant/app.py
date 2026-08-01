@@ -487,8 +487,8 @@ def create_app(
             async def run_organization_once() -> bool:
                 return await automation.run_once()
 
-            async def run_organization_manual() -> bool:
-                return await automation.run_once()
+            async def run_organization_manual(run_id: str) -> bool:
+                return await automation.run_once(run_id=run_id)
 
             scheduler = OrganizationScheduler(
                 application.state.settings_service,

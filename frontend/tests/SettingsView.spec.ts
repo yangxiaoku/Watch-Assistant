@@ -108,6 +108,7 @@ function makeApi(overrides: Partial<Record<keyof ApiClient, unknown>> = {}) {
       blocked_count: 0,
       blocked_details: [],
       finished_at: null,
+      run_id: null,
     }),
     updateOrganizationSettings: vi.fn().mockResolvedValue({ ...organization, revision: 5 }),
     p115Directories: vi.fn().mockImplementation(async (directoryId?: string) => ({
@@ -117,8 +118,8 @@ function makeApi(overrides: Partial<Record<keyof ApiClient, unknown>> = {}) {
       has_more: false,
       next_page: null,
     })),
-    runOrganizationNow: vi.fn().mockResolvedValue({ action: "run_now", queued: true, schedule_enabled: false, message_zh: "整理已排队" }),
-    stopOrganization: vi.fn().mockResolvedValue({ action: "stop", queued: false, schedule_enabled: false, message_zh: "已停止整理" }),
+    runOrganizationNow: vi.fn().mockResolvedValue({ action: "run_now", queued: true, schedule_enabled: false, message_zh: "整理已排队", run_id: "org-test-run" }),
+    stopOrganization: vi.fn().mockResolvedValue({ action: "stop", queued: false, schedule_enabled: false, message_zh: "已停止整理", run_id: null }),
     ...overrides,
   } as unknown as ApiClient;
 }
@@ -203,6 +204,7 @@ describe("SettingsView", () => {
         blocked_details: [],
         items: [{ title: "未识别影片", tmdb_id: null, target: null, status: "needs_review", error_code: null }],
         finished_at: "2026-07-31T12:33:25Z",
+        run_id: "org-review",
       }),
     });
     const wrapper = mount(SettingsView, { props: { api } });
@@ -233,6 +235,7 @@ describe("SettingsView", () => {
           message_zh: "源目录扫描未完成，已阻止生成整理预览。",
           next_step_zh: "请重新执行一次完整扫描。",
         }],
+        run_id: null,
         finished_at: null,
       }),
     });
@@ -265,6 +268,7 @@ describe("SettingsView", () => {
         }],
         items: [],
         finished_at: "2026-07-31T12:33:25Z",
+        run_id: "org-test-run",
       };
       const resultMock = vi.fn()
         .mockResolvedValueOnce({
@@ -278,6 +282,7 @@ describe("SettingsView", () => {
           blocked_details: [],
           items: [],
           finished_at: null,
+          run_id: null,
         })
         .mockResolvedValueOnce(finalResult);
       const api = makeApi({ organizationResult: resultMock });
@@ -293,6 +298,50 @@ describe("SettingsView", () => {
       expect(wrapper.get(".settings-action-message").text()).toContain("115 登录凭据未配置");
       expect(wrapper.get(".settings-action-message").text()).toContain("下一步");
       expect(wrapper.get(".organization-blocked-details").text()).toContain("credentials_missing");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("settles a matching run when finished_at is unchanged", async () => {
+    vi.useFakeTimers();
+    try {
+      const finishedAt = "2026-07-31T12:33:25Z";
+      const previous = {
+        status: "success" as const,
+        available_statuses: ["unknown", "success", "skipped", "deleted", "replace", "failed"],
+        source_count: 1,
+        scanned_count: 1,
+        plan_count: 1,
+        queued_count: 0,
+        blocked_count: 0,
+        blocked_details: [],
+        items: [],
+        finished_at: finishedAt,
+        run_id: "org-old-run",
+      };
+      const current = { ...previous, run_id: "org-new-run" };
+      const resultMock = vi.fn().mockResolvedValueOnce(previous).mockResolvedValueOnce(current);
+      const api = makeApi({
+        organizationResult: resultMock,
+        runOrganizationNow: vi.fn().mockResolvedValue({
+          action: "run_now",
+          queued: true,
+          schedule_enabled: false,
+          message_zh: "整理已排队",
+          run_id: "org-new-run",
+        }),
+      });
+      const wrapper = mount(SettingsView, { props: { api } });
+      await flushPromises();
+      await wrapper.findAll("button").find((button) => button.text().includes("115 整理"))?.trigger("click");
+      await flushPromises();
+      await wrapper.findAll("button").find((button) => button.text().includes("开始整理"))?.trigger("click");
+      await flushPromises();
+      await vi.advanceTimersByTimeAsync(500);
+      await flushPromises();
+
+      expect(wrapper.get(".settings-action-message").text()).toContain("整理扫描已完成");
     } finally {
       vi.useRealTimers();
     }

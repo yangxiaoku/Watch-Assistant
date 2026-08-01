@@ -205,6 +205,7 @@ async def test_automation_scans_source_and_freezes_target_catalog(tmp_path: Path
     assert service.last_result.scanned_count == 1
     assert service.last_result.plan_count == 1
     assert service.last_result.blocked_count == 0
+    assert service.last_result.run_id is not None
     assert gateway.calls[:4] == [
         ("9000", 1, 1),
         ("8000", 1, 1),

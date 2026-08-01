@@ -59,6 +59,29 @@ async def test_manual_run_wakes_scheduler_when_schedule_is_disabled():
 
 
 @pytest.mark.asyncio
+async def test_manual_run_passes_a_stable_run_id_to_the_callback():
+    settings = SettingsStub(False)
+    received: list[str] = []
+
+    async def run_once():
+        return True
+
+    async def manual_run(run_id: str):
+        received.append(run_id)
+        return True
+
+    scheduler = OrganizationScheduler(settings, run_once, manual_run)
+    stop = asyncio.Event()
+    task = asyncio.create_task(scheduler.run_forever(stop))
+    requested = await scheduler.request_run_now()
+    await asyncio.wait_for(_wait_for(lambda: received == [requested]), timeout=1)
+    assert requested.startswith("org_")
+    stop.set()
+    scheduler.stop_pending()
+    await asyncio.wait_for(task, timeout=1)
+
+
+@pytest.mark.asyncio
 async def test_enabled_schedule_waits_for_the_first_interval():
     settings = SettingsStub(True)
     calls = 0

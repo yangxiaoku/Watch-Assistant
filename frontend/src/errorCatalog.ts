@@ -209,7 +209,7 @@ const CATALOG: Record<string, Omit<UiErrorDescriptor, "code">> = {
   inventory_index_stale: { title: "115 媒体库库存已过期", message: "本次推送未提交到 115，当前库存索引不能作为去重依据。", suggestion: "请前往“媒体库”重新扫描库存后再重试。", retryable: false, action: "open_library" },
   inventory_index_unknown: { title: "115 媒体库库存状态未知", message: "本次推送未提交到 115，当前库存扫描状态不可靠。", suggestion: "请前往“媒体库”确认扫描状态并重新扫描后再重试。", retryable: false, action: "open_library" },
   inventory_exact_duplicate: { title: "资源已在 115 媒体库中", message: "本次推送未提交到 115，库存中已经存在相同资源。", suggestion: "请前往“媒体库”查看现有资源，不要重复提交。", retryable: false, action: "open_library" },
-  inventory_review_required: { title: "115 媒体库存在相近资源", message: "本次推送未提交到 115，库存中存在相同媒体或待确认版本。", suggestion: "请前往“媒体库”查看库存后完成人工确认。", retryable: false, action: "open_library" },
+  inventory_review_required: { title: "115 媒体库存在待确认候选", message: "库存存在仅凭文件名匹配的相近资源，本次检查未阻止推送。", suggestion: "可前往“媒体库”查看匹配依据，再按质量策略或人工确认处理。", retryable: false, action: "open_library" },
 };
 
 export const UI_ERROR_CODES = Object.freeze(Object.keys(CATALOG));

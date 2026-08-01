@@ -206,7 +206,7 @@ _CATALOG: dict[str, ApiErrorDescriptor] = {
     "inventory_index_stale": ApiErrorDescriptor("inventory_index_stale", "媒体库库存索引已过期", "本次远端提交已阻止，系统无法确认媒体库中是否已有该资源。", "刷新媒体库库存后再重试任务。", False, "refresh_snapshot"),
     "inventory_index_unknown": ApiErrorDescriptor("inventory_index_unknown", "媒体库库存状态未知", "本次远端提交已阻止，系统无法确认媒体库中是否已有该资源。", "刷新媒体库库存并确认扫描时间后再试。", False, "refresh_snapshot"),
     "inventory_exact_duplicate": ApiErrorDescriptor("inventory_exact_duplicate", "资源已在媒体库中", "本次远端提交已阻止，媒体库已有相同资源。", "查看媒体库现有版本，不要重复提交。", False, "refresh_snapshot"),
-    "inventory_review_required": ApiErrorDescriptor("inventory_review_required", "媒体库存在相近资源", "本次远端提交已阻止，媒体库存在相同媒体或待确认版本。", "先查看库存版本并完成人工确认，再决定是否继续。", False, "refresh_snapshot"),
+    "inventory_review_required": ApiErrorDescriptor("inventory_review_required", "媒体库存在待确认候选", "库存存在仅凭文件名匹配的相近资源，本次检查未阻止推送。", "可前往媒体库查看匹配依据，再按质量策略或人工确认处理。", False, "refresh_snapshot"),
     "inventory_check_failed": ApiErrorDescriptor("inventory_check_failed", "库存检查未完成", "本次远端提交已阻止，库存检查没有得到可靠结果。", "刷新库存后再重试；不要重复提交可能已在途的任务。", True, "retry"),
     "task_not_found": ApiErrorDescriptor("task_not_found", "任务不存在", "本次任务操作未完成。", "请刷新任务列表后再试。", False, "retry"),
     "workflow_not_found": ApiErrorDescriptor("workflow_not_found", "关联工作流不存在", "本次任务未创建。", "请刷新页面后重新操作。", False, "retry"),

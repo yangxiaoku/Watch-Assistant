@@ -553,6 +553,7 @@ async def test_organization_manual_run_is_independent_from_schedule_and_stop_cle
 
         async def request_run_now(self):
             self.requested += 1
+            return "org_test_run"
 
         def stop_pending(self):
             self.stopped += 1
@@ -567,6 +568,7 @@ async def test_organization_manual_run_is_independent_from_schedule_and_stop_cle
         )
         assert run_now.status_code == 200
         assert run_now.json()["queued"] is True
+        assert run_now.json()["run_id"] == "org_test_run"
         assert scheduler.requested == 1
 
         result = await client.get("/api/v1/settings/organization/result")
@@ -581,6 +583,7 @@ async def test_organization_manual_run_is_independent_from_schedule_and_stop_cle
         )
         assert stopped.status_code == 200
         assert stopped.json()["schedule_enabled"] is False
+        assert stopped.json()["run_id"] is None
         assert scheduler.stopped == 1
     finally:
         await client.aclose()

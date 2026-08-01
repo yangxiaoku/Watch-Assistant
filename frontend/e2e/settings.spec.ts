@@ -125,6 +125,7 @@ test("settings contract, cursor logs, validation states, and responsive layout",
     blocked_details: [],
     items: [],
     finished_at: null,
+    run_id: null,
   } }));
   await page.route("**/api/v1/logs?**", (route) => {
     logsCount += 1;

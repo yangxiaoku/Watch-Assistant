@@ -6,6 +6,7 @@ from cryptography.fernet import Fernet
 from watch_assistant.crypto import SecretCrypto
 from watch_assistant.db import create_database, initialize_database
 from watch_assistant.library_models import (
+    LibraryMediaIdentity,
     LibraryScanEntry,
     LibraryScanRun,
     MediaLibrary,
@@ -38,7 +39,16 @@ async def _resource(database, crypto, *, metadata=None, name="New.Movie.2026.mkv
         await session.commit()
 
 
-async def _library(database, *, complete=True, captured_at=None, object_id=None):
+async def _library(
+    database,
+    *,
+    complete=True,
+    captured_at=None,
+    object_id=None,
+    name="New.Movie.2026.mkv",
+    tmdb_id=None,
+    media_type=None,
+):
     now = captured_at or datetime.now(UTC)
     async with database.session_factory() as session:
         session.add(
@@ -71,10 +81,20 @@ async def _library(database, *, complete=True, captured_at=None, object_id=None)
                     object_type="file",
                     object_id=object_id,
                     parent_id="root-guard",
-                    name="New.Movie.2026.mkv",
+                    name=name,
                     is_directory=False,
                 )
             )
+            if tmdb_id is not None:
+                session.add(
+                    LibraryMediaIdentity(
+                        id="identity-guard",
+                        library_id="library-guard",
+                        object_id=object_id,
+                        tmdb_id=tmdb_id,
+                        media_type=media_type or "movie",
+                    )
+                )
         await session.commit()
 
 
@@ -121,6 +141,7 @@ async def test_exact_identity_and_stale_scope_are_blocked(tmp_path):
     guard = InventoryPushGuard(database.session_factory)
 
     duplicate = await guard.check("resource-guard")
+    assert duplicate.allowed is False
     assert duplicate.code == "inventory_exact_duplicate"
 
     async with database.session_factory() as session:
@@ -129,4 +150,52 @@ async def test_exact_identity_and_stale_scope_are_blocked(tmp_path):
         await session.commit()
     stale = await guard.check("resource-guard")
     assert stale.code == "inventory_index_stale"
+    await database.engine.dispose()
+
+
+async def test_media_and_version_duplicates_are_advisory(tmp_path):
+    database = await _database(tmp_path)
+    crypto = SecretCrypto(Fernet.generate_key().decode("ascii"))
+    guard = InventoryPushGuard(database.session_factory)
+
+    await _resource(
+        database,
+        crypto,
+        name="New.Movie.2026.2160p.BluRay.mkv",
+        metadata={"tmdb_id": 7, "media_type": "movie"},
+    )
+    await _library(
+        database,
+        object_id="remote-file",
+        name="New.Movie.2026.1080p.WEB-DL.mkv",
+        tmdb_id=7,
+        media_type="movie",
+    )
+
+    media_duplicate = await guard.check("resource-guard")
+    assert media_duplicate.allowed is True
+    assert media_duplicate.code == "inventory_media_duplicate"
+
+    async with database.session_factory() as session:
+        resource = await session.get(Resource, "resource-guard")
+        assert resource is not None
+        resource.name = "New.Movie.2026.1080p.WEB-DL.mkv"
+        await session.commit()
+
+    version_duplicate = await guard.check("resource-guard")
+    assert version_duplicate.allowed is True
+    assert version_duplicate.code == "inventory_version_duplicate"
+    await database.engine.dispose()
+
+
+async def test_unconfirmed_filename_identity_remains_advisory(tmp_path):
+    database = await _database(tmp_path)
+    crypto = SecretCrypto(Fernet.generate_key().decode("ascii"))
+    await _resource(database, crypto)
+    await _library(database, object_id="remote-file")
+
+    result = await InventoryPushGuard(database.session_factory).check("resource-guard")
+
+    assert result.allowed is True
+    assert result.code == "inventory_review_required"
     await database.engine.dispose()
