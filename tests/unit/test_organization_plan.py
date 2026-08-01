@@ -34,6 +34,7 @@ from watch_assistant.services.organization_plan import (
     PlanSource,
     _canonical_hash,
     _entry_remote_version,
+    _execution_blockers,
     load_executable_steps,
 )
 
@@ -43,6 +44,40 @@ SCAN_ID = "scan-1"
 SECRET_NAME = "private-title.mkv"
 SECRET_PATH = "/private/cloud/private-title.mkv"
 SECRET_PICKCODE = "private-pickcode"
+
+
+@pytest.mark.parametrize(
+    ("status", "expires_at", "complete_preconditions", "strict_versions", "snapshot_changed", "expected"),
+    (
+        (OrganizationPlanStatus.PLANNED, datetime.now(UTC) - timedelta(seconds=1), True, True, False, "plan_expired"),
+        (OrganizationPlanStatus.IGNORED, datetime.now(UTC) + timedelta(hours=1), True, True, False, "plan_status_ignored"),
+        (OrganizationPlanStatus.PLANNED, datetime.now(UTC) + timedelta(hours=1), False, True, False, "plan_prerequisites_incomplete"),
+        (OrganizationPlanStatus.PLANNED, datetime.now(UTC) + timedelta(hours=1), True, False, False, "source_snapshot_changed"),
+        (OrganizationPlanStatus.NEEDS_REVIEW, datetime.now(UTC) + timedelta(hours=1), True, True, False, "plan_needs_review"),
+    ),
+)
+def test_execution_blocker_matrix_exposes_a_specific_reason(
+    status,
+    expires_at,
+    complete_preconditions,
+    strict_versions,
+    snapshot_changed,
+    expected,
+):
+    blockers = _execution_blockers(
+        status=status,
+        expires_at=expires_at,
+        now=datetime.now(UTC),
+        action_count=1,
+        executable_action_count=1,
+        review_action_count=0,
+        complete_preconditions=complete_preconditions,
+        strict_source_versions=strict_versions,
+        source_snapshot_changed=snapshot_changed,
+    )
+
+    assert expected in {blocker.code for blocker in blockers}
+    assert all(blocker.message_zh and blocker.next_step_zh for blocker in blockers)
 
 
 def _source_version(
@@ -232,7 +267,11 @@ async def test_plan_can_execute_requires_planned_and_unexpired_state(tmp_path):
         assert plan is not None
         plan.status = OrganizationPlanStatus.NEEDS_REVIEW.value
         await session.commit()
-    assert (await service.get_plan(plan_view.plan_id)).can_execute is False
+    review_view = await service.get_plan(plan_view.plan_id)
+    assert review_view.can_execute is False
+    assert {blocker.code for blocker in review_view.execution_blockers} == {
+        "plan_needs_review",
+    }
 
     async with database.session_factory() as session:
         plan = await session.get(OrganizationPlan, plan_view.plan_id)
@@ -240,7 +279,11 @@ async def test_plan_can_execute_requires_planned_and_unexpired_state(tmp_path):
         plan.status = OrganizationPlanStatus.PLANNED.value
         plan.expires_at = datetime.now(UTC) - timedelta(seconds=1)
         await session.commit()
-    assert (await service.get_plan(plan_view.plan_id)).can_execute is False
+    expired_view = await service.get_plan(plan_view.plan_id)
+    assert expired_view.can_execute is False
+    assert {blocker.code for blocker in expired_view.execution_blockers} == {
+        "plan_expired",
+    }
     await database.engine.dispose()
 
 

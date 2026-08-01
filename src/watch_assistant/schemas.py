@@ -762,6 +762,17 @@ class OrganizationPlanCandidateResponse(BaseModel):
     release_year: int | None = None
 
 
+class OrganizationExecutionBlockerResponse(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    kind: Literal[
+        "expired", "status", "prerequisite", "snapshot_changed", "review_only"
+    ]
+    code: str
+    message_zh: str
+    next_step_zh: str
+
+
 class OrganizationPlanResponse(BaseModel):
     model_config = {"extra": "forbid"}
 
@@ -776,6 +787,9 @@ class OrganizationPlanResponse(BaseModel):
     executable_action_count: int = Field(ge=0)
     review_action_count: int = Field(ge=0)
     can_execute: bool
+    execution_blockers: list[OrganizationExecutionBlockerResponse] = Field(
+        default_factory=list
+    )
     alias: str | None = None
     candidates: list[OrganizationPlanCandidateResponse] = Field(default_factory=list)
 
@@ -950,12 +964,24 @@ class SearchSourcesResponse(BaseModel):
     prowlarr: SearchSourceStateResponse
 
 
+class CapabilityAvailabilityResponse(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    enabled: bool
+    reason_code: str | None = None
+    reason_zh: str
+    settings_section: Literal["overview", "organization"] | None = None
+
+
 class SettingsOverviewResponse(BaseModel):
     release: str
     uptime_seconds: int = Field(ge=0)
     database_size_bytes: int = Field(ge=0)
     capabilities: dict[str, bool]
     capability_statuses: dict[str, "CapabilityStatusResponse"] = Field(
+        default_factory=dict
+    )
+    capability_details: dict[str, CapabilityAvailabilityResponse] = Field(
         default_factory=dict
     )
 

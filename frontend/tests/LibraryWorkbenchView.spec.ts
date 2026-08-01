@@ -217,4 +217,39 @@ describe("LibraryWorkbenchView", () => {
     expect(strmOperations).toHaveBeenCalledTimes(2);
     expect(wrapper.text()).not.toContain("操作历史加载失败");
   });
+
+  it.each([
+    ["strm", "STRM 失效清理未启用，请检查部署功能开关。", "预览失效清理", "overview"],
+    ["empty", "空目录回收未就绪，请前往自动整理设置检查开关和写入契约。", "预览空目录清理", "organization"],
+  ] as const)("blocks unavailable %s cleanup before a 503 and opens settings", async (_kind, reason, label, section) => {
+    const library = {
+      library_id: "main",
+      name: "115 媒体库",
+      root_directory_id: "123",
+      enabled: true,
+      scope_verified: true,
+      revision: 2,
+      latest_scan: { run_id: "scan-1", state: "completed" as const, complete: true, snapshot_revision: 1, pages_read: 1, items_seen: 1, added_count: 1, changed_count: 0, removed_count: 0, error_code: null },
+    };
+    const api = {
+      libraries: vi.fn().mockResolvedValue({ items: [library], next_cursor: null }),
+      libraryMedia: vi.fn().mockResolvedValue({ items: [], next_cursor: null }),
+      strmManifest: vi.fn().mockResolvedValue({ items: [], page: 1, page_size: 50, total: 0, total_pages: 0 }),
+      strmOperations: vi.fn().mockResolvedValue({ items: [], next_cursor: null }),
+    };
+    const capability = { enabled: false, reason_code: "disabled", reason_zh: reason as string, settings_section: section };
+    const wrapper = mount(LibraryWorkbenchView, {
+      props: {
+        api: api as never,
+        ...(section === "overview" ? { strmCleanupCapability: capability } : { emptyDirectoryCleanupCapability: capability }),
+      },
+    });
+    await flushPromises();
+
+    const cleanupButton = wrapper.findAll("button").find((button) => button.text().includes(label));
+    expect(cleanupButton?.attributes("disabled")).toBeDefined();
+    expect(wrapper.text()).toContain(reason);
+    await wrapper.findAll("button").find((button) => button.text().includes("前往"))!.trigger("click");
+    expect(wrapper.emitted("open-settings")?.at(-1)).toEqual([section]);
+  });
 });

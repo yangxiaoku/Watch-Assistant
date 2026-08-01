@@ -114,7 +114,12 @@ async def test_plan_review_api_is_authenticated_and_redacted(tmp_path):
     assert "remote-private" not in listing.text
     assert "pickcode-private" not in listing.text
     assert "/private/title.mkv" not in listing.text
-    assert "source_snapshot" not in listing.text
+    assert '"source_snapshot":' not in listing.text
+    assert {item["kind"] for item in body["items"][0]["execution_blockers"]} >= {
+        "review_only",
+        "snapshot_changed",
+        "prerequisite",
+    }
 
     missing_csrf = await client.post(
         "/api/v1/organization-plans/plan-review/confirm",
@@ -180,6 +185,7 @@ async def test_plan_review_cursor_is_bounded_and_confirm_is_local_only(tmp_path)
         "executable_action_count",
         "review_action_count",
         "can_execute",
+        "execution_blockers",
         "alias",
         "candidates",
     }

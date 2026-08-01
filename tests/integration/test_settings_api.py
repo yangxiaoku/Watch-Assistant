@@ -78,6 +78,7 @@ async def test_settings_overview_logging_patch_and_redacted_logs(tmp_path, monke
         "strm_incremental",
         "strm_cleanup",
         "strm_playback",
+        "organization_empty_directory_cleanup",
     }
     capabilities = overview.json()["capabilities"]
     assert all(
@@ -91,6 +92,7 @@ async def test_settings_overview_logging_patch_and_redacted_logs(tmp_path, monke
             "strm_incremental",
             "strm_cleanup",
             "strm_playback",
+            "organization_empty_directory_cleanup",
         )
     )
     capability_statuses = overview.json()["capability_statuses"]
@@ -98,6 +100,18 @@ async def test_settings_overview_logging_patch_and_redacted_logs(tmp_path, monke
         "state": "unconfigured",
         "state_zh": "未配置",
         "last_success_at": None,
+    }
+    assert overview.json()["capability_details"]["strm_cleanup"] == {
+        "enabled": False,
+        "reason_code": "strm_cleanup_disabled",
+        "reason_zh": "STRM 失效清理未启用，请检查部署功能开关。",
+        "settings_section": "overview",
+    }
+    assert overview.json()["capability_details"]["organization_empty_directory_cleanup"] == {
+        "enabled": False,
+        "reason_code": "empty_directory_cleanup_disabled",
+        "reason_zh": "空目录回收未就绪，请前往自动整理设置检查开关和写入契约。",
+        "settings_section": "organization",
     }
 
     current = await client.get("/api/v1/settings/logging")

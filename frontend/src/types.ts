@@ -233,9 +233,20 @@ export interface HealthResponse {
     full: boolean;
     incremental: boolean;
     cleanup: boolean;
+    cleanup_capability?: CapabilityAvailability;
     playback: boolean;
     playback_contract_verified: boolean;
   };
+  organization_capabilities?: {
+    empty_directory_cleanup?: CapabilityAvailability;
+  };
+}
+
+export interface CapabilityAvailability {
+  enabled: boolean;
+  reason_code?: string | null;
+  reason_zh: string;
+  settings_section?: "overview" | "organization" | null;
 }
 
 export type LogLevel = "DEBUG" | "ERROR" | "WARNING" | "INFO";
@@ -257,8 +268,10 @@ export interface SettingsOverviewResponse {
     strm_incremental: boolean;
     strm_cleanup: boolean;
     strm_playback: boolean;
+    organization_empty_directory_cleanup: boolean;
   };
   capability_statuses?: Record<string, CapabilityStatusResponse>;
+  capability_details?: Record<string, CapabilityAvailability>;
 }
 
 export type CapabilityState = "unconfigured" | "configured" | "contract_verified" | "runtime_healthy" | "recent_success";
@@ -703,8 +716,23 @@ export interface OrganizationPlanSummary {
   executable_action_count: number;
   review_action_count: number;
   can_execute: boolean;
+  execution_blockers?: OrganizationExecutionBlocker[];
   alias: string | null;
   candidates: OrganizationPlanCandidate[];
+}
+
+export type OrganizationExecutionBlockerKind =
+  | "expired"
+  | "status"
+  | "prerequisite"
+  | "snapshot_changed"
+  | "review_only";
+
+export interface OrganizationExecutionBlocker {
+  kind: OrganizationExecutionBlockerKind;
+  code: string;
+  message_zh: string;
+  next_step_zh: string;
 }
 
 export interface OrganizationPlanCandidate {

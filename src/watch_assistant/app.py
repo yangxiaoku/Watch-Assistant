@@ -70,6 +70,7 @@ from watch_assistant.library_models import (
     LibraryScanRun,
     MediaLibrary,
 )
+from watch_assistant.release_metadata import read_release_commit
 from watch_assistant.schemas import LoggingLevel
 from watch_assistant.security import SecurityManager
 from watch_assistant.services.agent_tokens import AgentTokenService
@@ -1543,6 +1544,53 @@ def create_app(
                 ).auto_start_enabled
             except Exception:  # noqa: BLE001 - health remains available
                 inspection_auto_start_enabled = False
+        strm_cleanup_enabled = bool(
+            getattr(application.state, "strm_cleanup_enabled", False)
+        )
+        if strm_cleanup_enabled:
+            strm_cleanup_capability = {
+                "enabled": True,
+                "reason_code": None,
+                "reason_zh": "可用",
+                "settings_section": "overview",
+            }
+        else:
+            strm_cleanup_capability = {
+                "enabled": False,
+                "reason_code": "strm_cleanup_disabled",
+                "reason_zh": "STRM 失效清理未启用，请检查部署功能开关。",
+                "settings_section": "overview",
+            }
+        empty_cleanup_setting = False
+        if settings_service is not None:
+            try:
+                empty_cleanup_setting = (
+                    await settings_service.get_organization()
+                ).cleanup_empty_directories
+            except Exception:  # noqa: BLE001 - health remains conservative
+                empty_cleanup_setting = False
+        empty_cleanup_enabled = bool(
+            empty_cleanup_setting
+            and callable(
+                getattr(application.state, "empty_directory_cleanup_executor", None)
+            )
+        )
+        if empty_cleanup_enabled:
+            empty_cleanup_capability = {
+                "enabled": True,
+                "reason_code": None,
+                "reason_zh": "可用",
+                "settings_section": "organization",
+            }
+        else:
+            empty_cleanup_capability = {
+                "enabled": False,
+                "reason_code": "empty_directory_cleanup_disabled",
+                "reason_zh": (
+                    "空目录回收未就绪，请前往自动整理设置检查开关和写入契约。"
+                ),
+                "settings_section": "organization",
+            }
         return {
             "status": "ok",
             "release": application.state.release,
@@ -1582,9 +1630,8 @@ def create_app(
                 "incremental": bool(
                     getattr(application.state, "strm_incremental_enabled", False)
                 ),
-                "cleanup": bool(
-                    getattr(application.state, "strm_cleanup_enabled", False)
-                ),
+                "cleanup": strm_cleanup_enabled,
+                "cleanup_capability": strm_cleanup_capability,
                 "playback": bool(
                     getattr(application.state, "strm_playback_enabled", False)
                     and getattr(application.state, "strm_playback_supported", False)
@@ -1597,6 +1644,9 @@ def create_app(
                         application.state, "strm_playback_contract_verified", False
                     )
                 ),
+            },
+            "organization_capabilities": {
+                "empty_directory_cleanup": empty_cleanup_capability,
             },
         }
 
@@ -1661,13 +1711,21 @@ def create_app(
 
 
 def _resolve_release(trusted_path: Path | None = None) -> str:
+    release_root = trusted_path or _TRUSTED_RELEASE_PATH
+    try:
+        resolved_root = release_root.resolve(strict=True)
+    except (OSError, RuntimeError, ValueError):
+        resolved_root = None
+    if resolved_root is not None:
+        version_release = read_release_commit(resolved_root / "VERSION")
+        if version_release is not None:
+            return version_release
     configured = os.environ.get("WATCH_ASSISTANT_RELEASE", "").strip()
     if _RELEASE_SHA.fullmatch(configured) is not None:
         return configured.lower()
-    try:
-        release_name = (trusted_path or _TRUSTED_RELEASE_PATH).resolve(strict=True).name
-    except (OSError, RuntimeError, ValueError):
+    if resolved_root is None:
         return "unknown"
+    release_name = resolved_root.name
     if _RELEASE_SHA.fullmatch(release_name) is not None:
         return release_name.lower()
     return "unknown"

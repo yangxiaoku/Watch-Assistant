@@ -458,6 +458,48 @@ describe("SettingsView", () => {
     expect(wrapper.text()).toContain("页面不会回显已保存的 Cookie 原文");
   });
 
+  it("shortens release and keeps directory IDs and error codes out of the main prompt", async () => {
+    const fullRelease = "0123456789abcdef0123456789abcdef01234567";
+    const fullCid = "9876543210987654321";
+    const errorCode = "scan_incomplete";
+    const api = makeApi({
+      settingsOverview: vi.fn().mockResolvedValue({ ...overview, release: fullRelease }),
+      organizationSettings: vi.fn().mockResolvedValue({
+        ...organization,
+        source_directory_ids: [fullCid],
+        source_directory_labels: ["待整理/来源"],
+        target_directory_id: fullCid,
+        target_directory_label: "媒体库/归档",
+        push_directory_id: fullCid,
+        push_directory_label: "媒体库/推送",
+      }),
+      organizationResult: vi.fn().mockResolvedValue({
+        status: "failed",
+        available_statuses: ["unknown", "success", "skipped", "deleted", "replace", "failed"],
+        source_count: 1,
+        scanned_count: 0,
+        plan_count: 0,
+        queued_count: 0,
+        blocked_count: 1,
+        blocked_details: [{ source_directory_id: fullCid, phase: "scan", error_code: errorCode, message_zh: "扫描未完成。", next_step_zh: "重新扫描。" }],
+        items: [],
+        finished_at: null,
+        run_id: null,
+      }),
+    });
+    const wrapper = mount(SettingsView, { props: { api } });
+    await flushPromises();
+
+    expect(wrapper.text()).toContain(fullRelease.slice(0, 7));
+    expect(wrapper.text()).not.toContain(fullRelease);
+    await wrapper.findAll("button").find((button) => button.text().includes("115 整理"))?.trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).not.toContain(fullCid);
+    const diagnostics = wrapper.get(".organization-blocked-details details");
+    expect(diagnostics.element.hasAttribute("open")).toBe(false);
+    expect(diagnostics.text()).toContain(errorCode);
+  });
+
   it("loads the first cursor page and appends later pages with id de-duplication", async () => {
     const api = makeApi({
       logs: vi.fn()

@@ -271,4 +271,27 @@ describe("OrganizationWorkbenchView", () => {
     expect(wrapper.text()).toContain("扫描快照已更新，原计划已失效");
     expect(wrapper.text()).not.toContain("本次操作未完成，当前页面没有更新");
   });
+
+  it("renders structured execution blockers with a Chinese next step", async () => {
+    const blockedPlan = {
+      ...plan,
+      status: "planned" as const,
+      can_execute: false,
+      execution_blockers: [
+        {
+          kind: "snapshot_changed" as const,
+          code: "source_snapshot_changed",
+          message_zh: "来源快照已变化或无法核对，原计划不能执行。",
+          next_step_zh: "重新扫描并生成新的整理计划。",
+        },
+      ],
+    };
+    const api = makeApi({ organizationPlans: vi.fn().mockResolvedValue({ items: [blockedPlan], next_cursor: null }) });
+    const wrapper = mount(OrganizationWorkbenchView, { props: { api, executionEnabled: true } });
+    await flushPromises();
+
+    expect(wrapper.get(".organization-execution-blockers").text()).toContain("来源快照已变化");
+    expect(wrapper.get(".organization-execution-blockers").text()).toContain("下一步：重新扫描");
+    expect(wrapper.findAll("button").some((button) => button.text().includes("立即整理"))).toBe(false);
+  });
 });

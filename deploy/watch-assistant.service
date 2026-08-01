@@ -9,6 +9,9 @@ User=watch-assistant
 Group=watch-assistant
 WorkingDirectory=/opt/watch-assistant/current
 EnvironmentFile=/etc/watch-assistant.env
+# Generated atomically from the deployed release's VERSION file. Do not add a
+# release override to the general environment file or a systemd drop-in.
+EnvironmentFile=-/var/lib/watch-assistant/release.env
 Environment=FRONTEND_DIST_DIR=/opt/watch-assistant/current/frontend/dist
 Environment=HOME=/var/lib/watch-assistant
 ExecStart=/opt/watch-assistant/venv/bin/uvicorn watch_assistant.app:app --host 0.0.0.0 --port 8115 --workers 1
