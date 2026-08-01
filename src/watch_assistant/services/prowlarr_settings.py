@@ -119,6 +119,7 @@ class ProwlarrSettingsService:
         revision: int,
     ) -> dict[str, object]:
         async with self._operation_lock:
+            commit_cancelled = False
             async with self._mutation_lock, self._session_factory() as session:
                 settings = await self._get_or_create(session)
                 if settings.revision != revision:
@@ -136,9 +137,14 @@ class ProwlarrSettingsService:
                 if fields_set:
                     settings.managed_prowlarr_updated_at = datetime.now(UTC)
                     settings.revision += 1
-                    await self._commit_uncancellable(session)
-                next_revision = settings.revision
-            await self._apply_runtime()
+                    try:
+                        await self._commit_uncancellable(session)
+                    except asyncio.CancelledError:
+                        commit_cancelled = True
+                    next_revision = settings.revision
+            runtime_cancelled = await self._apply_runtime_consistently()
+        if commit_cancelled or runtime_cancelled:
+            raise asyncio.CancelledError
         await emit_event(
             self._event_logger, "settings.changed", fields={"status": "prowlarr"}
         )
@@ -146,6 +152,7 @@ class ProwlarrSettingsService:
 
     async def reset(self, revision: int) -> dict[str, object]:
         async with self._operation_lock:
+            commit_cancelled = False
             async with self._mutation_lock, self._session_factory() as session:
                 settings = await self._get_or_create(session)
                 if settings.revision != revision:
@@ -155,9 +162,14 @@ class ProwlarrSettingsService:
                 settings.managed_prowlarr_api_key_encrypted = None
                 settings.managed_prowlarr_updated_at = None
                 settings.revision += 1
-                await self._commit_uncancellable(session)
+                try:
+                    await self._commit_uncancellable(session)
+                except asyncio.CancelledError:
+                    commit_cancelled = True
                 next_revision = settings.revision
-            await self._apply_runtime()
+            runtime_cancelled = await self._apply_runtime_consistently()
+        if commit_cancelled or runtime_cancelled:
+            raise asyncio.CancelledError
         await emit_event(
             self._event_logger, "settings.changed", fields={"status": "prowlarr_reset"}
         )
@@ -216,6 +228,18 @@ class ProwlarrSettingsService:
         if not callable(replace):
             return
         await replace(await self.runtime_client())
+
+    async def _apply_runtime_consistently(self) -> bool:
+        """Finish a committed runtime replacement before returning cancellation."""
+        runtime_task = asyncio.create_task(self._apply_runtime())
+        cancelled = False
+        while not runtime_task.done():
+            try:
+                await asyncio.shield(runtime_task)
+            except asyncio.CancelledError:
+                cancelled = True
+        await runtime_task
+        return cancelled or bool(asyncio.current_task().cancelling())
 
     def _effective_values(self, settings: ApplicationSettings) -> dict[str, object]:
         managed_key = self._decrypt(settings.managed_prowlarr_api_key_encrypted)
@@ -282,12 +306,15 @@ class ProwlarrSettingsService:
 
     async def _commit_uncancellable(self, session: AsyncSession) -> None:
         commit_task = asyncio.create_task(session.commit())
+        cancelled = False
         while not commit_task.done():
             try:
                 await asyncio.shield(commit_task)
             except asyncio.CancelledError:
-                continue
+                cancelled = True
         await commit_task
+        if cancelled or bool(asyncio.current_task().cancelling()):
+            raise asyncio.CancelledError
 
     async def _get_or_create(self, session: AsyncSession) -> ApplicationSettings:
         settings = await session.get(ApplicationSettings, SETTINGS_ID)

@@ -31,45 +31,42 @@ value.
 
 The successful response is a bare JSON array of `ReleaseResource` objects. It
 does not contain a cursor or a total field. `ReleaseResource.protocol` is the
-official enum `unknown`, `usenet`, or `torrent`; the Watch Assistant unified
-model maps `usenet` to the user-facing NZB kind and keeps it separate from a
-torrent. `infoHash` is nullable and is a string in the official schema.
+official enum `unknown`, `usenet`, or `torrent`; the Watch Assistant adapter
+keeps `usenet` outside the supported magnet resource and push path. `infoHash`
+is nullable and is a string in the official schema.
 
 Prowlarr does not define Watch Assistant's infohash normalization, duplicate
 merge, source observation, timeout fallback, pagination loop, or Chinese error
-catalog. Those are local policies covered by the strict pending tests in
-`tests/contracts/test_prowlarr_contract.py` and must be reviewed when the
-adapter is connected.
+catalog. Those are local policies covered by the passing offline contract tests
+in `tests/contracts/test_prowlarr_contract.py`.
 
-## Pending Watch Assistant seam
+## Watch Assistant seam
 
-The pending tests use an explicit, injectable target seam so they cannot
-silently bind to a real service:
+The contract tests use the product adapter and search service directly with an
+explicit injected HTTP transport, so they cannot silently bind to a real
+service:
 
 - `watch_assistant.adapters.prowlarr.ProwlarrClient(base_url, api_key,
-  timeout_seconds, transport)` with an async `search` method using the frozen
-  query names;
-- `watch_assistant.services.search_aggregation.aggregate_sources(sources)`
-  returning an object whose async `search` result exposes `results`,
-  `warnings`, and `error_code`;
-- normalized candidates expose `kind` (`torrent` or `nzb`), lowercase
-  `infohash` when present, `source_id`, and duplicate `observations`.
+  timeout, client)` uses the frozen query names and returns
+  `ProwlarrSearchResult`;
+- `watch_assistant.services.search.SearchService._query_sources` preserves a
+  healthy PanSou result when Prowlarr fails and reports a partial warning;
+- `SearchService` normalization exposes the common magnet canonical key and
+  preserves source observations in metadata. NZB/usenet releases remain
+  unsupported and never enter the magnet push path.
 
 This is a Watch Assistant test seam, not an assertion about an undocumented
-Prowlarr endpoint. The main implementation may use an equivalent adapter
-interface, but it must update this contract test before removing the strict
-pending marker.
+Prowlarr endpoint.
 
 ## Local evidence
 
 `tests/contract_support/prowlarr_mock.py` uses `httpx.MockTransport`; it never
 opens a listener or connects to Prowlarr. The synthetic fixtures contain no
 credentials or real direct links.
-The pending adapter constructor includes an injected transport so those tests
-remain offline after the product module is connected.
+The adapter receives an injected `httpx.AsyncClient` backed by that transport,
+so the product calls remain offline.
 
 The currently available tests prove the mock's route, header-only request
 recording, repeated search arrays, protocol values, bare-array pagination
-boundary, and Chinese error descriptors. Adapter and multi-source assertions
-are strict `xfail` until the target modules exist; an unexpected pass is a
-test failure so the marker cannot silently hide a connected implementation.
+boundary, Chinese error descriptors, adapter query construction, NZB filtering,
+bounded pagination, cross-source deduplication, and partial-source fallback.

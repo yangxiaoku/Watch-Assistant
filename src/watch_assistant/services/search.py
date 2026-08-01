@@ -51,8 +51,8 @@ from watch_assistant.services.content_policy import (
 from watch_assistant.services.normalize import (
     merge_normalized_resources,
     normalize_pansou,
-    normalize_source_id,
     normalize_prowlarr,
+    normalize_source_id,
 )
 from watch_assistant.services.observability import EventLogger, emit_event
 from watch_assistant.services.validation import (
@@ -729,7 +729,9 @@ class SearchService:
                         fallback_prowlarr,
                         fallback_warnings,
                         fallback_complete,
-                    ) = await self._query_sources(fallback_queries)
+                    ) = await self._query_sources(
+                        fallback_queries, warning_offset=len(queries)
+                    )
                     warnings = _merge_warnings(warnings, fallback_warnings)
                     complete = complete and fallback_complete
                     if fallback_pansou or fallback_prowlarr:
@@ -741,6 +743,7 @@ class SearchService:
                             self._normalize_prowlarr_results(
                                 fallback_prowlarr, now
                             ),
+                        )
                         normalized = self._merge_normalized_results(
                             normalized,
                             fallback_normalized,
@@ -968,13 +971,36 @@ class SearchService:
                 if not self._prowlarr_usage.get(id(previous), 0):
                     idle.set()
         if previous is not None and previous is not client and idle is not None:
-            await idle.wait()
-            close = getattr(previous, "aclose", None)
-            if callable(close):
-                await close()
+            cancelled = False
+            idle_task = asyncio.create_task(idle.wait())
+            try:
+                while not idle_task.done():
+                    try:
+                        await asyncio.shield(idle_task)
+                    except asyncio.CancelledError:
+                        cancelled = True
+                await idle_task
+                close = getattr(previous, "aclose", None)
+                if callable(close):
+                    close_task = asyncio.create_task(close())
+                    while not close_task.done():
+                        try:
+                            await asyncio.shield(close_task)
+                        except asyncio.CancelledError:
+                            cancelled = True
+                    await close_task
+            finally:
+                async with self._prowlarr_state_lock:
+                    if (
+                        self._prowlarr_idle.get(id(previous)) is idle
+                        and not self._prowlarr_usage.get(id(previous), 0)
+                    ):
+                        self._prowlarr_idle.pop(id(previous), None)
+            if cancelled or bool(asyncio.current_task().cancelling()):
+                raise asyncio.CancelledError
 
     async def _query_sources(
-        self, queries: tuple[str, ...]
+        self, queries: tuple[str, ...], *, warning_offset: int = 0
     ) -> tuple[
         list[tuple[str, dict]],
         list[tuple[str, ProwlarrSearchResult]],
@@ -997,7 +1023,7 @@ class SearchService:
                 if isinstance(result, dict)
             ]
             warnings = [
-                f"pansou_query_failed:{index + 1}"
+                f"pansou_query_failed:{warning_offset + index + 1}"
                 for index, result in enumerate(pansou_results)
                 if isinstance(result, BaseException)
             ]
@@ -1024,13 +1050,17 @@ class SearchService:
             if isinstance(pansou_result, dict):
                 successful_pansou.append((queries[index - 1], pansou_result))
             else:
-                warnings.append(f"pansou_query_failed:{index}")
+                warnings.append(
+                    f"pansou_query_failed:{warning_offset + index}"
+                )
             if isinstance(prowlarr_result, ProwlarrSearchResult):
                 successful_prowlarr.append((queries[index - 1], prowlarr_result))
                 if prowlarr_result.unsupported_count:
                     warnings.append("prowlarr_unsupported_results")
             else:
-                warnings.append(f"prowlarr_query_failed:{index}")
+                warnings.append(
+                    f"prowlarr_query_failed:{warning_offset + index}"
+                )
         return (
             successful_pansou,
             successful_prowlarr,

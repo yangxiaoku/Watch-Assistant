@@ -7,6 +7,7 @@ download actions intentionally remain outside this adapter.
 import base64
 import binascii
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit
@@ -49,6 +50,9 @@ class ProwlarrSearchResult:
 _HEX_INFOHASH = re.compile(r"[0-9a-fA-F]{40}")
 _BASE32_INFOHASH = re.compile(r"[A-Z2-7a-z2-7]{32}")
 _MAX_RESULTS = 500
+_MAX_PAGES = 20
+_MAX_PAGE_SIZE = 100
+_DEFAULT_PAGE_SIZE = 100
 _MAX_TEXT_LENGTH = 500
 
 
@@ -61,27 +65,103 @@ class ProwlarrClient:
         api_key: str,
         *,
         timeout: float = 12.0,
-        max_results: int = 100,
+        max_results: int = _MAX_RESULTS,
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self._timeout = timeout
         self._max_results = max(1, min(max_results, _MAX_RESULTS))
         self._owns_client = client is None
-        self._client = client or httpx.AsyncClient(
-            base_url=base_url.rstrip("/") + "/",
-            headers={"X-Api-Key": api_key},
-        )
+        if client is None:
+            self._client = httpx.AsyncClient(
+                base_url=base_url.rstrip("/") + "/",
+                headers={"X-Api-Key": api_key},
+            )
+        else:
+            self._client = client
+            self._client.headers["X-Api-Key"] = api_key
 
-    async def search(self, keyword: str) -> ProwlarrSearchResult:
+    async def search(
+        self,
+        keyword: str,
+        *,
+        search_type: str = "search",
+        indexer_ids: Iterable[int] | None = None,
+        categories: Iterable[int] | None = None,
+        limit: int | None = None,
+        offset: int = 0,
+        page_size: int | None = None,
+    ) -> ProwlarrSearchResult:
+        """Search the official bare-array endpoint with bounded pagination."""
+        if type(offset) is not int or offset < 0:
+            raise ValueError("offset must be a non-negative integer")
+        result_limit = self._max_results if limit is None else limit
+        if type(result_limit) is not int or result_limit < 1:
+            raise ValueError("limit must be a positive integer")
+        result_limit = min(result_limit, self._max_results)
+        requested_page_size = (
+            page_size
+            if page_size is not None
+            else result_limit
+            if limit is not None
+            else min(result_limit, _DEFAULT_PAGE_SIZE)
+        )
+        if type(requested_page_size) is not int or requested_page_size < 1:
+            raise ValueError("page_size must be a positive integer")
+        requested_page_size = min(requested_page_size, _MAX_PAGE_SIZE)
+        indexer_params = _array_params("indexerIds", indexer_ids)
+        category_params = _array_params("categories", categories)
+
+        releases: list[ProwlarrRelease] = []
+        unsupported_count = 0
+        items_seen = 0
+        current_offset = offset
+        for _page in range(_MAX_PAGES):
+            remaining = result_limit - items_seen
+            if remaining <= 0:
+                break
+            request_limit = min(requested_page_size, remaining)
+            params: list[tuple[str, str]] = [
+                ("query", keyword),
+                ("type", search_type),
+            ]
+            params.extend(indexer_params)
+            params.extend(category_params)
+            params.extend(
+                (("limit", str(request_limit)), ("offset", str(current_offset)))
+            )
+            payload = await self._request_page(params)
+            if len(payload) > request_limit:
+                raise ProwlarrInvalidResponseError(
+                    "Unexpected Prowlarr response shape"
+                )
+
+            items_seen += len(payload)
+            for item in payload:
+                if not isinstance(item, dict):
+                    raise ProwlarrInvalidResponseError(
+                        "Unexpected Prowlarr response shape"
+                    )
+                release = _parse_release(item)
+                if release is None:
+                    unsupported_count += 1
+                else:
+                    releases.append(release)
+
+            if len(payload) < request_limit:
+                break
+            next_offset = current_offset + len(payload)
+            if next_offset <= current_offset:
+                raise ProwlarrInvalidResponseError(
+                    "Unexpected Prowlarr response shape"
+                )
+            current_offset = next_offset
+        return ProwlarrSearchResult(tuple(releases), unsupported_count)
+
+    async def _request_page(self, params: list[tuple[str, str]]) -> list[Any]:
         try:
             response = await self._client.get(
                 "api/v1/search",
-                params={
-                    "query": keyword,
-                    "type": "search",
-                    "limit": self._max_results,
-                    "offset": 0,
-                },
+                params=params,
                 timeout=self._timeout,
             )
             response.raise_for_status()
@@ -100,24 +180,22 @@ class ProwlarrClient:
             ) from exc
         if not isinstance(payload, list):
             raise ProwlarrInvalidResponseError("Unexpected Prowlarr response shape")
-
-        releases: list[ProwlarrRelease] = []
-        unsupported_count = 0
-        for item in payload[: self._max_results]:
-            if not isinstance(item, dict):
-                raise ProwlarrInvalidResponseError(
-                    "Unexpected Prowlarr response shape"
-                )
-            release = _parse_release(item)
-            if release is None:
-                unsupported_count += 1
-            else:
-                releases.append(release)
-        return ProwlarrSearchResult(tuple(releases), unsupported_count)
+        return payload
 
     async def aclose(self) -> None:
         if self._owns_client:
             await self._client.aclose()
+
+
+def _array_params(name: str, values: Iterable[int] | None) -> list[tuple[str, str]]:
+    if values is None:
+        return []
+    params: list[tuple[str, str]] = []
+    for value in values:
+        if type(value) is not int:
+            raise ValueError(f"{name} must contain integers")
+        params.append((name, str(value)))
+    return params
 
 
 def _parse_release(item: dict[str, Any]) -> ProwlarrRelease | None:

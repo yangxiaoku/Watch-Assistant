@@ -56,6 +56,7 @@ def _service(pansou, prowlarr):
     service._pansou = pansou
     service._prowlarr = prowlarr
     service._pansou_limit = asyncio.Semaphore(2)
+    service._pansou_timeout = 1
     service._prowlarr_limit = asyncio.Semaphore(2)
     service._prowlarr_state_lock = asyncio.Lock()
     service._prowlarr_usage = {}
@@ -190,3 +191,28 @@ async def test_replacing_prowlarr_client_waits_for_inflight_search():
 
     assert previous.closed is True
     assert service._prowlarr is replacement
+    assert service._prowlarr_usage == {}
+    assert service._prowlarr_idle == {}
+
+
+@pytest.mark.asyncio
+async def test_replacing_prowlarr_client_cleans_up_after_cancellation():
+    previous = _ClosableProwlarr()
+    service = _service(_Pansou(), previous)
+    search = asyncio.create_task(service._query_prowlarr("Movie"))
+    await previous.started.wait()
+
+    replacement = _Prowlarr()
+    replace = asyncio.create_task(service.replace_prowlarr_client(replacement))
+    await asyncio.sleep(0)
+    replace.cancel()
+
+    previous.release.set()
+    await search
+    with pytest.raises(asyncio.CancelledError):
+        await replace
+
+    assert previous.closed is True
+    assert service._prowlarr is replacement
+    assert service._prowlarr_usage == {}
+    assert service._prowlarr_idle == {}

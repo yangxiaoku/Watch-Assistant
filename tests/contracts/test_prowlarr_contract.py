@@ -16,13 +16,13 @@ from tests.contract_support.prowlarr_mock import (
     load_fixture,
 )
 from watch_assistant.adapters.prowlarr import ProwlarrClient
-from watch_assistant.services.api_errors import build_error_payload
-from watch_assistant.services.search import SearchService
 from watch_assistant.schemas import (
     ProwlarrSettingsResponse,
     ProwlarrVerifyResponse,
     SearchSourcesResponse,
 )
+from watch_assistant.services.api_errors import build_error_payload
+from watch_assistant.services.search import SearchService
 
 TORRENT_INFOHASH = "0123456789abcdef0123456789abcdef01234567"
 
@@ -189,6 +189,7 @@ async def test_mock_preserves_official_search_parameters_and_repeated_arrays():
     assert request.values("categories") == ("5000", "5070")
     assert request.values("limit") == ("2",)
     assert request.values("offset") == ("0",)
+    assert len(mock.requests) == 1
     assert request.api_key_in_query is False
 
 
@@ -294,6 +295,7 @@ async def test_target_adapter_uses_header_only_and_passes_official_search_query(
     assert request.values("categories") == ("5000", "5070")
     assert request.values("limit") == ("2",)
     assert request.values("offset") == ("0",)
+    assert len(mock.requests) == 1
 
 
 async def test_target_adapter_distinguishes_torrent_and_excludes_nzb_from_results():
@@ -418,7 +420,9 @@ async def test_target_adapter_stops_pagination_after_short_page():
 async def test_target_maps_prowlarr_upstream_failure_to_chinese_error_code():
     mock = ProwlarrMock([MockResponse.failure(429, {"error": "fixture_rate_limited"})])
     adapter, transport_client = _new_target_adapter(mock)
-    service = _new_search_service(_Pansou(), adapter)
+    service = _new_search_service(
+        _Pansou(error=RuntimeError("fixture PanSou failure")), adapter
+    )
     try:
         successful_pansou, successful_prowlarr, warnings, complete = (
             await service._query_sources(("Example Show",))
