@@ -22,6 +22,13 @@ _SAFE_CODE = re.compile(r"^[a-z][a-z0-9_.-]{1,99}$")
 _CATALOG: dict[str, ApiErrorDescriptor] = {
     "tmdb_unavailable": ApiErrorDescriptor("tmdb_unavailable", "影视信息暂时无法加载", "本次影视资料没有更新。", "请重新加载影视资料。", True, "retry"),
     "pansou_unavailable": ApiErrorDescriptor("pansou_unavailable", "资源搜索暂时不可用", "本次资源查询没有完成，页面内容没有更新。", "请稍后重新搜索资源。", True, "retry"),
+    "prowlarr_settings_unavailable": ApiErrorDescriptor("prowlarr_settings_unavailable", "Prowlarr 设置暂时不可用", "Prowlarr 配置没有更新。", "请稍后重试。", True, "retry"),
+    "invalid_prowlarr_settings": ApiErrorDescriptor("invalid_prowlarr_settings", "Prowlarr 设置有误", "Prowlarr 配置没有保存。", "请检查地址和 API Key 后再试。", False, "inspect_configuration"),
+    "prowlarr_disabled": ApiErrorDescriptor("prowlarr_disabled", "Prowlarr 未启用", "当前未执行 Prowlarr 连接验证。", "请先启用 Prowlarr。", False, "inspect_configuration"),
+    "prowlarr_not_configured": ApiErrorDescriptor("prowlarr_not_configured", "Prowlarr 尚未配置", "当前未执行 Prowlarr 连接验证。", "请配置有效的 Prowlarr 地址和 API Key。", False, "inspect_configuration"),
+    "prowlarr_auth_required": ApiErrorDescriptor("prowlarr_auth_required", "Prowlarr 认证未通过", "Prowlarr 连接验证未通过。", "请检查 API Key 后重试。", False, "inspect_configuration"),
+    "prowlarr_invalid_response": ApiErrorDescriptor("prowlarr_invalid_response", "Prowlarr 响应无效", "Prowlarr 返回内容无法用于资源搜索。", "请检查 Prowlarr 版本和连接配置。", True, "retry"),
+    "prowlarr_unavailable": ApiErrorDescriptor("prowlarr_unavailable", "Prowlarr 暂时不可用", "Prowlarr 连接验证未完成。", "请稍后重试或检查 Prowlarr 服务状态。", True, "retry"),
     "rate_limited": ApiErrorDescriptor("rate_limited", "请求过于频繁", "本次请求未执行，当前页面内容没有改变。", "请稍后再试。", True, "retry"),
     "settings_conflict": ApiErrorDescriptor("settings_conflict", "设置已在其他位置更新", "本次修改未保存，当前页面不是最新版本。", "请加载最新设置后重新提交。", False, "reload_settings"),
     "credential_rejected": ApiErrorDescriptor("credential_rejected", "凭据验证未通过", "新凭据未生效，原配置保持不变。", "请检查凭据后重新验证。", False, "reauthenticate"),

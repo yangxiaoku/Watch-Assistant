@@ -1,3 +1,5 @@
+import secrets
+
 import pytest
 from pydantic import ValidationError
 
@@ -22,6 +24,10 @@ def make_settings(**overrides: object) -> Settings:
 def test_inspection_settings_have_production_defaults():
     settings = make_settings()
 
+    assert settings.prowlarr_enabled is False
+    assert settings.prowlarr_configured is False
+    assert settings.prowlarr_timeout_seconds == 12
+    assert settings.prowlarr_max_concurrency == 4
     assert settings.organization_plan_enabled is False
     assert settings.organization_execution_enabled is False
     assert settings.organization_write_enabled is False
@@ -110,3 +116,21 @@ def test_inspection_settings_accept_bounds(field: str, lower: float, upper: floa
 def test_inspection_settings_reject_out_of_bounds(field: str, value: float):
     with pytest.raises(ValidationError):
         make_settings(**{field: value})
+
+
+def test_prowlarr_requires_url_and_api_key_when_enabled():
+    with pytest.raises(ValidationError, match="PROWLARR_BASE_URL"):
+        make_settings(PROWLARR_ENABLED=True)
+    with pytest.raises(ValidationError, match="PROWLARR_API_KEY"):
+        make_settings(PROWLARR_ENABLED=True, PROWLARR_BASE_URL="http://prowlarr.test")
+
+
+def test_prowlarr_is_configured_only_with_explicit_complete_settings():
+    api_key = secrets.token_urlsafe(24)
+    settings = make_settings(
+        PROWLARR_ENABLED=True,
+        PROWLARR_BASE_URL="http://prowlarr.test",
+        PROWLARR_API_KEY=api_key,
+    )
+
+    assert settings.prowlarr_configured is True

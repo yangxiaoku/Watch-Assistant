@@ -1,0 +1,30 @@
+[
+  {
+    "guid": "fixture:torrent:one",
+    "size": 2147483648,
+    "indexerId": 101,
+    "indexer": "fixture-torrent-one",
+    "title": "Example Show S01E01 1080p",
+    "publishDate": "2026-07-25T00:00:00Z",
+    "infoHash": "0123456789ABCDEF0123456789ABCDEF01234567",
+    "seeders": 18,
+    "leechers": 4,
+    "protocol": "torrent",
+    "magnetUrl": null,
+    "downloadUrl": null
+  },
+  {
+    "guid": "fixture:usenet:one",
+    "size": 1073741824,
+    "indexerId": 202,
+    "indexer": "fixture-usenet-one",
+    "title": "Example Show S01E01 1080p NZB",
+    "publishDate": "2026-07-25T01:00:00Z",
+    "infoHash": null,
+    "seeders": null,
+    "leechers": null,
+    "protocol": "usenet",
+    "magnetUrl": null,
+    "downloadUrl": null
+  }
+]

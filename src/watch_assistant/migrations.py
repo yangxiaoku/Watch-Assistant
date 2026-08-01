@@ -24,6 +24,10 @@ APPLICATION_SETTINGS_COLUMN_ADDITIONS = (
     ("managed_tmdb_updated_at", "DATETIME"),
     ("managed_p115_cookie_encrypted", "TEXT"),
     ("managed_p115_updated_at", "DATETIME"),
+    ("managed_prowlarr_enabled", "BOOLEAN"),
+    ("managed_prowlarr_base_url", "TEXT"),
+    ("managed_prowlarr_api_key_encrypted", "TEXT"),
+    ("managed_prowlarr_updated_at", "DATETIME"),
 )
 
 

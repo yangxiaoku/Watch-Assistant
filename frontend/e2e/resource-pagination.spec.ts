@@ -69,6 +69,67 @@ async function mockShell(page: import("@playwright/test").Page) {
   } }));
 }
 
+test("shows confirmed source names and preserves results when one source warns", async ({ page }) => {
+  await mockShell(page);
+  await page.route("**/api/v1/media/movie/27205/resource-search", (route) => route.fulfill({
+    status: 202,
+    json: {
+      task_id: "prowlarr-search-1",
+      tmdb_id: 27205,
+      media_type: "movie",
+      season_number: null,
+      status: "ready",
+      snapshot_revision: "snapshot-prowlarr",
+      query_plan_version: "v4",
+      sources: ["plugin:pansou", "plugin:prowlarr"],
+      selected_season: null,
+      warnings: ["pansou_query_failed:0"],
+      cache_age_seconds: null,
+      error_code: null,
+      created_at: "2026-08-01T10:00:00Z",
+      updated_at: "2026-08-01T10:00:00Z",
+    },
+  }));
+  await page.route("**/api/v1/resource-search/prowlarr-search-1", (route) => route.fulfill({
+    json: {
+      task_id: "prowlarr-search-1",
+      tmdb_id: 27205,
+      media_type: "movie",
+      season_number: null,
+      status: "ready",
+      snapshot_revision: "snapshot-prowlarr",
+      query_plan_version: "v4",
+      sources: ["plugin:pansou", "plugin:prowlarr"],
+      selected_season: null,
+      warnings: ["pansou_query_failed:0"],
+      cache_age_seconds: null,
+      error_code: null,
+      created_at: "2026-08-01T10:00:00Z",
+      updated_at: "2026-08-01T10:00:00Z",
+    },
+  }));
+  await page.route("**/api/v1/media/movie/27205/resources**", (route) => route.fulfill({
+    json: {
+      ...pageResponse(1),
+      total: 2,
+      total_pages: 1,
+      facets: { magnet: 2, share: 0, "4k": 0, "1080p": 2, "720p": 0, subtitle: 0 },
+      snapshot_revision: "snapshot-prowlarr",
+      items: [
+        { ...resource("pansou-1", 1), source: "plugin:pansou", name: "PanSou 资源 1080p" },
+        { ...resource("prowlarr-1", 1), source: "plugin:prowlarr", name: "Prowlarr 资源 1080p" },
+      ],
+    },
+  }));
+
+  await page.goto("/movie/27205");
+  await expect(page.locator(".resource-source-summary")).toContainText("来源 2 个：PanSou / Prowlarr");
+  await expect(page.locator(".source-badge:visible").filter({ hasText: "Prowlarr" }).first()).toBeVisible();
+  await expect(page.locator(".source-diagnostics")).toContainText("部分搜索来源暂不可用");
+  await expect(page.locator(".source-diagnostics")).toContainText("已保留其他来源的有效结果");
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+});
+
 test("uses resource pages beyond the POST result limit and restores URL state", async ({ page }, testInfo) => {
   const resourceRequests: string[] = [];
   await mockShell(page);

@@ -1,6 +1,36 @@
 export type ResourceKind = "magnet" | "115_share";
 export type InspectionResultStatus = "verified" | "timeout" | "failed" | "unsupported";
 export type InspectionBatchStatus = "queued" | "running" | "completed" | "partial" | "failed";
+export type ProwlarrSettingsSource = "managed" | "environment" | "none";
+export type ProwlarrVerificationStatus = "available" | "unavailable" | "disabled";
+
+export interface ProwlarrSettingsResponse {
+  source: ProwlarrSettingsSource;
+  enabled: boolean;
+  configured: boolean;
+  base_url: string | null;
+  api_key_configured: boolean;
+  api_key_source: ProwlarrSettingsSource;
+  last_updated_at: string | null;
+  revision: number;
+}
+
+export interface PatchProwlarrSettingsRequest {
+  enabled?: boolean | null;
+  base_url?: string | null;
+  api_key?: string;
+  revision: number;
+}
+
+export interface ProwlarrVerifyResponse {
+  source: "prowlarr";
+  status: ProwlarrVerificationStatus;
+  configured: boolean;
+  base_url: string | null;
+  message_code: string | null;
+  checked_at: string;
+}
+
 export type TaskState =
   | "queued"
   | "submitting"
@@ -148,8 +178,11 @@ export interface ResourceSearchResponse {
   season_number: number | null;
   status: "queued" | "running" | "ready" | "failed";
   snapshot_revision: string | null;
+  query_plan_version: string;
   selected_season: number | null;
+  sources: string[];
   warnings: string[];
+  cache_age_seconds: number | null;
   error_code: string | null;
   created_at: string;
   updated_at: string;

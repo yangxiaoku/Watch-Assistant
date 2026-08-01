@@ -128,6 +128,39 @@ def test_valid_magnet_requires_supported_btih(url, canonical_key):
     assert resources[0].canonical_key == canonical_key
 
 
+def test_magnet_with_multiple_btih_values_uses_first_canonical_identity():
+    first = "abcdef0123456789abcdef0123456789abcdef01"
+    second = "1234567890abcdef1234567890abcdef12345678"
+
+    resources = normalize_pansou(
+        _magnet_data(
+            {
+                "url": (
+                    f"magnet:?xt=urn:btih:{first}&xt=urn:btih:{second}"
+                    "&dn=Movie"
+                )
+            }
+        )
+    )
+
+    assert resources[0].canonical_key == f"magnet:{first}"
+
+
+def test_untrusted_source_value_is_replaced_with_opaque_safe_identifier():
+    resource = normalize_pansou(
+        _magnet_data(
+            {
+                "url": f"magnet:?xt=urn:btih:{HEX_HASH}&dn=Movie",
+                "source": "https://indexer.test/search?redaction_marker=example-marker",
+            }
+        )
+    )[0]
+
+    assert resource.source.startswith("source:")
+    assert "https://" not in resource.source
+    assert "example-marker" not in resource.source
+
+
 @pytest.mark.parametrize(
     "url",
     [

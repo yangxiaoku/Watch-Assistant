@@ -18,6 +18,13 @@ EPISODE_PATTERN = re.compile(
     r"\u7b2c\s*\d+\s*[\u5b63\u96c6]|\u66f4\u65b0\u81f3\s*\d*\s*\u96c6?|\u5168\s*\d+\s*\u96c6",
     re.IGNORECASE,
 )
+SEASON_RANGE_PATTERN = re.compile(
+    r"(?<![a-z0-9])s(?:eason)?s?\s*0*(\d{1,3})(?!\d)\s*[-~到至]\s*"
+    r"(?:s(?:eason)?s?\s*)?0*(\d{1,3})(?!\d)|"
+    r"第\s*0*(\d{1,3})(?!\d)\s*季?\s*[-~到至]\s*"
+    r"第?\s*0*(\d{1,3})(?!\d)\s*季",
+    re.IGNORECASE,
+)
 MEDIA_PATTERN = re.compile(
     r"\b(?:2160p|1080p|720p|4k|blu[ .-]?ray|web[ .-]?dl|webrip|"
     r"remux|brrip|dvd[ .-]?rip|hdr|x26[45]|h[ .]?26[45])\b",
@@ -123,11 +130,10 @@ def _match_score(
     if media.media_type == MediaType.MOVIE and has_episode_marker:
         return None
 
-    season_numbers = _season_numbers(resource_name)
     if (
         media.media_type == MediaType.TV
         and season_number is not None
-        and season_numbers != {season_number}
+        and not _season_matches_requested(resource_name, season_number)
     ):
         return None
 
@@ -216,6 +222,10 @@ def _relevance_score(
         if media.media_type == MediaType.TV
         and season_number is not None
         and _season_numbers(resource_name) == {season_number}
+        else 10
+        if media.media_type == MediaType.TV
+        and season_number is not None
+        and _season_matches_requested(resource_name, season_number)
         else 0
     )
     return max(0, min(100, title_score + year_score + season_score))
@@ -313,12 +323,21 @@ def _season_numbers(value: str) -> set[int]:
         value = match.group(1) or match.group(2)
         if value is not None:
             numbers.add(int(value))
-    for match in re.finditer(
-        r"(?<![a-z0-9])s(?:eason)?s?\s*0*(\d{1,3})(?!\d)\s*[-~到至]\s*"
-        r"(?:s(?:eason)?s?\s*)?0*(\d{1,3})(?!\d)|"
-        r"第\s*0*(\d{1,3})(?!\d)\s*季?\s*[-~到至]\s*"
-        r"第?\s*0*(\d{1,3})(?!\d)\s*季",
-        normalized,
-    ):
+    for match in SEASON_RANGE_PATTERN.finditer(normalized):
         numbers.update(int(item) for item in match.groups() if item is not None)
     return numbers
+
+
+def _season_matches_requested(value: str, season_number: int) -> bool:
+    numbers = _season_numbers(value)
+    if season_number in numbers:
+        return True
+    normalized = unicodedata.normalize("NFKC", value).casefold()
+    for match in SEASON_RANGE_PATTERN.finditer(normalized):
+        if match.group(1) is not None:
+            start, end = int(match.group(1)), int(match.group(2))
+        else:
+            start, end = int(match.group(3)), int(match.group(4))
+        if min(start, end) <= season_number <= max(start, end):
+            return True
+    return False

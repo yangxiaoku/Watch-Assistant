@@ -101,6 +101,7 @@ def test_validation_filters_other_tv_seasons_when_one_is_selected():
         _resource("Game of Thrones Season 1 2011 1080p"),
         _resource("Game of Thrones 第3季 2013 1080p"),
         _resource("Game of Thrones complete collection 1080p"),
+        _resource("Game of Thrones S01-S03 2012 1080p"),
         _resource("Game of Thrones S02-S03 2012 1080p"),
         _resource("Game of Thrones Season 2-3 2012 1080p"),
         _resource("Game of Thrones S02 全集 2012 1080p"),
@@ -119,6 +120,9 @@ def test_validation_filters_other_tv_seasons_when_one_is_selected():
 
     assert {item.name for item in resources} == {
         "Game of Thrones S02E01 2012 1080p",
+        "Game of Thrones S01-S03 2012 1080p",
+        "Game of Thrones S02-S03 2012 1080p",
+        "Game of Thrones Season 2-3 2012 1080p",
         "Game of Thrones S02 全集 2012 1080p",
         "Game of Thrones S02 全季 2012 1080p",
         "Game of Thrones S02 Complete Season 2012 1080p",
@@ -126,8 +130,14 @@ def test_validation_filters_other_tv_seasons_when_one_is_selected():
         "Game of Thrones S02 Complete Series 2012 1080p",
         "Game of Thrones S02 Complete Collection 2012 1080p",
         "Game of Thrones S02 Collection 2012 1080p",
+        "Game of Thrones S02 Seasons 1-3 2012 1080p",
+        "Game of Thrones S02 Seasons 2-3 2012 1080p",
     }
-    assert rejected == 8
+    assert rejected == 4
+
+    exact = next(item for item in resources if item.name.endswith("S02E01 2012 1080p"))
+    ranged = next(item for item in resources if item.name.endswith("S01-S03 2012 1080p"))
+    assert ranged.metadata["relevance_score"] < exact.metadata["relevance_score"]
 
 
 def test_season_numbers_do_not_treat_years_as_seasons():

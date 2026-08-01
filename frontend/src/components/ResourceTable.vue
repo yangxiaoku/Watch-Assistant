@@ -3,6 +3,7 @@ import { computed, ref, watch } from "vue";
 import { ChevronFirst, ChevronLast, ChevronLeft, ChevronRight, LoaderCircle, Magnet, PackageOpen, ScanSearch, Search } from "@lucide/vue";
 
 import PushButton from "./PushButton.vue";
+import { resourceSourceLabel, sourceNameList } from "../resourceSources";
 import { inspectionStatusLabel } from "../inspection";
 import { canPushResource, NO_PUSH_CAPABILITIES, type PushCapabilities } from "../push";
 import type { ResourceFacets, ResourceKind, ResourceQuality, ResourceSort, ResourceSummary } from "../types";
@@ -12,6 +13,7 @@ const props = defineProps<{
   facets?: ResourceFacets;
   total?: number;
   hiddenTotal?: number;
+  sourceNames?: string[];
   page?: number;
   pageSize?: 25 | 50 | 100;
   totalPages?: number;
@@ -68,6 +70,8 @@ const kind = computed(() => props.resourceKind ?? "all");
 const quality = computed(() => props.resourceQuality ?? "all");
 const sort = computed(() => props.resourceSort ?? "comprehensive");
 const activePushCapabilities = computed(() => props.pushCapabilities ?? NO_PUSH_CAPABILITIES);
+const displayedSourceNames = computed(() => props.sourceNames?.length ? sourceNameList(props.sourceNames) : sourceNameList(props.resources.map((resource) => resource.source)));
+const sourceSummary = computed(() => displayedSourceNames.value.length ? "来源 " + displayedSourceNames.value.length + " 个：" + displayedSourceNames.value.join(" / ") : "");
 
 const kindCounts = computed(() => ({ all: total.value, magnet: facets.value.magnet, share: facets.value.share }));
 const qualityCounts = computed(() => ({
@@ -142,6 +146,7 @@ function pageRequest(target: number) {
       <div class="resource-heading-copy">
         <p class="eyebrow">资源分页</p>
         <h2>可用资源 <span>{{ total }}</span></h2><p v-if="hiddenTotal" class="resource-hidden-count">已隐藏 {{ hiddenTotal }} 条</p>
+        <p v-if="sourceSummary" class="resource-source-summary">{{ sourceSummary }}</p>
         <p v-if="inspectionState === 'running'" class="inspection-progress" role="status">检测中 {{ inspectionCompleted ?? 0 }} / {{ inspectionTotal ?? 0 }} 条磁力<span v-if="inspectionFailed"> · 失败 {{ inspectionFailed }} 条</span></p>
         <p v-else-if="inspectionState === 'completed'" class="inspection-progress success" role="status">检测完成 · {{ inspectionCompleted ?? 0 }} / {{ inspectionTotal ?? 0 }}<span v-if="inspectionFailed"> · 失败 {{ inspectionFailed }} 条</span></p>
         <p v-else-if="inspectionState === 'partial' || inspectionState === 'timeout' || inspectionState === 'failed'" class="inspection-progress warning" role="status">{{ inspectionError ?? (inspectionState === 'timeout' ? '检测超时，可重试' : inspectionState === 'partial' ? `部分失败：${inspectionFailed ?? 0} 条磁力检测失败` : '检测失败，可重试') }} · {{ inspectionCompleted ?? 0 }} / {{ inspectionTotal ?? 0 }}</p>
@@ -174,7 +179,7 @@ function pageRequest(target: number) {
             <td class="numeric"><span>{{ formatSize(resource.size_bytes) }}</span><small v-if="sizeSourceLabel(resource)">{{ sizeSourceLabel(resource) }}</small></td>
             <td class="numeric" :title="seedersTitle(resource)"><span>{{ resource.seeders ?? '未知' }}</span><small v-if="resource.seeders_source === 'pansou'">来源数据</small></td>
             <td class="inspection-cell"><template v-if="resource.inspection_status"><strong>{{ inspectionLabel(resource.inspection_status) }}</strong><small>视频 {{ formatCount(resource.video_file_count) }} · 字幕 {{ formatCount(resource.subtitle_count) }} · 样本 {{ formatCount(resource.sample_count) }}</small></template><span v-else class="inspection-empty">未检测</span></td>
-            <td class="source-cell"><strong>{{ resource.source }}</strong><small>{{ formatDate(resource.captured_at) }}</small></td>
+            <td class="source-cell"><strong class="source-badge">{{ resourceSourceLabel(resource) }}</strong><small>{{ formatDate(resource.captured_at) }}</small></td>
             <td class="action-cell"><PushButton :busy="pushingId === resource.resource_id" :disabled="!canPush(resource)" :title="pushTitle(resource)" @push="emit('push', resource)" /></td>
           </tr>
         </tbody>
@@ -182,7 +187,7 @@ function pageRequest(target: number) {
     </div>
     <div v-if="resources.length" class="resource-cards" :class="{ 'resource-list-loading': resourceLoading }">
       <article v-for="resource in resources" :key="resource.resource_id" class="resource-card">
-        <div class="card-heading"><span class="kind-label">{{ resource.kind === 'magnet' ? '磁力' : '115 分享' }}</span><span>{{ resource.source }}</span></div>
+        <div class="card-heading"><span class="kind-label">{{ resource.kind === 'magnet' ? '磁力' : '115 分享' }}</span><strong class="source-badge">{{ resourceSourceLabel(resource) }}</strong></div>
         <h3 class="resource-card-title">{{ resource.name }}</h3>
         <dl><div><dt>大小</dt><dd>{{ formatSize(resource.size_bytes) }}<small v-if="sizeSourceLabel(resource)" class="metric-source">{{ sizeSourceLabel(resource) }}</small></dd></div><div><dt>做种</dt><dd>{{ resource.seeders ?? '未知' }}<small v-if="resource.seeders_source === 'pansou'" class="metric-source">来源数据</small></dd></div><div><dt>抓取</dt><dd>{{ formatDate(resource.captured_at) }}</dd></div></dl>
         <div v-if="hasQuality(resource)" class="quality-metrics"><span>综合 {{ formatScore(resource.rank_score) }}</span><span>相关 {{ formatScore(resource.relevance_score) }}</span><span>完整 {{ formatScore(resource.completeness_score) }}</span></div>

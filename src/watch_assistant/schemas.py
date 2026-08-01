@@ -814,6 +814,47 @@ class CredentialSettingsResponse(BaseModel):
     p115_cookie: P115CredentialStatus
 
 
+class ProwlarrSettingsPatch(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    enabled: bool | None = None
+    base_url: str | None = Field(default=None, max_length=2048)
+    api_key: SecretStr | None = None
+    revision: int = Field(ge=0)
+
+
+class ProwlarrSettingsResponse(BaseModel):
+    source: Literal["managed", "environment", "none"]
+    enabled: bool
+    configured: bool
+    base_url: str | None
+    api_key_configured: bool
+    api_key_source: Literal["managed", "environment", "none"]
+    last_updated_at: datetime | None
+    revision: int = Field(ge=0)
+
+
+class ProwlarrVerifyResponse(BaseModel):
+    source: Literal["prowlarr"] = "prowlarr"
+    status: Literal["available", "unavailable", "disabled"]
+    configured: bool
+    base_url: str | None
+    message_code: str | None = None
+    checked_at: datetime
+
+
+class SearchSourceStateResponse(BaseModel):
+    enabled: bool
+    configured: bool
+    status: Literal["disabled", "configured", "unavailable"]
+    message_code: str | None = None
+
+
+class SearchSourcesResponse(BaseModel):
+    pansou: SearchSourceStateResponse
+    prowlarr: SearchSourceStateResponse
+
+
 class SettingsOverviewResponse(BaseModel):
     release: str
     uptime_seconds: int = Field(ge=0)
@@ -1224,7 +1265,7 @@ class ResourceSearchResponse(BaseModel):
     season_number: int | None = Field(default=None, ge=0)
     status: Literal["queued", "running", "ready", "failed"]
     snapshot_revision: str | None = None
-    query_plan_version: str = "v4"
+    query_plan_version: str = "v5"
     cache_age_seconds: int | None = Field(default=None, ge=0)
     sources: list[str] = Field(default_factory=list)
     selected_season: int | None = Field(default=None, ge=0)

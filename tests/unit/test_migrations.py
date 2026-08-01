@@ -36,6 +36,10 @@ APPLICATION_SETTINGS_COLUMNS = {
     "managed_tmdb_updated_at",
     "managed_p115_cookie_encrypted",
     "managed_p115_updated_at",
+    "managed_prowlarr_enabled",
+    "managed_prowlarr_base_url",
+    "managed_prowlarr_api_key_encrypted",
+    "managed_prowlarr_updated_at",
     "updated_at",
 }
 
@@ -89,6 +93,10 @@ async def test_initialize_database_creates_schema_records_migration_and_defaults
     assert settings.managed_tmdb_updated_at is None
     assert settings.managed_p115_cookie_encrypted is None
     assert settings.managed_p115_updated_at is None
+    assert settings.managed_prowlarr_enabled is None
+    assert settings.managed_prowlarr_base_url is None
+    assert settings.managed_prowlarr_api_key_encrypted is None
+    assert settings.managed_prowlarr_updated_at is None
     await database.engine.dispose()
 
 
