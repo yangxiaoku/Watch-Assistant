@@ -10,7 +10,7 @@ function task(status: ResourceSearchResponse["status"] = "running"): ResourceSea
     season_number: null,
     status,
     snapshot_revision: null,
-    query_plan_version: "v4",
+    query_plan_version: "v5",
     cache_age_seconds: null,
     sources: [],
     selected_season: null,

@@ -95,6 +95,31 @@ describe("MovieView seasons", () => {
     expect(wrapper.text()).not.toContain("年份未知");
   });
 
+  it("translates search warning codes for the Chinese interface", () => {
+    const result = response("movie");
+    result.warnings = [
+      "partial_upstream",
+      "pansou_query_failed:2",
+      "resource_results_truncated",
+    ];
+    const wrapper = mount(MovieView, {
+      props: {
+        result,
+        mediaType: "movie",
+        pushingId: null,
+        pushCapabilities: { magnet: true, share: true },
+        favorite: false,
+      },
+    });
+
+    const warning = wrapper.get(".warning-strip").text();
+    expect(warning).toContain("部分搜索来源暂不可用");
+    expect(warning).toContain("部分搜索请求失败");
+    expect(warning).toContain("结果较多");
+    expect(warning).not.toContain("partial_upstream");
+    expect(warning).not.toContain("pansou_query_failed");
+  });
+
   it("shows all seasons and emits the selected season", async () => {
     const wrapper = mount(MovieView, {
       props: {

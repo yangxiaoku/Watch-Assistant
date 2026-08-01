@@ -71,7 +71,7 @@ describe("ApiClient season and inspection requests", () => {
       season_number: 2,
       status: "running",
       snapshot_revision: null,
-      query_plan_version: "v4",
+      query_plan_version: "v5",
       cache_age_seconds: null,
       sources: [],
       selected_season: 2,

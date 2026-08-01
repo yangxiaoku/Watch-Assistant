@@ -67,12 +67,18 @@ function posterUrl(path: string | null): string | null {
 }
 
 function warningLabel(value: string): string {
-  if (value === "resource_mismatch_filtered") return "已隐藏与当前影视不匹配的资源";
-  if (value === "partial_upstream") return "部分搜索来源暂时不可用";
-  if (value === "prowlarr_unsupported_results") return "Prowlarr 返回了不支持的资源类型，已跳过";
-  if (value.startsWith("prowlarr_query_failed:")) return "Prowlarr 搜索暂时不可用";
-  if (value.startsWith("pansou_query_failed:")) return "PanSou 部分查询暂时不可用";
-  return value;
+  if (value.startsWith("pansou_query_failed:")) return "部分搜索请求失败，已保留其他来源结果";
+  return {
+    alternative_titles_used: "已使用其他译名补充搜索",
+    link_check_inconclusive: "部分分享链接暂无法确认，已保留待核对结果",
+    new_resources_found: "发现新资源",
+    partial_upstream: "部分搜索来源暂不可用，已保留其他来源结果",
+    prowlarr_unsupported_results: "Prowlarr 返回了不支持的资源类型，已跳过",
+    resource_mismatch_filtered: "已隐藏与当前影视不匹配的资源",
+    resource_results_truncated: "结果较多，当前仅展示部分资源，可使用分页查看其余结果",
+    stale_cache: "部分结果来自缓存，搜索来源未完全可用",
+    watching_for_resources: "暂未找到可用资源，系统会继续等待新结果",
+  }[value] ?? "搜索结果存在待核对提示";
 }
 </script>
 

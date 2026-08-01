@@ -51,6 +51,7 @@ from watch_assistant.services.content_policy import (
 from watch_assistant.services.normalize import (
     merge_normalized_resources,
     normalize_pansou,
+    normalize_source_id,
     normalize_prowlarr,
 )
 from watch_assistant.services.observability import EventLogger, emit_event
@@ -120,7 +121,7 @@ def make_cache_key(
     season_number: int | None = None,
 ) -> str:
     season = "" if season_number is None else f":season:{season_number}"
-    return f"tmdb:{media_type.value}:{tmdb_id}{season}:queries:v4"
+    return f"tmdb:{media_type.value}:{tmdb_id}{season}:queries:v5"
 
 
 class SearchService:
@@ -135,6 +136,7 @@ class SearchService:
         share_domains: tuple[str, ...] = ("115.com", "115cdn.com"),
         pansou_max_concurrency: int = 6,
         prowlarr_max_concurrency: int = 4,
+        pansou_request_timeout: float = 12.0,
         event_logger: EventLogger | None = None,
     ) -> None:
         self._session_factory = session_factory
@@ -149,6 +151,7 @@ class SearchService:
         self._prowlarr_state_lock = asyncio.Lock()
         self._prowlarr_usage: dict[int, int] = {}
         self._prowlarr_idle: dict[int, asyncio.Event] = {}
+        self._pansou_timeout = pansou_request_timeout
         self._search_locks: dict[tuple[MediaType, int], asyncio.Lock] = {}
         self._resource_search_tasks: dict[
             tuple[MediaType, int, int | None], _ResourceSearchTask
@@ -298,8 +301,14 @@ class SearchService:
                 )
             return existing.response()
         if existing is not None and existing.status == "ready" and not refresh:
-            async with self._resource_search_lock(existing.task_id):
-                return existing.response()
+            snapshot_revision, cache_age_seconds = await self._snapshot_metadata(
+                tmdb_id, media_type, season_number
+            )
+            if snapshot_revision is not None:
+                existing.snapshot_revision = snapshot_revision
+                existing.cache_age_seconds = cache_age_seconds
+                async with self._resource_search_lock(existing.task_id):
+                    return existing.response()
 
         now = datetime.now(UTC)
         snapshot_revision = None
@@ -434,7 +443,7 @@ class SearchService:
             row.refresh = task.refresh
             row.status = task.status
             row.snapshot_revision = task.snapshot_revision
-            row.query_plan_version = "v4"
+            row.query_plan_version = "v5"
             row.cache_age_seconds = task.cache_age_seconds
             row.sources_json = json.dumps(task.sources, ensure_ascii=False)
             row.selected_season = task.selected_season
@@ -454,6 +463,8 @@ class SearchService:
         if cache is None:
             return None, None
         age = max(0, int((datetime.now(UTC) - _as_utc(cache.fetched_at)).total_seconds()))
+        if not _cache_is_fresh(cache, timedelta(seconds=age)):
+            return None, None
         return _as_utc(cache.fetched_at).isoformat(), age
 
     async def _search_impl(
@@ -720,7 +731,7 @@ class SearchService:
                         fallback_complete,
                     ) = await self._query_sources(fallback_queries)
                     warnings = _merge_warnings(warnings, fallback_warnings)
-                    complete = fallback_complete
+                    complete = complete and fallback_complete
                     if fallback_pansou or fallback_prowlarr:
                         fallback_normalized = self._normalize_results(
                             fallback_pansou, now
@@ -730,7 +741,6 @@ class SearchService:
                             self._normalize_prowlarr_results(
                                 fallback_prowlarr, now
                             ),
-                        )
                         normalized = self._merge_normalized_results(
                             normalized,
                             fallback_normalized,
@@ -752,16 +762,42 @@ class SearchService:
                         if candidates:
                             warnings.append("alternative_titles_used")
 
+        if sum(item.kind == ResourceKind.MAGNET for item in candidates) > MAX_SNAPSHOT_MAGNETS:
+            warnings = _merge_warnings(warnings, ["resource_results_truncated"])
         candidates = _limit_magnet_resources(candidates, MAX_SNAPSHOT_MAGNETS)
 
         if not complete:
             warnings = _merge_warnings(warnings, ["partial_upstream"])
             if cache_usable and cache is not None:
                 async with self._session_factory() as session:
+                    await self._record_validation_outcomes(
+                        session,
+                        media,
+                        normalized,
+                        alternative_titles,
+                        now,
+                        season_number,
+                    )
                     fresh_resources = await self._persist_resources(session, candidates, now)
-                    resources = _dedupe_resources([*fresh_resources, *cached_resources])
+                    merged_resources = _dedupe_resources(
+                        [*fresh_resources, *cached_resources]
+                    )
+                    if (
+                        sum(
+                            item.kind == ResourceKind.MAGNET
+                            for item in merged_resources
+                        )
+                        > MAX_SNAPSHOT_MAGNETS
+                    ):
+                        warnings = _merge_warnings(
+                            warnings, ["resource_results_truncated"]
+                        )
+                    resources = _limit_magnet_resources(
+                        merged_resources, MAX_SNAPSHOT_MAGNETS
+                    )
                     score_snapshot = _resource_score_snapshot(resources)
-                    score_snapshot.update(cached_scores)
+                    for resource_id, scores in cached_scores.items():
+                        score_snapshot.setdefault(resource_id, dict(scores))
                     await self._persist_cache(
                         session,
                         cache_key,
@@ -785,6 +821,14 @@ class SearchService:
                     policy=policy,
                 )
             async with self._session_factory() as session:
+                await self._record_validation_outcomes(
+                    session,
+                    media,
+                    normalized,
+                    alternative_titles,
+                    now,
+                    season_number,
+                )
                 resources = await self._persist_resources(session, candidates, now)
                 score_snapshot = _resource_score_snapshot(resources)
                 await self._persist_cache(
@@ -884,7 +928,9 @@ class SearchService:
 
     async def _query_pansou(self, query: str) -> dict:
         async with self._pansou_limit:
-            return await self._pansou.search(query)
+            return await asyncio.wait_for(
+                self._pansou.search(query), timeout=self._pansou_timeout
+            )
 
     async def _query_prowlarr(self, query: str) -> ProwlarrSearchResult:
         async with self._prowlarr_state_lock:
@@ -1364,6 +1410,11 @@ class SearchService:
                 resource, response_scores, "comprehensive"
             ),
         )
+        response_warnings = list(warnings or [])
+        if sum(item.kind == ResourceKind.MAGNET for item in ordered_resources) > LEGACY_MAGNET_LIMIT:
+            response_warnings = _merge_warnings(
+                response_warnings, ["resource_results_truncated"]
+            )
         visible_resources = _limit_magnet_resources(
             ordered_resources, LEGACY_MAGNET_LIMIT
         )
@@ -1372,7 +1423,7 @@ class SearchService:
             results=[
                 _resource_summary(item, response_scores) for item in visible_resources
             ],
-            warnings=warnings or [],
+            warnings=response_warnings,
             cached=cached,
             cache_age_seconds=(
                 max(0, int(_age(cache.fetched_at, now).total_seconds()))
@@ -1470,7 +1521,7 @@ def _resource_summary(
         name=item.name,
         size_bytes=item.size_bytes,
         seeders=item.seeders,
-        source=item.source,
+        source=normalize_source_id(item.source),
         captured_at=_as_utc(item.captured_at),
         size_source=(size_source if size_source in {"pansou", "inspection"} else None),
         seeders_source=seeders_source if seeders_source == "pansou" else None,
@@ -1510,7 +1561,10 @@ def _merge_warnings(current: list[str], additions: list[str]) -> list[str]:
 
 
 def _dedupe_resources(resources: list[Resource]) -> list[Resource]:
-    return list({item.canonical_key: item for item in resources}.values())
+    deduplicated: dict[str, Resource] = {}
+    for resource in resources:
+        deduplicated.setdefault(resource.canonical_key, resource)
+    return list(deduplicated.values())
 
 
 def _fallback_queries(
