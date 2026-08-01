@@ -209,7 +209,14 @@ class StrmCleanupPlanService:
             if not hmac.compare_digest(plan.plan_hash, digest.lower()):
                 raise StrmCleanupPlanError("plan_digest_mismatch")
             if plan.status == "applied":
-                return StrmCleanupApplyView(_view(plan), 0)
+                if (
+                    plan.applied_idempotency_key is not None
+                    and plan.applied_idempotency_key != idempotency_key
+                ):
+                    raise StrmCleanupPlanError("cleanup_plan_already_applied")
+                return StrmCleanupApplyView(
+                    _view(plan), int(plan.applied_retired or 0)
+                )
             if plan.revision != expected_revision:
                 raise StrmCleanupPlanError("plan_revision_changed")
             if plan.status != "needs_review":
@@ -262,6 +269,8 @@ class StrmCleanupPlanService:
                 retired += 1
             plan.status = "applied"
             plan.revision += 1
+            plan.applied_idempotency_key = idempotency_key
+            plan.applied_retired = retired
             await session.commit()
             await session.refresh(plan)
             return StrmCleanupApplyView(_view(plan), retired)

@@ -41,3 +41,23 @@ def test_strm_write_routes_require_strm_write_scope():
             }
         )
         assert _required_scope(request) == "strm:write"
+
+
+def test_strm_operation_read_routes_require_strm_read_scope():
+    for path in (
+        "/api/v1/strm-operations/strm_op_1",
+        "/api/v1/libraries/library/strm-operations",
+    ):
+        request = Request(
+            {
+                "type": "http",
+                "method": "GET",
+                "path": path,
+                "headers": [],
+                "scheme": "http",
+                "server": ("app.test", 80),
+                "client": ("127.0.0.1", 1234),
+                "root_path": "",
+            }
+        )
+        assert _required_scope(request) == "strm:read"

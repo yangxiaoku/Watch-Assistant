@@ -46,6 +46,10 @@ import type {
   MediaEntryListResponse,
   StrmManifestListResponse,
   StrmGenerationResponse,
+  StrmCleanupPlanApplyResponse,
+  StrmCleanupPlanResponse,
+  StrmOperationListResponse,
+  StrmOperationResponse,
   PwaDevice,
 } from "./types";
 import { describeUiError, type UiErrorAction } from "./errorCatalog";
@@ -781,6 +785,42 @@ export class ApiClient {
       body: JSON.stringify({ source_scan_run_id: scanRunId }),
     });
   }
+
+  async strmOperation(operationId: string): Promise<StrmOperationResponse> {
+    return this.request<StrmOperationResponse>(`/api/v1/strm-operations/${encodeURIComponent(operationId)}`);
+  }
+
+  async strmOperations(libraryId: string, cursor?: string, limit = 20): Promise<StrmOperationListResponse> {
+    const params = new URLSearchParams({ limit: String(limit) });
+    if (cursor !== undefined) params.set("cursor", cursor);
+    return this.request<StrmOperationListResponse>(`/api/v1/libraries/${encodeURIComponent(libraryId)}/strm-operations?${params.toString()}`);
+  }
+
+  async createStrmCleanupPlan(libraryId: string, scanRunId: string): Promise<StrmCleanupPlanResponse> {
+    return this.request<StrmCleanupPlanResponse>(`/api/v1/libraries/${encodeURIComponent(libraryId)}/strm-cleanup-plan`, {
+      method: "POST",
+      body: JSON.stringify({ source_scan_run_id: scanRunId }),
+    });
+  }
+
+  async strmCleanupPlan(planId: string): Promise<StrmCleanupPlanResponse> {
+    return this.request<StrmCleanupPlanResponse>(`/api/v1/strm-cleanup-plans/${encodeURIComponent(planId)}`);
+  }
+
+  async applyStrmCleanupPlan(
+    planId: string,
+    payload: { expectedRevision: number; digest: string; idempotencyKey?: string },
+  ): Promise<StrmCleanupPlanApplyResponse> {
+    return this.request<StrmCleanupPlanApplyResponse>(`/api/v1/strm-cleanup-plans/${encodeURIComponent(planId)}/apply`, {
+      method: "POST",
+      body: JSON.stringify({
+        expected_revision: payload.expectedRevision,
+        digest: payload.digest,
+        confirm: true,
+        idempotency_key: payload.idempotencyKey ?? createIdempotencyKey(),
+      }),
+    });
+  }
 }
 
 const READ_CACHE_PREFIX = "watch-assistant:readonly-cache:";
@@ -790,7 +830,7 @@ function isCacheableRead(path: string): boolean {
   return /^\/api\/v1\/(health|tasks(?:[/?]|$)|notifications(?:[/?]|$)|workflows(?:[/?]|$))/.test(path);
 }
 
-function createIdempotencyKey(): string {
+export function createIdempotencyKey(): string {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) return crypto.randomUUID();
   return `wa-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }

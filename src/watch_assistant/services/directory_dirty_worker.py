@@ -173,7 +173,9 @@ class DirectoryDirtyWorker:
                     source_scan_run_id=scan.run_id,
                     output_root=self._output_root,
                     playback_url_prefix=self._playback_url_prefix,
-                    retire_removed=self._cleanup_enabled,
+                    # Incremental reconciliation only creates/updates current
+                    # entries. Retirement is a separate reviewed cleanup plan.
+                    retire_removed=False,
                 )
                 await self._sync_workflow(
                     workflow_id,

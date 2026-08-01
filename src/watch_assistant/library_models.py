@@ -303,6 +303,10 @@ class StrmCleanupPlan(Base):
     revision: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     plan_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    applied_idempotency_key: Mapped[str | None] = mapped_column(
+        String(128), nullable=True
+    )
+    applied_retired: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utc_now
     )

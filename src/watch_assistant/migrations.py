@@ -387,6 +387,38 @@ def _create_strm_manifest_table(connection: Connection) -> None:
     StrmManifestEntry.__table__.create(connection, checkfirst=True)
 
 
+def _create_strm_operations_table(connection: Connection) -> None:
+    """Create the durable ledger for STRM synchronization requests."""
+
+    from watch_assistant.models import StrmOperation
+
+    StrmOperation.__table__.create(connection, checkfirst=True)
+
+
+def _add_strm_cleanup_idempotency(connection: Connection) -> None:
+    """Persist the result key for safe retries after a successful cleanup."""
+
+    if not inspect(connection).has_table("strm_cleanup_plans"):
+        return
+    columns = {
+        item["name"] for item in inspect(connection).get_columns("strm_cleanup_plans")
+    }
+    if "applied_idempotency_key" not in columns:
+        connection.execute(
+            text(
+                "ALTER TABLE strm_cleanup_plans "
+                "ADD COLUMN applied_idempotency_key VARCHAR(128)"
+            )
+        )
+    if "applied_retired" not in columns:
+        connection.execute(
+            text(
+                "ALTER TABLE strm_cleanup_plans "
+                "ADD COLUMN applied_retired INTEGER NOT NULL DEFAULT 0"
+            )
+        )
+
+
 def _upgrade_audit_records_schema(connection: Connection) -> None:
     """Bridge the pre-REQ-004 audit table to the current event schema."""
 
@@ -902,6 +934,8 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration("051_organization_cancel_requested", _add_organization_cancel_requested),
     Migration("052_task_target_directory", _add_task_target_directory),
     Migration("053_organization_history", _create_organization_history_table),
+    Migration("054_strm_operations", _create_strm_operations_table),
+    Migration("055_strm_cleanup_idempotency", _add_strm_cleanup_idempotency),
 )
 
 
