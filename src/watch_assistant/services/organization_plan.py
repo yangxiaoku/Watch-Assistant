@@ -108,6 +108,22 @@ class OrganizationPlanItem:
         return "OrganizationPlanItem(source=<redacted>, naming_plan=<redacted>)"
 
 
+@dataclass(frozen=True, slots=True)
+class OrganizationExecutionBlocker:
+    kind: str
+    code: str
+    message_zh: str
+    next_step_zh: str
+
+    def to_public_dict(self) -> dict[str, str]:
+        return {
+            "kind": self.kind,
+            "code": self.code,
+            "message_zh": self.message_zh,
+            "next_step_zh": self.next_step_zh,
+        }
+
+
 @dataclass(frozen=True, slots=True, repr=False)
 class OrganizationPlanView:
     plan_id: str
@@ -121,6 +137,7 @@ class OrganizationPlanView:
     executable_action_count: int
     review_action_count: int
     can_execute: bool
+    execution_blockers: tuple[OrganizationExecutionBlocker, ...] = ()
     alias: str | None = None
     candidates: tuple[dict[str, object], ...] = ()
 
@@ -145,6 +162,9 @@ class OrganizationPlanView:
             "executable_action_count": self.executable_action_count,
             "review_action_count": self.review_action_count,
             "can_execute": self.can_execute,
+            "execution_blockers": [
+                blocker.to_public_dict() for blocker in self.execution_blockers
+            ],
             "alias": self.alias,
             "candidates": list(self.candidates),
         }
@@ -215,6 +235,15 @@ class OrganizationPlanService:
         """Attach the read-only TMDB client after runtime credentials are loaded."""
 
         self._tmdb_client = tmdb_client
+
+    async def _view_for_session(
+        self, session: AsyncSession, plan: OrganizationPlan
+    ) -> OrganizationPlanView:
+        source_snapshot = _load_source_snapshot(plan.source_snapshot_json)
+        source_snapshot_changed = await _source_snapshot_changed(
+            session, plan, source_snapshot
+        )
+        return _view(plan, source_snapshot_changed=source_snapshot_changed)
 
     async def create_plan(
         self,
@@ -310,7 +339,7 @@ class OrganizationPlanService:
                 )
             )
             if existing is not None:
-                return _view(existing)
+                return await self._view_for_session(session, existing)
             plan = OrganizationPlan(
                 id=uuid.uuid4().hex,
                 library_id=library.id,
@@ -342,8 +371,8 @@ class OrganizationPlanService:
                 )
                 if existing is None:
                     raise OrganizationPlanError("plan_persistence_failed") from None
-                return _view(existing)
-            return _view(plan)
+                return await self._view_for_session(session, existing)
+            return await self._view_for_session(session, plan)
 
     async def refresh_plan(
         self,
@@ -374,9 +403,9 @@ class OrganizationPlanService:
                 plan.status = OrganizationPlanStatus.INVALIDATED.value
                 plan.revision += 1
                 await session.commit()
-                return _view(plan)
+                return await self._view_for_session(session, plan)
             if plan.status == OrganizationPlanStatus.IGNORED.value:
-                return _view(plan)
+                return await self._view_for_session(session, plan)
             stale = current_time >= _utc(plan.expires_at)
             library = await session.get(MediaLibrary, plan.library_id)
             stored_preconditions = _load_json_object(plan.preconditions_json)
@@ -478,7 +507,7 @@ class OrganizationPlanService:
                 plan.status = OrganizationPlanStatus.INVALIDATED.value
                 plan.revision += 1
                 await session.commit()
-            return _view(plan)
+            return await self._view_for_session(session, plan)
 
     async def ignore_plan(
         self, plan_id: str, *, expected_revision: int
@@ -508,7 +537,11 @@ class OrganizationPlanService:
             has_more = len(rows) > limit
             rows = rows[:limit]
             next_cursor = cursor + limit if has_more else None
-            return [_view(row) for row in rows], next_cursor
+            views = [
+                await self._view_for_session(session, row)
+                for row in rows
+            ]
+            return views, next_cursor
 
     async def get_plan(self, plan_id: str) -> OrganizationPlanView:
         _validate_identity(plan_id, "invalid_plan")
@@ -516,7 +549,7 @@ class OrganizationPlanService:
             plan = await session.get(OrganizationPlan, plan_id)
             if plan is None:
                 raise OrganizationPlanError("plan_not_found")
-            return _view(plan)
+            return await self._view_for_session(session, plan)
 
     async def search_candidates(
         self,
@@ -620,7 +653,7 @@ class OrganizationPlanService:
                 stored.basis_json = _json(basis)
                 stored.revision += 1
                 await session.commit()
-            return _view(stored)
+            return await self._view_for_session(session, stored)
 
     async def select_candidate(
         self,
@@ -857,7 +890,7 @@ class OrganizationPlanService:
             refreshed = await session.get(OrganizationPlan, plan_id)
             if refreshed is None:
                 raise OrganizationPlanError("plan_not_found")
-            return _view(refreshed)
+            return await self._view_for_session(session, refreshed)
 
     async def plan_library_id(self, plan_id: str) -> str:
         """Return the owning library ID for a scope check at an adapter boundary."""
@@ -929,7 +962,7 @@ class OrganizationPlanService:
             }:
                 raise OrganizationPlanError("plan_not_reviewable")
             if plan.alias == alias:
-                return _view(plan)
+                return await self._view_for_session(session, plan)
             result = await session.execute(
                 update(OrganizationPlan)
                 .where(
@@ -951,7 +984,7 @@ class OrganizationPlanService:
             refreshed = await session.get(OrganizationPlan, plan_id)
             if refreshed is None:
                 raise OrganizationPlanError("plan_not_found")
-            return _view(refreshed)
+            return await self._view_for_session(session, refreshed)
 
     async def _transition_plan(
         self,
@@ -971,7 +1004,7 @@ class OrganizationPlanService:
             if plan.revision != expected_revision:
                 raise OrganizationPlanError("stale_revision")
             if plan.status == target.value:
-                return _view(plan)
+                return await self._view_for_session(session, plan)
             if plan.status not in {item.value for item in allowed}:
                 raise OrganizationPlanError("plan_not_reviewable")
             result = await session.execute(
@@ -989,7 +1022,7 @@ class OrganizationPlanService:
             refreshed = await session.get(OrganizationPlan, plan_id)
             if refreshed is None:
                 raise OrganizationPlanError("plan_not_found")
-            return _view(refreshed)
+            return await self._view_for_session(session, refreshed)
 
     async def _verified_scan(
         self,
@@ -2484,7 +2517,123 @@ def _strict_execution_versions(execution: Mapping[str, object]) -> bool:
     )
 
 
-def _view(plan: OrganizationPlan) -> OrganizationPlanView:
+def _execution_blockers(
+    *,
+    status: OrganizationPlanStatus,
+    expires_at: datetime,
+    now: datetime,
+    action_count: int,
+    executable_action_count: int,
+    review_action_count: int,
+    complete_preconditions: bool,
+    strict_source_versions: bool,
+    source_snapshot_changed: bool,
+) -> tuple[OrganizationExecutionBlocker, ...]:
+    blockers: list[OrganizationExecutionBlocker] = []
+    if expires_at <= now:
+        blockers.append(
+            OrganizationExecutionBlocker(
+                kind="expired",
+                code="plan_expired",
+                message_zh="整理计划已过期，不能执行。",
+                next_step_zh="重新扫描并生成新的整理计划。",
+            )
+        )
+    if status is OrganizationPlanStatus.NEEDS_REVIEW:
+        blockers.append(
+            OrganizationExecutionBlocker(
+                kind="review_only",
+                code="plan_needs_review",
+                message_zh="整理计划仍有待复核内容，不能直接执行。",
+                next_step_zh="逐项复核识别结果或选择正确候选后再确认计划。",
+            )
+        )
+    elif status is not OrganizationPlanStatus.PLANNED:
+        blockers.append(
+            OrganizationExecutionBlocker(
+                kind="status",
+                code=f"plan_status_{status.value}",
+                message_zh="整理计划当前状态不允许执行。",
+                next_step_zh="重新扫描并生成新的整理计划。",
+            )
+        )
+    if source_snapshot_changed or not strict_source_versions:
+        blockers.append(
+            OrganizationExecutionBlocker(
+                kind="snapshot_changed",
+                code="source_snapshot_changed",
+                message_zh="来源快照已变化或无法核对，原计划不能执行。",
+                next_step_zh="重新扫描并生成新的整理计划。",
+            )
+        )
+    if not complete_preconditions:
+        blockers.append(
+            OrganizationExecutionBlocker(
+                kind="prerequisite",
+                code="plan_prerequisites_incomplete",
+                message_zh="整理前置条件尚未全部满足。",
+                next_step_zh="完成范围验证、目标目录检查和最新扫描后重新生成计划。",
+            )
+        )
+    if action_count == 0 or executable_action_count != action_count or review_action_count:
+        blockers.append(
+            OrganizationExecutionBlocker(
+                kind="review_only",
+                code="plan_has_review_actions",
+                message_zh="计划中仍有不能自动执行的动作。",
+                next_step_zh="逐项复核计划内容，处理待确认动作后再执行。",
+            )
+        )
+    return tuple(blockers)
+
+
+async def _source_snapshot_changed(
+    session: AsyncSession,
+    plan: OrganizationPlan,
+    source_snapshot: list[dict[str, object]] | None,
+) -> bool:
+    """Compare the persisted source observation with the current completed scan."""
+
+    if source_snapshot is None:
+        return True
+    library = await session.get(MediaLibrary, plan.library_id)
+    run = await session.get(LibraryScanRun, plan.source_scan_run_id)
+    if library is None or run is None:
+        return True
+    latest = await _latest_completed_scan(
+        session,
+        library_id=plan.library_id,
+        root_directory_id=library.root_directory_id,
+    )
+    if (
+        latest is None
+        or not _plan_scan_binding_is_current(
+            plan, library=library, run=run, latest=latest
+        )
+    ):
+        return True
+    rows = {
+        (row.object_type, row.object_id): row
+        for row in await session.scalars(
+            select(LibraryScanEntry).where(LibraryScanEntry.scan_run_id == run.id)
+        )
+    }
+    for snapshot in source_snapshot:
+        if not isinstance(snapshot, dict):
+            return True
+        object_type = snapshot.get("object_type")
+        object_id = snapshot.get("object_id")
+        if not isinstance(object_type, str) or not isinstance(object_id, str):
+            return True
+        row = rows.get((object_type, object_id))
+        if row is None or not _source_observation_matches(snapshot, row):
+            return True
+    return False
+
+
+def _view(
+    plan: OrganizationPlan, *, source_snapshot_changed: bool = False
+) -> OrganizationPlanView:
     source_snapshot_payload = _load_source_snapshot(plan.source_snapshot_json)
     source_snapshot = source_snapshot_payload or []
     preconditions = _load_json_object(plan.preconditions_json)
@@ -2547,30 +2696,38 @@ def _view(plan: OrganizationPlan) -> OrganizationPlanView:
         source_snapshot_payload is not None
         and _strict_plan_versions(source_snapshot, actions, precondition_items)
     )
+    expires_at = _utc(plan.expires_at)
+    blockers = _execution_blockers(
+        status=OrganizationPlanStatus(plan.status),
+        expires_at=expires_at,
+        now=datetime.now(UTC),
+        action_count=len(actions),
+        executable_action_count=executable_action_count,
+        review_action_count=review_action_count,
+        complete_preconditions=complete_preconditions,
+        strict_source_versions=strict_source_versions,
+        source_snapshot_changed=source_snapshot_changed,
+    )
     return OrganizationPlanView(
         plan_id=plan.id,
         plan_hash=plan.plan_hash,
         status=OrganizationPlanStatus(plan.status),
         revision=plan.revision,
-        expires_at=_utc(plan.expires_at),
+        expires_at=expires_at,
         source_count=len(source_snapshot),
         action_count=len(actions),
         precondition_count=precondition_count,
         executable_action_count=executable_action_count,
         review_action_count=review_action_count,
-        can_execute=(
-            plan.status == OrganizationPlanStatus.PLANNED.value
-            and _utc(plan.expires_at) > datetime.now(UTC)
-            and executable_action_count == len(actions)
-            and complete_preconditions
-            and strict_source_versions
-        ),
+        can_execute=not blockers,
+        execution_blockers=blockers,
         alias=plan.alias,
         candidates=tuple(candidates),
     )
 
 
 __all__ = [
+    "OrganizationExecutionBlocker",
     "OrganizationPlanCompanion",
     "OrganizationPlanError",
     "OrganizationPlanExecutionMember",

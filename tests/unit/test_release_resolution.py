@@ -41,3 +41,15 @@ def test_release_accepts_only_a_safe_commit_hash(
         pass
     else:
         assert module._resolve_release(link) == sha
+
+
+def test_release_version_file_is_the_authoritative_source(tmp_path, monkeypatch):
+    module = importlib.import_module("watch_assistant.app")
+    release_root = tmp_path / "release"
+    release_root.mkdir()
+    release_root.joinpath("VERSION").write_text(
+        "commit=abcdef1\nbuild_time=2026-08-02T00:00:00Z\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("WATCH_ASSISTANT_RELEASE", "0123456")
+
+    assert module._resolve_release(release_root) == "abcdef1"

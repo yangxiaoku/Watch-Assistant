@@ -14,6 +14,7 @@ from sqlalchemy import select
 
 from watch_assistant.models import OrganizationOperation, OrganizationOperationStatus
 from watch_assistant.schemas import (
+    CapabilityAvailabilityResponse,
     CapabilityState,
     CapabilityStatusResponse,
     ContentPolicyPatch,
@@ -113,6 +114,15 @@ async def require_content_policy_write_access(
 @router.get("/settings/overview", response_model=SettingsOverviewResponse)
 async def settings_overview(request: Request) -> SettingsOverviewResponse:
     database = getattr(request.app.state, "database", None)
+    empty_cleanup_setting = False
+    settings_service = getattr(request.app.state, "settings_service", None)
+    if settings_service is not None:
+        try:
+            empty_cleanup_setting = (
+                await settings_service.get_organization()
+            ).cleanup_empty_directories
+        except Exception:  # noqa: BLE001 - capability diagnostics stay conservative
+            empty_cleanup_setting = False
     capabilities = {
         "inspection": bool(getattr(request.app.state, "inspection_supported", False)),
         "magnet": bool(
@@ -160,7 +170,15 @@ async def settings_overview(request: Request) -> SettingsOverviewResponse:
                 request.app.state, "strm_playback_contract_verified", False
             )
         ),
+        "organization_empty_directory_cleanup": bool(
+            empty_cleanup_setting
+            and callable(
+                getattr(request.app.state, "empty_directory_cleanup_executor", None)
+            )
+        ),
     }
+    strm_cleanup_enabled = capabilities["strm_cleanup"]
+    empty_cleanup_enabled = capabilities["organization_empty_directory_cleanup"]
     automation = getattr(request.app.state, "organization_automation_service", None)
     last_result = getattr(automation, "last_result", None)
     plan_success_at = (
@@ -233,6 +251,36 @@ async def settings_overview(request: Request) -> SettingsOverviewResponse:
                     )
                 ),
                 runtime_healthy=capabilities["strm_playback"],
+            ),
+            "organization_empty_directory_cleanup": _capability_status(
+                configured=empty_cleanup_setting,
+                runtime_healthy=empty_cleanup_enabled,
+            ),
+        },
+        capability_details={
+            "strm_cleanup": CapabilityAvailabilityResponse(
+                enabled=strm_cleanup_enabled,
+                reason_code=None if strm_cleanup_enabled else "strm_cleanup_disabled",
+                reason_zh=(
+                    "可用"
+                    if strm_cleanup_enabled
+                    else "STRM 失效清理未启用，请检查部署功能开关。"
+                ),
+                settings_section="overview",
+            ),
+            "organization_empty_directory_cleanup": CapabilityAvailabilityResponse(
+                enabled=empty_cleanup_enabled,
+                reason_code=(
+                    None
+                    if empty_cleanup_enabled
+                    else "empty_directory_cleanup_disabled"
+                ),
+                reason_zh=(
+                    "可用"
+                    if empty_cleanup_enabled
+                    else "空目录回收未就绪，请前往自动整理设置检查开关和写入契约。"
+                ),
+                settings_section="organization",
             ),
         },
     )

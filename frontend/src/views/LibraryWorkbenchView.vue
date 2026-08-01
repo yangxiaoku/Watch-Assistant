@@ -7,13 +7,21 @@ import type {
   MediaEntryResponse,
   MediaLibraryResponse,
   EmptyDirectoryCleanupPlanResponse,
+  CapabilityAvailability,
   StrmCleanupPlanResponse,
   StrmGenerationResponse,
   StrmManifestItemResponse,
   StrmOperationResponse,
 } from "../types";
 
-const props = defineProps<{ api: ApiClient }>();
+const props = defineProps<{
+  api: ApiClient;
+  strmCleanupCapability?: CapabilityAvailability;
+  emptyDirectoryCleanupCapability?: CapabilityAvailability;
+}>();
+const emit = defineEmits<{
+  "open-settings": [section: "overview" | "organization"];
+}>();
 
 const libraries = ref<MediaLibraryResponse[]>([]);
 const selectedId = ref<string | null>(null);
@@ -39,6 +47,14 @@ let operationPollTimer: number | null = null;
 const selected = computed(() => libraries.value.find((item) => item.library_id === selectedId.value) ?? null);
 const scan = computed(() => selected.value?.latest_scan ?? null);
 const readyForSync = computed(() => Boolean(selected.value?.enabled && scan.value?.complete && scan.value.state === "completed"));
+// Older callers may not have loaded health yet; the app passes an explicit
+// unavailable capability as soon as health is known.
+const strmCleanupAvailable = computed(() => props.strmCleanupCapability?.enabled ?? true);
+const emptyDirectoryCleanupAvailable = computed(() => props.emptyDirectoryCleanupCapability?.enabled ?? true);
+
+function openCapabilitySettings(capability: CapabilityAvailability | undefined, fallback: "overview" | "organization") {
+  emit("open-settings", capability?.settings_section ?? fallback);
+}
 
 function setError(exception: unknown, fallback: string) {
   error.value = exception instanceof ApiError ? exception.message : fallback;
@@ -316,7 +332,7 @@ async function retryLatestOperation() {
 }
 
 async function previewCleanup() {
-  if (!selected.value || !scan.value || !readyForSync.value || busy.value) return;
+  if (!selected.value || !scan.value || !readyForSync.value || !strmCleanupAvailable.value || busy.value) return;
   busy.value = true;
   error.value = "";
   notice.value = "";
@@ -363,7 +379,7 @@ async function confirmCleanup() {
 }
 
 async function previewEmptyDirectoryCleanup() {
-  if (!selected.value || !scan.value || !readyForSync.value || busy.value) return;
+  if (!selected.value || !scan.value || !readyForSync.value || !emptyDirectoryCleanupAvailable.value || busy.value) return;
   busy.value = true;
   error.value = "";
   notice.value = "";
@@ -517,8 +533,12 @@ onBeforeUnmount(() => {
           <button class="secondary-button" type="button" :disabled="busy || !readyForSync" @click="createOrganizationPreview"><SlidersHorizontal :size="16" />生成整理预览</button>
           <button class="secondary-button" type="button" :disabled="busy || !readyForSync" @click="syncStrm('full')"><Database :size="16" />全量 STRM</button>
            <button class="secondary-button" type="button" :disabled="busy || !readyForSync" @click="syncStrm('incremental')"><RefreshCw :size="16" />增量同步</button>
-           <button class="secondary-button" type="button" :disabled="busy || !readyForSync" @click="previewCleanup"><Ban :size="16" />预览失效清理</button>
-           <button class="secondary-button" type="button" :disabled="busy || !readyForSync" @click="previewEmptyDirectoryCleanup"><Trash2 :size="16" />预览空目录清理</button>
+           <button class="secondary-button" type="button" :disabled="busy || !readyForSync || !strmCleanupAvailable" @click="previewCleanup"><Ban :size="16" />预览失效清理</button>
+           <button class="secondary-button" type="button" :disabled="busy || !readyForSync || !emptyDirectoryCleanupAvailable" @click="previewEmptyDirectoryCleanup"><Trash2 :size="16" />预览空目录清理</button>
+        </div>
+        <div class="library-capability-notices">
+          <p v-if="!strmCleanupAvailable" class="library-capability-note"><Ban :size="15" />{{ strmCleanupCapability?.reason_zh || "STRM 失效清理当前不可用。" }}<button class="text-button" type="button" @click="openCapabilitySettings(strmCleanupCapability, 'overview')"><SlidersHorizontal :size="14" />前往设置</button></p>
+          <p v-if="!emptyDirectoryCleanupAvailable" class="library-capability-note"><Trash2 :size="15" />{{ emptyDirectoryCleanupCapability?.reason_zh || "空目录回收当前不可用。" }}<button class="text-button" type="button" @click="openCapabilitySettings(emptyDirectoryCleanupCapability, 'organization')"><SlidersHorizontal :size="14" />前往自动整理设置</button></p>
         </div>
         <p v-if="busy" class="library-progress"><LoaderCircle class="spin" :size="16" />正在处理当前媒体库</p>
         <div v-if="latestResult" class="library-result"><strong>最近一次同步</strong><span>生成 {{ latestResult.generated }}</span><span>未变化 {{ latestResult.unchanged }}</span><span>跳过 {{ latestResult.skipped }}</span><span>失败 {{ latestResult.failed }}</span><span>退休 {{ latestResult.retired }}</span></div>

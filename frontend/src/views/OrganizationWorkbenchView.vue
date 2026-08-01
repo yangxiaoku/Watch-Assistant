@@ -3,7 +3,7 @@ import { Ban, Check, ChevronRight, Eye, ListChecks, LoaderCircle, Play, RefreshC
 import { computed, onMounted, ref } from "vue";
 import { ApiClient, ApiError, focusFirstFieldError } from "../api";
 import { describeUiError } from "../errorCatalog";
-import type { OrganizationOperationResponse, OrganizationPlanStatus, OrganizationPlanSummary } from "../types";
+import type { OrganizationExecutionBlocker, OrganizationOperationResponse, OrganizationPlanStatus, OrganizationPlanSummary } from "../types";
 
 const props = withDefaults(defineProps<{ api: ApiClient; enabled?: boolean; executionEnabled?: boolean }>(), {
   enabled: true,
@@ -27,6 +27,18 @@ const selectedIsReviewable = computed(() => selected.value?.status === "needs_re
 const selectedCanEdit = computed(() => selected.value?.status === "needs_review" || selected.value?.status === "planned");
 const selectedCanExecute = computed(() => selected.value?.can_execute === true);
 const executableItems = computed(() => items.value.filter((item) => item.can_execute));
+const selectedExecutionBlockers = computed<OrganizationExecutionBlocker[]>(() => {
+  const blockers = selected.value?.execution_blockers;
+  if (blockers?.length) return blockers;
+  return selected.value && !selected.value.can_execute
+    ? [{
+        kind: "status",
+        code: "plan_not_executable",
+        message_zh: "当前计划尚不能执行。",
+        next_step_zh: "刷新计划并按提示完成复核或重新生成计划。",
+      }]
+    : [];
+});
 
 const statusLabel: Record<OrganizationPlanStatus, string> = {
   needs_review: "待确认",
@@ -45,7 +57,11 @@ const operationStatusLabel: Record<OrganizationOperationResponse["status"], stri
 };
 
 function normalizePlan(plan: OrganizationPlanSummary): OrganizationPlanSummary {
-  return { ...plan, candidates: Array.isArray(plan.candidates) ? plan.candidates : [] };
+  return {
+    ...plan,
+    candidates: Array.isArray(plan.candidates) ? plan.candidates : [],
+    execution_blockers: Array.isArray(plan.execution_blockers) ? plan.execution_blockers : [],
+  };
 }
 
 function operationFailureMessage(code: string | null): string {
@@ -363,6 +379,10 @@ onMounted(() => {
           <div><dt>待复核动作</dt><dd>{{ selected.review_action_count }}</dd></div>
           <div><dt>前置条件</dt><dd>{{ selected.precondition_count }}</dd></div>
         </dl>
+        <section v-if="!selected.can_execute" class="organization-execution-blockers" aria-live="polite">
+          <strong>当前不能执行</strong>
+          <ul><li v-for="blocker in selectedExecutionBlockers" :key="`${blocker.kind}-${blocker.code}`"><span>{{ blocker.message_zh }}</span><small>下一步：{{ blocker.next_step_zh }}</small></li></ul>
+        </section>
         <div v-if="selected.status === 'needs_review' && selected.candidates.length" class="organization-candidate-list">
           <strong>请选择识别结果</strong>
           <button v-for="candidate in selected.candidates" :key="`${candidate.source_object_id}-${candidate.tmdb_id}`" type="button" class="organization-candidate" :disabled="busy" @click="selectCandidate(candidate)">

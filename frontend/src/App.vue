@@ -22,7 +22,7 @@ import { finalizeInspectionResources, inspectionProgress as getInspectionProgres
 import { describeUiError } from "./errorCatalog";
 import { waitForResourceSearch as pollResourceSearch } from "./resourceSearchPolling";
 import { sourceNameList } from "./resourceSources";
-import type { HomeCatalogResponse, MovieMetadata, ResourceFacets, ResourcePageResponse, ResourceQuality, ResourceSearchResponse, ResourceSort, ResourceSummary, SearchResponse, SeasonDetailResponse, TaskResponse } from "./types";
+import type { CapabilityAvailability, HomeCatalogResponse, MovieMetadata, ResourceFacets, ResourcePageResponse, ResourceQuality, ResourceSearchResponse, ResourceSort, ResourceSummary, SearchResponse, SeasonDetailResponse, TaskResponse } from "./types";
 import CollectionView from "./views/CollectionView.vue";
 import HomeView from "./views/HomeView.vue";
 import LibraryView from "./views/LibraryView.vue";
@@ -74,6 +74,15 @@ const inspectionSupported = ref(false);
 const inspectionAutoStartEnabled = ref<boolean | "unknown">("unknown");
 const organizationPlanEnabled = ref(false);
 const organizationExecutionEnabled = ref(false);
+const settingsInitialSection = ref<"overview" | "organization">("overview");
+const unavailableCapability = (): CapabilityAvailability => ({
+  enabled: false,
+  reason_code: "capability_unknown",
+  reason_zh: "当前未读取能力状态，请刷新页面后重试。",
+  settings_section: "overview",
+});
+const strmCleanupCapability = ref<CapabilityAvailability>(unavailableCapability());
+const emptyDirectoryCleanupCapability = ref<CapabilityAvailability>(unavailableCapability());
 const selectedSeason = ref<number | null>(null);
 const seasonDetail = ref<SeasonDetailResponse | null>(null);
 const seasonDetailLoading = ref(false);
@@ -1391,6 +1400,11 @@ function updateOnline(): void {
   isOnline.value = browserIsOnline();
 }
 
+function openOrganizationSettings(section: "overview" | "organization" = "organization"): void {
+  settingsInitialSection.value = section;
+  void selectView("settings");
+}
+
 function recordOfflineData(event: Event): void {
   const cachedAt = (event as CustomEvent<{ cachedAt?: string }>).detail?.cachedAt;
   if (cachedAt) offlineDataAt.value = cachedAt;
@@ -1407,6 +1421,17 @@ onMounted(async () => {
     inspectionAutoStartEnabled.value = health.inspection_auto_start_enabled === true;
     organizationPlanEnabled.value = health.organization_plan_enabled === true;
     organizationExecutionEnabled.value = health.organization_execution_enabled === true;
+    const strmCleanup = health.strm_capabilities?.cleanup_capability;
+    strmCleanupCapability.value = strmCleanup ?? {
+      enabled: health.strm_capabilities?.cleanup === true,
+      reason_code: health.strm_capabilities?.cleanup === true ? null : "strm_cleanup_disabled",
+      reason_zh: health.strm_capabilities?.cleanup === true
+        ? "可用"
+        : "STRM 失效清理未启用，请检查部署功能开关。",
+      settings_section: "overview",
+    };
+    emptyDirectoryCleanupCapability.value = health.organization_capabilities?.empty_directory_cleanup
+      ?? unavailableCapability();
     await api.me();
     authenticated.value = true;
   } catch {
@@ -1457,10 +1482,10 @@ onBeforeUnmount(() => {
         <HomeView v-if="activeView === 'home'" :catalog="homeCatalog" :loading="catalogLoading" :favorite-ids="favoriteIds" @open="openMovie" @favorite="toggleFavorite" @navigate="selectView" />
         <LibraryView v-else-if="activeView === 'movies' || activeView === 'tv'" :movies="catalogMovies" :loading="catalogLoading" :favorite-ids="favoriteIds" :genre-id="genreId" :year="year" :sort="sort" :media-type="activeView" :page="currentPage" :total-pages="totalPages" :total-results="totalResults" @open="openMovie" @favorite="toggleFavorite" @filters="loadDiscover" @page="loadPage" />
         <CollectionView v-else-if="activeView === 'favorites' || activeView === 'history'" :mode="activeView" :movies="activeView === 'favorites' ? favorites : history" :favorite-ids="favoriteIds" @open="openMovie" @favorite="toggleFavorite" />
-        <SettingsView v-else-if="activeView === 'settings'" :api="api" @auto-start-enabled="inspectionAutoStartEnabled = $event" />
+        <SettingsView v-else-if="activeView === 'settings'" :api="api" :initial-section="settingsInitialSection" @auto-start-enabled="inspectionAutoStartEnabled = $event" />
         <OrganizationWorkbenchView v-else-if="activeView === 'organization-plans' && organizationPlanEnabled" :api="api" :execution-enabled="organizationExecutionEnabled" />
         <OrganizationHistoryView v-else-if="activeView === 'organization-history' && organizationPlanEnabled" :api="api" />
-        <LibraryWorkbenchView v-else-if="activeView === 'library'" :api="api" />
+        <LibraryWorkbenchView v-else-if="activeView === 'library'" :api="api" :strm-cleanup-capability="strmCleanupCapability" :empty-directory-cleanup-capability="emptyDirectoryCleanupCapability" @open-settings="openOrganizationSettings" />
         <WorkflowCenterView v-else-if="activeView === 'workflows'" :api="api" />
         <NotificationCenterView v-else-if="activeView === 'notifications'" :api="api" @navigate="selectView" />
         <SearchView v-else v-model="searchInput" :loading="catalogLoading" :movies="catalogMovies" :heading="catalogHeading" :favorite-ids="favoriteIds" :page="currentPage" :total-pages="totalPages" :total-results="totalResults" @search="searchMovies" @reset="selectView('home')" @open="openMovie" @favorite="toggleFavorite" @page="loadPage" />

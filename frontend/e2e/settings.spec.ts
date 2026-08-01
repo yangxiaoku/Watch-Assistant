@@ -313,3 +313,103 @@ test("settings contract, cursor logs, validation states, and responsive layout",
   expect(layout.contentRight).toBeLessThanOrEqual(layout.clientWidth + 1);
   await page.screenshot({ path: testInfo.outputPath(`settings-${testInfo.project.name}.png`), fullPage: true });
 });
+
+test("keeps release, directory IDs, and machine codes out of settings main prompts", async ({ page }) => {
+  const fullRelease = "0123456789abcdef0123456789abcdef01234567";
+  const fullDirectoryId = "9876543210987654321";
+  const errorCode = "scan_incomplete";
+  await page.route("**/api/v1/health", (route) => route.fulfill({ json: { status: "ok", push_supported: false } }));
+  await page.route("**/api/v1/auth/me", (route) => route.fulfill({ json: { authenticated: true, via_bearer: false, csrf_token: "fixture-csrf" } }));
+  await page.route("**/api/v1/movies/home", (route) => route.fulfill({ json: { popular: [], now_playing: [], upcoming: [], top_rated: [], tv_popular: [], tv_on_the_air: [], tv_top_rated: [] } }));
+  await page.route("**/api/v1/settings/overview", (route) => route.fulfill({ json: {
+    release: fullRelease,
+    uptime_seconds: 1,
+    database_size_bytes: 1,
+    capabilities: {
+      inspection: false,
+      magnet: false,
+      share: false,
+      organization_plan: false,
+      organization_execution: false,
+      organization_write: false,
+      permanent_delete: false,
+      strm_full: false,
+      strm_incremental: false,
+      strm_cleanup: false,
+      strm_playback: false,
+      organization_empty_directory_cleanup: false,
+    },
+    capability_statuses: {},
+    capability_details: {},
+  } }));
+  await page.route("**/api/v1/settings/logging", (route) => route.fulfill({ json: { revision: 0, level: "INFO", retention_days: 30, max_file_mb: 10 } }));
+  await page.route("**/api/v1/settings/inspection", (route) => route.fulfill({ json: { auto_start_enabled: false, revision: 0 } }));
+  await page.route("**/api/v1/settings/p115", (route) => route.fulfill({ json: p115 }));
+  await page.route("**/api/v1/settings/p115/devices", (route) => route.fulfill({ json: { items: [] } }));
+  await page.route("**/api/v1/settings/search-sources/prowlarr", (route) => route.fulfill({ json: prowlarrSnapshot(0) }));
+  await page.route("**/api/v1/settings/credentials", (route) => route.fulfill({ json: credentialsSnapshot(0) }));
+  await page.route("**/api/v1/settings/content-policy", (route) => route.fulfill({ json: { hide_adult_media: true, hide_suspicious_resources: true, hide_low_quality_resources: true, blocked_keywords: [], revision: 0 } }));
+  await page.route("**/api/v1/settings/organization", (route) => route.fulfill({ json: {
+    revision: 0,
+    schedule_enabled: false,
+    scan_interval_minutes: 60,
+    source_directory_ids: [fullDirectoryId],
+    source_directory_labels: ["待整理/来源"],
+    target_directory_id: fullDirectoryId,
+    target_directory_label: "媒体库/归档",
+    push_directory_id: fullDirectoryId,
+    push_directory_label: "媒体库/推送",
+    video_extensions: ["mkv"],
+    metadata_extensions: ["srt"],
+    rename_enabled: false,
+    media_probe_enabled: false,
+    ai_identification_enabled: false,
+    small_file_threshold_mb: 0,
+    cleanup_empty_directories: false,
+    strm_linkage_enabled: false,
+    operation_delay_seconds: 0,
+    include_children_category: false,
+    include_concert_category: false,
+    region_grouping_enabled: false,
+    year_grouping_enabled: false,
+    prefer_remux: false,
+    prefer_resolution: false,
+    prefer_dolby: false,
+    conflict_mode: 2,
+    multi_version_enabled: false,
+  } }));
+  await page.route("**/api/v1/settings/organization/result", (route) => route.fulfill({ json: {
+    status: "failed",
+    available_statuses: ["unknown", "success", "skipped", "deleted", "replace", "failed"],
+    source_count: 1,
+    scanned_count: 0,
+    plan_count: 0,
+    queued_count: 0,
+    blocked_count: 1,
+    blocked_details: [{ source_directory_id: fullDirectoryId, phase: "scan", error_code: errorCode, message_zh: "扫描未完成。", next_step_zh: "请重新扫描。" }],
+    items: [],
+    finished_at: null,
+    run_id: null,
+  } }));
+  await page.route("**/api/v1/logs?**", (route) => route.fulfill({ json: { items: [], next_cursor: null } }));
+
+  await page.goto("/settings");
+  await expect(page.getByRole("heading", { name: "设置" })).toBeVisible();
+  await expect(page.getByText(fullRelease)).toHaveCount(0);
+  await expect(page.getByText(fullRelease.slice(0, 7))).toBeVisible();
+
+  const organizationButton = page.getByRole("button", { name: "115 整理" });
+  if (await organizationButton.isVisible()) {
+    await organizationButton.click();
+  } else {
+    await page.locator(".settings-mobile-select select").selectOption("organization");
+  }
+  await expect(page.getByRole("heading", { name: "自动整理" })).toBeVisible();
+  await expect(page.getByText(fullDirectoryId)).toHaveCount(0);
+  await expect(page.getByText("待整理/来源")).toBeVisible();
+  await expect(page.getByText("扫描未完成。", { exact: false })).toBeVisible();
+  await expect(page.getByText(errorCode, { exact: true })).toBeHidden();
+  const diagnostics = page.locator(".organization-blocked-details details");
+  await expect(diagnostics).not.toHaveAttribute("open", "");
+  await expect(diagnostics).toContainText(errorCode);
+});

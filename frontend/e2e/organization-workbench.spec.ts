@@ -12,6 +12,7 @@ const needsReview = {
   executable_action_count: 1,
   review_action_count: 0,
   can_execute: true,
+  execution_blockers: [],
   alias: null,
 };
 const reviewOnly = {
@@ -21,6 +22,12 @@ const reviewOnly = {
   executable_action_count: 0,
   review_action_count: 1,
   can_execute: false,
+  execution_blockers: [{
+    kind: "review_only",
+    code: "plan_has_review_actions",
+    message_zh: "计划中仍有不能自动执行的动作。",
+    next_step_zh: "逐项复核计划内容，处理待确认动作后再执行。",
+  }],
   candidates: [],
 };
 let activePlan = needsReview;
@@ -60,6 +67,7 @@ test.beforeEach(async ({ page }) => {
         executable_action_count: 1,
         review_action_count: 0,
         can_execute: true,
+        execution_blockers: [],
       };
       await route.fulfill({ json: activePlan });
       return;
@@ -98,6 +106,8 @@ test("unmatched review plan searches, selects, previews a move, then confirms on
   await page.goto("/organization-plans");
 
   await expect(page.getByText("可执行移动").locator(".." )).toContainText("0");
+  await expect(page.getByText("计划中仍有不能自动执行的动作。")).toBeVisible();
+  await expect(page.getByText("下一步：逐项复核计划内容，处理待确认动作后再执行。")).toBeVisible();
   await expect(page.getByRole("button", { name: "确认并开始整理" })).toHaveCount(0);
   await page.getByPlaceholder("输入片名或年份").fill("The Office 2005");
   await page.getByRole("button", { name: "搜索候选" }).click();

@@ -20,7 +20,11 @@ _REQUIRED_FILES = (
     "config/tgto-contract.json",
     "frontend/dist/index.html",
     "src/watch_assistant/app.py",
+    "src/watch_assistant/release_metadata.py",
     "scripts/release_startup_smoke.py",
+    "scripts/systemd_release_update.py",
+    "scripts/postdeploy_release_check.py",
+    "scripts/deploy_systemd_release.sh",
 )
 _LEGACY_APPLICATION_SETTINGS = """
 CREATE TABLE application_settings (
@@ -134,7 +138,12 @@ async def _start_and_check_health(release_root: Path, release: str) -> None:
                 base_url="http://release-smoke",
             ) as client:
                 response = await client.get("/api/v1/health")
-            if response.status_code != 200 or response.json().get("status") != "ok":
+            payload = response.json()
+            if (
+                response.status_code != 200
+                or payload.get("status") != "ok"
+                or payload.get("release") != release
+            ):
                 raise RuntimeError("health_check_failed")
         finally:
             _restore_environment(previous)
