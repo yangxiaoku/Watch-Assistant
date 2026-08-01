@@ -377,6 +377,33 @@ describe("ApiClient season and inspection requests", () => {
     expect(fetchMock.mock.calls[6][1].method).toBe("POST");
   });
 
+  it("uses the frozen Prowlarr settings endpoints and sends the key only on update", async () => {
+    const settings = { source: "managed", enabled: true, configured: true, base_url: "http://prowlarr:9696", api_key_configured: true, api_key_source: "managed", last_updated_at: "2026-08-01T10:00:00Z", revision: 3 };
+    const verified = { source: "prowlarr", status: "available", configured: true, base_url: "http://prowlarr:9696", message_code: null, checked_at: "2026-08-01T10:01:00Z" };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(settings), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ...settings, revision: 4 }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ...settings, source: "environment", revision: 5 }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(verified), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const api = new ApiClient();
+
+    await api.prowlarrSettings();
+    await api.updateProwlarrSettings({ enabled: true, base_url: "http://prowlarr:9696", api_key: "fixture-only", revision: 3 });
+    await api.resetProwlarrSettings(4);
+    await api.verifyProwlarr();
+
+    expect(fetchMock.mock.calls.map(([url, init]) => [url, init?.method])).toEqual([
+      ["/api/v1/settings/search-sources/prowlarr", undefined],
+      ["/api/v1/settings/search-sources/prowlarr", "PATCH"],
+      ["/api/v1/settings/search-sources/prowlarr/reset", "POST"],
+      ["/api/v1/settings/search-sources/prowlarr/verify", "POST"],
+    ]);
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body as string)).toEqual({ enabled: true, base_url: "http://prowlarr:9696", api_key: "fixture-only", revision: 3 });
+    expect(JSON.parse(fetchMock.mock.calls[2][1].body as string)).toEqual({ revision: 4 });
+    expect(JSON.parse(fetchMock.mock.calls[3][1].body as string)).toEqual({});
+  });
+
   it("uses the managed credentials endpoints without expecting secret response fields", async () => {
     const response = { revision: 3, tmdb: { configured: true, source: "managed", last_updated_at: "2026-07-25T03:00:00Z" }, p115_cookie: { configured: true, source: "managed", last_updated_at: "2026-07-25T03:00:00Z", structure_valid: true, ready: true } };
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(response), { status: 200 }));

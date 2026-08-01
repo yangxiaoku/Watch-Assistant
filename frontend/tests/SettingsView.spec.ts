@@ -3,7 +3,6 @@ import { describe, expect, it, vi } from "vitest";
 
 import { ApiClient, ApiError } from "../src/api";
 import { p115DeviceOptions } from "../src/p115DeviceTypes";
-import type { ProwlarrSettingsClient } from "../src/prowlarr";
 import type { LogsResponse } from "../src/types";
 import SettingsView from "../src/views/SettingsView.vue";
 
@@ -80,6 +79,16 @@ const organization = {
   multi_version_enabled: false,
   revision: 4,
 };
+const prowlarrSettings = {
+  source: "none" as const,
+  enabled: false,
+  configured: false,
+  base_url: null,
+  api_key_configured: false,
+  api_key_source: "none" as const,
+  last_updated_at: null,
+  revision: 0,
+};
 
 function makeApi(overrides: Partial<Record<keyof ApiClient, unknown>> = {}) {
   return {
@@ -89,6 +98,10 @@ function makeApi(overrides: Partial<Record<keyof ApiClient, unknown>> = {}) {
     updateInspectionSettings: vi.fn().mockResolvedValue({ ...inspection, revision: 1 }),
     updateLoggingSettings: vi.fn().mockResolvedValue({ ...logging, revision: 8 }),
     p115Settings: vi.fn().mockResolvedValue(p115),
+    prowlarrSettings: vi.fn().mockResolvedValue(prowlarrSettings),
+    updateProwlarrSettings: vi.fn().mockResolvedValue({ ...prowlarrSettings, source: "managed", enabled: true, configured: true, base_url: "http://prowlarr:9696", api_key_configured: true, api_key_source: "managed", revision: 1 }),
+    resetProwlarrSettings: vi.fn().mockResolvedValue(prowlarrSettings),
+    verifyProwlarr: vi.fn().mockResolvedValue({ source: "prowlarr", status: "disabled", configured: false, base_url: null, message_code: "prowlarr_disabled", checked_at: "2026-08-01T10:01:00Z" }),
     credentialSettings: vi.fn().mockResolvedValue(credentials),
     updateTmdbCredential: vi.fn().mockResolvedValue({ ...credentials, revision: 1, tmdb: { configured: true, source: "managed", last_updated_at: "2026-07-25T03:00:00Z" } }),
     resetTmdbCredential: vi.fn().mockResolvedValue(credentials),
@@ -873,34 +886,48 @@ describe("SettingsView", () => {
     expect(api.updateTmdbCredential).toHaveBeenCalledTimes(1);
   });
 
-  it("renders redacted Prowlarr status and validates through the injected client", async () => {
-    const api = makeApi();
-    const prowlarr: ProwlarrSettingsClient = {
-      settings: vi.fn().mockResolvedValue({
-        enabled: true,
-        configured: true,
-        status: "configured",
-        status_zh: "已配置",
-        last_checked_at: "2026-08-01T10:00:00Z",
-        last_success_at: "2026-08-01T09:58:00Z",
-      }),
-      validateConnection: vi.fn().mockResolvedValue({
-        status: "success",
-        message_zh: "连接验证成功",
-        checked_at: "2026-08-01T10:01:00Z",
-      }),
-    };
-    const wrapper = mount(SettingsView, { props: { api, initialSection: "prowlarr", prowlarr } });
+  it("saves Prowlarr settings without echoing the API Key and verifies through ApiClient", async () => {
+    const api = makeApi({
+      prowlarrSettings: vi.fn().mockResolvedValue({ ...prowlarrSettings, source: "managed", enabled: true, configured: true, base_url: "http://prowlarr:9696", api_key_configured: true, api_key_source: "managed", revision: 4 }),
+      updateProwlarrSettings: vi.fn().mockResolvedValue({ ...prowlarrSettings, source: "managed", enabled: true, configured: true, base_url: "http://prowlarr:9696", api_key_configured: true, api_key_source: "managed", revision: 5 }),
+      verifyProwlarr: vi.fn().mockResolvedValue({ source: "prowlarr", status: "available", configured: true, base_url: "http://prowlarr:9696", message_code: null, checked_at: "2026-08-01T10:01:00Z" }),
+    });
+    const wrapper = mount(SettingsView, { props: { api, initialSection: "prowlarr" } });
     await flushPromises();
 
     expect(wrapper.get("#prowlarr-title").text()).toBe("Prowlarr");
     expect(wrapper.text()).toContain("已配置");
-    expect(wrapper.text()).toContain("最近验证");
-    expect(wrapper.find('[name="api_key"]').exists()).toBe(false);
-
-    await wrapper.findAll("button").find((button) => button.text().includes("验证 Prowlarr 连接"))?.trigger("click");
+    expect((wrapper.get("#prowlarr-api-key").element as HTMLInputElement).value).toBe("");
+    await wrapper.get("#prowlarr-base-url").setValue("http://prowlarr:9696");
+    await wrapper.get("#prowlarr-api-key").setValue("fixture-only");
+    await wrapper.get("button.primary-button").trigger("click");
     await flushPromises();
-    expect(prowlarr.validateConnection).toHaveBeenCalledTimes(1);
+    expect(api.updateProwlarrSettings).toHaveBeenCalledWith({ enabled: true, base_url: "http://prowlarr:9696", api_key: "fixture-only", revision: 4 });
+    expect((wrapper.get("#prowlarr-api-key").element as HTMLInputElement).value).toBe("");
+
+    const verifyButton = wrapper.findAll("button").find((button) => button.text().includes("验证 Prowlarr 连接"));
+    await verifyButton?.trigger("click");
+    await flushPromises();
+    expect(api.verifyProwlarr).toHaveBeenCalledTimes(1);
     expect(wrapper.text()).toContain("连接验证成功");
+  });
+
+  it("offers reload on a Prowlarr revision conflict", async () => {
+    const prowlarrSettingsMock = vi.fn()
+      .mockResolvedValueOnce({ ...prowlarrSettings, source: "managed", enabled: true, configured: true, base_url: "http://prowlarr:9696", api_key_configured: true, api_key_source: "managed", revision: 2 })
+      .mockResolvedValueOnce({ ...prowlarrSettings, source: "managed", enabled: true, configured: true, base_url: "http://prowlarr:9696", api_key_configured: true, api_key_source: "managed", revision: 3 });
+    const api = makeApi({
+      prowlarrSettings: prowlarrSettingsMock,
+      updateProwlarrSettings: vi.fn().mockRejectedValue(new ApiError("设置已被其他请求修改", 409, "settings_conflict")),
+    });
+    const wrapper = mount(SettingsView, { props: { api, initialSection: "prowlarr" } });
+    await flushPromises();
+    await wrapper.get("#prowlarr-base-url").setValue("http://changed:9696");
+    await wrapper.get("button.primary-button").trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("设置已被其他请求修改");
+    await wrapper.get(".settings-save-error .text-button").trigger("click");
+    await flushPromises();
+    expect(prowlarrSettingsMock).toHaveBeenCalledTimes(2);
   });
 });

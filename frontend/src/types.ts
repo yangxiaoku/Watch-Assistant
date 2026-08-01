@@ -1,25 +1,34 @@
 export type ResourceKind = "magnet" | "115_share";
 export type InspectionResultStatus = "verified" | "timeout" | "failed" | "unsupported";
 export type InspectionBatchStatus = "queued" | "running" | "completed" | "partial" | "failed";
-export type ProwlarrConfigStatus = "configured" | "unconfigured" | "disabled" | "unavailable" | "unsupported";
+export type ProwlarrSettingsSource = "managed" | "environment" | "none";
+export type ProwlarrVerificationStatus = "available" | "unavailable" | "disabled";
 
-/** Frontend-only view model until the server settings route is frozen. */
-export interface ProwlarrSettingsState {
+export interface ProwlarrSettingsResponse {
+  source: ProwlarrSettingsSource;
   enabled: boolean;
   configured: boolean;
-  status: ProwlarrConfigStatus;
-  status_zh: string;
-  last_checked_at: string | null;
-  last_success_at: string | null;
+  base_url: string | null;
+  api_key_configured: boolean;
+  api_key_source: ProwlarrSettingsSource;
+  last_updated_at: string | null;
+  revision: number;
 }
 
-export type ProwlarrValidationStatus = "success" | "auth_required" | "unavailable" | "unsupported";
+export interface PatchProwlarrSettingsRequest {
+  enabled?: boolean | null;
+  base_url?: string | null;
+  api_key?: string;
+  revision: number;
+}
 
-/** Frontend-only validation result; never contains credentials. */
-export interface ProwlarrValidationState {
-  status: ProwlarrValidationStatus;
-  message_zh: string;
-  checked_at: string | null;
+export interface ProwlarrVerifyResponse {
+  source: "prowlarr";
+  status: ProwlarrVerificationStatus;
+  configured: boolean;
+  base_url: string | null;
+  message_code: string | null;
+  checked_at: string;
 }
 
 export type TaskState =
@@ -169,6 +178,7 @@ export interface ResourceSearchResponse {
   season_number: number | null;
   status: "queued" | "running" | "ready" | "failed";
   snapshot_revision: string | null;
+  query_plan_version: string;
   selected_season: number | null;
   sources: string[];
   warnings: string[];

@@ -22,7 +22,6 @@ import {
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { ApiClient, ApiError, focusFirstFieldError } from "../api";
 import { p115DeviceOptions } from "../p115DeviceTypes";
-import { pendingProwlarrSettingsClient, type ProwlarrSettingsClient } from "../prowlarr";
 import type {
   CapabilityState,
   CapabilityStatusResponse,
@@ -42,11 +41,12 @@ import type {
   P115DirectoryItem,
   P115LoginDevice,
   SettingsOverviewResponse,
-  ProwlarrSettingsState,
-  ProwlarrValidationState,
+  PatchProwlarrSettingsRequest,
+  ProwlarrSettingsResponse,
+  ProwlarrVerifyResponse,
 } from "../types";
 
-const props = withDefaults(defineProps<{ api: ApiClient; initialSection?: SettingsSection; prowlarr?: ProwlarrSettingsClient }>(), {
+const props = withDefaults(defineProps<{ api: ApiClient; initialSection?: SettingsSection }>(), {
   initialSection: "overview" as SettingsSection,
 });
 const emit = defineEmits<{ "auto-start-enabled": [enabled: boolean] }>();
@@ -106,7 +106,6 @@ const actorTypeOptions = [
   { value: "userscript", label: "用户脚本" },
 ];
 const activeSection = ref<SettingsSection>(props.initialSection);
-const prowlarrClient = computed(() => props.prowlarr ?? pendingProwlarrSettingsClient);
 const overview = ref<SettingsOverviewResponse | null>(null);
 const overviewLoading = ref(true);
 const overviewError = ref("");
@@ -116,10 +115,18 @@ const p115Error = ref("");
 const credentials = ref<CredentialSettingsResponse | null>(null);
 const credentialsLoading = ref(false);
 const credentialsError = ref("");
-const prowlarr = ref<ProwlarrSettingsState | null>(null);
+const prowlarr = ref<ProwlarrSettingsResponse | null>(null);
 const prowlarrLoading = ref(true);
 const prowlarrError = ref("");
-const prowlarrValidationState = ref<"idle" | "running" | ProwlarrValidationState["status"] | "error">("idle");
+const prowlarrBaseUrlDraft = ref("");
+const prowlarrApiKeyDraft = ref("");
+const prowlarrEnabledDraft = ref(false);
+const prowlarrSaving = ref(false);
+const prowlarrResetting = ref(false);
+const prowlarrSaveError = ref("");
+const prowlarrSaveMessage = ref("");
+const prowlarrConflict = ref(false);
+const prowlarrValidationState = ref<"idle" | "running" | ProwlarrVerifyResponse["status"] | "error">("idle");
 const prowlarrValidationMessage = ref("");
 const tmdbDraft = ref("");
 const p115CookieDraft = ref("");
@@ -140,6 +147,7 @@ const p115QrBusy = ref(false);
 let p115QrPollTimer: number | null = null;
 const credentialMutationBusy = computed(() => tmdbSaving.value || tmdbResetting.value || p115CredentialSaving.value || p115CredentialResetting.value);
 const p115MutationBusy = computed(() => p115CredentialSaving.value || p115CredentialResetting.value);
+const prowlarrMutationBusy = computed(() => prowlarrSaving.value || prowlarrResetting.value);
 const inspectionSettings = ref<InspectionSettingsResponse | null>(null);
 const inspectionLoading = ref(true);
 const inspectionError = ref("");
@@ -364,14 +372,80 @@ async function loadP115() {
 async function loadProwlarr() {
   prowlarrLoading.value = true;
   prowlarrError.value = "";
+  prowlarrSaveError.value = "";
+  prowlarrConflict.value = false;
   try {
-    const response = await prowlarrClient.value.settings();
+    const response = await props.api.prowlarrSettings();
     if (!settingsMounted) return;
-    prowlarr.value = response;
+    applyProwlarr(response);
   } catch (exception) {
     if (settingsMounted) prowlarrError.value = exception instanceof ApiError ? exception.message : "Prowlarr 状态加载失败，请稍后重试";
   } finally {
     if (settingsMounted) prowlarrLoading.value = false;
+  }
+}
+
+function applyProwlarr(value: ProwlarrSettingsResponse) {
+  prowlarr.value = value;
+  prowlarrBaseUrlDraft.value = value.base_url ?? "";
+  prowlarrEnabledDraft.value = value.enabled;
+  prowlarrApiKeyDraft.value = "";
+}
+
+function prowlarrMutationError(exception: unknown, fallback: string): string {
+  if (!(exception instanceof ApiError)) return fallback;
+  if (exception.status === 409) return "设置已被其他请求修改，请重新加载后再保存。";
+  if (exception.status === 422) return "Prowlarr 地址或配置格式不正确，请检查后重试。";
+  if (exception.status === 429) return "操作过于频繁，请稍后重试。";
+  if (exception.status === 503) return "Prowlarr 设置服务暂不可用，请稍后重试。";
+  return exception.message || fallback;
+}
+
+async function saveProwlarr() {
+  if (!prowlarr.value || prowlarrMutationBusy.value || prowlarrValidationState.value === "running") return;
+  prowlarrSaving.value = true;
+  prowlarrSaveError.value = "";
+  prowlarrSaveMessage.value = "";
+  prowlarrConflict.value = false;
+  const payload: PatchProwlarrSettingsRequest = {
+    enabled: prowlarrEnabledDraft.value,
+    base_url: prowlarrBaseUrlDraft.value.trim() || null,
+    revision: prowlarr.value.revision,
+  };
+  if (prowlarrApiKeyDraft.value) payload.api_key = prowlarrApiKeyDraft.value;
+  try {
+    const response = await props.api.updateProwlarrSettings(payload);
+    if (!settingsMounted) return;
+    applyProwlarr(response);
+    syncSharedRevision(response.revision);
+    prowlarrSaveMessage.value = "Prowlarr 配置已保存";
+  } catch (exception) {
+    if (!settingsMounted) return;
+    prowlarrConflict.value = exception instanceof ApiError && exception.status === 409;
+    prowlarrSaveError.value = prowlarrMutationError(exception, "Prowlarr 配置保存失败，请稍后重试");
+  } finally {
+    if (settingsMounted) prowlarrSaving.value = false;
+  }
+}
+
+async function resetProwlarr() {
+  if (!prowlarr.value || prowlarrMutationBusy.value || prowlarrValidationState.value === "running" || prowlarr.value.source !== "managed") return;
+  prowlarrResetting.value = true;
+  prowlarrSaveError.value = "";
+  prowlarrSaveMessage.value = "";
+  prowlarrConflict.value = false;
+  try {
+    const response = await props.api.resetProwlarrSettings(prowlarr.value.revision);
+    if (!settingsMounted) return;
+    applyProwlarr(response);
+    syncSharedRevision(response.revision);
+    prowlarrSaveMessage.value = "已恢复环境配置";
+  } catch (exception) {
+    if (!settingsMounted) return;
+    prowlarrConflict.value = exception instanceof ApiError && exception.status === 409;
+    prowlarrSaveError.value = prowlarrMutationError(exception, "Prowlarr 配置恢复失败，请稍后重试");
+  } finally {
+    if (settingsMounted) prowlarrResetting.value = false;
   }
 }
 
@@ -915,6 +989,7 @@ function syncSharedRevision(revision: number) {
   if (inspectionSettings.value) inspectionSettings.value = { ...inspectionSettings.value, revision };
   if (contentPolicy.value) contentPolicy.value = { ...contentPolicy.value, revision };
   if (credentials.value) credentials.value = { ...credentials.value, revision };
+  if (prowlarr.value) prowlarr.value = { ...prowlarr.value, revision };
   if (organizationSettings.value) organizationSettings.value = { ...organizationSettings.value, revision };
 }
 
@@ -1070,17 +1145,14 @@ async function validateP115() {
 }
 
 async function validateProwlarr() {
-  if (prowlarrValidationState.value === "running") return;
+  if (prowlarrValidationState.value === "running" || prowlarrMutationBusy.value) return;
   prowlarrValidationState.value = "running";
   prowlarrValidationMessage.value = "正在验证 Prowlarr 连接";
   try {
-    const response = await prowlarrClient.value.validateConnection();
+    const response = await props.api.verifyProwlarr();
     if (!settingsMounted) return;
     prowlarrValidationState.value = response.status;
-    prowlarrValidationMessage.value = response.checked_at
-      ? `${response.message_zh}（${formatTimestamp(response.checked_at)}）`
-      : response.message_zh;
-    await loadProwlarr();
+    prowlarrValidationMessage.value = `${prowlarrVerificationMessage(response)}（${formatTimestamp(response.checked_at)}）`;
   } catch (exception) {
     if (!settingsMounted) return;
     prowlarrValidationState.value = "error";
@@ -1167,12 +1239,42 @@ function validationClass(value: ValidationState) {
   return value === "ready" ? "status-ok" : value === "needs_auth" ? "status-degraded" : "status-down";
 }
 
-function prowlarrStatusClass(value: ProwlarrSettingsState["status"]) {
-  return value === "configured" ? "status-ok" : value === "unavailable" ? "status-down" : value === "unsupported" ? "status-unknown" : "status-degraded";
+function prowlarrStatus(value: ProwlarrSettingsResponse): "configured" | "disabled" | "unavailable" {
+  if (!value.enabled) return "disabled";
+  return value.configured ? "configured" : "unavailable";
+}
+
+function prowlarrStatusLabel(value: ProwlarrSettingsResponse): string {
+  return { configured: "已配置", disabled: "未启用", unavailable: "待配置" }[prowlarrStatus(value)];
+}
+
+function prowlarrStatusClass(value: ProwlarrSettingsResponse): string {
+  const status = prowlarrStatus(value);
+  return status === "configured" ? "status-ok" : status === "unavailable" ? "status-down" : "status-degraded";
+}
+
+function prowlarrSourceLabel(value: ProwlarrSettingsResponse["source"]): string {
+  return { managed: "页面配置", environment: "环境变量", none: "未配置" }[value];
+}
+
+function prowlarrApiKeySourceLabel(value: ProwlarrSettingsResponse["api_key_source"]): string {
+  return { managed: "页面配置", environment: "环境变量", none: "未配置" }[value];
+}
+
+function prowlarrVerificationMessage(response: ProwlarrVerifyResponse): string {
+  const codeLabels: Record<string, string> = {
+    prowlarr_disabled: "Prowlarr 未启用",
+    prowlarr_not_configured: "Prowlarr 尚未配置",
+    prowlarr_auth_required: "Prowlarr 认证失败，请检查 API Key",
+    prowlarr_invalid_response: "Prowlarr 返回格式不受支持",
+    prowlarr_unavailable: "Prowlarr 当前不可用",
+  };
+  if (response.message_code && codeLabels[response.message_code]) return codeLabels[response.message_code];
+  return response.status === "available" ? "连接验证成功" : response.status === "disabled" ? "Prowlarr 未启用" : "Prowlarr 当前不可用";
 }
 
 function prowlarrValidationClass(value: typeof prowlarrValidationState.value) {
-  return value === "success" ? "status-ok" : value === "unsupported" || value === "unavailable" ? "status-unknown" : "status-down";
+  return value === "available" ? "status-ok" : value === "disabled" || value === "idle" || value === "running" ? "status-unknown" : "status-down";
 }
 
 onMounted(() => {
@@ -1253,13 +1355,15 @@ watch(autoRefreshLogs, syncLogsRefreshTimer);
         </section>
 
         <section v-else-if="activeSection === 'prowlarr'" class="settings-section" aria-labelledby="prowlarr-title">
-          <header class="settings-section-heading"><div><p class="eyebrow">多来源搜索</p><h2 id="prowlarr-title">Prowlarr</h2><p>仅显示服务端安全摘要，API Key 不会返回到浏览器。</p></div><button class="icon-button" type="button" title="刷新 Prowlarr 状态" aria-label="刷新 Prowlarr 状态" :disabled="prowlarrLoading" @click="loadProwlarr"><RefreshCw :size="16" :class="{ spin: prowlarrLoading }" /></button></header>
+          <header class="settings-section-heading"><div><p class="eyebrow">多来源搜索</p><h2 id="prowlarr-title">Prowlarr</h2><p>配置由服务端保存，API Key 只提交到服务端，不会回显。</p></div><button class="icon-button" type="button" title="刷新 Prowlarr 状态" aria-label="刷新 Prowlarr 状态" :disabled="prowlarrLoading || prowlarrMutationBusy" @click="loadProwlarr"><RefreshCw :size="16" :class="{ spin: prowlarrLoading }" /></button></header>
           <div v-if="prowlarrLoading" class="settings-loading"><LoaderCircle class="spin" :size="20" />正在加载 Prowlarr 状态</div>
           <div v-else-if="prowlarrError" class="settings-state settings-state-error"><AlertTriangle :size="18" /><span>{{ prowlarrError }}</span><button class="text-button" type="button" @click="loadProwlarr">重试</button></div>
           <template v-else-if="prowlarr">
-            <div class="p15-status-line prowlarr-status-line"><span class="settings-status-name"><Radio :size="17" />服务端配置</span><span :class="prowlarrStatusClass(prowlarr.status)">{{ prowlarr.status_zh }}</span><span :class="prowlarr.enabled ? 'status-ok' : 'status-degraded'">{{ prowlarr.enabled ? '已启用' : '未启用' }}</span></div>
-            <div class="settings-metrics prowlarr-metrics"><div class="settings-metric"><span>是否已配置</span><strong :class="prowlarr.configured ? 'status-ok' : 'status-degraded'">{{ prowlarr.configured ? '已配置' : '未配置' }}</strong></div><div class="settings-metric"><span>最近验证</span><strong>{{ prowlarr.last_checked_at ? formatTimestamp(prowlarr.last_checked_at) : '未知' }}</strong></div><div class="settings-metric"><span>最近成功</span><strong>{{ prowlarr.last_success_at ? formatTimestamp(prowlarr.last_success_at) : '未知' }}</strong></div></div>
-            <div class="settings-subsection"><h3>连接验证</h3><div class="settings-action-row"><button class="secondary-button" type="button" :disabled="prowlarrValidationState === 'running'" @click="validateProwlarr"><LoaderCircle v-if="prowlarrValidationState === 'running'" class="spin" :size="16" /><Radio v-else :size="16" />验证 Prowlarr 连接</button><span v-if="prowlarrValidationMessage" :class="['settings-action-message', prowlarrValidationClass(prowlarrValidationState)]" role="status">{{ prowlarrValidationMessage }}</span></div><p class="settings-note"><ShieldCheck :size="15" />连接验证只使用服务端已保存的配置；浏览器不会接收或提交 API Key。</p></div>
+            <div class="p15-status-line prowlarr-status-line"><span class="settings-status-name"><Radio :size="17" />服务端配置</span><span :class="prowlarrStatusClass(prowlarr)">{{ prowlarrStatusLabel(prowlarr) }}</span><span :class="prowlarr.enabled ? 'status-ok' : 'status-degraded'">{{ prowlarr.enabled ? '已启用' : '未启用' }}</span></div>
+            <div class="settings-metrics prowlarr-metrics"><div class="settings-metric"><span>配置来源</span><strong>{{ prowlarrSourceLabel(prowlarr.source) }}</strong></div><div class="settings-metric"><span>API Key</span><strong :class="prowlarr.api_key_configured ? 'status-ok' : 'status-degraded'">{{ prowlarr.api_key_configured ? `已配置（${prowlarrApiKeySourceLabel(prowlarr.api_key_source)}）` : '未配置' }}</strong></div><div class="settings-metric"><span>配置版本</span><strong>{{ prowlarr.revision }}</strong></div><div class="settings-metric"><span>最后更新</span><strong>{{ prowlarr.last_updated_at ? formatTimestamp(prowlarr.last_updated_at) : '未知' }}</strong></div></div>
+            <div class="settings-subsection"><h3>服务端配置</h3><div class="settings-form-grid"><label for="prowlarr-base-url">服务地址<input id="prowlarr-base-url" v-model="prowlarrBaseUrlDraft" type="url" inputmode="url" autocomplete="url" spellcheck="false" placeholder="例如 http://prowlarr:9696" :disabled="prowlarrMutationBusy" /></label><label for="prowlarr-api-key">API Key<input id="prowlarr-api-key" v-model="prowlarrApiKeyDraft" name="prowlarr_api_key" type="password" autocomplete="new-password" spellcheck="false" placeholder="输入新的 API Key（可留空以保留现有配置）" :disabled="prowlarrMutationBusy" /></label></div><label class="settings-toggle"><input v-model="prowlarrEnabledDraft" type="checkbox" :disabled="prowlarrMutationBusy" />启用 Prowlarr 搜索来源</label><div class="settings-action-row"><button class="primary-button" type="button" :disabled="prowlarrMutationBusy || prowlarrValidationState === 'running'" @click="saveProwlarr"><LoaderCircle v-if="prowlarrSaving" class="spin" :size="15" /><Save v-else :size="15" />保存 Prowlarr 配置</button><button class="secondary-button" type="button" :disabled="prowlarrMutationBusy || prowlarrValidationState === 'running' || prowlarr.source !== 'managed'" @click="resetProwlarr"><LoaderCircle v-if="prowlarrResetting" class="spin" :size="15" /><RefreshCw v-else :size="15" />恢复环境配置</button></div><p class="settings-note"><ShieldCheck :size="15" />API Key 仅在填写后随保存请求提交；服务端响应、状态和日志不会包含 Key 原文。</p></div>
+            <p v-if="prowlarrSaveMessage" class="settings-action-message status-ok" role="status">{{ prowlarrSaveMessage }}</p><p v-if="prowlarrSaveError" class="settings-state settings-state-error settings-save-error" role="alert"><AlertTriangle :size="17" />{{ prowlarrSaveError }}<button v-if="prowlarrConflict" class="text-button" type="button" @click="loadProwlarr">重新加载</button></p>
+            <div class="settings-subsection"><h3>只读连接验证</h3><div class="settings-action-row"><button class="secondary-button" type="button" :disabled="prowlarrValidationState === 'running' || prowlarrMutationBusy" @click="validateProwlarr"><LoaderCircle v-if="prowlarrValidationState === 'running'" class="spin" :size="16" /><Radio v-else :size="16" />验证 Prowlarr 连接</button><span v-if="prowlarrValidationMessage" :class="['settings-action-message', prowlarrValidationClass(prowlarrValidationState)]" role="status">{{ prowlarrValidationMessage }}</span></div><p class="settings-note">验证只读使用服务端已保存的配置，不会修改 URL、启用状态或 API Key。</p></div>
           </template>
         </section>
 

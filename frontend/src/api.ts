@@ -18,6 +18,9 @@ import type {
   PatchOrganizationSettingsRequest,
   P115SettingsResponse,
   P115ValidationResponse,
+  PatchProwlarrSettingsRequest,
+  ProwlarrSettingsResponse,
+  ProwlarrVerifyResponse,
   SearchRequest,
   SearchResponse,
   SeasonDetailResponse,
@@ -157,6 +160,31 @@ export class ApiClient {
 
   async p115Settings(): Promise<P115SettingsResponse> {
     return this.request<P115SettingsResponse>("/api/v1/settings/p115");
+  }
+
+  async prowlarrSettings(): Promise<ProwlarrSettingsResponse> {
+    return this.request<ProwlarrSettingsResponse>("/api/v1/settings/search-sources/prowlarr");
+  }
+
+  async updateProwlarrSettings(settings: PatchProwlarrSettingsRequest): Promise<ProwlarrSettingsResponse> {
+    return this.request<ProwlarrSettingsResponse>("/api/v1/settings/search-sources/prowlarr", {
+      method: "PATCH",
+      body: JSON.stringify(settings),
+    });
+  }
+
+  async resetProwlarrSettings(revision: number): Promise<ProwlarrSettingsResponse> {
+    return this.request<ProwlarrSettingsResponse>("/api/v1/settings/search-sources/prowlarr/reset", {
+      method: "POST",
+      body: JSON.stringify({ revision }),
+    });
+  }
+
+  async verifyProwlarr(): Promise<ProwlarrVerifyResponse> {
+    return this.request<ProwlarrVerifyResponse>("/api/v1/settings/search-sources/prowlarr/verify", {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
   }
 
   async credentialSettings(): Promise<CredentialSettingsResponse> {
