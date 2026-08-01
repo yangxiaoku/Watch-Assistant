@@ -18,6 +18,9 @@ import type {
   PatchOrganizationSettingsRequest,
   P115SettingsResponse,
   P115ValidationResponse,
+  PatchProwlarrSettingsRequest,
+  ProwlarrSettingsResponse,
+  ProwlarrVerifyResponse,
   SearchRequest,
   SearchResponse,
   SeasonDetailResponse,
@@ -41,8 +44,14 @@ import type {
   MediaLibraryListResponse,
   MediaLibraryResponse,
   MediaEntryListResponse,
+  EmptyDirectoryCleanupPlanApplyResponse,
+  EmptyDirectoryCleanupPlanResponse,
   StrmManifestListResponse,
   StrmGenerationResponse,
+  StrmCleanupPlanApplyResponse,
+  StrmCleanupPlanResponse,
+  StrmOperationListResponse,
+  StrmOperationResponse,
   PwaDevice,
 } from "./types";
 import { describeUiError, type UiErrorAction } from "./errorCatalog";
@@ -157,6 +166,31 @@ export class ApiClient {
 
   async p115Settings(): Promise<P115SettingsResponse> {
     return this.request<P115SettingsResponse>("/api/v1/settings/p115");
+  }
+
+  async prowlarrSettings(): Promise<ProwlarrSettingsResponse> {
+    return this.request<ProwlarrSettingsResponse>("/api/v1/settings/search-sources/prowlarr");
+  }
+
+  async updateProwlarrSettings(settings: PatchProwlarrSettingsRequest): Promise<ProwlarrSettingsResponse> {
+    return this.request<ProwlarrSettingsResponse>("/api/v1/settings/search-sources/prowlarr", {
+      method: "PATCH",
+      body: JSON.stringify(settings),
+    });
+  }
+
+  async resetProwlarrSettings(revision: number): Promise<ProwlarrSettingsResponse> {
+    return this.request<ProwlarrSettingsResponse>("/api/v1/settings/search-sources/prowlarr/reset", {
+      method: "POST",
+      body: JSON.stringify({ revision }),
+    });
+  }
+
+  async verifyProwlarr(): Promise<ProwlarrVerifyResponse> {
+    return this.request<ProwlarrVerifyResponse>("/api/v1/settings/search-sources/prowlarr/verify", {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
   }
 
   async credentialSettings(): Promise<CredentialSettingsResponse> {
@@ -570,6 +604,17 @@ export class ApiClient {
     });
   }
 
+  async searchOrganizationCandidates(planId: string, expectedRevision: number, query: string, sourceIndex?: number): Promise<OrganizationPlanSummary> {
+    return this.request<OrganizationPlanSummary>(`/api/v1/organization-plans/${encodeURIComponent(planId)}/candidate-search`, {
+      method: "POST",
+      body: JSON.stringify({
+        expected_revision: expectedRevision,
+        query,
+        ...(sourceIndex === undefined ? {} : { source_index: sourceIndex }),
+      }),
+    });
+  }
+
   async ignoreOrganizationPlan(planId: string, expectedRevision: number): Promise<OrganizationPlanSummary> {
     return this.request<OrganizationPlanSummary>(`/api/v1/organization-plans/${encodeURIComponent(planId)}/ignore`, {
       method: "POST",
@@ -742,6 +787,81 @@ export class ApiClient {
       body: JSON.stringify({ source_scan_run_id: scanRunId }),
     });
   }
+
+  async strmOperation(operationId: string): Promise<StrmOperationResponse> {
+    return this.request<StrmOperationResponse>(`/api/v1/strm-operations/${encodeURIComponent(operationId)}`);
+  }
+
+  async strmOperations(libraryId: string, cursor?: string, limit = 20): Promise<StrmOperationListResponse> {
+    const params = new URLSearchParams({ limit: String(limit) });
+    if (cursor !== undefined) params.set("cursor", cursor);
+    return this.request<StrmOperationListResponse>(`/api/v1/libraries/${encodeURIComponent(libraryId)}/strm-operations?${params.toString()}`);
+  }
+
+  async createStrmCleanupPlan(libraryId: string, scanRunId: string): Promise<StrmCleanupPlanResponse> {
+    return this.request<StrmCleanupPlanResponse>(`/api/v1/libraries/${encodeURIComponent(libraryId)}/strm-cleanup-plan`, {
+      method: "POST",
+      body: JSON.stringify({ source_scan_run_id: scanRunId }),
+    });
+  }
+
+  async strmCleanupPlan(planId: string): Promise<StrmCleanupPlanResponse> {
+    return this.request<StrmCleanupPlanResponse>(`/api/v1/strm-cleanup-plans/${encodeURIComponent(planId)}`);
+  }
+
+  async applyStrmCleanupPlan(
+    planId: string,
+    payload: { expectedRevision: number; digest: string; idempotencyKey?: string },
+  ): Promise<StrmCleanupPlanApplyResponse> {
+    return this.request<StrmCleanupPlanApplyResponse>(`/api/v1/strm-cleanup-plans/${encodeURIComponent(planId)}/apply`, {
+      method: "POST",
+      body: JSON.stringify({
+        expected_revision: payload.expectedRevision,
+        digest: payload.digest,
+        confirm: true,
+        idempotency_key: payload.idempotencyKey ?? createIdempotencyKey(),
+      }),
+    });
+  }
+
+  async createEmptyDirectoryCleanupPlan(
+    libraryId: string,
+    scanRunId: string,
+  ): Promise<EmptyDirectoryCleanupPlanResponse> {
+    return this.request<EmptyDirectoryCleanupPlanResponse>(
+      `/api/v1/libraries/${encodeURIComponent(libraryId)}/empty-directory-cleanup-plan`,
+      {
+        method: "POST",
+        body: JSON.stringify({ source_scan_run_id: scanRunId }),
+      },
+    );
+  }
+
+  async emptyDirectoryCleanupPlan(
+    planId: string,
+  ): Promise<EmptyDirectoryCleanupPlanResponse> {
+    return this.request<EmptyDirectoryCleanupPlanResponse>(
+      `/api/v1/empty-directory-cleanup-plans/${encodeURIComponent(planId)}`,
+    );
+  }
+
+  async applyEmptyDirectoryCleanupPlan(
+    planId: string,
+    payload: { expectedRevision: number; digest: string; idempotencyKey?: string },
+  ): Promise<EmptyDirectoryCleanupPlanApplyResponse> {
+    return this.request<EmptyDirectoryCleanupPlanApplyResponse>(
+      `/api/v1/empty-directory-cleanup-plans/${encodeURIComponent(planId)}/apply`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          expected_revision: payload.expectedRevision,
+          digest: payload.digest,
+          confirm: true,
+          idempotency_key: payload.idempotencyKey ?? createIdempotencyKey(),
+        }),
+      },
+    );
+  }
 }
 
 const READ_CACHE_PREFIX = "watch-assistant:readonly-cache:";
@@ -751,7 +871,7 @@ function isCacheableRead(path: string): boolean {
   return /^\/api\/v1\/(health|tasks(?:[/?]|$)|notifications(?:[/?]|$)|workflows(?:[/?]|$))/.test(path);
 }
 
-function createIdempotencyKey(): string {
+export function createIdempotencyKey(): string {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) return crypto.randomUUID();
   return `wa-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }

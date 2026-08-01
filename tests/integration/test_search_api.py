@@ -480,6 +480,42 @@ async def test_resource_snapshot_applies_current_content_policy_and_hidden_total
 
 
 @pytest.mark.integration
+async def test_resource_snapshot_redacts_legacy_source_value(tmp_path):
+    client, database, tmdb, pansou = await _make_client(tmp_path)
+    now = datetime.now(UTC)
+    resource = Resource(
+        id="res_legacy_source",
+        kind=ResourceKind.MAGNET,
+        canonical_key="magnet:legacy-source",
+        encrypted_url="encrypted",
+        name="Inception 2010 1080p",
+        source="https://indexer.test/search?redaction_marker=example-marker",
+        captured_at=now,
+        expires_at=now + timedelta(days=7),
+    )
+    cache = SearchCache(
+        cache_key=make_cache_key(12345, MediaType.MOVIE),
+        resource_ids_json=json.dumps({"version": 1, "resources": [{"resource_id": resource.id}]}),
+        warnings_json="[]",
+        fetched_at=now,
+        expires_at=now + timedelta(days=7),
+    )
+    async with database.session_factory() as session:
+        session.add_all([resource, cache])
+        await session.commit()
+
+    response = await client.get(
+        "/api/v1/media/movie/12345/resources", params={"page_size": 25}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["items"][0]["source"].startswith("source:")
+    assert "example-marker" not in response.text
+    assert "https://indexer.test" not in response.text
+    await _close(client, database, tmdb, pansou)
+
+
+@pytest.mark.integration
 @respx.mock
 async def test_resource_snapshot_missing_returns_stable_error_without_upstream(
     tmp_path,
@@ -655,6 +691,101 @@ async def test_partial_positive_refresh_preserves_existing_cache(tmp_path):
 
 @pytest.mark.integration
 @respx.mock
+async def test_partial_refresh_prefers_new_duplicate_over_cached_resource(tmp_path):
+    _mock_tmdb()
+    route = respx.get("http://pansou.test/api/search").mock(
+        return_value=httpx.Response(200, json=_pansou_response())
+    )
+    client, database, tmdb, pansou = await _make_client(tmp_path)
+    first = await client.post("/api/v1/search", json={"tmdb_id": 12345})
+    assert first.status_code == 200
+
+    calls = 0
+
+    def partial_duplicate(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(
+                200,
+                json={
+                    "code": 0,
+                    "data": {
+                        "total": 1,
+                        "merged_by_type": {
+                            "magnet": [
+                                {
+                                    "url": MAGNET,
+                                    "name": "Inception 2010 2160p BluRay",
+                                    "source": "plugin:fresh",
+                                    "seeders": 42,
+                                }
+                            ]
+                        },
+                    },
+                },
+            )
+        raise httpx.ReadTimeout("one query failed")
+
+    route.side_effect = partial_duplicate
+    refreshed = await client.post(
+        "/api/v1/search", json={"tmdb_id": 12345, "refresh": True}
+    )
+
+    assert refreshed.status_code == 200
+    duplicate = next(
+        item for item in refreshed.json()["results"] if item["kind"] == "magnet"
+    )
+    assert duplicate["name"] == "Inception 2010 2160p BluRay"
+    assert duplicate["seeders"] == 42
+    assert duplicate["source"] == "plugin:fresh"
+    async with database.session_factory() as session:
+        reliability = await session.get(SourceReliability, "plugin:fresh")
+    assert reliability is not None
+    assert reliability.accepted_count == 1
+    await _close(client, database, tmdb, pansou)
+
+
+@pytest.mark.integration
+@respx.mock
+async def test_resource_search_does_not_reuse_expired_snapshot(tmp_path):
+    _mock_tmdb()
+    route = respx.get("http://pansou.test/api/search").mock(
+        return_value=httpx.Response(200, json=_pansou_response())
+    )
+    client, database, tmdb, pansou = await _make_client(tmp_path)
+    seeded = await client.post("/api/v1/search", json={"tmdb_id": 12345})
+    assert seeded.status_code == 200
+    initial_calls = route.call_count
+
+    async with database.session_factory() as session:
+        cache = await session.get(SearchCache, make_cache_key(12345))
+        assert cache is not None
+        cache.fetched_at = datetime.now(UTC) - timedelta(days=2)
+        cache.expires_at = cache.fetched_at + timedelta(hours=1)
+        await session.commit()
+
+    accepted = await client.post(
+        "/api/v1/media/movie/12345/resource-search", json={"refresh": False}
+    )
+    assert accepted.status_code == 202
+    assert accepted.json()["status"] == "queued"
+
+    final = accepted.json()
+    for _ in range(50):
+        if final["status"] in {"ready", "failed"}:
+            break
+        await asyncio.sleep(0.01)
+        final = (
+            await client.get(f"/api/v1/resource-search/{accepted.json()['task_id']}")
+        ).json()
+    assert final["status"] == "ready"
+    assert route.call_count > initial_calls
+    await _close(client, database, tmdb, pansou)
+
+
+@pytest.mark.integration
+@respx.mock
 async def test_concurrent_searches_share_one_four_query_refresh(tmp_path):
     _mock_tmdb()
     route = respx.get("http://pansou.test/api/search").mock(
@@ -769,6 +900,40 @@ async def test_search_uses_media_alternatives_only_after_zero_candidates(
     assert route.call_count == 5
     assert len(response.json()["results"]) == 1
     assert "alternative_titles_used" in response.json()["warnings"]
+    await _close(client, database, tmdb, pansou)
+
+
+@pytest.mark.integration
+@respx.mock
+async def test_alternative_query_failure_is_reported_as_partial(tmp_path):
+    _mock_tmdb()
+    respx.get(
+        "https://api.themoviedb.org/3/movie/12345/alternative_titles"
+    ).mock(
+        return_value=httpx.Response(
+            200,
+            json={"titles": [{"iso_3166_1": "US", "title": "Alternate"}]},
+        )
+    )
+
+    def pansou_response(request: httpx.Request) -> httpx.Response:
+        if request.url.params["kw"] == "Alternate":
+            raise httpx.ReadTimeout("query details stay private")
+        return httpx.Response(200, json=_empty_pansou_response())
+
+    route = respx.get("http://pansou.test/api/search").mock(
+        side_effect=pansou_response
+    )
+    client, database, tmdb, pansou = await _make_client(tmp_path)
+
+    response = await client.post("/api/v1/search", json={"tmdb_id": 12345})
+
+    assert response.status_code == 200
+    assert response.json()["warnings"] == [
+        "pansou_query_failed:5",
+        "partial_upstream",
+    ]
+    assert route.call_count == 5
     await _close(client, database, tmdb, pansou)
 
 
@@ -1186,7 +1351,7 @@ async def test_tv_resource_search_falls_back_to_title_without_year(tmp_path):
     }
     async with database.session_factory() as session:
         cache = await session.scalar(select(SearchCache))
-    assert cache.cache_key == "tmdb:tv:1399:queries:v4"
+    assert cache.cache_key == "tmdb:tv:1399:queries:v5"
     await _close(client, database, tmdb, pansou)
 
 
@@ -1277,8 +1442,8 @@ async def test_tv_season_search_filters_other_seasons_and_is_cache_isolated(tmp_
     async with database.session_factory() as session:
         keys = {item.cache_key for item in await session.scalars(select(SearchCache))}
     assert keys == {
-        "tmdb:tv:1399:queries:v4",
-        "tmdb:tv:1399:season:2:queries:v4",
+        "tmdb:tv:1399:queries:v5",
+        "tmdb:tv:1399:season:2:queries:v5",
     }
     await _close(client, database, tmdb, pansou)
 
@@ -1434,7 +1599,7 @@ async def test_cache_snapshot_preserves_context_order_and_scores(tmp_path):
         ),
     ]
     cache_a = SearchCache(
-        cache_key=f"tmdb:tv:{tv_id}:season:2:queries:v4",
+        cache_key=f"tmdb:tv:{tv_id}:season:2:queries:v5",
         resource_ids_json=json.dumps(
             {
                 "version": 1,
@@ -1458,7 +1623,7 @@ async def test_cache_snapshot_preserves_context_order_and_scores(tmp_path):
         expires_at=now + timedelta(days=7),
     )
     cache_b = SearchCache(
-        cache_key=f"tmdb:tv:{tv_id}:season:3:queries:v4",
+        cache_key=f"tmdb:tv:{tv_id}:season:3:queries:v5",
         resource_ids_json=json.dumps(
             {
                 "version": 1,
@@ -1547,7 +1712,7 @@ async def test_public_search_reads_legacy_list_cache_scores(tmp_path):
         ),
     )
     cache = SearchCache(
-        cache_key="tmdb:movie:12345:queries:v4",
+        cache_key="tmdb:movie:12345:queries:v5",
         resource_ids_json=json.dumps([resource.id]),
         fetched_at=now,
         expires_at=now + timedelta(days=7),
@@ -1567,9 +1732,11 @@ async def test_public_search_reads_legacy_list_cache_scores(tmp_path):
             "kind": "magnet",
             "name": "Legacy cached resource",
             "size_bytes": None,
-            "seeders": None,
-            "source": "test",
-            "captured_at": body["results"][0]["captured_at"],
+                "seeders": None,
+                "source": "test",
+                "sources": ["test"],
+                "source_count": 1,
+                "captured_at": body["results"][0]["captured_at"],
             "size_source": None,
             "seeders_source": None,
             "seeders_observed_at": None,
@@ -1606,11 +1773,12 @@ async def test_public_search_cache_hit_preserves_pansou_metadata_sources(tmp_pat
                 "size_source": "pansou",
                 "seeders_source": "pansou",
                 "seeders_observed_at": "2026-07-25T04:00:00+00:00",
+                "sources": ["plugin:pansou", "plugin:nyaa"],
             }
         ),
     )
     cache = SearchCache(
-        cache_key="tmdb:movie:12345:queries:v4",
+        cache_key="tmdb:movie:12345:queries:v5",
         resource_ids_json=json.dumps([resource.id]),
         fetched_at=now,
         expires_at=now + timedelta(days=7),
@@ -1627,6 +1795,8 @@ async def test_public_search_cache_hit_preserves_pansou_metadata_sources(tmp_pat
     assert result["size_source"] == "pansou"
     assert result["seeders_source"] == "pansou"
     assert result["seeders_observed_at"] == "2026-07-25T04:00:00Z"
+    assert result["sources"] == ["plugin:pansou", "plugin:nyaa"]
+    assert result["source_count"] == 2
     await _close(client, database, tmdb, pansou)
 
 
@@ -1718,8 +1888,8 @@ async def test_concurrent_warm_with_barrier_share_checks_avoids_sqlite_lock(
     async with database.session_factory() as session:
         caches = list(await session.scalars(select(SearchCache)))
     assert {item.cache_key for item in caches} == {
-        "tmdb:movie:1501:queries:v4",
-        "tmdb:movie:1502:queries:v4",
+        "tmdb:movie:1501:queries:v5",
+        "tmdb:movie:1502:queries:v5",
     }
     await _close(client, database, tmdb, pansou)
 

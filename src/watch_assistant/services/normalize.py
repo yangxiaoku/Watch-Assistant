@@ -3,10 +3,13 @@
 import base64
 import binascii
 import re
+from collections.abc import Iterable
 from datetime import UTC, datetime
+from hashlib import sha256
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+from watch_assistant.adapters.prowlarr import ProwlarrRelease
 from watch_assistant.schemas import NormalizedResource, ResourceKind
 
 HEX_INFOHASH = re.compile(r"[0-9A-Fa-f]{40}")
@@ -28,6 +31,7 @@ SIZE_MULTIPLIERS = {
     "TIB": 1024**4,
 }
 LABEL_PRIORITY = {"dn": 1, "note": 2, "name": 3}
+SAFE_SOURCE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}")
 
 
 def normalize_pansou(
@@ -64,6 +68,50 @@ def normalize_pansou(
     return [resources_by_key[key] for key in ordered_keys]
 
 
+def normalize_prowlarr(
+    releases: Iterable[ProwlarrRelease],
+    *,
+    captured_at: datetime | None = None,
+) -> list[NormalizedResource]:
+    """Map verified torrent releases into the common magnet resource shape."""
+    fallback_time = captured_at or datetime.now(UTC)
+    resources: list[NormalizedResource] = []
+    for release in releases:
+        magnet = _parse_magnet(release.magnet_url)
+        if magnet is None:
+            continue
+        canonical_key, display_name = magnet
+        url = release.magnet_url
+        if display_name is None:
+            url = _add_magnet_dn(url, release.title)
+        metadata: dict[str, Any] = {
+            "category": "magnet",
+            "prowlarr_protocol": release.protocol,
+        }
+        if release.indexer:
+            metadata["prowlarr_indexer"] = release.indexer
+        if release.indexer_id is not None:
+            metadata["prowlarr_indexer_id"] = release.indexer_id
+        if release.size_bytes is not None:
+            metadata["size_source"] = "prowlarr"
+        if release.seeders is not None:
+            metadata["seeders_source"] = "prowlarr"
+        resources.append(
+            NormalizedResource(
+                kind=ResourceKind.MAGNET,
+                canonical_key=canonical_key,
+                name=release.title,
+                url=url,
+                size_bytes=release.size_bytes,
+                seeders=release.seeders,
+                source="prowlarr",
+                captured_at=_parse_datetime(release.publish_date) or fallback_time,
+                metadata=metadata,
+            )
+        )
+    return resources
+
+
 def _normalize_item(
     item: dict[str, Any],
     category: str,
@@ -97,7 +145,7 @@ def _normalize_item(
     else:
         name = note.strip() or "PanSou resource"
         label_source = None
-    source = item.get("source") if isinstance(item.get("source"), str) else "PanSou"
+    source = normalize_source_id(item.get("source"))
     raw_datetime = item.get("datetime")
     password = item.get("password")
     if not isinstance(password, str) or not password:
@@ -169,7 +217,7 @@ def _parse_magnet(url: str) -> tuple[str, str | None] | None:
                 continue
         else:
             continue
-        if decoded != "0" * 40:
+        if canonical_key is None and decoded != "0" * 40:
             canonical_key = f"magnet:{decoded}"
     if canonical_key is None:
         return None
@@ -315,6 +363,15 @@ def _share_key(url: str, allowed_domains: tuple[str, ...]) -> str | None:
 def _normalize_domain(domain: str) -> str:
     normalized = domain.casefold().strip().rstrip(".")
     return normalized.removeprefix("www.")
+
+
+def normalize_source_id(value: object) -> str:
+    if not isinstance(value, str) or not value.strip():
+        return "PanSou"
+    source = value.strip()
+    if SAFE_SOURCE.fullmatch(source):
+        return source
+    return "source:" + sha256(source.encode("utf-8")).hexdigest()[:16]
 
 
 def _parse_datetime(value: object) -> datetime | None:

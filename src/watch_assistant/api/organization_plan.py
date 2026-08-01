@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from watch_assistant.schemas import (
     OrganizationPlanAliasRequest,
     OrganizationPlanCandidateRequest,
+    OrganizationPlanCandidateSearchRequest,
     OrganizationPlanListResponse,
     OrganizationPlanMutationRequest,
     OrganizationPlanResponse,
@@ -116,6 +117,29 @@ async def select_organization_candidate(
 
 
 @router.post(
+    "/organization-plans/{plan_id}/candidate-search",
+    response_model=OrganizationPlanResponse,
+)
+async def search_organization_candidates(
+    plan_id: str,
+    payload: OrganizationPlanCandidateSearchRequest,
+    service: ServiceDependency,
+) -> OrganizationPlanResponse:
+    try:
+        item = await service.search_candidates(
+            plan_id,
+            expected_revision=payload.expected_revision,
+            source_object_id=payload.source_object_id,
+            source_index=payload.source_index,
+            query=payload.query,
+            limit=payload.limit,
+        )
+    except OrganizationPlanError as exc:
+        raise _http_error(exc) from None
+    return OrganizationPlanResponse.model_validate(item.to_public_dict())
+
+
+@router.post(
     "/organization-plans/{plan_id}/ignore", response_model=OrganizationPlanResponse
 )
 async def ignore_organization_plan(
@@ -165,6 +189,11 @@ def _http_error(error: OrganizationPlanError) -> HTTPException:
         "tmdb_candidate_not_found": 404,
         "candidate_target_unavailable": 409,
         "source_snapshot_mismatch": 409,
+        "candidate_source_required": 422,
+        "invalid_source_index": 422,
+        "invalid_candidate_query": 422,
+        "invalid_candidate_limit": 422,
+        "candidate_search_unavailable": 503,
     }
     messages = {
         "plan_not_found": "计划不存在",
@@ -179,6 +208,11 @@ def _http_error(error: OrganizationPlanError) -> HTTPException:
         "tmdb_candidate_not_found": "TMDB 候选不存在，请刷新后重试",
         "candidate_target_unavailable": "候选影片无法生成安全归档路径",
         "source_snapshot_mismatch": "来源扫描快照已变化，请重新扫描",
+        "candidate_source_required": "请先选择要搜索的来源条目",
+        "invalid_source_index": "来源条目标识无效",
+        "invalid_candidate_query": "搜索关键词无效",
+        "invalid_candidate_limit": "候选数量限制无效",
+        "candidate_search_unavailable": "TMDB 候选搜索暂不可用，请稍后重试",
     }
     code = error.code if error.code in messages else "organization_plan_unavailable"
     status = statuses.get(code, 409)

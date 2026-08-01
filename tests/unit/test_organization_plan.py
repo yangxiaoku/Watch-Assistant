@@ -33,6 +33,7 @@ from watch_assistant.services.organization_plan import (
     OrganizationPlanStatus,
     PlanSource,
     _canonical_hash,
+    _entry_remote_version,
     load_executable_steps,
 )
 
@@ -42,6 +43,26 @@ SCAN_ID = "scan-1"
 SECRET_NAME = "private-title.mkv"
 SECRET_PATH = "/private/cloud/private-title.mkv"
 SECRET_PICKCODE = "private-pickcode"
+
+
+def _source_version(
+    object_id: str,
+    *,
+    path: str,
+    name: str,
+    parent_id: str = ROOT_ID,
+) -> str:
+    return _entry_remote_version(
+        LibraryScanEntry(
+            scan_run_id=SCAN_ID,
+            object_type="file",
+            object_id=object_id,
+            parent_id=parent_id,
+            name=name,
+            path=path,
+            is_directory=False,
+        )
+    )
 
 
 def _candidate() -> TmdbCandidate:
@@ -67,13 +88,14 @@ def _item(
     target_name: str = "safe-title.mkv",
     companions: tuple[OrganizationPlanCompanion, ...] = (),
 ) -> OrganizationPlanItem:
+    source_name = SECRET_NAME if object_id == "100" else "second-title.mkv"
     return OrganizationPlanItem(
         source=PlanSource(
             object_type="file",
             object_id=object_id,
             parent_id=ROOT_ID,
             path=path,
-            remote_version="remote-v1",
+            remote_version=_source_version(object_id, path=path, name=source_name),
         ),
         naming_plan=NamingPlan(
             status=naming_status,
@@ -172,6 +194,7 @@ async def test_plan_hash_is_stable_and_persistence_is_idempotent(tmp_path):
     assert first.plan_id == second.plan_id
     assert first.plan_hash == second.plan_hash
     assert first.status is OrganizationPlanStatus.PLANNED
+    assert first.can_execute is True
     # Display/audit basis changes do not change the canonical idempotency hash.
     async with database.session_factory() as session:
         plans = list(await session.scalars(select(OrganizationPlan)))
@@ -192,6 +215,32 @@ async def test_plan_hash_is_stable_and_persistence_is_idempotent(tmp_path):
         target_root="ordered",
     )
     assert ordered_first.plan_id == ordered_second.plan_id
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_plan_can_execute_requires_planned_and_unexpired_state(tmp_path):
+    database = await _database(tmp_path)
+    service = OrganizationPlanService(database.session_factory)
+    plan_view = await service.create_plan(
+        library_id=LIBRARY_ID, scan_run_id=SCAN_ID, items=(_item(),)
+    )
+    assert plan_view.can_execute is True
+
+    async with database.session_factory() as session:
+        plan = await session.get(OrganizationPlan, plan_view.plan_id)
+        assert plan is not None
+        plan.status = OrganizationPlanStatus.NEEDS_REVIEW.value
+        await session.commit()
+    assert (await service.get_plan(plan_view.plan_id)).can_execute is False
+
+    async with database.session_factory() as session:
+        plan = await session.get(OrganizationPlan, plan_view.plan_id)
+        assert plan is not None
+        plan.status = OrganizationPlanStatus.PLANNED.value
+        plan.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+        await session.commit()
+    assert (await service.get_plan(plan_view.plan_id)).can_execute is False
     await database.engine.dispose()
 
 
@@ -218,6 +267,147 @@ async def test_complete_execution_payload_is_persisted_and_parsed(tmp_path):
             "8000",
             "safe-title.mkv",
         )
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_non_hash_legacy_version_is_not_executable(tmp_path):
+    database = await _database(tmp_path)
+    service = OrganizationPlanService(database.session_factory)
+    plan_view = await service.create_plan(
+        library_id=LIBRARY_ID, scan_run_id=SCAN_ID, items=(_item(),)
+    )
+    async with database.session_factory() as session:
+        plan = await session.get(OrganizationPlan, plan_view.plan_id)
+        assert plan is not None
+        source_snapshot = json.loads(plan.source_snapshot_json)
+        actions = json.loads(plan.actions_json)
+        preconditions = json.loads(plan.preconditions_json)
+        legacy = "remote-v1"
+        source_snapshot[0]["remote_version"] = legacy
+        plan.source_snapshot_json = json.dumps(source_snapshot)
+        plan.actions_json = json.dumps(actions)
+        plan.preconditions_json = json.dumps(preconditions)
+        plan.plan_hash = _canonical_hash(
+            {
+                "library_id": plan.library_id,
+                "library_snapshot": preconditions["library"],
+                "source_snapshot": source_snapshot,
+                "target_root": plan.target_root,
+                "actions": actions,
+                "preconditions": preconditions,
+                "rule_version": plan.rule_version,
+                "parser_version": plan.parser_version,
+                "matcher_version": plan.matcher_version,
+            }
+        )
+        await session.commit()
+
+    refreshed = await service.get_plan(plan_view.plan_id)
+    assert refreshed.can_execute is False
+    async with database.session_factory() as session:
+        stored = await session.get(OrganizationPlan, plan_view.plan_id)
+        assert stored is not None
+        assert await load_executable_steps(database.session_factory, stored) is None
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("size_bytes", 1),
+        ("modified_at", datetime(2026, 7, 28, tzinfo=UTC)),
+    ),
+)
+async def test_source_size_or_mtime_change_blocks_execution(tmp_path, field, value):
+    database = await _database(tmp_path)
+    service = OrganizationPlanService(database.session_factory)
+    plan_view = await service.create_plan(
+        library_id=LIBRARY_ID, scan_run_id=SCAN_ID, items=(_item(),)
+    )
+    async with database.session_factory() as session:
+        row = await session.get(
+            LibraryScanEntry,
+            {
+                "scan_run_id": SCAN_ID,
+                "object_type": "file",
+                "object_id": "100",
+            },
+        )
+        assert row is not None
+        setattr(row, field, value)
+        await session.commit()
+        stored = await session.get(OrganizationPlan, plan_view.plan_id)
+        assert stored is not None
+        assert await load_executable_steps(database.session_factory, stored) is None
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_unrelated_new_scan_invalidates_bound_plan(tmp_path):
+    database = await _database(tmp_path)
+    service = OrganizationPlanService(database.session_factory)
+    plan_view = await service.create_plan(
+        library_id=LIBRARY_ID, scan_run_id=SCAN_ID, items=(_item(),)
+    )
+    async with database.session_factory() as session:
+        session.add(
+            LibraryScanRun(
+                id="scan-2",
+                library_id=LIBRARY_ID,
+                root_directory_id=ROOT_ID,
+                idempotency_key="scan-key-2",
+                state="completed",
+                complete=True,
+                snapshot_revision=2,
+            )
+        )
+        await session.flush()
+        session.add_all(
+            [
+                LibraryScanEntry(
+                    scan_run_id="scan-2",
+                    object_type="directory",
+                    object_id="8000",
+                    parent_id=ROOT_ID,
+                    name="movie",
+                    path="movie",
+                    is_directory=True,
+                ),
+                LibraryScanEntry(
+                    scan_run_id="scan-2",
+                    object_type="file",
+                    object_id="100",
+                    parent_id=ROOT_ID,
+                    name=SECRET_NAME,
+                    path=SECRET_PATH,
+                    is_directory=False,
+                ),
+                LibraryScanEntry(
+                    scan_run_id="scan-2",
+                    object_type="file",
+                    object_id="101",
+                    parent_id=ROOT_ID,
+                    name="second-title.mkv",
+                    path=SECRET_PATH,
+                    is_directory=False,
+                ),
+                LibraryScanEntry(
+                    scan_run_id="scan-2",
+                    object_type="file",
+                    object_id="unrelated",
+                    parent_id=ROOT_ID,
+                    name="unrelated.mkv",
+                    path="unrelated.mkv",
+                    is_directory=False,
+                ),
+            ]
+        )
+        await session.commit()
+        stored = await session.get(OrganizationPlan, plan_view.plan_id)
+        assert stored is not None
+        assert await load_executable_steps(database.session_factory, stored) is None
     await database.engine.dispose()
 
 
@@ -275,7 +465,9 @@ async def test_companion_group_is_complete_and_target_identity_changes_hash(tmp_
             object_id="102",
             parent_id=ROOT_ID,
             path="/private/cloud/private-title.srt",
-            remote_version="remote-v1",
+            remote_version=_source_version(
+                "102", path="/private/cloud/private-title.srt", name="private-title.srt"
+            ),
         ),
         target_parent_id="8000",
         target_name="safe-title.srt",
@@ -336,7 +528,9 @@ async def test_executable_loader_rejects_synced_member_version_or_path_tampering
             object_id="102",
             parent_id=ROOT_ID,
             path="/private/cloud/private-title.srt",
-            remote_version="remote-v1",
+            remote_version=_source_version(
+                "102", path="/private/cloud/private-title.srt", name="private-title.srt"
+            ),
         ),
         target_parent_id="8000",
         target_name="safe-title.srt",
@@ -405,7 +599,9 @@ async def test_missing_target_mapping_or_companion_identity_needs_review(tmp_pat
             object_id="missing-companion",
             parent_id=ROOT_ID,
             path="/private/subtitle.srt",
-            remote_version="remote-v1",
+            remote_version=_source_version(
+                "missing-companion", path="/private/subtitle.srt", name="subtitle.srt"
+            ),
         ),
         target_parent_id="8000",
         target_name="safe-title.srt",
@@ -615,7 +811,13 @@ async def test_invalid_target_and_source_scope_fail_closed(tmp_path):
             scan_run_id=SCAN_ID,
             items=(
                 OrganizationPlanItem(
-                    source=PlanSource("file", "999", ROOT_ID, SECRET_PATH, "remote-v1"),
+                    source=PlanSource(
+                        "file",
+                        "999",
+                        ROOT_ID,
+                        SECRET_PATH,
+                        _source_version("999", path=SECRET_PATH, name=SECRET_NAME),
+                    ),
                     naming_plan=_item().naming_plan,
                     decision=_item().decision,
                 ),

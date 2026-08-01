@@ -303,6 +303,42 @@ class StrmCleanupPlan(Base):
     revision: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     plan_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    applied_idempotency_key: Mapped[str | None] = mapped_column(
+        String(128), nullable=True
+    )
+    applied_retired: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utc_now
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utc_now, onupdate=_utc_now
+    )
+
+
+class EmptyDirectoryCleanupPlan(Base):
+    """A reviewed, reversible plan for recycling managed empty directories."""
+
+    __tablename__ = "empty_directory_cleanup_plans"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    library_id: Mapped[str] = mapped_column(
+        String(128), ForeignKey("media_libraries.id"), index=True
+    )
+    source_scan_run_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("library_scan_runs.id")
+    )
+    source_snapshot_revision: Mapped[int] = mapped_column(Integer)
+    candidates_json: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(
+        String(16), default="needs_review", server_default="needs_review"
+    )
+    revision: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    plan_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    applied_idempotency_key: Mapped[str | None] = mapped_column(
+        String(128), nullable=True
+    )
+    applied_deleted: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utc_now
     )

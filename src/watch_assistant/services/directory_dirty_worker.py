@@ -20,10 +20,7 @@ from watch_assistant.models import (
     OrganizationOperation,
 )
 from watch_assistant.schemas import WorkflowStageName, WorkflowStageStatus
-from watch_assistant.services.empty_directory_cleanup import (
-    EmptyDirectoryCleanupError,
-    EmptyDirectoryCleanupStatus,
-)
+from watch_assistant.services.empty_directory_cleanup import EmptyDirectoryCleanupStatus
 from watch_assistant.services.library_index import (
     LibraryIndexError,
     LibraryIndexService,
@@ -173,7 +170,9 @@ class DirectoryDirtyWorker:
                     source_scan_run_id=scan.run_id,
                     output_root=self._output_root,
                     playback_url_prefix=self._playback_url_prefix,
-                    retire_removed=self._cleanup_enabled,
+                    # Incremental reconciliation only creates/updates current
+                    # entries. Retirement is a separate reviewed cleanup plan.
+                    retire_removed=False,
                 )
                 await self._sync_workflow(
                     workflow_id,
@@ -186,70 +185,11 @@ class DirectoryDirtyWorker:
                 candidates = await self._cleanup_candidates(
                     scan.run_id, root_directory_id, actions_json
                 )
-                if candidates and self._empty_directory_cleaner is None:
-                    await self._outbox.retry(
-                        self._session_factory,
-                        lease,
-                        error_code="empty_directory_cleanup_unavailable",
-                        max_attempts=self._max_attempts,
+                if candidates:
+                    await self._audit(
+                        "library.empty_directory_cleanup.review_required",
+                        "受管空目录清理需要预览并确认",
                     )
-                    await self._sync_workflow(
-                        workflow_id,
-                        lease,
-                        status=(
-                            WorkflowStageStatus.FAILED
-                            if lease.attempts >= self._max_attempts
-                            else WorkflowStageStatus.WAITING_EXTERNAL
-                        ),
-                        reason="empty_directory_cleanup_unavailable",
-                        error_code="empty_directory_cleanup_unavailable",
-                    )
-                    return True
-                for candidate in candidates:
-                    try:
-                        result = await self._empty_directory_cleaner(
-                            candidate.directory_id,
-                            candidate.parent_id,
-                            candidate.name,
-                        )
-                    except EmptyDirectoryCleanupError:
-                        await self._outbox.retry(
-                            self._session_factory,
-                            lease,
-                            error_code="empty_directory_cleanup_failed",
-                            max_attempts=self._max_attempts,
-                        )
-                        await self._sync_workflow(
-                            workflow_id,
-                            lease,
-                            status=(
-                                WorkflowStageStatus.FAILED
-                                if lease.attempts >= self._max_attempts
-                                else WorkflowStageStatus.WAITING_EXTERNAL
-                            ),
-                            reason="empty_directory_cleanup_failed",
-                            error_code="empty_directory_cleanup_failed",
-                        )
-                        return True
-                    if result is EmptyDirectoryCleanupStatus.UNCERTAIN:
-                        await self._outbox.retry(
-                            self._session_factory,
-                            lease,
-                            error_code="empty_directory_cleanup_uncertain",
-                            max_attempts=self._max_attempts,
-                        )
-                        await self._sync_workflow(
-                            workflow_id,
-                            lease,
-                            status=(
-                                WorkflowStageStatus.FAILED
-                                if lease.attempts >= self._max_attempts
-                                else WorkflowStageStatus.WAITING_EXTERNAL
-                            ),
-                            reason="empty_directory_cleanup_uncertain",
-                            error_code="empty_directory_cleanup_uncertain",
-                        )
-                        return True
             await self._outbox.complete(self._session_factory, lease)
             await self._audit("strm.dirty_consumed", "目录变更已完成增量对账")
         except asyncio.CancelledError:

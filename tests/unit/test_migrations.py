@@ -36,6 +36,10 @@ APPLICATION_SETTINGS_COLUMNS = {
     "managed_tmdb_updated_at",
     "managed_p115_cookie_encrypted",
     "managed_p115_updated_at",
+    "managed_prowlarr_enabled",
+    "managed_prowlarr_base_url",
+    "managed_prowlarr_api_key_encrypted",
+    "managed_prowlarr_updated_at",
     "updated_at",
 }
 
@@ -89,11 +93,15 @@ async def test_initialize_database_creates_schema_records_migration_and_defaults
     assert settings.managed_tmdb_updated_at is None
     assert settings.managed_p115_cookie_encrypted is None
     assert settings.managed_p115_updated_at is None
+    assert settings.managed_prowlarr_enabled is None
+    assert settings.managed_prowlarr_base_url is None
+    assert settings.managed_prowlarr_api_key_encrypted is None
+    assert settings.managed_prowlarr_updated_at is None
     await database.engine.dispose()
 
 
 @pytest.mark.asyncio
-async def test_initialize_database_upgrades_legacy_settings_without_losing_data(
+async def test_initialize_database_upgrades_legacy_settings_idempotently_without_losing_data(
     tmp_path,
 ):
     database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'watch.db'}")
@@ -166,6 +174,7 @@ async def test_initialize_database_upgrades_legacy_settings_without_losing_data(
         )
         await session.commit()
 
+    await initialize_database(database.engine)
     await initialize_database(database.engine)
 
     async with database.session_factory() as session:

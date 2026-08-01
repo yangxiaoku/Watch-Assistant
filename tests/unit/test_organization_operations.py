@@ -47,12 +47,27 @@ from watch_assistant.services.organization_plan import (
     OrganizationPlanService,
     OrganizationPlanStatus,
     PlanSource,
+    _entry_remote_version,
 )
 from watch_assistant.services.workflows import WorkflowService
 
 LIBRARY_ID = "library-1"
 ROOT_ID = "7000"
 SCAN_ID = "scan-1"
+
+
+def _source_version() -> str:
+    return _entry_remote_version(
+        LibraryScanEntry(
+            scan_run_id=SCAN_ID,
+            object_type="file",
+            object_id="100",
+            parent_id=ROOT_ID,
+            name="movie.mkv",
+            path="/private/movie.mkv",
+            is_directory=False,
+        )
+    )
 
 
 def _item(
@@ -64,7 +79,7 @@ def _item(
             object_id="100",
             parent_id=ROOT_ID,
             path="/private/movie.mkv",
-            remote_version="remote-v1",
+            remote_version=_source_version(),
         ),
         naming_plan=NamingPlan(
             status=ClassificationStatus.PLANNED,

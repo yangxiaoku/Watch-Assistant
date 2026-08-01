@@ -26,6 +26,7 @@ from watch_assistant.adapters.p115_library_gateway import P115ReadOnlyDirectoryG
 from watch_assistant.adapters.p115_playback_contract import P115PlaybackGateway
 from watch_assistant.adapters.p115_playback_gateway import P115LivePlaybackGateway
 from watch_assistant.adapters.pansou import PanSouClient
+from watch_assistant.adapters.prowlarr import ProwlarrClient
 from watch_assistant.adapters.qbittorrent import QbittorrentClient
 from watch_assistant.adapters.tmdb import TmdbClient
 from watch_assistant.api.agent import router as agent_router
@@ -50,6 +51,7 @@ from watch_assistant.api.organization_plan import router as organization_plan_ro
 from watch_assistant.api.pwa import router as pwa_router
 from watch_assistant.api.quality_profiles import router as quality_profiles_router
 from watch_assistant.api.search import router as search_router
+from watch_assistant.api.search_sources import router as search_sources_router
 from watch_assistant.api.seasons import router as seasons_router
 from watch_assistant.api.settings import router as settings_router
 from watch_assistant.api.settings_p115 import router as p115_settings_router
@@ -63,7 +65,11 @@ from watch_assistant.api.workflows import router as workflows_router
 from watch_assistant.config import Settings, load_tgto_contract
 from watch_assistant.crypto import SecretCrypto
 from watch_assistant.db import Database, create_database, initialize_database
-from watch_assistant.library_models import MediaLibrary
+from watch_assistant.library_models import (
+    LibraryScanEntry,
+    LibraryScanRun,
+    MediaLibrary,
+)
 from watch_assistant.schemas import LoggingLevel
 from watch_assistant.security import SecurityManager
 from watch_assistant.services.agent_tokens import AgentTokenService
@@ -79,6 +85,7 @@ from watch_assistant.services.deployment_diagnostics import DeploymentDiagnostic
 from watch_assistant.services.directory_dirty_worker import DirectoryDirtyWorker
 from watch_assistant.services.empty_directory_cleanup import (
     EmptyDirectoryCleanupError,
+    EmptyDirectoryCleanupStatus,
     LiveP115EmptyDirectoryCleaner,
 )
 from watch_assistant.services.inspection import InspectionService, InspectionWorker
@@ -115,12 +122,14 @@ from watch_assistant.services.p115_delete import P115DeleteService
 from watch_assistant.services.p115_login_devices import P115LoginDeviceService
 from watch_assistant.services.p115_qrcode import P115QrcodeService
 from watch_assistant.services.p115_settings import P115SettingsService
+from watch_assistant.services.prowlarr_settings import ProwlarrSettingsService
 from watch_assistant.services.pwa_devices import PwaDeviceService
 from watch_assistant.services.quality_profiles import QualityProfileService
 from watch_assistant.services.search import SearchService
 from watch_assistant.services.season_metadata import SeasonMetadataService
 from watch_assistant.services.settings import SettingsService
 from watch_assistant.services.strm_manifest import StrmManifestService
+from watch_assistant.services.strm_operations import StrmOperationService
 from watch_assistant.services.subscription_scheduler import SubscriptionScheduler
 from watch_assistant.services.subscriptions import SubscriptionService
 from watch_assistant.services.tasks import TaskService
@@ -139,6 +148,8 @@ _DEFAULT_PLAYBACK_NETWORKS = (
     "100.64.0.0/10",
     "fc00::/7",
 )
+_STRM_OPERATION_RECOVERY_INTERVAL_SECONDS = 60.0
+_STRM_OPERATION_STALE_AFTER = timedelta(minutes=30)
 
 
 async def _refresh_inventory_before_push(application: FastAPI) -> bool:
@@ -230,12 +241,66 @@ async def _refresh_inventory_before_push(application: FastAPI) -> bool:
     return True
 
 
+async def _current_managed_directory_ids(
+    session_factory,
+    directory_id: str,
+    parent_id: str,
+) -> frozenset[str]:
+    """Return one library's latest complete directory scope for a candidate."""
+
+    async with session_factory() as session:
+        runs = list(
+            (
+                await session.scalars(
+                    select(LibraryScanRun)
+                    .join(MediaLibrary, MediaLibrary.id == LibraryScanRun.library_id)
+                    .where(
+                        MediaLibrary.enabled.is_(True),
+                        MediaLibrary.scope_verified.is_(True),
+                        LibraryScanRun.root_directory_id
+                        == MediaLibrary.root_directory_id,
+                        LibraryScanRun.state == "completed",
+                        LibraryScanRun.complete.is_(True),
+                        LibraryScanRun.snapshot_revision.is_not(None),
+                    )
+                )
+            ).all()
+        )
+        latest: dict[str, LibraryScanRun] = {}
+        for run in runs:
+            current = latest.get(run.library_id)
+            if current is None or (
+                run.snapshot_revision or -1,
+                run.id,
+            ) > (
+                current.snapshot_revision or -1,
+                current.id,
+            ):
+                latest[run.library_id] = run
+        for run in latest.values():
+            directory_ids = set(
+                (
+                    await session.scalars(
+                        select(LibraryScanEntry.object_id).where(
+                            LibraryScanEntry.scan_run_id == run.id,
+                            LibraryScanEntry.is_directory.is_(True),
+                        )
+                    )
+                ).all()
+            )
+            scope = directory_ids | {run.root_directory_id}
+            if directory_id in scope and parent_id in scope:
+                return frozenset(scope)
+    return frozenset()
+
+
 def create_app(
     *,
     database: Database | None = None,
     crypto: SecretCrypto | None = None,
     tmdb_client: TmdbClient | None = None,
     pansou_client: PanSouClient | None = None,
+    prowlarr_client: ProwlarrClient | None = None,
     security_manager: SecurityManager | None = None,
     share_domains: tuple[str, ...] = ("115.com", "115cdn.com"),
     push_supported: bool | None = None,
@@ -278,6 +343,8 @@ def create_app(
         organization_worker_task: asyncio.Task[None] | None = None
         dirty_stop: asyncio.Event | None = None
         dirty_task: asyncio.Task[None] | None = None
+        strm_recovery_stop: asyncio.Event | None = None
+        strm_recovery_task: asyncio.Task[None] | None = None
 
         async def apply_dirty_runtime(ready: bool) -> None:
             nonlocal dirty_stop, dirty_task
@@ -317,45 +384,6 @@ def create_app(
                     page_size=1,
                 )
 
-            empty_directory_cleaner = None
-            cleanup_write_gate = (
-                getattr(application.state, "organization_execution_enabled", False)
-                and getattr(application.state, "organization_write_enabled", False)
-                and getattr(
-                    application.state, "organization_write_contract_verified", False
-                )
-            )
-            if cleanup_write_gate:
-                async def clean_empty_directory(
-                    directory_id: str, parent_id: str, name: str
-                ):
-                    try:
-                        cookie = await asyncio.to_thread(
-                            application.state.organization_cookie_provider.load
-                        )
-                        if not cookie:
-                            raise EmptyDirectoryCleanupError("credentials_unavailable")
-                        client = await asyncio.to_thread(_default_client_factory, cookie)
-                        cleaner = LiveP115EmptyDirectoryCleaner(
-                            client=client,
-                            call_executor=p115_c03_timeout_executor,
-                            managed_directory_ids=(directory_id, parent_id),
-                            scope_confirmed=True,
-                        )
-                        return await cleaner.cleanup(directory_id, parent_id, name)
-                    except EmptyDirectoryCleanupError:
-                        raise
-                    except Exception as exc:  # noqa: BLE001 - details stay private
-                        del exc
-                        raise EmptyDirectoryCleanupError(
-                            "empty_directory_cleanup_unavailable"
-                        ) from None
-                    finally:
-                        if "client" in locals():
-                            await _close_client(client)
-
-                empty_directory_cleaner = clean_empty_directory
-
             worker = DirectoryDirtyWorker(
                 application.state.database.session_factory,
                 application.state.strm_manifest_service,
@@ -366,7 +394,9 @@ def create_app(
                     getattr(application.state, "strm_cleanup_enabled", False)
                 ),
                 settings_service=application.state.settings_service,
-                empty_directory_cleaner=empty_directory_cleaner,
+                # Empty-directory recycling is only authorized by the explicit
+                # preview/apply API, never by the background dirty worker.
+                empty_directory_cleaner=None,
                 event_logger=application.state.settings_service,
             )
             application.state.directory_dirty_worker = worker
@@ -376,53 +406,115 @@ def create_app(
                 name="watch-assistant-directory-dirty-worker",
             )
 
+        async def stop_organization_runtime() -> None:
+            nonlocal organization_stop, organization_task
+            nonlocal organization_worker_stop, organization_worker_task
+            if organization_stop is not None:
+                organization_stop.set()
+            if organization_task is not None:
+                organization_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await organization_task
+            if organization_worker_stop is not None:
+                organization_worker_stop.set()
+            if organization_worker_task is not None:
+                organization_worker_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await organization_worker_task
+            organization_stop = None
+            organization_task = None
+            organization_worker_stop = None
+            organization_worker_task = None
+            if hasattr(application.state, "organization_worker"):
+                delattr(application.state, "organization_worker")
+            if hasattr(application.state, "organization_scheduler"):
+                delattr(application.state, "organization_scheduler")
+            if hasattr(application.state, "organization_automation_service"):
+                delattr(application.state, "organization_automation_service")
+            if hasattr(application.state, "_organization_runtime_write_enabled"):
+                delattr(application.state, "_organization_runtime_write_enabled")
+            if hasattr(application.state, "empty_directory_cleanup_executor"):
+                delattr(application.state, "empty_directory_cleanup_executor")
+
         async def apply_organization_runtime(ready: bool) -> None:
             nonlocal organization_stop, organization_task
             nonlocal organization_worker_stop, organization_worker_task
             planning_enabled = (
-                ready
-                and getattr(application.state, "organization_plan_enabled", False)
+                getattr(application.state, "organization_plan_enabled", False)
                 and getattr(application.state, "organization_cookie_provider", None)
                 is not None
                 and getattr(application.state, "organization_target_root_id", None)
                 is not None
             )
             if not planning_enabled:
-                if organization_stop is not None:
-                    organization_stop.set()
-                if organization_task is not None:
-                    organization_task.cancel()
-                    with suppress(asyncio.CancelledError):
-                        await organization_task
-                if organization_worker_stop is not None:
-                    organization_worker_stop.set()
-                if organization_worker_task is not None:
-                    organization_worker_task.cancel()
-                    with suppress(asyncio.CancelledError):
-                        await organization_worker_task
-                organization_stop = None
-                organization_task = None
-                organization_worker_stop = None
-                organization_worker_task = None
-                if hasattr(application.state, "organization_worker"):
-                    delattr(application.state, "organization_worker")
-                if hasattr(application.state, "organization_scheduler"):
-                    delattr(application.state, "organization_scheduler")
-                if hasattr(application.state, "organization_automation_service"):
-                    delattr(application.state, "organization_automation_service")
-                return
-            if organization_task is not None:
+                await stop_organization_runtime()
                 return
             write_enabled = (
-                getattr(application.state, "organization_execution_enabled", False)
+                ready
+                and getattr(application.state, "organization_execution_enabled", False)
                 and getattr(application.state, "organization_write_enabled", False)
                 and getattr(
                     application.state, "organization_write_contract_verified", False
                 )
             )
+            if (
+                organization_task is not None
+                and getattr(
+                    application.state, "_organization_runtime_write_enabled", None
+                )
+                == write_enabled
+            ):
+                return
+            if organization_task is not None:
+                await stop_organization_runtime()
             worker = None
             directory_provisioner = None
             if write_enabled:
+                async def execute_empty_directory_cleanup(candidate: dict[str, str]):
+                    try:
+                        directory_id = candidate["directory_id"]
+                        parent_id = candidate["parent_id"]
+                        name = candidate["name"]
+                        cookie = await asyncio.to_thread(
+                            application.state.organization_cookie_provider.load
+                        )
+                        if not cookie:
+                            raise EmptyDirectoryCleanupError("credentials_unavailable")
+                        client = await asyncio.to_thread(_default_client_factory, cookie)
+                        managed_directory_ids = await _current_managed_directory_ids(
+                            application.state.database.session_factory,
+                            directory_id,
+                            parent_id,
+                        )
+                        if not managed_directory_ids:
+                            raise EmptyDirectoryCleanupError(
+                                "cleanup_scope_unverified"
+                            )
+                        cleaner = LiveP115EmptyDirectoryCleaner(
+                            client=client,
+                            call_executor=p115_c03_timeout_executor,
+                            managed_directory_ids=managed_directory_ids,
+                            scope_confirmed=True,
+                        )
+                        return await cleaner.cleanup(directory_id, parent_id, name)
+                    except EmptyDirectoryCleanupError as error:
+                        return (
+                            EmptyDirectoryCleanupStatus.UNCERTAIN
+                            if error.uncertain
+                            else EmptyDirectoryCleanupStatus.FAILED
+                        )
+                    except Exception as exc:  # noqa: BLE001 - details stay private
+                        del exc
+                        raise EmptyDirectoryCleanupError(
+                            "empty_directory_cleanup_unavailable"
+                        ) from None
+                    finally:
+                        if "client" in locals():
+                            await _close_client(client)
+
+                application.state.empty_directory_cleanup_executor = (
+                    execute_empty_directory_cleanup
+                )
                 worker = OrganizationWorker(
                     application.state.database.session_factory,
                     application.state.organization_operation_service,
@@ -459,6 +551,8 @@ def create_app(
                         await _close_client(client)
 
                 directory_provisioner = provision_organization_directories
+            elif hasattr(application.state, "empty_directory_cleanup_executor"):
+                delattr(application.state, "empty_directory_cleanup_executor")
 
             def gateway_factory(directory_ids):
                 return P115ReadOnlyDirectoryGateway(
@@ -483,12 +577,15 @@ def create_app(
                 event_logger=application.state.settings_service,
             )
             application.state.organization_automation_service = automation
+            application.state._organization_runtime_write_enabled = write_enabled
 
             async def run_organization_once() -> bool:
                 return await automation.run_once()
 
             async def run_organization_manual(run_id: str) -> bool:
-                return await automation.run_once(run_id=run_id)
+                return await automation.run_once(
+                    manual_confirmation=True, run_id=run_id
+                )
 
             scheduler = OrganizationScheduler(
                 application.state.settings_service,
@@ -608,6 +705,20 @@ def create_app(
                 runtime_database.session_factory,
                 state_directory=_state_directory(runtime_database),
             )
+            prowlarr_settings_service = ProwlarrSettingsService(
+                runtime_database.session_factory,
+                runtime_crypto,
+                environment_enabled=settings.prowlarr_enabled,
+                environment_base_url=settings.prowlarr_base_url,
+                environment_api_key=settings.prowlarr_api_key.get_secret_value(),
+                timeout_seconds=settings.prowlarr_timeout_seconds,
+                event_logger=application.state.settings_service,
+                runtime_state=application.state,
+            )
+            application.state.prowlarr_settings_service = prowlarr_settings_service
+            runtime_prowlarr = prowlarr_client or await (
+                prowlarr_settings_service.runtime_client()
+            )
             application.state.webhook_service = WebhookService(
                 runtime_database.session_factory,
                 runtime_crypto,
@@ -672,6 +783,9 @@ def create_app(
                 managed_tmdb or settings.tmdb_api_key.get_secret_value(),
                 base_url=settings.tmdb_base_url,
             )
+            application.state.organization_plan_service.bind_candidate_search_client(
+                runtime_tmdb
+            )
             application.state.organization_preview_service = OrganizationPreviewService(
                 runtime_database.session_factory,
                 runtime_tmdb,
@@ -689,9 +803,11 @@ def create_app(
                 runtime_database.session_factory,
                 tmdb_client=runtime_tmdb,
                 pansou_client=runtime_pansou,
+                prowlarr_client=runtime_prowlarr,
                 crypto=runtime_crypto,
                 share_domains=share_domains,
                 pansou_max_concurrency=settings.pansou_max_concurrency,
+                prowlarr_max_concurrency=settings.prowlarr_max_concurrency,
                 event_logger=application.state.settings_service,
             )
             application.state.manual_import_service = ManualImportService(
@@ -779,6 +895,9 @@ def create_app(
             }
             application.state.p115_ready = False
             application.state.database = runtime_database
+            application.state.strm_operation_service = StrmOperationService(
+                runtime_database.session_factory
+            )
             application.state.inventory_push_guard = (
                 inventory_guard
                 if inventory_guard is not None
@@ -809,6 +928,8 @@ def create_app(
                 composite_cookie_provider,
             )
             owned = [runtime_database, runtime_tmdb, runtime_pansou]
+            if runtime_prowlarr is not None:
+                owned.append(runtime_prowlarr)
             cookie_provider = composite_cookie_provider
             runtime_task_adapter: TaskAdapter | None = None
             if settings.p115_enabled:
@@ -918,6 +1039,41 @@ def create_app(
                     ),
                     name="watch-assistant-subscription-scheduler",
                 )
+        operation_database = getattr(application.state, "database", None)
+        if operation_database is not None:
+            operation_service = getattr(
+                application.state, "strm_operation_service", None
+            )
+            if not isinstance(operation_service, StrmOperationService):
+                operation_service = StrmOperationService(
+                    operation_database.session_factory
+                )
+                application.state.strm_operation_service = operation_service
+            await operation_service.recover_incomplete()
+            strm_recovery_stop = asyncio.Event()
+
+            async def run_strm_operation_recovery() -> None:
+                while not strm_recovery_stop.is_set():
+                    try:
+                        await operation_service.recover_stale(
+                            max_age=_STRM_OPERATION_STALE_AFTER
+                        )
+                    except Exception:  # noqa: BLE001 - recovery retries next tick
+                        await asyncio.sleep(_STRM_OPERATION_RECOVERY_INTERVAL_SECONDS)
+                        continue
+                    try:
+                        await asyncio.wait_for(
+                            strm_recovery_stop.wait(),
+                            timeout=_STRM_OPERATION_RECOVERY_INTERVAL_SECONDS,
+                        )
+                    except TimeoutError:
+                        continue
+
+            strm_recovery_task = asyncio.create_task(
+                run_strm_operation_recovery(),
+                name="watch-assistant-strm-operation-recovery",
+            )
+
         task_adapter_resource = getattr(application.state, "task_adapter", None)
         if task_adapter_resource is not None and not hasattr(
             application.state, "p115_ready"
@@ -938,8 +1094,9 @@ def create_app(
             and application.state.strm_playback_gateway is None
         ):
             application.state.strm_playback_supported = False
-        if getattr(application.state, "p115_ready", False):
-            await apply_organization_runtime(True)
+        await apply_organization_runtime(
+            bool(getattr(application.state, "p115_ready", False))
+        )
         worker = getattr(application.state, "inspection_worker", None)
         if worker is not None:
             inspection_stop = asyncio.Event()
@@ -992,6 +1149,11 @@ def create_app(
                 dirty_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await dirty_task
+            if strm_recovery_task is not None and strm_recovery_stop is not None:
+                strm_recovery_stop.set()
+                strm_recovery_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await strm_recovery_task
             if organization_task is not None and organization_stop is not None:
                 organization_stop.set()
                 organization_task.cancel()
@@ -1044,6 +1206,14 @@ def create_app(
                     await resource.engine.dispose()
                 elif hasattr(resource, "aclose"):
                     await resource.aclose()
+            search_service = getattr(application.state, "search_service", None)
+            active_prowlarr = getattr(search_service, "_prowlarr", None)
+            if (
+                active_prowlarr is not None
+                and active_prowlarr not in owned
+                and hasattr(active_prowlarr, "aclose")
+            ):
+                await active_prowlarr.aclose()
             webhook_service = getattr(application.state, "webhook_service", None)
             if webhook_service is not None and webhook_service not in owned:
                 await webhook_service.aclose()
@@ -1199,10 +1369,21 @@ def create_app(
             database.session_factory,
             event_logger=application.state.settings_service,
         )
+        application.state.prowlarr_settings_service = ProwlarrSettingsService(
+            database.session_factory,
+            crypto,
+            environment_enabled=_env_flag("PROWLARR_ENABLED"),
+            environment_base_url=os.environ.get("PROWLARR_BASE_URL", ""),
+            environment_api_key=os.environ.get("PROWLARR_API_KEY", ""),
+            timeout_seconds=float(os.environ.get("PROWLARR_TIMEOUT_SECONDS", "12")),
+            event_logger=application.state.settings_service,
+            runtime_state=application.state,
+        )
         application.state.search_service = SearchService(
             database.session_factory,
             tmdb_client=tmdb_client,
             pansou_client=pansou_client,
+            prowlarr_client=prowlarr_client,
             crypto=crypto,
             share_domains=share_domains,
             event_logger=application.state.settings_service,
@@ -1253,7 +1434,7 @@ def create_app(
             database.session_factory
         )
         application.state.organization_plan_service = OrganizationPlanService(
-            database.session_factory
+            database.session_factory, tmdb_client=tmdb_client
         )
         application.state.organization_history_service = OrganizationHistoryService(
             database.session_factory
@@ -1268,6 +1449,9 @@ def create_app(
             event_logger=application.state.settings_service,
         )
         application.state.strm_manifest_service = StrmManifestService(
+            database.session_factory
+        )
+        application.state.strm_operation_service = StrmOperationService(
             database.session_factory
         )
         application.state.mcp_service = McpService(
@@ -1417,6 +1601,7 @@ def create_app(
         }
 
     application.include_router(search_router)
+    application.include_router(search_sources_router)
     application.include_router(settings_router)
     application.include_router(credentials_router)
     application.include_router(deployment_router)

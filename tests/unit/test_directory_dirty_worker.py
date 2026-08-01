@@ -153,7 +153,9 @@ async def test_dirty_worker_retries_incomplete_scan(tmp_path: Path):
     )
     assert await worker.run_once()
     async with database.session_factory() as session:
-        row = await session.scalar(select(DirectoryDirtyEvent))
+        row = await session.scalar(
+            select(DirectoryDirtyEvent).where(DirectoryDirtyEvent.directory_id == "7000")
+        )
         assert row is not None
         assert row.status == "pending"
         assert row.error_code == "scan_incomplete"

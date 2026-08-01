@@ -1,0 +1,104 @@
+import secrets
+from pathlib import Path
+
+import httpx
+import pytest
+import respx
+from cryptography.fernet import Fernet
+
+from watch_assistant.adapters.pansou import PanSouClient
+from watch_assistant.adapters.prowlarr import ProwlarrClient
+from watch_assistant.adapters.tmdb import TmdbClient
+from watch_assistant.app import create_app
+from watch_assistant.crypto import SecretCrypto
+from watch_assistant.db import create_database, initialize_database
+from watch_assistant.models import ApplicationSettings
+
+
+async def _make_client(tmp_path: Path):
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'settings-api.db'}")
+    await initialize_database(database.engine)
+    tmdb = TmdbClient("unused")
+    pansou = PanSouClient("http://pansou.test")
+    prowlarr = ProwlarrClient("http://prowlarr.test", secrets.token_urlsafe(24))
+    app = create_app(
+        database=database,
+        crypto=SecretCrypto(Fernet.generate_key().decode("ascii")),
+        tmdb_client=tmdb,
+        pansou_client=pansou,
+        prowlarr_client=prowlarr,
+    )
+    client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://app.test"
+    )
+    return client, database, tmdb, pansou, prowlarr
+
+
+@pytest.mark.integration
+@respx.mock
+async def test_prowlarr_settings_never_echo_key_and_verify_is_read_only(tmp_path):
+    api_key = secrets.token_urlsafe(24)
+    route = respx.get("http://prowlarr.test/api/v1/search").mock(
+        return_value=httpx.Response(200, json=[])
+    )
+    client, database, tmdb, pansou, prowlarr = await _make_client(tmp_path)
+    try:
+        saved = await client.patch(
+            "/api/v1/settings/search-sources/prowlarr",
+            json={
+                "enabled": True,
+                "base_url": "http://prowlarr.test/",
+                "api_key": api_key,
+                "revision": 0,
+            },
+        )
+        assert saved.status_code == 200
+        assert saved.json()["base_url"] == "http://prowlarr.test"
+        assert saved.json()["api_key_source"] == "managed"
+        assert api_key not in saved.text
+
+        current = await client.get("/api/v1/settings/search-sources/prowlarr")
+        assert current.status_code == 200
+        assert current.json()["revision"] == 1
+        assert api_key not in current.text
+
+        sources = await client.get("/api/v1/settings/search-sources")
+        assert sources.status_code == 200
+        assert sources.json()["pansou"]["status"] == "configured"
+        assert sources.json()["prowlarr"]["status"] == "configured"
+
+        verified = await client.post(
+            "/api/v1/settings/search-sources/prowlarr/verify"
+        )
+        assert verified.status_code == 200
+        assert verified.json()["status"] == "available"
+        assert route.calls[-1].request.headers["X-Api-Key"] == api_key
+        assert api_key not in str(route.calls[-1].request.url)
+
+        async with database.session_factory() as session:
+            stored = await session.get(ApplicationSettings, "default")
+        assert stored is not None
+        assert stored.managed_prowlarr_api_key_encrypted
+        assert api_key not in stored.managed_prowlarr_api_key_encrypted
+
+        reset = await client.post(
+            "/api/v1/settings/search-sources/prowlarr/reset",
+            json={"revision": 1},
+        )
+        assert reset.status_code == 200
+        assert reset.json()["configured"] is False
+        sources = await client.get("/api/v1/settings/search-sources")
+        assert sources.json()["prowlarr"]["status"] == "disabled"
+
+        stale = await client.patch(
+            "/api/v1/settings/search-sources/prowlarr",
+            json={"revision": 1, "enabled": True},
+        )
+        assert stale.status_code == 409
+        assert stale.json()["detail"] == "settings_conflict"
+    finally:
+        await client.aclose()
+        await tmdb.aclose()
+        await pansou.aclose()
+        await prowlarr.aclose()
+        await database.engine.dispose()

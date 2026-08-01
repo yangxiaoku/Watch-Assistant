@@ -1,5 +1,8 @@
+import asyncio
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
+
+import pytest
 
 from watch_assistant.models import Resource, SourceReliability
 from watch_assistant.schemas import (
@@ -9,22 +12,142 @@ from watch_assistant.schemas import (
     ResourceKind,
     SearchResponse,
 )
+from watch_assistant.services.content_policy import ContentPolicy
 from watch_assistant.services.search import (
+    MAX_SNAPSHOT_MAGNETS,
     SearchService,
+    _dedupe_resources,
     _limit_magnet_resources,
     _quality_matches,
     _resource_facets,
     _resource_sort_key,
+    _resource_summary,
     make_cache_key,
     source_penalty,
 )
 
 
+def test_partial_merge_keeps_fresh_resource_over_stale_cache():
+    now = datetime.now(UTC)
+    fresh = Resource(
+        id="res_same",
+        kind=ResourceKind.MAGNET,
+        canonical_key="magnet:same",
+        encrypted_url="fresh-cipher",
+        name="Movie 2010 2160p",
+        seeders=42,
+        source="source:fresh",
+        captured_at=now,
+        expires_at=now,
+    )
+    cached = Resource(
+        id="res_same",
+        kind=ResourceKind.MAGNET,
+        canonical_key="magnet:same",
+        encrypted_url="cached-cipher",
+        name="Movie 2010 1080p",
+        seeders=2,
+        source="source:cached",
+        captured_at=now - timedelta(days=1),
+        expires_at=now,
+    )
+
+    assert _dedupe_resources([fresh, cached]) == [fresh]
+
+
+def test_legacy_search_response_explains_magnet_truncation():
+    now = datetime.now(UTC)
+    resources = [
+        Resource(
+            id=f"res_{index}",
+            kind=ResourceKind.MAGNET,
+            canonical_key=f"magnet:{index:040x}",
+            encrypted_url="encrypted",
+            name=f"Movie 2010 1080p {index}",
+            source="test",
+            captured_at=now,
+            expires_at=now,
+        )
+        for index in range(31)
+    ]
+
+    response = SearchService._response(
+        MovieMetadata(tmdb_id=1, title="Movie", release_year=2010),
+        resources,
+        now,
+        None,
+        cached=False,
+        policy=ContentPolicy(),
+    )
+
+    assert len(response.results) == 30
+    assert "resource_results_truncated" in response.warnings
+
+
+def test_resource_summary_preserves_normalized_source_evidence_with_legacy_fallback():
+    now = datetime.now(UTC)
+    resource = Resource(
+        id="res_sources",
+        kind=ResourceKind.MAGNET,
+        canonical_key="magnet:sources",
+        encrypted_url="encrypted",
+        name="Movie 2010 1080p",
+        source="plugin:prowlarr",
+        captured_at=now,
+        expires_at=now,
+        metadata_json='{"sources":["plugin:pansou", "plugin:prowlarr", "plugin:custom"]}',
+    )
+
+    summary = _resource_summary(resource, None)
+
+    assert summary.sources == ["plugin:pansou", "plugin:prowlarr", "plugin:custom"]
+    assert summary.source_count == 3
+
+    legacy = Resource(
+        id="res_legacy",
+        kind=ResourceKind.MAGNET,
+        canonical_key="magnet:legacy",
+        encrypted_url="encrypted",
+        name="Legacy",
+        source="plugin:prowlarr",
+        captured_at=now,
+        expires_at=now,
+    )
+    legacy_summary = _resource_summary(legacy, None)
+    assert legacy_summary.sources == ["plugin:prowlarr"]
+    assert legacy_summary.source_count == 1
+
+
+@pytest.mark.asyncio
+async def test_query_timeout_does_not_block_other_queries():
+    service = SearchService.__new__(SearchService)
+    service._pansou_limit = asyncio.Semaphore(2)
+    service._pansou_timeout = 0.01
+    client = AsyncMock()
+
+    async def search(query: str):
+        if query == "slow":
+            await asyncio.sleep(1)
+        return {"query": query}
+
+    client.search.side_effect = search
+    service._pansou = client
+
+    results = await asyncio.gather(
+        service._query_pansou("slow"),
+        service._query_pansou("fast"),
+        return_exceptions=True,
+    )
+
+    assert isinstance(results[0], TimeoutError)
+    assert results[1] == {"query": "fast"}
+
+
 def test_cache_key_is_versioned_by_movie_id():
-    assert make_cache_key(12345) == "tmdb:movie:12345:queries:v4"
-    assert make_cache_key(12345, MediaType.TV) == "tmdb:tv:12345:queries:v4"
+    assert make_cache_key(12345) == "tmdb:movie:12345:queries:v5"
+    assert make_cache_key(12345, MediaType.TV) == "tmdb:tv:12345:queries:v5"
     assert make_cache_key(12345, MediaType.TV, 2) == (
-        "tmdb:tv:12345:season:2:queries:v4"
+        "tmdb:tv:12345:season:2:queries:v5"
     )
 
 
@@ -77,6 +200,42 @@ def test_snapshot_magnet_limit_keeps_shares_and_quality_tokens_are_bounded():
     assert _quality_matches("Movie 2010 1080p x264", "1080p")
     assert not _quality_matches("Movie 2010 21080p x264", "1080p")
     assert not _quality_matches("Movie 2010 x264", "4k")
+
+
+def test_partial_snapshot_limit_keeps_fresh_resources_before_cached_ones():
+    now = datetime.now(UTC)
+    fresh = Resource(
+        id="res_fresh",
+        kind=ResourceKind.MAGNET,
+        canonical_key="magnet:fresh",
+        encrypted_url="encrypted",
+        name="Movie 2010 1080p fresh",
+        source="source:fresh",
+        captured_at=now,
+        expires_at=now,
+    )
+    cached = [
+        Resource(
+            id=f"res_cached_{index}",
+            kind=ResourceKind.MAGNET,
+            canonical_key=f"magnet:cached-{index}",
+            encrypted_url="encrypted",
+            name=f"Movie 2010 1080p cached-{index}",
+            source="source:cached",
+            captured_at=now,
+            expires_at=now,
+        )
+        for index in range(500)
+    ]
+
+    limited = _limit_magnet_resources(
+        _dedupe_resources([fresh, *cached]), MAX_SNAPSHOT_MAGNETS
+    )
+
+    assert len(limited) == MAX_SNAPSHOT_MAGNETS
+    assert limited[0] is fresh
+    assert fresh in limited
+    assert cached[-1] not in limited
 
 
 def test_quality_tags_match_resource_table_tokens_without_false_positives():

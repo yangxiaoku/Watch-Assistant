@@ -10,13 +10,16 @@ import uvicorn
 from cryptography.fernet import Fernet
 from pwdlib import PasswordHash
 
+from watch_assistant.adapters.p115_library import DirectoryPage, LibraryEntry, ScanState
 from watch_assistant.adapters.qbittorrent import (
     InspectionStatus,
     QbittorrentInspectionResult,
 )
+from watch_assistant.api import library as library_api
 from watch_assistant.app import create_app
 from watch_assistant.crypto import SecretCrypto
 from watch_assistant.db import create_database, initialize_database
+from watch_assistant.library_models import MediaLibrary
 from watch_assistant.schemas import MediaType, MovieMetadata
 from watch_assistant.security import SecurityManager
 
@@ -109,9 +112,74 @@ class TestQbittorrent:
         return None
 
 
+class TestLibraryGateway:
+    """Deterministic read-only tree used by the real STRM live test."""
+
+    def __init__(self, *_args, **_kwargs):
+        pass
+
+    async def list_directory(self, directory_id: str, *, page: int, page_size: int):
+        assert page == 1
+        assert page_size == 1
+        if directory_id == "1000":
+            items = (
+                LibraryEntry(
+                    directory_id="2000",
+                    file_id=None,
+                    parent_id="1000",
+                    name="Shows",
+                    is_directory=True,
+                    size_bytes=None,
+                    modified_at=None,
+                    pickcode=None,
+                    path="Shows",
+                ),
+            )
+        elif directory_id == "2000":
+            items = (
+                LibraryEntry(
+                    directory_id=None,
+                    file_id="3000",
+                    parent_id="2000",
+                    name="Episode.mkv",
+                    is_directory=False,
+                    size_bytes=10,
+                    modified_at=None,
+                    pickcode=None,
+                ),
+            )
+        else:
+            items = ()
+        return DirectoryPage(
+            items=items,
+            page=1,
+            page_count=1,
+            total=len(items),
+            scan_complete=True,
+            state=ScanState.COMPLETE,
+            has_more=False,
+            terminal=True,
+        )
+
+
 async def build_app(database_path: Path):
     database = create_database(f"sqlite+aiosqlite:///{database_path}")
     await initialize_database(database.engine)
+    async with database.session_factory() as session:
+        session.add(
+            MediaLibrary(
+                id="live-library",
+                name="本地 STRM 验收媒体库",
+                root_directory_id="1000",
+                scope_verified=True,
+                enabled=True,
+                revision=1,
+            )
+        )
+        await session.commit()
+    # The live server must exercise the same API gateway construction as the
+    # product, while keeping the fixture entirely local and read-only.
+    library_api.P115ReadOnlyDirectoryGateway = TestLibraryGateway
     password_hash = PasswordHash.recommended()
     return create_app(
         database=database,
@@ -126,6 +194,10 @@ async def build_app(database_path: Path):
         push_supported=False,
         organization_plan_enabled=True,
         organization_execution_enabled=False,
+        strm_full_enabled=True,
+        strm_incremental_enabled=True,
+        strm_cleanup_enabled=True,
+        strm_output_root=database_path.parent / "strm-output",
         frontend_dir=ROOT / "frontend" / "dist",
     )
 

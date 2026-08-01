@@ -25,6 +25,16 @@ const credentialsSnapshot = (revision: number, tmdbSource: "environment" | "mana
   tmdb: { configured: tmdbSource === "managed", source: tmdbSource, last_updated_at: tmdbSource === "managed" ? "2026-07-25T03:00:00Z" : null },
   p115_cookie: { configured: true, source: p115Source, last_updated_at: "2026-07-25T03:00:00Z", structure_valid: true, ready: true },
 });
+const prowlarrSnapshot = (revision: number, source: "none" | "managed" | "environment" = "none", configured = false) => ({
+  source,
+  enabled: source !== "none",
+  configured,
+  base_url: source === "none" ? null : "http://prowlarr:9696",
+  api_key_configured: configured,
+  api_key_source: configured ? source : "none",
+  last_updated_at: revision ? "2026-08-01T10:00:00Z" : null,
+  revision,
+});
 
 test("settings contract, cursor logs, validation states, and responsive layout", async ({ page }, testInfo) => {
   let loggingRevision = 0;
@@ -37,6 +47,11 @@ test("settings contract, cursor logs, validation states, and responsive layout",
   let credentialSaveCount = 0;
   let holdCredentialSave = false;
   let releaseCredentialSave!: () => void;
+  let prowlarrRevision = 0;
+  let prowlarrSource: "none" | "managed" | "environment" = "none";
+  let prowlarrConfigured = false;
+  let prowlarrConflictNextSave = false;
+  const prowlarrBodies: unknown[] = [];
   const credentialBodies: unknown[] = [];
   const credentialGate = new Promise<void>((resolve) => { releaseCredentialSave = resolve; });
   const patchBodies: unknown[] = [];
@@ -46,6 +61,39 @@ test("settings contract, cursor logs, validation states, and responsive layout",
   await page.route("**/api/v1/auth/me", (route) => route.fulfill({ json: { authenticated: true, via_bearer: false, csrf_token: "csrf-settings" } }));
   await page.route("**/api/v1/movies/home", (route) => route.fulfill({ json: { popular: [], now_playing: [], upcoming: [], top_rated: [], tv_popular: [], tv_on_the_air: [], tv_top_rated: [] } }));
   await page.route("**/api/v1/settings/overview", (route) => route.fulfill({ json: overview }));
+  await page.route("**/api/v1/settings/search-sources/prowlarr", async (route) => {
+    const request = route.request();
+    if (request.method() === "GET") {
+      await route.fulfill({ json: prowlarrSnapshot(prowlarrRevision, prowlarrSource, prowlarrConfigured) });
+      return;
+    }
+    expect(request.method()).toBe("PATCH");
+    const body = request.postDataJSON();
+    prowlarrBodies.push(body);
+    if (prowlarrConflictNextSave) {
+      prowlarrConflictNextSave = false;
+      await route.fulfill({ status: 409, json: { detail: "settings_conflict" } });
+      return;
+    }
+    expect(body.revision).toBe(prowlarrRevision);
+    prowlarrRevision += 1;
+    prowlarrSource = "managed";
+    prowlarrConfigured = true;
+    await route.fulfill({ json: prowlarrSnapshot(prowlarrRevision, "managed", true) });
+  });
+  await page.route("**/api/v1/settings/search-sources/prowlarr/reset", async (route) => {
+    expect(route.request().method()).toBe("POST");
+    expect(route.request().postDataJSON()).toEqual({ revision: prowlarrRevision });
+    prowlarrRevision += 1;
+    prowlarrSource = "none";
+    prowlarrConfigured = false;
+    await route.fulfill({ json: prowlarrSnapshot(prowlarrRevision, "none", false) });
+  });
+  await page.route("**/api/v1/settings/search-sources/prowlarr/verify", async (route) => {
+    expect(route.request().method()).toBe("POST");
+    expect(route.request().postDataJSON()).toEqual({});
+    await route.fulfill({ json: { source: "prowlarr", status: "available", configured: true, base_url: "http://prowlarr:9696", message_code: null, checked_at: "2026-08-01T10:01:00Z" } });
+  });
   await page.route("**/api/v1/settings/credentials**", async (route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
@@ -147,6 +195,30 @@ test("settings contract, cursor logs, validation states, and responsive layout",
 
   const mobileSectionSelect = page.locator(".settings-mobile-select select");
   const mobileLayout = await mobileSectionSelect.isVisible();
+  if (mobileLayout) await mobileSectionSelect.selectOption("prowlarr");
+  else await page.getByRole("button", { name: "搜索来源" }).click();
+  await expect(page.getByRole("heading", { name: "Prowlarr" })).toBeVisible();
+  await expect(page.locator(".prowlarr-status-line > span:nth-of-type(2)")).toHaveText("未启用");
+  const submittedProwlarrValue = "fixture-only";
+  await page.getByLabel("服务地址").fill("http://prowlarr:9696");
+  await page.getByLabel("API Key").fill(submittedProwlarrValue);
+  await page.getByLabel("启用 Prowlarr 搜索来源").check();
+  await page.getByRole("button", { name: "保存 Prowlarr 配置" }).click();
+  await expect(page.getByText("Prowlarr 配置已保存")).toBeVisible();
+  expect(prowlarrBodies[0]).toEqual({ enabled: true, base_url: "http://prowlarr:9696", api_key: submittedProwlarrValue, revision: 0 });
+  await expect(page.getByLabel("API Key")).toHaveValue("");
+  expect(await page.locator("html").textContent()).not.toContain(submittedProwlarrValue);
+  await page.getByRole("button", { name: "验证 Prowlarr 连接" }).click();
+  await expect(page.getByText("连接验证成功")).toBeVisible();
+  await page.getByRole("button", { name: "恢复环境配置" }).click();
+  await expect(page.getByText("已恢复环境配置")).toBeVisible();
+  prowlarrConflictNextSave = true;
+  await page.getByLabel("服务地址").fill("http://changed:9696");
+  await page.getByRole("button", { name: "保存 Prowlarr 配置" }).click();
+  await expect(page.getByText("设置已被其他请求修改")).toBeVisible();
+  await page.getByRole("button", { name: "重新加载" }).last().click();
+  await expect(page.getByLabel("服务地址")).toHaveValue("");
+
   if (mobileLayout) await mobileSectionSelect.selectOption("logs");
   else await page.getByRole("button", { name: "日志" }).click();
   const logMessage = mobileLayout ? page.locator(".settings-log-item p").filter({ hasText: "服务已启动" }) : page.locator(".settings-log-table td").filter({ hasText: "服务已启动" });
@@ -174,7 +246,7 @@ test("settings contract, cursor logs, validation states, and responsive layout",
   await page.getByLabel("文件上限（MB，1-50）").fill("20");
   await page.getByRole("button", { name: "保存" }).click();
   await expect.poll(() => saveCount).toBe(2);
-  expect(patchBodies[0]).toEqual({ revision: 0, level: "WARNING", retention_days: 45, max_file_mb: 20 });
+  expect(patchBodies[0]).toEqual({ revision: 2, level: "WARNING", retention_days: 45, max_file_mb: 20 });
 
   if (mobileLayout) await mobileSectionSelect.selectOption("p115");
   else await page.getByRole("button", { name: "115 推送" }).click();

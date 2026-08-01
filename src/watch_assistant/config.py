@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -50,6 +50,21 @@ class Settings(BaseSettings):
     )
     pansou_max_concurrency: int = Field(
         default=6, ge=1, le=32, validation_alias="PANSOU_MAX_CONCURRENCY"
+    )
+    prowlarr_enabled: bool = Field(
+        default=False, validation_alias="PROWLARR_ENABLED"
+    )
+    prowlarr_base_url: str = Field(
+        default="", validation_alias="PROWLARR_BASE_URL"
+    )
+    prowlarr_api_key: SecretStr = Field(
+        default=SecretStr(""), validation_alias="PROWLARR_API_KEY"
+    )
+    prowlarr_timeout_seconds: float = Field(
+        default=12, ge=1, le=30, validation_alias="PROWLARR_TIMEOUT_SECONDS"
+    )
+    prowlarr_max_concurrency: int = Field(
+        default=4, ge=1, le=16, validation_alias="PROWLARR_MAX_CONCURRENCY"
     )
     cache_warm_concurrency: int = Field(
         default=3, ge=1, le=16, validation_alias="CACHE_WARM_CONCURRENCY"
@@ -171,6 +186,21 @@ class Settings(BaseSettings):
     @property
     def p115_configured(self) -> bool:
         return self.p115_enabled and self.p115_target_cid is not None
+
+    @property
+    def prowlarr_configured(self) -> bool:
+        return self.prowlarr_enabled and bool(
+            self.prowlarr_base_url.strip()
+            and self.prowlarr_api_key.get_secret_value()
+        )
+
+    @model_validator(mode="after")
+    def validate_prowlarr_configuration(self) -> "Settings":
+        if self.prowlarr_enabled and not self.prowlarr_base_url.strip():
+            raise ValueError("PROWLARR_ENABLED requires PROWLARR_BASE_URL")
+        if self.prowlarr_enabled and not self.prowlarr_api_key.get_secret_value():
+            raise ValueError("PROWLARR_ENABLED requires PROWLARR_API_KEY")
+        return self
 
 
 def load_tgto_contract(path: Path | str) -> dict[str, Any]:

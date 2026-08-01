@@ -1,6 +1,36 @@
 export type ResourceKind = "magnet" | "115_share";
 export type InspectionResultStatus = "verified" | "timeout" | "failed" | "unsupported";
 export type InspectionBatchStatus = "queued" | "running" | "completed" | "partial" | "failed";
+export type ProwlarrSettingsSource = "managed" | "environment" | "none";
+export type ProwlarrVerificationStatus = "available" | "unavailable" | "disabled";
+
+export interface ProwlarrSettingsResponse {
+  source: ProwlarrSettingsSource;
+  enabled: boolean;
+  configured: boolean;
+  base_url: string | null;
+  api_key_configured: boolean;
+  api_key_source: ProwlarrSettingsSource;
+  last_updated_at: string | null;
+  revision: number;
+}
+
+export interface PatchProwlarrSettingsRequest {
+  enabled?: boolean | null;
+  base_url?: string | null;
+  api_key?: string;
+  revision: number;
+}
+
+export interface ProwlarrVerifyResponse {
+  source: "prowlarr";
+  status: ProwlarrVerificationStatus;
+  configured: boolean;
+  base_url: string | null;
+  message_code: string | null;
+  checked_at: string;
+}
+
 export type TaskState =
   | "queued"
   | "submitting"
@@ -88,6 +118,8 @@ export interface ResourceSummary {
   size_bytes: number | null;
   seeders: number | null;
   source: string;
+  sources?: string[];
+  source_count?: number;
   captured_at: string;
   size_source?: "pansou" | "inspection" | null;
   seeders_source?: "pansou" | null;
@@ -148,8 +180,11 @@ export interface ResourceSearchResponse {
   season_number: number | null;
   status: "queued" | "running" | "ready" | "failed";
   snapshot_revision: string | null;
+  query_plan_version: string;
   selected_season: number | null;
+  sources: string[];
   warnings: string[];
+  cache_age_seconds: number | null;
   error_code: string | null;
   created_at: string;
   updated_at: string;
@@ -299,6 +334,7 @@ export interface StrmManifestListResponse {
 }
 
 export interface StrmGenerationResponse {
+  operation_id: string;
   library_id: string;
   scan_run_id: string;
   generated: number;
@@ -306,6 +342,76 @@ export interface StrmGenerationResponse {
   skipped: number;
   failed: number;
   retired: number;
+}
+
+export interface StrmOperationResponse {
+  operation_id: string;
+  library_id: string;
+  source_scan_run_id: string;
+  workflow_id: string | null;
+  kind: "full" | "incremental" | "cleanup";
+  status: "queued" | "running" | "succeeded" | "failed" | "timeout" | "cancelled";
+  generated: number;
+  unchanged: number;
+  skipped: number;
+  failed: number;
+  retired: number;
+  error_code: string | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+export interface StrmOperationListResponse {
+  items: StrmOperationResponse[];
+  next_cursor: string | null;
+}
+
+export interface StrmCleanupPlanResponse {
+  plan_id: string;
+  library_id: string;
+  source_scan_run_id: string;
+  source_snapshot_revision: number;
+  plan_hash: string;
+  status: "needs_review" | "invalidated" | "applied";
+  revision: number;
+  expires_at: string;
+  candidate_count: number;
+  executable_count: number;
+  blocked_count: number;
+}
+
+export interface StrmCleanupPlanApplyResponse {
+  plan: StrmCleanupPlanResponse;
+  retired: number;
+}
+
+export interface EmptyDirectoryCleanupCandidateResponse {
+  directory_id: string;
+  parent_id: string;
+  name: string;
+  path: string;
+  state: "ready" | "blocked";
+}
+
+export interface EmptyDirectoryCleanupPlanResponse {
+  plan_id: string;
+  library_id: string;
+  source_scan_run_id: string;
+  source_snapshot_revision: number;
+  plan_hash: string;
+  status: "needs_review" | "applying" | "invalidated" | "applied";
+  revision: number;
+  expires_at: string;
+  candidate_count: number;
+  executable_count: number;
+  blocked_count: number;
+  candidates: EmptyDirectoryCleanupCandidateResponse[];
+}
+
+export interface EmptyDirectoryCleanupPlanApplyResponse {
+  plan: EmptyDirectoryCleanupPlanResponse;
+  deleted: number;
 }
 
 export type OrganizationOperationStatus = "planned" | "organizing" | "organized" | "failed" | "uncertain" | "cancelled";
@@ -366,8 +472,11 @@ export interface OrganizationSettingsResponse {
   schedule_enabled: boolean;
   scan_interval_minutes: number;
   source_directory_ids: string[];
+  source_directory_labels?: string[];
   target_directory_id: string | null;
+  target_directory_label?: string | null;
   push_directory_id: string | null;
+  push_directory_label?: string | null;
   video_extensions: string[];
   metadata_extensions: string[];
   rename_enabled: boolean;
@@ -393,8 +502,11 @@ export interface PatchOrganizationSettingsRequest {
   schedule_enabled?: boolean;
   scan_interval_minutes?: number;
   source_directory_ids?: string[];
+  source_directory_labels?: string[];
   target_directory_id?: string | null;
+  target_directory_label?: string | null;
   push_directory_id?: string | null;
+  push_directory_label?: string | null;
   video_extensions?: string[];
   metadata_extensions?: string[];
   rename_enabled?: boolean;
@@ -588,6 +700,9 @@ export interface OrganizationPlanSummary {
   source_count: number;
   action_count: number;
   precondition_count: number;
+  executable_action_count: number;
+  review_action_count: number;
+  can_execute: boolean;
   alias: string | null;
   candidates: OrganizationPlanCandidate[];
 }

@@ -1,4 +1,3 @@
-from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -74,15 +73,11 @@ async def test_generation_coalesces_running_change_and_requeues_latest_generatio
     assert running is not None
     assert running.generation == 1
 
-    second_item = _item()
-    second_item = replace(
-        second_item,
-        source=replace(second_item.source, remote_version="remote-v2"),
-    )
     second_plan = await OrganizationPlanService(database.session_factory).create_plan(
         library_id="library-1",
         scan_run_id="scan-1",
-        items=(second_item,),
+        items=(_item(),),
+        parser_version="parser-v2",
     )
     second_operation = await OrganizationOperationService(
         database.session_factory

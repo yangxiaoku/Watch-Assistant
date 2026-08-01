@@ -288,6 +288,7 @@ class StrmManifestListResponse(BaseModel):
 class StrmGenerationResponse(BaseModel):
     model_config = {"extra": "forbid"}
 
+    operation_id: str
     library_id: str
     scan_run_id: str
     generated: int = Field(ge=0)
@@ -295,6 +296,35 @@ class StrmGenerationResponse(BaseModel):
     skipped: int = Field(ge=0)
     failed: int = Field(ge=0)
     retired: int = Field(default=0, ge=0)
+
+
+class StrmOperationResponse(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    operation_id: str
+    library_id: str
+    source_scan_run_id: str
+    workflow_id: str | None = None
+    kind: Literal["full", "incremental", "cleanup"]
+    status: Literal[
+        "queued", "running", "succeeded", "failed", "timeout", "cancelled"
+    ]
+    generated: int = Field(ge=0)
+    unchanged: int = Field(ge=0)
+    skipped: int = Field(ge=0)
+    failed: int = Field(ge=0)
+    retired: int = Field(ge=0)
+    error_code: str | None = None
+    created_at: datetime
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+
+
+class StrmOperationListResponse(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    items: list[StrmOperationResponse]
+    next_cursor: str | None = None
 
 
 class StrmCleanupPlanRequest(BaseModel):
@@ -333,6 +363,55 @@ class StrmCleanupPlanApplyResponse(BaseModel):
 
     plan: StrmCleanupPlanResponse
     retired: int = Field(ge=0)
+
+
+class EmptyDirectoryCleanupPlanRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    source_scan_run_id: str = Field(min_length=1, max_length=128)
+
+
+class EmptyDirectoryCleanupCandidateResponse(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    directory_id: str
+    parent_id: str
+    name: str
+    path: str
+    state: Literal["ready", "blocked"]
+
+
+class EmptyDirectoryCleanupPlanResponse(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    plan_id: str
+    library_id: str
+    source_scan_run_id: str
+    source_snapshot_revision: int = Field(ge=0)
+    plan_hash: str = Field(min_length=64, max_length=64)
+    status: Literal["needs_review", "applying", "invalidated", "applied"]
+    revision: int = Field(ge=1)
+    expires_at: datetime
+    candidate_count: int = Field(ge=0)
+    executable_count: int = Field(ge=0)
+    blocked_count: int = Field(ge=0)
+    candidates: list[EmptyDirectoryCleanupCandidateResponse]
+
+
+class EmptyDirectoryCleanupPlanApplyRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    expected_revision: int = Field(ge=1)
+    digest: str = Field(min_length=64, max_length=64)
+    confirm: bool = False
+    idempotency_key: str = Field(min_length=1, max_length=128)
+
+
+class EmptyDirectoryCleanupPlanApplyResponse(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    plan: EmptyDirectoryCleanupPlanResponse
+    deleted: int = Field(ge=0)
 
 
 class StrmVerifyRequest(BaseModel):
@@ -537,8 +616,11 @@ class OrganizationSettingsResponse(BaseModel):
     schedule_enabled: bool
     scan_interval_minutes: int = Field(ge=5, le=1440)
     source_directory_ids: list[str] = Field(max_length=50)
+    source_directory_labels: list[str] = Field(default_factory=list, max_length=50)
     target_directory_id: str | None = None
+    target_directory_label: str | None = None
     push_directory_id: str | None = None
+    push_directory_label: str | None = None
     video_extensions: list[str] = Field(max_length=50)
     metadata_extensions: list[str] = Field(max_length=50)
     rename_enabled: bool
@@ -566,8 +648,11 @@ class OrganizationSettingsPatch(BaseModel):
     schedule_enabled: bool | None = None
     scan_interval_minutes: int | None = Field(default=None, ge=5, le=1440)
     source_directory_ids: list[str] | None = Field(default=None, max_length=50)
+    source_directory_labels: list[str] | None = Field(default=None, max_length=50)
     target_directory_id: str | None = None
+    target_directory_label: str | None = None
     push_directory_id: str | None = None
+    push_directory_label: str | None = None
     video_extensions: list[str] | None = Field(default=None, max_length=50)
     metadata_extensions: list[str] | None = Field(default=None, max_length=50)
     rename_enabled: bool | None = None
@@ -688,6 +773,9 @@ class OrganizationPlanResponse(BaseModel):
     source_count: int = Field(ge=0)
     action_count: int = Field(ge=0)
     precondition_count: int = Field(ge=0)
+    executable_action_count: int = Field(ge=0)
+    review_action_count: int = Field(ge=0)
+    can_execute: bool
     alias: str | None = None
     candidates: list[OrganizationPlanCandidateResponse] = Field(default_factory=list)
 
@@ -708,6 +796,13 @@ class OrganizationPlanMutationRequest(BaseModel):
 class OrganizationPlanCandidateRequest(OrganizationPlanMutationRequest):
     source_object_id: str = Field(min_length=1, max_length=128)
     tmdb_id: int = Field(gt=0)
+
+
+class OrganizationPlanCandidateSearchRequest(OrganizationPlanMutationRequest):
+    source_object_id: str | None = Field(default=None, min_length=1, max_length=128)
+    source_index: int | None = Field(default=None, ge=0, le=100)
+    query: str | None = Field(default=None, max_length=200)
+    limit: int = Field(default=8, ge=1, le=20)
 
 
 class OrganizationOperationQueueRequest(BaseModel):
@@ -812,6 +907,47 @@ class CredentialSettingsResponse(BaseModel):
     revision: int = Field(ge=0)
     tmdb: CredentialSourceResponse
     p115_cookie: P115CredentialStatus
+
+
+class ProwlarrSettingsPatch(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    enabled: bool | None = None
+    base_url: str | None = Field(default=None, max_length=2048)
+    api_key: SecretStr | None = None
+    revision: int = Field(ge=0)
+
+
+class ProwlarrSettingsResponse(BaseModel):
+    source: Literal["managed", "environment", "none"]
+    enabled: bool
+    configured: bool
+    base_url: str | None
+    api_key_configured: bool
+    api_key_source: Literal["managed", "environment", "none"]
+    last_updated_at: datetime | None
+    revision: int = Field(ge=0)
+
+
+class ProwlarrVerifyResponse(BaseModel):
+    source: Literal["prowlarr"] = "prowlarr"
+    status: Literal["available", "unavailable", "disabled"]
+    configured: bool
+    base_url: str | None
+    message_code: str | None = None
+    checked_at: datetime
+
+
+class SearchSourceStateResponse(BaseModel):
+    enabled: bool
+    configured: bool
+    status: Literal["disabled", "configured", "unavailable"]
+    message_code: str | None = None
+
+
+class SearchSourcesResponse(BaseModel):
+    pansou: SearchSourceStateResponse
+    prowlarr: SearchSourceStateResponse
 
 
 class SettingsOverviewResponse(BaseModel):
@@ -1190,6 +1326,8 @@ class ResourceSummary(BaseModel):
     size_bytes: int | None
     seeders: int | None
     source: str
+    sources: list[str] = Field(default_factory=list)
+    source_count: int = Field(default=0, ge=0)
     captured_at: datetime
     size_source: Literal["pansou", "inspection"] | None = None
     seeders_source: Literal["pansou"] | None = None
@@ -1224,7 +1362,7 @@ class ResourceSearchResponse(BaseModel):
     season_number: int | None = Field(default=None, ge=0)
     status: Literal["queued", "running", "ready", "failed"]
     snapshot_revision: str | None = None
-    query_plan_version: str = "v4"
+    query_plan_version: str = "v5"
     cache_age_seconds: int | None = Field(default=None, ge=0)
     sources: list[str] = Field(default_factory=list)
     selected_season: int | None = Field(default=None, ge=0)

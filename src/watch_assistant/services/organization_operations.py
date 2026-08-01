@@ -928,6 +928,23 @@ class OrganizationOperationService:
             raise OrganizationOperationPrerequisiteError("plan_is_not_planned")
         library = await session.get(MediaLibrary, plan.library_id)
         run = await session.get(LibraryScanRun, plan.source_scan_run_id)
+        latest = None
+        if library is not None:
+            latest = await session.scalar(
+                select(LibraryScanRun)
+                .where(
+                    LibraryScanRun.library_id == plan.library_id,
+                    LibraryScanRun.root_directory_id == library.root_directory_id,
+                    LibraryScanRun.state == ScanRunState.COMPLETED.value,
+                    LibraryScanRun.complete.is_(True),
+                    LibraryScanRun.snapshot_revision.is_not(None),
+                )
+                .order_by(
+                    LibraryScanRun.snapshot_revision.desc(),
+                    LibraryScanRun.id.desc(),
+                )
+                .limit(1)
+            )
         current = (
             library is not None
             and library.enabled
@@ -938,7 +955,10 @@ class OrganizationOperationService:
             and run.root_directory_id == library.root_directory_id
             and run.state == ScanRunState.COMPLETED.value
             and run.complete
+            and latest is not None
+            and latest.id == run.id
             and run.snapshot_revision == plan.source_snapshot_revision
+            and latest.snapshot_revision == plan.source_snapshot_revision
             and _as_utc(plan.expires_at) > datetime.now(UTC)
         )
         if current:

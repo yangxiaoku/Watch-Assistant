@@ -68,6 +68,18 @@ class ApplicationSettings(Base):
     managed_p115_updated_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    managed_prowlarr_enabled: Mapped[bool | None] = mapped_column(
+        Boolean, nullable=True
+    )
+    managed_prowlarr_base_url: Mapped[str | None] = mapped_column(
+        Text, nullable=True
+    )
+    managed_prowlarr_api_key_encrypted: Mapped[str | None] = mapped_column(
+        Text, nullable=True
+    )
+    managed_prowlarr_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, onupdate=utc_now
     )
@@ -399,7 +411,7 @@ class ResourceSearchJob(Base):
     refresh: Mapped[bool] = mapped_column(Boolean, default=False)
     status: Mapped[str] = mapped_column(String(16), index=True)
     snapshot_revision: Mapped[str | None] = mapped_column(Text, nullable=True)
-    query_plan_version: Mapped[str] = mapped_column(String(16), default="v4")
+    query_plan_version: Mapped[str] = mapped_column(String(16), default="v5")
     cache_age_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     sources_json: Mapped[str] = mapped_column(Text, default="[]")
     selected_season: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -688,6 +700,80 @@ class WorkflowStage(Base):
     )
 
     workflow: Mapped[Workflow] = relationship(back_populates="stages")
+
+
+class StrmOperationKind(StrEnum):
+    FULL = "full"
+    INCREMENTAL = "incremental"
+    CLEANUP = "cleanup"
+
+
+class StrmOperationStatus(StrEnum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    TIMEOUT = "timeout"
+    CANCELLED = "cancelled"
+
+
+class StrmOperation(Base):
+    """Durable state and counters for one STRM synchronization request."""
+
+    __tablename__ = "strm_operations"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    # These are application-level links so a failed request can be recorded
+    # even when its scan or workflow does not exist.
+    library_id: Mapped[str] = mapped_column(String(128), index=True)
+    kind: Mapped[StrmOperationKind] = mapped_column(
+        Enum(StrmOperationKind, values_callable=enum_values, native_enum=False),
+        nullable=False,
+        index=True,
+    )
+    source_scan_run_id: Mapped[str] = mapped_column(String(64), index=True)
+    workflow_id: Mapped[str | None] = mapped_column(
+        String(40), nullable=True, index=True
+    )
+    status: Mapped[StrmOperationStatus] = mapped_column(
+        Enum(StrmOperationStatus, values_callable=enum_values, native_enum=False),
+        default=StrmOperationStatus.QUEUED,
+        server_default=StrmOperationStatus.QUEUED.value,
+        nullable=False,
+        index=True,
+    )
+    generated: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    unchanged: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    skipped: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    failed: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    retired: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    error_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+    lease_owner: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    heartbeat_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+
+    def __repr__(self) -> str:
+        return (
+            "StrmOperation(id=<redacted>, library_id=<redacted>, "
+            f"kind={self.kind.value!r}, status={self.status.value!r})"
+        )
 
 
 class OrganizationOperationStatus(StrEnum):

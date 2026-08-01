@@ -3,6 +3,7 @@ import { defineConfig } from "@playwright/test";
 export default defineConfig({
   testDir: "./e2e",
   testMatch: "live-api.spec.ts",
+  workers: 1,
   webServer: {
     command: "node e2e/live-server.mjs",
     url: "http://127.0.0.1:4176/api/v1/health",
