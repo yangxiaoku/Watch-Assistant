@@ -71,7 +71,7 @@ def _create_legacy_database(database_path: Path, migration_ids: list[str]) -> No
 
 
 def _configure_environment(
-    release_root: Path, database_path: Path, state_directory: Path, release: str
+    release_root: Path, database_path: Path, state_directory: Path
 ) -> dict[str, str | None]:
     values = {
         "DATABASE_URL": f"sqlite+aiosqlite:///{database_path.as_posix()}",
@@ -84,7 +84,6 @@ def _configure_environment(
         "TGTO_CONTRACT_PATH": str(release_root / "config/tgto-contract.json"),
         "FRONTEND_DIST_DIR": str(release_root / "frontend/dist"),
         "STATE_DIRECTORY": str(state_directory),
-        "WATCH_ASSISTANT_RELEASE": release,
         "CACHE_WARM_ENABLED": "false",
         "SUBSCRIPTION_SCHEDULER_ENABLED": "false",
         "PROWLARR_ENABLED": "false",
@@ -101,8 +100,12 @@ def _configure_environment(
         "P115_COOKIE_PATH": str(state_directory / "missing-cookie"),
         "STRM_OUTPUT_ROOT": str(state_directory / "strm"),
     }
-    previous = {name: os.environ.get(name) for name in values}
+    previous = {
+        name: os.environ.get(name)
+        for name in (*values, "WATCH_ASSISTANT_RELEASE")
+    }
     os.environ.update(values)
+    os.environ.pop("WATCH_ASSISTANT_RELEASE", None)
     return previous
 
 
@@ -129,10 +132,13 @@ async def _start_and_check_health(release_root: Path, release: str) -> None:
         ]
         _create_legacy_database(database_path, migration_ids)
         previous = _configure_environment(
-            release_root, database_path, state_directory, release
+            release_root, database_path, state_directory
         )
         try:
-            app = create_app(frontend_dir=release_root / "frontend/dist")
+            app = create_app(
+                frontend_dir=release_root / "frontend/dist",
+                release_root=release_root,
+            )
             async with app.router.lifespan_context(app), httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app),
                 base_url="http://release-smoke",
