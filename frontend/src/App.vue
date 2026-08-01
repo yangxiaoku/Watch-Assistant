@@ -1451,7 +1451,7 @@ onBeforeUnmount(() => {
         <LibraryView v-else-if="activeView === 'movies' || activeView === 'tv'" :movies="catalogMovies" :loading="catalogLoading" :favorite-ids="favoriteIds" :genre-id="genreId" :year="year" :sort="sort" :media-type="activeView" :page="currentPage" :total-pages="totalPages" :total-results="totalResults" @open="openMovie" @favorite="toggleFavorite" @filters="loadDiscover" @page="loadPage" />
         <CollectionView v-else-if="activeView === 'favorites' || activeView === 'history'" :mode="activeView" :movies="activeView === 'favorites' ? favorites : history" :favorite-ids="favoriteIds" @open="openMovie" @favorite="toggleFavorite" />
         <SettingsView v-else-if="activeView === 'settings'" :api="api" @auto-start-enabled="inspectionAutoStartEnabled = $event" />
-        <OrganizationWorkbenchView v-else-if="activeView === 'organization-plans' && organizationPlanEnabled" :api="api" />
+        <OrganizationWorkbenchView v-else-if="activeView === 'organization-plans' && organizationPlanEnabled" :api="api" :execution-enabled="organizationExecutionEnabled" />
         <OrganizationHistoryView v-else-if="activeView === 'organization-history' && organizationPlanEnabled" :api="api" />
         <LibraryWorkbenchView v-else-if="activeView === 'library'" :api="api" />
         <WorkflowCenterView v-else-if="activeView === 'workflows'" :api="api" />
