@@ -956,6 +956,9 @@ class OrganizationOperationService:
             and run.state == ScanRunState.COMPLETED.value
             and run.complete
             and latest is not None
+            and latest.id == run.id
+            and run.snapshot_revision == plan.source_snapshot_revision
+            and latest.snapshot_revision == plan.source_snapshot_revision
             and _as_utc(plan.expires_at) > datetime.now(UTC)
         )
         if current:

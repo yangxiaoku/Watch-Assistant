@@ -252,6 +252,24 @@ EVENT_CATALOG: dict[str, EventDefinition] = {
     "strm.dirty_skipped": _event(
         "strm.dirty_skipped", LogCategory.STRM, "已跳过目录增量对账", "整理完成后未启用 STRM 联动"
     ),
+    "library.empty_directory_cleanup.review_required": _event(
+        "library.empty_directory_cleanup.review_required",
+        LogCategory.LIBRARY,
+        "受管空目录需要确认",
+        "发现受管空目录，已等待人工预览和一次确认，当前状态：{status}",
+    ),
+    "library.empty_directory_cleanup.plan.created": _event(
+        "library.empty_directory_cleanup.plan.created",
+        LogCategory.LIBRARY,
+        "空目录清理计划已生成",
+        "空目录清理计划已生成，包含 {count} 个候选项",
+    ),
+    "library.empty_directory_cleanup.applied": _event(
+        "library.empty_directory_cleanup.applied",
+        LogCategory.LIBRARY,
+        "空目录清理计划已执行",
+        "空目录清理计划已执行，处理 {count} 个受管目录",
+    ),
     "library.identity.bound": _event(
         "library.identity.bound",
         LogCategory.LIBRARY,

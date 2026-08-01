@@ -459,8 +459,11 @@ async def test_organization_settings_persist_and_validate_cid_scope(tmp_path):
                 "schedule_enabled": True,
                 "scan_interval_minutes": 5,
                 "source_directory_ids": ["3482085898508567892"],
+                "source_directory_labels": ["待整理/剧集"],
                 "target_directory_id": "2988794667098701570",
+                "target_directory_label": "媒体库/归档",
                 "push_directory_id": "3988794667098701570",
+                "push_directory_label": "媒体库/推送",
                 "video_extensions": ["MKV", "mp4"],
                 "metadata_extensions": ["SRT", "nfo"],
                 "operation_delay_seconds": 2.0,
@@ -472,6 +475,20 @@ async def test_organization_settings_persist_and_validate_cid_scope(tmp_path):
         assert updated.json()["video_extensions"] == ["mkv", "mp4"]
         assert updated.json()["metadata_extensions"] == ["srt", "nfo"]
         assert updated.json()["push_directory_id"] == "3988794667098701570"
+        assert updated.json()["source_directory_labels"] == ["待整理/剧集"]
+        assert updated.json()["target_directory_label"] == "媒体库/归档"
+        assert updated.json()["push_directory_label"] == "媒体库/推送"
+
+        unsafe_label = await client.patch(
+            "/api/v1/settings/organization",
+            json={
+                "revision": updated.json()["revision"],
+                "target_directory_label": "C:/sensitive/full-path",
+            },
+            headers=headers,
+        )
+        assert unsafe_label.status_code == 422
+        assert unsafe_label.json()["detail"] == "invalid_target_directory_label"
 
         invalid = await client.patch(
             "/api/v1/settings/organization",

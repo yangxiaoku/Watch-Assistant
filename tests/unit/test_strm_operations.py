@@ -119,6 +119,7 @@ async def test_strm_operation_recovery_terminalizes_stale_and_orphaned_rows(
             stale_row = await session.get(StrmOperation, stale.operation_id)
             assert stale_row is not None
             stale_row.updated_at = now - timedelta(hours=1)
+            stale_row.lease_expires_at = now - timedelta(seconds=1)
             await session.commit()
 
         recovered = await service.recover_stale(
@@ -135,6 +136,88 @@ async def test_strm_operation_recovery_terminalizes_stale_and_orphaned_rows(
         orphan = await service.get(queued.operation_id)
         assert orphan.status == "failed"
         assert orphan.error_code == "strm_operation_recovered"
+    finally:
+        await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_strm_recovery_uses_cas_and_heartbeat_lease(tmp_path: Path):
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'operations.db'}")
+    await initialize_database(database.engine)
+    try:
+        service = StrmOperationService(database.session_factory)
+        operation = await service.create(
+            library_id="library-one",
+            source_scan_run_id="scan-heartbeat",
+            kind=StrmOperationKind.FULL,
+        )
+        running = await service.start(
+            operation.operation_id,
+            now=datetime(2026, 8, 1, 0, 0, tzinfo=UTC),
+            lease_duration=timedelta(minutes=5),
+        )
+        assert running.status == "running"
+
+        heartbeat = await service.heartbeat(
+            operation.operation_id,
+            now=datetime(2026, 8, 1, 0, 29, tzinfo=UTC),
+            lease_duration=timedelta(minutes=5),
+        )
+        assert heartbeat.status == "running"
+
+        assert await service.recover_stale(
+            max_age=timedelta(minutes=30),
+            now=datetime(2026, 8, 1, 0, 30, tzinfo=UTC),
+        ) == 0
+
+        async with database.session_factory() as session:
+            row = await session.get(StrmOperation, operation.operation_id)
+            assert row is not None
+            observed_updated_at = row.updated_at
+            row.status = "succeeded"
+            row.finished_at = datetime(2026, 8, 1, 0, 30, 1, tzinfo=UTC)
+            await session.commit()
+
+        assert await service._recover(
+            current_time=datetime(2026, 8, 1, 0, 31, tzinfo=UTC),
+            error_code="strm_operation_timeout",
+            cutoff=observed_updated_at,
+            respect_lease=True,
+        ) == 0
+        assert (await service.get(operation.operation_id)).status == "succeeded"
+    finally:
+        await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_strm_timeout_and_cancelled_are_distinct_terminal_states(tmp_path: Path):
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'operations.db'}")
+    await initialize_database(database.engine)
+    try:
+        service = StrmOperationService(database.session_factory)
+        timeout_operation = await service.create(
+            library_id="library-one",
+            source_scan_run_id="scan-timeout",
+            kind=StrmOperationKind.FULL,
+        )
+        await service.start(timeout_operation.operation_id)
+        cancelled_operation = await service.create(
+            library_id="library-one",
+            source_scan_run_id="scan-cancelled",
+            kind=StrmOperationKind.FULL,
+        )
+        await service.start(cancelled_operation.operation_id)
+
+        now = datetime.now(UTC)
+        async with database.session_factory() as session:
+            row = await session.get(StrmOperation, timeout_operation.operation_id)
+            assert row is not None
+            row.lease_expires_at = now - timedelta(seconds=1)
+            await session.commit()
+
+        assert await service.recover_stale(max_age=timedelta(minutes=30), now=now) == 1
+        assert (await service.get(timeout_operation.operation_id)).status == "timeout"
+        assert (await service.cancel(cancelled_operation.operation_id)).status == "cancelled"
     finally:
         await database.engine.dispose()
 

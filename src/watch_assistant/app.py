@@ -85,6 +85,7 @@ from watch_assistant.services.deployment_diagnostics import DeploymentDiagnostic
 from watch_assistant.services.directory_dirty_worker import DirectoryDirtyWorker
 from watch_assistant.services.empty_directory_cleanup import (
     EmptyDirectoryCleanupError,
+    EmptyDirectoryCleanupStatus,
     LiveP115EmptyDirectoryCleaner,
 )
 from watch_assistant.services.inspection import InspectionService, InspectionWorker
@@ -383,54 +384,6 @@ def create_app(
                     page_size=1,
                 )
 
-            empty_directory_cleaner = None
-            cleanup_write_gate = (
-                getattr(application.state, "organization_execution_enabled", False)
-                and getattr(application.state, "organization_write_enabled", False)
-                and getattr(
-                    application.state, "organization_write_contract_verified", False
-                )
-            )
-            if cleanup_write_gate:
-                async def clean_empty_directory(
-                    directory_id: str, parent_id: str, name: str
-                ):
-                    try:
-                        cookie = await asyncio.to_thread(
-                            application.state.organization_cookie_provider.load
-                        )
-                        if not cookie:
-                            raise EmptyDirectoryCleanupError("credentials_unavailable")
-                        client = await asyncio.to_thread(_default_client_factory, cookie)
-                        managed_directory_ids = await _current_managed_directory_ids(
-                            application.state.database.session_factory,
-                            directory_id,
-                            parent_id,
-                        )
-                        if not managed_directory_ids:
-                            raise EmptyDirectoryCleanupError(
-                                "cleanup_scope_unverified"
-                            )
-                        cleaner = LiveP115EmptyDirectoryCleaner(
-                            client=client,
-                            call_executor=p115_c03_timeout_executor,
-                            managed_directory_ids=managed_directory_ids,
-                            scope_confirmed=True,
-                        )
-                        return await cleaner.cleanup(directory_id, parent_id, name)
-                    except EmptyDirectoryCleanupError:
-                        raise
-                    except Exception as exc:  # noqa: BLE001 - details stay private
-                        del exc
-                        raise EmptyDirectoryCleanupError(
-                            "empty_directory_cleanup_unavailable"
-                        ) from None
-                    finally:
-                        if "client" in locals():
-                            await _close_client(client)
-
-                empty_directory_cleaner = clean_empty_directory
-
             worker = DirectoryDirtyWorker(
                 application.state.database.session_factory,
                 application.state.strm_manifest_service,
@@ -441,7 +394,9 @@ def create_app(
                     getattr(application.state, "strm_cleanup_enabled", False)
                 ),
                 settings_service=application.state.settings_service,
-                empty_directory_cleaner=empty_directory_cleaner,
+                # Empty-directory recycling is only authorized by the explicit
+                # preview/apply API, never by the background dirty worker.
+                empty_directory_cleaner=None,
                 event_logger=application.state.settings_service,
             )
             application.state.directory_dirty_worker = worker
@@ -478,6 +433,8 @@ def create_app(
                 delattr(application.state, "organization_automation_service")
             if hasattr(application.state, "_organization_runtime_write_enabled"):
                 delattr(application.state, "_organization_runtime_write_enabled")
+            if hasattr(application.state, "empty_directory_cleanup_executor"):
+                delattr(application.state, "empty_directory_cleanup_executor")
 
         async def apply_organization_runtime(ready: bool) -> None:
             nonlocal organization_stop, organization_task
@@ -513,6 +470,51 @@ def create_app(
             worker = None
             directory_provisioner = None
             if write_enabled:
+                async def execute_empty_directory_cleanup(candidate: dict[str, str]):
+                    try:
+                        directory_id = candidate["directory_id"]
+                        parent_id = candidate["parent_id"]
+                        name = candidate["name"]
+                        cookie = await asyncio.to_thread(
+                            application.state.organization_cookie_provider.load
+                        )
+                        if not cookie:
+                            raise EmptyDirectoryCleanupError("credentials_unavailable")
+                        client = await asyncio.to_thread(_default_client_factory, cookie)
+                        managed_directory_ids = await _current_managed_directory_ids(
+                            application.state.database.session_factory,
+                            directory_id,
+                            parent_id,
+                        )
+                        if not managed_directory_ids:
+                            raise EmptyDirectoryCleanupError(
+                                "cleanup_scope_unverified"
+                            )
+                        cleaner = LiveP115EmptyDirectoryCleaner(
+                            client=client,
+                            call_executor=p115_c03_timeout_executor,
+                            managed_directory_ids=managed_directory_ids,
+                            scope_confirmed=True,
+                        )
+                        return await cleaner.cleanup(directory_id, parent_id, name)
+                    except EmptyDirectoryCleanupError as error:
+                        return (
+                            EmptyDirectoryCleanupStatus.UNCERTAIN
+                            if error.uncertain
+                            else EmptyDirectoryCleanupStatus.FAILED
+                        )
+                    except Exception as exc:  # noqa: BLE001 - details stay private
+                        del exc
+                        raise EmptyDirectoryCleanupError(
+                            "empty_directory_cleanup_unavailable"
+                        ) from None
+                    finally:
+                        if "client" in locals():
+                            await _close_client(client)
+
+                application.state.empty_directory_cleanup_executor = (
+                    execute_empty_directory_cleanup
+                )
                 worker = OrganizationWorker(
                     application.state.database.session_factory,
                     application.state.organization_operation_service,
@@ -549,6 +551,8 @@ def create_app(
                         await _close_client(client)
 
                 directory_provisioner = provision_organization_directories
+            elif hasattr(application.state, "empty_directory_cleanup_executor"):
+                delattr(application.state, "empty_directory_cleanup_executor")
 
             def gateway_factory(directory_ids):
                 return P115ReadOnlyDirectoryGateway(

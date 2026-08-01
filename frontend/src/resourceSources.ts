@@ -17,11 +17,17 @@ export function sourceLabel(value: string): string {
 }
 
 export function resourceSourceNames(resource: ResourceSummary): string[] {
-  return [sourceLabel(resource.source)];
+  const values = resource.sources?.length ? resource.sources : [resource.source];
+  return cleanNames(values.map(sourceLabel));
 }
 
 export function resourceSourceLabel(resource: ResourceSummary): string {
-  return resourceSourceNames(resource)[0];
+  return resourceSourceNames(resource)[0] ?? sourceLabel(resource.source);
+}
+
+export function resourceSourceCount(resource: ResourceSummary): number {
+  const names = resourceSourceNames(resource);
+  return resource.source_count && resource.source_count > 0 ? resource.source_count : names.length;
 }
 
 export function sourceNameList(values: string[]): string[] {

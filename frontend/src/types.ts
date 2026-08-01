@@ -118,6 +118,8 @@ export interface ResourceSummary {
   size_bytes: number | null;
   seeders: number | null;
   source: string;
+  sources?: string[];
+  source_count?: number;
   captured_at: string;
   size_source?: "pansou" | "inspection" | null;
   seeders_source?: "pansou" | null;
@@ -348,7 +350,7 @@ export interface StrmOperationResponse {
   source_scan_run_id: string;
   workflow_id: string | null;
   kind: "full" | "incremental" | "cleanup";
-  status: "queued" | "running" | "succeeded" | "failed";
+  status: "queued" | "running" | "succeeded" | "failed" | "timeout" | "cancelled";
   generated: number;
   unchanged: number;
   skipped: number;
@@ -382,6 +384,34 @@ export interface StrmCleanupPlanResponse {
 export interface StrmCleanupPlanApplyResponse {
   plan: StrmCleanupPlanResponse;
   retired: number;
+}
+
+export interface EmptyDirectoryCleanupCandidateResponse {
+  directory_id: string;
+  parent_id: string;
+  name: string;
+  path: string;
+  state: "ready" | "blocked";
+}
+
+export interface EmptyDirectoryCleanupPlanResponse {
+  plan_id: string;
+  library_id: string;
+  source_scan_run_id: string;
+  source_snapshot_revision: number;
+  plan_hash: string;
+  status: "needs_review" | "applying" | "invalidated" | "applied";
+  revision: number;
+  expires_at: string;
+  candidate_count: number;
+  executable_count: number;
+  blocked_count: number;
+  candidates: EmptyDirectoryCleanupCandidateResponse[];
+}
+
+export interface EmptyDirectoryCleanupPlanApplyResponse {
+  plan: EmptyDirectoryCleanupPlanResponse;
+  deleted: number;
 }
 
 export type OrganizationOperationStatus = "planned" | "organizing" | "organized" | "failed" | "uncertain" | "cancelled";
@@ -442,8 +472,11 @@ export interface OrganizationSettingsResponse {
   schedule_enabled: boolean;
   scan_interval_minutes: number;
   source_directory_ids: string[];
+  source_directory_labels?: string[];
   target_directory_id: string | null;
+  target_directory_label?: string | null;
   push_directory_id: string | null;
+  push_directory_label?: string | null;
   video_extensions: string[];
   metadata_extensions: string[];
   rename_enabled: boolean;
@@ -469,8 +502,11 @@ export interface PatchOrganizationSettingsRequest {
   schedule_enabled?: boolean;
   scan_interval_minutes?: number;
   source_directory_ids?: string[];
+  source_directory_labels?: string[];
   target_directory_id?: string | null;
+  target_directory_label?: string | null;
   push_directory_id?: string | null;
+  push_directory_label?: string | null;
   video_extensions?: string[];
   metadata_extensions?: string[];
   rename_enabled?: boolean;

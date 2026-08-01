@@ -1732,9 +1732,11 @@ async def test_public_search_reads_legacy_list_cache_scores(tmp_path):
             "kind": "magnet",
             "name": "Legacy cached resource",
             "size_bytes": None,
-            "seeders": None,
-            "source": "test",
-            "captured_at": body["results"][0]["captured_at"],
+                "seeders": None,
+                "source": "test",
+                "sources": ["test"],
+                "source_count": 1,
+                "captured_at": body["results"][0]["captured_at"],
             "size_source": None,
             "seeders_source": None,
             "seeders_observed_at": None,
@@ -1771,6 +1773,7 @@ async def test_public_search_cache_hit_preserves_pansou_metadata_sources(tmp_pat
                 "size_source": "pansou",
                 "seeders_source": "pansou",
                 "seeders_observed_at": "2026-07-25T04:00:00+00:00",
+                "sources": ["plugin:pansou", "plugin:nyaa"],
             }
         ),
     )
@@ -1792,6 +1795,8 @@ async def test_public_search_cache_hit_preserves_pansou_metadata_sources(tmp_pat
     assert result["size_source"] == "pansou"
     assert result["seeders_source"] == "pansou"
     assert result["seeders_observed_at"] == "2026-07-25T04:00:00Z"
+    assert result["sources"] == ["plugin:pansou", "plugin:nyaa"]
+    assert result["source_count"] == 2
     await _close(client, database, tmdb, pansou)
 
 

@@ -44,6 +44,8 @@ import type {
   MediaLibraryListResponse,
   MediaLibraryResponse,
   MediaEntryListResponse,
+  EmptyDirectoryCleanupPlanApplyResponse,
+  EmptyDirectoryCleanupPlanResponse,
   StrmManifestListResponse,
   StrmGenerationResponse,
   StrmCleanupPlanApplyResponse,
@@ -820,6 +822,45 @@ export class ApiClient {
         idempotency_key: payload.idempotencyKey ?? createIdempotencyKey(),
       }),
     });
+  }
+
+  async createEmptyDirectoryCleanupPlan(
+    libraryId: string,
+    scanRunId: string,
+  ): Promise<EmptyDirectoryCleanupPlanResponse> {
+    return this.request<EmptyDirectoryCleanupPlanResponse>(
+      `/api/v1/libraries/${encodeURIComponent(libraryId)}/empty-directory-cleanup-plan`,
+      {
+        method: "POST",
+        body: JSON.stringify({ source_scan_run_id: scanRunId }),
+      },
+    );
+  }
+
+  async emptyDirectoryCleanupPlan(
+    planId: string,
+  ): Promise<EmptyDirectoryCleanupPlanResponse> {
+    return this.request<EmptyDirectoryCleanupPlanResponse>(
+      `/api/v1/empty-directory-cleanup-plans/${encodeURIComponent(planId)}`,
+    );
+  }
+
+  async applyEmptyDirectoryCleanupPlan(
+    planId: string,
+    payload: { expectedRevision: number; digest: string; idempotencyKey?: string },
+  ): Promise<EmptyDirectoryCleanupPlanApplyResponse> {
+    return this.request<EmptyDirectoryCleanupPlanApplyResponse>(
+      `/api/v1/empty-directory-cleanup-plans/${encodeURIComponent(planId)}/apply`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          expected_revision: payload.expectedRevision,
+          digest: payload.digest,
+          confirm: true,
+          idempotency_key: payload.idempotencyKey ?? createIdempotencyKey(),
+        }),
+      },
+    );
   }
 }
 

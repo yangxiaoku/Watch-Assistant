@@ -128,6 +128,29 @@ async def test_prowlarr_settings_reject_unsafe_url_and_stale_revision(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_revision_only_prowlarr_patch_is_idempotent(tmp_path):
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'settings.db'}")
+    await initialize_database(database.engine)
+    service = ProwlarrSettingsService(
+        database.session_factory,
+        SecretCrypto(Fernet.generate_key().decode("ascii")),
+    )
+    snapshot = await service.snapshot()
+
+    result = await service.update(
+        enabled=None,
+        base_url=None,
+        api_key=None,
+        fields_set=set(),
+        revision=snapshot["revision"],
+    )
+
+    assert result["revision"] == snapshot["revision"]
+    assert result["base_url"] == snapshot["base_url"]
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_cancelled_commit_still_applies_persisted_runtime_state(tmp_path, monkeypatch):
     database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'settings.db'}")
     await initialize_database(database.engine)

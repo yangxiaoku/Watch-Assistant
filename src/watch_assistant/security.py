@@ -474,6 +474,8 @@ def _required_scope(request: Request) -> str:
         return "strm:read"
     if path.startswith("/api/v1/strm-operations"):
         return "strm:read"
+    if path.startswith("/api/v1/empty-directory-cleanup-plans"):
+        return "library:read" if method in {"GET", "HEAD"} else "organize:execute"
     if path.startswith("/api/v1/libraries/") and any(
         marker in path
         for marker in (

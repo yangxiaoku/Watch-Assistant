@@ -45,6 +45,7 @@ class ProwlarrRelease:
 class ProwlarrSearchResult:
     releases: tuple[ProwlarrRelease, ...]
     unsupported_count: int = 0
+    truncated: bool = False
 
 
 _HEX_INFOHASH = re.compile(r"[0-9a-fA-F]{40}")
@@ -115,7 +116,8 @@ class ProwlarrClient:
         unsupported_count = 0
         items_seen = 0
         current_offset = offset
-        for _page in range(_MAX_PAGES):
+        truncated = False
+        for page_number in range(_MAX_PAGES):
             remaining = result_limit - items_seen
             if remaining <= 0:
                 break
@@ -155,7 +157,11 @@ class ProwlarrClient:
                     "Unexpected Prowlarr response shape"
                 )
             current_offset = next_offset
-        return ProwlarrSearchResult(tuple(releases), unsupported_count)
+        else:
+            # A full final page means the bounded paginator stopped before the
+            # upstream advertised an end. Preserve that fact for aggregation.
+            truncated = items_seen < result_limit
+        return ProwlarrSearchResult(tuple(releases), unsupported_count, truncated)
 
     async def _request_page(self, params: list[tuple[str, str]]) -> list[Any]:
         try:

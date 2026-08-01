@@ -3,7 +3,7 @@ import { computed, ref, watch } from "vue";
 import { ChevronFirst, ChevronLast, ChevronLeft, ChevronRight, LoaderCircle, Magnet, PackageOpen, ScanSearch, Search } from "@lucide/vue";
 
 import PushButton from "./PushButton.vue";
-import { resourceSourceLabel, sourceNameList } from "../resourceSources";
+import { resourceSourceCount, resourceSourceLabel, resourceSourceNames, sourceNameList } from "../resourceSources";
 import { inspectionStatusLabel } from "../inspection";
 import { canPushResource, NO_PUSH_CAPABILITIES, type PushCapabilities } from "../push";
 import type { ResourceFacets, ResourceKind, ResourceQuality, ResourceSort, ResourceSummary } from "../types";
@@ -111,6 +111,10 @@ function seedersTitle(resource: ResourceSummary): string | undefined {
     : undefined;
 }
 
+function resourceSourceEvidence(resource: ResourceSummary): string {
+  return resourceSourceNames(resource).join(" / ");
+}
+
 function inspectionLabel(value: ResourceSummary["inspection_status"]): string {
   if (!value) return "";
   if (value === "running" || value === "queued") return "检测中";
@@ -179,7 +183,7 @@ function pageRequest(target: number) {
             <td class="numeric"><span>{{ formatSize(resource.size_bytes) }}</span><small v-if="sizeSourceLabel(resource)">{{ sizeSourceLabel(resource) }}</small></td>
             <td class="numeric" :title="seedersTitle(resource)"><span>{{ resource.seeders ?? '未知' }}</span><small v-if="resource.seeders_source === 'pansou'">来源数据</small></td>
             <td class="inspection-cell"><template v-if="resource.inspection_status"><strong>{{ inspectionLabel(resource.inspection_status) }}</strong><small>视频 {{ formatCount(resource.video_file_count) }} · 字幕 {{ formatCount(resource.subtitle_count) }} · 样本 {{ formatCount(resource.sample_count) }}</small></template><span v-else class="inspection-empty">未检测</span></td>
-            <td class="source-cell"><strong class="source-badge">{{ resourceSourceLabel(resource) }}</strong><small>{{ formatDate(resource.captured_at) }}</small></td>
+            <td class="source-cell"><strong class="source-badge">{{ resourceSourceLabel(resource) }}</strong><details class="source-evidence"><summary>{{ resourceSourceCount(resource) }} 个来源</summary><span>{{ resourceSourceEvidence(resource) }}</span></details><small>{{ formatDate(resource.captured_at) }}</small></td>
             <td class="action-cell"><PushButton :busy="pushingId === resource.resource_id" :disabled="!canPush(resource)" :title="pushTitle(resource)" @push="emit('push', resource)" /></td>
           </tr>
         </tbody>
@@ -188,7 +192,7 @@ function pageRequest(target: number) {
     <div v-if="resources.length" class="resource-cards" :class="{ 'resource-list-loading': resourceLoading }">
       <article v-for="resource in resources" :key="resource.resource_id" class="resource-card">
         <div class="card-heading"><span class="kind-label">{{ resource.kind === 'magnet' ? '磁力' : '115 分享' }}</span><strong class="source-badge">{{ resourceSourceLabel(resource) }}</strong></div>
-        <h3 class="resource-card-title">{{ resource.name }}</h3>
+        <h3 class="resource-card-title">{{ resource.name }}</h3><details class="source-evidence"><summary>{{ resourceSourceCount(resource) }} 个来源</summary><span>{{ resourceSourceEvidence(resource) }}</span></details>
         <dl><div><dt>大小</dt><dd>{{ formatSize(resource.size_bytes) }}<small v-if="sizeSourceLabel(resource)" class="metric-source">{{ sizeSourceLabel(resource) }}</small></dd></div><div><dt>做种</dt><dd>{{ resource.seeders ?? '未知' }}<small v-if="resource.seeders_source === 'pansou'" class="metric-source">来源数据</small></dd></div><div><dt>抓取</dt><dd>{{ formatDate(resource.captured_at) }}</dd></div></dl>
         <div v-if="hasQuality(resource)" class="quality-metrics"><span>综合 {{ formatScore(resource.rank_score) }}</span><span>相关 {{ formatScore(resource.relevance_score) }}</span><span>完整 {{ formatScore(resource.completeness_score) }}</span></div>
         <p v-if="resource.inspection_status" class="inspection-details">{{ inspectionLabel(resource.inspection_status) }} · 视频 {{ formatCount(resource.video_file_count) }} · 字幕 {{ formatCount(resource.subtitle_count) }} · 样本 {{ formatCount(resource.sample_count) }}</p><p v-else class="inspection-details inspection-empty">未检测</p>
