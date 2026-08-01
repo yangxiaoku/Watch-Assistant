@@ -93,6 +93,15 @@ async def patch_workflow_stage(
         return await service.patch_stage(workflow_id, stage_name, payload)
     except WorkflowNotFound as exc:
         raise HTTPException(status_code=404, detail="workflow_not_found") from exc
+    except WorkflowConflict as exc:
+        code = str(exc)
+        if code not in {
+            "workflow_prerequisite_not_met",
+            "workflow_stage_regression",
+            "workflow_stage_terminal",
+        }:
+            code = "workflow_conflict"
+        raise HTTPException(status_code=409, detail=code) from None
 
 
 @router.post(

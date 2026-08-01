@@ -9,7 +9,7 @@ from watch_assistant.adapters.tmdb import TmdbClient
 from watch_assistant.app import create_app
 from watch_assistant.crypto import SecretCrypto
 from watch_assistant.db import create_database, initialize_database
-from watch_assistant.schemas import NotificationSeverity
+from watch_assistant.schemas import NotificationPreferencePatch, NotificationSeverity
 
 
 async def _make_client(tmp_path: Path):
@@ -160,6 +160,13 @@ async def test_business_events_create_actionable_notifications_without_log_noise
 async def test_high_value_business_events_are_filtered_and_notified(tmp_path):
     client, database, tmdb, pansou, app = await _make_client(tmp_path)
     try:
+        preference = await app.state.notification_service.get_preferences()
+        await app.state.notification_service.update_preferences(
+            NotificationPreferencePatch(
+                revision=preference.revision,
+                quiet_hours_enabled=False,
+            )
+        )
         await app.state.settings_service.log_event(
             "p115.readiness", fields={"status": "unavailable"}
         )

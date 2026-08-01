@@ -14,6 +14,7 @@ from watch_assistant.schemas import (
     MediaType,
     WorkflowCreateRequest,
     WorkflowStageName,
+    WorkflowStagePatch,
     WorkflowStageStatus,
 )
 from watch_assistant.services.directory_dirty_worker import DirectoryDirtyWorker
@@ -31,6 +32,19 @@ async def _claimed(database, *, workflow_id=None):
             row = await session.get(OrganizationOperation, operation.operation_id)
             row.workflow_id = workflow_id
             await session.commit()
+        workflow_service = WorkflowService(database.session_factory)
+        for stage_name in (
+            WorkflowStageName.DISCOVERY,
+            WorkflowStageName.INSPECTION,
+            WorkflowStageName.APPROVAL,
+            WorkflowStageName.PUSH,
+            WorkflowStageName.AVAILABILITY,
+        ):
+            await workflow_service.patch_stage(
+                workflow_id,
+                stage_name,
+                WorkflowStagePatch(status=WorkflowStageStatus.SUCCEEDED),
+            )
     lease = await service.claim(operation.operation_id, expected_revision=1)
     return service, operation, lease
 

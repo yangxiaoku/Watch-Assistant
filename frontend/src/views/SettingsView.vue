@@ -22,6 +22,8 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { ApiClient, ApiError, focusFirstFieldError } from "../api";
 import { p115DeviceOptions } from "../p115DeviceTypes";
 import type {
+  CapabilityState,
+  CapabilityStatusResponse,
   LogCategory,
   LogEntry,
   LogLevel,
@@ -193,6 +195,21 @@ const organizationResultSummary = computed(() => {
   if (result.plan_count > 0 && result.queued_count === 0) return "已生成整理计划，但没有影片进入移动队列。";
   return "本次扫描已完成。";
 });
+function organizationResultActionMessage(result: OrganizationAutomationResultResponse): string {
+  const blocked = result.blocked_details?.[0];
+  if (blocked) {
+    return `自动整理未完成：${blocked.message_zh} 下一步：${blocked.next_step_zh}`;
+  }
+  if (result.status === "success") {
+    return result.queued_count > 0
+      ? `整理已完成，已将 ${result.queued_count} 个影片加入后续处理。`
+      : "整理扫描已完成，没有需要执行的移动操作。";
+  }
+  if (result.status === "skipped") {
+    return "整理扫描已完成，但没有影片进入移动队列。请查看结果中的待确认项目。";
+  }
+  return "整理结果已更新，请查看下方结果和诊断信息。";
+}
 const organizationResultStatusBreakdown = computed(() => {
   const counts = new Map<string, number>();
   for (const item of organizationResult.value?.items ?? []) {
@@ -334,7 +351,7 @@ async function loadP115() {
 
 async function loadP115Devices() {
   try {
-    p115Devices.value = (await props.api.p115Devices()).items;
+    p115Devices.value = (await props.api.p115Devices()).items ?? [];
   } catch {
     p115Devices.value = [];
   }
@@ -399,7 +416,7 @@ async function activateP115Device(device: P115LoginDevice) {
   if (!credentials.value || device.active || p115QrBusy.value) return;
   p115QrError.value = "";
   try {
-    p115Devices.value = (await props.api.activateP115Device(device.id, credentials.value.revision)).items;
+    p115Devices.value = (await props.api.activateP115Device(device.id, credentials.value.revision)).items ?? [];
     await Promise.all([loadCredentials(), loadP115()]);
     p115QrError.value = `已切换到“${device.name}”，其他设备仍保留。`;
   } catch (exception) {
@@ -433,7 +450,7 @@ async function loadCredentials() {
   } catch (exception) {
     if (settingsMounted) credentialsError.value = credentialErrorMessage(exception, "连接配置加载失败，请稍后重试");
   } finally {
-    if (settingsMounted) credentialsLoading.value = false;
+    credentialsLoading.value = false;
   }
 }
 
@@ -639,11 +656,16 @@ async function pollOrganizationResult(previousFinishedAt: string | null) {
       const pending = response.items?.some(
         (item) => item.status === "queued" || item.status === "organizing",
       );
-      if (response.finished_at && response.finished_at !== previousFinishedAt && !pending) return;
+      if (response.finished_at && response.finished_at !== previousFinishedAt && !pending) {
+        organizationActionMessage.value = organizationResultActionMessage(response);
+        return;
+      }
     } catch {
+      organizationActionMessage.value = "整理任务已排队，但结果暂时无法更新。请刷新结果并查看诊断信息。";
       return;
     }
   }
+  organizationActionMessage.value = "整理任务仍在处理，暂时未收到最终结果。请稍后刷新结果；结果不确定时不要重复提交。";
 }
 
 async function openDirectoryPicker(mode: "source" | "target" | "push") {
@@ -772,7 +794,9 @@ async function runOrganizationNow() {
     organizationActionMessage.value = response.message_zh;
     void pollOrganizationResult(previousFinishedAt);
   } catch (exception) {
-    organizationActionMessage.value = exception instanceof ApiError ? exception.message : "开始整理失败，请稍后重试";
+    organizationActionMessage.value = exception instanceof ApiError
+      ? `${exception.message}${exception.suggestion ? ` ${exception.suggestion}` : ""}`
+      : "开始整理失败，请稍后重试";
   } finally {
     organizationActionBusy.value = false;
   }
@@ -1048,6 +1072,29 @@ function capabilityClass(value: boolean) {
   return value ? "status-ok" : "status-degraded";
 }
 
+type OverviewCapabilityKey = keyof SettingsOverviewResponse["capabilities"];
+
+function overviewCapability(key: OverviewCapabilityKey, fallback: boolean): CapabilityStatusResponse {
+  return overview.value?.capability_statuses?.[key] ?? {
+    state: fallback ? "runtime_healthy" : "unconfigured",
+    state_zh: fallback ? "可用" : "未启用",
+    last_success_at: null,
+  };
+}
+
+function overviewCapabilityClass(key: OverviewCapabilityKey, fallback: boolean) {
+  const state: CapabilityState = overviewCapability(key, fallback).state;
+  return state === "recent_success" || state === "runtime_healthy" || state === "contract_verified"
+    ? "status-ok"
+    : state === "configured"
+      ? "status-unknown"
+      : "status-degraded";
+}
+
+function overviewCapabilityLabel(key: OverviewCapabilityKey, fallback: boolean) {
+  return overviewCapability(key, fallback).state_zh;
+}
+
 function levelLabel(level: LogLevel) {
   return levelOptions.find((option) => option.value === level)?.label ?? level;
 }
@@ -1117,9 +1164,9 @@ watch(autoRefreshLogs, syncLogsRefreshTimer);
           <div v-else-if="overviewError" class="settings-state settings-state-error"><AlertTriangle :size="18" /><span>{{ overviewError }}</span><button class="text-button" type="button" @click="loadOverview">重试</button></div>
           <template v-else-if="overview">
             <div class="settings-metrics"><div class="settings-metric"><span>版本</span><strong>{{ overview.release }}</strong></div><div class="settings-metric"><span>运行时间</span><strong>{{ formatUptime(overview.uptime_seconds) }}</strong></div><div class="settings-metric"><span>数据库大小</span><strong>{{ formatBytes(overview.database_size_bytes) }}</strong></div></div>
-            <div class="settings-subsection"><h3>能力</h3><div class="settings-capability-list"><div><span>内容检测</span><strong :class="capabilityClass(overview.capabilities.inspection)">{{ capabilityLabel(overview.capabilities.inspection) }}</strong></div><div><span>磁力云下载</span><strong :class="capabilityClass(overview.capabilities.magnet)">{{ capabilityLabel(overview.capabilities.magnet) }}</strong></div><div><span>115 分享转存</span><strong :class="capabilityClass(overview.capabilities.share)">{{ overview.capabilities.share ? '可用' : '未启用' }}</strong></div></div></div>
-            <div class="settings-subsection"><h3>115 真实操作</h3><div class="settings-capability-list"><div><span>整理计划</span><strong :class="capabilityClass(overview.capabilities.organization_plan)">{{ capabilityLabel(overview.capabilities.organization_plan) }}</strong></div><div><span>移动与重命名</span><strong :class="capabilityClass(overview.capabilities.organization_write)">{{ capabilityLabel(overview.capabilities.organization_write) }}</strong></div><div><span>永久删除</span><strong :class="capabilityClass(overview.capabilities.permanent_delete)">{{ capabilityLabel(overview.capabilities.permanent_delete) }}</strong></div></div></div>
-            <div class="settings-subsection"><h3>STRM</h3><div class="settings-capability-list"><div><span>全量生成</span><strong :class="capabilityClass(overview.capabilities.strm_full)">{{ capabilityLabel(overview.capabilities.strm_full) }}</strong></div><div><span>增量同步</span><strong :class="capabilityClass(overview.capabilities.strm_incremental)">{{ capabilityLabel(overview.capabilities.strm_incremental) }}</strong></div><div><span>失效清理</span><strong :class="capabilityClass(overview.capabilities.strm_cleanup)">{{ capabilityLabel(overview.capabilities.strm_cleanup) }}</strong></div><div><span>动态播放</span><strong :class="capabilityClass(overview.capabilities.strm_playback)">{{ capabilityLabel(overview.capabilities.strm_playback) }}</strong></div></div></div>
+            <div class="settings-subsection"><h3>能力</h3><div class="settings-capability-list"><div><span>内容检测</span><strong :class="overviewCapabilityClass('inspection', overview.capabilities.inspection)">{{ overviewCapabilityLabel('inspection', overview.capabilities.inspection) }}</strong></div><div><span>磁力云下载</span><strong :class="overviewCapabilityClass('magnet', overview.capabilities.magnet)">{{ overviewCapabilityLabel('magnet', overview.capabilities.magnet) }}</strong></div><div><span>115 分享转存</span><strong :class="overviewCapabilityClass('share', overview.capabilities.share)">{{ overviewCapabilityLabel('share', overview.capabilities.share) }}</strong></div></div></div>
+            <div class="settings-subsection"><h3>115 真实操作</h3><div class="settings-capability-list"><div><span>整理计划</span><strong :class="overviewCapabilityClass('organization_plan', overview.capabilities.organization_plan)">{{ overviewCapabilityLabel('organization_plan', overview.capabilities.organization_plan) }}</strong></div><div><span>移动与重命名</span><strong :class="overviewCapabilityClass('organization_write', overview.capabilities.organization_write)">{{ overviewCapabilityLabel('organization_write', overview.capabilities.organization_write) }}</strong></div><div><span>永久删除</span><strong :class="overviewCapabilityClass('permanent_delete', overview.capabilities.permanent_delete)">{{ overviewCapabilityLabel('permanent_delete', overview.capabilities.permanent_delete) }}</strong></div></div></div>
+            <div class="settings-subsection"><h3>STRM</h3><div class="settings-capability-list"><div><span>全量生成</span><strong :class="overviewCapabilityClass('strm_full', overview.capabilities.strm_full)">{{ overviewCapabilityLabel('strm_full', overview.capabilities.strm_full) }}</strong></div><div><span>增量同步</span><strong :class="overviewCapabilityClass('strm_incremental', overview.capabilities.strm_incremental)">{{ overviewCapabilityLabel('strm_incremental', overview.capabilities.strm_incremental) }}</strong></div><div><span>失效清理</span><strong :class="overviewCapabilityClass('strm_cleanup', overview.capabilities.strm_cleanup)">{{ overviewCapabilityLabel('strm_cleanup', overview.capabilities.strm_cleanup) }}</strong></div><div><span>动态播放</span><strong :class="overviewCapabilityClass('strm_playback', overview.capabilities.strm_playback)">{{ overviewCapabilityLabel('strm_playback', overview.capabilities.strm_playback) }}</strong></div></div></div>
           </template>
         </section>
 
@@ -1180,10 +1227,10 @@ watch(autoRefreshLogs, syncLogsRefreshTimer);
                     <span><b>{{ item.title }}</b><small v-if="item.tmdb_id">TMDB {{ item.tmdb_id }}</small></span>
                     <span :class="['organization-result-item-status', `is-${item.status}`]">{{ organizationItemStatusLabels[item.status] }}</span>
                     <small v-if="item.target" class="organization-result-item-target">归档：{{ item.target }}</small><small v-else-if="item.status === 'needs_review' || item.status === 'uncertain'" class="organization-result-item-target">未生成归档路径，未移动文件</small>
-                    <code v-if="item.error_code">错误：{{ item.error_code }}</code>
+                    <details v-if="item.error_code"><summary>诊断信息</summary><small>错误码：{{ item.error_code }}</small></details>
                   </div>
                 </div>
-                <div v-if="organizationResult?.blocked_details.length" class="organization-blocked-details"><strong>未执行原因</strong><ul><li v-for="detail in organizationResult.blocked_details" :key="`${detail.source_directory_id ?? 'automation'}-${detail.error_code}`"><span>{{ detail.source_directory_id ? '来源目录 ' + detail.source_directory_id : '自动整理' }}：{{ detail.message_zh }}</span><code>{{ detail.error_code }}</code></li></ul></div>
+                <div v-if="organizationResult?.blocked_details?.length" class="organization-blocked-details"><strong>未执行原因</strong><ul><li v-for="detail in organizationResult.blocked_details" :key="`${detail.source_directory_id ?? 'automation'}-${detail.error_code}`"><span>{{ detail.source_directory_id ? '来源目录 ' + detail.source_directory_id : '自动整理' }}：{{ detail.message_zh }} 下一步：{{ detail.next_step_zh }}</span><details><summary>诊断信息</summary><small>阶段：{{ detail.phase }}；错误码：{{ detail.error_code }}</small></details></li></ul></div>
               </div>
             </details>
             <details class="settings-subsection" open><summary><h3>扫描来源、归档与推送目录</h3><span class="settings-section-disclosure" aria-hidden="true">⌄</span></summary><p class="settings-note">目录选择器从 115 网盘根目录开始浏览。扫描来源可多选，整理归档目录和资源推送目录各选一个；三者保存后分别生效。账号根目录仅用于浏览，整理必须选择受管的实际文件夹。</p><div class="directory-selection-grid"><div class="directory-selection-field"><span>整理扫描来源</span><div class="directory-chips"><span v-for="id in organizationList(organizationSourceDraft)" :key="id" class="directory-chip">{{ id }}<button type="button" aria-label="移除扫描来源" @click="organizationSourceDraft = organizationList(organizationSourceDraft).filter(item => item !== id).join(', ')">×</button></span><span v-if="!organizationList(organizationSourceDraft).length" class="settings-note">尚未选择</span></div><button class="secondary-button" type="button" @click="openDirectoryPicker('source')">📂 选择扫描来源</button></div><div class="directory-selection-field"><span>整理归档目录</span><span v-if="organizationTargetDraft" class="directory-chip">{{ organizationTargetDraft }}</span><span v-else class="settings-note">尚未选择</span><button class="secondary-button" type="button" @click="openDirectoryPicker('target')">📂 选择归档目录</button></div><div class="directory-selection-field"><span>资源推送目录</span><span v-if="organizationPushDraft" class="directory-chip">{{ organizationPushDraft }}</span><span v-else class="settings-note">尚未选择</span><button class="secondary-button" type="button" @click="openDirectoryPicker('push')">📂 选择推送目录</button><p class="settings-note">资源页面点击“推送”时直接使用这里保存的目录，不再临时选择。</p></div></div></details>

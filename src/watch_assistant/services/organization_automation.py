@@ -5,10 +5,12 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 import uuid
 from collections.abc import Awaitable, Callable, Collection, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Literal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -26,6 +28,7 @@ from watch_assistant.services.library_index import (
     LibraryIndexError,
     LibraryIndexService,
 )
+from watch_assistant.services.media_matcher import TmdbMatchError
 from watch_assistant.services.organization_directory_provisioner import (
     OrganizationDirectoryProvisionError,
 )
@@ -51,28 +54,44 @@ from watch_assistant.services.settings import SettingsService
 class OrganizationAutomationError(ValueError):
     """Stable local automation error without remote values."""
 
-    def __init__(self, code: str) -> None:
+    def __init__(
+        self,
+        code: str,
+        *,
+        phase: OrganizationAutomationPhase | None = None,
+    ) -> None:
         self.code = code
+        self.phase = phase
         super().__init__(code)
+
+
+OrganizationAutomationPhase = Literal[
+    "credentials", "directory_read", "scan", "tmdb", "plan", "execution"
+]
 
 
 @dataclass(frozen=True, slots=True, repr=False)
 class OrganizationBlockedDetail:
     source_directory_id: str | None
+    phase: OrganizationAutomationPhase
     error_code: str
     message_zh: str
+    next_step_zh: str
 
     def to_public_dict(self) -> dict[str, str | None]:
         return {
             "source_directory_id": self.source_directory_id,
+            "phase": self.phase,
             "error_code": self.error_code,
             "message_zh": self.message_zh,
+            "next_step_zh": self.next_step_zh,
         }
 
     def __repr__(self) -> str:
         return (
             "OrganizationBlockedDetail(source_directory_id_present="
             f"{self.source_directory_id is not None}, "
+            f"phase={self.phase!r}, "
             f"error_code={self.error_code!r})"
         )
 
@@ -165,17 +184,17 @@ class OrganizationAutomationService:
             except asyncio.CancelledError:
                 raise
             except Exception as error:  # noqa: BLE001 - scheduler remains alive
-                error_code = _stable_error_code(error)
+                error_code, phase = _classify_error(error)
                 self.last_result = OrganizationAutomationResult(
                     source_count=len(settings.source_directory_ids),
                     scanned_count=0,
                     plan_count=0,
                     queued_count=0,
                     blocked_count=1,
-                    blocked_details=(_blocked_detail(None, error_code),),
+                    blocked_details=(_blocked_detail(None, error_code, phase=phase),),
                     finished_at=datetime.now(UTC),
                 )
-                await self._log_blocked(None, error_code)
+                await self._log_blocked(None, error_code, phase=phase)
                 return True
             self.last_result = OrganizationAutomationResult(
                 source_count=result.source_count,
@@ -200,7 +219,23 @@ class OrganizationAutomationService:
             raise OrganizationAutomationError("target_directory_missing")
         authorized_ids = tuple(dict.fromkeys((*settings.source_directory_ids, target_id)))
         gateway = self._gateway_factory(authorized_ids)
-        catalog = await read_target_catalog(gateway, target_id)
+        try:
+            catalog = await read_target_catalog(gateway, target_id)
+        except asyncio.CancelledError:
+            raise
+        except OrganizationTargetError as error:
+            raise OrganizationAutomationError(
+                _stable_error_code(error), phase="directory_read"
+            ) from None
+        except P115ReadOnlyGatewayError as error:
+            error_code, phase = _classify_error(
+                error, default_phase="directory_read"
+            )
+            raise OrganizationAutomationError(error_code, phase=phase) from None
+        except Exception:  # noqa: BLE001 - keep remote directory details private
+            raise OrganizationAutomationError(
+                "target_directory_read_failed", phase="directory_read"
+            ) from None
         if any(source_id in catalog.by_path.values() for source_id in settings.source_directory_ids):
             raise OrganizationAutomationError("source_target_overlap")
 
@@ -223,8 +258,10 @@ class OrganizationAutomationService:
                 if not scan.complete:
                     error_code = scan.error_code or "scan_incomplete"
                     blocked += 1
-                    blocked_details.append(_blocked_detail(source_id, error_code))
-                    await self._log_blocked(source_id, error_code)
+                    blocked_details.append(
+                        _blocked_detail(source_id, error_code, phase="scan")
+                    )
+                    await self._log_blocked(source_id, error_code, phase="scan")
                     continue
                 if await self._scan_contains_directory(
                     scan.run_id,
@@ -232,9 +269,11 @@ class OrganizationAutomationService:
                 ):
                     blocked += 1
                     blocked_details.append(
-                        _blocked_detail(source_id, "source_target_overlap")
+                        _blocked_detail(
+                            source_id, "source_target_overlap", phase="scan"
+                        )
                     )
-                    await self._log_blocked(source_id, "source_target_overlap")
+                    await self._log_blocked(source_id, "source_target_overlap", phase="scan")
                     continue
                 scanned += 1
                 preview_kwargs = {
@@ -289,13 +328,34 @@ class OrganizationAutomationService:
                         except OrganizationDirectoryProvisionError:
                             raise
                         except Exception as error:  # noqa: BLE001 - keep remote details private
-                            error_code = _stable_error_code(error)
+                            error_code, phase = _classify_error(
+                                error, default_phase="execution"
+                            )
                             raise OrganizationAutomationError(
                                 error_code
                                 if error_code != "automation_failed"
-                                else "target_directory_create_failed"
+                                else "target_directory_create_failed",
+                                phase=phase,
                             ) from None
-                        catalog = await read_target_catalog(gateway, target_id)
+                        try:
+                            catalog = await read_target_catalog(gateway, target_id)
+                        except asyncio.CancelledError:
+                            raise
+                        except OrganizationTargetError as error:
+                            raise OrganizationAutomationError(
+                                _stable_error_code(error), phase="directory_read"
+                            ) from None
+                        except P115ReadOnlyGatewayError as error:
+                            error_code, phase = _classify_error(
+                                error, default_phase="directory_read"
+                            )
+                            raise OrganizationAutomationError(
+                                error_code, phase=phase
+                            ) from None
+                        except Exception:  # noqa: BLE001 - keep remote details private
+                            raise OrganizationAutomationError(
+                                "target_directory_read_failed", phase="directory_read"
+                            ) from None
                         preview_kwargs["target_directories"] = catalog.by_path
                         preview_kwargs["existing_target_files"] = catalog.files
                         if callable(create_previews):
@@ -332,11 +392,14 @@ class OrganizationAutomationService:
                 OrganizationPreviewError,
                 P115ReadOnlyGatewayError,
                 OrganizationTargetError,
+                TmdbMatchError,
             ) as error:
-                error_code = _stable_error_code(error)
+                error_code, phase = _classify_error(error)
                 blocked += 1
-                blocked_details.append(_blocked_detail(source_id, error_code))
-                await self._log_blocked(source_id, error_code)
+                blocked_details.append(
+                    _blocked_detail(source_id, error_code, phase=phase)
+                )
+                await self._log_blocked(source_id, error_code, phase=phase)
         return OrganizationAutomationResult(
             source_count=len(settings.source_directory_ids),
             scanned_count=scanned,
@@ -448,13 +511,20 @@ class OrganizationAutomationService:
                 except asyncio.CancelledError:
                     raise
                 except P115ReadOnlyGatewayError as error:
+                    error_code, phase = _classify_error(
+                        error, default_phase="directory_read"
+                    )
                     raise OrganizationAutomationError(
-                        _stable_error_code(error)
+                        error_code, phase=phase
                     ) from None
                 except Exception:  # noqa: BLE001 - scope verification stays fail-closed
-                    raise OrganizationAutomationError("gateway_error") from None
+                    raise OrganizationAutomationError(
+                        "gateway_error", phase="directory_read"
+                    ) from None
                 if page.state.value != "complete" or page.scan_complete is False:
-                    raise OrganizationAutomationError("source_scope_unverified")
+                    raise OrganizationAutomationError(
+                        "source_scope_unverified", phase="directory_read"
+                    )
                 library.scope_verified = True
                 library.enabled = True
                 library.revision += 1
@@ -487,7 +557,11 @@ class OrganizationAutomationService:
             )
 
     async def _log_blocked(
-        self, source_directory_id: str | None, error_code: str
+        self,
+        source_directory_id: str | None,
+        error_code: str,
+        *,
+        phase: OrganizationAutomationPhase | None = None,
     ) -> None:
         logger = self._event_logger
         method = getattr(logger, "log_event", None)
@@ -498,7 +572,9 @@ class OrganizationAutomationService:
                     "status": "blocked",
                     "error_code": error_code,
                     "source_directory_id": source_directory_id or "未指定",
-                    "message_zh": _blocked_message_zh(error_code),
+                    "phase": phase or _phase_for_code(error_code),
+                    "message_zh": _blocked_message_zh(error_code, phase=phase),
+                    "next_step_zh": _next_step_zh(error_code, phase=phase),
                 },
                 counts={"count": 0},
             )
@@ -533,14 +609,88 @@ def _stable_error_code(error: Exception) -> str:
         }:
             return code
         return "gateway_error"
-    if isinstance(code, str) and code in _STABLE_AUTOMATION_ERROR_CODES:
+    if isinstance(code, str) and _SAFE_ERROR_CODE.fullmatch(code):
         return code
-    message = str(error)
-    return (
-        message
-        if message in _STABLE_AUTOMATION_ERROR_CODES
-        else "automation_failed"
-    )
+    if isinstance(
+        error,
+        (
+            LibraryIndexError,
+            OrganizationDirectoryProvisionError,
+            OrganizationPlanError,
+            OrganizationPreviewError,
+            OrganizationTargetError,
+            TmdbMatchError,
+        ),
+    ):
+        message = str(error)
+        if _SAFE_ERROR_CODE.fullmatch(message):
+            return message
+    return "automation_failed"
+
+
+def _classify_error(
+    error: Exception,
+    *,
+    default_phase: OrganizationAutomationPhase = "plan",
+) -> tuple[str, OrganizationAutomationPhase]:
+    """Reduce internal failures to a safe code and an actionable workflow phase."""
+
+    code = _stable_error_code(error)
+    explicit_phase = getattr(error, "phase", None)
+    if explicit_phase in _AUTOMATION_PHASES:
+        return code, explicit_phase
+    if isinstance(error, P115ReadOnlyGatewayError):
+        return code, "credentials" if code in _CREDENTIAL_CODES else default_phase
+    if isinstance(error, LibraryIndexError):
+        return code, "scan"
+    if isinstance(error, TmdbMatchError):
+        return code, "tmdb"
+    if isinstance(error, OrganizationDirectoryProvisionError):
+        return code, "execution"
+    if isinstance(error, OrganizationTargetError):
+        return code, "directory_read"
+    if isinstance(error, OrganizationPlanError):
+        return code, "plan"
+    if isinstance(error, OrganizationPreviewError):
+        return code, _phase_for_code(code, default="plan")
+    return code, _phase_for_code(code, default=default_phase)
+
+
+_SAFE_ERROR_CODE = re.compile(r"^[a-z][a-z0-9_.-]{1,99}$")
+_AUTOMATION_PHASES = frozenset(
+    {"credentials", "directory_read", "scan", "tmdb", "plan", "execution"}
+)
+_CREDENTIAL_CODES = frozenset(
+    {
+        "credentials_missing",
+        "credentials_unavailable",
+        "client_unavailable",
+        "blocked_environment",
+    }
+)
+_SCAN_CODES = frozenset(
+    {
+        "scan_incomplete",
+        "partial_page",
+        "storage_error",
+        "entry_path_invalid",
+        "directory_cycle",
+        "directory_limit_exceeded",
+        "total_mismatch",
+        "cancelled",
+        "scan_not_current",
+        "scan_entry_invalid",
+        "source_directory_not_found",
+        "entry_scope_unverified",
+        "pagination_unverified",
+    }
+)
+_TMDB_CODES = frozenset(
+    {"tmdb_unavailable", "tmdb_timeout", "tmdb_rate_limited", "tmdb_malformed_response"}
+)
+_EXECUTION_CODES = frozenset(
+    {"target_directory_create_failed", "target_directory_parent_missing"}
+)
 
 
 _STABLE_AUTOMATION_ERROR_CODES = frozenset(
@@ -596,17 +746,76 @@ _BLOCKED_MESSAGES_ZH = {
 }
 
 
-def _blocked_message_zh(error_code: str) -> str:
-    return _BLOCKED_MESSAGES_ZH.get(error_code, "自动整理被阻断，请核对扫描状态和目录配置。")
+def _phase_for_code(
+    error_code: str,
+    *,
+    default: OrganizationAutomationPhase = "plan",
+) -> OrganizationAutomationPhase:
+    if error_code in _CREDENTIAL_CODES:
+        return "credentials"
+    if error_code in _SCAN_CODES:
+        return "scan"
+    if error_code in _TMDB_CODES:
+        return "tmdb"
+    if error_code in _EXECUTION_CODES:
+        return "execution"
+    if error_code in {"target_directory_read_failed", "target_directory_incomplete"}:
+        return "directory_read"
+    return default
+
+
+_PHASE_MESSAGES_ZH = {
+    "credentials": "115 登录凭据或连接状态不可用，自动整理已停止。",
+    "directory_read": "读取 115 目录失败，自动整理已停止。",
+    "scan": "源目录扫描未完成，自动整理已停止。",
+    "tmdb": "影视资料识别失败，自动整理已停止。",
+    "plan": "整理计划生成失败，自动整理已停止。",
+    "execution": "整理操作执行失败，自动整理已停止。",
+}
+_PHASE_NEXT_STEPS_ZH = {
+    "credentials": "请到设置检查 115 登录状态和凭据，再重新发起整理。",
+    "directory_read": "请确认目标目录仍可访问、范围未变化，再重新读取目录。",
+    "scan": "请重新执行一次完整扫描；扫描未完成前不会生成或执行计划。",
+    "tmdb": "请检查影视资料服务配置或稍后重试，识别不确定时需要人工确认。",
+    "plan": "请刷新扫描快照并重新生成整理计划，确认前不会执行移动。",
+    "execution": "请先核对远端状态；结果不确定时不要重复提交。",
+}
+
+
+def _blocked_message_zh(
+    error_code: str,
+    *,
+    phase: OrganizationAutomationPhase | None = None,
+) -> str:
+    return _BLOCKED_MESSAGES_ZH.get(
+        error_code,
+        _PHASE_MESSAGES_ZH[phase or _phase_for_code(error_code)],
+    )
+
+
+def _next_step_zh(
+    error_code: str,
+    *,
+    phase: OrganizationAutomationPhase | None = None,
+) -> str:
+    if error_code in _CREDENTIAL_CODES:
+        return _PHASE_NEXT_STEPS_ZH["credentials"]
+    return _PHASE_NEXT_STEPS_ZH[phase or _phase_for_code(error_code)]
 
 
 def _blocked_detail(
-    source_directory_id: str | None, error_code: str
+    source_directory_id: str | None,
+    error_code: str,
+    *,
+    phase: OrganizationAutomationPhase | None = None,
 ) -> OrganizationBlockedDetail:
+    resolved_phase = phase or _phase_for_code(error_code)
     return OrganizationBlockedDetail(
         source_directory_id=source_directory_id,
+        phase=resolved_phase,
         error_code=error_code,
-        message_zh=_blocked_message_zh(error_code),
+        message_zh=_blocked_message_zh(error_code, phase=resolved_phase),
+        next_step_zh=_next_step_zh(error_code, phase=resolved_phase),
     )
 
 

@@ -3,6 +3,7 @@
 import argparse
 import asyncio
 import os
+import tempfile
 from pathlib import Path
 
 import uvicorn
@@ -26,6 +27,34 @@ MAGNET = f"magnet:?xt=urn:btih:{INFOHASH}&dn=Live+Test+Film+2026+1080p"
 
 
 class TestTmdb:
+    async def get_feed(
+        self, feed: str, media_type: MediaType = MediaType.MOVIE
+    ) -> list[MovieMetadata]:
+        media_label = "电视剧" if media_type == MediaType.TV else "电影"
+        feed_labels = {
+            "popular": "热门推荐",
+            "now_playing": "正在热映",
+            "upcoming": "即将上映",
+            "top_rated": "高分佳作",
+            "on_the_air": "热播剧集",
+        }
+        label = feed_labels.get(feed, feed)
+        base_id = 1000 if media_type == MediaType.MOVIE else 2000
+        return [
+            MovieMetadata(
+                tmdb_id=base_id + index,
+                media_type=media_type,
+                title=f"本地验收 {label} {index}",
+                original_title=f"Live Test {media_label} {feed} {index}",
+                release_year=2026,
+                overview="本地前端验收数据，不访问外部服务。",
+                poster_path=None,
+                backdrop_path=None,
+                vote_average=8.0 - index / 10,
+            )
+            for index in range(1, 4)
+        ]
+
     async def get_media(self, tmdb_id: int, media_type: MediaType) -> MovieMetadata:
         return MovieMetadata(
             tmdb_id=tmdb_id,
@@ -80,8 +109,8 @@ class TestQbittorrent:
         return None
 
 
-async def build_app():
-    database = create_database("sqlite+aiosqlite:///:memory:")
+async def build_app(database_path: Path):
+    database = create_database(f"sqlite+aiosqlite:///{database_path}")
     await initialize_database(database.engine)
     password_hash = PasswordHash.recommended()
     return create_app(
@@ -95,6 +124,8 @@ async def build_app():
         ),
         qbittorrent_client=TestQbittorrent(),
         push_supported=False,
+        organization_plan_enabled=True,
+        organization_execution_enabled=False,
         frontend_dir=ROOT / "frontend" / "dist",
     )
 
@@ -104,8 +135,9 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=4176)
     args = parser.parse_args()
     os.environ.setdefault("PYTHONPATH", str(ROOT / "src"))
-    app = asyncio.run(build_app())
-    uvicorn.run(app, host="127.0.0.1", port=args.port, workers=1)
+    with tempfile.TemporaryDirectory(prefix="watch-assistant-live-") as temp_dir:
+        app = asyncio.run(build_app(Path(temp_dir) / "live.db"))
+        uvicorn.run(app, host="127.0.0.1", port=args.port, workers=1)
 
 
 if __name__ == "__main__":

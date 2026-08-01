@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 from sqlalchemy import and_, func, select
@@ -52,6 +52,42 @@ _STAGE_STATUS_ZH = {
     WorkflowStageStatus.FAILED: "已失败",
     WorkflowStageStatus.UNCERTAIN: "结果待确认",
     WorkflowStageStatus.CANCELLED: "已取消",
+}
+_TERMINAL_PREREQUISITE_STATUSES = {
+    WorkflowStageStatus.SUCCEEDED,
+    WorkflowStageStatus.SKIPPED,
+}
+_STALE_STAGE_AFTER = timedelta(hours=24)
+_REASON_ZH = {
+    "workflow_created": "工作流已创建，等待第一个阶段开始。",
+    "stage_in_progress": "有阶段正在处理，后续阶段会在前置完成后开始。",
+    "stage_failed_with_pending_work": "前置阶段失败，仍有阶段尚未完成。",
+    "stage_failed": "工作流阶段处理失败。",
+    "stage_uncertain": "远端结果暂时无法确认，需要先核对后再继续。",
+    "waiting_confirmation": "工作流等待人工确认。",
+    "waiting_external": "工作流等待外部服务返回结果。",
+    "all_stages_terminal": "所有阶段均已结束。",
+    "workflow_cancelled": "工作流已取消。",
+    "child_started": "关联任务已开始。",
+    "organization_queued": "整理操作已排队，等待后台执行。",
+    "organization_started": "整理操作正在执行。",
+    "organization_finished": "整理操作已结束。",
+    "organization_uncertain": "整理结果暂时无法确认，请先核对 115。",
+    "organization_retried": "整理操作已重新排队。",
+    "organization_cancelled": "整理操作已取消。",
+    "task_retry": "推送任务已重新开始。",
+    "task_cancelled": "推送任务已取消。",
+    "task_accepted": "推送任务已完成。",
+    "task_uncertain": "推送结果暂时无法确认，请先核对远端状态。",
+    "task_failed": "推送任务处理失败。",
+    "stage_timeout": "阶段长时间没有更新，已暂停并等待核对。",
+    "workflow_prerequisite_not_met": "前置阶段尚未完成，当前阶段不能开始。",
+}
+_ERROR_ZH = {
+    "workflow_prerequisite_not_met": "前置阶段尚未完成",
+    "workflow_stage_regression": "阶段状态不能回退",
+    "workflow_stage_terminal": "已结束阶段不能改写",
+    "stage_timeout": "阶段超过允许等待时间",
 }
 
 
@@ -192,6 +228,14 @@ class WorkflowService:
             )
             if stage is None:
                 raise WorkflowNotFound(f"{workflow_id}:{stage_name.value}")
+            stages = list(
+                await session.scalars(
+                    select(WorkflowStage).where(
+                        WorkflowStage.workflow_id == workflow_id
+                    )
+                )
+            )
+            _validate_stage_transition(stages, stage, patch.status)
             stage.status = patch.status
             stage.reason = patch.reason
             stage.error_code = patch.error_code
@@ -354,6 +398,43 @@ class WorkflowService:
         )
         return response
 
+    async def recover_stale(self, *, now: datetime | None = None) -> int:
+        """Stop orphaned stages after restart without inventing a remote result."""
+
+        current_time = now or datetime.now(UTC)
+        cutoff = current_time - _STALE_STAGE_AFTER
+        recovered = 0
+        async with self._session_factory() as session:
+            stages = list(
+                await session.scalars(
+                    select(WorkflowStage).where(
+                        WorkflowStage.status == WorkflowStageStatus.RUNNING,
+                        WorkflowStage.updated_at < cutoff,
+                    )
+                )
+            )
+            for stage in stages:
+                stage.status = WorkflowStageStatus.UNCERTAIN
+                stage.reason = "stage_timeout"
+                stage.error_code = "stage_timeout"
+                stage.completed_at = current_time
+                stage.updated_at = current_time
+                workflow = await session.get(Workflow, stage.workflow_id)
+                if workflow is not None:
+                    all_stages = list(
+                        await session.scalars(
+                            select(WorkflowStage).where(
+                                WorkflowStage.workflow_id == workflow.id
+                            )
+                        )
+                    )
+                    workflow.status, workflow.state_reason = _derive_status(all_stages)
+                    workflow.updated_at = current_time
+                recovered += 1
+            if recovered:
+                await session.commit()
+        return recovered
+
 
 async def link_child(
     session: AsyncSession,
@@ -373,6 +454,12 @@ async def link_child(
     )
     if stage is None:
         raise WorkflowNotFound(f"{workflow_id}:{stage_name.value}")
+    stages = list(
+        await session.scalars(
+            select(WorkflowStage).where(WorkflowStage.workflow_id == workflow_id)
+        )
+    )
+    _validate_stage_transition(stages, stage, WorkflowStageStatus.RUNNING)
     stage.child_type = child_type
     stage.child_id = child_id
     now = datetime.now(UTC)
@@ -415,6 +502,12 @@ async def sync_child_stage(
     )
     if stage is None:
         raise WorkflowNotFound(f"{workflow_id}:{stage_name.value}")
+    stages = list(
+        await session.scalars(
+            select(WorkflowStage).where(WorkflowStage.workflow_id == workflow_id)
+        )
+    )
+    _validate_stage_transition(stages, stage, status)
     now = datetime.now(UTC)
     stage.child_type = child_type
     stage.child_id = child_id
@@ -495,6 +588,45 @@ def _derive_status(
     return WorkflowStatus.COMPLETED, "all_stages_terminal"
 
 
+def _validate_stage_transition(
+    stages: list[WorkflowStage],
+    stage: WorkflowStage,
+    requested: WorkflowStageStatus,
+) -> None:
+    """Enforce the ordered workflow contract at every child update boundary."""
+
+    current = stage.status
+    if requested is WorkflowStageStatus.PENDING:
+        if current is not WorkflowStageStatus.PENDING:
+            raise WorkflowConflict("workflow_stage_regression")
+        return
+    if current in {
+        WorkflowStageStatus.SUCCEEDED,
+        WorkflowStageStatus.SKIPPED,
+        WorkflowStageStatus.CANCELLED,
+    } and requested is not current:
+        raise WorkflowConflict("workflow_stage_terminal")
+    if current is WorkflowStageStatus.UNCERTAIN and requested not in {
+        WorkflowStageStatus.SUCCEEDED,
+        WorkflowStageStatus.FAILED,
+        WorkflowStageStatus.UNCERTAIN,
+    }:
+        raise WorkflowConflict("workflow_stage_regression")
+    if current is WorkflowStageStatus.FAILED and requested not in {
+        WorkflowStageStatus.RUNNING,
+        WorkflowStageStatus.FAILED,
+    }:
+        raise WorkflowConflict("workflow_stage_regression")
+    later_stages = [item for item in stages if item.sequence > stage.sequence]
+    if any(item.status is not WorkflowStageStatus.PENDING for item in later_stages):
+        raise WorkflowConflict("workflow_stage_regression")
+    if stage.sequence == 0:
+        return
+    previous = {item.sequence: item for item in stages}.get(stage.sequence - 1)
+    if previous is None or previous.status not in _TERMINAL_PREREQUISITE_STATUSES:
+        raise WorkflowConflict("workflow_prerequisite_not_met")
+
+
 def _response(workflow: Workflow) -> WorkflowResponse:
     stages = sorted(workflow.stages, key=lambda item: _STAGE_ORDER.index(item.stage))
     return WorkflowResponse(
@@ -506,6 +638,7 @@ def _response(workflow: Workflow) -> WorkflowResponse:
         status=workflow.status,
         status_zh=_STATUS_ZH[workflow.status],
         state_reason=workflow.state_reason,
+        state_reason_zh=_reason_zh(workflow.state_reason),
         created_at=workflow.created_at,
         updated_at=workflow.updated_at,
         stages=[
@@ -516,6 +649,7 @@ def _response(workflow: Workflow) -> WorkflowResponse:
                 status=stage.status,
                 status_zh=_STAGE_STATUS_ZH[stage.status],
                 reason=stage.reason,
+                reason_zh=_reason_zh(stage.reason),
                 error_code=stage.error_code,
                 child_type=stage.child_type,
                 child_id=stage.child_id,
@@ -526,3 +660,9 @@ def _response(workflow: Workflow) -> WorkflowResponse:
             for stage in stages
         ],
     )
+
+
+def _reason_zh(reason: str | None) -> str | None:
+    if reason is None:
+        return None
+    return _REASON_ZH.get(reason, _ERROR_ZH.get(reason, "工作流状态已更新，请查看诊断信息。"))

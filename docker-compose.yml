@@ -2,6 +2,8 @@ services:
   watch-assistant:
     build:
       context: .
+      args:
+        WATCH_ASSISTANT_RELEASE: ${WATCH_ASSISTANT_RELEASE:-unknown}
     image: watch-assistant:local
     container_name: watch-assistant
     restart: unless-stopped

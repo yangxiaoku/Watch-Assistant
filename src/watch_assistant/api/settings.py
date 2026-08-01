@@ -10,8 +10,12 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
+from sqlalchemy import select
 
+from watch_assistant.models import OrganizationOperation, OrganizationOperationStatus
 from watch_assistant.schemas import (
+    CapabilityState,
+    CapabilityStatusResponse,
     ContentPolicyPatch,
     ContentPolicyResponse,
     InspectionSettingsPatch,
@@ -107,61 +111,178 @@ async def require_content_policy_write_access(
 @router.get("/settings/overview", response_model=SettingsOverviewResponse)
 async def settings_overview(request: Request) -> SettingsOverviewResponse:
     database = getattr(request.app.state, "database", None)
+    capabilities = {
+        "inspection": bool(getattr(request.app.state, "inspection_supported", False)),
+        "magnet": bool(
+            getattr(request.app.state, "push_capabilities", {}).get("magnet", False)
+        ),
+        "share": bool(
+            getattr(request.app.state, "push_capabilities", {}).get("share", False)
+        ),
+        "organization_plan": bool(
+            getattr(request.app.state, "organization_plan_enabled", False)
+        ),
+        "organization_execution": bool(
+            getattr(request.app.state, "organization_execution_supported", False)
+            or getattr(request.app.state, "organization_worker", None) is not None
+        ),
+        "organization_write": bool(
+            getattr(request.app.state, "organization_worker", None) is not None
+            and getattr(request.app.state, "organization_write_enabled", False)
+            and getattr(
+                request.app.state, "organization_write_contract_verified", False
+            )
+        ),
+        "permanent_delete": bool(
+            getattr(request.app.state, "organization_worker", None) is not None
+            and getattr(request.app.state, "organization_write_enabled", False)
+            and getattr(
+                request.app.state, "organization_write_contract_verified", False
+            )
+            and getattr(request.app.state, "permanent_delete_enabled", False)
+            and getattr(
+                request.app.state, "permanent_delete_contract_verified", False
+            )
+        ),
+        "strm_full": bool(getattr(request.app.state, "strm_full_enabled", False)),
+        "strm_incremental": bool(
+            getattr(request.app.state, "strm_incremental_enabled", False)
+        ),
+        "strm_cleanup": bool(
+            getattr(request.app.state, "strm_cleanup_enabled", False)
+        ),
+        "strm_playback": bool(
+            getattr(request.app.state, "strm_playback_enabled", False)
+            and getattr(request.app.state, "strm_playback_supported", False)
+            and getattr(
+                request.app.state, "strm_playback_contract_verified", False
+            )
+        ),
+    }
+    automation = getattr(request.app.state, "organization_automation_service", None)
+    last_result = getattr(automation, "last_result", None)
+    plan_success_at = (
+        last_result.finished_at
+        if last_result is not None
+        and last_result.finished_at is not None
+        and last_result.blocked_count == 0
+        else None
+    )
+    execution_success_at = await _latest_organization_success_at(database)
+    worker_running = getattr(request.app.state, "organization_worker", None) is not None
+    write_contract_verified = bool(
+        getattr(request.app.state, "organization_write_contract_verified", False)
+    )
     return SettingsOverviewResponse(
         release=request.app.state.release,
         uptime_seconds=max(0, int(time.monotonic() - request.app.state.started_at)),
         database_size_bytes=_database_size(database),
-        capabilities={
-            "inspection": bool(
-                getattr(request.app.state, "inspection_supported", False)
+        capabilities=capabilities,
+        capability_statuses={
+            "inspection": _capability_status(
+                configured=capabilities["inspection"],
+                runtime_healthy=capabilities["inspection"],
             ),
-            "magnet": bool(
-                getattr(request.app.state, "push_capabilities", {}).get("magnet", False)
+            "magnet": _capability_status(
+                configured=capabilities["magnet"],
+                runtime_healthy=capabilities["magnet"],
             ),
-            "share": bool(
-                getattr(request.app.state, "push_capabilities", {}).get("share", False)
+            "share": _capability_status(configured=capabilities["share"]),
+            "organization_plan": _capability_status(
+                configured=capabilities["organization_plan"],
+                last_success_at=plan_success_at,
             ),
-            "organization_plan": bool(
-                getattr(request.app.state, "organization_plan_enabled", False)
+            "organization_execution": _capability_status(
+                configured=capabilities["organization_execution"],
+                runtime_healthy=worker_running,
+                last_success_at=execution_success_at,
             ),
-            "organization_execution": bool(
-                getattr(request.app.state, "organization_execution_supported", False)
-                or getattr(request.app.state, "organization_worker", None) is not None
+            "organization_write": _capability_status(
+                configured=(
+                    bool(getattr(request.app.state, "organization_write_enabled", False))
+                    or write_contract_verified
+                ),
+                contract_verified=write_contract_verified,
+                runtime_healthy=worker_running and capabilities["organization_write"],
+                last_success_at=execution_success_at,
             ),
-            "organization_write": bool(
-                getattr(request.app.state, "organization_worker", None) is not None
-                and getattr(request.app.state, "organization_write_enabled", False)
-                and getattr(
-                    request.app.state, "organization_write_contract_verified", False
-                )
+            "permanent_delete": _capability_status(
+                configured=bool(
+                    getattr(request.app.state, "permanent_delete_enabled", False)
+                ),
+                contract_verified=bool(
+                    getattr(
+                        request.app.state, "permanent_delete_contract_verified", False
+                    )
+                ),
             ),
-            "permanent_delete": bool(
-                getattr(request.app.state, "organization_worker", None) is not None
-                and getattr(request.app.state, "organization_write_enabled", False)
-                and getattr(
-                    request.app.state, "organization_write_contract_verified", False
-                )
-                and getattr(request.app.state, "permanent_delete_enabled", False)
-                and getattr(
-                    request.app.state, "permanent_delete_contract_verified", False
-                )
+            "strm_full": _capability_status(configured=capabilities["strm_full"]),
+            "strm_incremental": _capability_status(
+                configured=capabilities["strm_incremental"]
             ),
-            "strm_full": bool(getattr(request.app.state, "strm_full_enabled", False)),
-            "strm_incremental": bool(
-                getattr(request.app.state, "strm_incremental_enabled", False)
+            "strm_cleanup": _capability_status(
+                configured=capabilities["strm_cleanup"]
             ),
-            "strm_cleanup": bool(
-                getattr(request.app.state, "strm_cleanup_enabled", False)
-            ),
-            "strm_playback": bool(
-                getattr(request.app.state, "strm_playback_enabled", False)
-                and getattr(request.app.state, "strm_playback_supported", False)
-                and getattr(
-                    request.app.state, "strm_playback_contract_verified", False
-                )
+            "strm_playback": _capability_status(
+                configured=bool(getattr(request.app.state, "strm_playback_enabled", False)),
+                contract_verified=bool(
+                    getattr(
+                        request.app.state, "strm_playback_contract_verified", False
+                    )
+                ),
+                runtime_healthy=capabilities["strm_playback"],
             ),
         },
     )
+
+
+_CAPABILITY_STATE_ZH = {
+    CapabilityState.UNCONFIGURED: "未配置",
+    CapabilityState.CONFIGURED: "已配置",
+    CapabilityState.CONTRACT_VERIFIED: "契约已验证",
+    CapabilityState.RUNTIME_HEALTHY: "运行健康",
+    CapabilityState.RECENT_SUCCESS: "最近成功",
+}
+
+
+def _capability_status(
+    *,
+    configured: bool,
+    contract_verified: bool = False,
+    runtime_healthy: bool = False,
+    last_success_at=None,
+) -> CapabilityStatusResponse:
+    state = (
+        CapabilityState.RECENT_SUCCESS
+        if last_success_at is not None
+        else CapabilityState.RUNTIME_HEALTHY
+        if runtime_healthy
+        else CapabilityState.CONTRACT_VERIFIED
+        if contract_verified
+        else CapabilityState.CONFIGURED
+        if configured
+        else CapabilityState.UNCONFIGURED
+    )
+    return CapabilityStatusResponse(
+        state=state,
+        state_zh=_CAPABILITY_STATE_ZH[state],
+        last_success_at=last_success_at,
+    )
+
+
+async def _latest_organization_success_at(database):
+    if database is None:
+        return None
+    async with database.session_factory() as session:
+        return await session.scalar(
+            select(OrganizationOperation.finished_at)
+            .where(
+                OrganizationOperation.status == OrganizationOperationStatus.ORGANIZED,
+                OrganizationOperation.finished_at.is_not(None),
+            )
+            .order_by(OrganizationOperation.finished_at.desc())
+            .limit(1)
+        )
 
 
 @router.get("/settings/logging", response_model=LoggingSettingsResponse)

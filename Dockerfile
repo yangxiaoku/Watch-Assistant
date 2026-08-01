@@ -6,9 +6,11 @@ COPY frontend/ ./
 RUN npm run build
 
 FROM python:3.12-slim AS runtime
+ARG WATCH_ASSISTANT_RELEASE=unknown
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    FRONTEND_DIST_DIR=/app/frontend/dist
+    FRONTEND_DIST_DIR=/app/frontend/dist \
+    WATCH_ASSISTANT_RELEASE=$WATCH_ASSISTANT_RELEASE
 WORKDIR /app
 COPY pyproject.toml ./
 COPY src/ ./src/

@@ -128,7 +128,7 @@ from watch_assistant.services.webhooks import WebhookService
 from watch_assistant.services.workflows import WorkflowService
 from watch_assistant.worker import TaskAdapter, TaskWorker
 
-_RELEASE_SHA = re.compile(r"[0-9a-f]{40}", re.IGNORECASE)
+_RELEASE_SHA = re.compile(r"(?:[0-9a-f]{7}|[0-9a-f]{40})", re.IGNORECASE)
 _TRUSTED_RELEASE_PATH = Path("/opt/watch-assistant/current")
 _DEFAULT_PLAYBACK_NETWORKS = (
     "127.0.0.0/8",
@@ -718,6 +718,7 @@ def create_app(
                 runtime_database.session_factory,
                 event_logger=application.state.settings_service,
             )
+            await application.state.workflow_service.recover_stale()
             application.state.notification_service = NotificationService(
                 runtime_database.session_factory,
                 event_logger=application.state.settings_service,
@@ -1360,6 +1361,7 @@ def create_app(
                 inspection_auto_start_enabled = False
         return {
             "status": "ok",
+            "release": application.state.release,
             "push_supported": getattr(application.state, "push_supported", False),
             "push_capabilities": capabilities,
             "inspection_supported": getattr(
@@ -1474,9 +1476,9 @@ def create_app(
 
 
 def _resolve_release(trusted_path: Path | None = None) -> str:
-    configured = os.environ.get("WATCH_ASSISTANT_RELEASE")
-    if configured:
-        return configured
+    configured = os.environ.get("WATCH_ASSISTANT_RELEASE", "").strip()
+    if _RELEASE_SHA.fullmatch(configured) is not None:
+        return configured.lower()
     try:
         release_name = (trusted_path or _TRUSTED_RELEASE_PATH).resolve(strict=True).name
     except (OSError, RuntimeError, ValueError):

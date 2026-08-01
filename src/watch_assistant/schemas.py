@@ -602,8 +602,10 @@ class OrganizationBlockedDetailResponse(BaseModel):
     model_config = {"extra": "forbid"}
 
     source_directory_id: str | None = None
+    phase: Literal["credentials", "directory_read", "scan", "tmdb", "plan", "execution"]
     error_code: str
     message_zh: str
+    next_step_zh: str
 
 
 class OrganizationResultItemResponse(BaseModel):
@@ -815,6 +817,23 @@ class SettingsOverviewResponse(BaseModel):
     uptime_seconds: int = Field(ge=0)
     database_size_bytes: int = Field(ge=0)
     capabilities: dict[str, bool]
+    capability_statuses: dict[str, "CapabilityStatusResponse"] = Field(
+        default_factory=dict
+    )
+
+
+class CapabilityState(StrEnum):
+    UNCONFIGURED = "unconfigured"
+    CONFIGURED = "configured"
+    CONTRACT_VERIFIED = "contract_verified"
+    RUNTIME_HEALTHY = "runtime_healthy"
+    RECENT_SUCCESS = "recent_success"
+
+
+class CapabilityStatusResponse(BaseModel):
+    state: CapabilityState
+    state_zh: str
+    last_success_at: datetime | None = None
 
 
 class CompatibilityStatus(StrEnum):
@@ -1509,6 +1528,7 @@ class WorkflowStageResponse(BaseModel):
     status: WorkflowStageStatus
     status_zh: str
     reason: str | None
+    reason_zh: str | None
     error_code: str | None
     child_type: str | None
     child_id: str | None
@@ -1526,6 +1546,7 @@ class WorkflowResponse(BaseModel):
     status: WorkflowStatus
     status_zh: str
     state_reason: str | None
+    state_reason_zh: str | None
     created_at: datetime
     updated_at: datetime
     stages: list[WorkflowStageResponse] = Field(default_factory=list)

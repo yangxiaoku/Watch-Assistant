@@ -180,6 +180,7 @@ export interface InspectionBatchResponse {
 
 export interface HealthResponse {
   status: string;
+  release: string;
   push_supported: boolean;
   push_capabilities?: {
     magnet: boolean;
@@ -222,6 +223,15 @@ export interface SettingsOverviewResponse {
     strm_cleanup: boolean;
     strm_playback: boolean;
   };
+  capability_statuses?: Record<string, CapabilityStatusResponse>;
+}
+
+export type CapabilityState = "unconfigured" | "configured" | "contract_verified" | "runtime_healthy" | "recent_success";
+
+export interface CapabilityStatusResponse {
+  state: CapabilityState;
+  state_zh: string;
+  last_success_at: string | null;
 }
 
 export interface LibraryScanSummary {
@@ -417,8 +427,10 @@ export type OrganizationResultStatus = "unknown" | "success" | "skipped" | "dele
 
 export interface OrganizationBlockedDetail {
   source_directory_id: string | null;
+  phase: "credentials" | "directory_read" | "scan" | "tmdb" | "plan" | "execution";
   error_code: string;
   message_zh: string;
+  next_step_zh: string;
 }
 
 export interface OrganizationResultItem {
@@ -639,6 +651,7 @@ export interface WorkflowStageResponse {
   status: WorkflowStageStatus;
   status_zh: string;
   reason: string | null;
+  reason_zh: string | null;
   error_code: string | null;
   child_type: string | null;
   child_id: string | null;
@@ -656,6 +669,7 @@ export interface WorkflowResponse {
   status: WorkflowStatus;
   status_zh: string;
   state_reason: string | null;
+  state_reason_zh: string | null;
   created_at: string;
   updated_at: string;
   stages: WorkflowStageResponse[];

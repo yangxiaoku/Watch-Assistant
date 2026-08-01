@@ -164,7 +164,7 @@ onMounted(() => { void loadWorkflows(); });
         <button v-for="workflow in items" :key="workflow.id" type="button" class="workflow-row" :class="{ active: selected?.id === workflow.id }" @click="selectWorkflow(workflow)"><span class="workflow-row-title">{{ workflow.media_type === 'tv' ? '电视剧' : '电影' }}<span v-if="workflow.tmdb_id"> · TMDB {{ workflow.tmdb_id }}</span></span><strong>{{ statusLabel(workflow.status) }}</strong><small>更新于 {{ formatTimestamp(workflow.updated_at) }}</small></button>
       </div>
       <article v-if="selected" class="workflow-detail" aria-live="polite">
-        <header><div><p class="eyebrow">关联任务详情</p><h2>{{ selected.media_type === 'tv' ? '电视剧' : '电影' }} · {{ statusLabel(selected.status) }}</h2><p>{{ selected.state_reason || '服务端正在根据阶段状态计算结果。' }}</p></div><button class="icon-button" type="button" title="关闭详情" aria-label="关闭详情" @click="clearSelection">×</button></header>
+        <header><div><p class="eyebrow">关联任务详情</p><h2>{{ selected.media_type === 'tv' ? '电视剧' : '电影' }} · {{ statusLabel(selected.status) }}</h2><p>{{ selected.state_reason_zh || '服务端正在根据阶段状态计算结果。' }}</p><details v-if="selected.state_reason"><summary>诊断信息</summary><small>状态标识：{{ selected.state_reason }}</small></details></div><button class="icon-button" type="button" title="关闭详情" aria-label="关闭详情" @click="clearSelection">×</button></header>
         <p v-if="detailLoading" class="workflow-detail-loading" role="status"><LoaderCircle class="spin" :size="16" />正在刷新任务详情</p>
         <p v-if="detailError" class="error-text" role="alert">{{ detailError }}</p>
         <p v-if="actionError" class="error-text" role="alert">{{ actionError }}</p>
@@ -174,7 +174,7 @@ onMounted(() => { void loadWorkflows(); });
           <button v-if="workflowCanCancel" class="text-button" type="button" :disabled="actionLoading" @click="cancelSelectedWorkflow"><Ban :size="15" />取消工作流</button>
         </div>
         <dl class="workflow-identifiers"><div><dt>任务 ID</dt><dd>{{ selected.id }}</dd></div><div><dt>关联 ID</dt><dd>{{ selected.correlation_id }}</dd></div><div><dt>创建时间</dt><dd>{{ formatTimestamp(selected.created_at) }}</dd></div></dl>
-        <ol class="workflow-timeline"><li v-for="stage in selected.stages" :key="stage.id" class="workflow-stage" :class="stageClass(stage.status)"><component :is="statusIcon(stage.status)" :size="17" :class="{ spin: stage.status === 'running' }" /><div><strong>{{ stageLabel(stage.stage) }}</strong><span>{{ stage.status_zh || stage.status }}</span><small v-if="stage.reason">{{ stage.reason }}</small><small v-if="stage.error_code">错误码：{{ stage.error_code }}</small><small v-if="stage.updated_at">更新于 {{ formatTimestamp(stage.updated_at) }}</small></div></li></ol>
+        <ol class="workflow-timeline"><li v-for="stage in selected.stages" :key="stage.id" class="workflow-stage" :class="stageClass(stage.status)"><component :is="statusIcon(stage.status)" :size="17" :class="{ spin: stage.status === 'running' }" /><div><strong>{{ stageLabel(stage.stage) }}</strong><span>{{ stage.status_zh || '状态待确认' }}</span><small v-if="stage.reason_zh">{{ stage.reason_zh }}</small><details v-if="stage.reason || stage.error_code"><summary>诊断信息</summary><small v-if="stage.reason">状态标识：{{ stage.reason }}</small><small v-if="stage.error_code">错误码：{{ stage.error_code }}</small></details><small v-if="stage.updated_at">更新于 {{ formatTimestamp(stage.updated_at) }}</small></div></li></ol>
       </article>
     </div>
   </section>
