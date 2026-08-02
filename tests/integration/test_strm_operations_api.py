@@ -138,7 +138,7 @@ async def test_strm_operations_are_visible_and_legacy_cleanup_is_preview_only(
             "/api/v1/agent/tokens",
             json={
                 "name": "strm-scoped",
-                "scopes": ["strm:read", "strm:write"],
+                "scopes": ["library:read", "strm:read", "strm:write"],
                 "library_ids": ["library-other"],
             },
             headers=headers,
