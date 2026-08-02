@@ -516,6 +516,9 @@ class LibraryScanWorker:
         await self._emit_result(lease, result, result.error_code)
         return True
 
+    async def recover_expired(self, *, now: datetime | None = None) -> int:
+        return await self._operations.recover_expired(now=now)
+
     async def _renew_lease_forever(
         self, lease: LibraryScanLease, stop_event: asyncio.Event
     ) -> None:
