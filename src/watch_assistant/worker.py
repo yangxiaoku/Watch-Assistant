@@ -25,9 +25,11 @@ from watch_assistant.services.inventory_push_guard import (
 )
 from watch_assistant.services.observability import EventLogger, emit_event
 from watch_assistant.services.tasks import (
+    RECONCILIATION_UNAVAILABLE,
     TASK_LEASE_LOST,
     TaskLease,
     TaskService,
+    read_task_status,
 )
 
 _ExternalResult = TypeVar("_ExternalResult")
@@ -67,8 +69,11 @@ class TaskAdapter(Protocol):
         target_cid: str | None = None,
     ) -> SubmissionResult: ...
 
-    async def get_status(
-        self, remote_ref: str
+    async def get_status_for_task(
+        self,
+        remote_ref: str,
+        *,
+        target_directory_id: str | None,
     ) -> RemoteStatus | RemoteObservation | None: ...
 
 
@@ -171,7 +176,7 @@ class TaskWorker:
                 target_directory_id = lease.target_directory_id
                 try:
                     read_status = partial(
-                        _read_task_status,
+                        read_task_status,
                         self._adapter,
                         remote_ref,
                         target_directory_id=target_directory_id,
@@ -183,7 +188,10 @@ class TaskWorker:
                     await self._mark_lease_lost(lease)
                     continue
                 except Exception:  # noqa: BLE001 - status failure is uncertain
-                    remote_status = None
+                    remote_status = RemoteObservation(
+                        status=RemoteStatus.UNCERTAIN,
+                        error_code=RECONCILIATION_UNAVAILABLE,
+                    )
             await self._tasks.finish_recovery(lease, remote_status)
 
     async def run_forever(self, stop_event: asyncio.Event, *, interval: float = 1.0):
@@ -402,17 +410,3 @@ def _inventory_error_message(code: str) -> str:
     return _INVENTORY_ERROR_MESSAGES_ZH.get(
         code, "库存检查未完成，已阻止远端提交。"
     )
-
-
-async def _read_task_status(
-    adapter: TaskAdapter,
-    remote_ref: str,
-    *,
-    target_directory_id: str | None,
-) -> RemoteStatus | RemoteObservation | None:
-    target_aware = getattr(adapter, "get_status_for_task", None)
-    if callable(target_aware):
-        return await target_aware(
-            remote_ref, target_directory_id=target_directory_id
-        )
-    return await adapter.get_status(remote_ref)
