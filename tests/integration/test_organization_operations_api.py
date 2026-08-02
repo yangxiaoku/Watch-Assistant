@@ -13,6 +13,7 @@ from watch_assistant.app import create_app
 from watch_assistant.crypto import SecretCrypto
 from watch_assistant.db import create_database, initialize_database
 from watch_assistant.library_models import (
+    LibraryScanCheckpoint,
     LibraryScanEntry,
     LibraryScanRun,
     MediaLibrary,
@@ -130,9 +131,13 @@ async def _client(
                 library_id="library-operation",
                 root_directory_id="root-operation",
                 idempotency_key="scan-operation-key",
+                scan_mode="tree",
                 state="completed",
                 complete=True,
                 snapshot_revision=1,
+                expected_total=2,
+                pages_read=2,
+                items_seen=2,
             )
         )
         await session.flush()
@@ -179,6 +184,23 @@ async def _client(
                     name="movie.mkv",
                     path="/private/movie.mkv",
                     is_directory=False,
+                ),
+                LibraryScanCheckpoint(
+                    scan_run_id="scan-operation",
+                    page=2,
+                    items_seen=2,
+                    cursor_json=json.dumps(
+                        {
+                            "version": 2,
+                            "directory_totals": {
+                                "root-operation": 2,
+                                "target-operation": 0,
+                            },
+                            "expected_total": 2,
+                            "pending": [],
+                            "visited": ["root-operation", "target-operation"],
+                        }
+                    ),
                 ),
             ]
         )

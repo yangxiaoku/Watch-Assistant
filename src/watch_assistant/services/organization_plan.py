@@ -17,12 +17,17 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from watch_assistant.library_models import (
+    LibraryScanCheckpoint,
     LibraryScanEntry,
     LibraryScanRun,
     MediaLibrary,
     OrganizationPlan,
 )
-from watch_assistant.services.library_index import ScanRunState
+from watch_assistant.services.library_index import (
+    LibraryIndexError,
+    ScanRunState,
+    validate_complete_scan_evidence,
+)
 from watch_assistant.services.media_classification import (
     ClassificationStatus,
     NamingPlan,
@@ -1058,6 +1063,26 @@ class OrganizationPlanService:
         )
         if latest is None or latest.id != run.id:
             raise OrganizationPlanError("scan_not_current")
+        checkpoint = await session.get(LibraryScanCheckpoint, run.id)
+        entries = list(
+            (
+                await session.scalars(
+                    select(LibraryScanEntry).where(
+                        LibraryScanEntry.scan_run_id == run.id
+                    )
+                )
+            ).all()
+        )
+        try:
+            validate_complete_scan_evidence(
+                run,
+                checkpoint,
+                entries,
+                root_directory_id=library.root_directory_id,
+                require_tree=True,
+            )
+        except LibraryIndexError:
+            raise OrganizationPlanError("scan_not_current") from None
         return library, run
 
     async def _load_source_rows(
@@ -1560,14 +1585,32 @@ async def load_executable_steps(
             or len(precondition_items) != len(actions)
         ):
             return None
+        checkpoint = await session.get(LibraryScanCheckpoint, run.id)
+        all_entries = list(
+            (
+                await session.scalars(
+                    select(LibraryScanEntry).where(
+                        LibraryScanEntry.scan_run_id == run.id
+                    )
+                )
+            ).all()
+        )
+        try:
+            validate_complete_scan_evidence(
+                run,
+                checkpoint,
+                all_entries,
+                root_directory_id=library.root_directory_id,
+                require_tree=True,
+            )
+        except LibraryIndexError:
+            return None
         steps = _parse_executable_steps(stored, allow_unconfirmed=allow_unconfirmed)
         if steps is None:
             return None
         rows = {
             (row.object_type, row.object_id): row
-            for row in await session.scalars(
-                select(LibraryScanEntry).where(LibraryScanEntry.scan_run_id == run.id)
-            )
+            for row in all_entries
         }
         if not _validate_persisted_execution(
             stored,
@@ -1761,9 +1804,6 @@ def _validate_persisted_execution(
     managed_directory_ids.update(
         object_id for object_id, matches in directory_rows.items() if len(matches) == 1
     )
-    if target_directory_id is not None:
-        managed_directory_ids.add(target_directory_id)
-    managed_directory_ids.update(target_directories.values())
     try:
         _validate_relative_path(plan.target_root, allow_empty=True)
         _validate_version(plan.rule_version)

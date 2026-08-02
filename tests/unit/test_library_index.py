@@ -1,6 +1,7 @@
 import asyncio
 import json
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -21,6 +22,7 @@ from watch_assistant.services.library_index import (
     LibraryIndexError,
     LibraryIndexService,
     ScanRunState,
+    validate_tree_cursor_scope,
 )
 
 ROOT_ID = "7000"
@@ -141,6 +143,23 @@ class _TreeTotalGateway(_TreeGateway):
         if directory_id == ROOT_ID:
             return replace(page_value, total=self.reported_total)
         return page_value
+
+
+class _RootTotalGateway(_ReadOnlyGateway):
+    def __init__(self, reported_total: int | None):
+        super().__init__(1)
+        self.reported_total = reported_total
+
+    async def list_directory(self, directory_id: str, *, page: int = 1, page_size=100):
+        page_value = await super().list_directory(
+            directory_id, page=page, page_size=page_size
+        )
+        return replace(
+            page_value,
+            total=self.reported_total,
+            terminal=True,
+            has_more=False,
+        )
 
 
 def _file_entry(file_id: str, *, path: str = SECRET_PATH, parent_id: str = ROOT_ID):
@@ -364,6 +383,139 @@ async def test_pagination_error_is_incomplete_and_never_deletion_candidate(tmp_p
     assert result.changes == ()
     assert gateway.write_calls == 0
     await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("reported_total", "error_code"),
+    ((None, "pagination_unverified"), (0, "total_mismatch"), (2, "total_mismatch")),
+)
+async def test_root_total_evidence_is_fail_closed_before_snapshot_side_effects(
+    tmp_path, reported_total, error_code
+):
+    database = await _database(tmp_path)
+    gateway = _RootTotalGateway(reported_total)
+
+    result = await _service(database, gateway).scan(
+        f"root-total-{reported_total}"
+    )
+
+    assert result.state is ScanRunState.FAILED
+    assert result.complete is False
+    assert result.error_code == error_code
+    assert gateway.calls == [1]
+    async with database.session_factory() as session:
+        assert await session.scalar(select(LibraryScanEntry)) is None
+        assert await session.scalar(select(LibraryScanDiff)) is None
+        assert await session.scalar(select(LibraryObjectLedger)) is None
+        assert await session.scalar(select(LibraryInventoryEvent)) is None
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_external_lease_loss_is_fenced_before_remote_page(tmp_path, monkeypatch):
+    database = await _database(tmp_path)
+    gateway = _ReadOnlyGateway(1)
+    service = _service(
+        database,
+        gateway,
+        lease_owner="worker-one",
+        lease_token="lease-token",
+    )
+    async with database.session_factory() as session:
+        session.add(
+            LibraryScanRun(
+                id="leased-root-scan",
+                library_id=LIBRARY_ID,
+                root_directory_id=ROOT_ID,
+                idempotency_key="leased-root",
+                scan_mode="root",
+                state=ScanRunState.RUNNING.value,
+                lease_owner="worker-one",
+                lease_token="lease-token",
+                lease_expires_at=datetime.now(UTC) + timedelta(minutes=5),
+            )
+        )
+        await session.flush()
+        session.add(LibraryScanCheckpoint(scan_run_id="leased-root-scan"))
+        await session.commit()
+
+    original_fence = service._fence_before_remote_page
+
+    async def expire_then_fence(run_id: str):
+        async with database.session_factory() as session:
+            run = await session.get(LibraryScanRun, run_id)
+            assert run is not None
+            run.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+            await session.commit()
+        await original_fence(run_id)
+
+    monkeypatch.setattr(service, "_fence_before_remote_page", expire_then_fence)
+    with pytest.raises(LibraryIndexError, match="lease_claim_lost"):
+        await service.scan("leased-root")
+    assert gateway.calls == []
+    await database.engine.dispose()
+
+
+@pytest.mark.parametrize("corruption", ("items_seen", "directory_total", "parent_path"))
+def test_tree_cursor_evidence_rejects_persisted_scope_corruption(corruption):
+    run = LibraryScanRun(
+        id="corrupt-cursor",
+        library_id=LIBRARY_ID,
+        root_directory_id=ROOT_ID,
+        idempotency_key="corrupt-cursor-key",
+        scan_mode="tree",
+        state=ScanRunState.RUNNING.value,
+        expected_total=1,
+        pages_read=1,
+        items_seen=1,
+    )
+    checkpoint = LibraryScanCheckpoint(
+        scan_run_id=run.id,
+        page=1,
+        items_seen=1,
+        cursor_json=json.dumps(
+            {
+                "version": 2,
+                "directory_totals": {ROOT_ID: 1},
+                "expected_total": 1,
+                "pending": [
+                    {
+                        "directory_id": "7100",
+                        "parent_path": "nested",
+                        "page": 1,
+                        "page_count": None,
+                        "total": None,
+                        "items_seen": 0,
+                    }
+                ],
+                "visited": [ROOT_ID, "7100"],
+            }
+        ),
+    )
+    entry = LibraryScanEntry(
+        scan_run_id=run.id,
+        object_type="directory",
+        object_id="7100",
+        parent_id=ROOT_ID,
+        name="nested",
+        path="nested",
+        is_directory=True,
+    )
+    if corruption == "items_seen":
+        checkpoint.items_seen = 0
+    elif corruption == "directory_total":
+        checkpoint.cursor_json = checkpoint.cursor_json.replace('"7000": 1', '"7000": 2')
+        run.expected_total = 2
+    else:
+        checkpoint.cursor_json = checkpoint.cursor_json.replace(
+            '"parent_path": "nested"', '"parent_path": "other"'
+        )
+
+    with pytest.raises(LibraryIndexError):
+        validate_tree_cursor_scope(
+            run, checkpoint, (entry,), root_directory_id=ROOT_ID
+        )
 
 
 @pytest.mark.asyncio
