@@ -161,6 +161,64 @@ async def test_new_worker_restores_durable_child_scope_without_remote_scope_expa
 
 @pytest.mark.integration
 @pytest.mark.asyncio
+async def test_v2_durable_cursor_restores_child_scope_without_remote_scope_expansion(
+    tmp_path,
+):
+    database = await _database(tmp_path)
+    service = LibraryScanOperationService(database.session_factory)
+    queued = await service.enqueue(LIBRARY_ID, idempotency_key="v2-cross-worker")
+    lease = await service.claim_next(owner="worker-two")
+    assert lease is not None
+
+    async with database.session_factory() as session:
+        checkpoint = await session.get(LibraryScanCheckpoint, queued.run_id)
+        assert checkpoint is not None
+        checkpoint.cursor_json = json.dumps(
+            {
+                "version": 2,
+                "directory_totals": {ROOT_ID: 1},
+                "expected_total": 1,
+                "pending": [
+                    {
+                        "directory_id": CHILD_ID,
+                        "parent_path": "child-directory",
+                        "page": 1,
+                        "page_count": None,
+                        "total": None,
+                        "items_seen": 0,
+                    }
+                ],
+                "visited": [ROOT_ID, CHILD_ID],
+            }
+        )
+        session.add(
+            LibraryScanEntry(
+                scan_run_id=queued.run_id,
+                object_type="directory",
+                object_id=CHILD_ID,
+                parent_id=ROOT_ID,
+                name="child-directory",
+                path="child-directory",
+                is_directory=True,
+                size_bytes=0,
+            )
+        )
+        await session.commit()
+
+    transport = _Transport([_page([_file("8100", CHILD_ID)])])
+    scope = await service.readonly_directory_scope(lease)
+    gateway = _gateway(transport, scope)
+    page = await gateway.list_directory(CHILD_ID, page=1, page_size=1)
+
+    assert scope == frozenset({ROOT_ID, CHILD_ID})
+    assert page.items[0].parent_id == CHILD_ID
+    assert [call["cid"] for call in transport.calls] == [CHILD_ID]
+    await service.release(lease, requeue=True)
+    await database.engine.dispose()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
 async def test_durable_cursor_outside_root_is_rejected_before_gateway_creation(tmp_path):
     database = await _database(tmp_path)
     service = LibraryScanOperationService(database.session_factory)

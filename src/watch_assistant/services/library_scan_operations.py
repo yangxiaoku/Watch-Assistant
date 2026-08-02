@@ -792,7 +792,12 @@ def _readonly_directory_scope(
         cursor = json.loads(cursor_json)
     except (TypeError, ValueError):
         raise LibraryIndexError("checkpoint_invalid") from None
-    if not isinstance(cursor, dict) or cursor.get("version") != 1:
+    version = cursor.get("version") if isinstance(cursor, dict) else None
+    if (
+        not isinstance(version, int)
+        or isinstance(version, bool)
+        or version not in {1, 2}
+    ):
         raise LibraryIndexError("checkpoint_invalid")
 
     visited = cursor.get("visited")
@@ -804,6 +809,27 @@ def _readonly_directory_scope(
     if len(set(visited)) != len(visited) or root_directory_id not in visited:
         raise LibraryIndexError("library_scope_unverified")
 
+    directory_totals: dict[str, int] | None = None
+    if version == 2:
+        raw_directory_totals = cursor.get("directory_totals")
+        expected_total = cursor.get("expected_total")
+        if (
+            not isinstance(raw_directory_totals, dict)
+            or not _valid_nonnegative_int(expected_total)
+        ):
+            raise LibraryIndexError("checkpoint_invalid")
+        directory_totals = {}
+        for directory_id, total in raw_directory_totals.items():
+            if not _valid_scope_identifier(directory_id):
+                raise LibraryIndexError("library_scope_unverified")
+            if not _valid_nonnegative_int(total):
+                raise LibraryIndexError("checkpoint_invalid")
+            if directory_id not in visited:
+                raise LibraryIndexError("library_scope_unverified")
+            directory_totals[directory_id] = total
+        if sum(directory_totals.values()) != expected_total:
+            raise LibraryIndexError("checkpoint_invalid")
+
     pending_ids: list[str] = []
     for item in pending:
         if not isinstance(item, dict):
@@ -813,7 +839,39 @@ def _readonly_directory_scope(
             raise LibraryIndexError("library_scope_unverified")
         if directory_id in pending_ids:
             raise LibraryIndexError("checkpoint_invalid")
+        parent_path = item.get("parent_path")
+        page = item.get("page")
+        page_count = item.get("page_count")
+        total = item.get("total")
+        if (
+            not isinstance(parent_path, str)
+            or not _valid_cursor_path(parent_path, allow_empty=True)
+            or not isinstance(page, int)
+            or isinstance(page, bool)
+            or page < 1
+            or not _valid_optional_nonnegative_int(page_count)
+            or not _valid_optional_nonnegative_int(total)
+        ):
+            raise LibraryIndexError("checkpoint_invalid")
+        if version == 2:
+            items_seen = item.get("items_seen")
+            if not _valid_nonnegative_int(items_seen):
+                raise LibraryIndexError("checkpoint_invalid")
+            if directory_totals is None:
+                raise LibraryIndexError("checkpoint_invalid")
+            known_total = directory_totals.get(directory_id)
+            if total is None:
+                if known_total is not None or items_seen != 0:
+                    raise LibraryIndexError("checkpoint_invalid")
+            elif known_total != total or items_seen > total:
+                raise LibraryIndexError("checkpoint_invalid")
         pending_ids.append(directory_id)
+
+    if version == 2:
+        if directory_totals is None:
+            raise LibraryIndexError("checkpoint_invalid")
+        if set(directory_totals) | set(pending_ids) != set(visited):
+            raise LibraryIndexError("checkpoint_invalid")
 
     directory_parents: dict[str, str] = {}
     for entry in entries:
@@ -845,6 +903,26 @@ def _readonly_directory_scope(
             current = parent_id
 
     return frozenset(visited)
+
+
+def _valid_nonnegative_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _valid_optional_nonnegative_int(value: object) -> bool:
+    return value is None or _valid_nonnegative_int(value)
+
+
+def _valid_cursor_path(value: object, *, allow_empty: bool = False) -> bool:
+    return (
+        isinstance(value, str)
+        and (allow_empty or bool(value))
+        and len(value) <= 4096
+        and "\x00" not in value
+        and "\\" not in value
+        and "://" not in value
+        and not any(part == ".." for part in value.split("/"))
+    )
 
 
 def _valid_scope_identifier(value: object) -> bool:
