@@ -25,6 +25,7 @@ from watch_assistant.services.inventory_push_guard import (
 )
 from watch_assistant.services.observability import EventLogger, emit_event
 from watch_assistant.services.tasks import (
+    TASK_LEASE_LOST,
     TaskLease,
     TaskService,
 )
@@ -105,6 +106,7 @@ class TaskWorker:
         try:
             result = await self._process_lease(lease)
         except _LeaseClaimLost:
+            await self._mark_lease_lost(lease)
             return True
         task = await self._tasks.finish_submission(lease, result)
         if task is None:
@@ -178,6 +180,7 @@ class TaskWorker:
                         lease, read_status
                     )
                 except _LeaseClaimLost:
+                    await self._mark_lease_lost(lease)
                     continue
                 except Exception:  # noqa: BLE001 - status failure is uncertain
                     remote_status = None
@@ -346,6 +349,29 @@ class TaskWorker:
         except Exception:  # noqa: BLE001 - fail closed when the DB cannot fence
             return False
 
+    async def _mark_lease_lost(self, lease: TaskLease) -> None:
+        """Leave a still-owned claim reviewable without crossing its fence."""
+
+        try:
+            task = await self._tasks.mark_lease_lost(lease)
+        except Exception:  # noqa: BLE001 - recovery will retry after lease expiry
+            return
+        if task is None:
+            return
+        await emit_event(
+            self._event_logger,
+            "task.uncertain",
+            level=LoggingLevel.WARNING,
+            fields={
+                "status": task.state.value,
+                "count": 1,
+                "error_code": TASK_LEASE_LOST,
+            },
+            task_id=task.id,
+            resource_type="task",
+            resource_id=task.resource_id,
+        )
+
     async def _renew_lease_forever(
         self,
         lease: TaskLease,
@@ -353,14 +379,18 @@ class TaskWorker:
         failure_event: asyncio.Event,
     ) -> None:
         interval = max(min(self._lease_seconds / 3, 30.0), 0.01)
+        renew_timeout = max(min(interval, 5.0), 0.05)
         while not stop_event.is_set():
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=interval)
             except TimeoutError:
                 try:
-                    renewed = await self._tasks.renew(
-                        lease,
-                        lease_duration=timedelta(seconds=self._lease_seconds),
+                    renewed = await asyncio.wait_for(
+                        self._tasks.renew(
+                            lease,
+                            lease_duration=timedelta(seconds=self._lease_seconds),
+                        ),
+                        timeout=renew_timeout,
                     )
                 except Exception:  # noqa: BLE001 - external result must be discarded
                     failure_event.set()

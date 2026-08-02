@@ -1,6 +1,7 @@
 import asyncio
 import threading
 from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock
 
 import pytest
 from cryptography.fernet import Fernet
@@ -279,6 +280,87 @@ async def test_worker_renews_lease_during_slow_external_submission(tmp_path):
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize("renewal_failure", ["false", "timeout"])
+async def test_renewal_failure_stops_follow_up_submission_and_marks_uncertain(
+    tmp_path, renewal_failure
+):
+    database = await _database(tmp_path)
+    crypto = SecretCrypto(Fernet.generate_key().decode("ascii"))
+    await _add_resource(database, crypto)
+    service = TaskService(database.session_factory)
+    task, _ = await service.create("res_magnet")
+    adapter = SlowSubmissionAdapter()
+    worker = TaskWorker(
+        database.session_factory,
+        crypto,
+        adapter,
+        owner="renewal-failure-worker",
+        lease_seconds=0.3,
+    )
+    if renewal_failure == "false":
+        worker._tasks.renew = AsyncMock(return_value=False)
+    else:
+        renewal_started = asyncio.Event()
+
+        async def blocked_renew(*_args, **_kwargs):
+            renewal_started.set()
+            await asyncio.Event().wait()
+
+        worker._tasks.renew = blocked_renew
+
+    run_task = asyncio.create_task(worker.run_once())
+    await asyncio.wait_for(adapter.started.wait(), timeout=2)
+    if renewal_failure == "timeout":
+        await asyncio.wait_for(renewal_started.wait(), timeout=2)
+
+    assert await asyncio.wait_for(run_task, timeout=2) is True
+    stored = await service.get(task.id)
+    assert stored is not None
+    assert stored.state is TaskState.UNCERTAIN
+    assert stored.error_code == "lease_claim_lost"
+    assert stored.error_message == "任务执行权已变化，外部结果待确认，未继续提交。"
+    assert stored.lease_owner is None
+    assert stored.lease_token is None
+    assert stored.lease_expires_at is None
+
+    # A fenced loss is terminal for this attempt; the worker cannot submit again.
+    assert await worker.run_once() is False
+    assert adapter.submissions == 1
+    await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_recover_expired_does_not_take_over_a_live_lease(tmp_path):
+    database = await _database(tmp_path)
+    crypto = SecretCrypto(Fernet.generate_key().decode("ascii"))
+    await _add_resource(database, crypto)
+    service = TaskService(database.session_factory)
+    task, _ = await service.create("res_magnet")
+    claim_time = datetime.now(UTC)
+    lease = await service.claim_next(
+        owner="live-worker",
+        lease_duration=timedelta(seconds=60),
+        now=claim_time,
+    )
+    assert lease is not None
+
+    worker = TaskWorker(
+        database.session_factory,
+        crypto,
+        FakeAdapter(),
+        owner="recovery-worker",
+        lease_seconds=60,
+    )
+    assert await worker.recover_expired() == 0
+    stored = await service.get(task.id)
+    assert stored is not None
+    assert stored.state is TaskState.SUBMITTING
+    assert stored.lease_owner == "live-worker"
+    assert stored.lease_token == lease.lease_token
+    await database.engine.dispose()
+
+
+@pytest.mark.integration
 async def test_stale_worker_cannot_renew_or_finalize_after_expired_claim_takeover(
     tmp_path,
 ):
@@ -316,6 +398,12 @@ async def test_stale_worker_cannot_renew_or_finalize_after_expired_claim_takeove
         )
         is False
     )
+    assert await service.mark_lease_lost(old_lease) is None
+    current = await service.get(task.id)
+    assert current is not None
+    assert current.state is TaskState.SUBMITTING
+    assert current.lease_owner == "new-worker"
+    assert current.lease_token == new_lease.lease_token
 
     accepted = await service.finish_submission(
         new_lease,
