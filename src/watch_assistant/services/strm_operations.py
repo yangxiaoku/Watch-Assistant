@@ -100,19 +100,58 @@ class StrmOperationService:
         lease_duration: timedelta = timedelta(minutes=5),
         now: datetime | None = None,
     ) -> StrmOperationSummary:
+        summary, _ = await self.claim_start(
+            operation_id,
+            lease_owner=lease_owner,
+            lease_duration=lease_duration,
+            now=now,
+        )
+        return summary
+
+    async def claim_start(
+        self,
+        operation_id: str,
+        *,
+        lease_owner: str | None = None,
+        lease_duration: timedelta = timedelta(minutes=5),
+        now: datetime | None = None,
+    ) -> tuple[StrmOperationSummary, bool]:
+        """Atomically claim a queued operation for one executor."""
+
         duration = _validate_lease_duration(lease_duration)
         _validate_optional_owner(lease_owner)
-        operation = await self._load(operation_id)
-        if operation.status is StrmOperationStatus.QUEUED:
-            current_time = _as_utc(now) or datetime.now(UTC)
-            operation.status = StrmOperationStatus.RUNNING
-            operation.started_at = current_time
-            operation.updated_at = current_time
-            operation.heartbeat_at = current_time
-            operation.lease_expires_at = current_time + duration
-            operation.lease_owner = lease_owner or operation.id
-            await self._commit(operation)
-        return _summary(operation)
+        current_time = _as_utc(now) or datetime.now(UTC)
+        _validate_identifier(operation_id, "operation_id", maximum=64)
+        async with self._session_factory() as session:
+            current = await session.get(StrmOperation, operation_id)
+            if current is None:
+                raise StrmOperationNotFound(operation_id)
+            if current.status is not StrmOperationStatus.QUEUED:
+                return _summary(current), False
+            result = await session.execute(
+                update(StrmOperation)
+                .where(
+                    StrmOperation.id == operation_id,
+                    StrmOperation.status == StrmOperationStatus.QUEUED,
+                )
+                .values(
+                    status=StrmOperationStatus.RUNNING,
+                    started_at=current_time,
+                    updated_at=current_time,
+                    heartbeat_at=current_time,
+                    lease_expires_at=current_time + duration,
+                    lease_owner=lease_owner or operation_id,
+                )
+            )
+            if result.rowcount != 1:
+                await session.rollback()
+                current = await session.get(StrmOperation, operation_id)
+                if current is None:
+                    raise StrmOperationNotFound(operation_id)
+                return _summary(current), False
+            await session.commit()
+            await session.refresh(current)
+            return _summary(current), True
 
     async def heartbeat(
         self,

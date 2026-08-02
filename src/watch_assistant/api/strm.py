@@ -618,7 +618,9 @@ async def resume_strm_operation(
     if resumed.status != "queued":
         return _operation_response(resumed)
     try:
-        running = await operations.start(operation_id)
+        running, acquired = await operations.claim_start(operation_id)
+        if not acquired:
+            return _operation_response(running)
         await _sync_workflow_stage(
             request,
             running.workflow_id,
