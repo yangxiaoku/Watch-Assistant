@@ -332,10 +332,11 @@ class OrganizationExecutor:
                 last_error = "outcome_unknown"
                 continue
             if replacement is None:
-                # A missing replacement is evidence that recycle may have
-                # happened, but it cannot prove the destination was handled
-                # when the primary operation is only partially observed.
-                replacement_observations.append("removed")
+                # ``read_object`` only reports the transport's observed
+                # source/target scope.  A missing object is therefore not
+                # proof that recycle completed; it may be outside that scope.
+                replacement_observations.append("uncertain")
+                last_error = "replacement_reconciliation_unverified"
             elif (
                 replacement.object_id == step.replacement_object_id
                 and replacement.parent_id == step.replacement_parent_id
