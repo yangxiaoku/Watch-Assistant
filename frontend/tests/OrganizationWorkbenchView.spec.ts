@@ -49,6 +49,14 @@ describe("OrganizationWorkbenchView", () => {
     expect(wrapper.find(".organization-workbench").exists()).toBe(false);
   });
 
+  it("uses a safe local identifier when a plan has no alias", async () => {
+    const wrapper = mount(OrganizationWorkbenchView, { props: { api: makeApi() } });
+    await flushPromises();
+
+    expect(wrapper.get(".organization-plan-row strong").text()).toBe("计划 plan-local-1");
+    expect(wrapper.get(".organization-preview h2").text()).toBe("计划 plan-local-1");
+  });
+
   it("hides mutation controls for invalidated plans", async () => {
     const api = makeApi({
       organizationPlans: vi.fn().mockResolvedValue({

@@ -37,6 +37,10 @@ test("routes push actions by resource capability", async ({ page }) => {
     },
   }));
   await page.route("**/api/v1/tasks", async (route) => {
+    if (route.request().method() !== "POST") {
+      await route.fulfill({ json: [] });
+      return;
+    }
     taskPostCount += 1;
     return route.fulfill({
       json: {

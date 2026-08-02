@@ -89,7 +89,7 @@ test.beforeEach(async ({ page }) => {
 test("reviews a local plan on desktop and mobile without exposing remote data", async ({ page }) => {
   await page.goto("/organization-plans");
   await expect(page.getByRole("heading", { name: "整理计划工作台" })).toBeVisible();
-  await expect(page.getByText("计划 plan-loc", { exact: false })).toBeVisible();
+  await expect(page.getByText("计划 plan-loc", { exact: false }).first()).toBeVisible();
   await expect(page.getByText("remote-private", { exact: false })).toHaveCount(0);
   await expect(page.getByText("pickcode", { exact: false })).toHaveCount(0);
 
