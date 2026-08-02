@@ -7,7 +7,12 @@ from sqlalchemy import func, select
 
 from watch_assistant.adapters.p115_library import DirectoryPage, LibraryEntry, ScanState
 from watch_assistant.db import create_database, initialize_database
-from watch_assistant.library_models import LibraryScanEntry, MediaLibrary
+from watch_assistant.library_models import (
+    LibraryScanEntry,
+    LibraryScanRun,
+    MediaLibrary,
+)
+from watch_assistant.services.library_index import LibraryIndexService
 from watch_assistant.services.library_scan_operations import (
     LibraryScanOperationService,
     LibraryScanWorker,
@@ -182,4 +187,186 @@ async def test_worker_interruption_requeues_with_durable_tree_cursor(tmp_path):
             select(func.count()).select_from(LibraryScanEntry)
         )
     assert count == 2
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_enqueue_same_key_returns_one_persisted_run(tmp_path):
+    database = await _database(tmp_path)
+    service = LibraryScanOperationService(database.session_factory)
+
+    summaries = await asyncio.gather(
+        service.enqueue(LIBRARY_ID, idempotency_key="concurrent-key"),
+        service.enqueue(LIBRARY_ID, idempotency_key="concurrent-key"),
+    )
+
+    assert len({summary.run_id for summary in summaries}) == 1
+    async with database.session_factory() as session:
+        runs = list((await session.scalars(select(LibraryScanRun))).all())
+    assert len(runs) == 1
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_claim_next_grants_only_one_lease(tmp_path):
+    database = await _database(tmp_path)
+    service = LibraryScanOperationService(database.session_factory)
+    await service.enqueue(LIBRARY_ID, idempotency_key="claim-key")
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+
+    leases = await asyncio.gather(
+        service.claim_next(
+            owner="worker-one",
+            lease_duration=timedelta(minutes=1),
+            now=now,
+        ),
+        service.claim_next(
+            owner="worker-two",
+            lease_duration=timedelta(minutes=1),
+            now=now,
+        ),
+    )
+
+    claimed = [lease for lease in leases if lease is not None]
+    assert len(claimed) == 1
+    run = await service.get(LIBRARY_ID, claimed[0].run_id)
+    assert run.state == "running"
+    assert run.attempts == 1
+    assert run.error_code is None
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_tree_reset_preserves_the_active_lease(tmp_path):
+    database = await _database(tmp_path)
+    service = LibraryScanOperationService(database.session_factory)
+    queued = await service.enqueue(LIBRARY_ID, idempotency_key="reset-key")
+    lease = await service.claim_next(owner="scan-worker")
+    assert lease is not None
+
+    index = LibraryIndexService(
+        database.session_factory,
+        _Gateway(),
+        library_id=LIBRARY_ID,
+        root_directory_id=ROOT_ID,
+        page_size=1,
+    )
+    await index._reset_tree_run(queued.run_id)
+
+    async with database.session_factory() as session:
+        run = await session.get(LibraryScanRun, queued.run_id)
+    assert run is not None
+    assert run.state == "running"
+    assert run.lease_owner == lease.lease_owner
+    assert run.lease_token == lease.lease_token
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_worker_stops_without_cancelled_write_when_lease_renewal_is_lost(
+    tmp_path, monkeypatch
+):
+    database = await _database(tmp_path)
+    service = LibraryScanOperationService(database.session_factory)
+
+    class _SlowGateway(_Gateway):
+        async def list_directory(
+            self, directory_id: str, *, page: int = 1, page_size=100
+        ):
+            await asyncio.sleep(1)
+            return await super().list_directory(
+                directory_id, page=page, page_size=page_size
+            )
+
+    async def lose_lease(*_args, **_kwargs):
+        return False
+
+    monkeypatch.setattr(service, "renew", lose_lease)
+    worker = LibraryScanWorker(
+        database.session_factory,
+        service,
+        lambda _root_id: _SlowGateway(),
+        owner="scan-worker",
+        lease_duration=timedelta(seconds=0.3),
+    )
+    queued = await service.enqueue(LIBRARY_ID, idempotency_key="lease-lost")
+
+    assert await worker.run_once() is True
+    summary = await service.get(LIBRARY_ID, queued.run_id)
+    assert summary.state == "failed"
+    assert summary.error_code == "lease_claim_lost"
+    assert summary.error_message_zh is not None
+    assert "扫描执行权" in summary.error_message_zh
+    assert summary.pages_read == 0
+    async with database.session_factory() as session:
+        count = await session.scalar(
+            select(func.count()).select_from(LibraryScanEntry)
+        )
+    assert count == 0
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_scan_cannot_overwrite_a_reclaimed_lease(tmp_path):
+    database = await _database(tmp_path)
+    service = LibraryScanOperationService(database.session_factory)
+    queued = await service.enqueue(LIBRARY_ID, idempotency_key="reclaimed-lease")
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    old_lease = await service.claim_next(
+        owner="old-worker",
+        lease_duration=timedelta(minutes=1),
+        now=now,
+    )
+    assert old_lease is not None
+    gateway_started = asyncio.Event()
+
+    class _BlockingGateway:
+        async def list_directory(
+            self, directory_id: str, *, page: int = 1, page_size=100
+        ):
+            assert directory_id == ROOT_ID
+            assert page == 1
+            assert page_size == 1
+            gateway_started.set()
+            await asyncio.sleep(10)
+            return DirectoryPage(
+                items=(),
+                page=1,
+                page_count=1,
+                total=0,
+                scan_complete=True,
+                state=ScanState.COMPLETE,
+                has_more=False,
+                terminal=True,
+            )
+
+    scan = LibraryIndexService(
+        database.session_factory,
+        _BlockingGateway(),
+        library_id=LIBRARY_ID,
+        root_directory_id=ROOT_ID,
+        page_size=1,
+        propagate_cancelled=True,
+    )
+    task = asyncio.create_task(scan.scan_tree("reclaimed-lease"))
+    await gateway_started.wait()
+
+    recovery_time = now + timedelta(minutes=2)
+    assert await service.recover_expired(now=recovery_time) == 1
+    new_lease = await service.claim_next(owner="new-worker", now=recovery_time)
+    assert new_lease is not None
+    assert new_lease.lease_token != old_lease.lease_token
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    summary = await service.get(LIBRARY_ID, queued.run_id)
+    assert summary.state == "running"
+    assert summary.error_code is None
+    async with database.session_factory() as session:
+        run = await session.get(LibraryScanRun, queued.run_id)
+    assert run is not None
+    assert run.lease_owner == "new-worker"
+    assert run.lease_token == new_lease.lease_token
     await database.engine.dispose()

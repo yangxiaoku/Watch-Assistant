@@ -10,7 +10,8 @@ from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from watch_assistant.adapters.p115_library import P115LibraryGateway
@@ -49,6 +50,7 @@ SCAN_ERROR_MESSAGES_ZH = {
     "repeated_entry": "115 返回了重复目录条目，扫描未生成完整快照。",
     "scan_worker_failed": "扫描 worker 异常退出，已保留断点，请稍后重试。",
     "scan_worker_recovered": "扫描已从上次中断位置重新排队。",
+    "lease_claim_lost": "扫描执行权已变化，已停止继续读取，请查看状态后再决定是否重试。",
     "library_scope_unverified": "媒体库范围尚未完成只读验证。",
     "scan_run_missing": "扫描操作不存在。",
 }
@@ -154,6 +156,7 @@ class LibraryScanOperationService:
         async with self._session_factory() as session:
             library = await session.get(MediaLibrary, library_id)
             _require_verified_library(library)
+            root_directory_id = library.root_directory_id
             run = await session.scalar(
                 select(LibraryScanRun).where(
                     LibraryScanRun.library_id == library_id,
@@ -164,17 +167,31 @@ class LibraryScanOperationService:
                 run = LibraryScanRun(
                     id=uuid.uuid4().hex,
                     library_id=library_id,
-                    root_directory_id=library.root_directory_id,
+                    root_directory_id=root_directory_id,
                     idempotency_key=idempotency_key,
                     scan_mode="tree",
                     max_directories=max_directories,
                 )
                 session.add(run)
-                await session.flush()
-                from watch_assistant.library_models import LibraryScanCheckpoint
+                try:
+                    await session.flush()
+                except IntegrityError:
+                    await session.rollback()
+                    run = await session.scalar(
+                        select(LibraryScanRun).where(
+                            LibraryScanRun.library_id == library_id,
+                            LibraryScanRun.idempotency_key == idempotency_key,
+                        )
+                    )
+                    if run is None:
+                        raise LibraryScanOperationError(
+                            "library_scan_unavailable"
+                        ) from None
+                else:
+                    from watch_assistant.library_models import LibraryScanCheckpoint
 
-                session.add(LibraryScanCheckpoint(scan_run_id=run.id))
-            elif run.root_directory_id != library.root_directory_id:
+                    session.add(LibraryScanCheckpoint(scan_run_id=run.id))
+            if run.root_directory_id != root_directory_id:
                 raise LibraryScanOperationError("library_scope_unverified")
             elif run.complete:
                 return _summary(run)
@@ -187,6 +204,7 @@ class LibraryScanOperationService:
                 run.state = ScanRunState.QUEUED.value
                 run.cancel_requested = False
                 run.lease_owner = None
+                run.lease_token = None
                 run.lease_expires_at = None
                 run.error_code = None
             await session.commit()
@@ -289,64 +307,90 @@ class LibraryScanOperationService:
             raise LibraryScanOperationError("invalid_lease_duration")
         current_time = _as_utc(now or datetime.now(UTC))
         async with self._session_factory() as session:
-            expired = list(
-                await session.scalars(
-                    select(LibraryScanRun).where(
-                        LibraryScanRun.state == ScanRunState.RUNNING.value,
-                        LibraryScanRun.lease_expires_at.is_not(None),
-                        LibraryScanRun.lease_expires_at <= current_time,
+            await self._recover_expired_in_session(session, current_time)
+            await session.commit()
+            while True:
+                run = await session.scalar(
+                    select(LibraryScanRun)
+                    .where(
+                        LibraryScanRun.state == ScanRunState.QUEUED.value,
+                        LibraryScanRun.cancel_requested.is_(False),
+                    )
+                    .order_by(LibraryScanRun.created_at.asc(), LibraryScanRun.id.asc())
+                    .limit(1)
+                )
+                if run is None:
+                    return None
+                token = uuid.uuid4().hex
+                expires_at = current_time + lease_duration
+                result = await session.execute(
+                    update(LibraryScanRun)
+                    .where(
+                        LibraryScanRun.id == run.id,
+                        LibraryScanRun.state == ScanRunState.QUEUED.value,
+                        LibraryScanRun.cancel_requested.is_(False),
+                    )
+                    .values(
+                        state=ScanRunState.RUNNING.value,
+                        attempts=LibraryScanRun.attempts + 1,
+                        lease_owner=owner,
+                        lease_token=token,
+                        lease_expires_at=expires_at,
+                        error_code=None,
                     )
                 )
-            )
-            for run in expired:
-                run.state = (
-                    ScanRunState.CANCELLED.value
-                    if run.cancel_requested
-                    else ScanRunState.QUEUED.value
+                if result.rowcount != 1:
+                    await session.rollback()
+                    continue
+                await session.commit()
+                return LibraryScanLease(
+                    run_id=run.id,
+                    library_id=run.library_id,
+                    root_directory_id=run.root_directory_id,
+                    idempotency_key=run.idempotency_key,
+                    scan_mode=run.scan_mode,
+                    max_directories=run.max_directories,
+                    lease_owner=owner,
+                    lease_token=token,
+                    lease_expires_at=expires_at,
                 )
-                run.lease_owner = None
-                run.lease_token = None
-                run.lease_expires_at = None
-                run.error_code = (
-                    "cancelled"
-                    if run.cancel_requested
-                    else "scan_worker_recovered"
-                )
-            if expired:
-                await session.flush()
-            run = await session.scalar(
-                select(LibraryScanRun)
-                .where(
-                    LibraryScanRun.state == ScanRunState.QUEUED.value,
-                    LibraryScanRun.cancel_requested.is_(False),
-                )
-                .order_by(LibraryScanRun.created_at.asc(), LibraryScanRun.id.asc())
-                .limit(1)
+
+    async def _recover_expired_in_session(
+        self, session: AsyncSession, current_time: datetime
+    ) -> int:
+        cancelled = await session.execute(
+            update(LibraryScanRun)
+            .where(
+                LibraryScanRun.state == ScanRunState.RUNNING.value,
+                LibraryScanRun.lease_expires_at.is_not(None),
+                LibraryScanRun.lease_expires_at <= current_time,
+                LibraryScanRun.cancel_requested.is_(True),
             )
-            if run is None:
-                if expired:
-                    await session.commit()
-                return None
-            token = uuid.uuid4().hex
-            expires_at = current_time + lease_duration
-            run.state = ScanRunState.RUNNING.value
-            run.attempts += 1
-            run.lease_owner = owner
-            run.lease_token = token
-            run.lease_expires_at = expires_at
-            run.error_code = None
-            await session.commit()
-            return LibraryScanLease(
-                run_id=run.id,
-                library_id=run.library_id,
-                root_directory_id=run.root_directory_id,
-                idempotency_key=run.idempotency_key,
-                scan_mode=run.scan_mode,
-                max_directories=run.max_directories,
-                lease_owner=owner,
-                lease_token=token,
-                lease_expires_at=expires_at,
+            .values(
+                state=ScanRunState.CANCELLED.value,
+                lease_owner=None,
+                lease_token=None,
+                lease_expires_at=None,
+                error_code="cancelled",
             )
+        )
+        requeued = await session.execute(
+            update(LibraryScanRun)
+            .where(
+                LibraryScanRun.state == ScanRunState.RUNNING.value,
+                LibraryScanRun.lease_expires_at.is_not(None),
+                LibraryScanRun.lease_expires_at <= current_time,
+                LibraryScanRun.cancel_requested.is_(False),
+            )
+            .values(
+                state=ScanRunState.QUEUED.value,
+                lease_owner=None,
+                lease_token=None,
+                lease_expires_at=None,
+                error_code="scan_worker_recovered",
+            )
+        )
+        return (cancelled.rowcount or 0) + (requeued.rowcount or 0)
 
     async def release(
         self,
@@ -393,48 +437,27 @@ class LibraryScanOperationService:
         current_time = _as_utc(now or datetime.now(UTC))
         expires_at = current_time + lease_duration
         async with self._session_factory() as session:
-            run = await session.get(LibraryScanRun, lease.run_id)
-            if (
-                run is None
-                or run.state != ScanRunState.RUNNING.value
-                or run.lease_owner != lease.lease_owner
-                or run.lease_token != lease.lease_token
-                or run.lease_expires_at is None
-                or _as_utc(run.lease_expires_at) <= current_time
-            ):
-                return False
-            run.lease_expires_at = expires_at
+            result = await session.execute(
+                update(LibraryScanRun)
+                .where(
+                    LibraryScanRun.id == lease.run_id,
+                    LibraryScanRun.state == ScanRunState.RUNNING.value,
+                    LibraryScanRun.lease_owner == lease.lease_owner,
+                    LibraryScanRun.lease_token == lease.lease_token,
+                    LibraryScanRun.lease_expires_at.is_not(None),
+                    LibraryScanRun.lease_expires_at > current_time,
+                )
+                .values(lease_expires_at=expires_at)
+            )
             await session.commit()
-            return True
+            return result.rowcount == 1
 
     async def recover_expired(self, *, now: datetime | None = None) -> int:
         current_time = _as_utc(now or datetime.now(UTC))
         async with self._session_factory() as session:
-            rows = list(
-                await session.scalars(
-                    select(LibraryScanRun).where(
-                        LibraryScanRun.state == ScanRunState.RUNNING.value,
-                        LibraryScanRun.lease_expires_at.is_not(None),
-                        LibraryScanRun.lease_expires_at <= current_time,
-                    )
-                )
-            )
-            for run in rows:
-                run.state = (
-                    ScanRunState.CANCELLED.value
-                    if run.cancel_requested
-                    else ScanRunState.QUEUED.value
-                )
-                run.lease_owner = None
-                run.lease_token = None
-                run.lease_expires_at = None
-                run.error_code = (
-                    "cancelled"
-                    if run.cancel_requested
-                    else "scan_worker_recovered"
-                )
+            recovered = await self._recover_expired_in_session(session, current_time)
             await session.commit()
-            return len(rows)
+            return recovered
 
 
 GatewayFactory = Callable[[str], P115LibraryGateway | Awaitable[P115LibraryGateway]]
@@ -473,28 +496,34 @@ class LibraryScanWorker:
         if lease is None:
             return False
         heartbeat_stop = asyncio.Event()
+        lease_lost = asyncio.Event()
         heartbeat_task = asyncio.create_task(
-            self._renew_lease_forever(lease, heartbeat_stop),
+            self._renew_lease_forever(lease, heartbeat_stop, lease_lost),
             name=f"watch-assistant-library-scan-lease-{lease.run_id}",
         )
+        scan_task = asyncio.create_task(
+            self._scan_lease(lease),
+            name=f"watch-assistant-library-scan-{lease.run_id}",
+        )
         try:
-            gateway = self._gateway_factory(lease.root_directory_id)
-            if python_inspect.isawaitable(gateway):
-                gateway = await gateway
-            if lease.scan_mode != "tree":
-                raise LibraryScanOperationError("scan_mode_unsupported")
-            result = await LibraryIndexService(
-                self._session_factory,
-                gateway,
-                library_id=lease.library_id,
-                root_directory_id=lease.root_directory_id,
-                # The verified P115 contract intentionally remains one item per page.
-                page_size=1,
-            ).scan_tree(
-                lease.idempotency_key,
-                max_directories=lease.max_directories,
+            done, _pending = await asyncio.wait(
+                {scan_task, heartbeat_task},
+                return_when=asyncio.FIRST_COMPLETED,
             )
+            if heartbeat_task in done and lease_lost.is_set() and not scan_task.done():
+                scan_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await scan_task
+                await self._operations.release(
+                    lease, error_code="lease_claim_lost"
+                )
+                await self._emit_result(lease, None, "lease_claim_lost")
+                return True
+            result = await scan_task
         except asyncio.CancelledError:
+            scan_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await scan_task
             await self._operations.release(lease, requeue=True)
             raise
         except LibraryIndexError as error:
@@ -516,11 +545,33 @@ class LibraryScanWorker:
         await self._emit_result(lease, result, result.error_code)
         return True
 
+    async def _scan_lease(self, lease: LibraryScanLease) -> LibraryScanResult:
+        gateway = self._gateway_factory(lease.root_directory_id)
+        if python_inspect.isawaitable(gateway):
+            gateway = await gateway
+        if lease.scan_mode != "tree":
+            raise LibraryScanOperationError("scan_mode_unsupported")
+        return await LibraryIndexService(
+            self._session_factory,
+            gateway,
+            library_id=lease.library_id,
+            root_directory_id=lease.root_directory_id,
+            # The verified P115 contract intentionally remains one item per page.
+            page_size=1,
+            propagate_cancelled=True,
+        ).scan_tree(
+            lease.idempotency_key,
+            max_directories=lease.max_directories,
+        )
+
     async def recover_expired(self, *, now: datetime | None = None) -> int:
         return await self._operations.recover_expired(now=now)
 
     async def _renew_lease_forever(
-        self, lease: LibraryScanLease, stop_event: asyncio.Event
+        self,
+        lease: LibraryScanLease,
+        stop_event: asyncio.Event,
+        failure_event: asyncio.Event,
     ) -> None:
         interval = max(min(self._lease_duration.total_seconds() / 3, 30.0), 0.1)
         while not stop_event.is_set():
@@ -532,8 +583,10 @@ class LibraryScanWorker:
                         lease, lease_duration=self._lease_duration
                     )
                 except Exception:  # noqa: BLE001 - the scan result owns recovery
+                    failure_event.set()
                     return
                 if not renewed:
+                    failure_event.set()
                     return
 
     async def run_forever(

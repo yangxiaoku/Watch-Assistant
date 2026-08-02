@@ -116,6 +116,7 @@ class LibraryIndexService:
         root_directory_id: str,
         page_size: int = 100,
         max_reported_changes: int = 100,
+        propagate_cancelled: bool = False,
     ) -> None:
         _validate_identity(library_id)
         _validate_identity(root_directory_id)
@@ -137,6 +138,7 @@ class LibraryIndexService:
         self._root_directory_id = root_directory_id
         self._page_size = page_size
         self._max_reported_changes = max_reported_changes
+        self._propagate_cancelled = propagate_cancelled
         # A service instance is scoped to one worker operation.  Keeping the
         # cursor here preserves the old _persist_tree_page test seam while the
         # cursor itself remains durable in LibraryScanCheckpoint.
@@ -212,6 +214,8 @@ class LibraryIndexService:
                     return await self._complete_run(run.id)
                 next_page += 1
         except asyncio.CancelledError:
+            if self._propagate_cancelled:
+                raise
             await self._finish_incomplete(run.id, ScanRunState.CANCELLED, "cancelled")
             return await self._result_for_run(run.id)
 
@@ -328,6 +332,8 @@ class LibraryIndexService:
                 pages_read += 1
             return await self._complete_run(run.id)
         except asyncio.CancelledError:
+            if self._propagate_cancelled:
+                raise
             await self._finish_incomplete(run.id, ScanRunState.CANCELLED, "cancelled")
             return await self._result_for_run(run.id)
 
@@ -360,7 +366,6 @@ class LibraryIndexService:
                 run.pages_read = 0
                 run.items_seen = 0
             checkpoint.cursor_json = _encode_tree_cursor(cursor)
-            run.state = ScanRunState.QUEUED.value
             run.error_code = None
             run.expected_page_count = None
             run.expected_total = None
