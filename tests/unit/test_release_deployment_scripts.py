@@ -1,4 +1,5 @@
 import importlib.util
+import os
 import subprocess
 from pathlib import Path
 
@@ -19,6 +20,7 @@ def _load_script(name: str):
 
 systemd_release = _load_script("systemd_release_update")
 postdeploy_release = _load_script("postdeploy_release_check")
+systemd_prepare = _load_script("systemd_release_prepare")
 
 
 def _write_version(path: Path, commit: str = "abcdef1") -> None:
@@ -26,6 +28,30 @@ def _write_version(path: Path, commit: str = "abcdef1") -> None:
     path.write_text(
         f"commit={commit}\nbuild_time=2026-08-02T00:00:00Z\n", encoding="utf-8"
     )
+
+
+def _write_release_tree(root: Path, commit: str = "abcdef1") -> None:
+    for relative_name in systemd_prepare.REQUIRED_RELEASE_FILES:
+        path = root / relative_name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if relative_name == "VERSION":
+            _write_version(path, commit)
+        else:
+            path.write_text("release fixture\n", encoding="utf-8")
+
+
+def _prepare_release(
+    release_root: Path, releases_root: Path, **kwargs
+) -> str:
+    original_allowed_root = systemd_prepare.DEFAULT_RELEASES_ROOT
+    systemd_prepare.DEFAULT_RELEASES_ROOT = releases_root
+    try:
+        return systemd_prepare.prepare_release(
+            release_root=release_root,
+            **kwargs,
+        )
+    finally:
+        systemd_prepare.DEFAULT_RELEASES_ROOT = original_allowed_root
 
 
 def _systemd_identity(current_root: Path, release_env: Path) -> str:
@@ -94,6 +120,141 @@ def test_systemd_release_update_rejects_invalid_version_without_mutation(tmp_pat
 
     assert release_env.read_text(encoding="utf-8") == "WATCH_ASSISTANT_RELEASE=abcdef1\n"
     assert stale_drop_in.exists()
+
+
+def test_systemd_release_prepare_normalizes_only_top_level_and_checks_service_access(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    releases_root = tmp_path / "releases"
+    release_root = releases_root / "watch-assistant-abcdef1"
+    _write_release_tree(release_root)
+    release_root.chmod(0o700)
+    ordinary_file = release_root / "src/watch_assistant/app.py"
+    ordinary_file.chmod(0o640)
+    ordinary_mode = ordinary_file.stat().st_mode & 0o777
+    data_directory = release_root / "data"
+    data_directory.mkdir()
+    data_directory.chmod(0o700)
+    data_mode = data_directory.stat().st_mode & 0o777
+    release_env = release_root / "release.env"
+    release_env.write_text("WATCH_ASSISTANT_RELEASE=abcdef1\n", encoding="utf-8")
+    release_env.chmod(0o600)
+    release_env_mode = release_env.stat().st_mode & 0o777
+    chmod_calls: list[tuple[Path, int]] = []
+    original_chmod = Path.chmod
+
+    def record_chmod(path: Path, mode: int) -> None:
+        chmod_calls.append((path, mode))
+        original_chmod(path, mode)
+
+    monkeypatch.setattr(Path, "chmod", record_chmod)
+
+    service_uid = getattr(os, "getuid", lambda: release_root.stat().st_uid)()
+    prepared = _prepare_release(
+        release_root,
+        releases_root,
+        expected_release="abcdef1",
+        service_user=None,
+    )
+
+    assert prepared == "abcdef1"
+    if os.name == "nt":
+        assert (release_root, 0o755) in chmod_calls
+    else:
+        assert (release_root.stat().st_mode & 0o777) == 0o755
+    assert (ordinary_file.stat().st_mode & 0o777) == ordinary_mode
+    assert (data_directory.stat().st_mode & 0o777) == data_mode
+    assert (release_env.stat().st_mode & 0o777) == release_env_mode
+    assert service_uid == release_root.stat().st_uid
+
+
+def test_systemd_release_prepare_rejects_scope_version_and_missing_files_without_root_mutation(
+    tmp_path: Path,
+):
+    releases_root = tmp_path / "releases"
+    release_root = releases_root / "watch-assistant-abcdef1"
+    _write_release_tree(release_root)
+    release_root.chmod(0o700)
+    initial_mode = release_root.stat().st_mode & 0o777
+
+    with pytest.raises(systemd_prepare.ReleasePrepareError) as out_of_scope:
+        _prepare_release(
+            tmp_path,
+            releases_root,
+            expected_release="abcdef1",
+            service_user=None,
+        )
+    assert out_of_scope.value.code == "release_path_out_of_scope"
+    assert (release_root.stat().st_mode & 0o777) == initial_mode
+
+    with pytest.raises(systemd_prepare.ReleasePrepareError) as version_mismatch:
+        _prepare_release(
+            release_root,
+            releases_root,
+            expected_release="0123456",
+            service_user=None,
+        )
+    assert version_mismatch.value.code == "release_version_mismatch"
+    assert (release_root.stat().st_mode & 0o777) == initial_mode
+
+    (release_root / "frontend/dist/index.html").unlink()
+    with pytest.raises(systemd_prepare.ReleasePrepareError) as missing_file:
+        _prepare_release(
+            release_root,
+            releases_root,
+            expected_release="abcdef1",
+            service_user=None,
+        )
+    assert missing_file.value.code == "required_file_missing"
+    assert (release_root.stat().st_mode & 0o777) == initial_mode
+
+
+def test_systemd_release_prepare_rejects_escape_symlink(tmp_path: Path):
+    releases_root = tmp_path / "releases"
+    release_root = releases_root / "watch-assistant-abcdef1"
+    _write_release_tree(release_root)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    try:
+        (release_root / "escape").symlink_to(outside, target_is_directory=True)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"symlinks unavailable: {exc}")
+
+    with pytest.raises(systemd_prepare.ReleasePrepareError) as escaped:
+        _prepare_release(
+            release_root,
+            releases_root,
+            expected_release="abcdef1",
+            service_user=None,
+        )
+    assert escaped.value.code == "release_symlink_escape"
+
+
+def test_systemd_release_prepare_rejects_key_file_without_service_read_access(
+    tmp_path: Path,
+):
+    if os.name == "nt":
+        pytest.skip("Windows does not expose POSIX mode semantics")
+    releases_root = tmp_path / "releases"
+    release_root = releases_root / "watch-assistant-abcdef1"
+    _write_release_tree(release_root)
+    key_file = release_root / "src/watch_assistant/app.py"
+    key_file.chmod(0o600)
+    file_stat = key_file.stat()
+    identity = systemd_prepare.ServiceIdentity(
+        uid=file_stat.st_uid + 1,
+        gids=(file_stat.st_gid + 1,),
+    )
+
+    with pytest.raises(systemd_prepare.ReleasePrepareError) as denied:
+        _prepare_release(
+            release_root,
+            releases_root,
+            expected_release="abcdef1",
+            service_user=None,
+            service_identity=identity,
+        )
+    assert denied.value.code == "release_access_denied"
 
 
 def test_postdeploy_check_requires_matching_version_systemd_and_health(

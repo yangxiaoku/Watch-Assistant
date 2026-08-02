@@ -72,6 +72,22 @@ curl http://127.0.0.1:8000/api/v1/health
 
 使用 systemd 部署时，`watch-assistant.service` 可独立重启。qBittorrent sidecar 的升级或重启必须作为独立维护操作执行；不得通过重启应用隐式管理 qBittorrent 的生命周期。
 
+systemd 发布包解压到 `/opt/watch-assistant/releases/<release-dir>` 后，切换 `current` 或重启服务前必须先执行发布目录预检：
+
+```bash
+/opt/watch-assistant/venv/bin/python \
+  /opt/watch-assistant/releases/<release-dir>/scripts/systemd_release_prepare.py \
+  --release-root /opt/watch-assistant/releases/<release-dir> \
+  --expected-release <hash7> \
+  --service-user watch-assistant
+```
+
+预检只允许处理 `/opt/watch-assistant/releases` 下的实际发布目录，会拒绝越界符号链接，
+将发布顶层目录规范化为 `0755`，并验证 `VERSION`、应用代码、前端入口和部署脚本对服务用户可读、
+所需目录可遍历。它不会递归修改普通文件，也不会修改 `data`、`backup`、Secret 或环境文件的权限。
+隐藏 staging 目录可以暂时是 `0700`，但正式 release root 必须先通过该预检；关键文件权限不足时预检失败，
+不得跳过后直接启动服务。
+
 ## HTTPS
 
 推荐使用 Tailscale Serve：

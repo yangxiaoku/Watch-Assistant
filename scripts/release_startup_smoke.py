@@ -22,6 +22,7 @@ _REQUIRED_FILES = (
     "src/watch_assistant/app.py",
     "src/watch_assistant/release_metadata.py",
     "scripts/release_startup_smoke.py",
+    "scripts/systemd_release_prepare.py",
     "scripts/systemd_release_update.py",
     "scripts/postdeploy_release_check.py",
     "scripts/deploy_systemd_release.sh",
