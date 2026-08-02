@@ -6,6 +6,7 @@ from sqlalchemy import select
 
 from watch_assistant.db import create_database, initialize_database
 from watch_assistant.library_models import (
+    LibraryScanCheckpoint,
     LibraryScanEntry,
     LibraryScanRun,
     MediaLibrary,
@@ -54,6 +55,49 @@ def _entry(object_id: str, parent_id: str, *, is_directory: bool) -> LibraryScan
     )
 
 
+async def _refresh_tree_evidence(database) -> None:
+    async with database.session_factory() as session:
+        run = await session.get(LibraryScanRun, "scan-preview")
+        assert run is not None
+        entries = list(
+            (
+                await session.scalars(
+                    select(LibraryScanEntry).where(
+                        LibraryScanEntry.scan_run_id == run.id
+                    )
+                )
+            ).all()
+        )
+        directory_ids = [
+            run.root_directory_id,
+            *(entry.object_id for entry in entries if entry.is_directory),
+        ]
+        totals = {directory_id: 0 for directory_id in directory_ids}
+        for entry in entries:
+            assert entry.parent_id in totals
+            totals[entry.parent_id] += 1
+        run.scan_mode = "tree"
+        run.expected_total = len(entries)
+        run.pages_read = len(directory_ids)
+        run.items_seen = len(entries)
+        checkpoint = await session.get(LibraryScanCheckpoint, run.id)
+        if checkpoint is None:
+            checkpoint = LibraryScanCheckpoint(scan_run_id=run.id)
+            session.add(checkpoint)
+        checkpoint.page = len(directory_ids)
+        checkpoint.items_seen = len(entries)
+        checkpoint.cursor_json = json.dumps(
+            {
+                "version": 2,
+                "directory_totals": totals,
+                "expected_total": len(entries),
+                "pending": [],
+                "visited": directory_ids,
+            }
+        )
+        await session.commit()
+
+
 def test_preview_scope_uses_selected_source_subtree_and_rejects_nested_target():
     entries = [
         _entry("source", "root-preview", is_directory=True),
@@ -99,6 +143,7 @@ async def _database(tmp_path: Path, *, target_exists: bool):
                 library_id="library-preview",
                 root_directory_id="root-preview",
                 idempotency_key="preview-key",
+                scan_mode="tree",
                 state="completed",
                 complete=True,
                 snapshot_revision=1,
@@ -129,6 +174,7 @@ async def _database(tmp_path: Path, *, target_exists: bool):
             )
         )
         await session.commit()
+    await _refresh_tree_evidence(database)
     return database
 
 
@@ -198,6 +244,7 @@ async def test_preview_can_limit_sources_to_a_verified_directory(tmp_path: Path)
             ]
         )
         await session.commit()
+    await _refresh_tree_evidence(database)
     client = _TmdbClient()
     service = OrganizationPreviewService(
         database.session_factory, client, OrganizationPlanService(database.session_factory)
@@ -258,6 +305,7 @@ async def test_preview_moves_configured_metadata_companion_with_primary(tmp_path
             )
         )
         await session.commit()
+    await _refresh_tree_evidence(database)
     service = OrganizationPreviewService(
         database.session_factory, _TmdbClient(), OrganizationPlanService(database.session_factory)
     )

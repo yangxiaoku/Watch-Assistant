@@ -8,6 +8,7 @@ from sqlalchemy import inspect, select
 
 from watch_assistant.db import create_database, initialize_database
 from watch_assistant.library_models import (
+    LibraryScanCheckpoint,
     LibraryScanEntry,
     LibraryScanRun,
     MediaLibrary,
@@ -142,9 +143,13 @@ async def _database(tmp_path: Path):
                 library_id=LIBRARY_ID,
                 root_directory_id=ROOT_ID,
                 idempotency_key="scan-key",
+                scan_mode="tree",
                 state="completed",
                 complete=True,
                 snapshot_revision=1,
+                expected_total=2,
+                pages_read=2,
+                items_seen=2,
             )
         )
         await session.commit()
@@ -168,6 +173,22 @@ async def _database(tmp_path: Path):
                 name="movie.mkv",
                 path="/private/movie.mkv",
                 is_directory=False,
+            )
+        )
+        session.add(
+            LibraryScanCheckpoint(
+                scan_run_id=SCAN_ID,
+                page=2,
+                items_seen=2,
+                cursor_json=json.dumps(
+                    {
+                        "version": 2,
+                        "directory_totals": {ROOT_ID: 2, "8000": 0},
+                        "expected_total": 2,
+                        "pending": [],
+                        "visited": [ROOT_ID, "8000"],
+                    }
+                ),
             )
         )
         await session.commit()

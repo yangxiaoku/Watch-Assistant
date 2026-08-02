@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import inspect as python_inspect
-import json
 import uuid
 from collections.abc import Awaitable, Callable, Collection
 from contextlib import suppress
@@ -28,6 +27,7 @@ from watch_assistant.services.library_index import (
     LibraryIndexService,
     LibraryScanResult,
     ScanRunState,
+    validate_tree_cursor_scope,
 )
 from watch_assistant.services.observability import EventLogger, emit_event
 
@@ -524,28 +524,49 @@ class LibraryScanOperationService:
                 or run.state != ScanRunState.RUNNING.value
                 or run.lease_owner != lease.lease_owner
                 or run.lease_token != lease.lease_token
+                or run.lease_expires_at is None
+                or _as_utc(run.lease_expires_at) <= datetime.now(UTC)
                 or not library.enabled
                 or not library.scope_verified
                 or library.root_directory_id != lease.root_directory_id
             ):
                 raise LibraryIndexError("library_scope_unverified")
+            current_time = datetime.now(UTC)
+            result = await session.execute(
+                update(LibraryScanRun)
+                .where(
+                    LibraryScanRun.id == lease.run_id,
+                    LibraryScanRun.state == ScanRunState.RUNNING.value,
+                    LibraryScanRun.complete.is_(False),
+                    LibraryScanRun.lease_owner == lease.lease_owner,
+                    LibraryScanRun.lease_token == lease.lease_token,
+                    LibraryScanRun.lease_expires_at.is_not(None),
+                    LibraryScanRun.lease_expires_at > current_time,
+                )
+                .values(updated_at=current_time)
+                .execution_options(synchronize_session=False)
+            )
+            if result.rowcount != 1:
+                await session.rollback()
+                raise LibraryIndexError("lease_claim_lost")
             entries = list(
                 (
                     await session.scalars(
                         select(LibraryScanEntry).where(
-                            LibraryScanEntry.scan_run_id == lease.run_id,
-                            LibraryScanEntry.object_type == "directory",
-                            LibraryScanEntry.is_directory.is_(True),
+                            LibraryScanEntry.scan_run_id == lease.run_id
                         )
                     )
                 ).all()
             )
+            scope = validate_tree_cursor_scope(
+                run,
+                checkpoint,
+                entries,
+                root_directory_id=lease.root_directory_id,
+            )
+            await session.commit()
 
-        return _readonly_directory_scope(
-            lease.root_directory_id,
-            checkpoint.cursor_json,
-            entries,
-        )
+        return scope
 
 
 GatewayFactory = Callable[
@@ -779,162 +800,6 @@ def _as_utc(value: datetime) -> datetime:
     if value.tzinfo is None or value.utcoffset() is None:
         return value.replace(tzinfo=UTC)
     return value.astimezone(UTC)
-
-
-def _readonly_directory_scope(
-    root_directory_id: str,
-    cursor_json: str,
-    entries: Collection[LibraryScanEntry],
-) -> frozenset[str]:
-    if cursor_json in {"", "{}"}:
-        return frozenset((root_directory_id,))
-    try:
-        cursor = json.loads(cursor_json)
-    except (TypeError, ValueError):
-        raise LibraryIndexError("checkpoint_invalid") from None
-    version = cursor.get("version") if isinstance(cursor, dict) else None
-    if (
-        not isinstance(version, int)
-        or isinstance(version, bool)
-        or version not in {1, 2}
-    ):
-        raise LibraryIndexError("checkpoint_invalid")
-
-    visited = cursor.get("visited")
-    pending = cursor.get("pending")
-    if not isinstance(visited, list) or not isinstance(pending, list):
-        raise LibraryIndexError("checkpoint_invalid")
-    if any(not _valid_scope_identifier(value) for value in visited):
-        raise LibraryIndexError("checkpoint_invalid")
-    if len(set(visited)) != len(visited) or root_directory_id not in visited:
-        raise LibraryIndexError("library_scope_unverified")
-
-    directory_totals: dict[str, int] | None = None
-    if version == 2:
-        raw_directory_totals = cursor.get("directory_totals")
-        expected_total = cursor.get("expected_total")
-        if (
-            not isinstance(raw_directory_totals, dict)
-            or not _valid_nonnegative_int(expected_total)
-        ):
-            raise LibraryIndexError("checkpoint_invalid")
-        directory_totals = {}
-        for directory_id, total in raw_directory_totals.items():
-            if not _valid_scope_identifier(directory_id):
-                raise LibraryIndexError("library_scope_unverified")
-            if not _valid_nonnegative_int(total):
-                raise LibraryIndexError("checkpoint_invalid")
-            if directory_id not in visited:
-                raise LibraryIndexError("library_scope_unverified")
-            directory_totals[directory_id] = total
-        if sum(directory_totals.values()) != expected_total:
-            raise LibraryIndexError("checkpoint_invalid")
-
-    pending_ids: list[str] = []
-    for item in pending:
-        if not isinstance(item, dict):
-            raise LibraryIndexError("checkpoint_invalid")
-        directory_id = item.get("directory_id")
-        if not _valid_scope_identifier(directory_id) or directory_id not in visited:
-            raise LibraryIndexError("library_scope_unverified")
-        if directory_id in pending_ids:
-            raise LibraryIndexError("checkpoint_invalid")
-        parent_path = item.get("parent_path")
-        page = item.get("page")
-        page_count = item.get("page_count")
-        total = item.get("total")
-        if (
-            not isinstance(parent_path, str)
-            or not _valid_cursor_path(parent_path, allow_empty=True)
-            or not isinstance(page, int)
-            or isinstance(page, bool)
-            or page < 1
-            or not _valid_optional_nonnegative_int(page_count)
-            or not _valid_optional_nonnegative_int(total)
-        ):
-            raise LibraryIndexError("checkpoint_invalid")
-        if version == 2:
-            items_seen = item.get("items_seen")
-            if not _valid_nonnegative_int(items_seen):
-                raise LibraryIndexError("checkpoint_invalid")
-            if directory_totals is None:
-                raise LibraryIndexError("checkpoint_invalid")
-            known_total = directory_totals.get(directory_id)
-            if total is None:
-                if known_total is not None or items_seen != 0:
-                    raise LibraryIndexError("checkpoint_invalid")
-            elif known_total != total or items_seen > total:
-                raise LibraryIndexError("checkpoint_invalid")
-        pending_ids.append(directory_id)
-
-    if version == 2:
-        if directory_totals is None:
-            raise LibraryIndexError("checkpoint_invalid")
-        if set(directory_totals) | set(pending_ids) != set(visited):
-            raise LibraryIndexError("checkpoint_invalid")
-
-    directory_parents: dict[str, str] = {}
-    for entry in entries:
-        directory_id = entry.object_id
-        parent_id = entry.parent_id
-        if (
-            not _valid_scope_identifier(directory_id)
-            or directory_id == root_directory_id
-            or not _valid_scope_identifier(parent_id)
-            or directory_id in directory_parents
-            or directory_id not in visited
-        ):
-            raise LibraryIndexError("library_scope_unverified")
-        directory_parents[directory_id] = parent_id
-
-    visited_children = set(visited) - {root_directory_id}
-    if visited_children != set(directory_parents):
-        raise LibraryIndexError("library_scope_unverified")
-    for directory_id in directory_parents:
-        current = directory_id
-        chain: set[str] = set()
-        while current != root_directory_id:
-            if current in chain:
-                raise LibraryIndexError("library_scope_unverified")
-            chain.add(current)
-            parent_id = directory_parents.get(current)
-            if parent_id is None:
-                raise LibraryIndexError("library_scope_unverified")
-            current = parent_id
-
-    return frozenset(visited)
-
-
-def _valid_nonnegative_int(value: object) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
-
-
-def _valid_optional_nonnegative_int(value: object) -> bool:
-    return value is None or _valid_nonnegative_int(value)
-
-
-def _valid_cursor_path(value: object, *, allow_empty: bool = False) -> bool:
-    return (
-        isinstance(value, str)
-        and (allow_empty or bool(value))
-        and len(value) <= 4096
-        and "\x00" not in value
-        and "\\" not in value
-        and "://" not in value
-        and not any(part == ".." for part in value.split("/"))
-    )
-
-
-def _valid_scope_identifier(value: object) -> bool:
-    return (
-        isinstance(value, str)
-        and bool(value)
-        and len(value) <= 128
-        and "\x00" not in value
-        and "/" not in value
-        and "\\" not in value
-        and "://" not in value
-    )
 
 
 __all__ = [

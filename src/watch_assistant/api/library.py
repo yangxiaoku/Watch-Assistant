@@ -16,6 +16,7 @@ from watch_assistant.adapters.p115_library_gateway import (
 from watch_assistant.library_models import (
     LibraryInventoryEvent,
     LibraryMediaIdentity,
+    LibraryScanCheckpoint,
     LibraryScanEntry,
     LibraryScanRun,
     MediaLibrary,
@@ -57,6 +58,10 @@ from watch_assistant.services.library_inventory import (
     InventorySnapshot,
     build_snapshot,
     check_inventory,
+)
+from watch_assistant.services.library_index import (
+    LibraryIndexError,
+    validate_complete_scan_evidence,
 )
 from watch_assistant.services.library_scan_operations import (
     LibraryScanOperationError,
@@ -1109,6 +1114,28 @@ async def bind_library_identity(
         run = await _latest_scan_any(session, library_id)
         if not _scan_is_complete(run, library):
             raise HTTPException(status_code=409, detail="library_inventory_incomplete")
+        checkpoint = await session.get(LibraryScanCheckpoint, run.id)
+        all_entries = list(
+            (
+                await session.scalars(
+                    select(LibraryScanEntry).where(
+                        LibraryScanEntry.scan_run_id == run.id
+                    )
+                )
+            ).all()
+        )
+        try:
+            validate_complete_scan_evidence(
+                run,
+                checkpoint,
+                all_entries,
+                root_directory_id=library.root_directory_id,
+                require_tree=True,
+            )
+        except LibraryIndexError:
+            raise HTTPException(
+                status_code=409, detail="library_inventory_incomplete"
+            ) from None
         entry = await session.scalar(
             select(LibraryScanEntry).where(
                 LibraryScanEntry.scan_run_id == run.id,
@@ -1218,6 +1245,27 @@ async def _inventory_snapshot(
             )
         ).all()
     )
+    complete = _scan_is_complete(run, library)
+    if complete:
+        checkpoint = await session.get(LibraryScanCheckpoint, run.id)
+        try:
+            validate_complete_scan_evidence(
+                run,
+                checkpoint,
+                list(
+                    (
+                        await session.scalars(
+                            select(LibraryScanEntry).where(
+                                LibraryScanEntry.scan_run_id == run.id
+                            )
+                        )
+                    ).all()
+                ),
+                root_directory_id=run.root_directory_id,
+                require_tree=True,
+            )
+        except LibraryIndexError:
+            complete = False
     identities = {
         identity.object_id: identity
         for identity in (
@@ -1263,7 +1311,7 @@ async def _inventory_snapshot(
             )
             for entry in entries
         ),
-        complete=_scan_is_complete(run, library),
+        complete=complete,
         captured_at=(
             run.updated_at
             if run.updated_at.tzinfo is not None

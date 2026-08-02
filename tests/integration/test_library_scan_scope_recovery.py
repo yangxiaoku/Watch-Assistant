@@ -11,6 +11,7 @@ from watch_assistant.db import create_database, initialize_database
 from watch_assistant.library_models import (
     LibraryScanCheckpoint,
     LibraryScanEntry,
+    LibraryScanRun,
     MediaLibrary,
 )
 from watch_assistant.services.library_scan_operations import (
@@ -129,7 +130,9 @@ async def test_new_worker_restores_durable_child_scope_without_remote_scope_expa
     assert await first_worker.run_once() is True
 
     async with database.session_factory() as session:
+        run = await session.get(LibraryScanRun, queued.run_id)
         checkpoint = await session.get(LibraryScanCheckpoint, queued.run_id)
+        assert run is not None
         assert checkpoint is not None
         cursor = json.loads(checkpoint.cursor_json)
         assert cursor["visited"] == [ROOT_ID, CHILD_ID]
@@ -171,7 +174,9 @@ async def test_v2_durable_cursor_restores_child_scope_without_remote_scope_expan
     assert lease is not None
 
     async with database.session_factory() as session:
+        run = await session.get(LibraryScanRun, queued.run_id)
         checkpoint = await session.get(LibraryScanCheckpoint, queued.run_id)
+        assert run is not None
         assert checkpoint is not None
         checkpoint.cursor_json = json.dumps(
             {
@@ -191,6 +196,11 @@ async def test_v2_durable_cursor_restores_child_scope_without_remote_scope_expan
                 "visited": [ROOT_ID, CHILD_ID],
             }
         )
+        checkpoint.page = 1
+        checkpoint.items_seen = 1
+        run.pages_read = 1
+        run.items_seen = 1
+        run.expected_total = 1
         session.add(
             LibraryScanEntry(
                 scan_run_id=queued.run_id,

@@ -8,6 +8,7 @@ from sqlalchemy import inspect, select
 
 from watch_assistant.db import create_database, initialize_database
 from watch_assistant.library_models import (
+    LibraryScanCheckpoint,
     LibraryScanEntry,
     LibraryScanRun,
     MediaLibrary,
@@ -170,9 +171,13 @@ async def _database(tmp_path: Path):
                 library_id=LIBRARY_ID,
                 root_directory_id=ROOT_ID,
                 idempotency_key="scan-key",
+                scan_mode="tree",
                 state="completed",
                 complete=True,
                 snapshot_revision=1,
+                expected_total=3,
+                pages_read=2,
+                items_seen=3,
             )
         )
         await session.commit()
@@ -207,6 +212,22 @@ async def _database(tmp_path: Path):
                 name="second-title.mkv",
                 path=SECRET_PATH,
                 is_directory=False,
+            )
+        )
+        session.add(
+            LibraryScanCheckpoint(
+                scan_run_id=SCAN_ID,
+                page=2,
+                items_seen=3,
+                cursor_json=json.dumps(
+                    {
+                        "version": 2,
+                        "directory_totals": {ROOT_ID: 3, "8000": 0},
+                        "expected_total": 3,
+                        "pending": [],
+                        "visited": [ROOT_ID, "8000"],
+                    }
+                ),
             )
         )
         await session.commit()
@@ -401,9 +422,13 @@ async def test_unrelated_new_scan_invalidates_bound_plan(tmp_path):
                 library_id=LIBRARY_ID,
                 root_directory_id=ROOT_ID,
                 idempotency_key="scan-key-2",
+                scan_mode="tree",
                 state="completed",
                 complete=True,
                 snapshot_revision=2,
+                expected_total=4,
+                pages_read=2,
+                items_seen=4,
             )
         )
         await session.flush()
@@ -446,6 +471,22 @@ async def test_unrelated_new_scan_invalidates_bound_plan(tmp_path):
                     is_directory=False,
                 ),
             ]
+        )
+        session.add(
+            LibraryScanCheckpoint(
+                scan_run_id="scan-2",
+                page=2,
+                items_seen=4,
+                cursor_json=json.dumps(
+                    {
+                        "version": 2,
+                        "directory_totals": {ROOT_ID: 4, "8000": 0},
+                        "expected_total": 4,
+                        "pending": [],
+                        "visited": [ROOT_ID, "8000"],
+                    }
+                ),
+            )
         )
         await session.commit()
         stored = await session.get(OrganizationPlan, plan_view.plan_id)
@@ -636,6 +677,15 @@ async def test_missing_target_mapping_or_companion_identity_needs_review(tmp_pat
         target_root="missing-target",
     )
     assert missing_target.status is OrganizationPlanStatus.NEEDS_REVIEW
+    async with database.session_factory() as session:
+        stored = await session.get(OrganizationPlan, missing_target.plan_id)
+        assert stored is not None
+        assert (
+            await load_executable_steps(
+                database.session_factory, stored, allow_unconfirmed=True
+            )
+            is None
+        )
     companion = OrganizationPlanCompanion(
         source=PlanSource(
             object_type="file",
