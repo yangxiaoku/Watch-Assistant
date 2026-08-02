@@ -74,7 +74,7 @@ curl http://127.0.0.1:8000/api/v1/health
 
 ### systemd 发布目录与切换顺序
 
-使用发布包前，Linux/Git Bash 环境必须具备 `git`、`tar`、`sha256sum`、`stat`、`awk`、`grep`
+使用发布包前，Linux/Git Bash 环境必须具备 `git`、`tar`、`sha256sum`、`stat`、`awk`、`grep`、`cmp`
 和 `npm`，并在 worktree 创建 `.venv/bin/python`；Windows worktree 使用
 `.venv/Scripts/python.exe`。发布脚本会拒绝缺少该 worktree Python 的环境，不会回退系统 Python。
 发布 manifest 的 JSON 创建、读取和字段校验由 Python 标准库 helper 完成，因此不需要安装 `jq`。

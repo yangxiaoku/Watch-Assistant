@@ -93,6 +93,11 @@ if find "$TEMP_DIR/$PACKAGE_ROOT" -type l -print -quit | grep -q .; then
     echo "release artifact refused: archive contains symlinks" >&2
     exit 1
 fi
+if ! cmp -s "$ROOT_DIR/scripts/release_manifest.py" \
+    "$TEMP_DIR/$PACKAGE_ROOT/scripts/release_manifest.py"; then
+    echo "release artifact refused: release manifest helper does not match expected commit" >&2
+    exit 1
+fi
 VERSION_FILE="$TEMP_DIR/$PACKAGE_ROOT/VERSION"
 if [[ ! -f "$VERSION_FILE" ]]; then
     echo "release artifact refused: VERSION is missing" >&2
@@ -120,7 +125,7 @@ frontend_hash() {
 }
 
 FRONTEND_SHA256="$(frontend_hash "$TEMP_DIR/$PACKAGE_ROOT/frontend/dist")"
-"$RELEASE_SMOKE_PYTHON" "$TEMP_DIR/$PACKAGE_ROOT/scripts/release_manifest.py" verify-build \
+"$RELEASE_SMOKE_PYTHON" "$ROOT_DIR/scripts/release_manifest.py" verify-build \
     --manifest "$MANIFEST_FILE" \
     --expected-commit "$EXPECTED_COMMIT" \
     --expected-short-commit "$SHORT_COMMIT" \
@@ -134,7 +139,7 @@ cp "$PACKAGE_FILE" "$OUTPUT_DIR/$PACKAGE_NAME"
 cp "$VERSION_FILE" "$OUTPUT_DIR/VERSION"
 printf '%s  %s\n' "$PACKAGE_SHA256" "$PACKAGE_NAME" > "$OUTPUT_DIR/SHA256SUMS"
 
-"$RELEASE_SMOKE_PYTHON" "$TEMP_DIR/$PACKAGE_ROOT/scripts/release_manifest.py" write-artifact \
+"$RELEASE_SMOKE_PYTHON" "$ROOT_DIR/scripts/release_manifest.py" write-artifact \
     --output "$OUTPUT_DIR/release-manifest.json" \
     --artifact "$PACKAGE_NAME" \
     --commit "$EXPECTED_COMMIT" \

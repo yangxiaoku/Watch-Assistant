@@ -1,8 +1,10 @@
 import importlib.util
+import hashlib
 import json
 import os
 import shutil
 import subprocess
+import tarfile
 from pathlib import Path
 
 import pytest
@@ -97,6 +99,8 @@ def test_release_build_and_verify_use_provenance_and_project_venv():
     assert "--frontend-sha256" in verify
     assert "release_manifest.py" in build
     assert "release_manifest.py" in verify
+    assert '"$ROOT_DIR/scripts/release_manifest.py"' in verify
+    assert "cmp -s" in verify
     assert "jq" not in build.lower()
     assert "jq" not in verify.lower()
     assert "${PYTHON_BIN:-python}" not in build
@@ -114,6 +118,91 @@ def test_release_shell_scripts_have_valid_bash_syntax():
             check=False,
         )
         assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Linux shell release semantics are required")
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash is required")
+def test_verify_release_rejects_tampered_package_helper_or_manifest(tmp_path: Path):
+    commit = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
+    ).strip()
+    short_commit = commit[:7]
+    source_sha256 = hashlib.sha256(
+        subprocess.check_output(["git", "archive", "--format=tar", commit], cwd=ROOT)
+    ).hexdigest()
+
+    frontend_root = tmp_path / "frontend" / "dist"
+    frontend_root.mkdir(parents=True)
+    frontend_file = frontend_root / "index.html"
+    frontend_file.write_text("<!doctype html>", encoding="utf-8")
+    frontend_sha256 = hashlib.sha256(
+        (
+            hashlib.sha256(frontend_file.read_bytes()).hexdigest()
+            + "  ./index.html\n"
+        ).encode()
+    ).hexdigest()
+
+    for tampered_file in ("helper", "manifest"):
+        package_root = tmp_path / f"watch-assistant-{short_commit}-{tampered_file}"
+        (package_root / "frontend" / "dist").mkdir(parents=True)
+        (package_root / "src" / "watch_assistant").mkdir(parents=True)
+        (package_root / "scripts").mkdir()
+        (package_root / "VERSION").write_text(
+            f"commit={commit}\nbuild_time=2026-08-02T00:00:00Z\n",
+            encoding="utf-8",
+        )
+        (package_root / "frontend" / "dist" / "index.html").write_text(
+            frontend_file.read_text(encoding="utf-8"), encoding="utf-8"
+        )
+        for relative in (
+            "src/watch_assistant/app.py",
+            "src/watch_assistant/release_metadata.py",
+            "scripts/release_startup_smoke.py",
+        ):
+            path = package_root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("raise SystemExit(0)\n", encoding="utf-8")
+
+        helper = package_root / "scripts" / "release_manifest.py"
+        helper.write_bytes((ROOT / "scripts" / "release_manifest.py").read_bytes())
+        manifest = {
+            "schema_version": 2,
+            "commit": commit,
+            "short_commit": short_commit,
+            "source_sha256": source_sha256,
+            "frontend_sha256": frontend_sha256,
+            "build_time": "2026-08-02T00:00:00Z",
+            "branch": "codex/test",
+        }
+        if tampered_file == "helper":
+            helper.write_text("# tampered helper\n", encoding="utf-8")
+        else:
+            manifest["source_sha256"] = "0" * 64
+        (package_root / "release-manifest.json").write_text(
+            json.dumps(manifest), encoding="utf-8"
+        )
+
+        package_file = tmp_path / (
+            f"watch-assistant-{short_commit}-20260802-0000.tar.gz"
+        )
+        with tarfile.open(package_file, "w:gz") as archive:
+            archive.add(package_root, arcname=f"watch-assistant-{short_commit}")
+
+        result = subprocess.run(
+            [
+                "bash",
+                str(ROOT / "scripts" / "verify_release_artifact.sh"),
+                str(package_file),
+                commit,
+                str(tmp_path / f"output-{tampered_file}"),
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode != 0
+        assert "release artifact refused" in result.stderr
 
 
 def test_compose_and_docker_reject_unknown_release():
