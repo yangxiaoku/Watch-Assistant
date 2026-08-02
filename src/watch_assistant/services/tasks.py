@@ -69,6 +69,7 @@ class ReconciliationUnavailable(RuntimeError):
 
 
 AVAILABILITY_OBSERVATION_UNVERIFIED = "availability_observation_unverified"
+TASK_LEASE_LOST = "lease_claim_lost"
 
 
 RemoteState = RemoteStatus | RemoteObservation
@@ -458,6 +459,7 @@ class TaskService:
                     select(Task)
                     .where(
                         Task.state == TaskState.QUEUED,
+                        Task.lease_owner.is_(None),
                         Task.lease_token.is_(None),
                         (
                             Task.lease_expires_at.is_(None)
@@ -476,6 +478,7 @@ class TaskService:
                     .where(
                         Task.id == task.id,
                         Task.state == TaskState.QUEUED,
+                        Task.lease_owner.is_(None),
                         Task.lease_token.is_(None),
                         (
                             Task.lease_expires_at.is_(None)
@@ -652,6 +655,17 @@ class TaskService:
             task.updated_at = current_time
             await session.commit()
             return task
+
+    async def mark_lease_lost(self, lease: TaskLease) -> Task | None:
+        """Fence a worker that lost its claim into an explicit review state."""
+
+        return await self.finish_recovery(
+            lease,
+            RemoteObservation(
+                status=RemoteStatus.UNCERTAIN,
+                error_code=TASK_LEASE_LOST,
+            ),
+        )
 
     async def reconcile(
         self,
@@ -870,6 +884,7 @@ def _observation_error_message(error_code: str) -> str:
         "availability_file_id_unavailable": "无法可靠取得远端文件 ID。",
         "availability_parent_mismatch": "远端文件父目录核验不一致。",
         "availability_observer_unavailable": "远端文件只读观察器暂不可用。",
+        TASK_LEASE_LOST: "任务执行权已变化，外部结果待确认，未继续提交。",
     }.get(error_code, "远端结果待确认，系统未重复提交。")
 
 
