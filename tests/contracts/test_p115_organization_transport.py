@@ -3,6 +3,7 @@ import asyncio
 import pytest
 
 from watch_assistant.adapters.p115_library_write_contract import (
+    OrganizationContractEvidence,
     OrganizationWriteCapability,
     P115OrganizationContract,
 )
@@ -92,17 +93,23 @@ def _intent(
 
 
 def _organization_contract() -> P115OrganizationContract:
+    capabilities = frozenset(
+        {
+            OrganizationWriteCapability.READ_SCOPE,
+            OrganizationWriteCapability.MOVE,
+            OrganizationWriteCapability.RENAME,
+            OrganizationWriteCapability.RECYCLE,
+            OrganizationWriteCapability.POSTCONDITION,
+        }
+    )
     return P115OrganizationContract(
         verified=True,
         timeout_enforced=True,
-        capabilities=frozenset(
-            {
-                OrganizationWriteCapability.READ_SCOPE,
-                OrganizationWriteCapability.MOVE,
-                OrganizationWriteCapability.RENAME,
-                OrganizationWriteCapability.RECYCLE,
-                OrganizationWriteCapability.POSTCONDITION,
-            }
+        capabilities=capabilities,
+        evidence=OrganizationContractEvidence(
+            evidence_id="c03-fixture-organization-v1",
+            capabilities=capabilities,
+            timeout_enforced=True,
         ),
     )
 
@@ -386,18 +393,7 @@ def test_live_transport_rejects_unverified_organization_contract():
             organization_contract=P115OrganizationContract(),
         )
 
-    contract = P115OrganizationContract(
-        verified=True,
-        timeout_enforced=True,
-        capabilities=frozenset(
-            {
-                OrganizationWriteCapability.READ_SCOPE,
-                OrganizationWriteCapability.MOVE,
-                OrganizationWriteCapability.RENAME,
-                OrganizationWriteCapability.POSTCONDITION,
-            }
-        ),
-    )
+    contract = _organization_contract()
     transport = create_live_p115_organization_transport(
         client=object(),
         call_executor=_live_call_executor,

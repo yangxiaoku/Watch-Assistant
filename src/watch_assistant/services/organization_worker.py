@@ -34,6 +34,7 @@ from watch_assistant.services.organization_operations import (
 from watch_assistant.services.p115_credentials import CookieProvider
 
 P115ClientFactory = Callable[[str], Any]
+OrganizationDirectoryProvisioner = Callable[[str], Awaitable[None]]
 
 
 class OrganizationWorker:
@@ -58,6 +59,7 @@ class OrganizationWorker:
         event_logger=None,
         settings_service=None,
         organization_contract: P115OrganizationContract | None = None,
+        directory_provisioner: OrganizationDirectoryProvisioner | None = None,
     ) -> None:
         if not production_root_id.isdigit() or production_root_id.startswith("0"):
             raise ValueError("invalid_production_root_id")
@@ -77,6 +79,7 @@ class OrganizationWorker:
         self._event_logger = event_logger
         self._settings_service = settings_service
         self._organization_contract = organization_contract
+        self._directory_provisioner = directory_provisioner
         self._stop = asyncio.Event()
 
     async def run_once(self) -> bool:
@@ -122,6 +125,23 @@ class OrganizationWorker:
                 await self._finish_failed(
                     lease, decision.error_code or "contract_unverified"
                 )
+                return True
+
+        if self._directory_provisioner is not None:
+            try:
+                lease = await self._operations.renew_lease(
+                    lease.operation_id,
+                    expected_revision=lease.revision,
+                    lease_token=lease.lease_token,
+                )
+                await self._directory_provisioner(lease.operation_id)
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:  # noqa: BLE001 - remote details stay private
+                error_code = getattr(error, "code", None)
+                if not isinstance(error_code, str) or not error_code:
+                    error_code = "target_directory_create_failed"
+                await self._finish_failed(lease, error_code)
                 return True
 
         client = await self._build_client()

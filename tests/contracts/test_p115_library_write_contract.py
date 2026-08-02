@@ -6,6 +6,7 @@ from p115client import P115Client
 
 from watch_assistant.adapters.p115_library_write_contract import (
     FakeP115LibraryWriteGateway,
+    OrganizationContractEvidence,
     OrganizationWriteCapability,
     OrganizationWriteGate,
     P115OrganizationContract,
@@ -109,16 +110,22 @@ def test_all_write_gates_are_closed_by_default_and_delete_stays_disabled():
 
 
 def test_organization_gate_requires_verified_capabilities_and_scope():
+    capabilities = frozenset(
+        {
+            OrganizationWriteCapability.READ_SCOPE,
+            OrganizationWriteCapability.MOVE,
+            OrganizationWriteCapability.RENAME,
+            OrganizationWriteCapability.POSTCONDITION,
+        }
+    )
     contract = P115OrganizationContract(
         verified=True,
         timeout_enforced=True,
-        capabilities=frozenset(
-            {
-                OrganizationWriteCapability.READ_SCOPE,
-                OrganizationWriteCapability.MOVE,
-                OrganizationWriteCapability.RENAME,
-                OrganizationWriteCapability.POSTCONDITION,
-            }
+        capabilities=capabilities,
+        evidence=OrganizationContractEvidence(
+            evidence_id="c03-fixture-organization-v1",
+            capabilities=capabilities,
+            timeout_enforced=True,
         ),
     )
     base = OrganizationWriteGate(
@@ -162,6 +169,22 @@ def test_organization_gate_requires_verified_capabilities_and_scope():
     assert evaluate_organization_write_gate(base, WriteOperation.RECYCLE).error_code == (
         "capability_unverified"
     )
+
+
+def test_boolean_verified_flag_without_contract_evidence_is_rejected():
+    with pytest.raises(ValueError, match="organization_contract_evidence_required"):
+        P115OrganizationContract(
+            verified=True,
+            timeout_enforced=True,
+            capabilities=frozenset(
+                {
+                    OrganizationWriteCapability.READ_SCOPE,
+                    OrganizationWriteCapability.MOVE,
+                    OrganizationWriteCapability.RENAME,
+                    OrganizationWriteCapability.POSTCONDITION,
+                }
+            ),
+        )
 
 
 @pytest.mark.asyncio

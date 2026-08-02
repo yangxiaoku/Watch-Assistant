@@ -7,6 +7,11 @@ from cryptography.fernet import Fernet
 from pwdlib import PasswordHash
 
 from watch_assistant.app import create_app
+from watch_assistant.adapters.p115_library_write_contract import (
+    OrganizationContractEvidence,
+    OrganizationWriteCapability,
+    P115OrganizationContract,
+)
 from watch_assistant.crypto import SecretCrypto
 from watch_assistant.db import create_database, initialize_database
 from watch_assistant.library_models import (
@@ -96,6 +101,13 @@ async def test_empty_directory_cleanup_api_is_preview_confirm_idempotent_and_rev
         await session.commit()
 
     password_hash = PasswordHash.recommended()
+    capabilities = frozenset(
+        {
+            OrganizationWriteCapability.READ_SCOPE,
+            OrganizationWriteCapability.RECYCLE,
+            OrganizationWriteCapability.POSTCONDITION,
+        }
+    )
     app = create_app(
         database=database,
         crypto=SecretCrypto(Fernet.generate_key().decode("ascii")),
@@ -108,6 +120,16 @@ async def test_empty_directory_cleanup_api_is_preview_confirm_idempotent_and_rev
         organization_execution_enabled=True,
         organization_write_enabled=True,
         organization_write_contract_verified=True,
+        organization_contract=P115OrganizationContract(
+            verified=True,
+            capabilities=capabilities,
+            timeout_enforced=True,
+            evidence=OrganizationContractEvidence(
+                evidence_id="c03-fixture-recycle-v1",
+                capabilities=capabilities,
+                timeout_enforced=True,
+            ),
+        ),
         frontend_dir=tmp_path / "missing",
     )
     calls = []

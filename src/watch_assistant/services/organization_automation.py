@@ -1,4 +1,4 @@
-"""Scheduled, read-first organization planning and optional execution queueing."""
+"""Scheduled, read-first organization planning with no remote write path."""
 
 from __future__ import annotations
 
@@ -156,8 +156,9 @@ class OrganizationAutomationService:
         self._plans = plan_service
         self._gateway_factory = gateway_factory
         self._operations = operation_service
-        self._auto_execute = auto_execute
-        self._directory_provisioner = directory_provisioner
+        # Kept in the constructor for compatibility with older wiring.  A
+        # planning pass must never use either value to obtain write authority.
+        del auto_execute, directory_provisioner
         self._event_logger = event_logger or settings_service
         self._lock = asyncio.Lock()
         self.last_result: OrganizationAutomationResult | None = None
@@ -318,81 +319,9 @@ class OrganizationAutomationService:
                     preview_plans = list(await create_previews(**preview_kwargs))
                 else:
                     preview_plans = [await self._preview.create_preview(**preview_kwargs)]
-                if self._directory_provisioner is not None:
-                    target_paths = tuple(
-                        path
-                        for preview_plan in preview_plans
-                        for path in await self._plans.plan_target_directory_paths(
-                            preview_plan.plan_id
-                        )
-                    )
-                    missing_paths = tuple(
-                        path for path in target_paths if path not in catalog.by_path
-                    )
-                    if missing_paths:
-                        try:
-                            await self._directory_provisioner(
-                                target_id, catalog.by_path, missing_paths
-                            )
-                        except asyncio.CancelledError:
-                            raise
-                        except OrganizationDirectoryProvisionError:
-                            raise
-                        except Exception as error:  # noqa: BLE001 - keep remote details private
-                            error_code, phase = _classify_error(
-                                error, default_phase="execution"
-                            )
-                            raise OrganizationAutomationError(
-                                error_code
-                                if error_code != "automation_failed"
-                                else "target_directory_create_failed",
-                                phase=phase,
-                            ) from None
-                        try:
-                            catalog = await read_target_catalog(gateway, target_id)
-                        except asyncio.CancelledError:
-                            raise
-                        except OrganizationTargetError as error:
-                            raise OrganizationAutomationError(
-                                _stable_error_code(error), phase="directory_read"
-                            ) from None
-                        except P115ReadOnlyGatewayError as error:
-                            error_code, phase = _classify_error(
-                                error, default_phase="directory_read"
-                            )
-                            raise OrganizationAutomationError(
-                                error_code, phase=phase
-                            ) from None
-                        except Exception:  # noqa: BLE001 - keep remote details private
-                            raise OrganizationAutomationError(
-                                "target_directory_read_failed", phase="directory_read"
-                            ) from None
-                        preview_kwargs["target_directories"] = catalog.by_path
-                        preview_kwargs["existing_target_files"] = catalog.files
-                        if callable(create_previews):
-                            preview_plans = list(await create_previews(**preview_kwargs))
-                        else:
-                            preview_plans = [
-                                await self._preview.create_preview(**preview_kwargs)
-                            ]
                 plans += len(preview_plans)
                 for plan in preview_plans:
                     plan_ids.append(plan.plan_id)
-                    if (
-                        self._auto_execute
-                        and not manual_confirmation
-                        and self._operations is not None
-                        and plan.status is OrganizationPlanStatus.PLANNED
-                    ):
-                        confirmed = await self._plans.confirm_plan(
-                            plan.plan_id, expected_revision=plan.revision
-                        )
-                        await self._operations.create(
-                            plan.plan_id,
-                            idempotency_key=f"organization-auto:{plan.plan_id}",
-                            expected_plan_revision=confirmed.revision,
-                        )
-                        queued += 1
                     await self._log_preview(plan.status.value, plan.source_count)
             except asyncio.CancelledError:
                 raise
@@ -567,6 +496,15 @@ class OrganizationAutomationService:
                 fields={"status": status},
                 counts={"count": count},
             )
+            if status in {
+                OrganizationPlanStatus.PLANNED.value,
+                OrganizationPlanStatus.NEEDS_REVIEW.value,
+            }:
+                await method(
+                    "organize.plan.awaiting_confirmation",
+                    fields={"status": status},
+                    counts={"count": count},
+                )
 
     async def _log_blocked(
         self,
