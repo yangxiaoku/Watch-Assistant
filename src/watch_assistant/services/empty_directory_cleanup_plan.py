@@ -22,6 +22,7 @@ from watch_assistant.library_models import (
 from watch_assistant.services.empty_directory_cleanup import (
     EmptyDirectoryCleanupStatus,
 )
+from watch_assistant.services.strm_scope import has_newer_unsettled_scan
 
 
 class EmptyDirectoryCleanupPlanError(ValueError):
@@ -460,6 +461,8 @@ class EmptyDirectoryCleanupPlanService:
             .limit(1)
         )
         if latest != run.snapshot_revision:
+            raise EmptyDirectoryCleanupPlanError("source_snapshot_not_current")
+        if await has_newer_unsettled_scan(session, run):
             raise EmptyDirectoryCleanupPlanError("source_snapshot_not_current")
         return library, run
 

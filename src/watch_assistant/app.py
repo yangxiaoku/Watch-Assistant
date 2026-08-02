@@ -1516,7 +1516,7 @@ def create_app(
     if system_created_directory_ids is None:
         system_created_directory_ids = ()
     if isinstance(system_created_directory_ids, (str, bytes)):
-        raise ValueError("invalid_system_created_directory_ids")
+        raise TypeError("invalid_system_created_directory_ids")
     evidence = frozenset(system_created_directory_ids)
     if any(
         not isinstance(item, str)
