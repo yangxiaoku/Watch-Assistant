@@ -22,6 +22,7 @@ import { finalizeInspectionResources, inspectionProgress as getInspectionProgres
 import { describeUiError } from "./errorCatalog";
 import { waitForResourceSearch as pollResourceSearch } from "./resourceSearchPolling";
 import { sourceNameList } from "./resourceSources";
+import { createTaskRefreshGuard, isActiveTask } from "./taskPolling";
 import type { CapabilityAvailability, HomeCatalogResponse, MovieMetadata, ResourceFacets, ResourcePageResponse, ResourceQuality, ResourceSearchResponse, ResourceSort, ResourceSummary, SearchResponse, SeasonDetailResponse, TaskResponse } from "./types";
 import CollectionView from "./views/CollectionView.vue";
 import HomeView from "./views/HomeView.vue";
@@ -132,6 +133,7 @@ let workflowCreationPromise: Promise<string | null> | null = null;
 let pendingResourceRoute: ResourceRouteState | null = null;
 let seasonDetailRequestId = 0;
 let seasonDetailAbortController: AbortController | null = null;
+const taskRefreshGuard = createTaskRefreshGuard();
 
 type DetailMetricStage = "detail_framework" | "metadata_summary" | "metadata_complete" | "metadata_failed" | "resource_first_batch" | "resource_complete" | "resource_failed" | "late_response" | "request_cancelled";
 type DetailTiming = { startedAt: number; mediaType: "movie" | "tv"; tmdbId: number; seasonNumber: number | null; reported: Set<DetailMetricStage> };
@@ -187,7 +189,7 @@ let catalogReturnScrollY: number | null = null;
 
 const favoriteIds = computed(() => new Set(favorites.value.map(mediaKey)));
 const detailFavorite = computed(() => result.value ? favoriteIds.value.has(mediaKey(result.value.movie)) : false);
-const hasActiveTasks = computed(() => tasks.value.some((task) => ["queued", "submitting", "submitted", "downloading"].includes(task.state)));
+const hasActiveTasks = computed(() => tasks.value.some(isActiveTask));
 const resourceItems = computed(() => {
   const source = resourceResponse.value?.items ?? resourceItemsFallback.value;
   return source.map((resource) => {
@@ -620,7 +622,9 @@ function openTaskDrawer(): void {
 }
 
 function updateTask(task: TaskResponse): void {
+  taskRefreshGuard.invalidate(task.id);
   tasks.value = [task, ...tasks.value.filter((item) => item.id !== task.id)].slice(0, 50);
+  if (isActiveTask(task)) ensurePolling();
 }
 
 function resetInspection() {
@@ -1390,9 +1394,19 @@ function ensurePolling() {
       pollTimer = undefined;
       return;
     }
-    const active = tasks.value.filter((task) => ["queued", "submitting", "submitted", "downloading"].includes(task.state));
-    const updates = await Promise.all(active.map((task) => api.getTask(task.id).catch(() => task)));
-    const byId = new Map(updates.map((task) => [task.id, task]));
+    const active = tasks.value.filter(isActiveTask);
+    const updates = await Promise.all(active.map(async (task) => {
+      const version = taskRefreshGuard.begin(task.id);
+      try {
+        const response = await api.getTask(task.id);
+        return taskRefreshGuard.isCurrent(task.id, version) ? response : null;
+      } catch {
+        return null;
+      }
+    }));
+    const byId = new Map(
+      updates.filter((task): task is TaskResponse => task !== null).map((task) => [task.id, task]),
+    );
     tasks.value = tasks.value.map((task) => byId.get(task.id) ?? task);
   }, 2000);
 }

@@ -117,6 +117,10 @@ async def apply_remote_status(
 
     if verified_available and source is not EvidenceSource.READONLY_RECONCILIATION:
         raise WorkflowConflict("workflow_evidence_required")
+    if task.state is TaskState.AVAILABLE and (
+        remote_status is not RemoteStatus.AVAILABLE or not verified_available
+    ):
+        raise WorkflowConflict("workflow_stage_terminal")
     state = task_state_from_remote_status(
         remote_status, allow_available=verified_available
     )
@@ -164,6 +168,8 @@ def recover_after_restart(task: Task, remote_status: RemoteStatus | None) -> Non
     task.lease_owner = None
     task.lease_expires_at = None
     task.updated_at = datetime.now(UTC)
+    if task.state is TaskState.AVAILABLE:
+        return
     task.state = (
         task_state_from_remote_status(remote_status, allow_available=False)
         if remote_status is not None
@@ -212,6 +218,7 @@ class TaskService:
     ) -> None:
         self._session_factory = session_factory
         self._create_lock = asyncio.Lock()
+        self._reconcile_lock = asyncio.Lock()
         self._event_logger = event_logger
 
     async def create(
@@ -251,6 +258,23 @@ class TaskService:
                             "task",
                             existing.id,
                         )
+                        if existing.state is TaskState.AVAILABLE:
+                            evidence = await session.scalar(
+                                select(WorkflowEvidence)
+                                .where(
+                                    WorkflowEvidence.task_id == existing.id,
+                                    WorkflowEvidence.stage
+                                    == WorkflowStageName.AVAILABILITY,
+                                    WorkflowEvidence.status
+                                    == EvidenceStatus.AVAILABLE.value,
+                                    WorkflowEvidence.verified.is_(True),
+                                )
+                                .order_by(WorkflowEvidence.observed_at.desc())
+                            )
+                            if evidence is not None:
+                                await advance_availability_from_evidence(
+                                    session, workflow_id, existing.id, evidence
+                                )
                         await session.commit()
                     return existing, True
 
@@ -314,21 +338,22 @@ class TaskService:
         except ValueError as exc:
             raise ReconciliationUnavailable("reconciliation_unavailable") from exc
 
-        async with self._session_factory() as session:
-            task = await session.get(Task, task_id)
-            if task is None:
-                raise ResourceNotFound(task_id)
-            if task.remote_ref != remote_ref:
-                raise ReconciliationUnavailable("reconciliation_conflict")
-            evidence = await apply_remote_status(
-                session,
-                task,
-                normalized_status,
-                source=EvidenceSource.READONLY_RECONCILIATION,
-                verified_available=True,
-            )
-            await session.commit()
-            return task, evidence
+        async with self._reconcile_lock:
+            async with self._session_factory() as session:
+                task = await session.get(Task, task_id)
+                if task is None:
+                    raise ResourceNotFound(task_id)
+                if task.remote_ref != remote_ref:
+                    raise ReconciliationUnavailable("reconciliation_conflict")
+                evidence = await apply_remote_status(
+                    session,
+                    task,
+                    normalized_status,
+                    source=EvidenceSource.READONLY_RECONCILIATION,
+                    verified_available=True,
+                )
+                await session.commit()
+                return task, evidence
 
     async def evidence(self, task_id: str) -> list[WorkflowEvidence]:
         async with self._session_factory() as session:

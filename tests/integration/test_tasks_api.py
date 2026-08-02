@@ -275,6 +275,34 @@ async def test_readonly_reconciliation_promotes_availability_and_records_evidenc
 
 
 @pytest.mark.integration
+async def test_reconciliation_does_not_demote_available_task(tmp_path):
+    client, database, tmdb, pansou, app = await _make_task_client(tmp_path)
+    created = await client.post("/api/v1/tasks", json={"resource_id": "res_task_api"})
+    task_id = created.json()["id"]
+    async with database.session_factory() as session:
+        task = await session.get(Task, task_id)
+        assert task is not None
+        task.state = TaskState.AVAILABLE
+        task.remote_ref = "remote-available-terminal"
+        await session.commit()
+    app.state.task_adapter.remote_status = RemoteStatus.ACCEPTED
+
+    response = await client.post(f"/api/v1/tasks/{task_id}/reconcile")
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "workflow_stage_terminal"
+    assert response.json()["error"]["message_zh"]
+    async with database.session_factory() as session:
+        task = await session.get(Task, task_id)
+        assert task is not None
+        assert task.state is TaskState.AVAILABLE
+    await client.aclose()
+    await tmdb.aclose()
+    await pansou.aclose()
+    await database.engine.dispose()
+
+
+@pytest.mark.integration
 async def test_task_creation_persists_only_browsed_target_directory(tmp_path):
     client, database, tmdb, pansou, app = await _make_task_client(tmp_path)
     app.state.organization_target_root_id = "100"

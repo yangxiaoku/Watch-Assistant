@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 from sqlalchemy import and_, func, select
+from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from watch_assistant.models import Resource, Workflow, WorkflowEvidence, WorkflowStage
@@ -534,50 +535,64 @@ async def record_evidence(
     verified: bool,
     observed_at: datetime | None = None,
 ) -> WorkflowEvidence:
-    """Insert or refresh one safe, idempotent evidence record."""
+    """Atomically insert or refresh one safe, idempotent evidence record."""
 
-    filters = [
+    unique_filters = [
         WorkflowEvidence.evidence_type == evidence_type,
         WorkflowEvidence.source == source.value,
         WorkflowEvidence.subject_id == subject_id,
         WorkflowEvidence.status == status.value,
     ]
-    filters.append(
+    unique_filters.append(
         WorkflowEvidence.workflow_id.is_(None)
         if workflow_id is None
         else WorkflowEvidence.workflow_id == workflow_id
     )
-    filters.append(
+    unique_filters.append(
         WorkflowEvidence.task_id.is_(None)
         if task_id is None
         else WorkflowEvidence.task_id == task_id
     )
-    filters.append(
+    unique_filters.append(
         WorkflowEvidence.stage.is_(None)
         if stage is None
         else WorkflowEvidence.stage == stage
     )
-    evidence = await session.scalar(select(WorkflowEvidence).where(*filters))
     current_time = observed_at or datetime.now(UTC)
-    if evidence is None:
-        evidence = WorkflowEvidence(
-            id="evidence_" + uuid4().hex,
-            workflow_id=workflow_id,
-            task_id=task_id,
-            stage=stage,
-            evidence_type=evidence_type,
-            source=source.value,
-            subject_id=subject_id,
-            status=status.value,
-            verified=verified,
-            observed_at=current_time,
-            created_at=current_time,
+    values = {
+        "id": "evidence_" + uuid4().hex,
+        "workflow_id": workflow_id,
+        "task_id": task_id,
+        "stage": stage,
+        "evidence_type": evidence_type,
+        "source": source.value,
+        "subject_id": subject_id,
+        "status": status.value,
+        "verified": verified,
+        "observed_at": current_time,
+        "created_at": current_time,
+    }
+    statement = insert(WorkflowEvidence).values(values)
+    await session.execute(
+        statement.on_conflict_do_update(
+            index_elements=[
+                WorkflowEvidence.workflow_id,
+                WorkflowEvidence.stage,
+                WorkflowEvidence.evidence_type,
+                WorkflowEvidence.source,
+                WorkflowEvidence.subject_id,
+                WorkflowEvidence.status,
+            ],
+            set_={
+                "task_id": statement.excluded.task_id,
+                "verified": statement.excluded.verified,
+                "observed_at": statement.excluded.observed_at,
+            },
         )
-        session.add(evidence)
-    else:
-        evidence.verified = verified
-        evidence.observed_at = current_time
-    await session.flush()
+    )
+    evidence = await session.scalar(select(WorkflowEvidence).where(*unique_filters))
+    if evidence is None:
+        raise RuntimeError("workflow evidence upsert did not return a row")
     return evidence
 
 
