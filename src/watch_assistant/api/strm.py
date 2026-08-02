@@ -362,7 +362,7 @@ async def _execute_manifest_operation(
         if propagate_errors:
             raise
         return None, operation
-    except Exception:  # noqa: BLE001 - operation status must not remain running
+    except Exception:
         operation = await _fail_operation(
             request,
             operations,
