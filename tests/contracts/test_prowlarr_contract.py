@@ -536,7 +536,7 @@ async def test_target_adapter_classifies_read_only_upstream_failures(
     finally:
         await _close_target_adapter(adapter, transport_client)
 
-    assert getattr(error.value, "error_code") == error_code
+    assert error.value.error_code == error_code
     assert mock.requests[0].api_key_in_query is False
     assert "fixture_" not in str(error.value)
 
