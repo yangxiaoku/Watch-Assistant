@@ -58,8 +58,8 @@ Cookie 文件或应用内托管设备。分享推送、影视库整理、删除�
 - task worker readiness 已由 [PR #36](https://github.com/yangxiaoku/Watch-Assistant/pull/36) 合入，
   对应证据见 [worker 恢复集成测试](tests/integration/test_worker_recovery.py) 和 [任务状态单测](tests/unit/test_tasks.py)。
   这只表示恢复/租约边界有代码证据，不等于生产任务或 115 live 已验收。
-- 当前文档状态修正由 [PR #37](https://github.com/yangxiaoku/Watch-Assistant/pull/37) 提议，尚未合入发布基线；
-  PR #37 不改变生产版本、能力开关或部署状态。
+- PR #31-#37 均已合入当前发布基线，其中 [PR #37](https://github.com/yangxiaoku/Watch-Assistant/pull/37) 是本轮文档状态修正；
+  PR #37 只更新发布状态文档，不改变生产版本、能力开关或部署状态。
 - 发布 manifest、来源和 systemd 回退门禁已由 [PR #14](https://github.com/yangxiaoku/Watch-Assistant/pull/14)、
   [PR #15](https://github.com/yangxiaoku/Watch-Assistant/pull/15)、[PR #16](https://github.com/yangxiaoku/Watch-Assistant/pull/16)、
   [PR #22](https://github.com/yangxiaoku/Watch-Assistant/pull/22)、[PR #23](https://github.com/yangxiaoku/Watch-Assistant/pull/23)

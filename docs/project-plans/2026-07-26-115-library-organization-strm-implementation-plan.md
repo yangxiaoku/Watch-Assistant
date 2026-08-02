@@ -17,9 +17,10 @@
 后续工作台调整 [PR #32](https://github.com/yangxiaoku/Watch-Assistant/pull/32)、STRM/空目录清理加固
 [PR #33](https://github.com/yangxiaoku/Watch-Assistant/pull/33)、库存/组织门禁 [PR #34](https://github.com/yangxiaoku/Watch-Assistant/pull/34)、
 发布门禁 [PR #35](https://github.com/yangxiaoku/Watch-Assistant/pull/35) 和 task worker readiness [PR #36](https://github.com/yangxiaoku/Watch-Assistant/pull/36)。
-对应代码与离线测试只提高 readiness；当前文档状态修正通过 [PR #37](https://github.com/yangxiaoku/Watch-Assistant/pull/37) 提议，
-尚未合入；REQ-001/REQ-002 仍按总索引和 `BLOCKERS.md` 保持“待验收”；播放兼容性、生产媒体库整理、生产 STRM、
-元数据联动、清理和生产部署仍未验收。
+对应代码与离线测试只提高 readiness；文档状态修正 [PR #37](https://github.com/yangxiaoku/Watch-Assistant/pull/37) 已合入当前发布基线，
+PR #31-#37 均已合入；REQ-001/REQ-002 仍按总索引和 `BLOCKERS.md` 保持“待验收”；p115 live、生产媒体库整理、
+STRM 播放/清理、元数据联动和生产验收仍未完成，永久删除保持关闭。Prowlarr live 仍被 Internet Archive 上游 timeout
+阻断，不能写成可搜索来源已配置。
 
 2026-08-02 文档复核为历史审查窗口，锁定 `codex/integration-20260802@2c342d9`；复核期间集成 ref
 前进到 `3afc8d3`，随后随 PR #30 合入发布基线。该历史记录不代表发布包、部署或真实外部验收。
