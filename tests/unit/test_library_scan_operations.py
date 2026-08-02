@@ -29,9 +29,16 @@ LIBRARY_ID = "library-scan"
 
 
 class _Gateway:
-    def __init__(self, *, fail_once: bool = False, interrupt_page: int | None = None):
+    def __init__(
+        self,
+        *,
+        fail_once: bool = False,
+        interrupt_page: int | None = None,
+        total: int = 2,
+    ):
         self.fail_once = fail_once
         self.interrupt_page = interrupt_page
+        self.total = total
         self.calls: list[int] = []
 
     async def list_directory(self, directory_id: str, *, page: int = 1, page_size=100):
@@ -60,7 +67,7 @@ class _Gateway:
             ),
             page=page,
             page_count=2,
-            total=2,
+            total=self.total,
             scan_complete=True,
             state=ScanState.COMPLETE,
             has_more=page == 1,
@@ -132,7 +139,7 @@ async def test_active_idempotent_enqueue_does_not_steal_lease_and_expired_lease_
 async def test_worker_failure_is_persisted_then_same_key_requeues_and_completes(tmp_path):
     database = await _database(tmp_path)
     service = LibraryScanOperationService(database.session_factory)
-    gateway = _Gateway(fail_once=True)
+    gateway = _Gateway(fail_once=True, total=2)
     worker = LibraryScanWorker(
         database.session_factory,
         service,
@@ -211,7 +218,7 @@ async def test_direct_scan_cannot_steal_failed_worker_lease_before_release(tmp_p
 async def test_worker_interruption_requeues_with_durable_tree_cursor(tmp_path):
     database = await _database(tmp_path)
     service = LibraryScanOperationService(database.session_factory)
-    gateway = _Gateway(interrupt_page=2)
+    gateway = _Gateway(interrupt_page=2, total=2)
     worker = LibraryScanWorker(
         database.session_factory,
         service,
