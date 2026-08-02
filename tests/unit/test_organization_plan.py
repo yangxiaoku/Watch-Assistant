@@ -539,6 +539,20 @@ async def test_unrelated_new_scan_invalidates_bound_plan(tmp_path):
 async def test_execution_scope_includes_configured_target_root(tmp_path):
     database = await _database(tmp_path)
     service = OrganizationPlanService(database.session_factory)
+    async with database.session_factory() as session:
+        session.add(
+            LibraryScanEntry(
+                scan_run_id=SCAN_ID,
+                object_type="directory",
+                object_id="9000",
+                parent_id=ROOT_ID,
+                name="target",
+                path="target",
+                is_directory=True,
+            )
+        )
+        await session.commit()
+    await _refresh_completed_tree_evidence(database)
     plan_view = await service.create_plan(
         library_id=LIBRARY_ID,
         scan_run_id=SCAN_ID,
