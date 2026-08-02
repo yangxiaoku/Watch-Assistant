@@ -4,6 +4,53 @@ import { describe, expect, it, vi } from "vitest";
 import LibraryWorkbenchView from "../src/views/LibraryWorkbenchView.vue";
 
 describe("LibraryWorkbenchView", () => {
+  it("keeps the library entry reachable while explaining the disabled STRM gate", async () => {
+    const library = {
+      library_id: "main",
+      name: "115 媒体库",
+      root_directory_id: "123",
+      enabled: true,
+      scope_verified: true,
+      revision: 2,
+      latest_scan: { run_id: "scan-1", state: "completed" as const, complete: true, snapshot_revision: 1, pages_read: 1, items_seen: 1, added_count: 1, changed_count: 0, removed_count: 0, error_code: null },
+    };
+    const api = {
+      libraries: vi.fn().mockResolvedValue({ items: [library], next_cursor: null }),
+      libraryMedia: vi.fn().mockResolvedValue({ items: [], next_cursor: null }),
+      strmManifest: vi.fn().mockResolvedValue({ items: [], page: 1, page_size: 50, total: 0, total_pages: 0 }),
+      strmOperations: vi.fn().mockResolvedValue({ items: [], next_cursor: null }),
+    };
+    const wrapper = mount(LibraryWorkbenchView, {
+      props: {
+        api: api as never,
+        strmFullCapability: { enabled: false, reason_code: "strm_full_disabled", reason_zh: "STRM 全量生成未启用，请检查部署功能开关。", settings_section: "overview" },
+      },
+    });
+    await flushPromises();
+
+    const fullButton = wrapper.findAll("button").find((button) => button.text().includes("全量 STRM"));
+    expect(fullButton?.attributes("disabled")).toBeDefined();
+    expect(wrapper.text()).toContain("STRM 全量生成未启用，请检查部署功能开关。");
+    await wrapper.findAll("button").find((button) => button.text().includes("前往设置"))?.trigger("click");
+    expect(wrapper.emitted("open-settings")?.at(-1)).toEqual(["overview"]);
+  });
+
+  it("shows the first safe setup step when no library is configured", async () => {
+    const api = {
+      libraries: vi.fn().mockResolvedValue({ items: [], next_cursor: null }),
+      p115Directories: vi.fn(),
+      libraryMedia: vi.fn(),
+      strmManifest: vi.fn(),
+      strmOperations: vi.fn(),
+    };
+    const wrapper = mount(LibraryWorkbenchView, { props: { api: api as never } });
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("下一步：读取服务器配置的 115 根目录，保存配置、验证范围，再完成首次扫描。");
+    await wrapper.findAll("button").find((button) => button.text().includes("检查 115 整理设置"))?.trigger("click");
+    expect(wrapper.emitted("open-settings")?.at(-1)).toEqual(["organization"]);
+  });
+
   it("initializes the default library from the configured P115 root", async () => {
     const saved = { library_id: "main", name: "115 媒体库", root_directory_id: "123", enabled: false, scope_verified: false, revision: 1, latest_scan: null };
     const verified = { ...saved, enabled: true, scope_verified: true, revision: 2 };
