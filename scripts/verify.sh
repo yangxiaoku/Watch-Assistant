@@ -33,15 +33,87 @@ run_stage() {
     fi
 }
 
-# Keep test roots separate.  The repository contains archived release trees and
-# a few legacy unit helpers imported as top-level modules; a single repository
-# wide collection makes both cases ambiguous.
-run_stage unit-tests "$PYTHON_BIN" -m pytest -q tests/unit
-for test_file in "$ROOT_DIR"/tests/integration/test_*.py; do
-    test_name="${test_file##*/}"
-    test_name="${test_name%.py}"
-    run_stage "integration-${test_name}" "$PYTHON_BIN" -m pytest -q "$test_file"
-done
+wait_for_parallel_batch() {
+    local failed=0
+    local pid
+    for pid in "$@"; do
+        if ! wait "$pid"; then
+            failed=1
+        fi
+    done
+    return "$failed"
+}
+
+run_parallel_pytest_files() {
+    local name="$1"
+    local test_root="$2"
+    local group_size="$3"
+    local max_parallel="${VERIFY_PARALLEL_JOBS:-4}"
+    local stage_failed=0
+    local shard=0
+    local start=0
+    local count
+    local test_file
+    local log_file
+    local total
+    local -a test_files=()
+    local -a pids=()
+
+    case "$max_parallel" in
+        ''|*[!0-9]*|0)
+            echo "verification refused: VERIFY_PARALLEL_JOBS must be a positive integer" >&2
+            return 2
+            ;;
+    esac
+
+    # Keep test roots separate. The repository contains archived release trees
+    # and legacy helpers imported as top-level modules.
+    while IFS= read -r test_file; do
+        test_files+=("$test_file")
+    done < <(find "$test_root" -maxdepth 1 -type f -name 'test_*.py' -print | sort)
+
+    total="${#test_files[@]}"
+    while (( start < total )); do
+        count="$group_size"
+        if (( start + count > total )); then
+            count=$((total - start))
+        fi
+        log_file="$TEMP_DIR/${name}-${shard}.log"
+        echo "==> ${name}-${shard}: ${test_files[*]:start:count}"
+        "$PYTHON_BIN" -m pytest -q "${test_files[@]:start:count}" >"$log_file" 2>&1 &
+        pids+=("$!")
+        shard=$((shard + 1))
+        start=$((start + count))
+
+        if (( ${#pids[@]} >= max_parallel )); then
+            if ! wait_for_parallel_batch "${pids[@]}"; then
+                stage_failed=1
+            fi
+            pids=()
+        fi
+    done
+
+    if (( ${#pids[@]} > 0 )); then
+        if ! wait_for_parallel_batch "${pids[@]}"; then
+            stage_failed=1
+        fi
+    fi
+
+    for log_file in "$TEMP_DIR"/"${name}"-*.log; do
+        echo "---- ${log_file##*/} ----"
+        cat "$log_file"
+    done
+
+    if (( stage_failed != 0 )); then
+        echo "FAILED: ${name}" >&2
+        return 1
+    fi
+}
+
+# Unit files are grouped to reduce interpreter startup overhead. Integration
+# files stay separate so each contract retains its own bounded timeout.
+run_parallel_pytest_files unit-tests tests/unit 8
+run_parallel_pytest_files integration-tests tests/integration 1
 run_stage contract-tests "$PYTHON_BIN" -m pytest -q tests/contracts
 run_stage ruff "$PYTHON_BIN" -m ruff check src tests scripts
 run_stage frontend-tests npm --prefix frontend test -- --run
