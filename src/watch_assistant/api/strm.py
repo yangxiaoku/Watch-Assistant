@@ -1,7 +1,9 @@
 """Authenticated STRM manifest, generation, and playback routes."""
 
 import asyncio
+import hashlib
 import ipaddress
+import json
 import math
 from collections.abc import Collection
 from pathlib import Path
@@ -185,6 +187,76 @@ def _operation_response(summary: StrmOperationSummary) -> StrmOperationResponse:
     )
 
 
+def _generation_response(summary: StrmOperationSummary) -> StrmGenerationResponse:
+    return StrmGenerationResponse(
+        operation_id=summary.operation_id,
+        library_id=summary.library_id,
+        scan_run_id=summary.source_scan_run_id,
+        generated=summary.generated,
+        unchanged=summary.unchanged,
+        skipped=summary.skipped,
+        failed=summary.failed,
+        retired=summary.retired,
+    )
+
+
+def _existing_generation_response(
+    summary: StrmOperationSummary,
+) -> StrmGenerationResponse:
+    if summary.status in {"failed", "timeout", "cancelled"}:
+        raise HTTPException(
+            status_code=409,
+            detail=summary.error_code or "strm_operation_failed",
+        )
+    return _generation_response(summary)
+
+
+def _operation_idempotency_key(
+    request: Request,
+    *,
+    library_id: str,
+    payload: StrmGenerationRequest,
+    kind: StrmOperationKind,
+) -> str:
+    explicit = request.headers.get("idempotency-key")
+    alternate = request.headers.get("x-idempotency-key")
+    if explicit is not None and alternate is not None and explicit != alternate:
+        raise StrmOperationError("idempotency_key_conflict")
+    if explicit is not None:
+        return explicit
+    if alternate is not None:
+        return alternate
+    canonical = json.dumps(
+        {
+            "kind": kind.value,
+            "library_id": library_id,
+            "source_scan_run_id": payload.source_scan_run_id,
+            "workflow_id": payload.workflow_id,
+        },
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("ascii")
+    return "legacy-" + hashlib.sha256(canonical).hexdigest()
+
+
+def _cleanup_request_fingerprint(
+    plan_id: str, payload: StrmCleanupPlanApplyRequest
+) -> str:
+    canonical = json.dumps(
+        {
+            "confirm": payload.confirm,
+            "digest": payload.digest.lower(),
+            "expected_revision": payload.expected_revision,
+            "plan_id": plan_id,
+        },
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("ascii")
+    return "cleanup-" + hashlib.sha256(canonical).hexdigest()[:32]
+
+
 async def _operation_cancelled(
     operations: StrmOperationService, operation_id: str
 ) -> bool:
@@ -198,6 +270,8 @@ async def _operation_progress(
     operations: StrmOperationService,
     operation_id: str,
     summary: StrmGenerationSummary,
+    *,
+    lease_owner: str,
 ) -> None:
     await operations.progress(
         operation_id,
@@ -206,6 +280,7 @@ async def _operation_progress(
         skipped=summary.skipped,
         failed=summary.failed,
         retired=summary.retired,
+        lease_owner=lease_owner,
     )
 
 
@@ -223,16 +298,27 @@ async def _begin_operation(
     library_id: str,
     payload: StrmGenerationRequest,
     kind: StrmOperationKind,
-) -> tuple[StrmOperationService, StrmOperationSummary]:
+) -> tuple[StrmOperationService, StrmOperationSummary, bool]:
     operations = _operation_service(request)
     queued = await operations.create(
         library_id=library_id,
         source_scan_run_id=payload.source_scan_run_id,
         kind=kind,
         workflow_id=payload.workflow_id,
+        idempotency_key=_operation_idempotency_key(
+            request, library_id=library_id, payload=payload, kind=kind
+        ),
     )
+    lease_owner: str | None = None
     try:
-        running = await operations.start(queued.operation_id)
+        running, acquired = await operations.claim_start(queued.operation_id)
+        if not acquired:
+            if running.status == "queued":
+                raise StrmOperationError("strm_library_operation_conflict")
+            return operations, running, False
+        lease_owner = await operations.get_lease_token(running.operation_id)
+        if lease_owner is None:
+            raise StrmOperationError("strm_operation_lease_required")
         await _sync_workflow_stage(
             request,
             payload.workflow_id,
@@ -246,13 +332,18 @@ async def _begin_operation(
             operations,
             queued.operation_id,
             workflow_id=payload.workflow_id,
+            lease_owner=lease_owner,
         )
         raise
     except HTTPException as error:
         detail = error.detail if isinstance(error.detail, str) else "workflow_not_found"
-        await operations.fail(queued.operation_id, error_code=detail)
+        await operations.fail(
+            queued.operation_id,
+            error_code=detail,
+            lease_owner=lease_owner,
+        )
         raise
-    return operations, running
+    return operations, running, True
 
 
 async def _finish_operation(
@@ -263,6 +354,7 @@ async def _finish_operation(
     workflow_id: str | None,
     kind: StrmOperationKind,
     summary: StrmGenerationSummary,
+    lease_owner: str,
 ) -> StrmOperationSummary:
     if summary.failed:
         operation = await operations.fail(
@@ -273,6 +365,7 @@ async def _finish_operation(
             skipped=summary.skipped,
             failed=summary.failed,
             retired=summary.retired,
+            lease_owner=lease_owner,
         )
         status = WorkflowStageStatus.FAILED
         error_code = operation.error_code
@@ -284,6 +377,7 @@ async def _finish_operation(
             skipped=summary.skipped,
             failed=summary.failed,
             retired=summary.retired,
+            lease_owner=lease_owner,
         )
         status = WorkflowStageStatus.SUCCEEDED
         error_code = None
@@ -307,8 +401,11 @@ async def _execute_manifest_operation(
     kind: StrmOperationKind,
     propagate_errors: bool = True,
 ) -> tuple[StrmGenerationSummary | None, StrmOperationSummary]:
+    lease_owner = await operations.get_lease_token(running.operation_id)
+    if lease_owner is None:
+        raise StrmOperationError("strm_operation_lease_required")
     heartbeat_stop, heartbeat_task = _start_operation_heartbeat(
-        operations, running.operation_id
+        operations, running.operation_id, lease_owner
     )
     try:
         output_root = Path(
@@ -322,8 +419,18 @@ async def _execute_manifest_operation(
         async def cancel_check() -> bool:
             return await _operation_cancelled(operations, running.operation_id)
 
+        async def lease_check() -> bool:
+            return await operations.is_lease_active(
+                running.operation_id, lease_owner=lease_owner
+            )
+
         async def progress_callback(progress: StrmGenerationSummary) -> None:
-            await _operation_progress(operations, running.operation_id, progress)
+            await _operation_progress(
+                operations,
+                running.operation_id,
+                progress,
+                lease_owner=lease_owner,
+            )
 
         if kind is StrmOperationKind.FULL:
             summary = await service.generate(
@@ -332,6 +439,8 @@ async def _execute_manifest_operation(
                 output_root=output_root,
                 playback_url_prefix=playback_url_prefix,
                 cancel_check=cancel_check,
+                lease_check=lease_check,
+                operation_id=running.operation_id,
                 progress_callback=progress_callback,
             )
         elif kind is StrmOperationKind.INCREMENTAL:
@@ -342,6 +451,8 @@ async def _execute_manifest_operation(
                 playback_url_prefix=playback_url_prefix,
                 retire_removed=False,
                 cancel_check=cancel_check,
+                lease_check=lease_check,
+                operation_id=running.operation_id,
                 progress_callback=progress_callback,
             )
         else:
@@ -353,6 +464,7 @@ async def _execute_manifest_operation(
             workflow_id=running.workflow_id,
             kind=kind,
             summary=summary,
+            lease_owner=lease_owner,
         )
         return summary, operation
     except asyncio.CancelledError:
@@ -361,15 +473,33 @@ async def _execute_manifest_operation(
             operations,
             running.operation_id,
             workflow_id=running.workflow_id,
+            lease_owner=lease_owner,
         )
         raise
     except StrmManifestError as error:
+        if str(error) == "strm_operation_lease_lost":
+            return None, await operations.get(operation_id=running.operation_id)
         operation = await _fail_operation(
             request,
             operations,
             running.operation_id,
             workflow_id=running.workflow_id,
             error_code=str(error),
+            lease_owner=lease_owner,
+        )
+        if propagate_errors:
+            raise
+        return None, operation
+    except StrmOperationError as error:
+        if error.code == "strm_operation_lease_lost":
+            return None, await operations.get(operation_id=running.operation_id)
+        operation = await _fail_operation(
+            request,
+            operations,
+            running.operation_id,
+            workflow_id=running.workflow_id,
+            error_code=error.code,
+            lease_owner=lease_owner,
         )
         if propagate_errors:
             raise
@@ -381,6 +511,7 @@ async def _execute_manifest_operation(
             running.operation_id,
             workflow_id=running.workflow_id,
             error_code="strm_operation_failed",
+            lease_owner=lease_owner,
         )
         if propagate_errors:
             raise
@@ -396,8 +527,17 @@ async def _fail_operation(
     *,
     workflow_id: str | None,
     error_code: str,
+    lease_owner: str | None = None,
 ) -> StrmOperationSummary:
-    operation = await operations.fail(operation_id, error_code=error_code)
+    kwargs = {"error_code": error_code}
+    if lease_owner is not None:
+        kwargs["lease_owner"] = lease_owner
+    try:
+        operation = await operations.fail(operation_id, **kwargs)
+    except StrmOperationError as error:
+        if error.code == "strm_operation_lease_lost":
+            return await operations.get(operation_id)
+        raise
     if operation.status == "failed":
         await _sync_workflow_stage(
             request,
@@ -416,12 +556,17 @@ async def _cancel_operation(
     operation_id: str,
     *,
     workflow_id: str | None,
+    lease_owner: str | None = None,
 ) -> None:
     """Persist cancellation in an independent task before returning."""
 
     cleanup_task = asyncio.create_task(
         _cancel_operation_state(
-            request, operations, operation_id, workflow_id=workflow_id
+            request,
+            operations,
+            operation_id,
+            workflow_id=workflow_id,
+            lease_owner=lease_owner,
         ),
         name=f"watch-assistant-strm-cancel-{operation_id}",
     )
@@ -449,10 +594,14 @@ async def _cancel_operation_state(
     operation_id: str,
     *,
     workflow_id: str | None,
+    lease_owner: str | None,
 ) -> StrmOperationSummary:
     cancel = getattr(operations, "cancel", None)
     if callable(cancel):
-        operation = await cancel(operation_id)
+        kwargs = {}
+        if lease_owner is not None:
+            kwargs["lease_owner"] = lease_owner
+        operation = await cancel(operation_id, **kwargs)
         if operation.status == "cancelled" and request is not None:
             await _sync_workflow_stage(
                 request,
@@ -469,12 +618,14 @@ async def _cancel_operation_state(
         operation_id,
         workflow_id=workflow_id,
         error_code="strm_operation_cancelled",
+        lease_owner=lease_owner,
     )
 
 
 async def _run_operation_heartbeat(
     operations: StrmOperationService,
     operation_id: str,
+    lease_owner: str,
     stop: asyncio.Event,
 ) -> None:
     """Renew the local lease while a manifest operation is doing I/O."""
@@ -484,17 +635,17 @@ async def _run_operation_heartbeat(
             await asyncio.wait_for(stop.wait(), timeout=60)
         except TimeoutError:
             try:
-                await operations.heartbeat(operation_id)
+                await operations.heartbeat(operation_id, lease_owner=lease_owner)
             except (StrmOperationNotFound, StrmOperationError):
                 return
 
 
 def _start_operation_heartbeat(
-    operations: StrmOperationService, operation_id: str
+    operations: StrmOperationService, operation_id: str, lease_owner: str
 ) -> tuple[asyncio.Event, asyncio.Task[None]]:
     stop = asyncio.Event()
     task = asyncio.create_task(
-        _run_operation_heartbeat(operations, operation_id, stop),
+        _run_operation_heartbeat(operations, operation_id, lease_owner, stop),
         name=f"watch-assistant-strm-heartbeat-{operation_id}",
     )
     return stop, task
@@ -635,10 +786,14 @@ async def resume_strm_operation(
         raise HTTPException(status_code=404, detail="strm_operation_not_found") from None
     if resumed.status != "queued":
         return _operation_response(resumed)
+    lease_owner: str | None = None
     try:
         running, acquired = await operations.claim_start(operation_id)
         if not acquired:
             return _operation_response(running)
+        lease_owner = await operations.get_lease_token(running.operation_id)
+        if lease_owner is None:
+            raise StrmOperationError("strm_operation_lease_required")
         await _sync_workflow_stage(
             request,
             running.workflow_id,
@@ -652,11 +807,14 @@ async def resume_strm_operation(
             operations,
             operation_id,
             workflow_id=resumed.workflow_id,
+            lease_owner=lease_owner,
         )
         raise
     except HTTPException as error:
         detail = error.detail if isinstance(error.detail, str) else "workflow_not_found"
-        await operations.fail(operation_id, error_code=detail)
+        await operations.fail(
+            operation_id, error_code=detail, lease_owner=lease_owner
+        )
         raise
     _, terminal = await _execute_manifest_operation(
         request,
@@ -715,12 +873,22 @@ async def generate_manifest(
 ) -> StrmGenerationResponse:
     if not _library_allowed(context, library_id):
         raise HTTPException(status_code=404, detail="library_not_found") from None
-    operations, running = await _begin_operation(
-        request,
-        library_id=library_id,
-        payload=payload,
-        kind=StrmOperationKind.FULL,
-    )
+    try:
+        operations, running, acquired = await _begin_operation(
+            request,
+            library_id=library_id,
+            payload=payload,
+            kind=StrmOperationKind.FULL,
+        )
+    except StrmOperationError as error:
+        status = 409 if error.code in {
+            "idempotency_key_conflict",
+            "strm_library_operation_conflict",
+            "strm_operation_claim_conflict",
+        } else 422
+        raise HTTPException(status_code=status, detail=error.code) from None
+    if not acquired:
+        return _existing_generation_response(running)
     try:
         summary, operation = await _execute_manifest_operation(
             request,
@@ -736,17 +904,15 @@ async def generate_manifest(
     except Exception:  # noqa: BLE001 - operation status must not remain running
         raise HTTPException(status_code=409, detail="strm_operation_failed") from None
     if summary is None:
-        raise HTTPException(status_code=409, detail="strm_operation_failed")
-    return StrmGenerationResponse(
-        operation_id=operation.operation_id,
-        library_id=summary.library_id,
-        scan_run_id=summary.scan_run_id,
-        generated=summary.generated,
-        unchanged=summary.unchanged,
-        skipped=summary.skipped,
-        failed=summary.failed,
-        retired=summary.retired,
-    )
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "strm_operation_lease_lost"
+                if operation.status == "running"
+                else "strm_operation_failed"
+            ),
+        )
+    return _generation_response(operation)
 
 
 @router.post(
@@ -766,12 +932,22 @@ async def incremental_manifest(
 ) -> StrmGenerationResponse:
     if not _library_allowed(context, library_id):
         raise HTTPException(status_code=404, detail="library_not_found") from None
-    operations, running = await _begin_operation(
-        request,
-        library_id=library_id,
-        payload=payload,
-        kind=StrmOperationKind.INCREMENTAL,
-    )
+    try:
+        operations, running, acquired = await _begin_operation(
+            request,
+            library_id=library_id,
+            payload=payload,
+            kind=StrmOperationKind.INCREMENTAL,
+        )
+    except StrmOperationError as error:
+        status = 409 if error.code in {
+            "idempotency_key_conflict",
+            "strm_library_operation_conflict",
+            "strm_operation_claim_conflict",
+        } else 422
+        raise HTTPException(status_code=status, detail=error.code) from None
+    if not acquired:
+        return _existing_generation_response(running)
     try:
         summary, operation = await _execute_manifest_operation(
             request,
@@ -787,17 +963,15 @@ async def incremental_manifest(
     except Exception:  # noqa: BLE001 - operation status must not remain running
         raise HTTPException(status_code=409, detail="strm_operation_failed") from None
     if summary is None:
-        raise HTTPException(status_code=409, detail="strm_operation_failed")
-    return StrmGenerationResponse(
-        operation_id=operation.operation_id,
-        library_id=summary.library_id,
-        scan_run_id=summary.scan_run_id,
-        generated=summary.generated,
-        unchanged=summary.unchanged,
-        skipped=summary.skipped,
-        failed=summary.failed,
-        retired=summary.retired,
-    )
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "strm_operation_lease_lost"
+                if operation.status == "running"
+                else "strm_operation_failed"
+            ),
+        )
+    return _generation_response(operation)
 
 
 @router.post(
@@ -865,49 +1039,143 @@ async def apply_cleanup_plan(
         raise HTTPException(status_code=status, detail=error.code) from None
     if not _library_allowed(context, current_plan.library_id):
         raise HTTPException(status_code=404, detail="plan_not_found") from None
+    operations = _operation_service(request)
     try:
-        result = await service.apply_plan(
-            plan_id=plan_id,
-            expected_revision=payload.expected_revision,
-            digest=payload.digest,
-            confirm=payload.confirm,
-            idempotency_key=payload.idempotency_key,
-            output_root=_output_root(request),
-            playback_url_prefix=getattr(
-                request.app.state,
-                "strm_playback_url_prefix",
-                "http://127.0.0.1:8115/api/v1/strm/play",
-            ),
+        operation_key = payload.idempotency_key
+        queued = await operations.create(
+            library_id=current_plan.library_id,
+            source_scan_run_id=current_plan.source_scan_run_id,
+            kind=StrmOperationKind.CLEANUP,
+            workflow_id=_cleanup_request_fingerprint(plan_id, payload),
+            idempotency_key=operation_key,
         )
-    except StrmCleanupPlanError as error:
-        statuses = {
-            "plan_not_found": 404,
-            "cleanup_plan_expired": 409,
-            "cleanup_plan_blocked": 409,
-            "cleanup_plan_changed": 409,
-            "cleanup_plan_not_reviewable": 409,
-            "cleanup_plan_already_applied": 409,
-            "plan_revision_changed": 409,
-            "plan_digest_mismatch": 409,
-        }
+        running, acquired = await operations.claim_start(queued.operation_id)
+    except StrmOperationError as error:
+        status = 409 if error.code in {
+            "idempotency_key_conflict",
+            "strm_library_operation_conflict",
+            "strm_operation_claim_conflict",
+        } else 422
+        raise HTTPException(status_code=status, detail=error.code) from None
+    if not acquired:
+        if running.status == "succeeded":
+            current_plan = await service.get_plan(plan_id)
+            return StrmCleanupPlanApplyResponse(
+                plan=StrmCleanupPlanResponse.model_validate(
+                    current_plan.to_public_dict()
+                ),
+                retired=running.retired,
+            )
+        if running.status == "running":
+            raise HTTPException(status_code=409, detail="strm_operation_in_progress")
+        if running.status == "queued":
+            raise HTTPException(
+                status_code=409, detail="strm_library_operation_conflict"
+            )
         raise HTTPException(
-            status_code=statuses.get(error.code, 409), detail=error.code
-        ) from None
-    settings_service = getattr(request.app.state, "settings_service", None)
-    if settings_service is not None:
-        await settings_service.log_event(
-            "strm.cleanup.applied",
-            fields={"status": result.plan.status},
-            counts={"count": result.retired},
-            actor_type="agent" if context.via_bearer else "web",
-            actor_id=context.identity,
-            resource_type="strm_cleanup_plan",
-            resource_id=result.plan.plan_id,
+            status_code=409,
+            detail=running.error_code or "strm_operation_failed",
         )
-    return StrmCleanupPlanApplyResponse(
-        plan=StrmCleanupPlanResponse.model_validate(result.plan.to_public_dict()),
-        retired=result.retired,
+    lease_owner = await operations.get_lease_token(running.operation_id)
+    if lease_owner is None:
+        raise HTTPException(status_code=409, detail="strm_operation_lease_lost")
+    heartbeat_stop, heartbeat_task = _start_operation_heartbeat(
+        operations, running.operation_id, lease_owner
     )
+
+    async def lease_check() -> bool:
+        return await operations.is_lease_active(
+            running.operation_id, lease_owner=lease_owner
+        )
+
+    try:
+        try:
+            result = await service.apply_plan(
+                plan_id=plan_id,
+                expected_revision=payload.expected_revision,
+                digest=payload.digest,
+                confirm=payload.confirm,
+                idempotency_key=payload.idempotency_key,
+                output_root=_output_root(request),
+                playback_url_prefix=getattr(
+                    request.app.state,
+                    "strm_playback_url_prefix",
+                    "http://127.0.0.1:8115/api/v1/strm/play",
+                ),
+                lease_check=lease_check,
+                operation_id=running.operation_id,
+            )
+        except asyncio.CancelledError:
+            await _cancel_operation(
+                request,
+                operations,
+                running.operation_id,
+                workflow_id=None,
+                lease_owner=lease_owner,
+            )
+            raise
+        except StrmCleanupPlanError as error:
+            try:
+                await operations.fail(
+                    running.operation_id,
+                    error_code=error.code,
+                    lease_owner=lease_owner,
+                )
+            except StrmOperationError as lifecycle_error:
+                if lifecycle_error.code != "strm_operation_lease_lost":
+                    raise
+            statuses = {
+                "plan_not_found": 404,
+                "cleanup_plan_expired": 409,
+                "cleanup_plan_blocked": 409,
+                "cleanup_plan_changed": 409,
+                "cleanup_plan_not_reviewable": 409,
+                "cleanup_plan_already_applied": 409,
+                "plan_revision_changed": 409,
+                "plan_digest_mismatch": 409,
+            }
+            raise HTTPException(
+                status_code=statuses.get(error.code, 409), detail=error.code
+            ) from None
+        except Exception:  # noqa: BLE001 - operation status must not remain running
+            await _fail_operation(
+                request,
+                operations,
+                running.operation_id,
+                workflow_id=None,
+                error_code="strm_operation_failed",
+                lease_owner=lease_owner,
+            )
+            raise HTTPException(status_code=409, detail="strm_operation_failed") from None
+        try:
+            await operations.complete(
+                running.operation_id,
+                generated=0,
+                unchanged=0,
+                skipped=0,
+                failed=0,
+                retired=result.retired,
+                lease_owner=lease_owner,
+            )
+        except StrmOperationError as error:
+            raise HTTPException(status_code=409, detail=error.code) from None
+        settings_service = getattr(request.app.state, "settings_service", None)
+        if settings_service is not None:
+            await settings_service.log_event(
+                "strm.cleanup.applied",
+                fields={"status": result.plan.status},
+                counts={"count": result.retired},
+                actor_type="agent" if context.via_bearer else "web",
+                actor_id=context.identity,
+                resource_type="strm_cleanup_plan",
+                resource_id=result.plan.plan_id,
+            )
+        return StrmCleanupPlanApplyResponse(
+            plan=StrmCleanupPlanResponse.model_validate(result.plan.to_public_dict()),
+            retired=result.retired,
+        )
+    finally:
+        await _stop_operation_heartbeat(heartbeat_stop, heartbeat_task)
 
 
 @router.get(

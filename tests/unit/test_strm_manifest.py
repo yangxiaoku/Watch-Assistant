@@ -128,6 +128,45 @@ async def test_generation_is_bounded_to_complete_scan_and_idempotent(tmp_path: P
         await database.engine.dispose()
 
 
+async def test_manifest_generation_refuses_write_after_lease_loss(tmp_path: Path):
+    database = await _database(tmp_path)
+    try:
+        service = StrmManifestService(database.session_factory)
+
+        async def lease_check() -> bool:
+            return False
+
+        with pytest.raises(StrmManifestError, match="strm_operation_lease_lost"):
+            await service.generate(
+                "library-strm",
+                source_scan_run_id="scan-strm",
+                output_root=tmp_path / "output",
+                playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+                lease_check=lease_check,
+                operation_id="strm_op_lost_lease",
+            )
+        assert not (tmp_path / "output" / "Show" / "Episode.strm").exists()
+    finally:
+        await database.engine.dispose()
+
+
+async def test_manifest_operation_id_requires_lease_check(tmp_path: Path):
+    database = await _database(tmp_path)
+    try:
+        service = StrmManifestService(database.session_factory)
+        with pytest.raises(StrmManifestError, match="strm_operation_lease_required"):
+            await service.generate(
+                "library-strm",
+                source_scan_run_id="scan-strm",
+                output_root=tmp_path / "output",
+                playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+                operation_id="strm_op_without_lease_check",
+            )
+        assert not (tmp_path / "output" / "Show" / "Episode.strm").exists()
+    finally:
+        await database.engine.dispose()
+
+
 async def test_generation_requires_complete_current_scan(tmp_path: Path):
     database = await _database(tmp_path)
     try:
@@ -417,6 +456,95 @@ async def test_cleanup_plan_apply_requires_digest_and_retires_only_managed_file(
         items, total = await manifest_service.list_current("library-strm")
         assert total == 0
         assert items == ()
+    finally:
+        await database.engine.dispose()
+
+
+async def test_cleanup_plan_restores_file_when_lease_is_lost_mid_apply(
+    tmp_path: Path,
+):
+    database = await _database(tmp_path)
+    try:
+        manifest_service = StrmManifestService(database.session_factory)
+        await manifest_service.generate(
+            "library-strm",
+            source_scan_run_id="scan-strm",
+            output_root=tmp_path / "output",
+            playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+        )
+        await _add_removed_episode_scan(database)
+        plan_service = StrmCleanupPlanService(database.session_factory)
+        plan = await plan_service.create_plan(
+            library_id="library-strm",
+            source_scan_run_id="scan-strm-2",
+            output_root=tmp_path / "output",
+            playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+        )
+        checks = 0
+
+        async def lease_check() -> bool:
+            nonlocal checks
+            checks += 1
+            return checks < 3
+
+        with pytest.raises(StrmCleanupPlanError, match="strm_operation_lease_lost"):
+            await plan_service.apply_plan(
+                plan_id=plan.plan_id,
+                expected_revision=plan.revision,
+                digest=plan.plan_hash,
+                confirm=True,
+                idempotency_key="cleanup-lease-loss",
+                output_root=tmp_path / "output",
+                playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+                lease_check=lease_check,
+                operation_id="strm_op_cleanup_owner",
+            )
+
+        assert (tmp_path / "output/Show/Episode.strm").exists()
+        current = await plan_service.get_plan(plan.plan_id)
+        assert current.status == "needs_review"
+        items, total = await manifest_service.list_current("library-strm")
+        assert total == 1
+        assert items[0].status == "verified"
+    finally:
+        await database.engine.dispose()
+
+
+async def test_manifest_cleanup_does_not_restore_previously_missing_file_on_lease_loss(
+    tmp_path: Path,
+):
+    database = await _database(tmp_path)
+    try:
+        manifest_service = StrmManifestService(database.session_factory)
+        await manifest_service.generate(
+            "library-strm",
+            source_scan_run_id="scan-strm",
+            output_root=tmp_path / "output",
+            playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+        )
+        (tmp_path / "output/Show/Episode.strm").unlink()
+        await _add_removed_episode_scan(database)
+        checks = 0
+
+        async def lease_check() -> bool:
+            nonlocal checks
+            checks += 1
+            return checks < 4
+
+        with pytest.raises(StrmManifestError, match="strm_operation_lease_lost"):
+            await manifest_service.cleanup(
+                "library-strm",
+                source_scan_run_id="scan-strm-2",
+                output_root=tmp_path / "output",
+                playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+                lease_check=lease_check,
+                operation_id="strm_op_cleanup_lost_lease",
+            )
+
+        assert not (tmp_path / "output/Show/Episode.strm").exists()
+        items, total = await manifest_service.list_current("library-strm")
+        assert total == 1
+        assert items[0].status == "verified"
     finally:
         await database.engine.dispose()
 

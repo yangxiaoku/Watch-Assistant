@@ -6,6 +6,13 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from watch_assistant.library_models import LibraryScanRun
+from watch_assistant.models import StrmOperation, StrmOperationKind, StrmOperationStatus
+
+_MUTATING_KINDS = (
+    StrmOperationKind.FULL,
+    StrmOperationKind.INCREMENTAL,
+    StrmOperationKind.CLEANUP,
+)
 
 
 async def has_newer_unsettled_scan(
@@ -39,6 +46,24 @@ async def has_newer_unsettled_scan(
     return row_id is not None
 
 
+async def active_strm_operation_id(
+    session: AsyncSession,
+    library_id: str,
+    *,
+    exclude_operation_id: str | None = None,
+) -> str | None:
+    """Return a mutating STRM operation currently fencing this library."""
+
+    predicates = [
+        StrmOperation.library_id == library_id,
+        StrmOperation.status == StrmOperationStatus.RUNNING,
+        StrmOperation.kind.in_(_MUTATING_KINDS),
+    ]
+    if exclude_operation_id is not None:
+        predicates.append(StrmOperation.id != exclude_operation_id)
+    return await session.scalar(select(StrmOperation.id).where(*predicates).limit(1))
+
+
 def normalize_playback_url_prefix(value: object) -> str:
     """Accept only the stable local playback route, without query secrets."""
 
@@ -65,4 +90,8 @@ def normalize_playback_url_prefix(value: object) -> str:
     return value.rstrip("/") + "/"
 
 
-__all__ = ["has_newer_unsettled_scan", "normalize_playback_url_prefix"]
+__all__ = [
+    "active_strm_operation_id",
+    "has_newer_unsettled_scan",
+    "normalize_playback_url_prefix",
+]

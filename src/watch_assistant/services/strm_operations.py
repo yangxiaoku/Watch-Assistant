@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
+import hashlib
 import json
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
-from sqlalchemy import and_, or_, select, update
+from sqlalchemy import and_, exists, or_, select, update
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from watch_assistant.models import (
@@ -33,6 +36,12 @@ class StrmOperationNotFound(LookupError):
 
 _CURSOR_VERSION = 1
 _MAX_CURSOR_LENGTH = 256
+_MUTATING_KINDS = (
+    StrmOperationKind.FULL,
+    StrmOperationKind.INCREMENTAL,
+    StrmOperationKind.CLEANUP,
+)
+_CLAIM_LOCKS: dict[tuple[int, str], asyncio.Lock] = {}
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +76,7 @@ class StrmOperationService:
         source_scan_run_id: str,
         kind: StrmOperationKind | str,
         workflow_id: str | None = None,
+        idempotency_key: str | None = None,
     ) -> StrmOperationSummary:
         _validate_identifier(library_id, "library_id", maximum=128)
         _validate_identifier(source_scan_run_id, "source_scan_run_id", maximum=64)
@@ -76,21 +86,53 @@ class StrmOperationService:
             operation_kind = StrmOperationKind(kind)
         except ValueError:
             raise StrmOperationError("invalid_operation_kind") from None
-        now = datetime.now(UTC)
-        operation = StrmOperation(
-            id="strm_op_" + uuid4().hex,
-            library_id=library_id,
-            source_scan_run_id=source_scan_run_id,
-            kind=operation_kind,
-            workflow_id=workflow_id,
-            status=StrmOperationStatus.QUEUED,
-            created_at=now,
-            updated_at=now,
+        if idempotency_key is not None:
+            _validate_idempotency_key(idempotency_key)
+        operation_id = (
+            _idempotent_operation_id(library_id, operation_kind, idempotency_key)
+            if idempotency_key is not None
+            else "strm_op_" + uuid4().hex
         )
+        now = datetime.now(UTC)
         async with self._session_factory() as session:
+            existing = await session.get(StrmOperation, operation_id)
+            if existing is not None:
+                _ensure_same_request(
+                    existing,
+                    library_id=library_id,
+                    source_scan_run_id=source_scan_run_id,
+                    kind=operation_kind,
+                    workflow_id=workflow_id,
+                )
+                return _summary(existing)
+            operation = StrmOperation(
+                id=operation_id,
+                library_id=library_id,
+                source_scan_run_id=source_scan_run_id,
+                kind=operation_kind,
+                workflow_id=workflow_id,
+                status=StrmOperationStatus.QUEUED,
+                created_at=now,
+                updated_at=now,
+            )
             session.add(operation)
-            await session.commit()
-        return _summary(operation)
+            try:
+                await session.commit()
+            except IntegrityError as error:
+                await session.rollback()
+                existing = await session.get(StrmOperation, operation_id)
+                if existing is None:
+                    raise StrmOperationError("strm_operation_creation_conflict") from error
+                _ensure_same_request(
+                    existing,
+                    library_id=library_id,
+                    source_scan_run_id=source_scan_run_id,
+                    kind=operation_kind,
+                    workflow_id=workflow_id,
+                )
+                return _summary(existing)
+            await session.refresh(operation)
+            return _summary(operation)
 
     async def start(
         self,
@@ -126,32 +168,60 @@ class StrmOperationService:
             current = await session.get(StrmOperation, operation_id)
             if current is None:
                 raise StrmOperationNotFound(operation_id)
-            if current.status is not StrmOperationStatus.QUEUED:
-                return _summary(current), False
-            result = await session.execute(
-                update(StrmOperation)
-                .where(
-                    StrmOperation.id == operation_id,
-                    StrmOperation.status == StrmOperationStatus.QUEUED,
-                )
-                .values(
-                    status=StrmOperationStatus.RUNNING,
-                    started_at=current_time,
-                    updated_at=current_time,
-                    heartbeat_at=current_time,
-                    lease_expires_at=current_time + duration,
-                    lease_owner=lease_owner or operation_id,
-                )
-            )
-            if result.rowcount != 1:
-                await session.rollback()
-                current = await session.get(StrmOperation, operation_id)
-                if current is None:
-                    raise StrmOperationNotFound(operation_id)
-                return _summary(current), False
-            await session.commit()
-            await session.refresh(current)
-            return _summary(current), True
+            library_id = current.library_id
+
+        # Serialize claims for the actual manifest scope. The conditional SQL
+        # update below remains the durable cross-process guard; this lock only
+        # closes the common same-process read/claim race.
+        async with _claim_lock(self._session_factory, library_id):
+            for attempt in range(3):
+                try:
+                    async with self._session_factory() as session:
+                        current = await session.get(StrmOperation, operation_id)
+                        if current is None:
+                            raise StrmOperationNotFound(operation_id)
+                        if current.status is not StrmOperationStatus.QUEUED:
+                            return _summary(current), False
+                        active_exists = exists(
+                            select(StrmOperation.id).where(
+                                StrmOperation.library_id == current.library_id,
+                                StrmOperation.status == StrmOperationStatus.RUNNING,
+                                StrmOperation.kind.in_(_MUTATING_KINDS),
+                                StrmOperation.id != operation_id,
+                            )
+                        )
+                        token = uuid4().hex
+                        result = await session.execute(
+                            update(StrmOperation)
+                            .where(
+                                StrmOperation.id == operation_id,
+                                StrmOperation.status == StrmOperationStatus.QUEUED,
+                                ~active_exists,
+                            )
+                            .execution_options(synchronize_session=False)
+                            .values(
+                                status=StrmOperationStatus.RUNNING,
+                                started_at=current_time,
+                                updated_at=current_time,
+                                heartbeat_at=current_time,
+                                lease_expires_at=current_time + duration,
+                                lease_owner=token,
+                            )
+                        )
+                        if result.rowcount != 1:
+                            await session.rollback()
+                            current = await session.get(StrmOperation, operation_id)
+                            if current is None:
+                                raise StrmOperationNotFound(operation_id)
+                            return _summary(current), False
+                        await session.commit()
+                        await session.refresh(current)
+                        return _summary(current), True
+                except OperationalError as error:
+                    if attempt == 2 or not _is_database_lock(error):
+                        raise
+                    await asyncio.sleep(0.02 * (attempt + 1))
+            raise StrmOperationError("strm_operation_claim_conflict")
 
     async def heartbeat(
         self,
@@ -165,6 +235,8 @@ class StrmOperationService:
         _validate_optional_owner(lease_owner)
         current_time = _as_utc(now) or datetime.now(UTC)
         _validate_identifier(operation_id, "operation_id", maximum=64)
+        if lease_owner is None:
+            raise StrmOperationError("strm_operation_lease_required")
         async with self._session_factory() as session:
             current = await session.get(StrmOperation, operation_id)
             if current is None:
@@ -174,12 +246,14 @@ class StrmOperationService:
             predicates = [
                 StrmOperation.id == operation_id,
                 StrmOperation.status == StrmOperationStatus.RUNNING,
+                StrmOperation.lease_owner == lease_owner,
+                StrmOperation.lease_expires_at.is_not(None),
+                StrmOperation.lease_expires_at > current_time,
             ]
-            if lease_owner is not None:
-                predicates.append(StrmOperation.lease_owner == lease_owner)
             result = await session.execute(
                 update(StrmOperation)
                 .where(*predicates)
+                .execution_options(synchronize_session=False)
                 .values(
                     heartbeat_at=current_time,
                     lease_expires_at=current_time + duration,
@@ -207,18 +281,52 @@ class StrmOperationService:
         skipped: int,
         failed: int,
         retired: int,
+        lease_owner: str | None = None,
     ) -> StrmOperationSummary:
         """Persist a checkpoint while a local operation is still running."""
 
         _validate_counts(generated, unchanged, skipped, failed, retired)
-        operation = await self._load(operation_id)
-        if operation.status is not StrmOperationStatus.RUNNING:
-            return _summary(operation)
+        _validate_identifier(operation_id, "operation_id", maximum=64)
+        _validate_optional_owner(lease_owner)
+        if lease_owner is None:
+            raise StrmOperationError("strm_operation_lease_required")
         now = datetime.now(UTC)
-        _set_counts(operation, generated, unchanged, skipped, failed, retired)
-        operation.updated_at = now
-        await self._commit(operation)
-        return _summary(operation)
+        async with self._session_factory() as session:
+            current = await session.get(StrmOperation, operation_id)
+            if current is None:
+                raise StrmOperationNotFound(operation_id)
+            if current.status is not StrmOperationStatus.RUNNING:
+                return _summary(current)
+            result = await session.execute(
+                update(StrmOperation)
+                .where(
+                    StrmOperation.id == operation_id,
+                    StrmOperation.status == StrmOperationStatus.RUNNING,
+                    StrmOperation.lease_owner == lease_owner,
+                    StrmOperation.lease_expires_at.is_not(None),
+                    StrmOperation.lease_expires_at > now,
+                )
+                .execution_options(synchronize_session=False)
+                .values(
+                    generated=generated,
+                    unchanged=unchanged,
+                    skipped=skipped,
+                    failed=failed,
+                    retired=retired,
+                    updated_at=now,
+                )
+            )
+            if result.rowcount != 1:
+                await session.rollback()
+                current = await session.get(StrmOperation, operation_id)
+                if current is None:
+                    raise StrmOperationNotFound(operation_id)
+                if current.status is not StrmOperationStatus.RUNNING:
+                    return _summary(current)
+                raise StrmOperationError("strm_operation_lease_lost")
+            await session.commit()
+            await session.refresh(current)
+            return _summary(current)
 
     async def complete(
         self,
@@ -229,25 +337,19 @@ class StrmOperationService:
         skipped: int,
         failed: int,
         retired: int,
+        lease_owner: str | None = None,
     ) -> StrmOperationSummary:
         _validate_counts(generated, unchanged, skipped, failed, retired)
-        operation = await self._load(operation_id)
-        if operation.status in {
-            StrmOperationStatus.SUCCEEDED,
-            StrmOperationStatus.FAILED,
-            StrmOperationStatus.TIMEOUT,
-            StrmOperationStatus.CANCELLED,
-        }:
-            return _summary(operation)
-        now = datetime.now(UTC)
-        _set_counts(operation, generated, unchanged, skipped, failed, retired)
-        operation.status = StrmOperationStatus.SUCCEEDED
-        operation.started_at = operation.started_at or now
-        operation.finished_at = now
-        operation.updated_at = now
-        _clear_lease(operation)
-        await self._commit(operation)
-        return _summary(operation)
+        return await self._finish(
+            operation_id,
+            status=StrmOperationStatus.SUCCEEDED,
+            lease_owner=lease_owner,
+            generated=generated,
+            unchanged=unchanged,
+            skipped=skipped,
+            failed=failed,
+            retired=retired,
+        )
 
     async def fail(
         self,
@@ -259,53 +361,93 @@ class StrmOperationService:
         skipped: int = 0,
         failed: int = 0,
         retired: int = 0,
+        lease_owner: str | None = None,
     ) -> StrmOperationSummary:
         _validate_counts(generated, unchanged, skipped, failed, retired)
         if not isinstance(error_code, str) or not error_code or len(error_code) > 100:
             raise StrmOperationError("invalid_error_code")
-        operation = await self._load(operation_id)
-        if operation.status in {
-            StrmOperationStatus.SUCCEEDED,
-            StrmOperationStatus.FAILED,
-            StrmOperationStatus.TIMEOUT,
-            StrmOperationStatus.CANCELLED,
-        }:
-            return _summary(operation)
-        now = datetime.now(UTC)
-        _set_counts(operation, generated, unchanged, skipped, failed, retired)
-        operation.status = StrmOperationStatus.FAILED
-        operation.error_code = error_code
-        operation.started_at = operation.started_at or now
-        operation.finished_at = now
-        operation.updated_at = now
-        _clear_lease(operation)
-        await self._commit(operation)
-        return _summary(operation)
+        return await self._finish(
+            operation_id,
+            status=StrmOperationStatus.FAILED,
+            error_code=error_code,
+            lease_owner=lease_owner,
+            generated=generated,
+            unchanged=unchanged,
+            skipped=skipped,
+            failed=failed,
+            retired=retired,
+        )
 
     async def cancel(
         self,
         operation_id: str,
         *,
         error_code: str = "strm_operation_cancelled",
+        lease_owner: str | None = None,
     ) -> StrmOperationSummary:
         _validate_error_code(error_code)
-        operation = await self._load(operation_id)
-        if operation.status in {
-            StrmOperationStatus.SUCCEEDED,
-            StrmOperationStatus.FAILED,
-            StrmOperationStatus.TIMEOUT,
-            StrmOperationStatus.CANCELLED,
-        }:
-            return _summary(operation)
+        _validate_identifier(operation_id, "operation_id", maximum=64)
+        _validate_optional_owner(lease_owner)
         now = datetime.now(UTC)
-        operation.status = StrmOperationStatus.CANCELLED
-        operation.error_code = error_code
-        operation.started_at = operation.started_at or now
-        operation.finished_at = now
-        operation.updated_at = now
-        _clear_lease(operation)
-        await self._commit(operation)
-        return _summary(operation)
+        async with self._session_factory() as session:
+            current = await session.get(StrmOperation, operation_id)
+            if current is None:
+                raise StrmOperationNotFound(operation_id)
+            if current.status in {
+                StrmOperationStatus.SUCCEEDED,
+                StrmOperationStatus.FAILED,
+                StrmOperationStatus.TIMEOUT,
+                StrmOperationStatus.CANCELLED,
+            }:
+                return _summary(current)
+            predicates = [
+                StrmOperation.id == operation_id,
+                StrmOperation.status.in_(
+                    (StrmOperationStatus.QUEUED, StrmOperationStatus.RUNNING)
+                ),
+            ]
+            if current.status is StrmOperationStatus.RUNNING:
+                if lease_owner is not None:
+                    predicates.extend(
+                        (
+                            StrmOperation.lease_owner == lease_owner,
+                            StrmOperation.lease_expires_at.is_not(None),
+                            StrmOperation.lease_expires_at > now,
+                        )
+                    )
+                elif current.lease_owner is None:
+                    raise StrmOperationError("strm_operation_lease_lost")
+            result = await session.execute(
+                update(StrmOperation)
+                .where(*predicates)
+                .execution_options(synchronize_session=False)
+                .values(
+                    status=StrmOperationStatus.CANCELLED,
+                    error_code=error_code,
+                    started_at=current.started_at or now,
+                    finished_at=now,
+                    updated_at=now,
+                    lease_owner=None,
+                    lease_expires_at=None,
+                    heartbeat_at=None,
+                )
+            )
+            if result.rowcount != 1:
+                await session.rollback()
+                current = await session.get(StrmOperation, operation_id)
+                if current is None:
+                    raise StrmOperationNotFound(operation_id)
+                if current.status in {
+                    StrmOperationStatus.SUCCEEDED,
+                    StrmOperationStatus.FAILED,
+                    StrmOperationStatus.TIMEOUT,
+                    StrmOperationStatus.CANCELLED,
+                }:
+                    return _summary(current)
+                raise StrmOperationError("strm_operation_lease_lost")
+            await session.commit()
+            await session.refresh(current)
+            return _summary(current)
 
     async def resume(self, operation_id: str) -> StrmOperationSummary:
         """Requeue a terminal local operation for an explicit retry.
@@ -340,6 +482,7 @@ class StrmOperationService:
                         )
                     ),
                 )
+                .execution_options(synchronize_session=False)
                 .values(
                     status=StrmOperationStatus.QUEUED,
                     error_code=None,
@@ -371,6 +514,34 @@ class StrmOperationService:
 
         operation = await self._load(operation_id)
         return operation.status is StrmOperationStatus.CANCELLED
+
+    async def is_lease_active(
+        self,
+        operation_id: str,
+        *,
+        lease_owner: str | None,
+        now: datetime | None = None,
+    ) -> bool:
+        _validate_identifier(operation_id, "operation_id", maximum=64)
+        _validate_optional_owner(lease_owner)
+        if lease_owner is None:
+            return False
+        current_time = _as_utc(now) or datetime.now(UTC)
+        async with self._session_factory() as session:
+            operation = await session.get(StrmOperation, operation_id)
+            return bool(
+                operation is not None
+                and operation.status is StrmOperationStatus.RUNNING
+                and operation.lease_owner == lease_owner
+                and operation.lease_expires_at is not None
+                and _as_utc(operation.lease_expires_at) > current_time
+            )
+
+    async def get_lease_token(self, operation_id: str) -> str | None:
+        """Read the internal fencing token without putting it in a summary."""
+
+        operation = await self._load(operation_id)
+        return operation.lease_owner
 
     async def get(self, operation_id: str) -> StrmOperationSummary:
         return _summary(await self._load(operation_id))
@@ -445,6 +616,90 @@ class StrmOperationService:
         summaries = [_summary(row) for row in rows[:limit]]
         next_cursor = _encode_cursor(summaries[-1]) if has_more else None
         return summaries, next_cursor
+
+    async def _finish(
+        self,
+        operation_id: str,
+        *,
+        status: StrmOperationStatus,
+        lease_owner: str | None,
+        error_code: str | None = None,
+        generated: int,
+        unchanged: int,
+        skipped: int,
+        failed: int,
+        retired: int,
+    ) -> StrmOperationSummary:
+        _validate_identifier(operation_id, "operation_id", maximum=64)
+        _validate_optional_owner(lease_owner)
+        now = datetime.now(UTC)
+        async with self._session_factory() as session:
+            current = await session.get(StrmOperation, operation_id)
+            if current is None:
+                raise StrmOperationNotFound(operation_id)
+            if current.status in {
+                StrmOperationStatus.SUCCEEDED,
+                StrmOperationStatus.FAILED,
+                StrmOperationStatus.TIMEOUT,
+                StrmOperationStatus.CANCELLED,
+            }:
+                return _summary(current)
+
+            predicates = [StrmOperation.id == operation_id]
+            if current.status is StrmOperationStatus.QUEUED:
+                if status is not StrmOperationStatus.FAILED or lease_owner is not None:
+                    raise StrmOperationError("strm_operation_not_running")
+                predicates.append(StrmOperation.status == StrmOperationStatus.QUEUED)
+            elif current.status is StrmOperationStatus.RUNNING:
+                if lease_owner is None:
+                    raise StrmOperationError("strm_operation_lease_required")
+                predicates.extend(
+                    (
+                        StrmOperation.status == StrmOperationStatus.RUNNING,
+                        StrmOperation.lease_owner == lease_owner,
+                        StrmOperation.lease_expires_at.is_not(None),
+                        StrmOperation.lease_expires_at > now,
+                    )
+                )
+            else:
+                raise StrmOperationError("strm_operation_not_running")
+
+            result = await session.execute(
+                update(StrmOperation)
+                .where(*predicates)
+                .execution_options(synchronize_session=False)
+                .values(
+                    status=status,
+                    generated=generated,
+                    unchanged=unchanged,
+                    skipped=skipped,
+                    failed=failed,
+                    retired=retired,
+                    error_code=error_code,
+                    started_at=current.started_at or now,
+                    finished_at=now,
+                    updated_at=now,
+                    lease_owner=None,
+                    lease_expires_at=None,
+                    heartbeat_at=None,
+                )
+            )
+            if result.rowcount != 1:
+                await session.rollback()
+                current = await session.get(StrmOperation, operation_id)
+                if current is None:
+                    raise StrmOperationNotFound(operation_id)
+                if current.status in {
+                    StrmOperationStatus.SUCCEEDED,
+                    StrmOperationStatus.FAILED,
+                    StrmOperationStatus.TIMEOUT,
+                    StrmOperationStatus.CANCELLED,
+                }:
+                    return _summary(current)
+                raise StrmOperationError("strm_operation_lease_lost")
+            await session.commit()
+            await session.refresh(current)
+            return _summary(current)
 
     async def _load(self, operation_id: str) -> StrmOperation:
         _validate_identifier(operation_id, "operation_id", maximum=64)
@@ -544,6 +799,7 @@ class StrmOperationService:
                         ),
                         StrmOperation.updated_at == operation.updated_at,
                     )
+                    .execution_options(synchronize_session=False)
                     .values(
                         status=terminal_status,
                         error_code=error_code,
@@ -625,6 +881,63 @@ def _validate_counts(*values: int) -> None:
 def _validate_error_code(value: object) -> None:
     if not isinstance(value, str) or not value or len(value) > 100:
         raise StrmOperationError("invalid_error_code")
+
+
+def _validate_idempotency_key(value: object) -> None:
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value) > 128
+        or value != value.strip()
+        or not value.isascii()
+    ):
+        raise StrmOperationError("invalid_idempotency_key")
+
+
+def _idempotent_operation_id(
+    library_id: str,
+    kind: StrmOperationKind,
+    idempotency_key: str,
+) -> str:
+    canonical = json.dumps(
+        {
+            "idempotency_key": idempotency_key,
+            "kind": kind.value,
+            "library_id": library_id,
+        },
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("ascii")
+    return "strm_op_" + hashlib.sha256(canonical).hexdigest()[:56]
+
+
+def _ensure_same_request(
+    operation: StrmOperation,
+    *,
+    library_id: str,
+    source_scan_run_id: str,
+    kind: StrmOperationKind,
+    workflow_id: str | None,
+) -> None:
+    if (
+        operation.library_id != library_id
+        or operation.source_scan_run_id != source_scan_run_id
+        or operation.kind != kind
+        or operation.workflow_id != workflow_id
+    ):
+        raise StrmOperationError("idempotency_key_conflict")
+
+
+def _claim_lock(
+    session_factory: async_sessionmaker[AsyncSession], scope_id: str
+) -> asyncio.Lock:
+    key = (id(session_factory), scope_id)
+    lock = _CLAIM_LOCKS.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _CLAIM_LOCKS[key] = lock
+    return lock
 
 
 def _validate_lease_duration(value: object) -> timedelta:
@@ -717,6 +1030,11 @@ def _validate_identifier(value: object, field: str, *, maximum: int) -> None:
         or "\\" in value
     ):
         raise StrmOperationError(f"invalid_{field}")
+
+
+def _is_database_lock(error: OperationalError) -> bool:
+    message = str(error).lower()
+    return "database is locked" in message or "database table is locked" in message
 
 
 def _as_utc(value: datetime | None) -> datetime | None:

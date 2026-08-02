@@ -102,12 +102,32 @@ async def test_strm_operations_are_visible_and_legacy_cleanup_is_preview_only(
         generated = await client.post(
             "/api/v1/libraries/library-one/strm-generation",
             json={"source_scan_run_id": "scan-one"},
-            headers=headers,
+            headers={**headers, "Idempotency-Key": "api-full-one"},
         )
         assert generated.status_code == 200
         body = generated.json()
         assert body["operation_id"].startswith("strm_op_")
         assert body["generated"] == 1
+        assert "lease_owner" not in generated.text
+
+        repeated = await client.post(
+            "/api/v1/libraries/library-one/strm-generation",
+            json={"source_scan_run_id": "scan-one"},
+            headers={**headers, "Idempotency-Key": "api-full-one"},
+        )
+        assert repeated.status_code == 200
+        assert repeated.json() == body
+
+        conflicting = await client.post(
+            "/api/v1/libraries/library-one/strm-generation",
+            json={
+                "source_scan_run_id": "scan-one",
+                "workflow_id": "different-workflow",
+            },
+            headers={**headers, "Idempotency-Key": "api-full-one"},
+        )
+        assert conflicting.status_code == 409
+        assert conflicting.json()["detail"] == "idempotency_key_conflict"
         strm_path = tmp_path / "strm-output" / "Shows" / "Episode.strm"
         assert strm_path.exists()
 
@@ -116,6 +136,7 @@ async def test_strm_operations_are_visible_and_legacy_cleanup_is_preview_only(
         )
         assert operation.status_code == 200
         assert operation.json()["status"] == "succeeded"
+        assert "lease_owner" not in operation.text
         manifest = await client.get(
             "/api/v1/libraries/library-one/strm-manifest", headers=headers
         )
@@ -133,6 +154,7 @@ async def test_strm_operations_are_visible_and_legacy_cleanup_is_preview_only(
         )
         assert history.status_code == 200
         assert history.json()["items"][0]["operation_id"] == body["operation_id"]
+        assert "lease_owner" not in history.text
 
         scoped_token = await client.post(
             "/api/v1/agent/tokens",
@@ -195,7 +217,7 @@ async def test_strm_operations_are_visible_and_legacy_cleanup_is_preview_only(
             await client.post(
                 "/api/v1/libraries/library-one/strm-generation",
                 json={"source_scan_run_id": "scan-one"},
-                headers=headers,
+                headers={**headers, "Idempotency-Key": "api-cancelled-one"},
             )
         cancelled_history = await client.get(
             "/api/v1/libraries/library-one/strm-operations",
@@ -208,6 +230,13 @@ async def test_strm_operations_are_visible_and_legacy_cleanup_is_preview_only(
             cancelled_history.json()["items"][0]["error_code"]
             == "strm_operation_cancelled"
         )
+        cancelled_repeat = await client.post(
+            "/api/v1/libraries/library-one/strm-generation",
+            json={"source_scan_run_id": "scan-one"},
+            headers={**headers, "Idempotency-Key": "api-cancelled-one"},
+        )
+        assert cancelled_repeat.status_code == 409
+        assert cancelled_repeat.json()["detail"] == "strm_operation_cancelled"
         monkeypatch.undo()
 
         async with database.session_factory() as session:
