@@ -52,6 +52,12 @@ from watch_assistant.services.empty_directory_cleanup_plan import (
     EmptyDirectoryCleanupPlanError,
     EmptyDirectoryCleanupPlanService,
 )
+from watch_assistant.services.library_inventory import (
+    InventoryFile,
+    InventorySnapshot,
+    build_snapshot,
+    check_inventory,
+)
 from watch_assistant.services.library_scan_operations import (
     LibraryScanOperationError,
     LibraryScanOperationNotFound,
@@ -59,12 +65,6 @@ from watch_assistant.services.library_scan_operations import (
     LibraryScanOperationSummary,
     scan_error_message_zh,
     scan_state_message_zh,
-)
-from watch_assistant.services.library_inventory import (
-    InventoryFile,
-    InventorySnapshot,
-    build_snapshot,
-    check_inventory,
 )
 from watch_assistant.services.organization_plan import OrganizationPlanError
 from watch_assistant.services.organization_preview import (
