@@ -54,15 +54,15 @@ from watch_assistant.services.empty_directory_cleanup_plan import (
     EmptyDirectoryCleanupPlanError,
     EmptyDirectoryCleanupPlanService,
 )
+from watch_assistant.services.library_index import (
+    LibraryIndexError,
+    validate_complete_scan_evidence,
+)
 from watch_assistant.services.library_inventory import (
     InventoryFile,
     InventorySnapshot,
     build_snapshot,
     check_inventory,
-)
-from watch_assistant.services.library_index import (
-    LibraryIndexError,
-    validate_complete_scan_evidence,
 )
 from watch_assistant.services.library_scan_operations import (
     LibraryScanOperationError,
