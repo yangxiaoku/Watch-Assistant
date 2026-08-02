@@ -28,14 +28,21 @@ class MockResponse:
     status_code: int = 200
     payload: Any = None
     timeout: bool = False
+    headers: dict[str, str] | None = None
 
     @classmethod
     def json(cls, payload: Any, *, status_code: int = 200) -> MockResponse:
         return cls(status_code=status_code, payload=payload)
 
     @classmethod
-    def failure(cls, status_code: int, payload: Any) -> MockResponse:
-        return cls(status_code=status_code, payload=payload)
+    def failure(
+        cls,
+        status_code: int,
+        payload: Any,
+        *,
+        headers: dict[str, str] | None = None,
+    ) -> MockResponse:
+        return cls(status_code=status_code, payload=payload, headers=headers)
 
     @classmethod
     def upstream_timeout(cls) -> MockResponse:
@@ -149,6 +156,9 @@ class ProwlarrMock:
         return httpx.Response(
             response.status_code,
             json=response.payload,
-            headers={"content-type": "application/json"},
+            headers={
+                "content-type": "application/json",
+                **(response.headers or {}),
+            },
             request=request,
         )

@@ -7,6 +7,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, Field, PositiveInt, SecretStr, field_validator
 
+from watch_assistant.services.source_health import SourceHealthState
+
 
 class ResourceKind(StrEnum):
     MAGNET = "magnet"
@@ -941,6 +943,14 @@ class ProwlarrSettingsResponse(BaseModel):
     api_key_source: Literal["managed", "environment", "none"]
     last_updated_at: datetime | None
     revision: int = Field(ge=0)
+    health_state: SourceHealthState | None = None
+    health_message_code: str | None = None
+    health_message_zh: str | None = None
+    health_reason_code: str | None = None
+    health_reason_zh: str | None = None
+    health_checked_at: datetime | None = None
+    health_retry_after_seconds: int | None = Field(default=None, ge=0)
+    health_consecutive_failures: int = Field(default=0, ge=0)
 
 
 class ProwlarrVerifyResponse(BaseModel):
@@ -950,6 +960,11 @@ class ProwlarrVerifyResponse(BaseModel):
     base_url: str | None
     message_code: str | None = None
     checked_at: datetime
+    state: SourceHealthState | None = None
+    message_zh: str | None = None
+    reason_code: str | None = None
+    reason_zh: str | None = None
+    retry_after_seconds: int | None = Field(default=None, ge=0)
 
 
 class SearchSourceStateResponse(BaseModel):
@@ -957,6 +972,13 @@ class SearchSourceStateResponse(BaseModel):
     configured: bool
     status: Literal["disabled", "configured", "unavailable"]
     message_code: str | None = None
+    state: SourceHealthState | None = None
+    message_zh: str | None = None
+    reason_code: str | None = None
+    reason_zh: str | None = None
+    checked_at: datetime | None = None
+    retry_after_seconds: int | None = Field(default=None, ge=0)
+    consecutive_failures: int = Field(default=0, ge=0)
 
 
 class SearchSourcesResponse(BaseModel):
