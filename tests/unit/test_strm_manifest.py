@@ -1,3 +1,4 @@
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -168,6 +169,70 @@ async def test_generation_requires_complete_current_scan(tmp_path: Path):
                 "library-strm",
                 source_scan_run_id="scan-strm",
                 output_root=tmp_path / "stale-output",
+                playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+            )
+    finally:
+        await database.engine.dispose()
+
+
+async def test_strm_operations_block_newer_unsettled_scan_for_every_reconciliation_path(
+    tmp_path: Path,
+):
+    database = await _database(tmp_path)
+    try:
+        manifest = StrmManifestService(database.session_factory)
+        await manifest.generate(
+            "library-strm",
+            source_scan_run_id="scan-strm",
+            output_root=tmp_path / "output",
+            playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+        )
+        await _add_removed_episode_scan(database)
+        now = datetime.now(UTC)
+        async with database.session_factory() as session:
+            session.add(
+                LibraryScanRun(
+                    id="scan-pending",
+                    library_id="library-strm",
+                    root_directory_id="root-strm",
+                    idempotency_key="scan-pending-key",
+                    state="queued",
+                    complete=False,
+                    snapshot_revision=None,
+                    created_at=now + timedelta(seconds=1),
+                    updated_at=now + timedelta(seconds=1),
+                )
+            )
+            await session.commit()
+
+        with pytest.raises(StrmManifestError, match="source_snapshot_not_current"):
+            await manifest.generate(
+                "library-strm",
+                source_scan_run_id="scan-strm-2",
+                output_root=tmp_path / "output",
+                playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+            )
+        with pytest.raises(StrmManifestError, match="source_snapshot_not_current"):
+            await manifest.incremental(
+                "library-strm",
+                source_scan_run_id="scan-strm-2",
+                output_root=tmp_path / "output",
+                playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+            )
+
+        cleanup = StrmCleanupPlanService(database.session_factory)
+        with pytest.raises(StrmCleanupPlanError, match="source_snapshot_not_current"):
+            await cleanup.create_plan(
+                library_id="library-strm",
+                source_scan_run_id="scan-strm-2",
+                output_root=tmp_path / "output",
+                playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+            )
+        with pytest.raises(StrmVerificationError, match="source_snapshot_not_current"):
+            await StrmVerificationService(database.session_factory).verify(
+                library_id="library-strm",
+                source_scan_run_id="scan-strm-2",
+                output_root=tmp_path / "output",
                 playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
             )
     finally:

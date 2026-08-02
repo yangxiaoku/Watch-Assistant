@@ -1,10 +1,11 @@
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
 from watch_assistant.db import create_database, initialize_database
 from watch_assistant.library_models import (
+    EmptyDirectoryCleanupPlan,
     LibraryScanEntry,
     LibraryScanRun,
     MediaLibrary,
@@ -69,6 +70,7 @@ async def test_empty_directory_plan_requires_latest_complete_scan_and_is_idempot
             library_id="library-1",
             source_scan_run_id="run-1",
             protected_directory_ids=("200",),
+            system_created_directory_ids=("300",),
         )
         assert plan.candidate_count == 1
         assert plan.executable_count == 1
@@ -86,6 +88,7 @@ async def test_empty_directory_plan_requires_latest_complete_scan_and_is_idempot
             confirm=True,
             idempotency_key="cleanup-key-1",
             executor=execute,
+            system_created_directory_ids=("300",),
         )
         assert applied.deleted == 1
         assert calls == ["300"]
@@ -97,6 +100,7 @@ async def test_empty_directory_plan_requires_latest_complete_scan_and_is_idempot
             confirm=True,
             idempotency_key="cleanup-key-1",
             executor=execute,
+            system_created_directory_ids=("300",),
         )
         assert repeated.deleted == 1
         assert calls == ["300"]
@@ -108,6 +112,7 @@ async def test_empty_directory_plan_requires_latest_complete_scan_and_is_idempot
                 confirm=True,
                 idempotency_key="cleanup-key-2",
                 executor=execute,
+                system_created_directory_ids=("300",),
             )
     finally:
         await database.engine.dispose()
@@ -123,6 +128,7 @@ async def test_empty_directory_plan_protects_configured_directories_and_rejects_
             library_id="library-1",
             source_scan_run_id="run-1",
             protected_directory_ids=("200",),
+            system_created_directory_ids=("300",),
         )
         assert plan.candidate_count == 1
 
@@ -150,6 +156,7 @@ async def test_empty_directory_plan_protects_configured_directories_and_rejects_
                 confirm=True,
                 idempotency_key="cleanup-key-1",
                 executor=lambda _candidate: _success(),
+                system_created_directory_ids=("300",),
             )
     finally:
         await database.engine.dispose()
@@ -165,6 +172,7 @@ async def test_empty_directory_plan_invalidates_after_uncertain_executor_failure
             library_id="library-1",
             source_scan_run_id="run-1",
             protected_directory_ids=("200",),
+            system_created_directory_ids=("300",),
         )
         calls = []
 
@@ -180,6 +188,7 @@ async def test_empty_directory_plan_invalidates_after_uncertain_executor_failure
                 confirm=True,
                 idempotency_key="cleanup-key-1",
                 executor=execute,
+                system_created_directory_ids=("300",),
             )
         current = await service.get_plan(plan.plan_id)
         assert current.status == "invalidated"
@@ -192,6 +201,7 @@ async def test_empty_directory_plan_invalidates_after_uncertain_executor_failure
                 confirm=True,
                 idempotency_key="cleanup-key-2",
                 executor=execute,
+                system_created_directory_ids=("300",),
             )
         assert calls == [True]
     finally:
@@ -210,6 +220,7 @@ async def test_empty_directory_plan_claim_is_compare_and_set_under_concurrent_co
             library_id="library-1",
             source_scan_run_id="run-1",
             protected_directory_ids=("200",),
+            system_created_directory_ids=("300",),
         )
         both_validated = asyncio.Event()
         validation_count = 0
@@ -238,6 +249,7 @@ async def test_empty_directory_plan_claim_is_compare_and_set_under_concurrent_co
                 confirm=True,
                 idempotency_key="cleanup-key-concurrent-1",
                 executor=execute,
+                system_created_directory_ids=("300",),
             )
         )
         second = asyncio.create_task(
@@ -248,6 +260,7 @@ async def test_empty_directory_plan_claim_is_compare_and_set_under_concurrent_co
                 confirm=True,
                 idempotency_key="cleanup-key-concurrent-2",
                 executor=execute,
+                system_created_directory_ids=("300",),
             )
         )
         results = await asyncio.gather(first, second, return_exceptions=True)
@@ -260,6 +273,110 @@ async def test_empty_directory_plan_claim_is_compare_and_set_under_concurrent_co
             "plan_revision_changed",
         }
         assert calls == ["300"]
+    finally:
+        await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_empty_directory_plan_blocks_missing_system_created_evidence(tmp_path):
+    database = await _database(tmp_path)
+    try:
+        await _seed(database)
+        service = EmptyDirectoryCleanupPlanService(database.session_factory)
+        plan = await service.create_plan(
+            library_id="library-1",
+            source_scan_run_id="run-1",
+            protected_directory_ids=("200",),
+        )
+        assert plan.candidate_count == 1
+        assert plan.executable_count == 0
+        assert plan.blocked_count == 1
+        assert plan.candidates[0]["state"] == "blocked"
+    finally:
+        await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_empty_directory_plan_rejects_newer_unsettled_scan(tmp_path):
+    database = await _database(tmp_path)
+    try:
+        await _seed(database)
+        service = EmptyDirectoryCleanupPlanService(database.session_factory)
+        now = datetime.now(UTC)
+        async with database.session_factory() as session:
+            session.add(
+                LibraryScanRun(
+                    id="run-pending",
+                    library_id="library-1",
+                    root_directory_id="100",
+                    idempotency_key="run-pending-key",
+                    state="queued",
+                    complete=False,
+                    snapshot_revision=None,
+                    created_at=now + timedelta(seconds=1),
+                    updated_at=now + timedelta(seconds=1),
+                )
+            )
+            await session.commit()
+        with pytest.raises(
+            EmptyDirectoryCleanupPlanError, match="source_snapshot_not_current"
+        ):
+            await service.create_plan(
+                library_id="library-1",
+                source_scan_run_id="run-1",
+                protected_directory_ids=("200",),
+                system_created_directory_ids=("300",),
+            )
+    finally:
+        await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_stale_applying_plan_is_invalidated_without_executor_retry(tmp_path):
+    database = await _database(tmp_path)
+    try:
+        await _seed(database)
+        service = EmptyDirectoryCleanupPlanService(database.session_factory)
+        plan = await service.create_plan(
+            library_id="library-1",
+            source_scan_run_id="run-1",
+            protected_directory_ids=("200",),
+            system_created_directory_ids=("300",),
+        )
+        now = datetime(2026, 8, 2, 0, 0, tzinfo=UTC)
+        async with database.session_factory() as session:
+            row = await session.get(EmptyDirectoryCleanupPlan, plan.plan_id)
+            assert row is not None
+            row.status = "applying"
+            row.revision = plan.revision + 1
+            row.updated_at = now - timedelta(hours=1)
+            await session.commit()
+
+        assert await service.recover_stale_applying(
+            max_age=timedelta(minutes=30), now=now
+        ) == 1
+        current = await service.get_plan(plan.plan_id)
+        assert current.status == "invalidated"
+        assert current.revision == plan.revision + 2
+
+        calls = []
+
+        async def execute(_candidate):
+            calls.append(True)
+            return EmptyDirectoryCleanupStatus.SUCCESS
+
+        with pytest.raises(EmptyDirectoryCleanupPlanError, match="empty_cleanup_not_reviewable"):
+            await service.apply_plan(
+                plan_id=plan.plan_id,
+                expected_revision=current.revision,
+                digest=plan.plan_hash,
+                confirm=True,
+                idempotency_key="cleanup-after-crash",
+                executor=execute,
+                system_created_directory_ids=("300",),
+                now=now,
+            )
+        assert calls == []
     finally:
         await database.engine.dispose()
 

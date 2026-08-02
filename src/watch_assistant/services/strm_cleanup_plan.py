@@ -11,7 +11,6 @@ from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
-from urllib.parse import urlsplit
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -24,6 +23,10 @@ from watch_assistant.library_models import (
     StrmManifestEntry,
 )
 from watch_assistant.services.strm_manifest import StrmManifestError, _remove_managed
+from watch_assistant.services.strm_scope import (
+    has_newer_unsettled_scan,
+    normalize_playback_url_prefix,
+)
 
 
 class StrmCleanupPlanError(ValueError):
@@ -314,6 +317,8 @@ class StrmCleanupPlanService:
         )
         if latest != run.snapshot_revision:
             raise StrmCleanupPlanError("source_snapshot_not_current")
+        if await has_newer_unsettled_scan(session, run):
+            raise StrmCleanupPlanError("source_snapshot_not_current")
         return library, run
 
 
@@ -412,19 +417,10 @@ def _same_path(left: Path, right: Path) -> bool:
 
 
 def _safe_prefix(value: object) -> str:
-    if not isinstance(value, str) or not value or len(value) > 2048:
-        raise StrmCleanupPlanError("invalid_playback_url_prefix")
-    parsed = urlsplit(value)
-    if (
-        parsed.scheme not in {"http", "https"}
-        or not parsed.netloc
-        or parsed.username
-        or parsed.password
-        or parsed.query
-        or parsed.fragment
-    ):
-        raise StrmCleanupPlanError("invalid_playback_url_prefix")
-    return value.rstrip("/") + "/"
+    try:
+        return normalize_playback_url_prefix(value)
+    except ValueError:
+        raise StrmCleanupPlanError("invalid_playback_url_prefix") from None
 
 
 def _valid_id(value: object) -> bool:

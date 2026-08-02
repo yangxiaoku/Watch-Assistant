@@ -69,6 +69,7 @@ async def test_empty_directory_cleanup_requires_full_verified_scope_and_postcond
         client=client,
         call_executor=_executor,
         managed_directory_ids=("1000", "8000", "7000", "9000"),
+        system_created_directory_ids=("7000",),
         scope_confirmed=True,
     )
 
@@ -91,6 +92,23 @@ async def test_empty_directory_cleanup_rejects_scope_not_in_complete_scan():
         client=client,
         call_executor=_executor,
         managed_directory_ids=("1000", "8000"),
+        system_created_directory_ids=("8000",),
+        scope_confirmed=True,
+    )
+
+    with pytest.raises(EmptyDirectoryCleanupError, match="cleanup_scope_unverified"):
+        await cleaner.cleanup("7000", "8000", "old-show")
+    assert client.calls == []
+
+
+@pytest.mark.asyncio
+async def test_empty_directory_cleanup_requires_system_created_evidence_before_remote_reads():
+    client = _FakeClient({"fs_delete": [], "fs_files": []})
+    cleaner = LiveP115EmptyDirectoryCleaner(
+        client=client,
+        call_executor=_executor,
+        managed_directory_ids=("1000", "8000", "7000"),
+        system_created_directory_ids=(),
         scope_confirmed=True,
     )
 

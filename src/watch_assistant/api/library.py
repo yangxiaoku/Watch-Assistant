@@ -563,6 +563,8 @@ async def require_empty_directory_cleanup(request: Request) -> None:
 
 async def require_empty_directory_cleanup_apply(request: Request) -> None:
     await require_empty_directory_cleanup(request)
+    if not getattr(request.app.state, "system_created_directory_ids", frozenset()):
+        raise HTTPException(status_code=503, detail="empty_directory_cleanup_unavailable")
     if not getattr(request.app.state, "organization_execution_enabled", False):
         raise HTTPException(status_code=503, detail="organization_execution_disabled")
     if not getattr(request.app.state, "organization_write_enabled", False):
@@ -623,6 +625,9 @@ async def create_empty_directory_cleanup_plan(
             library_id=library_id,
             source_scan_run_id=payload.source_scan_run_id,
             protected_directory_ids=_empty_cleanup_protected_ids(library, settings),
+            system_created_directory_ids=getattr(
+                request.app.state, "system_created_directory_ids", frozenset()
+            ),
         )
     except EmptyDirectoryCleanupPlanError as error:
         raise HTTPException(
@@ -701,6 +706,9 @@ async def apply_empty_directory_cleanup_plan(
             confirm=payload.confirm,
             idempotency_key=payload.idempotency_key,
             executor=executor,
+            system_created_directory_ids=getattr(
+                request.app.state, "system_created_directory_ids", frozenset()
+            ),
         )
     except EmptyDirectoryCleanupPlanError as error:
         raise HTTPException(
