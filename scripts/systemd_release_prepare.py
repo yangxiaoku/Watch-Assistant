@@ -37,6 +37,7 @@ DEFAULT_REQUIRED_PATHS = (
     "scripts/systemd_release_prepare.py",
     "scripts/systemd_release_update.py",
     "scripts/postdeploy_release_check.py",
+    "scripts/release_manifest.py",
     "scripts/release_startup_smoke.py",
 )
 _TOP_LEVEL_MODE = 0o755
