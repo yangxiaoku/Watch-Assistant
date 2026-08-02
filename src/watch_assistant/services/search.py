@@ -1396,9 +1396,22 @@ class SearchService:
     async def _persist_resources(self, session, resources, now):
         if not resources:
             return []
+        existing_rows = await session.scalars(
+            select(Resource).where(
+                Resource.canonical_key.in_([item.canonical_key for item in resources])
+            )
+        )
+        existing_by_key = {item.canonical_key: item for item in existing_rows}
         expires_at = now + STALE_CACHE_AGE
         values = []
         for resource in resources:
+            existing = existing_by_key.get(resource.canonical_key)
+            size_bytes = resource.size_bytes
+            if size_bytes is None and existing is not None:
+                size_bytes = existing.size_bytes
+            seeders = resource.seeders
+            if seeders is None and existing is not None:
+                seeders = existing.seeders
             resource_id = (
                 "res_" + sha256(resource.canonical_key.encode()).hexdigest()[:24]
             )
@@ -1410,14 +1423,19 @@ class SearchService:
                     "encrypted_url": self._crypto.encrypt(resource.url),
                     "encrypted_password": self._crypto.encrypt(resource.password)
                     if resource.password
+                    else existing.encrypted_password
+                    if existing is not None
                     else None,
                     "name": resource.name,
-                    "size_bytes": resource.size_bytes,
-                    "seeders": resource.seeders,
-                    "source": resource.source,
+                    "size_bytes": size_bytes,
+                    "seeders": seeders,
+                    "source": normalize_source_id(resource.source),
                     "captured_at": resource.captured_at,
                     "expires_at": expires_at,
-                    "metadata_json": json.dumps(resource.metadata, ensure_ascii=False),
+                    "metadata_json": json.dumps(
+                        _merge_persisted_resource_metadata(existing, resource),
+                        ensure_ascii=False,
+                    ),
                 }
             )
         stmt = insert(Resource).values(values)
@@ -1433,7 +1451,9 @@ class SearchService:
         )
         canonical_keys = [item["canonical_key"] for item in values]
         rows = await session.scalars(
-            select(Resource).where(Resource.canonical_key.in_(canonical_keys))
+            select(Resource)
+            .where(Resource.canonical_key.in_(canonical_keys))
+            .execution_options(populate_existing=True)
         )
         by_key = {resource.canonical_key: resource for resource in rows}
         return [by_key[key] for key in canonical_keys]
@@ -1693,6 +1713,87 @@ def _resource_metadata(resource: Resource) -> dict:
     except (TypeError, json.JSONDecodeError):
         return {}
     return metadata if isinstance(metadata, dict) else {}
+
+
+def _merge_persisted_resource_metadata(
+    existing: Resource | None,
+    current: NormalizedResource,
+) -> dict[str, object]:
+    """Keep source history and optional evidence across partial refreshes."""
+    existing_metadata = _resource_metadata(existing) if existing is not None else {}
+    current_metadata = current.metadata
+    merged = {**existing_metadata, **current_metadata}
+
+    source_values: list[object] = [current_metadata.get("sources"), current.source]
+    observation_values: list[object] = [
+        current_metadata.get("source_observations"),
+        [
+            {
+                "source": current.source,
+                "captured_at": _as_utc(current.captured_at).isoformat(),
+            }
+        ],
+    ]
+    if existing is not None:
+        source_values = [
+            existing_metadata.get("sources"),
+            existing.source,
+            *source_values,
+        ]
+        observation_values = [
+            existing_metadata.get("source_observations"),
+            [
+                {
+                    "source": existing.source,
+                    "captured_at": _as_utc(existing.captured_at).isoformat(),
+                }
+            ],
+            *observation_values,
+        ]
+    merged["sources"] = _merge_safe_source_ids(*source_values)
+    merged["source_observations"] = _merge_source_observations(
+        *observation_values
+    )
+
+    search_queries = _merge_metadata_strings(
+        existing_metadata.get("search_queries"),
+        current_metadata.get("search_queries"),
+    )
+    if search_queries:
+        merged["search_queries"] = search_queries
+    else:
+        merged.pop("search_queries", None)
+    return merged
+
+
+def _merge_safe_source_ids(*values: object) -> list[str]:
+    sources: list[str] = []
+    for value in values:
+        candidates = (
+            [value]
+            if isinstance(value, str)
+            else value
+            if isinstance(value, list)
+            else []
+        )
+        for candidate in candidates:
+            if not isinstance(candidate, str) or not candidate.strip():
+                continue
+            normalized = normalize_source_id(candidate)
+            if normalized not in sources:
+                sources.append(normalized)
+    return sources
+
+
+def _merge_metadata_strings(*values: object) -> list[str]:
+    merged: list[str] = []
+    for value in values:
+        if not isinstance(value, list):
+            continue
+        for item in value:
+            if isinstance(item, str) and item not in merged:
+                merged.append(item)
+    return merged
 
 
 def _parse_metadata_datetime(value: object) -> datetime | None:
