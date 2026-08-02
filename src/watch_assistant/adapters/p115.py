@@ -11,7 +11,11 @@ from importlib.metadata import version
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
-from watch_assistant.schemas import RemoteStatus, SubmissionResult
+from watch_assistant.adapters.p115_library_gateway import (
+    P115ReadOnlyDirectoryGateway,
+    P115ReadOnlyGatewayError,
+)
+from watch_assistant.schemas import RemoteObservation, RemoteStatus, SubmissionResult
 from watch_assistant.services.p115_credentials import (
     CookieProvider,
     normalize_cookie_text,
@@ -67,6 +71,9 @@ _CANONICAL_TASK_STATUS = {
     RemoteStatus.DOWNLOADING.value: RemoteStatus.DOWNLOADING,
     RemoteStatus.AVAILABLE.value: RemoteStatus.AVAILABLE,
 }
+_AVAILABILITY_FILE_ID_UNAVAILABLE = "availability_file_id_unavailable"
+_AVAILABILITY_PARENT_MISMATCH = "availability_parent_mismatch"
+_AVAILABILITY_OBSERVER_UNAVAILABLE = "availability_observer_unavailable"
 
 
 class _AuthFailure(Exception):
@@ -91,6 +98,11 @@ class P115Adapter:
         *,
         max_concurrency: int = 1,
         client_factory: Callable[[str], Any] | None = None,
+        readonly_gateway: P115ReadOnlyDirectoryGateway | None = None,
+        readonly_gateway_factory: Callable[
+            [str], P115ReadOnlyDirectoryGateway
+        ] | None = None,
+        file_id_resolver: Callable[[Mapping[str, Any]], object] | None = None,
     ) -> None:
         if isinstance(target_cid, bool):
             raise TypeError("target_cid must be a non-negative integer")
@@ -104,6 +116,11 @@ class P115Adapter:
         self._cookie_provider = cookie_provider
         self._target_cid = target_cid
         self._client_factory = client_factory or _default_client_factory
+        if readonly_gateway is not None and readonly_gateway_factory is not None:
+            raise ValueError("readonly_gateway_sources_conflict")
+        self._readonly_gateway = readonly_gateway
+        self._readonly_gateway_factory = readonly_gateway_factory
+        self._file_id_resolver = file_id_resolver
         self._client: Any = None
         self._cookie: str | None = None
         self._client_lock = asyncio.Lock()
@@ -191,7 +208,9 @@ class P115Adapter:
             raise ValueError("target_cid must be a positive integer")
         return target_cid
 
-    async def get_status(self, remote_ref: str) -> RemoteStatus | None:
+    async def get_status(
+        self, remote_ref: str, *, target_directory_id: str | None = None
+    ) -> RemoteStatus | RemoteObservation | None:
         if not isinstance(remote_ref, str) or not remote_ref or len(remote_ref) > 255:
             return None
         async with self._semaphore:
@@ -222,10 +241,78 @@ class P115Adapter:
                 tasks = _task_records(response)
                 for task in tasks:
                     if _task_matches(task, remote_ref, expected_hash):
-                        return _task_status(task)
+                        status = _task_status(task)
+                        if status is RemoteStatus.AVAILABLE:
+                            return await self._observe_available_task(
+                                task, target_directory_id=target_directory_id
+                            )
+                        return status
                 if not tasks or _task_page_count(response) <= page:
                     break
             return None
+
+    async def get_status_for_task(
+        self, remote_ref: str, *, target_directory_id: str | None = None
+    ) -> RemoteStatus | RemoteObservation | None:
+        """Read status with the task's persisted target scope when available."""
+
+        return await self.get_status(
+            remote_ref, target_directory_id=target_directory_id
+        )
+
+    async def _observe_available_task(
+        self,
+        task: Mapping[str, Any],
+        *,
+        target_directory_id: str | None,
+    ) -> RemoteObservation:
+        file_id = _task_file_id(task, resolver=self._file_id_resolver)
+        if file_id is None:
+            return _uncertain_observation(_AVAILABILITY_FILE_ID_UNAVAILABLE)
+        parent_id = _stable_directory_id(
+            self._target_cid if target_directory_id is None else target_directory_id
+        )
+        if parent_id is None:
+            return _uncertain_observation(_AVAILABILITY_PARENT_MISMATCH)
+        try:
+            gateway = self._readonly_gateway_for(parent_id, file_id)
+        except Exception:  # noqa: BLE001 - gateway construction stays opaque
+            return _uncertain_observation(_AVAILABILITY_OBSERVER_UNAVAILABLE)
+        if gateway is None:
+            return _uncertain_observation(_AVAILABILITY_OBSERVER_UNAVAILABLE)
+        try:
+            detail = await gateway.get_file_detail(file_id)
+        except asyncio.CancelledError:
+            raise
+        except P115ReadOnlyGatewayError:
+            return _uncertain_observation(_AVAILABILITY_OBSERVER_UNAVAILABLE)
+        except Exception:  # noqa: BLE001 - remote detail stays redacted
+            return _uncertain_observation(_AVAILABILITY_OBSERVER_UNAVAILABLE)
+        if (
+            detail.file_id != file_id
+            or detail.parent_id != parent_id
+            or detail.is_directory is not False
+        ):
+            return _uncertain_observation(_AVAILABILITY_PARENT_MISMATCH)
+        return RemoteObservation(
+            status=RemoteStatus.AVAILABLE,
+            file_id=detail.file_id,
+            parent_id=detail.parent_id,
+            is_directory=detail.is_directory,
+        )
+
+    def _readonly_gateway_for(
+        self, parent_id: str, file_id: str
+    ) -> P115ReadOnlyDirectoryGateway | None:
+        if self._readonly_gateway is not None:
+            return self._readonly_gateway
+        if self._readonly_gateway_factory is not None:
+            return self._readonly_gateway_factory(parent_id)
+        return P115ReadOnlyDirectoryGateway(
+            self._cookie_provider,
+            authorized_directory_ids=(parent_id,),
+            authorized_file_ids=(file_id,),
+        )
 
     async def aclose(self) -> None:
         async with self._client_lock:
@@ -778,6 +865,45 @@ def _task_matches(
         isinstance(task.get(key), (str, int)) and str(task[key]) == remote_ref
         for key in ("task_id", "taskid", "taskId", "id")
     )
+
+
+def _task_file_id(
+    task: Mapping[str, Any],
+    *,
+    resolver: Callable[[Mapping[str, Any]], object] | None,
+) -> str | None:
+    if resolver is not None:
+        try:
+            resolved = resolver(task)
+        except Exception:  # noqa: BLE001 - identity resolver is fail-closed
+            return None
+        return _stable_directory_id(resolved)
+    values: list[str] = []
+    for key in ("file_id", "fid"):
+        if key not in task:
+            continue
+        value = _stable_directory_id(task[key])
+        if value is None:
+            return None
+        values.append(value)
+    if not values or any(value != values[0] for value in values[1:]):
+        return None
+    return values[0]
+
+
+def _stable_directory_id(value: object) -> str | None:
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        return None
+    normalized = str(value)
+    return (
+        normalized
+        if normalized.isdigit() and not normalized.startswith("0")
+        else None
+    )
+
+
+def _uncertain_observation(error_code: str) -> RemoteObservation:
+    return RemoteObservation(status=RemoteStatus.UNCERTAIN, error_code=error_code)
 
 
 def _task_status(task: Mapping[str, Any]) -> RemoteStatus:
