@@ -331,17 +331,29 @@ async def test_worker_terminal_state_updates_linked_workflow_stage(tmp_path):
         )
     task, _ = await task_service.create("res_magnet", workflow_id=workflow.id)
 
+    adapter = FakeAdapter()
     worker = TaskWorker(
         database.session_factory,
         crypto,
-        FakeAdapter(),
+        adapter,
         owner="workflow-worker",
     )
     assert await worker.run_once() is True
 
     updated = await workflow_service.get(workflow.id)
     push_stage = next(stage for stage in updated.stages if stage.stage.value == "push")
+    assert push_stage.status.value == "waiting_external"
+
+    adapter.remote_status = RemoteStatus.AVAILABLE
+    await task_service.reconcile(task.id, adapter)
+
+    updated = await workflow_service.get(workflow.id)
+    push_stage = next(stage for stage in updated.stages if stage.stage.value == "push")
+    availability_stage = next(
+        stage for stage in updated.stages if stage.stage.value == "availability"
+    )
     assert push_stage.status.value == "succeeded"
+    assert availability_stage.status.value == "succeeded"
     assert push_stage.child_id == task.id
     await database.engine.dispose()
 
