@@ -25,7 +25,6 @@ from watch_assistant.services.library_index import (
 )
 from watch_assistant.services.observability import EventLogger, emit_event
 
-
 SCAN_STATE_LABELS_ZH = {
     "queued": "等待扫描",
     "running": "扫描中",
