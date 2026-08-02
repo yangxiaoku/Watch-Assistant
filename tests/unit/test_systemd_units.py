@@ -34,6 +34,36 @@ def test_watch_assistant_unit_uses_writable_home_for_p115_cache():
     assert "ReadWritePaths=/opt" not in unit
 
 
+def test_compose_and_systemd_runtime_contracts_use_distinct_explicit_ports_and_state():
+    root = DEPLOY_DIR.parent
+    compose = (root / "docker-compose.yml").read_text(encoding="utf-8")
+    compose_env = (root / ".env.example").read_text(encoding="utf-8")
+    systemd_env = (DEPLOY_DIR / "watch-assistant.env.example").read_text(
+        encoding="utf-8"
+    )
+    systemd = (DEPLOY_DIR / "watch-assistant.service").read_text(encoding="utf-8")
+
+    assert "http://127.0.0.1:8000/api/v1/health" in compose
+    assert "${WATCH_ASSISTANT_PORT:-8000}:8000" in compose
+    assert "${DATA_DIR:-./data}:/data" in compose
+    assert "name: ${EXTERNAL_NETWORK:-pansou_default}" in compose
+    assert "WATCH_ASSISTANT_PORT=8115" in compose_env
+    assert "DATA_DIR=./data" in compose_env
+    assert "EXTERNAL_NETWORK=pansou_default" in compose_env
+    assert (
+        "DATABASE_URL=sqlite+aiosqlite:////var/lib/watch-assistant/watch-assistant.db"
+        in systemd_env
+    )
+    assert (
+        "ExecStart=/opt/watch-assistant/venv/bin/uvicorn watch_assistant.app:app "
+        "--host 0.0.0.0 --port 8115"
+    ) in systemd
+    assert (
+        "Environment=FRONTEND_DIST_DIR=/opt/watch-assistant/current/frontend/dist"
+        in systemd
+    )
+
+
 def test_release_startup_smoke_is_tracked_as_executable():
     result = subprocess.run(
         ["git", "ls-files", "--stage", "scripts/release_startup_smoke.py"],

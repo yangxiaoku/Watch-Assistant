@@ -125,6 +125,33 @@ def test_release_build_and_verify_use_provenance_and_project_venv():
     assert "worktree .venv Python is required" in verify_gate
 
 
+def test_release_package_gate_is_limited_to_publish_main():
+    workflow = (ROOT / ".github" / "workflows" / "systemd-release.yml").read_text(
+        encoding="utf-8"
+    )
+    build = (ROOT / "scripts" / "build_release.sh").read_text(encoding="utf-8")
+    verify = (ROOT / "scripts" / "verify_release_artifact.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert "codex/ci-release-artifact" not in workflow
+    assert 'test "${GITHUB_REF}" = "refs/heads/codex/publish-main"' in workflow
+    assert 'test "$(git branch --show-current)" = "codex/publish-main"' in workflow
+    assert 'refs/remotes/origin/codex/publish-main' in workflow
+    for script in (build, verify):
+        assert 'RELEASE_BRANCH="codex/publish-main"' in script
+        assert 'refs/remotes/origin/${RELEASE_BRANCH}' in script
+
+
+def test_verify_gate_scopes_pytest_collection_to_offline_test_roots():
+    verify_gate = (ROOT / "scripts" / "verify.sh").read_text(encoding="utf-8")
+
+    assert 'find "$test_root" -maxdepth 1 -type f -name \'test_*.py\'' in verify_gate
+    assert 'find "$ROOT_DIR" -type f -name \'test_*.py\'' not in verify_gate
+    assert "release-archive" not in verify_gate
+    assert "node_modules" not in verify_gate
+
+
 @pytest.mark.skipif(shutil.which("bash") is None, reason="bash is required")
 def test_release_shell_scripts_have_valid_bash_syntax():
     for name in ("build_release.sh", "verify_release_artifact.sh"):

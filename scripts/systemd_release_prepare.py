@@ -19,11 +19,14 @@ if SRC_ROOT.is_dir():
 if SCRIPTS_ROOT.is_dir():
     sys.path.insert(0, str(SCRIPTS_ROOT))
 
-from release_manifest import ReleaseManifestError, validate_build_manifest_file
+from release_manifest import (
+    ReleaseManifestError,
+    validate_build_manifest_file,
+    validate_version_commit_file,
+)
 
 from watch_assistant.release_metadata import (
     normalize_full_release,
-    read_release_commit,
 )
 
 DEFAULT_ALLOWED_RELEASES_ROOT = Path("/opt/watch-assistant/releases")
@@ -333,11 +336,14 @@ def prepare_release(
         _validate_required_path(normalized, resolved)
         validated_paths[normalized] = resolved
 
-    actual = read_release_commit(validated_paths["VERSION"])
-    if actual is None:
-        raise ReleasePrepareError("version_invalid")
-    if actual != expected:
-        raise ReleasePrepareError("version_mismatch")
+    try:
+        actual = validate_version_commit_file(
+            validated_paths["VERSION"], expected_commit=expected
+        )
+    except ReleaseManifestError as exc:
+        if exc.code == "version_commit_mismatch":
+            raise ReleasePrepareError("version_mismatch") from None
+        raise ReleasePrepareError("version_invalid") from None
     _validate_release_manifest(validated_paths["release-manifest.json"], expected)
 
     identity = service_identity or _resolve_service_identity(service_user, release_root)

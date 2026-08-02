@@ -120,6 +120,35 @@ def test_artifact_manifest_preserves_sha256sums_metadata(tmp_path: Path):
     assert payload["version"] == version
 
 
+@pytest.mark.parametrize(
+    "version",
+    [
+        "commit=" + COMMIT + "\ncommit=" + COMMIT + "\n",
+        "commit=not-a-release\n",
+    ],
+)
+def test_version_commit_validation_rejects_ambiguous_or_invalid_version(
+    tmp_path: Path, version: str
+):
+    version_file = tmp_path / "VERSION"
+    version_file.write_text(version, encoding="utf-8")
+
+    with pytest.raises(release_manifest.ReleaseManifestError, match="VERSION is invalid"):
+        release_manifest.validate_version_commit_file(version_file)
+
+
+def test_version_commit_validation_requires_expected_full_commit(tmp_path: Path):
+    version_file = tmp_path / "VERSION"
+    version_file.write_text("commit=" + COMMIT + "\n", encoding="utf-8")
+
+    with pytest.raises(
+        release_manifest.ReleaseManifestError, match="VERSION commit mismatch"
+    ):
+        release_manifest.validate_version_commit_file(
+            version_file, expected_commit="b" * 40
+        )
+
+
 def test_runtime_manifest_validation_keeps_startup_provenance_gate(tmp_path: Path):
     manifest_path = tmp_path / "release-manifest.json"
     manifest_path.write_text(

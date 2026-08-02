@@ -10,6 +10,7 @@ if [[ ! "$EXPECTED_COMMIT" =~ ^[0-9a-fA-F]{40}$ ]]; then
     exit 1
 fi
 EXPECTED_COMMIT="$(printf '%s' "$EXPECTED_COMMIT" | tr '[:upper:]' '[:lower:]')"
+RELEASE_BRANCH="codex/publish-main"
 if [[ ! -f "$PACKAGE_FILE" ]]; then
     echo "release artifact refused: package is missing" >&2
     exit 1
@@ -17,6 +18,19 @@ fi
 
 ROOT_DIR="$(git rev-parse --show-toplevel)"
 cd "$ROOT_DIR"
+if [[ "$(git branch --show-current)" != "$RELEASE_BRANCH" ]]; then
+    echo "release artifact refused: artifacts must be verified from ${RELEASE_BRANCH}" >&2
+    exit 1
+fi
+if ! PUBLISH_COMMIT="$(git rev-parse --verify "refs/remotes/origin/${RELEASE_BRANCH}" 2>/dev/null)"; then
+    echo "release artifact refused: origin/${RELEASE_BRANCH} is unavailable" >&2
+    exit 1
+fi
+PUBLISH_COMMIT="$(printf '%s' "$PUBLISH_COMMIT" | tr '[:upper:]' '[:lower:]')"
+if [[ "$PUBLISH_COMMIT" != "$EXPECTED_COMMIT" ]]; then
+    echo "release artifact refused: expected commit is not the latest origin/${RELEASE_BRANCH}" >&2
+    exit 1
+fi
 if [[ "$(git rev-parse HEAD)" != "$EXPECTED_COMMIT" ]]; then
     echo "release artifact refused: checked-out commit does not match expected SHA" >&2
     exit 1
@@ -103,15 +117,10 @@ if [[ ! -f "$VERSION_FILE" ]]; then
     echo "release artifact refused: VERSION is missing" >&2
     exit 1
 fi
-VERSION_COMMIT_COUNT="$(grep -Ec '^commit=[0-9a-fA-F]{40}$' "$VERSION_FILE" || true)"
-if [[ "$VERSION_COMMIT_COUNT" != "1" ]]; then
-    echo "release artifact refused: VERSION must contain exactly one full commit" >&2
-    exit 1
-fi
-VERSION_COMMIT="$(grep -E '^commit=[0-9a-fA-F]{40}$' "$VERSION_FILE" | awk -F= 'NR == 1 { print $2 }')"
-VERSION_COMMIT="$(printf '%s' "$VERSION_COMMIT" | tr '[:upper:]' '[:lower:]')"
-if [[ "$VERSION_COMMIT" != "$EXPECTED_COMMIT" ]]; then
-    echo "release artifact refused: VERSION does not identify the expected commit" >&2
+if ! "$RELEASE_SMOKE_PYTHON" "$ROOT_DIR/scripts/release_manifest.py" verify-version \
+    --version-file "$VERSION_FILE" \
+    --expected-commit "$EXPECTED_COMMIT"; then
+    echo "release artifact refused: VERSION does not identify exactly the expected commit" >&2
     exit 1
 fi
 
