@@ -296,7 +296,19 @@ async def test_queue_is_idempotent_and_rejects_unconfirmed_stale_or_expired_plan
 ):
     client, database = await _client(tmp_path, execution_enabled=True)
     headers = await _auth_headers(client)
-    payload = {"expected_revision": 1, "idempotency_key": "queue-key"}
+    missing_confirmation = await client.post(
+        "/api/v1/organization-plans/plan-ready/operation",
+        json={"expected_revision": 1, "idempotency_key": "missing-confirmation"},
+        headers=headers,
+    )
+    assert missing_confirmation.status_code == 409
+    assert missing_confirmation.json()["detail"]["code"] == "confirmation_required"
+
+    payload = {
+        "expected_revision": 1,
+        "idempotency_key": "queue-key",
+        "confirm": True,
+    }
     first = await client.post(
         "/api/v1/organization-plans/plan-ready/operation",
         json=payload,
@@ -335,14 +347,22 @@ async def test_queue_is_idempotent_and_rejects_unconfirmed_stale_or_expired_plan
     assert repeated.json()["operation_id"] == first_body["operation_id"]
     conflicting = await client.post(
         "/api/v1/organization-plans/plan-ready/operation",
-        json={"expected_revision": 1, "idempotency_key": "new-queue-key"},
+        json={
+            "expected_revision": 1,
+            "idempotency_key": "new-queue-key",
+            "confirm": True,
+        },
         headers=headers,
     )
     assert conflicting.status_code == 409
     assert conflicting.json()["detail"]["code"] == "operation_plan_conflict"
     stale = await client.post(
         "/api/v1/organization-plans/plan-stale/operation",
-        json={"expected_revision": 1, "idempotency_key": "stale-key"},
+        json={
+            "expected_revision": 1,
+            "idempotency_key": "stale-key",
+            "confirm": True,
+        },
         headers=headers,
     )
     assert stale.status_code == 409
@@ -354,7 +374,11 @@ async def test_queue_is_idempotent_and_rejects_unconfirmed_stale_or_expired_plan
     ):
         rejected = await client.post(
             f"/api/v1/organization-plans/{plan_id}/operation",
-            json={"expected_revision": 1, "idempotency_key": key},
+            json={
+                "expected_revision": 1,
+                "idempotency_key": key,
+                "confirm": True,
+            },
             headers=headers,
         )
         assert rejected.status_code == 409
@@ -458,6 +482,7 @@ async def test_queue_can_link_organization_operation_to_workflow(tmp_path: Path)
             "expected_revision": 1,
             "idempotency_key": "workflow-queue-key",
             "workflow_id": workflow_id,
+            "confirm": True,
         },
         headers=headers,
     )
@@ -540,11 +565,18 @@ async def test_batch_isolates_item_failures_and_cancel_is_local(tmp_path: Path):
                     "plan_id": "plan-batch",
                     "expected_revision": 1,
                     "idempotency_key": "batch-good",
+                    "confirm": True,
                 },
                 {
                     "plan_id": "plan-review",
                     "expected_revision": 1,
                     "idempotency_key": "batch-bad",
+                    "confirm": True,
+                },
+                {
+                    "plan_id": "plan-cancel",
+                    "expected_revision": 1,
+                    "idempotency_key": "batch-missing-confirmation",
                 },
             ]
         },
@@ -555,13 +587,19 @@ async def test_batch_isolates_item_failures_and_cancel_is_local(tmp_path: Path):
     assert items[0]["status"] == "planned"
     assert items[1]["status"] == "rejected"
     assert items[1]["error_code"] == "plan_is_not_planned"
+    assert items[2]["status"] == "rejected"
+    assert items[2]["error_code"] == "confirmation_required"
     async with database.session_factory() as session:
         operations = list((await session.scalars(select(OrganizationOperation))).all())
     assert len(operations) == 1
 
     queued = await client.post(
         "/api/v1/organization-plans/plan-cancel/operation",
-        json={"expected_revision": 1, "idempotency_key": "cancel-key"},
+        json={
+            "expected_revision": 1,
+            "idempotency_key": "cancel-key",
+            "confirm": True,
+        },
         headers=headers,
     )
     cancelled = await client.post(
@@ -599,7 +637,11 @@ async def test_cancel_requests_organizing_and_rejects_uncertain_without_remote_c
     headers = await _auth_headers(client)
     queued = await client.post(
         "/api/v1/organization-plans/plan-ready/operation",
-        json={"expected_revision": 1, "idempotency_key": "organizing-key"},
+        json={
+            "expected_revision": 1,
+            "idempotency_key": "organizing-key",
+            "confirm": True,
+        },
         headers=headers,
     )
     operation_id = queued.json()["operation_id"]

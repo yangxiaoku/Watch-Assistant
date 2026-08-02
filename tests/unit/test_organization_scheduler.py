@@ -123,6 +123,25 @@ async def test_manual_run_is_not_lost_while_settings_are_loading():
     await asyncio.wait_for(task, timeout=1)
 
 
+@pytest.mark.asyncio
+async def test_scheduler_only_invokes_the_planning_callback():
+    settings = SettingsStub(False)
+    planning_calls: list[str] = []
+
+    async def plan_once():
+        planning_calls.append("plan")
+        return True
+
+    scheduler = OrganizationScheduler(settings, plan_once)
+    stop = asyncio.Event()
+    task = asyncio.create_task(scheduler.run_forever(stop))
+    await scheduler.request_run_now()
+    await asyncio.wait_for(_wait_for(lambda: planning_calls == ["plan"]), timeout=1)
+    stop.set()
+    scheduler.stop_pending()
+    await asyncio.wait_for(task, timeout=1)
+
+
 class BlockingSettingsStub(SettingsStub):
     def __init__(self, enabled: bool):
         super().__init__(enabled)

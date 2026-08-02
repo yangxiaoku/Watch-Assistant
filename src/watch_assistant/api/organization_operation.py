@@ -112,7 +112,7 @@ async def queue_organization_operation(
     service: ServiceDependency,
 ) -> OrganizationOperationResponse:
     try:
-        await _validate_agent_confirmation(
+        await _validate_operation_confirmation(
             context, service, plan_id, digest=payload.digest, confirm=payload.confirm
         )
         summary = await service.create(
@@ -140,7 +140,7 @@ async def confirm_and_queue_organization_operation(
     """Confirm a local preview and enqueue its operation in one action."""
 
     try:
-        await _validate_agent_confirmation(
+        await _validate_operation_confirmation(
             context, service, plan_id, digest=payload.digest, confirm=payload.confirm
         )
         if not await service.has_executable_steps(plan_id, allow_unconfirmed=True):
@@ -190,7 +190,7 @@ async def queue_organization_operations_batch(
     results: list[OrganizationOperationBatchResult] = []
     for item in payload.items:
         try:
-            await _validate_agent_confirmation(
+            await _validate_operation_confirmation(
                 context,
                 service,
                 item.plan_id,
@@ -234,7 +234,7 @@ async def confirm_and_queue_organization_operations_batch(
     results: list[OrganizationOperationBatchResult] = []
     for item in payload.items:
         try:
-            await _validate_agent_confirmation(
+            await _validate_operation_confirmation(
                 context,
                 service,
                 item.plan_id,
@@ -371,7 +371,7 @@ def _error_values(error: Exception) -> tuple[int, str, str]:
     return status, code, _MESSAGES.get(code, "整理操作暂不可用")
 
 
-async def _validate_agent_confirmation(
+async def _validate_operation_confirmation(
     context: AuthContext,
     service: OrganizationOperationService,
     plan_id: str,
@@ -379,10 +379,10 @@ async def _validate_agent_confirmation(
     digest: str | None,
     confirm: bool,
 ) -> None:
-    if not context.via_bearer:
-        return
     if not confirm:
         raise ValueError("confirmation_required")
+    if not context.via_bearer:
+        return
     if digest is None:
         raise ValueError("plan_digest_required")
     expected = await service.plan_digest(plan_id)
@@ -431,6 +431,10 @@ _MESSAGES = {
     "confirmation_required": "缺少操作确认",
     "capability_unverified": "115 整理能力尚未完成契约验收",
     "contract_unverified": "115 整理写入契约尚未验收",
+    "organization_contract_evidence_required": "115 整理写入缺少独立契约验收证据",
+    "organization_lease_required": "整理操作租约无效，未创建目标目录",
+    "target_directory_parent_missing": "归档目录父级不存在，请重新生成计划",
+    "target_directory_create_failed": "归档目录创建失败，请先核对远端状态",
     "plan_digest_required": "缺少计划摘要",
     "plan_digest_mismatch": "计划摘要已变化，请刷新后重试",
     "stale_revision": "计划版本已变化，请刷新后重试",

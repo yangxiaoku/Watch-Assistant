@@ -24,7 +24,6 @@ from watch_assistant.adapters.p115 import P115Adapter
 from watch_assistant.adapters.p115_c03_live_transport import p115_c03_timeout_executor
 from watch_assistant.adapters.p115_library_gateway import P115ReadOnlyDirectoryGateway
 from watch_assistant.adapters.p115_library_write_contract import (
-    OrganizationWriteCapability,
     P115OrganizationContract,
 )
 from watch_assistant.adapters.p115_playback_contract import P115PlaybackGateway
@@ -121,6 +120,7 @@ from watch_assistant.services.organization_operations import (
 from watch_assistant.services.organization_plan import OrganizationPlanService
 from watch_assistant.services.organization_preview import OrganizationPreviewService
 from watch_assistant.services.organization_scheduler import OrganizationScheduler
+from watch_assistant.services.organization_target import read_target_catalog
 from watch_assistant.services.organization_worker import (
     OrganizationWorker,
     _close_client,
@@ -393,6 +393,7 @@ def create_app(
     organization_execution_enabled: bool | None = None,
     organization_write_enabled: bool | None = None,
     organization_write_contract_verified: bool | None = None,
+    organization_contract: P115OrganizationContract | None = None,
     permanent_delete_enabled: bool | None = None,
     permanent_delete_contract_verified: bool | None = None,
     strm_full_enabled: bool | None = None,
@@ -537,7 +538,13 @@ def create_app(
                 and getattr(application.state, "organization_execution_enabled", False)
                 and getattr(application.state, "organization_write_enabled", False)
                 and getattr(
-                    application.state, "organization_write_contract_verified", False
+                    getattr(
+                        application.state,
+                        "organization_contract",
+                        P115OrganizationContract(),
+                    ),
+                    "verified",
+                    False,
                 )
             )
             if (
@@ -552,6 +559,11 @@ def create_app(
                 await stop_organization_runtime()
             worker = None
             directory_provisioner = None
+            organization_contract = getattr(
+                application.state,
+                "organization_contract",
+                P115OrganizationContract(),
+            )
             if write_enabled:
                 async def execute_empty_directory_cleanup(candidate: dict[str, str]):
                     try:
@@ -598,37 +610,30 @@ def create_app(
                 application.state.empty_directory_cleanup_executor = (
                     execute_empty_directory_cleanup
                 )
-                worker = OrganizationWorker(
-                    application.state.database.session_factory,
-                    application.state.organization_operation_service,
-                    application.state.organization_cookie_provider,
-                    production_root_id=application.state.organization_target_root_id,
-                    live_enabled=True,
-                    event_logger=application.state.settings_service,
-                    settings_service=application.state.settings_service,
-                    organization_contract=P115OrganizationContract(
-                        verified=bool(
-                            application.state.organization_write_contract_verified
+                async def provision_organization_directories(operation_id: str) -> None:
+                    summary = await application.state.organization_operation_service.get(
+                        operation_id
+                    )
+                    paths = await application.state.organization_plan_service.plan_target_directory_paths(
+                        summary.plan_id
+                    )
+                    if not paths:
+                        return
+                    gateway = P115ReadOnlyDirectoryGateway(
+                        application.state.organization_cookie_provider,
+                        authorized_directory_ids=(
+                            application.state.organization_target_root_id,
                         ),
-                        capabilities=frozenset(
-                            {
-                                OrganizationWriteCapability.READ_SCOPE,
-                                OrganizationWriteCapability.MOVE,
-                                OrganizationWriteCapability.RENAME,
-                                OrganizationWriteCapability.RECYCLE,
-                                OrganizationWriteCapability.POSTCONDITION,
-                            }
-                        ),
-                        timeout_enforced=True,
-                    ),
-                )
-                application.state.organization_worker = worker
-
-                async def provision_organization_directories(
-                    target_root_id: str,
-                    existing_directories,
-                    paths,
-                ) -> None:
+                        request_timeout_seconds=30,
+                    )
+                    catalog = await read_target_catalog(
+                        gateway, application.state.organization_target_root_id
+                    )
+                    missing_paths = tuple(
+                        path for path in paths if path not in catalog.by_path
+                    )
+                    if not missing_paths:
+                        return
                     cookie = await asyncio.to_thread(
                         application.state.organization_cookie_provider.load
                     )
@@ -639,16 +644,33 @@ def create_app(
                         provisioner = OrganizationDirectoryProvisioner(
                             client,
                             call_executor=p115_c03_timeout_executor,
+                            organization_contract=organization_contract,
+                            event_logger=application.state.settings_service,
                         )
                         await provisioner.ensure(
-                            target_root_id=target_root_id,
-                            existing_directories=existing_directories,
-                            paths=paths,
+                            target_root_id=application.state.organization_target_root_id,
+                            existing_directories=catalog.by_path,
+                            paths=missing_paths,
+                            plan_confirmed=True,
+                            scope_confirmed=True,
+                            lease_active=True,
                         )
                     finally:
                         await _close_client(client)
 
                 directory_provisioner = provision_organization_directories
+                worker = OrganizationWorker(
+                    application.state.database.session_factory,
+                    application.state.organization_operation_service,
+                    application.state.organization_cookie_provider,
+                    production_root_id=application.state.organization_target_root_id,
+                    live_enabled=True,
+                    event_logger=application.state.settings_service,
+                    settings_service=application.state.settings_service,
+                    organization_contract=organization_contract,
+                    directory_provisioner=directory_provisioner,
+                )
+                application.state.organization_worker = worker
             elif hasattr(application.state, "empty_directory_cleanup_executor"):
                 delattr(application.state, "empty_directory_cleanup_executor")
 
@@ -665,13 +687,6 @@ def create_app(
                 application.state.organization_preview_service,
                 application.state.organization_plan_service,
                 gateway_factory,
-                operation_service=(
-                    application.state.organization_operation_service
-                    if write_enabled
-                    else None
-                ),
-                auto_execute=write_enabled,
-                directory_provisioner=directory_provisioner,
                 event_logger=application.state.settings_service,
             )
             application.state.organization_automation_service = automation
@@ -1435,10 +1450,19 @@ def create_app(
         if organization_write_enabled is not None
         else _env_flag("ORGANIZATION_WRITE_ENABLED")
     )
-    application.state.organization_write_contract_verified = (
-        organization_write_contract_verified
-        if organization_write_contract_verified is not None
-        else _env_flag("ORGANIZATION_WRITE_CONTRACT_VERIFIED")
+    if organization_contract is not None and not isinstance(
+        organization_contract, P115OrganizationContract
+    ):
+        raise ValueError("invalid_organization_contract")
+    application.state.organization_contract = (
+        organization_contract or P115OrganizationContract()
+    )
+    # The legacy environment flag is intentionally ignored as write evidence.
+    # Only an explicitly injected, versioned contract can make this true.
+    del organization_write_contract_verified
+    application.state.organization_write_contract_verified = bool(
+        application.state.organization_contract.verified
+        and application.state.organization_contract.evidence is not None
     )
     application.state.permanent_delete_enabled = (
         permanent_delete_enabled

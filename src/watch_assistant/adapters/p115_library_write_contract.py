@@ -29,6 +29,7 @@ class OrganizationWriteCapability(StrEnum):
     """Capabilities frozen by the independently verified organization contract."""
 
     READ_SCOPE = "read_scope"
+    MKDIR = "mkdir"
     MOVE = "move"
     RENAME = "rename"
     RECYCLE = "recycle"
@@ -86,6 +87,51 @@ class WriteGateDecision:
 
 
 @dataclass(frozen=True, slots=True, repr=False)
+class OrganizationContractEvidence:
+    """Redacted evidence produced by the independently verified C03 probe."""
+
+    evidence_id: str
+    capabilities: frozenset[OrganizationWriteCapability]
+    timeout_enforced: bool
+    version: str = ORGANIZATION_CONTRACT_VERSION
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.evidence_id, str)
+            or not self.evidence_id
+            or len(self.evidence_id) > 128
+            or any(
+                character not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:-"
+                for character in self.evidence_id
+            )
+        ):
+            raise ValueError("invalid_organization_contract_evidence")
+        if self.version != ORGANIZATION_CONTRACT_VERSION:
+            raise ValueError("organization_contract_unverified")
+        if not isinstance(self.timeout_enforced, bool) or not self.timeout_enforced:
+            raise ValueError("invalid_organization_contract_evidence")
+        try:
+            capabilities = frozenset(
+                capability
+                if isinstance(capability, OrganizationWriteCapability)
+                else OrganizationWriteCapability(capability)
+                for capability in self.capabilities
+            )
+        except (TypeError, ValueError):
+            raise ValueError("invalid_organization_contract_evidence") from None
+        if not capabilities:
+            raise ValueError("invalid_organization_contract_evidence")
+        object.__setattr__(self, "capabilities", capabilities)
+
+    def __repr__(self) -> str:
+        return (
+            "OrganizationContractEvidence("
+            f"capability_count={len(self.capabilities)}, "
+            f"timeout_enforced={self.timeout_enforced!r})"
+        )
+
+
+@dataclass(frozen=True, slots=True, repr=False)
 class P115OrganizationContract:
     """The small, explicit capability contract required by the live gateway.
 
@@ -98,6 +144,7 @@ class P115OrganizationContract:
     capabilities: frozenset[OrganizationWriteCapability] = frozenset()
     timeout_enforced: bool = False
     version: str = ORGANIZATION_CONTRACT_VERSION
+    evidence: OrganizationContractEvidence | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.verified, bool) or not isinstance(
@@ -106,6 +153,21 @@ class P115OrganizationContract:
             raise TypeError("invalid_organization_contract")
         if self.version != ORGANIZATION_CONTRACT_VERSION:
             raise ValueError("organization_contract_unverified")
+        if self.verified and self.evidence is None:
+            raise ValueError("organization_contract_evidence_required")
+        if self.evidence is not None and not isinstance(
+            self.evidence, OrganizationContractEvidence
+        ):
+            raise TypeError("invalid_organization_contract_evidence")
+        if self.evidence is not None:
+            if not self.verified:
+                raise ValueError("organization_contract_unverified")
+            if (
+                self.evidence.version != self.version
+                or self.evidence.capabilities != frozenset(self.capabilities)
+                or self.evidence.timeout_enforced != self.timeout_enforced
+            ):
+                raise ValueError("organization_contract_evidence_mismatch")
         try:
             capabilities = frozenset(
                 capability
@@ -119,6 +181,11 @@ class P115OrganizationContract:
 
     def supports(self, operation: WriteOperation) -> bool:
         required = {
+            WriteOperation.MKDIR: {
+                OrganizationWriteCapability.READ_SCOPE,
+                OrganizationWriteCapability.MKDIR,
+                OrganizationWriteCapability.POSTCONDITION,
+            },
             WriteOperation.MOVE: {
                 OrganizationWriteCapability.READ_SCOPE,
                 OrganizationWriteCapability.MOVE,
@@ -149,6 +216,7 @@ class P115OrganizationContract:
         }.get(operation)
         return (
             self.verified
+            and self.evidence is not None
             and self.timeout_enforced
             and required is not None
             and required <= self.capabilities
@@ -159,7 +227,8 @@ class P115OrganizationContract:
             "P115OrganizationContract("
             f"verified={self.verified!r}, "
             f"capability_count={len(self.capabilities)}, "
-            f"timeout_enforced={self.timeout_enforced!r})"
+            f"timeout_enforced={self.timeout_enforced!r}, "
+            f"evidence_present={self.evidence is not None!r})"
         )
 
 
@@ -429,6 +498,7 @@ class FakeP115LibraryWriteGateway:
 __all__ = [
     "ORGANIZATION_CONTRACT_VERSION",
     "FakeP115LibraryWriteGateway",
+    "OrganizationContractEvidence",
     "OrganizationWriteCapability",
     "OrganizationWriteGate",
     "P115LibraryWriteGateway",

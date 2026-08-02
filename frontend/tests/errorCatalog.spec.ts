@@ -43,6 +43,36 @@ describe("中文错误目录", () => {
     expect(taskErrorMessage("inventory_scope_unconfigured")).toContain("完成一次完整扫描");
   });
 
+  it("keeps organization confirmation-boundary errors explicitly mapped", () => {
+    const expected = {
+      organization_contract_evidence_required: {
+        title: "整理写入缺少契约证据",
+        action: "inspect_configuration",
+      },
+      organization_lease_required: {
+        title: "整理操作租约无效",
+        action: "refresh_snapshot",
+      },
+      target_directory_create_failed: {
+        title: "归档目录创建失败",
+        action: "view_task",
+      },
+      target_directory_parent_missing: {
+        title: "归档目录父级不存在",
+        action: "refresh_snapshot",
+      },
+    } as const;
+
+    for (const [code, descriptor] of Object.entries(expected)) {
+      expect(UI_ERROR_CODES).toContain(code);
+      expect(describeUiError(code, 409)).toMatchObject({
+        ...descriptor,
+        retryable: false,
+      });
+      expect(taskErrorMessage(code)).toContain(descriptor.title);
+    }
+  });
+
   it("keeps actions available for backend operational codes", () => {
     expect(UI_ERROR_CODES).toContain("cache_warm_disabled");
     expect(describeUiError("cache_warm_disabled")).toMatchObject({

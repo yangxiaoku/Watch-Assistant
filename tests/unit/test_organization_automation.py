@@ -285,39 +285,47 @@ async def test_automation_preserves_stable_inner_failure_code(
 
 
 @pytest.mark.asyncio
-async def test_automation_confirms_and_queues_planned_work_when_write_gate_is_open(
+async def test_automation_only_persists_pending_plan_without_confirming_or_provisioning(
     tmp_path: Path,
 ):
     database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'automation-write.db'}")
     await initialize_database(database.engine)
     operations = _Operations()
+    events = _Events()
     plan_service = OrganizationPlanService(database.session_factory)
     preview = OrganizationPreviewService(
         database.session_factory, _TmdbClient(), plan_service
     )
 
-    class _ConfirmedPreview:
-        async def create_preview(self, **kwargs):
-            plan = await preview.create_preview(**kwargs)
-            return await plan_service.confirm_plan(
-                plan.plan_id, expected_revision=plan.revision
-            )
+    provision_calls: list[object] = []
+
+    async def provision(*args):
+        provision_calls.append(args)
 
     service = OrganizationAutomationService(
         database.session_factory,
         _Settings(configured=True),
-        _ConfirmedPreview(),
+        preview,
         plan_service,
         lambda _authorized: _Gateway(),
         operation_service=operations,
         auto_execute=True,
+        directory_provisioner=provision,
+        event_logger=events,
     )
 
     assert await service.run_once() is True
     assert service.last_result is not None
-    assert service.last_result.queued_count == 1
-    assert len(operations.calls) == 1
-    assert operations.calls[0][1]["idempotency_key"].startswith("organization-auto:")
+    assert service.last_result.queued_count == 0
+    assert operations.calls == []
+    assert provision_calls == []
+    assert any(
+        event == "organize.plan.awaiting_confirmation" for event, _fields in events.events
+    )
+    async with database.session_factory() as session:
+        plan = await session.scalar(select(OrganizationPlan))
+        assert plan is not None
+        assert plan.status == "planned"
     await database.engine.dispose()
 
 

@@ -207,6 +207,18 @@ EVENT_CATALOG: dict[str, EventDefinition] = {
         "整理预览已生成",
         "整理预览已生成，当前状态：{status}，涉及 {count} 个文件",
     ),
+    "organize.plan.awaiting_confirmation": _event(
+        "organize.plan.awaiting_confirmation",
+        LogCategory.ORGANIZE,
+        "整理计划等待确认",
+        "整理计划已保存，等待人工确认，当前状态：{status}，涉及 {count} 个文件",
+    ),
+    "organize.directory.provisioned": _event(
+        "organize.directory.provisioned",
+        LogCategory.ORGANIZE,
+        "整理目标目录已创建",
+        "确认后的整理操作已创建目标目录，共 {count} 个目录",
+    ),
     "organize.automation.blocked": _event(
         "organize.automation.blocked",
         LogCategory.ORGANIZE,

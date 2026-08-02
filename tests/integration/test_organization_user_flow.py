@@ -129,7 +129,15 @@ class _FakeDirectoryGateway:
         )
 
 
-def _app(database, *, task_adapter, security, tmdb_client=None):
+def _app(
+    database,
+    *,
+    task_adapter,
+    security,
+    tmdb_client=None,
+    organization_write_enabled=False,
+    organization_write_contract_verified=None,
+):
     app = create_app(
         database=database,
         crypto=SecretCrypto(Fernet.generate_key().decode("ascii")),
@@ -140,7 +148,8 @@ def _app(database, *, task_adapter, security, tmdb_client=None):
         task_adapter=task_adapter,
         organization_plan_enabled=True,
         organization_execution_enabled=True,
-        organization_write_enabled=False,
+        organization_write_enabled=organization_write_enabled,
+        organization_write_contract_verified=organization_write_contract_verified,
     )
     app.state.organization_target_root_id = "9000"
     app.state.p115_browsed_directory_ids = {"1000", "9000"}
@@ -151,6 +160,28 @@ async def _login(client: httpx.AsyncClient, password: str) -> dict[str, str]:
     response = await client.post("/api/v1/auth/login", json={"password": password})
     assert response.status_code == 200
     return {"X-CSRF-Token": response.json()["csrf_token"]}
+
+
+@pytest.mark.integration
+async def test_legacy_contract_flag_does_not_open_organization_write_runtime(
+    tmp_path: Path,
+):
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'contract-boundary.db'}")
+    password_hash = PasswordHash.recommended()
+    app = _app(
+        database,
+        task_adapter=_ReadinessFalseTaskAdapter(),
+        security=SecurityManager(
+            web_password_hash=password_hash.hash("contract-boundary-password"),
+            script_token_hash=password_hash.hash("unused-script-token"),
+        ),
+        organization_write_enabled=True,
+        organization_write_contract_verified=True,
+    )
+
+    assert app.state.organization_contract.verified is False
+    assert app.state.organization_write_contract_verified is False
+    await database.engine.dispose()
 
 
 @pytest.mark.integration

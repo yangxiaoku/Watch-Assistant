@@ -10,7 +10,11 @@ from watch_assistant.adapters.p115_c03_live_transport import (
     P115C03LiveTransport,
 )
 from watch_assistant.adapters.p115_library_write_contract import (
+    OrganizationWriteGate,
+    P115OrganizationContract,
+    WriteOperation,
     WriteStatus,
+    evaluate_organization_write_gate,
     prepare_mkdir,
 )
 
@@ -31,6 +35,8 @@ class OrganizationDirectoryProvisioner:
         client,
         *,
         call_executor: P115C03CallExecutor,
+        organization_contract: P115OrganizationContract | None = None,
+        event_logger: object | None = None,
         timeout_seconds: float = 30.0,
     ) -> None:
         self._client = client
@@ -39,6 +45,8 @@ class OrganizationDirectoryProvisioner:
             call_executor=call_executor,
         )
         self._timeout_seconds = timeout_seconds
+        self._organization_contract = organization_contract or P115OrganizationContract()
+        self._event_logger = event_logger
 
     async def ensure(
         self,
@@ -46,7 +54,25 @@ class OrganizationDirectoryProvisioner:
         target_root_id: str,
         existing_directories: Mapping[str, str],
         paths: Collection[str],
+        plan_confirmed: bool = False,
+        scope_confirmed: bool = False,
+        lease_active: bool = False,
     ) -> None:
+        if lease_active is not True:
+            raise OrganizationDirectoryProvisionError("organization_lease_required")
+        decision = evaluate_organization_write_gate(
+            OrganizationWriteGate(
+                write_enabled=True,
+                plan_confirmed=plan_confirmed,
+                scope_confirmed=scope_confirmed,
+                contract=self._organization_contract,
+            ),
+            WriteOperation.MKDIR,
+        )
+        if not decision.allowed:
+            raise OrganizationDirectoryProvisionError(
+                decision.error_code or "capability_unverified"
+            )
         directory_ids = dict(existing_directories)
         directory_ids.setdefault("", target_root_id)
         normalized_paths = sorted(
@@ -80,6 +106,15 @@ class OrganizationDirectoryProvisioner:
                     )
                 directory_ids[current_path] = receipt.file_id
                 parent_path = current_path
+        await self._log_provisioned(len(normalized_paths))
+
+    async def _log_provisioned(self, count: int) -> None:
+        method = getattr(self._event_logger, "log_event", None)
+        if callable(method):
+            await method(
+                "organize.directory.provisioned",
+                counts={"count": count},
+            )
 
 
 def _normalize_directory_path(value: object) -> str | None:
