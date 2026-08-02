@@ -35,6 +35,7 @@ class FakeAdapter:
         self.target_cids = []
         self.remote_status = None
         self.status_lookups = 0
+        self.status_target_directory_ids = []
 
     async def submit_magnet(
         self, url: str, *, target_cid: str | None = None
@@ -48,7 +49,10 @@ class FakeAdapter:
         self.submissions += 1
         return SubmissionResult(status=RemoteStatus.ACCEPTED, remote_ref="remote-share")
 
-    async def get_status(self, remote_ref: str):
+    async def get_status_for_task(
+        self, remote_ref: str, *, target_directory_id: str | None
+    ):
+        self.status_target_directory_ids.append(target_directory_id)
         self.status_lookups += 1
         return self.remote_status
 
@@ -803,6 +807,7 @@ async def test_expired_submitting_task_without_remote_ref_becomes_uncertain(tmp_
 
     assert recovered == 1
     assert stored.state == TaskState.UNCERTAIN
+    assert stored.error_code == "remote_observation_missing"
     assert adapter.submissions == 0
     await database.engine.dispose()
 

@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import watch_assistant.services.strm_manifest as strm_manifest_module
 from watch_assistant.db import create_database, initialize_database
 from watch_assistant.library_models import (
     LibraryScanDiff,
@@ -23,6 +24,8 @@ from watch_assistant.services.strm_cleanup_plan import (
 from watch_assistant.services.strm_manifest import (
     StrmManifestError,
     StrmManifestService,
+    _FileMutation,
+    _LeaseFence,
 )
 from watch_assistant.services.strm_verification import (
     StrmVerificationError,
@@ -169,6 +172,31 @@ async def test_manifest_operation_id_requires_lease_check(tmp_path: Path):
         assert not (tmp_path / "output" / "Show" / "Episode.strm").exists()
     finally:
         await database.engine.dispose()
+
+
+async def test_successful_manifest_commit_disarms_file_compensation(
+    tmp_path: Path, monkeypatch
+):
+    async def commit_without_failure(_session, _fence):
+        return None
+
+    monkeypatch.setattr(
+        strm_manifest_module, "_commit_fenced", commit_without_failure
+    )
+    mutations = [
+        _FileMutation(
+            root=tmp_path,
+            relative_path="Episode.strm",
+            before=b"old\n",
+            after=b"new\n",
+        )
+    ]
+
+    await StrmManifestService(None)._commit_entry(
+        None, _LeaseFence(None, None), None, mutations
+    )
+
+    assert mutations == []
 
 
 async def test_generation_requires_complete_current_scan(tmp_path: Path):

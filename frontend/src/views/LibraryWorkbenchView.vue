@@ -6,6 +6,7 @@ import ConfirmDialog from "../components/ConfirmDialog.vue";
 import PaginationBar from "../components/PaginationBar.vue";
 import { describeUiError } from "../errorCatalog";
 import { libraryScanStatusLabel, manifestStatusLabel, strmOperationNextStep, strmOperationStatusLabel } from "../statusCatalog";
+import { diagnosticReference } from "../uiSafety";
 import type {
   MediaEntryResponse,
   MediaLibraryResponse,
@@ -53,7 +54,7 @@ const cleanupPlan = ref<StrmCleanupPlanResponse | null>(null);
 const cleanupIdempotencyKey = ref<string | null>(null);
 const emptyCleanupPlan = ref<EmptyDirectoryCleanupPlanResponse | null>(null);
 const emptyCleanupIdempotencyKey = ref<string | null>(null);
-const pendingCleanup = ref<"strm" | "empty" | null>(null);
+const pendingCleanup = ref<"strm" | "empty" | "operation" | null>(null);
 const operationDetailOpen = ref(false);
 let operationPollGeneration = 0;
 let operationPollTimer: number | null = null;
@@ -68,12 +69,25 @@ const strmIncrementalAvailable = computed(() => props.strmIncrementalCapability?
 const strmCleanupAvailable = computed(() => props.strmCleanupCapability?.enabled ?? true);
 const emptyDirectoryCleanupAvailable = computed(() => props.emptyDirectoryCleanupCapability?.enabled ?? true);
 const cleanupDialogOpen = computed(() => pendingCleanup.value !== null);
-const cleanupDialogTitle = computed(() => pendingCleanup.value === "empty" ? "确认回收空目录" : "确认退休失效 STRM");
+const cleanupDialogTitle = computed(() => {
+  if (pendingCleanup.value === "empty") return "确认回收空目录";
+  if (pendingCleanup.value === "operation") return "确认取消 STRM 操作";
+  return "确认退休失效 STRM";
+});
 const cleanupDialogSummary = computed(() => pendingCleanup.value === "empty"
   ? "系统只会把计划中的受管空目录送入可恢复回收站，永久删除保持关闭。"
-  : "系统只会退休计划中受管且未被用户修改的失效 STRM 文件，扫描或清单变化会阻断执行。"
+  : pendingCleanup.value === "operation"
+    ? "只会请求取消尚未完成的 STRM 操作；已经写入或结果待确认的内容不会被伪造撤回。"
+    : "系统只会退休计划中受管且未被用户修改的失效 STRM 文件，扫描或清单变化会阻断执行。"
 );
 const cleanupDialogDetails = computed(() => {
+  if (pendingCleanup.value === "operation" && latestOperation.value) {
+    return [
+      `当前状态：${strmOperationStatusLabel(latestOperation.value)}`,
+      "服务端会再次核对操作状态，状态已变化时将拒绝取消。",
+      "取消失败或结果不确定时，请刷新状态，不要重复提交。",
+    ];
+  }
   if (pendingCleanup.value === "empty" && emptyCleanupPlan.value) {
     const plan = emptyCleanupPlan.value;
     return [
@@ -427,6 +441,12 @@ async function refreshLatestOperation() {
   }
 }
 
+function requestCancelLatestOperation() {
+  const operation = latestOperation.value;
+  if (!operation || (operation.status !== "queued" && operation.status !== "running")) return;
+  pendingCleanup.value = "operation";
+}
+
 async function cancelLatestOperation() {
   const operation = latestOperation.value;
   if (!operation || (operation.status !== "queued" && operation.status !== "running")) return;
@@ -609,6 +629,7 @@ async function confirmPendingCleanup(): Promise<void> {
   pendingCleanup.value = null;
   if (pending === "strm") await applyCleanup();
   if (pending === "empty") await applyEmptyDirectoryCleanup();
+  if (pending === "operation") await cancelLatestOperation();
 }
 
 function emptyCleanupStatusLabel(status: EmptyDirectoryCleanupPlanResponse["status"]): string {
@@ -728,8 +749,8 @@ onBeforeUnmount(() => {
           <div class="library-operation-stats"><span>生成 {{ latestOperation.generated }}</span><span>未变化 {{ latestOperation.unchanged }}</span><span>跳过 {{ latestOperation.skipped }}</span><span>失败 {{ latestOperation.failed }}</span><span>退休 {{ latestOperation.retired }}</span></div>
           <p class="library-operation-next-step">下一步：{{ strmOperationNextStep(latestOperation) }}</p>
           <p v-if="operationError(latestOperation)" class="library-operation-error">{{ operationError(latestOperation) }}</p>
-          <div class="library-operation-actions"><button class="text-button" type="button" @click="operationDetailOpen = !operationDetailOpen">{{ operationDetailOpen ? "收起详情" : "查看详情" }}</button><button v-if="['queued', 'running'].includes(latestOperation.status)" class="text-button" type="button" @click="cancelLatestOperation"><Ban :size="14" />取消操作</button><button v-if="['failed', 'cancelled'].includes(latestOperation.status) && latestOperation.kind !== 'cleanup'" class="text-button" type="button" @click="retryLatestOperation"><RefreshCw :size="14" />恢复执行</button><button class="text-button" type="button" @click="refreshLatestOperation"><RefreshCw :size="14" />刷新状态</button></div>
-          <div v-if="operationDetailOpen" class="library-operation-detail"><small>操作 {{ latestOperation.operation_id }}</small><small>创建 {{ new Date(latestOperation.created_at).toLocaleString() }}</small><small v-if="latestOperation.finished_at">结束 {{ new Date(latestOperation.finished_at).toLocaleString() }}</small></div>
+          <div class="library-operation-actions"><button class="text-button" type="button" @click="operationDetailOpen = !operationDetailOpen">{{ operationDetailOpen ? "收起详情" : "查看详情" }}</button><button v-if="['queued', 'running'].includes(latestOperation.status)" class="text-button" type="button" @click="requestCancelLatestOperation"><Ban :size="14" />取消操作</button><button v-if="['failed', 'cancelled'].includes(latestOperation.status) && latestOperation.kind !== 'cleanup'" class="text-button" type="button" @click="retryLatestOperation"><RefreshCw :size="14" />恢复执行</button><button class="text-button" type="button" @click="refreshLatestOperation"><RefreshCw :size="14" />刷新状态</button></div>
+          <div v-if="operationDetailOpen" class="library-operation-detail"><small>操作标识：{{ diagnosticReference(latestOperation.operation_id) }}</small><small>创建 {{ new Date(latestOperation.created_at).toLocaleString() }}</small><small v-if="latestOperation.finished_at">结束 {{ new Date(latestOperation.finished_at).toLocaleString() }}</small></div>
         </section>
          <section v-if="cleanupPlan" class="library-cleanup-plan" :class="`is-${cleanupPlan.status}`">
           <div class="library-section-heading"><div><p class="eyebrow">失效清理预览</p><h3>受管 STRM 退休计划</h3></div><strong>{{ cleanupPlan.status === "needs_review" ? "待确认" : cleanupPlan.status === "applied" ? "已完成" : "已失效" }}</strong></div>
@@ -756,6 +777,6 @@ onBeforeUnmount(() => {
       </main>
       <div v-else class="library-empty"><Database :size="24" /><strong>尚未配置库存媒体库</strong><span>下一步：读取服务器配置的 115 根目录，保存配置、验证范围，再完成首次扫描。</span><button class="primary-button" type="button" :disabled="busy" @click="initializeLibrary"><Database :size="16" />初始化并扫描媒体库</button><button class="text-button" type="button" @click="openCapabilitySettings(undefined, 'organization')"><SlidersHorizontal :size="14" />先检查 115 整理设置</button></div>
     </div>
-    <ConfirmDialog :open="cleanupDialogOpen" :title="cleanupDialogTitle" :summary="cleanupDialogSummary" :details="cleanupDialogDetails" confirm-label="确认并提交" tone="danger" :busy="busy" @cancel="closeCleanupDialog" @confirm="confirmPendingCleanup" />
+    <ConfirmDialog :open="cleanupDialogOpen" :title="cleanupDialogTitle" :summary="cleanupDialogSummary" :details="cleanupDialogDetails" :confirm-label="pendingCleanup === 'operation' ? '确认取消' : '确认并提交'" tone="danger" :busy="busy" @cancel="closeCleanupDialog" @confirm="confirmPendingCleanup" />
   </section>
 </template>

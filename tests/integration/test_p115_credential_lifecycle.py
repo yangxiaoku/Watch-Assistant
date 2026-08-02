@@ -46,7 +46,9 @@ class LifecycleAdapter:
         self.share_calls += 1
         raise AssertionError("share submission must not run")
 
-    async def get_status(self, _remote_ref: str):
+    async def get_status_for_task(
+        self, _remote_ref: str, *, target_directory_id: str | None
+    ):
         return None
 
     async def aclose(self) -> None:

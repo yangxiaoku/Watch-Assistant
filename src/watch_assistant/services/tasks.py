@@ -39,8 +39,11 @@ REUSABLE_STATES = (
 
 
 class TaskStatusAdapter(Protocol):
-    async def get_status(
-        self, remote_ref: str
+    async def get_status_for_task(
+        self,
+        remote_ref: str,
+        *,
+        target_directory_id: str | None,
     ) -> RemoteStatus | RemoteObservation | None: ...
 
 
@@ -69,6 +72,11 @@ class ReconciliationUnavailable(RuntimeError):
 
 
 AVAILABILITY_OBSERVATION_UNVERIFIED = "availability_observation_unverified"
+AVAILABILITY_PARENT_MISMATCH = "availability_parent_mismatch"
+AVAILABILITY_OBSERVER_TIMEOUT = "availability_observer_timeout"
+AVAILABILITY_OBSERVER_UNAVAILABLE = "availability_observer_unavailable"
+REMOTE_OBSERVATION_MISSING = "remote_observation_missing"
+RECONCILIATION_UNAVAILABLE = "reconciliation_unavailable"
 TASK_LEASE_LOST = "lease_claim_lost"
 
 
@@ -169,6 +177,7 @@ async def apply_remote_status(
     observation = _as_remote_observation(remote_status)
     if observation is None:
         raise WorkflowConflict("workflow_evidence_required")
+    observation = _scope_observation_to_task(task, observation)
     state = task_state_from_remote_observation(observation)
     availability_verified = state is TaskState.AVAILABLE
     if availability_verified and source is not EvidenceSource.READONLY_RECONCILIATION:
@@ -230,13 +239,21 @@ def recover_after_restart(task: Task, remote_status: RemoteState | None) -> None
         return
     if remote_status is None:
         task.state = TaskState.UNCERTAIN
+        task.error_code = REMOTE_OBSERVATION_MISSING
+        task.error_message = _observation_error_message(REMOTE_OBSERVATION_MISSING)
         return
     observation = _as_remote_observation(remote_status)
     if observation is None:
         task.state = TaskState.UNCERTAIN
+        task.error_code = REMOTE_OBSERVATION_MISSING
+        task.error_message = _observation_error_message(REMOTE_OBSERVATION_MISSING)
         return
+    observation = _scope_observation_to_task(task, observation)
     task.state = task_state_from_remote_observation(observation)
-    if observation.error_code is not None:
+    if task.state not in {TaskState.FAILED, TaskState.UNCERTAIN}:
+        task.error_code = None
+        task.error_message = None
+    elif observation.error_code is not None:
         task.error_code = observation.error_code
         task.error_message = _observation_error_message(observation.error_code)
 
@@ -640,11 +657,15 @@ class TaskService:
         current_time = datetime.now(UTC)
         observation = _as_remote_observation(remote_status)
         if observation is None:
-            observation = RemoteObservation(status=RemoteStatus.UNCERTAIN)
+            observation = RemoteObservation(
+                status=RemoteStatus.UNCERTAIN,
+                error_code=REMOTE_OBSERVATION_MISSING,
+            )
         async with self._session_factory() as session:
             task = await _fenced_task(session, lease, current_time)
             if task is None:
                 return None
+            observation = _scope_observation_to_task(task, observation)
             await apply_remote_status(
                 session,
                 task,
@@ -689,7 +710,7 @@ class TaskService:
             lease_owner = task.lease_owner
             lease_token = task.lease_token
         try:
-            remote_status = await _read_task_status(
+            remote_status = await read_task_status(
                 adapter, remote_ref, target_directory_id=target_directory_id
             )
         except Exception as exc:
@@ -830,20 +851,18 @@ class TaskService:
         return task
 
 
-async def _read_task_status(
+async def read_task_status(
     adapter: TaskStatusAdapter,
     remote_ref: str,
     *,
     target_directory_id: str | None,
 ) -> RemoteState | None:
-    """Use a target-aware adapter hook when it exists, preserving old adapters."""
+    """Read status through the target-aware, read-only observation contract."""
 
     target_aware = getattr(adapter, "get_status_for_task", None)
-    if callable(target_aware):
-        return await target_aware(
-            remote_ref, target_directory_id=target_directory_id
-        )
-    return await adapter.get_status(remote_ref)
+    if not callable(target_aware):
+        raise ReconciliationUnavailable(RECONCILIATION_UNAVAILABLE)
+    return await target_aware(remote_ref, target_directory_id=target_directory_id)
 
 
 def _as_remote_observation(value: object) -> RemoteObservation | None:
@@ -882,10 +901,40 @@ def _observation_error_message(error_code: str) -> str:
     return {
         AVAILABILITY_OBSERVATION_UNVERIFIED: "远端文件可用性尚未完成只读核验。",
         "availability_file_id_unavailable": "无法可靠取得远端文件 ID。",
-        "availability_parent_mismatch": "远端文件父目录核验不一致。",
-        "availability_observer_unavailable": "远端文件只读观察器暂不可用。",
+        AVAILABILITY_PARENT_MISMATCH: "远端文件父目录核验不一致。",
+        AVAILABILITY_OBSERVER_TIMEOUT: "远端文件只读核验超时。",
+        AVAILABILITY_OBSERVER_UNAVAILABLE: "远端文件只读观察器暂不可用。",
+        REMOTE_OBSERVATION_MISSING: "远端只读核对没有返回完整观察结果。",
+        RECONCILIATION_UNAVAILABLE: "远端只读核对暂时不可用。",
         TASK_LEASE_LOST: "任务执行权已变化，外部结果待确认，未继续提交。",
     }.get(error_code, "远端结果待确认，系统未重复提交。")
+
+
+def _scope_observation_to_task(
+    task: Task, observation: RemoteObservation
+) -> RemoteObservation:
+    """Reject a complete observation that proves a different target directory."""
+
+    if (
+        not observation.availability_verified
+        or task.target_directory_id is None
+        or _stable_remote_id(task.target_directory_id)
+        == _stable_remote_id(observation.parent_id)
+    ):
+        return observation
+    return RemoteObservation(
+        status=RemoteStatus.UNCERTAIN,
+        error_code=AVAILABILITY_PARENT_MISMATCH,
+    )
+
+
+def _stable_remote_id(value: object) -> str | None:
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        return None
+    normalized = str(value)
+    if not normalized.isdigit() or normalized.startswith("0"):
+        return None
+    return normalized
 
 
 def _as_utc(value: datetime) -> datetime:
