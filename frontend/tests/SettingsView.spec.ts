@@ -445,7 +445,9 @@ describe("SettingsView", () => {
     expect(wrapper.text()).toContain("3.0 MB");
     expect(wrapper.text()).toContain("内容检测");
     expect(wrapper.text()).toContain("115 分享转存");
-    expect(wrapper.text()).toContain("未启用");
+    expect(wrapper.text()).toContain("未配置");
+    expect(wrapper.text()).toContain("只读可用");
+    expect(wrapper.text()).toContain("可执行");
     expect(wrapper.text()).not.toContain("组件状态");
     expect(wrapper.text()).not.toContain("配置版本");
     expect(wrapper.find("input[type=password]").exists()).toBe(false);
@@ -456,6 +458,47 @@ describe("SettingsView", () => {
     expect(wrapper.text()).toContain("TgtoDrive");
     expect(wrapper.text()).toContain("结构正常");
     expect(wrapper.text()).toContain("页面不会回显已保存的 Cookie 原文");
+  });
+
+  it("maps capability readiness to actionable Chinese states", async () => {
+    const api = makeApi({
+      settingsOverview: vi.fn().mockResolvedValue({
+        ...overview,
+        capabilities: {
+          inspection: true,
+          magnet: false,
+          share: false,
+          organization_plan: false,
+          organization_execution: true,
+          organization_write: false,
+          organization_empty_directory_cleanup: false,
+          permanent_delete: false,
+          strm_full: false,
+          strm_incremental: false,
+          strm_cleanup: false,
+          strm_playback: false,
+        },
+        capability_statuses: {
+          inspection: { state: "runtime_healthy", state_zh: "运行健康", last_success_at: null },
+          magnet: { state: "unconfigured", state_zh: "未配置", last_success_at: null },
+          organization_execution: { state: "runtime_healthy", state_zh: "运行健康", last_success_at: null },
+          organization_write: { state: "configured", state_zh: "已配置", last_success_at: null },
+          strm_full: { state: "configured", state_zh: "已配置", last_success_at: null },
+        },
+        capability_details: {
+          strm_full: { enabled: false, reason_code: "strm_full_disabled", reason_zh: "STRM 全量生成未启用，请检查部署功能开关。", settings_section: "overview" },
+        },
+      }),
+    });
+    const wrapper = mount(SettingsView, { props: { api } });
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("只读可用");
+    expect(wrapper.text()).toContain("未配置");
+    expect(wrapper.text()).toContain("已配置但关闭");
+    expect(wrapper.text()).toContain("契约未验证");
+    expect(wrapper.text()).toContain("可执行");
+    expect(wrapper.text()).toContain("下一步：STRM 全量生成未启用，请检查部署功能开关。");
   });
 
   it("shortens release and keeps directory IDs and error codes out of the main prompt", async () => {

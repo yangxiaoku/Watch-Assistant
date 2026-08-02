@@ -16,6 +16,8 @@ import type {
 
 const props = defineProps<{
   api: ApiClient;
+  strmFullCapability?: CapabilityAvailability;
+  strmIncrementalCapability?: CapabilityAvailability;
   strmCleanupCapability?: CapabilityAvailability;
   emptyDirectoryCleanupCapability?: CapabilityAvailability;
 }>();
@@ -46,11 +48,34 @@ let operationPollTimer: number | null = null;
 
 const selected = computed(() => libraries.value.find((item) => item.library_id === selectedId.value) ?? null);
 const scan = computed(() => selected.value?.latest_scan ?? null);
-const readyForSync = computed(() => Boolean(selected.value?.enabled && scan.value?.complete && scan.value.state === "completed"));
+const readyForSync = computed(() => Boolean(selected.value?.enabled && selected.value.scope_verified && scan.value?.complete && scan.value.state === "completed"));
 // Older callers may not have loaded health yet; the app passes an explicit
 // unavailable capability as soon as health is known.
+const strmFullAvailable = computed(() => props.strmFullCapability?.enabled ?? true);
+const strmIncrementalAvailable = computed(() => props.strmIncrementalCapability?.enabled ?? true);
 const strmCleanupAvailable = computed(() => props.strmCleanupCapability?.enabled ?? true);
 const emptyDirectoryCleanupAvailable = computed(() => props.emptyDirectoryCleanupCapability?.enabled ?? true);
+
+const workflowGuidance = computed(() => {
+  if (!selected.value) return "下一步：初始化媒体库，保存配置、验证范围并完成首次扫描。";
+  if (!selected.value.enabled) return "媒体库尚未启用。下一步：保存配置并验证范围。";
+  if (!selected.value.scope_verified) return "媒体库范围尚未验证。下一步：点击“验证范围”。";
+  if (!scan.value || scan.value.state !== "completed" || !scan.value.complete) return "尚未完成完整扫描，STRM 和清理保持禁用。下一步：完成一次完整扫描。";
+  return "";
+});
+
+function actionReason(action: "scan" | "organization" | "full" | "incremental" | "strm-cleanup" | "empty-cleanup"): string {
+  if (!selected.value) return "请先初始化媒体库。";
+  if (action === "scan" && (!selected.value.enabled || !selected.value.scope_verified)) {
+    return selected.value.enabled ? "请先验证媒体库范围。" : "请先启用媒体库并保存配置。";
+  }
+  if (!readyForSync.value) return workflowGuidance.value || "请先完成媒体库准备流程。";
+  if (action === "full" && !strmFullAvailable.value) return props.strmFullCapability?.reason_zh || "STRM 全量生成当前不可用。";
+  if (action === "incremental" && !strmIncrementalAvailable.value) return props.strmIncrementalCapability?.reason_zh || "STRM 增量同步当前不可用。";
+  if (action === "strm-cleanup" && !strmCleanupAvailable.value) return props.strmCleanupCapability?.reason_zh || "STRM 失效清理当前不可用。";
+  if (action === "empty-cleanup" && !emptyDirectoryCleanupAvailable.value) return props.emptyDirectoryCleanupCapability?.reason_zh || "空目录回收当前不可用。";
+  return "";
+}
 
 function openCapabilitySettings(capability: CapabilityAvailability | undefined, fallback: "overview" | "organization") {
   emit("open-settings", capability?.settings_section ?? fallback);
@@ -529,14 +554,17 @@ onBeforeUnmount(() => {
           <div><span>STRM 数</span><strong>{{ manifest.length }}</strong></div>
         </div>
         <div class="library-action-row">
-          <button class="primary-button" type="button" :disabled="busy || !selected.enabled || !selected.scope_verified" @click="scanLibrary"><RefreshCw :size="16" />扫描目录</button>
-          <button class="secondary-button" type="button" :disabled="busy || !readyForSync" @click="createOrganizationPreview"><SlidersHorizontal :size="16" />生成整理预览</button>
-          <button class="secondary-button" type="button" :disabled="busy || !readyForSync" @click="syncStrm('full')"><Database :size="16" />全量 STRM</button>
-           <button class="secondary-button" type="button" :disabled="busy || !readyForSync" @click="syncStrm('incremental')"><RefreshCw :size="16" />增量同步</button>
-           <button class="secondary-button" type="button" :disabled="busy || !readyForSync || !strmCleanupAvailable" @click="previewCleanup"><Ban :size="16" />预览失效清理</button>
-           <button class="secondary-button" type="button" :disabled="busy || !readyForSync || !emptyDirectoryCleanupAvailable" @click="previewEmptyDirectoryCleanup"><Trash2 :size="16" />预览空目录清理</button>
+          <button class="primary-button" type="button" :title="actionReason('scan')" :disabled="busy || !selected.enabled || !selected.scope_verified" @click="scanLibrary"><RefreshCw :size="16" />扫描目录</button>
+          <button class="secondary-button" type="button" :title="actionReason('organization')" :disabled="busy || !readyForSync" @click="createOrganizationPreview"><SlidersHorizontal :size="16" />生成整理预览</button>
+          <button class="secondary-button" type="button" :title="actionReason('full')" :disabled="busy || !readyForSync || !strmFullAvailable" @click="syncStrm('full')"><Database :size="16" />全量 STRM</button>
+           <button class="secondary-button" type="button" :title="actionReason('incremental')" :disabled="busy || !readyForSync || !strmIncrementalAvailable" @click="syncStrm('incremental')"><RefreshCw :size="16" />增量同步</button>
+           <button class="secondary-button" type="button" :title="actionReason('strm-cleanup')" :disabled="busy || !readyForSync || !strmCleanupAvailable" @click="previewCleanup"><Ban :size="16" />预览失效清理</button>
+           <button class="secondary-button" type="button" :title="actionReason('empty-cleanup')" :disabled="busy || !readyForSync || !emptyDirectoryCleanupAvailable" @click="previewEmptyDirectoryCleanup"><Trash2 :size="16" />预览空目录清理</button>
         </div>
         <div class="library-capability-notices">
+          <p v-if="workflowGuidance" class="library-workflow-note"><RefreshCw :size="15" />{{ workflowGuidance }}</p>
+          <p v-if="!strmFullAvailable" class="library-capability-note"><Database :size="15" />{{ strmFullCapability?.reason_zh || "STRM 全量生成当前不可用。" }}<button class="text-button" type="button" @click="openCapabilitySettings(strmFullCapability, 'overview')"><SlidersHorizontal :size="14" />前往设置</button></p>
+          <p v-if="!strmIncrementalAvailable" class="library-capability-note"><RefreshCw :size="15" />{{ strmIncrementalCapability?.reason_zh || "STRM 增量同步当前不可用。" }}<button class="text-button" type="button" @click="openCapabilitySettings(strmIncrementalCapability, 'overview')"><SlidersHorizontal :size="14" />前往设置</button></p>
           <p v-if="!strmCleanupAvailable" class="library-capability-note"><Ban :size="15" />{{ strmCleanupCapability?.reason_zh || "STRM 失效清理当前不可用。" }}<button class="text-button" type="button" @click="openCapabilitySettings(strmCleanupCapability, 'overview')"><SlidersHorizontal :size="14" />前往设置</button></p>
           <p v-if="!emptyDirectoryCleanupAvailable" class="library-capability-note"><Trash2 :size="15" />{{ emptyDirectoryCleanupCapability?.reason_zh || "空目录回收当前不可用。" }}<button class="text-button" type="button" @click="openCapabilitySettings(emptyDirectoryCleanupCapability, 'organization')"><SlidersHorizontal :size="14" />前往自动整理设置</button></p>
         </div>
@@ -572,7 +600,7 @@ onBeforeUnmount(() => {
         <section class="library-output-section"><div class="library-section-heading"><div><p class="eyebrow">受管清单</p><h3>STRM 文件</h3></div><span>{{ manifest.length }} / 50</span></div><div v-if="manifest.length" class="library-table-wrap"><table><thead><tr><th>云端路径</th><th>本地路径</th><th>状态</th></tr></thead><tbody><tr v-for="item in manifest" :key="item.manifest_id"><td>{{ item.cloud_relative_path }}</td><td>{{ item.local_relative_path }}</td><td>{{ item.status }}</td></tr></tbody></table></div><p v-else class="library-muted">暂无受管 STRM。完成扫描后可以执行全量生成。</p></section>
         <section class="library-output-section"><div class="library-section-heading"><div><p class="eyebrow">最近扫描</p><h3>索引文件</h3></div><span>{{ media.length }} / 50</span></div><div v-if="media.length" class="library-table-wrap"><table><thead><tr><th>文件名</th><th>大小</th><th>修改时间</th></tr></thead><tbody><tr v-for="item in media" :key="item.media_id"><td>{{ item.name }}</td><td>{{ formatBytes(item.size_bytes) }}</td><td>{{ item.modified_at ? new Date(item.modified_at).toLocaleString() : "未知" }}</td></tr></tbody></table></div><p v-else class="library-muted">完成一次完整扫描后，这里会显示索引文件。</p></section>
       </main>
-      <div v-else class="library-empty"><Database :size="24" /><strong>尚未配置库存媒体库</strong><span>系统会读取服务器已配置的 115 根目录，保存、验证并完成首次扫描。</span><button class="primary-button" type="button" :disabled="busy" @click="initializeLibrary"><Database :size="16" />初始化并扫描媒体库</button></div>
+      <div v-else class="library-empty"><Database :size="24" /><strong>尚未配置库存媒体库</strong><span>下一步：读取服务器配置的 115 根目录，保存配置、验证范围，再完成首次扫描。</span><button class="primary-button" type="button" :disabled="busy" @click="initializeLibrary"><Database :size="16" />初始化并扫描媒体库</button><button class="text-button" type="button" @click="openCapabilitySettings(undefined, 'organization')"><SlidersHorizontal :size="14" />先检查 115 整理设置</button></div>
     </div>
   </section>
 </template>

@@ -1250,6 +1250,34 @@ function capabilityClass(value: boolean) {
 }
 
 type OverviewCapabilityKey = keyof SettingsOverviewResponse["capabilities"];
+type CapabilityPresentation = {
+  label: string;
+  className: string;
+  nextStep: string;
+};
+
+const readOnlyCapabilityKeys = new Set<OverviewCapabilityKey>(["inspection", "strm_playback"]);
+const contractCapabilityKeys = new Set<OverviewCapabilityKey>(["organization_write", "permanent_delete", "strm_playback"]);
+const overviewCapabilityGroups: Record<"basic" | "organization" | "strm", Array<{ key: OverviewCapabilityKey; label: string }>> = {
+  basic: [
+    { key: "inspection", label: "内容检测" },
+    { key: "magnet", label: "磁力云下载" },
+    { key: "share", label: "115 分享转存" },
+  ],
+  organization: [
+    { key: "organization_plan", label: "整理计划" },
+    { key: "organization_execution", label: "整理执行" },
+    { key: "organization_write", label: "移动与重命名" },
+    { key: "organization_empty_directory_cleanup", label: "空目录回收" },
+    { key: "permanent_delete", label: "永久删除" },
+  ],
+  strm: [
+    { key: "strm_full", label: "全量生成" },
+    { key: "strm_incremental", label: "增量同步" },
+    { key: "strm_cleanup", label: "失效清理" },
+    { key: "strm_playback", label: "动态播放" },
+  ],
+};
 
 function overviewCapability(key: OverviewCapabilityKey, fallback: boolean): CapabilityStatusResponse {
   return overview.value?.capability_statuses?.[key] ?? {
@@ -1259,17 +1287,66 @@ function overviewCapability(key: OverviewCapabilityKey, fallback: boolean): Capa
   };
 }
 
+function overviewCapabilityPresentation(key: OverviewCapabilityKey, fallback: boolean): CapabilityPresentation {
+  const status = overviewCapability(key, fallback);
+  const enabled = overview.value?.capabilities?.[key] ?? fallback;
+  const detail = overviewCapabilityDetail(key);
+  if (enabled) {
+    return {
+      label: readOnlyCapabilityKeys.has(key) ? "只读可用" : "可执行",
+      className: "status-ok",
+      nextStep: detail?.reason_zh === "可用" ? "" : detail?.reason_zh ?? "",
+    };
+  }
+  if (status.state === "unconfigured") {
+    return {
+      label: "未配置",
+      className: "status-degraded",
+      nextStep: detail?.reason_zh ?? "请先完成对应连接、目录或凭据配置。",
+    };
+  }
+  if (contractCapabilityKeys.has(key) && status.state === "configured") {
+    return {
+      label: "契约未验证",
+      className: "status-degraded",
+      nextStep: detail?.reason_zh ?? "远端契约未验证，写操作保持禁用。",
+    };
+  }
+  return {
+    label: "已配置但关闭",
+    className: "status-degraded",
+    nextStep: detail?.reason_zh ?? "请检查对应功能开关。",
+  };
+}
+
 function overviewCapabilityClass(key: OverviewCapabilityKey, fallback: boolean) {
-  const state: CapabilityState = overviewCapability(key, fallback).state;
-  return state === "recent_success" || state === "runtime_healthy" || state === "contract_verified"
-    ? "status-ok"
-    : state === "configured"
-      ? "status-unknown"
-      : "status-degraded";
+  return overviewCapabilityPresentation(key, fallback).className;
 }
 
 function overviewCapabilityLabel(key: OverviewCapabilityKey, fallback: boolean) {
-  return overviewCapability(key, fallback).state_zh;
+  return overviewCapabilityPresentation(key, fallback).label;
+}
+
+function overviewCapabilityNextStep(key: OverviewCapabilityKey, fallback: boolean) {
+  return overviewCapabilityPresentation(key, fallback).nextStep;
+}
+
+function overviewCapabilityAction(key: OverviewCapabilityKey): { label: string; section: SettingsSection } | null {
+  if (key === "inspection") return { label: "打开检测设置", section: "inspection" };
+  if (key === "magnet" || key === "share") return { label: "打开 115 推送", section: "p115" };
+  if (key === "organization_plan" || key === "organization_execution" || key === "organization_write" || key === "organization_empty_directory_cleanup") {
+    return { label: "打开整理设置", section: "organization" };
+  }
+  return null;
+}
+
+function overviewCapabilityActionLabel(key: OverviewCapabilityKey) {
+  return overviewCapabilityAction(key)?.label ?? "";
+}
+
+function openOverviewCapabilityAction(key: OverviewCapabilityKey) {
+  const action = overviewCapabilityAction(key);
+  if (action) selectSection(action.section);
 }
 
 function levelLabel(level: LogLevel) {
@@ -1380,9 +1457,15 @@ watch(autoRefreshLogs, syncLogsRefreshTimer);
           <div v-else-if="overviewError" class="settings-state settings-state-error"><AlertTriangle :size="18" /><span>{{ overviewError }}</span><button class="text-button" type="button" @click="loadOverview">重试</button></div>
           <template v-else-if="overview">
             <div class="settings-metrics"><div class="settings-metric"><span>版本</span><strong>{{ shortRelease(overview.release) }}</strong></div><div class="settings-metric"><span>运行时间</span><strong>{{ formatUptime(overview.uptime_seconds) }}</strong></div><div class="settings-metric"><span>数据库大小</span><strong>{{ formatBytes(overview.database_size_bytes) }}</strong></div></div>
-            <div class="settings-subsection"><h3>能力</h3><div class="settings-capability-list"><div><span>内容检测</span><strong :class="overviewCapabilityClass('inspection', overview.capabilities.inspection)">{{ overviewCapabilityLabel('inspection', overview.capabilities.inspection) }}</strong></div><div><span>磁力云下载</span><strong :class="overviewCapabilityClass('magnet', overview.capabilities.magnet)">{{ overviewCapabilityLabel('magnet', overview.capabilities.magnet) }}</strong></div><div><span>115 分享转存</span><strong :class="overviewCapabilityClass('share', overview.capabilities.share)">{{ overviewCapabilityLabel('share', overview.capabilities.share) }}</strong></div></div></div>
-            <div class="settings-subsection"><h3>115 真实操作</h3><div class="settings-capability-list"><div><span>整理计划</span><strong :class="overviewCapabilityClass('organization_plan', overview.capabilities.organization_plan)">{{ overviewCapabilityLabel('organization_plan', overview.capabilities.organization_plan) }}</strong></div><div><span>移动与重命名</span><strong :class="overviewCapabilityClass('organization_write', overview.capabilities.organization_write)">{{ overviewCapabilityLabel('organization_write', overview.capabilities.organization_write) }}</strong></div><div><span>空目录回收</span><strong :class="overviewCapabilityClass('organization_empty_directory_cleanup', overview.capabilities.organization_empty_directory_cleanup)">{{ overviewCapabilityLabel('organization_empty_directory_cleanup', overview.capabilities.organization_empty_directory_cleanup) }}</strong></div><div><span>永久删除</span><strong :class="overviewCapabilityClass('permanent_delete', overview.capabilities.permanent_delete)">{{ overviewCapabilityLabel('permanent_delete', overview.capabilities.permanent_delete) }}</strong></div></div><p v-if="overviewCapabilityDetail('organization_empty_directory_cleanup')?.enabled === false" class="settings-note">{{ overviewCapabilityDetail('organization_empty_directory_cleanup')?.reason_zh }} <button class="text-button" type="button" @click="selectSection('organization')"><Settings2 :size="14" />前往自动整理设置</button></p></div>
-            <div class="settings-subsection"><h3>STRM</h3><div class="settings-capability-list"><div><span>全量生成</span><strong :class="overviewCapabilityClass('strm_full', overview.capabilities.strm_full)">{{ overviewCapabilityLabel('strm_full', overview.capabilities.strm_full) }}</strong></div><div><span>增量同步</span><strong :class="overviewCapabilityClass('strm_incremental', overview.capabilities.strm_incremental)">{{ overviewCapabilityLabel('strm_incremental', overview.capabilities.strm_incremental) }}</strong></div><div><span>失效清理</span><strong :class="overviewCapabilityClass('strm_cleanup', overview.capabilities.strm_cleanup)">{{ overviewCapabilityLabel('strm_cleanup', overview.capabilities.strm_cleanup) }}</strong></div><div><span>动态播放</span><strong :class="overviewCapabilityClass('strm_playback', overview.capabilities.strm_playback)">{{ overviewCapabilityLabel('strm_playback', overview.capabilities.strm_playback) }}</strong></div></div><p v-if="overviewCapabilityDetail('strm_cleanup')?.enabled === false" class="settings-note">{{ overviewCapabilityDetail('strm_cleanup')?.reason_zh }}</p></div>
+            <div class="settings-subsection"><h3>能力</h3><div class="settings-capability-list">
+              <div v-for="entry in overviewCapabilityGroups.basic" :key="entry.key" class="settings-capability-row"><span>{{ entry.label }}<small v-if="overviewCapabilityNextStep(entry.key, overview.capabilities?.[entry.key] ?? false)">下一步：{{ overviewCapabilityNextStep(entry.key, overview.capabilities?.[entry.key] ?? false) }}</small></span><span class="settings-capability-value"><strong :class="overviewCapabilityClass(entry.key, overview.capabilities?.[entry.key] ?? false)">{{ overviewCapabilityLabel(entry.key, overview.capabilities?.[entry.key] ?? false) }}</strong><button v-if="overviewCapabilityNextStep(entry.key, overview.capabilities?.[entry.key] ?? false) && overviewCapabilityAction(entry.key)" class="text-button" type="button" @click="openOverviewCapabilityAction(entry.key)">{{ overviewCapabilityActionLabel(entry.key) }}</button></span></div>
+            </div></div>
+            <div class="settings-subsection"><h3>115 真实操作</h3><div class="settings-capability-list">
+              <div v-for="entry in overviewCapabilityGroups.organization" :key="entry.key" class="settings-capability-row"><span>{{ entry.label }}<small v-if="overviewCapabilityNextStep(entry.key, overview.capabilities?.[entry.key] ?? false)">下一步：{{ overviewCapabilityNextStep(entry.key, overview.capabilities?.[entry.key] ?? false) }}</small></span><span class="settings-capability-value"><strong :class="overviewCapabilityClass(entry.key, overview.capabilities?.[entry.key] ?? false)">{{ overviewCapabilityLabel(entry.key, overview.capabilities?.[entry.key] ?? false) }}</strong><button v-if="overviewCapabilityNextStep(entry.key, overview.capabilities?.[entry.key] ?? false) && overviewCapabilityAction(entry.key)" class="text-button" type="button" @click="openOverviewCapabilityAction(entry.key)">{{ overviewCapabilityActionLabel(entry.key) }}</button></span></div>
+            </div></div>
+            <div class="settings-subsection"><h3>STRM</h3><div class="settings-capability-list">
+              <div v-for="entry in overviewCapabilityGroups.strm" :key="entry.key" class="settings-capability-row"><span>{{ entry.label }}<small v-if="overviewCapabilityNextStep(entry.key, overview.capabilities?.[entry.key] ?? false)">下一步：{{ overviewCapabilityNextStep(entry.key, overview.capabilities?.[entry.key] ?? false) }}</small></span><span class="settings-capability-value"><strong :class="overviewCapabilityClass(entry.key, overview.capabilities?.[entry.key] ?? false)">{{ overviewCapabilityLabel(entry.key, overview.capabilities?.[entry.key] ?? false) }}</strong><button v-if="overviewCapabilityNextStep(entry.key, overview.capabilities?.[entry.key] ?? false) && overviewCapabilityAction(entry.key)" class="text-button" type="button" @click="openOverviewCapabilityAction(entry.key)">{{ overviewCapabilityActionLabel(entry.key) }}</button></span></div>
+            </div></div>
           </template>
         </section>
 

@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { CircleAlert, CircleCheck, Database, LoaderCircle, X } from "@lucide/vue";
+import { CircleAlert, CircleCheck, Database, ListTodo, LoaderCircle, X } from "@lucide/vue";
 import { describeUiError, taskErrorMessage } from "../errorCatalog";
 import type { TaskResponse } from "../types";
 
 defineProps<{ tasks: TaskResponse[]; open: boolean }>();
-defineEmits<{ close: []; navigate: [view: "library"] }>();
+defineEmits<{ close: []; navigate: [view: "library" | "workflows"] }>();
 
 function shouldOpenLibrary(code: string | null): boolean {
   return code !== null && describeUiError(code).action === "open_library";
@@ -22,7 +22,7 @@ const labels: Record<TaskResponse["state"], string> = {
 
 <template>
   <aside v-if="open" class="task-drawer" aria-label="推送任务">
-    <header><div><p class="eyebrow">任务中心</p><h2>推送记录</h2></div><button class="icon-button" title="关闭" @click="$emit('close')"><X :size="18" /></button></header>
+    <header><div><p class="eyebrow">任务记录</p><h2>推送任务</h2></div><div class="task-drawer-header-actions"><button class="text-button" type="button" @click="$emit('navigate', 'workflows')"><ListTodo :size="14" />任务中心</button><button class="icon-button" type="button" title="关闭推送任务" aria-label="关闭推送任务" @click="$emit('close')"><X :size="18" /></button></div></header>
     <div v-if="tasks.length === 0" class="empty-state">还没有推送任务</div>
     <article v-for="task in tasks" :key="task.id" class="task-row">
       <div class="task-icon" :class="task.state">
