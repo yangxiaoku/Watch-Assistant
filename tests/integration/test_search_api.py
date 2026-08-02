@@ -699,6 +699,25 @@ async def test_partial_refresh_prefers_new_duplicate_over_cached_resource(tmp_pa
     client, database, tmdb, pansou = await _make_client(tmp_path)
     first = await client.post("/api/v1/search", json={"tmdb_id": 12345})
     assert first.status_code == 200
+    async with database.session_factory() as session:
+        existing = await session.scalar(
+            select(Resource).where(
+                Resource.canonical_key
+                == "magnet:abcdef0123456789abcdef0123456789abcdef01"
+            )
+        )
+        assert existing is not None
+        existing.size_bytes = 2048
+        existing.seeders = 9
+        existing.metadata_json = json.dumps(
+            {
+                "sources": ["plugin:magnet"],
+                "size_source": "pansou",
+                "seeders_source": "pansou",
+                "seeders_observed_at": "2026-07-23T10:30:00Z",
+            }
+        )
+        await session.commit()
 
     calls = 0
 
@@ -718,7 +737,6 @@ async def test_partial_refresh_prefers_new_duplicate_over_cached_resource(tmp_pa
                                     "url": MAGNET,
                                     "name": "Inception 2010 2160p BluRay",
                                     "source": "plugin:fresh",
-                                    "seeders": 42,
                                 }
                             ]
                         },
@@ -737,10 +755,24 @@ async def test_partial_refresh_prefers_new_duplicate_over_cached_resource(tmp_pa
         item for item in refreshed.json()["results"] if item["kind"] == "magnet"
     )
     assert duplicate["name"] == "Inception 2010 2160p BluRay"
-    assert duplicate["seeders"] == 42
+    assert duplicate["size_bytes"] == 2048
+    assert duplicate["seeders"] == 9
     assert duplicate["source"] == "plugin:fresh"
+    assert duplicate["sources"] == ["plugin:magnet", "plugin:fresh"]
+    assert duplicate["source_count"] == 2
     async with database.session_factory() as session:
+        persisted = await session.scalar(
+            select(Resource).where(
+                Resource.canonical_key
+                == "magnet:abcdef0123456789abcdef0123456789abcdef01"
+            )
+        )
         reliability = await session.get(SourceReliability, "plugin:fresh")
+    assert persisted is not None
+    persisted_metadata = json.loads(persisted.metadata_json)
+    assert {
+        item["source"] for item in persisted_metadata["source_observations"]
+    } == {"plugin:magnet", "plugin:fresh"}
     assert reliability is not None
     assert reliability.accepted_count == 1
     await _close(client, database, tmdb, pansou)
