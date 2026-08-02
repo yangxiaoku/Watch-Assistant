@@ -127,6 +127,9 @@ def _validate_build_payload(
         build_time = payload.get("build_time")
         if not isinstance(build_time, str) or not build_time:
             raise _invalid("release manifest build_time is invalid")
+        branch = payload.get("branch")
+        if not isinstance(branch, str) or not branch:
+            raise _invalid("release manifest branch is invalid")
 
     return payload
 

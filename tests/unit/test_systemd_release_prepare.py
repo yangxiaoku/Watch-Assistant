@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import os
 import stat
 from pathlib import Path
@@ -53,6 +54,20 @@ def _write_release(
     (release_root / "VERSION").write_text(
         f"commit={commit}\nbuild_time=2026-08-02T00:00:00Z\n", encoding="utf-8"
     )
+    (release_root / "release-manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "commit": commit,
+                "short_commit": commit[:7],
+                "source_sha256": "a" * 64,
+                "frontend_sha256": "b" * 64,
+                "build_time": "2026-08-02T00:00:00Z",
+                "branch": "codex/test",
+            }
+        ),
+        encoding="utf-8",
+    )
     (release_root / "frontend" / "dist" / "index.html").write_text(
         "<!doctype html>", encoding="utf-8"
     )
@@ -61,7 +76,7 @@ def _write_release(
     )
     for relative in PREPARE_PATHS[1:]:
         path = release_root / relative
-        if relative in {"frontend/dist/index.html", "src/watch_assistant"}:
+        if relative in {"release-manifest.json", "frontend/dist/index.html", "src/watch_assistant"}:
             continue
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("#!/bin/sh\n", encoding="utf-8")
@@ -155,6 +170,29 @@ def test_prepare_rejects_missing_release_manifest_helper(tmp_path: Path):
         )
 
     assert missing.value.code == "required_path_missing"
+
+
+def test_prepare_rejects_release_manifest_commit_mismatch(tmp_path: Path):
+    allowed_root = tmp_path / "releases"
+    allowed_root.mkdir()
+    release_root, _ = _write_release(allowed_root)
+    manifest = json.loads(
+        (release_root / "release-manifest.json").read_text(encoding="utf-8")
+    )
+    manifest["commit"] = "0" * 40
+    (release_root / "release-manifest.json").write_text(
+        json.dumps(manifest), encoding="utf-8"
+    )
+
+    with pytest.raises(prepare.ReleasePrepareError) as error:
+        prepare.prepare_release(
+            release_root,
+            FULL_COMMIT,
+            allowed_root,
+            required_files=PREPARE_PATHS,
+        )
+
+    assert error.value.code == "release_manifest_commit_mismatch"
 
 
 def test_prepare_rejects_root_scope_and_allowed_root_itself(tmp_path: Path):

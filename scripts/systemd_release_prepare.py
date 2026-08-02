@@ -13,8 +13,13 @@ from typing import NamedTuple
 
 SCRIPT_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = SCRIPT_ROOT / "src"
+SCRIPTS_ROOT = SCRIPT_ROOT / "scripts"
 if SRC_ROOT.is_dir():
     sys.path.insert(0, str(SRC_ROOT))
+if SCRIPTS_ROOT.is_dir():
+    sys.path.insert(0, str(SCRIPTS_ROOT))
+
+from release_manifest import ReleaseManifestError, validate_build_manifest_file
 
 from watch_assistant.release_metadata import (
     normalize_full_release,
@@ -146,6 +151,17 @@ def _validate_required_path(relative: str, path: Path) -> None:
             raise ReleasePrepareError("required_path_type")
     elif not stat.S_ISREG(metadata.st_mode):
         raise ReleasePrepareError("required_path_type")
+
+
+def _validate_release_manifest(path: Path, expected_release: str) -> None:
+    try:
+        validate_build_manifest_file(
+            path,
+            expected_commit=expected_release,
+            expected_short_commit=expected_release[:7],
+        )
+    except ReleaseManifestError as exc:
+        raise ReleasePrepareError(f"release_manifest_{exc.code}") from None
 
 
 def _validate_parent_traversal(release_root: Path) -> None:
@@ -322,6 +338,7 @@ def prepare_release(
         raise ReleasePrepareError("version_invalid")
     if actual != expected:
         raise ReleasePrepareError("version_mismatch")
+    _validate_release_manifest(validated_paths["release-manifest.json"], expected)
 
     identity = service_identity or _resolve_service_identity(service_user, release_root)
     _normalize_root_mode(release_root)
@@ -330,7 +347,7 @@ def prepare_release(
 
 
 def _message(code: str) -> str:
-    return {
+    messages = {
         "ok": "发布目录准备成功。",
         "expected_release_invalid": "expected release 无效。",
         "version_invalid": "VERSION 无效。",
@@ -360,7 +377,10 @@ def _message(code: str) -> str:
         "release_root_mode_update_failed": "发布根目录权限规范化失败。",
         "release_root_mode_invalid": "发布根目录权限校验失败。",
         "service_user_unavailable": "无法解析 systemd 服务用户。",
-    }.get(code, "发布目录准备失败。")
+    }
+    if code.startswith("release_manifest_"):
+        return "发布来源证明校验失败。"
+    return messages.get(code, "发布目录准备失败。")
 
 
 def main(argv: Sequence[str] | None = None) -> int:
