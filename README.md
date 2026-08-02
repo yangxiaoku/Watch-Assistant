@@ -53,8 +53,9 @@ Cookie 文件或应用内托管设备。分享推送、影视库整理、删除�
   更严格的离线 readiness，不表示生产 STRM、生产清理或永久删除已开启。
 - 发布 manifest、来源和 systemd 回退门禁已由 [PR #14](https://github.com/yangxiaoku/Watch-Assistant/pull/14)、
   [PR #15](https://github.com/yangxiaoku/Watch-Assistant/pull/15)、[PR #16](https://github.com/yangxiaoku/Watch-Assistant/pull/16)、
-  [PR #22](https://github.com/yangxiaoku/Watch-Assistant/pull/22) 和 [PR #23](https://github.com/yangxiaoku/Watch-Assistant/pull/23)
-  合入；[发布 manifest 测试](tests/unit/test_release_manifest.py)、[部署脚本测试](tests/unit/test_release_deployment_scripts.py)
+  [PR #22](https://github.com/yangxiaoku/Watch-Assistant/pull/22)、[PR #23](https://github.com/yangxiaoku/Watch-Assistant/pull/23)
+  和最新 [PR #35](https://github.com/yangxiaoku/Watch-Assistant/pull/35) 合入；[发布 manifest 测试](tests/unit/test_release_manifest.py)、
+  [部署脚本测试](tests/unit/test_release_deployment_scripts.py)、[systemd 单元测试](tests/unit/test_systemd_units.py)
   和 [发布物 smoke 测试](tests/integration/test_release_archive_smoke.py) 只证明门禁覆盖，
   不证明当前生产版本或线上健康状态。
 

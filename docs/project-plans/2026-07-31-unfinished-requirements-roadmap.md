@@ -7,9 +7,10 @@
 当前发布核对：唯一发布分支为 `codex/publish-main`；发布前执行 `git fetch origin`，再用
 `git rev-parse origin/codex/publish-main` 获取实际最新基线，本路线图不固定当前 commit。
 当前基线已通过 [PR #30](https://github.com/yangxiaoku/Watch-Assistant/pull/30)、[PR #31](https://github.com/yangxiaoku/Watch-Assistant/pull/31)、
-[PR #32](https://github.com/yangxiaoku/Watch-Assistant/pull/32) 和 [PR #33](https://github.com/yangxiaoku/Watch-Assistant/pull/33)
-合入扫描、STRM/task worker 门禁、p115 fail-closed 证据、工作台调整和空目录清理加固；[PR #34](https://github.com/yangxiaoku/Watch-Assistant/pull/34)
-仍为未合入候选。上述代码和离线测试不改变下方需求状态，也不构成生产部署或真实外部验收证据。
+[PR #32](https://github.com/yangxiaoku/Watch-Assistant/pull/32)、[PR #33](https://github.com/yangxiaoku/Watch-Assistant/pull/33)
+和最新 [PR #35](https://github.com/yangxiaoku/Watch-Assistant/pull/35) 合入扫描、STRM/task worker 门禁、p115 fail-closed 证据、
+工作台调整、空目录清理加固和发布门禁；[PR #34](https://github.com/yangxiaoku/Watch-Assistant/pull/34) 仍为未合入候选。
+上述代码和离线测试不改变下方需求状态，也不构成生产部署或真实外部验收证据。
 
 2026-08-02 复核是历史审查窗口，锁定 `codex/integration-20260802@2c342d9`；复核期间集成 ref
 前进到 `3afc8d3`，随后随 PR #30 合入。本历史记录保留原始审查范围，不替代当前发布核对。

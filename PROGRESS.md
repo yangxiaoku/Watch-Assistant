@@ -33,9 +33,11 @@
   上游 timeout 阻断，当前没有已验收的可搜索真实来源配置。
 - 发布门禁代码已由 [PR #14](https://github.com/yangxiaoku/Watch-Assistant/pull/14)、
   [PR #15](https://github.com/yangxiaoku/Watch-Assistant/pull/15)、[PR #16](https://github.com/yangxiaoku/Watch-Assistant/pull/16)、
-  [PR #22](https://github.com/yangxiaoku/Watch-Assistant/pull/22) 和 [PR #23](https://github.com/yangxiaoku/Watch-Assistant/pull/23)
-  合入；[manifest 测试](tests/unit/test_release_manifest.py)、[部署脚本测试](tests/unit/test_release_deployment_scripts.py)
-  和 [发布物 smoke 测试](tests/integration/test_release_archive_smoke.py) 只证明发布门禁覆盖，未证明已打包或已部署。
+  [PR #22](https://github.com/yangxiaoku/Watch-Assistant/pull/22)、[PR #23](https://github.com/yangxiaoku/Watch-Assistant/pull/23)
+  和最新 [PR #35](https://github.com/yangxiaoku/Watch-Assistant/pull/35) 合入；当前基线对应
+  [manifest 测试](tests/unit/test_release_manifest.py)、[部署脚本测试](tests/unit/test_release_deployment_scripts.py)、
+  [systemd 单元测试](tests/unit/test_systemd_units.py) 和 [发布物 smoke 测试](tests/integration/test_release_archive_smoke.py)
+  只证明发布门禁覆盖，未证明已打包或已部署。
 
 ## 2026-08-02 集成审查记录（未发布）
 
@@ -116,7 +118,6 @@
 以下远端候选或本地分支均不属于 `codex/publish-main`，不得描述为已发布：
 
 - [PR #34](https://github.com/yangxiaoku/Watch-Assistant/pull/34)：库存扫描和组织门禁后续加固；本次核对时仍为 Open，尚未合入。
-- `codex/release-deployment-gates-20260803`：本地未合入的发布门禁候选。
 
 本次文档修正使用独立分支提交；其他未合入候选和历史 release 记录必须分别核对，不能以分支名、截图或
 旧发布包代替当前基线证据。远端 `origin/codex/publish-20260729` 的旧发布说明仅作历史记录，不是当前发布版本。
