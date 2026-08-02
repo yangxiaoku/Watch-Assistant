@@ -21,12 +21,15 @@ if SRC_ROOT.is_dir():
 if SCRIPTS_ROOT.is_dir():
     sys.path.insert(0, str(SCRIPTS_ROOT))
 
-from release_manifest import ReleaseManifestError, validate_build_manifest_file
+from release_manifest import (
+    ReleaseManifestError,
+    validate_build_manifest_file,
+    validate_version_commit_file,
+)
 
 from watch_assistant.release_metadata import (
     normalize_full_release,
     normalize_release,
-    read_release_commit,
 )
 
 _RELEASE_ENV_NAME = "WATCH_ASSISTANT_RELEASE"
@@ -68,8 +71,9 @@ def update_release_metadata(
 ) -> str:
     """Keep the legacy metadata-only operation for offline callers."""
 
-    release = read_release_commit(version_file)
-    if release is None:
+    try:
+        release = validate_version_commit_file(version_file)
+    except ReleaseManifestError:
         raise ValueError("invalid_release_version")
     _write_atomic(release_env, f"{_RELEASE_ENV_NAME}={release}\n")
     if stale_drop_in is not None and stale_drop_in.is_file():
@@ -179,7 +183,10 @@ def _validate_saved_release(
     code_prefix: str,
 ) -> None:
     if expected_release is not None:
-        actual_release = read_release_commit(release_root / "VERSION")
+        try:
+            actual_release = validate_version_commit_file(release_root / "VERSION")
+        except ReleaseManifestError:
+            raise ValueError(f"{code_prefix}_version_invalid") from None
         if actual_release != expected_release:
             raise ValueError(f"{code_prefix}_version_mismatch")
     if expected_manifest_sha256 is not None and _manifest_sha256(release_root) != (
@@ -273,16 +280,23 @@ def switch_release(
     if expected is None:
         raise ValueError("expected_release_invalid")
     target = _validate_release_root(release_root, allowed_releases_root)
-    version = read_release_commit(target / "VERSION")
-    if version != expected:
-        raise ValueError("version_expected_mismatch")
+    try:
+        validate_version_commit_file(target / "VERSION", expected_commit=expected)
+    except ReleaseManifestError as exc:
+        if exc.code == "version_commit_mismatch":
+            raise ValueError("version_expected_mismatch") from None
+        raise ValueError("version_invalid") from None
     _validate_release_manifest(target, expected)
     previous_target = _current_target(current_root)
-    previous_release = (
-        read_release_commit(previous_target / "VERSION")
-        if previous_target is not None
-        else None
-    )
+    if previous_target is None:
+        previous_release = None
+    else:
+        try:
+            previous_release = validate_version_commit_file(
+                previous_target / "VERSION"
+            )
+        except ReleaseManifestError:
+            raise ValueError("previous_version_invalid") from None
     if previous_target is not None and previous_release is None:
         raise ValueError("previous_version_invalid")
     if previous_target is not None:
