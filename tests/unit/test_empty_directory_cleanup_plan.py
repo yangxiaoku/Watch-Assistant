@@ -2,6 +2,8 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from sqlalchemy.exc import IntegrityError, OperationalError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from watch_assistant.db import create_database, initialize_database
 from watch_assistant.library_models import (
@@ -10,6 +12,7 @@ from watch_assistant.library_models import (
     LibraryScanRun,
     MediaLibrary,
 )
+from watch_assistant.models import StrmOperationKind
 from watch_assistant.services.empty_directory_cleanup import (
     EmptyDirectoryCleanupStatus,
 )
@@ -17,6 +20,7 @@ from watch_assistant.services.empty_directory_cleanup_plan import (
     EmptyDirectoryCleanupPlanError,
     EmptyDirectoryCleanupPlanService,
 )
+from watch_assistant.services.strm_operations import StrmOperationService
 
 
 async def _database(tmp_path):
@@ -377,6 +381,101 @@ async def test_stale_applying_plan_is_invalidated_without_executor_retry(tmp_pat
                 now=now,
             )
         assert calls == []
+    finally:
+        await database.engine.dispose()
+
+
+async def test_stale_applying_plan_preserves_a_live_cleanup_operation(tmp_path):
+    database = await _database(tmp_path)
+    try:
+        await _seed(database)
+        service = EmptyDirectoryCleanupPlanService(database.session_factory)
+        plan = await service.create_plan(
+            library_id="library-1",
+            source_scan_run_id="run-1",
+            protected_directory_ids=("200",),
+            system_created_directory_ids=("300",),
+        )
+        now = datetime(2026, 8, 2, 0, 0, tzinfo=UTC)
+        operation_service = StrmOperationService(database.session_factory)
+        operation = await operation_service.create(
+            library_id="library-1",
+            source_scan_run_id="run-1",
+            kind=StrmOperationKind.CLEANUP,
+            idempotency_key="live-cleanup-operation",
+        )
+        await operation_service.start(
+            operation.operation_id,
+            now=now - timedelta(minutes=1),
+            lease_duration=timedelta(hours=1),
+        )
+        async with database.session_factory() as session:
+            row = await session.get(EmptyDirectoryCleanupPlan, plan.plan_id)
+            assert row is not None
+            row.status = "applying"
+            row.revision = plan.revision + 1
+            row.updated_at = now - timedelta(hours=1)
+            await session.commit()
+
+        assert await service.recover_stale_applying(
+            max_age=timedelta(minutes=30), now=now
+        ) == 0
+        async with database.session_factory() as session:
+            current = await session.get(EmptyDirectoryCleanupPlan, plan.plan_id)
+            assert current is not None
+            assert current.status == "applying"
+    finally:
+        await database.engine.dispose()
+
+
+@pytest.mark.parametrize(
+    "commit_error",
+    (IntegrityError, OperationalError),
+    ids=("integrity", "operational"),
+)
+async def test_empty_directory_apply_reports_uncertain_after_final_commit_failure(
+    tmp_path, monkeypatch, commit_error
+):
+    database = await _database(tmp_path)
+    try:
+        await _seed(database)
+        service = EmptyDirectoryCleanupPlanService(database.session_factory)
+        plan = await service.create_plan(
+            library_id="library-1",
+            source_scan_run_id="run-1",
+            protected_directory_ids=("200",),
+            system_created_directory_ids=("300",),
+        )
+        calls = []
+
+        async def execute(_candidate):
+            calls.append(True)
+            return EmptyDirectoryCleanupStatus.SUCCESS
+
+        original_commit = AsyncSession.commit
+        commit_calls = 0
+
+        async def fail_final_commit(session):
+            nonlocal commit_calls
+            commit_calls += 1
+            if commit_calls >= 4:
+                raise commit_error("forced commit failure", {}, RuntimeError("forced"))
+            await original_commit(session)
+
+        monkeypatch.setattr(AsyncSession, "commit", fail_final_commit)
+        with pytest.raises(
+            EmptyDirectoryCleanupPlanError, match="empty_cleanup_uncertain"
+        ):
+            await service.apply_plan(
+                plan_id=plan.plan_id,
+                expected_revision=plan.revision,
+                digest=plan.plan_hash,
+                confirm=True,
+                idempotency_key="uncertain-final-commit",
+                executor=execute,
+                system_created_directory_ids=("300",),
+            )
+        assert calls == [True]
     finally:
         await database.engine.dispose()
 

@@ -115,3 +115,40 @@ async def test_empty_directory_cleanup_requires_system_created_evidence_before_r
     with pytest.raises(EmptyDirectoryCleanupError, match="cleanup_scope_unverified"):
         await cleaner.cleanup("7000", "8000", "old-show")
     assert client.calls == []
+
+
+@pytest.mark.asyncio
+async def test_empty_directory_cleanup_fences_remote_write_and_postcondition():
+    client = _FakeClient(
+        {
+            "fs_delete": [{"state": True}],
+            "fs_files": [
+                _page([_directory("7000", "8000", "old-show")], count=1),
+                _page([], count=0),
+            ],
+        }
+    )
+    cleaner = LiveP115EmptyDirectoryCleaner(
+        client=client,
+        call_executor=_executor,
+        managed_directory_ids=("1000", "8000", "7000"),
+        system_created_directory_ids=("7000",),
+        scope_confirmed=True,
+    )
+    checks = 0
+
+    async def lease_check() -> bool:
+        nonlocal checks
+        checks += 1
+        return checks < 6
+
+    with pytest.raises(EmptyDirectoryCleanupError, match="cleanup_lease_lost"):
+        await cleaner.cleanup(
+            "7000", "8000", "old-show", lease_check=lease_check
+        )
+
+    assert [call[0] for call in client.calls] == [
+        "fs_files",
+        "fs_files",
+        "fs_delete",
+    ]

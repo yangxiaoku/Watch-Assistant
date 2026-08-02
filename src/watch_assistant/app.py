@@ -570,7 +570,9 @@ def create_app(
                 P115OrganizationContract(),
             )
             if write_enabled:
-                async def execute_empty_directory_cleanup(candidate: dict[str, str]):
+                async def execute_empty_directory_cleanup(
+                    candidate: dict[str, str], *, lease_check=None
+                ):
                     try:
                         directory_id = candidate["directory_id"]
                         parent_id = candidate["parent_id"]
@@ -601,7 +603,12 @@ def create_app(
                             ),
                             scope_confirmed=True,
                         )
-                        return await cleaner.cleanup(directory_id, parent_id, name)
+                        return await cleaner.cleanup(
+                            directory_id,
+                            parent_id,
+                            name,
+                            lease_check=lease_check,
+                        )
                     except EmptyDirectoryCleanupError as error:
                         return (
                             EmptyDirectoryCleanupStatus.UNCERTAIN
