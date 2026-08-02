@@ -12,6 +12,7 @@ from watch_assistant.app import create_app
 from watch_assistant.crypto import SecretCrypto
 from watch_assistant.db import create_database, initialize_database
 from watch_assistant.library_models import (
+    LibraryScanCheckpoint,
     LibraryScanEntry,
     LibraryScanRun,
     MediaLibrary,
@@ -49,9 +50,11 @@ async def _client(tmp_path: Path):
                 library_id="library-one",
                 root_directory_id="root-one",
                 idempotency_key="scan-key",
+                scan_mode="tree",
                 state="completed",
                 complete=True,
                 snapshot_revision=7,
+                expected_total=2,
                 pages_read=2,
                 items_seen=2,
                 added_count=2,
@@ -80,6 +83,22 @@ async def _client(tmp_path: Path):
                 name="private-dir",
                 path="/private/secret",
                 is_directory=True,
+            )
+        )
+        session.add(
+            LibraryScanCheckpoint(
+                scan_run_id="scan-one",
+                page=2,
+                items_seen=2,
+                cursor_json=json.dumps(
+                    {
+                        "version": 2,
+                        "directory_totals": {"root-one": 2, "directory-one": 0},
+                        "expected_total": 2,
+                        "pending": [],
+                        "visited": ["root-one", "directory-one"],
+                    }
+                ),
             )
         )
         session.add(

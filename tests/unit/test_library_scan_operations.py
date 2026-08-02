@@ -535,7 +535,7 @@ async def test_final_lease_fence_rolls_back_inventory_and_completion(tmp_path, m
     original_fence = scan._fence_write
 
     async def fail_after_complete(session, run, *, refresh=True):
-        if not refresh and run.complete:
+        if not refresh and not run.complete and run.snapshot_revision is not None:
             raise LibraryIndexError("lease_claim_lost")
         await original_fence(session, run, refresh=refresh)
 

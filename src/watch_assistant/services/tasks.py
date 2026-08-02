@@ -231,6 +231,8 @@ async def apply_remote_status(
 
 
 def recover_after_restart(task: Task, remote_status: RemoteState | None) -> None:
+    if _lease_is_live(task, datetime.now(UTC)):
+        return
     task.lease_owner = None
     task.lease_token = None
     task.lease_expires_at = None
@@ -348,6 +350,15 @@ def _validate_lease_parameters(owner: str, lease_duration: timedelta) -> None:
         raise ValueError("invalid_worker_owner")
     if lease_duration.total_seconds() <= 0:
         raise ValueError("invalid_lease_duration")
+
+
+def _lease_is_live(task: Task, current_time: datetime) -> bool:
+    return bool(
+        task.lease_owner
+        and task.lease_token
+        and task.lease_expires_at is not None
+        and _as_utc(task.lease_expires_at) > current_time
+    )
 
 
 class TaskService:

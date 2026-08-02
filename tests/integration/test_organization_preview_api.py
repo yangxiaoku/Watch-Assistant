@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import httpx
@@ -9,6 +10,7 @@ from watch_assistant.app import create_app
 from watch_assistant.crypto import SecretCrypto
 from watch_assistant.db import create_database, initialize_database
 from watch_assistant.library_models import (
+    LibraryScanCheckpoint,
     LibraryScanEntry,
     LibraryScanRun,
     MediaLibrary,
@@ -58,9 +60,13 @@ async def test_organization_preview_api_is_local_idempotent_and_redacted(tmp_pat
                 library_id="library-preview-api",
                 root_directory_id="root-preview-api",
                 idempotency_key="preview-api-key",
+                scan_mode="tree",
                 state="completed",
                 complete=True,
                 snapshot_revision=1,
+                expected_total=1,
+                pages_read=1,
+                items_seen=1,
             )
         )
         await session.flush()
@@ -73,6 +79,22 @@ async def test_organization_preview_api_is_local_idempotent_and_redacted(tmp_pat
                 name="The.Office.2005.1080p.mkv",
                 path="incoming/The.Office.2005.1080p.mkv",
                 is_directory=False,
+            )
+        )
+        session.add(
+            LibraryScanCheckpoint(
+                scan_run_id="scan-preview-api",
+                page=1,
+                items_seen=1,
+                cursor_json=json.dumps(
+                    {
+                        "version": 2,
+                        "directory_totals": {"root-preview-api": 1},
+                        "expected_total": 1,
+                        "pending": [],
+                        "visited": ["root-preview-api"],
+                    }
+                ),
             )
         )
         await session.commit()

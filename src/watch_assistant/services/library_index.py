@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
+from collections.abc import Collection
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
@@ -181,6 +182,7 @@ class LibraryIndexService:
 
             while True:
                 try:
+                    await self._fence_before_remote_page(run.id)
                     page = await self._gateway.list_directory(
                         self._root_directory_id,
                         page=next_page,
@@ -199,6 +201,7 @@ class LibraryIndexService:
                         root_directory_id=self._root_directory_id,
                         expected_page_count=expected_page_count,
                         expected_total=expected_total,
+                        require_total=True,
                     )
                 except LibraryIndexError as error:
                     state = (
@@ -300,6 +303,7 @@ class LibraryIndexService:
                     )
                     return await self._result_for_run(run.id)
                 try:
+                    await self._fence_before_remote_page(run.id)
                     page = await self._gateway.list_directory(
                         directory_id,
                         page=page_number,
@@ -409,12 +413,29 @@ class LibraryIndexService:
 
     async def _tree_cursor_for_run(self, run_id: str) -> dict[str, object]:
         async with self._session_factory() as session:
+            run = await session.get(LibraryScanRun, run_id)
             checkpoint = await session.get(LibraryScanCheckpoint, run_id)
-            if checkpoint is None:
+            if run is None or checkpoint is None:
                 raise LibraryIndexError("checkpoint_missing")
             cursor = _decode_tree_cursor(checkpoint.cursor_json)
             if cursor is None:
                 raise LibraryIndexError("checkpoint_invalid")
+            entries = list(
+                (
+                    await session.scalars(
+                        select(LibraryScanEntry).where(
+                            LibraryScanEntry.scan_run_id == run_id
+                        )
+                    )
+                ).all()
+            )
+            _validate_tree_cursor_evidence(
+                run,
+                checkpoint,
+                entries,
+                root_directory_id=self._root_directory_id,
+                require_complete=False,
+            )
             return cursor
 
     async def _pages_read_for_run(self, run_id: str) -> int:
@@ -428,6 +449,17 @@ class LibraryIndexService:
         async with self._session_factory() as session:
             run = await session.get(LibraryScanRun, run_id)
             return run is not None and run.cancel_requested
+
+    async def _fence_before_remote_page(self, run_id: str) -> None:
+        """Prove the durable lease immediately before a remote page call."""
+
+        async with self._session_factory() as session:
+            run = await session.get(LibraryScanRun, run_id)
+            if run is None:
+                raise LibraryIndexError("scan_run_missing")
+            self._assert_execution_lease(run)
+            await self._fence_write(session, run)
+            await session.commit()
 
     async def _persist_tree_page(
         self, run_id: str, page: DirectoryPage, *, pages_read: int
@@ -695,6 +727,12 @@ class LibraryIndexService:
             run.expected_total = expected_total
             run.pages_read = page.page
             run.items_seen = checkpoint.items_seen + len(page.items)
+            if expected_total is None:
+                raise LibraryIndexError("pagination_unverified")
+            if run.items_seen > expected_total:
+                raise LibraryIndexError("total_mismatch")
+            if page.terminal is True and run.items_seen != expected_total:
+                raise LibraryIndexError("total_mismatch")
             checkpoint.page = page.page
             checkpoint.items_seen = run.items_seen
             await self._fence_write(session, run, refresh=False)
@@ -733,20 +771,61 @@ class LibraryIndexService:
                 tree_cursor_ready = True
                 if run.scan_mode == "tree":
                     checkpoint = await session.get(LibraryScanCheckpoint, run_id)
-                    cursor = (
-                        None
-                        if checkpoint is None
-                        else _decode_tree_cursor(checkpoint.cursor_json)
+                    entries = list(
+                        (
+                            await session.scalars(
+                                select(LibraryScanEntry).where(
+                                    LibraryScanEntry.scan_run_id == run_id
+                                )
+                            )
+                        ).all()
                     )
-                    tree_cursor_ready = cursor is not None and _tree_cursor_complete(
-                        cursor
+                    if checkpoint is None:
+                        tree_cursor_ready = False
+                        evidence_error = "checkpoint_missing"
+                    else:
+                        try:
+                            _validate_tree_cursor_evidence(
+                                run,
+                                checkpoint,
+                                entries,
+                                root_directory_id=self._root_directory_id,
+                                require_complete=True,
+                            )
+                        except LibraryIndexError as error:
+                            tree_cursor_ready = False
+                            evidence_error = error.code
+                        else:
+                            evidence_error = None
+                else:
+                    checkpoint = await session.get(LibraryScanCheckpoint, run_id)
+                    entries = list(
+                        (
+                            await session.scalars(
+                                select(LibraryScanEntry).where(
+                                    LibraryScanEntry.scan_run_id == run_id
+                                )
+                            )
+                        ).all()
                     )
+                    evidence_error = None
+                    try:
+                        validate_complete_scan_evidence(
+                            run,
+                            checkpoint,
+                            entries,
+                            root_directory_id=self._root_directory_id,
+                        )
+                    except LibraryIndexError as error:
+                        tree_cursor_ready = False
+                        evidence_error = error.code
                 if not tree_cursor_ready or (
                     run.scan_mode == "tree" and run.expected_total is None
                 ):
                     run.state = ScanRunState.FAILED.value
                     run.complete = False
-                    run.error_code = "pagination_unverified"
+                    run.error_code = evidence_error or "pagination_unverified"
+                    await self._fence_write(session, run, refresh=False)
                 elif (
                     run.expected_total is not None
                     and run.items_seen != run.expected_total
@@ -754,6 +833,7 @@ class LibraryIndexService:
                     run.state = ScanRunState.FAILED.value
                     run.complete = False
                     run.error_code = "total_mismatch"
+                    await self._fence_write(session, run, refresh=False)
                 else:
                     previous = await session.scalar(
                         select(LibraryScanRun)
@@ -782,15 +862,6 @@ class LibraryIndexService:
                     added_count = 0
                     changed_count = 0
                     removed_count = 0
-                    entries = list(
-                        (
-                            await session.scalars(
-                                select(LibraryScanEntry).where(
-                                    LibraryScanEntry.scan_run_id == run_id
-                                )
-                            )
-                        ).all()
-                    )
                     previous_entries: dict[tuple[str, str], LibraryScanEntry] = {}
                     if previous_id is not None:
                         previous_entries = {
@@ -870,13 +941,16 @@ class LibraryIndexService:
                                 scan_run_id=run_id,
                                 entry=old,
                             )
+                    # The CAS must happen while the run is still running.  The
+                    # terminal state and all dirty snapshot rows are flushed by
+                    # this transaction only after the owner has been proven.
+                    await self._fence_write(session, run, refresh=False)
                     run.state = ScanRunState.COMPLETED.value
                     run.complete = True
                     run.error_code = None
                     run.added_count = added_count
                     run.changed_count = changed_count
                     run.removed_count = removed_count
-                await self._fence_write(session, run, refresh=False)
                 run.lease_owner = None
                 run.lease_token = None
                 run.lease_expires_at = None
@@ -1206,12 +1280,15 @@ def _validate_idempotency_key(value: str) -> None:
 def _entry_identity(entry: LibraryEntry) -> tuple[str, str]:
     if entry.parent_id is None:
         raise LibraryIndexError("entry_scope_unverified")
+    _validate_identity(entry.parent_id)
     if entry.is_directory:
         if entry.directory_id is None:
             raise LibraryIndexError("missing_directory_id")
+        _validate_identity(entry.directory_id)
         return "directory", entry.directory_id
     if entry.file_id is None:
         raise LibraryIndexError("missing_file_id")
+    _validate_identity(entry.file_id)
     return "file", entry.file_id
 
 
@@ -1328,20 +1405,27 @@ def _decode_tree_cursor(value: str | None) -> dict[str, object] | None:
         or expected_total is None
     ):
         return None
-    if (
-        any(not isinstance(item, str) or not item for item in visited)
-        or len(set(visited)) != len(visited)
-    ):
+    if len(set(visited)) != len(visited):
         return None
+    for directory_id in visited:
+        if not isinstance(directory_id, str):
+            return None
+        try:
+            _validate_identity(directory_id)
+        except LibraryIndexError:
+            return None
     normalized_totals: dict[str, int] = {}
     for directory_id, total in directory_totals.items():
         if (
             not isinstance(directory_id, str)
-            or not directory_id
             or not _optional_nonnegative_int(total)
             or total is None
             or directory_id not in visited
         ):
+            return None
+        try:
+            _validate_identity(directory_id)
+        except LibraryIndexError:
             return None
         normalized_totals[directory_id] = total
     if sum(normalized_totals.values()) != expected_total:
@@ -1358,7 +1442,6 @@ def _decode_tree_cursor(value: str | None) -> dict[str, object] | None:
         items_seen = item.get("items_seen")
         if (
             not isinstance(directory_id, str)
-            or not directory_id
             or not isinstance(parent_path, str)
             or not isinstance(page, int)
             or isinstance(page, bool)
@@ -1370,6 +1453,10 @@ def _decode_tree_cursor(value: str | None) -> dict[str, object] | None:
             or items_seen < 0
             or directory_id not in visited
         ):
+            return None
+        try:
+            _validate_identity(directory_id)
+        except LibraryIndexError:
             return None
         try:
             _validate_remote_path(parent_path, allow_empty=True)
@@ -1392,6 +1479,232 @@ def _decode_tree_cursor(value: str | None) -> dict[str, object] | None:
         "pending": normalized_pending,
         "visited": list(visited),
     }
+
+
+def validate_complete_scan_evidence(
+    run: LibraryScanRun,
+    checkpoint: LibraryScanCheckpoint | None,
+    entries: Collection[LibraryScanEntry],
+    *,
+    root_directory_id: str,
+    require_tree: bool = False,
+) -> frozenset[str]:
+    """Validate the durable evidence before treating a snapshot as complete."""
+
+    _validate_root_scope_id(root_directory_id)
+    if checkpoint is None:
+        raise LibraryIndexError("checkpoint_missing")
+    if run.root_directory_id != root_directory_id:
+        raise LibraryIndexError("library_scope_unverified")
+    if run.scan_mode == "tree":
+        return _validate_tree_cursor_evidence(
+            run,
+            checkpoint,
+            entries,
+            root_directory_id=root_directory_id,
+            require_complete=True,
+        )
+    if require_tree or run.scan_mode != "root":
+        raise LibraryIndexError("pagination_unverified")
+    if checkpoint.cursor_json not in {"", "{}"}:
+        raise LibraryIndexError("checkpoint_invalid")
+    if (
+        not _optional_nonnegative_int(run.expected_total)
+        or run.expected_total is None
+        or not _optional_nonnegative_int(run.items_seen)
+        or not _optional_nonnegative_int(run.pages_read)
+        or checkpoint.page != run.pages_read
+        or checkpoint.items_seen != run.items_seen
+        or len(entries) != run.items_seen
+        or run.items_seen != run.expected_total
+    ):
+        raise LibraryIndexError("pagination_unverified")
+    _validate_entry_records(
+        entries, allowed_parents={root_directory_id}, require_paths=False
+    )
+    return frozenset((root_directory_id,))
+
+
+def validate_tree_cursor_scope(
+    run: LibraryScanRun,
+    checkpoint: LibraryScanCheckpoint,
+    entries: Collection[LibraryScanEntry],
+    *,
+    root_directory_id: str,
+) -> frozenset[str]:
+    """Validate the persisted directory allowlist for a resumable tree scan."""
+
+    _validate_root_scope_id(root_directory_id)
+    if checkpoint.cursor_json in {"", "{}"}:
+        if (
+            checkpoint.page != 0
+            or checkpoint.items_seen != 0
+            or run.pages_read != 0
+            or run.items_seen != 0
+            or entries
+        ):
+            raise LibraryIndexError("checkpoint_invalid")
+        return frozenset((root_directory_id,))
+    if _is_legacy_tree_cursor(checkpoint.cursor_json):
+        raise LibraryIndexError("library_scope_unverified")
+    return _validate_tree_cursor_evidence(
+        run,
+        checkpoint,
+        entries,
+        root_directory_id=root_directory_id,
+        require_complete=False,
+    )
+
+
+def _validate_tree_cursor_evidence(
+    run: LibraryScanRun,
+    checkpoint: LibraryScanCheckpoint,
+    entries: Collection[LibraryScanEntry],
+    *,
+    root_directory_id: str,
+    require_complete: bool,
+) -> frozenset[str]:
+    cursor = _decode_tree_cursor(checkpoint.cursor_json)
+    if cursor is None:
+        raise LibraryIndexError("checkpoint_invalid")
+    visited = cursor["visited"]
+    pending = cursor["pending"]
+    directory_totals = cursor["directory_totals"]
+    expected_total = cursor["expected_total"]
+    if (
+        not isinstance(visited, list)
+        or not isinstance(pending, list)
+        or not isinstance(directory_totals, dict)
+        or not isinstance(expected_total, int)
+        or isinstance(expected_total, bool)
+        or root_directory_id not in visited
+        or len(set(visited)) != len(visited)
+    ):
+        raise LibraryIndexError("checkpoint_invalid")
+    if (
+        not _optional_nonnegative_int(run.items_seen)
+        or not _optional_nonnegative_int(run.pages_read)
+        or checkpoint.items_seen != run.items_seen
+        or checkpoint.page != run.pages_read
+        or len(entries) != run.items_seen
+        or (
+            run.expected_total is not None
+            and run.expected_total != expected_total
+        )
+    ):
+        raise LibraryIndexError("checkpoint_invalid")
+
+    pending_by_id: dict[str, dict[str, object]] = {}
+    for item in pending:
+        if not isinstance(item, dict):
+            raise LibraryIndexError("checkpoint_invalid")
+        directory_id = item.get("directory_id")
+        if not isinstance(directory_id, str) or directory_id in pending_by_id:
+            raise LibraryIndexError("checkpoint_invalid")
+        pending_by_id[directory_id] = item
+
+    visited_ids = set(visited)
+    if any(directory_id not in visited_ids for directory_id in pending_by_id):
+        raise LibraryIndexError("library_scope_unverified")
+    _validate_entry_records(entries, allowed_parents=visited_ids, require_paths=True)
+
+    directory_rows: dict[str, LibraryScanEntry] = {}
+    observed_by_parent: dict[str, int] = {}
+    for entry in entries:
+        if not isinstance(entry.parent_id, str):
+            raise LibraryIndexError("library_scope_unverified")
+        observed_by_parent[entry.parent_id] = (
+            observed_by_parent.get(entry.parent_id, 0) + 1
+        )
+        if entry.is_directory:
+            if entry.object_id == root_directory_id or entry.object_id in directory_rows:
+                raise LibraryIndexError("library_scope_unverified")
+            directory_rows[entry.object_id] = entry
+
+    child_ids = visited_ids - {root_directory_id}
+    if child_ids != set(directory_rows):
+        raise LibraryIndexError("library_scope_unverified")
+    for directory_id, entry in directory_rows.items():
+        if entry.parent_id not in visited_ids:
+            raise LibraryIndexError("library_scope_unverified")
+        current = directory_id
+        chain: set[str] = set()
+        while current != root_directory_id:
+            if current in chain:
+                raise LibraryIndexError("library_scope_unverified")
+            chain.add(current)
+            parent = directory_rows.get(current)
+            if parent is None:
+                raise LibraryIndexError("library_scope_unverified")
+            if not isinstance(parent.parent_id, str):
+                raise LibraryIndexError("library_scope_unverified")
+            current = parent.parent_id
+
+    for directory_id in visited_ids:
+        item = pending_by_id.get(directory_id)
+        total = directory_totals.get(directory_id)
+        observed = observed_by_parent.get(directory_id, 0)
+        if item is not None:
+            items_seen = item.get("items_seen")
+            if not isinstance(items_seen, int) or isinstance(items_seen, bool):
+                raise LibraryIndexError("checkpoint_invalid")
+            if items_seen != observed:
+                raise LibraryIndexError("checkpoint_invalid")
+            if total is None:
+                if item.get("total") is not None:
+                    raise LibraryIndexError("checkpoint_invalid")
+            elif item.get("total") != total or observed > total:
+                raise LibraryIndexError("checkpoint_invalid")
+            if directory_id == root_directory_id:
+                if item.get("parent_path") != "":
+                    raise LibraryIndexError("entry_path_invalid")
+            else:
+                entry = directory_rows.get(directory_id)
+                if entry is None or entry.path != item.get("parent_path"):
+                    raise LibraryIndexError("entry_path_invalid")
+        elif total is None or observed != total:
+            raise LibraryIndexError("checkpoint_invalid")
+
+    if require_complete:
+        if pending or set(directory_totals) != visited_ids:
+            raise LibraryIndexError("pagination_unverified")
+        if expected_total != len(entries) or run.expected_total != expected_total:
+            raise LibraryIndexError("total_mismatch")
+    return frozenset(visited_ids)
+
+
+def _validate_root_scope_id(root_directory_id: str) -> None:
+    try:
+        _validate_identity(root_directory_id)
+    except LibraryIndexError:
+        raise LibraryIndexError("library_scope_unverified") from None
+
+
+def _validate_entry_records(
+    entries: Collection[LibraryScanEntry],
+    *,
+    allowed_parents: set[str],
+    require_paths: bool,
+) -> None:
+    seen: set[tuple[str, str]] = set()
+    for entry in entries:
+        object_type = "directory" if entry.is_directory else "file"
+        if entry.object_type != object_type:
+            raise LibraryIndexError("entry_scope_unverified")
+        _validate_identity(entry.object_id)
+        if not isinstance(entry.parent_id, str) or entry.parent_id not in allowed_parents:
+            raise LibraryIndexError("entry_out_of_scope")
+        if entry.path is None:
+            if require_paths:
+                raise LibraryIndexError("entry_path_invalid")
+        elif not isinstance(entry.path, str) or not entry.path:
+            raise LibraryIndexError("entry_path_invalid")
+        else:
+            _validate_remote_path(entry.path)
+        identity = (entry.object_type, entry.object_id)
+        if identity in seen:
+            raise LibraryIndexError("repeated_entry")
+        seen.add(identity)
 
 
 def _is_legacy_tree_cursor(value: str | None) -> bool:
@@ -1522,6 +1835,7 @@ def _advance_tree_cursor(
         if not entry.is_directory or entry.directory_id is None:
             continue
         child_id = entry.directory_id
+        _validate_identity(child_id)
         if child_id in next_visited:
             raise LibraryIndexError("directory_cycle")
         if len(next_visited) >= max_directories:
@@ -1562,4 +1876,6 @@ __all__ = [
     "LibraryScanResult",
     "ScanChange",
     "ScanRunState",
+    "validate_complete_scan_evidence",
+    "validate_tree_cursor_scope",
 ]
