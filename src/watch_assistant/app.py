@@ -1213,10 +1213,12 @@ def create_app(
                 )
                 application.state.library_scan_operation_service = scan_operations
 
-            def scan_gateway_factory(root_directory_id: str):
+            def scan_gateway_factory(
+                root_directory_id: str, authorized_directory_ids: Collection[str]
+            ):
                 return P115ReadOnlyDirectoryGateway(
                     scan_provider,
-                    authorized_directory_ids=(root_directory_id,),
+                    authorized_directory_ids=tuple(authorized_directory_ids),
                     request_timeout_seconds=30,
                 )
 

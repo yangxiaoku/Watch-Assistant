@@ -1,8 +1,8 @@
 """Bounded read-only P115 directory gateway.
 
-This adapter is deliberately not wired into the application. It maps the small
-``fs_files`` contract verified in Phase 0 plus bounded ``fs_info`` detail
-reads for allowlisted IDs. Credentials and transport construction are injected.
+This adapter maps the small ``fs_files`` contract verified in Phase 0 plus
+bounded ``fs_info`` detail reads for allowlisted IDs. Credentials and transport
+construction are injected, and callers must provide any durable child scope.
 """
 
 from __future__ import annotations
@@ -144,6 +144,8 @@ class P115ReadOnlyDirectoryGateway:
             expected_limit=request_page_size,
             virtual_root=is_virtual_root,
         )
+        if any(entry.parent_id != normalized_directory_id for entry in result.items):
+            raise P115ReadOnlyGatewayError("entry_scope_unverified")
         for entry in result.items:
             if entry.is_directory and entry.directory_id is not None:
                 self._observed_directories[entry.directory_id] = entry

@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import inspect as python_inspect
+import json
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Collection
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -15,7 +16,12 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from watch_assistant.adapters.p115_library import P115LibraryGateway
-from watch_assistant.library_models import LibraryScanRun, MediaLibrary
+from watch_assistant.library_models import (
+    LibraryScanCheckpoint,
+    LibraryScanEntry,
+    LibraryScanRun,
+    MediaLibrary,
+)
 from watch_assistant.schemas import LoggingLevel
 from watch_assistant.services.library_index import (
     LibraryIndexError,
@@ -48,6 +54,7 @@ SCAN_ERROR_MESSAGES_ZH = {
     "scan_worker_recovered": "扫描已从上次中断位置重新排队。",
     "lease_claim_lost": "扫描执行权已变化，已停止继续读取，请查看状态后再决定是否重试。",
     "library_scope_unverified": "媒体库范围尚未完成只读验证。",
+    "checkpoint_invalid": "扫描断点无法完成校验，已停止继续读取。",
     "scan_run_missing": "扫描操作不存在。",
 }
 
@@ -492,8 +499,58 @@ class LibraryScanOperationService:
             await session.commit()
             return recovered
 
+    async def readonly_directory_scope(
+        self, lease: LibraryScanLease
+    ) -> frozenset[str]:
+        """Rebuild the verified directory scope needed by a resumed scan.
 
-GatewayFactory = Callable[[str], P115LibraryGateway | Awaitable[P115LibraryGateway]]
+        A new gateway has no in-process observations from the previous worker.
+        Only directory IDs that were persisted in the same validated tree
+        snapshot as the cursor may be restored into its allowlist.
+        """
+
+        async with self._session_factory() as session:
+            run = await session.get(LibraryScanRun, lease.run_id)
+            library = await session.get(MediaLibrary, lease.library_id)
+            checkpoint = await session.get(LibraryScanCheckpoint, lease.run_id)
+            if (
+                run is None
+                or library is None
+                or checkpoint is None
+                or run.library_id != lease.library_id
+                or run.root_directory_id != lease.root_directory_id
+                or run.idempotency_key != lease.idempotency_key
+                or run.scan_mode != lease.scan_mode
+                or run.state != ScanRunState.RUNNING.value
+                or run.lease_owner != lease.lease_owner
+                or run.lease_token != lease.lease_token
+                or not library.enabled
+                or not library.scope_verified
+                or library.root_directory_id != lease.root_directory_id
+            ):
+                raise LibraryIndexError("library_scope_unverified")
+            entries = list(
+                (
+                    await session.scalars(
+                        select(LibraryScanEntry).where(
+                            LibraryScanEntry.scan_run_id == lease.run_id,
+                            LibraryScanEntry.object_type == "directory",
+                            LibraryScanEntry.is_directory.is_(True),
+                        )
+                    )
+                ).all()
+            )
+
+        return _readonly_directory_scope(
+            lease.root_directory_id,
+            checkpoint.cursor_json,
+            entries,
+        )
+
+
+GatewayFactory = Callable[
+    [str, Collection[str]], P115LibraryGateway | Awaitable[P115LibraryGateway]
+]
 
 
 class LibraryScanWorker:
@@ -581,11 +638,12 @@ class LibraryScanWorker:
     async def _scan_lease(
         self, lease: LibraryScanLease, lease_lost: asyncio.Event
     ) -> LibraryScanResult:
-        gateway = self._gateway_factory(lease.root_directory_id)
-        if python_inspect.isawaitable(gateway):
-            gateway = await gateway
         if lease.scan_mode != "tree":
             raise LibraryScanOperationError("scan_mode_unsupported")
+        directory_scope = await self._operations.readonly_directory_scope(lease)
+        gateway = self._gateway_factory(lease.root_directory_id, directory_scope)
+        if python_inspect.isawaitable(gateway):
+            gateway = await gateway
         return await LibraryIndexService(
             self._session_factory,
             gateway,
@@ -721,6 +779,84 @@ def _as_utc(value: datetime) -> datetime:
     if value.tzinfo is None or value.utcoffset() is None:
         return value.replace(tzinfo=UTC)
     return value.astimezone(UTC)
+
+
+def _readonly_directory_scope(
+    root_directory_id: str,
+    cursor_json: str,
+    entries: Collection[LibraryScanEntry],
+) -> frozenset[str]:
+    if cursor_json in {"", "{}"}:
+        return frozenset((root_directory_id,))
+    try:
+        cursor = json.loads(cursor_json)
+    except (TypeError, ValueError):
+        raise LibraryIndexError("checkpoint_invalid") from None
+    if not isinstance(cursor, dict) or cursor.get("version") != 1:
+        raise LibraryIndexError("checkpoint_invalid")
+
+    visited = cursor.get("visited")
+    pending = cursor.get("pending")
+    if not isinstance(visited, list) or not isinstance(pending, list):
+        raise LibraryIndexError("checkpoint_invalid")
+    if any(not _valid_scope_identifier(value) for value in visited):
+        raise LibraryIndexError("checkpoint_invalid")
+    if len(set(visited)) != len(visited) or root_directory_id not in visited:
+        raise LibraryIndexError("library_scope_unverified")
+
+    pending_ids: list[str] = []
+    for item in pending:
+        if not isinstance(item, dict):
+            raise LibraryIndexError("checkpoint_invalid")
+        directory_id = item.get("directory_id")
+        if not _valid_scope_identifier(directory_id) or directory_id not in visited:
+            raise LibraryIndexError("library_scope_unverified")
+        if directory_id in pending_ids:
+            raise LibraryIndexError("checkpoint_invalid")
+        pending_ids.append(directory_id)
+
+    directory_parents: dict[str, str] = {}
+    for entry in entries:
+        directory_id = entry.object_id
+        parent_id = entry.parent_id
+        if (
+            not _valid_scope_identifier(directory_id)
+            or directory_id == root_directory_id
+            or not _valid_scope_identifier(parent_id)
+            or directory_id in directory_parents
+            or directory_id not in visited
+        ):
+            raise LibraryIndexError("library_scope_unverified")
+        directory_parents[directory_id] = parent_id
+
+    visited_children = set(visited) - {root_directory_id}
+    if visited_children != set(directory_parents):
+        raise LibraryIndexError("library_scope_unverified")
+    for directory_id in directory_parents:
+        current = directory_id
+        chain: set[str] = set()
+        while current != root_directory_id:
+            if current in chain:
+                raise LibraryIndexError("library_scope_unverified")
+            chain.add(current)
+            parent_id = directory_parents.get(current)
+            if parent_id is None:
+                raise LibraryIndexError("library_scope_unverified")
+            current = parent_id
+
+    return frozenset(visited)
+
+
+def _valid_scope_identifier(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and bool(value)
+        and len(value) <= 128
+        and "\x00" not in value
+        and "/" not in value
+        and "\\" not in value
+        and "://" not in value
+    )
 
 
 __all__ = [

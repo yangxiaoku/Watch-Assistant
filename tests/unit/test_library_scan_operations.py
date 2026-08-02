@@ -133,7 +133,7 @@ async def test_worker_failure_is_persisted_then_same_key_requeues_and_completes(
     worker = LibraryScanWorker(
         database.session_factory,
         service,
-        lambda _root_id: gateway,
+        lambda _root_id, _scope: gateway,
         owner="scan-worker",
         poll_interval_seconds=0.01,
     )
@@ -212,7 +212,7 @@ async def test_worker_interruption_requeues_with_durable_tree_cursor(tmp_path):
     worker = LibraryScanWorker(
         database.session_factory,
         service,
-        lambda _root_id: gateway,
+        lambda _root_id, _scope: gateway,
         owner="scan-worker",
         poll_interval_seconds=0.01,
     )
@@ -336,7 +336,7 @@ async def test_worker_stops_without_cancelled_write_when_lease_renewal_is_lost(
     worker = LibraryScanWorker(
         database.session_factory,
         service,
-        lambda _root_id: _SlowGateway(),
+        lambda _root_id, _scope: _SlowGateway(),
         owner="scan-worker",
         lease_duration=timedelta(seconds=0.3),
     )
