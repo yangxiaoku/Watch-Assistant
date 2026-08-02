@@ -2,7 +2,10 @@
 import { Ban, Check, Database, LoaderCircle, RefreshCw, SlidersHorizontal, Trash2 } from "@lucide/vue";
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { ApiClient, ApiError, createIdempotencyKey, focusFirstFieldError } from "../api";
+import ConfirmDialog from "../components/ConfirmDialog.vue";
+import PaginationBar from "../components/PaginationBar.vue";
 import { describeUiError } from "../errorCatalog";
+import { libraryScanStatusLabel, manifestStatusLabel, strmOperationNextStep, strmOperationStatusLabel } from "../statusCatalog";
 import type {
   MediaEntryResponse,
   MediaLibraryResponse,
@@ -30,6 +33,14 @@ const selectedId = ref<string | null>(null);
 const media = ref<MediaEntryResponse[]>([]);
 const manifest = ref<StrmManifestItemResponse[]>([]);
 const operations = ref<StrmOperationResponse[]>([]);
+const mediaLoading = ref(false);
+const mediaError = ref("");
+const manifestPage = ref(1);
+const manifestPageSize = ref(50);
+const manifestTotal = ref(0);
+const manifestTotalPages = ref(1);
+const manifestLoading = ref(false);
+const manifestError = ref("");
 const operationsError = ref("");
 const loading = ref(false);
 const busy = ref(false);
@@ -42,6 +53,7 @@ const cleanupPlan = ref<StrmCleanupPlanResponse | null>(null);
 const cleanupIdempotencyKey = ref<string | null>(null);
 const emptyCleanupPlan = ref<EmptyDirectoryCleanupPlanResponse | null>(null);
 const emptyCleanupIdempotencyKey = ref<string | null>(null);
+const pendingCleanup = ref<"strm" | "empty" | null>(null);
 const operationDetailOpen = ref(false);
 let operationPollGeneration = 0;
 let operationPollTimer: number | null = null;
@@ -55,6 +67,31 @@ const strmFullAvailable = computed(() => props.strmFullCapability?.enabled ?? tr
 const strmIncrementalAvailable = computed(() => props.strmIncrementalCapability?.enabled ?? true);
 const strmCleanupAvailable = computed(() => props.strmCleanupCapability?.enabled ?? true);
 const emptyDirectoryCleanupAvailable = computed(() => props.emptyDirectoryCleanupCapability?.enabled ?? true);
+const cleanupDialogOpen = computed(() => pendingCleanup.value !== null);
+const cleanupDialogTitle = computed(() => pendingCleanup.value === "empty" ? "确认回收空目录" : "确认退休失效 STRM");
+const cleanupDialogSummary = computed(() => pendingCleanup.value === "empty"
+  ? "系统只会把计划中的受管空目录送入可恢复回收站，永久删除保持关闭。"
+  : "系统只会退休计划中受管且未被用户修改的失效 STRM 文件，扫描或清单变化会阻断执行。"
+);
+const cleanupDialogDetails = computed(() => {
+  if (pendingCleanup.value === "empty" && emptyCleanupPlan.value) {
+    const plan = emptyCleanupPlan.value;
+    return [
+      `候选目录：${plan.candidate_count} 项，可恢复回收：${plan.executable_count} 项`,
+      `已阻断：${plan.blocked_count} 项；快照修订：${plan.source_snapshot_revision}`,
+      "执行前仍会复核计划版本、摘要和幂等键。",
+    ];
+  }
+  if (pendingCleanup.value === "strm" && cleanupPlan.value) {
+    const plan = cleanupPlan.value;
+    return [
+      `候选 STRM：${plan.candidate_count} 项，可退休：${plan.executable_count} 项`,
+      `已阻断：${plan.blocked_count} 项；快照修订：${plan.source_snapshot_revision}`,
+      "执行前仍会复核计划版本、摘要和幂等键。",
+    ];
+  }
+  return [];
+});
 
 const workflowGuidance = computed(() => {
   if (!selected.value) return "下一步：初始化媒体库，保存配置、验证范围并完成首次扫描。";
@@ -111,18 +148,50 @@ async function loadLibraries(preferredId = selectedId.value) {
 
 async function loadOutputs(libraryId: string) {
   operationsError.value = "";
-  const [mediaResponse, manifestResponse] = await Promise.all([
-    props.api.libraryMedia(libraryId).catch(() => ({ items: [], next_cursor: null })),
-    props.api.strmManifest(libraryId).catch(() => ({ items: [], page: 1, page_size: 50, total: 0, total_pages: 0 })),
-  ]);
-  media.value = mediaResponse.items;
-  manifest.value = manifestResponse.items;
+  await Promise.all([loadMedia(libraryId), loadManifestPage(libraryId, 1), loadOperations(libraryId)]);
+}
+
+async function loadMedia(libraryId: string): Promise<void> {
+  mediaLoading.value = true;
+  mediaError.value = "";
+  try {
+    const response = await props.api.libraryMedia(libraryId);
+    if (selectedId.value !== libraryId) return;
+    media.value = response.items;
+  } catch (exception) {
+    if (selectedId.value === libraryId) mediaError.value = exception instanceof ApiError ? exception.message : "索引文件加载失败，请重试";
+  } finally {
+    if (selectedId.value === libraryId) mediaLoading.value = false;
+  }
+}
+
+async function loadManifestPage(libraryId = selectedId.value, targetPage = manifestPage.value): Promise<void> {
+  if (!libraryId) return;
+  manifestLoading.value = true;
+  manifestError.value = "";
+  try {
+    const response = await props.api.strmManifest(libraryId, Math.max(1, targetPage), manifestPageSize.value);
+    if (selectedId.value !== libraryId) return;
+    manifest.value = response.items;
+    manifestPage.value = Math.max(1, response.page || targetPage);
+    manifestPageSize.value = Math.max(1, response.page_size || manifestPageSize.value);
+    manifestTotal.value = Math.max(0, response.total || 0);
+    manifestTotalPages.value = Math.max(1, response.total_pages || 1);
+  } catch (exception) {
+    if (selectedId.value === libraryId) manifestError.value = exception instanceof ApiError ? exception.message : "STRM 清单加载失败，请重试";
+  } finally {
+    if (selectedId.value === libraryId) manifestLoading.value = false;
+  }
+}
+
+async function loadOperations(libraryId: string): Promise<void> {
   try {
     const operationsResponse = await props.api.strmOperations(libraryId);
+    if (selectedId.value !== libraryId) return;
     operations.value = operationsResponse.items;
     if (operations.value[0]) latestOperation.value = operations.value[0];
   } catch {
-    operationsError.value = "STRM 操作历史加载失败，请重试";
+    if (selectedId.value === libraryId) operationsError.value = "STRM 操作历史加载失败，请重试";
   }
 }
 
@@ -201,6 +270,12 @@ function selectLibrary(library: MediaLibraryResponse) {
   cleanupIdempotencyKey.value = null;
   emptyCleanupPlan.value = null;
   emptyCleanupIdempotencyKey.value = null;
+  pendingCleanup.value = null;
+  manifestPage.value = 1;
+  manifestTotal.value = 0;
+  manifestTotalPages.value = 1;
+  manifestError.value = "";
+  mediaError.value = "";
   operationDetailOpen.value = false;
   operationsError.value = "";
   operations.value = [];
@@ -336,7 +411,7 @@ function operationStatusMessage(
     case "failed":
       return `STRM ${label}同步失败，请查看详情后重试`;
     case "timeout":
-      return `STRM ${label}同步超时，请查看详情后重试`;
+      return `STRM ${label}同步结果待确认，请先刷新并核对结果，确认前不要恢复执行`;
     case "cancelled":
       return `STRM ${label}同步已取消，可重试`;
   }
@@ -346,6 +421,7 @@ async function refreshLatestOperation() {
   if (!latestOperation.value) return;
   try {
     latestOperation.value = await props.api.strmOperation(latestOperation.value.operation_id);
+    notice.value = operationStatusMessage(latestOperation.value);
   } catch (exception) {
     setError(exception, "STRM 操作详情加载失败，请重试");
   }
@@ -380,7 +456,7 @@ async function retryLatestOperation() {
   if (
     !operation
     || operation.kind === "cleanup"
-    || (operation.status !== "failed" && operation.status !== "timeout" && operation.status !== "cancelled")
+    || (operation.status !== "failed" && operation.status !== "cancelled")
     || busy.value
   ) return;
   busy.value = true;
@@ -446,10 +522,15 @@ async function previewCleanup() {
 async function confirmCleanup() {
   const plan = cleanupPlan.value;
   if (!plan || plan.status !== "needs_review" || plan.executable_count === 0 || busy.value) return;
-  if (typeof window !== "undefined" && !window.confirm("确认退休清理预览中的受管 STRM 文件？用户修改过的文件不会被删除。")) return;
+  pendingCleanup.value = "strm";
+}
+
+async function applyCleanup(): Promise<void> {
+  const plan = cleanupPlan.value;
+  if (!plan || plan.status !== "needs_review" || plan.executable_count === 0 || busy.value) return;
   busy.value = true;
   error.value = "";
-    notice.value = "";
+  notice.value = "";
   try {
     const idempotencyKey = cleanupIdempotencyKey.value ?? createIdempotencyKey();
     cleanupIdempotencyKey.value = idempotencyKey;
@@ -493,7 +574,12 @@ async function previewEmptyDirectoryCleanup() {
 async function confirmEmptyDirectoryCleanup() {
   const plan = emptyCleanupPlan.value;
   if (!plan || plan.status !== "needs_review" || plan.executable_count === 0 || busy.value) return;
-  if (typeof window !== "undefined" && !window.confirm("确认将预览中的受管空目录可恢复回收到 115 回收站？永久删除保持关闭。")) return;
+  pendingCleanup.value = "empty";
+}
+
+async function applyEmptyDirectoryCleanup(): Promise<void> {
+  const plan = emptyCleanupPlan.value;
+  if (!plan || plan.status !== "needs_review" || plan.executable_count === 0 || busy.value) return;
   busy.value = true;
   error.value = "";
   notice.value = "";
@@ -514,6 +600,17 @@ async function confirmEmptyDirectoryCleanup() {
   }
 }
 
+function closeCleanupDialog(): void {
+  if (!busy.value) pendingCleanup.value = null;
+}
+
+async function confirmPendingCleanup(): Promise<void> {
+  const pending = pendingCleanup.value;
+  pendingCleanup.value = null;
+  if (pending === "strm") await applyCleanup();
+  if (pending === "empty") await applyEmptyDirectoryCleanup();
+}
+
 function emptyCleanupStatusLabel(status: EmptyDirectoryCleanupPlanResponse["status"]): string {
   switch (status) {
     case "needs_review": return "待确认";
@@ -527,15 +624,6 @@ const operationLabels: Record<StrmOperationResponse["kind"], string> = {
   full: "全量生成",
   incremental: "增量同步",
   cleanup: "失效清理",
-};
-
-const operationStatusLabels: Record<StrmOperationResponse["status"], string> = {
-  queued: "已排队",
-  running: "执行中",
-  succeeded: "已完成",
-  failed: "失败",
-  timeout: "已超时",
-  cancelled: "已取消",
 };
 
 function operationError(operation: StrmOperationResponse): string | null {
@@ -614,9 +702,9 @@ onBeforeUnmount(() => {
         <div class="library-detail-heading"><div><p class="eyebrow">当前范围</p><h2>{{ selected.name }}</h2><small>根目录 {{ selected.root_directory_id }}</small></div><button class="secondary-button" type="button" :disabled="busy || selected.scope_verified" @click="verifyScope"><Check :size="16" />验证范围</button></div>
         <div class="library-stat-grid">
           <div><span>范围状态</span><strong>{{ selected.scope_verified ? "已验证" : "待验证" }}</strong></div>
-          <div><span>扫描状态</span><strong>{{ scan?.complete ? "完整" : scan?.state ?? "未扫描" }}</strong></div>
+          <div><span>扫描状态</span><strong>{{ libraryScanStatusLabel(scan) }}</strong></div>
           <div><span>文件数</span><strong>{{ scan?.items_seen ?? 0 }}</strong></div>
-          <div><span>STRM 数</span><strong>{{ manifest.length }}</strong></div>
+          <div><span>STRM 数</span><strong>{{ manifestTotal }}</strong></div>
         </div>
         <div class="library-action-row">
           <button class="primary-button" type="button" :title="actionReason('scan')" :disabled="busy || !selected.enabled || !selected.scope_verified" @click="scanLibrary"><RefreshCw :size="16" />扫描目录</button>
@@ -636,17 +724,18 @@ onBeforeUnmount(() => {
         <p v-if="busy" class="library-progress"><LoaderCircle class="spin" :size="16" />正在处理当前媒体库</p>
         <div v-if="latestResult" class="library-result"><strong>最近一次同步</strong><span>生成 {{ latestResult.generated }}</span><span>未变化 {{ latestResult.unchanged }}</span><span>跳过 {{ latestResult.skipped }}</span><span>失败 {{ latestResult.failed }}</span><span>退休 {{ latestResult.retired }}</span></div>
         <section v-if="latestOperation" class="library-operation-section" :class="`is-${latestOperation.status}`">
-          <div class="library-section-heading"><div><p class="eyebrow">持久操作状态</p><h3>{{ operationLabels[latestOperation.kind] }}</h3></div><strong>{{ operationStatusLabels[latestOperation.status] }}</strong></div>
+          <div class="library-section-heading"><div><p class="eyebrow">持久操作状态</p><h3>{{ operationLabels[latestOperation.kind] }}</h3></div><strong>{{ strmOperationStatusLabel(latestOperation) }}</strong></div>
           <div class="library-operation-stats"><span>生成 {{ latestOperation.generated }}</span><span>未变化 {{ latestOperation.unchanged }}</span><span>跳过 {{ latestOperation.skipped }}</span><span>失败 {{ latestOperation.failed }}</span><span>退休 {{ latestOperation.retired }}</span></div>
+          <p class="library-operation-next-step">下一步：{{ strmOperationNextStep(latestOperation) }}</p>
           <p v-if="operationError(latestOperation)" class="library-operation-error">{{ operationError(latestOperation) }}</p>
-          <div class="library-operation-actions"><button class="text-button" type="button" @click="operationDetailOpen = !operationDetailOpen">{{ operationDetailOpen ? "收起详情" : "查看详情" }}</button><button v-if="['queued', 'running'].includes(latestOperation.status)" class="text-button" type="button" @click="cancelLatestOperation"><Ban :size="14" />取消操作</button><button v-if="['failed', 'timeout', 'cancelled'].includes(latestOperation.status) && latestOperation.kind !== 'cleanup'" class="text-button" type="button" @click="retryLatestOperation"><RefreshCw :size="14" />恢复执行</button><button class="text-button" type="button" @click="refreshLatestOperation"><RefreshCw :size="14" />刷新状态</button></div>
+          <div class="library-operation-actions"><button class="text-button" type="button" @click="operationDetailOpen = !operationDetailOpen">{{ operationDetailOpen ? "收起详情" : "查看详情" }}</button><button v-if="['queued', 'running'].includes(latestOperation.status)" class="text-button" type="button" @click="cancelLatestOperation"><Ban :size="14" />取消操作</button><button v-if="['failed', 'cancelled'].includes(latestOperation.status) && latestOperation.kind !== 'cleanup'" class="text-button" type="button" @click="retryLatestOperation"><RefreshCw :size="14" />恢复执行</button><button class="text-button" type="button" @click="refreshLatestOperation"><RefreshCw :size="14" />刷新状态</button></div>
           <div v-if="operationDetailOpen" class="library-operation-detail"><small>操作 {{ latestOperation.operation_id }}</small><small>创建 {{ new Date(latestOperation.created_at).toLocaleString() }}</small><small v-if="latestOperation.finished_at">结束 {{ new Date(latestOperation.finished_at).toLocaleString() }}</small></div>
         </section>
          <section v-if="cleanupPlan" class="library-cleanup-plan" :class="`is-${cleanupPlan.status}`">
           <div class="library-section-heading"><div><p class="eyebrow">失效清理预览</p><h3>受管 STRM 退休计划</h3></div><strong>{{ cleanupPlan.status === "needs_review" ? "待确认" : cleanupPlan.status === "applied" ? "已完成" : "已失效" }}</strong></div>
           <div class="library-operation-stats"><span>候选 {{ cleanupPlan.candidate_count }}</span><span>可执行 {{ cleanupPlan.executable_count }}</span><span>已阻断 {{ cleanupPlan.blocked_count }}</span><span>快照修订 {{ cleanupPlan.source_snapshot_revision }}</span></div>
           <p class="library-cleanup-note">仅处理系统受管且内容未被用户修改的 STRM；扫描不完整或清单变化时会自动阻断。</p>
-          <button v-if="cleanupPlan.status === 'needs_review' && cleanupPlan.executable_count" class="danger-button" type="button" :disabled="busy" @click="confirmCleanup"><Check :size="16" />确认执行清理</button>
+          <button v-if="cleanupPlan.status === 'needs_review' && cleanupPlan.executable_count" class="danger-button" type="button" :disabled="busy" @click="confirmCleanup"><Check :size="16" />查看摘要并确认清理</button>
            <p v-else-if="cleanupPlan.status === 'needs_review'" class="library-muted">当前没有可执行的清理项。</p>
          </section>
          <section v-if="emptyCleanupPlan" class="library-cleanup-plan" :class="`is-${emptyCleanupPlan.status}`">
@@ -658,14 +747,15 @@ onBeforeUnmount(() => {
                <span><strong>{{ candidate.name }}</strong><small>{{ candidate.path || "相对路径不可用" }}</small></span><small>{{ candidate.state === "ready" ? "可回收" : "已阻断" }}</small>
              </div>
            </div>
-           <button v-if="emptyCleanupPlan.status === 'needs_review' && emptyCleanupPlan.executable_count" class="danger-button" type="button" :disabled="busy" @click="confirmEmptyDirectoryCleanup"><Check :size="16" />确认可恢复回收</button>
+           <button v-if="emptyCleanupPlan.status === 'needs_review' && emptyCleanupPlan.executable_count" class="danger-button" type="button" :disabled="busy" @click="confirmEmptyDirectoryCleanup"><Check :size="16" />查看摘要并确认回收</button>
            <p v-else-if="emptyCleanupPlan.status === 'needs_review'" class="library-muted">当前没有可执行的受管空目录。</p>
          </section>
-        <section v-if="operationsError || operations.length" class="library-output-section"><div class="library-section-heading"><div><p class="eyebrow">操作历史</p><h3>STRM 操作</h3></div><span v-if="operations.length">{{ operations.length }} 条</span></div><p v-if="operationsError" class="library-operation-history-error" role="alert">{{ operationsError }} <button class="text-button" type="button" @click="retryOutputs">重试</button></p><div v-else class="library-operation-list"><div v-for="operation in operations" :key="operation.operation_id" class="library-operation-row"><span><strong>{{ operationLabels[operation.kind] }}</strong><small>{{ operationStatusLabels[operation.status] }} · {{ new Date(operation.created_at).toLocaleString() }}</small></span><span>生成 {{ operation.generated }} · 失败 {{ operation.failed }}</span></div></div></section>
-        <section class="library-output-section"><div class="library-section-heading"><div><p class="eyebrow">受管清单</p><h3>STRM 文件</h3></div><span>{{ manifest.length }} / 50</span></div><div v-if="manifest.length" class="library-table-wrap"><table><thead><tr><th>云端路径</th><th>本地路径</th><th>状态</th></tr></thead><tbody><tr v-for="item in manifest" :key="item.manifest_id"><td>{{ item.cloud_relative_path }}</td><td>{{ item.local_relative_path }}</td><td>{{ item.status }}</td></tr></tbody></table></div><p v-else class="library-muted">暂无受管 STRM。完成扫描后可以执行全量生成。</p></section>
-        <section class="library-output-section"><div class="library-section-heading"><div><p class="eyebrow">最近扫描</p><h3>索引文件</h3></div><span>{{ media.length }} / 50</span></div><div v-if="media.length" class="library-table-wrap"><table><thead><tr><th>文件名</th><th>大小</th><th>修改时间</th></tr></thead><tbody><tr v-for="item in media" :key="item.media_id"><td>{{ item.name }}</td><td>{{ formatBytes(item.size_bytes) }}</td><td>{{ item.modified_at ? new Date(item.modified_at).toLocaleString() : "未知" }}</td></tr></tbody></table></div><p v-else class="library-muted">完成一次完整扫描后，这里会显示索引文件。</p></section>
+        <section v-if="operationsError || operations.length" class="library-output-section"><div class="library-section-heading"><div><p class="eyebrow">操作历史</p><h3>STRM 操作</h3></div><span v-if="operations.length">{{ operations.length }} 条</span></div><p v-if="operationsError" class="library-operation-history-error" role="alert">{{ operationsError }} <button class="text-button" type="button" @click="retryOutputs">重试</button></p><div v-else class="library-operation-list"><div v-for="operation in operations" :key="operation.operation_id" class="library-operation-row"><span><strong>{{ operationLabels[operation.kind] }}</strong><small>{{ strmOperationStatusLabel(operation) }} · {{ new Date(operation.created_at).toLocaleString() }}</small></span><span>生成 {{ operation.generated }} · 失败 {{ operation.failed }}</span></div></div></section>
+        <section class="library-output-section"><div class="library-section-heading"><div><p class="eyebrow">受管清单</p><h3>STRM 文件</h3></div><span>{{ manifestTotal }} 条</span></div><p v-if="manifestError" class="library-operation-history-error" role="alert">{{ manifestError }} <button class="text-button" type="button" @click="loadManifestPage()">重试</button></p><div v-else-if="manifestLoading && !manifest.length" class="library-output-loading" role="status"><LoaderCircle class="spin" :size="18" />正在加载 STRM 清单</div><div v-else-if="manifest.length" class="library-table-wrap" :class="{ 'library-list-loading': manifestLoading }"><table><thead><tr><th>云端路径</th><th>本地路径</th><th>状态</th></tr></thead><tbody><tr v-for="item in manifest" :key="item.manifest_id"><td>{{ item.cloud_relative_path }}</td><td>{{ item.local_relative_path }}</td><td>{{ manifestStatusLabel(item.status) }}</td></tr></tbody></table></div><p v-else class="library-muted">暂无受管 STRM。完成扫描后可以执行全量生成。</p><PaginationBar :page="manifestPage" :total-pages="manifestTotalPages" :total-results="manifestTotal" :loading="manifestLoading" @page="(page) => loadManifestPage(selectedId, page)" /></section>
+        <section class="library-output-section"><div class="library-section-heading"><div><p class="eyebrow">最近扫描</p><h3>索引文件</h3></div><span>{{ media.length }} 项</span></div><p v-if="mediaError" class="library-operation-history-error" role="alert">{{ mediaError }} <button class="text-button" type="button" @click="selectedId && loadMedia(selectedId)">重试</button></p><div v-else-if="mediaLoading && !media.length" class="library-output-loading" role="status"><LoaderCircle class="spin" :size="18" />正在加载索引文件</div><div v-else-if="media.length" class="library-table-wrap" :class="{ 'library-list-loading': mediaLoading }"><table><thead><tr><th>文件名</th><th>大小</th><th>修改时间</th></tr></thead><tbody><tr v-for="item in media" :key="item.media_id"><td>{{ item.name }}</td><td>{{ formatBytes(item.size_bytes) }}</td><td>{{ item.modified_at ? new Date(item.modified_at).toLocaleString() : "未知" }}</td></tr></tbody></table></div><p v-else class="library-muted">完成一次完整扫描后，这里会显示索引文件。</p></section>
       </main>
       <div v-else class="library-empty"><Database :size="24" /><strong>尚未配置库存媒体库</strong><span>下一步：读取服务器配置的 115 根目录，保存配置、验证范围，再完成首次扫描。</span><button class="primary-button" type="button" :disabled="busy" @click="initializeLibrary"><Database :size="16" />初始化并扫描媒体库</button><button class="text-button" type="button" @click="openCapabilitySettings(undefined, 'organization')"><SlidersHorizontal :size="14" />先检查 115 整理设置</button></div>
     </div>
+    <ConfirmDialog :open="cleanupDialogOpen" :title="cleanupDialogTitle" :summary="cleanupDialogSummary" :details="cleanupDialogDetails" confirm-label="确认并提交" tone="danger" :busy="busy" @cancel="closeCleanupDialog" @confirm="confirmPendingCleanup" />
   </section>
 </template>

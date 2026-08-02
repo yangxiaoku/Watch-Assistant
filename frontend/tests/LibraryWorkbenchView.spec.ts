@@ -3,6 +3,12 @@ import { describe, expect, it, vi } from "vitest";
 
 import LibraryWorkbenchView from "../src/views/LibraryWorkbenchView.vue";
 
+async function confirmRiskyAction(wrapper: ReturnType<typeof mount>) {
+  await wrapper.get(".confirm-dialog-acknowledgement input").setValue(true);
+  await wrapper.get(".confirm-dialog-actions button:last-child").trigger("click");
+  await flushPromises();
+}
+
 describe("LibraryWorkbenchView", () => {
   it("keeps the library entry reachable while explaining the disabled STRM gate", async () => {
     const library = {
@@ -102,7 +108,6 @@ describe("LibraryWorkbenchView", () => {
       createStrmCleanupPlan: vi.fn().mockResolvedValue(plan),
       applyStrmCleanupPlan: vi.fn().mockResolvedValue({ plan: { ...plan, status: "applied", revision: 2 }, retired: 1 }),
     };
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
     const wrapper = mount(LibraryWorkbenchView, { props: { api: api as never } });
     await flushPromises();
 
@@ -115,11 +120,49 @@ describe("LibraryWorkbenchView", () => {
     await flushPromises();
     expect(wrapper.text()).toContain("失效清理预览已生成");
 
-    await wrapper.findAll("button").find((button) => button.text().includes("确认执行清理"))!.trigger("click");
-    await flushPromises();
+    await wrapper.findAll("button").find((button) => button.text().includes("查看摘要并确认清理"))!.trigger("click");
+    expect(wrapper.get(".confirm-dialog").text()).toContain("可退休");
+    await confirmRiskyAction(wrapper);
     expect(api.applyStrmCleanupPlan).toHaveBeenCalledWith("plan-1", expect.objectContaining({ expectedRevision: 1, digest: "a".repeat(64), idempotencyKey: expect.any(String) }));
     expect(wrapper.text()).toContain("失效清理已完成，退休 1 个受管 STRM");
-    confirm.mockRestore();
+  });
+
+  it("loads later STRM manifest pages and presents item states in Chinese", async () => {
+    const library = {
+      library_id: "main",
+      name: "115 媒体库",
+      root_directory_id: "123",
+      enabled: true,
+      scope_verified: true,
+      revision: 2,
+      latest_scan: { run_id: "scan-1", state: "completed" as const, complete: true, snapshot_revision: 1, pages_read: 1, items_seen: 1, added_count: 1, changed_count: 0, removed_count: 0, error_code: null },
+    };
+    const manifestPage = (page: number, name: string) => ({
+      items: [{ manifest_id: `manifest-${page}`, library_id: "main", cloud_file_id: `cloud-${page}`, cloud_relative_path: name, local_relative_path: `${name}.strm`, status: "verified" as const, source_version: page }],
+      page,
+      page_size: 1,
+      total: 2,
+      total_pages: 2,
+    });
+    const strmManifest = vi.fn()
+      .mockResolvedValueOnce(manifestPage(1, "第一项"))
+      .mockResolvedValueOnce(manifestPage(2, "第二项"));
+    const api = {
+      libraries: vi.fn().mockResolvedValue({ items: [library], next_cursor: null }),
+      libraryMedia: vi.fn().mockResolvedValue({ items: [], next_cursor: null }),
+      strmManifest,
+      strmOperations: vi.fn().mockResolvedValue({ items: [], next_cursor: null }),
+    };
+    const wrapper = mount(LibraryWorkbenchView, { props: { api: api as never } });
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("第一项");
+    expect(wrapper.text()).toContain("有效");
+    await wrapper.get('button[aria-label="下一页"]').trigger("click");
+    await flushPromises();
+
+    expect(strmManifest).toHaveBeenNthCalledWith(2, "main", 2, 1);
+    expect(wrapper.text()).toContain("第二项");
   });
 
   it("previews and confirms reversible empty-directory cleanup", async () => {
@@ -154,7 +197,6 @@ describe("LibraryWorkbenchView", () => {
       createEmptyDirectoryCleanupPlan: vi.fn().mockResolvedValue(plan),
       applyEmptyDirectoryCleanupPlan: vi.fn().mockResolvedValue({ plan: { ...plan, status: "applied", revision: 3 }, deleted: 1 }),
     };
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
     const wrapper = mount(LibraryWorkbenchView, { props: { api: api as never } });
     await flushPromises();
 
@@ -162,11 +204,11 @@ describe("LibraryWorkbenchView", () => {
     await flushPromises();
     expect(wrapper.text()).toContain("受管目录可恢复回收");
     expect(wrapper.text()).toContain("受管来源/空目录");
-    await wrapper.findAll("button").find((button) => button.text().includes("确认可恢复回收"))!.trigger("click");
-    await flushPromises();
+    await wrapper.findAll("button").find((button) => button.text().includes("查看摘要并确认回收"))!.trigger("click");
+    expect(wrapper.get(".confirm-dialog").text()).toContain("可恢复回收");
+    await confirmRiskyAction(wrapper);
     expect(api.applyEmptyDirectoryCleanupPlan).toHaveBeenCalledWith("empty-plan-1", expect.objectContaining({ expectedRevision: 1, digest: "b".repeat(64), idempotencyKey: expect.any(String) }));
     expect(wrapper.text()).toContain("可恢复回收 1 个受管目录");
-    confirm.mockRestore();
   });
 
   it("polls queued and running STRM operations before showing completion", async () => {
@@ -216,7 +258,7 @@ describe("LibraryWorkbenchView", () => {
 
   it.each([
     ["failed", "失败，请查看详情后重试"],
-    ["timeout", "超时，请查看详情后重试"],
+    ["timeout", "结果待确认，请先刷新并核对结果，确认前不要恢复执行"],
     ["cancelled", "已取消，可重试"],
   ] as const)("shows a Chinese STRM %s result", async (status, message) => {
     const library = {

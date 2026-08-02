@@ -55,16 +55,32 @@ const emit = defineEmits<{ "auto-start-enabled": [enabled: boolean] }>();
 type SettingsSection = "overview" | "credentials" | "prowlarr" | "logs" | "content" | "inspection" | "p115" | "organization";
 type ValidationState = "idle" | "running" | "error" | P115ValidationResponse["status"];
 
-const sections = [
-  { id: "overview" as const, label: "概览", icon: Activity },
-  { id: "credentials" as const, label: "连接配置", icon: KeyRound },
-  { id: "prowlarr" as const, label: "搜索来源", icon: Radio },
-  { id: "logs" as const, label: "日志", icon: FileText },
-  { id: "content" as const, label: "内容安全", icon: ShieldAlert },
-  { id: "inspection" as const, label: "资源检测", icon: ScanSearch },
-  { id: "p115" as const, label: "115 推送", icon: ShieldCheck },
-  { id: "organization" as const, label: "115 整理", icon: Zap },
+const sectionGroups = [
+  {
+    label: "系统",
+    items: [
+      { id: "overview" as const, label: "概览", icon: Activity },
+      { id: "logs" as const, label: "日志", icon: FileText },
+      { id: "content" as const, label: "内容安全", icon: ShieldAlert },
+      { id: "inspection" as const, label: "资源检测", icon: ScanSearch },
+    ],
+  },
+  {
+    label: "连接与搜索",
+    items: [
+      { id: "credentials" as const, label: "连接配置", icon: KeyRound },
+      { id: "prowlarr" as const, label: "搜索来源", icon: Radio },
+    ],
+  },
+  {
+    label: "入库与输出",
+    items: [
+      { id: "p115" as const, label: "115 推送", icon: ShieldCheck },
+      { id: "organization" as const, label: "115 整理", icon: Zap },
+    ],
+  },
 ];
+const sections = sectionGroups.flatMap((group) => group.items);
 const levelOptions: Array<{ value: LogLevel; label: string }> = [
   { value: "DEBUG", label: "调试" },
   { value: "ERROR", label: "错误" },
@@ -1467,9 +1483,9 @@ watch(autoRefreshLogs, syncLogsRefreshTimer);
   <section class="settings-view">
     <header class="settings-heading"><div><p class="eyebrow">工作区设置</p><h1>设置</h1><p>查看运行状态、日志策略和 115 推送准备情况。</p></div><Settings2 :size="28" /></header>
     <div class="settings-layout">
-      <aside class="settings-nav" aria-label="设置分区"><button v-for="item in sections" :key="item.id" type="button" :class="{ active: activeSection === item.id }" @click="selectSection(item.id)"><component :is="item.icon" :size="16" />{{ item.label }}</button></aside>
+      <aside class="settings-nav" aria-label="设置分区"><div v-for="group in sectionGroups" :key="group.label" class="settings-nav-group"><p class="settings-nav-group-label">{{ group.label }}</p><button v-for="item in group.items" :key="item.id" type="button" :class="{ active: activeSection === item.id }" @click="selectSection(item.id)"><component :is="item.icon" :size="16" />{{ item.label }}</button></div></aside>
       <div class="settings-content">
-        <label class="settings-mobile-select">分区<select aria-label="设置分区" :value="activeSection" @change="selectMobileSection"><option v-for="item in sections" :key="item.id" :value="item.id">{{ item.label }}</option></select></label>
+        <label class="settings-mobile-select">分区<select aria-label="设置分区" :value="activeSection" @change="selectMobileSection"><optgroup v-for="group in sectionGroups" :key="group.label" :label="group.label"><option v-for="item in group.items" :key="item.id" :value="item.id">{{ item.label }}</option></optgroup></select></label>
         <div class="settings-section-kicker"><span>{{ currentSection?.label }}</span><span>观影助手</span></div>
 
         <section v-if="activeSection === 'overview'" class="settings-section" aria-labelledby="overview-title">
