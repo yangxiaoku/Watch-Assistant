@@ -72,6 +72,48 @@ curl http://127.0.0.1:8000/api/v1/health
 
 使用 systemd 部署时，`watch-assistant.service` 可独立重启。qBittorrent sidecar 的升级或重启必须作为独立维护操作执行；不得通过重启应用隐式管理 qBittorrent 的生命周期。
 
+### systemd 发布目录与切换顺序
+
+systemd 发布必须使用 `/opt/watch-assistant/releases` 作为 release 根目录。可以先将压缩包
+解压到同一文件系统内的隐藏 staging 目录，例如
+`/opt/watch-assistant/releases/.watch-assistant-<hash7>.staging`；该目录在 staging 阶段可以是
+`0700`。staging 目录不能被 `current` 或 systemd 服务引用，也不能直接作为最终 release 使用。
+
+在同一文件系统内先将 staging 原子 rename 为未被使用的最终目录：
+
+```bash
+mv -T "$STAGING_ROOT" "$RELEASE_ROOT"
+```
+
+完成原子 rename 后，必须对最终 release 目录运行 prepare 门禁；最终目录的
+顶层权限会被规范化为 `0755`，关键文件、VERSION、范围和符号链接逃逸也会一并校验：
+
+```bash
+RELEASES_ROOT=/opt/watch-assistant/releases
+EXPECTED_RELEASE=<hash7>
+RELEASE_ROOT="$RELEASES_ROOT/watch-assistant-$EXPECTED_RELEASE"
+"$RELEASE_ROOT/scripts/systemd_release_prepare.py" \
+  --release-root "$RELEASE_ROOT" \
+  --expected-release "$EXPECTED_RELEASE" \
+  --allowed-releases-root "$RELEASES_ROOT" \
+  --service-user watch-assistant
+```
+
+prepare 成功后，才允许将 `current` 原子切换到该最终目录；prepare 失败时禁止切换，禁止手工
+递归 chmod、跳过校验或直接重启服务。切换完成后使用发布脚本更新 release 元数据并重启服务，
+该脚本要求显式传入相同的 expected release，并会再次执行 prepare 门禁：
+
+```bash
+ln -s "$RELEASE_ROOT" /opt/watch-assistant/.current.new
+mv -Tf /opt/watch-assistant/.current.new /opt/watch-assistant/current
+
+"$RELEASE_ROOT/scripts/deploy_systemd_release.sh" \
+  "$RELEASE_ROOT" "$EXPECTED_RELEASE"
+```
+
+prepare 工具只修改 release 顶层目录权限，不触碰 `data`、`backup`、`release.env`、
+`/var/lib/watch-assistant` 或 `/etc` 下的文件。
+
 ## HTTPS
 
 推荐使用 Tailscale Serve：

@@ -46,3 +46,16 @@ def test_release_startup_smoke_is_tracked_as_executable():
         pytest.skip("git metadata is unavailable")
 
     assert result.stdout.split(maxsplit=1)[0] == "100755"
+
+
+def test_systemd_release_deploy_runs_prepare_before_metadata_update():
+    script = (DEPLOY_DIR.parent / "scripts" / "deploy_systemd_release.sh").read_text(
+        encoding="utf-8"
+    )
+
+    prepare_position = script.index("systemd_release_prepare.py")
+    update_position = script.index("systemd_release_update.py")
+    assert prepare_position < update_position
+    assert "--expected-release \"$EXPECTED_RELEASE\"" in script
+    assert "--allowed-releases-root \"$RELEASES_ROOT\"" in script
+    assert "--service-user \"$SERVICE_USER\"" in script
