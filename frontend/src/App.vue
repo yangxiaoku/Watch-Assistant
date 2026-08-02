@@ -617,7 +617,7 @@ async function selectView(view: Exclude<BrowseView, "search">) {
   }
 }
 
-function navigateFromTaskDrawer(view: "library" | "workflows") {
+function navigateFromTaskDrawer(view: "library" | "settings" | "workflows") {
   drawerOpen.value = false;
   void selectView(view);
 }
@@ -630,6 +630,11 @@ function updateTask(task: TaskResponse): void {
   taskRefreshGuard.invalidate(task.id);
   tasks.value = [task, ...tasks.value.filter((item) => item.id !== task.id)].slice(0, 50);
   if (isActiveTask(task)) ensurePolling();
+}
+
+function replaceTasks(loaded: TaskResponse[]): void {
+  tasks.value = loaded.slice(0, 50);
+  if (tasks.value.some(isActiveTask)) ensurePolling();
 }
 
 function resetInspection() {
@@ -1542,6 +1547,6 @@ onBeforeUnmount(() => {
        <p v-else-if="result && pushCapabilities.magnet && !pushCapabilities.share" class="warning-strip">磁力云下载可用，115 分享转存尚未验证</p>
        <section v-if="result" class="detail-workspace"><MovieView :result="result" :resources="resourceItems" :resource-facets="resourceFacets" :resource-total="resourceTotal" :resource-hidden-total="resourceHiddenTotal" :resource-page="resourcePage" :resource-page-size="resourcePageSize" :resource-total-pages="resourceTotalPages" :resource-kind="resourceKind" :resource-quality="resourceQuality" :resource-query="resourceQuery" :resource-sort="resourceSort" :resource-loading="resourceLoading" :resource-error="resourceError" :source-names="searchSourceNames" :metadata-loading="metadataLoading" :metadata-error="metadataError" :metadata-stale="metadataStale" :pagination-unavailable="resourcePaginationUnavailable" :media-type="detailMediaType" :season-number="selectedSeason" :season-detail="seasonDetail" :season-detail-loading="seasonDetailLoading" :season-detail-error="seasonDetailError" :pushing-id="pushingId" :push-capabilities="pushCapabilities" :favorite="detailFavorite" :inspection-supported="inspectionSupported" :inspection-state="inspectionState" :inspection-completed="inspectionCompleted" :inspection-total="inspectionTotal" :inspection-failed="inspectionFailed" :inspection-error="inspectionError" :inspection-more-available="inspectionMoreAvailable" :inspection-retry-available="inspectionRetryAvailable" :inspection-started="inspectionSeenIds.size > 0" @push="startPush" @favorite="toggleFavorite(result.movie)" @refresh="refreshResources" @retry-metadata="loadMetadata(detailMediaType, result.movie.tmdb_id, result.movie.title === '正在加载影视资料' ? undefined : result.movie)" @season="selectSeason" @inspect-more="inspectMore" @retry-failed="retryFailed" @retry-page="resourcePaginationUnavailable ? () => loadResourcePage(currentResourceRoute(), 'replace') : refreshResources" @page="changeResourcePage" @kind="(value) => changeResourceFilter({ kind: value })" @quality="(value) => changeResourceFilter({ quality: value })" @query="changeResourceQuery" @sort="(value) => changeResourceFilter({ sort: value })" @page-size="(value) => changeResourceFilter({ pageSize: value })" @back="returnToBrowse" /></section>
     </template>
-    <TaskDrawer :api="api" :tasks="tasks" :open="drawerOpen" @close="drawerOpen = false" @navigate="navigateFromTaskDrawer" @updated="updateTask" />
+    <TaskDrawer :api="api" :tasks="tasks" :open="drawerOpen" @close="drawerOpen = false" @navigate="navigateFromTaskDrawer" @updated="updateTask" @loaded="replaceTasks" />
   </main>
 </template>

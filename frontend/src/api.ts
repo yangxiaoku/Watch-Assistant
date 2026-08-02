@@ -58,6 +58,7 @@ import type {
   PwaDevice,
 } from "./types";
 import { describeUiError, type UiErrorAction } from "./errorCatalog";
+import { safeLocalizedCopy } from "./uiSafety";
 
 export interface ApiFieldError {
   fieldId: string;
@@ -481,8 +482,26 @@ export class ApiClient {
     });
   }
 
+  async listTasks(): Promise<TaskResponse[]> {
+    return this.request<TaskResponse[]>("/api/v1/tasks");
+  }
+
   async getTask(taskId: string): Promise<TaskResponse> {
-    return this.request<TaskResponse>(`/api/v1/tasks/${taskId}`);
+    return this.request<TaskResponse>(`/api/v1/tasks/${encodeURIComponent(taskId)}`);
+  }
+
+  async retryTask(taskId: string): Promise<TaskResponse> {
+    return this.request<TaskResponse>(`/api/v1/tasks/${encodeURIComponent(taskId)}/retry`, {
+      method: "POST",
+      body: "{}",
+    });
+  }
+
+  async cancelTask(taskId: string): Promise<TaskResponse> {
+    return this.request<TaskResponse>(`/api/v1/tasks/${encodeURIComponent(taskId)}/cancel`, {
+      method: "POST",
+      body: "{}",
+    });
   }
 
   async reconcileTask(taskId: string): Promise<TaskReconciliationResponse> {
@@ -684,11 +703,12 @@ export class ApiClient {
       const body = await response.json().catch(() => ({}));
       if (!response.ok) {
         const detail = body.error ?? body.detail;
-        const code = typeof detail === "string" ? detail : detail?.code;
-        const descriptor = describeUiError(code, response.status);
-        const fieldErrors = parseFieldErrors(detail?.field_errors);
-        const requestId = typeof detail?.request_id === "string" ? detail.request_id : response.headers.get("X-Request-ID");
-        const correlationId = typeof detail?.correlation_id === "string" ? detail.correlation_id : response.headers.get("X-Correlation-ID");
+        const detailRecord = asErrorRecord(detail);
+        const code = typeof detail === "string" ? detail : typeof detailRecord?.code === "string" ? detailRecord.code : undefined;
+        const descriptor = localizedDescriptor(detailRecord, describeUiError(code, response.status));
+        const fieldErrors = parseFieldErrors(detailRecord?.field_errors);
+        const requestId = typeof detailRecord?.request_id === "string" ? detailRecord.request_id : response.headers.get("X-Request-ID");
+        const correlationId = typeof detailRecord?.correlation_id === "string" ? detailRecord.correlation_id : response.headers.get("X-Correlation-ID");
         throw new ApiError(descriptor.message, response.status, descriptor.code, {
           ...descriptor,
           fieldErrors,
@@ -946,7 +966,24 @@ function parseFieldErrors(value: unknown): ApiFieldError[] {
     if (!item || typeof item !== "object") return [];
     const record = item as Record<string, unknown>;
     const fieldId = typeof record.field_id === "string" ? record.field_id : typeof record.field === "string" ? record.field : "";
-    const message = typeof record.message_zh === "string" ? record.message_zh : typeof record.message === "string" ? record.message : "";
+    const message = typeof record.message_zh === "string" ? record.message_zh : "";
     return fieldId && message ? [{ fieldId, message }] : [];
   });
+}
+
+function asErrorRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" ? value as Record<string, unknown> : null;
+}
+
+function localizedDescriptor(
+  detail: Record<string, unknown> | null,
+  descriptor: ReturnType<typeof describeUiError>,
+): ReturnType<typeof describeUiError> {
+  if (!detail) return descriptor;
+  return {
+    ...descriptor,
+    title: safeLocalizedCopy(detail.title_zh, descriptor.title),
+    message: safeLocalizedCopy(detail.message_zh, descriptor.message),
+    suggestion: safeLocalizedCopy(detail.suggestion_zh, descriptor.suggestion),
+  };
 }
