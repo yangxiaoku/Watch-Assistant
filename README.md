@@ -95,7 +95,8 @@ RELEASE_ROOT="$RELEASES_ROOT/watch-assistant-$EXPECTED_RELEASE"
 "$RELEASE_ROOT/scripts/systemd_release_prepare.py" \
   --release-root "$RELEASE_ROOT" \
   --expected-release "$EXPECTED_RELEASE" \
-  --allowed-releases-root "$RELEASES_ROOT"
+  --allowed-releases-root "$RELEASES_ROOT" \
+  --service-user watch-assistant
 ```
 
 prepare 成功后，才允许将 `current` 原子切换到该最终目录；prepare 失败时禁止切换，禁止手工

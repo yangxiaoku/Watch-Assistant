@@ -9,6 +9,7 @@ import stat
 import sys
 from collections.abc import Sequence
 from pathlib import Path
+from typing import NamedTuple
 
 SCRIPT_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = SCRIPT_ROOT / "src"
@@ -18,11 +19,15 @@ if SRC_ROOT.is_dir():
 from watch_assistant.release_metadata import normalize_release, read_release_commit
 
 DEFAULT_ALLOWED_RELEASES_ROOT = Path("/opt/watch-assistant/releases")
+DEFAULT_RELEASES_ROOT = DEFAULT_ALLOWED_RELEASES_ROOT
+DEFAULT_SERVICE_USER = "watch-assistant"
 DEFAULT_REQUIRED_PATHS = (
     "VERSION",
     "config/tgto-contract.json",
     "frontend/dist/index.html",
     "src/watch_assistant",
+    "src/watch_assistant/app.py",
+    "src/watch_assistant/release_metadata.py",
     "deploy/watch-assistant.service",
     "scripts/deploy_systemd_release.sh",
     "scripts/systemd_release_prepare.py",
@@ -39,6 +44,11 @@ class ReleasePrepareError(ValueError):
     def __init__(self, code: str):
         self.code = code
         super().__init__(code)
+
+
+class ServiceIdentity(NamedTuple):
+    uid: int
+    gids: tuple[int, ...]
 
 
 def _is_within(path: Path, parent: Path) -> bool:
@@ -133,27 +143,101 @@ def _validate_required_path(relative: str, path: Path) -> None:
     elif not stat.S_ISREG(metadata.st_mode):
         raise ReleasePrepareError("required_path_type")
 
-    if os.name == "nt":
-        return
-    mode = stat.S_IMODE(metadata.st_mode)
-    required_bits = stat.S_IROTH
-    if is_directory:
-        required_bits |= stat.S_IXOTH
-    if mode & required_bits != required_bits:
-        raise ReleasePrepareError("required_path_not_readable")
-
 
 def _validate_parent_traversal(release_root: Path) -> None:
-    if os.name == "nt":
-        return
     try:
         metadata = release_root.parent.stat()
     except (OSError, RuntimeError):
         raise ReleasePrepareError("release_parent_unavailable") from None
     if not stat.S_ISDIR(metadata.st_mode):
         raise ReleasePrepareError("release_parent_not_directory")
-    if not stat.S_IMODE(metadata.st_mode) & stat.S_IXOTH:
-        raise ReleasePrepareError("release_parent_not_traversable")
+
+
+def _resolve_service_identity(
+    service_user: str | None, release_root: Path
+) -> ServiceIdentity | None:
+    if os.name == "nt":
+        # Windows does not expose POSIX owner/group mode semantics. Keep the
+        # user parameter in the CLI contract without attempting a pwd lookup.
+        return None
+    if service_user is None:
+        try:
+            uid = os.getuid()
+            primary_gid = os.getgid()
+            gids = {primary_gid, *os.getgroups()}
+        except AttributeError:
+            metadata = release_root.stat()
+            uid = metadata.st_uid
+            gids = {metadata.st_gid}
+        return ServiceIdentity(uid=uid, gids=tuple(gids))
+    try:
+        import pwd
+
+        account = pwd.getpwnam(service_user)
+    except (ImportError, KeyError, OSError):
+        raise ReleasePrepareError("service_user_unavailable") from None
+    gids = {account.pw_gid}
+    getgrouplist = getattr(os, "getgrouplist", None)
+    if getgrouplist is not None:
+        try:
+            gids.update(getgrouplist(service_user, account.pw_gid))
+        except OSError:
+            pass
+    return ServiceIdentity(uid=account.pw_uid, gids=tuple(gids))
+
+
+def _permission_bits(mode: int, identity: ServiceIdentity, metadata: os.stat_result) -> int:
+    if identity.uid == metadata.st_uid:
+        return (mode >> 6) & 0b111
+    if metadata.st_gid in identity.gids:
+        return (mode >> 3) & 0b111
+    return mode & 0b111
+
+
+def _require_service_access(
+    path: Path,
+    identity: ServiceIdentity,
+    required_bits: int,
+    code: str,
+) -> None:
+    try:
+        metadata = path.stat()
+    except (OSError, RuntimeError):
+        raise ReleasePrepareError(code) from None
+    mode = stat.S_IMODE(metadata.st_mode)
+    if _permission_bits(mode, identity, metadata) & required_bits != required_bits:
+        raise ReleasePrepareError(code)
+
+
+def _validate_service_access(
+    release_root: Path,
+    validated_paths: dict[str, Path],
+    identity: ServiceIdentity | None,
+) -> None:
+    if identity is None:
+        return
+    for parent in reversed(release_root.parents):
+        _require_service_access(
+            parent, identity, 0b001, "release_parent_not_traversable"
+        )
+    _require_service_access(release_root, identity, 0b101, "release_root_not_traversable")
+
+    checked_directories: set[Path] = {release_root}
+    for required_path in validated_paths.values():
+        relative_parent = required_path.relative_to(release_root).parent
+        current = release_root
+        for part in relative_parent.parts:
+            current /= part
+            if current in checked_directories:
+                continue
+            _require_service_access(
+                current, identity, 0b101, "required_path_not_readable"
+            )
+            checked_directories.add(current)
+        required_bits = 0b101 if required_path.is_dir() else 0b100
+        _require_service_access(
+            required_path, identity, required_bits, "required_path_not_readable"
+        )
 
 
 def _release_root_mode(release_root: Path) -> int:
@@ -202,8 +286,10 @@ def _effective_required_paths(
 def prepare_release(
     release_root: Path,
     expected_release: str,
-    allowed_releases_root: Path = DEFAULT_ALLOWED_RELEASES_ROOT,
+    allowed_releases_root: Path | None = None,
     required_files: Sequence[str] | None = None,
+    service_user: str | None = None,
+    service_identity: ServiceIdentity | None = None,
 ) -> str:
     """Validate and prepare one release; return its normalized release id."""
 
@@ -211,7 +297,13 @@ def prepare_release(
     if expected is None:
         raise ReleasePrepareError("expected_release_invalid")
 
-    allowed_root = _resolve_allowed_root(Path(allowed_releases_root))
+    allowed_root = _resolve_allowed_root(
+        Path(
+            allowed_releases_root
+            if allowed_releases_root is not None
+            else DEFAULT_RELEASES_ROOT
+        )
+    )
     release_root = _resolve_release_root(Path(release_root), allowed_root)
     _validate_parent_traversal(release_root)
 
@@ -227,7 +319,9 @@ def prepare_release(
     if actual != expected:
         raise ReleasePrepareError("version_mismatch")
 
+    identity = service_identity or _resolve_service_identity(service_user, release_root)
     _normalize_root_mode(release_root)
+    _validate_service_access(release_root, validated_paths, identity)
     return actual
 
 
@@ -253,13 +347,15 @@ def _message(code: str) -> str:
         "required_path_missing": "关键路径缺失或不可解析。",
         "required_path_escape": "关键路径通过符号链接逃逸发布目录。",
         "required_path_type": "关键路径类型不正确。",
-        "required_path_not_readable": "关键路径缺少服务用户读取权限。",
+        "required_path_not_readable": "关键路径缺少服务用户读取或遍历权限。",
         "release_parent_unavailable": "发布目录父目录不可用。",
         "release_parent_not_directory": "发布目录父路径不是目录。",
         "release_parent_not_traversable": "发布目录父目录缺少服务用户遍历权限。",
+        "release_root_not_traversable": "发布根目录缺少服务用户遍历权限。",
         "release_root_unavailable": "发布根目录不可用。",
         "release_root_mode_update_failed": "发布根目录权限规范化失败。",
         "release_root_mode_invalid": "发布根目录权限校验失败。",
+        "service_user_unavailable": "无法解析 systemd 服务用户。",
     }.get(code, "发布目录准备失败。")
 
 
@@ -280,6 +376,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="append",
         help="额外的相对关键路径；未传入时使用内置发布清单。",
     )
+    parser.add_argument("--service-user", default=DEFAULT_SERVICE_USER)
     args = parser.parse_args(argv)
     try:
         release = prepare_release(
@@ -287,6 +384,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             expected_release=args.expected_release,
             allowed_releases_root=args.allowed_releases_root,
             required_files=args.required_files,
+            service_user=args.service_user,
         )
     except ReleasePrepareError as exc:
         print(f"系统发布目录准备失败：{_message(exc.code)}")

@@ -58,3 +58,4 @@ def test_systemd_release_deploy_runs_prepare_before_metadata_update():
     assert prepare_position < update_position
     assert "--expected-release \"$EXPECTED_RELEASE\"" in script
     assert "--allowed-releases-root \"$RELEASES_ROOT\"" in script
+    assert "--service-user \"$SERVICE_USER\"" in script

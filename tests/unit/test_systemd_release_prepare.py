@@ -11,6 +11,8 @@ PREPARE_PATHS = (
     "config/tgto-contract.json",
     "frontend/dist/index.html",
     "src/watch_assistant",
+    "src/watch_assistant/app.py",
+    "src/watch_assistant/release_metadata.py",
     "deploy/watch-assistant.service",
     "scripts/deploy_systemd_release.sh",
     "scripts/systemd_release_prepare.py",
@@ -161,6 +163,33 @@ def test_prepare_rejects_root_scope_and_allowed_root_itself(tmp_path: Path):
     assert same_root.value.code == "release_root_is_allowed_root"
 
 
+def test_prepare_cli_accepts_configured_root_and_service_user_on_offline_hosts(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
+    allowed_root = tmp_path / "releases"
+    release_root = allowed_root / "watch-assistant-abcdef1"
+    release_root.mkdir(parents=True)
+
+    assert (
+        prepare.main(
+            [
+                "--release-root",
+                str(release_root),
+                "--expected-release",
+                "abcdef1",
+                "--allowed-releases-root",
+                str(allowed_root),
+                "--service-user",
+                "offline-watch-assistant",
+            ]
+        )
+        == 1
+    )
+    output = capsys.readouterr().out
+    assert "SYSTEMD_RELEASE_PREPARE_CODE=required_path_missing" in output
+    assert str(release_root) not in output
+
+
 @pytest.mark.skipif(os.name == "nt", reason="symlink creation requires POSIX test support")
 def test_prepare_rejects_release_root_symlink(tmp_path: Path):
     allowed_root = tmp_path / "releases"
@@ -206,6 +235,7 @@ def test_prepare_requires_parent_traversal_bit(tmp_path: Path):
     allowed_root.mkdir()
     release_root, _ = _write_release(allowed_root)
     os.chmod(allowed_root, 0o700)
+    service_identity = prepare.ServiceIdentity(uid=10**9, gids=(10**9,))
 
     with pytest.raises(prepare.ReleasePrepareError) as error:
         prepare.prepare_release(
@@ -213,5 +243,6 @@ def test_prepare_requires_parent_traversal_bit(tmp_path: Path):
             "abcdef1",
             allowed_root,
             required_files=PREPARE_PATHS,
+            service_identity=service_identity,
         )
     assert error.value.code == "release_parent_not_traversable"

@@ -12,13 +12,15 @@ RELEASE_ENV="${WATCH_ASSISTANT_RELEASE_ENV:-/var/lib/watch-assistant/release.env
 DROP_IN="${WATCH_ASSISTANT_RELEASE_DROP_IN:-/etc/systemd/system/watch-assistant.service.d/release.conf}"
 CURRENT_ROOT="${WATCH_ASSISTANT_CURRENT_ROOT:-/opt/watch-assistant/current}"
 RELEASES_ROOT="${WATCH_ASSISTANT_RELEASES_ROOT:-/opt/watch-assistant/releases}"
+SERVICE_USER="${WATCH_ASSISTANT_SERVICE_USER:-watch-assistant}"
 HEALTH_URL="${WATCH_ASSISTANT_HEALTH_URL:-http://127.0.0.1:8115/api/v1/health}"
 PYTHON_BIN="${WATCH_ASSISTANT_PYTHON:-/opt/watch-assistant/venv/bin/python}"
 
 "$PYTHON_BIN" "$RELEASE_ROOT/scripts/systemd_release_prepare.py" \
     --release-root "$RELEASE_ROOT" \
     --expected-release "$EXPECTED_RELEASE" \
-    --allowed-releases-root "$RELEASES_ROOT"
+    --allowed-releases-root "$RELEASES_ROOT" \
+    --service-user "$SERVICE_USER"
 "$PYTHON_BIN" "$RELEASE_ROOT/scripts/systemd_release_update.py" \
     --version-file "$RELEASE_ROOT/VERSION" \
     --release-env "$RELEASE_ENV" \
