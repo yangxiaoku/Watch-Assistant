@@ -197,6 +197,87 @@ async def test_strm_recovery_uses_cas_and_heartbeat_lease(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_startup_recovery_preserves_a_live_operation_lease(tmp_path: Path):
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'operations.db'}")
+    await initialize_database(database.engine)
+    try:
+        service = StrmOperationService(database.session_factory)
+        now = datetime(2026, 8, 2, 12, 0, tzinfo=UTC)
+        operation = await service.create(
+            library_id="library-one",
+            source_scan_run_id="scan-live",
+            kind=StrmOperationKind.INCREMENTAL,
+        )
+        running = await service.start(
+            operation.operation_id,
+            now=now,
+            lease_duration=timedelta(minutes=5),
+        )
+        assert running.status == "running"
+
+        recovered = await service.recover_incomplete(
+            now=now + timedelta(minutes=1),
+        )
+
+        assert recovered == 0
+        current = await service.get(operation.operation_id)
+        assert current.status == "running"
+        assert await service.is_lease_active(
+            operation.operation_id,
+            lease_owner=await service.get_lease_token(operation.operation_id),
+            now=now + timedelta(minutes=1),
+        )
+    finally:
+        await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_expired_recovery_fences_old_executor_before_new_claim(tmp_path: Path):
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'operations.db'}")
+    await initialize_database(database.engine)
+    try:
+        service = StrmOperationService(database.session_factory)
+        now = datetime(2026, 8, 2, 12, 0, tzinfo=UTC)
+        old = await service.create(
+            library_id="library-one",
+            source_scan_run_id="scan-old",
+            kind=StrmOperationKind.INCREMENTAL,
+        )
+        await service.start(
+            old.operation_id,
+            now=now,
+            lease_duration=timedelta(minutes=1),
+        )
+        old_owner = await service.get_lease_token(old.operation_id)
+        assert old_owner is not None
+        assert await service.recover_incomplete(now=now + timedelta(seconds=30)) == 0
+
+        assert await service.recover_stale(
+            max_age=timedelta(minutes=30),
+            now=now + timedelta(minutes=2),
+        ) == 1
+        assert not await service.is_lease_active(
+            old.operation_id,
+            lease_owner=old_owner,
+            now=now + timedelta(minutes=2),
+        )
+
+        new = await service.create(
+            library_id="library-one",
+            source_scan_run_id="scan-new",
+            kind=StrmOperationKind.INCREMENTAL,
+        )
+        claimed, acquired = await service.claim_start(
+            new.operation_id,
+            now=now + timedelta(minutes=2),
+        )
+        assert acquired is True
+        assert claimed.status == "running"
+    finally:
+        await database.engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_strm_operation_idempotency_reuses_only_matching_request(tmp_path: Path):
     database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'operations.db'}")
     await initialize_database(database.engine)

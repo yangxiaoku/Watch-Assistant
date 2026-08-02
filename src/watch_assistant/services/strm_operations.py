@@ -552,7 +552,7 @@ class StrmOperationService:
         now: datetime | None = None,
         error_code: str = "strm_operation_recovered",
     ) -> int:
-        """Terminalize operations left behind by a cancelled process."""
+        """Recover operations without taking a live lease from another process."""
 
         _validate_error_code(error_code)
         current_time = _as_utc(now) or datetime.now(UTC)
@@ -560,7 +560,7 @@ class StrmOperationService:
             current_time=current_time,
             error_code=error_code,
             cutoff=None,
-            respect_lease=False,
+            respect_lease=True,
         )
 
     async def recover_stale(

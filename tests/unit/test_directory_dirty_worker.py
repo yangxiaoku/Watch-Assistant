@@ -6,11 +6,13 @@ import pytest
 from sqlalchemy import select
 from test_organization_operations import _database, _operation
 
+from watch_assistant.db import create_database
 from watch_assistant.models import (
     DirectoryDirtyEvent,
     OrganizationOperation,
     OrganizationOperationStatus,
     Resource,
+    StrmOperation,
     Task,
 )
 from watch_assistant.schemas import (
@@ -26,6 +28,10 @@ from watch_assistant.schemas import (
 from watch_assistant.services.directory_dirty_worker import DirectoryDirtyWorker
 from watch_assistant.services.organization_operations import (
     OrganizationOperationService,
+)
+from watch_assistant.services.strm_operations import (
+    StrmOperationKind,
+    StrmOperationService,
 )
 from watch_assistant.services.tasks import TaskService
 from watch_assistant.services.workflows import WorkflowService
@@ -103,9 +109,31 @@ class _FakeIndex:
 class _FakeStrm:
     def __init__(self):
         self.calls = []
+        self.lease_was_active = False
 
     async def incremental(self, library_id, **kwargs):
         self.calls.append((library_id, kwargs))
+        lease_check = kwargs.get("lease_check")
+        if callable(lease_check):
+            self.lease_was_active = await lease_check()
+        progress_callback = kwargs.get("progress_callback")
+        if callable(progress_callback):
+            await progress_callback(
+                SimpleNamespace(
+                    generated=1,
+                    unchanged=0,
+                    skipped=0,
+                    failed=0,
+                    retired=0,
+                )
+            )
+        return SimpleNamespace(
+            generated=1,
+            unchanged=0,
+            skipped=0,
+            failed=0,
+            retired=0,
+        )
 
 
 class _OrganizationSettings:
@@ -155,11 +183,23 @@ async def test_dirty_worker_consumes_event_and_preserves_cleanup_gate(tmp_path: 
     assert len(index.calls) == 1
     assert len(strm.calls) == 1
     assert strm.calls[0][1]["retire_removed"] is False
+    assert strm.calls[0][1]["operation_id"].startswith("strm_op_")
+    assert strm.lease_was_active is True
     async with database.session_factory() as session:
         current = await session.get(DirectoryDirtyEvent, event.id)
         assert current is not None
         assert current.status == "consumed"
         assert current.error_code is None
+        operation_row = await session.scalar(
+            select(StrmOperation).where(
+                StrmOperation.library_id == "library-1",
+                StrmOperation.kind == StrmOperationKind.INCREMENTAL,
+            )
+        )
+        assert operation_row is not None
+        assert operation_row.status.value == "succeeded"
+        assert operation_row.generated == 1
+        assert operation_row.lease_owner is None
     workflow_state = await WorkflowService(database.session_factory).get(workflow.id)
     strm_stage = next(
         stage for stage in workflow_state.stages if stage.stage is WorkflowStageName.STRM
@@ -167,6 +207,74 @@ async def test_dirty_worker_consumes_event_and_preserves_cleanup_gate(tmp_path: 
     assert strm_stage.status is WorkflowStageStatus.SUCCEEDED
     assert strm_stage.child_type == "strm_dirty_generation"
     await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_dirty_worker_claim_is_mutually_exclusive_with_api_operation(
+    tmp_path: Path,
+):
+    database = await _database(tmp_path)
+    other_database = create_database(
+        f"sqlite+aiosqlite:///{tmp_path / 'operations.db'}"
+    )
+    try:
+        service, operation, lease = await _claimed(database)
+        await service.finish(
+            operation.operation_id,
+            expected_revision=lease.revision,
+            lease_token=lease.lease_token,
+            status=OrganizationOperationStatus.ORGANIZED,
+            source_directory_id="7000",
+            target_directory_id="8000",
+        )
+        api_operations = StrmOperationService(database.session_factory)
+        api_operation = await api_operations.create(
+            library_id="library-1",
+            source_scan_run_id="api-scan",
+            kind=StrmOperationKind.FULL,
+            idempotency_key="api-running-operation",
+        )
+        api_running = await api_operations.start(api_operation.operation_id)
+        assert api_running.status == "running"
+
+        index = _FakeIndex()
+        strm = _FakeStrm()
+        worker = DirectoryDirtyWorker(
+            other_database.session_factory,
+            strm,
+            lambda _library_id, _root_id: index,
+            output_root=tmp_path / "strm",
+            playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+        )
+
+        assert await worker.run_once()
+        assert len(index.calls) == 1
+        assert strm.calls == []
+        async with database.session_factory() as session:
+            event = await session.scalar(
+                select(DirectoryDirtyEvent).where(
+                    DirectoryDirtyEvent.directory_id == "7000"
+                )
+            )
+            assert event is not None
+            assert event.status == "pending"
+            assert event.error_code == "strm_operation_in_progress"
+            queued = list(
+                (
+                    await session.scalars(
+                        select(StrmOperation).where(
+                            StrmOperation.library_id == "library-1",
+                            StrmOperation.kind == StrmOperationKind.INCREMENTAL,
+                        )
+                    )
+                ).all()
+            )
+            assert len(queued) == 1
+            assert queued[0].status.value == "queued"
+        assert (await api_operations.get(api_operation.operation_id)).status == "running"
+    finally:
+        await other_database.engine.dispose()
+        await database.engine.dispose()
 
 
 @pytest.mark.asyncio

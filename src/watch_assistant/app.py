@@ -481,6 +481,7 @@ def create_app(
                 cleanup_enabled=bool(
                     getattr(application.state, "strm_cleanup_enabled", False)
                 ),
+                operation_service=application.state.strm_operation_service,
                 settings_service=application.state.settings_service,
                 # Empty-directory recycling is only authorized by the explicit
                 # preview/apply API, never by the background dirty worker.

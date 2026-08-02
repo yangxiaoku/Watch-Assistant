@@ -203,6 +203,17 @@ def _generation_response(summary: StrmOperationSummary) -> StrmGenerationRespons
 def _existing_generation_response(
     summary: StrmOperationSummary,
 ) -> StrmGenerationResponse:
+    if summary.status == "running":
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "strm_operation_in_progress",
+                "message": "已复用正在执行的 STRM 操作，当前仍在执行",
+                "operation_id": summary.operation_id,
+                "status": summary.status,
+                "reused": True,
+            },
+        )
     if summary.status in {"failed", "timeout", "cancelled"}:
         raise HTTPException(
             status_code=409,
