@@ -81,6 +81,8 @@ const unavailableCapability = (): CapabilityAvailability => ({
   reason_zh: "当前未读取能力状态，请刷新页面后重试。",
   settings_section: "overview",
 });
+const strmFullCapability = ref<CapabilityAvailability>(unavailableCapability());
+const strmIncrementalCapability = ref<CapabilityAvailability>(unavailableCapability());
 const strmCleanupCapability = ref<CapabilityAvailability>(unavailableCapability());
 const emptyDirectoryCleanupCapability = ref<CapabilityAvailability>(unavailableCapability());
 const selectedSeason = ref<number | null>(null);
@@ -481,12 +483,26 @@ const navItems = [
   { view: "movies" as const, label: "电影", icon: Film },
   { view: "tv" as const, label: "剧集", icon: Tv },
   { view: "popular" as const, label: "热门", icon: Flame },
+  { view: "favorites" as const, label: "收藏", icon: Heart },
+  { view: "history" as const, label: "记录", icon: Clock3 },
   { view: "organization-plans" as const, label: "整理", icon: ClipboardCheck },
   { view: "organization-history" as const, label: "整理历史", icon: Clock3 },
   { view: "library" as const, label: "媒体库", icon: Database },
-  { view: "workflows" as const, label: "任务中心", icon: ListTodo },
-  { view: "notifications" as const, label: "通知", icon: Bell },
 ];
+
+function healthCapability(
+  enabled: boolean | undefined,
+  reasonCode: string,
+  label: string,
+): CapabilityAvailability {
+  if (enabled === undefined) return unavailableCapability();
+  return {
+    enabled,
+    reason_code: enabled ? null : reasonCode,
+    reason_zh: enabled ? "可执行" : `${label}未启用，请在设置概览查看功能状态。`,
+    settings_section: "overview",
+  };
+}
 
 function readStoredMovies(key: string): MovieMetadata[] {
   try {
@@ -594,9 +610,13 @@ async function selectView(view: Exclude<BrowseView, "search">) {
   }
 }
 
-function navigateFromTaskDrawer(view: "library") {
+function navigateFromTaskDrawer(view: "library" | "workflows") {
   drawerOpen.value = false;
   void selectView(view);
+}
+
+function openTaskDrawer(): void {
+  drawerOpen.value = true;
 }
 
 function resetInspection() {
@@ -1421,6 +1441,8 @@ onMounted(async () => {
     inspectionAutoStartEnabled.value = health.inspection_auto_start_enabled === true;
     organizationPlanEnabled.value = health.organization_plan_enabled === true;
     organizationExecutionEnabled.value = health.organization_execution_enabled === true;
+    strmFullCapability.value = healthCapability(health.strm_capabilities?.full, "strm_full_disabled", "STRM 全量生成");
+    strmIncrementalCapability.value = healthCapability(health.strm_capabilities?.incremental, "strm_incremental_disabled", "STRM 增量同步");
     const strmCleanup = health.strm_capabilities?.cleanup_capability;
     strmCleanupCapability.value = strmCleanup ?? {
       enabled: health.strm_capabilities?.cleanup === true,
@@ -1462,11 +1484,11 @@ onBeforeUnmount(() => {
           <template v-for="item in navItems" :key="item.view"><button v-if="(item.view !== 'organization-plans' && item.view !== 'organization-history') || organizationPlanEnabled" type="button" :class="{ active: activeView === item.view && !result }" @click="selectView(item.view)"><component :is="item.icon" :size="16" />{{ item.label }}</button></template>
         </nav>
         <form class="top-search" role="search" @submit.prevent="searchMovies"><Search :size="17" /><input v-model="searchInput" type="search" aria-label="搜索电影或电视剧" placeholder="搜索电影或电视剧" /><button type="submit" aria-label="提交搜索" title="搜索"><Search :size="17" /></button></form>
-        <div class="topbar-actions">
-          <button type="button" :class="{ active: activeView === 'favorites' && !result }" @click="selectView('favorites')"><Heart :size="17" />收藏</button>
-          <button type="button" :class="{ active: activeView === 'history' && !result }" @click="selectView('history')"><Clock3 :size="17" />记录</button>
-          <button class="icon-button" type="button" title="推送记录" aria-label="推送记录" @click="drawerOpen = true"><PanelRight :size="18" /></button>
-          <button class="icon-button" type="button" :class="{ active: activeView === 'settings' && !result }" title="设置" aria-label="设置" @click="selectView('settings')"><Settings :size="18" /></button>
+        <div class="topbar-actions" aria-label="工作流入口">
+          <button class="icon-button topbar-quick-action" type="button" title="推送任务" aria-label="推送任务" @click="openTaskDrawer"><PanelRight :size="18" /><span>推送任务</span></button>
+          <button class="icon-button topbar-quick-action" type="button" :class="{ active: activeView === 'workflows' && !result }" title="任务中心" aria-label="任务中心" @click="selectView('workflows')"><ListTodo :size="18" /><span>任务中心</span></button>
+          <button class="icon-button topbar-quick-action" type="button" :class="{ active: activeView === 'notifications' && !result }" title="通知" aria-label="通知" @click="selectView('notifications')"><Bell :size="18" /><span>通知</span></button>
+          <button class="icon-button topbar-quick-action" type="button" :class="{ active: activeView === 'settings' && !result }" title="设置" aria-label="设置" @click="selectView('settings')"><Settings :size="18" /><span>设置</span></button>
         </div>
       </template>
       <div v-else class="topbar-meta"><span class="status-dot" />局域网工作台</div>
@@ -1485,8 +1507,8 @@ onBeforeUnmount(() => {
         <SettingsView v-else-if="activeView === 'settings'" :api="api" :initial-section="settingsInitialSection" @auto-start-enabled="inspectionAutoStartEnabled = $event" />
         <OrganizationWorkbenchView v-else-if="activeView === 'organization-plans' && organizationPlanEnabled" :api="api" :execution-enabled="organizationExecutionEnabled" />
         <OrganizationHistoryView v-else-if="activeView === 'organization-history' && organizationPlanEnabled" :api="api" />
-        <LibraryWorkbenchView v-else-if="activeView === 'library'" :api="api" :strm-cleanup-capability="strmCleanupCapability" :empty-directory-cleanup-capability="emptyDirectoryCleanupCapability" @open-settings="openOrganizationSettings" />
-        <WorkflowCenterView v-else-if="activeView === 'workflows'" :api="api" />
+        <LibraryWorkbenchView v-else-if="activeView === 'library'" :api="api" :strm-full-capability="strmFullCapability" :strm-incremental-capability="strmIncrementalCapability" :strm-cleanup-capability="strmCleanupCapability" :empty-directory-cleanup-capability="emptyDirectoryCleanupCapability" @open-settings="openOrganizationSettings" />
+        <WorkflowCenterView v-else-if="activeView === 'workflows'" :api="api" @open-push-tasks="openTaskDrawer" />
         <NotificationCenterView v-else-if="activeView === 'notifications'" :api="api" @navigate="selectView" />
         <SearchView v-else v-model="searchInput" :loading="catalogLoading" :movies="catalogMovies" :heading="catalogHeading" :favorite-ids="favoriteIds" :page="currentPage" :total-pages="totalPages" :total-results="totalResults" @search="searchMovies" @reset="selectView('home')" @open="openMovie" @favorite="toggleFavorite" @page="loadPage" />
       </template>

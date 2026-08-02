@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { AlertTriangle, Ban, CheckCircle2, Clock3, LoaderCircle, RefreshCw, XCircle } from "@lucide/vue";
+import { AlertTriangle, Ban, CheckCircle2, Clock3, LoaderCircle, PanelRight, RefreshCw, XCircle } from "@lucide/vue";
 import { computed, onMounted, ref } from "vue";
 import { ApiClient, ApiError } from "../api";
 import type { WorkflowResponse, WorkflowStageResponse, WorkflowStatus } from "../types";
 
 const props = defineProps<{ api: ApiClient }>();
+defineEmits<{ "open-push-tasks": [] }>();
 
 const statusFilter = ref<WorkflowStatus | "">("");
 const stageFilter = ref<WorkflowStageResponse["stage"] | "">("");
@@ -154,6 +155,7 @@ onMounted(() => { void loadWorkflows(); });
   <section class="workflow-center" aria-labelledby="workflow-title">
     <header class="library-heading workflow-heading">
       <div><p class="eyebrow">任务状态与阶段</p><h1 id="workflow-title">任务中心</h1><p>统一查看搜索、检测、推送、整理和 STRM 的关联进度。</p></div>
+      <button class="secondary-button workflow-push-link" type="button" @click="$emit('open-push-tasks')"><PanelRight :size="16" />查看推送任务</button>
       <div class="workflow-toolbar"><label for="workflow-status">状态</label><select id="workflow-status" v-model="statusFilter" @change="loadWorkflows"><option v-for="option in statusOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select><label for="workflow-stage">阶段</label><select id="workflow-stage" v-model="stageFilter" @change="loadWorkflows"><option v-for="option in stageOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select><label for="workflow-stage-status">阶段状态</label><select id="workflow-stage-status" v-model="stageStatusFilter" @change="loadWorkflows"><option v-for="option in stageStatusOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select><label for="workflow-subscription">订阅</label><input id="workflow-subscription" v-model="subscriptionFilter" type="search" placeholder="订阅 ID" @change="loadWorkflows" /><button class="icon-button" type="button" title="刷新任务中心" aria-label="刷新任务中心" :disabled="loading" @click="loadWorkflows"><RefreshCw :size="17" :class="{ spin: loading }" /></button></div>
     </header>
     <div v-if="error" class="settings-state settings-state-error" role="alert"><AlertTriangle :size="18" /><span>{{ error }}</span><button class="text-button" type="button" @click="loadWorkflows">重试</button></div>
