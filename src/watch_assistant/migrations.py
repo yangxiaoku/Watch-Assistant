@@ -193,6 +193,57 @@ def _create_library_inventory_ledger_tables(connection: Connection) -> None:
         )
 
 
+def _upgrade_library_scan_lifecycle(connection: Connection) -> None:
+    """Add durable worker leases and tree cursors to existing scan tables."""
+
+    inspector = inspect(connection)
+    if not inspector.has_table("library_scan_runs"):
+        return
+    run_columns = {
+        item["name"] for item in inspector.get_columns("library_scan_runs")
+    }
+    run_additions = (
+        ("scan_mode", "VARCHAR(16) NOT NULL DEFAULT 'tree'"),
+        ("max_directories", "INTEGER NOT NULL DEFAULT 10000"),
+        ("attempts", "INTEGER NOT NULL DEFAULT 0"),
+        ("lease_owner", "VARCHAR(128)"),
+        ("lease_token", "VARCHAR(64)"),
+        ("lease_expires_at", "DATETIME"),
+        ("cancel_requested", "BOOLEAN NOT NULL DEFAULT 0"),
+    )
+    for name, definition in run_additions:
+        if name not in run_columns:
+            connection.execute(
+                text(f"ALTER TABLE library_scan_runs ADD COLUMN {name} {definition}")
+            )
+    connection.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_library_scan_runs_lease "
+            "ON library_scan_runs (state, lease_expires_at, created_at)"
+        )
+    )
+    connection.execute(
+        text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_library_scan_run_idempotency "
+            "ON library_scan_runs (library_id, idempotency_key)"
+        )
+    )
+
+    if not inspector.has_table("library_scan_checkpoints"):
+        return
+    checkpoint_columns = {
+        item["name"]
+        for item in inspect(connection).get_columns("library_scan_checkpoints")
+    }
+    if "cursor_json" not in checkpoint_columns:
+        connection.execute(
+            text(
+                "ALTER TABLE library_scan_checkpoints "
+                "ADD COLUMN cursor_json TEXT NOT NULL DEFAULT '{}'"
+            )
+        )
+
+
 def _create_organization_plan_tables(connection: Connection) -> None:
     """Create local, preview-only organization plans for legacy databases."""
 
@@ -1022,6 +1073,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration("056_strm_operation_leases", _add_strm_operation_leases),
     Migration("057_empty_directory_cleanup_plans", _create_empty_directory_cleanup_plan_table),
     Migration("058_prowlarr_application_settings_columns", _add_prowlarr_application_settings_columns),
+    Migration("059_library_scan_lifecycle", _upgrade_library_scan_lifecycle),
 )
 
 

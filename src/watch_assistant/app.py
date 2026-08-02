@@ -92,6 +92,10 @@ from watch_assistant.services.empty_directory_cleanup import (
 from watch_assistant.services.inspection import InspectionService, InspectionWorker
 from watch_assistant.services.inventory_push_guard import InventoryPushGuard
 from watch_assistant.services.library_index import LibraryIndexService
+from watch_assistant.services.library_scan_operations import (
+    LibraryScanOperationService,
+    LibraryScanWorker,
+)
 from watch_assistant.services.maintenance import MaintenanceService
 from watch_assistant.services.manual_import import ManualImportService
 from watch_assistant.services.mcp import McpService
@@ -347,6 +351,8 @@ def create_app(
         dirty_task: asyncio.Task[None] | None = None
         strm_recovery_stop: asyncio.Event | None = None
         strm_recovery_task: asyncio.Task[None] | None = None
+        library_scan_stop: asyncio.Event | None = None
+        library_scan_task: asyncio.Task[None] | None = None
 
         async def apply_dirty_runtime(ready: bool) -> None:
             nonlocal dirty_stop, dirty_task
@@ -743,6 +749,12 @@ def create_app(
             application.state.organization_plan_service = OrganizationPlanService(
                 runtime_database.session_factory
             )
+            application.state.library_scan_operation_service = (
+                LibraryScanOperationService(
+                    runtime_database.session_factory,
+                    event_logger=application.state.settings_service,
+                )
+            )
             application.state.organization_history_service = OrganizationHistoryService(
                 runtime_database.session_factory
             )
@@ -1076,6 +1088,41 @@ def create_app(
                 name="watch-assistant-strm-operation-recovery",
             )
 
+        scan_database = getattr(application.state, "database", None)
+        scan_provider = getattr(application.state, "organization_cookie_provider", None)
+        if scan_database is not None and scan_provider is not None:
+            scan_operations = getattr(
+                application.state, "library_scan_operation_service", None
+            )
+            if not isinstance(scan_operations, LibraryScanOperationService):
+                scan_operations = LibraryScanOperationService(
+                    scan_database.session_factory,
+                    event_logger=getattr(application.state, "settings_service", None),
+                )
+                application.state.library_scan_operation_service = scan_operations
+
+            def scan_gateway_factory(root_directory_id: str):
+                return P115ReadOnlyDirectoryGateway(
+                    scan_provider,
+                    authorized_directory_ids=(root_directory_id,),
+                    request_timeout_seconds=30,
+                )
+
+            scan_worker = LibraryScanWorker(
+                scan_database.session_factory,
+                scan_operations,
+                scan_gateway_factory,
+                owner=_worker_owner(),
+                event_logger=getattr(application.state, "settings_service", None),
+            )
+            await scan_worker.recover_expired()
+            application.state.library_scan_worker = scan_worker
+            library_scan_stop = asyncio.Event()
+            library_scan_task = asyncio.create_task(
+                scan_worker.run_forever(library_scan_stop),
+                name="watch-assistant-library-scan-worker",
+            )
+
         task_adapter_resource = getattr(application.state, "task_adapter", None)
         if task_adapter_resource is not None and not hasattr(
             application.state, "p115_ready"
@@ -1156,6 +1203,11 @@ def create_app(
                 strm_recovery_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await strm_recovery_task
+            if library_scan_task is not None and library_scan_stop is not None:
+                library_scan_stop.set()
+                library_scan_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await library_scan_task
             if organization_task is not None and organization_stop is not None:
                 organization_stop.set()
                 organization_task.cancel()
@@ -1440,6 +1492,12 @@ def create_app(
         application.state.organization_plan_service = OrganizationPlanService(
             database.session_factory, tmdb_client=tmdb_client
         )
+        application.state.library_scan_operation_service = (
+            LibraryScanOperationService(
+                database.session_factory,
+                event_logger=application.state.settings_service,
+            )
+        )
         application.state.organization_history_service = OrganizationHistoryService(
             database.session_factory
         )
@@ -1627,6 +1685,9 @@ def create_app(
             ),
             "organization_execution_supported": bool(
                 getattr(application.state, "organization_worker", None) is not None
+            ),
+            "library_scan_supported": bool(
+                getattr(application.state, "library_scan_worker", None) is not None
             ),
             "strm_capabilities": {
                 "full": bool(getattr(application.state, "strm_full_enabled", False)),
