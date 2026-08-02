@@ -134,6 +134,37 @@ async def test_strm_operations_are_visible_and_legacy_cleanup_is_preview_only(
         assert history.status_code == 200
         assert history.json()["items"][0]["operation_id"] == body["operation_id"]
 
+        scoped_token = await client.post(
+            "/api/v1/agent/tokens",
+            json={
+                "name": "strm-scoped",
+                "scopes": ["library:read", "strm:read", "strm:write"],
+                "library_ids": ["library-other"],
+            },
+            headers=headers,
+        )
+        assert scoped_token.status_code == 201
+        scoped_headers = {
+            "Authorization": f"Bearer {scoped_token.json()['token']}"
+        }
+        denied_manifest = await client.get(
+            "/api/v1/libraries/library-one/strm-manifest",
+            headers=scoped_headers,
+        )
+        denied_generation = await client.post(
+            "/api/v1/libraries/library-one/strm-generation",
+            json={"source_scan_run_id": "scan-one"},
+            headers=scoped_headers,
+        )
+        denied_plan = await client.post(
+            "/api/v1/libraries/library-one/strm-cleanup-plan",
+            json={"source_scan_run_id": "scan-one"},
+            headers=scoped_headers,
+        )
+        assert denied_manifest.status_code == 404
+        assert denied_generation.status_code == 404
+        assert denied_plan.status_code == 404
+
         legacy = await client.post(
             "/api/v1/libraries/library-one/strm-cleanup",
             json={"source_scan_run_id": "scan-one"},

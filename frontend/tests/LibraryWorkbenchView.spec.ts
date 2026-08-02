@@ -245,6 +245,71 @@ describe("LibraryWorkbenchView", () => {
     expect(wrapper.text()).toContain("查看详情");
   });
 
+  it("resumes the persisted STRM operation shown after reload", async () => {
+    const library = {
+      library_id: "main",
+      name: "115 媒体库",
+      root_directory_id: "123",
+      enabled: true,
+      scope_verified: true,
+      revision: 2,
+      latest_scan: { run_id: "scan-1", state: "completed" as const, complete: true, snapshot_revision: 1, pages_read: 1, items_seen: 1, added_count: 1, changed_count: 0, removed_count: 0, error_code: null },
+    };
+    const failed = { operation_id: "strm_op_failed", library_id: "main", source_scan_run_id: "scan-1", workflow_id: null, kind: "full" as const, status: "failed" as const, generated: 0, unchanged: 0, skipped: 0, failed: 1, retired: 0, error_code: "strm_operation_failed", created_at: "2026-08-01T00:00:00Z", started_at: "2026-08-01T00:00:00Z", finished_at: "2026-08-01T00:00:01Z" };
+    const succeeded = { ...failed, status: "succeeded" as const, failed: 0, generated: 1, error_code: null };
+    const strmOperations = vi.fn()
+      .mockResolvedValueOnce({ items: [failed], next_cursor: null })
+      .mockResolvedValueOnce({ items: [succeeded], next_cursor: null });
+    const api = {
+      libraries: vi.fn().mockResolvedValue({ items: [library], next_cursor: null }),
+      libraryMedia: vi.fn().mockResolvedValue({ items: [], next_cursor: null }),
+      strmManifest: vi.fn().mockResolvedValue({ items: [], page: 1, page_size: 50, total: 0, total_pages: 0 }),
+      strmOperations,
+      resumeStrmOperation: vi.fn().mockResolvedValue(succeeded),
+    };
+    const wrapper = mount(LibraryWorkbenchView, { props: { api: api as never } });
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("恢复执行");
+    await wrapper.findAll("button").find((button) => button.text().includes("恢复执行"))!.trigger("click");
+    await flushPromises();
+
+    expect(api.resumeStrmOperation).toHaveBeenCalledWith("strm_op_failed");
+    expect(wrapper.text()).toContain("STRM 全量同步完成");
+  });
+
+  it("cancels a running STRM operation from the workbench", async () => {
+    const library = {
+      library_id: "main",
+      name: "115 媒体库",
+      root_directory_id: "123",
+      enabled: true,
+      scope_verified: true,
+      revision: 2,
+      latest_scan: { run_id: "scan-1", state: "completed" as const, complete: true, snapshot_revision: 1, pages_read: 1, items_seen: 1, added_count: 1, changed_count: 0, removed_count: 0, error_code: null },
+    };
+    const running = { operation_id: "strm_op_running", library_id: "main", source_scan_run_id: "scan-1", workflow_id: null, kind: "incremental" as const, status: "running" as const, generated: 0, unchanged: 0, skipped: 0, failed: 0, retired: 0, error_code: null, created_at: "2026-08-01T00:00:00Z", started_at: "2026-08-01T00:00:00Z", finished_at: null };
+    const cancelled = { ...running, status: "cancelled" as const, error_code: "strm_operation_cancelled", finished_at: "2026-08-01T00:00:01Z" };
+    const strmOperations = vi.fn()
+      .mockResolvedValueOnce({ items: [running], next_cursor: null })
+      .mockResolvedValueOnce({ items: [cancelled], next_cursor: null });
+    const api = {
+      libraries: vi.fn().mockResolvedValue({ items: [library], next_cursor: null }),
+      libraryMedia: vi.fn().mockResolvedValue({ items: [], next_cursor: null }),
+      strmManifest: vi.fn().mockResolvedValue({ items: [], page: 1, page_size: 50, total: 0, total_pages: 0 }),
+      strmOperations,
+      cancelStrmOperation: vi.fn().mockResolvedValue(cancelled),
+    };
+    const wrapper = mount(LibraryWorkbenchView, { props: { api: api as never } });
+    await flushPromises();
+
+    await wrapper.findAll("button").find((button) => button.text().includes("取消操作"))!.trigger("click");
+    await flushPromises();
+
+    expect(api.cancelStrmOperation).toHaveBeenCalledWith("strm_op_running");
+    expect(wrapper.text()).toContain("STRM 增量同步已取消");
+  });
+
   it("keeps STRM operation history errors visible with retry", async () => {
     const strmOperations = vi.fn()
       .mockRejectedValueOnce(new Error("offline"))

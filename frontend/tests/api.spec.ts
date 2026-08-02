@@ -303,6 +303,23 @@ describe("ApiClient season and inspection requests", () => {
     });
   });
 
+  it("exposes durable STRM cancellation and resume endpoints", async () => {
+    const response = { operation_id: "strm_op_1", library_id: "main", source_scan_run_id: "scan-1", workflow_id: null, kind: "full", status: "cancelled", generated: 0, unchanged: 0, skipped: 0, failed: 0, retired: 0, error_code: "strm_operation_cancelled", created_at: "2026-08-01T00:00:00Z", started_at: "2026-08-01T00:00:00Z", finished_at: "2026-08-01T00:00:01Z" };
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(response), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const api = new ApiClient();
+
+    await api.cancelStrmOperation("strm_op_1");
+    await api.resumeStrmOperation("strm_op_1");
+
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "/api/v1/strm-operations/strm_op_1/cancel",
+      "/api/v1/strm-operations/strm_op_1/resume",
+    ]);
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: "POST" });
+    expect(fetchMock.mock.calls[1][1]).toMatchObject({ method: "POST" });
+  });
+
   it("reads the server-configured P115 root for library setup", async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ parent_id: "123", items: [], has_more: false, next_page: null }), { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);

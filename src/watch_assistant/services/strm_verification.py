@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Collection
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from urllib.parse import urlsplit
@@ -72,8 +73,16 @@ class StrmVerificationView:
 class StrmVerificationService:
     """Compare only system-managed STRM files; never writes or repairs."""
 
-    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+    def __init__(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        *,
+        managed_output_roots: Collection[Path | str] = (),
+    ) -> None:
         self._session_factory = session_factory
+        self._managed_output_roots = tuple(
+            _absolute_path(Path(root)) for root in managed_output_roots
+        )
 
     async def verify(
         self,
@@ -92,7 +101,7 @@ class StrmVerificationService:
             or not 1 <= max_issues <= 500
         ):
             raise StrmVerificationError("invalid_request")
-        root = _readable_root(output_root)
+        root = _readable_root(output_root, self._managed_output_roots)
         prefix = _safe_prefix(playback_url_prefix)
         async with self._session_factory() as session:
             library, run = await self._validated_current_run(
@@ -254,8 +263,15 @@ def _content_valid(root: Path, relative_path: str, expected: str) -> bool:
         return False
 
 
-def _readable_root(value: Path | str) -> Path:
-    root = Path(os.path.abspath(os.fspath(Path(value))))
+def _readable_root(
+    value: Path | str,
+    managed_output_roots: Collection[Path] = (),
+) -> Path:
+    root = _absolute_path(Path(value))
+    if managed_output_roots and not any(
+        _same_path(root, allowed) for allowed in managed_output_roots
+    ):
+        raise StrmVerificationError("strm_output_unavailable")
     if _has_symlink_component(root):
         raise StrmVerificationError("strm_output_unavailable")
     try:
@@ -265,6 +281,16 @@ def _readable_root(value: Path | str) -> Path:
     if not root.is_dir():
         raise StrmVerificationError("strm_output_unavailable")
     return root
+
+
+def _absolute_path(value: Path) -> Path:
+    """Make a lexical absolute path before checking symlink components."""
+
+    return Path(os.path.abspath(os.fspath(value)))
+
+
+def _same_path(left: Path, right: Path) -> bool:
+    return os.path.normcase(os.fspath(left)) == os.path.normcase(os.fspath(right))
 
 
 def _safe_prefix(value: object) -> str:

@@ -7,6 +7,7 @@ import hmac
 import json
 import os
 import uuid
+from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
@@ -72,8 +73,16 @@ class StrmCleanupApplyView:
 class StrmCleanupPlanService:
     """Persist reviewable candidates without retiring manifests or files."""
 
-    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+    def __init__(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        *,
+        managed_output_roots: Collection[Path | str] = (),
+    ) -> None:
         self._session_factory = session_factory
+        self._managed_output_roots = tuple(
+            _absolute_path(Path(root)) for root in managed_output_roots
+        )
 
     async def create_plan(
         self,
@@ -86,7 +95,7 @@ class StrmCleanupPlanService:
     ) -> StrmCleanupPlanView:
         if not _valid_id(library_id) or not _valid_id(source_scan_run_id):
             raise StrmCleanupPlanError("invalid_request")
-        root = _readable_root(output_root)
+        root = _readable_root(output_root, self._managed_output_roots)
         prefix = _safe_prefix(playback_url_prefix)
         current_time = _utc(now)
         async with self._session_factory() as session:
@@ -200,7 +209,7 @@ class StrmCleanupPlanService:
             or not _valid_id(idempotency_key)
         ):
             raise StrmCleanupPlanError("invalid_request")
-        root = _readable_root(output_root)
+        root = _readable_root(output_root, self._managed_output_roots)
         prefix = _safe_prefix(playback_url_prefix)
         current_time = _utc(now)
         async with self._session_factory() as session:
@@ -372,8 +381,15 @@ def _managed_state(root: Path, relative_path: str, expected: str) -> str:
     return "ready" if actual == expected else "changed"
 
 
-def _readable_root(value: Path | str) -> Path:
-    root = Path(os.path.abspath(os.fspath(Path(value))))
+def _readable_root(
+    value: Path | str,
+    managed_output_roots: Collection[Path] = (),
+) -> Path:
+    root = _absolute_path(Path(value))
+    if managed_output_roots and not any(
+        _same_path(root, allowed) for allowed in managed_output_roots
+    ):
+        raise StrmCleanupPlanError("strm_output_unavailable")
     if _has_symlink_component(root):
         raise StrmCleanupPlanError("strm_output_unavailable")
     try:
@@ -383,6 +399,16 @@ def _readable_root(value: Path | str) -> Path:
     if not resolved.is_dir():
         raise StrmCleanupPlanError("strm_output_unavailable")
     return resolved
+
+
+def _absolute_path(value: Path) -> Path:
+    """Make a lexical absolute path before checking symlink components."""
+
+    return Path(os.path.abspath(os.fspath(value)))
+
+
+def _same_path(left: Path, right: Path) -> bool:
+    return os.path.normcase(os.fspath(left)) == os.path.normcase(os.fspath(right))
 
 
 def _safe_prefix(value: object) -> str:

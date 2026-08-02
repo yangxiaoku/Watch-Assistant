@@ -120,6 +120,7 @@ async function loadOutputs(libraryId: string) {
   try {
     const operationsResponse = await props.api.strmOperations(libraryId);
     operations.value = operationsResponse.items;
+    if (operations.value[0]) latestOperation.value = operations.value[0];
   } catch {
     operationsError.value = "STRM 操作历史加载失败，请重试";
   }
@@ -350,10 +351,74 @@ async function refreshLatestOperation() {
   }
 }
 
+async function cancelLatestOperation() {
+  const operation = latestOperation.value;
+  if (!operation || (operation.status !== "queued" && operation.status !== "running")) return;
+  operationPollGeneration += 1;
+  if (operationPollTimer !== null) {
+    window.clearTimeout(operationPollTimer);
+    operationPollTimer = null;
+  }
+  busy.value = true;
+  error.value = "";
+  notice.value = "";
+  try {
+    const cancelled = await props.api.cancelStrmOperation(operation.operation_id);
+    latestOperation.value = cancelled;
+    latestResult.value = null;
+    notice.value = operationStatusMessage(cancelled);
+    if (selected.value) await loadOutputs(selected.value.library_id);
+  } catch (exception) {
+    setError(exception, "STRM 操作取消失败，请刷新状态");
+  } finally {
+    busy.value = false;
+  }
+}
+
 async function retryLatestOperation() {
   const operation = latestOperation.value;
-  if (!operation || (operation.status !== "failed" && operation.status !== "timeout" && operation.status !== "cancelled")) return;
-  await syncStrm(operation.kind === "incremental" ? "incremental" : "full");
+  if (
+    !operation
+    || operation.kind === "cleanup"
+    || (operation.status !== "failed" && operation.status !== "timeout" && operation.status !== "cancelled")
+    || busy.value
+  ) return;
+  busy.value = true;
+  error.value = "";
+  notice.value = "";
+  operationDetailOpen.value = false;
+  const pollGeneration = ++operationPollGeneration;
+  const action = operation.kind === "incremental" ? "incremental" : "full";
+  try {
+    const resumed = await props.api.resumeStrmOperation(operation.operation_id);
+    latestOperation.value = resumed;
+    const terminal = resumed.status === "queued" || resumed.status === "running"
+      ? await pollStrmOperation(resumed.operation_id, pollGeneration, action)
+      : resumed;
+    if (!terminal || pollGeneration !== operationPollGeneration) return;
+    latestOperation.value = terminal;
+    if (terminal.status === "succeeded") {
+      latestResult.value = {
+        operation_id: terminal.operation_id,
+        library_id: terminal.library_id,
+        scan_run_id: terminal.source_scan_run_id,
+        generated: terminal.generated,
+        unchanged: terminal.unchanged,
+        skipped: terminal.skipped,
+        failed: terminal.failed,
+        retired: terminal.retired,
+      };
+      notice.value = operationStatusMessage(terminal, action);
+    } else {
+      latestResult.value = null;
+      error.value = operationStatusMessage(terminal, action);
+    }
+    await loadOutputs(operation.library_id);
+  } catch (exception) {
+    setError(exception, "STRM 操作恢复失败，请刷新状态");
+  } finally {
+    busy.value = false;
+  }
 }
 
 async function previewCleanup() {
@@ -574,7 +639,7 @@ onBeforeUnmount(() => {
           <div class="library-section-heading"><div><p class="eyebrow">持久操作状态</p><h3>{{ operationLabels[latestOperation.kind] }}</h3></div><strong>{{ operationStatusLabels[latestOperation.status] }}</strong></div>
           <div class="library-operation-stats"><span>生成 {{ latestOperation.generated }}</span><span>未变化 {{ latestOperation.unchanged }}</span><span>跳过 {{ latestOperation.skipped }}</span><span>失败 {{ latestOperation.failed }}</span><span>退休 {{ latestOperation.retired }}</span></div>
           <p v-if="operationError(latestOperation)" class="library-operation-error">{{ operationError(latestOperation) }}</p>
-          <div class="library-operation-actions"><button class="text-button" type="button" @click="operationDetailOpen = !operationDetailOpen">{{ operationDetailOpen ? "收起详情" : "查看详情" }}</button><button v-if="['failed', 'timeout', 'cancelled'].includes(latestOperation.status)" class="text-button" type="button" @click="retryLatestOperation">重试</button><button class="text-button" type="button" @click="refreshLatestOperation">刷新状态</button></div>
+          <div class="library-operation-actions"><button class="text-button" type="button" @click="operationDetailOpen = !operationDetailOpen">{{ operationDetailOpen ? "收起详情" : "查看详情" }}</button><button v-if="['queued', 'running'].includes(latestOperation.status)" class="text-button" type="button" @click="cancelLatestOperation"><Ban :size="14" />取消操作</button><button v-if="['failed', 'timeout', 'cancelled'].includes(latestOperation.status) && latestOperation.kind !== 'cleanup'" class="text-button" type="button" @click="retryLatestOperation"><RefreshCw :size="14" />恢复执行</button><button class="text-button" type="button" @click="refreshLatestOperation"><RefreshCw :size="14" />刷新状态</button></div>
           <div v-if="operationDetailOpen" class="library-operation-detail"><small>操作 {{ latestOperation.operation_id }}</small><small>创建 {{ new Date(latestOperation.created_at).toLocaleString() }}</small><small v-if="latestOperation.finished_at">结束 {{ new Date(latestOperation.finished_at).toLocaleString() }}</small></div>
         </section>
          <section v-if="cleanupPlan" class="library-cleanup-plan" :class="`is-${cleanupPlan.status}`">
