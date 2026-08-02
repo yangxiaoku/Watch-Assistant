@@ -448,6 +448,20 @@ async def test_tree_scan_includes_discovered_child_directories(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_root_scan_is_recorded_as_non_recursive(tmp_path):
+    database = await _database(tmp_path)
+
+    result = await _service(database, _TreeGateway(), page_size=1).scan("root-scan")
+
+    assert result.state is ScanRunState.COMPLETED
+    async with database.session_factory() as session:
+        run = await session.get(LibraryScanRun, result.run_id)
+    assert run is not None
+    assert run.scan_mode == "root"
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_tree_scan_materializes_relative_paths_when_gateway_omits_them(tmp_path):
     database = await _database(tmp_path)
 

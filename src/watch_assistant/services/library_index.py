@@ -149,7 +149,7 @@ class LibraryIndexService:
     async def scan(self, idempotency_key: str) -> LibraryScanResult:
         _validate_idempotency_key(idempotency_key)
         await self._verify_scope()
-        run = await self._get_or_create_run(idempotency_key)
+        run = await self._get_or_create_run(idempotency_key, scan_mode="root")
         if run.complete and run.state == ScanRunState.COMPLETED.value:
             return await self._result_for_run(run.id)
         try:
@@ -241,7 +241,7 @@ class LibraryIndexService:
         ):
             raise LibraryIndexError("invalid_directory_limit")
         await self._verify_scope()
-        run = await self._get_or_create_run(idempotency_key)
+        run = await self._get_or_create_run(idempotency_key, scan_mode="tree")
         if run.complete and run.state == ScanRunState.COMPLETED.value:
             return await self._result_for_run(run.id)
         await self._reset_tree_run(run.id)
@@ -458,7 +458,9 @@ class LibraryIndexService:
         ):
             raise LibraryIndexError("library_scope_unverified")
 
-    async def _get_or_create_run(self, idempotency_key: str) -> LibraryScanRun:
+    async def _get_or_create_run(
+        self, idempotency_key: str, *, scan_mode: str
+    ) -> LibraryScanRun:
         async with self._session_factory() as session:
             run = await session.scalar(
                 select(LibraryScanRun).where(
@@ -469,12 +471,15 @@ class LibraryIndexService:
             if run is not None:
                 if run.root_directory_id != self._root_directory_id:
                     raise LibraryIndexError("library_scope_unverified")
+                if run.scan_mode != scan_mode:
+                    raise LibraryIndexError("scan_mode_mismatch")
                 return run
             run = LibraryScanRun(
                 id=uuid.uuid4().hex,
                 library_id=self._library_id,
                 root_directory_id=self._root_directory_id,
                 idempotency_key=idempotency_key,
+                scan_mode=scan_mode,
             )
             session.add(run)
             await session.flush()
@@ -491,6 +496,10 @@ class LibraryIndexService:
                 )
                 if existing is None:
                     raise LibraryIndexError("scan_run_conflict") from None
+                if existing.root_directory_id != self._root_directory_id:
+                    raise LibraryIndexError("library_scope_unverified")
+                if existing.scan_mode != scan_mode:
+                    raise LibraryIndexError("scan_mode_mismatch")
                 return existing
             return run
 

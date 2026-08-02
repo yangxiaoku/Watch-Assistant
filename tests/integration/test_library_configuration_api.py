@@ -9,7 +9,11 @@ from watch_assistant.adapters.p115_library import DirectoryPage, ScanState
 from watch_assistant.app import create_app
 from watch_assistant.crypto import SecretCrypto
 from watch_assistant.db import create_database, initialize_database
-from watch_assistant.library_models import LibraryScanEntry, MediaLibrary
+from watch_assistant.library_models import (
+    LibraryScanEntry,
+    LibraryScanRun,
+    MediaLibrary,
+)
 from watch_assistant.security import SecurityManager
 
 WEB_PASSWORD = "library-config-password"
@@ -180,6 +184,10 @@ async def test_library_scan_operation_api_is_idempotent_bounded_and_cancellable(
         assert first_body["state"] == "queued"
         assert first_body["state_message_zh"] == "等待扫描"
         assert first_body["error_code"] is None
+        async with database.session_factory() as session:
+            scan_run = await session.get(LibraryScanRun, first_body["run_id"])
+        assert scan_run is not None
+        assert scan_run.scan_mode == "tree"
 
         repeated = await client.post(
             "/api/v1/libraries/library-scan/scan",

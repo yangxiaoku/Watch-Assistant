@@ -35,6 +35,24 @@ class InventoryPushCheck:
     decision: InventoryDecision | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class InventoryRefreshEvidence:
+    """Evidence returned by a pre-push refresh before the guard is retried."""
+
+    complete: bool
+    scope_verified: bool
+    error_code: str | None = None
+    library_count: int = 0
+    refreshed_count: int = 0
+
+    @property
+    def usable(self) -> bool:
+        return self.complete and self.scope_verified and self.error_code is None
+
+    def __bool__(self) -> bool:
+        return self.usable
+
+
 class InventoryPushGuard:
     """Check every enabled library and fail closed on missing evidence.
 
@@ -77,6 +95,8 @@ class InventoryPushGuard:
             probe = _resource_probe(resource)
             advisory_decision: InventoryDecision | None = None
             for library in libraries:
+                if not library.scope_verified:
+                    return InventoryPushCheck(False, "inventory_scope_unconfigured")
                 run = await session.scalar(
                     select(LibraryScanRun)
                     .where(LibraryScanRun.library_id == library.id)
@@ -85,7 +105,15 @@ class InventoryPushGuard:
                     )
                     .limit(1)
                 )
-                if run is None:
+                if (
+                    run is None
+                    or run.root_directory_id != library.root_directory_id
+                    or run.scan_mode != "tree"
+                    or not run.complete
+                    or run.state != "completed"
+                    or run.snapshot_revision is None
+                    or not await _run_covers_scope(session, run, library)
+                ):
                     return InventoryPushCheck(False, "inventory_index_incomplete")
                 snapshot = await _snapshot(session, run, library.id, self._freshness_threshold_seconds)
                 status = snapshot.freshness.status
@@ -121,6 +149,23 @@ class InventoryPushGuard:
                     True, code_by_decision[advisory_decision], advisory_decision
                 )
             return InventoryPushCheck(True, "inventory_not_found", InventoryDecision.NOT_FOUND)
+
+
+async def _run_covers_scope(
+    session: AsyncSession, run: LibraryScanRun, library: MediaLibrary
+) -> bool:
+    """Reject snapshots whose entry parents cannot be inside the configured tree."""
+
+    entries = list(
+        (
+            await session.scalars(
+                select(LibraryScanEntry).where(LibraryScanEntry.scan_run_id == run.id)
+            )
+        ).all()
+    )
+    directory_ids = {entry.object_id for entry in entries if entry.is_directory}
+    scope_ids = directory_ids | {library.root_directory_id}
+    return all(entry.parent_id in scope_ids for entry in entries)
 
 
 async def _snapshot(
@@ -197,4 +242,4 @@ def _resource_probe(resource: Resource) -> dict[str, object]:
     return probe
 
 
-__all__ = ["InventoryPushCheck", "InventoryPushGuard"]
+__all__ = ["InventoryPushCheck", "InventoryPushGuard", "InventoryRefreshEvidence"]

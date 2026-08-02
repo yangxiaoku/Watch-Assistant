@@ -17,6 +17,7 @@ from watch_assistant.schemas import (
 )
 from watch_assistant.services.inventory_push_guard import (
     InventoryPushCheck,
+    InventoryRefreshEvidence,
 )
 from watch_assistant.services.library_inventory import InventoryDecision
 from watch_assistant.services.tasks import TaskService
@@ -327,6 +328,45 @@ async def test_worker_keeps_stale_inventory_blocked_when_refresh_fails(tmp_path)
     stored = await service.get(task.id)
     assert stored.state == TaskState.FAILED
     assert stored.error_code == "inventory_index_stale"
+    assert adapter.submissions == 0
+    assert guard.checks == 1
+    await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_worker_propagates_failed_refresh_evidence_as_chinese_warning(tmp_path):
+    database = await _database(tmp_path)
+    crypto = SecretCrypto(Fernet.generate_key().decode("ascii"))
+    await _add_resource(database, crypto)
+    service = TaskService(database.session_factory)
+    task, _ = await service.create("res_magnet")
+    guard = RefreshingInventoryGuard(
+        InventoryPushCheck(False, "inventory_index_stale")
+    )
+
+    async def refresh_inventory():
+        return InventoryRefreshEvidence(
+            complete=False,
+            scope_verified=True,
+            error_code="inventory_index_incomplete",
+            library_count=1,
+        )
+
+    adapter = FakeAdapter()
+    worker = TaskWorker(
+        database.session_factory,
+        crypto,
+        adapter,
+        owner="test-worker",
+        inventory_guard=guard,
+        inventory_refresh=refresh_inventory,
+    )
+
+    assert await worker.run_once() is True
+    stored = await service.get(task.id)
+    assert stored.state == TaskState.FAILED
+    assert stored.error_code == "inventory_index_incomplete"
+    assert stored.error_message == "媒体库库存扫描不完整，已阻止远端提交。"
     assert adapter.submissions == 0
     assert guard.checks == 1
     await database.engine.dispose()
