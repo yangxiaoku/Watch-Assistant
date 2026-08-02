@@ -21,7 +21,9 @@ def test_task_states_are_explicit():
     assert {state.value for state in TaskState} == {
         "queued",
         "submitting",
-        "accepted",
+        "submitted",
+        "downloading",
+        "available",
         "needs_auth",
         "failed",
         "uncertain",

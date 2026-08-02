@@ -34,10 +34,13 @@ export interface ProwlarrVerifyResponse {
 export type TaskState =
   | "queued"
   | "submitting"
-  | "accepted"
+  | "submitted"
+  | "downloading"
+  | "available"
   | "needs_auth"
   | "failed"
-  | "uncertain";
+  | "uncertain"
+  | "cancelled";
 
 export interface MovieMetadata {
   tmdb_id: number;
@@ -782,6 +785,42 @@ export interface TaskResponse {
   created_at: string;
   updated_at: string;
   submitted_at: string | null;
+  state_zh: string;
+  state_reason_zh: string | null;
+}
+
+export type WorkflowEvidenceStatus =
+  | "discovered"
+  | "submitted"
+  | "downloading"
+  | "available"
+  | "failed"
+  | "uncertain";
+export type WorkflowEvidenceSource =
+  | "resource_record"
+  | "submission_receipt"
+  | "readonly_reconciliation";
+
+export interface WorkflowEvidenceResponse {
+  id: string;
+  workflow_id: string | null;
+  task_id: string | null;
+  stage: WorkflowStageName | null;
+  evidence_type: string;
+  source: WorkflowEvidenceSource;
+  subject_id: string;
+  status: WorkflowEvidenceStatus;
+  verified: boolean;
+  observed_at: string;
+}
+
+export interface WorkflowEvidenceListResponse {
+  items: WorkflowEvidenceResponse[];
+}
+
+export interface TaskReconciliationResponse {
+  task: TaskResponse;
+  evidence: WorkflowEvidenceResponse;
 }
 
 export type WorkflowStatus = "in_progress" | "waiting_user_confirmation" | "waiting_external" | "partial" | "completed" | "cancelled" | "failed" | "result_pending_confirmation";

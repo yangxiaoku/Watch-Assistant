@@ -30,6 +30,8 @@ import type {
   ResourceSort,
   SettingsOverviewResponse,
   TaskResponse,
+  TaskReconciliationResponse,
+  WorkflowEvidenceListResponse,
   WorkflowListResponse,
   WorkflowResponse,
   WorkflowStageName,
@@ -478,6 +480,19 @@ export class ApiClient {
     return this.request<TaskResponse>(`/api/v1/tasks/${taskId}`);
   }
 
+  async reconcileTask(taskId: string): Promise<TaskReconciliationResponse> {
+    return this.request<TaskReconciliationResponse>(
+      `/api/v1/tasks/${encodeURIComponent(taskId)}/reconcile`,
+      { method: "POST", body: "{}" },
+    );
+  }
+
+  async taskEvidence(taskId: string): Promise<WorkflowEvidenceListResponse> {
+    return this.request<WorkflowEvidenceListResponse>(
+      `/api/v1/tasks/${encodeURIComponent(taskId)}/evidence`,
+    );
+  }
+
   async workflows(filters: { status?: string; mediaType?: "movie" | "tv"; subscriptionId?: string; stage?: string; stageStatus?: string; page?: number; pageSize?: number } = {}): Promise<WorkflowListResponse> {
     const params = new URLSearchParams({ page: String(filters.page ?? 1), page_size: String(filters.pageSize ?? 20) });
     if (filters.status) params.set("status", filters.status);
@@ -492,10 +507,20 @@ export class ApiClient {
     return this.request<WorkflowResponse>(`/api/v1/workflows/${encodeURIComponent(workflowId)}`);
   }
 
-  async createWorkflow(input: { mediaType: "movie" | "tv"; tmdbId: number }): Promise<WorkflowResponse> {
+  async workflowEvidence(workflowId: string): Promise<WorkflowEvidenceListResponse> {
+    return this.request<WorkflowEvidenceListResponse>(
+      `/api/v1/workflows/${encodeURIComponent(workflowId)}/evidence`,
+    );
+  }
+
+  async createWorkflow(input: { mediaType: "movie" | "tv"; tmdbId: number; resourceId?: string }): Promise<WorkflowResponse> {
     return this.request<WorkflowResponse>("/api/v1/workflows", {
       method: "POST",
-      body: JSON.stringify({ media_type: input.mediaType, tmdb_id: input.tmdbId }),
+      body: JSON.stringify({
+        media_type: input.mediaType,
+        tmdb_id: input.tmdbId,
+        ...(input.resourceId ? { resource_id: input.resourceId } : {}),
+      }),
     });
   }
 

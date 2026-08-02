@@ -16,9 +16,12 @@ from watch_assistant.library_models import (
 from watch_assistant.models import (
     OrganizationOperation,
     OrganizationOperationStatus,
+    Resource,
+    Task,
 )
 from watch_assistant.schemas import (
     MediaType,
+    RemoteStatus,
     WorkflowCreateRequest,
     WorkflowStageName,
     WorkflowStagePatch,
@@ -50,6 +53,7 @@ from watch_assistant.services.organization_plan import (
     _entry_remote_version,
 )
 from watch_assistant.services.workflows import WorkflowService
+from watch_assistant.services.tasks import TaskService
 
 LIBRARY_ID = "library-1"
 ROOT_ID = "7000"
@@ -109,6 +113,18 @@ async def _database(tmp_path: Path):
     database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'operations.db'}")
     await initialize_database(database.engine)
     async with database.session_factory() as session:
+        session.add(
+            Resource(
+                id="workflow-resource",
+                kind="magnet",
+                canonical_key="magnet:workflow-resource",
+                encrypted_url="encrypted-workflow-resource",
+                name="Workflow resource",
+                source="test",
+                captured_at=datetime.now(UTC),
+                expires_at=datetime.now(UTC) + timedelta(days=1),
+            )
+        )
         session.add(
             MediaLibrary(
                 id=LIBRARY_ID,
@@ -176,7 +192,9 @@ async def _operation(database, *, key: str = "operation-1"):
 async def test_organization_operation_updates_linked_workflow_stage(tmp_path):
     database = await _database(tmp_path)
     workflow = await WorkflowService(database.session_factory).create(
-        WorkflowCreateRequest(media_type=MediaType.MOVIE, tmdb_id=1)
+        WorkflowCreateRequest(
+            media_type=MediaType.MOVIE, tmdb_id=1, resource_id="workflow-resource"
+        )
     )
     plan = await _plan(database)
     service = OrganizationOperationService(database.session_factory)
@@ -196,30 +214,27 @@ async def test_organization_operation_updates_linked_workflow_stage(tmp_path):
     assert organization_stage.child_id == operation.operation_id
 
     workflow_service = WorkflowService(database.session_factory)
-    for stage_name in (
-        WorkflowStageName.DISCOVERY,
-        WorkflowStageName.INSPECTION,
-        WorkflowStageName.APPROVAL,
-        WorkflowStageName.PUSH,
-        WorkflowStageName.AVAILABILITY,
-    ):
+    for stage_name in (WorkflowStageName.INSPECTION, WorkflowStageName.APPROVAL):
         await workflow_service.patch_stage(
             workflow.id,
             stage_name,
-            WorkflowStagePatch(status=WorkflowStageStatus.RUNNING),
+            WorkflowStagePatch(status=WorkflowStageStatus.SUCCEEDED),
         )
-        if stage_name is WorkflowStageName.APPROVAL:
-            await workflow_service.patch_stage(
-                workflow.id,
-                stage_name,
-                WorkflowStagePatch(status=WorkflowStageStatus.SUCCEEDED),
-            )
-        else:
-            await workflow_service.patch_stage(
-                workflow.id,
-                stage_name,
-                WorkflowStagePatch(status=WorkflowStageStatus.SUCCEEDED),
-            )
+    task, _ = await TaskService(database.session_factory).create(
+        "workflow-resource", workflow_id=workflow.id
+    )
+    async with database.session_factory() as session:
+        stored_task = await session.get(Task, task.id)
+        assert stored_task is not None
+        stored_task.remote_ref = "workflow-available"
+        await session.commit()
+
+    class AvailableAdapter:
+        async def get_status(self, remote_ref: str):
+            assert remote_ref == "workflow-available"
+            return RemoteStatus.AVAILABLE
+
+    await TaskService(database.session_factory).reconcile(task.id, AvailableAdapter())
 
     lease = await service.claim(operation.operation_id, expected_revision=1)
     running = await WorkflowService(database.session_factory).get(workflow.id)

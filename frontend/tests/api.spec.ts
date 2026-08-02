@@ -123,7 +123,7 @@ describe("ApiClient season and inspection requests", () => {
     vi.stubGlobal("fetch", fetchMock);
     const api = new ApiClient();
 
-    await api.createWorkflow({ mediaType: "movie", tmdbId: 27205 });
+    await api.createWorkflow({ mediaType: "movie", tmdbId: 27205, resourceId: "resource_1" });
     await api.inspectResources(["resource_1"], "wf_1");
     await api.createTask("resource_1", false, "wf_1");
 
@@ -135,6 +135,11 @@ describe("ApiClient season and inspection requests", () => {
     expect(JSON.parse(fetchMock.mock.calls[1][1].body as string)).toEqual({
       resource_ids: ["resource_1"],
       workflow_id: "wf_1",
+    });
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body as string)).toEqual({
+      media_type: "movie",
+      tmdb_id: 27205,
+      resource_id: "resource_1",
     });
     expect(JSON.parse(fetchMock.mock.calls[2][1].body as string)).toEqual({
       resource_id: "resource_1",
@@ -206,6 +211,34 @@ describe("ApiClient season and inspection requests", () => {
     expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
       "/api/v1/workflows?page=1&page_size=20&status=in_progress",
       "/api/v1/workflows/wf_1",
+    ]);
+  });
+
+  it("loads task and workflow evidence without exposing remote secrets", async () => {
+    const evidence = {
+      id: "evidence-1",
+      workflow_id: "wf_1",
+      task_id: "task_1",
+      stage: "availability",
+      evidence_type: "remote_status",
+      source: "readonly_reconciliation",
+      subject_id: "remote-ref-redacted",
+      status: "available",
+      verified: true,
+      observed_at: "2026-08-01T00:00:00Z",
+    };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ items: [evidence] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ items: [evidence] }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const api = new ApiClient();
+
+    await api.taskEvidence("task/1");
+    await api.workflowEvidence("wf/1");
+
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "/api/v1/tasks/task%2F1/evidence",
+      "/api/v1/workflows/wf%2F1/evidence",
     ]);
   });
 

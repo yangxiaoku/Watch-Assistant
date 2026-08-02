@@ -189,7 +189,7 @@ def test_task_wait_polls_without_resubmitting(monkeypatch, capsys):
     responses = iter(
         [
             {"id": "task-one", "state": "queued"},
-            {"id": "task-one", "state": "accepted"},
+            {"id": "task-one", "state": "available"},
         ]
     )
     seen: list[tuple[str, str]] = []
@@ -228,7 +228,7 @@ def test_task_wait_polls_without_resubmitting(monkeypatch, capsys):
         ApiClient.close = original_close
     body = json.loads(capsys.readouterr().out)
     assert code == EXIT_OK
-    assert body["data"]["state"] == "accepted"
+    assert body["data"]["state"] == "available"
     assert seen == [("GET", "/api/v1/tasks/task-one"), ("GET", "/api/v1/tasks/task-one")]
 
 

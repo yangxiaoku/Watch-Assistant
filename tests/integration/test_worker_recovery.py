@@ -144,7 +144,7 @@ async def test_task_creation_is_idempotent_and_worker_accepts_submission(tmp_pat
     task = await service.get(first.id)
 
     assert processed is True
-    assert task.state == TaskState.ACCEPTED
+    assert task.state == TaskState.SUBMITTED
     assert task.remote_ref == "remote-123"
     assert adapter.submissions == 1
     await database.engine.dispose()
@@ -196,7 +196,7 @@ async def test_worker_refreshes_stale_inventory_before_submission(tmp_path):
 
     assert await worker.run_once() is True
     stored = await service.get(task.id)
-    assert stored.state == TaskState.ACCEPTED
+    assert stored.state == TaskState.SUBMITTED
     assert adapter.submissions == 1
     assert refreshes == 1
     assert guard.checks == 2
@@ -303,7 +303,7 @@ async def test_worker_allows_advisory_inventory_checks(
 
     assert await worker.run_once() is True
     stored = await service.get(task.id)
-    assert stored.state == TaskState.ACCEPTED
+    assert stored.state == TaskState.SUBMITTED
     assert adapter.submissions == 1
     await database.engine.dispose()
 
@@ -316,10 +316,11 @@ async def test_worker_terminal_state_updates_linked_workflow_stage(tmp_path):
     task_service = TaskService(database.session_factory)
     workflow_service = WorkflowService(database.session_factory)
     workflow = await workflow_service.create(
-        WorkflowCreateRequest(media_type="movie", tmdb_id=27205)
+        WorkflowCreateRequest(
+            media_type="movie", tmdb_id=27205, resource_id="res_magnet"
+        )
     )
     for stage in (
-        WorkflowStageName.DISCOVERY,
         WorkflowStageName.INSPECTION,
         WorkflowStageName.APPROVAL,
     ):

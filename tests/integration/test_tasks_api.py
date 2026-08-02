@@ -11,9 +11,13 @@ from watch_assistant.app import create_app
 from watch_assistant.crypto import SecretCrypto
 from watch_assistant.db import create_database, initialize_database
 from watch_assistant.models import Resource, Task, TaskState
+from watch_assistant.schemas import RemoteStatus
 
 
 class FakeTaskAdapter:
+    def __init__(self):
+        self.remote_status = None
+
     async def submit_magnet(self, url: str):
         raise AssertionError("task adapter should not run in API tests")
 
@@ -21,7 +25,7 @@ class FakeTaskAdapter:
         raise AssertionError("share adapter must not run in API tests")
 
     async def get_status(self, remote_ref: str):
-        return None
+        return self.remote_status
 
 
 async def _make_task_client(tmp_path: Path):
@@ -133,7 +137,12 @@ async def test_task_creation_links_push_stage_to_workflow(tmp_path):
     )
     assert workflow_response.status_code == 201
     workflow_id = workflow_response.json()["id"]
-    for stage in ("discovery", "inspection", "approval"):
+    discovery = await client.post(
+        f"/api/v1/workflows/{workflow_id}/discovery",
+        json={"resource_id": "res_task_api"},
+    )
+    assert discovery.status_code == 200
+    for stage in ("inspection", "approval"):
         advanced = await client.patch(
             f"/api/v1/workflows/{workflow_id}/stages/{stage}",
             json={"status": "succeeded"},
@@ -153,6 +162,112 @@ async def test_task_creation_links_push_stage_to_workflow(tmp_path):
     assert push_stage["child_type"] == "task"
     assert push_stage["child_id"] == task_response.json()["id"]
 
+    await client.aclose()
+    await tmdb.aclose()
+    await pansou.aclose()
+    await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_workflow_stage_patch_cannot_forge_discovery_or_availability(tmp_path):
+    client, database, tmdb, pansou, _app = await _make_task_client(tmp_path)
+    workflow = await client.post(
+        "/api/v1/workflows", json={"media_type": "movie", "tmdb_id": 27205}
+    )
+
+    forged_discovery = await client.patch(
+        f"/api/v1/workflows/{workflow.json()['id']}/stages/discovery",
+        json={"status": "succeeded"},
+    )
+    forged_availability = await client.patch(
+        f"/api/v1/workflows/{workflow.json()['id']}/stages/availability",
+        json={"status": "succeeded"},
+    )
+
+    assert forged_discovery.status_code == 409
+    assert forged_discovery.json()["error"]["code"] == "workflow_evidence_required"
+    assert forged_availability.status_code == 409
+    assert forged_availability.json()["error"]["code"] == "workflow_evidence_required"
+    await client.aclose()
+    await tmdb.aclose()
+    await pansou.aclose()
+    await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_uncertain_retry_requires_readonly_reconciliation(tmp_path):
+    client, database, tmdb, pansou, app = await _make_task_client(tmp_path)
+    created = await client.post("/api/v1/tasks", json={"resource_id": "res_task_api"})
+    task_id = created.json()["id"]
+    async with database.session_factory() as session:
+        task = await session.get(Task, task_id)
+        assert task is not None
+        task.state = TaskState.UNCERTAIN
+        task.remote_ref = "remote-uncertain"
+        await session.commit()
+
+    response = await client.post(f"/api/v1/tasks/{task_id}/retry")
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "uncertain_requires_verification"
+    reconciliation = await client.post(f"/api/v1/tasks/{task_id}/reconcile")
+    assert reconciliation.status_code == 503
+    assert reconciliation.json()["error"]["code"] == "reconciliation_unavailable"
+    assert app.state.task_adapter.remote_status is None
+    async with database.session_factory() as session:
+        task = await session.get(Task, task_id)
+        assert task is not None
+        assert task.state is TaskState.UNCERTAIN
+        assert task.remote_ref == "remote-uncertain"
+    await client.aclose()
+    await tmdb.aclose()
+    await pansou.aclose()
+    await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_readonly_reconciliation_promotes_availability_and_records_evidence(tmp_path):
+    client, database, tmdb, pansou, app = await _make_task_client(tmp_path)
+    workflow = await client.post(
+        "/api/v1/workflows",
+        json={"media_type": "movie", "tmdb_id": 27205, "resource_id": "res_task_api"},
+    )
+    workflow_id = workflow.json()["id"]
+    for stage in ("inspection", "approval"):
+        response = await client.patch(
+            f"/api/v1/workflows/{workflow_id}/stages/{stage}",
+            json={"status": "succeeded"},
+        )
+        assert response.status_code == 200
+    task_response = await client.post(
+        "/api/v1/tasks",
+        json={"resource_id": "res_task_api", "workflow_id": workflow_id},
+    )
+    task_id = task_response.json()["id"]
+    async with database.session_factory() as session:
+        task = await session.get(Task, task_id)
+        assert task is not None
+        task.state = TaskState.SUBMITTED
+        task.remote_ref = "remote-available"
+        await session.commit()
+    app.state.task_adapter.remote_status = RemoteStatus.AVAILABLE
+
+    reconciled = await client.post(f"/api/v1/tasks/{task_id}/reconcile")
+    workflow_after = await client.get(f"/api/v1/workflows/{workflow_id}")
+    evidence = await client.get(f"/api/v1/tasks/{task_id}/evidence")
+
+    assert reconciled.status_code == 200
+    assert reconciled.json()["task"]["state"] == "available"
+    assert reconciled.json()["task"]["state_zh"] == "文件已可用"
+    assert reconciled.json()["evidence"]["source"] == "readonly_reconciliation"
+    assert reconciled.json()["evidence"]["status"] == "available"
+    assert reconciled.json()["evidence"]["verified"] is True
+    stages = {item["stage"]: item["status"] for item in workflow_after.json()["stages"]}
+    assert stages["push"] == "succeeded"
+    assert stages["availability"] == "succeeded"
+    assert stages["organization"] == "pending"
+    assert evidence.status_code == 200
+    assert evidence.json()[0]["status"] == "available"
     await client.aclose()
     await tmdb.aclose()
     await pansou.aclose()

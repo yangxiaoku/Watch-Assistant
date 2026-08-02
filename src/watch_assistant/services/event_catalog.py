@@ -138,7 +138,16 @@ EVENT_CATALOG: dict[str, EventDefinition] = {
         "task.submitted", LogCategory.TASK, "推送任务已提交", "推送任务已提交，当前状态：{status}"
     ),
     "task.accepted": _event(
-        "task.accepted", LogCategory.TASK, "推送任务已接受", "推送任务已被远端接受"
+        "task.accepted", LogCategory.TASK, "推送请求已受理", "115 已受理推送请求，等待文件可用证据"
+    ),
+    "task.downloading": _event(
+        "task.downloading", LogCategory.TASK, "文件正在下载", "115 正在下载文件，尚未取得文件可用证据"
+    ),
+    "task.availability_verified": _event(
+        "task.availability_verified",
+        LogCategory.TASK,
+        "文件已确认可用",
+        "已通过只读核对取得文件可用证据",
     ),
     "task.failed": _event(
         "task.failed", LogCategory.TASK, "推送任务失败", "推送任务失败，错误码：{error_code}", suggestion="请检查 115 登录状态和资源有效性"
@@ -362,6 +371,12 @@ EVENT_CATALOG: dict[str, EventDefinition] = {
     ),
     "workflow.created": _event(
         "workflow.created", LogCategory.TASK, "工作流已创建", "已创建端到端工作流，当前状态：{status}"
+    ),
+    "workflow.discovery_verified": _event(
+        "workflow.discovery_verified",
+        LogCategory.TASK,
+        "资源发现已确认",
+        "已根据资源记录完成工作流发现阶段",
     ),
     "workflow.stage_changed": _event(
         "workflow.stage_changed", LogCategory.TASK, "工作流阶段已更新", "工作流阶段“{stage}”已更新，当前状态：{status}", fields=frozenset({"stage"})

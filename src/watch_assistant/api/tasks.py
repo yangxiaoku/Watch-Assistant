@@ -4,13 +4,21 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
-from watch_assistant.schemas import TaskAction, TaskCreateRequest, TaskResponse
+from watch_assistant.schemas import (
+    TaskAction,
+    TaskCreateRequest,
+    TaskReconciliationResponse,
+    TaskResponse,
+    WorkflowEvidenceResponse,
+)
 from watch_assistant.security import require_api_auth
 from watch_assistant.services.tasks import (
     InvalidCancelState,
     InvalidRetryState,
     PushKindUnsupported,
+    ReconciliationUnavailable,
     ResourceNotFound,
+    TaskNotReconcilable,
     TaskService,
 )
 from watch_assistant.services.workflows import WorkflowConflict, WorkflowNotFound
@@ -102,9 +110,63 @@ async def retry_task(
     except ResourceNotFound as exc:
         raise HTTPException(status_code=404, detail="task_not_found") from exc
     except InvalidRetryState as exc:
-        raise HTTPException(status_code=409, detail="task_not_retryable") from exc
+        code = str(exc)
+        if code not in {"uncertain_requires_verification"}:
+            code = "task_not_retryable"
+        raise HTTPException(status_code=409, detail=code) from exc
     except PushKindUnsupported as exc:
         raise HTTPException(status_code=503, detail="push_kind_unsupported") from exc
+
+
+@router.post(
+    "/tasks/{task_id}/reconcile", response_model=TaskReconciliationResponse
+)
+async def reconcile_task(
+    task_id: str,
+    raw_request: Request,
+    service: TaskServiceDependency,
+) -> TaskReconciliationResponse:
+    adapter = getattr(raw_request.app.state, "task_adapter", None)
+    if adapter is None or not callable(getattr(adapter, "get_status", None)):
+        raise HTTPException(status_code=503, detail="reconciliation_unavailable")
+    try:
+        task, evidence = await service.reconcile(task_id, adapter)
+    except ResourceNotFound as exc:
+        raise HTTPException(status_code=404, detail="task_not_found") from exc
+    except TaskNotReconcilable as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ReconciliationUnavailable as exc:
+        code = str(exc)
+        if code not in {"reconciliation_unavailable", "reconciliation_conflict"}:
+            code = "reconciliation_unavailable"
+        raise HTTPException(status_code=503, detail=code) from exc
+    except WorkflowConflict as exc:
+        code = str(exc)
+        if code not in {"workflow_evidence_required", "workflow_stage_terminal"}:
+            code = "reconciliation_conflict"
+        raise HTTPException(status_code=409, detail=code) from exc
+    return TaskReconciliationResponse(
+        task=TaskResponse.model_validate(task, from_attributes=True),
+        evidence=WorkflowEvidenceResponse.model_validate(
+            evidence, from_attributes=True
+        ),
+    )
+
+
+@router.get(
+    "/tasks/{task_id}/evidence", response_model=list[WorkflowEvidenceResponse]
+)
+async def list_task_evidence(
+    task_id: str, service: TaskServiceDependency
+) -> list[WorkflowEvidenceResponse]:
+    try:
+        rows = await service.evidence(task_id)
+    except ResourceNotFound as exc:
+        raise HTTPException(status_code=404, detail="task_not_found") from exc
+    return [
+        WorkflowEvidenceResponse.model_validate(row, from_attributes=True)
+        for row in rows
+    ]
 
 
 @router.post("/tasks/{task_id}/cancel", response_model=TaskResponse)

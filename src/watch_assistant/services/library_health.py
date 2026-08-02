@@ -89,7 +89,17 @@ class TaskEvidence:
 
     def __post_init__(self) -> None:
         _validate_id(self.task_id, "task_id")
-        if self.state not in {"queued", "submitting", "accepted", "needs_auth", "failed", "uncertain"}:
+        if self.state not in {
+            "queued",
+            "submitting",
+            "submitted",
+            "downloading",
+            "available",
+            "needs_auth",
+            "failed",
+            "uncertain",
+            "cancelled",
+        }:
             raise HealthError("invalid_task_state")
 
 
