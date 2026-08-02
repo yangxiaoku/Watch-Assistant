@@ -286,6 +286,97 @@ async def _finish_operation(
     return operation
 
 
+async def _execute_manifest_operation(
+    request: Request,
+    service: StrmManifestService,
+    operations: StrmOperationService,
+    running: StrmOperationSummary,
+    *,
+    kind: StrmOperationKind,
+    propagate_errors: bool = True,
+) -> tuple[StrmGenerationSummary | None, StrmOperationSummary]:
+    heartbeat_stop, heartbeat_task = _start_operation_heartbeat(
+        operations, running.operation_id
+    )
+    try:
+        output_root = Path(
+            getattr(request.app.state, "strm_output_root", "./data/strm")
+        )
+        playback_url_prefix = getattr(
+            request.app.state,
+            "strm_playback_url_prefix",
+            "http://127.0.0.1:8115/api/v1/strm/play",
+        )
+        async def cancel_check() -> bool:
+            return await _operation_cancelled(operations, running.operation_id)
+
+        async def progress_callback(progress: StrmGenerationSummary) -> None:
+            await _operation_progress(operations, running.operation_id, progress)
+
+        if kind is StrmOperationKind.FULL:
+            summary = await service.generate(
+                running.library_id,
+                source_scan_run_id=running.source_scan_run_id,
+                output_root=output_root,
+                playback_url_prefix=playback_url_prefix,
+                cancel_check=cancel_check,
+                progress_callback=progress_callback,
+            )
+        elif kind is StrmOperationKind.INCREMENTAL:
+            summary = await service.incremental(
+                running.library_id,
+                source_scan_run_id=running.source_scan_run_id,
+                output_root=output_root,
+                playback_url_prefix=playback_url_prefix,
+                retire_removed=False,
+                cancel_check=cancel_check,
+                progress_callback=progress_callback,
+            )
+        else:
+            raise StrmManifestError("strm_operation_not_resumable")
+        operation = await _finish_operation(
+            request,
+            operations,
+            running.operation_id,
+            workflow_id=running.workflow_id,
+            kind=kind,
+            summary=summary,
+        )
+        return summary, operation
+    except asyncio.CancelledError:
+        await _cancel_operation(
+            request,
+            operations,
+            running.operation_id,
+            workflow_id=running.workflow_id,
+        )
+        raise
+    except StrmManifestError as error:
+        operation = await _fail_operation(
+            request,
+            operations,
+            running.operation_id,
+            workflow_id=running.workflow_id,
+            error_code=str(error),
+        )
+        if propagate_errors:
+            raise
+        return None, operation
+    except Exception:  # noqa: BLE001 - operation status must not remain running
+        operation = await _fail_operation(
+            request,
+            operations,
+            running.operation_id,
+            workflow_id=running.workflow_id,
+            error_code="strm_operation_failed",
+        )
+        if propagate_errors:
+            raise
+        return None, operation
+    finally:
+        await _stop_operation_heartbeat(heartbeat_stop, heartbeat_task)
+
+
 async def _fail_operation(
     request: Request,
     operations: StrmOperationService,
@@ -499,7 +590,10 @@ async def cancel_strm_operation(
     ],
 )
 async def resume_strm_operation(
-    operation_id: str, request: Request, context: AuthDependency
+    operation_id: str,
+    request: Request,
+    context: AuthDependency,
+    service: ServiceDependency,
 ) -> StrmOperationResponse:
     operations = _operation_service(request)
     try:
@@ -518,10 +612,41 @@ async def resume_strm_operation(
     ):
         raise HTTPException(status_code=503, detail="strm_incremental_disabled")
     try:
-        summary = await operations.resume(operation_id)
+        resumed = await operations.resume(operation_id)
     except StrmOperationNotFound:
         raise HTTPException(status_code=404, detail="strm_operation_not_found") from None
-    return _operation_response(summary)
+    if resumed.status != "queued":
+        return _operation_response(resumed)
+    try:
+        running = await operations.start(operation_id)
+        await _sync_workflow_stage(
+            request,
+            running.workflow_id,
+            operation_id=running.operation_id,
+            status=WorkflowStageStatus.RUNNING,
+            reason="strm_resumed",
+        )
+    except asyncio.CancelledError:
+        await _cancel_operation(
+            request,
+            operations,
+            operation_id,
+            workflow_id=resumed.workflow_id,
+        )
+        raise
+    except HTTPException as error:
+        detail = error.detail if isinstance(error.detail, str) else "workflow_not_found"
+        await operations.fail(operation_id, error_code=detail)
+        raise
+    _, terminal = await _execute_manifest_operation(
+        request,
+        service,
+        operations,
+        running,
+        kind=StrmOperationKind(resumed.kind),
+        propagate_errors=False,
+    )
+    return _operation_response(terminal)
 
 
 @router.get(
@@ -573,64 +698,22 @@ async def generate_manifest(
         payload=payload,
         kind=StrmOperationKind.FULL,
     )
-    heartbeat_stop, heartbeat_task = _start_operation_heartbeat(
-        operations, running.operation_id
-    )
     try:
-        summary = await service.generate(
-            library_id,
-            source_scan_run_id=payload.source_scan_run_id,
-            output_root=Path(
-                getattr(request.app.state, "strm_output_root", "./data/strm")
-            ),
-            playback_url_prefix=getattr(
-                request.app.state,
-                "strm_playback_url_prefix",
-                "http://127.0.0.1:8115/api/v1/strm/play",
-            ),
-            cancel_check=lambda: _operation_cancelled(
-                operations, running.operation_id
-            ),
-            progress_callback=lambda progress: _operation_progress(
-                operations, running.operation_id, progress
-            ),
-        )
-        operation = await _finish_operation(
+        summary, operation = await _execute_manifest_operation(
             request,
+            service,
             operations,
-            running.operation_id,
-            workflow_id=payload.workflow_id,
+            running,
             kind=StrmOperationKind.FULL,
-            summary=summary,
         )
     except asyncio.CancelledError:
-        await _cancel_operation(
-            request,
-            operations,
-            running.operation_id,
-            workflow_id=payload.workflow_id,
-        )
         raise
     except StrmManifestError as error:
-        await _fail_operation(
-            request,
-            operations,
-            running.operation_id,
-            workflow_id=payload.workflow_id,
-            error_code=str(error),
-        )
         raise HTTPException(status_code=409, detail=str(error)) from None
     except Exception:  # noqa: BLE001 - operation status must not remain running
-        await _fail_operation(
-            request,
-            operations,
-            running.operation_id,
-            workflow_id=payload.workflow_id,
-            error_code="strm_operation_failed",
-        )
         raise HTTPException(status_code=409, detail="strm_operation_failed") from None
-    finally:
-        await _stop_operation_heartbeat(heartbeat_stop, heartbeat_task)
+    if summary is None:
+        raise HTTPException(status_code=409, detail="strm_operation_failed")
     return StrmGenerationResponse(
         operation_id=operation.operation_id,
         library_id=summary.library_id,
@@ -663,65 +746,22 @@ async def incremental_manifest(
         payload=payload,
         kind=StrmOperationKind.INCREMENTAL,
     )
-    heartbeat_stop, heartbeat_task = _start_operation_heartbeat(
-        operations, running.operation_id
-    )
     try:
-        summary = await service.incremental(
-            library_id,
-            source_scan_run_id=payload.source_scan_run_id,
-            output_root=Path(
-                getattr(request.app.state, "strm_output_root", "./data/strm")
-            ),
-            playback_url_prefix=getattr(
-                request.app.state,
-                "strm_playback_url_prefix",
-                "http://127.0.0.1:8115/api/v1/strm/play",
-            ),
-            retire_removed=False,
-            cancel_check=lambda: _operation_cancelled(
-                operations, running.operation_id
-            ),
-            progress_callback=lambda progress: _operation_progress(
-                operations, running.operation_id, progress
-            ),
-        )
-        operation = await _finish_operation(
+        summary, operation = await _execute_manifest_operation(
             request,
+            service,
             operations,
-            running.operation_id,
-            workflow_id=payload.workflow_id,
+            running,
             kind=StrmOperationKind.INCREMENTAL,
-            summary=summary,
         )
     except asyncio.CancelledError:
-        await _cancel_operation(
-            request,
-            operations,
-            running.operation_id,
-            workflow_id=payload.workflow_id,
-        )
         raise
     except StrmManifestError as error:
-        await _fail_operation(
-            request,
-            operations,
-            running.operation_id,
-            workflow_id=payload.workflow_id,
-            error_code=str(error),
-        )
         raise HTTPException(status_code=409, detail=str(error)) from None
     except Exception:  # noqa: BLE001 - operation status must not remain running
-        await _fail_operation(
-            request,
-            operations,
-            running.operation_id,
-            workflow_id=payload.workflow_id,
-            error_code="strm_operation_failed",
-        )
         raise HTTPException(status_code=409, detail="strm_operation_failed") from None
-    finally:
-        await _stop_operation_heartbeat(heartbeat_stop, heartbeat_task)
+    if summary is None:
+        raise HTTPException(status_code=409, detail="strm_operation_failed")
     return StrmGenerationResponse(
         operation_id=operation.operation_id,
         library_id=summary.library_id,

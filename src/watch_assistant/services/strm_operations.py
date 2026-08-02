@@ -304,6 +304,11 @@ class StrmOperationService:
                 .values(
                     status=StrmOperationStatus.QUEUED,
                     error_code=None,
+                    generated=0,
+                    unchanged=0,
+                    skipped=0,
+                    failed=0,
+                    retired=0,
                     started_at=None,
                     finished_at=None,
                     lease_owner=None,

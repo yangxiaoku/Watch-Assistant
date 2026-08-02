@@ -177,6 +177,58 @@ async def test_strm_operations_are_visible_and_legacy_cleanup_is_preview_only(
             cancelled_history.json()["items"][0]["error_code"]
             == "strm_operation_cancelled"
         )
+
+        async with database.session_factory() as session:
+            session.add(
+                LibraryScanRun(
+                    id="scan-two",
+                    library_id="library-one",
+                    root_directory_id="1000",
+                    idempotency_key="scan-two-key",
+                    state="completed",
+                    complete=True,
+                    snapshot_revision=2,
+                )
+            )
+            await session.flush()
+            session.add(
+                LibraryScanEntry(
+                    scan_run_id="scan-two",
+                    object_type="file",
+                    object_id="file-two",
+                    parent_id="1000",
+                    name="Resumed.mkv",
+                    path="Shows/Resumed.mkv",
+                    is_directory=False,
+                    size_bytes=20,
+                )
+            )
+            await session.commit()
+
+        resumable = await StrmOperationService(database.session_factory).create(
+            library_id="library-one",
+            source_scan_run_id="scan-two",
+            kind=StrmOperationKind.FULL,
+        )
+        await StrmOperationService(database.session_factory).start(
+            resumable.operation_id
+        )
+        cancelled = await client.post(
+            f"/api/v1/strm-operations/{resumable.operation_id}/cancel",
+            headers=headers,
+        )
+        assert cancelled.status_code == 200
+        assert cancelled.json()["status"] == "cancelled"
+
+        resumed = await client.post(
+            f"/api/v1/strm-operations/{resumable.operation_id}/resume",
+            headers=headers,
+        )
+        assert resumed.status_code == 200
+        resumed_body = resumed.json()
+        assert resumed_body["status"] == "succeeded"
+        assert resumed_body["generated"] == 1
+        assert (tmp_path / "strm-output" / "Shows" / "Resumed.strm").exists()
     finally:
         await client.aclose()
         await database.engine.dispose()
