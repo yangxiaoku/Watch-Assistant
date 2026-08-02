@@ -9,6 +9,7 @@ from watch_assistant.adapters.p115_library import DirectoryPage, ScanState
 from watch_assistant.app import create_app
 from watch_assistant.crypto import SecretCrypto
 from watch_assistant.db import create_database, initialize_database
+from watch_assistant.library_models import LibraryScanEntry, MediaLibrary
 from watch_assistant.security import SecurityManager
 
 WEB_PASSWORD = "library-config-password"
@@ -143,6 +144,102 @@ async def test_library_configuration_is_scoped_optimistic_and_read_verified(tmp_
         assert verified.status_code == 200
         assert verified.json()["verified"] is True
         assert verified.json()["enabled"] is True
+
+    await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_library_scan_operation_api_is_idempotent_bounded_and_cancellable(tmp_path):
+    app, database = await _client(tmp_path)
+    async with database.session_factory() as session:
+        session.add(
+            MediaLibrary(
+                id="library-scan",
+                name="Scan library",
+                root_directory_id="7000",
+                scope_verified=True,
+                enabled=True,
+            )
+        )
+        await session.commit()
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://app.test"
+    ) as client:
+        login = await client.post(
+            "/api/v1/auth/login", json={"password": WEB_PASSWORD}
+        )
+        headers = {"X-CSRF-Token": login.json()["csrf_token"]}
+        first = await client.post(
+            "/api/v1/libraries/library-scan/scan",
+            headers=headers,
+            json={"idempotency_key": "api-scan-key", "max_directories": 3},
+        )
+        assert first.status_code == 200
+        first_body = first.json()
+        assert first_body["state"] == "queued"
+        assert first_body["state_message_zh"] == "等待扫描"
+        assert first_body["error_code"] is None
+
+        repeated = await client.post(
+            "/api/v1/libraries/library-scan/scan",
+            headers=headers,
+            json={"idempotency_key": "api-scan-key", "max_directories": 9},
+        )
+        assert repeated.status_code == 200
+        assert repeated.json()["run_id"] == first_body["run_id"]
+
+        async with database.session_factory() as session:
+            session.add_all(
+                [
+                    LibraryScanEntry(
+                        scan_run_id=first_body["run_id"],
+                        object_type="file",
+                        object_id="1001",
+                        parent_id="7000",
+                        name="title-a.mkv",
+                        path="title-a.mkv",
+                        is_directory=False,
+                        size_bytes=100,
+                    ),
+                    LibraryScanEntry(
+                        scan_run_id=first_body["run_id"],
+                        object_type="file",
+                        object_id="1002",
+                        parent_id="7000",
+                        name="title-b.mkv",
+                        path="title-b.mkv",
+                        is_directory=False,
+                        size_bytes=200,
+                    ),
+                ]
+            )
+            await session.commit()
+
+        page = await client.get(
+            f"/api/v1/libraries/library-scan/scans/{first_body['run_id']}/entries",
+            params={"limit": 1},
+        )
+        assert page.status_code == 200
+        assert len(page.json()["items"]) == 1
+        assert page.json()["next_cursor"] == 1
+        assert page.json()["items"][0]["object_id"] == "1001"
+
+        cancelled = await client.post(
+            f"/api/v1/libraries/library-scan/scans/{first_body['run_id']}/cancel",
+            headers=headers,
+        )
+        assert cancelled.status_code == 200
+        assert cancelled.json()["state"] == "cancelled"
+        assert cancelled.json()["state_message_zh"] == "已取消"
+        assert cancelled.json()["error_code"] == "cancelled"
+
+        listing = await client.get(
+            "/api/v1/libraries/library-scan/scans"
+        )
+        assert listing.status_code == 200
+        assert listing.json()["items"][0]["run_id"] == first_body["run_id"]
+        assert listing.json()["items"][0]["state"] == "cancelled"
 
     await database.engine.dispose()
 

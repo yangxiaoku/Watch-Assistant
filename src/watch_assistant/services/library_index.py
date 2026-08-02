@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -115,6 +116,8 @@ class LibraryIndexService:
         root_directory_id: str,
         page_size: int = 100,
         max_reported_changes: int = 100,
+        propagate_cancelled: bool = False,
+        cancel_event: asyncio.Event | None = None,
     ) -> None:
         _validate_identity(library_id)
         _validate_identity(root_directory_id)
@@ -136,6 +139,12 @@ class LibraryIndexService:
         self._root_directory_id = root_directory_id
         self._page_size = page_size
         self._max_reported_changes = max_reported_changes
+        self._propagate_cancelled = propagate_cancelled
+        self._cancel_event = cancel_event
+        # A service instance is scoped to one worker operation.  Keeping the
+        # cursor here preserves the old _persist_tree_page test seam while the
+        # cursor itself remains durable in LibraryScanCheckpoint.
+        self._tree_cursors: dict[str, dict[str, object]] = {}
 
     async def scan(self, idempotency_key: str) -> LibraryScanResult:
         _validate_idempotency_key(idempotency_key)
@@ -207,6 +216,10 @@ class LibraryIndexService:
                     return await self._complete_run(run.id)
                 next_page += 1
         except asyncio.CancelledError:
+            if self._propagate_cancelled and (
+                self._cancel_event is None or self._cancel_event.is_set()
+            ):
+                raise
             await self._finish_incomplete(run.id, ScanRunState.CANCELLED, "cancelled")
             return await self._result_for_run(run.id)
 
@@ -232,91 +245,101 @@ class LibraryIndexService:
         if run.complete and run.state == ScanRunState.COMPLETED.value:
             return await self._result_for_run(run.id)
         await self._reset_tree_run(run.id)
+        cursor = await self._tree_cursor_for_run(run.id)
+        self._tree_cursors[run.id] = cursor
         try:
             await self._mark_running(run.id)
-            pending = [self._root_directory_id]
-            visited = {self._root_directory_id}
-            directory_paths = {self._root_directory_id: ""}
-            pages_read = 0
-            while pending:
-                directory_id = pending.pop(0)
-                parent_path = directory_paths.get(directory_id)
-                if parent_path is None:
+            pages_read = await self._pages_read_for_run(run.id)
+            while cursor["pending"]:
+                pending = cursor["pending"]
+                if not isinstance(pending, list) or not pending:
+                    break
+                current = pending[0]
+                if not isinstance(current, dict):
                     await self._finish_incomplete(
                         run.id, ScanRunState.FAILED, "entry_path_invalid"
                     )
                     return await self._result_for_run(run.id)
-                page_number = 1
-                expected_page_count: int | None = None
-                expected_total: int | None = None
-                while True:
-                    try:
-                        page = await self._gateway.list_directory(
-                            directory_id,
-                            page=page_number,
-                            page_size=self._page_size,
-                        )
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception:  # noqa: BLE001 - remote details stay private
-                        await self._finish_incomplete(
-                            run.id, ScanRunState.FAILED, "gateway_error"
-                        )
-                        return await self._result_for_run(run.id)
-                    try:
-                        page = _materialize_tree_paths(page, parent_path)
-                        expected_page_count, expected_total, terminal = _validate_page(
-                            page,
-                            requested_page=page_number,
-                            root_directory_id=directory_id,
-                            expected_page_count=expected_page_count,
-                            expected_total=expected_total,
-                        )
-                        await self._persist_tree_page(
-                            run.id, page, pages_read=pages_read + 1
-                        )
-                    except LibraryIndexError as error:
-                        state = (
-                            ScanRunState.CANCELLED
-                            if error.code == "cancelled"
-                            else ScanRunState.FAILED
-                        )
-                        await self._finish_incomplete(run.id, state, error.code)
-                        return await self._result_for_run(run.id)
-                    except Exception:  # noqa: BLE001 - storage details stay private
-                        await self._finish_incomplete(
-                            run.id, ScanRunState.FAILED, "storage_error"
-                        )
-                        return await self._result_for_run(run.id)
-                    pages_read += 1
-                    for entry in page.items:
-                        if not entry.is_directory or entry.directory_id is None:
-                            continue
-                        child_id = entry.directory_id
-                        if child_id in visited:
-                            await self._finish_incomplete(
-                                run.id, ScanRunState.FAILED, "directory_cycle"
-                            )
-                            return await self._result_for_run(run.id)
-                        if len(visited) >= max_directories:
-                            await self._finish_incomplete(
-                                run.id, ScanRunState.FAILED, "directory_limit_exceeded"
-                            )
-                            return await self._result_for_run(run.id)
-                        visited.add(child_id)
-                        child_path = entry.path
-                        if not isinstance(child_path, str) or not child_path:
-                            await self._finish_incomplete(
-                                run.id, ScanRunState.FAILED, "entry_path_invalid"
-                            )
-                            return await self._result_for_run(run.id)
-                        directory_paths[child_id] = child_path
-                        pending.append(child_id)
-                    if terminal:
-                        break
-                    page_number += 1
+                directory_id = current.get("directory_id")
+                parent_path = current.get("parent_path")
+                page_number = current.get("page")
+                expected_page_count = current.get("page_count")
+                expected_total = current.get("total")
+                if (
+                    not isinstance(directory_id, str)
+                    or not isinstance(parent_path, str)
+                    or not isinstance(page_number, int)
+                    or page_number < 1
+                    or not _optional_nonnegative_int(expected_page_count)
+                    or not _optional_nonnegative_int(expected_total)
+                ):
+                    await self._finish_incomplete(
+                        run.id, ScanRunState.FAILED, "entry_path_invalid"
+                    )
+                    return await self._result_for_run(run.id)
+                if await self._cancel_requested(run.id):
+                    await self._finish_incomplete(
+                        run.id, ScanRunState.CANCELLED, "cancelled"
+                    )
+                    return await self._result_for_run(run.id)
+                try:
+                    page = await self._gateway.list_directory(
+                        directory_id,
+                        page=page_number,
+                        page_size=self._page_size,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001 - remote details stay private
+                    await self._finish_incomplete(
+                        run.id, ScanRunState.FAILED, "gateway_error"
+                    )
+                    return await self._result_for_run(run.id)
+                try:
+                    page = _materialize_tree_paths(page, parent_path)
+                    normalized_page_count, normalized_total, terminal = _validate_page(
+                        page,
+                        requested_page=page_number,
+                        root_directory_id=directory_id,
+                        expected_page_count=expected_page_count,
+                        expected_total=expected_total,
+                    )
+                    next_cursor = _advance_tree_cursor(
+                        cursor,
+                        page,
+                        directory_id=directory_id,
+                        parent_path=parent_path,
+                        page_number=page_number,
+                        page_count=normalized_page_count,
+                        total=normalized_total,
+                        terminal=terminal,
+                        max_directories=max_directories,
+                    )
+                    cursor = next_cursor
+                    self._tree_cursors[run.id] = next_cursor
+                    await self._persist_tree_page(
+                        run.id, page, pages_read=pages_read + 1
+                    )
+                except LibraryIndexError as error:
+                    state = (
+                        ScanRunState.CANCELLED
+                        if error.code == "cancelled"
+                        else ScanRunState.FAILED
+                    )
+                    await self._finish_incomplete(run.id, state, error.code)
+                    return await self._result_for_run(run.id)
+                except Exception:  # noqa: BLE001 - storage details stay private
+                    await self._finish_incomplete(
+                        run.id, ScanRunState.FAILED, "storage_error"
+                    )
+                    return await self._result_for_run(run.id)
+                pages_read += 1
             return await self._complete_run(run.id)
         except asyncio.CancelledError:
+            if self._propagate_cancelled and (
+                self._cancel_event is None or self._cancel_event.is_set()
+            ):
+                raise
             await self._finish_incomplete(run.id, ScanRunState.CANCELLED, "cancelled")
             return await self._result_for_run(run.id)
 
@@ -328,21 +351,53 @@ class LibraryIndexService:
                 raise LibraryIndexError("scan_run_missing")
             if run.complete:
                 return
-            await session.execute(
-                delete(LibraryScanEntry).where(LibraryScanEntry.scan_run_id == run_id)
-            )
-            await session.execute(
-                delete(LibraryScanDiff).where(LibraryScanDiff.scan_run_id == run_id)
-            )
-            run.state = ScanRunState.QUEUED.value
+            raw_cursor = checkpoint.cursor_json
+            cursor = _decode_tree_cursor(raw_cursor)
+            if cursor is None and raw_cursor not in {"", "{}"}:
+                raise LibraryIndexError("checkpoint_invalid")
+            if cursor is None:
+                await session.execute(
+                    delete(LibraryScanEntry).where(
+                        LibraryScanEntry.scan_run_id == run_id
+                    )
+                )
+                await session.execute(
+                    delete(LibraryScanDiff).where(
+                        LibraryScanDiff.scan_run_id == run_id
+                    )
+                )
+                cursor = _initial_tree_cursor(self._root_directory_id)
+                checkpoint.page = 0
+                checkpoint.items_seen = 0
+                run.pages_read = 0
+                run.items_seen = 0
+            checkpoint.cursor_json = _encode_tree_cursor(cursor)
             run.error_code = None
-            run.pages_read = 0
-            run.items_seen = 0
             run.expected_page_count = None
             run.expected_total = None
-            checkpoint.page = 0
-            checkpoint.items_seen = 0
             await session.commit()
+
+    async def _tree_cursor_for_run(self, run_id: str) -> dict[str, object]:
+        async with self._session_factory() as session:
+            checkpoint = await session.get(LibraryScanCheckpoint, run_id)
+            if checkpoint is None:
+                raise LibraryIndexError("checkpoint_missing")
+            cursor = _decode_tree_cursor(checkpoint.cursor_json)
+            if cursor is None:
+                raise LibraryIndexError("checkpoint_invalid")
+            return cursor
+
+    async def _pages_read_for_run(self, run_id: str) -> int:
+        async with self._session_factory() as session:
+            checkpoint = await session.get(LibraryScanCheckpoint, run_id)
+            if checkpoint is None:
+                raise LibraryIndexError("checkpoint_missing")
+            return checkpoint.page
+
+    async def _cancel_requested(self, run_id: str) -> bool:
+        async with self._session_factory() as session:
+            run = await session.get(LibraryScanRun, run_id)
+            return run is not None and run.cancel_requested
 
     async def _persist_tree_page(
         self, run_id: str, page: DirectoryPage, *, pages_read: int
@@ -388,6 +443,9 @@ class LibraryIndexService:
             run.items_seen = checkpoint.items_seen + len(page.items)
             checkpoint.page = pages_read
             checkpoint.items_seen = run.items_seen
+            cursor = self._tree_cursors.get(run_id)
+            if cursor is not None:
+                checkpoint.cursor_json = _encode_tree_cursor(cursor)
 
     async def _verify_scope(self) -> None:
         async with self._session_factory() as session:
@@ -989,6 +1047,137 @@ def _validate_page(
     ):
         raise LibraryIndexError("pagination_unverified")
     return expected_page_count, expected_total, terminal
+
+
+def _initial_tree_cursor(root_directory_id: str) -> dict[str, object]:
+    return {
+        "version": 1,
+        "pending": [
+            {
+                "directory_id": root_directory_id,
+                "parent_path": "",
+                "page": 1,
+                "page_count": None,
+                "total": None,
+            }
+        ],
+        "visited": [root_directory_id],
+    }
+
+
+def _decode_tree_cursor(value: str | None) -> dict[str, object] | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        decoded = json.loads(value)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(decoded, dict) or decoded.get("version") != 1:
+        return None
+    pending = decoded.get("pending")
+    visited = decoded.get("visited")
+    if not isinstance(pending, list) or not isinstance(visited, list):
+        return None
+    if any(not isinstance(item, str) or not item for item in visited):
+        return None
+    normalized_pending: list[dict[str, object]] = []
+    for item in pending:
+        if not isinstance(item, dict):
+            return None
+        directory_id = item.get("directory_id")
+        parent_path = item.get("parent_path")
+        page = item.get("page")
+        page_count = item.get("page_count")
+        total = item.get("total")
+        if (
+            not isinstance(directory_id, str)
+            or not directory_id
+            or not isinstance(parent_path, str)
+            or not isinstance(page, int)
+            or isinstance(page, bool)
+            or page < 1
+            or not _optional_nonnegative_int(page_count)
+            or not _optional_nonnegative_int(total)
+        ):
+            return None
+        normalized_pending.append(
+            {
+                "directory_id": directory_id,
+                "parent_path": parent_path,
+                "page": page,
+                "page_count": page_count,
+                "total": total,
+            }
+        )
+    return {"version": 1, "pending": normalized_pending, "visited": list(visited)}
+
+
+def _encode_tree_cursor(value: dict[str, object]) -> str:
+    return json.dumps(value, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
+
+
+def _optional_nonnegative_int(value: object) -> bool:
+    return value is None or (
+        isinstance(value, int) and not isinstance(value, bool) and value >= 0
+    )
+
+
+def _advance_tree_cursor(
+    cursor: dict[str, object],
+    page: DirectoryPage,
+    *,
+    directory_id: str,
+    parent_path: str,
+    page_number: int,
+    page_count: int | None,
+    total: int | None,
+    terminal: bool,
+    max_directories: int,
+) -> dict[str, object]:
+    """Advance a tree cursor only after the current page passed validation."""
+
+    pending = cursor.get("pending")
+    visited = cursor.get("visited")
+    if not isinstance(pending, list) or not pending or not isinstance(visited, list):
+        raise LibraryIndexError("checkpoint_invalid")
+    current_item = pending[0]
+    if (
+        not isinstance(current_item, dict)
+        or current_item.get("directory_id") != directory_id
+    ):
+        raise LibraryIndexError("checkpoint_invalid")
+    next_cursor = json.loads(_encode_tree_cursor(cursor))
+    next_pending = next_cursor["pending"]
+    next_visited = next_cursor["visited"]
+    current = next_pending[0]
+    current["page_count"] = page_count
+    current["total"] = total
+    if terminal:
+        next_pending.pop(0)
+    else:
+        current["page"] = page_number + 1
+    for entry in page.items:
+        if not entry.is_directory or entry.directory_id is None:
+            continue
+        child_id = entry.directory_id
+        if child_id in next_visited:
+            raise LibraryIndexError("directory_cycle")
+        if len(next_visited) >= max_directories:
+            raise LibraryIndexError("directory_limit_exceeded")
+        child_path = entry.path
+        if not isinstance(child_path, str) or not child_path:
+            raise LibraryIndexError("entry_path_invalid")
+        next_visited.append(child_id)
+        next_pending.append(
+            {
+                "directory_id": child_id,
+                "parent_path": child_path,
+                "page": 1,
+                "page_count": None,
+                "total": None,
+            }
+        )
+    return next_cursor
 
 
 def _entry_changed(old: LibraryScanEntry, current: LibraryScanEntry) -> bool:

@@ -35,6 +35,7 @@ from watch_assistant.schemas import (
     LibraryDeleteRequest,
     LibraryDeleteResponse,
     LibraryInventoryResponse,
+    LibraryScanListResponse,
     LibraryScanRequest,
     LibraryScanSummary,
     MediaEntryListResponse,
@@ -51,15 +52,19 @@ from watch_assistant.services.empty_directory_cleanup_plan import (
     EmptyDirectoryCleanupPlanError,
     EmptyDirectoryCleanupPlanService,
 )
-from watch_assistant.services.library_index import (
-    LibraryIndexError,
-    LibraryIndexService,
-)
 from watch_assistant.services.library_inventory import (
     InventoryFile,
     InventorySnapshot,
     build_snapshot,
     check_inventory,
+)
+from watch_assistant.services.library_scan_operations import (
+    LibraryScanOperationError,
+    LibraryScanOperationNotFound,
+    LibraryScanOperationService,
+    LibraryScanOperationSummary,
+    scan_error_message_zh,
+    scan_state_message_zh,
 )
 from watch_assistant.services.organization_plan import OrganizationPlanError
 from watch_assistant.services.organization_preview import (
@@ -119,7 +124,81 @@ def _scan_summary(run: LibraryScanRun | None) -> LibraryScanSummary | None:
         added_count=run.added_count,
         changed_count=run.changed_count,
         removed_count=run.removed_count,
+        attempts=run.attempts,
+        state_message_zh=scan_state_message_zh(run.state),
         error_code=run.error_code,
+        error_message_zh=scan_error_message_zh(run.error_code),
+        cancel_requested=run.cancel_requested,
+    )
+
+
+def _operation_summary(summary: LibraryScanOperationSummary) -> LibraryScanSummary:
+    return LibraryScanSummary(
+        run_id=summary.run_id,
+        state=summary.state,
+        complete=summary.complete,
+        snapshot_revision=summary.snapshot_revision,
+        pages_read=summary.pages_read,
+        items_seen=summary.items_seen,
+        added_count=summary.added_count,
+        changed_count=summary.changed_count,
+        removed_count=summary.removed_count,
+        attempts=summary.attempts,
+        state_message_zh=summary.state_message_zh,
+        error_code=summary.error_code,
+        error_message_zh=summary.error_message_zh,
+        cancel_requested=summary.cancel_requested,
+    )
+
+
+def _scan_operation_service(request: Request) -> LibraryScanOperationService:
+    service = getattr(request.app.state, "library_scan_operation_service", None)
+    if isinstance(service, LibraryScanOperationService):
+        return service
+    database = getattr(request.app.state, "database", None)
+    if database is None:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "library_scan_unavailable",
+                "message": "媒体库扫描服务暂不可用",
+            },
+        )
+    service = LibraryScanOperationService(
+        database.session_factory,
+        event_logger=getattr(request.app.state, "settings_service", None),
+    )
+    request.app.state.library_scan_operation_service = service
+    return service
+
+
+def _scan_http_error(error: LibraryScanOperationError) -> HTTPException:
+    messages = {
+        "invalid_library_id": "媒体库标识无效",
+        "invalid_scan_run_id": "扫描操作标识无效",
+        "invalid_idempotency_key": "幂等标识无效",
+        "invalid_directory_limit": "目录数量上限无效",
+        "invalid_pagination": "分页参数无效",
+        "invalid_lease_duration": "扫描租约参数无效",
+        "library_scope_unverified": "媒体库范围尚未完成只读验证",
+        "scan_mode_unsupported": "扫描模式暂不受支持",
+        "checkpoint_invalid": "扫描断点无效，请重新发起扫描",
+    }
+    statuses = {
+        "invalid_library_id": 422,
+        "invalid_scan_run_id": 422,
+        "invalid_idempotency_key": 422,
+        "invalid_directory_limit": 422,
+        "invalid_pagination": 422,
+        "invalid_lease_duration": 500,
+        "library_scope_unverified": 409,
+        "checkpoint_invalid": 409,
+    }
+    code = error.code
+    message = messages.get(code, "媒体库扫描服务暂不可用")
+    return HTTPException(
+        status_code=statuses.get(code, 503),
+        detail={"code": code, "message": message},
     )
 
 
@@ -329,44 +408,142 @@ async def scan_library(
 ) -> LibraryScanSummary:
     if not _stable_library_id(library_id) or not _allowed(context, library_id):
         raise HTTPException(status_code=404, detail="library_not_found")
-    provider = getattr(request.app.state, "organization_cookie_provider", None)
-    if provider is None:
+    if getattr(request.app.state, "organization_cookie_provider", None) is None:
         raise HTTPException(status_code=503, detail="library_scope_unavailable")
-    async with request.app.state.database.session_factory() as session:
-        library = await session.get(MediaLibrary, library_id)
-    if (
-        library is None
-        or not library.enabled
-        or not library.scope_verified
-    ):
-        raise HTTPException(status_code=409, detail="library_scope_unverified")
-    gateway = P115ReadOnlyDirectoryGateway(
-        provider,
-        authorized_directory_ids=(library.root_directory_id,),
-        request_timeout_seconds=30,
-    )
-    service = LibraryIndexService(
-        request.app.state.database.session_factory,
-        gateway,
-        library_id=library.id,
-        root_directory_id=library.root_directory_id,
-        page_size=1,
-    )
     try:
-        result = await service.scan_tree(payload.idempotency_key)
-    except LibraryIndexError as error:
-        raise HTTPException(status_code=409, detail=error.code) from None
-    return LibraryScanSummary(
-        run_id=result.run_id,
-        state=result.state.value,
-        complete=result.complete,
-        snapshot_revision=result.snapshot_revision,
-        pages_read=result.pages_read,
-        items_seen=result.items_seen,
-        added_count=result.added_count,
-        changed_count=result.changed_count,
-        removed_count=result.removed_count,
-        error_code=result.error_code,
+        summary = await _scan_operation_service(request).enqueue(
+            library_id,
+            idempotency_key=payload.idempotency_key,
+            max_directories=payload.max_directories,
+        )
+    except LibraryScanOperationError as error:
+        raise _scan_http_error(error) from None
+    return _operation_summary(summary)
+
+
+@router.get(
+    "/libraries/{library_id}/scans", response_model=LibraryScanListResponse
+)
+async def list_library_scans(
+    library_id: str,
+    request: Request,
+    context: LibraryReadDependency,
+    cursor: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+) -> LibraryScanListResponse:
+    if not _stable_library_id(library_id) or not _allowed(context, library_id):
+        raise HTTPException(status_code=404, detail="library_not_found")
+    try:
+        items, next_cursor = await _scan_operation_service(request).list(
+            library_id, cursor=cursor, limit=limit
+        )
+    except LibraryScanOperationError as error:
+        raise _scan_http_error(error) from None
+    return LibraryScanListResponse(
+        items=[_operation_summary(item) for item in items],
+        next_cursor=next_cursor,
+    )
+
+
+@router.get(
+    "/libraries/{library_id}/scans/{scan_run_id}", response_model=LibraryScanSummary
+)
+@router.get(
+    "/libraries/{library_id}/scan/{scan_run_id}",
+    response_model=LibraryScanSummary,
+    include_in_schema=False,
+)
+async def get_library_scan(
+    library_id: str,
+    scan_run_id: str,
+    request: Request,
+    context: LibraryReadDependency,
+) -> LibraryScanSummary:
+    if not _stable_library_id(library_id) or not _allowed(context, library_id):
+        raise HTTPException(status_code=404, detail="library_not_found")
+    try:
+        summary = await _scan_operation_service(request).get(library_id, scan_run_id)
+    except LibraryScanOperationNotFound:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "library_scan_not_found", "message": "扫描操作不存在"},
+        ) from None
+    except LibraryScanOperationError as error:
+        raise _scan_http_error(error) from None
+    return _operation_summary(summary)
+
+
+@router.post(
+    "/libraries/{library_id}/scans/{scan_run_id}/cancel",
+    response_model=LibraryScanSummary,
+)
+async def cancel_library_scan(
+    library_id: str,
+    scan_run_id: str,
+    request: Request,
+    context: LibraryReadDependency,
+) -> LibraryScanSummary:
+    if not _stable_library_id(library_id) or not _allowed(context, library_id):
+        raise HTTPException(status_code=404, detail="library_not_found")
+    try:
+        summary = await _scan_operation_service(request).cancel(
+            library_id, scan_run_id
+        )
+    except LibraryScanOperationNotFound:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "library_scan_not_found", "message": "扫描操作不存在"},
+        ) from None
+    except LibraryScanOperationError as error:
+        raise _scan_http_error(error) from None
+    return _operation_summary(summary)
+
+
+@router.get(
+    "/libraries/{library_id}/scans/{scan_run_id}/entries",
+    response_model=MediaEntryListResponse,
+)
+async def list_library_scan_entries(
+    library_id: str,
+    scan_run_id: str,
+    request: Request,
+    context: LibraryReadDependency,
+    cursor: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+) -> MediaEntryListResponse:
+    if not _stable_library_id(library_id) or not _allowed(context, library_id):
+        raise HTTPException(status_code=404, detail="library_not_found")
+    async with request.app.state.database.session_factory() as session:
+        run = await session.scalar(
+            select(LibraryScanRun).where(
+                LibraryScanRun.id == scan_run_id,
+                LibraryScanRun.library_id == library_id,
+            )
+        )
+        if run is None:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "library_scan_not_found", "message": "扫描操作不存在"},
+            )
+        entries = list(
+            (
+                await session.scalars(
+                    select(LibraryScanEntry)
+                    .where(
+                        LibraryScanEntry.scan_run_id == scan_run_id,
+                        LibraryScanEntry.is_directory.is_(False),
+                    )
+                    .order_by(LibraryScanEntry.object_id)
+                    .offset(cursor)
+                    .limit(limit + 1)
+                )
+            ).all()
+        )
+    has_more = len(entries) > limit
+    entries = entries[:limit]
+    return MediaEntryListResponse(
+        items=[_entry_response(library_id, scan_run_id, entry) for entry in entries],
+        next_cursor=cursor + limit if has_more else None,
     )
 
 

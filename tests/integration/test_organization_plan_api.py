@@ -127,9 +127,17 @@ async def test_plan_review_api_is_authenticated_and_redacted(tmp_path):
     )
     assert missing_csrf.status_code == 403
 
+    mismatched_hash = await client.post(
+        "/api/v1/organization-plans/plan-review/confirm",
+        json={"expected_revision": 1, "plan_hash": "b" * 64},
+        headers=headers,
+    )
+    assert mismatched_hash.status_code == 409
+    assert mismatched_hash.json()["detail"]["code"] == "plan_hash_mismatch"
+
     confirmed = await client.post(
         "/api/v1/organization-plans/plan-review/confirm",
-        json={"expected_revision": 1},
+        json={"expected_revision": 1, "plan_hash": "a" * 64},
         headers=headers,
     )
     assert confirmed.status_code == 200

@@ -183,7 +183,11 @@ class LibraryScanSummary(BaseModel):
     added_count: int = Field(ge=0)
     changed_count: int = Field(ge=0)
     removed_count: int = Field(default=0, ge=0)
+    attempts: int = Field(default=0, ge=0)
+    state_message_zh: str = ""
     error_code: str | None = None
+    error_message_zh: str | None = None
+    cancel_requested: bool = False
 
 
 class MediaLibraryResponse(BaseModel):
@@ -220,6 +224,7 @@ class LibraryScanRequest(BaseModel):
     model_config = {"extra": "forbid"}
 
     idempotency_key: str = Field(min_length=1, max_length=128)
+    max_directories: int = Field(default=10_000, ge=1, le=100_000)
 
 
 class OrganizationPreviewRequest(BaseModel):
@@ -233,6 +238,13 @@ class MediaLibraryListResponse(BaseModel):
     model_config = {"extra": "forbid"}
 
     items: list[MediaLibraryResponse]
+    next_cursor: int | None = Field(default=None, ge=0)
+
+
+class LibraryScanListResponse(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    items: list[LibraryScanSummary]
     next_cursor: int | None = Field(default=None, ge=0)
 
 
@@ -807,6 +819,7 @@ class OrganizationPlanMutationRequest(BaseModel):
     model_config = {"extra": "forbid"}
 
     expected_revision: int = Field(ge=1)
+    plan_hash: str | None = Field(default=None, min_length=64, max_length=64)
 
 
 class OrganizationPlanCandidateRequest(OrganizationPlanMutationRequest):

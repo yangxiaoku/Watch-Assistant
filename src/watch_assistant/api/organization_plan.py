@@ -1,5 +1,6 @@
 """Authenticated, local-only organization plan review routes."""
 
+import hmac
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -88,6 +89,10 @@ async def confirm_organization_plan(
     service: ServiceDependency,
 ) -> OrganizationPlanResponse:
     try:
+        if payload.plan_hash is not None:
+            current = await service.get_plan(plan_id)
+            if not hmac.compare_digest(current.plan_hash, payload.plan_hash):
+                raise OrganizationPlanError("plan_hash_mismatch")
         item = await service.confirm_plan(
             plan_id, expected_revision=payload.expected_revision
         )
@@ -183,6 +188,7 @@ def _http_error(error: OrganizationPlanError) -> HTTPException:
         "invalid_revision": 422,
         "invalid_alias": 422,
         "stale_revision": 409,
+        "plan_hash_mismatch": 409,
         "plan_not_reviewable": 409,
         "invalid_source_object": 422,
         "invalid_tmdb_candidate": 422,
@@ -202,6 +208,7 @@ def _http_error(error: OrganizationPlanError) -> HTTPException:
         "invalid_revision": "计划版本无效",
         "invalid_alias": "别名格式不受支持",
         "stale_revision": "计划版本已变化，请刷新后重试",
+        "plan_hash_mismatch": "计划摘要已变化，请刷新计划后重新确认",
         "plan_not_reviewable": "计划当前状态不可修改",
         "invalid_source_object": "来源影片标识无效",
         "invalid_tmdb_candidate": "TMDB 候选无效",
