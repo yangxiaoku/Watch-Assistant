@@ -338,22 +338,21 @@ class TaskService:
         except ValueError as exc:
             raise ReconciliationUnavailable("reconciliation_unavailable") from exc
 
-        async with self._reconcile_lock:
-            async with self._session_factory() as session:
-                task = await session.get(Task, task_id)
-                if task is None:
-                    raise ResourceNotFound(task_id)
-                if task.remote_ref != remote_ref:
-                    raise ReconciliationUnavailable("reconciliation_conflict")
-                evidence = await apply_remote_status(
-                    session,
-                    task,
-                    normalized_status,
-                    source=EvidenceSource.READONLY_RECONCILIATION,
-                    verified_available=True,
-                )
-                await session.commit()
-                return task, evidence
+        async with self._reconcile_lock, self._session_factory() as session:
+            task = await session.get(Task, task_id)
+            if task is None:
+                raise ResourceNotFound(task_id)
+            if task.remote_ref != remote_ref:
+                raise ReconciliationUnavailable("reconciliation_conflict")
+            evidence = await apply_remote_status(
+                session,
+                task,
+                normalized_status,
+                source=EvidenceSource.READONLY_RECONCILIATION,
+                verified_available=True,
+            )
+            await session.commit()
+            return task, evidence
 
     async def evidence(self, task_id: str) -> list[WorkflowEvidence]:
         async with self._session_factory() as session:
