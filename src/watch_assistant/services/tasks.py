@@ -366,9 +366,9 @@ class TaskService:
             task = await session.get(Task, task_id)
             if task is None:
                 raise ResourceNotFound(task_id)
-            prepare_manual_retry(task)
             if allowed_actions is not None and task.action not in allowed_actions:
                 raise PushKindUnsupported("push kind is not supported")
+            prepare_manual_retry(task)
             if task.workflow_id is not None:
                 await sync_child_stage(
                     session,
