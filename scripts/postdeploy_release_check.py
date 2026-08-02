@@ -17,13 +17,17 @@ from urllib.request import Request, urlopen
 
 SCRIPT_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = SCRIPT_ROOT / "src"
+SCRIPTS_ROOT = SCRIPT_ROOT / "scripts"
 if SRC_ROOT.is_dir():
     sys.path.insert(0, str(SRC_ROOT))
+if SCRIPTS_ROOT.is_dir():
+    sys.path.insert(0, str(SCRIPTS_ROOT))
+
+from release_manifest import ReleaseManifestError, validate_version_commit_file
 
 from watch_assistant.release_metadata import (
     normalize_full_release,
     normalize_release,
-    read_release_commit,
 )
 
 _RELEASE_ENV_NAME = "WATCH_ASSISTANT_RELEASE"
@@ -79,6 +83,13 @@ def _read_release_env(path: Path) -> tuple[str | None, str]:
     if release is None:
         return None, "release_env_invalid"
     return release, "ok"
+
+
+def _read_version_commit(path: Path) -> str | None:
+    try:
+        return validate_version_commit_file(path)
+    except ReleaseManifestError:
+        return None
 
 
 def _read_service_identity(
@@ -204,7 +215,7 @@ def check_release_consistency(
 ) -> tuple[bool, str]:
     if not _validate_health_polling(health_timeout, health_poll_interval):
         return False, "health_polling_invalid"
-    expected = read_release_commit(version_file)
+    expected = _read_version_commit(version_file)
     if expected is None:
         return False, "version_invalid"
     if expected_release is not None:
@@ -214,7 +225,7 @@ def check_release_consistency(
         if expected != exact_expected:
             return False, "version_expected_mismatch"
     current_root = current_root or version_file.parent
-    current_release = read_release_commit(current_root / "VERSION")
+    current_release = _read_version_commit(current_root / "VERSION")
     if current_release is None:
         return False, "current_version_invalid"
     if current_release != expected:
@@ -312,7 +323,7 @@ def main() -> int:
         print("POSTDEPLOY_RELEASE_CHECK=failed")
         print(f"POSTDEPLOY_RELEASE_CODE={code}")
         return 1
-    release = read_release_commit(args.version_file)
+    release = _read_version_commit(args.version_file)
     print("POSTDEPLOY_RELEASE_CHECK=ok")
     print(f"POSTDEPLOY_RELEASE={release}")
     return 0
