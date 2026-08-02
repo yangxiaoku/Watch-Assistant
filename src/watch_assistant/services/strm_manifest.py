@@ -12,7 +12,8 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from urllib.parse import quote
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from watch_assistant.library_models import (
@@ -23,6 +24,7 @@ from watch_assistant.library_models import (
     StrmManifestEntry,
     StrmManifestStatus,
 )
+from watch_assistant.models import StrmOperation, StrmOperationStatus
 from watch_assistant.services.strm_scope import (
     active_strm_operation_id,
     has_newer_unsettled_scan,
@@ -66,6 +68,130 @@ LeaseCheck = Callable[[], Awaitable[bool]]
 ProgressCallback = Callable[[StrmGenerationSummary], Awaitable[None]]
 
 
+@dataclass(frozen=True, slots=True)
+class _FileMutation:
+    """The exact file state needed to compensate one local side effect."""
+
+    root: Path
+    relative_path: str
+    before: bytes | None
+    after: bytes | None
+
+
+@dataclass(frozen=True, slots=True)
+class _ManifestCommitExpectation:
+    manifest_id: str
+    cloud_file_id: str
+    local_relative_path: str
+    source_version: int
+    status: str
+    is_current: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _ReconcileEntryResult:
+    outcome: str
+    expectation: _ManifestCommitExpectation | None
+
+
+@dataclass(frozen=True, slots=True)
+class _RetireResult:
+    retired: bool
+    expectation: _ManifestCommitExpectation | None
+
+
+class _LeaseFence:
+    """Bind a callback lease to a durable conditional database write."""
+
+    def __init__(
+        self,
+        operation_id: str | None,
+        lease_check: LeaseCheck | None,
+    ) -> None:
+        self.operation_id = operation_id
+        self.lease_check = lease_check
+        self._lease_owner: str | None = None
+        self._database_lease = False
+
+    async def bind(self, session: AsyncSession) -> None:
+        await _raise_if_lease_lost(self.lease_check)
+        if self.operation_id is not None:
+            operation = await session.get(StrmOperation, self.operation_id)
+            if operation is None or not _operation_lease_is_current(operation):
+                raise StrmManifestError("strm_operation_lease_lost")
+            self._lease_owner = operation.lease_owner
+            self._database_lease = True
+        await _raise_if_lease_lost(self.lease_check)
+
+    async def assert_current(self, session: AsyncSession) -> None:
+        await _raise_if_lease_lost(self.lease_check)
+        if not self._database_lease or self.operation_id is None:
+            return
+        operation = await session.scalar(
+            select(StrmOperation)
+            .where(StrmOperation.id == self.operation_id)
+            .execution_options(populate_existing=True)
+        )
+        if operation is None or not _operation_lease_is_current(
+            operation, expected_owner=self._lease_owner
+        ):
+            raise StrmManifestError("strm_operation_lease_lost")
+
+    async def fence_commit(self, session: AsyncSession) -> None:
+        """Acquire the lease row's write lock immediately before commit.
+
+        The conditional update and the manifest transaction commit are one
+        database transaction.  A competing lease takeover therefore cannot
+        commit between this check and the manifest commit.
+        """
+
+        await _raise_if_lease_lost(self.lease_check)
+        if not self._database_lease or self.operation_id is None:
+            return
+        result = await session.execute(
+            update(StrmOperation)
+            .where(
+                StrmOperation.id == self.operation_id,
+                StrmOperation.status == StrmOperationStatus.RUNNING,
+                StrmOperation.lease_owner == self._lease_owner,
+                StrmOperation.lease_expires_at.is_not(None),
+                StrmOperation.lease_expires_at > datetime.now(UTC),
+            )
+            # A no-op UPDATE still takes the database row/write lock without
+            # changing the externally visible lease value.
+            .values(heartbeat_at=StrmOperation.heartbeat_at)
+            .execution_options(synchronize_session=False)
+        )
+        if result.rowcount != 1:
+            raise StrmManifestError("strm_operation_lease_lost")
+
+    async def observe_database_lease(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+    ) -> bool | None:
+        if not self._database_lease or self.operation_id is None:
+            return True
+        try:
+            async with session_factory() as session:
+                operation = await session.get(StrmOperation, self.operation_id)
+                return bool(
+                    operation is not None
+                    and _operation_lease_is_current(
+                        operation, expected_owner=self._lease_owner
+                    )
+                )
+        except SQLAlchemyError:
+            return None
+
+
+async def _commit_fenced(
+    session: AsyncSession,
+    fence: _LeaseFence,
+) -> None:
+    await fence.fence_commit(session)
+    await session.commit()
+
+
 class StrmManifestService:
     """Generate only files represented by one complete current scan."""
 
@@ -79,6 +205,98 @@ class StrmManifestService:
         self._managed_output_roots = tuple(
             _absolute_path(Path(root)) for root in managed_output_roots
         )
+
+    async def _commit_entry(
+        self,
+        session: AsyncSession,
+        fence: _LeaseFence,
+        expectation: _ManifestCommitExpectation | None,
+        mutations: list[_FileMutation],
+    ) -> None:
+        try:
+            await _commit_fenced(session, fence)
+        except asyncio.CancelledError:
+            await self._recover_commit_failure(
+                session,
+                fence,
+                expectation,
+                mutations,
+                cancelled=True,
+            )
+            raise
+        except SQLAlchemyError:
+            await self._recover_commit_failure(
+                session,
+                fence,
+                expectation,
+                mutations,
+                cancelled=False,
+            )
+
+    async def _recover_commit_failure(
+        self,
+        session: AsyncSession,
+        fence: _LeaseFence,
+        expectation: _ManifestCommitExpectation | None,
+        mutations: list[_FileMutation],
+        *,
+        cancelled: bool,
+    ) -> None:
+        rollback_failed = False
+        try:
+            await asyncio.shield(session.rollback())
+        except asyncio.CancelledError:
+            rollback_failed = True
+        except Exception:  # noqa: BLE001 - probe the commit outcome next
+            rollback_failed = True
+            # A fresh read below is the only safe way to distinguish a commit
+            # that failed from a commit whose acknowledgement was lost.
+        observed = await self._observe_manifest_commit(expectation)
+        if observed is True:
+            mutations.clear()
+            return
+        lease_current = await fence.observe_database_lease(self._session_factory)
+        if lease_current is False:
+            try:
+                _restore_file_mutations(mutations)
+            except Exception:  # noqa: BLE001 - compensation failure is uncertainty
+                raise StrmManifestError("uncertain") from None
+            mutations.clear()
+            raise StrmManifestError("strm_operation_lease_lost")
+        if lease_current is None:
+            raise StrmManifestError("uncertain")
+        if rollback_failed:
+            raise StrmManifestError("uncertain") from None
+        try:
+            _restore_file_mutations(mutations)
+        except Exception:  # noqa: BLE001 - compensation failure is uncertainty
+            raise StrmManifestError("uncertain") from None
+        mutations.clear()
+        if observed is None:
+            raise StrmManifestError("uncertain")
+        if not cancelled:
+            raise StrmManifestError("strm_operation_failed")
+
+    async def _observe_manifest_commit(
+        self,
+        expectation: _ManifestCommitExpectation | None,
+    ) -> bool | None:
+        if expectation is None:
+            return False
+        try:
+            async with self._session_factory() as session:
+                row = await session.get(StrmManifestEntry, expectation.manifest_id)
+                if row is None:
+                    return False
+                return bool(
+                    row.cloud_file_id == expectation.cloud_file_id
+                    and row.local_relative_path == expectation.local_relative_path
+                    and row.source_version == expectation.source_version
+                    and str(row.status) == expectation.status
+                    and row.is_current is expectation.is_current
+                )
+        except SQLAlchemyError:
+            return None
 
     async def list_current(
         self, library_id: str, *, page: int = 1, page_size: int = 50
@@ -126,6 +344,7 @@ class StrmManifestService:
             raise StrmManifestError("invalid_request")
         _validate_fencing(operation_id, lease_check)
         await _raise_if_lease_lost(lease_check)
+        fence = _LeaseFence(operation_id, lease_check)
         prefix = _safe_prefix(playback_url_prefix)
         root = _safe_root(output_root, self._managed_output_roots)
         async with self._session_factory() as session:
@@ -157,6 +376,10 @@ class StrmManifestService:
             await _raise_if_conflicting_operation(
                 session, library_id, operation_id=operation_id
             )
+            await fence.bind(session)
+            library_pk = library.id
+            run_pk = run.id
+            source_version = run.snapshot_revision
             generated = unchanged = skipped = failed = 0
             last_object_id: str | None = None
             while True:
@@ -164,12 +387,13 @@ class StrmManifestService:
                 query = (
                     select(LibraryScanEntry)
                     .where(
-                        LibraryScanEntry.scan_run_id == run.id,
+                        LibraryScanEntry.scan_run_id == run_pk,
                         LibraryScanEntry.object_type == "file",
                         LibraryScanEntry.is_directory.is_(False),
                     )
                     .order_by(LibraryScanEntry.object_id)
                     .limit(_RECONCILE_BATCH_SIZE)
+                    .execution_options(populate_existing=True)
                 )
                 if last_object_id is not None:
                     query = query.where(
@@ -180,7 +404,8 @@ class StrmManifestService:
                     break
                 for entry in entries:
                     await _raise_if_cancelled(cancel_check, lease_check)
-                    last_object_id = entry.object_id
+                    entry_id = entry.object_id
+                    last_object_id = entry_id
                     paths = _paths(entry)
                     if paths is None:
                         skipped += 1
@@ -196,25 +421,37 @@ class StrmManifestService:
                         )
                         continue
                     try:
-                        async with session.begin_nested():
-                            outcome = await self._reconcile_entry(
-                                session,
-                                library_id=library.id,
-                                entry=entry,
-                                source_version=run.snapshot_revision,
-                                root=root,
-                                prefix=prefix,
-                                lease_check=lease_check,
-                            )
-                        await session.commit()
+                        mutations: list[_FileMutation] = []
+                        result = await self._reconcile_entry(
+                            session,
+                            library_id=library_pk,
+                            entry=entry,
+                            source_version=source_version,
+                            root=root,
+                            prefix=prefix,
+                            fence=fence,
+                            mutations=mutations,
+                        )
+                        await self._commit_entry(
+                            session, fence, result.expectation, mutations
+                        )
+                        outcome = result.outcome
+                    except asyncio.CancelledError:
+                        await _rollback_entry(session, mutations)
+                        raise
+                    except SQLAlchemyError:
+                        await _rollback_entry(session, mutations)
+                        raise StrmManifestError("strm_operation_failed") from None
                     except StrmManifestError as error:
+                        await _rollback_entry(session, mutations)
                         if _is_lease_error(error):
                             raise
                         failed += 1
-                        continue
+                        break
                     except OSError:
+                        await _rollback_entry(session, mutations)
                         failed += 1
-                        continue
+                        break
                     if outcome == "generated":
                         generated += 1
                     else:
@@ -306,6 +543,8 @@ class StrmManifestService:
         if not _valid_id(library_id) or not _valid_id(source_scan_run_id):
             raise StrmManifestError("invalid_request")
         _validate_fencing(operation_id, lease_check)
+        await _raise_if_lease_lost(lease_check)
+        fence = _LeaseFence(operation_id, lease_check)
         prefix = _safe_prefix(playback_url_prefix)
         root = _safe_root(output_root, self._managed_output_roots)
         generated = unchanged = skipped = failed = retired = 0
@@ -316,17 +555,22 @@ class StrmManifestService:
             await _raise_if_conflicting_operation(
                 session, library_id, operation_id=operation_id
             )
+            await fence.bind(session)
+            library_pk = library.id
+            run_pk = run.id
+            source_version = run.snapshot_revision
             last_object_id: str | None = None
             while True:
                 await _raise_if_cancelled(cancel_check, lease_check)
                 query = (
                     select(LibraryScanDiff)
                     .where(
-                        LibraryScanDiff.scan_run_id == run.id,
+                        LibraryScanDiff.scan_run_id == run_pk,
                         LibraryScanDiff.object_type == "file",
                     )
                     .order_by(LibraryScanDiff.object_id)
                     .limit(_RECONCILE_BATCH_SIZE)
+                    .execution_options(populate_existing=True)
                 )
                 if last_object_id is not None:
                     query = query.where(LibraryScanDiff.object_id > last_object_id)
@@ -340,24 +584,40 @@ class StrmManifestService:
                         if not retire_removed:
                             continue
                         try:
-                            async with session.begin_nested():
-                                did_retire = await self._retire_removed(
-                                    session,
-                                    library_id=library.id,
-                                    object_id=change.object_id,
-                                    root=root,
-                                    prefix=prefix,
-                                    lease_check=lease_check,
-                                )
-                            await session.commit()
+                            mutations = []
+                            retire_result = await self._retire_removed(
+                                session,
+                                library_id=library_pk,
+                                object_id=change.object_id,
+                                root=root,
+                                prefix=prefix,
+                                fence=fence,
+                                mutations=mutations,
+                            )
+                            await self._commit_entry(
+                                session,
+                                fence,
+                                retire_result.expectation,
+                                mutations,
+                            )
+                        except asyncio.CancelledError:
+                            await _rollback_entry(session, mutations)
+                            raise
+                        except SQLAlchemyError:
+                            await _rollback_entry(session, mutations)
+                            raise StrmManifestError("strm_operation_failed") from None
                         except StrmManifestError as error:
+                            await _rollback_entry(session, mutations)
                             if _is_lease_error(error):
                                 raise
                             failed += 1
+                            break
                         except OSError:
+                            await _rollback_entry(session, mutations)
                             failed += 1
+                            break
                         else:
-                            retired += int(did_retire)
+                            retired += int(retire_result.retired)
                         await _report_progress(
                             progress_callback,
                             library_id,
@@ -373,34 +633,48 @@ class StrmManifestService:
                         continue
                     entry = await session.scalar(
                         select(LibraryScanEntry).where(
-                            LibraryScanEntry.scan_run_id == run.id,
+                            LibraryScanEntry.scan_run_id == run_pk,
                             LibraryScanEntry.object_type == "file",
                             LibraryScanEntry.object_id == change.object_id,
                             LibraryScanEntry.is_directory.is_(False),
                         )
+                        .execution_options(populate_existing=True)
                     )
                     if entry is None:
                         failed += 1
                         continue
                     try:
-                        async with session.begin_nested():
-                            outcome = await self._reconcile_entry(
-                                session,
-                                library_id=library.id,
-                                entry=entry,
-                                source_version=run.snapshot_revision,
-                                root=root,
-                                prefix=prefix,
-                                lease_check=lease_check,
-                            )
-                        await session.commit()
+                        mutations = []
+                        result = await self._reconcile_entry(
+                            session,
+                            library_id=library_pk,
+                            entry=entry,
+                            source_version=source_version,
+                            root=root,
+                            prefix=prefix,
+                            fence=fence,
+                            mutations=mutations,
+                        )
+                        await self._commit_entry(
+                            session, fence, result.expectation, mutations
+                        )
+                        outcome = result.outcome
+                    except asyncio.CancelledError:
+                        await _rollback_entry(session, mutations)
+                        raise
+                    except SQLAlchemyError:
+                        await _rollback_entry(session, mutations)
+                        raise StrmManifestError("strm_operation_failed") from None
                     except StrmManifestError as error:
+                        await _rollback_entry(session, mutations)
                         if _is_lease_error(error):
                             raise
                         failed += 1
-                        continue
+                        break
                     except OSError:
+                        await _rollback_entry(session, mutations)
                         failed += 1
+                        break
                     else:
                         if outcome == "generated":
                             generated += 1
@@ -468,11 +742,12 @@ class StrmManifestService:
         source_version: int,
         root: Path,
         prefix: str,
-        lease_check: LeaseCheck | None,
-    ) -> str:
+        fence: _LeaseFence,
+        mutations: list[_FileMutation],
+    ) -> _ReconcileEntryResult:
         paths = _paths(entry)
         if paths is None:
-            return "skipped"
+            return _ReconcileEntryResult("skipped", None)
         cloud_path, local_path = paths
         manifest = await session.scalar(
             select(StrmManifestEntry).where(
@@ -491,7 +766,7 @@ class StrmManifestService:
         )
         if collision is not None:
             raise StrmManifestError("path_collision")
-        await _raise_if_lease_lost(lease_check)
+        await fence.assert_current(session)
         if manifest is None:
             manifest = StrmManifestEntry(
                 manifest_id="strm_" + uuid.uuid4().hex,
@@ -512,31 +787,36 @@ class StrmManifestService:
         else:
             old_path = manifest.local_relative_path
         content = f"{prefix}{quote(manifest.manifest_id, safe='')}\n".encode()
-        await _raise_if_lease_lost(lease_check)
-        written = False
-        old_removed = False
-        try:
-            written = _write(root, local_path, content)
-            await _raise_if_lease_lost(lease_check)
-            if old_path and old_path != local_path:
-                await _raise_if_lease_lost(lease_check)
-                old_removed = _remove_managed(root, old_path, content)
-                await _raise_if_lease_lost(lease_check)
-            manifest.cloud_directory_id = entry.parent_id
-            manifest.cloud_relative_path = cloud_path
-            manifest.local_relative_path = local_path
-            manifest.size_bytes = entry.size_bytes
-            manifest.source_version = source_version
-            manifest.status = StrmManifestStatus.VERIFIED
-            manifest.last_verified_at = datetime.now(UTC)
-            await _raise_if_lease_lost(lease_check)
-        except (StrmManifestError, asyncio.CancelledError):
-            if old_removed and old_path is not None:
-                _write(root, old_path, content)
-            if written:
-                _remove_managed(root, local_path, content, tolerate_missing=True)
-            raise
-        return "generated" if written else "unchanged"
+        await fence.assert_current(session)
+        written, mutation = _write_with_undo(root, local_path, content)
+        if mutation is not None:
+            mutations.append(mutation)
+        await fence.assert_current(session)
+        if old_path and old_path != local_path:
+            await fence.assert_current(session)
+            mutation = _remove_with_undo(root, old_path, content)
+            if mutation is not None:
+                mutations.append(mutation)
+            await fence.assert_current(session)
+        manifest.cloud_directory_id = entry.parent_id
+        manifest.cloud_relative_path = cloud_path
+        manifest.local_relative_path = local_path
+        manifest.size_bytes = entry.size_bytes
+        manifest.source_version = source_version
+        manifest.status = StrmManifestStatus.VERIFIED
+        manifest.last_verified_at = datetime.now(UTC)
+        await fence.assert_current(session)
+        return _ReconcileEntryResult(
+            "generated" if written else "unchanged",
+            _ManifestCommitExpectation(
+                manifest.manifest_id,
+                manifest.cloud_file_id,
+                manifest.local_relative_path,
+                manifest.source_version,
+                StrmManifestStatus.VERIFIED.value,
+                True,
+            ),
+        )
 
     async def _retire_removed(
         self,
@@ -546,8 +826,9 @@ class StrmManifestService:
         object_id: str,
         root: Path,
         prefix: str,
-        lease_check: LeaseCheck | None,
-    ) -> bool:
+        fence: _LeaseFence,
+        mutations: list[_FileMutation],
+    ) -> _RetireResult:
         manifest = await session.scalar(
             select(StrmManifestEntry).where(
                 StrmManifestEntry.library_id == library_id,
@@ -556,20 +837,26 @@ class StrmManifestService:
             )
         )
         if manifest is None:
-            return False
+            return _RetireResult(False, None)
         expected = f"{prefix}{quote(manifest.manifest_id, safe='')}\n".encode()
-        removed = False
-        try:
-            await _raise_if_lease_lost(lease_check)
-            removed = _remove_managed(root, manifest.local_relative_path, expected)
-            await _raise_if_lease_lost(lease_check)
-        except (StrmManifestError, asyncio.CancelledError):
-            if removed:
-                _write(root, manifest.local_relative_path, expected)
-            raise
+        await fence.assert_current(session)
+        mutation = _remove_with_undo(root, manifest.local_relative_path, expected)
+        if mutation is not None:
+            mutations.append(mutation)
+        await fence.assert_current(session)
         manifest.is_current = False
         manifest.status = StrmManifestStatus.RETIRED
-        return True
+        return _RetireResult(
+            True,
+            _ManifestCommitExpectation(
+                manifest.manifest_id,
+                manifest.cloud_file_id,
+                manifest.local_relative_path,
+                manifest.source_version,
+                StrmManifestStatus.RETIRED.value,
+                False,
+            ),
+        )
 
 
 def _item(row: StrmManifestEntry) -> StrmManifestItem:
@@ -603,6 +890,15 @@ def _paths(entry: LibraryScanEntry) -> tuple[str, str] | None:
 
 
 def _write(root: Path, relative_path: str, content: bytes) -> bool:
+    written, _mutation = _write_with_undo(root, relative_path, content)
+    return written
+
+
+def _write_with_undo(
+    root: Path, relative_path: str, content: bytes
+) -> tuple[bool, _FileMutation | None]:
+    if not _valid_relative_path(relative_path):
+        raise StrmManifestError("invalid_managed_path")
     target = root.joinpath(*PurePosixPath(relative_path).parts)
     parent = target.parent
     _assert_no_symlink_components(parent)
@@ -613,8 +909,14 @@ def _write(root: Path, relative_path: str, content: bytes) -> bool:
     _within(root, resolved_parent)
     if target.is_symlink():
         raise StrmManifestError("symlink_target")
-    if target.is_file() and target.read_bytes() == content:
-        return False
+    before: bytes | None = None
+    if target.is_file():
+        try:
+            before = target.read_bytes()
+        except OSError as error:
+            raise StrmManifestError("managed_file_not_readable") from error
+        if before == content:
+            return False, None
     if target.exists() and not target.is_file():
         raise StrmManifestError("target_not_file")
     descriptor, temporary_name = tempfile.mkstemp(
@@ -629,16 +931,16 @@ def _write(root: Path, relative_path: str, content: bytes) -> bool:
         os.replace(temporary, target)
     finally:
         temporary.unlink(missing_ok=True)
-    return True
+    return True, _FileMutation(root, relative_path, before, content)
 
 
-def _remove_managed(
+def _remove_with_undo(
     root: Path,
     relative_path: str,
     expected: bytes,
     *,
     tolerate_missing: bool = False,
-) -> bool:
+) -> _FileMutation | None:
     if not _valid_relative_path(relative_path):
         raise StrmManifestError("invalid_managed_path")
     target = root.joinpath(*PurePosixPath(relative_path).parts)
@@ -646,14 +948,14 @@ def _remove_managed(
     try:
         resolved_parent = target.parent.resolve(strict=True)
     except OSError as error:
+        if tolerate_missing and not target.exists():
+            return None
         raise StrmManifestError("managed_parent_not_safe") from error
     _within(root, resolved_parent)
     if target.is_symlink():
         raise StrmManifestError("managed_file_not_safe")
     if not target.exists():
-        if tolerate_missing:
-            return False
-        return False
+        return None
     if not target.is_file():
         raise StrmManifestError("managed_file_not_safe")
     try:
@@ -663,7 +965,101 @@ def _remove_managed(
     if actual != expected:
         raise StrmManifestError("managed_file_changed")
     target.unlink()
-    return True
+    return _FileMutation(root, relative_path, actual, None)
+
+
+def _remove_managed(
+    root: Path,
+    relative_path: str,
+    expected: bytes,
+    *,
+    tolerate_missing: bool = False,
+) -> bool:
+    return (
+        _remove_with_undo(
+            root,
+            relative_path,
+            expected,
+            tolerate_missing=tolerate_missing,
+        )
+        is not None
+    )
+
+
+def _restore_file_mutation(mutation: _FileMutation) -> None:
+    current = _read_target(mutation.root, mutation.relative_path)
+    if mutation.after is None:
+        if current is None:
+            _write(mutation.root, mutation.relative_path, mutation.before or b"")
+        elif current != mutation.before:
+            raise StrmManifestError("uncertain")
+        return
+    if current is not None and current != mutation.after:
+        raise StrmManifestError("uncertain")
+    if mutation.before is None:
+        if current is not None:
+            _remove_managed(
+                mutation.root,
+                mutation.relative_path,
+                mutation.after,
+                tolerate_missing=True,
+            )
+    else:
+        _write(mutation.root, mutation.relative_path, mutation.before)
+
+
+def _restore_file_mutations(mutations: list[_FileMutation]) -> None:
+    first_error: BaseException | None = None
+    for mutation in reversed(mutations):
+        try:
+            _restore_file_mutation(mutation)
+        except BaseException as error:  # noqa: BLE001 - finish every compensation
+            if first_error is None:
+                first_error = error
+    if first_error is not None:
+        raise StrmManifestError("uncertain") from None
+
+
+async def _rollback_entry(
+    session: AsyncSession,
+    mutations: list[_FileMutation],
+) -> None:
+    database_error: BaseException | None = None
+    try:
+        await asyncio.shield(session.rollback())
+    except BaseException as error:  # noqa: BLE001 - compensation must continue
+        database_error = error
+    file_error: BaseException | None = None
+    try:
+        _restore_file_mutations(mutations)
+    except BaseException as error:  # noqa: BLE001 - report explicit uncertainty
+        file_error = error
+    if database_error is not None or file_error is not None:
+        raise StrmManifestError("uncertain") from None
+
+
+def _read_target(root: Path, relative_path: str) -> bytes | None:
+    if not _valid_relative_path(relative_path):
+        raise StrmManifestError("invalid_managed_path")
+    target = root.joinpath(*PurePosixPath(relative_path).parts)
+    _assert_no_symlink_components(target.parent)
+    try:
+        resolved_parent = target.parent.resolve(strict=True)
+    except OSError:
+        if not target.exists():
+            return None
+        raise StrmManifestError("managed_parent_not_safe") from None
+    _within(root, resolved_parent)
+    if target.is_symlink():
+        raise StrmManifestError("managed_file_not_safe")
+    if not target.exists():
+        return None
+    if not target.is_file():
+        raise StrmManifestError("managed_file_not_safe")
+    try:
+        return target.read_bytes()
+    except OSError as error:
+        raise StrmManifestError("managed_file_not_readable") from error
 
 
 def _safe_root(
@@ -753,6 +1149,25 @@ async def _raise_if_cancelled(
     await _raise_if_lease_lost(lease_check)
     if cancel_check is not None and await cancel_check():
         raise StrmManifestError("strm_operation_cancelled")
+
+
+def _operation_lease_is_current(
+    operation: StrmOperation,
+    *,
+    expected_owner: str | None = None,
+) -> bool:
+    if (
+        operation.status is not StrmOperationStatus.RUNNING
+        or operation.lease_owner is None
+        or operation.lease_expires_at is None
+    ):
+        return False
+    if expected_owner is not None and operation.lease_owner != expected_owner:
+        return False
+    expires_at = operation.lease_expires_at
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=UTC)
+    return expires_at > datetime.now(UTC)
 
 
 async def _raise_if_lease_lost(lease_check: LeaseCheck | None) -> None:
