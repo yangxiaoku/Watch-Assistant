@@ -78,9 +78,7 @@ async def test_p115_managed_cookie_lifecycle_uses_app_runtime_callback(
 ):
     LifecycleAdapter.instances.clear()
     ControlledWorker.instances.clear()
-    contract = tmp_path / "tgto.json"
-    contract.write_text('{"supported": false}', encoding="utf-8")
-    cookie_path = tmp_path / "tgtodrive-cookie"
+    cookie_path = tmp_path / "p115-cookie"
     cookie_path.write_text("invalid", encoding="ascii", newline="")
     if os.name != "nt":
         cookie_path.chmod(0o600)
@@ -91,8 +89,6 @@ async def test_p115_managed_cookie_lifecycle_uses_app_runtime_callback(
         "WEB_PASSWORD_HASH": "unused",
         "SCRIPT_TOKEN_HASH": "unused",
         "PANSOU_BASE_URL": "http://pansou.test",
-        "TGTO_BASE_URL": "http://tgto.test",
-        "TGTO_CONTRACT_PATH": str(contract),
         "CACHE_WARM_ENABLED": "false",
         "P115_ENABLED": "true",
         "P115_COOKIE_PATH": str(cookie_path),
@@ -142,8 +138,6 @@ async def test_p115_managed_cookie_lifecycle_uses_app_runtime_callback(
             assert credentials.json()["p115_cookie"]["ready"] is True
             assert p115_settings.json()["cookie"]["source"] == "managed"
             assert p115_settings.json()["ready"] is True
-            assert p115_settings.json()["cookie"]["sync_status"] == "unknown"
-            assert p115_settings.json()["cookie"]["last_sync_at"] is None
 
             update_again = await client.put(
                 "/api/v1/settings/credentials/p115-cookie",
@@ -168,8 +162,8 @@ async def test_p115_managed_cookie_lifecycle_uses_app_runtime_callback(
             assert ControlledWorker.instances[0].stopped.is_set()
             p115_settings = await client.get("/api/v1/settings/p115")
             credentials = await client.get("/api/v1/settings/credentials")
-            assert p115_settings.json()["cookie"]["source"] == "tgtodrive"
-            assert credentials.json()["p115_cookie"]["source"] == "tgtodrive"
+            assert p115_settings.json()["cookie"]["source"] == "file"
+            assert credentials.json()["p115_cookie"]["source"] == "file"
             assert p115_settings.json()["ready"] is False
             assert credentials.json()["p115_cookie"]["ready"] is False
 
@@ -188,8 +182,8 @@ async def test_p115_managed_cookie_lifecycle_uses_app_runtime_callback(
             await ControlledWorker.instances[1].started.wait()
             p115_settings = await client.get("/api/v1/settings/p115")
             credentials = await client.get("/api/v1/settings/credentials")
-            assert p115_settings.json()["cookie"]["source"] == "tgtodrive"
-            assert credentials.json()["p115_cookie"]["source"] == "tgtodrive"
+            assert p115_settings.json()["cookie"]["source"] == "file"
+            assert credentials.json()["p115_cookie"]["source"] == "file"
             assert p115_settings.json()["ready"] is True
             assert credentials.json()["p115_cookie"]["ready"] is True
 

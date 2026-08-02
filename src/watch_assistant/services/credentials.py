@@ -158,7 +158,7 @@ class CredentialService:
             },
             "p115_cookie": {
                 "configured": cookie_configured or fallback,
-                "source": "managed" if cookie_configured else "tgtodrive",
+                "source": "managed" if cookie_configured else "file",
                 "last_updated_at": cookie_updated,
                 "structure_valid": active_cookie is not None,
                 "ready": runtime_ready and active_cookie is not None,

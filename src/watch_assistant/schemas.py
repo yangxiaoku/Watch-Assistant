@@ -926,7 +926,7 @@ class CredentialSourceResponse(BaseModel):
 
 class P115CredentialStatus(BaseModel):
     configured: bool
-    source: Literal["managed", "tgtodrive"]
+    source: Literal["managed", "file"]
     last_updated_at: datetime | None
     structure_valid: bool
     ready: bool

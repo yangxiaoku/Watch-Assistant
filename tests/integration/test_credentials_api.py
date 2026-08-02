@@ -74,7 +74,7 @@ async def _setup(tmp_path: Path):
     database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'credentials.db'}")
     await initialize_database(database.engine)
     crypto = SecretCrypto(Fernet.generate_key().decode("ascii"))
-    fallback = CookieProvider(tmp_path / "tgtodrive-cookie")
+    fallback = CookieProvider(tmp_path / "p115-cookie")
     provider = CompositeCookieProvider(fallback)
     tmdb = FakeTmdb()
     p115 = FakeP115()
@@ -335,7 +335,7 @@ async def test_reset_validates_fallback_and_disables_when_fallback_invalid(
     tmp_path: Path,
 ):
     database, _crypto, _tmdb, p115, _security, app = await _setup(tmp_path)
-    fallback_path = tmp_path / "tgtodrive-cookie"
+    fallback_path = tmp_path / "p115-cookie"
     fallback_path.write_text(COOKIE, encoding="ascii", newline="")
     if os.name != "nt":
         fallback_path.chmod(0o600)

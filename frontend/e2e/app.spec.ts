@@ -345,7 +345,7 @@ test("syncs the inspection setting from the settings page into the live detail w
   await page.route("**/api/v1/movies/home", (route) => route.fulfill({ json: home }));
   await page.route("**/api/v1/settings/overview", (route) => route.fulfill({ json: { release: "test", uptime_seconds: 1, database_size_bytes: 1, capabilities: { inspection: true, magnet: false, share: false } } }));
   await page.route("**/api/v1/settings/logging", (route) => route.fulfill({ json: { revision, level: "INFO", retention_days: 14, max_file_mb: 10 } }));
-  await page.route("**/api/v1/settings/p115", (route) => route.fulfill({ json: { enabled: false, ready: false, capabilities: { magnet: false, share: false }, cookie: { source: "tgtodrive", configured: false, structure_valid: false, sync_status: "unknown", last_sync_at: null }, target_configured: false, max_concurrency: 1 } }));
+  await page.route("**/api/v1/settings/p115", (route) => route.fulfill({ json: { enabled: false, ready: false, capabilities: { magnet: false, share: false }, cookie: { source: "file", configured: false, structure_valid: false }, target_configured: false, max_concurrency: 1 } }));
   await page.route("**/api/v1/logs?**", (route) => route.fulfill({ json: { items: [], next_cursor: null } }));
   await page.route("**/api/v1/settings/inspection", (route) => {
     if (route.request().method() === "GET") return route.fulfill({ json: { auto_start_enabled: autoStartEnabled, revision } });

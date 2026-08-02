@@ -12,7 +12,6 @@ BASE_SETTINGS = {
     "WEB_PASSWORD_HASH": "web-hash",
     "SCRIPT_TOKEN_HASH": "script-hash",
     "PANSOU_BASE_URL": "http://pansou.test",
-    "TGTO_BASE_URL": "http://tgto.test",
 }
 
 

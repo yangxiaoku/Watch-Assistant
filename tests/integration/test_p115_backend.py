@@ -130,8 +130,6 @@ async def test_health_capabilities_default_off_and_fake_magnet_on(tmp_path):
 
 @pytest.mark.integration
 async def test_p115_enabled_without_target_cid_fails_startup(tmp_path, monkeypatch):
-    contract = tmp_path / "tgto.json"
-    contract.write_text('{"supported": false}', encoding="utf-8")
     values = {
         "DATABASE_URL": f"sqlite+aiosqlite:///{tmp_path / 'app.db'}",
         "ENCRYPTION_KEY": Fernet.generate_key().decode("ascii"),
@@ -139,8 +137,6 @@ async def test_p115_enabled_without_target_cid_fails_startup(tmp_path, monkeypat
         "WEB_PASSWORD_HASH": "web",
         "SCRIPT_TOKEN_HASH": "script",
         "PANSOU_BASE_URL": "http://pansou.test",
-        "TGTO_BASE_URL": "http://tgto.test",
-        "TGTO_CONTRACT_PATH": str(contract),
         "CACHE_WARM_ENABLED": "false",
         "P115_ENABLED": "true",
     }
@@ -158,8 +154,6 @@ async def test_p115_enabled_without_target_cid_fails_startup(tmp_path, monkeypat
 async def test_p115_disabled_does_not_construct_adapter_or_worker(
     tmp_path, monkeypatch
 ):
-    contract = tmp_path / "tgto.json"
-    contract.write_text('{"supported": false}', encoding="utf-8")
     values = {
         "DATABASE_URL": f"sqlite+aiosqlite:///{tmp_path / 'app.db'}",
         "ENCRYPTION_KEY": Fernet.generate_key().decode("ascii"),
@@ -167,8 +161,6 @@ async def test_p115_disabled_does_not_construct_adapter_or_worker(
         "WEB_PASSWORD_HASH": "web",
         "SCRIPT_TOKEN_HASH": "script",
         "PANSOU_BASE_URL": "http://pansou.test",
-        "TGTO_BASE_URL": "http://tgto.test",
-        "TGTO_CONTRACT_PATH": str(contract),
         "CACHE_WARM_ENABLED": "false",
         "P115_ENABLED": "false",
     }
@@ -192,8 +184,6 @@ async def test_p115_disabled_does_not_construct_adapter_or_worker(
 async def test_p115_settings_reuses_runtime_adapter_without_remote_access(
     tmp_path, monkeypatch
 ):
-    contract = tmp_path / "tgto.json"
-    contract.write_text('{"supported": false}', encoding="utf-8")
     cookie_path = tmp_path / "p115-cookie"
     cookie_path.write_text(
         "UID=uid_A1_456; CID=cid; KID=kid; SEID=seid",
@@ -208,8 +198,6 @@ async def test_p115_settings_reuses_runtime_adapter_without_remote_access(
         "WEB_PASSWORD_HASH": "unused",
         "SCRIPT_TOKEN_HASH": "unused",
         "PANSOU_BASE_URL": "http://pansou.test",
-        "TGTO_BASE_URL": "http://tgto.test",
-        "TGTO_CONTRACT_PATH": str(contract),
         "CACHE_WARM_ENABLED": "false",
         "P115_ENABLED": "true",
         "P115_COOKIE_PATH": str(cookie_path),

@@ -11,16 +11,14 @@ const p115 = {
   ready: true,
   capabilities: { magnet: true, share: false },
   cookie: {
-    source: "tgtodrive",
+    source: "file",
     configured: true,
     structure_valid: true,
-    sync_status: "success",
-    last_sync_at: "2026-07-25T02:00:00Z",
   },
   target_configured: true,
   max_concurrency: 1,
 };
-const credentialsSnapshot = (revision: number, tmdbSource: "environment" | "managed" = "environment", p115Source: "tgtodrive" | "managed" = "tgtodrive") => ({
+const credentialsSnapshot = (revision: number, tmdbSource: "environment" | "managed" = "environment", p115Source: "file" | "managed" = "file") => ({
   revision,
   tmdb: { configured: tmdbSource === "managed", source: tmdbSource, last_updated_at: tmdbSource === "managed" ? "2026-07-25T03:00:00Z" : null },
   p115_cookie: { configured: true, source: p115Source, last_updated_at: "2026-07-25T03:00:00Z", structure_valid: true, ready: true },
@@ -113,7 +111,7 @@ test("settings contract, cursor logs, validation states, and responsive layout",
     const isTmdb = path.endsWith("/tmdb");
     const isTmdbReset = path.endsWith("/tmdb/reset");
     const isP115Reset = path.endsWith("/p115-cookie/reset");
-    return route.fulfill({ json: credentialsSnapshot(credentialRevision, isTmdb || isTmdbReset ? (isTmdbReset ? "environment" : "managed") : credentialRevision > 0 ? "managed" : "environment", isP115Reset ? "tgtodrive" : credentialRevision > 0 ? "managed" : "tgtodrive") });
+    return route.fulfill({ json: credentialsSnapshot(credentialRevision, isTmdb || isTmdbReset ? (isTmdbReset ? "environment" : "managed") : credentialRevision > 0 ? "managed" : "environment", isP115Reset ? "file" : credentialRevision > 0 ? "managed" : "file") });
   });
   await page.route("**/api/v1/settings/logging", (route) => {
     if (route.request().method() === "GET") return route.fulfill({ json: { revision: loggingRevision, level: "INFO", retention_days: 30, max_file_mb: 10 } });
@@ -251,7 +249,7 @@ test("settings contract, cursor logs, validation states, and responsive layout",
   if (mobileLayout) await mobileSectionSelect.selectOption("p115");
   else await page.getByRole("button", { name: "115 推送" }).click();
   await expect(page.getByText("已就绪")).toBeVisible();
-  await expect(page.getByText("TgtoDrive")).toBeVisible();
+  await expect(page.getByText("文件")).toBeVisible();
   await expect(page.getByText("结构正常")).toBeVisible();
   await expect(page.getByText("115 分享转存")).toBeVisible();
   await page.getByRole("button", { name: "验证 Cookie" }).click();
@@ -279,7 +277,7 @@ test("settings contract, cursor logs, validation states, and responsive layout",
   expect(credentialBodies).toContainEqual({ value: cookieSecret, revision: 1 });
 
   await credentialPanels.nth(0).getByRole("button", { name: "恢复环境配置" }).click();
-  await credentialPanels.nth(1).getByRole("button", { name: "恢复 TgtoDrive" }).click();
+  await credentialPanels.nth(1).getByRole("button", { name: "恢复文件 Cookie" }).click();
   await expect.poll(() => credentialSaveCount).toBe(4);
   credentialConflictNextSave = true;
   await credentialPanels.nth(0).getByLabel("TMDB API Key").fill("draft-conflict-only");

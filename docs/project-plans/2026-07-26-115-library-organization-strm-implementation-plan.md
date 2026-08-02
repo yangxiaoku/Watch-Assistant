@@ -35,8 +35,8 @@
 | 层级 | 基线 | 已确认能力 | 明确不包含 |
 |---|---|---|---|
 | Git 正式主线 | `origin/main@42939d0` | TMDB 查询/搜索/季度信息；PanSou 聚合；qB 检测；P115 磁力提交、Cookie readiness 和只读任务列表；SQLite；推送 Task 状态机；设置中心 V1；脱敏 LogStore | 持久 WebSession、资源分页、inspection auto-start、内容策略、托管凭据、115 目录整理、pickcode/直链、STRM |
-| 当前已知生产 | `5e32f5f` | 正式主线能力，加持久 WebSession、资源分页、inspection auto-start、Settings V2、内容策略和托管 TMDB/P115 凭据界面；托管值为空，生产来源为 environment/TgtoDrive | 115 影视库整理、pickcode/直链、STRM |
-| 已验证功能分支 | `feature/integration-settings-v2@5e32f5f` | Settings V2、内容策略、业务日志、托管 TMDB/P115 凭据、共享 revision；已部署并完成生产验收；托管值仍为空，生产来源为 environment/TgtoDrive | 不包含目录整理或 STRM |
+| 当前已知生产 | `5e32f5f` | 正式主线能力，加持久 WebSession、资源分页、inspection auto-start、Settings V2、内容策略和托管 TMDB/P115 凭据界面；托管值为空，P115 来源为独立配置文件或托管值 | 115 影视库整理、pickcode/直链、STRM |
+| 已验证功能分支 | `feature/integration-settings-v2@5e32f5f` | Settings V2、内容策略、业务日志、托管 TMDB/P115 凭据、共享 revision；已部署并完成生产验收；托管值仍为空，P115 来源为独立配置文件或托管值 | 不包含目录整理或 STRM |
 | 本项目拟新增 | 待开发 | 115 影视库整理、目录索引、解析/匹配/规划、STRM 全量/增量、动态播放、元数据、洗版/隔离、运营工作台 | 仍为拟新增、未开发；Phase 0 前不允许任何真实写操作 |
 
 实施基线：`5e32f5f` 已完成生产验收并作为当前生产基线；本项目仍只覆盖拟新增、未开发的 115 影视库整理与 STRM 能力。

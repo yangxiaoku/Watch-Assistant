@@ -37,7 +37,6 @@ def test_missing_setting_names_the_required_environment_variable(monkeypatch):
         "WEB_PASSWORD_HASH": "web-hash",
         "SCRIPT_TOKEN_HASH": "script-hash",
         "PANSOU_BASE_URL": "http://pansou.test",
-        "TGTO_BASE_URL": "http://tgto.test",
     }
     for name, value in required.items():
         monkeypatch.setenv(name, value)
@@ -55,7 +54,6 @@ def test_tmdb_base_url_can_use_network_reachable_alias(monkeypatch):
         "WEB_PASSWORD_HASH": "web-hash",
         "SCRIPT_TOKEN_HASH": "script-hash",
         "PANSOU_BASE_URL": "http://pansou.test",
-        "TGTO_BASE_URL": "http://tgto.test",
         "TMDB_BASE_URL": "https://api.tmdb.org/3",
     }
     for name, value in required.items():
@@ -76,7 +74,6 @@ def test_inspection_settings_load_qb_credentials_from_a_secret_directory(
         "WEB_PASSWORD_HASH": "web-hash",
         "SCRIPT_TOKEN_HASH": "script-hash",
         "PANSOU_BASE_URL": "http://pansou.test",
-        "TGTO_BASE_URL": "http://tgto.test",
         "INSPECTION_ENABLED": "true",
         "QBITTORRENT_BASE_URL": "http://172.20.0.4:8080",
     }

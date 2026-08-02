@@ -378,7 +378,7 @@ describe("ApiClient season and inspection requests", () => {
       { revision: 1, level: "WARNING", retention_days: 45, max_file_mb: 20 },
       { auto_start_enabled: true, revision: 0 },
       { auto_start_enabled: false, revision: 1 },
-      { enabled: true, ready: true, capabilities: { magnet: true, share: false }, cookie: { source: "tgtodrive", configured: true, structure_valid: true, sync_status: "success", last_sync_at: null }, target_configured: true, max_concurrency: 1 },
+      { enabled: true, ready: true, capabilities: { magnet: true, share: false }, cookie: { source: "file", configured: true, structure_valid: true }, target_configured: true, max_concurrency: 1 },
       { status: "needs_auth", checked_at: "2026-07-25T02:00:00Z" },
       { items: [], next_cursor: 20 },
     ];

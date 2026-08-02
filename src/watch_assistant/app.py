@@ -66,7 +66,7 @@ from watch_assistant.api.tasks import router as tasks_router
 from watch_assistant.api.telemetry import router as telemetry_router
 from watch_assistant.api.webhooks import router as webhooks_router
 from watch_assistant.api.workflows import router as workflows_router
-from watch_assistant.config import Settings, load_tgto_contract
+from watch_assistant.config import Settings
 from watch_assistant.crypto import SecretCrypto
 from watch_assistant.db import Database, create_database, initialize_database
 from watch_assistant.library_models import (
@@ -716,12 +716,6 @@ def create_app(
                 )
             if settings.p115_enabled and settings.p115_target_cid is None:
                 raise RuntimeError("P115_ENABLED requires P115_TARGET_CID")
-            contract = load_tgto_contract(settings.tgto_contract_path)
-            if contract.get("supported") is True:
-                raise RuntimeError(
-                    "TgtoDrive contract is marked supported, but no production worker "
-                    "is configured"
-                )
             runtime_database = database or create_database(settings.database_url)
             await initialize_database(runtime_database.engine)
             runtime_crypto = crypto or SecretCrypto(

@@ -91,8 +91,6 @@ async def test_app_startup_upgrades_legacy_prowlarr_settings_schema(
         )
     await database.engine.dispose()
 
-    contract_path = tmp_path / "tgto-contract.json"
-    contract_path.write_text('{"supported": false}', encoding="utf-8")
     settings = {
         "DATABASE_URL": f"sqlite+aiosqlite:///{database_path}",
         "ENCRYPTION_KEY": Fernet.generate_key().decode("ascii"),
@@ -100,8 +98,6 @@ async def test_app_startup_upgrades_legacy_prowlarr_settings_schema(
         "WEB_PASSWORD_HASH": "web-hash",
         "SCRIPT_TOKEN_HASH": "script-hash",
         "PANSOU_BASE_URL": "http://pansou.test",
-        "TGTO_BASE_URL": "http://tgto.test",
-        "TGTO_CONTRACT_PATH": str(contract_path),
         "CACHE_WARM_ENABLED": "false",
         "SUBSCRIPTION_SCHEDULER_ENABLED": "false",
         "P115_ENABLED": "false",
@@ -128,36 +124,9 @@ async def test_app_startup_upgrades_legacy_prowlarr_settings_schema(
 
 
 @pytest.mark.integration
-async def test_supported_contract_fails_closed_without_production_worker(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    contract_path = tmp_path / "tgto-contract.json"
-    contract_path.write_text('{"supported": true}', encoding="utf-8")
-    settings = {
-        "DATABASE_URL": f"sqlite+aiosqlite:///{tmp_path / 'app.db'}",
-        "ENCRYPTION_KEY": Fernet.generate_key().decode("ascii"),
-        "TMDB_API_KEY": "tmdb-key",
-        "WEB_PASSWORD_HASH": "web-hash",
-        "SCRIPT_TOKEN_HASH": "script-hash",
-        "PANSOU_BASE_URL": "http://pansou.test",
-        "TGTO_BASE_URL": "http://tgto.test",
-        "TGTO_CONTRACT_PATH": str(contract_path),
-    }
-    for name, value in settings.items():
-        monkeypatch.setenv(name, value)
-    app = create_app(frontend_dir=tmp_path / "missing")
-
-    with pytest.raises(RuntimeError, match="no production worker"):
-        async with app.router.lifespan_context(app):
-            pass
-
-
-@pytest.mark.integration
 async def test_app_passes_inspection_settings_to_qbittorrent_client(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    contract_path = tmp_path / "tgto-contract.json"
-    contract_path.write_text('{"supported": false}', encoding="utf-8")
     settings = {
         "DATABASE_URL": f"sqlite+aiosqlite:///{tmp_path / 'app.db'}",
         "ENCRYPTION_KEY": Fernet.generate_key().decode("ascii"),
@@ -165,8 +134,6 @@ async def test_app_passes_inspection_settings_to_qbittorrent_client(
         "WEB_PASSWORD_HASH": "web-hash",
         "SCRIPT_TOKEN_HASH": "script-hash",
         "PANSOU_BASE_URL": "http://pansou.test",
-        "TGTO_BASE_URL": "http://tgto.test",
-        "TGTO_CONTRACT_PATH": str(contract_path),
         "CACHE_WARM_ENABLED": "false",
         "INSPECTION_ENABLED": "true",
         "QBITTORRENT_BASE_URL": "http://qbittorrent.test",

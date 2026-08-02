@@ -24,7 +24,6 @@ from release_manifest import validate_runtime_manifest_file
 _REQUIRED_FILES = (
     "VERSION",
     "release-manifest.json",
-    "config/tgto-contract.json",
     "frontend/dist/index.html",
     "src/watch_assistant/app.py",
     "src/watch_assistant/release_metadata.py",
@@ -93,8 +92,6 @@ def _configure_environment(
         "WEB_PASSWORD_HASH": "release-smoke",
         "SCRIPT_TOKEN_HASH": "release-smoke",
         "PANSOU_BASE_URL": "http://127.0.0.1:1",
-        "TGTO_BASE_URL": "http://127.0.0.1:1",
-        "TGTO_CONTRACT_PATH": str(release_root / "config/tgto-contract.json"),
         "FRONTEND_DIST_DIR": str(release_root / "frontend/dist"),
         "STATE_DIRECTORY": str(state_directory),
         "CACHE_WARM_ENABLED": "false",

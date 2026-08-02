@@ -22,13 +22,14 @@ REQ-001（115 影视库自动整理）和 REQ-002（STRM 全量与增量同步�
 相关代码和开关不代表已验收或已上线。生产能力、实际版本和部署方式必须以发布前的只读核对
 以及 `/api/v1/health` 返回为准；本文不硬编码生产 commit 或开关状态。
 
-TgtoDrive 当前没有验证通过的稳定提交/状态 HTTP 契约，`config/tgto-contract.json` 明确为
-`supported:false`。真实推送保持禁用并返回 `push_unsupported`，不会猜测接口、写 TgtoDrive
-数据库或调用内部 `.pyc`。
+磁力和 115 分享任务统一通过独立的 p115 gateway；P115 Cookie 只来自服务端配置的只读
+Cookie 文件或应用内托管设备。分享推送、影视库整理、删除和 STRM 写入继续受独立契约、
+功能开关、计划/确认、幂等和审计门禁约束，未验收时保持关闭。
 
 ## 部署
 
-要求：Docker Engine、Docker Compose，以及已存在的外部网络 `pansou_default`。服务器已确认 `pansou-app` 与 `TgtoDrive` 都连接到该网络。
+要求：Docker Engine、Docker Compose，以及已存在的外部网络 `pansou_default`。应用只通过
+该网络访问 PanSou；qBittorrent 和 115 按各自适配器配置，不随应用容器重启。
 
 1. 从示例创建 `.env`，并建立 `secrets` 目录。
 2. 生成四个只读 Secret 文件：
@@ -168,7 +169,7 @@ npm --prefix frontend run build
 
 2026-07-25（后端分支）：
 
-- Python：`141 passed, 1 skipped`；跳过项是明确的 TgtoDrive `supported:false` 实际契约测试。
+- Python：该历史记录对应旧版外部推送链；当前版本已移除旧链路，推送只保留独立 p115 gateway。
 - Ruff：通过。
 - Vitest：`8 passed`。
 - Playwright：桌面与移动端 `2 passed`。
@@ -176,5 +177,5 @@ npm --prefix frontend run build
 - Compose：在 `192.168.6.236` 的 Docker Compose v5.1.2 上执行 `config --quiet` 通过。
 - 浏览器：1440×900 与 390×844 均无横向溢出，控制台无错误。
 - PanSou：只读搜索返回 `code=0`，确认 `data.merged_by_type` 含磁力结果。
-- TgtoDrive：没有稳定 submit/status 契约，未提交测试磁力或 115 分享，真实推送保持禁用。
+- 115：当前版本的磁力/分享入口统一使用独立 p115 gateway；真实写入仍须通过对应契约验收和功能门禁。
 - 镜像构建：服务器访问 `registry-1.docker.io:443` 超时，无法拉取 `node:24-alpine` 和 `python:3.12-slim`，因此没有部署镜像摘要。
