@@ -1,3 +1,4 @@
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -8,8 +9,10 @@ from pwdlib import PasswordHash
 from watch_assistant.app import create_app
 from watch_assistant.crypto import SecretCrypto
 from watch_assistant.db import create_database, initialize_database
-from watch_assistant.schemas import LogCategory, LoggingLevel
+from watch_assistant.models import Resource, Task
+from watch_assistant.schemas import LogCategory, LoggingLevel, RemoteStatus
 from watch_assistant.security import SecurityManager
+from watch_assistant.services.tasks import TaskService
 
 WEB_PASSWORD = "settings-web-password"
 SCRIPT_TOKEN = "settings-script-token"
@@ -365,25 +368,62 @@ async def test_strm_routes_enforce_independent_flags_and_reach_service(tmp_path)
         assert cleanup_apply.status_code == 404
         assert cleanup_apply.json()["detail"] == "plan_not_found"
 
+        now = datetime.now(UTC)
+        async with database.session_factory() as session:
+            session.add(
+                Resource(
+                    id="workflow-strm-resource",
+                    kind="magnet",
+                    canonical_key="magnet:workflow-strm-resource",
+                    encrypted_url="snapshot",
+                    name="Workflow Movie",
+                    source="test",
+                    captured_at=now,
+                    expires_at=now + timedelta(days=1),
+                )
+            )
+            await session.commit()
+
         workflow_response = await client.post(
-            "/api/v1/workflows", json={"media_type": "movie"}, headers=headers
+            "/api/v1/workflows",
+            json={"media_type": "movie", "resource_id": "workflow-strm-resource"},
+            headers=headers,
         )
         assert workflow_response.status_code == 201
         workflow_id = workflow_response.json()["id"]
-        for stage in (
-            "discovery",
-            "inspection",
-            "approval",
-            "push",
-            "availability",
-            "organization",
-        ):
+        for stage in ("inspection", "approval"):
             advanced = await client.patch(
                 f"/api/v1/workflows/{workflow_id}/stages/{stage}",
                 json={"status": "succeeded"},
                 headers=headers,
             )
             assert advanced.status_code == 200
+
+        task, _ = await TaskService(database.session_factory).create(
+            "workflow-strm-resource", workflow_id=workflow_id
+        )
+        async with database.session_factory() as session:
+            stored_task = await session.get(Task, task.id)
+            assert stored_task is not None
+            stored_task.remote_ref = "remote-available"
+            await session.commit()
+
+        class AvailableAdapter:
+            async def get_status(self, remote_ref: str):
+                assert remote_ref == "remote-available"
+                return RemoteStatus.AVAILABLE
+
+        app.state.task_adapter = AvailableAdapter()
+        reconciled = await client.post(
+            f"/api/v1/tasks/{task.id}/reconcile", headers=headers
+        )
+        assert reconciled.status_code == 200
+        advanced = await client.patch(
+            f"/api/v1/workflows/{workflow_id}/stages/organization",
+            json={"status": "succeeded"},
+            headers=headers,
+        )
+        assert advanced.status_code == 200
         response = await client.post(
             "/api/v1/libraries/library/strm-incremental",
             json={**payload, "workflow_id": workflow_id},
