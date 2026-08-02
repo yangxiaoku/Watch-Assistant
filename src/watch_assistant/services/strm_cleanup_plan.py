@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
 import os
 import uuid
-from collections.abc import Collection
+from collections.abc import Awaitable, Callable, Collection
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
@@ -22,8 +23,13 @@ from watch_assistant.library_models import (
     StrmCleanupPlan,
     StrmManifestEntry,
 )
-from watch_assistant.services.strm_manifest import StrmManifestError, _remove_managed
+from watch_assistant.services.strm_manifest import (
+    StrmManifestError,
+    _remove_managed,
+    _write,
+)
 from watch_assistant.services.strm_scope import (
+    active_strm_operation_id,
     has_newer_unsettled_scan,
     normalize_playback_url_prefix,
 )
@@ -35,6 +41,9 @@ class StrmCleanupPlanError(ValueError):
     def __init__(self, code: str) -> None:
         self.code = code
         super().__init__(code)
+
+
+LeaseCheck = Callable[[], Awaitable[bool]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -199,6 +208,8 @@ class StrmCleanupPlanService:
         output_root: Path | str,
         playback_url_prefix: str,
         now: datetime | None = None,
+        lease_check: LeaseCheck | None = None,
+        operation_id: str | None = None,
     ) -> StrmCleanupApplyView:
         if (
             not _valid_id(plan_id)
@@ -210,8 +221,12 @@ class StrmCleanupPlanService:
             or not all(char in "0123456789abcdef" for char in digest.lower())
             or not confirm
             or not _valid_id(idempotency_key)
+            or (operation_id is not None and not _valid_id(operation_id))
         ):
             raise StrmCleanupPlanError("invalid_request")
+        if operation_id is not None and lease_check is None:
+            raise StrmCleanupPlanError("strm_operation_lease_required")
+        await _raise_if_lease_lost(lease_check)
         root = _readable_root(output_root, self._managed_output_roots)
         prefix = _safe_prefix(playback_url_prefix)
         current_time = _utc(now)
@@ -239,6 +254,13 @@ class StrmCleanupPlanService:
             library, _run = await self._validated_current_run(
                 session, plan.library_id, plan.source_scan_run_id
             )
+            if (
+                await active_strm_operation_id(
+                    session, library.id, exclude_operation_id=operation_id
+                )
+                is not None
+            ):
+                raise StrmCleanupPlanError("strm_library_operation_conflict")
             candidates = _candidates(plan)
             manifest_ids = [item["manifest_id"] for item in candidates]
             manifests = {
@@ -267,24 +289,46 @@ class StrmCleanupPlanService:
                     raise StrmCleanupPlanError("cleanup_plan_blocked")
                 preflight.append((manifest, state))
             retired = 0
-            for manifest, state in preflight:
-                if state == "ready":
-                    try:
-                        _remove_managed(
-                            root,
-                            manifest.local_relative_path,
-                            f"{prefix}{manifest.manifest_id}\n".encode(),
-                        )
-                    except StrmManifestError:
-                        raise StrmCleanupPlanError("cleanup_plan_blocked") from None
-                manifest.is_current = False
-                manifest.status = "retired"
-                retired += 1
-            plan.status = "applied"
-            plan.revision += 1
-            plan.applied_idempotency_key = idempotency_key
-            plan.applied_retired = retired
-            await session.commit()
+            removed_files: list[tuple[str, bytes]] = []
+            try:
+                for manifest, state in preflight:
+                    await _raise_if_lease_lost(lease_check)
+                    if state == "ready":
+                        try:
+                            removed = _remove_managed(
+                                root,
+                                manifest.local_relative_path,
+                                f"{prefix}{manifest.manifest_id}\n".encode(),
+                            )
+                        except StrmManifestError:
+                            raise StrmCleanupPlanError("cleanup_plan_blocked") from None
+                        if removed:
+                            removed_files.append(
+                                (
+                                    manifest.local_relative_path,
+                                    f"{prefix}{manifest.manifest_id}\n".encode(),
+                                )
+                            )
+                        await _raise_if_lease_lost(lease_check)
+                    await _raise_if_lease_lost(lease_check)
+                    manifest.is_current = False
+                    manifest.status = "retired"
+                    retired += 1
+                await _raise_if_lease_lost(lease_check)
+                plan.status = "applied"
+                plan.revision += 1
+                plan.applied_idempotency_key = idempotency_key
+                plan.applied_retired = retired
+                await session.commit()
+            except asyncio.CancelledError:
+                _restore_removed(root, removed_files)
+                raise
+            except (StrmManifestError, StrmCleanupPlanError):
+                _restore_removed(root, removed_files)
+                raise
+            except OSError as error:
+                _restore_removed(root, removed_files)
+                raise StrmCleanupPlanError("cleanup_plan_uncertain") from error
             await session.refresh(plan)
             return StrmCleanupApplyView(_view(plan), retired)
 
@@ -384,6 +428,20 @@ def _managed_state(root: Path, relative_path: str, expected: str) -> str:
     except (OSError, UnicodeError):
         return "unreadable"
     return "ready" if actual == expected else "changed"
+
+
+async def _raise_if_lease_lost(lease_check: LeaseCheck | None) -> None:
+    if lease_check is not None and not await lease_check():
+        raise StrmCleanupPlanError("strm_operation_lease_lost")
+
+
+def _restore_removed(root: Path, removed_files: list[tuple[str, bytes]]) -> None:
+    for relative_path, content in reversed(removed_files):
+        try:
+            if _managed_state(root, relative_path, content.decode()) == "missing":
+                _write(root, relative_path, content)
+        except (OSError, StrmManifestError):
+            raise StrmCleanupPlanError("cleanup_plan_uncertain") from None
 
 
 def _readable_root(

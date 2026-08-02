@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import tempfile
 import uuid
@@ -23,6 +24,7 @@ from watch_assistant.library_models import (
     StrmManifestStatus,
 )
 from watch_assistant.services.strm_scope import (
+    active_strm_operation_id,
     has_newer_unsettled_scan,
     normalize_playback_url_prefix,
 )
@@ -60,6 +62,7 @@ class StrmGenerationSummary:
 
 
 CancelCheck = Callable[[], Awaitable[bool]]
+LeaseCheck = Callable[[], Awaitable[bool]]
 ProgressCallback = Callable[[StrmGenerationSummary], Awaitable[None]]
 
 
@@ -115,10 +118,14 @@ class StrmManifestService:
         output_root: Path | str,
         playback_url_prefix: str,
         cancel_check: CancelCheck | None = None,
+        lease_check: LeaseCheck | None = None,
+        operation_id: str | None = None,
         progress_callback: ProgressCallback | None = None,
     ) -> StrmGenerationSummary:
         if not _valid_id(library_id) or not _valid_id(source_scan_run_id):
             raise StrmManifestError("invalid_request")
+        _validate_fencing(operation_id, lease_check)
+        await _raise_if_lease_lost(lease_check)
         prefix = _safe_prefix(playback_url_prefix)
         root = _safe_root(output_root, self._managed_output_roots)
         async with self._session_factory() as session:
@@ -147,10 +154,13 @@ class StrmManifestService:
                 raise StrmManifestError("source_snapshot_not_current")
             if await has_newer_unsettled_scan(session, run):
                 raise StrmManifestError("source_snapshot_not_current")
+            await _raise_if_conflicting_operation(
+                session, library_id, operation_id=operation_id
+            )
             generated = unchanged = skipped = failed = 0
             last_object_id: str | None = None
             while True:
-                await _raise_if_cancelled(cancel_check)
+                await _raise_if_cancelled(cancel_check, lease_check)
                 query = (
                     select(LibraryScanEntry)
                     .where(
@@ -169,7 +179,7 @@ class StrmManifestService:
                 if not entries:
                     break
                 for entry in entries:
-                    await _raise_if_cancelled(cancel_check)
+                    await _raise_if_cancelled(cancel_check, lease_check)
                     last_object_id = entry.object_id
                     paths = _paths(entry)
                     if paths is None:
@@ -194,9 +204,15 @@ class StrmManifestService:
                                 source_version=run.snapshot_revision,
                                 root=root,
                                 prefix=prefix,
+                                lease_check=lease_check,
                             )
                         await session.commit()
-                    except (OSError, StrmManifestError):
+                    except StrmManifestError as error:
+                        if _is_lease_error(error):
+                            raise
+                        failed += 1
+                        continue
+                    except OSError:
                         failed += 1
                         continue
                     if outcome == "generated":
@@ -213,6 +229,7 @@ class StrmManifestService:
                         failed,
                         0,
                     )
+        await _raise_if_lease_lost(lease_check)
         return StrmGenerationSummary(
             library_id, source_scan_run_id, generated, unchanged, skipped, failed
         )
@@ -226,6 +243,8 @@ class StrmManifestService:
         playback_url_prefix: str,
         retire_removed: bool = True,
         cancel_check: CancelCheck | None = None,
+        lease_check: LeaseCheck | None = None,
+        operation_id: str | None = None,
         progress_callback: ProgressCallback | None = None,
     ) -> StrmGenerationSummary:
         """Reconcile only file-level changes from one complete current scan."""
@@ -238,6 +257,8 @@ class StrmManifestService:
             include_generation=True,
             retire_removed=retire_removed,
             cancel_check=cancel_check,
+            lease_check=lease_check,
+            operation_id=operation_id,
             progress_callback=progress_callback,
         )
 
@@ -249,6 +270,8 @@ class StrmManifestService:
         output_root: Path | str,
         playback_url_prefix: str,
         cancel_check: CancelCheck | None = None,
+        lease_check: LeaseCheck | None = None,
+        operation_id: str | None = None,
         progress_callback: ProgressCallback | None = None,
     ) -> StrmGenerationSummary:
         """Retire only manifest entries removed by a complete current scan."""
@@ -261,6 +284,8 @@ class StrmManifestService:
             include_generation=False,
             retire_removed=True,
             cancel_check=cancel_check,
+            lease_check=lease_check,
+            operation_id=operation_id,
             progress_callback=progress_callback,
         )
 
@@ -274,10 +299,13 @@ class StrmManifestService:
         include_generation: bool,
         retire_removed: bool,
         cancel_check: CancelCheck | None,
+        lease_check: LeaseCheck | None,
+        operation_id: str | None,
         progress_callback: ProgressCallback | None,
     ) -> StrmGenerationSummary:
         if not _valid_id(library_id) or not _valid_id(source_scan_run_id):
             raise StrmManifestError("invalid_request")
+        _validate_fencing(operation_id, lease_check)
         prefix = _safe_prefix(playback_url_prefix)
         root = _safe_root(output_root, self._managed_output_roots)
         generated = unchanged = skipped = failed = retired = 0
@@ -285,9 +313,12 @@ class StrmManifestService:
             library, run = await self._validated_current_run(
                 session, library_id, source_scan_run_id
             )
+            await _raise_if_conflicting_operation(
+                session, library_id, operation_id=operation_id
+            )
             last_object_id: str | None = None
             while True:
-                await _raise_if_cancelled(cancel_check)
+                await _raise_if_cancelled(cancel_check, lease_check)
                 query = (
                     select(LibraryScanDiff)
                     .where(
@@ -303,7 +334,7 @@ class StrmManifestService:
                 if not changes:
                     break
                 for change in changes:
-                    await _raise_if_cancelled(cancel_check)
+                    await _raise_if_cancelled(cancel_check, lease_check)
                     last_object_id = change.object_id
                     if change.change_kind == "removed":
                         if not retire_removed:
@@ -316,9 +347,14 @@ class StrmManifestService:
                                     object_id=change.object_id,
                                     root=root,
                                     prefix=prefix,
+                                    lease_check=lease_check,
                                 )
                             await session.commit()
-                        except (OSError, StrmManifestError):
+                        except StrmManifestError as error:
+                            if _is_lease_error(error):
+                                raise
+                            failed += 1
+                        except OSError:
                             failed += 1
                         else:
                             retired += int(did_retire)
@@ -355,9 +391,15 @@ class StrmManifestService:
                                 source_version=run.snapshot_revision,
                                 root=root,
                                 prefix=prefix,
+                                lease_check=lease_check,
                             )
                         await session.commit()
-                    except (OSError, StrmManifestError):
+                    except StrmManifestError as error:
+                        if _is_lease_error(error):
+                            raise
+                        failed += 1
+                        continue
+                    except OSError:
                         failed += 1
                     else:
                         if outcome == "generated":
@@ -376,6 +418,7 @@ class StrmManifestService:
                         failed,
                         retired,
                     )
+        await _raise_if_lease_lost(lease_check)
         return StrmGenerationSummary(
             library_id,
             source_scan_run_id,
@@ -425,6 +468,7 @@ class StrmManifestService:
         source_version: int,
         root: Path,
         prefix: str,
+        lease_check: LeaseCheck | None,
     ) -> str:
         paths = _paths(entry)
         if paths is None:
@@ -447,6 +491,7 @@ class StrmManifestService:
         )
         if collision is not None:
             raise StrmManifestError("path_collision")
+        await _raise_if_lease_lost(lease_check)
         if manifest is None:
             manifest = StrmManifestEntry(
                 manifest_id="strm_" + uuid.uuid4().hex,
@@ -467,21 +512,30 @@ class StrmManifestService:
         else:
             old_path = manifest.local_relative_path
         content = f"{prefix}{quote(manifest.manifest_id, safe='')}\n".encode()
-        written = _write(root, local_path, content)
-        if old_path and old_path != local_path:
-            try:
-                _remove_managed(root, old_path, content)
-            except Exception:
-                if written:
-                    _remove_managed(root, local_path, content, tolerate_missing=True)
-                raise
-        manifest.cloud_directory_id = entry.parent_id
-        manifest.cloud_relative_path = cloud_path
-        manifest.local_relative_path = local_path
-        manifest.size_bytes = entry.size_bytes
-        manifest.source_version = source_version
-        manifest.status = StrmManifestStatus.VERIFIED
-        manifest.last_verified_at = datetime.now(UTC)
+        await _raise_if_lease_lost(lease_check)
+        written = False
+        old_removed = False
+        try:
+            written = _write(root, local_path, content)
+            await _raise_if_lease_lost(lease_check)
+            if old_path and old_path != local_path:
+                await _raise_if_lease_lost(lease_check)
+                old_removed = _remove_managed(root, old_path, content)
+                await _raise_if_lease_lost(lease_check)
+            manifest.cloud_directory_id = entry.parent_id
+            manifest.cloud_relative_path = cloud_path
+            manifest.local_relative_path = local_path
+            manifest.size_bytes = entry.size_bytes
+            manifest.source_version = source_version
+            manifest.status = StrmManifestStatus.VERIFIED
+            manifest.last_verified_at = datetime.now(UTC)
+            await _raise_if_lease_lost(lease_check)
+        except (StrmManifestError, asyncio.CancelledError):
+            if old_removed and old_path is not None:
+                _write(root, old_path, content)
+            if written:
+                _remove_managed(root, local_path, content, tolerate_missing=True)
+            raise
         return "generated" if written else "unchanged"
 
     async def _retire_removed(
@@ -492,6 +546,7 @@ class StrmManifestService:
         object_id: str,
         root: Path,
         prefix: str,
+        lease_check: LeaseCheck | None,
     ) -> bool:
         manifest = await session.scalar(
             select(StrmManifestEntry).where(
@@ -503,7 +558,15 @@ class StrmManifestService:
         if manifest is None:
             return False
         expected = f"{prefix}{quote(manifest.manifest_id, safe='')}\n".encode()
-        _remove_managed(root, manifest.local_relative_path, expected)
+        removed = False
+        try:
+            await _raise_if_lease_lost(lease_check)
+            removed = _remove_managed(root, manifest.local_relative_path, expected)
+            await _raise_if_lease_lost(lease_check)
+        except (StrmManifestError, asyncio.CancelledError):
+            if removed:
+                _write(root, manifest.local_relative_path, expected)
+            raise
         manifest.is_current = False
         manifest.status = StrmManifestStatus.RETIRED
         return True
@@ -575,7 +638,7 @@ def _remove_managed(
     expected: bytes,
     *,
     tolerate_missing: bool = False,
-) -> None:
+) -> bool:
     if not _valid_relative_path(relative_path):
         raise StrmManifestError("invalid_managed_path")
     target = root.joinpath(*PurePosixPath(relative_path).parts)
@@ -589,8 +652,8 @@ def _remove_managed(
         raise StrmManifestError("managed_file_not_safe")
     if not target.exists():
         if tolerate_missing:
-            return
-        return
+            return False
+        return False
     if not target.is_file():
         raise StrmManifestError("managed_file_not_safe")
     try:
@@ -600,6 +663,7 @@ def _remove_managed(
     if actual != expected:
         raise StrmManifestError("managed_file_changed")
     target.unlink()
+    return True
 
 
 def _safe_root(
@@ -682,9 +746,45 @@ def _assert_no_symlink_components(path: Path) -> None:
             raise StrmManifestError("symlink_path_component")
 
 
-async def _raise_if_cancelled(cancel_check: CancelCheck | None) -> None:
+async def _raise_if_cancelled(
+    cancel_check: CancelCheck | None,
+    lease_check: LeaseCheck | None,
+) -> None:
+    await _raise_if_lease_lost(lease_check)
     if cancel_check is not None and await cancel_check():
         raise StrmManifestError("strm_operation_cancelled")
+
+
+async def _raise_if_lease_lost(lease_check: LeaseCheck | None) -> None:
+    if lease_check is not None and not await lease_check():
+        raise StrmManifestError("strm_operation_lease_lost")
+
+
+async def _raise_if_conflicting_operation(
+    session: AsyncSession,
+    library_id: str,
+    *,
+    operation_id: str | None,
+) -> None:
+    if operation_id is not None and not _valid_id(operation_id):
+        raise StrmManifestError("invalid_request")
+    active_id = await active_strm_operation_id(
+        session, library_id, exclude_operation_id=operation_id
+    )
+    if active_id is not None:
+        raise StrmManifestError("strm_library_operation_conflict")
+
+
+def _is_lease_error(error: StrmManifestError) -> bool:
+    return str(error) == "strm_operation_lease_lost"
+
+
+def _validate_fencing(
+    operation_id: str | None,
+    lease_check: LeaseCheck | None,
+) -> None:
+    if operation_id is not None and lease_check is None:
+        raise StrmManifestError("strm_operation_lease_required")
 
 
 async def _report_progress(

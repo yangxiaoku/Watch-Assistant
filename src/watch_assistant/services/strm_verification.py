@@ -18,6 +18,7 @@ from watch_assistant.library_models import (
 )
 from watch_assistant.services.strm_manifest import _paths
 from watch_assistant.services.strm_scope import (
+    active_strm_operation_id,
     has_newer_unsettled_scan,
     normalize_playback_url_prefix,
 )
@@ -110,6 +111,8 @@ class StrmVerificationService:
             library, run = await self._validated_current_run(
                 session, library_id, source_scan_run_id
             )
+            if await active_strm_operation_id(session, library.id) is not None:
+                raise StrmVerificationError("strm_library_operation_conflict")
             entries = list(
                 (
                     await session.scalars(
