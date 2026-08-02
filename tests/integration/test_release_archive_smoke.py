@@ -34,7 +34,6 @@ def test_release_archive_smoke_uses_staged_version_with_old_current_present(
     release_root = tmp_path / "watch-assistant-abcdef1"
     shutil.copytree(ROOT / "src", release_root / "src")
     shutil.copytree(ROOT / "scripts", release_root / "scripts")
-    shutil.copytree(ROOT / "config", release_root / "config")
     (release_root / "frontend" / "dist").mkdir(parents=True)
     (release_root / "frontend" / "dist" / "index.html").write_text(
         "<!doctype html><title>release smoke</title>", encoding="utf-8"
