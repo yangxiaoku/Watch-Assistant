@@ -125,12 +125,15 @@ frontend_hash() {
 }
 
 FRONTEND_SHA256="$(frontend_hash "$TEMP_DIR/$PACKAGE_ROOT/frontend/dist")"
-"$RELEASE_SMOKE_PYTHON" "$ROOT_DIR/scripts/release_manifest.py" verify-build \
+if ! "$RELEASE_SMOKE_PYTHON" "$ROOT_DIR/scripts/release_manifest.py" verify-build \
     --manifest "$MANIFEST_FILE" \
     --expected-commit "$EXPECTED_COMMIT" \
     --expected-short-commit "$SHORT_COMMIT" \
     --expected-source-sha256 "$SOURCE_SHA256" \
-    --expected-frontend-sha256 "$FRONTEND_SHA256"
+    --expected-frontend-sha256 "$FRONTEND_SHA256"; then
+    echo "release artifact refused: release manifest validation failed" >&2
+    exit 1
+fi
 
 PACKAGE_SHA256="$(sha256sum "$PACKAGE_FILE" | awk '{print $1}')"
 PACKAGE_SIZE="$(stat -c '%s' "$PACKAGE_FILE")"
@@ -139,7 +142,7 @@ cp "$PACKAGE_FILE" "$OUTPUT_DIR/$PACKAGE_NAME"
 cp "$VERSION_FILE" "$OUTPUT_DIR/VERSION"
 printf '%s  %s\n' "$PACKAGE_SHA256" "$PACKAGE_NAME" > "$OUTPUT_DIR/SHA256SUMS"
 
-"$RELEASE_SMOKE_PYTHON" "$ROOT_DIR/scripts/release_manifest.py" write-artifact \
+if ! "$RELEASE_SMOKE_PYTHON" "$ROOT_DIR/scripts/release_manifest.py" write-artifact \
     --output "$OUTPUT_DIR/release-manifest.json" \
     --artifact "$PACKAGE_NAME" \
     --commit "$EXPECTED_COMMIT" \
@@ -148,7 +151,10 @@ printf '%s  %s\n' "$PACKAGE_SHA256" "$PACKAGE_NAME" > "$OUTPUT_DIR/SHA256SUMS"
     --package-size-bytes "$PACKAGE_SIZE" \
     --source-sha256 "$SOURCE_SHA256" \
     --frontend-sha256 "$FRONTEND_SHA256" \
-    --version-file "$VERSION_FILE"
+    --version-file "$VERSION_FILE"; then
+    echo "release artifact refused: verified release manifest could not be written" >&2
+    exit 1
+fi
 
 (
     cd "$OUTPUT_DIR"
