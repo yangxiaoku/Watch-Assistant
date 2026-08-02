@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Mapping
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -35,6 +35,7 @@ from watch_assistant.services.search import (
     SearchUnavailable,
     _resource_summary,
 )
+from watch_assistant.services.source_health import SourceHealthTracker
 
 TORRENT_INFOHASH = "0123456789abcdef0123456789abcdef01234567"
 
@@ -539,6 +540,8 @@ async def test_target_adapter_classifies_read_only_upstream_failures(
     assert error.value.error_code == error_code
     assert mock.requests[0].api_key_in_query is False
     assert "fixture_" not in str(error.value)
+    assert error.value.__cause__ is None
+    assert error.value.__suppress_context__ is True
 
 
 async def test_target_adapter_honors_bounded_retry_after_without_exposing_header():
@@ -562,6 +565,81 @@ async def test_target_adapter_honors_bounded_retry_after_without_exposing_header
     assert error.value.retry_after_seconds == 42
     assert 0 < health.retry_after_seconds <= error.value.retry_after_seconds
     assert "Retry-After" not in str(error.value)
+
+
+async def test_target_adapter_releases_cancelled_half_open_probe():
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        started.set()
+        await release.wait()
+        return httpx.Response(200, json=[], request=request)
+
+    current = [datetime(2026, 8, 2, tzinfo=UTC)]
+    tracker = SourceHealthTracker(
+        clock=lambda: current[0],
+        backoff_base_seconds=10,
+        failure_threshold=2,
+    )
+    tracker.record_failure("prowlarr_server_error")
+    tracker.record_failure("prowlarr_server_error")
+    current[0] += timedelta(seconds=40)
+    transport_client = httpx.AsyncClient(
+        base_url="https://prowlarr.fixture.invalid",
+        transport=httpx.MockTransport(handler),
+    )
+    adapter = ProwlarrClient(
+        base_url="https://prowlarr.fixture.invalid",
+        api_key="fixture-only",
+        client=transport_client,
+        health_tracker=tracker,
+    )
+    task = asyncio.create_task(adapter.search("fixture query"))
+    try:
+        await started.wait()
+        assert tracker.allow_request() is False
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert tracker.allow_request() is True
+        tracker.release_request()
+    finally:
+        release.set()
+        await adapter.aclose()
+        await transport_client.aclose()
+
+
+async def test_target_adapter_validates_local_arguments_before_circuit_gate():
+    current = [datetime(2026, 8, 2, tzinfo=UTC)]
+    tracker = SourceHealthTracker(
+        clock=lambda: current[0],
+        backoff_base_seconds=10,
+        failure_threshold=2,
+    )
+    tracker.record_failure("prowlarr_server_error")
+    tracker.record_failure("prowlarr_server_error")
+    current[0] += timedelta(seconds=40)
+    transport_client = httpx.AsyncClient(
+        base_url="https://prowlarr.fixture.invalid",
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json=[], request=request)
+        ),
+    )
+    adapter = ProwlarrClient(
+        base_url="https://prowlarr.fixture.invalid",
+        api_key="fixture-only",
+        client=transport_client,
+        health_tracker=tracker,
+    )
+    try:
+        with pytest.raises(ValueError, match="limit must be a positive integer"):
+            await adapter.search("fixture query", limit=0)
+        assert tracker.allow_request() is True
+        tracker.release_request()
+    finally:
+        await adapter.aclose()
+        await transport_client.aclose()
 
 
 async def test_target_adapter_opens_local_circuit_after_repeated_server_failures():

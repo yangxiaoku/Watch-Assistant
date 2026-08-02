@@ -1373,18 +1373,43 @@ function validationClass(value: ValidationState) {
   return value === "ready" ? "status-ok" : value === "needs_auth" ? "status-degraded" : "status-down";
 }
 
-function prowlarrStatus(value: ProwlarrSettingsResponse): "configured" | "disabled" | "unavailable" {
+type ProwlarrDisplayStatus = "configured" | "disabled" | "unavailable" | NonNullable<ProwlarrSettingsResponse["health_state"]>;
+
+function prowlarrStatus(value: ProwlarrSettingsResponse): ProwlarrDisplayStatus {
   if (!value.enabled) return "disabled";
-  return value.configured ? "configured" : "unavailable";
+  if (!value.configured) return "unavailable";
+  return value.health_state ?? "configured";
 }
 
 function prowlarrStatusLabel(value: ProwlarrSettingsResponse): string {
-  return { configured: "已配置", disabled: "未启用", unavailable: "待配置" }[prowlarrStatus(value)];
+  return {
+    configured: "已配置",
+    disabled: "未启用",
+    unavailable: "待配置",
+    not_configured: "待配置",
+    unverified: "配置未验证",
+    available: "可用",
+    degraded: "已降级",
+    backoff: "暂时退避",
+    open_circuit: "暂时熔断",
+  }[prowlarrStatus(value)];
 }
 
 function prowlarrStatusClass(value: ProwlarrSettingsResponse): string {
   const status = prowlarrStatus(value);
-  return status === "configured" ? "status-ok" : status === "unavailable" ? "status-down" : "status-degraded";
+  if (status === "configured" || status === "available") return "status-ok";
+  if (status === "unavailable" || status === "not_configured") return "status-down";
+  return "status-degraded";
+}
+
+function prowlarrHealthNote(value: ProwlarrSettingsResponse): string | null {
+  if (!value.enabled || !value.configured) return null;
+  const reason = value.health_reason_zh ?? value.health_message_zh;
+  const retryAfter = value.health_retry_after_seconds;
+  const retryMessage = typeof retryAfter === "number" && Number.isFinite(retryAfter) && retryAfter > 0
+    ? `预计 ${Math.ceil(retryAfter)} 秒后重试`
+    : null;
+  return [reason, retryMessage].filter((item): item is string => Boolean(item)).join(" ") || null;
 }
 
 function prowlarrSourceLabel(value: ProwlarrSettingsResponse["source"]): string {
@@ -1500,6 +1525,7 @@ watch(autoRefreshLogs, syncLogsRefreshTimer);
           <div v-else-if="prowlarrError" class="settings-state settings-state-error"><AlertTriangle :size="18" /><span>{{ prowlarrError }}</span><button class="text-button" type="button" @click="loadProwlarr">重试</button></div>
           <template v-else-if="prowlarr">
             <div class="p15-status-line prowlarr-status-line"><span class="settings-status-name"><Radio :size="17" />服务端配置</span><span :class="prowlarrStatusClass(prowlarr)">{{ prowlarrStatusLabel(prowlarr) }}</span></div>
+            <p v-if="prowlarrHealthNote(prowlarr)" class="settings-note prowlarr-health-note" role="status">{{ prowlarrHealthNote(prowlarr) }}</p>
             <div class="settings-metrics prowlarr-metrics"><div class="settings-metric"><span>配置来源</span><strong>{{ prowlarrSourceLabel(prowlarr.source) }}</strong></div><div class="settings-metric"><span>API Key</span><strong :class="prowlarr.api_key_configured ? 'status-ok' : 'status-degraded'">{{ prowlarr.api_key_configured ? `已配置（${prowlarrApiKeySourceLabel(prowlarr.api_key_source)}）` : '未配置' }}</strong></div><div class="settings-metric"><span>配置版本</span><strong>{{ prowlarr.revision }}</strong></div><div class="settings-metric"><span>最后更新</span><strong>{{ prowlarr.last_updated_at ? formatTimestamp(prowlarr.last_updated_at) : '未知' }}</strong></div></div>
             <div class="settings-subsection"><h3>服务端配置</h3><div class="settings-form-grid"><label for="prowlarr-base-url">服务地址<input id="prowlarr-base-url" v-model="prowlarrBaseUrlDraft" type="url" inputmode="url" autocomplete="url" spellcheck="false" placeholder="例如 http://prowlarr:9696" :disabled="prowlarrMutationBusy" /></label><label for="prowlarr-api-key">API Key<input id="prowlarr-api-key" v-model="prowlarrApiKeyDraft" name="prowlarr_api_key" type="password" autocomplete="new-password" spellcheck="false" placeholder="输入新的 API Key（可留空以保留现有配置）" :disabled="prowlarrMutationBusy" /></label></div><label class="settings-toggle"><input v-model="prowlarrEnabledDraft" type="checkbox" :disabled="prowlarrMutationBusy" />启用 Prowlarr 搜索来源</label><div class="settings-action-row"><button class="primary-button" type="button" :disabled="prowlarrMutationBusy || prowlarrValidationState === 'running'" @click="saveProwlarr"><LoaderCircle v-if="prowlarrSaving" class="spin" :size="15" /><Save v-else :size="15" />保存 Prowlarr 配置</button><button class="secondary-button" type="button" :disabled="prowlarrMutationBusy || prowlarrValidationState === 'running' || prowlarr.source !== 'managed'" @click="resetProwlarr"><LoaderCircle v-if="prowlarrResetting" class="spin" :size="15" /><RefreshCw v-else :size="15" />恢复环境配置</button></div><p class="settings-note"><ShieldCheck :size="15" />API Key 仅在填写后随保存请求提交；服务端响应、状态和日志不会包含 Key 原文。</p></div>
             <p v-if="prowlarrSaveMessage" class="settings-action-message status-ok" role="status">{{ prowlarrSaveMessage }}</p><p v-if="prowlarrSaveError" class="settings-state settings-state-error settings-save-error" role="alert"><AlertTriangle :size="17" />{{ prowlarrSaveError }}<button v-if="prowlarrConflict" class="text-button" type="button" @click="loadProwlarr">重新加载</button></p>

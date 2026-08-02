@@ -491,6 +491,49 @@ describe("ApiClient season and inspection requests", () => {
     expect(JSON.parse(fetchMock.mock.calls[3][1].body as string)).toEqual({});
   });
 
+  it("loads source health without exposing request details", async () => {
+    const health = {
+      pansou: {
+        enabled: true,
+        configured: true,
+        status: "configured",
+        message_code: null,
+        state: null,
+        message_zh: "PanSou 可用。",
+        reason_code: null,
+        reason_zh: null,
+        checked_at: null,
+        retry_after_seconds: null,
+        consecutive_failures: 0,
+      },
+      prowlarr: {
+        enabled: true,
+        configured: true,
+        status: "configured",
+        message_code: "prowlarr_unavailable",
+        state: "backoff",
+        message_zh: "Prowlarr 暂时退避。",
+        reason_code: "prowlarr_rate_limited",
+        reason_zh: "Prowlarr 当前受到限流，系统将在稍后重试。",
+        checked_at: "2026-08-02T04:00:00Z",
+        retry_after_seconds: 42,
+        consecutive_failures: 1,
+      },
+    };
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(health), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const api = new ApiClient();
+
+    const response = await api.searchSources();
+
+    expect(response.prowlarr.state).toBe("backoff");
+    expect(response.prowlarr.reason_code).toBe("prowlarr_rate_limited");
+    expect(response.prowlarr.retry_after_seconds).toBe(42);
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/v1/settings/search-sources");
+  });
+
   it("uses the managed credentials endpoints without expecting secret response fields", async () => {
     const response = { revision: 3, tmdb: { configured: true, source: "managed", last_updated_at: "2026-07-25T03:00:00Z" }, p115_cookie: { configured: true, source: "managed", last_updated_at: "2026-07-25T03:00:00Z", structure_valid: true, ready: true } };
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(response), { status: 200 }));

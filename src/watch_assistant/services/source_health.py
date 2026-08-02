@@ -90,6 +90,11 @@ class SourceHealthTracker:
         self._state = SourceHealthState.BACKOFF
         return True
 
+    def release_request(self) -> None:
+        """Release a half-open probe that did not reach an outcome."""
+
+        self._probe_in_flight = False
+
     def record_success(self, *, now: datetime | None = None) -> None:
         self._state = SourceHealthState.AVAILABLE
         self._consecutive_failures = 0
@@ -109,7 +114,8 @@ class SourceHealthTracker:
         current = _as_utc(now or self._clock())
         self._consecutive_failures += 1
         self._total_failures += 1
-        self._last_error_code = _safe_code(error_code)
+        safe_error_code = _safe_code(error_code)
+        self._last_error_code = safe_error_code
         self._checked_at = current
         self._probe_in_flight = False
 
@@ -123,7 +129,7 @@ class SourceHealthTracker:
         self._retry_at = current + timedelta(seconds=delay)
         if self._consecutive_failures >= self._failure_threshold:
             self._state = SourceHealthState.OPEN_CIRCUIT
-        elif error_code == "prowlarr_rate_limited":
+        elif safe_error_code == "prowlarr_rate_limited":
             self._state = SourceHealthState.BACKOFF
         else:
             self._state = SourceHealthState.DEGRADED
@@ -174,17 +180,32 @@ def health_reason_code(
         return "prowlarr_available"
     if state == SourceHealthState.OPEN_CIRCUIT:
         return "prowlarr_open_circuit"
-    if last_error_code in {
+    safe_error_code = _safe_code(last_error_code) if last_error_code else None
+    if safe_error_code in {
         "prowlarr_auth_required",
         "prowlarr_invalid_response",
         "prowlarr_rate_limited",
         "prowlarr_server_error",
         "prowlarr_timeout",
     }:
-        return last_error_code
+        return safe_error_code
     if state == SourceHealthState.BACKOFF:
         return "prowlarr_backoff"
     return "prowlarr_unavailable"
+
+
+def health_reason_message(
+    state: SourceHealthState, last_error_code: str | None = None
+) -> str:
+    """Return a safe Chinese explanation for the public health snapshot."""
+
+    return {
+        "prowlarr_auth_required": "Prowlarr 认证失败，请检查 API Key。",
+        "prowlarr_invalid_response": "Prowlarr 返回格式不受支持。",
+        "prowlarr_rate_limited": "Prowlarr 当前受到限流，系统将在稍后重试。",
+        "prowlarr_server_error": "Prowlarr 服务端暂时异常，已保留其他来源结果。",
+        "prowlarr_timeout": "Prowlarr 请求超时，已保留其他来源结果。",
+    }.get(health_reason_code(state, last_error_code), health_message(state))
 
 
 def _as_utc(value: datetime) -> datetime:

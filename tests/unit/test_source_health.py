@@ -5,6 +5,7 @@ from watch_assistant.services.source_health import (
     SourceHealthTracker,
     health_message,
     health_reason_code,
+    health_reason_message,
 )
 
 
@@ -37,6 +38,27 @@ def test_rate_limit_backoff_allows_one_probe_after_retry_window():
     assert tracker.allow_request() is False
     tracker.record_success()
     assert tracker.snapshot().state == SourceHealthState.AVAILABLE
+
+
+def test_released_half_open_probe_can_be_retried_without_sensitive_state():
+    current = [datetime(2026, 8, 2, tzinfo=UTC)]
+    tracker = SourceHealthTracker(
+        clock=lambda: current[0],
+        backoff_base_seconds=10,
+        failure_threshold=2,
+    )
+    tracker.record_failure("prowlarr_rate_limited", retry_after_seconds=10)
+    current[0] += timedelta(seconds=10)
+
+    assert tracker.allow_request() is True
+    assert tracker.allow_request() is False
+    tracker.release_request()
+    assert tracker.allow_request() is True
+    tracker.release_request()
+
+    assert health_reason_message(
+        SourceHealthState.BACKOFF, "PROWLARR_RATE_LIMITED"
+    ) == "Prowlarr 当前受到限流，系统将在稍后重试。"
 
 
 def test_repeated_failures_open_circuit_without_sensitive_fields():

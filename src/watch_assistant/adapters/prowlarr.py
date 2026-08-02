@@ -4,6 +4,7 @@ Only the public search endpoint is used here.  Indexer administration and
 download actions intentionally remain outside this adapter.
 """
 
+import asyncio
 import base64
 import binascii
 import re
@@ -148,8 +149,6 @@ class ProwlarrClient:
         page_size: int | None = None,
     ) -> ProwlarrSearchResult:
         """Search the official bare-array endpoint with bounded pagination."""
-        if not self._health.allow_request():
-            raise ProwlarrCircuitOpenError("Prowlarr circuit is open")
         if type(offset) is not int or offset < 0:
             raise ValueError("offset must be a non-negative integer")
         result_limit = self._max_results if limit is None else limit
@@ -168,6 +167,8 @@ class ProwlarrClient:
         requested_page_size = min(requested_page_size, _MAX_PAGE_SIZE)
         indexer_params = _array_params("indexerIds", indexer_ids)
         category_params = _array_params("categories", categories)
+        if not self._health.allow_request():
+            raise ProwlarrCircuitOpenError("Prowlarr circuit is open")
 
         releases: list[ProwlarrRelease] = []
         unsupported_count = 0
@@ -219,16 +220,23 @@ class ProwlarrClient:
                 # A full final page means the bounded paginator stopped before
                 # the upstream advertised an end. Preserve that fact for aggregation.
                 truncated = items_seen < result_limit
+        except asyncio.CancelledError:
+            self._health.release_request()
+            raise
         except ProwlarrError as exc:
             self._health.record_failure(
                 exc.error_code,
                 retry_after_seconds=getattr(exc, "retry_after_seconds", None),
             )
             raise
-        except (httpx.TimeoutException, TimeoutError) as exc:
+        except (httpx.TimeoutException, TimeoutError):
             error = ProwlarrTimeoutError("Prowlarr request timed out")
             self._health.record_failure(error.error_code)
-            raise error from exc
+            raise error from None
+        except Exception:  # noqa: BLE001 - sanitize unexpected transport errors
+            error = ProwlarrError("Prowlarr request failed")
+            self._health.record_failure(error.error_code)
+            raise error from None
         self._health.record_success()
         return ProwlarrSearchResult(tuple(releases), unsupported_count, truncated)
 
@@ -249,33 +257,33 @@ class ProwlarrClient:
                 raise ProwlarrAuthError(
                     "Prowlarr authentication failed",
                     status_code=exc.response.status_code,
-                ) from exc
+                ) from None
             if exc.response.status_code == 408:
                 raise ProwlarrTimeoutError(
                     "Prowlarr request timed out", status_code=408
-                ) from exc
+                ) from None
             if exc.response.status_code == 429:
                 raise ProwlarrRateLimitError(
                     retry_after_seconds=_retry_after_seconds(exc.response)
-                ) from exc
+                ) from None
             if 500 <= exc.response.status_code <= 599:
                 raise ProwlarrServerError(
                     "Prowlarr server error", status_code=exc.response.status_code
-                ) from exc
+                ) from None
             raise ProwlarrError(
                 "Prowlarr request failed", status_code=exc.response.status_code
-            ) from exc
-        except httpx.TimeoutException as exc:
-            raise ProwlarrTimeoutError("Prowlarr request timed out") from exc
-        except httpx.HTTPError as exc:
-            raise ProwlarrError("Prowlarr request failed") from exc
+            ) from None
+        except httpx.TimeoutException:
+            raise ProwlarrTimeoutError("Prowlarr request timed out") from None
+        except httpx.HTTPError:
+            raise ProwlarrError("Prowlarr request failed") from None
 
         try:
             payload = response.json()
-        except (UnicodeDecodeError, ValueError) as exc:
+        except (UnicodeDecodeError, ValueError):
             raise ProwlarrInvalidResponseError(
                 "Unexpected Prowlarr response shape"
-            ) from exc
+            ) from None
         if not isinstance(payload, list):
             raise ProwlarrInvalidResponseError("Unexpected Prowlarr response shape")
         return payload

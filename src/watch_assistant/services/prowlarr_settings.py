@@ -26,6 +26,7 @@ from watch_assistant.services.source_health import (
     SourceHealthTracker,
     health_message,
     health_reason_code,
+    health_reason_message,
 )
 
 SETTINGS_ID = "default"
@@ -343,10 +344,13 @@ class ProwlarrSettingsService:
             "message_zh": health_message(health.state),
             "retry_after_seconds": health.retry_after_seconds,
             "reason_code": health_reason_code(health.state, health.last_error_code),
-            "reason_zh": health_message(health.state),
+            "reason_zh": health_reason_message(
+                health.state, health.last_error_code
+            ),
         }
 
     def _health_fields(self, values: dict[str, object]) -> dict[str, object]:
+        last_error_code: str | None = None
         if not values["enabled"]:
             state = SourceHealthState.DISABLED
             message_code = "prowlarr_disabled"
@@ -368,19 +372,16 @@ class ProwlarrSettingsService:
             checked_at = health.checked_at
             retry_after = health.retry_after_seconds
             failures = health.consecutive_failures
+            last_error_code = health.last_error_code
         return {
             "health_state": state,
             "health_message_code": message_code,
             "health_message_zh": health_message(state),
             "health_reason_code": health_reason_code(
                 state,
-                self._health.snapshot().last_error_code if state not in {
-                    SourceHealthState.DISABLED,
-                    SourceHealthState.NOT_CONFIGURED,
-                }
-                else None,
+                last_error_code,
             ),
-            "health_reason_zh": health_message(state),
+            "health_reason_zh": health_reason_message(state, last_error_code),
             "health_checked_at": checked_at,
             "health_retry_after_seconds": retry_after,
             "health_consecutive_failures": failures,

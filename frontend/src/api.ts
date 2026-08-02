@@ -21,6 +21,7 @@ import type {
   PatchProwlarrSettingsRequest,
   ProwlarrSettingsResponse,
   ProwlarrVerifyResponse,
+  SearchSourcesResponse,
   SearchRequest,
   SearchResponse,
   SeasonDetailResponse,
@@ -172,6 +173,10 @@ export class ApiClient {
 
   async prowlarrSettings(): Promise<ProwlarrSettingsResponse> {
     return this.request<ProwlarrSettingsResponse>("/api/v1/settings/search-sources/prowlarr");
+  }
+
+  async searchSources(): Promise<SearchSourcesResponse> {
+    return this.request<SearchSourcesResponse>("/api/v1/settings/search-sources");
   }
 
   async updateProwlarrSettings(settings: PatchProwlarrSettingsRequest): Promise<ProwlarrSettingsResponse> {
