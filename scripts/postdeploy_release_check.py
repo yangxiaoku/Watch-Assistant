@@ -5,10 +5,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 from urllib.error import URLError
 from urllib.request import Request, urlopen
@@ -27,6 +29,10 @@ from watch_assistant.release_metadata import (
 _RELEASE_ENV_NAME = "WATCH_ASSISTANT_RELEASE"
 _DEFAULT_RELEASE_ENV = Path("/var/lib/watch-assistant/release.env")
 _SYSTEMD_PROPERTIES = ("EnvironmentFiles", "MainPID", "WorkingDirectory")
+DEFAULT_HEALTH_TIMEOUT = 30.0
+DEFAULT_HEALTH_POLL_INTERVAL = 1.0
+MAX_HEALTH_TIMEOUT = 120.0
+MAX_HEALTH_POLL_INTERVAL = 5.0
 
 
 def _parse_systemd_properties(output: str) -> dict[str, str]:
@@ -103,6 +109,47 @@ def _read_health(url: str, timeout: float) -> str | None:
     return normalize_release(payload.get("release"))
 
 
+def _validate_health_polling(
+    health_timeout: float, health_poll_interval: float
+) -> bool:
+    return (
+        math.isfinite(health_timeout)
+        and 0 < health_timeout <= MAX_HEALTH_TIMEOUT
+        and math.isfinite(health_poll_interval)
+        and 0 < health_poll_interval <= MAX_HEALTH_POLL_INTERVAL
+    )
+
+
+def _wait_for_health(
+    url: str,
+    request_timeout: float,
+    expected_release: str,
+    health_timeout: float,
+    health_poll_interval: float,
+) -> tuple[str | None, bool]:
+    """Poll readiness until the expected release is reported or the deadline expires."""
+
+    deadline = time.monotonic() + health_timeout
+    max_attempts = max(1, math.ceil(health_timeout / health_poll_interval) + 1)
+    saw_health = False
+    last_health: str | None = None
+    for _attempt in range(max_attempts):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        health = _read_health(url, min(request_timeout, remaining))
+        if health is not None:
+            saw_health = True
+            last_health = health
+            if health == expected_release:
+                return health, True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(health_poll_interval, remaining))
+    return last_health, saw_health
+
+
 def _read_diagnostics(
     url: str, timeout: float, token: str | None, expected: str | None = None
 ) -> str:
@@ -152,7 +199,11 @@ def check_release_consistency(
     diagnostics_url: str | None = None,
     diagnostics_token: str | None = None,
     timeout: float = 5.0,
+    health_timeout: float = DEFAULT_HEALTH_TIMEOUT,
+    health_poll_interval: float = DEFAULT_HEALTH_POLL_INTERVAL,
 ) -> tuple[bool, str]:
+    if not _validate_health_polling(health_timeout, health_poll_interval):
+        return False, "health_polling_invalid"
     expected = read_release_commit(version_file)
     if expected is None:
         return False, "version_invalid"
@@ -203,7 +254,13 @@ def check_release_consistency(
     if not service_ok:
         return False, service_code
 
-    health = _read_health(health_url, timeout)
+    health, _saw_health = _wait_for_health(
+        health_url,
+        timeout,
+        expected,
+        health_timeout,
+        health_poll_interval,
+    )
     if health is None:
         return False, "health_not_reported"
     if health != expected:
@@ -229,6 +286,12 @@ def main() -> int:
     parser.add_argument("--expected-release")
     parser.add_argument("--diagnostics-url")
     parser.add_argument("--timeout", type=float, default=5.0)
+    parser.add_argument(
+        "--health-timeout", type=float, default=DEFAULT_HEALTH_TIMEOUT
+    )
+    parser.add_argument(
+        "--health-poll-interval", type=float, default=DEFAULT_HEALTH_POLL_INTERVAL
+    )
     args = parser.parse_args()
     passed, code = check_release_consistency(
         version_file=args.version_file,
@@ -242,6 +305,8 @@ def main() -> int:
         diagnostics_url=args.diagnostics_url,
         diagnostics_token=os.environ.get("WATCH_ASSISTANT_DIAGNOSTICS_TOKEN"),
         timeout=args.timeout,
+        health_timeout=args.health_timeout,
+        health_poll_interval=args.health_poll_interval,
     )
     if not passed:
         print("POSTDEPLOY_RELEASE_CHECK=failed")

@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import os
+import sys
 import tempfile
 import uuid
 from datetime import UTC, datetime
@@ -14,10 +15,13 @@ from pathlib import Path
 
 SCRIPT_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = SCRIPT_ROOT / "src"
+SCRIPTS_ROOT = SCRIPT_ROOT / "scripts"
 if SRC_ROOT.is_dir():
-    import sys
-
     sys.path.insert(0, str(SRC_ROOT))
+if SCRIPTS_ROOT.is_dir():
+    sys.path.insert(0, str(SCRIPTS_ROOT))
+
+from release_manifest import ReleaseManifestError, validate_build_manifest_file
 
 from watch_assistant.release_metadata import (
     normalize_full_release,
@@ -138,6 +142,8 @@ def _current_target(current_root: Path) -> Path | None:
 
 def _validate_release_root(release_root: Path, allowed_root: Path) -> Path:
     try:
+        if release_root.is_symlink():
+            raise ValueError("release_root_symlink")
         allowed = allowed_root.resolve(strict=True)
         release = release_root.resolve(strict=True)
     except (OSError, RuntimeError) as exc:
@@ -162,6 +168,28 @@ def _validate_previous_target(target: str | None, allowed_root: Path) -> Path | 
     ):
         raise ValueError("previous_current_out_of_scope")
     return resolved_target
+
+
+def _validate_saved_release(
+    release_root: Path,
+    expected_release: str | None,
+    expected_manifest_sha256: str | None,
+    expected_version_sha256: str | None,
+    *,
+    code_prefix: str,
+) -> None:
+    if expected_release is not None:
+        actual_release = read_release_commit(release_root / "VERSION")
+        if actual_release != expected_release:
+            raise ValueError(f"{code_prefix}_version_mismatch")
+    if expected_manifest_sha256 is not None and _manifest_sha256(release_root) != (
+        expected_manifest_sha256
+    ):
+        raise ValueError(f"{code_prefix}_manifest_changed")
+    if expected_version_sha256 is not None and _file_sha256(release_root / "VERSION") != (
+        expected_version_sha256
+    ):
+        raise ValueError(f"{code_prefix}_version_changed")
 
 
 def _atomic_switch(current_root: Path, release_root: Path) -> None:
@@ -218,6 +246,17 @@ def _file_sha256(path: Path) -> str | None:
     return digest.hexdigest()
 
 
+def _validate_release_manifest(release_root: Path, expected_release: str) -> None:
+    try:
+        validate_build_manifest_file(
+            release_root / "release-manifest.json",
+            expected_commit=expected_release,
+            expected_short_commit=expected_release[:7],
+        )
+    except ReleaseManifestError as exc:
+        raise ValueError(f"release_manifest_{exc.code}") from None
+
+
 def switch_release(
     *,
     release_root: Path,
@@ -237,6 +276,7 @@ def switch_release(
     version = read_release_commit(target / "VERSION")
     if version != expected:
         raise ValueError("version_expected_mismatch")
+    _validate_release_manifest(target, expected)
     previous_target = _current_target(current_root)
     previous_release = (
         read_release_commit(previous_target / "VERSION")
@@ -317,6 +357,20 @@ def rollback_release(
     if not isinstance(target_value, str):
         raise TypeError("rollback_state_invalid")
     target = _validate_release_root(Path(target_value), allowed_releases_root)
+    target_release = state.get("target_release")
+    if normalize_full_release(target_release) is None:
+        raise ValueError("rollback_state_invalid")
+    _validate_saved_release(
+        target,
+        str(target_release),
+        state.get("target_manifest_sha256")
+        if isinstance(state.get("target_manifest_sha256"), str)
+        else None,
+        state.get("target_version_sha256")
+        if isinstance(state.get("target_version_sha256"), str)
+        else None,
+        code_prefix="rollback_target",
+    )
     active = _current_target(current_root)
     if active != target:
         raise ValueError("rollback_target_changed")
@@ -326,10 +380,29 @@ def rollback_release(
         else None,
         allowed_releases_root,
     )
+    previous_release = state.get("previous_release")
+    if previous_target is None and previous_release is not None:
+        raise ValueError("rollback_state_invalid")
+    if previous_target is not None and not isinstance(previous_release, str):
+        raise ValueError("rollback_state_invalid")
+    if previous_target is not None:
+        _validate_saved_release(
+            previous_target,
+            previous_release,
+            state.get("previous_manifest_sha256")
+            if isinstance(state.get("previous_manifest_sha256"), str)
+            else None,
+            state.get("previous_version_sha256")
+            if isinstance(state.get("previous_version_sha256"), str)
+            else None,
+            code_prefix="rollback_previous",
+        )
     previous_env_present = state.get("previous_release_env_present") is True
     previous_env_release = state.get("previous_release_env_release")
     if previous_env_present and normalize_release(previous_env_release) is None:
         raise ValueError("previous_release_env_invalid")
+    if previous_env_present and previous_env_release != previous_release:
+        raise ValueError("previous_release_env_mismatch")
 
     try:
         if previous_target is None:

@@ -59,3 +59,15 @@ def test_systemd_release_deploy_runs_prepare_before_metadata_update():
     assert "--expected-release \"$EXPECTED_RELEASE\"" in script
     assert "--allowed-releases-root \"$RELEASES_ROOT\"" in script
     assert "--service-user \"$SERVICE_USER\"" in script
+
+
+def test_systemd_release_deploy_rechecks_previous_health_after_rollback():
+    script = (DEPLOY_DIR.parent / "scripts" / "deploy_systemd_release.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert '"$CURRENT_ROOT/VERSION"' in script
+    assert "automatic rollback health verification failed" in script
+    assert "--unit watch-assistant.service" in script
+    assert "restart watch-assistant-qbittorrent.service" not in script
+    assert "systemctl restart" not in script
