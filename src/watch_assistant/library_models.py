@@ -46,6 +46,13 @@ class LibraryScanRun(Base):
     """One idempotent scan and its immutable complete/partial outcome."""
 
     __tablename__ = "library_scan_runs"
+    __table_args__ = (
+        UniqueConstraint(
+            "library_id",
+            "idempotency_key",
+            name="uq_library_scan_run_idempotency",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     library_id: Mapped[str] = mapped_column(
@@ -53,6 +60,12 @@ class LibraryScanRun(Base):
     )
     root_directory_id: Mapped[str] = mapped_column(String(128))
     idempotency_key: Mapped[str] = mapped_column(String(128))
+    scan_mode: Mapped[str] = mapped_column(
+        String(16), default="tree", server_default="tree"
+    )
+    max_directories: Mapped[int] = mapped_column(
+        Integer, default=10_000, server_default="10000"
+    )
     state: Mapped[str] = mapped_column(
         String(16), default="queued", server_default="queued"
     )
@@ -62,6 +75,15 @@ class LibraryScanRun(Base):
     expected_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
     pages_read: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     items_seen: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    lease_owner: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    lease_token: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    cancel_requested: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="0"
+    )
     added_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     changed_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     removed_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
@@ -86,6 +108,9 @@ class LibraryScanCheckpoint(Base):
     )
     page: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     items_seen: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    cursor_json: Mapped[str] = mapped_column(
+        Text, default="{}", server_default="{}"
+    )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utc_now, onupdate=_utc_now
     )
