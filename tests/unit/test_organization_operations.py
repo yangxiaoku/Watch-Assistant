@@ -195,6 +195,46 @@ async def _database(tmp_path: Path):
     return database
 
 
+async def _refresh_completed_tree_evidence(database):
+    async with database.session_factory() as session:
+        run = await session.get(LibraryScanRun, SCAN_ID)
+        checkpoint = await session.get(LibraryScanCheckpoint, SCAN_ID)
+        assert run is not None
+        assert checkpoint is not None
+        entries = list(
+            (
+                await session.scalars(
+                    select(LibraryScanEntry).where(
+                        LibraryScanEntry.scan_run_id == SCAN_ID
+                    )
+                )
+            ).all()
+        )
+        directory_ids = [run.root_directory_id]
+        directory_totals = {run.root_directory_id: 0}
+        for entry in entries:
+            directory_totals[entry.parent_id] = (
+                directory_totals.get(entry.parent_id, 0) + 1
+            )
+            if entry.is_directory:
+                directory_ids.append(entry.object_id)
+                directory_totals.setdefault(entry.object_id, 0)
+        assert set(directory_totals) == set(directory_ids)
+        run.expected_total = len(entries)
+        run.items_seen = len(entries)
+        checkpoint.items_seen = len(entries)
+        checkpoint.cursor_json = json.dumps(
+            {
+                "version": 2,
+                "directory_totals": directory_totals,
+                "expected_total": len(entries),
+                "pending": [],
+                "visited": directory_ids,
+            }
+        )
+        await session.commit()
+
+
 async def _plan(database, *, confidence: MatchConfidence = MatchConfidence.HIGH):
     return await OrganizationPlanService(database.session_factory).create_plan(
         library_id=LIBRARY_ID,

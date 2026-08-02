@@ -154,7 +154,12 @@ class _RootTotalGateway(_ReadOnlyGateway):
         page_value = await super().list_directory(
             directory_id, page=page, page_size=page_size
         )
-        return replace(page_value, total=self.reported_total)
+        return replace(
+            page_value,
+            total=self.reported_total,
+            terminal=True,
+            has_more=False,
+        )
 
 
 def _file_entry(file_id: str, *, path: str = SECRET_PATH, parent_id: str = ROOT_ID):

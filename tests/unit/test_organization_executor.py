@@ -6,7 +6,12 @@ from pathlib import Path
 
 import pytest
 from sqlalchemy import select
-from test_organization_operations import _database, _item, _operation
+from test_organization_operations import (
+    _database,
+    _item,
+    _operation,
+    _refresh_completed_tree_evidence,
+)
 
 from watch_assistant.library_models import (
     LibraryScanEntry,
@@ -451,6 +456,7 @@ async def test_mixed_steps_do_not_complete_when_one_replacement_is_unobserved(
             )
         )
         await session.commit()
+    await _refresh_completed_tree_evidence(database)
     first = replace(
         _item(),
         policy_decision=VersionDecision("candidate", "remux_priority", "remux"),
@@ -987,6 +993,7 @@ async def test_companion_partial_failure_does_not_continue_group(tmp_path: Path)
             )
         )
         await session.commit()
+    await _refresh_completed_tree_evidence(database)
     companion = OrganizationPlanCompanion(
         source=PlanSource(
             object_type="file",
@@ -1049,6 +1056,7 @@ async def test_companion_partial_replay_is_uncertain_without_writes(tmp_path: Pa
             )
         )
         await session.commit()
+    await _refresh_completed_tree_evidence(database)
     companion = OrganizationPlanCompanion(
         source=PlanSource(
             object_type="file",
