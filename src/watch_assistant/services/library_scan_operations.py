@@ -15,10 +15,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from watch_assistant.adapters.p115_library import P115LibraryGateway
-from watch_assistant.library_models import (
-    LibraryScanRun,
-    MediaLibrary,
-)
+from watch_assistant.library_models import LibraryScanRun, MediaLibrary
 from watch_assistant.schemas import LoggingLevel
 from watch_assistant.services.library_index import (
     LibraryIndexError,
