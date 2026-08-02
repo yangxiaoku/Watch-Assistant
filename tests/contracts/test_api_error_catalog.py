@@ -1,4 +1,5 @@
 import ast
+import json
 import re
 from pathlib import Path
 
@@ -129,6 +130,9 @@ def test_domain_codes_used_by_http_error_mappers_are_in_central_catalog():
         "operation_is_not_retryable",
         "invalid_terminal_status",
         "directory_scope_required",
+        "strm_library_operation_conflict",
+        "strm_operation_in_progress",
+        "strm_operation_lease_lost",
     }
     assert domain_codes <= catalog_codes()
 
@@ -145,3 +149,24 @@ def test_every_catalog_entry_builds_a_safe_chinese_payload():
         assert payload["title_zh"]
         assert payload["message_zh"]
         assert payload["suggestion_zh"]
+
+
+def test_strm_fencing_error_payloads_are_chinese_and_do_not_expose_lease_data():
+    for code in (
+        "strm_library_operation_conflict",
+        "strm_operation_in_progress",
+        "strm_operation_lease_lost",
+    ):
+        payload = build_error_payload(
+            code,
+            409,
+            request_id="request-test",
+            correlation_id="correlation-test",
+        )
+        serialized = json.dumps(payload, ensure_ascii=False)
+        assert payload["title_zh"]
+        assert payload["message_zh"]
+        assert payload["suggestion_zh"]
+        assert "lease_owner" not in serialized
+        assert "lease_token" not in serialized
+        assert "token" not in serialized.lower()
