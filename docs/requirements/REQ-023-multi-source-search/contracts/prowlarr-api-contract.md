@@ -103,3 +103,19 @@ metadata; the existing PanSou query metadata behavior is unchanged.
 
 This remains offline readiness evidence.  No real Prowlarr host, API key,
 indexer configuration, or indexer write operation has been used or verified.
+
+## Follow-up review evidence
+
+The readiness seam also protects the local health state from abandoned probes:
+argument validation happens before a circuit probe is reserved, and cancelled
+half-open requests release their reservation so a later probe can run. Public
+adapter errors suppress the underlying HTTPX exception chain; request query
+text and authentication headers therefore do not appear in an emitted error
+traceback. Health responses retain only bounded retry timing, stable reason
+codes, and Chinese explanations for timeout, rate-limit, authentication,
+response-shape, and server failures.
+
+The frontend API type seam now carries the existing source-health response,
+including state, reason, and retry fields, without adding any credential or
+request-detail field. The settings page remains outside this change; this is a
+typed backend dependency for a later status presentation update.

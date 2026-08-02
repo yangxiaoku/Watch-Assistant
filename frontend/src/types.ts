@@ -3,6 +3,33 @@ export type InspectionResultStatus = "verified" | "timeout" | "failed" | "unsupp
 export type InspectionBatchStatus = "queued" | "running" | "completed" | "partial" | "failed";
 export type ProwlarrSettingsSource = "managed" | "environment" | "none";
 export type ProwlarrVerificationStatus = "available" | "unavailable" | "disabled";
+export type ProwlarrHealthState =
+  | "disabled"
+  | "not_configured"
+  | "unverified"
+  | "available"
+  | "degraded"
+  | "backoff"
+  | "open_circuit";
+
+export interface SearchSourceStateResponse {
+  enabled: boolean;
+  configured: boolean;
+  status: "disabled" | "configured" | "unavailable";
+  message_code: string | null;
+  state: ProwlarrHealthState | null;
+  message_zh: string | null;
+  reason_code: string | null;
+  reason_zh: string | null;
+  checked_at: string | null;
+  retry_after_seconds: number | null;
+  consecutive_failures: number;
+}
+
+export interface SearchSourcesResponse {
+  pansou: SearchSourceStateResponse;
+  prowlarr: SearchSourceStateResponse;
+}
 
 export interface ProwlarrSettingsResponse {
   source: ProwlarrSettingsSource;
@@ -13,6 +40,14 @@ export interface ProwlarrSettingsResponse {
   api_key_source: ProwlarrSettingsSource;
   last_updated_at: string | null;
   revision: number;
+  health_state: ProwlarrHealthState | null;
+  health_message_code: string | null;
+  health_message_zh: string | null;
+  health_reason_code: string | null;
+  health_reason_zh: string | null;
+  health_checked_at: string | null;
+  health_retry_after_seconds: number | null;
+  health_consecutive_failures: number;
 }
 
 export interface PatchProwlarrSettingsRequest {
@@ -29,6 +64,11 @@ export interface ProwlarrVerifyResponse {
   base_url: string | null;
   message_code: string | null;
   checked_at: string;
+  state?: ProwlarrHealthState | null;
+  message_zh?: string | null;
+  reason_code?: string | null;
+  reason_zh?: string | null;
+  retry_after_seconds?: number | null;
 }
 
 export type TaskState =

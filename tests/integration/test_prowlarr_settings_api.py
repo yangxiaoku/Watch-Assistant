@@ -108,3 +108,67 @@ async def test_prowlarr_settings_never_echo_key_and_verify_is_read_only(tmp_path
         await pansou.aclose()
         await prowlarr.aclose()
         await database.engine.dispose()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("status_code", "headers", "expected_state", "expected_reason"),
+    [
+        (429, {"Retry-After": "42"}, "backoff", "prowlarr_rate_limited"),
+        (500, {}, "degraded", "prowlarr_server_error"),
+    ],
+)
+@respx.mock
+async def test_prowlarr_verify_returns_safe_health_reason_and_retry_window(
+    tmp_path: Path,
+    status_code: int,
+    headers: dict[str, str],
+    expected_state: str,
+    expected_reason: str,
+):
+    route = respx.get("http://prowlarr.test/api/v1/search").mock(
+        return_value=httpx.Response(
+            status_code,
+            json={"error": "fixture_upstream_detail"},
+            headers=headers,
+        )
+    )
+    client, database, tmdb, pansou, prowlarr = await _make_client(tmp_path)
+    api_key = "fixture-only"
+    try:
+        saved = await client.patch(
+            "/api/v1/settings/search-sources/prowlarr",
+            json={
+                "enabled": True,
+                "base_url": "http://prowlarr.test",
+                "api_key": api_key,
+                "revision": 0,
+            },
+        )
+        assert saved.status_code == 200
+
+        verified = await client.post(
+            "/api/v1/settings/search-sources/prowlarr/verify"
+        )
+        assert verified.status_code == 200
+        body = verified.json()
+        assert body["status"] == "unavailable"
+        assert body["state"] == expected_state
+        assert body["reason_code"] == expected_reason
+        assert body["retry_after_seconds"] is not None
+        assert "fixture_upstream_detail" not in verified.text
+        assert api_key not in verified.text
+
+        sources = await client.get("/api/v1/settings/search-sources")
+        source = sources.json()["prowlarr"]
+        assert source["state"] == expected_state
+        assert source["reason_code"] == expected_reason
+        assert source["retry_after_seconds"] is not None
+        assert "fixture_upstream_detail" not in sources.text
+        assert route.calls
+    finally:
+        await client.aclose()
+        await tmdb.aclose()
+        await pansou.aclose()
+        await prowlarr.aclose()
+        await database.engine.dispose()
