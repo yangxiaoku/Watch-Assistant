@@ -100,19 +100,58 @@ class StrmOperationService:
         lease_duration: timedelta = timedelta(minutes=5),
         now: datetime | None = None,
     ) -> StrmOperationSummary:
+        summary, _ = await self.claim_start(
+            operation_id,
+            lease_owner=lease_owner,
+            lease_duration=lease_duration,
+            now=now,
+        )
+        return summary
+
+    async def claim_start(
+        self,
+        operation_id: str,
+        *,
+        lease_owner: str | None = None,
+        lease_duration: timedelta = timedelta(minutes=5),
+        now: datetime | None = None,
+    ) -> tuple[StrmOperationSummary, bool]:
+        """Atomically claim a queued operation for one executor."""
+
         duration = _validate_lease_duration(lease_duration)
         _validate_optional_owner(lease_owner)
-        operation = await self._load(operation_id)
-        if operation.status is StrmOperationStatus.QUEUED:
-            current_time = _as_utc(now) or datetime.now(UTC)
-            operation.status = StrmOperationStatus.RUNNING
-            operation.started_at = current_time
-            operation.updated_at = current_time
-            operation.heartbeat_at = current_time
-            operation.lease_expires_at = current_time + duration
-            operation.lease_owner = lease_owner or operation.id
-            await self._commit(operation)
-        return _summary(operation)
+        current_time = _as_utc(now) or datetime.now(UTC)
+        _validate_identifier(operation_id, "operation_id", maximum=64)
+        async with self._session_factory() as session:
+            current = await session.get(StrmOperation, operation_id)
+            if current is None:
+                raise StrmOperationNotFound(operation_id)
+            if current.status is not StrmOperationStatus.QUEUED:
+                return _summary(current), False
+            result = await session.execute(
+                update(StrmOperation)
+                .where(
+                    StrmOperation.id == operation_id,
+                    StrmOperation.status == StrmOperationStatus.QUEUED,
+                )
+                .values(
+                    status=StrmOperationStatus.RUNNING,
+                    started_at=current_time,
+                    updated_at=current_time,
+                    heartbeat_at=current_time,
+                    lease_expires_at=current_time + duration,
+                    lease_owner=lease_owner or operation_id,
+                )
+            )
+            if result.rowcount != 1:
+                await session.rollback()
+                current = await session.get(StrmOperation, operation_id)
+                if current is None:
+                    raise StrmOperationNotFound(operation_id)
+                return _summary(current), False
+            await session.commit()
+            await session.refresh(current)
+            return _summary(current), True
 
     async def heartbeat(
         self,
@@ -158,6 +197,28 @@ class StrmOperationService:
             await session.commit()
             await session.refresh(current)
             return _summary(current)
+
+    async def progress(
+        self,
+        operation_id: str,
+        *,
+        generated: int,
+        unchanged: int,
+        skipped: int,
+        failed: int,
+        retired: int,
+    ) -> StrmOperationSummary:
+        """Persist a checkpoint while a local operation is still running."""
+
+        _validate_counts(generated, unchanged, skipped, failed, retired)
+        operation = await self._load(operation_id)
+        if operation.status is not StrmOperationStatus.RUNNING:
+            return _summary(operation)
+        now = datetime.now(UTC)
+        _set_counts(operation, generated, unchanged, skipped, failed, retired)
+        operation.updated_at = now
+        await self._commit(operation)
+        return _summary(operation)
 
     async def complete(
         self,
@@ -245,6 +306,71 @@ class StrmOperationService:
         _clear_lease(operation)
         await self._commit(operation)
         return _summary(operation)
+
+    async def resume(self, operation_id: str) -> StrmOperationSummary:
+        """Requeue a terminal local operation for an explicit retry.
+
+        The manifest reconciler is idempotent, so retrying after a process
+        interruption is safe. This method only changes the durable state; a
+        caller still has to start the operation through the normal execution
+        path.
+        """
+
+        _validate_identifier(operation_id, "operation_id", maximum=64)
+        async with self._session_factory() as session:
+            current = await session.get(StrmOperation, operation_id)
+            if current is None:
+                raise StrmOperationNotFound(operation_id)
+            if current.status not in {
+                StrmOperationStatus.FAILED,
+                StrmOperationStatus.TIMEOUT,
+                StrmOperationStatus.CANCELLED,
+            }:
+                return _summary(current)
+            now = datetime.now(UTC)
+            result = await session.execute(
+                update(StrmOperation)
+                .where(
+                    StrmOperation.id == operation_id,
+                    StrmOperation.status.in_(
+                        (
+                            StrmOperationStatus.FAILED,
+                            StrmOperationStatus.TIMEOUT,
+                            StrmOperationStatus.CANCELLED,
+                        )
+                    ),
+                )
+                .values(
+                    status=StrmOperationStatus.QUEUED,
+                    error_code=None,
+                    generated=0,
+                    unchanged=0,
+                    skipped=0,
+                    failed=0,
+                    retired=0,
+                    started_at=None,
+                    finished_at=None,
+                    lease_owner=None,
+                    lease_expires_at=None,
+                    heartbeat_at=None,
+                    updated_at=now,
+                )
+            )
+            if result.rowcount != 1:
+                await session.rollback()
+                current = await session.get(StrmOperation, operation_id)
+                if current is None:
+                    raise StrmOperationNotFound(operation_id)
+                return _summary(current)
+            await session.commit()
+            await session.refresh(current)
+            return _summary(current)
+
+    async def is_cancelled(self, operation_id: str) -> bool:
+        """Read the cancellation bit without exposing persisted credentials."""
+
+        operation = await self._load(operation_id)
+        return operation.status is StrmOperationStatus.CANCELLED
 
     async def get(self, operation_id: str) -> StrmOperationSummary:
         return _summary(await self._load(operation_id))

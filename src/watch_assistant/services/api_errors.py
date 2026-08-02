@@ -169,6 +169,7 @@ _CATALOG: dict[str, ApiErrorDescriptor] = {
     "strm_unavailable": ApiErrorDescriptor("strm_unavailable", "STRM 服务暂时不可用", "本次 STRM 操作未完成。", "请稍后重试。", True, "retry"),
     "strm_operation_failed": ApiErrorDescriptor("strm_operation_failed", "STRM 操作失败", "本次 STRM 操作未完成，文件状态没有被伪造更新。", "请查看操作历史和扫描快照后再重试。", False, "view_task"),
     "strm_operation_not_found": ApiErrorDescriptor("strm_operation_not_found", "STRM 操作不存在", "本次 STRM 操作状态无法读取。", "请刷新操作历史后再试。", False, "refresh_snapshot"),
+    "strm_operation_not_resumable": ApiErrorDescriptor("strm_operation_not_resumable", "STRM 操作不可恢复", "本次 STRM 操作不支持直接恢复。", "请查看清理计划并重新发起受控操作。", False, "view_task"),
     "source_snapshot_not_ready": ApiErrorDescriptor("source_snapshot_not_ready", "扫描快照尚未就绪", "本次 STRM 清理计划未生成。", "请先完成一次完整且受保护的媒体库扫描。", False, "refresh_snapshot"),
     "source_snapshot_not_current": ApiErrorDescriptor("source_snapshot_not_current", "扫描快照已过期", "本次 STRM 清理计划未生成。", "请刷新媒体库后重新生成计划。", False, "refresh_snapshot"),
     "strm_output_unavailable": ApiErrorDescriptor("strm_output_unavailable", "STRM 输出目录不可用", "本次 STRM 清理计划未生成。", "请检查受管 STRM 输出目录。", False, "inspect_configuration"),

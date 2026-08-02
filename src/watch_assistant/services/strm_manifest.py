@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import tempfile
 import uuid
+from collections.abc import Awaitable, Callable, Collection
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -25,6 +26,7 @@ from watch_assistant.library_models import (
 VIDEO_EXTENSIONS = frozenset(
     {".avi", ".flv", ".m2ts", ".mkv", ".mov", ".mp4", ".ts", ".webm", ".wmv"}
 )
+_RECONCILE_BATCH_SIZE = 100
 
 
 class StrmManifestError(ValueError):
@@ -53,11 +55,23 @@ class StrmGenerationSummary:
     retired: int = 0
 
 
+CancelCheck = Callable[[], Awaitable[bool]]
+ProgressCallback = Callable[[StrmGenerationSummary], Awaitable[None]]
+
+
 class StrmManifestService:
     """Generate only files represented by one complete current scan."""
 
-    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+    def __init__(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        *,
+        managed_output_roots: Collection[Path | str] = (),
+    ) -> None:
         self._session_factory = session_factory
+        self._managed_output_roots = tuple(
+            _absolute_path(Path(root)) for root in managed_output_roots
+        )
 
     async def list_current(
         self, library_id: str, *, page: int = 1, page_size: int = 50
@@ -96,11 +110,13 @@ class StrmManifestService:
         source_scan_run_id: str,
         output_root: Path | str,
         playback_url_prefix: str,
+        cancel_check: CancelCheck | None = None,
+        progress_callback: ProgressCallback | None = None,
     ) -> StrmGenerationSummary:
         if not _valid_id(library_id) or not _valid_id(source_scan_run_id):
             raise StrmManifestError("invalid_request")
         prefix = _safe_prefix(playback_url_prefix)
-        root = _safe_root(output_root)
+        root = _safe_root(output_root, self._managed_output_roots)
         async with self._session_factory() as session:
             library = await session.get(MediaLibrary, library_id)
             run = await session.get(LibraryScanRun, source_scan_run_id)
@@ -125,82 +141,72 @@ class StrmManifestService:
             )
             if latest != run.snapshot_revision:
                 raise StrmManifestError("source_snapshot_not_current")
-            entries = list(
-                (
-                    await session.scalars(
-                        select(LibraryScanEntry)
-                        .where(
-                            LibraryScanEntry.scan_run_id == run.id,
-                            LibraryScanEntry.object_type == "file",
-                            LibraryScanEntry.is_directory.is_(False),
-                        )
-                        .order_by(LibraryScanEntry.object_id)
-                    )
-                ).all()
-            )
             generated = unchanged = skipped = failed = 0
-            for entry in entries:
-                paths = _paths(entry)
-                if paths is None:
-                    skipped += 1
-                    continue
-                cloud_path, local_path = paths
-                collision = await session.scalar(
-                    select(StrmManifestEntry).where(
-                        StrmManifestEntry.library_id == library_id,
-                        StrmManifestEntry.local_relative_path == local_path,
-                        StrmManifestEntry.is_current.is_(True),
-                        StrmManifestEntry.cloud_file_id != entry.object_id,
+            last_object_id: str | None = None
+            while True:
+                await _raise_if_cancelled(cancel_check)
+                query = (
+                    select(LibraryScanEntry)
+                    .where(
+                        LibraryScanEntry.scan_run_id == run.id,
+                        LibraryScanEntry.object_type == "file",
+                        LibraryScanEntry.is_directory.is_(False),
                     )
+                    .order_by(LibraryScanEntry.object_id)
+                    .limit(_RECONCILE_BATCH_SIZE)
                 )
-                if collision is not None:
-                    failed += 1
-                    continue
-                manifest = await session.scalar(
-                    select(StrmManifestEntry).where(
-                        StrmManifestEntry.library_id == library_id,
-                        StrmManifestEntry.cloud_file_id == entry.object_id,
-                        StrmManifestEntry.is_current.is_(True),
+                if last_object_id is not None:
+                    query = query.where(
+                        LibraryScanEntry.object_id > last_object_id
                     )
-                )
-                if manifest is None:
-                    manifest = StrmManifestEntry(
-                        manifest_id="strm_" + uuid.uuid4().hex,
-                        library_id=library_id,
-                        cloud_file_id=entry.object_id,
-                        cloud_directory_id=entry.parent_id,
-                        pickcode=None,
-                        cloud_relative_path=cloud_path,
-                        local_relative_path=local_path,
-                        size_bytes=entry.size_bytes,
-                        source_version=run.snapshot_revision,
-                        status=StrmManifestStatus.PENDING,
-                        is_current=True,
+                entries = list((await session.scalars(query)).all())
+                if not entries:
+                    break
+                for entry in entries:
+                    await _raise_if_cancelled(cancel_check)
+                    last_object_id = entry.object_id
+                    paths = _paths(entry)
+                    if paths is None:
+                        skipped += 1
+                        await _report_progress(
+                            progress_callback,
+                            library_id,
+                            source_scan_run_id,
+                            generated,
+                            unchanged,
+                            skipped,
+                            failed,
+                            0,
+                        )
+                        continue
+                    try:
+                        async with session.begin_nested():
+                            outcome = await self._reconcile_entry(
+                                session,
+                                library_id=library.id,
+                                entry=entry,
+                                source_version=run.snapshot_revision,
+                                root=root,
+                                prefix=prefix,
+                            )
+                        await session.commit()
+                    except (OSError, StrmManifestError):
+                        failed += 1
+                        continue
+                    if outcome == "generated":
+                        generated += 1
+                    else:
+                        unchanged += 1
+                    await _report_progress(
+                        progress_callback,
+                        library_id,
+                        source_scan_run_id,
+                        generated,
+                        unchanged,
+                        skipped,
+                        failed,
+                        0,
                     )
-                    session.add(manifest)
-                    await session.flush()
-                else:
-                    manifest.cloud_directory_id = entry.parent_id
-                    manifest.cloud_relative_path = cloud_path
-                    manifest.local_relative_path = local_path
-                    manifest.size_bytes = entry.size_bytes
-                    manifest.source_version = run.snapshot_revision
-                    manifest.status = StrmManifestStatus.PENDING
-                try:
-                    content = (
-                        f"{prefix}{quote(manifest.manifest_id, safe='')}\n".encode()
-                    )
-                    written = _write(root, local_path, content)
-                except (OSError, StrmManifestError):
-                    failed += 1
-                    continue
-                manifest.status = StrmManifestStatus.VERIFIED
-                manifest.last_verified_at = datetime.now(UTC)
-                if written:
-                    generated += 1
-                else:
-                    unchanged += 1
-            await session.commit()
         return StrmGenerationSummary(
             library_id, source_scan_run_id, generated, unchanged, skipped, failed
         )
@@ -213,6 +219,8 @@ class StrmManifestService:
         output_root: Path | str,
         playback_url_prefix: str,
         retire_removed: bool = True,
+        cancel_check: CancelCheck | None = None,
+        progress_callback: ProgressCallback | None = None,
     ) -> StrmGenerationSummary:
         """Reconcile only file-level changes from one complete current scan."""
 
@@ -223,6 +231,8 @@ class StrmManifestService:
             playback_url_prefix=playback_url_prefix,
             include_generation=True,
             retire_removed=retire_removed,
+            cancel_check=cancel_check,
+            progress_callback=progress_callback,
         )
 
     async def cleanup(
@@ -232,6 +242,8 @@ class StrmManifestService:
         source_scan_run_id: str,
         output_root: Path | str,
         playback_url_prefix: str,
+        cancel_check: CancelCheck | None = None,
+        progress_callback: ProgressCallback | None = None,
     ) -> StrmGenerationSummary:
         """Retire only manifest entries removed by a complete current scan."""
 
@@ -242,6 +254,8 @@ class StrmManifestService:
             playback_url_prefix=playback_url_prefix,
             include_generation=False,
             retire_removed=True,
+            cancel_check=cancel_check,
+            progress_callback=progress_callback,
         )
 
     async def _reconcile(
@@ -253,81 +267,109 @@ class StrmManifestService:
         playback_url_prefix: str,
         include_generation: bool,
         retire_removed: bool,
+        cancel_check: CancelCheck | None,
+        progress_callback: ProgressCallback | None,
     ) -> StrmGenerationSummary:
         if not _valid_id(library_id) or not _valid_id(source_scan_run_id):
             raise StrmManifestError("invalid_request")
         prefix = _safe_prefix(playback_url_prefix)
-        root = _safe_root(output_root)
+        root = _safe_root(output_root, self._managed_output_roots)
         generated = unchanged = skipped = failed = retired = 0
         async with self._session_factory() as session:
             library, run = await self._validated_current_run(
                 session, library_id, source_scan_run_id
             )
-            changes = list(
-                (
-                    await session.scalars(
-                        select(LibraryScanDiff)
-                        .where(
-                            LibraryScanDiff.scan_run_id == run.id,
-                            LibraryScanDiff.object_type == "file",
-                        )
-                        .order_by(LibraryScanDiff.object_id)
+            last_object_id: str | None = None
+            while True:
+                await _raise_if_cancelled(cancel_check)
+                query = (
+                    select(LibraryScanDiff)
+                    .where(
+                        LibraryScanDiff.scan_run_id == run.id,
+                        LibraryScanDiff.object_type == "file",
                     )
-                ).all()
-            )
-            # Process each diff in its own transaction boundary. A failure for
-            # one file must not roll back already verified local files.
-            for change in changes:
-                if change.change_kind == "removed":
-                    if not retire_removed:
+                    .order_by(LibraryScanDiff.object_id)
+                    .limit(_RECONCILE_BATCH_SIZE)
+                )
+                if last_object_id is not None:
+                    query = query.where(LibraryScanDiff.object_id > last_object_id)
+                changes = list((await session.scalars(query)).all())
+                if not changes:
+                    break
+                for change in changes:
+                    await _raise_if_cancelled(cancel_check)
+                    last_object_id = change.object_id
+                    if change.change_kind == "removed":
+                        if not retire_removed:
+                            continue
+                        try:
+                            async with session.begin_nested():
+                                did_retire = await self._retire_removed(
+                                    session,
+                                    library_id=library.id,
+                                    object_id=change.object_id,
+                                    root=root,
+                                    prefix=prefix,
+                                )
+                            await session.commit()
+                        except (OSError, StrmManifestError):
+                            failed += 1
+                        else:
+                            retired += int(did_retire)
+                        await _report_progress(
+                            progress_callback,
+                            library_id,
+                            source_scan_run_id,
+                            generated,
+                            unchanged,
+                            skipped,
+                            failed,
+                            retired,
+                        )
+                        continue
+                    if not include_generation:
+                        continue
+                    entry = await session.scalar(
+                        select(LibraryScanEntry).where(
+                            LibraryScanEntry.scan_run_id == run.id,
+                            LibraryScanEntry.object_type == "file",
+                            LibraryScanEntry.object_id == change.object_id,
+                            LibraryScanEntry.is_directory.is_(False),
+                        )
+                    )
+                    if entry is None:
+                        failed += 1
                         continue
                     try:
                         async with session.begin_nested():
-                            did_retire = await self._retire_removed(
+                            outcome = await self._reconcile_entry(
                                 session,
                                 library_id=library.id,
-                                object_id=change.object_id,
+                                entry=entry,
+                                source_version=run.snapshot_revision,
                                 root=root,
                                 prefix=prefix,
                             )
-                    except StrmManifestError:
+                        await session.commit()
+                    except (OSError, StrmManifestError):
                         failed += 1
                     else:
-                        retired += int(did_retire)
-                    continue
-                if not include_generation:
-                    continue
-                entry = await session.scalar(
-                    select(LibraryScanEntry).where(
-                        LibraryScanEntry.scan_run_id == run.id,
-                        LibraryScanEntry.object_type == "file",
-                        LibraryScanEntry.object_id == change.object_id,
-                        LibraryScanEntry.is_directory.is_(False),
+                        if outcome == "generated":
+                            generated += 1
+                        elif outcome == "unchanged":
+                            unchanged += 1
+                        else:
+                            skipped += 1
+                    await _report_progress(
+                        progress_callback,
+                        library_id,
+                        source_scan_run_id,
+                        generated,
+                        unchanged,
+                        skipped,
+                        failed,
+                        retired,
                     )
-                )
-                if entry is None:
-                    failed += 1
-                    continue
-                try:
-                    async with session.begin_nested():
-                        outcome = await self._reconcile_entry(
-                            session,
-                            library_id=library.id,
-                            entry=entry,
-                            source_version=run.snapshot_revision,
-                            root=root,
-                            prefix=prefix,
-                        )
-                except StrmManifestError:
-                    failed += 1
-                else:
-                    if outcome == "generated":
-                        generated += 1
-                    elif outcome == "unchanged":
-                        unchanged += 1
-                    else:
-                        skipped += 1
-            await session.commit()
         return StrmGenerationSummary(
             library_id,
             source_scan_run_id,
@@ -492,7 +534,10 @@ def _paths(entry: LibraryScanEntry) -> tuple[str, str] | None:
 def _write(root: Path, relative_path: str, content: bytes) -> bool:
     target = root.joinpath(*PurePosixPath(relative_path).parts)
     parent = target.parent
+    _assert_no_symlink_components(parent)
+    _within(root, parent.resolve(strict=False))
     parent.mkdir(parents=True, exist_ok=True)
+    _assert_no_symlink_components(parent)
     resolved_parent = parent.resolve(strict=True)
     _within(root, resolved_parent)
     if target.is_symlink():
@@ -526,16 +571,19 @@ def _remove_managed(
     if not _valid_relative_path(relative_path):
         raise StrmManifestError("invalid_managed_path")
     target = root.joinpath(*PurePosixPath(relative_path).parts)
-    if not target.exists():
-        if tolerate_missing:
-            return
-        return
+    _assert_no_symlink_components(target.parent)
     try:
         resolved_parent = target.parent.resolve(strict=True)
     except OSError as error:
         raise StrmManifestError("managed_parent_not_safe") from error
     _within(root, resolved_parent)
-    if target.is_symlink() or not target.is_file():
+    if target.is_symlink():
+        raise StrmManifestError("managed_file_not_safe")
+    if not target.exists():
+        if tolerate_missing:
+            return
+        return
+    if not target.is_file():
         raise StrmManifestError("managed_file_not_safe")
     try:
         actual = target.read_bytes()
@@ -546,9 +594,18 @@ def _remove_managed(
     target.unlink()
 
 
-def _safe_root(value: Path | str) -> Path:
-    root = Path(value)
+def _safe_root(
+    value: Path | str,
+    managed_output_roots: Collection[Path] = (),
+) -> Path:
+    root = _absolute_path(Path(value))
+    _assert_no_symlink_components(root)
+    if managed_output_roots and not any(
+        _same_path(root, allowed) for allowed in managed_output_roots
+    ):
+        raise StrmManifestError("output_root_not_allowed")
     root.mkdir(parents=True, exist_ok=True)
+    _assert_no_symlink_components(root)
     resolved = root.resolve(strict=True)
     if not resolved.is_dir():
         raise StrmManifestError("output_root_not_directory")
@@ -569,6 +626,8 @@ def _safe_prefix(value: object) -> str:
     if (
         parsed.scheme not in {"http", "https"}
         or not parsed.netloc
+        or parsed.username
+        or parsed.password
         or parsed.query
         or parsed.fragment
     ):
@@ -598,7 +657,59 @@ def _valid_relative_path(value: object) -> bool:
     return (
         not path.is_absolute()
         and path.as_posix() == value
-        and all(part not in {"", ".", ".."} for part in path.parts)
+        and all(
+            part not in {"", ".", ".."} and ":" not in part
+            for part in path.parts
+        )
+    )
+
+
+def _absolute_path(value: Path) -> Path:
+    """Make a lexical absolute path without following symlinks."""
+
+    return Path(os.path.abspath(os.fspath(value)))
+
+
+def _same_path(left: Path, right: Path) -> bool:
+    return os.path.normcase(os.fspath(left)) == os.path.normcase(os.fspath(right))
+
+
+def _assert_no_symlink_components(path: Path) -> None:
+    current = Path(path.anchor) if path.anchor else Path.cwd()
+    parts = path.parts[1:] if path.anchor else path.parts
+    for part in parts:
+        current /= part
+        if current.is_symlink():
+            raise StrmManifestError("symlink_path_component")
+
+
+async def _raise_if_cancelled(cancel_check: CancelCheck | None) -> None:
+    if cancel_check is not None and await cancel_check():
+        raise StrmManifestError("strm_operation_cancelled")
+
+
+async def _report_progress(
+    progress_callback: ProgressCallback | None,
+    library_id: str,
+    source_scan_run_id: str,
+    generated: int,
+    unchanged: int,
+    skipped: int,
+    failed: int,
+    retired: int,
+) -> None:
+    if progress_callback is None:
+        return
+    await progress_callback(
+        StrmGenerationSummary(
+            library_id,
+            source_scan_run_id,
+            generated,
+            unchanged,
+            skipped,
+            failed,
+            retired,
+        )
     )
 
 
