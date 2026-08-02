@@ -108,7 +108,20 @@ class TaskWorker:
         except _LeaseClaimLost:
             await self._mark_lease_lost(lease)
             return True
-        task = await self._tasks.finish_submission(lease, result)
+        except asyncio.CancelledError:
+            await self._mark_lease_lost(lease)
+            raise
+        except Exception:  # noqa: BLE001 - keep a failed claim recoverable
+            await self._mark_lease_lost(lease)
+            return True
+        try:
+            task = await self._tasks.finish_submission(lease, result)
+        except asyncio.CancelledError:
+            await self._mark_lease_lost(lease)
+            raise
+        except Exception:  # noqa: BLE001 - keep a failed claim recoverable
+            await self._mark_lease_lost(lease)
+            return True
         if task is None:
             return True
         state = task.state
@@ -155,14 +168,20 @@ class TaskWorker:
                 return recovered
             recovered += 1
             if lease.action != TaskAction.OFFLINE_DOWNLOAD:
-                await self._tasks.finish_submission(
-                    lease,
-                    SubmissionResult(
-                        status=RemoteStatus.FAILED,
-                        error_code="push_kind_unsupported",
-                        error_message="share push is not supported",
-                    ),
-                )
+                try:
+                    await self._tasks.finish_submission(
+                        lease,
+                        SubmissionResult(
+                            status=RemoteStatus.FAILED,
+                            error_code="push_kind_unsupported",
+                            error_message="share push is not supported",
+                        ),
+                    )
+                except asyncio.CancelledError:
+                    await self._mark_lease_lost(lease)
+                    raise
+                except Exception:  # noqa: BLE001 - recovery retries after expiry
+                    await self._mark_lease_lost(lease)
                 continue
 
             remote_status = None
@@ -182,13 +201,28 @@ class TaskWorker:
                 except _LeaseClaimLost:
                     await self._mark_lease_lost(lease)
                     continue
+                except asyncio.CancelledError:
+                    await self._mark_lease_lost(lease)
+                    raise
                 except Exception:  # noqa: BLE001 - status failure is uncertain
                     remote_status = None
-            await self._tasks.finish_recovery(lease, remote_status)
+            try:
+                await self._tasks.finish_recovery(lease, remote_status)
+            except asyncio.CancelledError:
+                await self._mark_lease_lost(lease)
+                raise
+            except Exception:  # noqa: BLE001 - recovery retries after expiry
+                await self._mark_lease_lost(lease)
 
     async def run_forever(self, stop_event: asyncio.Event, *, interval: float = 1.0):
         while not stop_event.is_set():
-            await self.run_once()
+            try:
+                await self.run_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001
+                # A transient claim/database error must not kill the worker loop.
+                pass
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=interval)
             except TimeoutError:
@@ -354,7 +388,9 @@ class TaskWorker:
 
         try:
             task = await self._tasks.mark_lease_lost(lease)
-        except Exception:  # noqa: BLE001 - recovery will retry after lease expiry
+        except asyncio.CancelledError:
+            return
+        except Exception:  # noqa: BLE001 - recovery retries after expiry
             return
         if task is None:
             return

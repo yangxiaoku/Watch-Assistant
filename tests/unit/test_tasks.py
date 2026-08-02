@@ -112,6 +112,20 @@ def test_recovery_requires_complete_file_observation_for_available():
     assert task.state is TaskState.AVAILABLE
 
 
+def test_restart_recovery_does_not_clear_a_live_lease():
+    task = make_task(state=TaskState.SUBMITTING)
+    task.lease_owner = "live-worker"
+    task.lease_token = "live-token"
+    task.lease_expires_at = datetime.now(UTC) + timedelta(minutes=1)
+
+    recover_after_restart(task, RemoteStatus.ACCEPTED)
+
+    assert task.state is TaskState.SUBMITTING
+    assert task.lease_owner == "live-worker"
+    assert task.lease_token == "live-token"
+    assert task.lease_expires_at is not None
+
+
 def test_duplicate_resource_reuses_recent_task():
     existing = make_task(state=TaskState.SUBMITTED, age_hours=2)
 
