@@ -40,14 +40,14 @@ export interface ProwlarrSettingsResponse {
   api_key_source: ProwlarrSettingsSource;
   last_updated_at: string | null;
   revision: number;
-  health_state: ProwlarrHealthState | null;
-  health_message_code: string | null;
-  health_message_zh: string | null;
-  health_reason_code: string | null;
-  health_reason_zh: string | null;
-  health_checked_at: string | null;
-  health_retry_after_seconds: number | null;
-  health_consecutive_failures: number;
+  health_state?: ProwlarrHealthState | null;
+  health_message_code?: string | null;
+  health_message_zh?: string | null;
+  health_reason_code?: string | null;
+  health_reason_zh?: string | null;
+  health_checked_at?: string | null;
+  health_retry_after_seconds?: number | null;
+  health_consecutive_failures?: number;
 }
 
 export interface PatchProwlarrSettingsRequest {

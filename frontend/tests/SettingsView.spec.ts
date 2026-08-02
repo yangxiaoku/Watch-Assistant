@@ -154,6 +154,54 @@ describe("SettingsView", () => {
     expect(statusText.match(/未启用/g)?.length).toBe(1);
   });
 
+  it("shows an enabled but unverified Prowlarr source as unverified", async () => {
+    const api = makeApi({
+      prowlarrSettings: vi.fn().mockResolvedValue({
+        ...prowlarrSettings,
+        source: "managed",
+        enabled: true,
+        configured: true,
+        base_url: "http://prowlarr:9696",
+        api_key_configured: true,
+        api_key_source: "managed",
+        health_state: "unverified",
+        health_reason_zh: "Prowlarr 配置已保存，尚未完成只读连接验证。",
+        health_retry_after_seconds: null,
+      }),
+    });
+    const wrapper = mount(SettingsView, { props: { api, initialSection: "prowlarr" } });
+    await flushPromises();
+
+    expect(wrapper.get(".prowlarr-status-line").text()).toContain("配置未验证");
+    expect(wrapper.get(".prowlarr-status-line").text()).not.toContain("已配置");
+    expect(wrapper.get(".prowlarr-status-line > span:last-child").classes()).toContain("status-degraded");
+    expect(wrapper.get(".prowlarr-health-note").text()).toContain("尚未完成只读连接验证");
+  });
+
+  it("shows safe Prowlarr backoff reason and retry time without exposing the API Key", async () => {
+    const api = makeApi({
+      prowlarrSettings: vi.fn().mockResolvedValue({
+        ...prowlarrSettings,
+        source: "managed",
+        enabled: true,
+        configured: true,
+        base_url: "http://prowlarr:9696",
+        api_key_configured: true,
+        api_key_source: "managed",
+        health_state: "backoff",
+        health_reason_zh: "Prowlarr 当前受到限流，系统将在稍后重试。",
+        health_retry_after_seconds: 42,
+      }),
+    });
+    const wrapper = mount(SettingsView, { props: { api, initialSection: "prowlarr" } });
+    await flushPromises();
+
+    expect(wrapper.get(".prowlarr-status-line").text()).toContain("暂时退避");
+    expect(wrapper.get(".prowlarr-health-note").text()).toContain("42 秒后重试");
+    expect(wrapper.get(".prowlarr-health-note").text()).toContain("受到限流");
+    expect(wrapper.html()).not.toContain("fixture-api-key");
+  });
+
   it("keeps all verified 115 QR device types available", () => {
     expect(p115DeviceOptions).toHaveLength(18);
     expect(p115DeviceOptions.map((option) => option.value)).toEqual([
