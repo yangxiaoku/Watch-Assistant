@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
+import inspect
 import json
 import uuid
 from collections.abc import Awaitable, Callable, Collection
@@ -11,6 +13,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select, update
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from watch_assistant.library_models import (
@@ -19,8 +22,14 @@ from watch_assistant.library_models import (
     LibraryScanRun,
     MediaLibrary,
 )
+from watch_assistant.models import StrmOperation, StrmOperationKind, StrmOperationStatus
 from watch_assistant.services.empty_directory_cleanup import (
     EmptyDirectoryCleanupStatus,
+)
+from watch_assistant.services.strm_manifest import (
+    StrmManifestError,
+    _commit_fenced,
+    _LeaseFence,
 )
 from watch_assistant.services.strm_scope import has_newer_unsettled_scan
 
@@ -34,8 +43,9 @@ class EmptyDirectoryCleanupPlanError(ValueError):
 
 
 EmptyDirectoryExecutor = Callable[
-    [dict[str, str]], Awaitable[EmptyDirectoryCleanupStatus]
+    ..., Awaitable[EmptyDirectoryCleanupStatus]
 ]
+LeaseCheck = Callable[[], Awaitable[bool]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -202,6 +212,8 @@ class EmptyDirectoryCleanupPlanService:
         executor: EmptyDirectoryExecutor | None,
         system_created_directory_ids: Collection[str] = (),
         now: datetime | None = None,
+        lease_check: LeaseCheck | None = None,
+        operation_id: str | None = None,
     ) -> EmptyDirectoryCleanupApplyView:
         if (
             not _valid_id(plan_id)
@@ -212,14 +224,19 @@ class EmptyDirectoryCleanupPlanService:
             or not all(char in "0123456789abcdef" for char in digest.lower())
             or confirm is not True
             or not _valid_id(idempotency_key)
+            or (operation_id is not None and not _valid_id(operation_id))
         ):
             raise EmptyDirectoryCleanupPlanError("invalid_request")
         if executor is None:
             raise EmptyDirectoryCleanupPlanError("empty_directory_cleanup_unavailable")
+        if operation_id is not None and lease_check is None:
+            raise EmptyDirectoryCleanupPlanError("strm_operation_lease_required")
         system_created = frozenset(system_created_directory_ids)
         if any(not _valid_id(item) for item in system_created):
             raise EmptyDirectoryCleanupPlanError("invalid_cleanup_scope")
         current_time = _utc(now)
+        await _raise_if_lease_lost(lease_check)
+        fence = _LeaseFence(operation_id, lease_check)
         await self.recover_stale_applying(now=current_time)
         async with self._session_factory() as session:
             plan = await session.get(EmptyDirectoryCleanupPlan, plan_id)
@@ -284,6 +301,8 @@ class EmptyDirectoryCleanupPlanService:
                 ):
                     raise EmptyDirectoryCleanupPlanError("empty_cleanup_changed")
 
+            await _bind_fence(fence, session)
+            await _assert_fence_current(fence, session)
             applying_revision = expected_revision + 1
             result = await session.execute(
                 update(EmptyDirectoryCleanupPlan)
@@ -302,20 +321,37 @@ class EmptyDirectoryCleanupPlanService:
                         "empty_cleanup_in_progress"
                     )
                 raise EmptyDirectoryCleanupPlanError("plan_revision_changed")
-            await session.commit()
+            try:
+                await _commit_fenced(session, fence)
+            except asyncio.CancelledError:
+                await asyncio.shield(session.rollback())
+                raise
+            except StrmManifestError as error:
+                await session.rollback()
+                raise EmptyDirectoryCleanupPlanError(str(error)) from None
+            except SQLAlchemyError:
+                await asyncio.shield(session.rollback())
+                raise EmptyDirectoryCleanupPlanError("empty_cleanup_uncertain") from None
 
         deleted = 0
+        remote_side_effect_started = False
         try:
             for candidate in candidates:
                 async with self._session_factory() as session:
                     await self._validated_current_run(
                         session, plan.library_id, plan.source_scan_run_id
                     )
+                    await _assert_fence_current(fence, session)
+                await _raise_if_lease_lost(lease_check)
                 await self._heartbeat_claim(
-                    plan_id, applying_revision, now=datetime.now(UTC)
+                    plan_id,
+                    applying_revision,
+                    now=datetime.now(UTC),
+                    fence=fence,
                 )
                 try:
-                    result = await executor(candidate)
+                    remote_side_effect_started = True
+                    result = await _execute_candidate(executor, candidate, lease_check)
                 except Exception as error:  # noqa: BLE001 - remote detail stays private
                     del error
                     raise EmptyDirectoryCleanupPlanError(
@@ -330,15 +366,48 @@ class EmptyDirectoryCleanupPlanService:
                 else:
                     raise EmptyDirectoryCleanupPlanError("empty_cleanup_failed")
                 await self._heartbeat_claim(
-                    plan_id, applying_revision, now=datetime.now(UTC)
+                    plan_id,
+                    applying_revision,
+                    now=datetime.now(UTC),
+                    fence=fence,
                 )
             async with self._session_factory() as session:
                 await self._validated_current_run(
                     session, plan.library_id, plan.source_scan_run_id
                 )
-        except EmptyDirectoryCleanupPlanError:
-            await self._invalidate_claim(plan_id, applying_revision)
+                await _assert_fence_current(fence, session)
+            await _raise_if_lease_lost(lease_check)
+        except asyncio.CancelledError:
+            await self._invalidate_after_failure(
+                plan_id,
+                applying_revision,
+                fence=fence,
+                lease_lost=False,
+            )
+            if remote_side_effect_started:
+                raise EmptyDirectoryCleanupPlanError("empty_cleanup_uncertain") from None
             raise
+        except EmptyDirectoryCleanupPlanError as error:
+            lease_lost = error.code == "strm_operation_lease_lost"
+            if lease_lost and remote_side_effect_started:
+                raise EmptyDirectoryCleanupPlanError(
+                    "empty_cleanup_uncertain"
+                ) from None
+            await self._invalidate_after_failure(
+                plan_id,
+                applying_revision,
+                fence=fence,
+                lease_lost=lease_lost,
+            )
+            raise
+        except SQLAlchemyError:
+            await self._invalidate_after_failure(
+                plan_id,
+                applying_revision,
+                fence=fence,
+                lease_lost=False,
+            )
+            raise EmptyDirectoryCleanupPlanError("empty_cleanup_uncertain") from None
 
         async with self._session_factory() as session:
             plan = await session.get(EmptyDirectoryCleanupPlan, plan_id)
@@ -350,11 +419,24 @@ class EmptyDirectoryCleanupPlanService:
             plan.revision += 1
             plan.applied_idempotency_key = idempotency_key
             plan.applied_deleted = deleted
-            await session.commit()
+            await self._commit_applied(
+                session,
+                fence,
+                plan_id=plan_id,
+                revision=plan.revision,
+                idempotency_key=idempotency_key,
+                deleted=deleted,
+            )
             await session.refresh(plan)
             return EmptyDirectoryCleanupApplyView(_view(plan), deleted)
 
-    async def _invalidate_claim(self, plan_id: str, applying_revision: int) -> None:
+    async def _invalidate_claim(
+        self,
+        plan_id: str,
+        applying_revision: int,
+        *,
+        fence: _LeaseFence | None = None,
+    ) -> None:
         async with self._session_factory() as session:
             plan = await session.get(EmptyDirectoryCleanupPlan, plan_id)
             if (
@@ -364,10 +446,15 @@ class EmptyDirectoryCleanupPlanService:
             ):
                 plan.status = "invalidated"
                 plan.revision += 1
-                await session.commit()
+                await _commit_fenced(session, fence or _LeaseFence(None, None))
 
     async def _heartbeat_claim(
-        self, plan_id: str, applying_revision: int, *, now: datetime
+        self,
+        plan_id: str,
+        applying_revision: int,
+        *,
+        now: datetime,
+        fence: _LeaseFence | None = None,
     ) -> None:
         current_time = _utc(now)
         async with self._session_factory() as session:
@@ -383,7 +470,95 @@ class EmptyDirectoryCleanupPlanService:
             if result.rowcount != 1:
                 await session.rollback()
                 raise EmptyDirectoryCleanupPlanError("empty_cleanup_in_progress")
-            await session.commit()
+            try:
+                await _commit_fenced(session, fence or _LeaseFence(None, None))
+            except StrmManifestError as error:
+                await session.rollback()
+                raise EmptyDirectoryCleanupPlanError(str(error)) from None
+            except SQLAlchemyError:
+                await asyncio.shield(session.rollback())
+                raise EmptyDirectoryCleanupPlanError("empty_cleanup_uncertain") from None
+
+    async def _invalidate_after_failure(
+        self,
+        plan_id: str,
+        applying_revision: int,
+        *,
+        fence: _LeaseFence,
+        lease_lost: bool,
+    ) -> None:
+        if lease_lost:
+            return
+        try:
+            await asyncio.shield(
+                self._invalidate_claim(
+                    plan_id, applying_revision, fence=fence
+                )
+            )
+        except StrmManifestError as error:
+            if str(error) == "strm_operation_lease_lost":
+                raise EmptyDirectoryCleanupPlanError(str(error)) from None
+            raise EmptyDirectoryCleanupPlanError("empty_cleanup_uncertain") from None
+        except SQLAlchemyError:
+            raise EmptyDirectoryCleanupPlanError("empty_cleanup_uncertain") from None
+
+    async def _commit_applied(
+        self,
+        session: AsyncSession,
+        fence: _LeaseFence,
+        *,
+        plan_id: str,
+        revision: int,
+        idempotency_key: str,
+        deleted: int,
+    ) -> None:
+        try:
+            await _commit_fenced(session, fence)
+        except asyncio.CancelledError:
+            await asyncio.shield(session.rollback())
+            if await self._observe_plan_commit(
+                plan_id,
+                revision=revision,
+                idempotency_key=idempotency_key,
+                deleted=deleted,
+            ):
+                return
+            raise EmptyDirectoryCleanupPlanError("empty_cleanup_uncertain") from None
+        except StrmManifestError:
+            await asyncio.shield(session.rollback())
+            raise EmptyDirectoryCleanupPlanError("empty_cleanup_uncertain") from None
+        except SQLAlchemyError:
+            await asyncio.shield(session.rollback())
+            observed = await self._observe_plan_commit(
+                plan_id,
+                revision=revision,
+                idempotency_key=idempotency_key,
+                deleted=deleted,
+            )
+            if observed:
+                return
+            raise EmptyDirectoryCleanupPlanError("empty_cleanup_uncertain") from None
+
+    async def _observe_plan_commit(
+        self,
+        plan_id: str,
+        *,
+        revision: int,
+        idempotency_key: str,
+        deleted: int,
+    ) -> bool:
+        try:
+            async with self._session_factory() as session:
+                plan = await session.get(EmptyDirectoryCleanupPlan, plan_id)
+                return bool(
+                    plan is not None
+                    and plan.status == "applied"
+                    and plan.revision == revision
+                    and plan.applied_idempotency_key == idempotency_key
+                    and int(plan.applied_deleted or 0) == deleted
+                )
+        except SQLAlchemyError:
+            return False
 
     async def recover_stale_applying(
         self,
@@ -411,6 +586,10 @@ class EmptyDirectoryCleanupPlanService:
             recovered = 0
             for plan in plans:
                 if _utc(plan.updated_at) > cutoff:
+                    continue
+                if await _has_live_cleanup_operation(
+                    session, plan.library_id, current_time
+                ):
                     continue
                 result = await session.execute(
                     update(EmptyDirectoryCleanupPlan)
@@ -569,6 +748,66 @@ def _utc(value: datetime | None) -> datetime:
     if value is None:
         return datetime.now(UTC)
     return value.astimezone(UTC) if value.tzinfo else value.replace(tzinfo=UTC)
+
+
+async def _execute_candidate(
+    executor: EmptyDirectoryExecutor,
+    candidate: dict[str, str],
+    lease_check: LeaseCheck | None,
+) -> EmptyDirectoryCleanupStatus:
+    if lease_check is None or not _accepts_lease_check(executor):
+        return await executor(candidate)
+    return await executor(candidate, lease_check=lease_check)
+
+
+def _accepts_lease_check(executor: EmptyDirectoryExecutor) -> bool:
+    try:
+        parameters = inspect.signature(executor).parameters.values()
+    except (TypeError, ValueError):
+        return True
+    return any(
+        parameter.name == "lease_check"
+        or parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters
+    )
+
+
+async def _raise_if_lease_lost(lease_check: LeaseCheck | None) -> None:
+    if lease_check is not None and not await lease_check():
+        raise EmptyDirectoryCleanupPlanError("strm_operation_lease_lost")
+
+
+async def _bind_fence(fence: _LeaseFence, session: AsyncSession) -> None:
+    try:
+        await fence.bind(session)
+    except StrmManifestError as error:
+        raise EmptyDirectoryCleanupPlanError(str(error)) from None
+
+
+async def _assert_fence_current(
+    fence: _LeaseFence, session: AsyncSession
+) -> None:
+    try:
+        await fence.assert_current(session)
+    except StrmManifestError as error:
+        raise EmptyDirectoryCleanupPlanError(str(error)) from None
+
+
+async def _has_live_cleanup_operation(
+    session: AsyncSession, library_id: str, now: datetime
+) -> bool:
+    operation_id = await session.scalar(
+        select(StrmOperation.id)
+        .where(
+            StrmOperation.library_id == library_id,
+            StrmOperation.kind == StrmOperationKind.CLEANUP,
+            StrmOperation.status == StrmOperationStatus.RUNNING,
+            StrmOperation.lease_expires_at.is_not(None),
+            StrmOperation.lease_expires_at > now,
+        )
+        .limit(1)
+    )
+    return operation_id is not None
 
 
 __all__ = [

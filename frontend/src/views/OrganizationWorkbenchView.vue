@@ -4,6 +4,7 @@ import { computed, onMounted, ref } from "vue";
 import { ApiClient, ApiError, focusFirstFieldError } from "../api";
 import ConfirmDialog from "../components/ConfirmDialog.vue";
 import { describeUiError } from "../errorCatalog";
+import { diagnosticCode, diagnosticReference } from "../uiSafety";
 import type { OrganizationExecutionBlocker, OrganizationOperationResponse, OrganizationPlanStatus, OrganizationPlanSummary } from "../types";
 
 const props = withDefaults(defineProps<{ api: ApiClient; enabled?: boolean; executionEnabled?: boolean }>(), {
@@ -66,7 +67,7 @@ const executionDialogDetails = computed(() => {
   return [
     `计划版本：${plan.revision}`,
     `预计移动：${plan.executable_action_count} 项，共 ${plan.action_count} 个预览动作`,
-    `前置条件：${plan.precondition_count} 项；计划摘要：${plan.plan_hash.slice(0, 8)}…`,
+    `前置条件：${plan.precondition_count} 项；执行前会再次核对计划摘要`,
   ];
 });
 const executionDialogConfirmLabel = computed(() => pendingExecution.value?.kind === "batch" ? "确认并提交" : "确认并排队");
@@ -311,7 +312,8 @@ async function confirmAndQueueCurrentPage() {
     if (accepted) notice.value = `已确认并提交 ${accepted} 个整理计划，后台正在执行${skipped ? `，跳过 ${skipped} 个待搜索或复核计划` : ""}`;
     else if (skipped) notice.value = `当前页没有新的整理操作，已跳过 ${skipped} 个待搜索或复核计划`;
     if (rejected.length) {
-      error.value = `${rejected.length} 个计划未提交：${rejected[0].message}`;
+      const rejectedCode = rejected[0].error_code;
+      error.value = `${rejected.length} 个计划未提交：${rejectedCode ? describeUiError(rejectedCode, 409).message : "当前计划状态已变化，请刷新后重试。"}`;
     }
   } catch (exception) {
     focusFirstFieldError(exception);
@@ -418,7 +420,7 @@ onMounted(() => {
       <div class="organization-list" aria-label="计划列表">
         <button v-if="executionEnabled && activeStatus === 'needs_review'" class="primary-button organization-batch-action" type="button" :disabled="loading || busy" @click="requestBatchExecution"><ListChecks :size="16" />确认并整理当前页（{{ executableItems.length }}）</button>
         <button v-for="plan in items" :key="plan.plan_id" type="button" class="organization-plan-row" :class="{ active: selected?.plan_id === plan.plan_id }" @click="selectPlan(plan)">
-          <span class="organization-plan-row-main"><strong>{{ plan.alias || `计划 ${plan.plan_id.slice(0, 8)}` }}</strong><small>{{ statusLabel[plan.status] }}</small></span>
+          <span class="organization-plan-row-main"><strong>{{ plan.alias || "未命名计划" }}</strong><small>{{ statusLabel[plan.status] }}</small></span>
           <span class="organization-plan-row-meta"><span>版本 {{ plan.revision }}</span><ChevronRight :size="16" /></span>
         </button>
         <button v-if="nextCursor !== null" class="secondary-button organization-more" type="button" :disabled="loading || busy" @click="loadPlans(nextCursor!)">加载下一页</button>
@@ -427,7 +429,7 @@ onMounted(() => {
       <article v-if="selected" class="organization-preview">
         <div class="organization-preview-heading"><div><p class="eyebrow">整理计划预览</p><h2>{{ selected.alias || "未命名计划" }}</h2></div><span class="organization-status">{{ statusLabel[selected.status] }}</span></div>
         <dl class="organization-facts">
-          <div><dt>计划标识</dt><dd>{{ selected.plan_id }}</dd></div>
+          <div><dt>计划状态</dt><dd>当前计划已选中</dd></div>
           <div><dt>版本</dt><dd>{{ selected.revision }}</dd></div>
           <div><dt>来源条目</dt><dd>{{ selected.source_count }}</dd></div>
           <div><dt>预览动作</dt><dd>{{ selected.action_count }}</dd></div>
@@ -435,6 +437,7 @@ onMounted(() => {
           <div><dt>待复核动作</dt><dd>{{ selected.review_action_count }}</dd></div>
           <div><dt>前置条件</dt><dd>{{ selected.precondition_count }}</dd></div>
         </dl>
+        <details class="organization-diagnostics"><summary>查看诊断标识</summary><small>计划标识：{{ diagnosticReference(selected.plan_id) }}</small><small>计划摘要：{{ diagnosticReference(selected.plan_hash) }}</small></details>
         <section v-if="!selected.can_execute" class="organization-execution-blockers" aria-live="polite">
           <strong>当前不能执行</strong>
           <ul><li v-for="blocker in selectedExecutionBlockers" :key="`${blocker.kind}-${blocker.code}`"><span>{{ blocker.message_zh }}</span><small>下一步：{{ blocker.next_step_zh }}</small></li></ul>
@@ -460,6 +463,7 @@ onMounted(() => {
           <span v-if="operation.status === 'failed'">{{ operationFailureMessage(operation.error_code) }}</span>
           <span v-else-if="operation.status === 'uncertain'">{{ operationFailureMessage(operation.error_code) }}</span>
           <span v-else-if="operation.status === 'organizing'">后台正在执行，页面刷新后仍会保留当前状态。</span>
+          <details v-if="operation.error_code" class="diagnostic-details"><summary>诊断信息</summary><small>错误码：{{ diagnosticCode(operation.error_code) }}</small><small>操作标识：{{ diagnosticReference(operation.operation_id) }}</small></details>
         </div>
         <div v-if="selectedCanEdit || (selected.status === 'planned' && executionEnabled)" class="organization-actions">
           <button v-if="selectedIsReviewable && executionEnabled && selectedCanExecute" class="primary-button" type="button" :disabled="busy" @click="requestExecution(selected)"><Play :size="16" />确认并开始整理</button>

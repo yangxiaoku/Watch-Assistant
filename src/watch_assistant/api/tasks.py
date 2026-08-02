@@ -127,7 +127,7 @@ async def reconcile_task(
     service: TaskServiceDependency,
 ) -> TaskReconciliationResponse:
     adapter = getattr(raw_request.app.state, "task_adapter", None)
-    if adapter is None or not callable(getattr(adapter, "get_status", None)):
+    if adapter is None or not callable(getattr(adapter, "get_status_for_task", None)):
         raise HTTPException(status_code=503, detail="reconciliation_unavailable")
     try:
         task, evidence = await service.reconcile(task_id, adapter)

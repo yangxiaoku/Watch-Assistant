@@ -215,6 +215,7 @@ class StrmManifestService:
     ) -> None:
         try:
             await _commit_fenced(session, fence)
+            mutations.clear()
         except asyncio.CancelledError:
             await self._recover_commit_failure(
                 session,

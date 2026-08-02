@@ -414,7 +414,9 @@ async def test_strm_routes_enforce_independent_flags_and_reach_service(tmp_path)
             await session.commit()
 
         class AvailableAdapter:
-            async def get_status(self, remote_ref: str):
+            async def get_status_for_task(
+                self, remote_ref: str, *, target_directory_id: str | None
+            ):
                 assert remote_ref == "remote-available"
                 return RemoteObservation(
                     status=RemoteStatus.AVAILABLE,

@@ -81,7 +81,9 @@ async def _claimed(database, *, workflow_id=None):
             await session.commit()
 
         class AvailableAdapter:
-            async def get_status(self, remote_ref: str):
+            async def get_status_for_task(
+                self, remote_ref: str, *, target_directory_id: str | None
+            ):
                 assert remote_ref == "dirty-available"
                 return RemoteObservation(
                     status=RemoteStatus.AVAILABLE,
