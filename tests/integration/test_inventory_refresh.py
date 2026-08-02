@@ -21,7 +21,6 @@ from watch_assistant.models import Resource
 from watch_assistant.services.inventory_push_guard import InventoryPushGuard
 from watch_assistant.services.library_index import LibraryIndexService
 
-
 ROOT_ID = "7000"
 NESTED_ID = "7100"
 LIBRARY_ID = "library-refresh"
