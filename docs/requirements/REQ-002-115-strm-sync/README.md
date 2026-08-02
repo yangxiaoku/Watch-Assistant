@@ -5,7 +5,7 @@
 | 版本 | V1.0 |
 | 状态 | 待验收 |
 | 创建日期 | 2026-07-26 |
-| 更新日期 | 2026-07-31 |
+| 更新日期 | 2026-08-03 |
 | 负责人 | 待指定 |
 | 优先级 | P0 |
 | 依赖 | 115 只读与直链契约、REQ-001、REQ-004 |
@@ -17,8 +17,16 @@
 
 ## 当前集成验收状态
 
-- 离线验收：已完成本轮集成验收，覆盖 fake 扫描、STRM ledger、取消/恢复、keyset cursor、稳定播放入口和清理预览确认。
-- live/生产验收：未完成；未执行真实 115 直链、媒体服务器兼容性或生产部署验收，因此本需求仍未上线。
+- 当前发布基线已合入 [PR #30](https://github.com/yangxiaoku/Watch-Assistant/pull/30) 的 STRM manifest、
+  dirty worker、扫描完整性和租约门禁；对应回归见 [STRM manifest](../../../tests/unit/test_strm_manifest.py)、
+  [STRM 操作](../../../tests/unit/test_strm_operations.py)、[dirty worker](../../../tests/unit/test_directory_dirty_worker.py)
+  和 [STRM API](../../../tests/integration/test_strm_operations_api.py)。这些证据只覆盖代码、离线和受管夹具范围。
+- 后续 STRM manifest 与空目录清理加固已由 [PR #33](https://github.com/yangxiaoku/Watch-Assistant/pull/33) 合入；
+  对应 [空目录计划单测](../../../tests/unit/test_empty_directory_cleanup_plan.py) 和
+  [空目录清理契约测试](../../../tests/contracts/test_empty_directory_cleanup_contract.py) 仍只证明离线 readiness。
+- STRM 全量/增量、受管清单和空目录清理仍必须受完整扫描、清理计划、人工确认和功能开关约束；永久删除保持关闭。
+  临时输出目录的结果不能替代生产媒体库、播放、媒体服务器或元数据验收。
+- live/生产验收：未完成；未执行真实 115 直链、播放兼容性、生产媒体库清单或生产部署验收，因此本需求仍未上线。
 
 ## 2. 背景与问题
 

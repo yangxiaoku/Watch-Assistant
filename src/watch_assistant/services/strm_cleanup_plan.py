@@ -14,6 +14,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
 
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from watch_assistant.library_models import (
@@ -25,8 +26,11 @@ from watch_assistant.library_models import (
 )
 from watch_assistant.services.strm_manifest import (
     StrmManifestError,
-    _remove_managed,
-    _write,
+    _commit_fenced,
+    _FileMutation,
+    _LeaseFence,
+    _remove_with_undo,
+    _restore_file_mutations,
 )
 from watch_assistant.services.strm_scope import (
     active_strm_operation_id,
@@ -227,6 +231,7 @@ class StrmCleanupPlanService:
         if operation_id is not None and lease_check is None:
             raise StrmCleanupPlanError("strm_operation_lease_required")
         await _raise_if_lease_lost(lease_check)
+        fence = _LeaseFence(operation_id, lease_check)
         root = _readable_root(output_root, self._managed_output_roots)
         prefix = _safe_prefix(playback_url_prefix)
         current_time = _utc(now)
@@ -261,6 +266,7 @@ class StrmCleanupPlanService:
                 is not None
             ):
                 raise StrmCleanupPlanError("strm_library_operation_conflict")
+            await _bind_fence(fence, session)
             candidates = _candidates(plan)
             manifest_ids = [item["manifest_id"] for item in candidates]
             manifests = {
@@ -277,6 +283,7 @@ class StrmCleanupPlanService:
             } if manifest_ids else {}
             preflight: list[tuple[StrmManifestEntry, str]] = []
             for item in candidates:
+                await _assert_fence_current(fence, session)
                 manifest = manifests.get(item["manifest_id"])
                 if manifest is None or manifest.cloud_file_id != item["cloud_file_id"]:
                     raise StrmCleanupPlanError("cleanup_plan_changed")
@@ -289,48 +296,170 @@ class StrmCleanupPlanService:
                     raise StrmCleanupPlanError("cleanup_plan_blocked")
                 preflight.append((manifest, state))
             retired = 0
-            removed_files: list[tuple[str, bytes]] = []
+            mutations: list[_FileMutation] = []
             try:
                 for manifest, state in preflight:
-                    await _raise_if_lease_lost(lease_check)
+                    await _assert_fence_current(fence, session)
                     if state == "ready":
                         try:
-                            removed = _remove_managed(
+                            mutation = _remove_with_undo(
                                 root,
                                 manifest.local_relative_path,
                                 f"{prefix}{manifest.manifest_id}\n".encode(),
                             )
                         except StrmManifestError:
                             raise StrmCleanupPlanError("cleanup_plan_blocked") from None
-                        if removed:
-                            removed_files.append(
-                                (
-                                    manifest.local_relative_path,
-                                    f"{prefix}{manifest.manifest_id}\n".encode(),
-                                )
-                            )
-                        await _raise_if_lease_lost(lease_check)
-                    await _raise_if_lease_lost(lease_check)
+                        if mutation is not None:
+                            mutations.append(mutation)
+                        await _assert_fence_current(fence, session)
+                    await _assert_fence_current(fence, session)
                     manifest.is_current = False
                     manifest.status = "retired"
                     retired += 1
-                await _raise_if_lease_lost(lease_check)
+                await _assert_fence_current(fence, session)
                 plan.status = "applied"
                 plan.revision += 1
                 plan.applied_idempotency_key = idempotency_key
                 plan.applied_retired = retired
-                await session.commit()
+                await self._commit_plan(
+                    session,
+                    fence,
+                    plan,
+                    idempotency_key=idempotency_key,
+                    retired=retired,
+                    mutations=mutations,
+                )
             except asyncio.CancelledError:
-                _restore_removed(root, removed_files)
+                await _rollback_cleanup(session, mutations)
                 raise
-            except (StrmManifestError, StrmCleanupPlanError):
-                _restore_removed(root, removed_files)
+            except StrmManifestError as error:
+                await _rollback_cleanup(session, mutations)
+                code = str(error)
+                if code == "strm_operation_lease_lost":
+                    raise StrmCleanupPlanError(code) from None
+                raise StrmCleanupPlanError("cleanup_plan_blocked") from None
+            except StrmCleanupPlanError:
+                await _rollback_cleanup(session, mutations)
                 raise
+            except SQLAlchemyError:
+                await _rollback_cleanup(session, mutations)
+                raise StrmCleanupPlanError("uncertain") from None
             except OSError as error:
-                _restore_removed(root, removed_files)
-                raise StrmCleanupPlanError("cleanup_plan_uncertain") from error
+                await _rollback_cleanup(session, mutations)
+                raise StrmCleanupPlanError("uncertain") from error
             await session.refresh(plan)
             return StrmCleanupApplyView(_view(plan), retired)
+
+    async def _commit_plan(
+        self,
+        session: AsyncSession,
+        fence: _LeaseFence,
+        plan: StrmCleanupPlan,
+        *,
+        idempotency_key: str,
+        retired: int,
+        mutations: list[_FileMutation],
+    ) -> None:
+        plan_id = plan.id
+        plan_revision = plan.revision
+        try:
+            await _commit_fenced(session, fence)
+            mutations.clear()
+        except asyncio.CancelledError:
+            await self._recover_commit_failure(
+                session,
+                fence,
+                plan_id=plan_id,
+                revision=plan_revision,
+                idempotency_key=idempotency_key,
+                retired=retired,
+                mutations=mutations,
+                cancelled=True,
+            )
+            raise
+        except SQLAlchemyError:
+            await self._recover_commit_failure(
+                session,
+                fence,
+                plan_id=plan_id,
+                revision=plan_revision,
+                idempotency_key=idempotency_key,
+                retired=retired,
+                mutations=mutations,
+                cancelled=False,
+            )
+
+    async def _recover_commit_failure(
+        self,
+        session: AsyncSession,
+        fence: _LeaseFence,
+        *,
+        plan_id: str,
+        revision: int,
+        idempotency_key: str,
+        retired: int,
+        mutations: list[_FileMutation],
+        cancelled: bool,
+    ) -> None:
+        rollback_failed = False
+        try:
+            await asyncio.shield(session.rollback())
+        except asyncio.CancelledError:
+            rollback_failed = True
+        except Exception:  # noqa: BLE001 - probe the commit outcome next
+            rollback_failed = True
+        observed = await self._observe_plan_commit(
+            plan_id,
+            revision=revision,
+            idempotency_key=idempotency_key,
+            retired=retired,
+        )
+        if observed is True:
+            mutations.clear()
+            return
+        lease_current = await fence.observe_database_lease(self._session_factory)
+        if lease_current is False:
+            try:
+                _restore_file_mutations(mutations)
+            except Exception:  # noqa: BLE001 - compensation failure is uncertainty
+                raise StrmCleanupPlanError("uncertain") from None
+            mutations.clear()
+            raise StrmCleanupPlanError("strm_operation_lease_lost")
+        if lease_current is None:
+            raise StrmCleanupPlanError("uncertain")
+        if rollback_failed:
+            raise StrmCleanupPlanError("uncertain") from None
+        try:
+            _restore_file_mutations(mutations)
+        except Exception:  # noqa: BLE001 - compensation failure is uncertainty
+            raise StrmCleanupPlanError("uncertain") from None
+        mutations.clear()
+        if observed is None:
+            raise StrmCleanupPlanError("uncertain")
+        if not cancelled:
+            raise StrmCleanupPlanError("uncertain")
+
+    async def _observe_plan_commit(
+        self,
+        plan_id: str,
+        *,
+        revision: int,
+        idempotency_key: str,
+        retired: int,
+    ) -> bool | None:
+        try:
+            async with self._session_factory() as session:
+                plan = await session.get(StrmCleanupPlan, plan_id)
+                if plan is None:
+                    return False
+                return bool(
+                    plan.status == "applied"
+                    and plan.revision == revision
+                    and plan.applied_idempotency_key == idempotency_key
+                    and int(plan.applied_retired or 0) == retired
+                )
+        except SQLAlchemyError:
+            return None
 
     async def _validated_current_run(
         self, session: AsyncSession, library_id: str, scan_run_id: str
@@ -435,13 +564,44 @@ async def _raise_if_lease_lost(lease_check: LeaseCheck | None) -> None:
         raise StrmCleanupPlanError("strm_operation_lease_lost")
 
 
-def _restore_removed(root: Path, removed_files: list[tuple[str, bytes]]) -> None:
-    for relative_path, content in reversed(removed_files):
-        try:
-            if _managed_state(root, relative_path, content.decode()) == "missing":
-                _write(root, relative_path, content)
-        except (OSError, StrmManifestError):
-            raise StrmCleanupPlanError("cleanup_plan_uncertain") from None
+async def _bind_fence(fence: _LeaseFence, session: AsyncSession) -> None:
+    try:
+        await fence.bind(session)
+    except StrmManifestError as error:
+        code = str(error)
+        if code == "strm_operation_lease_lost":
+            raise StrmCleanupPlanError(code) from None
+        raise StrmCleanupPlanError("cleanup_plan_blocked") from None
+
+
+async def _assert_fence_current(
+    fence: _LeaseFence, session: AsyncSession
+) -> None:
+    try:
+        await fence.assert_current(session)
+    except StrmManifestError as error:
+        code = str(error)
+        if code == "strm_operation_lease_lost":
+            raise StrmCleanupPlanError(code) from None
+        raise StrmCleanupPlanError("cleanup_plan_blocked") from None
+
+
+async def _rollback_cleanup(
+    session: AsyncSession,
+    mutations: list[_FileMutation],
+) -> None:
+    database_error: BaseException | None = None
+    try:
+        await asyncio.shield(session.rollback())
+    except BaseException as error:  # noqa: BLE001 - compensation must continue
+        database_error = error
+    file_error: BaseException | None = None
+    try:
+        _restore_file_mutations(mutations)
+    except BaseException as error:  # noqa: BLE001 - report explicit uncertainty
+        file_error = error
+    if database_error is not None or file_error is not None:
+        raise StrmCleanupPlanError("uncertain") from None
 
 
 def _readable_root(

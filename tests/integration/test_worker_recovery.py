@@ -35,6 +35,7 @@ class FakeAdapter:
         self.target_cids = []
         self.remote_status = None
         self.status_lookups = 0
+        self.status_target_directory_ids = []
 
     async def submit_magnet(
         self, url: str, *, target_cid: str | None = None
@@ -48,7 +49,10 @@ class FakeAdapter:
         self.submissions += 1
         return SubmissionResult(status=RemoteStatus.ACCEPTED, remote_ref="remote-share")
 
-    async def get_status(self, remote_ref: str):
+    async def get_status_for_task(
+        self, remote_ref: str, *, target_directory_id: str | None
+    ):
+        self.status_target_directory_ids.append(target_directory_id)
         self.status_lookups += 1
         return self.remote_status
 
@@ -68,6 +72,15 @@ class SlowSubmissionAdapter(FakeAdapter):
         self.started.set()
         await self.release.wait()
         return SubmissionResult(status=RemoteStatus.ACCEPTED, remote_ref="remote-slow")
+
+
+class CancelledSubmissionAdapter(FakeAdapter):
+    async def submit_magnet(
+        self, url: str, *, target_cid: str | None = None
+    ) -> SubmissionResult:
+        self.submissions += 1
+        self.target_cids.append(target_cid)
+        raise asyncio.CancelledError
 
 
 class EventRecorder:
@@ -326,6 +339,68 @@ async def test_renewal_failure_stops_follow_up_submission_and_marks_uncertain(
     # A fenced loss is terminal for this attempt; the worker cannot submit again.
     assert await worker.run_once() is False
     assert adapter.submissions == 1
+    await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_cancelled_external_submission_is_fenced_and_recoverable(tmp_path):
+    database = await _database(tmp_path)
+    crypto = SecretCrypto(Fernet.generate_key().decode("ascii"))
+    await _add_resource(database, crypto)
+    service = TaskService(database.session_factory)
+    task, _ = await service.create("res_magnet")
+    adapter = CancelledSubmissionAdapter()
+    worker = TaskWorker(
+        database.session_factory,
+        crypto,
+        adapter,
+        owner="cancelled-worker",
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await worker.run_once()
+
+    stored = await service.get(task.id)
+    assert stored is not None
+    assert stored.state is TaskState.UNCERTAIN
+    assert stored.error_code == "lease_claim_lost"
+    assert stored.lease_owner is None
+    assert stored.lease_token is None
+    assert stored.lease_expires_at is None
+    assert await worker.run_once() is False
+    assert adapter.submissions == 1
+    await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_finish_database_failure_marks_claim_uncertain_without_retry(tmp_path):
+    database = await _database(tmp_path)
+    crypto = SecretCrypto(Fernet.generate_key().decode("ascii"))
+    await _add_resource(database, crypto)
+    service = TaskService(database.session_factory)
+    task, _ = await service.create("res_magnet")
+    adapter = FakeAdapter()
+    worker = TaskWorker(
+        database.session_factory,
+        crypto,
+        adapter,
+        owner="db-failure-worker",
+    )
+
+    async def fail_finish(*_args, **_kwargs):
+        raise RuntimeError("database unavailable")
+
+    worker._tasks.finish_submission = fail_finish
+
+    assert await worker.run_once() is True
+    stored = await service.get(task.id)
+    assert stored is not None
+    assert stored.state is TaskState.UNCERTAIN
+    assert stored.error_code == "lease_claim_lost"
+    assert stored.lease_owner is None
+    assert stored.lease_token is None
+    assert adapter.submissions == 1
+    assert await worker.run_once() is False
     await database.engine.dispose()
 
 
@@ -803,6 +878,7 @@ async def test_expired_submitting_task_without_remote_ref_becomes_uncertain(tmp_
 
     assert recovered == 1
     assert stored.state == TaskState.UNCERTAIN
+    assert stored.error_code == "remote_observation_missing"
     assert adapter.submissions == 0
     await database.engine.dispose()
 

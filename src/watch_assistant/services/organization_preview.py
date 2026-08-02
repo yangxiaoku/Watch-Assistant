@@ -14,11 +14,16 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from watch_assistant.library_models import (
+    LibraryScanCheckpoint,
     LibraryScanEntry,
     LibraryScanRun,
     MediaLibrary,
 )
-from watch_assistant.services.library_index import ScanRunState
+from watch_assistant.services.library_index import (
+    LibraryIndexError,
+    ScanRunState,
+    validate_complete_scan_evidence,
+)
 from watch_assistant.services.media_classification import (
     ClassificationStatus,
     CompanionFile,
@@ -423,6 +428,17 @@ class OrganizationPreviewService:
                     )
                 ).all()
             )
+            checkpoint = await session.get(LibraryScanCheckpoint, run.id)
+            try:
+                validate_complete_scan_evidence(
+                    run,
+                    checkpoint,
+                    entries,
+                    root_directory_id=library.root_directory_id,
+                    require_tree=True,
+                )
+            except LibraryIndexError:
+                raise OrganizationPreviewError("scan_not_current") from None
         return library, run, entries
 
 
@@ -435,12 +451,22 @@ def _scope_entries(
 ) -> list[LibraryScanEntry]:
     """Limit a root snapshot to configured source subtrees."""
 
-    source_ids = {
-        value
-        for value in (source_directory_ids or ())
-        if isinstance(value, str) and value
+    raw_source_ids = None if source_directory_ids is None else tuple(source_directory_ids)
+    if raw_source_ids is not None and any(
+        not isinstance(value, str) or not value for value in raw_source_ids
+    ):
+        raise OrganizationPreviewError("source_scope_unverified")
+    source_ids = set(raw_source_ids or ())
+    if len(source_ids) != len(raw_source_ids or ()):
+        raise OrganizationPreviewError("source_scope_unverified")
+    directory_ids = {
+        entry.object_id for entry in entries if entry.is_directory
     }
+    if source_ids and not source_ids <= directory_ids | {root_directory_id}:
+        raise OrganizationPreviewError("source_scope_unverified")
     if not source_ids or root_directory_id in source_ids:
+        if target_directory_id == root_directory_id:
+            raise OrganizationPreviewError("source_target_overlap")
         return list(entries)
 
     child_ids: dict[str, set[str]] = {}

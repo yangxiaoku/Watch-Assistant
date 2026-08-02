@@ -8,8 +8,10 @@ from watch_assistant.schemas import RemoteObservation, RemoteStatus
 from watch_assistant.services.tasks import (
     InvalidCancelState,
     InvalidRetryState,
+    ReconciliationUnavailable,
     choose_existing_task,
     prepare_manual_retry,
+    read_task_status,
     recover_after_restart,
     task_state_from_remote_observation,
     task_state_from_remote_status,
@@ -27,6 +29,8 @@ def test_submitting_without_remote_confirmation_becomes_uncertain():
     assert task.lease_owner is None
     assert task.lease_token is None
     assert task.lease_expires_at is None
+    assert task.error_code == "remote_observation_missing"
+    assert task.error_message == "远端只读核对没有返回完整观察结果。"
 
 
 def test_recovery_uses_confirmed_remote_status():
@@ -110,6 +114,56 @@ def test_recovery_requires_complete_file_observation_for_available():
         ),
     )
     assert task.state is TaskState.AVAILABLE
+
+
+def test_restart_recovery_does_not_clear_a_live_lease():
+    task = make_task(state=TaskState.SUBMITTING)
+    task.lease_owner = "live-worker"
+    task.lease_token = "live-token"
+    task.lease_expires_at = datetime.now(UTC) + timedelta(minutes=1)
+
+    recover_after_restart(task, RemoteStatus.ACCEPTED)
+
+    assert task.state is TaskState.SUBMITTING
+    assert task.lease_owner == "live-worker"
+    assert task.lease_token == "live-token"
+    assert task.lease_expires_at is not None
+
+
+def test_recovery_rejects_observation_outside_task_target():
+    task = make_task(state=TaskState.SUBMITTING)
+    task.target_directory_id = "7"
+
+    recover_after_restart(
+        task,
+        RemoteObservation(
+            status=RemoteStatus.AVAILABLE,
+            file_id="101",
+            parent_id="8",
+            is_directory=False,
+        ),
+    )
+
+    assert task.state is TaskState.UNCERTAIN
+    assert task.error_code == "availability_parent_mismatch"
+    assert task.error_message == "远端文件父目录核验不一致。"
+
+
+@pytest.mark.asyncio
+async def test_legacy_status_adapter_cannot_bypass_target_aware_observation():
+    class LegacyAdapter:
+        async def get_status(self, _remote_ref: str):
+            return RemoteObservation(
+                status=RemoteStatus.AVAILABLE,
+                file_id="101",
+                parent_id="7",
+                is_directory=False,
+            )
+
+    with pytest.raises(ReconciliationUnavailable, match="reconciliation_unavailable"):
+        await read_task_status(
+            LegacyAdapter(), "remote-legacy", target_directory_id="7"
+        )
 
 
 def test_duplicate_resource_reuses_recent_task():

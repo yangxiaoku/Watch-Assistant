@@ -16,6 +16,13 @@ _SCHEMA_VERSION = 2
 _FULL_SHA_PATTERN = re.compile(r"[0-9a-f]{40}", re.IGNORECASE)
 _SHORT_SHA_PATTERN = re.compile(r"[0-9a-f]{7}", re.IGNORECASE)
 _SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
+_VERSION_COMMIT_PATTERN = re.compile(
+    r"^commit=(?P<commit>[0-9a-f]{7}|[0-9a-f]{40})$", re.IGNORECASE
+)
+_ARTIFACT_PATTERN = re.compile(
+    r"^watch-assistant-(?P<short>[0-9a-f]{7})-[0-9]{8}-[0-9]{4}\.tar\.gz$",
+    re.IGNORECASE,
+)
 
 
 class ReleaseManifestError(ValueError):
@@ -51,6 +58,37 @@ def _load_json(path: Path) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise _invalid("release manifest is invalid")
     return payload
+
+
+def validate_version_commit_file(
+    path: Path, *, expected_commit: str | None = None
+) -> str:
+    """Read one unambiguous release commit from a VERSION file."""
+
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError) as exc:
+        raise ReleaseManifestError("version_invalid", "release VERSION is invalid") from exc
+
+    commit_lines = [line for line in lines if line.strip().startswith("commit=")]
+    if len(commit_lines) != 1:
+        raise ReleaseManifestError("version_invalid", "release VERSION is invalid")
+    match = _VERSION_COMMIT_PATTERN.fullmatch(commit_lines[0])
+    if match is None:
+        raise ReleaseManifestError("version_invalid", "release VERSION is invalid")
+    raw_commit = match.group("commit")
+    commit = (
+        _require_commit(raw_commit, "version commit", full=True)
+        if len(raw_commit) == 40
+        else _require_commit(raw_commit, "version commit", full=False)
+    )
+    if expected_commit is not None:
+        expected = _require_commit(expected_commit, "expected commit", full=True)
+        if commit != expected:
+            raise ReleaseManifestError(
+                "version_commit_mismatch", "release VERSION commit mismatch"
+            )
+    return commit
 
 
 def _validate_schema(payload: dict[str, Any]) -> None:
@@ -266,7 +304,7 @@ def _artifact_payload(
     frontend_sha256: str,
     version: str,
 ) -> dict[str, Any]:
-    if not isinstance(artifact, str) or not artifact:
+    if not isinstance(artifact, str) or _ARTIFACT_PATTERN.fullmatch(artifact) is None:
         raise _invalid("release manifest artifact is invalid")
     if not isinstance(package_size_bytes, int) or package_size_bytes < 0:
         raise _invalid("release manifest package_size_bytes is invalid")
@@ -291,6 +329,13 @@ def _artifact_payload(
         raise ReleaseManifestError(
             "short_commit_mismatch", "release manifest short commit mismatch"
         )
+    artifact_match = _ARTIFACT_PATTERN.fullmatch(payload["artifact"])
+    if artifact_match is None or artifact_match.group("short").lower() != payload[
+        "short_commit"
+    ]:
+        raise ReleaseManifestError(
+            "short_commit_mismatch", "release manifest artifact commit mismatch"
+        )
     _require_sha256(payload["package_sha256"], "package_sha256")
     _require_sha256(payload["source_sha256"], "source_sha256")
     _require_sha256(payload["frontend_sha256"], "frontend_sha256")
@@ -310,6 +355,7 @@ def write_artifact_manifest(
     version_file: Path,
 ) -> None:
     try:
+        validate_version_commit_file(version_file, expected_commit=commit)
         version = version_file.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as exc:
         raise ReleaseManifestError(
@@ -350,6 +396,10 @@ def _parser() -> argparse.ArgumentParser:
     verify.add_argument("--expected-source-sha256", required=True)
     verify.add_argument("--expected-frontend-sha256", required=True)
 
+    version = commands.add_parser("verify-version", help="validate VERSION provenance")
+    version.add_argument("--version-file", type=Path, required=True)
+    version.add_argument("--expected-commit", required=True)
+
     artifact = commands.add_parser(
         "write-artifact", help="write verification metadata"
     )
@@ -385,6 +435,10 @@ def main(argv: list[str] | None = None) -> int:
                 expected_short_commit=args.expected_short_commit,
                 expected_source_sha256=args.expected_source_sha256,
                 expected_frontend_sha256=args.expected_frontend_sha256,
+            )
+        elif args.command == "verify-version":
+            validate_version_commit_file(
+                args.version_file, expected_commit=args.expected_commit
             )
         elif args.command == "write-artifact":
             write_artifact_manifest(

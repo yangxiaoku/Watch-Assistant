@@ -25,9 +25,11 @@ from watch_assistant.services.inventory_push_guard import (
 )
 from watch_assistant.services.observability import EventLogger, emit_event
 from watch_assistant.services.tasks import (
+    RECONCILIATION_UNAVAILABLE,
     TASK_LEASE_LOST,
     TaskLease,
     TaskService,
+    read_task_status,
 )
 
 _ExternalResult = TypeVar("_ExternalResult")
@@ -67,8 +69,11 @@ class TaskAdapter(Protocol):
         target_cid: str | None = None,
     ) -> SubmissionResult: ...
 
-    async def get_status(
-        self, remote_ref: str
+    async def get_status_for_task(
+        self,
+        remote_ref: str,
+        *,
+        target_directory_id: str | None,
     ) -> RemoteStatus | RemoteObservation | None: ...
 
 
@@ -108,7 +113,20 @@ class TaskWorker:
         except _LeaseClaimLost:
             await self._mark_lease_lost(lease)
             return True
-        task = await self._tasks.finish_submission(lease, result)
+        except asyncio.CancelledError:
+            await self._mark_lease_lost(lease)
+            raise
+        except Exception:  # noqa: BLE001 - keep a failed claim recoverable
+            await self._mark_lease_lost(lease)
+            return True
+        try:
+            task = await self._tasks.finish_submission(lease, result)
+        except asyncio.CancelledError:
+            await self._mark_lease_lost(lease)
+            raise
+        except Exception:  # noqa: BLE001 - keep a failed claim recoverable
+            await self._mark_lease_lost(lease)
+            return True
         if task is None:
             return True
         state = task.state
@@ -155,14 +173,20 @@ class TaskWorker:
                 return recovered
             recovered += 1
             if lease.action != TaskAction.OFFLINE_DOWNLOAD:
-                await self._tasks.finish_submission(
-                    lease,
-                    SubmissionResult(
-                        status=RemoteStatus.FAILED,
-                        error_code="push_kind_unsupported",
-                        error_message="share push is not supported",
-                    ),
-                )
+                try:
+                    await self._tasks.finish_submission(
+                        lease,
+                        SubmissionResult(
+                            status=RemoteStatus.FAILED,
+                            error_code="push_kind_unsupported",
+                            error_message="share push is not supported",
+                        ),
+                    )
+                except asyncio.CancelledError:
+                    await self._mark_lease_lost(lease)
+                    raise
+                except Exception:  # noqa: BLE001 - recovery retries after expiry
+                    await self._mark_lease_lost(lease)
                 continue
 
             remote_status = None
@@ -171,7 +195,7 @@ class TaskWorker:
                 target_directory_id = lease.target_directory_id
                 try:
                     read_status = partial(
-                        _read_task_status,
+                        read_task_status,
                         self._adapter,
                         remote_ref,
                         target_directory_id=target_directory_id,
@@ -182,13 +206,31 @@ class TaskWorker:
                 except _LeaseClaimLost:
                     await self._mark_lease_lost(lease)
                     continue
+                except asyncio.CancelledError:
+                    await self._mark_lease_lost(lease)
+                    raise
                 except Exception:  # noqa: BLE001 - status failure is uncertain
-                    remote_status = None
-            await self._tasks.finish_recovery(lease, remote_status)
+                    remote_status = RemoteObservation(
+                        status=RemoteStatus.UNCERTAIN,
+                        error_code=RECONCILIATION_UNAVAILABLE,
+                    )
+            try:
+                await self._tasks.finish_recovery(lease, remote_status)
+            except asyncio.CancelledError:
+                await self._mark_lease_lost(lease)
+                raise
+            except Exception:  # noqa: BLE001 - recovery retries after expiry
+                await self._mark_lease_lost(lease)
 
     async def run_forever(self, stop_event: asyncio.Event, *, interval: float = 1.0):
         while not stop_event.is_set():
-            await self.run_once()
+            try:
+                await self.run_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001
+                # A transient claim/database error must not kill the worker loop.
+                await asyncio.sleep(0)
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=interval)
             except TimeoutError:
@@ -354,7 +396,9 @@ class TaskWorker:
 
         try:
             task = await self._tasks.mark_lease_lost(lease)
-        except Exception:  # noqa: BLE001 - recovery will retry after lease expiry
+        except asyncio.CancelledError:
+            return
+        except Exception:  # noqa: BLE001 - recovery retries after expiry
             return
         if task is None:
             return
@@ -402,17 +446,3 @@ def _inventory_error_message(code: str) -> str:
     return _INVENTORY_ERROR_MESSAGES_ZH.get(
         code, "库存检查未完成，已阻止远端提交。"
     )
-
-
-async def _read_task_status(
-    adapter: TaskAdapter,
-    remote_ref: str,
-    *,
-    target_directory_id: str | None,
-) -> RemoteStatus | RemoteObservation | None:
-    target_aware = getattr(adapter, "get_status_for_task", None)
-    if callable(target_aware):
-        return await target_aware(
-            remote_ref, target_directory_id=target_directory_id
-        )
-    return await adapter.get_status(remote_ref)

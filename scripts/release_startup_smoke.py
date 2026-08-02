@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
-import re
 import sqlite3
 import sys
 import tempfile
@@ -19,7 +18,10 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from release_manifest import validate_runtime_manifest_file
+from release_manifest import (
+    validate_runtime_manifest_file,
+    validate_version_commit_file,
+)
 
 _REQUIRED_FILES = (
     "VERSION",
@@ -58,11 +60,7 @@ CREATE TABLE schema_migrations (
 
 
 def _version_commit(release_root: Path) -> str:
-    version_text = (release_root / "VERSION").read_text(encoding="utf-8")
-    match = re.search(r"^commit=([0-9a-f]{7}|[0-9a-f]{40})$", version_text, re.MULTILINE)
-    if match is None:
-        raise ValueError("invalid release version")
-    return match.group(1)
+    return validate_version_commit_file(release_root / "VERSION")
 
 
 def _validate_manifest(release_root: Path, release: str) -> None:

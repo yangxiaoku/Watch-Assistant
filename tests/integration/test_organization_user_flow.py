@@ -1,15 +1,23 @@
 import asyncio
+import json
 from pathlib import Path
 
 import httpx
 import pytest
 from cryptography.fernet import Fernet
 from pwdlib import PasswordHash
+from sqlalchemy import select
 
 from watch_assistant.adapters.p115_library import DirectoryPage, LibraryEntry, ScanState
 from watch_assistant.app import create_app
 from watch_assistant.crypto import SecretCrypto
 from watch_assistant.db import create_database, initialize_database
+from watch_assistant.library_models import (
+    LibraryScanCheckpoint,
+    LibraryScanEntry,
+    LibraryScanRun,
+    OrganizationPlan,
+)
 from watch_assistant.schemas import MediaType
 from watch_assistant.security import SecurityManager
 from watch_assistant.services.media_matcher import MediaKind, TmdbCandidate
@@ -162,6 +170,95 @@ async def _login(client: httpx.AsyncClient, password: str) -> dict[str, str]:
     return {"X-CSRF-Token": response.json()["csrf_token"]}
 
 
+async def _add_target_tree_evidence(database, plan_id: str) -> None:
+    """Complete the local target-tree fixture used by execution-scope checks."""
+
+    async with database.session_factory() as session:
+        plan = await session.get(OrganizationPlan, plan_id)
+        assert plan is not None
+        run = await session.get(LibraryScanRun, plan.source_scan_run_id)
+        assert run is not None
+        checkpoint = await session.get(LibraryScanCheckpoint, run.id)
+        assert checkpoint is not None
+        target_rows = (
+            ("9000", run.root_directory_id, "target-root", "target-root"),
+            ("8000", "9000", "library", "library"),
+            ("8001", "8000", "movie", "library/movie"),
+            (
+                "8002",
+                "8001",
+                "western",
+                "library/movie/western",
+            ),
+            (
+                "8003",
+                "8002",
+                "The Office (2005) {tmdb-42}",
+                "library/movie/western/The Office (2005) {tmdb-42}",
+            ),
+        )
+        existing_ids = set(
+            (
+                await session.scalars(
+                    select(LibraryScanEntry.object_id).where(
+                        LibraryScanEntry.scan_run_id == run.id,
+                        LibraryScanEntry.object_type == "directory",
+                    )
+                )
+            ).all()
+        )
+        for object_id, parent_id, name, path in target_rows:
+            if object_id in existing_ids:
+                continue
+            session.add(
+                LibraryScanEntry(
+                    scan_run_id=run.id,
+                    object_type="directory",
+                    object_id=object_id,
+                    parent_id=parent_id,
+                    name=name,
+                    path=path,
+                    is_directory=True,
+                )
+            )
+        await session.flush()
+        entries = list(
+            (
+                await session.scalars(
+                    select(LibraryScanEntry).where(
+                        LibraryScanEntry.scan_run_id == run.id
+                    )
+                )
+            ).all()
+        )
+        visited = [run.root_directory_id]
+        directory_totals = {run.root_directory_id: 0}
+        for entry in entries:
+            assert isinstance(entry.parent_id, str)
+            directory_totals[entry.parent_id] = (
+                directory_totals.get(entry.parent_id, 0) + 1
+            )
+            if entry.is_directory:
+                visited.append(entry.object_id)
+                directory_totals.setdefault(entry.object_id, 0)
+        assert set(directory_totals) == set(visited)
+        run.scan_mode = "tree"
+        run.expected_total = len(entries)
+        run.items_seen = len(entries)
+        checkpoint.page = run.pages_read
+        checkpoint.items_seen = len(entries)
+        checkpoint.cursor_json = json.dumps(
+            {
+                "version": 2,
+                "directory_totals": directory_totals,
+                "expected_total": len(entries),
+                "pending": [],
+                "visited": visited,
+            }
+        )
+        await session.commit()
+
+
 @pytest.mark.integration
 async def test_legacy_contract_flag_does_not_open_organization_write_runtime(
     tmp_path: Path,
@@ -263,6 +360,7 @@ async def test_manual_organization_flow_survives_unready_p115_and_restart(
             assert len(plans.json()["items"]) == 1
             plan = plans.json()["items"][0]
             assert plan["status"] == "needs_review"
+            await _add_target_tree_evidence(database, plan["plan_id"])
 
             confirmed = await client.post(
                 f"/api/v1/organization-plans/{plan['plan_id']}/confirm-and-operation",
@@ -369,6 +467,7 @@ async def test_no_candidates_can_be_searched_selected_and_queued_as_one_confirme
         assert plan["can_execute"] is False
         assert plan["executable_action_count"] == 0
         assert plan["review_action_count"] == 1
+        await _add_target_tree_evidence(app.state.database, plan["plan_id"])
 
         searched = await client.post(
             f"/api/v1/organization-plans/{plan['plan_id']}/candidate-search",

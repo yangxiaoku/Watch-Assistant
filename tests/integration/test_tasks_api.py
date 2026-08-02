@@ -17,6 +17,7 @@ from watch_assistant.schemas import RemoteObservation, RemoteStatus
 class FakeTaskAdapter:
     def __init__(self):
         self.remote_status = None
+        self.target_directory_ids = []
 
     async def submit_magnet(self, url: str):
         raise AssertionError("task adapter should not run in API tests")
@@ -24,7 +25,10 @@ class FakeTaskAdapter:
     async def save_share(self, url: str, password: str | None):
         raise AssertionError("share adapter must not run in API tests")
 
-    async def get_status(self, remote_ref: str):
+    async def get_status_for_task(
+        self, remote_ref: str, *, target_directory_id: str | None
+    ):
+        self.target_directory_ids.append(target_directory_id)
         return self.remote_status
 
 
@@ -304,6 +308,43 @@ async def test_bare_available_status_is_persisted_as_uncertain(tmp_path):
     )
     assert response.json()["evidence"]["status"] == "uncertain"
     assert response.json()["evidence"]["verified"] is False
+    await client.aclose()
+    await tmdb.aclose()
+    await pansou.aclose()
+    await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_reconciliation_rejects_observation_outside_task_target(tmp_path):
+    client, database, tmdb, pansou, app = await _make_task_client(tmp_path)
+    app.state.organization_target_root_id = "7"
+    app.state.p115_browsed_directory_ids = {"7"}
+    created = await client.post(
+        "/api/v1/tasks",
+        json={"resource_id": "res_task_api", "target_directory_id": "7"},
+    )
+    task_id = created.json()["id"]
+    async with database.session_factory() as session:
+        task = await session.get(Task, task_id)
+        assert task is not None
+        task.state = TaskState.SUBMITTED
+        task.remote_ref = "remote-wrong-parent"
+        await session.commit()
+    app.state.task_adapter.remote_status = RemoteObservation(
+        status=RemoteStatus.AVAILABLE,
+        file_id="101",
+        parent_id="8",
+        is_directory=False,
+    )
+
+    response = await client.post(f"/api/v1/tasks/{task_id}/reconcile")
+
+    assert response.status_code == 200
+    assert response.json()["task"]["state"] == "uncertain"
+    assert response.json()["task"]["error_code"] == "availability_parent_mismatch"
+    assert response.json()["task"]["error_message"] == "远端文件父目录核验不一致。"
+    assert response.json()["evidence"]["verified"] is False
+    assert app.state.task_adapter.target_directory_ids == ["7"]
     await client.aclose()
     await tmdb.aclose()
     await pansou.aclose()
