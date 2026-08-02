@@ -8,6 +8,9 @@ from sqlalchemy import func, select
 from watch_assistant.adapters.p115_library import DirectoryPage, LibraryEntry, ScanState
 from watch_assistant.db import create_database, initialize_database
 from watch_assistant.library_models import (
+    LibraryInventoryEvent,
+    LibraryObjectLedger,
+    LibraryScanDiff,
     LibraryScanEntry,
     LibraryScanRun,
     MediaLibrary,
@@ -489,11 +492,72 @@ async def test_reclaimed_lease_cannot_persist_a_page_returned_late(tmp_path):
         count = await session.scalar(
             select(func.count()).select_from(LibraryScanEntry)
         )
+        diff_count = await session.scalar(
+            select(func.count())
+            .select_from(LibraryScanDiff)
+            .where(LibraryScanDiff.scan_run_id == queued.run_id)
+        )
+        ledger_count = await session.scalar(
+            select(func.count()).select_from(LibraryObjectLedger)
+        )
+        event_count = await session.scalar(
+            select(func.count()).select_from(LibraryInventoryEvent)
+        )
     assert run is not None
     assert run.state == "running"
     assert run.lease_token == new_lease.lease_token
     assert run.pages_read == 0
     assert count == 0
+    assert run.complete is False
+    assert diff_count == 0
+    assert ledger_count == 0
+    assert event_count == 0
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_final_lease_fence_rolls_back_inventory_and_completion(tmp_path, monkeypatch):
+    database = await _database(tmp_path)
+    scan = LibraryIndexService(
+        database.session_factory,
+        _Gateway(),
+        library_id=LIBRARY_ID,
+        root_directory_id=ROOT_ID,
+        page_size=1,
+    )
+    original_fence = scan._fence_write
+
+    async def fail_after_complete(session, run, *, refresh=True):
+        if not refresh and run.complete:
+            raise LibraryIndexError("lease_claim_lost")
+        await original_fence(session, run, refresh=refresh)
+
+    monkeypatch.setattr(scan, "_fence_write", fail_after_complete)
+
+    with pytest.raises(LibraryIndexError, match="lease_claim_lost"):
+        await scan.scan_tree("final-fence")
+
+    async with database.session_factory() as session:
+        run = await session.scalar(select(LibraryScanRun))
+        entry_count = await session.scalar(
+            select(func.count()).select_from(LibraryScanEntry)
+        )
+        diff_count = await session.scalar(
+            select(func.count()).select_from(LibraryScanDiff)
+        )
+        ledger_count = await session.scalar(
+            select(func.count()).select_from(LibraryObjectLedger)
+        )
+        event_count = await session.scalar(
+            select(func.count()).select_from(LibraryInventoryEvent)
+        )
+    assert run is not None
+    assert run.complete is False
+    assert run.state == "running"
+    assert entry_count == 2
+    assert diff_count == 0
+    assert ledger_count == 0
+    assert event_count == 0
     await database.engine.dispose()
 
 

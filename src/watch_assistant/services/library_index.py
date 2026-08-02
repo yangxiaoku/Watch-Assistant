@@ -320,6 +320,7 @@ class LibraryIndexService:
                         root_directory_id=directory_id,
                         expected_page_count=expected_page_count,
                         expected_total=expected_total,
+                        require_total=True,
                     )
                     next_cursor = _advance_tree_cursor(
                         cursor,
@@ -380,9 +381,10 @@ class LibraryIndexService:
             await self._fence_write(session, run)
             raw_cursor = checkpoint.cursor_json
             cursor = _decode_tree_cursor(raw_cursor)
-            if cursor is None and raw_cursor not in {"", "{}"}:
+            legacy_cursor = _is_legacy_tree_cursor(raw_cursor)
+            if cursor is None and raw_cursor not in {"", "{}"} and not legacy_cursor:
                 raise LibraryIndexError("checkpoint_invalid")
-            if cursor is None:
+            if cursor is None or legacy_cursor:
                 await session.execute(
                     delete(LibraryScanEntry).where(
                         LibraryScanEntry.scan_run_id == run_id
@@ -401,7 +403,8 @@ class LibraryIndexService:
             checkpoint.cursor_json = _encode_tree_cursor(cursor)
             run.error_code = None
             run.expected_page_count = None
-            run.expected_total = None
+            run.expected_total = _tree_cursor_expected_total(cursor)
+            await self._fence_write(session, run, refresh=False)
             await session.commit()
 
     async def _tree_cursor_for_run(self, run_id: str) -> dict[str, object]:
@@ -475,6 +478,10 @@ class LibraryIndexService:
             cursor = self._tree_cursors.get(run_id)
             if cursor is not None:
                 checkpoint.cursor_json = _encode_tree_cursor(cursor)
+                run.expected_total = _tree_cursor_expected_total(cursor)
+            else:
+                run.expected_total = None
+            await self._fence_write(session, run, refresh=False)
 
     async def _verify_scope(self) -> None:
         async with self._session_factory() as session:
@@ -549,7 +556,22 @@ class LibraryIndexService:
             if run.complete:
                 return False
             if self._external_lease:
-                if not self._lease_is_current(run, current_time):
+                result = await session.execute(
+                    update(LibraryScanRun)
+                    .where(
+                        LibraryScanRun.id == run_id,
+                        LibraryScanRun.state == ScanRunState.RUNNING.value,
+                        LibraryScanRun.complete.is_(False),
+                        LibraryScanRun.lease_owner == self._lease_owner,
+                        LibraryScanRun.lease_token == self._lease_token,
+                        LibraryScanRun.lease_expires_at.is_not(None),
+                        LibraryScanRun.lease_expires_at > current_time,
+                    )
+                    .values(updated_at=current_time)
+                    .execution_options(synchronize_session=False)
+                )
+                if result.rowcount != 1:
+                    await session.rollback()
                     raise LibraryIndexError("lease_claim_lost")
                 return True
             if self._execution_active:
@@ -675,6 +697,7 @@ class LibraryIndexService:
             run.items_seen = checkpoint.items_seen + len(page.items)
             checkpoint.page = page.page
             checkpoint.items_seen = run.items_seen
+            await self._fence_write(session, run, refresh=False)
 
     async def _finish_incomplete(
         self, run_id: str, state: ScanRunState, error_code: str
@@ -688,6 +711,7 @@ class LibraryIndexService:
             run.state = state.value
             run.complete = False
             run.error_code = error_code
+            await self._fence_write(session, run, refresh=False)
             if not self._external_lease:
                 run.lease_owner = None
                 run.lease_token = None
@@ -706,7 +730,24 @@ class LibraryIndexService:
                     raise LibraryIndexError("scan_run_missing")
                 self._assert_execution_lease(run)
                 await self._fence_write(session, run)
-                if (
+                tree_cursor_ready = True
+                if run.scan_mode == "tree":
+                    checkpoint = await session.get(LibraryScanCheckpoint, run_id)
+                    cursor = (
+                        None
+                        if checkpoint is None
+                        else _decode_tree_cursor(checkpoint.cursor_json)
+                    )
+                    tree_cursor_ready = cursor is not None and _tree_cursor_complete(
+                        cursor
+                    )
+                if not tree_cursor_ready or (
+                    run.scan_mode == "tree" and run.expected_total is None
+                ):
+                    run.state = ScanRunState.FAILED.value
+                    run.complete = False
+                    run.error_code = "pagination_unverified"
+                elif (
                     run.expected_total is not None
                     and run.items_seen != run.expected_total
                 ):
@@ -835,6 +876,7 @@ class LibraryIndexService:
                     run.added_count = added_count
                     run.changed_count = changed_count
                     run.removed_count = removed_count
+                await self._fence_write(session, run, refresh=False)
                 run.lease_owner = None
                 run.lease_token = None
                 run.lease_expires_at = None
@@ -851,7 +893,9 @@ class LibraryIndexService:
         if not self._lease_is_current(run, datetime.now(UTC)):
             raise LibraryIndexError("lease_claim_lost")
 
-    async def _fence_write(self, session: AsyncSession, run: LibraryScanRun) -> None:
+    async def _fence_write(
+        self, session: AsyncSession, run: LibraryScanRun, *, refresh: bool = True
+    ) -> None:
         if self._lease_token is None:
             return
         current_time = datetime.now(UTC)
@@ -865,15 +909,20 @@ class LibraryIndexService:
         ]
         if self._lease_owner is not None:
             conditions.append(LibraryScanRun.lease_owner == self._lease_owner)
-        result = await session.execute(
-            update(LibraryScanRun)
-            .where(*conditions)
-            .values(updated_at=current_time)
-            .execution_options(synchronize_session=False)
-        )
+        # The final fence is deliberately executed without autoflush.  An
+        # expired worker must not flush its dirty snapshot/ledger rows before
+        # the lease CAS has proved that the owner and expiry are still valid.
+        with session.no_autoflush:
+            result = await session.execute(
+                update(LibraryScanRun)
+                .where(*conditions)
+                .values(updated_at=current_time)
+                .execution_options(synchronize_session=False)
+            )
         if result.rowcount != 1:
             raise LibraryIndexError("lease_claim_lost")
-        await session.refresh(run)
+        if refresh:
+            await session.refresh(run)
 
     def _lease_is_current(self, run: LibraryScanRun, current_time: datetime) -> bool:
         if (
@@ -1173,6 +1222,7 @@ def _validate_page(
     root_directory_id: str,
     expected_page_count: int | None,
     expected_total: int | None,
+    require_total: bool = False,
 ) -> tuple[int | None, int | None, bool]:
     if page.page != requested_page or page.page < 1:
         raise LibraryIndexError("repeated_page")
@@ -1182,6 +1232,8 @@ def _validate_page(
         if expected_page_count is not None and page.page_count != expected_page_count:
             raise LibraryIndexError("page_count_changed")
         expected_page_count = page.page_count
+    if require_total and page.total is None:
+        raise LibraryIndexError("pagination_unverified")
     if expected_total is not None and page.total != expected_total:
         raise LibraryIndexError("total_changed")
     if expected_total is None:
@@ -1238,7 +1290,9 @@ def _validate_page(
 
 def _initial_tree_cursor(root_directory_id: str) -> dict[str, object]:
     return {
-        "version": 1,
+        "version": 2,
+        "directory_totals": {},
+        "expected_total": 0,
         "pending": [
             {
                 "directory_id": root_directory_id,
@@ -1246,6 +1300,7 @@ def _initial_tree_cursor(root_directory_id: str) -> dict[str, object]:
                 "page": 1,
                 "page_count": None,
                 "total": None,
+                "items_seen": 0,
             }
         ],
         "visited": [root_directory_id],
@@ -1259,13 +1314,37 @@ def _decode_tree_cursor(value: str | None) -> dict[str, object] | None:
         decoded = json.loads(value)
     except (TypeError, ValueError):
         return None
-    if not isinstance(decoded, dict) or decoded.get("version") != 1:
+    if not isinstance(decoded, dict) or decoded.get("version") != 2:
         return None
     pending = decoded.get("pending")
     visited = decoded.get("visited")
-    if not isinstance(pending, list) or not isinstance(visited, list):
+    directory_totals = decoded.get("directory_totals")
+    expected_total = decoded.get("expected_total")
+    if (
+        not isinstance(pending, list)
+        or not isinstance(visited, list)
+        or not isinstance(directory_totals, dict)
+        or not _optional_nonnegative_int(expected_total)
+        or expected_total is None
+    ):
         return None
-    if any(not isinstance(item, str) or not item for item in visited):
+    if (
+        any(not isinstance(item, str) or not item for item in visited)
+        or len(set(visited)) != len(visited)
+    ):
+        return None
+    normalized_totals: dict[str, int] = {}
+    for directory_id, total in directory_totals.items():
+        if (
+            not isinstance(directory_id, str)
+            or not directory_id
+            or not _optional_nonnegative_int(total)
+            or total is None
+            or directory_id not in visited
+        ):
+            return None
+        normalized_totals[directory_id] = total
+    if sum(normalized_totals.values()) != expected_total:
         return None
     normalized_pending: list[dict[str, object]] = []
     for item in pending:
@@ -1276,6 +1355,7 @@ def _decode_tree_cursor(value: str | None) -> dict[str, object] | None:
         page = item.get("page")
         page_count = item.get("page_count")
         total = item.get("total")
+        items_seen = item.get("items_seen")
         if (
             not isinstance(directory_id, str)
             or not directory_id
@@ -1285,6 +1365,10 @@ def _decode_tree_cursor(value: str | None) -> dict[str, object] | None:
             or page < 1
             or not _optional_nonnegative_int(page_count)
             or not _optional_nonnegative_int(total)
+            or not isinstance(items_seen, int)
+            or isinstance(items_seen, bool)
+            or items_seen < 0
+            or directory_id not in visited
         ):
             return None
         try:
@@ -1298,9 +1382,59 @@ def _decode_tree_cursor(value: str | None) -> dict[str, object] | None:
                 "page": page,
                 "page_count": page_count,
                 "total": total,
+                "items_seen": items_seen,
             }
         )
-    return {"version": 1, "pending": normalized_pending, "visited": list(visited)}
+    return {
+        "version": 2,
+        "directory_totals": normalized_totals,
+        "expected_total": expected_total,
+        "pending": normalized_pending,
+        "visited": list(visited),
+    }
+
+
+def _is_legacy_tree_cursor(value: str | None) -> bool:
+    if not isinstance(value, str) or not value:
+        return False
+    try:
+        decoded = json.loads(value)
+    except (TypeError, ValueError):
+        return False
+    return isinstance(decoded, dict) and decoded.get("version") == 1
+
+
+def _tree_cursor_expected_total(cursor: dict[str, object]) -> int:
+    directory_totals = cursor.get("directory_totals")
+    expected_total = cursor.get("expected_total")
+    if (
+        not isinstance(directory_totals, dict)
+        or not _optional_nonnegative_int(expected_total)
+        or expected_total is None
+        or any(
+            not isinstance(directory_id, str)
+            or not directory_id
+            or not _optional_nonnegative_int(total)
+            or total is None
+            for directory_id, total in directory_totals.items()
+        )
+        or sum(directory_totals.values()) != expected_total
+    ):
+        raise LibraryIndexError("checkpoint_invalid")
+    return expected_total
+
+
+def _tree_cursor_complete(cursor: dict[str, object]) -> bool:
+    pending = cursor.get("pending")
+    visited = cursor.get("visited")
+    directory_totals = cursor.get("directory_totals")
+    return (
+        isinstance(pending, list)
+        and not pending
+        and isinstance(visited, list)
+        and isinstance(directory_totals, dict)
+        and set(visited) == set(directory_totals)
+    )
 
 
 def _encode_tree_cursor(value: dict[str, object]) -> str:
@@ -1342,7 +1476,13 @@ def _advance_tree_cursor(
 
     pending = cursor.get("pending")
     visited = cursor.get("visited")
-    if not isinstance(pending, list) or not pending or not isinstance(visited, list):
+    directory_totals = cursor.get("directory_totals")
+    if (
+        not isinstance(pending, list)
+        or not pending
+        or not isinstance(visited, list)
+        or not isinstance(directory_totals, dict)
+    ):
         raise LibraryIndexError("checkpoint_invalid")
     current_item = pending[0]
     if (
@@ -1350,12 +1490,30 @@ def _advance_tree_cursor(
         or current_item.get("directory_id") != directory_id
     ):
         raise LibraryIndexError("checkpoint_invalid")
+    current_items_seen = current_item.get("items_seen")
+    if (
+        not isinstance(current_items_seen, int)
+        or isinstance(current_items_seen, bool)
+        or current_items_seen < 0
+        or total is None
+    ):
+        raise LibraryIndexError("pagination_unverified")
+    previous_total = directory_totals.get(directory_id)
+    if previous_total is not None and previous_total != total:
+        raise LibraryIndexError("total_changed")
+    next_items_seen = current_items_seen + len(page.items)
+    if next_items_seen > total or (terminal and next_items_seen != total):
+        raise LibraryIndexError("total_mismatch")
     next_cursor = json.loads(_encode_tree_cursor(cursor))
     next_pending = next_cursor["pending"]
     next_visited = next_cursor["visited"]
+    next_directory_totals = next_cursor["directory_totals"]
     current = next_pending[0]
     current["page_count"] = page_count
     current["total"] = total
+    current["items_seen"] = next_items_seen
+    next_directory_totals[directory_id] = total
+    next_cursor["expected_total"] = sum(next_directory_totals.values())
     if terminal:
         next_pending.pop(0)
     else:
@@ -1379,6 +1537,7 @@ def _advance_tree_cursor(
                 "page": 1,
                 "page_count": None,
                 "total": None,
+                "items_seen": 0,
             }
         )
     return next_cursor
