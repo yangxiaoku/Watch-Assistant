@@ -99,7 +99,7 @@ async def test_get_settings_is_local_and_redacts_cookie(tmp_path):
         "ready": True,
         "capabilities": {"magnet": True, "share": False},
         "cookie": {
-            "source": "tgtodrive",
+            "source": "file",
             "configured": True,
             "structure_valid": True,
             "sync_status": "unknown",

@@ -14,7 +14,7 @@ from watch_assistant.services.p115_credentials import (
     CookieProvider,
 )
 
-P115_COOKIE_SOURCE = "tgtodrive"
+P115_COOKIE_SOURCE = "file"
 COOKIE_SYNC_STATUSES = frozenset(("success", "failed", "unknown"))
 
 

@@ -24,7 +24,7 @@ const p115 = {
   ready: true,
   capabilities: { magnet: true, share: false },
   cookie: {
-    source: "tgtodrive" as const,
+    source: "file" as const,
     configured: true,
     structure_valid: true,
     sync_status: "success" as const,
@@ -36,7 +36,7 @@ const p115 = {
 const credentials = {
   revision: 0,
   tmdb: { configured: false, source: "environment" as const, last_updated_at: null },
-  p115_cookie: { configured: true, source: "tgtodrive" as const, last_updated_at: "2026-07-25T02:00:00Z", structure_valid: true, ready: true },
+  p115_cookie: { configured: true, source: "file" as const, last_updated_at: "2026-07-25T02:00:00Z", structure_valid: true, ready: true },
 };
 
 const firstLogs: LogsResponse = {
@@ -455,7 +455,7 @@ describe("SettingsView", () => {
     const p115Button = wrapper.findAll("button").find((button) => button.text().includes("115 推送"));
     await p115Button?.trigger("click");
     expect(wrapper.text()).toContain("Cookie 来源");
-    expect(wrapper.text()).toContain("TgtoDrive");
+    expect(wrapper.text()).toContain("文件");
     expect(wrapper.text()).toContain("结构正常");
     expect(wrapper.text()).toContain("页面不会回显已保存的 Cookie 原文");
   });

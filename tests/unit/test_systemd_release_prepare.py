@@ -10,7 +10,6 @@ FULL_COMMIT = "abcdef1" + "0" * 33
 PREPARE_PATHS = (
     "VERSION",
     "release-manifest.json",
-    "config/tgto-contract.json",
     "frontend/dist/index.html",
     "src/watch_assistant",
     "src/watch_assistant/app.py",

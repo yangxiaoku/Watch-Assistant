@@ -601,7 +601,7 @@ export interface P115SettingsResponse {
     share: boolean;
   };
   cookie: {
-    source: "managed" | "tgtodrive";
+    source: "managed" | "file";
     configured: boolean;
     structure_valid: boolean;
     sync_status: "success" | "failed" | "unknown";
@@ -619,7 +619,7 @@ export interface CredentialSourceResponse {
 
 export interface P115CredentialStatus {
   configured: boolean;
-  source: "managed" | "tgtodrive";
+  source: "managed" | "file";
   last_updated_at: string | null;
   structure_valid: boolean;
   ready: boolean;

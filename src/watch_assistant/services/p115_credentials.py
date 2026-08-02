@@ -119,7 +119,7 @@ def normalize_cookie_text(text: str) -> str | None:
 
 
 class CompositeCookieProvider:
-    """Prefer an in-memory managed cookie, then use the TgtoDrive file."""
+    """Prefer an in-memory managed cookie, then use the configured P115 file."""
 
     __slots__ = ("_fallback", "_managed")
 
@@ -136,7 +136,7 @@ class CompositeCookieProvider:
 
     @property
     def source(self) -> str:
-        return "managed" if self._managed is not None else "tgtodrive"
+        return "managed" if self._managed is not None else "file"
 
     def set_managed(self, cookie: str | None) -> None:
         self._managed = normalize_cookie_text(cookie) if cookie else None

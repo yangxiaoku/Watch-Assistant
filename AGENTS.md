@@ -8,8 +8,8 @@ SQLAlchemy/SQLite，前端为 Vue 3/TypeScript/Vite。
 - 已实现并以 `README.md` 为准：TMDB 发现、季度资料、PanSou 聚合搜索、磁力内容检测、
   质量/语义筛选、P115 Cookie readiness 与受限适配、任务状态机、SQLite、Web 会话、
   设置中心、中文界面和本地日志。
-- TgtoDrive 没有经过验证的稳定提交/状态契约；真实推送必须保持禁用，返回
-  `push_unsupported`，不得猜测接口、调用内部 `.pyc` 或修改其数据库。
+- 磁力和 115 分享任务只能通过独立的 p115 gateway；分享能力和所有 115 写入均须按
+  独立契约、功能开关、计划/确认、幂等和审计门禁执行，门禁未满足时必须 fail-closed。
 - 规划但尚未实现或尚未验收：115 影视库自动整理、STRM 全量/增量同步、订阅追更、
   库存去重、字幕、Agent CLI/MCP、PWA 等。以 `docs/requirements/` 的状态为准，
   不得描述为已上线。
@@ -40,8 +40,8 @@ SQLAlchemy/SQLite，前端为 Vue 3/TypeScript/Vite。
 - 部署主机：`192.168.6.236`。不得把密码、Cookie、Token、API Key 或 Secret 写入代码、
   文档、日志、命令输出或测试 fixture。
 - 主要部署定义：`docker-compose.yml`。外部 Docker 网络为 `pansou_default`
-  （可由 `EXTERNAL_NETWORK` 覆盖）；PanSou、TgtoDrive、qBittorrent、115 均是外部依赖
-  或适配器，不随普通应用操作重启。
+  （可由 `EXTERNAL_NETWORK` 覆盖）；PanSou、qBittorrent 和 115 均是外部依赖或适配器，
+  不随普通应用操作重启。
 - Compose 容器内部监听 `8000`，健康检查为
   `http://127.0.0.1:8000/api/v1/health`；宿主机端口由 `WATCH_ASSISTANT_PORT` 控制，
   `.env.example` 为 `8115`。数据卷为 `${DATA_DIR:-./data}` 挂载到容器 `/data`。
@@ -49,7 +49,7 @@ SQLAlchemy/SQLite，前端为 Vue 3/TypeScript/Vite。
   `/opt/watch-assistant/current`，监听 `8115`，状态目录 `/var/lib/watch-assistant`，
   环境文件 `/etc/watch-assistant.env`。服务器实际 Docker/Compose 是否在运行、实际
   `DATA_DIR` 和反向代理/Tailscale 暴露方式均须在发布前核对；不能猜测。
-- `P115_ENABLED`、目标目录和能力开关均需显式配置；TgtoDrive 契约未验证时禁止真实推送。
+- `P115_ENABLED`、目标目录和能力开关均需显式配置；p115 写入契约未验证时禁止真实写入。
 
 常用命令（不包含凭据）：
 
@@ -76,7 +76,7 @@ ssh root@192.168.6.236 'curl -fsS http://127.0.0.1:8115/api/v1/health'
 
 ## 强制安全规则
 
-- 不猜测第三方 API；不调用内部 `.pyc`；不直接修改 TgtoDrive 数据库。
+- 不猜测第三方 API，不调用内部 `.pyc`，不直接修改第三方数据库。
 - 115 移动、重命名、隔离、洗版、清理和删除必须先完成契约验证、计划预览、人工确认、
   幂等和审计。`uncertain` 必须先只读核对远端，禁止直接重复提交。
 - 永久删除默认关闭，优先隔离和可恢复操作；清理只可处理系统受管清单，扫描不完整时禁止

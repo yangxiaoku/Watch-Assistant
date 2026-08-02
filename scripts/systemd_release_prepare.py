@@ -27,7 +27,6 @@ DEFAULT_SERVICE_USER = "watch-assistant"
 DEFAULT_REQUIRED_PATHS = (
     "VERSION",
     "release-manifest.json",
-    "config/tgto-contract.json",
     "frontend/dist/index.html",
     "src/watch_assistant",
     "src/watch_assistant/app.py",

@@ -28,7 +28,7 @@ P115_DIRECTORY_ROOT_ID = "0"
 
 
 class P115CookieResponse(BaseModel):
-    source: Literal["managed", "tgtodrive"]
+    source: Literal["managed", "file"]
     configured: bool
     structure_valid: bool
     sync_status: Literal["success", "failed", "unknown"]

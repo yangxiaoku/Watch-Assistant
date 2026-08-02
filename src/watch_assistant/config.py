@@ -1,8 +1,6 @@
 """Runtime configuration loaded from environment variables."""
 
-import json
 from pathlib import Path
-from typing import Any
 
 from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -30,11 +28,6 @@ class Settings(BaseSettings):
         default="https://api.themoviedb.org/3",
         min_length=1,
         validation_alias="TMDB_BASE_URL",
-    )
-    tgto_base_url: str = Field(min_length=1, validation_alias="TGTO_BASE_URL")
-    tgto_contract_path: Path = Field(
-        default=Path("config/tgto-contract.json"),
-        validation_alias="TGTO_CONTRACT_PATH",
     )
     cookie_secure: bool = Field(default=False, validation_alias="COOKIE_SECURE")
     web_session_ttl_hours: int = Field(
@@ -201,11 +194,3 @@ class Settings(BaseSettings):
         if self.prowlarr_enabled and not self.prowlarr_api_key.get_secret_value():
             raise ValueError("PROWLARR_ENABLED requires PROWLARR_API_KEY")
         return self
-
-
-def load_tgto_contract(path: Path | str) -> dict[str, Any]:
-    with Path(path).open(encoding="utf-8") as contract_file:
-        contract = json.load(contract_file)
-    if not isinstance(contract, dict):
-        raise TypeError("TgtoDrive contract root must be an object")
-    return contract
