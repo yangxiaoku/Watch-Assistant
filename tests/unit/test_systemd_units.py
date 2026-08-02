@@ -1,3 +1,4 @@
+import stat
 import subprocess
 from pathlib import Path
 
@@ -76,6 +77,12 @@ def test_release_startup_smoke_is_tracked_as_executable():
         pytest.skip("git metadata is unavailable")
 
     assert result.stdout.split(maxsplit=1)[0] == "100755"
+
+
+def test_systemd_release_driver_is_executable():
+    script = DEPLOY_DIR.parent / "scripts" / "deploy_systemd_release.sh"
+
+    assert script.stat().st_mode & stat.S_IXUSR
 
 
 def test_systemd_release_deploy_runs_prepare_before_metadata_update():
