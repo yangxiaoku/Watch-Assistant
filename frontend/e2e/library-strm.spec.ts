@@ -54,7 +54,6 @@ const cleanupPlan = {
 };
 
 test("runs full STRM generation and reviewed cleanup on the library workbench", async ({ page }, testInfo) => {
-  await page.on("dialog", (dialog) => dialog.accept());
   await page.route("**/api/v1/health", (route) => route.fulfill({ json: { status: "ok", push_supported: false, inspection_supported: false, strm_capabilities: { full: true, incremental: true, cleanup: true, playback: false, playback_contract_verified: false } } }));
   await page.route("**/api/v1/auth/me", (route) => route.fulfill({ json: { authenticated: true, via_bearer: false, csrf_token: "csrf-test" } }));
   await page.route("**/api/v1/libraries?**", (route) => route.fulfill({ json: { items: [library], next_cursor: null } }));
@@ -83,13 +82,16 @@ test("runs full STRM generation and reviewed cleanup on the library workbench", 
   await expect(page.getByRole("heading", { name: "媒体库与 STRM" })).toBeVisible();
   await page.getByRole("button", { name: "全量 STRM" }).click();
   await expect(page.getByText("STRM 全量同步完成")).toBeVisible();
-  await expect(page.locator(".library-operation-section strong")).toHaveText("已完成");
+  await expect(page.locator(".library-operation-section strong")).toHaveText("成功");
 
   await page.getByRole("button", { name: "预览失效清理" }).click();
   await expect(page.getByText("失效清理预览已生成，共 1 项，1 项可执行")).toBeVisible();
-  await page.getByRole("button", { name: "确认执行清理" }).click();
+  await page.getByRole("button", { name: "查看摘要并确认清理" }).click();
+  await expect(page.getByRole("dialog")).toContainText("可退休");
+  await page.getByRole("dialog").getByRole("checkbox", { name: "我已核对上述摘要，确认继续此操作" }).check();
+  await page.getByRole("dialog").getByRole("button", { name: "确认并提交" }).click();
   await expect(page.getByText("失效清理已完成，退休 1 个受管 STRM")).toBeVisible();
-  await expect(page.locator(".library-operation-section strong")).toHaveText("已完成");
+  await expect(page.locator(".library-operation-section strong")).toHaveText("成功");
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
   await page.screenshot({ path: testInfo.outputPath(`library-strm-${testInfo.project.name}.png`), fullPage: true });
 });

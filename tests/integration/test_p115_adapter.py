@@ -4,7 +4,8 @@ import os
 import pytest
 
 from watch_assistant.adapters.p115 import INFOHASH_REMOTE_REF_PREFIX, P115Adapter
-from watch_assistant.schemas import RemoteStatus
+from watch_assistant.adapters.p115_library import LibraryEntry
+from watch_assistant.schemas import RemoteObservation, RemoteStatus
 from watch_assistant.services.p115_credentials import CookieProvider
 
 COOKIE = "UID=123_A1_456; CID=cid; KID=kid; SEID=seid"
@@ -88,6 +89,16 @@ class FakeP115Client:
             return response
 
         return deliver()
+
+
+class FakeReadOnlyGateway:
+    def __init__(self, detail):
+        self.detail = detail
+        self.file_ids = []
+
+    async def get_file_detail(self, file_id):
+        self.file_ids.append(file_id)
+        return self.detail
 
 
 def _provider(tmp_path, value=COOKIE):
@@ -291,6 +302,108 @@ async def test_status_queries_task_list_and_supports_infohash_fallback(tmp_path)
     assert fake.list_payloads == [{"page": 1}]
     assert fake.add_payloads == []
     assert fake.share_payloads == []
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
+async def test_available_status_without_file_id_stays_uncertain(tmp_path):
+    provider, _path = _provider(tmp_path)
+    infohash = "c" * 40
+    fake = FakeP115Client(
+        task_response={
+            "state": True,
+            "data": [{"info_hash": infohash, "status": "available"}],
+        }
+    )
+    adapter = P115Adapter(provider, 7, client_factory=lambda _cookie: fake)
+
+    observation = await adapter.get_status("infohash:" + infohash)
+
+    assert isinstance(observation, RemoteObservation)
+    assert observation.status is RemoteStatus.UNCERTAIN
+    assert observation.error_code == "availability_file_id_unavailable"
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
+async def test_available_status_requires_readonly_file_detail_evidence(tmp_path):
+    provider, _path = _provider(tmp_path)
+    infohash = "c" * 40
+    fake = FakeP115Client(
+        task_response={
+            "state": True,
+            "data": [
+                {"info_hash": infohash, "status": "available", "fid": "101"}
+            ],
+        }
+    )
+    gateway = FakeReadOnlyGateway(
+        LibraryEntry(
+            directory_id=None,
+            file_id="101",
+            parent_id="7",
+            name="hidden-name.mkv",
+            is_directory=False,
+            size_bytes=None,
+            modified_at=None,
+            pickcode=None,
+        )
+    )
+    adapter = P115Adapter(
+        provider,
+        7,
+        client_factory=lambda _cookie: fake,
+        readonly_gateway=gateway,
+    )
+
+    observation = await adapter.get_status("infohash:" + infohash)
+
+    assert isinstance(observation, RemoteObservation)
+    assert observation.status is RemoteStatus.AVAILABLE
+    assert observation.file_id == "101"
+    assert observation.parent_id == "7"
+    assert observation.is_directory is False
+    assert observation.availability_verified is True
+    assert gateway.file_ids == ["101"]
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
+async def test_available_status_rejects_wrong_parent_from_readonly_detail(tmp_path):
+    provider, _path = _provider(tmp_path)
+    infohash = "c" * 40
+    fake = FakeP115Client(
+        task_response={
+            "state": True,
+            "data": [
+                {"info_hash": infohash, "status": "available", "fid": "101"}
+            ],
+        }
+    )
+    gateway = FakeReadOnlyGateway(
+        LibraryEntry(
+            directory_id=None,
+            file_id="101",
+            parent_id="8",
+            name="hidden-name.mkv",
+            is_directory=False,
+            size_bytes=None,
+            modified_at=None,
+            pickcode=None,
+        )
+    )
+    adapter = P115Adapter(
+        provider,
+        7,
+        client_factory=lambda _cookie: fake,
+        readonly_gateway=gateway,
+    )
+
+    observation = await adapter.get_status("infohash:" + infohash)
+
+    assert isinstance(observation, RemoteObservation)
+    assert observation.status is RemoteStatus.UNCERTAIN
+    assert observation.error_code == "availability_parent_mismatch"
     await adapter.aclose()
 
 

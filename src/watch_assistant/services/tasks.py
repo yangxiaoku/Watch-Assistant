@@ -1,6 +1,7 @@
 """Task creation, idempotency, and state transitions."""
 
 import asyncio
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
 from uuid import uuid4
@@ -12,7 +13,9 @@ from watch_assistant.models import Resource, Task, TaskState, WorkflowEvidence
 from watch_assistant.schemas import (
     EvidenceSource,
     EvidenceStatus,
+    RemoteObservation,
     RemoteStatus,
+    SubmissionResult,
     TaskAction,
     WorkflowStageName,
     WorkflowStageStatus,
@@ -36,7 +39,9 @@ REUSABLE_STATES = (
 
 
 class TaskStatusAdapter(Protocol):
-    async def get_status(self, remote_ref: str) -> RemoteStatus | None: ...
+    async def get_status(
+        self, remote_ref: str
+    ) -> RemoteStatus | RemoteObservation | None: ...
 
 
 class ResourceNotFound(LookupError):
@@ -63,20 +68,65 @@ class ReconciliationUnavailable(RuntimeError):
     pass
 
 
+AVAILABILITY_OBSERVATION_UNVERIFIED = "availability_observation_unverified"
+TASK_LEASE_LOST = "lease_claim_lost"
+
+
+RemoteState = RemoteStatus | RemoteObservation
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class TaskLease:
+    """The immutable claim context used to fence one worker attempt."""
+
+    task_id: str
+    lease_owner: str
+    lease_token: str
+    lease_expires_at: datetime
+    resource_id: str | None
+    workflow_id: str | None
+    target_directory_id: str | None
+    action: TaskAction
+    encrypted_url_snapshot: str
+    encrypted_password_snapshot: str | None
+    remote_ref: str | None
+
+    def __repr__(self) -> str:
+        return (
+            "TaskLease(task_id=<redacted>, lease_owner=<redacted>, "
+            f"lease_token=<redacted>, lease_expires_at={self.lease_expires_at!r})"
+        )
+
+
 def task_state_from_remote_status(
     status: RemoteStatus, *, allow_available: bool = False
 ) -> TaskState:
+    del allow_available
     if status in {RemoteStatus.ACCEPTED, RemoteStatus.SUBMITTED}:
         return TaskState.SUBMITTED
     if status is RemoteStatus.DOWNLOADING:
         return TaskState.DOWNLOADING
-    if status is RemoteStatus.AVAILABLE and allow_available:
-        return TaskState.AVAILABLE
     if status is RemoteStatus.NEEDS_AUTH:
         return TaskState.NEEDS_AUTH
     if status is RemoteStatus.FAILED:
         return TaskState.FAILED
     return TaskState.UNCERTAIN
+
+
+def task_state_from_remote_observation(observation: RemoteObservation) -> TaskState:
+    """Convert a remote result without trusting a bare AVAILABLE marker."""
+
+    try:
+        status = RemoteStatus(observation.status)
+    except (TypeError, ValueError):
+        return TaskState.UNCERTAIN
+    if status is RemoteStatus.AVAILABLE:
+        return (
+            TaskState.AVAILABLE
+            if observation.availability_verified
+            else TaskState.UNCERTAIN
+        )
+    return task_state_from_remote_status(status)
 
 
 def workflow_stage_status_for_task_state(state: TaskState) -> WorkflowStageStatus:
@@ -108,25 +158,32 @@ def evidence_status_for_task_state(state: TaskState) -> EvidenceStatus:
 async def apply_remote_status(
     session: AsyncSession,
     task: Task,
-    remote_status: RemoteStatus,
+    remote_status: RemoteState,
     *,
     source: EvidenceSource,
-    verified_available: bool,
+    verified_available: bool = False,
 ) -> WorkflowEvidence:
-    """Apply a read-only remote observation without ever submitting again."""
+    """Apply a remote result without trusting a caller-supplied AVAILABLE flag."""
 
-    if verified_available and source is not EvidenceSource.READONLY_RECONCILIATION:
+    del verified_available
+    observation = _as_remote_observation(remote_status)
+    if observation is None:
+        raise WorkflowConflict("workflow_evidence_required")
+    state = task_state_from_remote_observation(observation)
+    availability_verified = state is TaskState.AVAILABLE
+    if availability_verified and source is not EvidenceSource.READONLY_RECONCILIATION:
         raise WorkflowConflict("workflow_evidence_required")
     if task.state is TaskState.AVAILABLE and (
-        remote_status is not RemoteStatus.AVAILABLE or not verified_available
+        not availability_verified
     ):
         raise WorkflowConflict("workflow_stage_terminal")
-    state = task_state_from_remote_status(
-        remote_status, allow_available=verified_available
-    )
     task.state = state
-    task.error_code = None if state not in {TaskState.FAILED, TaskState.UNCERTAIN} else task.error_code
-    task.error_message = None if state not in {TaskState.FAILED, TaskState.UNCERTAIN} else task.error_message
+    if state not in {TaskState.FAILED, TaskState.UNCERTAIN}:
+        task.error_code = None
+        task.error_message = None
+    elif observation.error_code is not None:
+        task.error_code = observation.error_code
+        task.error_message = _observation_error_message(observation.error_code)
     task.updated_at = datetime.now(UTC)
     evidence = await record_evidence(
         session,
@@ -143,10 +200,10 @@ async def apply_remote_status(
         source=source,
         subject_id=task.id,
         status=evidence_status_for_task_state(state),
-        verified=state is TaskState.AVAILABLE and verified_available,
+        verified=availability_verified,
     )
     if task.workflow_id is not None:
-        if state is TaskState.AVAILABLE and verified_available:
+        if availability_verified:
             await advance_availability_from_evidence(
                 session, task.workflow_id, task.id, evidence
             )
@@ -164,17 +221,24 @@ async def apply_remote_status(
     return evidence
 
 
-def recover_after_restart(task: Task, remote_status: RemoteStatus | None) -> None:
+def recover_after_restart(task: Task, remote_status: RemoteState | None) -> None:
     task.lease_owner = None
+    task.lease_token = None
     task.lease_expires_at = None
     task.updated_at = datetime.now(UTC)
     if task.state is TaskState.AVAILABLE:
         return
-    task.state = (
-        task_state_from_remote_status(remote_status, allow_available=False)
-        if remote_status is not None
-        else TaskState.UNCERTAIN
-    )
+    if remote_status is None:
+        task.state = TaskState.UNCERTAIN
+        return
+    observation = _as_remote_observation(remote_status)
+    if observation is None:
+        task.state = TaskState.UNCERTAIN
+        return
+    task.state = task_state_from_remote_observation(observation)
+    if observation.error_code is not None:
+        task.error_code = observation.error_code
+        task.error_message = _observation_error_message(observation.error_code)
 
 
 def choose_existing_task(
@@ -205,8 +269,68 @@ def prepare_manual_retry(task: Task) -> None:
     task.error_code = None
     task.error_message = None
     task.lease_owner = None
+    task.lease_token = None
     task.lease_expires_at = None
     task.updated_at = datetime.now(UTC)
+
+
+def _task_lease(
+    task: Task,
+    owner: str,
+    token: str,
+    expires_at: datetime,
+) -> TaskLease:
+    return TaskLease(
+        task_id=task.id,
+        lease_owner=owner,
+        lease_token=token,
+        lease_expires_at=expires_at,
+        resource_id=task.resource_id,
+        workflow_id=task.workflow_id,
+        target_directory_id=task.target_directory_id,
+        action=task.action,
+        encrypted_url_snapshot=task.encrypted_url_snapshot,
+        encrypted_password_snapshot=task.encrypted_password_snapshot,
+        remote_ref=task.remote_ref,
+    )
+
+
+async def _fenced_task(
+    session: AsyncSession,
+    lease: TaskLease,
+    current_time: datetime,
+) -> Task | None:
+    """Acquire the task row for a final write using the lease predicates."""
+
+    result = await session.execute(
+        update(Task)
+        .where(
+            Task.id == lease.task_id,
+            Task.state == TaskState.SUBMITTING,
+            Task.lease_owner == lease.lease_owner,
+            Task.lease_token == lease.lease_token,
+            Task.lease_expires_at.is_not(None),
+            Task.lease_expires_at > current_time,
+        )
+        .values(updated_at=current_time)
+        .execution_options(synchronize_session=False)
+    )
+    if result.rowcount != 1:
+        return None
+    return await session.get(Task, lease.task_id)
+
+
+def _release_task_lease(task: Task) -> None:
+    task.lease_owner = None
+    task.lease_token = None
+    task.lease_expires_at = None
+
+
+def _validate_lease_parameters(owner: str, lease_duration: timedelta) -> None:
+    if not isinstance(owner, str) or not owner or len(owner) > 100:
+        raise ValueError("invalid_worker_owner")
+    if lease_duration.total_seconds() <= 0:
+        raise ValueError("invalid_lease_duration")
 
 
 class TaskService:
@@ -313,6 +437,236 @@ class TaskService:
         async with self._session_factory() as session:
             return await session.get(Task, task_id)
 
+    async def claim_next(
+        self,
+        *,
+        owner: str,
+        lease_duration: timedelta,
+        now: datetime | None = None,
+    ) -> TaskLease | None:
+        """Conditionally claim the oldest queued task in SQLite.
+
+        The candidate read is deliberately followed by a conditional update.
+        Concurrent workers may read the same candidate, but only the update
+        whose state and lease predicates still match can commit the claim.
+        """
+
+        _validate_lease_parameters(owner, lease_duration)
+        current_time = _as_utc(now or datetime.now(UTC))
+        async with self._session_factory() as session:
+            while True:
+                task = await session.scalar(
+                    select(Task)
+                    .where(
+                        Task.state == TaskState.QUEUED,
+                        Task.lease_owner.is_(None),
+                        Task.lease_token.is_(None),
+                        (
+                            Task.lease_expires_at.is_(None)
+                            | (Task.lease_expires_at <= current_time)
+                        ),
+                    )
+                    .order_by(Task.created_at.asc(), Task.id.asc())
+                    .limit(1)
+                )
+                if task is None:
+                    return None
+                token = uuid4().hex
+                expires_at = current_time + lease_duration
+                result = await session.execute(
+                    update(Task)
+                    .where(
+                        Task.id == task.id,
+                        Task.state == TaskState.QUEUED,
+                        Task.lease_owner.is_(None),
+                        Task.lease_token.is_(None),
+                        (
+                            Task.lease_expires_at.is_(None)
+                            | (Task.lease_expires_at <= current_time)
+                        ),
+                    )
+                    .values(
+                        state=TaskState.SUBMITTING,
+                        attempts=Task.attempts + 1,
+                        lease_owner=owner,
+                        lease_token=token,
+                        lease_expires_at=expires_at,
+                        updated_at=current_time,
+                    )
+                    .execution_options(synchronize_session=False)
+                )
+                if result.rowcount != 1:
+                    await session.rollback()
+                    continue
+                await session.commit()
+                return _task_lease(task, owner, token, expires_at)
+
+    async def claim_expired(
+        self,
+        *,
+        owner: str,
+        lease_duration: timedelta,
+        now: datetime | None = None,
+    ) -> TaskLease | None:
+        """Take over one expired submitting task with a new fencing token."""
+
+        _validate_lease_parameters(owner, lease_duration)
+        current_time = _as_utc(now or datetime.now(UTC))
+        async with self._session_factory() as session:
+            while True:
+                task = await session.scalar(
+                    select(Task)
+                    .where(
+                        Task.state == TaskState.SUBMITTING,
+                        Task.lease_expires_at.is_not(None),
+                        Task.lease_expires_at <= current_time,
+                    )
+                    .order_by(Task.updated_at.asc(), Task.id.asc())
+                    .limit(1)
+                )
+                if task is None:
+                    return None
+                token = uuid4().hex
+                expires_at = current_time + lease_duration
+                result = await session.execute(
+                    update(Task)
+                    .where(
+                        Task.id == task.id,
+                        Task.state == TaskState.SUBMITTING,
+                        Task.lease_expires_at.is_not(None),
+                        Task.lease_expires_at <= current_time,
+                    )
+                    .values(
+                        lease_owner=owner,
+                        lease_token=token,
+                        lease_expires_at=expires_at,
+                        updated_at=current_time,
+                    )
+                    .execution_options(synchronize_session=False)
+                )
+                if result.rowcount != 1:
+                    await session.rollback()
+                    continue
+                await session.commit()
+                return _task_lease(task, owner, token, expires_at)
+
+    async def is_lease_active(
+        self, lease: TaskLease, *, now: datetime | None = None
+    ) -> bool:
+        current_time = _as_utc(now or datetime.now(UTC))
+        async with self._session_factory() as session:
+            task_id = await session.scalar(
+                select(Task.id).where(
+                    Task.id == lease.task_id,
+                    Task.state == TaskState.SUBMITTING,
+                    Task.lease_owner == lease.lease_owner,
+                    Task.lease_token == lease.lease_token,
+                    Task.lease_expires_at.is_not(None),
+                    Task.lease_expires_at > current_time,
+                )
+            )
+            return task_id is not None
+
+    async def renew(
+        self,
+        lease: TaskLease,
+        *,
+        lease_duration: timedelta,
+        now: datetime | None = None,
+    ) -> bool:
+        """Renew only the still-live claim that owns this exact token."""
+
+        _validate_lease_parameters(lease.lease_owner, lease_duration)
+        current_time = _as_utc(now or datetime.now(UTC))
+        expires_at = current_time + lease_duration
+        async with self._session_factory() as session:
+            result = await session.execute(
+                update(Task)
+                .where(
+                    Task.id == lease.task_id,
+                    Task.state == TaskState.SUBMITTING,
+                    Task.lease_owner == lease.lease_owner,
+                    Task.lease_token == lease.lease_token,
+                    Task.lease_expires_at.is_not(None),
+                    Task.lease_expires_at > current_time,
+                )
+                .values(lease_expires_at=expires_at, updated_at=current_time)
+                .execution_options(synchronize_session=False)
+            )
+            await session.commit()
+            return result.rowcount == 1
+
+    async def finish_submission(
+        self, lease: TaskLease, result: SubmissionResult
+    ) -> Task | None:
+        """Persist a submission result only while the claim is still fenced."""
+
+        current_time = datetime.now(UTC)
+        async with self._session_factory() as session:
+            task = await _fenced_task(session, lease, current_time)
+            if task is None:
+                return None
+            task.remote_ref = result.remote_ref
+            task.error_code = result.error_code
+            task.error_message = result.error_message
+            task.submitted_at = (
+                current_time
+                if result.status
+                in {
+                    RemoteStatus.ACCEPTED,
+                    RemoteStatus.SUBMITTED,
+                    RemoteStatus.DOWNLOADING,
+                    RemoteStatus.AVAILABLE,
+                }
+                else None
+            )
+            await apply_remote_status(
+                session,
+                task,
+                result.status,
+                source=EvidenceSource.SUBMISSION_RECEIPT,
+                verified_available=False,
+            )
+            _release_task_lease(task)
+            task.updated_at = current_time
+            await session.commit()
+            return task
+
+    async def finish_recovery(
+        self, lease: TaskLease, remote_status: RemoteState | None
+    ) -> Task | None:
+        """Persist a read-only recovery observation under the new claim."""
+
+        current_time = datetime.now(UTC)
+        observation = _as_remote_observation(remote_status)
+        if observation is None:
+            observation = RemoteObservation(status=RemoteStatus.UNCERTAIN)
+        async with self._session_factory() as session:
+            task = await _fenced_task(session, lease, current_time)
+            if task is None:
+                return None
+            await apply_remote_status(
+                session,
+                task,
+                observation,
+                source=EvidenceSource.READONLY_RECONCILIATION,
+            )
+            _release_task_lease(task)
+            task.updated_at = current_time
+            await session.commit()
+            return task
+
+    async def mark_lease_lost(self, lease: TaskLease) -> Task | None:
+        """Fence a worker that lost its claim into an explicit review state."""
+
+        return await self.finish_recovery(
+            lease,
+            RemoteObservation(
+                status=RemoteStatus.UNCERTAIN,
+                error_code=TASK_LEASE_LOST,
+            ),
+        )
+
     async def reconcile(
         self,
         task_id: str,
@@ -326,30 +680,41 @@ class TaskService:
                 raise ResourceNotFound(task_id)
             if not task.remote_ref:
                 raise TaskNotReconcilable("task_not_reconcilable")
+            if task.state is TaskState.SUBMITTING and (
+                task.lease_owner is not None or task.lease_token is not None
+            ):
+                raise TaskNotReconcilable("task_lease_active")
             remote_ref = task.remote_ref
+            target_directory_id = task.target_directory_id
+            lease_owner = task.lease_owner
+            lease_token = task.lease_token
         try:
-            remote_status = await adapter.get_status(remote_ref)
+            remote_status = await _read_task_status(
+                adapter, remote_ref, target_directory_id=target_directory_id
+            )
         except Exception as exc:
             raise ReconciliationUnavailable("reconciliation_unavailable") from exc
         if remote_status is None:
             raise ReconciliationUnavailable("reconciliation_unavailable")
-        try:
-            normalized_status = RemoteStatus(remote_status)
-        except ValueError as exc:
-            raise ReconciliationUnavailable("reconciliation_unavailable") from exc
+        normalized_observation = _as_remote_observation(remote_status)
+        if normalized_observation is None:
+            raise ReconciliationUnavailable("reconciliation_unavailable")
 
         async with self._reconcile_lock, self._session_factory() as session:
             task = await session.get(Task, task_id)
             if task is None:
                 raise ResourceNotFound(task_id)
-            if task.remote_ref != remote_ref:
+            if (
+                task.remote_ref != remote_ref
+                or task.lease_owner != lease_owner
+                or task.lease_token != lease_token
+            ):
                 raise ReconciliationUnavailable("reconciliation_conflict")
             evidence = await apply_remote_status(
                 session,
                 task,
-                normalized_status,
+                normalized_observation,
                 source=EvidenceSource.READONLY_RECONCILIATION,
-                verified_available=True,
             )
             await session.commit()
             return task, evidence
@@ -425,11 +790,13 @@ class TaskService:
                     Task.id == task_id,
                     Task.state == TaskState.QUEUED,
                     Task.lease_owner.is_(None),
+                    Task.lease_token.is_(None),
                 )
                 .values(
                     state=TaskState.CANCELLED,
                     error_code="cancelled",
                     error_message="task_cancelled",
+                    lease_token=None,
                     updated_at=now,
                 )
                 .execution_options(synchronize_session=False)
@@ -439,6 +806,7 @@ class TaskService:
             task.state = TaskState.CANCELLED
             task.error_code = "cancelled"
             task.error_message = "task_cancelled"
+            task.lease_token = None
             task.updated_at = now
             if task.workflow_id is not None:
                 await sync_child_stage(
@@ -460,6 +828,64 @@ class TaskService:
             resource_id=task.resource_id,
         )
         return task
+
+
+async def _read_task_status(
+    adapter: TaskStatusAdapter,
+    remote_ref: str,
+    *,
+    target_directory_id: str | None,
+) -> RemoteState | None:
+    """Use a target-aware adapter hook when it exists, preserving old adapters."""
+
+    target_aware = getattr(adapter, "get_status_for_task", None)
+    if callable(target_aware):
+        return await target_aware(
+            remote_ref, target_directory_id=target_directory_id
+        )
+    return await adapter.get_status(remote_ref)
+
+
+def _as_remote_observation(value: object) -> RemoteObservation | None:
+    if isinstance(value, RemoteObservation):
+        try:
+            status = RemoteStatus(value.status)
+        except (TypeError, ValueError):
+            return None
+        error_code = value.error_code
+        if status is RemoteStatus.AVAILABLE and not value.availability_verified:
+            error_code = error_code or AVAILABILITY_OBSERVATION_UNVERIFIED
+        if status is value.status and error_code == value.error_code:
+            return value
+        return RemoteObservation(
+            status=status,
+            file_id=value.file_id,
+            parent_id=value.parent_id,
+            is_directory=value.is_directory,
+            error_code=error_code,
+        )
+    try:
+        status = RemoteStatus(value)
+    except (TypeError, ValueError):
+        return None
+    return RemoteObservation(
+        status=status,
+        error_code=(
+            AVAILABILITY_OBSERVATION_UNVERIFIED
+            if status is RemoteStatus.AVAILABLE
+            else None
+        ),
+    )
+
+
+def _observation_error_message(error_code: str) -> str:
+    return {
+        AVAILABILITY_OBSERVATION_UNVERIFIED: "远端文件可用性尚未完成只读核验。",
+        "availability_file_id_unavailable": "无法可靠取得远端文件 ID。",
+        "availability_parent_mismatch": "远端文件父目录核验不一致。",
+        "availability_observer_unavailable": "远端文件只读观察器暂不可用。",
+        TASK_LEASE_LOST: "任务执行权已变化，外部结果待确认，未继续提交。",
+    }.get(error_code, "远端结果待确认，系统未重复提交。")
 
 
 def _as_utc(value: datetime) -> datetime:

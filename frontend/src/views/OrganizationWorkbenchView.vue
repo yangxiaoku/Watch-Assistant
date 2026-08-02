@@ -2,6 +2,7 @@
 import { Ban, Check, ChevronRight, Eye, ListChecks, LoaderCircle, Play, RefreshCw, Search, Tag } from "@lucide/vue";
 import { computed, onMounted, ref } from "vue";
 import { ApiClient, ApiError, focusFirstFieldError } from "../api";
+import ConfirmDialog from "../components/ConfirmDialog.vue";
 import { describeUiError } from "../errorCatalog";
 import type { OrganizationExecutionBlocker, OrganizationOperationResponse, OrganizationPlanStatus, OrganizationPlanSummary } from "../types";
 
@@ -22,6 +23,11 @@ const loading = ref(false);
 const busy = ref(false);
 const error = ref("");
 const notice = ref("");
+const pendingExecution = ref<
+  | { kind: "single"; plan: OrganizationPlanSummary }
+  | { kind: "batch"; plans: OrganizationPlanSummary[] }
+  | null
+>(null);
 
 const selectedIsReviewable = computed(() => selected.value?.status === "needs_review");
 const selectedCanEdit = computed(() => selected.value?.status === "needs_review" || selected.value?.status === "planned");
@@ -39,6 +45,31 @@ const selectedExecutionBlockers = computed<OrganizationExecutionBlocker[]>(() =>
       }]
     : [];
 });
+const executionDialogOpen = computed(() => pendingExecution.value !== null);
+const executionDialogTitle = computed(() => pendingExecution.value?.kind === "batch" ? "确认批量整理" : "确认执行整理计划");
+const executionDialogSummary = computed(() => pendingExecution.value?.kind === "batch"
+  ? "系统将为当前页可执行计划逐项提交受控整理操作，不能执行的计划会被跳过。"
+  : "系统将根据这份不可变计划提交受控整理操作，服务端仍会在写入前核对远端前置条件。"
+);
+const executionDialogDetails = computed(() => {
+  const pending = pendingExecution.value;
+  if (!pending) return [];
+  if (pending.kind === "batch") {
+    const executableActions = pending.plans.reduce((sum, plan) => sum + plan.executable_action_count, 0);
+    return [
+      `计划数量：${pending.plans.length}`,
+      `预计移动：${executableActions} 项`,
+      "遇到版本变化或前置条件不满足的计划时，系统会单独拒绝，不会覆盖其他计划结果。",
+    ];
+  }
+  const plan = pending.plan;
+  return [
+    `计划版本：${plan.revision}`,
+    `预计移动：${plan.executable_action_count} 项，共 ${plan.action_count} 个预览动作`,
+    `前置条件：${plan.precondition_count} 项；计划摘要：${plan.plan_hash.slice(0, 8)}…`,
+  ];
+});
+const executionDialogConfirmLabel = computed(() => pendingExecution.value?.kind === "batch" ? "确认并提交" : "确认并排队");
 
 const statusLabel: Record<OrganizationPlanStatus, string> = {
   needs_review: "待确认",
@@ -120,6 +151,21 @@ async function confirmPlan() {
   await mutate("confirm", () => props.api.confirmOrganizationPlan(plan.plan_id, plan.revision));
 }
 
+function requestExecution(plan: OrganizationPlanSummary): void {
+  if (busy.value || !props.executionEnabled || !plan.can_execute) return;
+  pendingExecution.value = { kind: "single", plan: normalizePlan(plan) };
+}
+
+function requestBatchExecution(): void {
+  const executable = executableItems.value;
+  if (busy.value || !props.executionEnabled || activeStatus.value !== "needs_review" || !executable.length) return;
+  pendingExecution.value = { kind: "batch", plans: executable.map(normalizePlan) };
+}
+
+function closeExecutionDialog(): void {
+  if (!busy.value) pendingExecution.value = null;
+}
+
 async function ignorePlan() {
   const plan = selected.value;
   if (!plan || busy.value || !selectedCanEdit.value) return;
@@ -132,8 +178,7 @@ async function saveAlias() {
   await mutate("alias", () => props.api.aliasOrganizationPlan(plan.plan_id, aliasInput.value, plan.revision));
 }
 
-async function queueOperation() {
-  const plan = selected.value;
+async function queueOperation(plan = selected.value) {
   if (!plan || busy.value || plan.status !== "planned" || !selectedCanExecute.value || !props.executionEnabled) return;
   busy.value = true;
   error.value = "";
@@ -154,8 +199,7 @@ async function queueOperation() {
   }
 }
 
-async function confirmAndQueueOperation() {
-  const plan = selected.value;
+async function confirmAndQueueOperation(plan = selected.value) {
   if (!plan || busy.value || plan.status !== "needs_review" || !selectedCanExecute.value || !props.executionEnabled) return;
   busy.value = true;
   error.value = "";
@@ -277,6 +321,18 @@ async function confirmAndQueueCurrentPage() {
   }
 }
 
+async function confirmPendingExecution(): Promise<void> {
+  const pending = pendingExecution.value;
+  pendingExecution.value = null;
+  if (!pending) return;
+  if (pending.kind === "batch") {
+    await confirmAndQueueCurrentPage();
+    return;
+  }
+  if (pending.plan.status === "needs_review") await confirmAndQueueOperation(pending.plan);
+  else await queueOperation(pending.plan);
+}
+
 async function pollOperation(operationId: string) {
   if (typeof props.api.organizationOperation !== "function") return;
   for (let attempt = 0; attempt < 60; attempt += 1) {
@@ -360,7 +416,7 @@ onMounted(() => {
     <div v-else-if="!items.length" class="organization-empty"><Eye :size="22" /><strong>暂无计划</strong><span>当前状态没有可展示的本地计划。</span></div>
     <div v-else class="organization-layout">
       <div class="organization-list" aria-label="计划列表">
-        <button v-if="executionEnabled && activeStatus === 'needs_review'" class="primary-button organization-batch-action" type="button" :disabled="loading || busy" @click="confirmAndQueueCurrentPage"><ListChecks :size="16" />确认并整理当前页（{{ items.length }}）</button>
+        <button v-if="executionEnabled && activeStatus === 'needs_review'" class="primary-button organization-batch-action" type="button" :disabled="loading || busy" @click="requestBatchExecution"><ListChecks :size="16" />确认并整理当前页（{{ executableItems.length }}）</button>
         <button v-for="plan in items" :key="plan.plan_id" type="button" class="organization-plan-row" :class="{ active: selected?.plan_id === plan.plan_id }" @click="selectPlan(plan)">
           <span class="organization-plan-row-main"><strong>{{ plan.alias || `计划 ${plan.plan_id.slice(0, 8)}` }}</strong><small>{{ statusLabel[plan.status] }}</small></span>
           <span class="organization-plan-row-meta"><span>版本 {{ plan.revision }}</span><ChevronRight :size="16" /></span>
@@ -406,9 +462,9 @@ onMounted(() => {
           <span v-else-if="operation.status === 'organizing'">后台正在执行，页面刷新后仍会保留当前状态。</span>
         </div>
         <div v-if="selectedCanEdit || (selected.status === 'planned' && executionEnabled)" class="organization-actions">
-          <button v-if="selectedIsReviewable && executionEnabled && selectedCanExecute" class="primary-button" type="button" :disabled="busy" @click="confirmAndQueueOperation"><Play :size="16" />确认并开始整理</button>
+          <button v-if="selectedIsReviewable && executionEnabled && selectedCanExecute" class="primary-button" type="button" :disabled="busy" @click="requestExecution(selected)"><Play :size="16" />确认并开始整理</button>
           <button v-else-if="selectedIsReviewable && selectedCanExecute" class="primary-button" type="button" :disabled="busy" @click="confirmPlan"><Check :size="16" />确认本地计划</button>
-          <button v-if="selected.status === 'planned' && executionEnabled && selectedCanExecute" class="primary-button" type="button" :disabled="busy" @click="queueOperation"><Play :size="16" />立即整理</button>
+          <button v-if="selected.status === 'planned' && executionEnabled && selectedCanExecute" class="primary-button" type="button" :disabled="busy" @click="requestExecution(selected)"><Play :size="16" />立即整理</button>
           <button class="secondary-button" type="button" :disabled="busy" @click="ignorePlan"><Ban :size="16" />忽略</button>
         </div>
         <form v-if="selectedCanEdit" class="organization-alias" @submit.prevent="saveAlias">
@@ -417,5 +473,6 @@ onMounted(() => {
         </form>
       </article>
     </div>
+    <ConfirmDialog :open="executionDialogOpen" :title="executionDialogTitle" :summary="executionDialogSummary" :details="executionDialogDetails" :confirm-label="executionDialogConfirmLabel" :busy="busy" @cancel="closeExecutionDialog" @confirm="confirmPendingExecution" />
   </section>
 </template>

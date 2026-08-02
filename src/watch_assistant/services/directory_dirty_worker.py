@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -30,8 +31,16 @@ from watch_assistant.services.organization_outbox import (
     DirectoryDirtyOutboxService,
 )
 from watch_assistant.services.strm_manifest import (
+    StrmGenerationSummary,
     StrmManifestError,
     StrmManifestService,
+)
+from watch_assistant.services.strm_operations import (
+    StrmOperationError,
+    StrmOperationKind,
+    StrmOperationNotFound,
+    StrmOperationService,
+    StrmOperationSummary,
 )
 from watch_assistant.services.workflows import (
     WorkflowNotFound,
@@ -68,6 +77,7 @@ class DirectoryDirtyWorker:
         playback_url_prefix: str,
         cleanup_enabled: bool = False,
         outbox: DirectoryDirtyOutboxService | None = None,
+        operation_service: StrmOperationService | None = None,
         settings_service=None,
         empty_directory_cleaner: EmptyDirectoryCleaner | None = None,
         poll_interval_seconds: float = 5.0,
@@ -85,6 +95,7 @@ class DirectoryDirtyWorker:
         self._playback_url_prefix = playback_url_prefix
         self._cleanup_enabled = bool(cleanup_enabled)
         self._outbox = outbox or DirectoryDirtyOutboxService()
+        self._operations = operation_service or StrmOperationService(session_factory)
         self._settings_service = settings_service
         self._empty_directory_cleaner = empty_directory_cleaner
         self._poll_interval_seconds = float(poll_interval_seconds)
@@ -96,6 +107,11 @@ class DirectoryDirtyWorker:
         lease = await self._outbox.claim_generation(self._session_factory)
         if lease is None:
             return False
+        workflow_id: str | None = None
+        operation: StrmOperationSummary | None = None
+        operation_lease_owner: str | None = None
+        heartbeat_stop: asyncio.Event | None = None
+        heartbeat_task: asyncio.Task[None] | None = None
         try:
             context = await self._load_context(lease)
             if context is None:
@@ -165,22 +181,104 @@ class DirectoryDirtyWorker:
                 )
                 return True
             if strm_linkage_enabled:
-                summary = await self._strm.incremental(
-                    library_id,
+                operation = await self._operations.create(
+                    library_id=library_id,
                     source_scan_run_id=scan.run_id,
-                    output_root=self._output_root,
-                    playback_url_prefix=self._playback_url_prefix,
-                    # Incremental reconciliation only creates/updates current
-                    # entries. Retirement is a separate reviewed cleanup plan.
-                    retire_removed=False,
+                    kind=StrmOperationKind.INCREMENTAL,
+                    workflow_id=workflow_id,
+                    idempotency_key=_dirty_operation_idempotency_key(
+                        lease, scan.run_id
+                    ),
                 )
-                await self._sync_workflow(
-                    workflow_id,
-                    lease,
-                    status=(WorkflowStageStatus.FAILED if getattr(summary, "failed", 0) else WorkflowStageStatus.SUCCEEDED),
-                    reason="strm_finished",
-                    error_code="strm_incremental_failed" if getattr(summary, "failed", 0) else None,
+                if operation.status in {"failed", "timeout", "cancelled"}:
+                    operation = await self._operations.resume(operation.operation_id)
+                operation, acquired = await self._operations.claim_start(
+                    operation.operation_id
                 )
+                if not acquired:
+                    if operation.status == "succeeded":
+                        await self._sync_workflow(
+                            workflow_id,
+                            lease,
+                            status=WorkflowStageStatus.SUCCEEDED,
+                            reason="strm_reused_completed",
+                        )
+                    else:
+                        await self._outbox.retry(
+                            self._session_factory,
+                            lease,
+                            error_code="strm_operation_in_progress",
+                            max_attempts=self._max_attempts,
+                        )
+                        await self._sync_workflow(
+                            workflow_id,
+                            lease,
+                            status=(
+                                WorkflowStageStatus.FAILED
+                                if lease.attempts >= self._max_attempts
+                                else WorkflowStageStatus.WAITING_EXTERNAL
+                            ),
+                            reason="strm_operation_in_progress",
+                            error_code="strm_operation_in_progress",
+                        )
+                        return True
+                else:
+                    operation_lease_owner = await self._operations.get_lease_token(
+                        operation.operation_id
+                    )
+                    if operation_lease_owner is None:
+                        raise StrmOperationError("strm_operation_lease_required")
+                    heartbeat_stop, heartbeat_task = self._start_operation_heartbeat(
+                        operation.operation_id, operation_lease_owner
+                    )
+
+                    async def lease_check() -> bool:
+                        return await self._operations.is_lease_active(
+                            operation.operation_id,
+                            lease_owner=operation_lease_owner,
+                        )
+
+                    async def progress_callback(
+                        progress: StrmGenerationSummary,
+                    ) -> None:
+                        await self._operations.progress(
+                            operation.operation_id,
+                            generated=progress.generated,
+                            unchanged=progress.unchanged,
+                            skipped=progress.skipped,
+                            failed=progress.failed,
+                            retired=progress.retired,
+                            lease_owner=operation_lease_owner,
+                        )
+
+                    summary = await self._strm.incremental(
+                        library_id,
+                        source_scan_run_id=scan.run_id,
+                        output_root=self._output_root,
+                        playback_url_prefix=self._playback_url_prefix,
+                        # Incremental reconciliation only creates/updates current
+                        # entries. Retirement is a separate reviewed cleanup plan.
+                        retire_removed=False,
+                        lease_check=lease_check,
+                        operation_id=operation.operation_id,
+                        progress_callback=progress_callback,
+                    )
+                    operation = await self._finish_operation(
+                        operation,
+                        summary,
+                        lease_owner=operation_lease_owner,
+                    )
+                    await self._sync_workflow(
+                        workflow_id,
+                        lease,
+                        status=(
+                            WorkflowStageStatus.FAILED
+                            if operation.status == "failed"
+                            else WorkflowStageStatus.SUCCEEDED
+                        ),
+                        reason="strm_finished",
+                        error_code=operation.error_code,
+                    )
             if cleanup_empty_directories:
                 candidates = await self._cleanup_candidates(
                     scan.run_id, root_directory_id, actions_json
@@ -194,7 +292,12 @@ class DirectoryDirtyWorker:
             await self._audit("strm.dirty_consumed", "目录变更已完成增量对账")
         except asyncio.CancelledError:
             raise
-        except (LibraryIndexError, StrmManifestError):
+        except (LibraryIndexError, StrmManifestError, StrmOperationError) as error:
+            await self._fail_operation(
+                operation,
+                operation_lease_owner,
+                error_code=getattr(error, "code", str(error)),
+            )
             await self._outbox.retry(
                 self._session_factory,
                 lease,
@@ -213,6 +316,11 @@ class DirectoryDirtyWorker:
                 error_code="reconcile_failed",
             )
         except Exception:  # noqa: BLE001 - details never cross the worker boundary
+            await self._fail_operation(
+                operation,
+                operation_lease_owner,
+                error_code="worker_failed",
+            )
             await self._outbox.retry(
                 self._session_factory,
                 lease,
@@ -230,6 +338,9 @@ class DirectoryDirtyWorker:
                 reason="strm_worker_failed",
                 error_code="worker_failed",
             )
+        finally:
+            if heartbeat_stop is not None and heartbeat_task is not None:
+                await self._stop_operation_heartbeat(heartbeat_stop, heartbeat_task)
         return True
 
     async def run_forever(self, stop_event: asyncio.Event | None = None) -> None:
@@ -242,6 +353,85 @@ class DirectoryDirtyWorker:
                 await asyncio.wait_for(stop.wait(), timeout=self._poll_interval_seconds)
             except TimeoutError:
                 continue
+
+    async def _finish_operation(
+        self,
+        operation: StrmOperationSummary,
+        summary,
+        *,
+        lease_owner: str,
+    ) -> StrmOperationSummary:
+        counts = {
+            "generated": int(getattr(summary, "generated", 0)),
+            "unchanged": int(getattr(summary, "unchanged", 0)),
+            "skipped": int(getattr(summary, "skipped", 0)),
+            "failed": int(getattr(summary, "failed", 0)),
+            "retired": int(getattr(summary, "retired", 0)),
+        }
+        if counts["failed"]:
+            return await self._operations.fail(
+                operation.operation_id,
+                error_code="strm_incremental_failed",
+                lease_owner=lease_owner,
+                **counts,
+            )
+        return await self._operations.complete(
+            operation.operation_id,
+            lease_owner=lease_owner,
+            **counts,
+        )
+
+    async def _fail_operation(
+        self,
+        operation: StrmOperationSummary | None,
+        lease_owner: str | None,
+        *,
+        error_code: str,
+    ) -> None:
+        if operation is None or lease_owner is None:
+            return
+        try:
+            await self._operations.fail(
+                operation.operation_id,
+                error_code=error_code,
+                lease_owner=lease_owner,
+            )
+        except (StrmOperationError, StrmOperationNotFound):
+            # A newer executor may already own or have terminalized the row.
+            # The lease predicate is the fencing boundary in that case.
+            return
+
+    def _start_operation_heartbeat(
+        self, operation_id: str, lease_owner: str
+    ) -> tuple[asyncio.Event, asyncio.Task[None]]:
+        stop = asyncio.Event()
+        task = asyncio.create_task(
+            self._run_operation_heartbeat(operation_id, lease_owner, stop),
+            name=f"watch-assistant-dirty-strm-heartbeat-{operation_id}",
+        )
+        return stop, task
+
+    async def _run_operation_heartbeat(
+        self, operation_id: str, lease_owner: str, stop: asyncio.Event
+    ) -> None:
+        while not stop.is_set():
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=60)
+            except TimeoutError:
+                try:
+                    await self._operations.heartbeat(
+                        operation_id, lease_owner=lease_owner
+                    )
+                except (StrmOperationError, StrmOperationNotFound):
+                    return
+
+    async def _stop_operation_heartbeat(
+        self, stop: asyncio.Event, task: asyncio.Task[None]
+    ) -> None:
+        stop.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
     async def _load_context(
         self, lease: DirectoryDirtyLease
@@ -375,6 +565,19 @@ def _directory_in_plan_scope(directory_id: str, root_directory_id: str, actions_
 
 def _dirty_idempotency_key(lease: DirectoryDirtyLease) -> str:
     return f"dirty-{lease.event_id}-{lease.attempts}"
+
+
+def _dirty_operation_idempotency_key(
+    lease: DirectoryDirtyLease, source_scan_run_id: str
+) -> str:
+    scope = "|".join(
+        (
+            lease.queue_id or lease.event_id,
+            str(lease.generation if lease.generation is not None else lease.attempts),
+            source_scan_run_id,
+        )
+    )
+    return "dirty-" + hashlib.sha256(scope.encode("utf-8")).hexdigest()
 
 
 def _source_parent_ids(actions_json: str) -> set[str]:

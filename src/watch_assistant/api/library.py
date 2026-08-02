@@ -563,6 +563,8 @@ async def require_empty_directory_cleanup(request: Request) -> None:
 
 async def require_empty_directory_cleanup_apply(request: Request) -> None:
     await require_empty_directory_cleanup(request)
+    if not getattr(request.app.state, "system_created_directory_ids", frozenset()):
+        raise HTTPException(status_code=503, detail="empty_directory_cleanup_unavailable")
     if not getattr(request.app.state, "organization_execution_enabled", False):
         raise HTTPException(status_code=503, detail="organization_execution_disabled")
     if not getattr(request.app.state, "organization_write_enabled", False):
@@ -623,6 +625,9 @@ async def create_empty_directory_cleanup_plan(
             library_id=library_id,
             source_scan_run_id=payload.source_scan_run_id,
             protected_directory_ids=_empty_cleanup_protected_ids(library, settings),
+            system_created_directory_ids=getattr(
+                request.app.state, "system_created_directory_ids", frozenset()
+            ),
         )
     except EmptyDirectoryCleanupPlanError as error:
         raise HTTPException(
@@ -701,6 +706,9 @@ async def apply_empty_directory_cleanup_plan(
             confirm=payload.confirm,
             idempotency_key=payload.idempotency_key,
             executor=executor,
+            system_created_directory_ids=getattr(
+                request.app.state, "system_created_directory_ids", frozenset()
+            ),
         )
     except EmptyDirectoryCleanupPlanError as error:
         raise HTTPException(
@@ -1015,7 +1023,7 @@ async def get_library_inventory(
         if library is None:
             raise HTTPException(status_code=404, detail="library_not_found")
         run = await _latest_scan_any(session, library_id)
-        snapshot = await _inventory_snapshot(session, run)
+        snapshot = await _inventory_snapshot(session, run, library=library)
     return _inventory_response(
         library_id,
         run,
@@ -1049,7 +1057,7 @@ async def check_library_inventory(
         if library is None:
             raise HTTPException(status_code=404, detail="library_not_found")
         run = await _latest_scan_any(session, library_id)
-        snapshot = await _inventory_snapshot(session, run)
+        snapshot = await _inventory_snapshot(session, run, library=library)
     decision = check_inventory(
         snapshot,
         object_id=object_id,
@@ -1099,7 +1107,7 @@ async def bind_library_identity(
         if library is None:
             raise HTTPException(status_code=404, detail="library_not_found")
         run = await _latest_scan_any(session, library_id)
-        if run is None or not run.complete:
+        if not _scan_is_complete(run, library):
             raise HTTPException(status_code=409, detail="library_inventory_incomplete")
         entry = await session.scalar(
             select(LibraryScanEntry).where(
@@ -1193,6 +1201,8 @@ async def _latest_scan_any(session, library_id: str) -> LibraryScanRun | None:
 async def _inventory_snapshot(
     session,
     run: LibraryScanRun | None,
+    *,
+    library: MediaLibrary | None = None,
 ) -> InventorySnapshot:
     if run is None:
         return build_snapshot((), complete=False, captured_at=None)
@@ -1253,12 +1263,33 @@ async def _inventory_snapshot(
             )
             for entry in entries
         ),
-        complete=run.complete,
+        complete=_scan_is_complete(run, library),
         captured_at=(
             run.updated_at
             if run.updated_at.tzinfo is not None
             else run.updated_at.replace(tzinfo=UTC)
         ),
+    )
+
+
+def _scan_is_complete(
+    run: LibraryScanRun | None,
+    library: MediaLibrary | None = None,
+) -> bool:
+    return bool(
+        run is not None
+        and run.complete
+        and run.state == "completed"
+        and run.snapshot_revision is not None
+        and (
+            library is None
+            or (
+                library.enabled
+                and library.scope_verified
+                and run.library_id == library.id
+                and run.root_directory_id == library.root_directory_id
+            )
+        )
     )
 
 
@@ -1324,6 +1355,8 @@ def _matched_count(
     episode_start: int | None,
     episode_end: int | None,
 ) -> int:
+    if not snapshot.complete:
+        return 0
     return sum(
         (
             (object_id is not None and item.file.object_id == object_id)

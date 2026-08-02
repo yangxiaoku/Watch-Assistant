@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { CircleAlert, CircleCheck, Database, ListTodo, LoaderCircle, RefreshCw, X } from "@lucide/vue";
 import { ref } from "vue";
-import type { ApiClient } from "../api";
+import { ApiError, type ApiClient } from "../api";
 import { describeUiError, taskErrorMessage } from "../errorCatalog";
+import { taskStatusPresentation } from "../statusCatalog";
 import type { TaskResponse } from "../types";
 
 const props = defineProps<{ api: ApiClient; tasks: TaskResponse[]; open: boolean }>();
@@ -30,6 +31,11 @@ const labels: Record<TaskResponse["state"], string> = {
   cancelled: "已取消",
 };
 
+function taskNextStep(task: TaskResponse): string {
+  if (task.state_reason_zh) return task.state_reason_zh;
+  return taskStatusPresentation(task.state).nextStep;
+}
+
 function canReconcile(task: TaskResponse): boolean {
   return ["uncertain", "submitted", "downloading"].includes(task.state) && Boolean(task.remote_ref);
 }
@@ -44,7 +50,7 @@ async function reconcile(task: TaskResponse): Promise<void> {
   } catch (exception) {
     reconcileError.value = {
       taskId: task.id,
-      message: exception instanceof Error ? exception.message : "只读核对暂时无法完成",
+      message: exception instanceof ApiError ? exception.message : "只读核对暂时无法完成，请稍后重试。",
     };
   } finally {
     reconcilingId.value = null;
@@ -62,7 +68,7 @@ async function reconcile(task: TaskResponse): Promise<void> {
         <CircleCheck v-else-if="task.state === 'available'" :size="17" />
         <CircleAlert v-else :size="17" />
       </div>
-      <div class="task-copy"><strong>{{ task.state_zh || labels[task.state] }}</strong><small>任务 {{ task.id }}</small><small v-if="task.workflow_id">工作流 {{ task.workflow_id }}</small><small v-if="task.state_reason_zh">{{ task.state_reason_zh }}</small><small v-if="task.error_code">{{ taskErrorMessage(task.error_code) }}</small><small v-else-if="task.error_message">任务处理未完成，请查看状态后再试</small><button v-if="canReconcile(task)" class="text-button task-action" type="button" :disabled="reconcilingId !== null" @click="reconcile(task)"><RefreshCw :size="14" :class="{ spin: reconcilingId === task.id }" />只读核对</button><button v-if="shouldOpenLibrary(task.error_code)" class="text-button task-action" type="button" @click="emit('navigate', 'library')"><Database :size="14" />前往媒体库配置</button><small v-if="reconcileError?.taskId === task.id" class="error-text">{{ reconcileError.message }}</small></div>
+      <div class="task-copy"><div class="task-status-line"><strong>{{ task.state_zh || labels[task.state] }}</strong><span :class="['status-chip', `status-chip-${taskStatusPresentation(task.state).tone}`]">{{ taskStatusPresentation(task.state).label }}</span></div><small>任务 {{ task.id }}</small><small v-if="task.workflow_id">关联工作流 {{ task.workflow_id }}</small><small>{{ taskNextStep(task) }}</small><small v-if="task.error_code">{{ taskErrorMessage(task.error_code) }}</small><small v-else-if="task.error_message">任务处理未完成，原始异常不会在页面显示。</small><button v-if="canReconcile(task)" class="text-button task-action" type="button" :disabled="reconcilingId !== null" @click="reconcile(task)"><RefreshCw :size="14" :class="{ spin: reconcilingId === task.id }" />只读核对</button><button v-if="shouldOpenLibrary(task.error_code)" class="text-button task-action" type="button" @click="emit('navigate', 'library')"><Database :size="14" />前往媒体库配置</button><small v-if="reconcileError?.taskId === task.id" class="error-text">{{ reconcileError.message }}</small></div>
     </article>
   </aside>
 </template>

@@ -1030,6 +1030,18 @@ def _add_task_target_directory(connection: Connection) -> None:
     )
 
 
+def _add_task_lease_token(connection: Connection) -> None:
+    """Add a fencing token so an expired worker cannot write back later."""
+
+    if not inspect(connection).has_table("tasks"):
+        return
+    columns = {item["name"] for item in inspect(connection).get_columns("tasks")}
+    if "lease_token" not in columns:
+        connection.execute(
+            text("ALTER TABLE tasks ADD COLUMN lease_token VARCHAR(64)")
+        )
+
+
 def _create_organization_history_table(connection: Connection) -> None:
     """Persist one row per media item completed by an organization operation."""
 
@@ -1106,6 +1118,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration("059_library_scan_lifecycle", _upgrade_library_scan_lifecycle),
     Migration("060_workflow_evidence", _create_workflow_evidence_table),
     Migration("061_library_scan_mode_evidence", _invalidate_legacy_library_scan_modes),
+    Migration("062_task_lease_fencing", _add_task_lease_token),
 )
 
 

@@ -1,7 +1,11 @@
+import asyncio
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError, OperationalError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from watch_assistant.db import create_database, initialize_database
 from watch_assistant.library_models import (
@@ -11,6 +15,7 @@ from watch_assistant.library_models import (
     MediaLibrary,
     StrmManifestEntry,
 )
+from watch_assistant.models import StrmOperation, StrmOperationKind, StrmOperationStatus
 from watch_assistant.services.strm_cleanup_plan import (
     StrmCleanupPlanError,
     StrmCleanupPlanService,
@@ -127,6 +132,45 @@ async def test_generation_is_bounded_to_complete_scan_and_idempotent(tmp_path: P
         await database.engine.dispose()
 
 
+async def test_manifest_generation_refuses_write_after_lease_loss(tmp_path: Path):
+    database = await _database(tmp_path)
+    try:
+        service = StrmManifestService(database.session_factory)
+
+        async def lease_check() -> bool:
+            return False
+
+        with pytest.raises(StrmManifestError, match="strm_operation_lease_lost"):
+            await service.generate(
+                "library-strm",
+                source_scan_run_id="scan-strm",
+                output_root=tmp_path / "output",
+                playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+                lease_check=lease_check,
+                operation_id="strm_op_lost_lease",
+            )
+        assert not (tmp_path / "output" / "Show" / "Episode.strm").exists()
+    finally:
+        await database.engine.dispose()
+
+
+async def test_manifest_operation_id_requires_lease_check(tmp_path: Path):
+    database = await _database(tmp_path)
+    try:
+        service = StrmManifestService(database.session_factory)
+        with pytest.raises(StrmManifestError, match="strm_operation_lease_required"):
+            await service.generate(
+                "library-strm",
+                source_scan_run_id="scan-strm",
+                output_root=tmp_path / "output",
+                playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+                operation_id="strm_op_without_lease_check",
+            )
+        assert not (tmp_path / "output" / "Show" / "Episode.strm").exists()
+    finally:
+        await database.engine.dispose()
+
+
 async def test_generation_requires_complete_current_scan(tmp_path: Path):
     database = await _database(tmp_path)
     try:
@@ -168,6 +212,70 @@ async def test_generation_requires_complete_current_scan(tmp_path: Path):
                 "library-strm",
                 source_scan_run_id="scan-strm",
                 output_root=tmp_path / "stale-output",
+                playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+            )
+    finally:
+        await database.engine.dispose()
+
+
+async def test_strm_operations_block_newer_unsettled_scan_for_every_reconciliation_path(
+    tmp_path: Path,
+):
+    database = await _database(tmp_path)
+    try:
+        manifest = StrmManifestService(database.session_factory)
+        await manifest.generate(
+            "library-strm",
+            source_scan_run_id="scan-strm",
+            output_root=tmp_path / "output",
+            playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+        )
+        await _add_removed_episode_scan(database)
+        now = datetime.now(UTC)
+        async with database.session_factory() as session:
+            session.add(
+                LibraryScanRun(
+                    id="scan-pending",
+                    library_id="library-strm",
+                    root_directory_id="root-strm",
+                    idempotency_key="scan-pending-key",
+                    state="queued",
+                    complete=False,
+                    snapshot_revision=None,
+                    created_at=now + timedelta(seconds=1),
+                    updated_at=now + timedelta(seconds=1),
+                )
+            )
+            await session.commit()
+
+        with pytest.raises(StrmManifestError, match="source_snapshot_not_current"):
+            await manifest.generate(
+                "library-strm",
+                source_scan_run_id="scan-strm-2",
+                output_root=tmp_path / "output",
+                playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+            )
+        with pytest.raises(StrmManifestError, match="source_snapshot_not_current"):
+            await manifest.incremental(
+                "library-strm",
+                source_scan_run_id="scan-strm-2",
+                output_root=tmp_path / "output",
+                playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+            )
+
+        cleanup = StrmCleanupPlanService(database.session_factory)
+        with pytest.raises(StrmCleanupPlanError, match="source_snapshot_not_current"):
+            await cleanup.create_plan(
+                library_id="library-strm",
+                source_scan_run_id="scan-strm-2",
+                output_root=tmp_path / "output",
+                playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+            )
+        with pytest.raises(StrmVerificationError, match="source_snapshot_not_current"):
+            await StrmVerificationService(database.session_factory).verify(
+                library_id="library-strm",
+                source_scan_run_id="scan-strm-2",
+                output_root=tmp_path / "output",
                 playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
             )
     finally:
@@ -356,6 +464,380 @@ async def test_cleanup_plan_apply_requires_digest_and_retires_only_managed_file(
         await database.engine.dispose()
 
 
+@pytest.mark.parametrize(
+    "commit_error",
+    (IntegrityError, OperationalError),
+    ids=("integrity", "operational"),
+)
+async def test_same_path_rewrite_restores_old_file_after_commit_failure(
+    tmp_path: Path,
+    monkeypatch,
+    commit_error,
+):
+    database = await _database(tmp_path)
+    try:
+        service = StrmManifestService(database.session_factory)
+        await service.generate(
+            "library-strm",
+            source_scan_run_id="scan-strm",
+            output_root=tmp_path / "output",
+            playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+        )
+        target = tmp_path / "output/Show/Episode.strm"
+        old_content = target.read_bytes()
+        await _add_same_path_changed_scan(database)
+
+        async def fail_commit(_session):
+            raise commit_error("forced commit failure", {}, RuntimeError("forced"))
+
+        monkeypatch.setattr(AsyncSession, "commit", fail_commit)
+        summary = await service.incremental(
+            "library-strm",
+            source_scan_run_id="scan-strm-same-path",
+            output_root=tmp_path / "output",
+            playback_url_prefix="https://127.0.0.1:8115/api/v1/strm/play",
+        )
+
+        assert summary.failed == 1
+        assert target.read_bytes() == old_content
+        async with database.session_factory() as session:
+            manifest = await session.scalar(
+                select(StrmManifestEntry).where(
+                    StrmManifestEntry.cloud_file_id == "100"
+                )
+            )
+            assert manifest is not None
+            assert manifest.is_current is True
+            assert manifest.status == "verified"
+            assert manifest.source_version == 1
+            assert manifest.size_bytes == 100
+    finally:
+        await database.engine.dispose()
+
+
+async def test_same_path_rewrite_restores_old_file_when_commit_is_cancelled(
+    tmp_path: Path,
+    monkeypatch,
+):
+    database = await _database(tmp_path)
+    try:
+        service = StrmManifestService(database.session_factory)
+        await service.generate(
+            "library-strm",
+            source_scan_run_id="scan-strm",
+            output_root=tmp_path / "output",
+            playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+        )
+        target = tmp_path / "output/Show/Episode.strm"
+        old_content = target.read_bytes()
+        await _add_same_path_changed_scan(database)
+
+        async def cancel_commit(_session):
+            raise asyncio.CancelledError
+
+        monkeypatch.setattr(AsyncSession, "commit", cancel_commit)
+        with pytest.raises(asyncio.CancelledError):
+            await service.incremental(
+                "library-strm",
+                source_scan_run_id="scan-strm-same-path",
+                output_root=tmp_path / "output",
+                playback_url_prefix="https://127.0.0.1:8115/api/v1/strm/play",
+            )
+
+        assert target.read_bytes() == old_content
+        async with database.session_factory() as session:
+            manifest = await session.scalar(
+                select(StrmManifestEntry).where(
+                    StrmManifestEntry.cloud_file_id == "100"
+                )
+            )
+            assert manifest is not None
+            assert manifest.source_version == 1
+            assert manifest.size_bytes == 100
+            assert manifest.status == "verified"
+    finally:
+        await database.engine.dispose()
+
+
+@pytest.mark.parametrize(
+    "commit_error",
+    (IntegrityError, OperationalError),
+    ids=("integrity", "operational"),
+)
+async def test_cleanup_commit_failure_restores_file_and_keeps_plan_reviewable(
+    tmp_path: Path,
+    monkeypatch,
+    commit_error,
+):
+    database = await _database(tmp_path)
+    try:
+        manifest_service = StrmManifestService(database.session_factory)
+        await manifest_service.generate(
+            "library-strm",
+            source_scan_run_id="scan-strm",
+            output_root=tmp_path / "output",
+            playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+        )
+        target = tmp_path / "output/Show/Episode.strm"
+        original = target.read_bytes()
+        await _add_removed_episode_scan(database)
+        plan_service = StrmCleanupPlanService(database.session_factory)
+        plan = await plan_service.create_plan(
+            library_id="library-strm",
+            source_scan_run_id="scan-strm-2",
+            output_root=tmp_path / "output",
+            playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+        )
+
+        async def fail_commit(_session):
+            raise commit_error("forced commit failure", {}, RuntimeError("forced"))
+
+        monkeypatch.setattr(AsyncSession, "commit", fail_commit)
+        with pytest.raises(StrmCleanupPlanError, match="uncertain"):
+            await plan_service.apply_plan(
+                plan_id=plan.plan_id,
+                expected_revision=plan.revision,
+                digest=plan.plan_hash,
+                confirm=True,
+                idempotency_key="cleanup-commit-failure",
+                output_root=tmp_path / "output",
+                playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+            )
+
+        assert target.read_bytes() == original
+        current_plan = await plan_service.get_plan(plan.plan_id)
+        assert current_plan.status == "needs_review"
+        items, total = await manifest_service.list_current("library-strm")
+        assert total == 1
+        assert items[0].status == "verified"
+    finally:
+        await database.engine.dispose()
+
+
+async def test_cleanup_restores_file_when_commit_is_cancelled(
+    tmp_path: Path,
+    monkeypatch,
+):
+    database = await _database(tmp_path)
+    try:
+        manifest_service = StrmManifestService(database.session_factory)
+        await manifest_service.generate(
+            "library-strm",
+            source_scan_run_id="scan-strm",
+            output_root=tmp_path / "output",
+            playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+        )
+        target = tmp_path / "output/Show/Episode.strm"
+        original = target.read_bytes()
+        await _add_removed_episode_scan(database)
+        plan_service = StrmCleanupPlanService(database.session_factory)
+        plan = await plan_service.create_plan(
+            library_id="library-strm",
+            source_scan_run_id="scan-strm-2",
+            output_root=tmp_path / "output",
+            playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+        )
+
+        async def cancel_commit(_session):
+            raise asyncio.CancelledError
+
+        monkeypatch.setattr(AsyncSession, "commit", cancel_commit)
+        with pytest.raises(asyncio.CancelledError):
+            await plan_service.apply_plan(
+                plan_id=plan.plan_id,
+                expected_revision=plan.revision,
+                digest=plan.plan_hash,
+                confirm=True,
+                idempotency_key="cleanup-cancelled-commit",
+                output_root=tmp_path / "output",
+                playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+            )
+
+        assert target.read_bytes() == original
+        assert (await plan_service.get_plan(plan.plan_id)).status == "needs_review"
+        items, total = await manifest_service.list_current("library-strm")
+        assert total == 1
+        assert items[0].status == "verified"
+    finally:
+        await database.engine.dispose()
+
+
+async def test_database_lease_takeover_is_fenced_at_manifest_commit(
+    tmp_path: Path,
+):
+    database = await _database(tmp_path)
+    peer_database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'strm.db'}")
+    try:
+        service = StrmManifestService(database.session_factory)
+        await service.generate(
+            "library-strm",
+            source_scan_run_id="scan-strm",
+            output_root=tmp_path / "output",
+            playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+        )
+        target = tmp_path / "output/Show/Episode.strm"
+        original = target.read_bytes()
+        async with database.session_factory() as session:
+            session.add(
+                StrmOperation(
+                    id="strm_op_fence",
+                    library_id="library-strm",
+                    kind=StrmOperationKind.INCREMENTAL,
+                    source_scan_run_id="scan-strm-same-path",
+                    status=StrmOperationStatus.RUNNING,
+                    lease_owner="owner-a",
+                    lease_expires_at=datetime.now(UTC) + timedelta(minutes=5),
+                )
+            )
+            await session.commit()
+        await _add_same_path_changed_scan(database)
+        post_write_checks = 0
+        taken_over = False
+
+        async def lease_check() -> bool:
+            nonlocal post_write_checks, taken_over
+            if target.read_bytes() != original:
+                post_write_checks += 1
+                if post_write_checks == 1 and not taken_over:
+                    async with peer_database.session_factory() as session:
+                        operation = await session.get(StrmOperation, "strm_op_fence")
+                        assert operation is not None
+                        operation.lease_owner = "owner-b"
+                        operation.lease_expires_at = datetime.now(UTC) + timedelta(
+                            minutes=5
+                        )
+                        await session.commit()
+                    taken_over = True
+            return True
+
+        with pytest.raises(StrmManifestError, match="strm_operation_lease_lost"):
+            await service.incremental(
+                "library-strm",
+                source_scan_run_id="scan-strm-same-path",
+                output_root=tmp_path / "output",
+                playback_url_prefix="https://127.0.0.1:8115/api/v1/strm/play",
+                lease_check=lease_check,
+                operation_id="strm_op_fence",
+            )
+
+        assert taken_over is True
+        assert target.read_bytes() == original
+        async with database.session_factory() as session:
+            manifest = await session.scalar(
+                select(StrmManifestEntry).where(
+                    StrmManifestEntry.cloud_file_id == "100"
+                )
+            )
+            operation = await session.get(StrmOperation, "strm_op_fence")
+            assert manifest is not None
+            assert manifest.source_version == 1
+            assert manifest.size_bytes == 100
+            assert operation is not None
+            assert operation.lease_owner == "owner-b"
+    finally:
+        await peer_database.engine.dispose()
+        await database.engine.dispose()
+
+
+async def test_cleanup_plan_restores_file_when_lease_is_lost_mid_apply(
+    tmp_path: Path,
+):
+    database = await _database(tmp_path)
+    try:
+        manifest_service = StrmManifestService(database.session_factory)
+        await manifest_service.generate(
+            "library-strm",
+            source_scan_run_id="scan-strm",
+            output_root=tmp_path / "output",
+            playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+        )
+        await _add_removed_episode_scan(database)
+        plan_service = StrmCleanupPlanService(database.session_factory)
+        plan = await plan_service.create_plan(
+            library_id="library-strm",
+            source_scan_run_id="scan-strm-2",
+            output_root=tmp_path / "output",
+            playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+        )
+        await _add_running_strm_operation(
+            database,
+            operation_id="strm_op_cleanup_owner",
+            source_scan_run_id="scan-strm-2",
+        )
+        checks = 0
+
+        async def lease_check() -> bool:
+            nonlocal checks
+            checks += 1
+            return checks < 6
+
+        with pytest.raises(StrmCleanupPlanError, match="strm_operation_lease_lost"):
+            await plan_service.apply_plan(
+                plan_id=plan.plan_id,
+                expected_revision=plan.revision,
+                digest=plan.plan_hash,
+                confirm=True,
+                idempotency_key="cleanup-lease-loss",
+                output_root=tmp_path / "output",
+                playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+                lease_check=lease_check,
+                operation_id="strm_op_cleanup_owner",
+            )
+
+        assert (tmp_path / "output/Show/Episode.strm").exists()
+        current = await plan_service.get_plan(plan.plan_id)
+        assert current.status == "needs_review"
+        items, total = await manifest_service.list_current("library-strm")
+        assert total == 1
+        assert items[0].status == "verified"
+    finally:
+        await database.engine.dispose()
+
+
+async def test_manifest_cleanup_does_not_restore_previously_missing_file_on_lease_loss(
+    tmp_path: Path,
+):
+    database = await _database(tmp_path)
+    try:
+        manifest_service = StrmManifestService(database.session_factory)
+        await manifest_service.generate(
+            "library-strm",
+            source_scan_run_id="scan-strm",
+            output_root=tmp_path / "output",
+            playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+        )
+        (tmp_path / "output/Show/Episode.strm").unlink()
+        await _add_removed_episode_scan(database)
+        await _add_running_strm_operation(
+            database,
+            operation_id="strm_op_cleanup_lost_lease",
+            source_scan_run_id="scan-strm-2",
+        )
+        checks = 0
+
+        async def lease_check() -> bool:
+            nonlocal checks
+            checks += 1
+            return checks < 6
+
+        with pytest.raises(StrmManifestError, match="strm_operation_lease_lost"):
+            await manifest_service.cleanup(
+                "library-strm",
+                source_scan_run_id="scan-strm-2",
+                output_root=tmp_path / "output",
+                playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+                lease_check=lease_check,
+                operation_id="strm_op_cleanup_lost_lease",
+            )
+
+        assert not (tmp_path / "output/Show/Episode.strm").exists()
+        items, total = await manifest_service.list_current("library-strm")
+        assert total == 1
+        assert items[0].status == "verified"
+    finally:
+        await database.engine.dispose()
+
+
 async def test_cleanup_plan_apply_rejects_modified_candidate_without_partial_retirement(
     tmp_path: Path,
 ):
@@ -524,6 +1006,65 @@ async def _add_changed_scan(database) -> None:
                     path_changed=False,
                 ),
             ]
+        )
+        await session.commit()
+
+
+async def _add_same_path_changed_scan(database) -> None:
+    async with database.session_factory() as session:
+        session.add(
+            LibraryScanRun(
+                id="scan-strm-same-path",
+                library_id="library-strm",
+                root_directory_id="root-strm",
+                idempotency_key="scan-key-same-path",
+                state="completed",
+                complete=True,
+                snapshot_revision=2,
+            )
+        )
+        await session.flush()
+        session.add(
+            LibraryScanEntry(
+                scan_run_id="scan-strm-same-path",
+                object_type="file",
+                object_id="100",
+                parent_id="root-strm",
+                name="Episode.mkv",
+                path="Show/Episode.mkv",
+                is_directory=False,
+                size_bytes=101,
+            )
+        )
+        session.add(
+            LibraryScanDiff(
+                scan_run_id="scan-strm-same-path",
+                object_type="file",
+                object_id="100",
+                change_kind="changed",
+                path_changed=False,
+            )
+        )
+        await session.commit()
+
+
+async def _add_running_strm_operation(
+    database,
+    *,
+    operation_id: str,
+    source_scan_run_id: str,
+) -> None:
+    async with database.session_factory() as session:
+        session.add(
+            StrmOperation(
+                id=operation_id,
+                library_id="library-strm",
+                kind=StrmOperationKind.CLEANUP,
+                source_scan_run_id=source_scan_run_id,
+                status=StrmOperationStatus.RUNNING,
+                lease_owner="owner-a",
+                lease_expires_at=datetime.now(UTC) + timedelta(minutes=5),
+            )
         )
         await session.commit()
 

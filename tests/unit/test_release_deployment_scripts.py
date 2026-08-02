@@ -33,6 +33,23 @@ def _write_version(path: Path, commit: str = "abcdef1") -> None:
     )
 
 
+def _write_manifest(path: Path, commit: str) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "commit": commit,
+                "short_commit": commit[:7],
+                "source_sha256": "a" * 64,
+                "frontend_sha256": "b" * 64,
+                "build_time": "2026-08-02T00:00:00Z",
+                "branch": "codex/test",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 def _systemd_identity(current_root: Path, release_env: Path) -> str:
     return (
         f"EnvironmentFiles=/etc/watch-assistant.env (ignore_errors=no) "
@@ -285,6 +302,8 @@ def test_postdeploy_check_fails_closed_when_health_does_not_match(
         health_url="http://fixture.invalid/health",
         release_env=release_env,
         current_root=current_root,
+        health_timeout=0.01,
+        health_poll_interval=0.005,
     ) == (False, "release_mismatch")
 
 
@@ -374,6 +393,61 @@ def test_read_health_rejects_non_ok_status_without_exposing_payload(
     assert postdeploy_release._read_health("http://fixture.invalid/health", 1.0) is None
 
 
+def test_postdeploy_health_polls_until_expected_release(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    responses = iter((None, "0123456", "abcdef1"))
+    calls: list[tuple[str, float]] = []
+
+    def read_health(url: str, timeout: float) -> str | None:
+        calls.append((url, timeout))
+        return next(responses)
+
+    monkeypatch.setattr(postdeploy_release, "_read_health", read_health)
+    monkeypatch.setattr(postdeploy_release.time, "sleep", lambda _seconds: None)
+
+    assert postdeploy_release._wait_for_health(
+        "http://fixture.invalid/health",
+        5.0,
+        "abcdef1",
+        0.1,
+        0.01,
+    ) == ("abcdef1", True)
+    assert len(calls) == 3
+    assert all(timeout <= 0.1 for _, timeout in calls)
+
+
+def test_postdeploy_health_polling_has_a_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls = 0
+
+    def read_health(_url: str, _timeout: float) -> None:
+        nonlocal calls
+        calls += 1
+
+    monkeypatch.setattr(postdeploy_release, "_read_health", read_health)
+    monkeypatch.setattr(postdeploy_release.time, "sleep", lambda _seconds: None)
+
+    assert postdeploy_release._wait_for_health(
+        "http://fixture.invalid/health",
+        5.0,
+        "abcdef1",
+        0.02,
+        0.01,
+    ) == (None, False)
+    assert 1 <= calls <= 4
+
+
+def test_postdeploy_rejects_unbounded_health_polling_configuration():
+    assert postdeploy_release.check_release_consistency(
+        version_file=Path("/missing/VERSION"),
+        unit="watch-assistant.service",
+        health_url="http://fixture.invalid/health",
+        health_timeout=float("inf"),
+    ) == (False, "health_polling_invalid")
+
+
 @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink replacement is required")
 def test_systemd_release_switch_records_previous_metadata_and_rolls_back(
     tmp_path: Path,
@@ -387,7 +461,7 @@ def test_systemd_release_switch_records_previous_metadata_and_rolls_back(
     new_root.mkdir()
     _write_version(old_root / "VERSION", old_commit)
     _write_version(new_root / "VERSION", new_commit)
-    (new_root / "release-manifest.json").write_text("{}\n", encoding="utf-8")
+    _write_manifest(new_root / "release-manifest.json", new_commit)
     current_root = tmp_path / "current"
     current_root.symlink_to(old_root, target_is_directory=True)
     release_env = tmp_path / "state" / "release.env"
@@ -412,12 +486,61 @@ def test_systemd_release_switch_records_previous_metadata_and_rolls_back(
     assert saved["previous_current_target"] == str(old_root.resolve())
     assert saved["target_release"] == new_commit
 
+    manifest_path = new_root / "release-manifest.json"
+    manifest_bytes = manifest_path.read_bytes()
+    manifest_path.write_text("tampered\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="rollback_target_manifest_changed"):
+        systemd_release.rollback_release(
+            current_root=current_root,
+            release_env=release_env,
+            state_file=state_file,
+            allowed_releases_root=releases_root,
+        )
+    manifest_path.write_bytes(manifest_bytes)
+
     systemd_release.rollback_release(
         current_root=current_root,
         release_env=release_env,
         state_file=state_file,
         allowed_releases_root=releases_root,
     )
+    assert current_root.resolve() == old_root.resolve()
+    assert release_env.read_text(encoding="utf-8") == (
+        f"WATCH_ASSISTANT_RELEASE={old_commit}\n"
+    )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX symlink replacement is required")
+def test_systemd_release_switch_rejects_manifest_identity_mismatch(
+    tmp_path: Path,
+):
+    old_commit = "a" * 40
+    new_commit = "b" * 40
+    releases_root = tmp_path / "releases"
+    old_root = releases_root / "watch-assistant-old"
+    new_root = releases_root / "watch-assistant-new"
+    old_root.mkdir(parents=True)
+    new_root.mkdir()
+    _write_version(old_root / "VERSION", old_commit)
+    _write_version(new_root / "VERSION", new_commit)
+    _write_manifest(new_root / "release-manifest.json", "c" * 40)
+    current_root = tmp_path / "current"
+    current_root.symlink_to(old_root, target_is_directory=True)
+    release_env = tmp_path / "state" / "release.env"
+    release_env.parent.mkdir()
+    release_env.write_text(f"WATCH_ASSISTANT_RELEASE={old_commit}\n", encoding="utf-8")
+    state_file = tmp_path / "state" / "rollback.json"
+
+    with pytest.raises(ValueError, match="release_manifest_commit_mismatch"):
+        systemd_release.switch_release(
+            release_root=new_root,
+            expected_release=new_commit,
+            current_root=current_root,
+            release_env=release_env,
+            state_file=state_file,
+            allowed_releases_root=releases_root,
+        )
+
     assert current_root.resolve() == old_root.resolve()
     assert release_env.read_text(encoding="utf-8") == (
         f"WATCH_ASSISTANT_RELEASE={old_commit}\n"
@@ -437,6 +560,7 @@ def test_systemd_release_rollback_restores_legacy_short_release_metadata(
     new_root.mkdir()
     _write_version(old_root / "VERSION", old_commit)
     _write_version(new_root / "VERSION", new_commit)
+    _write_manifest(new_root / "release-manifest.json", new_commit)
     current_root = tmp_path / "current"
     current_root.symlink_to(old_root, target_is_directory=True)
     release_env = tmp_path / "state" / "release.env"

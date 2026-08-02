@@ -4,6 +4,11 @@
 日期：2026-07-31
 状态：供评审和排期使用，不代表任何功能已上线
 
+2026-08-02 复核：本路线图锁定 `codex/integration-20260802@2c342d9` 作为审查快照；该分支
+不是发布基线。复核期间集成 ref 已前进到 `3afc8d3`，其新增 STRM/task worker 提交未纳入本次
+文档判断。扫描、STRM worker 和 uncertain 门禁改进不改变下方需求状态，也不构成生产部署或
+真实外部验收证据。
+
 本路线图依据：
 
 - [`docs/requirements/README.md`](../requirements/README.md) 的需求状态和依赖关系

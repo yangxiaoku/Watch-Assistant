@@ -103,7 +103,13 @@ if [[ ! -f "$VERSION_FILE" ]]; then
     echo "release artifact refused: VERSION is missing" >&2
     exit 1
 fi
-VERSION_COMMIT="$(awk -F= '$1 == "commit" { print $2; exit }' "$VERSION_FILE")"
+VERSION_COMMIT_COUNT="$(grep -Ec '^commit=[0-9a-fA-F]{40}$' "$VERSION_FILE" || true)"
+if [[ "$VERSION_COMMIT_COUNT" != "1" ]]; then
+    echo "release artifact refused: VERSION must contain exactly one full commit" >&2
+    exit 1
+fi
+VERSION_COMMIT="$(grep -E '^commit=[0-9a-fA-F]{40}$' "$VERSION_FILE" | awk -F= 'NR == 1 { print $2 }')"
+VERSION_COMMIT="$(printf '%s' "$VERSION_COMMIT" | tr '[:upper:]' '[:lower:]')"
 if [[ "$VERSION_COMMIT" != "$EXPECTED_COMMIT" ]]; then
     echo "release artifact refused: VERSION does not identify the expected commit" >&2
     exit 1

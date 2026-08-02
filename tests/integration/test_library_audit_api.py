@@ -207,6 +207,61 @@ async def test_inventory_reports_freshness_and_only_exact_identity_blocks(tmp_pa
 
 
 @pytest.mark.integration
+async def test_inventory_rejects_failed_incomplete_and_wrong_scope_snapshots(tmp_path):
+    client, database = await _client(tmp_path)
+    login = await client.post("/api/v1/auth/login", json={"password": WEB_PASSWORD})
+    assert login.status_code == 200
+    csrf = login.json()["csrf_token"]
+
+    async def assert_blocked() -> None:
+        inventory = await client.get("/api/v1/libraries/library-one/inventory")
+        assert inventory.status_code == 200
+        assert inventory.json()["freshness"]["complete"] is False
+
+        check = await client.get(
+            "/api/v1/libraries/library-one/inventory/check",
+            params={"object_id": "file-one"},
+        )
+        assert check.status_code == 200
+        assert check.json()["decision"] == "index_incomplete"
+        assert check.json()["matched_object_count"] == 0
+
+        bound = await client.put(
+            "/api/v1/libraries/library-one/inventory/identities/file-one",
+            headers={"X-CSRF-Token": csrf},
+            json={"tmdb_id": 7, "media_type": "movie", "revision": 0},
+        )
+        assert bound.status_code == 409
+        assert bound.json()["detail"] == "library_inventory_incomplete"
+
+    async with database.session_factory() as session:
+        run = await session.get(LibraryScanRun, "scan-one")
+        assert run is not None
+        run.state = "failed"
+        await session.commit()
+    await assert_blocked()
+
+    async with database.session_factory() as session:
+        run = await session.get(LibraryScanRun, "scan-one")
+        assert run is not None
+        run.state = "completed"
+        run.complete = False
+        await session.commit()
+    await assert_blocked()
+
+    async with database.session_factory() as session:
+        run = await session.get(LibraryScanRun, "scan-one")
+        assert run is not None
+        run.complete = True
+        run.root_directory_id = "other-root"
+        await session.commit()
+    await assert_blocked()
+
+    await client.aclose()
+    await database.engine.dispose()
+
+
+@pytest.mark.integration
 async def test_library_scope_not_found_does_not_leak_other_library(tmp_path):
     client, database = await _client(tmp_path)
     login = await client.post("/api/v1/auth/login", json={"password": WEB_PASSWORD})

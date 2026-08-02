@@ -63,6 +63,7 @@ def test_build_manifest_round_trip_uses_expected_provenance(tmp_path: Path):
         ("source_sha256", "d" * 64, "source hash does not match"),
         ("frontend_sha256", "d" * 64, "frontend hash does not match"),
         ("build_time", "", "build_time is invalid"),
+        ("branch", "", "branch is invalid"),
     ],
 )
 def test_build_manifest_validation_fails_closed(

@@ -2,6 +2,8 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from watch_assistant.api.library import _scan_is_complete
+from watch_assistant.library_models import LibraryScanRun, MediaLibrary
 from watch_assistant.services.library_inventory import (
     DuplicateKind,
     FreshnessStatus,
@@ -133,6 +135,36 @@ def test_freshness_has_explicit_unknown_and_stale_states():
     assert unknown.status is FreshnessStatus.UNKNOWN
     assert stale.status is FreshnessStatus.STALE
     assert stale.age_seconds == 960
+
+
+def test_api_inventory_requires_a_completed_scoped_snapshot():
+    library = MediaLibrary(
+        id="library-1",
+        name="library",
+        root_directory_id="root-1",
+        enabled=True,
+        scope_verified=True,
+    )
+    def run(**overrides):
+        values = {
+            "id": "scan-1",
+            "library_id": library.id,
+            "root_directory_id": library.root_directory_id,
+            "idempotency_key": "scan-key",
+            "state": "completed",
+            "complete": True,
+            "snapshot_revision": 1,
+        }
+        values.update(overrides)
+        return LibraryScanRun(**values)
+
+    assert _scan_is_complete(run(), library) is True
+    assert _scan_is_complete(run(state="failed"), library) is False
+    assert _scan_is_complete(run(complete=False), library) is False
+    assert _scan_is_complete(run(snapshot_revision=None), library) is False
+    assert _scan_is_complete(
+        run(root_directory_id="other-root"), library
+    ) is False
 
 
 def test_duplicate_object_ids_are_rejected():

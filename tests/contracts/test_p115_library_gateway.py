@@ -182,6 +182,44 @@ async def test_observed_child_directory_can_be_scanned_without_expanding_scope()
 
 
 @pytest.mark.asyncio
+async def test_mismatched_parent_does_not_expand_observed_directory_scope():
+    client = _FsFilesClient((_page([_directory(cid="8", parent="99")]),))
+    gateway, source, factory_calls = _gateway(client)
+
+    with pytest.raises(P115ReadOnlyGatewayError, match="entry_scope_unverified"):
+        await gateway.list_directory("7")
+    with pytest.raises(P115ReadOnlyGatewayError, match="scope_unverified"):
+        await gateway.list_directory("8")
+
+    assert client.calls == [
+        {
+            "cid": "7",
+            "limit": VERIFIED_PAGE_SIZE,
+            "offset": 0,
+            "record_open_time": 0,
+            "show_dir": 1,
+        }
+    ]
+    assert source.calls == 1
+    assert len(factory_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_restored_child_allowlist_is_usable_by_a_new_gateway_instance():
+    client = _FsFilesClient((_page([_file("102", parent="8")]),))
+    gateway, source, factory_calls = _gateway(
+        client, authorized_directory_ids=("7", "8")
+    )
+
+    result = await gateway.list_directory("8")
+
+    assert result.items[0].file_id == "102"
+    assert client.calls[0]["cid"] == "8"
+    assert source.calls == 1
+    assert len(factory_calls) == 1
+
+
+@pytest.mark.asyncio
 async def test_missing_or_inconsistent_pagination_signals_fail_closed():
     without_count = _page([_file()])
     del without_count["count"]

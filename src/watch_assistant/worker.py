@@ -2,22 +2,21 @@
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime, timedelta
-from typing import Protocol
+from contextlib import suppress
+from datetime import timedelta
+from functools import partial
+from typing import Protocol, TypeVar
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from watch_assistant.crypto import SecretCrypto
-from watch_assistant.models import Task, TaskState
+from watch_assistant.models import TaskState
 from watch_assistant.schemas import (
-    EvidenceSource,
     LoggingLevel,
+    RemoteObservation,
     RemoteStatus,
     SubmissionResult,
     TaskAction,
-    WorkflowStageName,
-    WorkflowStageStatus,
 )
 from watch_assistant.services.inventory_push_guard import (
     InventoryPushCheck,
@@ -26,11 +25,17 @@ from watch_assistant.services.inventory_push_guard import (
 )
 from watch_assistant.services.observability import EventLogger, emit_event
 from watch_assistant.services.tasks import (
-    apply_remote_status,
-    recover_after_restart,
-    workflow_stage_status_for_task_state,
+    TASK_LEASE_LOST,
+    TaskLease,
+    TaskService,
 )
-from watch_assistant.services.workflows import sync_child_stage
+
+_ExternalResult = TypeVar("_ExternalResult")
+
+
+class _LeaseClaimLost(RuntimeError):
+    """The worker must discard an external result after losing its fence."""
+
 
 _AUTO_REFRESH_INVENTORY_CODES = frozenset(
     {
@@ -62,7 +67,9 @@ class TaskAdapter(Protocol):
         target_cid: str | None = None,
     ) -> SubmissionResult: ...
 
-    async def get_status(self, remote_ref: str) -> RemoteStatus | None: ...
+    async def get_status(
+        self, remote_ref: str
+    ) -> RemoteStatus | RemoteObservation | None: ...
 
 
 class TaskWorker:
@@ -73,7 +80,7 @@ class TaskWorker:
         adapter: TaskAdapter,
         *,
         owner: str,
-        lease_seconds: int = 60,
+        lease_seconds: float = 60,
         event_logger: EventLogger | None = None,
         inventory_guard: InventoryPushGuard | None = None,
         inventory_refresh: (
@@ -84,121 +91,26 @@ class TaskWorker:
         self._crypto = crypto
         self._adapter = adapter
         self._owner = owner
-        self._lease_seconds = lease_seconds
+        self._lease_seconds = float(lease_seconds)
+        if self._lease_seconds <= 0:
+            raise ValueError("invalid_lease_duration")
         self._event_logger = event_logger
         self._inventory_guard = inventory_guard
         self._inventory_refresh = inventory_refresh
+        self._tasks = TaskService(session_factory)
 
     async def run_once(self) -> bool:
-        task_id = await self._claim_one()
-        if task_id is None:
+        lease = await self._claim_one()
+        if lease is None:
             return False
-        async with self._session_factory() as session:
-            task = await session.get(Task, task_id)
-            if task is None:
-                return False
-            if task.action != TaskAction.OFFLINE_DOWNLOAD:
-                result = SubmissionResult(
-                    status=RemoteStatus.FAILED,
-                    error_code="push_kind_unsupported",
-                    error_message="share push is not supported",
-                )
-            else:
-                gate = None
-                if self._inventory_guard is not None:
-                    try:
-                        gate = await self._inventory_guard.check(task.resource_id)
-                    except Exception:  # noqa: BLE001 - fail closed before remote submission
-                        gate = None
-                if (
-                    self._inventory_guard is not None
-                    and gate is not None
-                    and not gate.allowed
-                    and gate.code in _AUTO_REFRESH_INVENTORY_CODES
-                    and self._inventory_refresh is not None
-                ):
-                    try:
-                        refreshed = await self._inventory_refresh()
-                    except Exception:  # noqa: BLE001 - fail closed before remote submission
-                        gate = InventoryPushCheck(False, "inventory_check_failed")
-                        refreshed = False
-                    if isinstance(refreshed, InventoryRefreshEvidence):
-                        if refreshed.usable:
-                            try:
-                                gate = await self._inventory_guard.check(task.resource_id)
-                            except Exception:  # noqa: BLE001 - fail closed before remote submission
-                                gate = None
-                        else:
-                            gate = InventoryPushCheck(
-                                False,
-                                refreshed.error_code or "inventory_check_failed",
-                            )
-                    elif refreshed:
-                        try:
-                            gate = await self._inventory_guard.check(task.resource_id)
-                        except Exception:  # noqa: BLE001 - fail closed before remote submission
-                            gate = None
-                if self._inventory_guard is not None and (
-                    gate is None or not gate.allowed
-                ):
-                    result = SubmissionResult(
-                        status=RemoteStatus.FAILED,
-                        error_code=(
-                            "inventory_check_failed" if gate is None else gate.code
-                        ),
-                        error_message=_inventory_error_message(
-                            "inventory_check_failed" if gate is None else gate.code
-                        ),
-                    )
-                else:
-                    try:
-                        url = self._crypto.decrypt(task.encrypted_url_snapshot)
-                    except Exception:  # noqa: BLE001 - failure occurred before remote submission
-                        result = SubmissionResult(
-                            status=RemoteStatus.FAILED,
-                            error_code="local_decryption_failed",
-                            error_message="stored submission data could not be decrypted",
-                        )
-                    else:
-                        try:
-                            if task.target_directory_id is None:
-                                result = await self._adapter.submit_magnet(url)
-                            else:
-                                result = await self._adapter.submit_magnet(
-                                    url, target_cid=task.target_directory_id
-                                )
-                        except Exception:  # noqa: BLE001 - remote outcome may be ambiguous
-                            result = SubmissionResult(
-                                status=RemoteStatus.UNCERTAIN,
-                                error_code="adapter_error",
-                                error_message="submission outcome is uncertain",
-                            )
-
-            task.remote_ref = result.remote_ref
-            task.error_code = result.error_code
-            task.error_message = result.error_message
-            task.submitted_at = (
-                datetime.now(UTC)
-                if result.status
-                in {
-                    RemoteStatus.ACCEPTED,
-                    RemoteStatus.SUBMITTED,
-                    RemoteStatus.DOWNLOADING,
-                    RemoteStatus.AVAILABLE,
-                }
-                else None
-            )
-            task.lease_owner = None
-            task.lease_expires_at = None
-            task.updated_at = datetime.now(UTC)
-            await apply_remote_status(
-                session,
-                task,
-                result.status,
-                source=EvidenceSource.SUBMISSION_RECEIPT,
-                verified_available=False,
-            )
-            await session.commit()
+        try:
+            result = await self._process_lease(lease)
+        except _LeaseClaimLost:
+            await self._mark_lease_lost(lease)
+            return True
+        task = await self._tasks.finish_submission(lease, result)
+        if task is None:
+            return True
         state = task.state
         event_code = {
             TaskState.SUBMITTED: "task.submitted",
@@ -233,66 +145,46 @@ class TaskWorker:
         return True
 
     async def recover_expired(self) -> int:
-        now = datetime.now(UTC)
-        async with self._session_factory() as session:
-            tasks = list(
-                await session.scalars(
-                    select(Task).where(
-                        Task.state == TaskState.SUBMITTING,
-                        Task.lease_expires_at.is_not(None),
-                        Task.lease_expires_at < now,
-                    )
-                )
+        recovered = 0
+        lease_duration = timedelta(seconds=self._lease_seconds)
+        while True:
+            lease = await self._tasks.claim_expired(
+                owner=self._owner, lease_duration=lease_duration
             )
-            for task in tasks:
-                if task.action != TaskAction.OFFLINE_DOWNLOAD:
-                    task.state = TaskState.FAILED
-                    task.remote_ref = None
-                    task.error_code = "push_kind_unsupported"
-                    task.error_message = "share push is not supported"
-                    task.lease_owner = None
-                    task.lease_expires_at = None
-                    task.updated_at = now
-                    if task.workflow_id is not None:
-                        await sync_child_stage(
-                            session,
-                            task.workflow_id,
-                            WorkflowStageName.PUSH,
-                            child_type="task",
-                            child_id=task.id,
-                            status=WorkflowStageStatus.FAILED,
-                            reason="task_failed",
-                            error_code=task.error_code,
-                        )
+            if lease is None:
+                return recovered
+            recovered += 1
+            if lease.action != TaskAction.OFFLINE_DOWNLOAD:
+                await self._tasks.finish_submission(
+                    lease,
+                    SubmissionResult(
+                        status=RemoteStatus.FAILED,
+                        error_code="push_kind_unsupported",
+                        error_message="share push is not supported",
+                    ),
+                )
+                continue
+
+            remote_status = None
+            if lease.remote_ref:
+                remote_ref = lease.remote_ref
+                target_directory_id = lease.target_directory_id
+                try:
+                    read_status = partial(
+                        _read_task_status,
+                        self._adapter,
+                        remote_ref,
+                        target_directory_id=target_directory_id,
+                    )
+                    remote_status = await self._run_external_call(
+                        lease, read_status
+                    )
+                except _LeaseClaimLost:
+                    await self._mark_lease_lost(lease)
                     continue
-                remote_status = None
-                if task.remote_ref:
-                    try:
-                        remote_status = await self._adapter.get_status(task.remote_ref)
-                    except Exception:  # noqa: BLE001 - status failure is uncertain
-                        remote_status = None
-                recover_after_restart(task, remote_status)
-                if remote_status is not None:
-                    await apply_remote_status(
-                        session,
-                        task,
-                        remote_status,
-                        source=EvidenceSource.READONLY_RECONCILIATION,
-                        verified_available=True,
-                    )
-                elif task.workflow_id is not None:
-                    await sync_child_stage(
-                        session,
-                        task.workflow_id,
-                        WorkflowStageName.PUSH,
-                        child_type="task",
-                        child_id=task.id,
-                        status=workflow_stage_status_for_task_state(task.state),
-                        reason=f"task_{task.state.value}",
-                        error_code=task.error_code,
-                    )
-            await session.commit()
-            return len(tasks)
+                except Exception:  # noqa: BLE001 - status failure is uncertain
+                    remote_status = None
+            await self._tasks.finish_recovery(lease, remote_status)
 
     async def run_forever(self, stop_event: asyncio.Event, *, interval: float = 1.0):
         while not stop_event.is_set():
@@ -302,28 +194,225 @@ class TaskWorker:
             except TimeoutError:
                 pass
 
-    async def _claim_one(self) -> str | None:
-        now = datetime.now(UTC)
-        async with self._session_factory() as session:
-            task = await session.scalar(
-                select(Task)
-                .where(
-                    Task.state == TaskState.QUEUED,
-                    (Task.lease_expires_at.is_(None) | (Task.lease_expires_at < now)),
-                )
-                .order_by(Task.created_at)
-                .limit(1)
+    async def _claim_one(self) -> TaskLease | None:
+        return await self._tasks.claim_next(
+            owner=self._owner,
+            lease_duration=timedelta(seconds=self._lease_seconds),
+        )
+
+    async def _process_lease(self, lease: TaskLease) -> SubmissionResult:
+        if lease.action != TaskAction.OFFLINE_DOWNLOAD:
+            return SubmissionResult(
+                status=RemoteStatus.FAILED,
+                error_code="push_kind_unsupported",
+                error_message="share push is not supported",
             )
-            if task is None:
-                return None
-            task.state = TaskState.SUBMITTING
-            task.attempts += 1
-            task.lease_owner = self._owner
-            task.lease_expires_at = now + timedelta(seconds=self._lease_seconds)
-            task.updated_at = now
-            await session.commit()
-            return task.id
+
+        gate = None
+        if self._inventory_guard is not None:
+            try:
+                gate = await self._run_external_call(
+                    lease, lambda: self._inventory_guard.check(lease.resource_id)
+                )
+            except _LeaseClaimLost:
+                raise
+            except Exception:  # noqa: BLE001 - fail closed before remote submission
+                gate = None
+        if (
+            self._inventory_guard is not None
+            and gate is not None
+            and not gate.allowed
+            and gate.code in _AUTO_REFRESH_INVENTORY_CODES
+            and self._inventory_refresh is not None
+        ):
+            try:
+                refreshed = await self._run_external_call(
+                    lease, self._inventory_refresh
+                )
+            except _LeaseClaimLost:
+                raise
+            except Exception:  # noqa: BLE001 - fail closed before remote submission
+                gate = InventoryPushCheck(False, "inventory_check_failed")
+                refreshed = False
+            if isinstance(refreshed, InventoryRefreshEvidence):
+                if refreshed.usable:
+                    try:
+                        gate = await self._run_external_call(
+                            lease,
+                            lambda: self._inventory_guard.check(lease.resource_id),
+                        )
+                    except _LeaseClaimLost:
+                        raise
+                    except Exception:  # noqa: BLE001 - fail closed before remote submission
+                        gate = None
+                else:
+                    gate = InventoryPushCheck(
+                        False,
+                        refreshed.error_code or "inventory_check_failed",
+                    )
+            elif refreshed:
+                try:
+                    gate = await self._run_external_call(
+                        lease, lambda: self._inventory_guard.check(lease.resource_id)
+                    )
+                except _LeaseClaimLost:
+                    raise
+                except Exception:  # noqa: BLE001 - fail closed before remote submission
+                    gate = None
+        if self._inventory_guard is not None and (gate is None or not gate.allowed):
+            code = "inventory_check_failed" if gate is None else gate.code
+            return SubmissionResult(
+                status=RemoteStatus.FAILED,
+                error_code=code,
+                error_message=_inventory_error_message(code),
+            )
+
+        try:
+            url = self._crypto.decrypt(lease.encrypted_url_snapshot)
+        except Exception:  # noqa: BLE001 - failure occurred before remote submission
+            return SubmissionResult(
+                status=RemoteStatus.FAILED,
+                error_code="local_decryption_failed",
+                error_message="stored submission data could not be decrypted",
+            )
+        try:
+            if lease.target_directory_id is None:
+                return await self._run_external_call(
+                    lease, lambda: self._adapter.submit_magnet(url)
+                )
+            return await self._run_external_call(
+                lease,
+                lambda: self._adapter.submit_magnet(
+                    url, target_cid=lease.target_directory_id
+                ),
+            )
+        except _LeaseClaimLost:
+            raise
+        except Exception:  # noqa: BLE001 - remote outcome may be ambiguous
+            return SubmissionResult(
+                status=RemoteStatus.UNCERTAIN,
+                error_code="adapter_error",
+                error_message="submission outcome is uncertain",
+            )
+
+    async def _run_external_call(
+        self,
+        lease: TaskLease,
+        operation: Callable[[], Awaitable[_ExternalResult]],
+    ) -> _ExternalResult:
+        if not await self._lease_is_active(lease):
+            raise _LeaseClaimLost
+        heartbeat_stop = asyncio.Event()
+        lease_lost = asyncio.Event()
+        heartbeat_task = asyncio.create_task(
+            self._renew_lease_forever(lease, heartbeat_stop, lease_lost),
+            name=f"watch-assistant-task-lease-{lease.task_id}",
+        )
+        operation_task = asyncio.create_task(operation())
+        try:
+            done, _pending = await asyncio.wait(
+                {operation_task, heartbeat_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if heartbeat_task in done and lease_lost.is_set():
+                if not operation_task.done():
+                    operation_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await operation_task
+                raise _LeaseClaimLost
+            try:
+                result = await operation_task
+            except asyncio.CancelledError:
+                if lease_lost.is_set():
+                    raise _LeaseClaimLost
+                raise
+            except Exception as exc:
+                if lease_lost.is_set() or not await self._lease_is_active(lease):
+                    raise _LeaseClaimLost from exc
+                raise
+            if lease_lost.is_set() or not await self._lease_is_active(lease):
+                raise _LeaseClaimLost
+            return result
+        finally:
+            heartbeat_stop.set()
+            heartbeat_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await heartbeat_task
+            if not operation_task.done():
+                operation_task.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await operation_task
+
+    async def _lease_is_active(self, lease: TaskLease) -> bool:
+        try:
+            return await self._tasks.is_lease_active(lease)
+        except Exception:  # noqa: BLE001 - fail closed when the DB cannot fence
+            return False
+
+    async def _mark_lease_lost(self, lease: TaskLease) -> None:
+        """Leave a still-owned claim reviewable without crossing its fence."""
+
+        try:
+            task = await self._tasks.mark_lease_lost(lease)
+        except Exception:  # noqa: BLE001 - recovery will retry after lease expiry
+            return
+        if task is None:
+            return
+        await emit_event(
+            self._event_logger,
+            "task.uncertain",
+            level=LoggingLevel.WARNING,
+            fields={
+                "status": task.state.value,
+                "count": 1,
+                "error_code": TASK_LEASE_LOST,
+            },
+            task_id=task.id,
+            resource_type="task",
+            resource_id=task.resource_id,
+        )
+
+    async def _renew_lease_forever(
+        self,
+        lease: TaskLease,
+        stop_event: asyncio.Event,
+        failure_event: asyncio.Event,
+    ) -> None:
+        interval = max(min(self._lease_seconds / 3, 30.0), 0.01)
+        renew_timeout = max(min(interval, 5.0), 0.05)
+        while not stop_event.is_set():
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=interval)
+            except TimeoutError:
+                try:
+                    renewed = await asyncio.wait_for(
+                        self._tasks.renew(
+                            lease,
+                            lease_duration=timedelta(seconds=self._lease_seconds),
+                        ),
+                        timeout=renew_timeout,
+                    )
+                except Exception:  # noqa: BLE001 - external result must be discarded
+                    failure_event.set()
+                    return
+                if not renewed:
+                    failure_event.set()
+                    return
 def _inventory_error_message(code: str) -> str:
     return _INVENTORY_ERROR_MESSAGES_ZH.get(
         code, "库存检查未完成，已阻止远端提交。"
     )
+
+
+async def _read_task_status(
+    adapter: TaskAdapter,
+    remote_ref: str,
+    *,
+    target_directory_id: str | None,
+) -> RemoteStatus | RemoteObservation | None:
+    target_aware = getattr(adapter, "get_status_for_task", None)
+    if callable(target_aware):
+        return await target_aware(
+            remote_ref, target_directory_id=target_directory_id
+        )
+    return await adapter.get_status(remote_ref)

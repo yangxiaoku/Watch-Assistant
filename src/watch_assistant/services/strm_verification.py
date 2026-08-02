@@ -6,7 +6,6 @@ import os
 from collections.abc import Collection
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from urllib.parse import urlsplit
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -18,6 +17,11 @@ from watch_assistant.library_models import (
     StrmManifestEntry,
 )
 from watch_assistant.services.strm_manifest import _paths
+from watch_assistant.services.strm_scope import (
+    active_strm_operation_id,
+    has_newer_unsettled_scan,
+    normalize_playback_url_prefix,
+)
 
 
 class StrmVerificationError(ValueError):
@@ -107,6 +111,8 @@ class StrmVerificationService:
             library, run = await self._validated_current_run(
                 session, library_id, source_scan_run_id
             )
+            if await active_strm_operation_id(session, library.id) is not None:
+                raise StrmVerificationError("strm_library_operation_conflict")
             entries = list(
                 (
                     await session.scalars(
@@ -233,6 +239,8 @@ class StrmVerificationService:
         )
         if latest != run.snapshot_revision:
             raise StrmVerificationError("source_snapshot_not_current")
+        if await has_newer_unsettled_scan(session, run):
+            raise StrmVerificationError("source_snapshot_not_current")
         return library, run
 
 
@@ -294,19 +302,10 @@ def _same_path(left: Path, right: Path) -> bool:
 
 
 def _safe_prefix(value: object) -> str:
-    if not isinstance(value, str) or not value or len(value) > 2048:
-        raise StrmVerificationError("invalid_playback_url_prefix")
-    parsed = urlsplit(value)
-    if (
-        parsed.scheme not in {"http", "https"}
-        or not parsed.netloc
-        or parsed.username
-        or parsed.password
-        or parsed.query
-        or parsed.fragment
-    ):
-        raise StrmVerificationError("invalid_playback_url_prefix")
-    return value.rstrip("/") + "/"
+    try:
+        return normalize_playback_url_prefix(value)
+    except ValueError:
+        raise StrmVerificationError("invalid_playback_url_prefix") from None
 
 
 def _valid_id(value: object) -> bool:

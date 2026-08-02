@@ -21,6 +21,7 @@ from watch_assistant.models import (
 )
 from watch_assistant.schemas import (
     MediaType,
+    RemoteObservation,
     RemoteStatus,
     WorkflowCreateRequest,
     WorkflowStageName,
@@ -232,7 +233,12 @@ async def test_organization_operation_updates_linked_workflow_stage(tmp_path):
     class AvailableAdapter:
         async def get_status(self, remote_ref: str):
             assert remote_ref == "workflow-available"
-            return RemoteStatus.AVAILABLE
+            return RemoteObservation(
+                status=RemoteStatus.AVAILABLE,
+                file_id="101",
+                parent_id="7",
+                is_directory=False,
+            )
 
     await TaskService(database.session_factory).reconcile(task.id, AvailableAdapter())
 

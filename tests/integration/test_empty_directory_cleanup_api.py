@@ -131,6 +131,7 @@ async def test_empty_directory_cleanup_api_is_preview_confirm_idempotent_and_rev
             ),
         ),
         frontend_dir=tmp_path / "missing",
+        system_created_directory_ids=("300",),
     )
     calls = []
 

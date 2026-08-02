@@ -58,11 +58,13 @@ class FakeOrganizationTransport:
         states=None,
         move_outcomes=None,
         rename_outcomes=None,
+        recycle_outcomes=None,
         post_mismatch=False,
     ):
         self.states = dict(states or {"100": ("7000", "movie.mkv")})
         self.move_outcomes = dict(move_outcomes or {})
         self.rename_outcomes = dict(rename_outcomes or {})
+        self.recycle_outcomes = dict(recycle_outcomes or {})
         self.post_mismatch = post_mismatch
         self.calls = []
 
@@ -120,6 +122,11 @@ class FakeOrganizationTransport:
 
     async def recycle(self, object_id, parent_id, name):
         self.calls.append(("recycle", object_id, parent_id, name))
+        outcome = self.recycle_outcomes.get(object_id)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        if outcome is not None:
+            return outcome
         if self.states.get(object_id) != (parent_id, name):
             return OrganizationTransportResult(
                 OrganizationTransportOperation.RECYCLE,
@@ -142,6 +149,29 @@ async def _claimed_executor(database, transport, **kwargs):
         **kwargs,
     )
     return executor, operation, lease
+
+
+async def _replacement_operation(database, *, key: str):
+    plan_service = OrganizationPlanService(database.session_factory)
+    plan = await plan_service.create_plan(
+        library_id="library-1",
+        scan_run_id="scan-1",
+        items=(
+            replace(
+                _item(),
+                policy_decision=VersionDecision(
+                    "candidate", "remux_priority", "remux"
+                ),
+                replacement_object_id="200",
+                replacement_parent_id="8000",
+                replacement_name="movie.mkv",
+            ),
+        ),
+    )
+    operation_service = OrganizationOperationService(database.session_factory)
+    operation = await operation_service.create(plan.plan_id, idempotency_key=key)
+    lease = await operation_service.claim(operation.operation_id, expected_revision=1)
+    return operation_service, operation, lease
 
 
 @pytest.mark.asyncio
@@ -234,6 +264,268 @@ async def test_candidate_replacement_recycles_existing_target_before_write(tmp_p
         "rename",
         "read_object",
     ]
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_uncertain_recycle_with_missing_replacement_stays_uncertain(
+    tmp_path: Path,
+):
+    database = await _database(tmp_path)
+    plan_service = OrganizationPlanService(database.session_factory)
+    plan = await plan_service.create_plan(
+        library_id="library-1",
+        scan_run_id="scan-1",
+        items=(
+            replace(
+                _item(),
+                policy_decision=VersionDecision("candidate", "remux_priority", "remux"),
+                replacement_object_id="200",
+                replacement_parent_id="8000",
+                replacement_name="movie.mkv",
+            ),
+        ),
+    )
+    operation_service = OrganizationOperationService(database.session_factory)
+    operation = await operation_service.create(plan.plan_id, idempotency_key="replace-uncertain")
+    lease = await operation_service.claim(operation.operation_id, expected_revision=1)
+    transport = FakeOrganizationTransport(
+        states={"100": ("7000", "movie.mkv"), "200": ("8000", "movie.mkv")},
+        recycle_outcomes={
+            "200": OrganizationTransportResult(
+                OrganizationTransportOperation.RECYCLE,
+                OrganizationTransportStatus.UNCERTAIN,
+            )
+        },
+    )
+    executor = OrganizationExecutor(operation_service, database.session_factory, transport)
+    initial = await executor.execute(
+        operation.operation_id,
+        expected_revision=lease.revision,
+        lease_token=lease.lease_token,
+    )
+    assert initial.status is OrganizationExecutionStatus.UNCERTAIN
+
+    # The recycle may have taken effect even though its response was
+    # uncertain. The primary source is still unchanged, so replacement
+    # evidence is required before exposing a retryable failure.
+    transport.states.pop("200")
+    summary = await operation_service.get(operation.operation_id)
+    call_count = len(transport.calls)
+    reconciled = await executor.reconcile_uncertain(
+        operation.operation_id,
+        expected_revision=summary.revision,
+    )
+
+    assert reconciled.status is OrganizationExecutionStatus.UNCERTAIN
+    assert [call[0] for call in transport.calls[call_count:]] == [
+        "read_object",
+        "read_object",
+    ]
+    current = await operation_service.get(operation.operation_id)
+    assert current.status is OrganizationOperationStatus.UNCERTAIN
+    assert reconciled.error_code == "replacement_reconciliation_unverified"
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_target_reconciliation_does_not_infer_missing_replacement_removed(
+    tmp_path: Path,
+):
+    database = await _database(tmp_path)
+    operation_service, operation, lease = await _replacement_operation(
+        database, key="replacement-target-reconciliation"
+    )
+    transport = FakeOrganizationTransport(
+        states={"100": ("7000", "movie.mkv"), "200": ("8000", "movie.mkv")},
+        recycle_outcomes={
+            "200": OrganizationTransportResult(
+                OrganizationTransportOperation.RECYCLE,
+                OrganizationTransportStatus.UNCERTAIN,
+            )
+        },
+    )
+    executor = OrganizationExecutor(
+        operation_service, database.session_factory, transport
+    )
+
+    initial = await executor.execute(
+        operation.operation_id,
+        expected_revision=lease.revision,
+        lease_token=lease.lease_token,
+    )
+    assert initial.status is OrganizationExecutionStatus.UNCERTAIN
+
+    transport.states["100"] = ("8000", "movie.mkv")
+    transport.states.pop("200")
+    summary = await operation_service.get(operation.operation_id)
+    call_count = len(transport.calls)
+
+    reconciled = await executor.reconcile_uncertain(
+        operation.operation_id,
+        expected_revision=summary.revision,
+    )
+
+    assert (reconciled.status, reconciled.error_code) == (
+        OrganizationExecutionStatus.UNCERTAIN,
+        "replacement_reconciliation_unverified",
+    )
+    assert [call[0] for call in transport.calls[call_count:]] == [
+        "read_object",
+        "read_object",
+    ]
+    assert all(
+        call[0] not in {"move", "rename", "recycle"}
+        for call in transport.calls[call_count:]
+    )
+    assert (
+        await operation_service.get(operation.operation_id)
+    ).status is OrganizationOperationStatus.UNCERTAIN
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "replacement_state",
+    (("7000", "movie.mkv"), ("8000", "movie.mkv")),
+    ids=("replacement-at-source", "replacement-at-target"),
+)
+async def test_reconciliation_keeps_non_removed_replacement_observations_uncertain(
+    tmp_path: Path, replacement_state: tuple[str, str]
+):
+    database = await _database(tmp_path)
+    operation_service, operation, lease = await _replacement_operation(
+        database, key=f"replacement-state-{replacement_state[0]}"
+    )
+    transport = FakeOrganizationTransport(
+        states={"100": ("7000", "movie.mkv"), "200": ("8000", "movie.mkv")},
+        recycle_outcomes={
+            "200": OrganizationTransportResult(
+                OrganizationTransportOperation.RECYCLE,
+                OrganizationTransportStatus.UNCERTAIN,
+            )
+        },
+    )
+    executor = OrganizationExecutor(
+        operation_service, database.session_factory, transport
+    )
+
+    await executor.execute(
+        operation.operation_id,
+        expected_revision=lease.revision,
+        lease_token=lease.lease_token,
+    )
+    transport.states["100"] = ("8000", "movie.mkv")
+    transport.states["200"] = replacement_state
+    summary = await operation_service.get(operation.operation_id)
+    call_count = len(transport.calls)
+
+    reconciled = await executor.reconcile_uncertain(
+        operation.operation_id,
+        expected_revision=summary.revision,
+    )
+
+    assert reconciled.status is OrganizationExecutionStatus.UNCERTAIN
+    assert all(
+        call[0] not in {"move", "rename", "recycle"}
+        for call in transport.calls[call_count:]
+    )
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_mixed_steps_do_not_complete_when_one_replacement_is_unobserved(
+    tmp_path: Path,
+):
+    database = await _database(tmp_path)
+    async with database.session_factory() as session:
+        session.add(
+            LibraryScanEntry(
+                scan_run_id="scan-1",
+                object_type="file",
+                object_id="101",
+                parent_id="7000",
+                name="episode.mkv",
+                path="/private/episode.mkv",
+                is_directory=False,
+            )
+        )
+        await session.commit()
+    first = replace(
+        _item(),
+        policy_decision=VersionDecision("candidate", "remux_priority", "remux"),
+        replacement_object_id="200",
+        replacement_parent_id="8000",
+        replacement_name="movie.mkv",
+    )
+    second = replace(
+        _item(),
+        source=replace(
+            _item().source,
+            object_id="101",
+            path="/private/episode.mkv",
+            remote_version=_source_version(
+                "101", "/private/episode.mkv", "episode.mkv"
+            ),
+        ),
+        naming_plan=replace(
+            _item().naming_plan,
+            target_path="movie/episode.mkv",
+            display_name="Episode",
+        ),
+        target_name="episode.mkv",
+    )
+    plan = await OrganizationPlanService(database.session_factory).create_plan(
+        library_id="library-1",
+        scan_run_id="scan-1",
+        items=(first, second),
+    )
+    operation_service = OrganizationOperationService(database.session_factory)
+    operation = await operation_service.create(
+        plan.plan_id, idempotency_key="mixed-reconciliation"
+    )
+    lease = await operation_service.claim(operation.operation_id, expected_revision=1)
+    transport = FakeOrganizationTransport(
+        states={
+            "100": ("7000", "movie.mkv"),
+            "101": ("7000", "episode.mkv"),
+            "200": ("8000", "movie.mkv"),
+        },
+        recycle_outcomes={
+            "200": OrganizationTransportResult(
+                OrganizationTransportOperation.RECYCLE,
+                OrganizationTransportStatus.UNCERTAIN,
+            )
+        },
+    )
+    executor = OrganizationExecutor(
+        operation_service, database.session_factory, transport
+    )
+
+    initial = await executor.execute(
+        operation.operation_id,
+        expected_revision=lease.revision,
+        lease_token=lease.lease_token,
+    )
+    assert initial.status is OrganizationExecutionStatus.UNCERTAIN
+
+    transport.states["100"] = ("8000", "movie.mkv")
+    transport.states["101"] = ("8000", "episode.mkv")
+    transport.states.pop("200")
+    summary = await operation_service.get(operation.operation_id)
+
+    reconciled = await executor.reconcile_uncertain(
+        operation.operation_id,
+        expected_revision=summary.revision,
+    )
+
+    assert (reconciled.status, reconciled.error_code) == (
+        OrganizationExecutionStatus.UNCERTAIN,
+        "replacement_reconciliation_unverified",
+    )
+    assert (
+        await operation_service.get(operation.operation_id)
+    ).status is OrganizationOperationStatus.UNCERTAIN
     await database.engine.dispose()
 
 

@@ -1,4 +1,5 @@
 import asyncio
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from secrets import token_urlsafe
 
@@ -16,7 +17,10 @@ from watch_assistant.library_models import (
     MediaLibrary,
 )
 from watch_assistant.security import SecurityManager
-from watch_assistant.services.strm_manifest import StrmManifestService
+from watch_assistant.services.strm_manifest import (
+    StrmGenerationSummary,
+    StrmManifestService,
+)
 from watch_assistant.services.strm_operations import (
     StrmOperationKind,
     StrmOperationService,
@@ -102,12 +106,32 @@ async def test_strm_operations_are_visible_and_legacy_cleanup_is_preview_only(
         generated = await client.post(
             "/api/v1/libraries/library-one/strm-generation",
             json={"source_scan_run_id": "scan-one"},
-            headers=headers,
+            headers={**headers, "Idempotency-Key": "api-full-one"},
         )
         assert generated.status_code == 200
         body = generated.json()
         assert body["operation_id"].startswith("strm_op_")
         assert body["generated"] == 1
+        assert "lease_owner" not in generated.text
+
+        repeated = await client.post(
+            "/api/v1/libraries/library-one/strm-generation",
+            json={"source_scan_run_id": "scan-one"},
+            headers={**headers, "Idempotency-Key": "api-full-one"},
+        )
+        assert repeated.status_code == 200
+        assert repeated.json() == body
+
+        conflicting = await client.post(
+            "/api/v1/libraries/library-one/strm-generation",
+            json={
+                "source_scan_run_id": "scan-one",
+                "workflow_id": "different-workflow",
+            },
+            headers={**headers, "Idempotency-Key": "api-full-one"},
+        )
+        assert conflicting.status_code == 409
+        assert conflicting.json()["detail"] == "idempotency_key_conflict"
         strm_path = tmp_path / "strm-output" / "Shows" / "Episode.strm"
         assert strm_path.exists()
 
@@ -116,6 +140,7 @@ async def test_strm_operations_are_visible_and_legacy_cleanup_is_preview_only(
         )
         assert operation.status_code == 200
         assert operation.json()["status"] == "succeeded"
+        assert "lease_owner" not in operation.text
         manifest = await client.get(
             "/api/v1/libraries/library-one/strm-manifest", headers=headers
         )
@@ -133,6 +158,7 @@ async def test_strm_operations_are_visible_and_legacy_cleanup_is_preview_only(
         )
         assert history.status_code == 200
         assert history.json()["items"][0]["operation_id"] == body["operation_id"]
+        assert "lease_owner" not in history.text
 
         scoped_token = await client.post(
             "/api/v1/agent/tokens",
@@ -179,7 +205,11 @@ async def test_strm_operations_are_visible_and_legacy_cleanup_is_preview_only(
             source_scan_run_id="scan-one",
             kind=StrmOperationKind.FULL,
         )
-        await StrmOperationService(database.session_factory).start(orphan.operation_id)
+        await StrmOperationService(database.session_factory).start(
+            orphan.operation_id,
+            now=datetime.now(UTC) - timedelta(hours=1),
+            lease_duration=timedelta(minutes=5),
+        )
         async with app.router.lifespan_context(app):
             recovered = await StrmOperationService(database.session_factory).get(
                 orphan.operation_id
@@ -195,7 +225,7 @@ async def test_strm_operations_are_visible_and_legacy_cleanup_is_preview_only(
             await client.post(
                 "/api/v1/libraries/library-one/strm-generation",
                 json={"source_scan_run_id": "scan-one"},
-                headers=headers,
+                headers={**headers, "Idempotency-Key": "api-cancelled-one"},
             )
         cancelled_history = await client.get(
             "/api/v1/libraries/library-one/strm-operations",
@@ -208,6 +238,13 @@ async def test_strm_operations_are_visible_and_legacy_cleanup_is_preview_only(
             cancelled_history.json()["items"][0]["error_code"]
             == "strm_operation_cancelled"
         )
+        cancelled_repeat = await client.post(
+            "/api/v1/libraries/library-one/strm-generation",
+            json={"source_scan_run_id": "scan-one"},
+            headers={**headers, "Idempotency-Key": "api-cancelled-one"},
+        )
+        assert cancelled_repeat.status_code == 409
+        assert cancelled_repeat.json()["detail"] == "strm_operation_cancelled"
         monkeypatch.undo()
 
         async with database.session_factory() as session:
@@ -262,5 +299,109 @@ async def test_strm_operations_are_visible_and_legacy_cleanup_is_preview_only(
         assert resumed_body["generated"] == 1
         assert (tmp_path / "strm-output" / "Shows" / "Resumed.strm").exists()
     finally:
+        await client.aclose()
+        await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_same_idempotency_key_reuses_running_operation_explicitly(
+    tmp_path: Path,
+    monkeypatch,
+):
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'strm-running.db'}")
+    await initialize_database(database.engine)
+    async with database.session_factory() as session:
+        session.add(
+            MediaLibrary(
+                id="library-one",
+                name="测试媒体库",
+                root_directory_id="1000",
+                scope_verified=True,
+                enabled=True,
+                revision=1,
+            )
+        )
+        await session.commit()
+        session.add(
+            LibraryScanRun(
+                id="scan-one",
+                library_id="library-one",
+                root_directory_id="1000",
+                idempotency_key="scan-one-key",
+                state="completed",
+                complete=True,
+                snapshot_revision=1,
+            )
+        )
+        await session.commit()
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def blocking_generate(self, *args, **kwargs):
+        del self, args, kwargs
+        started.set()
+        await release.wait()
+        return StrmGenerationSummary(
+            "library-one", "scan-one", 0, 0, 0, 0, 0
+        )
+
+    monkeypatch.setattr(StrmManifestService, "generate", blocking_generate)
+    password = token_urlsafe(16)
+    password_hash = PasswordHash.recommended()
+    app = create_app(
+        database=database,
+        crypto=SecretCrypto(Fernet.generate_key().decode("ascii")),
+        tmdb_client=_FakeClient(),
+        pansou_client=_FakeClient(),
+        security_manager=SecurityManager(
+            web_password_hash=password_hash.hash(password),
+            script_token_hash=password_hash.hash(token_urlsafe(16)),
+            cookie_secure=False,
+        ),
+        frontend_dir=tmp_path / "missing",
+        strm_full_enabled=True,
+        strm_incremental_enabled=True,
+        strm_output_root=tmp_path / "strm-output",
+    )
+    client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://app.test"
+    )
+    first_task = None
+    try:
+        login = await client.post("/api/v1/auth/login", json={"password": password})
+        assert login.status_code == 200
+        headers = {"X-CSRF-Token": login.json()["csrf_token"]}
+        request_headers = {**headers, "Idempotency-Key": "running-key"}
+        first_task = asyncio.create_task(
+            client.post(
+                "/api/v1/libraries/library-one/strm-generation",
+                json={"source_scan_run_id": "scan-one"},
+                headers=request_headers,
+            )
+        )
+        await asyncio.wait_for(started.wait(), timeout=1)
+
+        repeated = await client.post(
+            "/api/v1/libraries/library-one/strm-generation",
+            json={"source_scan_run_id": "scan-one"},
+            headers=request_headers,
+        )
+        assert repeated.status_code == 409
+        detail = repeated.json()["detail"]
+        assert detail["code"] == "strm_operation_in_progress"
+        assert detail["status"] == "running"
+        assert detail["reused"] is True
+        assert detail["operation_id"].startswith("strm_op_")
+        assert "lease_owner" not in repeated.text
+
+        release.set()
+        first = await asyncio.wait_for(first_task, timeout=2)
+        assert first.status_code == 200
+        assert first.json()["operation_id"] == detail["operation_id"]
+    finally:
+        release.set()
+        if first_task is not None and not first_task.done():
+            await first_task
         await client.aclose()
         await database.engine.dispose()

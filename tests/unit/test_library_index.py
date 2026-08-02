@@ -1,4 +1,5 @@
 import asyncio
+import json
 from dataclasses import replace
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from watch_assistant.library_models import (
     LibraryInventoryEvent,
     LibraryObjectLedger,
     LibraryScanCheckpoint,
+    LibraryScanDiff,
     LibraryScanEntry,
     LibraryScanRun,
     MediaLibrary,
@@ -125,6 +127,20 @@ class _PathlessTreeGateway:
             1,
             1,
         )
+
+
+class _TreeTotalGateway(_TreeGateway):
+    def __init__(self, reported_total: int | None):
+        super().__init__()
+        self.reported_total = reported_total
+
+    async def list_directory(self, directory_id: str, *, page: int = 1, page_size=100):
+        page_value = await super().list_directory(
+            directory_id, page=page, page_size=page_size
+        )
+        if directory_id == ROOT_ID:
+            return replace(page_value, total=self.reported_total)
+        return page_value
 
 
 def _file_entry(file_id: str, *, path: str = SECRET_PATH, parent_id: str = ROOT_ID):
@@ -378,6 +394,31 @@ async def test_out_of_scope_entry_is_rejected_before_persistence(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_parent_traversal_path_is_rejected_before_persistence(tmp_path):
+    database = await _database(tmp_path)
+
+    class _UnsafePathGateway(_ReadOnlyGateway):
+        async def list_directory(self, directory_id: str, *, page=1, page_size=100):
+            page_value = await super().list_directory(
+                directory_id, page=page, page_size=page_size
+            )
+            return replace(
+                page_value,
+                items=(replace(page_value.items[0], path="../outside.mkv"),),
+            )
+
+    result = await _service(database, _UnsafePathGateway(1)).scan("unsafe-path")
+
+    assert result.state is ScanRunState.FAILED
+    assert result.complete is False
+    assert result.error_code == "entry_path_invalid"
+    async with database.session_factory() as session:
+        count = await session.scalar(select(func.count()).select_from(LibraryScanEntry))
+    assert count == 0
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_scope_gate_rejects_unverified_library_before_gateway(tmp_path):
     database = await _database(tmp_path)
     async with database.session_factory() as session:
@@ -443,7 +484,15 @@ async def test_tree_scan_includes_discovered_child_directories(tmp_path):
     assert gateway.calls == [(ROOT_ID, 1), ("7100", 1)]
     async with database.session_factory() as session:
         entries = list(await session.scalars(select(LibraryScanEntry)))
+        run = await session.get(LibraryScanRun, result.run_id)
+        checkpoint = await session.get(LibraryScanCheckpoint, result.run_id)
     assert {entry.object_id for entry in entries} == {"7100", "1000", "1001"}
+    assert run is not None
+    assert run.expected_total == 3
+    assert checkpoint is not None
+    cursor = json.loads(checkpoint.cursor_json)
+    assert cursor["directory_totals"] == {ROOT_ID: 2, "7100": 1}
+    assert cursor["expected_total"] == 3
     await database.engine.dispose()
 
 
@@ -476,6 +525,48 @@ async def test_tree_scan_materializes_relative_paths_when_gateway_omits_them(tmp
     assert paths["7100"] == "nested"
     assert paths["1000"] == "private-title.mkv"
     assert paths["1001"] == "nested/private-title.mkv"
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("reported_total", "error_code"),
+    ((None, "pagination_unverified"), (1, "total_mismatch"), (3, "total_mismatch")),
+)
+async def test_tree_total_evidence_is_fail_closed_and_has_no_inventory_side_effects(
+    tmp_path, reported_total, error_code
+):
+    database = await _database(tmp_path)
+    baseline = await _service(database, _TreeGateway(), page_size=1).scan_tree(
+        "tree-total-baseline"
+    )
+    assert baseline.complete is True
+
+    result = await _service(
+        database, _TreeTotalGateway(reported_total), page_size=1
+    ).scan_tree(f"tree-total-{reported_total}")
+
+    assert result.state is ScanRunState.FAILED
+    assert result.complete is False
+    assert result.error_code == error_code
+    assert result.deletion_candidates == ()
+    async with database.session_factory() as session:
+        entry_count = await session.scalar(
+            select(func.count()).where(LibraryScanEntry.scan_run_id == result.run_id)
+        )
+        diff_count = await session.scalar(
+            select(func.count()).where(LibraryScanDiff.scan_run_id == result.run_id)
+        )
+        ledger_count = await session.scalar(
+            select(func.count()).select_from(LibraryObjectLedger)
+        )
+        event_count = await session.scalar(
+            select(func.count()).select_from(LibraryInventoryEvent)
+        )
+    assert entry_count == 0
+    assert diff_count == 0
+    assert ledger_count == 3
+    assert event_count == 3
     await database.engine.dispose()
 
 

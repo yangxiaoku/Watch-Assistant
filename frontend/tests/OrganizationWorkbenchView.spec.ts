@@ -33,6 +33,12 @@ function makeApi(overrides: Partial<Record<keyof ApiClient, unknown>> = {}) {
   } as unknown as ApiClient;
 }
 
+async function confirmRiskyAction(wrapper: ReturnType<typeof mount>) {
+  await wrapper.get(".confirm-dialog-acknowledgement input").setValue(true);
+  await wrapper.get(".confirm-dialog-actions button:last-child").trigger("click");
+  await flushPromises();
+}
+
 describe("OrganizationWorkbenchView", () => {
   it("does not request or render the workbench when disabled", async () => {
     const api = makeApi();
@@ -70,7 +76,8 @@ describe("OrganizationWorkbenchView", () => {
     expect(wrapper.text()).not.toContain("/private/");
 
     await wrapper.findAll(".primary-button").find((button) => button.text().includes("确认并开始整理"))!.trigger("click");
-    await flushPromises();
+    expect(wrapper.get(".confirm-dialog").text()).toContain("预计移动");
+    await confirmRiskyAction(wrapper);
     expect(api.confirmAndQueueOrganizationOperation).toHaveBeenCalledWith("plan-local-1", 4);
     expect(wrapper.text()).toContain("整理已提交，后台正在执行");
   });
@@ -82,7 +89,7 @@ describe("OrganizationWorkbenchView", () => {
     const wrapper = mount(OrganizationWorkbenchView, { props: { api, executionEnabled: true } });
     await flushPromises();
     await wrapper.findAll(".primary-button").find((button) => button.text().includes("确认并开始整理"))!.trigger("click");
-    await flushPromises();
+    await confirmRiskyAction(wrapper);
 
     expect(api.organizationPlans).toHaveBeenCalledTimes(2);
     expect(wrapper.text()).toContain("计划版本已变化，已刷新当前列表");
@@ -112,7 +119,7 @@ describe("OrganizationWorkbenchView", () => {
     await flushPromises();
 
     await wrapper.get(".organization-batch-action").trigger("click");
-    await flushPromises();
+    await confirmRiskyAction(wrapper);
 
     expect(api.confirmAndQueueOrganizationOperations).toHaveBeenCalledWith([
       { planId: plan.plan_id, expectedRevision: plan.revision },
@@ -145,7 +152,7 @@ describe("OrganizationWorkbenchView", () => {
     const operationButton = wrapper.findAll("button").find((button) => button.text().includes("立即整理"));
     expect(operationButton).toBeDefined();
     await operationButton!.trigger("click");
-    await flushPromises();
+    await confirmRiskyAction(wrapper);
     expect(api.queueOrganizationOperation).toHaveBeenCalledWith("plan-local-1", 4);
     expect(wrapper.text()).toContain("整理已提交，后台正在执行");
   });
@@ -193,7 +200,7 @@ describe("OrganizationWorkbenchView", () => {
     expect(wrapper.text()).toContain("已生成可执行计划，请确认后开始整理");
 
     await wrapper.findAll("button").find((button) => button.text().includes("立即整理"))!.trigger("click");
-    await flushPromises();
+    await confirmRiskyAction(wrapper);
     expect(api.queueOrganizationOperation).toHaveBeenCalledWith("plan-local-1", 5);
     expect(wrapper.text()).toContain("整理已完成");
   });
@@ -246,7 +253,7 @@ describe("OrganizationWorkbenchView", () => {
     expect(api.selectOrganizationCandidate).toHaveBeenCalledWith("plan-local-1", 5, "source-1", 42);
     expect(wrapper.text()).toContain("可执行移动");
     await wrapper.findAll("button").find((button) => button.text().includes("立即整理"))!.trigger("click");
-    await flushPromises();
+    await confirmRiskyAction(wrapper);
     expect(api.queueOrganizationOperation).toHaveBeenCalledWith("plan-local-1", 6);
   });
 

@@ -9,6 +9,7 @@ from watch_assistant.api.strm import _cancel_operation
 from watch_assistant.db import create_database, initialize_database
 from watch_assistant.models import StrmOperation
 from watch_assistant.services.strm_operations import (
+    StrmOperationError,
     StrmOperationKind,
     StrmOperationService,
 )
@@ -29,6 +30,10 @@ async def test_strm_operation_lifecycle_is_durable_and_terminal(tmp_path: Path):
 
         running = await service.start(queued.operation_id)
         assert running.status == "running"
+        lease_owner = await service.get_lease_token(queued.operation_id)
+        assert lease_owner is not None
+        assert not hasattr(running, "lease_owner")
+        assert lease_owner not in repr(running)
         completed = await service.complete(
             queued.operation_id,
             generated=2,
@@ -36,6 +41,7 @@ async def test_strm_operation_lifecycle_is_durable_and_terminal(tmp_path: Path):
             skipped=0,
             failed=0,
             retired=0,
+            lease_owner=lease_owner,
         )
         assert completed.status == "succeeded"
         assert completed.generated == 2
@@ -154,12 +160,13 @@ async def test_strm_recovery_uses_cas_and_heartbeat_lease(tmp_path: Path):
         running = await service.start(
             operation.operation_id,
             now=datetime(2026, 8, 1, 0, 0, tzinfo=UTC),
-            lease_duration=timedelta(minutes=5),
+            lease_duration=timedelta(minutes=30),
         )
         assert running.status == "running"
 
         heartbeat = await service.heartbeat(
             operation.operation_id,
+            lease_owner=await service.get_lease_token(operation.operation_id),
             now=datetime(2026, 8, 1, 0, 29, tzinfo=UTC),
             lease_duration=timedelta(minutes=5),
         )
@@ -185,6 +192,237 @@ async def test_strm_recovery_uses_cas_and_heartbeat_lease(tmp_path: Path):
             respect_lease=True,
         ) == 0
         assert (await service.get(operation.operation_id)).status == "succeeded"
+    finally:
+        await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_startup_recovery_preserves_a_live_operation_lease(tmp_path: Path):
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'operations.db'}")
+    await initialize_database(database.engine)
+    try:
+        service = StrmOperationService(database.session_factory)
+        now = datetime(2026, 8, 2, 12, 0, tzinfo=UTC)
+        operation = await service.create(
+            library_id="library-one",
+            source_scan_run_id="scan-live",
+            kind=StrmOperationKind.INCREMENTAL,
+        )
+        running = await service.start(
+            operation.operation_id,
+            now=now,
+            lease_duration=timedelta(minutes=5),
+        )
+        assert running.status == "running"
+
+        recovered = await service.recover_incomplete(
+            now=now + timedelta(minutes=1),
+        )
+
+        assert recovered == 0
+        current = await service.get(operation.operation_id)
+        assert current.status == "running"
+        assert await service.is_lease_active(
+            operation.operation_id,
+            lease_owner=await service.get_lease_token(operation.operation_id),
+            now=now + timedelta(minutes=1),
+        )
+    finally:
+        await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_expired_recovery_fences_old_executor_before_new_claim(tmp_path: Path):
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'operations.db'}")
+    await initialize_database(database.engine)
+    try:
+        service = StrmOperationService(database.session_factory)
+        now = datetime(2026, 8, 2, 12, 0, tzinfo=UTC)
+        old = await service.create(
+            library_id="library-one",
+            source_scan_run_id="scan-old",
+            kind=StrmOperationKind.INCREMENTAL,
+        )
+        await service.start(
+            old.operation_id,
+            now=now,
+            lease_duration=timedelta(minutes=1),
+        )
+        old_owner = await service.get_lease_token(old.operation_id)
+        assert old_owner is not None
+        assert await service.recover_incomplete(now=now + timedelta(seconds=30)) == 0
+
+        assert await service.recover_stale(
+            max_age=timedelta(minutes=30),
+            now=now + timedelta(minutes=2),
+        ) == 1
+        assert not await service.is_lease_active(
+            old.operation_id,
+            lease_owner=old_owner,
+            now=now + timedelta(minutes=2),
+        )
+
+        new = await service.create(
+            library_id="library-one",
+            source_scan_run_id="scan-new",
+            kind=StrmOperationKind.INCREMENTAL,
+        )
+        claimed, acquired = await service.claim_start(
+            new.operation_id,
+            now=now + timedelta(minutes=2),
+        )
+        assert acquired is True
+        assert claimed.status == "running"
+    finally:
+        await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_strm_operation_idempotency_reuses_only_matching_request(tmp_path: Path):
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'operations.db'}")
+    await initialize_database(database.engine)
+    try:
+        service = StrmOperationService(database.session_factory)
+        first = await service.create(
+            library_id="library-one",
+            source_scan_run_id="scan-one",
+            kind=StrmOperationKind.FULL,
+            workflow_id="workflow-one",
+            idempotency_key="same-request",
+        )
+        repeated = await service.create(
+            library_id="library-one",
+            source_scan_run_id="scan-one",
+            kind=StrmOperationKind.FULL,
+            workflow_id="workflow-one",
+            idempotency_key="same-request",
+        )
+        assert repeated.operation_id == first.operation_id
+        with pytest.raises(StrmOperationError, match="idempotency_key_conflict"):
+            await service.create(
+                library_id="library-one",
+                source_scan_run_id="scan-two",
+                kind=StrmOperationKind.FULL,
+                workflow_id="workflow-one",
+                idempotency_key="same-request",
+            )
+        with pytest.raises(StrmOperationError, match="idempotency_key_conflict"):
+            await service.create(
+                library_id="library-one",
+                source_scan_run_id="scan-one",
+                kind=StrmOperationKind.FULL,
+                workflow_id="workflow-two",
+                idempotency_key="same-request",
+            )
+    finally:
+        await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_same_library_claim_is_mutually_exclusive(tmp_path: Path):
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'operations.db'}")
+    await initialize_database(database.engine)
+    try:
+        service = StrmOperationService(database.session_factory)
+        first = await service.create(
+            library_id="library-one",
+            source_scan_run_id="scan-one",
+            kind=StrmOperationKind.FULL,
+            idempotency_key="first",
+        )
+        second = await service.create(
+            library_id="library-one",
+            source_scan_run_id="scan-two",
+            kind=StrmOperationKind.INCREMENTAL,
+            idempotency_key="second",
+        )
+        claimed, acquired = await service.claim_start(first.operation_id)
+        blocked, blocked_acquired = await service.claim_start(second.operation_id)
+        assert claimed.status == "running"
+        assert acquired is True
+        assert blocked.status == "queued"
+        assert blocked_acquired is False
+    finally:
+        await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_same_library_claim_uses_database_condition_across_connections(
+    tmp_path: Path,
+):
+    database_one = create_database(f"sqlite+aiosqlite:///{tmp_path / 'operations.db'}")
+    database_two = create_database(f"sqlite+aiosqlite:///{tmp_path / 'operations.db'}")
+    await initialize_database(database_one.engine)
+    try:
+        service_one = StrmOperationService(database_one.session_factory)
+        service_two = StrmOperationService(database_two.session_factory)
+        first = await service_one.create(
+            library_id="library-one",
+            source_scan_run_id="scan-one",
+            kind=StrmOperationKind.FULL,
+            idempotency_key="first",
+        )
+        second = await service_one.create(
+            library_id="library-one",
+            source_scan_run_id="scan-two",
+            kind=StrmOperationKind.INCREMENTAL,
+            idempotency_key="second",
+        )
+        claims = await asyncio.gather(
+            service_one.claim_start(first.operation_id),
+            service_two.claim_start(second.operation_id),
+        )
+        assert sum(acquired for _, acquired in claims) == 1
+        assert {summary.status for summary, _ in claims} == {"running", "queued"}
+    finally:
+        await database_one.engine.dispose()
+        await database_two.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_old_lease_cannot_update_progress_or_terminal_state(tmp_path: Path):
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'operations.db'}")
+    await initialize_database(database.engine)
+    try:
+        service = StrmOperationService(database.session_factory)
+        operation = await service.create(
+            library_id="library-one",
+            source_scan_run_id="scan-one",
+            kind=StrmOperationKind.FULL,
+        )
+        await service.start(operation.operation_id)
+        old_lease = await service.get_lease_token(operation.operation_id)
+        assert old_lease is not None
+        async with database.session_factory() as session:
+            row = await session.get(StrmOperation, operation.operation_id)
+            assert row is not None
+            row.lease_owner = "new-fenced-owner"
+            row.lease_expires_at = datetime.now(UTC) + timedelta(minutes=5)
+            await session.commit()
+
+        with pytest.raises(StrmOperationError, match="strm_operation_lease_lost"):
+            await service.progress(
+                operation.operation_id,
+                generated=1,
+                unchanged=0,
+                skipped=0,
+                failed=0,
+                retired=0,
+                lease_owner=old_lease,
+            )
+        with pytest.raises(StrmOperationError, match="strm_operation_lease_lost"):
+            await service.complete(
+                operation.operation_id,
+                generated=1,
+                unchanged=0,
+                skipped=0,
+                failed=0,
+                retired=0,
+                lease_owner=old_lease,
+            )
+        current = await service.get(operation.operation_id)
+        assert current.status == "running"
+        assert current.generated == 0
     finally:
         await database.engine.dispose()
 
