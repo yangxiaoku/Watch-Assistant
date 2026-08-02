@@ -35,8 +35,10 @@
   页数/总量一致性、可恢复 worker 目录范围恢复和不完整快照门禁；扫描范围或断点无法证明时，库存不会被当作完整事实。
 - 相关回归覆盖见 [扫描范围恢复](../../../tests/integration/test_library_scan_scope_recovery.py)、
   [扫描操作](../../../tests/unit/test_library_scan_operations.py) 和
-  [库存扫描索引](../../../tests/unit/test_library_index.py)。后续 [PR #34](https://github.com/yangxiaoku/Watch-Assistant/pull/34)
-  尚未合入；本段记录代码和测试覆盖范围，不代表这些改动已经部署或完成生产库存验收。
+  [库存扫描索引](../../../tests/unit/test_library_index.py)。库存扫描与组织门禁后续已由
+  [PR #34](https://github.com/yangxiaoku/Watch-Assistant/pull/34) 合入，补充证据见
+  [组织用户流集成测试](../../../tests/integration/test_organization_user_flow.py) 和
+  [组织计划单测](../../../tests/unit/test_organization_plan.py)；这些改动仍不代表已部署或完成生产库存验收。
 - 生产媒体库配置、应用内新鲜完整扫描、目录增量事件和整理/隔离/恢复统一账本仍是阻断项，
   因此本需求继续保持“开发中”。
 

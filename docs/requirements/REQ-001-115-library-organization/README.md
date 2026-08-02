@@ -36,6 +36,9 @@
   任务关联和中文工作台调整；对应回归见 [扫描范围恢复](../../../tests/integration/test_library_scan_scope_recovery.py)、
   [扫描操作](../../../tests/unit/test_library_scan_operations.py)、[组织工作台单测](../../../frontend/tests/OrganizationWorkbenchView.spec.ts)
   和 [组织工作台 E2E](../../../frontend/e2e/organization-workbench.spec.ts)。这些证据只覆盖代码、离线和受管夹具范围。
+- 库存扫描与组织门禁已由 [PR #34](https://github.com/yangxiaoku/Watch-Assistant/pull/34) 合入；对应
+  [组织用户流集成测试](../../../tests/integration/test_organization_user_flow.py)、[组织计划单测](../../../tests/unit/test_organization_plan.py)
+  和 [库存索引单测](../../../tests/unit/test_library_index.py) 仍只证明代码和离线证据，不证明生产媒体库已配置或已整理。
 - 受管夹具的真实低风险证据不能替代生产验收；生产媒体库范围、真实整理写入、回滚、播放兼容性和部署状态仍未验证。
 - p115 远程可用性证据已由 [PR #31](https://github.com/yangxiaoku/Watch-Assistant/pull/31) 合入发布基线；
   其 fail-closed 代码和离线回归不等于真实 115 业务整理已完成。在 live、生产媒体库范围、回滚和部署证据完成前，

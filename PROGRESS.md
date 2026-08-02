@@ -75,6 +75,12 @@
   对应 [manifest 单测](tests/unit/test_strm_manifest.py)、[空目录计划单测](tests/unit/test_empty_directory_cleanup_plan.py)
   和 [空目录清理契约测试](tests/contracts/test_empty_directory_cleanup_contract.py) 只证明离线 readiness，
   不证明生产 STRM、生产清理或永久删除已开启。
+- 库存扫描与组织门禁已由 [PR #34](https://github.com/yangxiaoku/Watch-Assistant/pull/34) 合入当前基线；
+  对应 [组织用户流集成测试](tests/integration/test_organization_user_flow.py)、[组织计划单测](tests/unit/test_organization_plan.py)
+  和 [库存索引单测](tests/unit/test_library_index.py) 只证明代码和离线证据，不证明生产媒体库已配置或已整理。
+- task worker readiness 已由 [PR #36](https://github.com/yangxiaoku/Watch-Assistant/pull/36) 合入当前基线；
+  对应 [worker 恢复集成测试](tests/integration/test_worker_recovery.py) 和 [任务状态单测](tests/unit/test_tasks.py) 只证明恢复/租约边界，
+  不证明生产任务或 115 live 已验收。
 - 发布治理：release manifest 完整性/来源校验、systemd release 权限和回退边界、独立 p115 runtime
   已合入当前基线；这些变更仍需按发布流程从提交后的干净工作树打包并做部署核对。
 
@@ -117,7 +123,7 @@
 
 以下远端候选或本地分支均不属于 `codex/publish-main`，不得描述为已发布：
 
-- [PR #34](https://github.com/yangxiaoku/Watch-Assistant/pull/34)：库存扫描和组织门禁后续加固；本次核对时仍为 Open，尚未合入。
+- [PR #37](https://github.com/yangxiaoku/Watch-Assistant/pull/37)：本轮文档状态修正；当前为文档候选，尚未合入发布基线。
 
 本次文档修正使用独立分支提交；其他未合入候选和历史 release 记录必须分别核对，不能以分支名、截图或
 旧发布包代替当前基线证据。远端 `origin/codex/publish-20260729` 的旧发布说明仅作历史记录，不是当前发布版本。
@@ -126,6 +132,7 @@
 
 - P115 `errno=990009`：live runner 使用 3 秒重试；live 不进入离线门禁。
 - p115 远程可用性 PR #31 已合入当前基线，但本轮未执行 live；在 live、生产部署和回归证据完成前，相关能力保持未验收。
+- 代码 PR #31、#32、#33、#34、#35、#36 均已合入当前基线；本轮文档状态修正通过 PR #37 提议，不能把 PR #37 写成已发布。
 - Prowlarr 离线 readiness 已具备，但真实来源仍受 Internet Archive 上游 timeout 阻断，不能据此认定可搜索来源已配置。
 - iPad Cookie：只允许从 `C:\Users\98275\.115ts-secrets\.p115-cookie` 读取，过期会阻断 live。
 - `192.168.6.236`：当前部署和 live 验证的内网单点；本轮未核对实际运行模式、版本、数据目录或

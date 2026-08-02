@@ -15,9 +15,10 @@
 当前基线包含 [PR #30](https://github.com/yangxiaoku/Watch-Assistant/pull/30) 的扫描/STRM/租约门禁和工作台调整，
 以及已合入的 [PR #31](https://github.com/yangxiaoku/Watch-Assistant/pull/31) p115 fail-closed 远程可用性证据、
 后续工作台调整 [PR #32](https://github.com/yangxiaoku/Watch-Assistant/pull/32)、STRM/空目录清理加固
-[PR #33](https://github.com/yangxiaoku/Watch-Assistant/pull/33) 和发布门禁 [PR #35](https://github.com/yangxiaoku/Watch-Assistant/pull/35)。
-对应代码与离线测试只提高 readiness，
-REQ-001/REQ-002 仍按总索引和 `BLOCKERS.md` 保持“待验收”；播放兼容性、生产媒体库整理、生产 STRM、
+[PR #33](https://github.com/yangxiaoku/Watch-Assistant/pull/33)、库存/组织门禁 [PR #34](https://github.com/yangxiaoku/Watch-Assistant/pull/34)、
+发布门禁 [PR #35](https://github.com/yangxiaoku/Watch-Assistant/pull/35) 和 task worker readiness [PR #36](https://github.com/yangxiaoku/Watch-Assistant/pull/36)。
+对应代码与离线测试只提高 readiness；当前文档状态修正通过 [PR #37](https://github.com/yangxiaoku/Watch-Assistant/pull/37) 提议，
+尚未合入；REQ-001/REQ-002 仍按总索引和 `BLOCKERS.md` 保持“待验收”；播放兼容性、生产媒体库整理、生产 STRM、
 元数据联动、清理和生产部署仍未验收。
 
 2026-08-02 文档复核为历史审查窗口，锁定 `codex/integration-20260802@2c342d9`；复核期间集成 ref
