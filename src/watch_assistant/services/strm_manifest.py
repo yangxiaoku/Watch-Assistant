@@ -17,6 +17,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from watch_assistant.library_models import (
+    LibraryScanCheckpoint,
     LibraryScanDiff,
     LibraryScanEntry,
     LibraryScanRun,
@@ -25,6 +26,10 @@ from watch_assistant.library_models import (
     StrmManifestStatus,
 )
 from watch_assistant.models import StrmOperation, StrmOperationStatus
+from watch_assistant.services.library_index import (
+    LibraryIndexError,
+    validate_complete_scan_evidence,
+)
 from watch_assistant.services.strm_scope import (
     active_strm_operation_id,
     has_newer_unsettled_scan,
@@ -349,31 +354,9 @@ class StrmManifestService:
         prefix = _safe_prefix(playback_url_prefix)
         root = _safe_root(output_root, self._managed_output_roots)
         async with self._session_factory() as session:
-            library = await session.get(MediaLibrary, library_id)
-            run = await session.get(LibraryScanRun, source_scan_run_id)
-            if (
-                library is None
-                or not library.enabled
-                or not library.scope_verified
-                or run is None
-                or run.library_id != library_id
-                or run.root_directory_id != library.root_directory_id
-                or run.state != "completed"
-                or not run.complete
-                or run.snapshot_revision is None
-            ):
-                raise StrmManifestError("source_snapshot_not_ready")
-            latest = await session.scalar(
-                select(func.max(LibraryScanRun.snapshot_revision)).where(
-                    LibraryScanRun.library_id == library_id,
-                    LibraryScanRun.complete.is_(True),
-                    LibraryScanRun.state == "completed",
-                )
+            library, run = await self._validated_current_run(
+                session, library_id, source_scan_run_id
             )
-            if latest != run.snapshot_revision:
-                raise StrmManifestError("source_snapshot_not_current")
-            if await has_newer_unsettled_scan(session, run):
-                raise StrmManifestError("source_snapshot_not_current")
             await _raise_if_conflicting_operation(
                 session, library_id, operation_id=operation_id
             )
@@ -732,6 +715,26 @@ class StrmManifestService:
             raise StrmManifestError("source_snapshot_not_current")
         if await has_newer_unsettled_scan(session, run):
             raise StrmManifestError("source_snapshot_not_current")
+        checkpoint = await session.get(LibraryScanCheckpoint, run.id)
+        entries = list(
+            (
+                await session.scalars(
+                    select(LibraryScanEntry).where(
+                        LibraryScanEntry.scan_run_id == run.id
+                    )
+                )
+            ).all()
+        )
+        try:
+            validate_complete_scan_evidence(
+                run,
+                checkpoint,
+                entries,
+                root_directory_id=library.root_directory_id,
+                require_tree=True,
+            )
+        except LibraryIndexError:
+            raise StrmManifestError("source_snapshot_not_ready") from None
         return library, run
 
     async def _reconcile_entry(

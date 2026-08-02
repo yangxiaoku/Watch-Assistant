@@ -1,4 +1,5 @@
 import asyncio
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -10,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import watch_assistant.services.strm_manifest as strm_manifest_module
 from watch_assistant.db import create_database, initialize_database
 from watch_assistant.library_models import (
+    LibraryScanCheckpoint,
     LibraryScanDiff,
     LibraryScanEntry,
     LibraryScanRun,
@@ -48,17 +50,20 @@ async def _database(tmp_path: Path, *, include_second_video: bool = False):
             )
         )
         await session.flush()
-        session.add(
-            LibraryScanRun(
-                id="scan-strm",
-                library_id="library-strm",
-                root_directory_id="root-strm",
-                idempotency_key="scan-key",
-                state="completed",
-                complete=True,
-                snapshot_revision=1,
-            )
+        run = LibraryScanRun(
+            id="scan-strm",
+            library_id="library-strm",
+            root_directory_id="root-strm",
+            idempotency_key="scan-key",
+            state="completed",
+            complete=True,
+            snapshot_revision=1,
+            scan_mode="tree",
+            pages_read=1,
+            items_seen=2,
+            expected_total=2,
         )
+        session.add(run)
         await session.flush()
         entries = [
             LibraryScanEntry(
@@ -95,6 +100,24 @@ async def _database(tmp_path: Path, *, include_second_video: bool = False):
                     size_bytes=200,
                 )
             )
+        run.items_seen = len(entries)
+        run.expected_total = len(entries)
+        session.add(
+            LibraryScanCheckpoint(
+                scan_run_id="scan-strm",
+                page=1,
+                items_seen=len(entries),
+                cursor_json=json.dumps(
+                    {
+                        "version": 2,
+                        "directory_totals": {"root-strm": len(entries)},
+                        "expected_total": len(entries),
+                        "pending": [],
+                        "visited": ["root-strm"],
+                    }
+                ),
+            )
+        )
         session.add_all(entries)
         await session.commit()
     return database
@@ -240,6 +263,65 @@ async def test_generation_requires_complete_current_scan(tmp_path: Path):
                 "library-strm",
                 source_scan_run_id="scan-strm",
                 output_root=tmp_path / "stale-output",
+                playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+            )
+    finally:
+        await database.engine.dispose()
+
+
+async def test_generation_rejects_complete_snapshot_with_broken_tree_evidence(
+    tmp_path: Path,
+):
+    database = await _database(tmp_path)
+    try:
+        async with database.session_factory() as session:
+            entry = await session.get(LibraryScanEntry, ("scan-strm", "file", "100"))
+            assert entry is not None
+            entry.parent_id = "outside-root"
+            await session.commit()
+
+        service = StrmManifestService(database.session_factory)
+        with pytest.raises(StrmManifestError, match="source_snapshot_not_ready"):
+            await service.generate(
+                "library-strm",
+                source_scan_run_id="scan-strm",
+                output_root=tmp_path / "output",
+                playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+            )
+        assert not (tmp_path / "output" / "Show" / "Episode.strm").exists()
+    finally:
+        await database.engine.dispose()
+
+
+async def test_all_strm_snapshot_consumers_reject_invalid_checkpoint(tmp_path: Path):
+    database = await _database(tmp_path)
+    try:
+        async with database.session_factory() as session:
+            checkpoint = await session.get(LibraryScanCheckpoint, "scan-strm")
+            assert checkpoint is not None
+            checkpoint.cursor_json = "{}"
+            await session.commit()
+
+        manifest = StrmManifestService(database.session_factory)
+        with pytest.raises(StrmManifestError, match="source_snapshot_not_ready"):
+            await manifest.incremental(
+                "library-strm",
+                source_scan_run_id="scan-strm",
+                output_root=tmp_path / "output",
+                playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+            )
+        with pytest.raises(StrmCleanupPlanError, match="source_snapshot_not_ready"):
+            await StrmCleanupPlanService(database.session_factory).create_plan(
+                library_id="library-strm",
+                source_scan_run_id="scan-strm",
+                output_root=tmp_path / "output",
+                playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+            )
+        with pytest.raises(StrmVerificationError, match="source_snapshot_not_ready"):
+            await StrmVerificationService(database.session_factory).verify(
+                library_id="library-strm",
+                source_scan_run_id="scan-strm",
+                output_root=tmp_path / "output",
                 playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
             )
     finally:
@@ -983,6 +1065,10 @@ async def _add_changed_scan(database) -> None:
                 state="completed",
                 complete=True,
                 snapshot_revision=2,
+                scan_mode="tree",
+                pages_read=1,
+                items_seen=2,
+                expected_total=2,
             )
         )
         await session.flush()
@@ -1009,6 +1095,22 @@ async def _add_changed_scan(database) -> None:
                     size_bytes=300,
                 ),
             ]
+        )
+        session.add(
+            LibraryScanCheckpoint(
+                scan_run_id="scan-strm-2",
+                page=1,
+                items_seen=2,
+                cursor_json=json.dumps(
+                    {
+                        "version": 2,
+                        "directory_totals": {"root-strm": 2},
+                        "expected_total": 2,
+                        "pending": [],
+                        "visited": ["root-strm"],
+                    }
+                ),
+            )
         )
         session.add_all(
             [
@@ -1049,6 +1151,10 @@ async def _add_same_path_changed_scan(database) -> None:
                 state="completed",
                 complete=True,
                 snapshot_revision=2,
+                scan_mode="tree",
+                pages_read=1,
+                items_seen=1,
+                expected_total=1,
             )
         )
         await session.flush()
@@ -1071,6 +1177,22 @@ async def _add_same_path_changed_scan(database) -> None:
                 object_id="100",
                 change_kind="changed",
                 path_changed=False,
+            )
+        )
+        session.add(
+            LibraryScanCheckpoint(
+                scan_run_id="scan-strm-same-path",
+                page=1,
+                items_seen=1,
+                cursor_json=json.dumps(
+                    {
+                        "version": 2,
+                        "directory_totals": {"root-strm": 1},
+                        "expected_total": 1,
+                        "pending": [],
+                        "visited": ["root-strm"],
+                    }
+                ),
             )
         )
         await session.commit()
@@ -1108,6 +1230,10 @@ async def _add_removed_episode_scan(database) -> None:
                 state="completed",
                 complete=True,
                 snapshot_revision=2,
+                scan_mode="tree",
+                pages_read=1,
+                items_seen=1,
+                expected_total=1,
             )
         )
         await session.flush()
@@ -1130,6 +1256,22 @@ async def _add_removed_episode_scan(database) -> None:
                 object_id="100",
                 change_kind="removed",
                 path_changed=False,
+            )
+        )
+        session.add(
+            LibraryScanCheckpoint(
+                scan_run_id="scan-strm-2",
+                page=1,
+                items_seen=1,
+                cursor_json=json.dumps(
+                    {
+                        "version": 2,
+                        "directory_totals": {"root-strm": 1},
+                        "expected_total": 1,
+                        "pending": [],
+                        "visited": ["root-strm"],
+                    }
+                ),
             )
         )
         await session.commit()

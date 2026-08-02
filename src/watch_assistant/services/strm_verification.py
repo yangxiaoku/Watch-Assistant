@@ -11,10 +11,15 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from watch_assistant.library_models import (
+    LibraryScanCheckpoint,
     LibraryScanEntry,
     LibraryScanRun,
     MediaLibrary,
     StrmManifestEntry,
+)
+from watch_assistant.services.library_index import (
+    LibraryIndexError,
+    validate_complete_scan_evidence,
 )
 from watch_assistant.services.strm_manifest import _paths
 from watch_assistant.services.strm_scope import (
@@ -241,6 +246,26 @@ class StrmVerificationService:
             raise StrmVerificationError("source_snapshot_not_current")
         if await has_newer_unsettled_scan(session, run):
             raise StrmVerificationError("source_snapshot_not_current")
+        checkpoint = await session.get(LibraryScanCheckpoint, run.id)
+        entries = list(
+            (
+                await session.scalars(
+                    select(LibraryScanEntry).where(
+                        LibraryScanEntry.scan_run_id == run.id
+                    )
+                )
+            ).all()
+        )
+        try:
+            validate_complete_scan_evidence(
+                run,
+                checkpoint,
+                entries,
+                root_directory_id=library.root_directory_id,
+                require_tree=True,
+            )
+        except LibraryIndexError:
+            raise StrmVerificationError("source_snapshot_not_ready") from None
         return library, run
 
 
