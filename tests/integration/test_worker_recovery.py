@@ -1,3 +1,4 @@
+import asyncio
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -144,9 +145,104 @@ async def test_task_creation_is_idempotent_and_worker_accepts_submission(tmp_pat
     task = await service.get(first.id)
 
     assert processed is True
-    assert task.state == TaskState.ACCEPTED
+    assert task.state == TaskState.SUBMITTED
     assert task.remote_ref == "remote-123"
     assert adapter.submissions == 1
+    await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_reusing_available_task_advances_new_workflow_availability(tmp_path):
+    database = await _database(tmp_path)
+    crypto = SecretCrypto(Fernet.generate_key().decode("ascii"))
+    await _add_resource(database, crypto)
+    task_service = TaskService(database.session_factory)
+    workflow_service = WorkflowService(database.session_factory)
+
+    existing, _ = await task_service.create("res_magnet")
+    async with database.session_factory() as session:
+        stored = await session.get(Task, existing.id)
+        assert stored is not None
+        stored.remote_ref = "remote-existing"
+        await session.commit()
+
+    adapter = FakeAdapter()
+    adapter.remote_status = RemoteStatus.AVAILABLE
+    await task_service.reconcile(existing.id, adapter)
+
+    workflow = await workflow_service.create(
+        WorkflowCreateRequest(
+            media_type="movie", tmdb_id=27205, resource_id="res_magnet"
+        )
+    )
+    for stage in (
+        WorkflowStageName.INSPECTION,
+        WorkflowStageName.APPROVAL,
+    ):
+        await workflow_service.patch_stage(
+            workflow.id,
+            stage,
+            WorkflowStagePatch(status=WorkflowStageStatus.SUCCEEDED),
+        )
+
+    reused, reused_flag = await task_service.create(
+        "res_magnet", workflow_id=workflow.id
+    )
+
+    assert reused_flag is True
+    assert reused.id == existing.id
+    updated = await workflow_service.get(workflow.id)
+    stages = {stage.stage.value: stage.status.value for stage in updated.stages}
+    assert stages["push"] == "succeeded"
+    assert stages["availability"] == "succeeded"
+    await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_concurrent_reconciliation_upserts_one_available_evidence(tmp_path):
+    database = await _database(tmp_path)
+    crypto = SecretCrypto(Fernet.generate_key().decode("ascii"))
+    await _add_resource(database, crypto)
+    task_service = TaskService(database.session_factory)
+    workflow_service = WorkflowService(database.session_factory)
+
+    workflow = await workflow_service.create(
+        WorkflowCreateRequest(
+            media_type="movie", tmdb_id=27205, resource_id="res_magnet"
+        )
+    )
+    for stage in (
+        WorkflowStageName.INSPECTION,
+        WorkflowStageName.APPROVAL,
+    ):
+        await workflow_service.patch_stage(
+            workflow.id,
+            stage,
+            WorkflowStagePatch(status=WorkflowStageStatus.SUCCEEDED),
+        )
+    task, _ = await task_service.create("res_magnet", workflow_id=workflow.id)
+    async with database.session_factory() as session:
+        stored = await session.get(Task, task.id)
+        assert stored is not None
+        stored.state = TaskState.SUBMITTED
+        stored.remote_ref = "remote-concurrent"
+        await session.commit()
+
+    adapter = FakeAdapter()
+    adapter.remote_status = RemoteStatus.AVAILABLE
+    results = await asyncio.gather(
+        task_service.reconcile(task.id, adapter),
+        task_service.reconcile(task.id, adapter),
+        return_exceptions=True,
+    )
+
+    assert all(not isinstance(result, Exception) for result in results), results
+    evidence = await task_service.evidence(task.id)
+    assert [item for item in evidence if item.status == "available"]
+    assert len([item for item in evidence if item.status == "available"]) == 1
+    updated = await task_service.get(task.id)
+    assert updated is not None
+    assert updated.state is TaskState.AVAILABLE
     await database.engine.dispose()
 
 
@@ -196,7 +292,7 @@ async def test_worker_refreshes_stale_inventory_before_submission(tmp_path):
 
     assert await worker.run_once() is True
     stored = await service.get(task.id)
-    assert stored.state == TaskState.ACCEPTED
+    assert stored.state == TaskState.SUBMITTED
     assert adapter.submissions == 1
     assert refreshes == 1
     assert guard.checks == 2
@@ -303,7 +399,7 @@ async def test_worker_allows_advisory_inventory_checks(
 
     assert await worker.run_once() is True
     stored = await service.get(task.id)
-    assert stored.state == TaskState.ACCEPTED
+    assert stored.state == TaskState.SUBMITTED
     assert adapter.submissions == 1
     await database.engine.dispose()
 
@@ -316,10 +412,11 @@ async def test_worker_terminal_state_updates_linked_workflow_stage(tmp_path):
     task_service = TaskService(database.session_factory)
     workflow_service = WorkflowService(database.session_factory)
     workflow = await workflow_service.create(
-        WorkflowCreateRequest(media_type="movie", tmdb_id=27205)
+        WorkflowCreateRequest(
+            media_type="movie", tmdb_id=27205, resource_id="res_magnet"
+        )
     )
     for stage in (
-        WorkflowStageName.DISCOVERY,
         WorkflowStageName.INSPECTION,
         WorkflowStageName.APPROVAL,
     ):
@@ -330,17 +427,29 @@ async def test_worker_terminal_state_updates_linked_workflow_stage(tmp_path):
         )
     task, _ = await task_service.create("res_magnet", workflow_id=workflow.id)
 
+    adapter = FakeAdapter()
     worker = TaskWorker(
         database.session_factory,
         crypto,
-        FakeAdapter(),
+        adapter,
         owner="workflow-worker",
     )
     assert await worker.run_once() is True
 
     updated = await workflow_service.get(workflow.id)
     push_stage = next(stage for stage in updated.stages if stage.stage.value == "push")
+    assert push_stage.status.value == "waiting_external"
+
+    adapter.remote_status = RemoteStatus.AVAILABLE
+    await task_service.reconcile(task.id, adapter)
+
+    updated = await workflow_service.get(workflow.id)
+    push_stage = next(stage for stage in updated.stages if stage.stage.value == "push")
+    availability_stage = next(
+        stage for stage in updated.stages if stage.stage.value == "availability"
+    )
     assert push_stage.status.value == "succeeded"
+    assert availability_stage.status.value == "succeeded"
     assert push_stage.child_id == task.id
     await database.engine.dispose()
 

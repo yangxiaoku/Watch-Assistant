@@ -2,22 +2,41 @@
 
 import asyncio
 from datetime import UTC, datetime, timedelta
+from typing import Protocol
 from uuid import uuid4
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from watch_assistant.models import Resource, Task, TaskState
+from watch_assistant.models import Resource, Task, TaskState, WorkflowEvidence
 from watch_assistant.schemas import (
+    EvidenceSource,
+    EvidenceStatus,
     RemoteStatus,
     TaskAction,
     WorkflowStageName,
     WorkflowStageStatus,
 )
 from watch_assistant.services.observability import EventLogger, emit_event
-from watch_assistant.services.workflows import link_child, sync_child_stage
+from watch_assistant.services.workflows import (
+    WorkflowConflict,
+    advance_availability_from_evidence,
+    link_child,
+    record_evidence,
+    sync_child_stage,
+)
 
-REUSABLE_STATES = (TaskState.QUEUED, TaskState.SUBMITTING, TaskState.ACCEPTED)
+REUSABLE_STATES = (
+    TaskState.QUEUED,
+    TaskState.SUBMITTING,
+    TaskState.SUBMITTED,
+    TaskState.DOWNLOADING,
+    TaskState.AVAILABLE,
+)
+
+
+class TaskStatusAdapter(Protocol):
+    async def get_status(self, remote_ref: str) -> RemoteStatus | None: ...
 
 
 class ResourceNotFound(LookupError):
@@ -36,12 +55,123 @@ class PushKindUnsupported(ValueError):
     pass
 
 
+class TaskNotReconcilable(ValueError):
+    pass
+
+
+class ReconciliationUnavailable(RuntimeError):
+    pass
+
+
+def task_state_from_remote_status(
+    status: RemoteStatus, *, allow_available: bool = False
+) -> TaskState:
+    if status in {RemoteStatus.ACCEPTED, RemoteStatus.SUBMITTED}:
+        return TaskState.SUBMITTED
+    if status is RemoteStatus.DOWNLOADING:
+        return TaskState.DOWNLOADING
+    if status is RemoteStatus.AVAILABLE and allow_available:
+        return TaskState.AVAILABLE
+    if status is RemoteStatus.NEEDS_AUTH:
+        return TaskState.NEEDS_AUTH
+    if status is RemoteStatus.FAILED:
+        return TaskState.FAILED
+    return TaskState.UNCERTAIN
+
+
+def workflow_stage_status_for_task_state(state: TaskState) -> WorkflowStageStatus:
+    if state in {TaskState.SUBMITTED, TaskState.DOWNLOADING}:
+        return WorkflowStageStatus.WAITING_EXTERNAL
+    if state is TaskState.NEEDS_AUTH:
+        return WorkflowStageStatus.WAITING_CONFIRMATION
+    if state is TaskState.UNCERTAIN:
+        return WorkflowStageStatus.UNCERTAIN
+    if state is TaskState.FAILED:
+        return WorkflowStageStatus.FAILED
+    if state is TaskState.CANCELLED:
+        return WorkflowStageStatus.CANCELLED
+    return WorkflowStageStatus.RUNNING
+
+
+def evidence_status_for_task_state(state: TaskState) -> EvidenceStatus:
+    if state is TaskState.SUBMITTED:
+        return EvidenceStatus.SUBMITTED
+    if state is TaskState.DOWNLOADING:
+        return EvidenceStatus.DOWNLOADING
+    if state is TaskState.AVAILABLE:
+        return EvidenceStatus.AVAILABLE
+    if state is TaskState.FAILED:
+        return EvidenceStatus.FAILED
+    return EvidenceStatus.UNCERTAIN
+
+
+async def apply_remote_status(
+    session: AsyncSession,
+    task: Task,
+    remote_status: RemoteStatus,
+    *,
+    source: EvidenceSource,
+    verified_available: bool,
+) -> WorkflowEvidence:
+    """Apply a read-only remote observation without ever submitting again."""
+
+    if verified_available and source is not EvidenceSource.READONLY_RECONCILIATION:
+        raise WorkflowConflict("workflow_evidence_required")
+    if task.state is TaskState.AVAILABLE and (
+        remote_status is not RemoteStatus.AVAILABLE or not verified_available
+    ):
+        raise WorkflowConflict("workflow_stage_terminal")
+    state = task_state_from_remote_status(
+        remote_status, allow_available=verified_available
+    )
+    task.state = state
+    task.error_code = None if state not in {TaskState.FAILED, TaskState.UNCERTAIN} else task.error_code
+    task.error_message = None if state not in {TaskState.FAILED, TaskState.UNCERTAIN} else task.error_message
+    task.updated_at = datetime.now(UTC)
+    evidence = await record_evidence(
+        session,
+        workflow_id=task.workflow_id,
+        task_id=task.id,
+        stage=(
+            WorkflowStageName.AVAILABILITY
+            if state is TaskState.AVAILABLE
+            else WorkflowStageName.PUSH
+        ),
+        evidence_type=(
+            "availability_receipt" if state is TaskState.AVAILABLE else "remote_status"
+        ),
+        source=source,
+        subject_id=task.id,
+        status=evidence_status_for_task_state(state),
+        verified=state is TaskState.AVAILABLE and verified_available,
+    )
+    if task.workflow_id is not None:
+        if state is TaskState.AVAILABLE and verified_available:
+            await advance_availability_from_evidence(
+                session, task.workflow_id, task.id, evidence
+            )
+        else:
+            await sync_child_stage(
+                session,
+                task.workflow_id,
+                WorkflowStageName.PUSH,
+                child_type="task",
+                child_id=task.id,
+                status=workflow_stage_status_for_task_state(state),
+                reason=f"task_{state.value}",
+                error_code=task.error_code,
+            )
+    return evidence
+
+
 def recover_after_restart(task: Task, remote_status: RemoteStatus | None) -> None:
     task.lease_owner = None
     task.lease_expires_at = None
     task.updated_at = datetime.now(UTC)
+    if task.state is TaskState.AVAILABLE:
+        return
     task.state = (
-        TaskState(remote_status.value)
+        task_state_from_remote_status(remote_status, allow_available=False)
         if remote_status is not None
         else TaskState.UNCERTAIN
     )
@@ -63,10 +193,11 @@ def choose_existing_task(
 
 
 def prepare_manual_retry(task: Task) -> None:
+    if task.state is TaskState.UNCERTAIN:
+        raise InvalidRetryState("uncertain_requires_verification")
     if task.state not in {
         TaskState.FAILED,
         TaskState.NEEDS_AUTH,
-        TaskState.UNCERTAIN,
     }:
         raise InvalidRetryState("task is not retryable")
     task.state = TaskState.QUEUED
@@ -87,6 +218,7 @@ class TaskService:
     ) -> None:
         self._session_factory = session_factory
         self._create_lock = asyncio.Lock()
+        self._reconcile_lock = asyncio.Lock()
         self._event_logger = event_logger
 
     async def create(
@@ -126,6 +258,23 @@ class TaskService:
                             "task",
                             existing.id,
                         )
+                        if existing.state is TaskState.AVAILABLE:
+                            evidence = await session.scalar(
+                                select(WorkflowEvidence)
+                                .where(
+                                    WorkflowEvidence.task_id == existing.id,
+                                    WorkflowEvidence.stage
+                                    == WorkflowStageName.AVAILABILITY,
+                                    WorkflowEvidence.status
+                                    == EvidenceStatus.AVAILABLE.value,
+                                    WorkflowEvidence.verified.is_(True),
+                                )
+                                .order_by(WorkflowEvidence.observed_at.desc())
+                            )
+                            if evidence is not None:
+                                await advance_availability_from_evidence(
+                                    session, workflow_id, existing.id, evidence
+                                )
                         await session.commit()
                     return existing, True
 
@@ -163,6 +312,60 @@ class TaskService:
     async def get(self, task_id: str) -> Task | None:
         async with self._session_factory() as session:
             return await session.get(Task, task_id)
+
+    async def reconcile(
+        self,
+        task_id: str,
+        adapter: TaskStatusAdapter,
+    ) -> tuple[Task, WorkflowEvidence]:
+        """Read the remote state and persist the observation; never submit."""
+
+        async with self._session_factory() as session:
+            task = await session.get(Task, task_id)
+            if task is None:
+                raise ResourceNotFound(task_id)
+            if not task.remote_ref:
+                raise TaskNotReconcilable("task_not_reconcilable")
+            remote_ref = task.remote_ref
+        try:
+            remote_status = await adapter.get_status(remote_ref)
+        except Exception as exc:
+            raise ReconciliationUnavailable("reconciliation_unavailable") from exc
+        if remote_status is None:
+            raise ReconciliationUnavailable("reconciliation_unavailable")
+        try:
+            normalized_status = RemoteStatus(remote_status)
+        except ValueError as exc:
+            raise ReconciliationUnavailable("reconciliation_unavailable") from exc
+
+        async with self._reconcile_lock, self._session_factory() as session:
+            task = await session.get(Task, task_id)
+            if task is None:
+                raise ResourceNotFound(task_id)
+            if task.remote_ref != remote_ref:
+                raise ReconciliationUnavailable("reconciliation_conflict")
+            evidence = await apply_remote_status(
+                session,
+                task,
+                normalized_status,
+                source=EvidenceSource.READONLY_RECONCILIATION,
+                verified_available=True,
+            )
+            await session.commit()
+            return task, evidence
+
+    async def evidence(self, task_id: str) -> list[WorkflowEvidence]:
+        async with self._session_factory() as session:
+            task = await session.get(Task, task_id)
+            if task is None:
+                raise ResourceNotFound(task_id)
+            return list(
+                await session.scalars(
+                    select(WorkflowEvidence)
+                    .where(WorkflowEvidence.task_id == task_id)
+                    .order_by(WorkflowEvidence.observed_at, WorkflowEvidence.id)
+                )
+            )
 
     async def list_recent(self, limit: int = 50, offset: int = 0) -> list[Task]:
         # MCP asks for one look-ahead row to produce a stable next cursor.

@@ -266,7 +266,7 @@ async def test_p115_settings_reuses_runtime_adapter_without_remote_access(
 
 
 @pytest.mark.integration
-async def test_magnet_task_reaches_accepted_with_fake_adapter(tmp_path):
+async def test_magnet_task_reaches_submitted_with_fake_adapter(tmp_path):
     adapter = FakeTaskAdapter()
     app, client, database, crypto, tmdb, pansou = await _app_client(tmp_path, adapter)
     await _add_resource(database, crypto, resource_id="magnet_task", kind="magnet")
@@ -278,7 +278,7 @@ async def test_magnet_task_reaches_accepted_with_fake_adapter(tmp_path):
     assert created.status_code == 202
     await app.state.task_worker.run_once()
     stored = await app.state.task_service.get(created.json()["id"])
-    assert stored.state == TaskState.ACCEPTED
+    assert stored.state == TaskState.SUBMITTED
     assert stored.remote_ref == "remote-test"
     assert adapter.submit_calls == 1
     await tmdb.aclose()

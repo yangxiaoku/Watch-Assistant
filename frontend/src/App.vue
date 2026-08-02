@@ -22,6 +22,7 @@ import { finalizeInspectionResources, inspectionProgress as getInspectionProgres
 import { describeUiError } from "./errorCatalog";
 import { waitForResourceSearch as pollResourceSearch } from "./resourceSearchPolling";
 import { sourceNameList } from "./resourceSources";
+import { createTaskRefreshGuard, isActiveTask } from "./taskPolling";
 import type { CapabilityAvailability, HomeCatalogResponse, MovieMetadata, ResourceFacets, ResourcePageResponse, ResourceQuality, ResourceSearchResponse, ResourceSort, ResourceSummary, SearchResponse, SeasonDetailResponse, TaskResponse } from "./types";
 import CollectionView from "./views/CollectionView.vue";
 import HomeView from "./views/HomeView.vue";
@@ -132,6 +133,7 @@ let workflowCreationPromise: Promise<string | null> | null = null;
 let pendingResourceRoute: ResourceRouteState | null = null;
 let seasonDetailRequestId = 0;
 let seasonDetailAbortController: AbortController | null = null;
+const taskRefreshGuard = createTaskRefreshGuard();
 
 type DetailMetricStage = "detail_framework" | "metadata_summary" | "metadata_complete" | "metadata_failed" | "resource_first_batch" | "resource_complete" | "resource_failed" | "late_response" | "request_cancelled";
 type DetailTiming = { startedAt: number; mediaType: "movie" | "tv"; tmdbId: number; seasonNumber: number | null; reported: Set<DetailMetricStage> };
@@ -187,7 +189,7 @@ let catalogReturnScrollY: number | null = null;
 
 const favoriteIds = computed(() => new Set(favorites.value.map(mediaKey)));
 const detailFavorite = computed(() => result.value ? favoriteIds.value.has(mediaKey(result.value.movie)) : false);
-const hasActiveTasks = computed(() => tasks.value.some((task) => task.state === "queued" || task.state === "submitting"));
+const hasActiveTasks = computed(() => tasks.value.some(isActiveTask));
 const resourceItems = computed(() => {
   const source = resourceResponse.value?.items ?? resourceItemsFallback.value;
   return source.map((resource) => {
@@ -619,6 +621,12 @@ function openTaskDrawer(): void {
   drawerOpen.value = true;
 }
 
+function updateTask(task: TaskResponse): void {
+  taskRefreshGuard.invalidate(task.id);
+  tasks.value = [task, ...tasks.value.filter((item) => item.id !== task.id)].slice(0, 50);
+  if (isActiveTask(task)) ensurePolling();
+}
+
 function resetInspection() {
   inspectionRunId += 1;
   inspectionState.value = "idle";
@@ -662,7 +670,7 @@ function invalidateDetailRequest() {
   activeWorkflowId.value = null;
 }
 
-async function ensureActiveWorkflow(): Promise<string | null> {
+async function ensureActiveWorkflow(resourceId?: string): Promise<string | null> {
   if (activeWorkflowId.value) return activeWorkflowId.value;
   if (!result.value || !result.value.movie.media_type) return null;
   if (workflowCreationPromise) return workflowCreationPromise;
@@ -670,13 +678,9 @@ async function ensureActiveWorkflow(): Promise<string | null> {
   const tmdbId = result.value.movie.tmdb_id;
   workflowCreationPromise = (async () => {
     try {
-      const workflow = await api.createWorkflow({ mediaType, tmdbId });
+      const workflow = await api.createWorkflow({ mediaType, tmdbId, resourceId });
       if (result.value?.movie.tmdb_id !== tmdbId || detailMediaType.value !== mediaType) return null;
       activeWorkflowId.value = workflow.id;
-      await api.patchWorkflowStage(workflow.id, "discovery", {
-        status: "succeeded",
-        reason: "resource_discovery_completed",
-      });
       return workflow.id;
     } catch {
       return null;
@@ -1193,7 +1197,7 @@ async function submitPush(resource: ResourceSummary, targetDirectoryId: string) 
   pushingId.value = resource.resource_id;
   error.value = "";
   try {
-    const workflowId = await ensureActiveWorkflow();
+    const workflowId = await ensureActiveWorkflow(resource.resource_id);
     const task = await submitPushResource(resource, pushCapabilities.value, (resourceId) => api.createTask(resourceId, false, workflowId, targetDirectoryId));
     if (!task) {
       error.value = resource.kind === "115_share" ? "115 分享转存尚未验证" : "磁力云下载不可用";
@@ -1328,7 +1332,7 @@ async function inspectBatch(resourceIds: string[], requestId: number) {
   const isCurrent = () => requestId === searchRequestId && runId === inspectionRunId;
 
   try {
-    const workflowId = await ensureActiveWorkflow();
+    const workflowId = await ensureActiveWorkflow(resourceIds[0]);
     const started = await api.inspectResources(resourceIds, workflowId);
     if (!isCurrent()) return;
     applyInspectionResponse(started, resourceIds);
@@ -1390,9 +1394,19 @@ function ensurePolling() {
       pollTimer = undefined;
       return;
     }
-    const active = tasks.value.filter((task) => task.state === "queued" || task.state === "submitting");
-    const updates = await Promise.all(active.map((task) => api.getTask(task.id).catch(() => task)));
-    const byId = new Map(updates.map((task) => [task.id, task]));
+    const active = tasks.value.filter(isActiveTask);
+    const updates = await Promise.all(active.map(async (task) => {
+      const version = taskRefreshGuard.begin(task.id);
+      try {
+        const response = await api.getTask(task.id);
+        return taskRefreshGuard.isCurrent(task.id, version) ? response : null;
+      } catch {
+        return null;
+      }
+    }));
+    const byId = new Map(
+      updates.filter((task): task is TaskResponse => task !== null).map((task) => [task.id, task]),
+    );
     tasks.value = tasks.value.map((task) => byId.get(task.id) ?? task);
   }, 2000);
 }
@@ -1517,6 +1531,6 @@ onBeforeUnmount(() => {
        <p v-else-if="result && pushCapabilities.magnet && !pushCapabilities.share" class="warning-strip">磁力云下载可用，115 分享转存尚未验证</p>
        <section v-if="result" class="detail-workspace"><MovieView :result="result" :resources="resourceItems" :resource-facets="resourceFacets" :resource-total="resourceTotal" :resource-hidden-total="resourceHiddenTotal" :resource-page="resourcePage" :resource-page-size="resourcePageSize" :resource-total-pages="resourceTotalPages" :resource-kind="resourceKind" :resource-quality="resourceQuality" :resource-query="resourceQuery" :resource-sort="resourceSort" :resource-loading="resourceLoading" :resource-error="resourceError" :source-names="searchSourceNames" :metadata-loading="metadataLoading" :metadata-error="metadataError" :metadata-stale="metadataStale" :pagination-unavailable="resourcePaginationUnavailable" :media-type="detailMediaType" :season-number="selectedSeason" :season-detail="seasonDetail" :season-detail-loading="seasonDetailLoading" :season-detail-error="seasonDetailError" :pushing-id="pushingId" :push-capabilities="pushCapabilities" :favorite="detailFavorite" :inspection-supported="inspectionSupported" :inspection-state="inspectionState" :inspection-completed="inspectionCompleted" :inspection-total="inspectionTotal" :inspection-failed="inspectionFailed" :inspection-error="inspectionError" :inspection-more-available="inspectionMoreAvailable" :inspection-retry-available="inspectionRetryAvailable" :inspection-started="inspectionSeenIds.size > 0" @push="startPush" @favorite="toggleFavorite(result.movie)" @refresh="refreshResources" @retry-metadata="loadMetadata(detailMediaType, result.movie.tmdb_id, result.movie.title === '正在加载影视资料' ? undefined : result.movie)" @season="selectSeason" @inspect-more="inspectMore" @retry-failed="retryFailed" @retry-page="resourcePaginationUnavailable ? () => loadResourcePage(currentResourceRoute(), 'replace') : refreshResources" @page="changeResourcePage" @kind="(value) => changeResourceFilter({ kind: value })" @quality="(value) => changeResourceFilter({ quality: value })" @query="changeResourceQuery" @sort="(value) => changeResourceFilter({ sort: value })" @page-size="(value) => changeResourceFilter({ pageSize: value })" @back="returnToBrowse" /></section>
     </template>
-    <TaskDrawer :tasks="tasks" :open="drawerOpen" @close="drawerOpen = false" @navigate="navigateFromTaskDrawer" />
+    <TaskDrawer :api="api" :tasks="tasks" :open="drawerOpen" @close="drawerOpen = false" @navigate="navigateFromTaskDrawer" @updated="updateTask" />
   </main>
 </template>

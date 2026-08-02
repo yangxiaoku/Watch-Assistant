@@ -6,14 +6,20 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 from sqlalchemy import and_, func, select
+from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from watch_assistant.models import Workflow, WorkflowStage
+from watch_assistant.models import Resource, Workflow, WorkflowEvidence, WorkflowStage
 from watch_assistant.schemas import (
+    EvidenceSource,
+    EvidenceStatus,
     MediaType,
     WorkflowApprovalRequest,
     WorkflowCancelRequest,
     WorkflowCreateRequest,
+    WorkflowDiscoveryRequest,
+    WorkflowEvidenceListResponse,
+    WorkflowEvidenceResponse,
     WorkflowListResponse,
     WorkflowResponse,
     WorkflowStageName,
@@ -77,9 +83,14 @@ _REASON_ZH = {
     "organization_cancelled": "整理操作已取消。",
     "task_retry": "推送任务已重新开始。",
     "task_cancelled": "推送任务已取消。",
-    "task_accepted": "推送任务已完成。",
+    "task_accepted": "115 已受理，等待文件可用证据。",
+    "task_submitted": "115 已受理，等待文件可用证据。",
+    "task_downloading": "115 正在下载，等待文件可用证据。",
+    "task_available": "已取得只读文件可用证据。",
     "task_uncertain": "推送结果暂时无法确认，请先核对远端状态。",
     "task_failed": "推送任务处理失败。",
+    "discovery_evidence": "已根据资源记录完成发现阶段。",
+    "availability_evidence": "已根据只读文件可用证据完成确认。",
     "stage_timeout": "阶段长时间没有更新，已暂停并等待核对。",
     "workflow_prerequisite_not_met": "前置阶段尚未完成，当前阶段不能开始。",
 }
@@ -87,6 +98,8 @@ _ERROR_ZH = {
     "workflow_prerequisite_not_met": "前置阶段尚未完成",
     "workflow_stage_regression": "阶段状态不能回退",
     "workflow_stage_terminal": "已结束阶段不能改写",
+    "workflow_evidence_required": "该阶段必须由受信生产者提交证据",
+    "workflow_discovery_conflict": "发现证据与当前工作流资源不一致",
     "stage_timeout": "阶段超过允许等待时间",
 }
 
@@ -138,7 +151,17 @@ class WorkflowService:
         ]
         async with self._session_factory() as session:
             session.add(workflow)
+            if request.resource_id is not None:
+                resource = await session.get(Resource, request.resource_id)
+                if resource is None:
+                    raise WorkflowConflict("resource_not_found")
+                await record_discovery_evidence(
+                    session,
+                    workflow,
+                    request.resource_id,
+                )
             await session.commit()
+            await session.refresh(workflow, ["stages"])
         await emit_event(
             self._event_logger,
             "workflow.created",
@@ -146,7 +169,61 @@ class WorkflowService:
             correlation_id=workflow.correlation_id,
             task_id=workflow.id,
         )
+        if request.resource_id is not None:
+            await emit_event(
+                self._event_logger,
+                "workflow.discovery_verified",
+                fields={
+                    "status": "succeeded",
+                    "stage": WorkflowStageName.DISCOVERY.value,
+                },
+                correlation_id=workflow.correlation_id,
+                task_id=workflow.id,
+            )
         return _response(workflow)
+
+    async def record_discovery(
+        self,
+        workflow_id: str,
+        request: WorkflowDiscoveryRequest,
+    ) -> WorkflowResponse:
+        """Advance discovery only from a persisted resource record."""
+
+        async with self._session_factory() as session:
+            workflow = await session.get(Workflow, workflow_id)
+            if workflow is None:
+                raise WorkflowNotFound(workflow_id)
+            resource = await session.get(Resource, request.resource_id)
+            if resource is None:
+                raise WorkflowConflict("resource_not_found")
+            await record_discovery_evidence(session, workflow, request.resource_id)
+            await session.commit()
+            await session.refresh(workflow, ["stages"])
+            response = _response(workflow)
+        await emit_event(
+            self._event_logger,
+            "workflow.discovery_verified",
+            fields={"status": "succeeded", "stage": WorkflowStageName.DISCOVERY.value},
+            correlation_id=response.correlation_id,
+            task_id=response.id,
+        )
+        return response
+
+    async def list_evidence(
+        self, workflow_id: str
+    ) -> WorkflowEvidenceListResponse:
+        async with self._session_factory() as session:
+            workflow = await session.get(Workflow, workflow_id)
+            if workflow is None:
+                raise WorkflowNotFound(workflow_id)
+            rows = list(
+                await session.scalars(
+                    select(WorkflowEvidence)
+                    .where(WorkflowEvidence.workflow_id == workflow_id)
+                    .order_by(WorkflowEvidence.observed_at, WorkflowEvidence.id)
+                )
+            )
+        return WorkflowEvidenceListResponse(items=[_evidence_response(row) for row in rows])
 
     async def get(self, workflow_id: str) -> WorkflowResponse:
         async with self._session_factory() as session:
@@ -228,6 +305,11 @@ class WorkflowService:
             )
             if stage is None:
                 raise WorkflowNotFound(f"{workflow_id}:{stage_name.value}")
+            if stage_name in {
+                WorkflowStageName.DISCOVERY,
+                WorkflowStageName.AVAILABILITY,
+            } and patch.status is not WorkflowStageStatus.PENDING:
+                raise WorkflowConflict("workflow_evidence_required")
             stages = list(
                 await session.scalars(
                     select(WorkflowStage).where(
@@ -242,7 +324,11 @@ class WorkflowService:
             stage.child_type = patch.child_type or stage.child_type
             stage.child_id = patch.child_id or stage.child_id
             stage.updated_at = now
-            if patch.status == WorkflowStageStatus.RUNNING and stage.started_at is None:
+            if patch.status in {
+                WorkflowStageStatus.RUNNING,
+                WorkflowStageStatus.WAITING_EXTERNAL,
+                WorkflowStageStatus.WAITING_CONFIRMATION,
+            } and stage.started_at is None:
                 stage.started_at = now
             if patch.status in _TERMINAL_STAGE_STATUSES:
                 stage.completed_at = now
@@ -436,6 +522,195 @@ class WorkflowService:
         return recovered
 
 
+async def record_evidence(
+    session: AsyncSession,
+    *,
+    workflow_id: str | None,
+    task_id: str | None,
+    stage: WorkflowStageName | None,
+    evidence_type: str,
+    source: EvidenceSource,
+    subject_id: str,
+    status: EvidenceStatus,
+    verified: bool,
+    observed_at: datetime | None = None,
+) -> WorkflowEvidence:
+    """Atomically insert or refresh one safe, idempotent evidence record."""
+
+    unique_filters = [
+        WorkflowEvidence.evidence_type == evidence_type,
+        WorkflowEvidence.source == source.value,
+        WorkflowEvidence.subject_id == subject_id,
+        WorkflowEvidence.status == status.value,
+    ]
+    unique_filters.append(
+        WorkflowEvidence.workflow_id.is_(None)
+        if workflow_id is None
+        else WorkflowEvidence.workflow_id == workflow_id
+    )
+    unique_filters.append(
+        WorkflowEvidence.task_id.is_(None)
+        if task_id is None
+        else WorkflowEvidence.task_id == task_id
+    )
+    unique_filters.append(
+        WorkflowEvidence.stage.is_(None)
+        if stage is None
+        else WorkflowEvidence.stage == stage
+    )
+    current_time = observed_at or datetime.now(UTC)
+    values = {
+        "id": "evidence_" + uuid4().hex,
+        "workflow_id": workflow_id,
+        "task_id": task_id,
+        "stage": stage,
+        "evidence_type": evidence_type,
+        "source": source.value,
+        "subject_id": subject_id,
+        "status": status.value,
+        "verified": verified,
+        "observed_at": current_time,
+        "created_at": current_time,
+    }
+    statement = insert(WorkflowEvidence).values(values)
+    await session.execute(
+        statement.on_conflict_do_update(
+            index_elements=[
+                WorkflowEvidence.workflow_id,
+                WorkflowEvidence.stage,
+                WorkflowEvidence.evidence_type,
+                WorkflowEvidence.source,
+                WorkflowEvidence.subject_id,
+                WorkflowEvidence.status,
+            ],
+            set_={
+                "task_id": statement.excluded.task_id,
+                "verified": statement.excluded.verified,
+                "observed_at": statement.excluded.observed_at,
+            },
+        )
+    )
+    evidence = await session.scalar(select(WorkflowEvidence).where(*unique_filters))
+    if evidence is None:
+        raise RuntimeError("workflow evidence upsert did not return a row")
+    return evidence
+
+
+async def record_discovery_evidence(
+    session: AsyncSession,
+    workflow: Workflow,
+    resource_id: str,
+) -> WorkflowEvidence:
+    """Use an existing local resource row as the discovery producer."""
+
+    stages = list(
+        await session.scalars(
+            select(WorkflowStage).where(WorkflowStage.workflow_id == workflow.id)
+        )
+    )
+    stage = next(item for item in stages if item.stage is WorkflowStageName.DISCOVERY)
+    if stage.status in _TERMINAL_STAGE_STATUSES:
+        if (
+            stage.status is WorkflowStageStatus.SUCCEEDED
+            and stage.child_id == resource_id
+        ):
+            evidence = await session.scalar(
+                select(WorkflowEvidence).where(
+                    WorkflowEvidence.workflow_id == workflow.id,
+                    WorkflowEvidence.stage == WorkflowStageName.DISCOVERY,
+                    WorkflowEvidence.subject_id == resource_id,
+                    WorkflowEvidence.status == EvidenceStatus.DISCOVERED.value,
+                )
+            )
+            if evidence is not None:
+                return evidence
+        raise WorkflowConflict("workflow_discovery_conflict")
+    _validate_stage_transition(stages, stage, WorkflowStageStatus.RUNNING)
+    now = datetime.now(UTC)
+    stage.status = WorkflowStageStatus.RUNNING
+    stage.started_at = stage.started_at or now
+    stage.updated_at = now
+    stage.status = WorkflowStageStatus.SUCCEEDED
+    stage.reason = "discovery_evidence"
+    stage.error_code = None
+    stage.child_type = "resource"
+    stage.child_id = resource_id
+    stage.completed_at = now
+    stage.updated_at = now
+    workflow.status, workflow.state_reason = _derive_status([*stages])
+    workflow.updated_at = now
+    return await record_evidence(
+        session,
+        workflow_id=workflow.id,
+        task_id=None,
+        stage=WorkflowStageName.DISCOVERY,
+        evidence_type="discovery",
+        source=EvidenceSource.RESOURCE_RECORD,
+        subject_id=resource_id,
+        status=EvidenceStatus.DISCOVERED,
+        verified=True,
+        observed_at=now,
+    )
+
+
+async def advance_availability_from_evidence(
+    session: AsyncSession,
+    workflow_id: str,
+    task_id: str,
+    evidence: WorkflowEvidence,
+) -> Workflow:
+    """Close push and open downstream stages only after an available receipt."""
+
+    if (
+        evidence.status != EvidenceStatus.AVAILABLE.value
+        or not evidence.verified
+        or evidence.task_id != task_id
+    ):
+        raise WorkflowConflict("workflow_evidence_required")
+    workflow = await session.get(Workflow, workflow_id)
+    if workflow is None:
+        raise WorkflowNotFound(workflow_id)
+    stages = list(
+        await session.scalars(
+            select(WorkflowStage).where(WorkflowStage.workflow_id == workflow_id)
+        )
+    )
+    push = next(item for item in stages if item.stage is WorkflowStageName.PUSH)
+    availability = next(
+        item for item in stages if item.stage is WorkflowStageName.AVAILABILITY
+    )
+    if availability.status is WorkflowStageStatus.SUCCEEDED:
+        if availability.child_id != evidence.id:
+            raise WorkflowConflict("workflow_stage_terminal")
+        return workflow
+    if push.status is not WorkflowStageStatus.SUCCEEDED:
+        _validate_stage_transition(stages, push, WorkflowStageStatus.SUCCEEDED)
+        now = datetime.now(UTC)
+        push.status = WorkflowStageStatus.SUCCEEDED
+        push.reason = "task_available"
+        push.error_code = None
+        push.completed_at = now
+        push.updated_at = now
+    stages = list(
+        await session.scalars(
+            select(WorkflowStage).where(WorkflowStage.workflow_id == workflow_id)
+        )
+    )
+    _validate_stage_transition(stages, availability, WorkflowStageStatus.SUCCEEDED)
+    now = datetime.now(UTC)
+    availability.status = WorkflowStageStatus.SUCCEEDED
+    availability.reason = "availability_evidence"
+    availability.error_code = None
+    availability.child_type = "workflow_evidence"
+    availability.child_id = evidence.id
+    availability.started_at = availability.started_at or now
+    availability.completed_at = now
+    availability.updated_at = now
+    workflow.status, workflow.state_reason = _derive_status(stages)
+    workflow.updated_at = now
+    return workflow
+
+
 async def link_child(
     session: AsyncSession,
     workflow_id: str,
@@ -514,7 +789,11 @@ async def sync_child_stage(
     stage.status = status
     stage.reason = reason
     stage.error_code = error_code
-    if status == WorkflowStageStatus.RUNNING and stage.started_at is None:
+    if status in {
+        WorkflowStageStatus.RUNNING,
+        WorkflowStageStatus.WAITING_EXTERNAL,
+        WorkflowStageStatus.WAITING_CONFIRMATION,
+    } and stage.started_at is None:
         stage.started_at = now
     if status in _TERMINAL_STAGE_STATUSES:
         stage.completed_at = now
@@ -659,6 +938,21 @@ def _response(workflow: Workflow) -> WorkflowResponse:
             )
             for stage in stages
         ],
+    )
+
+
+def _evidence_response(evidence: WorkflowEvidence) -> WorkflowEvidenceResponse:
+    return WorkflowEvidenceResponse(
+        id=evidence.id,
+        workflow_id=evidence.workflow_id,
+        task_id=evidence.task_id,
+        stage=evidence.stage,
+        evidence_type=evidence.evidence_type,
+        source=EvidenceSource(evidence.source),
+        subject_id=evidence.subject_id,
+        status=EvidenceStatus(evidence.status),
+        verified=evidence.verified,
+        observed_at=evidence.observed_at,
     )
 
 

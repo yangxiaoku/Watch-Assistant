@@ -24,7 +24,10 @@ from watch_assistant.services.observability import EventLogger, emit_event
 DEDUPLICATION_WINDOW = timedelta(minutes=30)
 _NOTIFIABLE_EVENTS = frozenset(
     {
+        "task.submitted",
         "task.accepted",
+        "task.downloading",
+        "task.availability_verified",
         "task.cancelled",
         "task.failed",
         "task.uncertain",

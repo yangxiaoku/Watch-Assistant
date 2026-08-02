@@ -43,10 +43,12 @@ class CleanupResult:
 PROTECTED_TASK_STATES = (
     TaskState.QUEUED,
     TaskState.SUBMITTING,
+    TaskState.SUBMITTED,
+    TaskState.DOWNLOADING,
     TaskState.NEEDS_AUTH,
     TaskState.UNCERTAIN,
 )
-TERMINAL_TASK_STATES = (TaskState.ACCEPTED, TaskState.FAILED, TaskState.CANCELLED)
+TERMINAL_TASK_STATES = (TaskState.AVAILABLE, TaskState.FAILED, TaskState.CANCELLED)
 
 
 def create_database(url: str) -> Database:

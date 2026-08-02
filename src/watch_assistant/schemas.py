@@ -5,7 +5,14 @@ from enum import StrEnum
 from typing import Any, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import BaseModel, Field, PositiveInt, SecretStr, field_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    PositiveInt,
+    SecretStr,
+    field_validator,
+    model_validator,
+)
 
 from watch_assistant.services.source_health import SourceHealthState
 
@@ -99,9 +106,27 @@ class QualityProfileScope(StrEnum):
 
 class RemoteStatus(StrEnum):
     ACCEPTED = "accepted"
+    SUBMITTED = "submitted"
+    DOWNLOADING = "downloading"
+    AVAILABLE = "available"
     NEEDS_AUTH = "needs_auth"
     FAILED = "failed"
     UNCERTAIN = "uncertain"
+
+
+class EvidenceStatus(StrEnum):
+    DISCOVERED = "discovered"
+    SUBMITTED = "submitted"
+    DOWNLOADING = "downloading"
+    AVAILABLE = "available"
+    FAILED = "failed"
+    UNCERTAIN = "uncertain"
+
+
+class EvidenceSource(StrEnum):
+    RESOURCE_RECORD = "resource_record"
+    SUBMISSION_RECEIPT = "submission_receipt"
+    READONLY_RECONCILIATION = "readonly_reconciliation"
 
 
 class LoggingLevel(StrEnum):
@@ -1260,7 +1285,7 @@ class SubmissionResult(BaseModel):
 
     @property
     def accepted(self) -> bool:
-        return self.status == RemoteStatus.ACCEPTED
+        return self.status in {RemoteStatus.ACCEPTED, RemoteStatus.SUBMITTED}
 
 
 class SeasonMetadata(BaseModel):
@@ -1697,6 +1722,13 @@ class WorkflowCreateRequest(BaseModel):
     media_type: MediaType | None = None
     tmdb_id: PositiveInt | None = None
     subscription_id: str | None = Field(default=None, max_length=64)
+    resource_id: str | None = Field(default=None, min_length=1, max_length=128)
+
+
+class WorkflowDiscoveryRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    resource_id: str = Field(min_length=1, max_length=128)
 
 
 class WorkflowStagePatch(BaseModel):
@@ -1760,6 +1792,25 @@ class WorkflowListResponse(BaseModel):
     total: int
 
 
+class WorkflowEvidenceResponse(BaseModel):
+    model_config = {"from_attributes": True}
+
+    id: str
+    workflow_id: str | None
+    task_id: str | None
+    stage: WorkflowStageName | None
+    evidence_type: str
+    source: EvidenceSource
+    subject_id: str
+    status: EvidenceStatus
+    verified: bool
+    observed_at: datetime
+
+
+class WorkflowEvidenceListResponse(BaseModel):
+    items: list[WorkflowEvidenceResponse] = Field(default_factory=list)
+
+
 class TaskResponse(BaseModel):
     model_config = {"from_attributes": True}
 
@@ -1776,6 +1827,36 @@ class TaskResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     submitted_at: datetime | None
+    state_zh: str = ""
+    state_reason_zh: str | None = None
+
+    @model_validator(mode="after")
+    def add_chinese_state(self) -> "TaskResponse":
+        normalized_state = "submitted" if self.state == "accepted" else self.state
+        self.state = normalized_state
+        self.state_zh = {
+            "queued": "排队中",
+            "submitting": "提交中",
+            "submitted": "已受理，等待文件可用",
+            "downloading": "下载中，等待文件可用",
+            "available": "文件已可用",
+            "needs_auth": "需要重新登录",
+            "failed": "处理失败",
+            "uncertain": "结果待确认",
+            "cancelled": "已取消",
+        }.get(normalized_state, "状态待确认")
+        self.state_reason_zh = {
+            "submitted": "115 已受理，尚未取得文件可用证据。",
+            "downloading": "115 正在下载，尚未取得文件可用证据。",
+            "available": "已取得只读文件可用证据。",
+            "uncertain": "远端结果暂时无法确认，请先核对，不要重复提交。",
+        }.get(normalized_state)
+        return self
+
+
+class TaskReconciliationResponse(BaseModel):
+    task: TaskResponse
+    evidence: WorkflowEvidenceResponse
 
 
 class AuthLoginRequest(BaseModel):

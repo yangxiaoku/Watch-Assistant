@@ -1,3 +1,4 @@
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -9,10 +10,14 @@ from watch_assistant.models import (
     DirectoryDirtyEvent,
     OrganizationOperation,
     OrganizationOperationStatus,
+    Resource,
+    Task,
 )
 from watch_assistant.schemas import (
     MediaType,
+    RemoteStatus,
     WorkflowCreateRequest,
+    WorkflowDiscoveryRequest,
     WorkflowStageName,
     WorkflowStagePatch,
     WorkflowStageStatus,
@@ -21,6 +26,7 @@ from watch_assistant.services.directory_dirty_worker import DirectoryDirtyWorker
 from watch_assistant.services.organization_operations import (
     OrganizationOperationService,
 )
+from watch_assistant.services.tasks import TaskService
 from watch_assistant.services.workflows import WorkflowService
 
 
@@ -29,22 +35,52 @@ async def _claimed(database, *, workflow_id=None):
     operation = await _operation(database)
     if workflow_id is not None:
         async with database.session_factory() as session:
-            row = await session.get(OrganizationOperation, operation.operation_id)
-            row.workflow_id = workflow_id
+            session.add(
+                Resource(
+                    id="dirty-resource",
+                    kind="magnet",
+                    canonical_key="magnet:dirty-resource",
+                    encrypted_url="encrypted-dirty-resource",
+                    name="Dirty worker resource",
+                    source="test",
+                    captured_at=datetime.now(UTC),
+                    expires_at=datetime.now(UTC) + timedelta(days=1),
+                )
+            )
             await session.commit()
         workflow_service = WorkflowService(database.session_factory)
+        await workflow_service.record_discovery(
+            workflow_id,
+            WorkflowDiscoveryRequest(resource_id="dirty-resource"),
+        )
         for stage_name in (
-            WorkflowStageName.DISCOVERY,
             WorkflowStageName.INSPECTION,
             WorkflowStageName.APPROVAL,
-            WorkflowStageName.PUSH,
-            WorkflowStageName.AVAILABILITY,
         ):
             await workflow_service.patch_stage(
                 workflow_id,
                 stage_name,
                 WorkflowStagePatch(status=WorkflowStageStatus.SUCCEEDED),
             )
+        task, _ = await TaskService(database.session_factory).create(
+            "dirty-resource", workflow_id=workflow_id
+        )
+        async with database.session_factory() as session:
+            row = await session.get(OrganizationOperation, operation.operation_id)
+            row.workflow_id = workflow_id
+            stored_task = await session.get(Task, task.id)
+            assert stored_task is not None
+            stored_task.remote_ref = "dirty-available"
+            await session.commit()
+
+        class AvailableAdapter:
+            async def get_status(self, remote_ref: str):
+                assert remote_ref == "dirty-available"
+                return RemoteStatus.AVAILABLE
+
+        await TaskService(database.session_factory).reconcile(
+            task.id, AvailableAdapter()
+        )
     lease = await service.claim(operation.operation_id, expected_revision=1)
     return service, operation, lease
 

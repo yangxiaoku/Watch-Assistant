@@ -287,7 +287,7 @@ async def test_status_queries_task_list_and_supports_infohash_fallback(tmp_path)
 
     status = await adapter.get_status("infohash:" + infohash)
 
-    assert status == RemoteStatus.ACCEPTED
+    assert status == RemoteStatus.DOWNLOADING
     assert fake.list_payloads == [{"page": 1}]
     assert fake.add_payloads == []
     assert fake.share_payloads == []
@@ -364,7 +364,7 @@ async def test_status_searches_later_pages_without_scanning_names(tmp_path):
     )
     adapter = P115Adapter(provider, 1, client_factory=lambda _cookie: fake)
 
-    assert await adapter.get_status("infohash:" + infohash) == RemoteStatus.ACCEPTED
+    assert await adapter.get_status("infohash:" + infohash) == RemoteStatus.UNCERTAIN
     assert fake.list_payloads == [{"page": 1}, {"page": 2}]
     await adapter.aclose()
 
@@ -390,8 +390,9 @@ async def test_status_move_minus_one_is_failed_but_status_two_is_not(tmp_path):
     [
         (-1, 0, RemoteStatus.FAILED),
         ("-1", "0", RemoteStatus.FAILED),
-        (0, 0, RemoteStatus.ACCEPTED),
-        (2, 1, RemoteStatus.ACCEPTED),
+        (0, 0, RemoteStatus.UNCERTAIN),
+        (2, 1, RemoteStatus.UNCERTAIN),
+        ("queued", 0, RemoteStatus.UNCERTAIN),
     ],
 )
 async def test_status_mapping_uses_observed_numeric_values(

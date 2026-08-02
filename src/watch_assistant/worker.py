@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from watch_assistant.crypto import SecretCrypto
 from watch_assistant.models import Task, TaskState
 from watch_assistant.schemas import (
+    EvidenceSource,
     LoggingLevel,
     RemoteStatus,
     SubmissionResult,
@@ -20,7 +21,11 @@ from watch_assistant.schemas import (
 )
 from watch_assistant.services.inventory_push_guard import InventoryPushGuard
 from watch_assistant.services.observability import EventLogger, emit_event
-from watch_assistant.services.tasks import recover_after_restart
+from watch_assistant.services.tasks import (
+    apply_remote_status,
+    recover_after_restart,
+    workflow_stage_status_for_task_state,
+)
 from watch_assistant.services.workflows import sync_child_stage
 
 _AUTO_REFRESH_INVENTORY_CODES = frozenset(
@@ -141,44 +146,55 @@ class TaskWorker:
                                 error_message="submission outcome is uncertain",
                             )
 
-            task.state = TaskState(result.status.value)
             task.remote_ref = result.remote_ref
             task.error_code = result.error_code
             task.error_message = result.error_message
             task.submitted_at = (
-                datetime.now(UTC) if result.status == RemoteStatus.ACCEPTED else None
+                datetime.now(UTC)
+                if result.status
+                in {
+                    RemoteStatus.ACCEPTED,
+                    RemoteStatus.SUBMITTED,
+                    RemoteStatus.DOWNLOADING,
+                    RemoteStatus.AVAILABLE,
+                }
+                else None
             )
             task.lease_owner = None
             task.lease_expires_at = None
             task.updated_at = datetime.now(UTC)
-            if task.workflow_id is not None:
-                await sync_child_stage(
-                    session,
-                    task.workflow_id,
-                    WorkflowStageName.PUSH,
-                    child_type="task",
-                    child_id=task.id,
-                    status=_workflow_stage_status(result.status),
-                    reason=f"task_{result.status.value}",
-                    error_code=result.error_code,
-                )
+            await apply_remote_status(
+                session,
+                task,
+                result.status,
+                source=EvidenceSource.SUBMISSION_RECEIPT,
+                verified_available=False,
+            )
             await session.commit()
+        state = task.state
         event_code = {
-            RemoteStatus.ACCEPTED: "task.accepted",
-            RemoteStatus.UNCERTAIN: "task.uncertain",
-            RemoteStatus.FAILED: "task.failed",
-            RemoteStatus.NEEDS_AUTH: "task.failed",
-        }[result.status]
+            TaskState.SUBMITTED: "task.submitted",
+            TaskState.DOWNLOADING: "task.downloading",
+            TaskState.AVAILABLE: "task.availability_verified",
+            TaskState.UNCERTAIN: "task.uncertain",
+            TaskState.FAILED: "task.failed",
+            TaskState.NEEDS_AUTH: "task.failed",
+        }.get(state, "task.failed")
         await emit_event(
             self._event_logger,
             event_code,
             level=(
                 LoggingLevel.INFO
-                if result.status == RemoteStatus.ACCEPTED
+                if state
+                in {
+                    TaskState.SUBMITTED,
+                    TaskState.DOWNLOADING,
+                    TaskState.AVAILABLE,
+                }
                 else LoggingLevel.WARNING
             ),
             fields={
-                "status": result.status.value,
+                "status": state.value,
                 "count": 1,
                 "error_code": result.error_code,
             },
@@ -228,14 +244,22 @@ class TaskWorker:
                     except Exception:  # noqa: BLE001 - status failure is uncertain
                         remote_status = None
                 recover_after_restart(task, remote_status)
-                if task.workflow_id is not None:
+                if remote_status is not None:
+                    await apply_remote_status(
+                        session,
+                        task,
+                        remote_status,
+                        source=EvidenceSource.READONLY_RECONCILIATION,
+                        verified_available=True,
+                    )
+                elif task.workflow_id is not None:
                     await sync_child_stage(
                         session,
                         task.workflow_id,
                         WorkflowStageName.PUSH,
                         child_type="task",
                         child_id=task.id,
-                        status=_workflow_stage_status(task.state),
+                        status=workflow_stage_status_for_task_state(task.state),
                         reason=f"task_{task.state.value}",
                         error_code=task.error_code,
                     )
@@ -271,18 +295,3 @@ class TaskWorker:
             task.updated_at = now
             await session.commit()
             return task.id
-
-
-def _workflow_stage_status(
-    status: RemoteStatus | TaskState,
-) -> WorkflowStageStatus:
-    value = status.value
-    if value == RemoteStatus.ACCEPTED.value:
-        return WorkflowStageStatus.SUCCEEDED
-    if value == RemoteStatus.NEEDS_AUTH.value:
-        return WorkflowStageStatus.WAITING_CONFIRMATION
-    if value == RemoteStatus.UNCERTAIN.value:
-        return WorkflowStageStatus.UNCERTAIN
-    if value == RemoteStatus.FAILED.value:
-        return WorkflowStageStatus.FAILED
-    return WorkflowStageStatus.RUNNING

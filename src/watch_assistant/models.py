@@ -271,7 +271,9 @@ class AgentToken(Base):
 class TaskState(StrEnum):
     QUEUED = "queued"
     SUBMITTING = "submitting"
-    ACCEPTED = "accepted"
+    SUBMITTED = "submitted"
+    DOWNLOADING = "downloading"
+    AVAILABLE = "available"
     NEEDS_AUTH = "needs_auth"
     FAILED = "failed"
     UNCERTAIN = "uncertain"
@@ -700,6 +702,46 @@ class WorkflowStage(Base):
     )
 
     workflow: Mapped[Workflow] = relationship(back_populates="stages")
+
+
+class WorkflowEvidence(Base):
+    """Safe, append-only evidence used to advance workflow stages."""
+
+    __tablename__ = "workflow_evidence"
+    __table_args__ = (
+        UniqueConstraint(
+            "workflow_id",
+            "stage",
+            "evidence_type",
+            "source",
+            "subject_id",
+            "status",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    workflow_id: Mapped[str | None] = mapped_column(
+        ForeignKey("workflows.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    task_id: Mapped[str | None] = mapped_column(
+        ForeignKey("tasks.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    stage: Mapped[WorkflowStageName | None] = mapped_column(
+        Enum(WorkflowStageName, values_callable=enum_values, native_enum=False),
+        nullable=True,
+        index=True,
+    )
+    evidence_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    source: Mapped[str] = mapped_column(String(64), nullable=False)
+    subject_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    observed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
 
 
 class StrmOperationKind(StrEnum):

@@ -61,6 +61,12 @@ _FAILED_MARKERS = (
     "错误",
     "拒绝",
 )
+_CANONICAL_TASK_STATUS = {
+    RemoteStatus.ACCEPTED.value: RemoteStatus.ACCEPTED,
+    RemoteStatus.SUBMITTED.value: RemoteStatus.SUBMITTED,
+    RemoteStatus.DOWNLOADING.value: RemoteStatus.DOWNLOADING,
+    RemoteStatus.AVAILABLE.value: RemoteStatus.AVAILABLE,
+}
 
 
 class _AuthFailure(Exception):
@@ -785,7 +791,14 @@ def _task_status(task: Mapping[str, Any]) -> RemoteStatus:
         task, ("status", "state"), _FAILED_MARKERS
     ):
         return RemoteStatus.FAILED
-    return RemoteStatus.ACCEPTED
+    for key in ("status", "state"):
+        value = task.get(key)
+        if isinstance(value, str):
+            normalized = value.strip().casefold()
+            status = _CANONICAL_TASK_STATUS.get(normalized)
+            if status is not None:
+                return status
+    return RemoteStatus.UNCERTAIN
 
 
 def _field_has_markers(

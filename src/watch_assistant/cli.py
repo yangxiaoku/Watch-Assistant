@@ -828,7 +828,7 @@ def _wait_for_task(
     if timeout_seconds <= 0:
         raise CliFailure("等待超时无效", code=EXIT_USAGE, error_code="invalid_timeout")
     deadline = time.monotonic() + timeout_seconds
-    terminal = {"accepted", "failed", "needs_auth", "uncertain"}
+    terminal = {"available", "failed", "needs_auth", "uncertain", "cancelled"}
     while True:
         body = client.get(f"/api/v1/tasks/{task_id}")
         data = _data_for("/api/v1/tasks", body)

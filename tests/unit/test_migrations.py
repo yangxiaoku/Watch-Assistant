@@ -10,7 +10,12 @@ from watch_assistant.library_models import (
     MediaLibrary,
     OrganizationPlan,
 )
-from watch_assistant.migrations import MIGRATIONS, Migration, run_migrations
+from watch_assistant.migrations import (
+    MIGRATIONS,
+    Migration,
+    _create_workflow_evidence_table,
+    run_migrations,
+)
 from watch_assistant.models import (
     ApplicationSettings,
     DirectoryDirtyEvent,
@@ -97,6 +102,34 @@ async def test_initialize_database_creates_schema_records_migration_and_defaults
     assert settings.managed_prowlarr_base_url is None
     assert settings.managed_prowlarr_api_key_encrypted is None
     assert settings.managed_prowlarr_updated_at is None
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_workflow_evidence_migration_normalizes_legacy_accepted_tasks(tmp_path):
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'watch.db'}")
+    await initialize_database(database.engine)
+    async with database.session_factory() as session:
+        session.add(
+            Task(
+                id="task-legacy-state",
+                resource_id=None,
+                action=TaskAction.OFFLINE_DOWNLOAD,
+                encrypted_url_snapshot="encrypted",
+                state="submitted",
+            )
+        )
+        await session.commit()
+    async with database.engine.begin() as connection:
+        await connection.execute(
+            text("UPDATE tasks SET status = 'accepted' WHERE id = 'task-legacy-state'")
+        )
+        await connection.run_sync(_create_workflow_evidence_table)
+        state = await connection.scalar(
+            text("SELECT status FROM tasks WHERE id = 'task-legacy-state'")
+        )
+
+    assert state == "submitted"
     await database.engine.dispose()
 
 

@@ -9,6 +9,8 @@ from watch_assistant.schemas import (
     WorkflowApprovalRequest,
     WorkflowCancelRequest,
     WorkflowCreateRequest,
+    WorkflowDiscoveryRequest,
+    WorkflowEvidenceListResponse,
     WorkflowListResponse,
     WorkflowResponse,
     WorkflowStageName,
@@ -43,7 +45,13 @@ async def create_workflow(
     payload: WorkflowCreateRequest,
     service: WorkflowServiceDependency,
 ) -> WorkflowResponse:
-    return await service.create(payload)
+    try:
+        return await service.create(payload)
+    except WorkflowConflict as exc:
+        code = str(exc)
+        if code not in {"resource_not_found", "workflow_discovery_conflict"}:
+            code = "workflow_conflict"
+        raise HTTPException(status_code=409, detail=code) from exc
 
 
 @router.get("/workflows", response_model=WorkflowListResponse)
@@ -80,6 +88,39 @@ async def get_workflow(
         raise HTTPException(status_code=404, detail="workflow_not_found") from exc
 
 
+@router.post(
+    "/workflows/{workflow_id}/discovery",
+    response_model=WorkflowResponse,
+)
+async def record_workflow_discovery(
+    workflow_id: str,
+    payload: WorkflowDiscoveryRequest,
+    service: WorkflowServiceDependency,
+) -> WorkflowResponse:
+    try:
+        return await service.record_discovery(workflow_id, payload)
+    except WorkflowNotFound as exc:
+        raise HTTPException(status_code=404, detail="workflow_not_found") from exc
+    except WorkflowConflict as exc:
+        code = str(exc)
+        if code not in {"resource_not_found", "workflow_discovery_conflict"}:
+            code = "workflow_conflict"
+        raise HTTPException(status_code=409, detail=code) from exc
+
+
+@router.get(
+    "/workflows/{workflow_id}/evidence",
+    response_model=WorkflowEvidenceListResponse,
+)
+async def list_workflow_evidence(
+    workflow_id: str, service: WorkflowServiceDependency
+) -> WorkflowEvidenceListResponse:
+    try:
+        return await service.list_evidence(workflow_id)
+    except WorkflowNotFound as exc:
+        raise HTTPException(status_code=404, detail="workflow_not_found") from exc
+
+
 @router.patch(
     "/workflows/{workflow_id}/stages/{stage_name}", response_model=WorkflowResponse
 )
@@ -99,6 +140,7 @@ async def patch_workflow_stage(
             "workflow_prerequisite_not_met",
             "workflow_stage_regression",
             "workflow_stage_terminal",
+            "workflow_evidence_required",
         }:
             code = "workflow_conflict"
         raise HTTPException(status_code=409, detail=code) from None

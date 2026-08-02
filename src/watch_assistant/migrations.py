@@ -1020,6 +1020,18 @@ def _create_organization_history_table(connection: Connection) -> None:
     OrganizationHistoryEntry.__table__.create(connection, checkfirst=True)
 
 
+def _create_workflow_evidence_table(connection: Connection) -> None:
+    """Persist safe read-only receipts used by workflow stage producers."""
+
+    if inspect(connection).has_table("tasks"):
+        connection.execute(
+            text("UPDATE tasks SET status = 'submitted' WHERE status = 'accepted'")
+        )
+    from watch_assistant.models import WorkflowEvidence
+
+    WorkflowEvidence.__table__.create(connection, checkfirst=True)
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration("001_application_settings_columns", _add_application_settings_columns),
     Migration("002_library_index_tables", _create_library_index_tables),
@@ -1074,6 +1086,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration("057_empty_directory_cleanup_plans", _create_empty_directory_cleanup_plan_table),
     Migration("058_prowlarr_application_settings_columns", _add_prowlarr_application_settings_columns),
     Migration("059_library_scan_lifecycle", _upgrade_library_scan_lifecycle),
+    Migration("060_workflow_evidence", _create_workflow_evidence_table),
 )
 
 

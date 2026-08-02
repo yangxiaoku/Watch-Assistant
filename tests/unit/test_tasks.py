@@ -11,6 +11,7 @@ from watch_assistant.services.tasks import (
     choose_existing_task,
     prepare_manual_retry,
     recover_after_restart,
+    task_state_from_remote_status,
 )
 
 
@@ -30,11 +31,21 @@ def test_recovery_uses_confirmed_remote_status():
 
     recover_after_restart(task, RemoteStatus.ACCEPTED)
 
-    assert task.state == TaskState.ACCEPTED
+    assert task.state == TaskState.SUBMITTED
+
+
+def test_remote_acceptance_never_means_available():
+    assert task_state_from_remote_status(RemoteStatus.ACCEPTED) is TaskState.SUBMITTED
+    assert task_state_from_remote_status(RemoteStatus.DOWNLOADING) is TaskState.DOWNLOADING
+    assert task_state_from_remote_status(RemoteStatus.AVAILABLE) is TaskState.UNCERTAIN
+    assert (
+        task_state_from_remote_status(RemoteStatus.AVAILABLE, allow_available=True)
+        is TaskState.AVAILABLE
+    )
 
 
 def test_duplicate_resource_reuses_recent_task():
-    existing = make_task(state=TaskState.ACCEPTED, age_hours=2)
+    existing = make_task(state=TaskState.SUBMITTED, age_hours=2)
 
     assert (
         choose_existing_task([existing], resource_id=existing.resource_id) is existing
@@ -48,7 +59,7 @@ def test_duplicate_resource_reuses_recent_task():
     )
     assert (
         choose_existing_task(
-            [make_task(state=TaskState.ACCEPTED, age_hours=25)],
+            [make_task(state=TaskState.SUBMITTED, age_hours=25)],
             resource_id=existing.resource_id,
         )
         is None
@@ -60,14 +71,15 @@ def test_manual_retry_is_explicit_and_clears_remote_outcome():
     task.remote_ref = "remote-123"
     task.error_code = "timeout"
 
-    prepare_manual_retry(task)
+    with pytest.raises(InvalidRetryState, match="uncertain_requires_verification"):
+        prepare_manual_retry(task)
 
-    assert task.state == TaskState.QUEUED
-    assert task.remote_ref is None
-    assert task.error_code is None
+    assert task.state == TaskState.UNCERTAIN
+    assert task.remote_ref == "remote-123"
+    assert task.error_code == "timeout"
 
     with pytest.raises(InvalidRetryState):
-        prepare_manual_retry(make_task(state=TaskState.ACCEPTED))
+        prepare_manual_retry(make_task(state=TaskState.SUBMITTED))
 
 
 @pytest.mark.asyncio

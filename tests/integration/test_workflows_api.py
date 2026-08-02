@@ -11,8 +11,9 @@ from watch_assistant.adapters.tmdb import TmdbClient
 from watch_assistant.app import create_app
 from watch_assistant.crypto import SecretCrypto
 from watch_assistant.db import create_database, initialize_database
-from watch_assistant.models import Resource, WorkflowStage
-from watch_assistant.schemas import WorkflowStageStatus
+from watch_assistant.models import Resource, Task, WorkflowStage
+from watch_assistant.schemas import RemoteStatus, WorkflowStageStatus
+from watch_assistant.services.tasks import TaskService
 from watch_assistant.services.workflows import WorkflowService
 
 
@@ -60,6 +61,15 @@ async def _make_client(tmp_path: Path):
     return client, database, tmdb, pansou
 
 
+async def _record_discovery(client, workflow_id: str):
+    response = await client.post(
+        f"/api/v1/workflows/{workflow_id}/discovery",
+        json={"resource_id": "res_workflow_api"},
+    )
+    assert response.status_code == 200
+    return response
+
+
 @pytest.mark.integration
 async def test_workflow_timeline_aggregates_stage_state_and_child_task(tmp_path):
     client, database, tmdb, pansou = await _make_client(tmp_path)
@@ -76,11 +86,7 @@ async def test_workflow_timeline_aggregates_stage_state_and_child_task(tmp_path)
         assert [stage["sequence"] for stage in workflow["stages"]] == list(range(7))
         assert "magnet:?" not in created.text
 
-        discovery = await client.patch(
-            f"/api/v1/workflows/{workflow_id}/stages/discovery",
-            json={"status": "succeeded", "reason": "资源已发现"},
-        )
-        assert discovery.status_code == 200
+        discovery = await _record_discovery(client, workflow_id)
         assert discovery.json()["status"] == "in_progress"
 
         for stage in ("inspection", "approval"):
@@ -139,7 +145,8 @@ async def test_workflow_stage_order_and_uncertain_priority(tmp_path):
     try:
         created = await client.post("/api/v1/workflows", json={"media_type": "movie"})
         workflow_id = created.json()["id"]
-        for stage in ("discovery", "inspection", "approval"):
+        await _record_discovery(client, workflow_id)
+        for stage in ("inspection", "approval"):
             response = await client.patch(
                 f"/api/v1/workflows/{workflow_id}/stages/{stage}",
                 json={"status": "succeeded"},
@@ -173,7 +180,8 @@ async def test_workflow_approval_and_cancel_are_guarded(tmp_path):
     try:
         awaiting = await client.post("/api/v1/workflows", json={"media_type": "movie"})
         workflow_id = awaiting.json()["id"]
-        for stage in ("discovery", "inspection"):
+        await _record_discovery(client, workflow_id)
+        for stage in ("inspection",):
             advanced = await client.patch(
                 f"/api/v1/workflows/{workflow_id}/stages/{stage}",
                 json={"status": "succeeded"},
@@ -197,7 +205,8 @@ async def test_workflow_approval_and_cancel_are_guarded(tmp_path):
 
         rejected = await client.post("/api/v1/workflows", json={"media_type": "movie"})
         rejected_id = rejected.json()["id"]
-        for stage in ("discovery", "inspection"):
+        await _record_discovery(client, rejected_id)
+        for stage in ("inspection",):
             advanced = await client.patch(
                 f"/api/v1/workflows/{rejected_id}/stages/{stage}",
                 json={"status": "succeeded"},
@@ -232,7 +241,8 @@ async def test_workflow_approval_and_cancel_are_guarded(tmp_path):
 
         running = await client.post("/api/v1/workflows", json={"media_type": "movie"})
         running_id = running.json()["id"]
-        for stage in ("discovery", "inspection", "approval", "push"):
+        await _record_discovery(client, running_id)
+        for stage in ("inspection", "approval", "push"):
             advanced = await client.patch(
                 f"/api/v1/workflows/{running_id}/stages/{stage}",
                 json={"status": "succeeded" if stage != "push" else "running"},
@@ -258,15 +268,30 @@ async def test_workflow_approval_and_cancel_are_guarded(tmp_path):
             "/api/v1/workflows", json={"media_type": "movie"}
         )
         no_pending_id = no_pending.json()["id"]
-        for stage in (
-            "discovery",
-            "inspection",
-            "approval",
-            "push",
-            "availability",
-            "organization",
-            "strm",
-        ):
+        await _record_discovery(client, no_pending_id)
+        for stage in ("inspection", "approval"):
+            await client.patch(
+                f"/api/v1/workflows/{no_pending_id}/stages/{stage}",
+                json={"status": "succeeded"},
+            )
+        task, _ = await TaskService(database.session_factory).create(
+            "res_workflow_api", workflow_id=no_pending_id
+        )
+        async with database.session_factory() as session:
+            stored_task = await session.get(Task, task.id)
+            assert stored_task is not None
+            stored_task.remote_ref = "remote-available"
+            await session.commit()
+
+        class AvailableAdapter:
+            async def get_status(self, remote_ref: str):
+                assert remote_ref == "remote-available"
+                return RemoteStatus.AVAILABLE
+
+        await TaskService(database.session_factory).reconcile(
+            task.id, AvailableAdapter()
+        )
+        for stage in ("organization", "strm"):
             await client.patch(
                 f"/api/v1/workflows/{no_pending_id}/stages/{stage}",
                 json={"status": "succeeded"},
