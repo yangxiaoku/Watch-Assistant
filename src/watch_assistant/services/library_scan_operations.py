@@ -502,7 +502,7 @@ class LibraryScanWorker:
             name=f"watch-assistant-library-scan-lease-{lease.run_id}",
         )
         scan_task = asyncio.create_task(
-            self._scan_lease(lease),
+            self._scan_lease(lease, lease_lost),
             name=f"watch-assistant-library-scan-{lease.run_id}",
         )
         try:
@@ -545,7 +545,9 @@ class LibraryScanWorker:
         await self._emit_result(lease, result, result.error_code)
         return True
 
-    async def _scan_lease(self, lease: LibraryScanLease) -> LibraryScanResult:
+    async def _scan_lease(
+        self, lease: LibraryScanLease, lease_lost: asyncio.Event
+    ) -> LibraryScanResult:
         gateway = self._gateway_factory(lease.root_directory_id)
         if python_inspect.isawaitable(gateway):
             gateway = await gateway
