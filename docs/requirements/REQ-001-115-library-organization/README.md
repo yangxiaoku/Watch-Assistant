@@ -5,7 +5,7 @@
 | 版本 | V1.0 |
 | 状态 | 待验收 |
 | 创建日期 | 2026-07-26 |
-| 更新日期 | 2026-08-02 |
+| 更新日期 | 2026-08-03 |
 | 负责人 | 待指定 |
 | 优先级 | P0 |
 | 依赖 | TMDB、115 目录读写契约、任务系统、REQ-004 |
@@ -32,14 +32,15 @@
 
 ## 当前集成验收状态
 
-- 阶段/离线证据：已覆盖 fake 115 网关、整理门禁、人工确认、候选补搜、操作状态和前端工作台；
-  受管夹具的真实低风险证据仍只证明对应夹具范围，不能替代生产验收。
-- 2026-08-02 集成复核：锁定快照补强了不完整树扫描、持久目录范围恢复和游标/页数校验；
-  对应回归见 [扫描范围恢复](../../../tests/integration/test_library_scan_scope_recovery.py)
-  和 [扫描操作](../../../tests/unit/test_library_scan_operations.py)。这些是 fail-closed
-  门禁改进，不是生产整理写入证据。复核期间集成 ref 后续新增的 worker 提交不在本次快照内。
-- live/生产验收：未完成；未执行真实生产媒体库整理或生产部署，因此本需求仍未上线。真实 115
-  写操作只可在独立契约、计划确认、receipt-before-verify、幂等和审计门禁全部满足后进行。
+- 当前发布基线已合入 [PR #30](https://github.com/yangxiaoku/Watch-Assistant/pull/30) 的扫描/整理门禁、
+  任务关联和中文工作台调整；对应回归见 [扫描范围恢复](../../../tests/integration/test_library_scan_scope_recovery.py)、
+  [扫描操作](../../../tests/unit/test_library_scan_operations.py)、[组织工作台单测](../../../frontend/tests/OrganizationWorkbenchView.spec.ts)
+  和 [组织工作台 E2E](../../../frontend/e2e/organization-workbench.spec.ts)。这些证据只覆盖代码、离线和受管夹具范围。
+- 受管夹具的真实低风险证据不能替代生产验收；生产媒体库范围、真实整理写入、回滚、播放兼容性和部署状态仍未验证。
+- p115 远程可用性证据已由 [PR #31](https://github.com/yangxiaoku/Watch-Assistant/pull/31) 合入发布基线；
+  其 fail-closed 代码和离线回归不等于真实 115 业务整理已完成。在 live、生产媒体库范围、回滚和部署证据完成前，
+  真实 115 业务整理保持未验收、未上线。
+- live/生产验收：未完成；真实 115 写操作只可在独立契约、计划确认、receipt-before-verify、幂等和审计门禁全部满足后进行。
 
 ## 3. 产品目标
 

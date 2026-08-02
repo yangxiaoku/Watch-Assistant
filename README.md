@@ -27,6 +27,37 @@ REQ-001（115 影视库自动整理）和 REQ-002（STRM 全量与增量同步�
 Cookie 文件或应用内托管设备。分享推送、影视库整理、删除和 STRM 写入继续受独立契约、
 功能开关、计划/确认、幂等和审计门禁约束，未验收时保持关闭。
 
+## 当前发布与验收边界
+
+- 唯一发布分支是 `codex/publish-main`。发布前先执行 `git fetch origin`，再用
+  `git rev-parse origin/codex/publish-main` 获取实际最新基线；本文不固定可能过期的 commit。
+- 当前发布基线已合入 [PR #30](https://github.com/yangxiaoku/Watch-Assistant/pull/30) 的 STRM/任务租约
+  门禁和中文工作台调整；对应离线证据可从
+  [工作台单测](frontend/tests/LibraryWorkbenchView.spec.ts)、[组织工作台单测](frontend/tests/OrganizationWorkbenchView.spec.ts)
+  和 [工作台 E2E](frontend/e2e/organization-workbench.spec.ts) 复核。后续工作台调整也已由
+  [PR #32](https://github.com/yangxiaoku/Watch-Assistant/pull/32) 合入，证据见
+  [工作台 E2E](frontend/e2e/workbench-360.spec.ts)、[工作流导航测试](frontend/tests/coreWorkflowNavigation.spec.ts)
+  和 [前端 API 测试](frontend/tests/api.spec.ts)。这些是代码和离线/受管夹具证据，不证明已生成发布包、
+  已部署或已完成生产验收。
+- Prowlarr 的离线 readiness 已通过 [PR #19](https://github.com/yangxiaoku/Watch-Assistant/pull/19) 和
+  [PR #29](https://github.com/yangxiaoku/Watch-Assistant/pull/29)，契约证据见
+  [Prowlarr 契约测试](tests/contracts/test_prowlarr_contract.py)。真实来源仍被 Internet Archive
+  上游 timeout 阻断，当前不能表述为已配置可搜索的真实来源。
+- p115 远程可用性证据已由 [PR #31](https://github.com/yangxiaoku/Watch-Assistant/pull/31) 合入当前基线，
+  对应回归见 [p115 适配器测试](tests/integration/test_p115_adapter.py)、[任务 API 测试](tests/integration/test_tasks_api.py)
+  和 [任务状态单测](tests/unit/test_tasks.py)。这些是 fail-closed 代码/离线证据；本轮未执行 live 或生产部署，
+  因此不能把 p115 远程可用性或发布写成已完成。
+- STRM manifest 与空目录清理加固已由 [PR #33](https://github.com/yangxiaoku/Watch-Assistant/pull/33) 合入，
+  证据见 [STRM manifest 单测](tests/unit/test_strm_manifest.py)、[空目录计划单测](tests/unit/test_empty_directory_cleanup_plan.py)
+  和 [空目录清理契约测试](tests/contracts/test_empty_directory_cleanup_contract.py)。这只表示当前基线具备
+  更严格的离线 readiness，不表示生产 STRM、生产清理或永久删除已开启。
+- 发布 manifest、来源和 systemd 回退门禁已由 [PR #14](https://github.com/yangxiaoku/Watch-Assistant/pull/14)、
+  [PR #15](https://github.com/yangxiaoku/Watch-Assistant/pull/15)、[PR #16](https://github.com/yangxiaoku/Watch-Assistant/pull/16)、
+  [PR #22](https://github.com/yangxiaoku/Watch-Assistant/pull/22) 和 [PR #23](https://github.com/yangxiaoku/Watch-Assistant/pull/23)
+  合入；[发布 manifest 测试](tests/unit/test_release_manifest.py)、[部署脚本测试](tests/unit/test_release_deployment_scripts.py)
+  和 [发布物 smoke 测试](tests/integration/test_release_archive_smoke.py) 只证明门禁覆盖，
+  不证明当前生产版本或线上健康状态。
+
 ## 部署
 
 要求：Docker Engine、Docker Compose，以及已存在的外部网络 `pansou_default`。应用只通过
@@ -176,7 +207,8 @@ npm --prefix frontend run build
 - 本次复核锁定 `codex/integration-20260802` 的 `2c342d9` 作为审查快照；该集成分支不是发布基线，
   本次也未生成发布包、执行部署或进行真实 115/媒体服务器验收。
 - 复核期间集成 ref 已继续前进到 `3afc8d3`，新增的 STRM manifest/cleanup 与 task worker lease
-  提交不在本次文档分支中，也没有被当作 `codex/publish-main` 或生产完成证据。
+  提交当时不在本次文档分支中；随后随 PR #30 合入发布基线，但仍只表示 fail-closed readiness，
+  不是生产部署或需求完成证据。
 - 最近集成提交补强了可恢复扫描的目录范围、完整扫描和持久游标/分页门禁，以及 STRM dirty
   操作的租约互斥和恢复边界；对应回归覆盖见
   [扫描范围恢复测试](tests/integration/test_library_scan_scope_recovery.py)、

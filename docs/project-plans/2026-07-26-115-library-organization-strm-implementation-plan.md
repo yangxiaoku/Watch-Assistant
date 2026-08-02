@@ -10,12 +10,17 @@
 本计划只覆盖 REQ-001 和 REQ-002。Agent CLI 与中文结构化日志应分别依据 REQ-003、REQ-004 制定独立实施计划。
 状态：供产品、研发、测试和运维评审；不代表功能已经上线
 
-2026-08-02 文档复核：本次审查锁定 `codex/integration-20260802@2c342d9` 快照；
-该分支只代表集成进度，不代表 `codex/publish-main`、发布包或生产部署。复核期间集成 ref
-已前进到 `3afc8d3`，其 STRM manifest/cleanup 和 task worker lease 提交不在本次快照内。
-本次锁定的集成内容补强了可恢复扫描的持久范围、完整树页数/总量、游标 v2、STRM dirty operation
-租约和不确定结果
-门禁；REQ-001/REQ-002 仍按总索引和 `BLOCKERS.md` 保持“待验收”。
+2026-08-03 当前核对：唯一发布分支为 `codex/publish-main`；发布前执行 `git fetch origin`，再用
+`git rev-parse origin/codex/publish-main` 获取实际最新基线。本计划不固定当前 commit，也不从文档推断生产版本。
+当前基线包含 [PR #30](https://github.com/yangxiaoku/Watch-Assistant/pull/30) 的扫描/STRM/租约门禁和工作台调整，
+以及已合入的 [PR #31](https://github.com/yangxiaoku/Watch-Assistant/pull/31) p115 fail-closed 远程可用性证据、
+后续工作台调整 [PR #32](https://github.com/yangxiaoku/Watch-Assistant/pull/32) 和 STRM/空目录清理加固
+[PR #33](https://github.com/yangxiaoku/Watch-Assistant/pull/33)。对应代码与离线测试只提高 readiness，
+REQ-001/REQ-002 仍按总索引和 `BLOCKERS.md` 保持“待验收”；播放兼容性、生产媒体库整理、生产 STRM、
+元数据联动、清理和生产部署仍未验收。
+
+2026-08-02 文档复核为历史审查窗口，锁定 `codex/integration-20260802@2c342d9`；复核期间集成 ref
+前进到 `3afc8d3`，随后随 PR #30 合入发布基线。该历史记录不代表发布包、部署或真实外部验收。
 
 ## 1. 项目范围说明
 
@@ -42,8 +47,8 @@
 | 层级 | 基线 | 已确认能力 | 明确不包含 |
 |---|---|---|---|
 | 当前发布基线 | `codex/publish-main`（发布前动态解析） | 以发布前实际提交、干净工作树、manifest、部署和健康核对为准 | 不从本计划推断当前生产提交、开关或部署状态 |
-| 本次集成审查快照 | `codex/integration-20260802@2c342d9`（2026-08-02） | 扫描范围恢复、完整性/页数门禁、游标 v2、STRM operation fencing 和 uncertain 边界已有代码与回归覆盖 | 未生成发布包；不包含生产部署或真实媒体服务器验收；后续集成提交不在本快照 |
-| 复核后集成指针 | `codex/integration-20260802@3afc8d3` | 包含后续 STRM manifest/cleanup 与 task worker lease 提交 | 未纳入本次文档分支，未作为发布或需求完成证据 |
+| 2026-08-02 历史集成审查快照 | `codex/integration-20260802@2c342d9` | 扫描范围恢复、完整性/页数门禁、游标 v2、STRM operation fencing 和 uncertain 边界已有代码与回归覆盖 | 当时未生成发布包；不包含生产部署或真实媒体服务器验收；随后通过 PR #30 合入发布基线 |
+| 2026-08-02 复核后集成指针 | `codex/integration-20260802@3afc8d3` | 包含后续 STRM manifest/cleanup 与 task worker lease 提交 | 仅作历史追溯；随后通过 PR #30 合入，仍不构成生产部署或需求完成证据 |
 | 本项目当前阶段 | 需求总索引为 `REQ-001/002=待验收` | 只读索引、整理计划、受管夹具 STRM、离线安全门禁等阶段证据已具备 | 生产范围、生产媒体库、稳定播放、元数据联动和生产清理仍未验收 |
 
 历史计划快照：原表中的 `origin/main@42939d0`、`5e32f5f` 和
@@ -304,8 +309,8 @@ flowchart TD
 
 ### 12.1 基线
 
-1. 本次集成复核锁定 `codex/integration-20260802@2c342d9`；该提交不是发布基线，不能直接推断生产状态。之后的集成 ref 变化须重新审查。
-2. 发布只能从 `codex/publish-main` 的实际最新提交、干净工作树和通过的发布门禁生成；不能使用本计划中的旧提交号代替核对。
+1. `codex/integration-20260802@2c342d9` 和后续 `3afc8d3` 仅为 2026-08-02 历史审查窗口；随后随 PR #30 合入发布基线，不能用它们代替当前核对。
+2. 发布只能从 `codex/publish-main` 的实际最新提交、干净工作树和通过的发布门禁生成；发布前执行 `git fetch origin` 并解析 `origin/codex/publish-main`，不能使用本计划中的旧提交号代替核对。
 3. 每个 Phase 从最新发布基线创建短生命周期分支和独立 worktree，合入后立即更新需求状态和证据。
 
 原 `feature/integration-settings-v2@5e32f5f` / `origin/main@42939d0` 只作为本计划的
