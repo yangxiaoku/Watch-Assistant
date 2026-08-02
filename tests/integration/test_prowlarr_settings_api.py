@@ -66,12 +66,16 @@ async def test_prowlarr_settings_never_echo_key_and_verify_is_read_only(tmp_path
         assert sources.status_code == 200
         assert sources.json()["pansou"]["status"] == "configured"
         assert sources.json()["prowlarr"]["status"] == "configured"
+        assert sources.json()["prowlarr"]["state"] == "unverified"
+        assert sources.json()["prowlarr"]["reason_code"] == "prowlarr_unverified"
 
         verified = await client.post(
             "/api/v1/settings/search-sources/prowlarr/verify"
         )
         assert verified.status_code == 200
         assert verified.json()["status"] == "available"
+        assert verified.json()["state"] == "available"
+        assert verified.json()["reason_code"] == "prowlarr_available"
         assert route.calls[-1].request.headers["X-Api-Key"] == api_key
         assert api_key not in str(route.calls[-1].request.url)
 
@@ -89,6 +93,8 @@ async def test_prowlarr_settings_never_echo_key_and_verify_is_read_only(tmp_path
         assert reset.json()["configured"] is False
         sources = await client.get("/api/v1/settings/search-sources")
         assert sources.json()["prowlarr"]["status"] == "disabled"
+        assert sources.json()["prowlarr"]["state"] == "disabled"
+        assert sources.json()["prowlarr"]["reason_code"] == "prowlarr_disabled"
 
         stale = await client.patch(
             "/api/v1/settings/search-sources/prowlarr",

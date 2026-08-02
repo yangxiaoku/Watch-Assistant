@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any
@@ -15,14 +16,25 @@ from tests.contract_support.prowlarr_mock import (
     ProwlarrMock,
     load_fixture,
 )
-from watch_assistant.adapters.prowlarr import ProwlarrClient
+from watch_assistant.adapters.prowlarr import (
+    ProwlarrCircuitOpenError,
+    ProwlarrClient,
+    ProwlarrRateLimitError,
+    ProwlarrServerError,
+    ProwlarrTimeoutError,
+)
+from watch_assistant.models import Resource
 from watch_assistant.schemas import (
     ProwlarrSettingsResponse,
     ProwlarrVerifyResponse,
     SearchSourcesResponse,
 )
 from watch_assistant.services.api_errors import build_error_payload
-from watch_assistant.services.search import SearchService, SearchUnavailable
+from watch_assistant.services.search import (
+    SearchService,
+    SearchUnavailable,
+    _resource_summary,
+)
 
 TORRENT_INFOHASH = "0123456789abcdef0123456789abcdef01234567"
 
@@ -346,14 +358,17 @@ async def test_search_service_merges_duplicate_infohash_and_keeps_sources():
         }
     )
     service = _new_search_service(pansou, adapter)
+    private_query = "private-prowlarr-query"
     try:
         successful_pansou, successful_prowlarr, warnings, complete = (
             await service._query_sources(("Example Show",))
         )
+        captured_at = datetime.now(UTC)
         normalized = service._merge_normalized_results(
-            service._normalize_results(successful_pansou, datetime.now(UTC)),
+            service._normalize_results(successful_pansou, captured_at),
             service._normalize_prowlarr_results(
-                successful_prowlarr, datetime.now(UTC)
+                [(private_query, successful_prowlarr[0][1])],
+                captured_at,
             ),
         )
     finally:
@@ -367,6 +382,49 @@ async def test_search_service_merges_duplicate_infohash_and_keeps_sources():
         "fixture-pansou",
         "prowlarr",
     }
+    assert {
+        item["source"] for item in normalized[0].metadata["source_observations"]
+    } == {"fixture-pansou", "prowlarr"}
+
+    prowlarr_only = service._normalize_prowlarr_results(
+        [
+            (private_query, successful_prowlarr[0][1]),
+            ("another-private-prowlarr-query", successful_prowlarr[0][1]),
+        ],
+        captured_at,
+    )[0]
+    assert "search_queries" not in prowlarr_only.metadata
+    assert private_query not in json.dumps(prowlarr_only.metadata)
+    assert "search_queries" not in json.dumps(prowlarr_only.metadata)
+    assert "api_key" not in json.dumps(prowlarr_only.metadata)
+    assert set(prowlarr_only.metadata["source_observations"][0]) == {
+        "source",
+        "captured_at",
+    }
+
+    persisted_metadata = json.dumps(normalized[0].metadata, ensure_ascii=False)
+    assert private_query not in persisted_metadata
+    assert normalized[0].metadata["search_queries"] == ["Example Show"]
+    assert "X-Api-Key" not in persisted_metadata
+    summary = _resource_summary(
+        Resource(
+            id="res_prowlarr_contract",
+            kind=normalized[0].kind,
+            canonical_key=normalized[0].canonical_key,
+            encrypted_url="fixture-cipher",
+            name=normalized[0].name,
+            source=normalized[0].source,
+            captured_at=normalized[0].captured_at,
+            expires_at=normalized[0].captured_at,
+            metadata_json=persisted_metadata,
+        ),
+        None,
+    )
+    public_response = summary.model_dump(mode="json")
+    assert "metadata" not in public_response
+    assert "search_queries" not in public_response
+    assert "api_key" not in json.dumps(public_response, ensure_ascii=False)
+    assert private_query not in json.dumps(public_response, ensure_ascii=False)
 
 
 @pytest.mark.parametrize(
@@ -445,6 +503,85 @@ async def test_target_adapter_stops_pagination_after_short_page():
     ]
     assert len(result.releases) == 2
     assert result.unsupported_count == 1
+
+
+@pytest.mark.parametrize(
+    ("failure", "exception_type", "error_code"),
+    [
+        (
+            MockResponse.failure(408, {"error": "fixture_timeout"}),
+            ProwlarrTimeoutError,
+            "prowlarr_timeout",
+        ),
+        (
+            MockResponse.failure(429, {"error": "fixture_rate_limited"}),
+            ProwlarrRateLimitError,
+            "prowlarr_rate_limited",
+        ),
+        (
+            MockResponse.failure(503, {"error": "fixture_server_error"}),
+            ProwlarrServerError,
+            "prowlarr_server_error",
+        ),
+    ],
+)
+async def test_target_adapter_classifies_read_only_upstream_failures(
+    failure: MockResponse, exception_type: type[Exception], error_code: str
+):
+    mock = ProwlarrMock([failure])
+    adapter, transport_client = _new_target_adapter(mock)
+    try:
+        with pytest.raises(exception_type) as error:
+            await adapter.search("Example Show")
+    finally:
+        await _close_target_adapter(adapter, transport_client)
+
+    assert error.value.error_code == error_code
+    assert mock.requests[0].api_key_in_query is False
+    assert "fixture_" not in str(error.value)
+
+
+async def test_target_adapter_honors_bounded_retry_after_without_exposing_header():
+    mock = ProwlarrMock(
+        [
+            MockResponse.failure(
+                429,
+                {"error": "fixture_rate_limited"},
+                headers={"Retry-After": "42"},
+            )
+        ]
+    )
+    adapter, transport_client = _new_target_adapter(mock)
+    try:
+        with pytest.raises(ProwlarrRateLimitError) as error:
+            await adapter.search("Example Show")
+        health = adapter.health_tracker.snapshot()
+    finally:
+        await _close_target_adapter(adapter, transport_client)
+
+    assert error.value.retry_after_seconds == 42
+    assert 0 < health.retry_after_seconds <= error.value.retry_after_seconds
+    assert "Retry-After" not in str(error.value)
+
+
+async def test_target_adapter_opens_local_circuit_after_repeated_server_failures():
+    mock = ProwlarrMock(
+        [
+            MockResponse.failure(500, {"error": "fixture_server_error"})
+            for _ in range(3)
+        ]
+    )
+    adapter, transport_client = _new_target_adapter(mock)
+    try:
+        for _ in range(3):
+            with pytest.raises(ProwlarrServerError):
+                await adapter.search("Example Show")
+        with pytest.raises(ProwlarrCircuitOpenError):
+            await adapter.search("Example Show")
+    finally:
+        await _close_target_adapter(adapter, transport_client)
+
+    assert len(mock.requests) == 3
 
 
 async def test_target_adapter_marks_continuous_full_page_as_truncated():

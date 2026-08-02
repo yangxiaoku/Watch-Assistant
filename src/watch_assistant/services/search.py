@@ -1142,6 +1142,9 @@ class SearchService:
             ):
                 resource.metadata["search_queries"] = [query]
                 resource.metadata["sources"] = [resource.source]
+                resource.metadata["source_observations"] = [
+                    _source_observation(resource)
+                ]
                 existing = normalized_by_key.get(resource.canonical_key)
                 normalized_by_key[resource.canonical_key] = (
                     resource
@@ -1156,10 +1159,12 @@ class SearchService:
         now: datetime,
     ) -> list[NormalizedResource]:
         normalized_by_key: dict[str, NormalizedResource] = {}
-        for query, result in results:
+        for _query, result in results:
             for resource in normalize_prowlarr(result.releases, captured_at=now):
-                resource.metadata["search_queries"] = [query]
                 resource.metadata["sources"] = [resource.source]
+                resource.metadata["source_observations"] = [
+                    _source_observation(resource)
+                ]
                 existing = normalized_by_key.get(resource.canonical_key)
                 normalized_by_key[resource.canonical_key] = (
                     resource
@@ -1560,6 +1565,10 @@ def _merge_normalized(
     existing: NormalizedResource,
     candidate: NormalizedResource,
 ) -> NormalizedResource:
+    has_search_queries = (
+        "search_queries" in existing.metadata
+        or "search_queries" in candidate.metadata
+    )
     queries = list(existing.metadata.get("search_queries", []))
     for query in candidate.metadata.get("search_queries", []):
         if query not in queries:
@@ -1568,9 +1577,47 @@ def _merge_normalized(
     for source in candidate.metadata.get("sources", []):
         if source not in sources:
             sources.append(source)
+    observations = _merge_source_observations(
+        existing.metadata.get("source_observations"),
+        candidate.metadata.get("source_observations"),
+    )
     merged = merge_normalized_resources(existing, candidate)
-    merged.metadata["search_queries"] = queries
+    if has_search_queries:
+        merged.metadata["search_queries"] = queries
+    else:
+        merged.metadata.pop("search_queries", None)
     merged.metadata["sources"] = sources
+    merged.metadata["source_observations"] = observations
+    return merged
+
+
+def _source_observation(resource: NormalizedResource) -> dict[str, str]:
+    """Keep provenance to safe source metadata, never request details."""
+    return {
+        "source": normalize_source_id(resource.source),
+        "captured_at": _as_utc(resource.captured_at).isoformat(),
+    }
+
+
+def _merge_source_observations(*values: object) -> list[dict[str, str]]:
+    merged: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for value in values:
+        if not isinstance(value, list):
+            continue
+        for item in value:
+            if not isinstance(item, Mapping):
+                continue
+            source = item.get("source")
+            captured_at = item.get("captured_at")
+            if not isinstance(source, str) or not isinstance(captured_at, str):
+                continue
+            normalized = normalize_source_id(source)
+            observation = (normalized, captured_at[:64])
+            if observation in seen:
+                continue
+            seen.add(observation)
+            merged.append({"source": normalized, "captured_at": observation[1]})
     return merged
 
 

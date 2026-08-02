@@ -137,10 +137,15 @@ async def get_search_sources(
             enabled=bool(prowlarr["enabled"]),
             configured=bool(prowlarr["configured"]),
             status=prowlarr_status,
-            message_code=(
-                None
-                if prowlarr["configured"] or not prowlarr["enabled"]
-                else "prowlarr_not_configured"
+            message_code=prowlarr.get("health_message_code"),
+            state=prowlarr.get("health_state"),
+            message_zh=prowlarr.get("health_message_zh"),
+            reason_code=prowlarr.get("health_reason_code"),
+            reason_zh=prowlarr.get("health_reason_zh"),
+            checked_at=prowlarr.get("health_checked_at"),
+            retry_after_seconds=prowlarr.get("health_retry_after_seconds"),
+            consecutive_failures=int(
+                prowlarr.get("health_consecutive_failures", 0) or 0
             ),
         ),
     )
