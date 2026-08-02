@@ -49,6 +49,10 @@ docs/requirements/
 - `已完成`
 - `已取消`
 
+`开发中` 表示需求范围仍有实现工作；`待验收` 表示阶段实现或离线证据已具备，但生产、
+外部依赖或完整验收证据仍未完成。测试夹具不能替代生产验收。总索引与各需求主文档的状态
+必须保持一致。
+
 优先级统一使用：
 
 - `Must`：本需求成立所必需。
@@ -60,35 +64,35 @@ docs/requirements/
 
 | 编号 | 名称 | 状态 | 主文档 |
 |---|---|---|---|
-| REQ-001 | 115 影视库自动整理 | 开发中 | [查看](./REQ-001-115-library-organization/README.md) |
-| REQ-002 | 115 STRM 全量与增量同步 | 开发中 | [查看](./REQ-002-115-strm-sync/README.md) |
-| REQ-003 | Agent CLI 管理入口 | 待评审 | [查看](./REQ-003-agent-cli/README.md) |
-| REQ-004 | 中文结构化日志与审计完善 | 开发中 | [查看](./REQ-004-chinese-structured-logging/README.md) |
-| REQ-005 | 资源搜索召回与 PanSou 一致性提升 | 开发中 | [查看](./REQ-005-resource-search-recall/README.md) |
-| REQ-006 | 磁力内容检测可靠性提升 | 开发中 | [查看](./REQ-006-magnet-inspection-reliability/README.md) |
-| REQ-007 | 影视订阅与自动追更 | 开发中 | [查看](./REQ-007-subscriptions-auto-follow/README.md) |
-| REQ-008 | 质量策略与自动选片 | 开发中 | [查看](./REQ-008-quality-profiles/README.md) |
-| REQ-009 | 端到端任务中心 | 开发中 | [查看](./REQ-009-end-to-end-task-center/README.md) |
-| REQ-010 | 115 影视库库存与重复检测 | 待评审 | [查看](./REQ-010-library-inventory-deduplication/README.md) |
-| REQ-011 | 剧集缺集与完整度检查 | 开发中 | [查看](./REQ-011-episode-completeness/README.md) |
-| REQ-012 | 通知中心 | 开发中 | [查看](./REQ-012-notification-center/README.md) |
+| REQ-001 | 115 影视库自动整理 | 待验收 | [查看](./REQ-001-115-library-organization/README.md) |
+| REQ-002 | 115 STRM 全量与增量同步 | 待验收 | [查看](./REQ-002-115-strm-sync/README.md) |
+| REQ-003 | Agent CLI 管理入口 | 开发中 | [查看](./REQ-003-agent-cli/README.md) |
+| REQ-004 | 中文结构化日志与审计完善 | 待验收 | [查看](./REQ-004-chinese-structured-logging/README.md) |
+| REQ-005 | 资源搜索召回与 PanSou 一致性提升 | 待验收 | [查看](./REQ-005-resource-search-recall/README.md) |
+| REQ-006 | 磁力内容检测可靠性提升 | 待验收 | [查看](./REQ-006-magnet-inspection-reliability/README.md) |
+| REQ-007 | 影视订阅与自动追更 | 待验收 | [查看](./REQ-007-subscriptions-auto-follow/README.md) |
+| REQ-008 | 质量策略与自动选片 | 待验收 | [查看](./REQ-008-quality-profiles/README.md) |
+| REQ-009 | 端到端任务中心 | 待验收 | [查看](./REQ-009-end-to-end-task-center/README.md) |
+| REQ-010 | 115 影视库库存与重复检测 | 开发中 | [查看](./REQ-010-library-inventory-deduplication/README.md) |
+| REQ-011 | 剧集缺集与完整度检查 | 待验收 | [查看](./REQ-011-episode-completeness/README.md) |
+| REQ-012 | 通知中心 | 待验收 | [查看](./REQ-012-notification-center/README.md) |
 | REQ-013 | Emby/Jellyfin/Plex 联动 | 暂不纳入 | 用户决定暂缓，不创建需求目录 |
-| REQ-014 | 字幕管理中心 | 开发中 | [查看](./REQ-014-subtitle-management/README.md) |
-| REQ-015 | 手工资源导入 | 开发中 | [查看](./REQ-015-manual-resource-import/README.md) |
-| REQ-016 | 存储空间与清理治理 | 待评审 | [查看](./REQ-016-storage-governance/README.md) |
-| REQ-017 | 配置、规则与数据库备份恢复 | 开发中 | [查看](./REQ-017-backup-restore/README.md) |
-| REQ-018 | 媒体库质量体检 | 待评审 | [查看](./REQ-018-library-health-check/README.md) |
-| REQ-019 | Webhook 与自动化接口 | 待评审 | [查看](./REQ-019-webhook-automation/README.md) |
-| REQ-020 | Agent MCP 服务端 | 待评审 | [查看](./REQ-020-mcp-server/README.md) |
-| REQ-021 | PWA 移动端管理 | 待评审 | [查看](./REQ-021-pwa-mobile/README.md) |
+| REQ-014 | 字幕管理中心 | 待验收 | [查看](./REQ-014-subtitle-management/README.md) |
+| REQ-015 | 手工资源导入 | 待验收 | [查看](./REQ-015-manual-resource-import/README.md) |
+| REQ-016 | 存储空间与清理治理 | 待验收 | [查看](./REQ-016-storage-governance/README.md) |
+| REQ-017 | 配置、规则与数据库备份恢复 | 待验收 | [查看](./REQ-017-backup-restore/README.md) |
+| REQ-018 | 媒体库质量体检 | 待验收 | [查看](./REQ-018-library-health-check/README.md) |
+| REQ-019 | Webhook 与自动化接口 | 待验收 | [查看](./REQ-019-webhook-automation/README.md) |
+| REQ-020 | Agent MCP 服务端 | 开发中 | [查看](./REQ-020-mcp-server/README.md) |
+| REQ-021 | PWA 移动端管理 | 开发中 | [查看](./REQ-021-pwa-mobile/README.md) |
 | REQ-022 | 影视合集与系列管理 | 待评审 | [查看](./REQ-022-collection-management/README.md) |
-| REQ-023 | 多搜索源接入与聚合 | 开发中 | [查看](./REQ-023-multi-source-search/README.md) |
-| REQ-024 | 部署、升级与兼容性中心 | 开发中 | [查看](./REQ-024-upgrade-compatibility-center/README.md) |
-| REQ-025 | 动漫元数据与集序映射 | 开发中 | [查看](./REQ-025-anime-metadata-mapping/README.md) |
-| REQ-026 | 媒体技术检测与损坏风险检查 | 开发中 | [查看](./REQ-026-media-technical-inspection/README.md) |
-| REQ-027 | 中文交互提示与错误引导 | 开发中 | [查看](./REQ-027-chinese-ui-feedback/README.md) |
-| REQ-028 | 影视详情首屏与资源渐进加载 | 开发中 | [查看](./REQ-028-progressive-media-detail/README.md) |
-| REQ-029 | 剧集分季元数据与季度展示 | 开发中 | [查看](./REQ-029-season-specific-metadata/README.md) |
+| REQ-023 | 多搜索源接入与聚合 | 待验收 | [查看](./REQ-023-multi-source-search/README.md) |
+| REQ-024 | 部署、升级与兼容性中心 | 待验收 | [查看](./REQ-024-upgrade-compatibility-center/README.md) |
+| REQ-025 | 动漫元数据与集序映射 | 待验收 | [查看](./REQ-025-anime-metadata-mapping/README.md) |
+| REQ-026 | 媒体技术检测与损坏风险检查 | 待验收 | [查看](./REQ-026-media-technical-inspection/README.md) |
+| REQ-027 | 中文交互提示与错误引导 | 待验收 | [查看](./REQ-027-chinese-ui-feedback/README.md) |
+| REQ-028 | 影视详情首屏与资源渐进加载 | 待验收 | [查看](./REQ-028-progressive-media-detail/README.md) |
+| REQ-029 | 剧集分季元数据与季度展示 | 待验收 | [查看](./REQ-029-season-specific-metadata/README.md) |
 | REQ-030 | 多维内容分类与筛选导航 | 待评审 | [查看](./REQ-030-content-taxonomy-navigation/README.md) |
 
 > `REQ-013` 编号保留，不参与当前排期；除非重新立项，否则不得复用该编号或创建对应需求目录。
