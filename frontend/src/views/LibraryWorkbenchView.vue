@@ -652,7 +652,7 @@ onBeforeUnmount(() => {
          <section v-if="emptyCleanupPlan" class="library-cleanup-plan" :class="`is-${emptyCleanupPlan.status}`">
            <div class="library-section-heading"><div><p class="eyebrow">空目录清理预览</p><h3>受管目录可恢复回收</h3></div><strong>{{ emptyCleanupStatusLabel(emptyCleanupPlan.status) }}</strong></div>
            <div class="library-operation-stats"><span>候选 {{ emptyCleanupPlan.candidate_count }}</span><span>可回收 {{ emptyCleanupPlan.executable_count }}</span><span>已阻断 {{ emptyCleanupPlan.blocked_count }}</span><span>快照修订 {{ emptyCleanupPlan.source_snapshot_revision }}</span></div>
-           <p class="library-cleanup-note">仅使用同一媒体库最新完整扫描中的系统受管目录，并遵守根目录、源目录、归档目录和推送目录保护规则；确认后只进入可恢复回收站，永久删除保持关闭。</p>
+           <p class="library-cleanup-note">仅处理同一媒体库最新完整扫描中已记录为系统创建、且仍在受管范围内的空目录，并遵守根目录、源目录、归档目录和推送目录保护规则；确认后只进入可恢复回收站，永久删除保持关闭。</p>
            <div v-if="emptyCleanupPlan.candidates.length" class="library-empty-directory-list">
              <div v-for="candidate in emptyCleanupPlan.candidates" :key="candidate.directory_id" class="library-empty-directory-row">
                <span><strong>{{ candidate.name }}</strong><small>{{ candidate.path || "相对路径不可用" }}</small></span><small>{{ candidate.state === "ready" ? "可回收" : "已阻断" }}</small>

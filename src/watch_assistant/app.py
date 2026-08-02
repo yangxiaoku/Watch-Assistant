@@ -6,7 +6,7 @@ import os
 import re
 import socket
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Collection
 from contextlib import asynccontextmanager, suppress
 from datetime import timedelta
 from pathlib import Path
@@ -91,6 +91,9 @@ from watch_assistant.services.empty_directory_cleanup import (
     EmptyDirectoryCleanupError,
     EmptyDirectoryCleanupStatus,
     LiveP115EmptyDirectoryCleaner,
+)
+from watch_assistant.services.empty_directory_cleanup_plan import (
+    EmptyDirectoryCleanupPlanService,
 )
 from watch_assistant.services.inspection import InspectionService, InspectionWorker
 from watch_assistant.services.inventory_push_guard import (
@@ -405,6 +408,7 @@ def create_app(
     strm_playback_url_prefix: str | None = None,
     strm_playback_allowed_networks: tuple[str, ...] | None = None,
     strm_playback_gateway: P115PlaybackGateway | None = None,
+    system_created_directory_ids: Collection[str] | None = None,
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
@@ -589,6 +593,11 @@ def create_app(
                             client=client,
                             call_executor=p115_c03_timeout_executor,
                             managed_directory_ids=managed_directory_ids,
+                            system_created_directory_ids=getattr(
+                                application.state,
+                                "system_created_directory_ids",
+                                frozenset(),
+                            ),
                             scope_confirmed=True,
                         )
                         return await cleaner.cleanup(directory_id, parent_id, name)
@@ -1164,6 +1173,9 @@ def create_app(
                 )
                 application.state.strm_operation_service = operation_service
             await operation_service.recover_incomplete()
+            await EmptyDirectoryCleanupPlanService(
+                operation_database.session_factory
+            ).recover_stale_applying()
             strm_recovery_stop = asyncio.Event()
 
             async def run_strm_operation_recovery() -> None:
@@ -1501,6 +1513,20 @@ def create_app(
     )
     application.state.strm_playback_gateway = strm_playback_gateway
     application.state.strm_playback_supported = strm_playback_gateway is not None
+    if system_created_directory_ids is None:
+        system_created_directory_ids = ()
+    if isinstance(system_created_directory_ids, (str, bytes)):
+        raise ValueError("invalid_system_created_directory_ids")
+    evidence = frozenset(system_created_directory_ids)
+    if any(
+        not isinstance(item, str)
+        or not item.isascii()
+        or not item.isdigit()
+        or item.startswith("0")
+        for item in evidence
+    ):
+        raise ValueError("invalid_system_created_directory_ids")
+    application.state.system_created_directory_ids = evidence
     application.state.strm_output_root = strm_output_root or Path(
         os.environ.get("STRM_OUTPUT_ROOT", "./data/strm")
     )
@@ -1742,6 +1768,7 @@ def create_app(
                 empty_cleanup_setting = False
         empty_cleanup_enabled = bool(
             empty_cleanup_setting
+            and getattr(application.state, "system_created_directory_ids", frozenset())
             and callable(
                 getattr(application.state, "empty_directory_cleanup_executor", None)
             )

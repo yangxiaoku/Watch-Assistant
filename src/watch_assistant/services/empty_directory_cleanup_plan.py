@@ -78,6 +78,8 @@ class EmptyDirectoryCleanupApplyView:
 class EmptyDirectoryCleanupPlanService:
     """Keep remote deletion behind a durable, reviewed local plan."""
 
+    DEFAULT_STALE_AFTER = timedelta(minutes=30)
+
     def __init__(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
@@ -89,12 +91,16 @@ class EmptyDirectoryCleanupPlanService:
         library_id: str,
         source_scan_run_id: str,
         protected_directory_ids: Collection[str] = (),
+        system_created_directory_ids: Collection[str] = (),
         now: datetime | None = None,
     ) -> EmptyDirectoryCleanupPlanView:
         if not _valid_id(library_id) or not _valid_id(source_scan_run_id):
             raise EmptyDirectoryCleanupPlanError("invalid_request")
         protected = frozenset(protected_directory_ids)
         if any(not _valid_id(item) for item in protected):
+            raise EmptyDirectoryCleanupPlanError("invalid_cleanup_scope")
+        system_created = frozenset(system_created_directory_ids)
+        if any(not _valid_id(item) for item in system_created):
             raise EmptyDirectoryCleanupPlanError("invalid_cleanup_scope")
         current_time = _utc(now)
         async with self._session_factory() as session:
@@ -129,6 +135,7 @@ class EmptyDirectoryCleanupPlanService:
                     library.root_directory_id,
                     protected,
                     occupied,
+                    system_created,
                 )
                 for entry in sorted(entries, key=lambda item: item.object_id)
             ]
@@ -176,6 +183,7 @@ class EmptyDirectoryCleanupPlanService:
     async def get_plan(self, plan_id: str) -> EmptyDirectoryCleanupPlanView:
         if not _valid_id(plan_id):
             raise EmptyDirectoryCleanupPlanError("plan_not_found")
+        await self.recover_stale_applying()
         async with self._session_factory() as session:
             plan = await session.get(EmptyDirectoryCleanupPlan, plan_id)
             if plan is None:
@@ -191,6 +199,7 @@ class EmptyDirectoryCleanupPlanService:
         confirm: bool,
         idempotency_key: str,
         executor: EmptyDirectoryExecutor | None,
+        system_created_directory_ids: Collection[str] = (),
         now: datetime | None = None,
     ) -> EmptyDirectoryCleanupApplyView:
         if (
@@ -206,7 +215,11 @@ class EmptyDirectoryCleanupPlanService:
             raise EmptyDirectoryCleanupPlanError("invalid_request")
         if executor is None:
             raise EmptyDirectoryCleanupPlanError("empty_directory_cleanup_unavailable")
+        system_created = frozenset(system_created_directory_ids)
+        if any(not _valid_id(item) for item in system_created):
+            raise EmptyDirectoryCleanupPlanError("invalid_cleanup_scope")
         current_time = _utc(now)
+        await self.recover_stale_applying(now=current_time)
         async with self._session_factory() as session:
             plan = await session.get(EmptyDirectoryCleanupPlan, plan_id)
             if plan is None:
@@ -262,6 +275,7 @@ class EmptyDirectoryCleanupPlanService:
                 entry = entries.get(candidate["directory_id"])
                 if (
                     candidate["state"] != "ready"
+                    or candidate["directory_id"] not in system_created
                     or entry is None
                     or entry.parent_id != candidate["parent_id"]
                     or entry.name != candidate["name"]
@@ -292,6 +306,13 @@ class EmptyDirectoryCleanupPlanService:
         deleted = 0
         try:
             for candidate in candidates:
+                async with self._session_factory() as session:
+                    await self._validated_current_run(
+                        session, plan.library_id, plan.source_scan_run_id
+                    )
+                await self._heartbeat_claim(
+                    plan_id, applying_revision, now=datetime.now(UTC)
+                )
                 try:
                     result = await executor(candidate)
                 except Exception as error:  # noqa: BLE001 - remote detail stays private
@@ -307,6 +328,13 @@ class EmptyDirectoryCleanupPlanService:
                     raise EmptyDirectoryCleanupPlanError("empty_cleanup_uncertain")
                 else:
                     raise EmptyDirectoryCleanupPlanError("empty_cleanup_failed")
+                await self._heartbeat_claim(
+                    plan_id, applying_revision, now=datetime.now(UTC)
+                )
+            async with self._session_factory() as session:
+                await self._validated_current_run(
+                    session, plan.library_id, plan.source_scan_run_id
+                )
         except EmptyDirectoryCleanupPlanError:
             await self._invalidate_claim(plan_id, applying_revision)
             raise
@@ -336,6 +364,73 @@ class EmptyDirectoryCleanupPlanService:
                 plan.status = "invalidated"
                 plan.revision += 1
                 await session.commit()
+
+    async def _heartbeat_claim(
+        self, plan_id: str, applying_revision: int, *, now: datetime
+    ) -> None:
+        current_time = _utc(now)
+        async with self._session_factory() as session:
+            result = await session.execute(
+                update(EmptyDirectoryCleanupPlan)
+                .where(
+                    EmptyDirectoryCleanupPlan.id == plan_id,
+                    EmptyDirectoryCleanupPlan.status == "applying",
+                    EmptyDirectoryCleanupPlan.revision == applying_revision,
+                )
+                .values(updated_at=current_time)
+            )
+            if result.rowcount != 1:
+                await session.rollback()
+                raise EmptyDirectoryCleanupPlanError("empty_cleanup_in_progress")
+            await session.commit()
+
+    async def recover_stale_applying(
+        self,
+        *,
+        max_age: timedelta | None = None,
+        now: datetime | None = None,
+    ) -> int:
+        """Invalidate abandoned claims without replaying any remote write."""
+
+        stale_after = self.DEFAULT_STALE_AFTER if max_age is None else max_age
+        if not isinstance(stale_after, timedelta) or stale_after <= timedelta(0):
+            raise EmptyDirectoryCleanupPlanError("invalid_cleanup_timeout")
+        current_time = _utc(now)
+        cutoff = current_time - stale_after
+        async with self._session_factory() as session:
+            plans = list(
+                (
+                    await session.scalars(
+                        select(EmptyDirectoryCleanupPlan).where(
+                            EmptyDirectoryCleanupPlan.status == "applying"
+                        )
+                    )
+                ).all()
+            )
+            recovered = 0
+            for plan in plans:
+                if _utc(plan.updated_at) > cutoff:
+                    continue
+                result = await session.execute(
+                    update(EmptyDirectoryCleanupPlan)
+                    .where(
+                        EmptyDirectoryCleanupPlan.id == plan.id,
+                        EmptyDirectoryCleanupPlan.status == "applying",
+                        EmptyDirectoryCleanupPlan.revision == plan.revision,
+                        EmptyDirectoryCleanupPlan.updated_at == plan.updated_at,
+                    )
+                    .values(
+                        status="invalidated",
+                        revision=plan.revision + 1,
+                        updated_at=current_time,
+                    )
+                )
+                recovered += int(result.rowcount == 1)
+            if recovered:
+                await session.commit()
+            else:
+                await session.rollback()
+            return recovered
 
     async def _validated_current_run(
         self, session: AsyncSession, library_id: str, scan_run_id: str
@@ -374,6 +469,7 @@ def _candidate_from_entry(
     root_directory_id: str,
     protected: Collection[str],
     occupied: Collection[str | None],
+    system_created: Collection[str],
 ) -> dict[str, str] | None:
     if (
         entry.object_id == root_directory_id
@@ -386,7 +482,12 @@ def _candidate_from_entry(
     safe_path = _safe_relative_path(path)
     state = (
         "ready"
-        if _safe_name(entry.name) and _valid_id(entry.parent_id) and safe_path
+        if (
+            entry.object_id in system_created
+            and _safe_name(entry.name)
+            and _valid_id(entry.parent_id)
+            and safe_path
+        )
         else "blocked"
     )
     return {

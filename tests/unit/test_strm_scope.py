@@ -9,6 +9,7 @@ from watch_assistant.library_models import (
     LibraryScanRun,
     MediaLibrary,
 )
+from watch_assistant.services.strm_scope import normalize_playback_url_prefix
 
 
 @pytest.mark.asyncio
@@ -92,3 +93,21 @@ async def test_cleanup_scope_uses_one_library_snapshot(tmp_path: Path):
         ) == frozenset()
     finally:
         await database.engine.dispose()
+
+
+def test_playback_prefix_is_the_stable_route_without_sensitive_url_parts():
+    assert (
+        normalize_playback_url_prefix(
+            "https://watch-assistant.example/api/v1/strm/play/"
+        )
+        == "https://watch-assistant.example/api/v1/strm/play/"
+    )
+    for invalid in (
+        "https://watch-assistant.example/api/v1/strm/play?x=1",
+        "https://watch-assistant.example/api/v1/strm/play/other",
+        "https://user:credential@watch-assistant.example/api/v1/strm/play",
+        "https://watch-assistant.example/api/v1/strm/play#fragment",
+        "https://watch-assistant.example/strm/play",
+    ):
+        with pytest.raises(ValueError, match="invalid_playback_url_prefix"):
+            normalize_playback_url_prefix(invalid)

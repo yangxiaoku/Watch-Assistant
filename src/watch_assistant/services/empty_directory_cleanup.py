@@ -38,6 +38,7 @@ class LiveP115EmptyDirectoryCleaner:
         client,
         call_executor: P115C03CallExecutor,
         managed_directory_ids: Collection[str],
+        system_created_directory_ids: Collection[str],
         scope_confirmed: bool,
         timeout_seconds: float = 30.0,
     ) -> None:
@@ -46,9 +47,13 @@ class LiveP115EmptyDirectoryCleaner:
         scope = frozenset(managed_directory_ids)
         if not scope or any(not _stable_id(item) for item in scope):
             raise ValueError("invalid_cleanup_scope")
+        system_created = frozenset(system_created_directory_ids)
+        if any(not _stable_id(item) for item in system_created):
+            raise ValueError("invalid_cleanup_scope")
         if timeout_seconds <= 0:
             raise ValueError("invalid_timeout")
         self._scope = scope
+        self._system_created = system_created
         self._timeout_seconds = float(timeout_seconds)
         self._c03 = P115C03LiveTransport(client, call_executor=call_executor)
 
@@ -60,6 +65,7 @@ class LiveP115EmptyDirectoryCleaner:
             or not _stable_id(parent_id)
             or parent_id not in self._scope
             or directory_id not in self._scope
+            or directory_id not in self._system_created
             or not _safe_name(name)
         ):
             raise EmptyDirectoryCleanupError("cleanup_scope_unverified")

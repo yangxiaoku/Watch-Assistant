@@ -9,7 +9,7 @@ from collections.abc import Awaitable, Callable, Collection
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -21,6 +21,10 @@ from watch_assistant.library_models import (
     MediaLibrary,
     StrmManifestEntry,
     StrmManifestStatus,
+)
+from watch_assistant.services.strm_scope import (
+    has_newer_unsettled_scan,
+    normalize_playback_url_prefix,
 )
 
 VIDEO_EXTENSIONS = frozenset(
@@ -140,6 +144,8 @@ class StrmManifestService:
                 )
             )
             if latest != run.snapshot_revision:
+                raise StrmManifestError("source_snapshot_not_current")
+            if await has_newer_unsettled_scan(session, run):
                 raise StrmManifestError("source_snapshot_not_current")
             generated = unchanged = skipped = failed = 0
             last_object_id: str | None = None
@@ -406,6 +412,8 @@ class StrmManifestService:
         )
         if latest != run.snapshot_revision:
             raise StrmManifestError("source_snapshot_not_current")
+        if await has_newer_unsettled_scan(session, run):
+            raise StrmManifestError("source_snapshot_not_current")
         return library, run
 
     async def _reconcile_entry(
@@ -620,19 +628,10 @@ def _within(root: Path, candidate: Path) -> None:
 
 
 def _safe_prefix(value: object) -> str:
-    if not isinstance(value, str) or not value or len(value) > 2048:
-        raise StrmManifestError("invalid_playback_url_prefix")
-    parsed = urlsplit(value)
-    if (
-        parsed.scheme not in {"http", "https"}
-        or not parsed.netloc
-        or parsed.username
-        or parsed.password
-        or parsed.query
-        or parsed.fragment
-    ):
-        raise StrmManifestError("invalid_playback_url_prefix")
-    return value.rstrip("/") + "/"
+    try:
+        return normalize_playback_url_prefix(value)
+    except ValueError:
+        raise StrmManifestError("invalid_playback_url_prefix") from None
 
 
 def _valid_id(value: object) -> bool:
