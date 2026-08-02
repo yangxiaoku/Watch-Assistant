@@ -1,8 +1,10 @@
 import asyncio
+import threading
 from datetime import UTC, datetime, timedelta
 
 import pytest
 from cryptography.fernet import Fernet
+from sqlalchemy import event
 
 from watch_assistant.crypto import SecretCrypto
 from watch_assistant.db import create_database, initialize_database
@@ -48,6 +50,23 @@ class FakeAdapter:
     async def get_status(self, remote_ref: str):
         self.status_lookups += 1
         return self.remote_status
+
+
+class SlowSubmissionAdapter(FakeAdapter):
+    def __init__(self):
+        super().__init__()
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def submit_magnet(
+        self, url: str, *, target_cid: str | None = None
+    ) -> SubmissionResult:
+        self.submissions += 1
+        self.target_cids.append(target_cid)
+        assert url.startswith("magnet:")
+        self.started.set()
+        await self.release.wait()
+        return SubmissionResult(status=RemoteStatus.ACCEPTED, remote_ref="remote-slow")
 
 
 class EventRecorder:
@@ -150,6 +169,171 @@ async def test_task_creation_is_idempotent_and_worker_accepts_submission(tmp_pat
     assert task.state == TaskState.SUBMITTED
     assert task.remote_ref == "remote-123"
     assert adapter.submissions == 1
+    await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_sqlite_claim_has_one_winner_when_workers_read_same_candidate(tmp_path):
+    database = await _database(tmp_path)
+    database_url = f"sqlite+aiosqlite:///{tmp_path / 'tasks.db'}"
+    crypto = SecretCrypto(Fernet.generate_key().decode("ascii"))
+    await _add_resource(database, crypto)
+    service = TaskService(database.session_factory)
+    task, _ = await service.create("res_magnet")
+    await database.engine.dispose()
+
+    candidate_selects = 0
+    counter_lock = threading.Lock()
+    select_barrier = threading.Barrier(2)
+
+    def synchronize_candidate_reads(
+        _connection, _cursor, statement, _parameters, _context, _executemany
+    ):
+        nonlocal candidate_selects
+        if (
+            "FROM tasks" in statement
+            and "ORDER BY tasks.created_at" in statement
+            and "LIMIT" in statement
+        ):
+            with counter_lock:
+                candidate_selects += 1
+                should_wait = candidate_selects <= 2
+            if should_wait:
+                select_barrier.wait(timeout=5)
+
+    async def claim_on_independent_engine(owner: str):
+        peer_database = create_database(database_url)
+        event.listen(
+            peer_database.engine.sync_engine,
+            "before_cursor_execute",
+            synchronize_candidate_reads,
+        )
+        try:
+            worker = TaskWorker(
+                peer_database.session_factory,
+                crypto,
+                FakeAdapter(),
+                owner=owner,
+            )
+            return await worker._claim_one()
+        finally:
+            event.remove(
+                peer_database.engine.sync_engine,
+                "before_cursor_execute",
+                synchronize_candidate_reads,
+            )
+            await peer_database.engine.dispose()
+
+    leases = await asyncio.gather(
+        asyncio.to_thread(lambda: asyncio.run(claim_on_independent_engine("worker-a"))),
+        asyncio.to_thread(lambda: asyncio.run(claim_on_independent_engine("worker-b"))),
+    )
+
+    assert candidate_selects >= 2
+    winners = [lease for lease in leases if lease is not None]
+    assert len(winners) == 1
+    check_database = create_database(database_url)
+    service = TaskService(check_database.session_factory)
+    stored = await service.get(task.id)
+    assert stored is not None
+    assert stored.state is TaskState.SUBMITTING
+    assert stored.attempts == 1
+    assert stored.lease_token is not None
+    await check_database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_worker_renews_lease_during_slow_external_submission(tmp_path):
+    database = await _database(tmp_path)
+    crypto = SecretCrypto(Fernet.generate_key().decode("ascii"))
+    await _add_resource(database, crypto)
+    service = TaskService(database.session_factory)
+    task, _ = await service.create("res_magnet")
+    adapter = SlowSubmissionAdapter()
+    worker = TaskWorker(
+        database.session_factory,
+        crypto,
+        adapter,
+        owner="slow-worker",
+        lease_seconds=0.3,
+    )
+
+    run_task = asyncio.create_task(worker.run_once())
+    await asyncio.wait_for(adapter.started.wait(), timeout=2)
+    await asyncio.sleep(0.7)
+    in_flight = await service.get(task.id)
+    assert in_flight is not None
+    assert in_flight.state is TaskState.SUBMITTING
+    assert in_flight.lease_owner == "slow-worker"
+    assert in_flight.lease_token is not None
+
+    adapter.release.set()
+    assert await asyncio.wait_for(run_task, timeout=2) is True
+    finished = await service.get(task.id)
+    assert finished is not None
+    assert finished.state is TaskState.SUBMITTED
+    assert finished.remote_ref == "remote-slow"
+    assert finished.lease_owner is None
+    assert finished.lease_token is None
+    await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_stale_worker_cannot_renew_or_finalize_after_expired_claim_takeover(
+    tmp_path,
+):
+    database = await _database(tmp_path)
+    crypto = SecretCrypto(Fernet.generate_key().decode("ascii"))
+    await _add_resource(database, crypto)
+    service = TaskService(database.session_factory)
+    task, _ = await service.create("res_magnet")
+    claim_time = datetime.now(UTC)
+    old_lease = await service.claim_next(
+        owner="old-worker",
+        lease_duration=timedelta(seconds=30),
+        now=claim_time,
+    )
+    assert old_lease is not None
+
+    async with database.session_factory() as session:
+        stored = await session.get(Task, task.id)
+        assert stored is not None
+        stored.lease_expires_at = claim_time - timedelta(seconds=1)
+        await session.commit()
+
+    new_lease = await service.claim_expired(
+        owner="new-worker",
+        lease_duration=timedelta(seconds=30),
+        now=claim_time,
+    )
+    assert new_lease is not None
+    assert new_lease.lease_token != old_lease.lease_token
+    assert (
+        await service.renew(
+            old_lease,
+            lease_duration=timedelta(seconds=30),
+            now=claim_time,
+        )
+        is False
+    )
+
+    accepted = await service.finish_submission(
+        new_lease,
+        SubmissionResult(status=RemoteStatus.ACCEPTED, remote_ref="remote-new"),
+    )
+    stale = await service.finish_submission(
+        old_lease,
+        SubmissionResult(status=RemoteStatus.ACCEPTED, remote_ref="remote-old"),
+    )
+
+    assert accepted is not None
+    assert stale is None
+    finished = await service.get(task.id)
+    assert finished is not None
+    assert finished.state is TaskState.SUBMITTED
+    assert finished.remote_ref == "remote-new"
+    assert finished.lease_owner is None
+    assert finished.lease_token is None
     await database.engine.dispose()
 
 

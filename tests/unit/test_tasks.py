@@ -19,11 +19,13 @@ from watch_assistant.services.tasks import (
 def test_submitting_without_remote_confirmation_becomes_uncertain():
     task = make_task(state=TaskState.SUBMITTING)
     task.lease_owner = "worker-1"
+    task.lease_token = "old-token"
 
     recover_after_restart(task, remote_status=None)
 
     assert task.state == TaskState.UNCERTAIN
     assert task.lease_owner is None
+    assert task.lease_token is None
     assert task.lease_expires_at is None
 
 
