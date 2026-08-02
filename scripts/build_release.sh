@@ -11,6 +11,22 @@ if [[ ! "$EXPECTED_COMMIT" =~ ^[0-9a-fA-F]{40}$ ]]; then
 fi
 EXPECTED_COMMIT="$(printf '%s' "$EXPECTED_COMMIT" | tr '[:upper:]' '[:lower:]')"
 
+RELEASE_BRANCH="codex/publish-main"
+BRANCH_NAME="$(git branch --show-current)"
+if [[ "$BRANCH_NAME" != "$RELEASE_BRANCH" ]]; then
+    echo "release refused: packages must be built from ${RELEASE_BRANCH}" >&2
+    exit 1
+fi
+if ! PUBLISH_COMMIT="$(git rev-parse --verify "refs/remotes/origin/${RELEASE_BRANCH}" 2>/dev/null)"; then
+    echo "release refused: origin/${RELEASE_BRANCH} is unavailable" >&2
+    exit 1
+fi
+PUBLISH_COMMIT="$(printf '%s' "$PUBLISH_COMMIT" | tr '[:upper:]' '[:lower:]')"
+if [[ "$PUBLISH_COMMIT" != "$EXPECTED_COMMIT" ]]; then
+    echo "release refused: expected commit is not the latest origin/${RELEASE_BRANCH}" >&2
+    exit 1
+fi
+
 if [[ -n "$(git status --porcelain --untracked-files=all)" ]]; then
     echo "release refused: working tree is not clean" >&2
     exit 1
@@ -31,10 +47,6 @@ else
 fi
 
 COMMIT_HASH="${EXPECTED_COMMIT:0:7}"
-BRANCH_NAME="$(git branch --show-current)"
-if [[ -z "$BRANCH_NAME" ]]; then
-    BRANCH_NAME="detached"
-fi
 BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 FILE_STAMP="$(date -u +%Y%m%d-%H%M)"
 PACKAGE_NAME="watch-assistant-${COMMIT_HASH}-${FILE_STAMP}.tar.gz"
