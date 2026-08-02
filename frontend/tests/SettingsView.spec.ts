@@ -39,8 +39,8 @@ const credentials = {
 
 const firstLogs: LogsResponse = {
   items: [
-    { id: 1, timestamp: "2026-07-25T02:00:00Z", level: "INFO" as const, category: "system" as const, message: "服务已启动" },
-    { id: 2, timestamp: "2026-07-25T02:01:00Z", level: "WARNING" as const, category: "cache" as const, message: "缓存已刷新" },
+    { id: 1, timestamp: "2026-07-25T02:00:00Z", level: "INFO" as const, category: "system" as const, message: "service.started", message_zh: "服务已启动" },
+    { id: 2, timestamp: "2026-07-25T02:01:00Z", level: "WARNING" as const, category: "cache" as const, message: "cache.refreshed", message_zh: "缓存已刷新" },
   ],
   next_cursor: 20,
 };
@@ -595,8 +595,8 @@ describe("SettingsView", () => {
         .mockResolvedValueOnce(firstLogs)
         .mockResolvedValueOnce({
           items: [
-            { id: 2, timestamp: "2026-07-25T02:01:00Z", level: "WARNING" as const, category: "cache" as const, message: "缓存已刷新（重复）" },
-            { id: 3, timestamp: "2026-07-25T02:02:00Z", level: "ERROR" as const, category: "security" as const, message: "需要重新登录" },
+            { id: 2, timestamp: "2026-07-25T02:01:00Z", level: "WARNING" as const, category: "cache" as const, message: "cache.refreshed", message_zh: "缓存已刷新（重复）" },
+            { id: 3, timestamp: "2026-07-25T02:02:00Z", level: "ERROR" as const, category: "security" as const, message: "auth.relogin_required", message_zh: "需要重新登录" },
           ],
           next_cursor: null,
         }),
@@ -654,9 +654,9 @@ describe("SettingsView", () => {
     await logsButton?.trigger("click");
     const category = wrapper.get(".settings-filter-row select");
     await category.setValue("search");
-    resolveSecond?.({ ...firstLogs, items: [{ ...firstLogs.items[0], id: 9, category: "search", message: "新分类响应" }], next_cursor: null });
+    resolveSecond?.({ ...firstLogs, items: [{ ...firstLogs.items[0], id: 9, category: "search", message: "search.new_category", message_zh: "新分类响应" }], next_cursor: null });
     await flushPromises();
-    resolveFirst?.({ ...firstLogs, items: [{ ...firstLogs.items[0], id: 1, message: "旧分类响应" }], next_cursor: null });
+    resolveFirst?.({ ...firstLogs, items: [{ ...firstLogs.items[0], id: 1, message: "search.old_category", message_zh: "旧分类响应" }], next_cursor: null });
     await flushPromises();
 
     expect(wrapper.text()).toContain("新分类响应");
@@ -669,11 +669,11 @@ describe("SettingsView", () => {
       logs: vi.fn()
         .mockResolvedValueOnce(firstLogs)
         .mockResolvedValueOnce({
-          items: [{ id: 3, timestamp: "2026-07-25T02:02:00Z", level: "INFO" as const, category: "system" as const, message: "旧页" }],
+          items: [{ id: 3, timestamp: "2026-07-25T02:02:00Z", level: "INFO" as const, category: "system" as const, message: "system.old_page", message_zh: "旧页" }],
           next_cursor: null,
         })
         .mockResolvedValueOnce({
-          items: [{ id: 4, timestamp: "2026-07-25T02:03:00Z", level: "INFO" as const, category: "system" as const, message: "自动刷新" }],
+          items: [{ id: 4, timestamp: "2026-07-25T02:03:00Z", level: "INFO" as const, category: "system" as const, message: "system.auto_refresh", message_zh: "自动刷新" }],
           next_cursor: 20,
         }),
     });

@@ -148,6 +148,53 @@ describe("ApiClient season and inspection requests", () => {
     });
   });
 
+  it("loads, retries, and cancels task endpoints with encoded identifiers", async () => {
+    const task = { id: "task/1", state: "queued" };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify([task]), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ...task, state: "queued" }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ...task, state: "cancelled" }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const api = new ApiClient();
+
+    await api.listTasks();
+    await api.retryTask("task/1");
+    await api.cancelTask("task/1");
+
+    expect(fetchMock.mock.calls.map(([url, init]) => [url, init?.method, init?.body])).toEqual([
+      ["/api/v1/tasks", undefined, undefined],
+      ["/api/v1/tasks/task%2F1/retry", "POST", "{}"],
+      ["/api/v1/tasks/task%2F1/cancel", "POST", "{}"],
+    ]);
+  });
+
+  it("uses safe structured Chinese error fields without rendering a secret", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      error: {
+        code: "backend_unavailable",
+        title_zh: "服务暂时不可用",
+        message_zh: "token: raw-secret-value",
+        suggestion_zh: "请稍后重试。",
+      },
+    }), { status: 503 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const api = new ApiClient();
+
+    let caught: unknown;
+    try {
+      await api.mediaMetadata("movie", 1);
+    } catch (exception) {
+      caught = exception;
+    }
+    expect(caught).toMatchObject({
+      title: "服务暂时不可用",
+      message: "本次操作未完成，当前页面没有更新。",
+      suggestion: "请稍后重试。",
+      retryable: true,
+    });
+    expect((caught as Error).message).not.toContain("raw-secret-value");
+  });
+
   it("converts an unknown backend detail to a safe Chinese error", async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ detail: "python traceback secret" }), { status: 500 }));
     vi.stubGlobal("fetch", fetchMock);
