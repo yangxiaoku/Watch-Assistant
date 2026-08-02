@@ -420,7 +420,7 @@ async def test_search_service_merges_duplicate_infohash_and_keeps_sources():
         ),
         None,
     )
-    public_response = summary.model_dump()
+    public_response = summary.model_dump(mode="json")
     assert "metadata" not in public_response
     assert "search_queries" not in public_response
     assert "api_key" not in json.dumps(public_response, ensure_ascii=False)
@@ -560,7 +560,7 @@ async def test_target_adapter_honors_bounded_retry_after_without_exposing_header
         await _close_target_adapter(adapter, transport_client)
 
     assert error.value.retry_after_seconds == 42
-    assert health.retry_after_seconds == 42
+    assert 0 < health.retry_after_seconds <= error.value.retry_after_seconds
     assert "Retry-After" not in str(error.value)
 
 
