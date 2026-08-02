@@ -1451,7 +1451,9 @@ class SearchService:
         )
         canonical_keys = [item["canonical_key"] for item in values]
         rows = await session.scalars(
-            select(Resource).where(Resource.canonical_key.in_(canonical_keys))
+            select(Resource)
+            .where(Resource.canonical_key.in_(canonical_keys))
+            .execution_options(populate_existing=True)
         )
         by_key = {resource.canonical_key: resource for resource in rows}
         return [by_key[key] for key in canonical_keys]
@@ -1722,7 +1724,7 @@ def _merge_persisted_resource_metadata(
     current_metadata = current.metadata
     merged = {**existing_metadata, **current_metadata}
 
-    source_values: list[object] = [current.source, current_metadata.get("sources")]
+    source_values: list[object] = [current_metadata.get("sources"), current.source]
     observation_values: list[object] = [
         current_metadata.get("source_observations"),
         [
@@ -1734,8 +1736,8 @@ def _merge_persisted_resource_metadata(
     ]
     if existing is not None:
         source_values = [
-            existing.source,
             existing_metadata.get("sources"),
+            existing.source,
             *source_values,
         ]
         observation_values = [
