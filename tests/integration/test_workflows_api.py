@@ -28,7 +28,9 @@ class FakeTaskAdapter:
     async def save_share(self, url: str, password: str | None):
         raise AssertionError("workflow API must not submit during association")
 
-    async def get_status(self, remote_ref: str):
+    async def get_status_for_task(
+        self, remote_ref: str, *, target_directory_id: str | None
+    ):
         return None
 
 
@@ -288,7 +290,9 @@ async def test_workflow_approval_and_cancel_are_guarded(tmp_path):
             await session.commit()
 
         class AvailableAdapter:
-            async def get_status(self, remote_ref: str):
+            async def get_status_for_task(
+                self, remote_ref: str, *, target_directory_id: str | None
+            ):
                 assert remote_ref == "remote-available"
                 return RemoteObservation(
                     status=RemoteStatus.AVAILABLE,

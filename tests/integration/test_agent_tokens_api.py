@@ -22,7 +22,9 @@ class _NoopTaskAdapter:
     async def save_share(self, _url: str, _password: str | None):
         raise AssertionError("task adapter should not run in token tests")
 
-    async def get_status(self, _remote_ref: str):
+    async def get_status_for_task(
+        self, _remote_ref: str, *, target_directory_id: str | None
+    ):
         return None
 
 

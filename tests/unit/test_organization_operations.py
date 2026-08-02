@@ -252,7 +252,9 @@ async def test_organization_operation_updates_linked_workflow_stage(tmp_path):
         await session.commit()
 
     class AvailableAdapter:
-        async def get_status(self, remote_ref: str):
+        async def get_status_for_task(
+            self, remote_ref: str, *, target_directory_id: str | None
+        ):
             assert remote_ref == "workflow-available"
             return RemoteObservation(
                 status=RemoteStatus.AVAILABLE,

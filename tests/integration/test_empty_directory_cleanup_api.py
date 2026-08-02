@@ -1,3 +1,4 @@
+import asyncio
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -134,15 +135,20 @@ async def test_empty_directory_cleanup_api_is_preview_confirm_idempotent_and_rev
         system_created_directory_ids=("300",),
     )
     calls = []
+    started = asyncio.Event()
+    release = asyncio.Event()
 
     async def execute(candidate):
         calls.append(candidate["directory_id"])
+        started.set()
+        await release.wait()
         return EmptyDirectoryCleanupStatus.SUCCESS
 
     app.state.empty_directory_cleanup_executor = execute
     client = httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://app.test"
     )
+    first_task = None
     try:
         login = await client.post("/api/v1/auth/login", json={"password": WEB_PASSWORD})
         assert login.status_code == 200
@@ -185,11 +191,29 @@ async def test_empty_directory_cleanup_api_is_preview_confirm_idempotent_and_rev
             "confirm": True,
             "idempotency_key": "empty-cleanup-key-1",
         }
-        applied = await client.post(
+        first_task = asyncio.create_task(
+            client.post(
+                f"/api/v1/empty-directory-cleanup-plans/{plan['plan_id']}/apply",
+                json=apply_payload,
+                headers=headers,
+            )
+        )
+        await asyncio.wait_for(started.wait(), timeout=1)
+        running = await client.post(
             f"/api/v1/empty-directory-cleanup-plans/{plan['plan_id']}/apply",
             json=apply_payload,
             headers=headers,
         )
+        assert running.status_code == 409
+        detail = running.json()["detail"]
+        assert detail["code"] == "empty_cleanup_in_progress"
+        assert detail["status"] == "running"
+        assert detail["reused"] is True
+        assert detail["operation_id"].startswith("strm_op_")
+        assert "lease_owner" not in running.text
+
+        release.set()
+        applied = await first_task
         assert applied.status_code == 200
         assert applied.json()["deleted"] == 1
         repeated = await client.post(
@@ -201,5 +225,8 @@ async def test_empty_directory_cleanup_api_is_preview_confirm_idempotent_and_rev
         assert repeated.json()["deleted"] == 1
         assert calls == ["300"]
     finally:
+        release.set()
+        if first_task is not None and not first_task.done():
+            await first_task
         await client.aclose()
         await database.engine.dispose()

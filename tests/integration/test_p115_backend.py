@@ -52,7 +52,9 @@ class FakeTaskAdapter:
         self.save_share_calls += 1
         raise AssertionError("share adapter must not be called")
 
-    async def get_status(self, remote_ref: str):
+    async def get_status_for_task(
+        self, remote_ref: str, *, target_directory_id: str | None
+    ):
         self.status_calls += 1
         return RemoteStatus.ACCEPTED
 

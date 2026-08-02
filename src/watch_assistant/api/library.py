@@ -1,5 +1,6 @@
 """Bounded, authenticated read-only media library resources."""
 
+import asyncio
 import hashlib
 import re
 from datetime import UTC
@@ -81,6 +82,11 @@ from watch_assistant.services.organization_target import (
     read_target_catalog,
 )
 from watch_assistant.services.p115_delete import P115DeleteService
+from watch_assistant.services.strm_operations import (
+    StrmOperationError,
+    StrmOperationKind,
+    StrmOperationService,
+)
 
 router = APIRouter(prefix="/api/v1", dependencies=[Depends(require_api_auth)])
 AuthDependency = Annotated[AuthContext, Depends(require_api_auth)]
@@ -605,6 +611,48 @@ def _empty_cleanup_error_status(code: str) -> int:
     return 404 if code == "plan_not_found" else 409
 
 
+def _empty_cleanup_operation_scope(plan_id: str) -> str:
+    return "cleanup:" + hashlib.sha256(plan_id.encode("ascii")).hexdigest()[:32]
+
+
+async def _run_empty_cleanup_operation_heartbeat(
+    operations: StrmOperationService,
+    operation_id: str,
+    lease_owner: str,
+    stop: asyncio.Event,
+) -> None:
+    while not stop.is_set():
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=60)
+        except TimeoutError:
+            try:
+                await operations.heartbeat(operation_id, lease_owner=lease_owner)
+            except StrmOperationError:
+                return
+
+
+def _start_empty_cleanup_operation_heartbeat(
+    operations: StrmOperationService, operation_id: str, lease_owner: str
+) -> tuple[asyncio.Event, asyncio.Task[None]]:
+    stop = asyncio.Event()
+    task = asyncio.create_task(
+        _run_empty_cleanup_operation_heartbeat(
+            operations, operation_id, lease_owner, stop
+        ),
+        name=f"watch-assistant-empty-cleanup-heartbeat-{operation_id}",
+    )
+    return stop, task
+
+
+async def _stop_empty_cleanup_operation_heartbeat(
+    stop: asyncio.Event, task: asyncio.Task[None]
+) -> None:
+    stop.set()
+    if not task.done():
+        task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+
+
 @router.post(
     "/libraries/{library_id}/empty-directory-cleanup-plan",
     response_model=EmptyDirectoryCleanupPlanResponse,
@@ -703,39 +751,169 @@ async def apply_empty_directory_cleanup_plan(
         and current_plan.library_id not in context.library_ids
     ):
         raise HTTPException(status_code=404, detail="plan_not_found")
+    operations = StrmOperationService(request.app.state.database.session_factory)
     try:
-        result = await service.apply_plan(
-            plan_id=plan_id,
-            expected_revision=payload.expected_revision,
-            digest=payload.digest,
-            confirm=payload.confirm,
+        queued = await operations.create(
+            library_id=current_plan.library_id,
+            source_scan_run_id=current_plan.source_scan_run_id,
+            kind=StrmOperationKind.CLEANUP,
+            workflow_id=_empty_cleanup_operation_scope(plan_id),
             idempotency_key=payload.idempotency_key,
-            executor=executor,
-            system_created_directory_ids=getattr(
-                request.app.state, "system_created_directory_ids", frozenset()
-            ),
         )
-    except EmptyDirectoryCleanupPlanError as error:
+        running, acquired = await operations.claim_start(queued.operation_id)
+    except StrmOperationError as error:
+        status = (
+            409
+            if error.code
+            in {
+                "idempotency_key_conflict",
+                "strm_library_operation_conflict",
+                "strm_operation_claim_conflict",
+            }
+            else 422
+        )
         raise HTTPException(
-            status_code=_empty_cleanup_error_status(error.code), detail=error.code
+            status_code=status, detail=error.code
         ) from None
-    settings_service = getattr(request.app.state, "settings_service", None)
-    if settings_service is not None:
-        await settings_service.log_event(
-            "library.empty_directory_cleanup.applied",
-            fields={"status": result.plan.status},
-            counts={"count": result.deleted},
-            actor_type="agent" if context.via_bearer else "web",
-            actor_id=context.identity,
-            resource_type="empty_directory_cleanup_plan",
-            resource_id=result.plan.plan_id,
+    if not acquired:
+        if running.status == "running":
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "empty_cleanup_in_progress",
+                    "message": "已复用正在执行的空目录清理操作，当前仍在执行",
+                    "operation_id": running.operation_id,
+                    "status": running.status,
+                    "reused": True,
+                },
+            )
+        if running.status == "succeeded":
+            try:
+                current_plan = await service.get_plan(plan_id)
+            except EmptyDirectoryCleanupPlanError as error:
+                raise HTTPException(
+                    status_code=_empty_cleanup_error_status(error.code),
+                    detail=error.code,
+                ) from None
+            if current_plan.status != "applied":
+                raise HTTPException(
+                    status_code=409, detail="empty_cleanup_uncertain"
+                )
+            return EmptyDirectoryCleanupPlanApplyResponse(
+                plan=EmptyDirectoryCleanupPlanResponse.model_validate(
+                    current_plan.to_public_dict()
+                ),
+                deleted=running.retired,
+            )
+        if running.status == "queued":
+            raise HTTPException(
+                status_code=409, detail="strm_library_operation_conflict"
+            )
+        raise HTTPException(
+            status_code=409,
+            detail=running.error_code or "empty_cleanup_failed",
         )
-    return EmptyDirectoryCleanupPlanApplyResponse(
-        plan=EmptyDirectoryCleanupPlanResponse.model_validate(
-            result.plan.to_public_dict()
-        ),
-        deleted=result.deleted,
+
+    lease_owner = await operations.get_lease_token(running.operation_id)
+    if lease_owner is None:
+        raise HTTPException(status_code=409, detail="strm_operation_lease_lost")
+    heartbeat_stop, heartbeat_task = _start_empty_cleanup_operation_heartbeat(
+        operations, running.operation_id, lease_owner
     )
+
+    async def lease_check() -> bool:
+        return await operations.is_lease_active(
+            running.operation_id, lease_owner=lease_owner
+        )
+
+    try:
+        try:
+            result = await service.apply_plan(
+                plan_id=plan_id,
+                expected_revision=payload.expected_revision,
+                digest=payload.digest,
+                confirm=payload.confirm,
+                idempotency_key=payload.idempotency_key,
+                executor=executor,
+                system_created_directory_ids=getattr(
+                    request.app.state, "system_created_directory_ids", frozenset()
+                ),
+                lease_check=lease_check,
+                operation_id=running.operation_id,
+            )
+        except asyncio.CancelledError:
+            try:
+                await asyncio.shield(
+                    operations.cancel(
+                        running.operation_id,
+                        lease_owner=lease_owner,
+                    )
+                )
+            except StrmOperationError:
+                pass
+            raise
+        except EmptyDirectoryCleanupPlanError as error:
+            try:
+                await operations.fail(
+                    running.operation_id,
+                    error_code=error.code,
+                    lease_owner=lease_owner,
+                )
+            except StrmOperationError as lifecycle_error:
+                if lifecycle_error.code != "strm_operation_lease_lost":
+                    raise
+            raise HTTPException(
+                status_code=_empty_cleanup_error_status(error.code),
+                detail=error.code,
+            ) from None
+        except Exception:  # noqa: BLE001 - operation status must not remain running
+            try:
+                await operations.fail(
+                    running.operation_id,
+                    error_code="empty_cleanup_failed",
+                    lease_owner=lease_owner,
+                )
+            except StrmOperationError:
+                pass
+            raise HTTPException(status_code=409, detail="empty_cleanup_failed") from None
+
+        try:
+            completed = await operations.complete(
+                running.operation_id,
+                generated=0,
+                unchanged=0,
+                skipped=0,
+                failed=0,
+                retired=result.deleted,
+                lease_owner=lease_owner,
+            )
+        except StrmOperationError as error:
+            if error.code == "strm_operation_lease_lost":
+                raise HTTPException(
+                    status_code=409, detail="empty_cleanup_uncertain"
+                ) from None
+            raise HTTPException(status_code=409, detail=error.code) from None
+        if completed.status != "succeeded":
+            raise HTTPException(status_code=409, detail="empty_cleanup_uncertain")
+        settings_service = getattr(request.app.state, "settings_service", None)
+        if settings_service is not None:
+            await settings_service.log_event(
+                "library.empty_directory_cleanup.applied",
+                fields={"status": result.plan.status},
+                counts={"count": result.deleted},
+                actor_type="agent" if context.via_bearer else "web",
+                actor_id=context.identity,
+                resource_type="empty_directory_cleanup_plan",
+                resource_id=result.plan.plan_id,
+            )
+        return EmptyDirectoryCleanupPlanApplyResponse(
+            plan=EmptyDirectoryCleanupPlanResponse.model_validate(
+                result.plan.to_public_dict()
+            ),
+            deleted=result.deleted,
+        )
+    finally:
+        await _stop_empty_cleanup_operation_heartbeat(heartbeat_stop, heartbeat_task)
 
 
 @router.post(

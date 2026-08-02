@@ -16,6 +16,7 @@ export default defineConfig({
     { name: "desktop", use: { viewport: { width: 1440, height: 900 } } },
     { name: "mobile", use: { viewport: { width: 390, height: 844 } } },
     { name: "mobile-wide", use: { viewport: { width: 430, height: 932 } } },
+    { name: "mobile-360", use: { viewport: { width: 360, height: 740 } }, testMatch: "**/workbench-360.spec.ts" },
     { name: "mobile-compact", use: { viewport: { width: 320, height: 568 } }, testMatch: "**/login-overflow.spec.ts" },
   ],
 });
