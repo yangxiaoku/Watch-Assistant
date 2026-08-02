@@ -1,0 +1,118 @@
+name: Systemd Release Package
+
+on:
+  push:
+    branches:
+      - codex/ci-release-artifact
+      - codex/publish-main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # Python 3.12.13 matches the verified runtime and the Docker runtime line.
+  PYTHON_VERSION: "3.12.13"
+  # Keep the existing Verify/Docker Node 24 compatibility line; npm is pinned below.
+  NODE_VERSION: "24"
+  NPM_VERSION: "11.9.0"
+
+jobs:
+  package:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Verify checked-out commit and toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          test "$(python --version 2>&1)" = "Python ${PYTHON_VERSION}"
+          case "$(node --version)" in
+            v24.*) ;;
+            *) echo "unexpected Node major version" >&2; exit 1 ;;
+          esac
+          npm install --global "npm@${NPM_VERSION}"
+          test "$(npm --version)" = "${NPM_VERSION}"
+
+      - name: Create isolated Python environment and install locked dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m venv .venv
+          PYTHON_BIN="$PWD/.venv/bin/python"
+          "$PYTHON_BIN" -m pip install --disable-pip-version-check --upgrade "pip==25.1.1"
+          export LOCK_CONSTRAINTS="$RUNNER_TEMP/watch-assistant-uv-lock-constraints.txt"
+          "$PYTHON_BIN" scripts/generate_pip_constraints.py \
+            --lock-file uv.lock \
+            --output "$LOCK_CONSTRAINTS"
+          "$PYTHON_BIN" -m pip install \
+            --disable-pip-version-check \
+            --constraint "$LOCK_CONSTRAINTS" \
+            -e ".[dev]"
+          "$PYTHON_BIN" -m pip check
+
+      - name: Install frontend dependencies from lockfile
+        run: npm ci --prefix frontend
+
+      - name: Run offline verification gate
+        run: bash scripts/verify.sh
+
+      - name: Validate Compose configuration without starting services
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p secrets
+          printf 'ci-placeholder\n' > secrets/encryption_key
+          printf 'ci-placeholder\n' > secrets/tmdb_api_key
+          printf 'ci-placeholder\n' > secrets/web_password_hash
+          printf 'ci-placeholder\n' > secrets/script_token_hash
+          docker compose --env-file .env.example config --quiet
+
+      - name: Build and verify systemd release package
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          test -z "$(git diff --name-only)"
+          test -z "$(git diff --cached --name-only)"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          export RELEASE_OUTPUT_DIR="$RUNNER_TEMP/release-output"
+          bash scripts/build_release.sh
+          package_file="$(find "$RELEASE_OUTPUT_DIR" -type f -name 'watch-assistant-*.tar.gz' -print -quit)"
+          test -n "$package_file"
+          artifact_dir="$RUNNER_TEMP/release-artifact"
+          bash scripts/verify_release_artifact.sh \
+            "$package_file" \
+            "$GITHUB_SHA" \
+            "$artifact_dir"
+          echo "artifact_name=$(basename "$package_file")" >> "$GITHUB_OUTPUT"
+          echo "artifact_dir=$artifact_dir" >> "$GITHUB_OUTPUT"
+
+      - name: Upload systemd release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.artifact_name }}
+          path: ${{ steps.package.outputs.artifact_dir }}
+          if-no-files-found: error
+          compression-level: 0
