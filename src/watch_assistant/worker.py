@@ -230,7 +230,7 @@ class TaskWorker:
                 raise
             except Exception:  # noqa: BLE001
                 # A transient claim/database error must not kill the worker loop.
-                pass
+                await asyncio.sleep(0)
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=interval)
             except TimeoutError:
