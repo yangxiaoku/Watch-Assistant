@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from watch_assistant.library_models import (
     EmptyDirectoryCleanupPlan,
+    LibraryScanCheckpoint,
     LibraryScanEntry,
     LibraryScanRun,
     MediaLibrary,
@@ -25,6 +26,10 @@ from watch_assistant.library_models import (
 from watch_assistant.models import StrmOperation, StrmOperationKind, StrmOperationStatus
 from watch_assistant.services.empty_directory_cleanup import (
     EmptyDirectoryCleanupStatus,
+)
+from watch_assistant.services.library_index import (
+    LibraryIndexError,
+    validate_complete_scan_evidence,
 )
 from watch_assistant.services.strm_manifest import (
     StrmManifestError,
@@ -643,6 +648,26 @@ class EmptyDirectoryCleanupPlanService:
             raise EmptyDirectoryCleanupPlanError("source_snapshot_not_current")
         if await has_newer_unsettled_scan(session, run):
             raise EmptyDirectoryCleanupPlanError("source_snapshot_not_current")
+        checkpoint = await session.get(LibraryScanCheckpoint, run.id)
+        entries = list(
+            (
+                await session.scalars(
+                    select(LibraryScanEntry).where(
+                        LibraryScanEntry.scan_run_id == run.id
+                    )
+                )
+            ).all()
+        )
+        try:
+            validate_complete_scan_evidence(
+                run,
+                checkpoint,
+                entries,
+                root_directory_id=library.root_directory_id,
+                require_tree=True,
+            )
+        except LibraryIndexError:
+            raise EmptyDirectoryCleanupPlanError("source_snapshot_not_ready") from None
         return library, run
 
 

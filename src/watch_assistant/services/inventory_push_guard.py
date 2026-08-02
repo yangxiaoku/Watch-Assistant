@@ -11,11 +11,16 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from watch_assistant.library_models import (
     LibraryMediaIdentity,
+    LibraryScanCheckpoint,
     LibraryScanEntry,
     LibraryScanRun,
     MediaLibrary,
 )
 from watch_assistant.models import Resource
+from watch_assistant.services.library_index import (
+    LibraryIndexError,
+    validate_complete_scan_evidence,
+)
 from watch_assistant.services.library_inventory import (
     FreshnessStatus,
     InventoryDecision,
@@ -154,7 +159,7 @@ class InventoryPushGuard:
 async def _run_covers_scope(
     session: AsyncSession, run: LibraryScanRun, library: MediaLibrary
 ) -> bool:
-    """Reject snapshots whose entry parents cannot be inside the configured tree."""
+    """Require the same durable tree evidence used by scan consumers."""
 
     entries = list(
         (
@@ -163,9 +168,18 @@ async def _run_covers_scope(
             )
         ).all()
     )
-    directory_ids = {entry.object_id for entry in entries if entry.is_directory}
-    scope_ids = directory_ids | {library.root_directory_id}
-    return all(entry.parent_id in scope_ids for entry in entries)
+    checkpoint = await session.get(LibraryScanCheckpoint, run.id)
+    try:
+        validate_complete_scan_evidence(
+            run,
+            checkpoint,
+            entries,
+            root_directory_id=library.root_directory_id,
+            require_tree=True,
+        )
+    except LibraryIndexError:
+        return False
+    return True
 
 
 async def _snapshot(

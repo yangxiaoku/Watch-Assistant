@@ -7,6 +7,7 @@ from watch_assistant.crypto import SecretCrypto
 from watch_assistant.db import create_database, initialize_database
 from watch_assistant.library_models import (
     LibraryMediaIdentity,
+    LibraryScanCheckpoint,
     LibraryScanEntry,
     LibraryScanRun,
     MediaLibrary,
@@ -62,19 +63,21 @@ async def _library(
             )
         )
         await session.flush()
-        session.add(
-            LibraryScanRun(
-                id="scan-guard",
-                library_id="library-guard",
-                root_directory_id="root-guard",
-                idempotency_key="scan-guard-key",
-                scan_mode=scan_mode,
-                state="completed" if complete else "failed",
-                complete=complete,
-                snapshot_revision=1 if complete else None,
-                updated_at=now,
-            )
+        run = LibraryScanRun(
+            id="scan-guard",
+            library_id="library-guard",
+            root_directory_id="root-guard",
+            idempotency_key="scan-guard-key",
+            scan_mode=scan_mode,
+            state="completed" if complete else "failed",
+            complete=complete,
+            snapshot_revision=1 if complete else None,
+            expected_total=1 if object_id else 0,
+            pages_read=1,
+            items_seen=1 if object_id else 0,
+            updated_at=now,
         )
+        session.add(run)
         await session.flush()
         if object_id:
             session.add(
@@ -84,6 +87,7 @@ async def _library(
                     object_id=object_id,
                     parent_id="root-guard",
                     name=name,
+                    path=name,
                     is_directory=False,
                 )
             )
@@ -97,6 +101,24 @@ async def _library(
                         media_type=media_type or "movie",
                     )
                 )
+        session.add(
+            LibraryScanCheckpoint(
+                scan_run_id="scan-guard",
+                page=1,
+                items_seen=1 if object_id else 0,
+                cursor_json=json.dumps(
+                    {
+                        "version": 2,
+                        "directory_totals": {
+                            "root-guard": 1 if object_id else 0
+                        },
+                        "expected_total": 1 if object_id else 0,
+                        "pending": [],
+                        "visited": ["root-guard"],
+                    }
+                ),
+            )
+        )
         await session.commit()
 
 
@@ -140,6 +162,24 @@ async def test_root_only_scan_cannot_prove_inventory_is_complete(tmp_path):
     crypto = SecretCrypto(Fernet.generate_key().decode("ascii"))
     await _resource(database, crypto, metadata={"object_id": "remote-file"})
     await _library(database, object_id="remote-file", scan_mode="root")
+
+    result = await InventoryPushGuard(database.session_factory).check("resource-guard")
+
+    assert result.allowed is False
+    assert result.code == "inventory_index_incomplete"
+    await database.engine.dispose()
+
+
+async def test_malformed_complete_scope_blocks_inventory_push(tmp_path):
+    database = await _database(tmp_path)
+    crypto = SecretCrypto(Fernet.generate_key().decode("ascii"))
+    await _resource(database, crypto, metadata={"object_id": "remote-file"})
+    await _library(database, object_id="remote-file")
+    async with database.session_factory() as session:
+        checkpoint = await session.get(LibraryScanCheckpoint, "scan-guard")
+        assert checkpoint is not None
+        checkpoint.items_seen = 2
+        await session.commit()
 
     result = await InventoryPushGuard(database.session_factory).check("resource-guard")
 

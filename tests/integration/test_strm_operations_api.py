@@ -1,4 +1,5 @@
 import asyncio
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from secrets import token_urlsafe
@@ -12,6 +13,7 @@ from watch_assistant.app import create_app
 from watch_assistant.crypto import SecretCrypto
 from watch_assistant.db import create_database, initialize_database
 from watch_assistant.library_models import (
+    LibraryScanCheckpoint,
     LibraryScanEntry,
     LibraryScanRun,
     MediaLibrary,
@@ -60,6 +62,10 @@ async def test_strm_operations_are_visible_and_legacy_cleanup_is_preview_only(
                 state="completed",
                 complete=True,
                 snapshot_revision=1,
+                scan_mode="tree",
+                pages_read=1,
+                items_seen=1,
+                expected_total=1,
             )
         )
         await session.commit()
@@ -73,6 +79,22 @@ async def test_strm_operations_are_visible_and_legacy_cleanup_is_preview_only(
                 path="Shows/Episode.mkv",
                 is_directory=False,
                 size_bytes=10,
+            )
+        )
+        session.add(
+            LibraryScanCheckpoint(
+                scan_run_id="scan-one",
+                page=1,
+                items_seen=1,
+                cursor_json=json.dumps(
+                    {
+                        "version": 2,
+                        "directory_totals": {"1000": 1},
+                        "expected_total": 1,
+                        "pending": [],
+                        "visited": ["1000"],
+                    }
+                ),
             )
         )
         await session.commit()
@@ -257,6 +279,10 @@ async def test_strm_operations_are_visible_and_legacy_cleanup_is_preview_only(
                     state="completed",
                     complete=True,
                     snapshot_revision=2,
+                    scan_mode="tree",
+                    pages_read=1,
+                    items_seen=1,
+                    expected_total=1,
                 )
             )
             await session.flush()
@@ -270,6 +296,22 @@ async def test_strm_operations_are_visible_and_legacy_cleanup_is_preview_only(
                     path="Shows/Resumed.mkv",
                     is_directory=False,
                     size_bytes=20,
+                )
+            )
+            session.add(
+                LibraryScanCheckpoint(
+                    scan_run_id="scan-two",
+                    page=1,
+                    items_seen=1,
+                    cursor_json=json.dumps(
+                        {
+                            "version": 2,
+                            "directory_totals": {"1000": 1},
+                            "expected_total": 1,
+                            "pending": [],
+                            "visited": ["1000"],
+                        }
+                    ),
                 )
             )
             await session.commit()

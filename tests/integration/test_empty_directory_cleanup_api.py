@@ -1,4 +1,5 @@
 import asyncio
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -16,6 +17,7 @@ from watch_assistant.app import create_app
 from watch_assistant.crypto import SecretCrypto
 from watch_assistant.db import create_database, initialize_database
 from watch_assistant.library_models import (
+    LibraryScanCheckpoint,
     LibraryScanEntry,
     LibraryScanRun,
     MediaLibrary,
@@ -62,7 +64,8 @@ async def test_empty_directory_cleanup_api_is_preview_confirm_idempotent_and_rev
                 complete=True,
                 snapshot_revision=1,
                 pages_read=1,
-                items_seen=3,
+                items_seen=2,
+                expected_total=2,
                 created_at=now,
                 updated_at=now,
             )
@@ -70,15 +73,6 @@ async def test_empty_directory_cleanup_api_is_preview_confirm_idempotent_and_rev
         await session.flush()
         session.add_all(
             [
-                LibraryScanEntry(
-                    scan_run_id="scan-one",
-                    object_type="directory",
-                    object_id="100",
-                    parent_id=None,
-                    name="根目录",
-                    path="",
-                    is_directory=True,
-                ),
                 LibraryScanEntry(
                     scan_run_id="scan-one",
                     object_type="directory",
@@ -98,6 +92,22 @@ async def test_empty_directory_cleanup_api_is_preview_confirm_idempotent_and_rev
                     is_directory=True,
                 ),
             ]
+        )
+        session.add(
+            LibraryScanCheckpoint(
+                scan_run_id="scan-one",
+                page=1,
+                items_seen=2,
+                cursor_json=json.dumps(
+                    {
+                        "version": 2,
+                        "directory_totals": {"100": 1, "200": 1, "300": 0},
+                        "expected_total": 2,
+                        "pending": [],
+                        "visited": ["100", "200", "300"],
+                    }
+                ),
+            )
         )
         await session.commit()
 

@@ -1,4 +1,5 @@
 import asyncio
+import json
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -8,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from watch_assistant.db import create_database, initialize_database
 from watch_assistant.library_models import (
     EmptyDirectoryCleanupPlan,
+    LibraryScanCheckpoint,
     LibraryScanEntry,
     LibraryScanRun,
     MediaLibrary,
@@ -42,7 +44,7 @@ async def _seed(database, *, snapshot_revision=1, run_id="run-1"):
             created_at=now,
         ))
         await session.flush()
-        session.add(LibraryScanRun(
+        run = LibraryScanRun(
             id=run_id,
             library_id="library-1",
             root_directory_id="100",
@@ -51,16 +53,33 @@ async def _seed(database, *, snapshot_revision=1, run_id="run-1"):
             complete=True,
             snapshot_revision=snapshot_revision,
             pages_read=1,
-            items_seen=3,
+            items_seen=2,
+            expected_total=2,
             created_at=now,
             updated_at=now,
-        ))
+        )
+        session.add(run)
         await session.flush()
         session.add_all([
-            LibraryScanEntry(scan_run_id=run_id, object_type="directory", object_id="100", parent_id=None, name="根目录", path="", is_directory=True, size_bytes=None, modified_at=None),
             LibraryScanEntry(scan_run_id=run_id, object_type="directory", object_id="200", parent_id="100", name="受管来源", path="受管来源", is_directory=True, size_bytes=None, modified_at=None),
             LibraryScanEntry(scan_run_id=run_id, object_type="directory", object_id="300", parent_id="200", name="空目录", path="受管来源/空目录", is_directory=True, size_bytes=None, modified_at=None),
         ])
+        session.add(
+            LibraryScanCheckpoint(
+                scan_run_id=run_id,
+                page=1,
+                items_seen=2,
+                cursor_json=json.dumps(
+                    {
+                        "version": 2,
+                        "directory_totals": {"100": 1, "200": 1, "300": 0},
+                        "expected_total": 2,
+                        "pending": [],
+                        "visited": ["100", "200", "300"],
+                    }
+                ),
+            )
+        )
         await session.commit()
 
 
@@ -326,6 +345,31 @@ async def test_empty_directory_plan_rejects_newer_unsettled_scan(tmp_path):
             EmptyDirectoryCleanupPlanError, match="source_snapshot_not_current"
         ):
             await service.create_plan(
+                library_id="library-1",
+                source_scan_run_id="run-1",
+                protected_directory_ids=("200",),
+                system_created_directory_ids=("300",),
+            )
+    finally:
+        await database.engine.dispose()
+
+
+async def test_empty_directory_plan_rejects_malformed_complete_scan(tmp_path):
+    database = await _database(tmp_path)
+    try:
+        await _seed(database)
+        async with database.session_factory() as session:
+            checkpoint = await session.get(LibraryScanCheckpoint, "run-1")
+            assert checkpoint is not None
+            checkpoint.cursor_json = "{}"
+            await session.commit()
+
+        with pytest.raises(
+            EmptyDirectoryCleanupPlanError, match="source_snapshot_not_ready"
+        ):
+            await EmptyDirectoryCleanupPlanService(
+                database.session_factory
+            ).create_plan(
                 library_id="library-1",
                 source_scan_run_id="run-1",
                 protected_directory_ids=("200",),
