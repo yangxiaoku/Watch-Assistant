@@ -5,7 +5,7 @@
 | 版本 | V1.0 |
 | 状态 | 待验收 |
 | 创建日期 | 2026-07-26 |
-| 更新日期 | 2026-08-01 |
+| 更新日期 | 2026-08-03 |
 | 负责人 | 待指定 |
 | 优先级 | P0 |
 | 依赖 | REQ-004、REQ-005、统一资源模型 |
@@ -17,8 +17,14 @@
 
 ## 当前集成验收状态
 
-- 离线验收：已完成本轮集成验收，覆盖 Prowlarr 适配器契约、API Key 不回显、只读验证、分页、timeout/429/5xx 分类、来源状态退避/熔断、故障降级、跨源 BTIH 去重和安全 provenance。
-- live/生产验收：未完成；未调用真实 Prowlarr、未做生产来源对照或部署验收，因此本需求仍未上线。
+- 离线 readiness：已由 [PR #19](https://github.com/yangxiaoku/Watch-Assistant/pull/19) 和
+  [PR #29](https://github.com/yangxiaoku/Watch-Assistant/pull/29) 合入，覆盖 Prowlarr 适配器契约、API Key 不回显、
+  只读验证、分页、timeout/429/5xx 分类、来源状态退避/熔断、故障降级、跨源 BTIH 去重和安全 provenance；
+  证据见 [Prowlarr 契约测试](../../../tests/contracts/test_prowlarr_contract.py)、
+  [Prowlarr 适配器测试](../../../tests/integration/test_prowlarr_adapter.py) 和
+  [来源设置 API 测试](../../../tests/integration/test_prowlarr_settings_api.py)。
+- live/生产验收：未完成。真实来源验证当前被 Internet Archive 上游 timeout 阻断，尚无已验收的可搜索真实来源配置，
+  也未完成生产来源对照或部署验收，因此本需求仍未上线。
 
 ## 2. 背景与问题
 
