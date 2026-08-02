@@ -116,8 +116,20 @@ run_parallel_pytest_files unit-tests tests/unit 8
 run_parallel_pytest_files integration-tests tests/integration 1
 run_stage contract-tests "$PYTHON_BIN" -m pytest -q tests/contracts
 run_stage ruff "$PYTHON_BIN" -m ruff check src tests scripts
-run_stage frontend-tests npm --prefix frontend test -- --run
-run_stage frontend-build npm --prefix frontend run build
+
+if [[ -n "${WATCH_ASSISTANT_FRONTEND_PM:-}" ]]; then
+    FRONTEND_PM="$WATCH_ASSISTANT_FRONTEND_PM"
+elif command -v npm >/dev/null 2>&1; then
+    FRONTEND_PM="$(command -v npm)"
+elif command -v pnpm >/dev/null 2>&1; then
+    FRONTEND_PM="$(command -v pnpm)"
+else
+    echo "verification refused: npm or pnpm is required for frontend checks" >&2
+    exit 2
+fi
+
+run_stage frontend-tests "$FRONTEND_PM" --prefix frontend test -- --run
+run_stage frontend-build "$FRONTEND_PM" --prefix frontend run build
 
 mkdir -p "$EVIDENCE_DIR"
 cp "$TEMP_DIR"/*.log "$EVIDENCE_DIR/"
