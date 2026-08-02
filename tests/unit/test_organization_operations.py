@@ -466,13 +466,17 @@ async def test_expired_lease_recovers_after_reopening_database(tmp_path):
 
     reopened = create_database(f"sqlite+aiosqlite:///{database_path}")
     await initialize_database(reopened.engine)
-    recovered = await OrganizationOperationService(reopened.session_factory).claim(
-        operation.operation_id,
-        expected_revision=lease.revision,
-        now=now + timedelta(seconds=2),
-    )
-    assert recovered.revision == 3
-    assert recovered.lease_token != lease.lease_token
+    reopened_service = OrganizationOperationService(reopened.session_factory)
+    with pytest.raises(OrganizationOperationStateError, match="uncertain_requires_verification"):
+        await reopened_service.claim(
+            operation.operation_id,
+            expected_revision=lease.revision,
+            now=now + timedelta(seconds=2),
+        )
+    current = await reopened_service.get(operation.operation_id)
+    assert current.status is OrganizationOperationStatus.UNCERTAIN
+    assert current.revision == lease.revision + 1
+    assert current.error_code == "outcome_unknown"
     await reopened.engine.dispose()
 
 
@@ -516,33 +520,25 @@ async def test_old_lease_token_cannot_finish_after_reclaim(tmp_path):
         lease_duration=timedelta(seconds=1),
         now=now,
     )
-    reclaimed = await service.claim(
-        operation.operation_id,
-        expected_revision=lease.revision,
-        now=now + timedelta(seconds=2),
-    )
-    assert reclaimed.lease_token != lease.lease_token
+    with pytest.raises(OrganizationOperationStateError, match="uncertain_requires_verification"):
+        await service.claim(
+            operation.operation_id,
+            expected_revision=lease.revision,
+            now=now + timedelta(seconds=2),
+        )
+    current = await service.get(operation.operation_id)
+    assert current.status is OrganizationOperationStatus.UNCERTAIN
 
     with pytest.raises(OrganizationOperationLeaseUnavailable):
         await service.finish(
             operation.operation_id,
-            expected_revision=reclaimed.revision,
+            expected_revision=current.revision,
             lease_token=lease.lease_token,
             status=OrganizationOperationStatus.ORGANIZED,
             now=now + timedelta(seconds=2),
             source_directory_id="source-dir",
             target_directory_id="target-dir",
         )
-    finished = await service.finish(
-        operation.operation_id,
-        expected_revision=reclaimed.revision,
-        lease_token=reclaimed.lease_token,
-        status=OrganizationOperationStatus.ORGANIZED,
-        now=now + timedelta(seconds=2),
-        source_directory_id="source-dir",
-        target_directory_id="target-dir",
-    )
-    assert finished.status is OrganizationOperationStatus.ORGANIZED
     await database.engine.dispose()
 
 

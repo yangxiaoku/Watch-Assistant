@@ -23,6 +23,10 @@ from starlette.staticfiles import StaticFiles
 from watch_assistant.adapters.p115 import P115Adapter
 from watch_assistant.adapters.p115_c03_live_transport import p115_c03_timeout_executor
 from watch_assistant.adapters.p115_library_gateway import P115ReadOnlyDirectoryGateway
+from watch_assistant.adapters.p115_library_write_contract import (
+    OrganizationWriteCapability,
+    P115OrganizationContract,
+)
 from watch_assistant.adapters.p115_playback_contract import P115PlaybackGateway
 from watch_assistant.adapters.p115_playback_gateway import P115LivePlaybackGateway
 from watch_assistant.adapters.pansou import PanSouClient
@@ -531,6 +535,21 @@ def create_app(
                     live_enabled=True,
                     event_logger=application.state.settings_service,
                     settings_service=application.state.settings_service,
+                    organization_contract=P115OrganizationContract(
+                        verified=bool(
+                            application.state.organization_write_contract_verified
+                        ),
+                        capabilities=frozenset(
+                            {
+                                OrganizationWriteCapability.READ_SCOPE,
+                                OrganizationWriteCapability.MOVE,
+                                OrganizationWriteCapability.RENAME,
+                                OrganizationWriteCapability.RECYCLE,
+                                OrganizationWriteCapability.POSTCONDITION,
+                            }
+                        ),
+                        timeout_enforced=True,
+                    ),
                 )
                 application.state.organization_worker = worker
 

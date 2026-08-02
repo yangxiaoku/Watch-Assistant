@@ -14,6 +14,7 @@ from enum import StrEnum
 class OrganizationStepCheck(StrEnum):
     READY = "ready"
     ALREADY_APPLIED = "already_applied"
+    NOT_APPLIED = "not_applied"
     CONFLICT = "conflict"
     UNCERTAIN = "uncertain"
 
@@ -128,6 +129,31 @@ def check_after_timeout(
     return OrganizationStepCheckResult(OrganizationStepCheck.UNCERTAIN, "timeout")
 
 
+def reconcile_uncertain(
+    expectation: OrganizationStepExpectation,
+    *,
+    observed: RemoteObjectState | None,
+) -> OrganizationStepCheckResult:
+    """Resolve an uncertain write using one read-only remote observation.
+
+    The source state proves that the write was not applied and is safe to
+    expose for an explicit retry.  Any other non-target state remains
+    uncertain; the reconciler must never infer success from a partial read.
+    """
+
+    if _matches_target(expectation, observed):
+        return OrganizationStepCheckResult(OrganizationStepCheck.ALREADY_APPLIED)
+    if _matches_source(expectation, observed):
+        return OrganizationStepCheckResult(OrganizationStepCheck.NOT_APPLIED)
+    if observed is None:
+        return OrganizationStepCheckResult(
+            OrganizationStepCheck.UNCERTAIN, "reconciliation_unobserved"
+        )
+    return OrganizationStepCheckResult(
+        OrganizationStepCheck.UNCERTAIN, "reconciliation_mismatch"
+    )
+
+
 def _matches_source(
     expectation: OrganizationStepExpectation, observed: RemoteObjectState | None
 ) -> bool:
@@ -156,4 +182,5 @@ __all__ = [
     "check_after_timeout",
     "check_after_write",
     "check_before_write",
+    "reconcile_uncertain",
 ]

@@ -13,7 +13,11 @@ from watch_assistant.adapters.p115_c03_live_transport import (
     P115C03LiveTransport,
 )
 from watch_assistant.adapters.p115_library_write_contract import (
+    OrganizationWriteGate,
+    P115OrganizationContract,
+    WriteOperation,
     WriteStatus,
+    evaluate_organization_write_gate,
     prepare_move,
     prepare_recycle,
     prepare_rename,
@@ -354,6 +358,7 @@ class LiveP115OrganizationTransport:
         scope_confirmed: bool,
         timeout_seconds: float = 30.0,
         live_enabled: bool = False,
+        organization_contract: P115OrganizationContract | None = None,
     ) -> None:
         if live_enabled is not True:
             raise P115OrganizationTransportError("live_transport_disabled")
@@ -368,6 +373,8 @@ class LiveP115OrganizationTransport:
         intent_items = tuple(intents)
         managed_ids = frozenset(managed_directory_ids)
         _validate_live_scope(intent_items, managed_ids, scope_confirmed)
+        if not isinstance(organization_contract, P115OrganizationContract):
+            raise P115OrganizationTransportError("organization_contract_required")
         self._intents = {item.object_id: item for item in intent_items}
         self._targets = {
             (intent.target_parent_id, intent.target_name) for intent in intent_items
@@ -378,7 +385,10 @@ class LiveP115OrganizationTransport:
         self._c03 = P115C03LiveTransport(client, call_executor=call_executor)
         self._client = client
         self._call_executor = call_executor
+        self._organization_contract = organization_contract
         self._receipts: list[OrganizationTransportResult] = []
+        for operation in (WriteOperation.MOVE, WriteOperation.RENAME):
+            self._require_write(operation)
 
     def __repr__(self) -> str:
         return (
@@ -445,6 +455,7 @@ class LiveP115OrganizationTransport:
     async def move(
         self, object_id: str, target_parent_id: str
     ) -> OrganizationTransportResult:
+        self._require_write(WriteOperation.MOVE)
         intent = self._intent(object_id)
         if target_parent_id != intent.target_parent_id:
             raise P115OrganizationTransportError("scope_unverified")
@@ -459,6 +470,7 @@ class LiveP115OrganizationTransport:
     async def recycle(
         self, object_id: str, parent_id: str, name: str
     ) -> OrganizationTransportResult:
+        self._require_write(WriteOperation.RECYCLE)
         self._require_scope()
         if (
             _stable_id(object_id) is None
@@ -479,6 +491,7 @@ class LiveP115OrganizationTransport:
     async def rename(
         self, object_id: str, target_name: str
     ) -> OrganizationTransportResult:
+        self._require_write(WriteOperation.RENAME)
         intent = self._intent(object_id)
         if target_name != intent.target_name:
             raise P115OrganizationTransportError("scope_unverified")
@@ -501,6 +514,21 @@ class LiveP115OrganizationTransport:
     def _require_scope(self) -> None:
         if self._scope_confirmed is not True:
             raise P115OrganizationTransportError("scope_unverified")
+
+    def _require_write(self, operation: WriteOperation) -> None:
+        decision = evaluate_organization_write_gate(
+            OrganizationWriteGate(
+                write_enabled=True,
+                plan_confirmed=True,
+                scope_confirmed=self._scope_confirmed,
+                contract=self._organization_contract,
+            ),
+            operation,
+        )
+        if not decision.allowed:
+            raise P115OrganizationTransportError(
+                decision.error_code or "capability_unverified"
+            )
 
 def create_p115_organization_transport(
     *,
@@ -533,6 +561,7 @@ def create_live_p115_organization_transport(
     scope_confirmed: bool,
     timeout_seconds: float = 30.0,
     live_enabled: bool = False,
+    organization_contract: P115OrganizationContract | None = None,
 ) -> LiveP115OrganizationTransport:
     """Build a live transport only after the application opens its write gate."""
 
@@ -544,6 +573,7 @@ def create_live_p115_organization_transport(
         scope_confirmed=scope_confirmed,
         timeout_seconds=timeout_seconds,
         live_enabled=live_enabled,
+        organization_contract=organization_contract,
     )
 
 

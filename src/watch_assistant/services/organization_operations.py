@@ -8,7 +8,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import or_, select, update
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -35,6 +35,8 @@ from watch_assistant.services.workflows import sync_child_stage
 VALID_OPERATION_ERROR_CODES = frozenset(
     {
         "cancelled",
+        "capability_unverified",
+        "contract_unverified",
         "lease_lost",
         "local_failure",
         "outcome_unknown",
@@ -434,16 +436,40 @@ class OrganizationOperationService:
                 raise OrganizationOperationPrerequisiteError("plan_not_executable")
             if operation.status is OrganizationOperationStatus.UNCERTAIN:
                 raise OrganizationOperationStateError("uncertain_requires_verification")
+            if operation.status is OrganizationOperationStatus.ORGANIZING:
+                lease_expired = operation.lease_expires_at is None or (
+                    _as_utc(operation.lease_expires_at) <= current_time
+                )
+                if lease_expired:
+                    operation.status = OrganizationOperationStatus.UNCERTAIN
+                    operation.revision += 1
+                    operation.lease_token = None
+                    operation.lease_expires_at = None
+                    operation.error_code = "outcome_unknown"
+                    operation.finished_at = current_time
+                    operation.updated_at = current_time
+                    await _sync_workflow_stage(
+                        session,
+                        operation.workflow_id,
+                        status=WorkflowStageStatus.UNCERTAIN,
+                        child_id=operation.id,
+                        reason="organization_uncertain",
+                        error_code="outcome_unknown",
+                    )
+                    await session.commit()
+                    await self._audit(
+                        "organize.operation.uncertain",
+                        "整理租约已过期，操作结果待远端核对",
+                    )
+                    raise OrganizationOperationStateError(
+                        "uncertain_requires_verification"
+                    )
             if operation.status not in {
                 OrganizationOperationStatus.PLANNED,
                 OrganizationOperationStatus.ORGANIZING,
             }:
                 raise OrganizationOperationStateError("operation_is_not_claimable")
-            if (
-                operation.status is OrganizationOperationStatus.ORGANIZING
-                and operation.lease_expires_at is not None
-                and _as_utc(operation.lease_expires_at) > current_time
-            ):
+            if operation.status is OrganizationOperationStatus.ORGANIZING:
                 raise OrganizationOperationLeaseUnavailable("lease_is_active")
 
             token = uuid.uuid4().hex
@@ -453,15 +479,8 @@ class OrganizationOperationService:
                 .where(
                     OrganizationOperation.id == operation_id,
                     OrganizationOperation.revision == expected_revision,
-                    or_(
-                        OrganizationOperation.status
-                        == OrganizationOperationStatus.PLANNED,
-                        (
-                            OrganizationOperation.status
-                            == OrganizationOperationStatus.ORGANIZING
-                        )
-                        & (OrganizationOperation.lease_expires_at <= current_time),
-                    ),
+                    OrganizationOperation.status
+                    == OrganizationOperationStatus.PLANNED,
                 )
                 .values(
                     status=OrganizationOperationStatus.ORGANIZING,
@@ -662,6 +681,138 @@ class OrganizationOperationService:
             await session.commit()
             summary = _summary(operation)
         await self._audit("organize.operation.uncertain", "整理操作已标记为结果不确定")
+        return summary
+
+    async def reconcile_organized(
+        self,
+        operation_id: str,
+        *,
+        expected_revision: int,
+        source_directory_id: str,
+        target_directory_id: str,
+        directory_ids: Iterable[str] | None = None,
+        now: datetime | None = None,
+    ) -> OrganizationOperationSummary:
+        """Commit success after a read-only check proved the exact target."""
+
+        _validate_identifier(operation_id, "invalid_operation_id", maximum=40)
+        _validate_identifier(source_directory_id, "invalid_directory_id", maximum=128)
+        _validate_identifier(target_directory_id, "invalid_directory_id", maximum=128)
+        current_time = _as_utc(now or datetime.now(UTC))
+        async with self._session_factory() as session:
+            result = await session.execute(
+                update(OrganizationOperation)
+                .where(
+                    OrganizationOperation.id == operation_id,
+                    OrganizationOperation.revision == expected_revision,
+                    OrganizationOperation.status
+                    == OrganizationOperationStatus.UNCERTAIN,
+                )
+                .values(
+                    status=OrganizationOperationStatus.ORGANIZED,
+                    revision=expected_revision + 1,
+                    lease_token=None,
+                    lease_expires_at=None,
+                    error_code=None,
+                    finished_at=current_time,
+                    updated_at=current_time,
+                )
+                .execution_options(synchronize_session=False)
+            )
+            if result.rowcount != 1:
+                raise OrganizationOperationConflict("operation_revision_changed")
+            operation = await session.get(OrganizationOperation, operation_id)
+            if operation is None:
+                raise OrganizationOperationNotFound
+            try:
+                await self._outbox_service.enqueue_directory_dirty(
+                    session,
+                    operation_id=operation_id,
+                    directory_ids=(
+                        (source_directory_id, target_directory_id)
+                        if directory_ids is None
+                        else directory_ids
+                    ),
+                )
+                await self._record_history(
+                    session,
+                    operation,
+                    source_directory_id=source_directory_id,
+                    target_directory_id=target_directory_id,
+                    completed_at=current_time,
+                )
+                await _sync_workflow_stage(
+                    session,
+                    operation.workflow_id,
+                    status=WorkflowStageStatus.SUCCEEDED,
+                    child_id=operation.id,
+                    reason="organization_reconciled",
+                )
+                await session.commit()
+            except OrganizationOutboxError:
+                await session.rollback()
+                raise OrganizationOperationConflict(
+                    "outbox_persistence_failed"
+                ) from None
+            except Exception:
+                await session.rollback()
+                raise OrganizationOperationConflict(
+                    "reconciliation_persistence_failed"
+                ) from None
+            summary = _summary(operation)
+        await self._audit("organize.operation.reconciled", "整理操作已通过远端核对")
+        return summary
+
+    async def reconcile_not_applied(
+        self,
+        operation_id: str,
+        *,
+        expected_revision: int,
+        now: datetime | None = None,
+    ) -> OrganizationOperationSummary:
+        """Mark an uncertain operation retryable only after source reappears."""
+
+        _validate_identifier(operation_id, "invalid_operation_id", maximum=40)
+        current_time = _as_utc(now or datetime.now(UTC))
+        async with self._session_factory() as session:
+            result = await session.execute(
+                update(OrganizationOperation)
+                .where(
+                    OrganizationOperation.id == operation_id,
+                    OrganizationOperation.revision == expected_revision,
+                    OrganizationOperation.status
+                    == OrganizationOperationStatus.UNCERTAIN,
+                )
+                .values(
+                    status=OrganizationOperationStatus.FAILED,
+                    revision=expected_revision + 1,
+                    lease_token=None,
+                    lease_expires_at=None,
+                    error_code="remote_write_failed",
+                    finished_at=current_time,
+                    updated_at=current_time,
+                )
+                .execution_options(synchronize_session=False)
+            )
+            if result.rowcount != 1:
+                raise OrganizationOperationConflict("operation_revision_changed")
+            operation = await session.get(OrganizationOperation, operation_id)
+            if operation is None:
+                raise OrganizationOperationNotFound
+            await _sync_workflow_stage(
+                session,
+                operation.workflow_id,
+                status=WorkflowStageStatus.FAILED,
+                child_id=operation.id,
+                reason="organization_reconciled_not_applied",
+                error_code="remote_write_failed",
+            )
+            await session.commit()
+            summary = _summary(operation)
+        await self._audit(
+            "organize.operation.reconciled_not_applied",
+            "整理操作已核对为未执行，可在确认后重试",
+        )
         return summary
 
     async def complete_organized_with_dirty_events(

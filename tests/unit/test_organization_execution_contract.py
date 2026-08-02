@@ -7,6 +7,7 @@ from watch_assistant.services.organization_execution_contract import (
     check_after_timeout,
     check_after_write,
     check_before_write,
+    reconcile_uncertain,
 )
 
 
@@ -115,6 +116,22 @@ def test_timeout_is_only_resolved_by_exact_postcondition():
     )
 
 
+def test_uncertain_reconciliation_distinguishes_source_target_and_unknown():
+    expectation = _expectation()
+
+    assert reconcile_uncertain(expectation, observed=_target()).status is (
+        OrganizationStepCheck.ALREADY_APPLIED
+    )
+    assert reconcile_uncertain(expectation, observed=_source()).status is (
+        OrganizationStepCheck.NOT_APPLIED
+    )
+    assert reconcile_uncertain(expectation, observed=None).status is (
+        OrganizationStepCheck.UNCERTAIN
+    )
+    assert reconcile_uncertain(
+        expectation,
+        observed=RemoteObjectState("file-1", "other-parent", "after.mkv"),
+    ).status is OrganizationStepCheck.UNCERTAIN
 def test_diagnostics_never_render_remote_identity_or_name():
     expectation = _expectation()
     source = _source()

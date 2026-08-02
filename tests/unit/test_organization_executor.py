@@ -348,6 +348,70 @@ async def test_write_failure_stops_without_retry(
 
 
 @pytest.mark.asyncio
+async def test_uncertain_reconciliation_reads_only_and_commits_exact_target(tmp_path):
+    database = await _database(tmp_path)
+    transport = FakeOrganizationTransport(move_outcomes={"100": TimeoutError()})
+    executor, operation, lease = await _claimed_executor(database, transport)
+
+    initial = await executor.execute(
+        operation.operation_id,
+        expected_revision=lease.revision,
+        lease_token=lease.lease_token,
+    )
+    assert initial.status is OrganizationExecutionStatus.UNCERTAIN
+    summary = await OrganizationOperationService(database.session_factory).get(
+        operation.operation_id
+    )
+    transport.states["100"] = ("8000", "movie.mkv")
+    call_count = len(transport.calls)
+
+    reconciled = await executor.reconcile_uncertain(
+        operation.operation_id,
+        expected_revision=summary.revision,
+    )
+
+    assert reconciled.status is OrganizationExecutionStatus.ORGANIZED
+    assert [call[0] for call in transport.calls[call_count:]] == ["read_object"]
+    assert all(call[0] not in {"move", "rename", "recycle"} for call in transport.calls[call_count:])
+    current = await OrganizationOperationService(database.session_factory).get(
+        operation.operation_id
+    )
+    assert current.status is OrganizationOperationStatus.ORGANIZED
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_uncertain_reconciliation_marks_exact_source_retryable(tmp_path):
+    database = await _database(tmp_path)
+    transport = FakeOrganizationTransport(move_outcomes={"100": TimeoutError()})
+    executor, operation, lease = await _claimed_executor(database, transport)
+
+    await executor.execute(
+        operation.operation_id,
+        expected_revision=lease.revision,
+        lease_token=lease.lease_token,
+    )
+    summary = await OrganizationOperationService(database.session_factory).get(
+        operation.operation_id
+    )
+
+    reconciled = await executor.reconcile_uncertain(
+        operation.operation_id,
+        expected_revision=summary.revision,
+    )
+
+    assert (reconciled.status, reconciled.error_code) == (
+        OrganizationExecutionStatus.FAILED,
+        "remote_write_failed",
+    )
+    current = await OrganizationOperationService(database.session_factory).get(
+        operation.operation_id
+    )
+    assert current.status is OrganizationOperationStatus.FAILED
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_confirmed_move_then_failed_rename_is_uncertain(tmp_path: Path):
     database = await _database(tmp_path)
     transport = FakeOrganizationTransport(

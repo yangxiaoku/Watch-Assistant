@@ -11,12 +11,22 @@ from watch_assistant.adapters.p115_c03_live_transport import (
     EXPECTED_P115CLIENT_VERSION,
     p115_c03_timeout_executor,
 )
+from watch_assistant.adapters.p115_library_write_contract import (
+    OrganizationWriteGate,
+    P115OrganizationContract,
+    WriteOperation,
+    evaluate_organization_write_gate,
+)
 from watch_assistant.adapters.p115_organization_transport import (
     OrganizationObjectIntent,
     create_live_p115_organization_transport,
 )
 from watch_assistant.models import OrganizationOperationStatus
 from watch_assistant.services.organization_executor import OrganizationExecutor
+from watch_assistant.services.organization_executor import (
+    OrganizationExecutionResult,
+    OrganizationExecutionStatus,
+)
 from watch_assistant.services.organization_operations import (
     OrganizationOperationService,
     OrganizationOperationStateError,
@@ -47,6 +57,7 @@ class OrganizationWorker:
         call_executor=None,
         event_logger=None,
         settings_service=None,
+        organization_contract: P115OrganizationContract | None = None,
     ) -> None:
         if not production_root_id.isdigit() or production_root_id.startswith("0"):
             raise ValueError("invalid_production_root_id")
@@ -54,6 +65,8 @@ class OrganizationWorker:
             raise ValueError("organization_worker_requires_explicit_enablement")
         if poll_interval_seconds <= 0:
             raise ValueError("invalid_poll_interval")
+        if organization_contract is None:
+            raise ValueError("organization_contract_required")
         self._session_factory = session_factory
         self._operations = operation_service
         self._cookie_provider = cookie_provider
@@ -63,6 +76,7 @@ class OrganizationWorker:
         self._call_executor = call_executor or p115_c03_timeout_executor
         self._event_logger = event_logger
         self._settings_service = settings_service
+        self._organization_contract = organization_contract
         self._stop = asyncio.Event()
 
     async def run_once(self) -> bool:
@@ -93,6 +107,23 @@ class OrganizationWorker:
             await self._finish_failed(lease, "plan_prerequisites_changed")
             return True
 
+        gate = OrganizationWriteGate(
+            write_enabled=True,
+            plan_confirmed=True,
+            scope_confirmed=self._production_root_id in plan_scope,
+            contract=self._organization_contract,
+        )
+        required_operations = [WriteOperation.MOVE, WriteOperation.RENAME]
+        if any(step.replacement_object_id is not None for step in steps):
+            required_operations.append(WriteOperation.RECYCLE)
+        for operation in required_operations:
+            decision = evaluate_organization_write_gate(gate, operation)
+            if not decision.allowed:
+                await self._finish_failed(
+                    lease, decision.error_code or "contract_unverified"
+                )
+                return True
+
         client = await self._build_client()
         if client is None:
             await self._finish_failed(lease, "remote_write_failed")
@@ -112,6 +143,7 @@ class OrganizationWorker:
                 managed_directory_ids=plan_scope,
                 scope_confirmed=True,
                 live_enabled=True,
+                organization_contract=self._organization_contract,
             )
             executor = OrganizationExecutor(
                 self._operations,
@@ -162,6 +194,99 @@ class OrganizationWorker:
                 await asyncio.wait_for(stop.wait(), timeout=self._poll_interval_seconds)
             except TimeoutError:
                 continue
+
+    async def reconcile_once(
+        self,
+        operation_id: str,
+        *,
+        expected_revision: int,
+        cancel_event: asyncio.Event | None = None,
+    ) -> OrganizationExecutionResult:
+        """Perform only read-only remote reconciliation for one uncertain run."""
+
+        summary = await self._operations.get(operation_id)
+        if (
+            summary.status is not OrganizationOperationStatus.UNCERTAIN
+            or summary.revision != expected_revision
+        ):
+            raise OrganizationOperationStateError("uncertain_requires_verification")
+        plan_scope = await self._operations.plan_execution_scope(operation_id)
+        steps = await self._operations.load_execution_steps(operation_id)
+        if (
+            not plan_scope
+            or self._production_root_id not in plan_scope
+            or not steps
+        ):
+            return OrganizationExecutionResult(
+                operation_id,
+                OrganizationExecutionStatus.UNCERTAIN,
+                "scope_unverified",
+                0,
+                0,
+            )
+        intents = tuple(
+            OrganizationObjectIntent(
+                member.object_id,
+                member.source_parent_id,
+                member.source_name,
+                member.target_parent_id,
+                member.target_name,
+            )
+            for step in steps
+            for member in step.members
+        )
+        if len({intent.object_id for intent in intents}) != len(intents):
+            return OrganizationExecutionResult(
+                operation_id,
+                OrganizationExecutionStatus.UNCERTAIN,
+                "plan_prerequisites_changed",
+                0,
+                0,
+            )
+        client = await self._build_client()
+        if client is None:
+            return OrganizationExecutionResult(
+                operation_id,
+                OrganizationExecutionStatus.UNCERTAIN,
+                "credentials_unavailable",
+                0,
+                0,
+            )
+        try:
+            transport = create_live_p115_organization_transport(
+                client=client,
+                call_executor=self._call_executor,
+                intents=intents,
+                managed_directory_ids=plan_scope,
+                scope_confirmed=True,
+                live_enabled=True,
+                organization_contract=self._organization_contract,
+            )
+            executor = OrganizationExecutor(
+                self._operations,
+                self._session_factory,
+                transport,
+                max_transport_calls=128,
+            )
+            return await executor.reconcile_uncertain(
+                operation_id,
+                expected_revision=expected_revision,
+                cancel_event=cancel_event,
+            )
+        except asyncio.CancelledError:
+            raise
+        except OrganizationOperationStateError:
+            raise
+        except Exception:  # noqa: BLE001 - remote details stay private
+            return OrganizationExecutionResult(
+                operation_id,
+                OrganizationExecutionStatus.UNCERTAIN,
+                "outcome_unknown",
+                0,
+                0,
+            )
+        finally:
+            await _close_client(client)
 
     async def _build_client(self) -> Any | None:
         try:

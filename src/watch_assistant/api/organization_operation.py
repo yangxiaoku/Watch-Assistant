@@ -24,6 +24,7 @@ from watch_assistant.services.organization_plan import (
     OrganizationPlanError,
     OrganizationPlanService,
 )
+from watch_assistant.services.organization_worker import OrganizationWorker
 
 
 async def require_organization_execution_enabled(request: Request) -> None:
@@ -82,6 +83,22 @@ PlanServiceDependency = Annotated[
     OrganizationPlanService, Depends(_get_plan_service)
 ]
 AuthDependency = Annotated[AuthContext, Depends(require_api_auth)]
+
+
+def _get_organization_worker(request: Request) -> OrganizationWorker:
+    worker = getattr(request.app.state, "organization_worker", None)
+    if not isinstance(worker, OrganizationWorker):
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "organization_reconciliation_unavailable",
+                "message": "整理结果核对服务暂不可用",
+            },
+        )
+    return worker
+
+
+WorkerDependency = Annotated[OrganizationWorker, Depends(_get_organization_worker)]
 
 
 @router.post(
@@ -270,6 +287,29 @@ async def cancel_organization_operation(
     return _response(summary)
 
 
+@router.post(
+    "/organization-operations/{operation_id}/reconcile",
+    response_model=OrganizationOperationResponse,
+)
+async def reconcile_organization_operation(
+    operation_id: str,
+    payload: OrganizationPlanMutationRequest,
+    service: ServiceDependency,
+    worker: WorkerDependency,
+) -> OrganizationOperationResponse:
+    """核对 uncertain 结果；该路径只允许远端只读查询。"""
+
+    try:
+        await worker.reconcile_once(
+            operation_id,
+            expected_revision=payload.expected_revision,
+        )
+        summary = await service.get(operation_id)
+    except Exception as exc:  # noqa: BLE001 - map only stable local errors
+        raise _http_error(exc) from None
+    return _response(summary)
+
+
 @router.get(
     "/organization-operations/{operation_id}",
     response_model=OrganizationOperationResponse,
@@ -389,6 +429,8 @@ _MESSAGES = {
     "workflow_id_conflict": "操作已关联其他工作流",
     "operation_not_found": "操作不存在",
     "confirmation_required": "缺少操作确认",
+    "capability_unverified": "115 整理能力尚未完成契约验收",
+    "contract_unverified": "115 整理写入契约尚未验收",
     "plan_digest_required": "缺少计划摘要",
     "plan_digest_mismatch": "计划摘要已变化，请刷新后重试",
     "stale_revision": "计划版本已变化，请刷新后重试",
