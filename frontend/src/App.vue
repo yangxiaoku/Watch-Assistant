@@ -492,6 +492,11 @@ const navItems = [
   { view: "library" as const, label: "媒体库", icon: Database },
 ];
 
+const navGroups = [
+  { label: "发现", items: navItems.slice(0, 6) },
+  { label: "入库", items: navItems.slice(6) },
+];
+
 function healthCapability(
   enabled: boolean | undefined,
   reasonCode: string,
@@ -1006,7 +1011,13 @@ async function loadResources(
       reportDetailMetric(requestId, "resource_failed", "failed", { errorCode: response.error_code ?? "resource_search_failed", once: true });
       return;
     }
-    result.value = { ...result.value, warnings: response.warnings };
+    const cacheAgeSeconds = response.cache_age_seconds;
+    result.value = {
+      ...result.value,
+      warnings: response.warnings,
+      cached: cacheAgeSeconds !== null,
+      cache_age_seconds: cacheAgeSeconds,
+    };
     searchSourceNames.value = sourceNameList(response.sources ?? []);
     resourceSearchCached = response.cache_age_seconds !== null;
     reportDetailMetric(requestId, "resource_first_batch", "success", { cached: resourceSearchCached, once: true });
@@ -1495,7 +1506,7 @@ onBeforeUnmount(() => {
       <a class="brand" href="/">WATCH<span>/</span>ASSISTANT</a>
       <template v-if="authenticated">
         <nav class="primary-nav" aria-label="主导航">
-          <template v-for="item in navItems" :key="item.view"><button v-if="(item.view !== 'organization-plans' && item.view !== 'organization-history') || organizationPlanEnabled" type="button" :class="{ active: activeView === item.view && !result }" @click="selectView(item.view)"><component :is="item.icon" :size="16" />{{ item.label }}</button></template>
+          <div v-for="group in navGroups" :key="group.label" class="primary-nav-group" :aria-label="group.label"><span class="primary-nav-group-label">{{ group.label }}</span><template v-for="item in group.items" :key="item.view"><button v-if="(item.view !== 'organization-plans' && item.view !== 'organization-history') || organizationPlanEnabled" type="button" :class="{ active: activeView === item.view && !result }" @click="selectView(item.view)"><component :is="item.icon" :size="16" />{{ item.label }}</button></template></div>
         </nav>
         <form class="top-search" role="search" @submit.prevent="searchMovies"><Search :size="17" /><input v-model="searchInput" type="search" aria-label="搜索电影或电视剧" placeholder="搜索电影或电视剧" /><button type="submit" aria-label="提交搜索" title="搜索"><Search :size="17" /></button></form>
         <div class="topbar-actions" aria-label="工作流入口">
