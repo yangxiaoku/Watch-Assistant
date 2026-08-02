@@ -817,6 +817,18 @@ export class ApiClient {
     return this.request<StrmOperationResponse>(`/api/v1/strm-operations/${encodeURIComponent(operationId)}`);
   }
 
+  async cancelStrmOperation(operationId: string): Promise<StrmOperationResponse> {
+    return this.request<StrmOperationResponse>(`/api/v1/strm-operations/${encodeURIComponent(operationId)}/cancel`, {
+      method: "POST",
+    });
+  }
+
+  async resumeStrmOperation(operationId: string): Promise<StrmOperationResponse> {
+    return this.request<StrmOperationResponse>(`/api/v1/strm-operations/${encodeURIComponent(operationId)}/resume`, {
+      method: "POST",
+    });
+  }
+
   async strmOperations(libraryId: string, cursor?: string, limit = 20): Promise<StrmOperationListResponse> {
     const params = new URLSearchParams({ limit: String(limit) });
     if (cursor !== undefined) params.set("cursor", cursor);

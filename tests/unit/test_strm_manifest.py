@@ -11,12 +11,18 @@ from watch_assistant.library_models import (
     MediaLibrary,
     StrmManifestEntry,
 )
-from watch_assistant.services.strm_cleanup_plan import StrmCleanupPlanService
+from watch_assistant.services.strm_cleanup_plan import (
+    StrmCleanupPlanError,
+    StrmCleanupPlanService,
+)
 from watch_assistant.services.strm_manifest import (
     StrmManifestError,
     StrmManifestService,
 )
-from watch_assistant.services.strm_verification import StrmVerificationService
+from watch_assistant.services.strm_verification import (
+    StrmVerificationError,
+    StrmVerificationService,
+)
 
 
 async def _database(tmp_path: Path, *, include_second_video: bool = False):
@@ -623,5 +629,48 @@ async def test_cleanup_does_not_delete_user_modified_strm(tmp_path: Path):
         items, total = await service.list_current("library-strm")
         assert total == 1
         assert items[0].cloud_file_id == "100"
+    finally:
+        await database.engine.dispose()
+
+
+async def test_cleanup_and_verification_are_bound_to_managed_output_root(
+    tmp_path: Path,
+):
+    database = await _database(tmp_path)
+    allowed = tmp_path / "allowed-output"
+    outside = tmp_path / "outside-output"
+    outside.mkdir()
+    try:
+        manifest_service = StrmManifestService(database.session_factory)
+        await manifest_service.generate(
+            "library-strm",
+            source_scan_run_id="scan-strm",
+            output_root=allowed,
+            playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+        )
+        await _add_removed_episode_scan(database)
+        cleanup = StrmCleanupPlanService(
+            database.session_factory,
+            managed_output_roots=(allowed,),
+        )
+        with pytest.raises(StrmCleanupPlanError, match="strm_output_unavailable"):
+            await cleanup.create_plan(
+                library_id="library-strm",
+                source_scan_run_id="scan-strm-2",
+                output_root=outside,
+                playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+            )
+
+        verification = StrmVerificationService(
+            database.session_factory,
+            managed_output_roots=(allowed,),
+        )
+        with pytest.raises(StrmVerificationError, match="strm_output_unavailable"):
+            await verification.verify(
+                library_id="library-strm",
+                source_scan_run_id="scan-strm",
+                output_root=outside,
+                playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+            )
     finally:
         await database.engine.dispose()

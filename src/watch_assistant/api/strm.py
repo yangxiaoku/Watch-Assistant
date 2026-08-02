@@ -122,6 +122,18 @@ def _service(request: Request) -> StrmManifestService:
 ServiceDependency = Annotated[StrmManifestService, Depends(_service)]
 
 
+def _output_root(request: Request) -> Path:
+    return Path(getattr(request.app.state, "strm_output_root", "./data/strm"))
+
+
+def _cleanup_plan_service(request: Request) -> StrmCleanupPlanService:
+    root = _output_root(request)
+    return StrmCleanupPlanService(
+        request.app.state.database.session_factory,
+        managed_output_roots=(root,),
+    )
+
+
 async def _sync_workflow_stage(
     request: Request,
     workflow_id: str | None,
@@ -498,14 +510,20 @@ async def _stop_operation_heartbeat(stop: asyncio.Event, task: asyncio.Task[None
 @router.get(
     "/libraries/{library_id}/strm-manifest",
     response_model=StrmManifestListResponse,
-    dependencies=[Depends(require_strm_enabled)],
+    dependencies=[
+        Depends(require_strm_enabled),
+        Depends(require_scope("strm:read")),
+    ],
 )
 async def list_manifest(
     library_id: str,
     service: ServiceDependency,
+    context: AuthDependency,
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=50, ge=1, le=100),
 ) -> StrmManifestListResponse:
+    if not _library_allowed(context, library_id):
+        raise HTTPException(status_code=404, detail="library_not_found") from None
     try:
         items, total = await service.list_current(
             library_id, page=page, page_size=page_size
@@ -693,7 +711,10 @@ async def generate_manifest(
     payload: StrmGenerationRequest,
     service: ServiceDependency,
     request: Request,
+    context: AuthDependency,
 ) -> StrmGenerationResponse:
+    if not _library_allowed(context, library_id):
+        raise HTTPException(status_code=404, detail="library_not_found") from None
     operations, running = await _begin_operation(
         request,
         library_id=library_id,
@@ -741,7 +762,10 @@ async def incremental_manifest(
     payload: StrmGenerationRequest,
     service: ServiceDependency,
     request: Request,
+    context: AuthDependency,
 ) -> StrmGenerationResponse:
+    if not _library_allowed(context, library_id):
+        raise HTTPException(status_code=404, detail="library_not_found") from None
     operations, running = await _begin_operation(
         request,
         library_id=library_id,
@@ -787,12 +811,14 @@ async def create_cleanup_plan(
     request: Request,
     context: AuthDependency,
 ) -> StrmCleanupPlanResponse:
-    service = StrmCleanupPlanService(request.app.state.database.session_factory)
+    if not _library_allowed(context, library_id):
+        raise HTTPException(status_code=404, detail="library_not_found") from None
+    service = _cleanup_plan_service(request)
     try:
         plan = await service.create_plan(
             library_id=library_id,
             source_scan_run_id=payload.source_scan_run_id,
-            output_root=getattr(request.app.state, "strm_output_root", "./data/strm"),
+            output_root=_output_root(request),
             playback_url_prefix=getattr(
                 request.app.state,
                 "strm_playback_url_prefix",
@@ -831,7 +857,14 @@ async def apply_cleanup_plan(
 ) -> StrmCleanupPlanApplyResponse:
     if not payload.confirm:
         raise HTTPException(status_code=409, detail="confirmation_required")
-    service = StrmCleanupPlanService(request.app.state.database.session_factory)
+    service = _cleanup_plan_service(request)
+    try:
+        current_plan = await service.get_plan(plan_id)
+    except StrmCleanupPlanError as error:
+        status = 404 if error.code == "plan_not_found" else 409
+        raise HTTPException(status_code=status, detail=error.code) from None
+    if not _library_allowed(context, current_plan.library_id):
+        raise HTTPException(status_code=404, detail="plan_not_found") from None
     try:
         result = await service.apply_plan(
             plan_id=plan_id,
@@ -839,7 +872,7 @@ async def apply_cleanup_plan(
             digest=payload.digest,
             confirm=payload.confirm,
             idempotency_key=payload.idempotency_key,
-            output_root=getattr(request.app.state, "strm_output_root", "./data/strm"),
+            output_root=_output_root(request),
             playback_url_prefix=getattr(
                 request.app.state,
                 "strm_playback_url_prefix",
@@ -880,15 +913,22 @@ async def apply_cleanup_plan(
 @router.get(
     "/strm-cleanup-plans/{plan_id}",
     response_model=StrmCleanupPlanResponse,
-    dependencies=[Depends(require_strm_enabled)],
+    dependencies=[
+        Depends(require_strm_enabled),
+        Depends(require_scope("strm:read")),
+    ],
 )
-async def get_cleanup_plan(plan_id: str, request: Request) -> StrmCleanupPlanResponse:
-    service = StrmCleanupPlanService(request.app.state.database.session_factory)
+async def get_cleanup_plan(
+    plan_id: str, request: Request, context: AuthDependency
+) -> StrmCleanupPlanResponse:
+    service = _cleanup_plan_service(request)
     try:
         plan = await service.get_plan(plan_id)
     except StrmCleanupPlanError as error:
         status = 404 if error.code == "plan_not_found" else 409
         raise HTTPException(status_code=status, detail=error.code) from None
+    if not _library_allowed(context, plan.library_id):
+        raise HTTPException(status_code=404, detail="plan_not_found") from None
     return StrmCleanupPlanResponse.model_validate(plan.to_public_dict())
 
 
@@ -906,13 +946,16 @@ async def verify_manifest(
     request: Request,
     context: AuthDependency,
 ) -> StrmVerifyResponse:
+    if not _library_allowed(context, library_id):
+        raise HTTPException(status_code=404, detail="library_not_found") from None
     try:
         result = await StrmVerificationService(
-            request.app.state.database.session_factory
+            request.app.state.database.session_factory,
+            managed_output_roots=(_output_root(request),),
         ).verify(
             library_id=library_id,
             source_scan_run_id=payload.source_scan_run_id,
-            output_root=getattr(request.app.state, "strm_output_root", "./data/strm"),
+            output_root=_output_root(request),
             playback_url_prefix=getattr(
                 request.app.state,
                 "strm_playback_url_prefix",
@@ -946,17 +989,20 @@ async def cleanup_manifest(
     library_id: str,
     payload: StrmGenerationRequest,
     request: Request,
+    context: AuthDependency,
 ) -> None:
     """Keep the legacy path safe while clients migrate to plan/apply."""
 
+    if not _library_allowed(context, library_id):
+        raise HTTPException(status_code=404, detail="library_not_found") from None
     # Validate the supplied snapshot and create a reviewable plan so this
     # compatibility route never performs a retirement without confirmation.
-    service = StrmCleanupPlanService(request.app.state.database.session_factory)
+    service = _cleanup_plan_service(request)
     try:
         plan = await service.create_plan(
             library_id=library_id,
             source_scan_run_id=payload.source_scan_run_id,
-            output_root=getattr(request.app.state, "strm_output_root", "./data/strm"),
+            output_root=_output_root(request),
             playback_url_prefix=getattr(
                 request.app.state,
                 "strm_playback_url_prefix",
@@ -978,7 +1024,10 @@ async def cleanup_manifest(
 @router.api_route(
     "/strm/play/{manifest_id}",
     methods=["GET", "HEAD"],
-    dependencies=[Depends(require_strm_playback_enabled)],
+    dependencies=[
+        Depends(require_strm_playback_enabled),
+        Depends(require_scope("strm:read")),
+    ],
 )
 async def play_manifest(
     manifest_id: str,
