@@ -5,7 +5,11 @@ import pytest
 from fastapi import FastAPI
 from sqlalchemy import select
 
-from watch_assistant.adapters.p115_library import DirectoryPage, LibraryEntry, ScanState
+from watch_assistant.adapters.p115_library import (
+    DirectoryPage,
+    LibraryEntry,
+    ScanState,
+)
 from watch_assistant.app import _refresh_inventory_before_push
 from watch_assistant.db import create_database, initialize_database
 from watch_assistant.library_models import (
