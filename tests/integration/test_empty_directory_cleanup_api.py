@@ -6,12 +6,12 @@ import pytest
 from cryptography.fernet import Fernet
 from pwdlib import PasswordHash
 
-from watch_assistant.app import create_app
 from watch_assistant.adapters.p115_library_write_contract import (
     OrganizationContractEvidence,
     OrganizationWriteCapability,
     P115OrganizationContract,
 )
+from watch_assistant.app import create_app
 from watch_assistant.crypto import SecretCrypto
 from watch_assistant.db import create_database, initialize_database
 from watch_assistant.library_models import (
