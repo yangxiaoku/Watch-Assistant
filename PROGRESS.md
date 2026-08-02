@@ -4,8 +4,8 @@
 `docs/requirements/README.md` 和 `docs/requirements/BLOCKERS.md` 为准；历史计划文档只保留
 设计背景，不用未更新的 checkbox 判断发布状态。提交号以 `codex/publish-main` 为发布基线。
 
-当前 Git 发布基线：本地 `codex/publish-main` 与 `origin/codex/publish-main` 均为
-`235ccc8`（2026-08-02）。本轮只核对仓库文档和 Git 状态，未生成新的 release 包、未执行部署，
+当前 Git 发布基线：以 `origin/codex/publish-main` 当前实际解析值为准，本记录创建时已核对。
+本轮只核对仓库文档和 Git 状态，未生成新的 release 包、未执行部署，
 也未对 `192.168.6.236:8115` 做服务器只读核对；因此不能把历史更新日志中的 release 包、
 健康检查或线上开关直接当作当前生产状态。详细核对记录见
 `docs/更新日志-2026-08-02-发布基线核对.md`。生产实际版本和健康状态必须在发布前重新核对。
