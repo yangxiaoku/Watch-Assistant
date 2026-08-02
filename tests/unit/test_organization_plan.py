@@ -234,6 +234,46 @@ async def _database(tmp_path: Path):
     return database
 
 
+async def _refresh_completed_tree_evidence(database):
+    async with database.session_factory() as session:
+        run = await session.get(LibraryScanRun, SCAN_ID)
+        checkpoint = await session.get(LibraryScanCheckpoint, SCAN_ID)
+        assert run is not None
+        assert checkpoint is not None
+        entries = list(
+            (
+                await session.scalars(
+                    select(LibraryScanEntry).where(
+                        LibraryScanEntry.scan_run_id == SCAN_ID
+                    )
+                )
+            ).all()
+        )
+        directory_ids = [run.root_directory_id]
+        directory_totals = {run.root_directory_id: 0}
+        for entry in entries:
+            directory_totals[entry.parent_id] = (
+                directory_totals.get(entry.parent_id, 0) + 1
+            )
+            if entry.is_directory:
+                directory_ids.append(entry.object_id)
+                directory_totals.setdefault(entry.object_id, 0)
+        assert set(directory_totals) == set(directory_ids)
+        run.expected_total = len(entries)
+        run.items_seen = len(entries)
+        checkpoint.items_seen = len(entries)
+        checkpoint.cursor_json = json.dumps(
+            {
+                "version": 2,
+                "directory_totals": directory_totals,
+                "expected_total": len(entries),
+                "pending": [],
+                "visited": directory_ids,
+            }
+        )
+        await session.commit()
+
+
 @pytest.mark.asyncio
 async def test_plan_hash_is_stable_and_persistence_is_idempotent(tmp_path):
     database = await _database(tmp_path)
@@ -543,6 +583,7 @@ async def test_companion_group_is_complete_and_target_identity_changes_hash(tmp_
             )
         )
         await session.commit()
+    await _refresh_completed_tree_evidence(database)
     companion = OrganizationPlanCompanion(
         source=PlanSource(
             object_type="file",
@@ -606,6 +647,7 @@ async def test_executable_loader_rejects_synced_member_version_or_path_tampering
             )
         )
         await session.commit()
+    await _refresh_completed_tree_evidence(database)
     companion = OrganizationPlanCompanion(
         source=PlanSource(
             object_type="file",
