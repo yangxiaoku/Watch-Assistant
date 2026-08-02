@@ -10,6 +10,13 @@
 本计划只覆盖 REQ-001 和 REQ-002。Agent CLI 与中文结构化日志应分别依据 REQ-003、REQ-004 制定独立实施计划。
 状态：供产品、研发、测试和运维评审；不代表功能已经上线
 
+2026-08-02 文档复核：本次审查锁定 `codex/integration-20260802@2c342d9` 快照；
+该分支只代表集成进度，不代表 `codex/publish-main`、发布包或生产部署。复核期间集成 ref
+已前进到 `3afc8d3`，其 STRM manifest/cleanup 和 task worker lease 提交不在本次快照内。
+本次锁定的集成内容补强了可恢复扫描的持久范围、完整树页数/总量、游标 v2、STRM dirty operation
+租约和不确定结果
+门禁；REQ-001/REQ-002 仍按总索引和 `BLOCKERS.md` 保持“待验收”。
+
 ## 1. 项目范围说明
 
 ### 1.1 目标
@@ -34,12 +41,14 @@
 
 | 层级 | 基线 | 已确认能力 | 明确不包含 |
 |---|---|---|---|
-| Git 正式主线 | `origin/main@42939d0` | TMDB 查询/搜索/季度信息；PanSou 聚合；qB 检测；P115 磁力提交、Cookie readiness 和只读任务列表；SQLite；推送 Task 状态机；设置中心 V1；脱敏 LogStore | 持久 WebSession、资源分页、inspection auto-start、内容策略、托管凭据、115 目录整理、pickcode/直链、STRM |
-| 当前已知生产 | `5e32f5f` | 正式主线能力，加持久 WebSession、资源分页、inspection auto-start、Settings V2、内容策略和托管 TMDB/P115 凭据界面；托管值为空，P115 来源为独立配置文件或托管值 | 115 影视库整理、pickcode/直链、STRM |
-| 已验证功能分支 | `feature/integration-settings-v2@5e32f5f` | Settings V2、内容策略、业务日志、托管 TMDB/P115 凭据、共享 revision；已部署并完成生产验收；托管值仍为空，P115 来源为独立配置文件或托管值 | 不包含目录整理或 STRM |
-| 本项目拟新增 | 待开发 | 115 影视库整理、目录索引、解析/匹配/规划、STRM 全量/增量、动态播放、元数据、洗版/隔离、运营工作台 | 仍为拟新增、未开发；Phase 0 前不允许任何真实写操作 |
+| 当前发布基线 | `codex/publish-main`（发布前动态解析） | 以发布前实际提交、干净工作树、manifest、部署和健康核对为准 | 不从本计划推断当前生产提交、开关或部署状态 |
+| 本次集成审查快照 | `codex/integration-20260802@2c342d9`（2026-08-02） | 扫描范围恢复、完整性/页数门禁、游标 v2、STRM operation fencing 和 uncertain 边界已有代码与回归覆盖 | 未生成发布包；不包含生产部署或真实媒体服务器验收；后续集成提交不在本快照 |
+| 复核后集成指针 | `codex/integration-20260802@3afc8d3` | 包含后续 STRM manifest/cleanup 与 task worker lease 提交 | 未纳入本次文档分支，未作为发布或需求完成证据 |
+| 本项目当前阶段 | 需求总索引为 `REQ-001/002=待验收` | 只读索引、整理计划、受管夹具 STRM、离线安全门禁等阶段证据已具备 | 生产范围、生产媒体库、稳定播放、元数据联动和生产清理仍未验收 |
 
-实施基线：`5e32f5f` 已完成生产验收并作为当前生产基线；本项目仍只覆盖拟新增、未开发的 115 影视库整理与 STRM 能力。
+历史计划快照：原表中的 `origin/main@42939d0`、`5e32f5f` 和
+`feature/integration-settings-v2@5e32f5f` 仅描述 2026-07-26 编写计划时的基线/部署事实，
+保留用于历史追溯，不再作为当前实施或生产基线。
 
 ## 2. 架构影响分析
 
@@ -237,7 +246,7 @@ flowchart TD
 | R-09 | 大目录分页不完整 | 中/高 | page_count/total 漂移、限流 | checkpoint、complete=false、禁止删除、退避 | 索引负责人 |
 | R-10 | 本地路径穿越/symlink 逃逸 | 低/灾难 | resolve 后越根、目录被替换 | 根 allowlist、dirfd/O_NOFOLLOW、原子写、安全测试 | STRM/安全 |
 | R-11 | Cookie/token/直链泄漏 | 低/灾难 | 日志/STRM/API 扫描命中 | Secret 存储、结构化日志、URL 脱敏、构建扫描 | 全体 |
-| R-12 | 基线长期未合 main | 中/高 | 多个长期 feature 分支 | 先发布合并 5e32；每 Phase 短分支、集成门禁 | 技术负责人 |
+| R-12 | 基线长期未合 main | 中/高 | 多个长期 feature 分支 | 以最新 `codex/publish-main` 和短生命周期集成分支推进；每 Phase 保留集成门禁 | 技术负责人 |
 | R-13 | 上线后误分类累积 | 中/中 | review/恢复率上升 | 自动率限额、抽样、规则版本、批次暂停 | 产品/QA |
 | R-14 | 媒体服务器版本差异 | 中/中 | 某版本扫描/播放回归 | 固定验收版本矩阵和兼容回归环境 | QA |
 
@@ -295,9 +304,12 @@ flowchart TD
 
 ### 12.1 基线
 
-1. 先完成 `feature/integration-settings-v2@5e32f5f` 的生产验收。
-2. 将其以可审计 PR 合入 `main`，打发布 tag；禁止从当前落后的 `origin/main@42939d0` 直接开发本需求。
-3. 每个 Phase 从最新已验收 main 创建短生命周期分支和独立 worktree。
+1. 本次集成复核锁定 `codex/integration-20260802@2c342d9`；该提交不是发布基线，不能直接推断生产状态。之后的集成 ref 变化须重新审查。
+2. 发布只能从 `codex/publish-main` 的实际最新提交、干净工作树和通过的发布门禁生成；不能使用本计划中的旧提交号代替核对。
+3. 每个 Phase 从最新发布基线创建短生命周期分支和独立 worktree，合入后立即更新需求状态和证据。
+
+原 `feature/integration-settings-v2@5e32f5f` / `origin/main@42939d0` 只作为本计划的
+2026-07-26 历史前置条件保留，不再作为当前开发入口。
 
 ### 12.2 建议分支
 

@@ -5,7 +5,7 @@
 | 版本 | V1.0 |
 | 状态 | 待验收 |
 | 创建日期 | 2026-07-26 |
-| 更新日期 | 2026-07-31 |
+| 更新日期 | 2026-08-02 |
 | 负责人 | 待指定 |
 | 优先级 | P0 |
 | 依赖 | 115 只读与直链契约、REQ-001、REQ-004 |
@@ -17,7 +17,13 @@
 
 ## 当前集成验收状态
 
-- 离线验收：已完成本轮集成验收，覆盖 fake 扫描、STRM ledger、取消/恢复、keyset cursor、稳定播放入口和清理预览确认。
+- 阶段/离线与受管夹具证据：已覆盖 fake 扫描、STRM ledger、取消/恢复、keyset cursor、稳定播放
+  入口和清理预览确认；临时输出目录的结果不能替代生产媒体库、播放或媒体服务器验收。
+- 2026-08-02 集成复核（锁定快照）：不完整树扫描、持久游标/页数漂移、dirty operation 租约互斥和过期恢复
+  已补充 fail-closed 保护；对应回归见 [STRM 操作](../../../tests/unit/test_strm_operations.py)、
+  [dirty worker](../../../tests/unit/test_directory_dirty_worker.py) 和
+  [STRM API](../../../tests/integration/test_strm_operations_api.py)。复核期间集成 ref 后续新增的
+  STRM manifest/cleanup 提交不在本次快照内，不能作为本次文档的发布证据。
 - live/生产验收：未完成；未执行真实 115 直链、媒体服务器兼容性或生产部署验收，因此本需求仍未上线。
 
 ## 2. 背景与问题

@@ -12,6 +12,24 @@
 
 整理计划和受管夹具写入契约已验收；生产整理写入、永久删除和生产媒体库 STRM 联动仍未开启。
 
+## 2026-08-02 集成审查记录（未发布）
+
+本次文档复核锁定本地 `codex/integration-20260802` 的 `2c342d9` 作为审查快照。它不是
+`codex/publish-main`，也没有生成 release 包或执行部署；因此不能把本节内容当作当前生产版本。
+复核期间该集成 ref 已前进到 `3afc8d3`，其间的 `2ddcada` 和 `3afc8d3` 源代码/测试提交
+未纳入本次文档分支，也未用于提升任何需求状态或发布判断。
+
+- 最近集成提交补齐了可恢复扫描的持久目录范围、完整树扫描的页数/总量门禁和游标 v2 校验，
+  并继续在范围、断点或页数不可信时 fail-closed。
+- STRM dirty worker 和 API operation 现在共享持久租约边界；过期恢复、并发领取和未确认的整理
+  替换结果继续保持互斥或 `uncertain`，不会推断远端删除或重复写入。
+- 对应回归文件为 `tests/integration/test_library_scan_scope_recovery.py`、
+  `tests/unit/test_library_scan_operations.py`、`tests/unit/test_library_index.py`、
+  `tests/unit/test_directory_dirty_worker.py`、`tests/unit/test_strm_operations.py` 和
+  `tests/integration/test_strm_operations_api.py`。本次文档分支未新增代码或测试通过计数。
+- `3afc8d3` 之后新增的 STRM manifest/cleanup 和 task worker lease 结果仍需独立审查与门禁，
+  不在本节已核对范围内。
+
 ## 已合入当前基线
 
 - 115 受控能力：整理计划、执行、移动/重命名写入、永久删除和 STRM 播放均受独立开关与契约

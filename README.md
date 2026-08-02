@@ -171,6 +171,19 @@ npm --prefix frontend run build
 以下记录按日期保存，属于历史验收证据，不代表当前部署版本或线上开关状态。当前 Git 发布
 基线和实际部署核对结果以 `PROGRESS.md` 为准。
 
+2026-08-02（集成基线文档复核）：
+
+- 本次复核锁定 `codex/integration-20260802` 的 `2c342d9` 作为审查快照；该集成分支不是发布基线，
+  本次也未生成发布包、执行部署或进行真实 115/媒体服务器验收。
+- 复核期间集成 ref 已继续前进到 `3afc8d3`，新增的 STRM manifest/cleanup 与 task worker lease
+  提交不在本次文档分支中，也没有被当作 `codex/publish-main` 或生产完成证据。
+- 最近集成提交补强了可恢复扫描的目录范围、完整扫描和持久游标/分页门禁，以及 STRM dirty
+  操作的租约互斥和恢复边界；对应回归覆盖见
+  [扫描范围恢复测试](tests/integration/test_library_scan_scope_recovery.py)、
+  [扫描操作测试](tests/unit/test_library_scan_operations.py) 和
+  [STRM 操作测试](tests/unit/test_strm_operations.py)。这些改动只提高 fail-closed readiness，
+  不改变 REQ-001/REQ-002 的“待验收”状态。
+
 2026-07-25（后端分支）：
 
 - Python：该历史记录对应旧版外部推送链；当前版本已移除旧链路，推送只保留独立 p115 gateway。
