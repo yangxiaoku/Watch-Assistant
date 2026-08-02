@@ -173,6 +173,30 @@ def _operation_response(summary: StrmOperationSummary) -> StrmOperationResponse:
     )
 
 
+async def _operation_cancelled(
+    operations: StrmOperationService, operation_id: str
+) -> bool:
+    try:
+        return await operations.is_cancelled(operation_id)
+    except StrmOperationNotFound:
+        return True
+
+
+async def _operation_progress(
+    operations: StrmOperationService,
+    operation_id: str,
+    summary: StrmGenerationSummary,
+) -> None:
+    await operations.progress(
+        operation_id,
+        generated=summary.generated,
+        unchanged=summary.unchanged,
+        skipped=summary.skipped,
+        failed=summary.failed,
+        retired=summary.retired,
+    )
+
+
 def _library_allowed(context: AuthContext, library_id: str) -> bool:
     return (
         not context.via_bearer
@@ -439,6 +463,67 @@ async def get_strm_operation(
     return _operation_response(summary)
 
 
+@router.post(
+    "/strm-operations/{operation_id}/cancel",
+    response_model=StrmOperationResponse,
+    dependencies=[
+        Depends(require_strm_enabled),
+        Depends(require_scope("strm:write")),
+    ],
+)
+async def cancel_strm_operation(
+    operation_id: str, request: Request, context: AuthDependency
+) -> StrmOperationResponse:
+    operations = _operation_service(request)
+    try:
+        current = await operations.get(operation_id)
+    except StrmOperationNotFound:
+        raise HTTPException(status_code=404, detail="strm_operation_not_found") from None
+    except StrmOperationError as error:
+        raise HTTPException(status_code=422, detail=error.code) from None
+    if not _library_allowed(context, current.library_id):
+        raise HTTPException(status_code=404, detail="strm_operation_not_found") from None
+    try:
+        summary = await operations.cancel(operation_id)
+    except StrmOperationNotFound:
+        raise HTTPException(status_code=404, detail="strm_operation_not_found") from None
+    return _operation_response(summary)
+
+
+@router.post(
+    "/strm-operations/{operation_id}/resume",
+    response_model=StrmOperationResponse,
+    dependencies=[
+        Depends(require_strm_enabled),
+        Depends(require_scope("strm:write")),
+    ],
+)
+async def resume_strm_operation(
+    operation_id: str, request: Request, context: AuthDependency
+) -> StrmOperationResponse:
+    operations = _operation_service(request)
+    try:
+        current = await operations.get(operation_id)
+    except StrmOperationNotFound:
+        raise HTTPException(status_code=404, detail="strm_operation_not_found") from None
+    except StrmOperationError as error:
+        raise HTTPException(status_code=422, detail=error.code) from None
+    if not _library_allowed(context, current.library_id):
+        raise HTTPException(status_code=404, detail="strm_operation_not_found") from None
+    if current.kind == StrmOperationKind.CLEANUP.value:
+        raise HTTPException(status_code=409, detail="strm_operation_not_resumable")
+    if (
+        current.kind == StrmOperationKind.INCREMENTAL.value
+        and not getattr(request.app.state, "strm_incremental_enabled", False)
+    ):
+        raise HTTPException(status_code=503, detail="strm_incremental_disabled")
+    try:
+        summary = await operations.resume(operation_id)
+    except StrmOperationNotFound:
+        raise HTTPException(status_code=404, detail="strm_operation_not_found") from None
+    return _operation_response(summary)
+
+
 @router.get(
     "/libraries/{library_id}/strm-operations",
     response_model=StrmOperationListResponse,
@@ -502,6 +587,12 @@ async def generate_manifest(
                 request.app.state,
                 "strm_playback_url_prefix",
                 "http://127.0.0.1:8115/api/v1/strm/play",
+            ),
+            cancel_check=lambda: _operation_cancelled(
+                operations, running.operation_id
+            ),
+            progress_callback=lambda progress: _operation_progress(
+                operations, running.operation_id, progress
             ),
         )
         operation = await _finish_operation(
@@ -588,6 +679,12 @@ async def incremental_manifest(
                 "http://127.0.0.1:8115/api/v1/strm/play",
             ),
             retire_removed=False,
+            cancel_check=lambda: _operation_cancelled(
+                operations, running.operation_id
+            ),
+            progress_callback=lambda progress: _operation_progress(
+                operations, running.operation_id, progress
+            ),
         )
         operation = await _finish_operation(
             request,

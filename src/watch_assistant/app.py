@@ -765,7 +765,8 @@ def create_app(
                 )
             )
             application.state.strm_manifest_service = StrmManifestService(
-                runtime_database.session_factory
+                runtime_database.session_factory,
+                managed_output_roots=(application.state.strm_output_root,),
             )
             fallback_cookie_provider = CookieProvider(settings.p115_cookie_path)
             composite_cookie_provider = CompositeCookieProvider(
@@ -1511,7 +1512,8 @@ def create_app(
             event_logger=application.state.settings_service,
         )
         application.state.strm_manifest_service = StrmManifestService(
-            database.session_factory
+            database.session_factory,
+            managed_output_roots=(application.state.strm_output_root,),
         )
         application.state.strm_operation_service = StrmOperationService(
             database.session_factory

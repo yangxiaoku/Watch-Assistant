@@ -12,7 +12,10 @@ from watch_assistant.library_models import (
     StrmManifestEntry,
 )
 from watch_assistant.services.strm_cleanup_plan import StrmCleanupPlanService
-from watch_assistant.services.strm_manifest import StrmManifestService
+from watch_assistant.services.strm_manifest import (
+    StrmManifestError,
+    StrmManifestService,
+)
 from watch_assistant.services.strm_verification import StrmVerificationService
 
 
@@ -111,6 +114,96 @@ async def test_generation_is_bounded_to_complete_scan_and_idempotent(tmp_path: P
             content
             == f"http://127.0.0.1:8115/api/v1/strm/play/{items[0].manifest_id}\n"
         )
+        assert "pickcode" not in content.lower()
+        assert "token" not in content.lower()
+        assert "cookie" not in content.lower()
+    finally:
+        await database.engine.dispose()
+
+
+async def test_generation_requires_complete_current_scan(tmp_path: Path):
+    database = await _database(tmp_path)
+    try:
+        async with database.session_factory() as session:
+            session.add(
+                LibraryScanRun(
+                    id="scan-incomplete",
+                    library_id="library-strm",
+                    root_directory_id="root-strm",
+                    idempotency_key="scan-incomplete-key",
+                    state="completed",
+                    complete=False,
+                    snapshot_revision=2,
+                )
+            )
+            session.add(
+                LibraryScanRun(
+                    id="scan-current",
+                    library_id="library-strm",
+                    root_directory_id="root-strm",
+                    idempotency_key="scan-current-key",
+                    state="completed",
+                    complete=True,
+                    snapshot_revision=2,
+                )
+            )
+            await session.commit()
+
+        service = StrmManifestService(database.session_factory)
+        with pytest.raises(StrmManifestError, match="source_snapshot_not_ready"):
+            await service.generate(
+                "library-strm",
+                source_scan_run_id="scan-incomplete",
+                output_root=tmp_path / "incomplete-output",
+                playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+            )
+        with pytest.raises(StrmManifestError, match="source_snapshot_not_current"):
+            await service.generate(
+                "library-strm",
+                source_scan_run_id="scan-strm",
+                output_root=tmp_path / "stale-output",
+                playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+            )
+    finally:
+        await database.engine.dispose()
+
+
+async def test_generation_enforces_managed_root_and_rejects_symlink_path(
+    tmp_path: Path,
+):
+    database = await _database(tmp_path)
+    managed_root = tmp_path / "managed"
+    outside_root = tmp_path / "outside"
+    try:
+        service = StrmManifestService(
+            database.session_factory,
+            managed_output_roots=(managed_root,),
+        )
+        with pytest.raises(StrmManifestError, match="output_root_not_allowed"):
+            await service.generate(
+                "library-strm",
+                source_scan_run_id="scan-strm",
+                output_root=tmp_path / "outside-allowlist",
+                playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+            )
+
+        managed_root.mkdir()
+        outside_root.mkdir()
+        symlinked_directory = managed_root / "Show"
+        try:
+            symlinked_directory.symlink_to(outside_root, target_is_directory=True)
+        except OSError:
+            pytest.skip("symlink creation is unavailable in this environment")
+
+        summary = await service.generate(
+            "library-strm",
+            source_scan_run_id="scan-strm",
+            output_root=managed_root,
+            playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+        )
+        assert summary.generated == 0
+        assert summary.failed == 1
+        assert not (outside_root / "Episode.strm").exists()
     finally:
         await database.engine.dispose()
 

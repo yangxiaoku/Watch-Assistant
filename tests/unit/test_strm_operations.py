@@ -218,6 +218,10 @@ async def test_strm_timeout_and_cancelled_are_distinct_terminal_states(tmp_path:
         assert await service.recover_stale(max_age=timedelta(minutes=30), now=now) == 1
         assert (await service.get(timeout_operation.operation_id)).status == "timeout"
         assert (await service.cancel(cancelled_operation.operation_id)).status == "cancelled"
+        resumed = await service.resume(cancelled_operation.operation_id)
+        assert resumed.status == "queued"
+        restarted = await service.start(cancelled_operation.operation_id)
+        assert restarted.status == "running"
     finally:
         await database.engine.dispose()
 
