@@ -94,7 +94,10 @@ from watch_assistant.services.empty_directory_cleanup import (
     LiveP115EmptyDirectoryCleaner,
 )
 from watch_assistant.services.inspection import InspectionService, InspectionWorker
-from watch_assistant.services.inventory_push_guard import InventoryPushGuard
+from watch_assistant.services.inventory_push_guard import (
+    InventoryPushGuard,
+    InventoryRefreshEvidence,
+)
 from watch_assistant.services.library_index import LibraryIndexService
 from watch_assistant.services.library_scan_operations import (
     LibraryScanOperationService,
@@ -161,7 +164,9 @@ _STRM_OPERATION_RECOVERY_INTERVAL_SECONDS = 60.0
 _STRM_OPERATION_STALE_AFTER = timedelta(minutes=30)
 
 
-async def _refresh_inventory_before_push(application: FastAPI) -> bool:
+async def _refresh_inventory_before_push(
+    application: FastAPI,
+) -> InventoryRefreshEvidence:
     """Refresh every enabled inventory scope using read-only 115 access."""
     database = getattr(application.state, "database", None)
     provider = getattr(application.state, "organization_cookie_provider", None)
@@ -176,7 +181,11 @@ async def _refresh_inventory_before_push(application: FastAPI) -> bool:
                 "error_code": "inventory_refresh_unavailable",
             },
         )
-        return False
+        return InventoryRefreshEvidence(
+            complete=False,
+            scope_verified=False,
+            error_code="inventory_check_failed",
+        )
 
     async with database.session_factory() as session:
         libraries = list(
@@ -198,7 +207,11 @@ async def _refresh_inventory_before_push(application: FastAPI) -> bool:
                 "error_code": "inventory_scope_unconfigured",
             },
         )
-        return False
+        return InventoryRefreshEvidence(
+            complete=False,
+            scope_verified=False,
+            error_code="inventory_scope_unconfigured",
+        )
 
     await emit_event(
         event_logger,
@@ -206,6 +219,24 @@ async def _refresh_inventory_before_push(application: FastAPI) -> bool:
         fields={"total": len(libraries)},
     )
     for library in libraries:
+        if not library.scope_verified:
+            await emit_event(
+                event_logger,
+                "inventory.refresh.failed",
+                level=LoggingLevel.WARNING,
+                fields={
+                    "hidden_count": 1,
+                    "error_code": "inventory_scope_unconfigured",
+                    "complete": False,
+                    "scope_verified": False,
+                },
+            )
+            return InventoryRefreshEvidence(
+                complete=False,
+                scope_verified=False,
+                error_code="inventory_scope_unconfigured",
+                library_count=len(libraries),
+            )
         try:
             gateway = P115ReadOnlyDirectoryGateway(
                 provider,
@@ -218,7 +249,7 @@ async def _refresh_inventory_before_push(application: FastAPI) -> bool:
                 library_id=library.id,
                 root_directory_id=library.root_directory_id,
                 page_size=1,
-            ).scan(f"push-inventory-{uuid4().hex}")
+            ).scan_tree(f"push-inventory-{uuid4().hex}")
         except Exception:  # noqa: BLE001 - remote details stay private
             await emit_event(
                 event_logger,
@@ -229,7 +260,12 @@ async def _refresh_inventory_before_push(application: FastAPI) -> bool:
                     "error_code": "inventory_refresh_failed",
                 },
             )
-            return False
+            return InventoryRefreshEvidence(
+                complete=False,
+                scope_verified=False,
+                error_code="inventory_check_failed",
+                library_count=len(libraries),
+            )
         if not result.complete or result.state.value != "completed":
             await emit_event(
                 event_logger,
@@ -240,14 +276,49 @@ async def _refresh_inventory_before_push(application: FastAPI) -> bool:
                     "error_code": result.error_code or "inventory_index_incomplete",
                 },
             )
-            return False
+            return InventoryRefreshEvidence(
+                complete=False,
+                scope_verified=True,
+                error_code="inventory_index_incomplete",
+                library_count=len(libraries),
+            )
+        async with database.session_factory() as session:
+            current = await session.get(MediaLibrary, library.id)
+        if (
+            current is None
+            or not current.enabled
+            or not current.scope_verified
+            or current.root_directory_id != library.root_directory_id
+        ):
+            await emit_event(
+                event_logger,
+                "inventory.refresh.failed",
+                level=LoggingLevel.WARNING,
+                fields={
+                    "hidden_count": 1,
+                    "error_code": "inventory_scope_unconfigured",
+                    "complete": False,
+                    "scope_verified": False,
+                },
+            )
+            return InventoryRefreshEvidence(
+                complete=False,
+                scope_verified=False,
+                error_code="inventory_scope_unconfigured",
+                library_count=len(libraries),
+            )
 
     await emit_event(
         event_logger,
         "inventory.refresh.completed",
         fields={"count": len(libraries)},
     )
-    return True
+    return InventoryRefreshEvidence(
+        complete=True,
+        scope_verified=True,
+        library_count=len(libraries),
+        refreshed_count=len(libraries),
+    )
 
 
 async def _current_managed_directory_ids(

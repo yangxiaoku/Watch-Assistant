@@ -244,6 +244,24 @@ def _upgrade_library_scan_lifecycle(connection: Connection) -> None:
         )
 
 
+def _invalidate_legacy_library_scan_modes(connection: Connection) -> None:
+    """Require a fresh recursive scan after scan mode became authoritative."""
+
+    if not inspect(connection).has_table("library_scan_runs"):
+        return
+    columns = {
+        item["name"] for item in inspect(connection).get_columns("library_scan_runs")
+    }
+    if "scan_mode" in columns:
+        connection.execute(
+            text(
+                "UPDATE library_scan_runs "
+                "SET scan_mode = 'legacy' "
+                "WHERE scan_mode = 'tree'"
+            )
+        )
+
+
 def _create_organization_plan_tables(connection: Connection) -> None:
     """Create local, preview-only organization plans for legacy databases."""
 
@@ -1087,6 +1105,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration("058_prowlarr_application_settings_columns", _add_prowlarr_application_settings_columns),
     Migration("059_library_scan_lifecycle", _upgrade_library_scan_lifecycle),
     Migration("060_workflow_evidence", _create_workflow_evidence_table),
+    Migration("061_library_scan_mode_evidence", _invalidate_legacy_library_scan_modes),
 )
 
 

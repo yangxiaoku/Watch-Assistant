@@ -48,6 +48,7 @@ async def _library(
     name="New.Movie.2026.mkv",
     tmdb_id=None,
     media_type=None,
+    scan_mode="tree",
 ):
     now = captured_at or datetime.now(UTC)
     async with database.session_factory() as session:
@@ -67,6 +68,7 @@ async def _library(
                 library_id="library-guard",
                 root_directory_id="root-guard",
                 idempotency_key="scan-guard-key",
+                scan_mode=scan_mode,
                 state="completed" if complete else "failed",
                 complete=complete,
                 snapshot_revision=1 if complete else None,
@@ -130,6 +132,19 @@ async def test_incomplete_scope_blocks_and_fresh_empty_scope_allows(tmp_path):
     allowed = await guard.check("resource-guard")
     assert allowed.allowed is True
     assert allowed.code == "inventory_not_found"
+    await database.engine.dispose()
+
+
+async def test_root_only_scan_cannot_prove_inventory_is_complete(tmp_path):
+    database = await _database(tmp_path)
+    crypto = SecretCrypto(Fernet.generate_key().decode("ascii"))
+    await _resource(database, crypto, metadata={"object_id": "remote-file"})
+    await _library(database, object_id="remote-file", scan_mode="root")
+
+    result = await InventoryPushGuard(database.session_factory).check("resource-guard")
+
+    assert result.allowed is False
+    assert result.code == "inventory_index_incomplete"
     await database.engine.dispose()
 
 

@@ -19,7 +19,11 @@ from watch_assistant.schemas import (
     WorkflowStageName,
     WorkflowStageStatus,
 )
-from watch_assistant.services.inventory_push_guard import InventoryPushGuard
+from watch_assistant.services.inventory_push_guard import (
+    InventoryPushCheck,
+    InventoryPushGuard,
+    InventoryRefreshEvidence,
+)
 from watch_assistant.services.observability import EventLogger, emit_event
 from watch_assistant.services.tasks import (
     apply_remote_status,
@@ -35,6 +39,14 @@ _AUTO_REFRESH_INVENTORY_CODES = frozenset(
         "inventory_index_unknown",
     }
 )
+_INVENTORY_ERROR_MESSAGES_ZH = {
+    "inventory_scope_unconfigured": "媒体库库存范围未配置，已阻止远端提交。",
+    "inventory_index_incomplete": "媒体库库存扫描不完整，已阻止远端提交。",
+    "inventory_index_stale": "媒体库库存索引已过期，已阻止远端提交。",
+    "inventory_index_unknown": "媒体库库存状态未知，已阻止远端提交。",
+    "inventory_exact_duplicate": "媒体库已有相同资源，已阻止远端提交。",
+    "inventory_check_failed": "库存检查未完成，已阻止远端提交。",
+}
 
 
 class TaskAdapter(Protocol):
@@ -64,7 +76,9 @@ class TaskWorker:
         lease_seconds: int = 60,
         event_logger: EventLogger | None = None,
         inventory_guard: InventoryPushGuard | None = None,
-        inventory_refresh: Callable[[], Awaitable[bool]] | None = None,
+        inventory_refresh: (
+            Callable[[], Awaitable[bool | InventoryRefreshEvidence]] | None
+        ) = None,
     ) -> None:
         self._session_factory = session_factory
         self._crypto = crypto
@@ -106,8 +120,20 @@ class TaskWorker:
                     try:
                         refreshed = await self._inventory_refresh()
                     except Exception:  # noqa: BLE001 - fail closed before remote submission
+                        gate = InventoryPushCheck(False, "inventory_check_failed")
                         refreshed = False
-                    if refreshed:
+                    if isinstance(refreshed, InventoryRefreshEvidence):
+                        if refreshed.usable:
+                            try:
+                                gate = await self._inventory_guard.check(task.resource_id)
+                            except Exception:  # noqa: BLE001 - fail closed before remote submission
+                                gate = None
+                        else:
+                            gate = InventoryPushCheck(
+                                False,
+                                refreshed.error_code or "inventory_check_failed",
+                            )
+                    elif refreshed:
                         try:
                             gate = await self._inventory_guard.check(task.resource_id)
                         except Exception:  # noqa: BLE001 - fail closed before remote submission
@@ -120,7 +146,9 @@ class TaskWorker:
                         error_code=(
                             "inventory_check_failed" if gate is None else gate.code
                         ),
-                        error_message="inventory preflight blocked remote submission",
+                        error_message=_inventory_error_message(
+                            "inventory_check_failed" if gate is None else gate.code
+                        ),
                     )
                 else:
                     try:
@@ -295,3 +323,7 @@ class TaskWorker:
             task.updated_at = now
             await session.commit()
             return task.id
+def _inventory_error_message(code: str) -> str:
+    return _INVENTORY_ERROR_MESSAGES_ZH.get(
+        code, "库存检查未完成，已阻止远端提交。"
+    )
