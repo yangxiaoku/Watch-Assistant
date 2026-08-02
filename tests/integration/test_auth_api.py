@@ -28,7 +28,9 @@ class FakeTaskAdapter:
     async def save_share(self, url: str, password: str | None):
         raise AssertionError("share adapter must not run in auth tests")
 
-    async def get_status(self, remote_ref: str):
+    async def get_status_for_task(
+        self, remote_ref: str, *, target_directory_id: str | None
+    ):
         return None
 
 

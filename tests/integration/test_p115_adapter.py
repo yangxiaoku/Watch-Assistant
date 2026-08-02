@@ -5,6 +5,7 @@ import pytest
 
 from watch_assistant.adapters.p115 import INFOHASH_REMOTE_REF_PREFIX, P115Adapter
 from watch_assistant.adapters.p115_library import LibraryEntry
+from watch_assistant.adapters.p115_library_gateway import P115ReadOnlyGatewayError
 from watch_assistant.schemas import RemoteObservation, RemoteStatus
 from watch_assistant.services.p115_credentials import CookieProvider
 
@@ -92,12 +93,15 @@ class FakeP115Client:
 
 
 class FakeReadOnlyGateway:
-    def __init__(self, detail):
+    def __init__(self, detail=None, *, error=None):
         self.detail = detail
+        self.error = error
         self.file_ids = []
 
     async def get_file_detail(self, file_id):
         self.file_ids.append(file_id)
+        if self.error is not None:
+            raise self.error
         return self.detail
 
 
@@ -404,6 +408,42 @@ async def test_available_status_rejects_wrong_parent_from_readonly_detail(tmp_pa
     assert isinstance(observation, RemoteObservation)
     assert observation.status is RemoteStatus.UNCERTAIN
     assert observation.error_code == "availability_parent_mismatch"
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
+async def test_available_status_timeout_stays_uncertain_and_redacted(tmp_path):
+    provider, _path = _provider(tmp_path)
+    infohash = "c" * 40
+    fake = FakeP115Client(
+        task_response={
+            "state": True,
+            "data": [
+                {"info_hash": infohash, "status": "available", "fid": "101"}
+            ],
+        }
+    )
+    gateway = FakeReadOnlyGateway(
+        error=P115ReadOnlyGatewayError("request_timeout")
+    )
+    adapter = P115Adapter(
+        provider,
+        7,
+        client_factory=lambda _cookie: fake,
+        readonly_gateway=gateway,
+    )
+
+    observation = await adapter.get_status_for_task(
+        "infohash:" + infohash, target_directory_id="7"
+    )
+
+    assert isinstance(observation, RemoteObservation)
+    assert observation.status is RemoteStatus.UNCERTAIN
+    assert observation.error_code == "availability_observer_timeout"
+    assert observation.file_id is None
+    assert observation.parent_id is None
+    assert observation.is_directory is None
+    assert gateway.file_ids == ["101"]
     await adapter.aclose()
 
 

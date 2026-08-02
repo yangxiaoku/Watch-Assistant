@@ -74,6 +74,7 @@ _CANONICAL_TASK_STATUS = {
 _AVAILABILITY_FILE_ID_UNAVAILABLE = "availability_file_id_unavailable"
 _AVAILABILITY_PARENT_MISMATCH = "availability_parent_mismatch"
 _AVAILABILITY_OBSERVER_UNAVAILABLE = "availability_observer_unavailable"
+_AVAILABILITY_OBSERVER_TIMEOUT = "availability_observer_timeout"
 
 
 class _AuthFailure(Exception):
@@ -284,8 +285,12 @@ class P115Adapter:
             detail = await gateway.get_file_detail(file_id)
         except asyncio.CancelledError:
             raise
-        except P115ReadOnlyGatewayError:
-            return _uncertain_observation(_AVAILABILITY_OBSERVER_UNAVAILABLE)
+        except P115ReadOnlyGatewayError as error:
+            return _uncertain_observation(
+                _availability_observer_error_code(error.code)
+            )
+        except TimeoutError:
+            return _uncertain_observation(_AVAILABILITY_OBSERVER_TIMEOUT)
         except Exception:  # noqa: BLE001 - remote detail stays redacted
             return _uncertain_observation(_AVAILABILITY_OBSERVER_UNAVAILABLE)
         if (
@@ -904,6 +909,12 @@ def _stable_directory_id(value: object) -> str | None:
 
 def _uncertain_observation(error_code: str) -> RemoteObservation:
     return RemoteObservation(status=RemoteStatus.UNCERTAIN, error_code=error_code)
+
+
+def _availability_observer_error_code(error_code: object) -> str:
+    if isinstance(error_code, str) and "timeout" in error_code.casefold():
+        return _AVAILABILITY_OBSERVER_TIMEOUT
+    return _AVAILABILITY_OBSERVER_UNAVAILABLE
 
 
 def _task_status(task: Mapping[str, Any]) -> RemoteStatus:
