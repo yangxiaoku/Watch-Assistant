@@ -21,6 +21,12 @@ from watch_assistant.crypto import SecretCrypto
 from watch_assistant.models import ApplicationSettings
 from watch_assistant.services.observability import EventLogger, emit_event
 from watch_assistant.services.settings import shared_settings_mutation_lock
+from watch_assistant.services.source_health import (
+    SourceHealthState,
+    SourceHealthTracker,
+    health_message,
+    health_reason_code,
+)
 
 SETTINGS_ID = "default"
 _API_KEY = re.compile(r"^[^\x00-\x1f\x7f\r\n]{1,512}$")
@@ -70,6 +76,7 @@ class ProwlarrSettingsService:
             session_factory
         )
         self._rate_windows: dict[str, deque[datetime]] = {}
+        self._health = SourceHealthTracker()
 
     def check_rate_limit(
         self,
@@ -92,7 +99,7 @@ class ProwlarrSettingsService:
         async with self._mutation_lock, self._session_factory() as session:
             settings = await self._get_or_create(session)
             values = self._effective_values(settings)
-        return {
+        response = {
             "source": values["source"],
             "enabled": values["enabled"],
             "configured": values["configured"],
@@ -102,6 +109,8 @@ class ProwlarrSettingsService:
             "last_updated_at": values["updated_at"],
             "revision": values["revision"],
         }
+        response.update(self._health_fields(values))
+        return response
 
     async def runtime_client(self) -> ProwlarrClient | None:
         async with self._mutation_lock, self._session_factory() as session:
@@ -144,6 +153,10 @@ class ProwlarrSettingsService:
                         commit_cancelled = True
                     next_revision = settings.revision
             runtime_cancelled = await self._apply_runtime_consistently()
+            if fields_set:
+                self._health.reset(
+                    configured=bool(self._effective_values(settings)["configured"])
+                )
         if commit_cancelled or runtime_cancelled:
             raise asyncio.CancelledError
         await emit_event(
@@ -169,6 +182,7 @@ class ProwlarrSettingsService:
                     commit_cancelled = True
                 next_revision = settings.revision
             runtime_cancelled = await self._apply_runtime_consistently()
+            self._health.reset(configured=False)
         if commit_cancelled or runtime_cancelled:
             raise asyncio.CancelledError
         await emit_event(
@@ -187,6 +201,10 @@ class ProwlarrSettingsService:
                 "base_url": snapshot["base_url"],
                 "message_code": "prowlarr_disabled",
                 "checked_at": checked_at,
+                "state": SourceHealthState.DISABLED,
+                "message_zh": health_message(SourceHealthState.DISABLED),
+                "reason_code": "prowlarr_disabled",
+                "reason_zh": health_message(SourceHealthState.DISABLED),
             }
         if not snapshot["configured"]:
             return {
@@ -196,6 +214,10 @@ class ProwlarrSettingsService:
                 "base_url": snapshot["base_url"],
                 "message_code": "prowlarr_not_configured",
                 "checked_at": checked_at,
+                "state": SourceHealthState.NOT_CONFIGURED,
+                "message_zh": health_message(SourceHealthState.NOT_CONFIGURED),
+                "reason_code": "prowlarr_not_configured",
+                "reason_zh": health_message(SourceHealthState.NOT_CONFIGURED),
             }
         client = await self.runtime_client()
         if client is None:
@@ -207,8 +229,15 @@ class ProwlarrSettingsService:
         except ProwlarrAuthError:
             return self._verify_result(snapshot, "prowlarr_auth_required", checked_at)
         except ProwlarrInvalidResponseError:
-            return self._verify_result(snapshot, "prowlarr_invalid_response", checked_at)
-        except (TimeoutError, ProwlarrError):
+            return self._verify_result(
+                snapshot, "prowlarr_invalid_response", checked_at
+            )
+        except ProwlarrError as exc:
+            return self._verify_result(
+                snapshot, _public_error_code(exc.error_code), checked_at
+            )
+        except TimeoutError:
+            self._health.record_failure("prowlarr_timeout")
             return self._verify_result(snapshot, "prowlarr_unavailable", checked_at)
         finally:
             await client.aclose()
@@ -219,6 +248,10 @@ class ProwlarrSettingsService:
             "base_url": snapshot["base_url"],
             "message_code": None,
             "checked_at": checked_at,
+            "state": SourceHealthState.AVAILABLE,
+            "message_zh": health_message(SourceHealthState.AVAILABLE),
+            "reason_code": "prowlarr_available",
+            "reason_zh": health_message(SourceHealthState.AVAILABLE),
         }
 
     async def _apply_runtime(self) -> None:
@@ -267,7 +300,9 @@ class ProwlarrSettingsService:
             or self._environment_api_key
         )
         return {
-            "source": "managed" if managed else "environment" if environment else "none",
+            "source": (
+                "managed" if managed else "environment" if environment else "none"
+            ),
             "api_key_source": (
                 "managed"
                 if managed_key
@@ -290,12 +325,13 @@ class ProwlarrSettingsService:
             str(values["base_url"]),
             str(values["api_key"]),
             timeout=self._timeout_seconds,
+            health_tracker=self._health,
         )
 
-    @staticmethod
     def _verify_result(
-        snapshot: dict[str, object], message_code: str, checked_at: datetime
+        self, snapshot: dict[str, object], message_code: str, checked_at: datetime
     ) -> dict[str, object]:
+        health = self._health.snapshot()
         return {
             "source": "prowlarr",
             "status": "unavailable",
@@ -303,6 +339,51 @@ class ProwlarrSettingsService:
             "base_url": snapshot["base_url"],
             "message_code": message_code,
             "checked_at": checked_at,
+            "state": health.state,
+            "message_zh": health_message(health.state),
+            "retry_after_seconds": health.retry_after_seconds,
+            "reason_code": health_reason_code(health.state, health.last_error_code),
+            "reason_zh": health_message(health.state),
+        }
+
+    def _health_fields(self, values: dict[str, object]) -> dict[str, object]:
+        if not values["enabled"]:
+            state = SourceHealthState.DISABLED
+            message_code = "prowlarr_disabled"
+            checked_at = None
+            retry_after = None
+            failures = 0
+        elif not values["configured"]:
+            state = SourceHealthState.NOT_CONFIGURED
+            message_code = "prowlarr_not_configured"
+            checked_at = None
+            retry_after = None
+            failures = 0
+        else:
+            health = self._health.snapshot()
+            state = health.state
+            if state in {SourceHealthState.DISABLED, SourceHealthState.NOT_CONFIGURED}:
+                state = SourceHealthState.UNVERIFIED
+            message_code = _public_error_code(health.last_error_code)
+            checked_at = health.checked_at
+            retry_after = health.retry_after_seconds
+            failures = health.consecutive_failures
+        return {
+            "health_state": state,
+            "health_message_code": message_code,
+            "health_message_zh": health_message(state),
+            "health_reason_code": health_reason_code(
+                state,
+                self._health.snapshot().last_error_code if state not in {
+                    SourceHealthState.DISABLED,
+                    SourceHealthState.NOT_CONFIGURED,
+                }
+                else None,
+            ),
+            "health_reason_zh": health_message(state),
+            "health_checked_at": checked_at,
+            "health_retry_after_seconds": retry_after,
+            "health_consecutive_failures": failures,
         }
 
     async def _commit_uncancellable(self, session: AsyncSession) -> None:
@@ -377,3 +458,12 @@ def _as_utc(value: datetime | None) -> datetime | None:
     if value.tzinfo is None:
         return value.replace(tzinfo=UTC)
     return value.astimezone(UTC)
+
+
+def _public_error_code(error_code: str | None) -> str | None:
+    """Map internal failure classes to the existing safe API catalog."""
+    if error_code in {"prowlarr_auth_required", "prowlarr_invalid_response"}:
+        return error_code
+    if error_code:
+        return "prowlarr_unavailable"
+    return None

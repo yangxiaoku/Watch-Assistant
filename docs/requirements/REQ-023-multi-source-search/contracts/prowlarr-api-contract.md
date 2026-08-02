@@ -74,3 +74,32 @@ The currently available tests prove the mock's route, header-only request
 recording, repeated search arrays, protocol values, bare-array pagination
 boundary, Chinese error descriptors, adapter query construction, NZB filtering,
 bounded pagination, cross-source deduplication, and partial-source fallback.
+
+## Offline readiness additions
+
+The adapter now classifies only the failure classes supported by the frozen
+wire contract and `httpx` transport: `408` and transport timeouts become
+`prowlarr_timeout`, `429` becomes `prowlarr_rate_limited` (with a bounded
+numeric `Retry-After` hint), `401`/`403` become `prowlarr_auth_required`, and
+`5xx` becomes `prowlarr_server_error`.  The upstream response body is never
+copied into an exception, log event, or API response.
+
+Each configured Prowlarr client shares an in-memory source tracker with the
+settings service.  Its safe state sequence is `unverified` -> `available`, or
+`degraded`/`backoff` after a classified failure; three consecutive failures
+open a bounded local circuit.  After the retry window, exactly one probe is
+allowed.  The source-status endpoint exposes only the state, safe reason code,
+Chinese reason text, counters, and timestamps.  It does not expose the API
+key, request header, query text, response body, or retry header value.
+
+Aggregation continues to execute PanSou and Prowlarr independently.  A
+Prowlarr timeout, rate limit, server failure, or open circuit leaves successful
+PanSou candidates available and marks the result partial.  Magnet candidates
+are deduplicated only by normalized BTIH; 115 share identities remain distinct
+unless their verified share identity is equal.  Canonical candidates retain
+safe `source_observations` containing only normalized source IDs and capture
+times.  Prowlarr query text is intentionally not copied into normalized
+metadata; the existing PanSou query metadata behavior is unchanged.
+
+This remains offline readiness evidence.  No real Prowlarr host, API key,
+indexer configuration, or indexer write operation has been used or verified.
