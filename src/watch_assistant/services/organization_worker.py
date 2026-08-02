@@ -22,10 +22,10 @@ from watch_assistant.adapters.p115_organization_transport import (
     create_live_p115_organization_transport,
 )
 from watch_assistant.models import OrganizationOperationStatus
-from watch_assistant.services.organization_executor import OrganizationExecutor
 from watch_assistant.services.organization_executor import (
     OrganizationExecutionResult,
     OrganizationExecutionStatus,
+    OrganizationExecutor,
 )
 from watch_assistant.services.organization_operations import (
     OrganizationOperationService,

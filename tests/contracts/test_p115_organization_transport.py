@@ -2,6 +2,10 @@ import asyncio
 
 import pytest
 
+from watch_assistant.adapters.p115_library_write_contract import (
+    OrganizationWriteCapability,
+    P115OrganizationContract,
+)
 from watch_assistant.adapters.p115_organization_transport import (
     LiveP115OrganizationTransport,
     OfflineP115OrganizationTransport,
@@ -10,10 +14,6 @@ from watch_assistant.adapters.p115_organization_transport import (
     P115OrganizationTransportError,
     create_live_p115_organization_transport,
     create_p115_organization_transport,
-)
-from watch_assistant.adapters.p115_library_write_contract import (
-    OrganizationWriteCapability,
-    P115OrganizationContract,
 )
 from watch_assistant.services.organization_execution_contract import RemoteObjectState
 from watch_assistant.services.organization_executor import (

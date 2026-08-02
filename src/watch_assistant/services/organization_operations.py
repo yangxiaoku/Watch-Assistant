@@ -754,7 +754,7 @@ class OrganizationOperationService:
                 raise OrganizationOperationConflict(
                     "outbox_persistence_failed"
                 ) from None
-            except Exception:
+            except Exception:  # noqa: BLE001 - collapse persistence details
                 await session.rollback()
                 raise OrganizationOperationConflict(
                     "reconciliation_persistence_failed"
