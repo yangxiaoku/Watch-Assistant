@@ -12,7 +12,10 @@ from watch_assistant.library_models import (
     LibraryScanRun,
     MediaLibrary,
 )
-from watch_assistant.services.library_index import LibraryIndexService
+from watch_assistant.services.library_index import (
+    LibraryIndexError,
+    LibraryIndexService,
+)
 from watch_assistant.services.library_scan_operations import (
     LibraryScanOperationService,
     LibraryScanWorker,
@@ -85,7 +88,7 @@ async def test_active_idempotent_enqueue_does_not_steal_lease_and_expired_lease_
 ):
     database = await _database(tmp_path)
     service = LibraryScanOperationService(database.session_factory)
-    now = datetime(2026, 1, 1, tzinfo=UTC)
+    now = datetime.now(UTC)
 
     queued = await service.enqueue(LIBRARY_ID, idempotency_key="same-key")
     first_lease = await service.claim_next(
@@ -150,6 +153,54 @@ async def test_worker_failure_is_persisted_then_same_key_requeues_and_completes(
     assert completed.complete is True
     assert completed.attempts == 2
     assert gateway.calls == [1, 1, 2]
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_direct_scan_cannot_steal_failed_worker_lease_before_release(tmp_path):
+    database = await _database(tmp_path)
+    service = LibraryScanOperationService(database.session_factory)
+    gateway = _Gateway(fail_once=True)
+    queued = await service.enqueue(LIBRARY_ID, idempotency_key="failed-lease")
+    now = datetime.now(UTC)
+    old_lease = await service.claim_next(
+        owner="old-worker",
+        lease_duration=timedelta(minutes=1),
+        now=now,
+    )
+    assert old_lease is not None
+
+    old_scan = LibraryIndexService(
+        database.session_factory,
+        gateway,
+        library_id=LIBRARY_ID,
+        root_directory_id=ROOT_ID,
+        page_size=1,
+        lease_owner=old_lease.lease_owner,
+        lease_token=old_lease.lease_token,
+    )
+    failed = await old_scan.scan_tree("failed-lease")
+    assert failed.state.value == "failed"
+    assert failed.complete is False
+
+    direct = LibraryIndexService(
+        database.session_factory,
+        gateway,
+        library_id=LIBRARY_ID,
+        root_directory_id=ROOT_ID,
+        page_size=1,
+    )
+    blocked = await direct.scan_tree("failed-lease")
+
+    assert blocked.state.value == "failed"
+    assert blocked.complete is False
+    assert gateway.calls == [1]
+    async with database.session_factory() as session:
+        run = await session.get(LibraryScanRun, queued.run_id)
+    assert run is not None
+    assert run.lease_token == old_lease.lease_token
+    assert run.lease_owner == old_lease.lease_owner
+    await service.release(old_lease, error_code=failed.error_code)
     await database.engine.dispose()
 
 
@@ -311,7 +362,7 @@ async def test_cancelled_scan_cannot_overwrite_a_reclaimed_lease(tmp_path):
     database = await _database(tmp_path)
     service = LibraryScanOperationService(database.session_factory)
     queued = await service.enqueue(LIBRARY_ID, idempotency_key="reclaimed-lease")
-    now = datetime(2026, 1, 1, tzinfo=UTC)
+    now = datetime.now(UTC)
     old_lease = await service.claim_next(
         owner="old-worker",
         lease_duration=timedelta(minutes=1),
@@ -349,6 +400,8 @@ async def test_cancelled_scan_cannot_overwrite_a_reclaimed_lease(tmp_path):
         page_size=1,
         propagate_cancelled=True,
         cancel_event=lease_lost_event,
+        lease_owner=old_lease.lease_owner,
+        lease_token=old_lease.lease_token,
     )
     task = asyncio.create_task(scan.scan_tree("reclaimed-lease"))
     await gateway_started.wait()
@@ -372,4 +425,149 @@ async def test_cancelled_scan_cannot_overwrite_a_reclaimed_lease(tmp_path):
     assert run is not None
     assert run.lease_owner == "new-worker"
     assert run.lease_token == new_lease.lease_token
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_reclaimed_lease_cannot_persist_a_page_returned_late(tmp_path):
+    database = await _database(tmp_path)
+    service = LibraryScanOperationService(database.session_factory)
+    queued = await service.enqueue(LIBRARY_ID, idempotency_key="late-page")
+    now = datetime.now(UTC)
+    old_lease = await service.claim_next(
+        owner="old-worker",
+        lease_duration=timedelta(minutes=1),
+        now=now,
+    )
+    assert old_lease is not None
+    page_started = asyncio.Event()
+    return_page = asyncio.Event()
+
+    class _LatePageGateway:
+        async def list_directory(
+            self, directory_id: str, *, page: int = 1, page_size=100
+        ):
+            assert directory_id == ROOT_ID
+            assert page == 1
+            assert page_size == 1
+            page_started.set()
+            await return_page.wait()
+            return DirectoryPage(
+                items=(),
+                page=1,
+                page_count=1,
+                total=0,
+                scan_complete=True,
+                state=ScanState.COMPLETE,
+                has_more=False,
+                terminal=True,
+            )
+
+    scan = LibraryIndexService(
+        database.session_factory,
+        _LatePageGateway(),
+        library_id=LIBRARY_ID,
+        root_directory_id=ROOT_ID,
+        page_size=1,
+        lease_owner=old_lease.lease_owner,
+        lease_token=old_lease.lease_token,
+    )
+    task = asyncio.create_task(scan.scan_tree("late-page"))
+    await page_started.wait()
+
+    recovery_time = now + timedelta(minutes=2)
+    assert await service.recover_expired(now=recovery_time) == 1
+    new_lease = await service.claim_next(owner="new-worker", now=recovery_time)
+    assert new_lease is not None
+    return_page.set()
+
+    with pytest.raises(LibraryIndexError, match="lease_claim_lost"):
+        await task
+
+    async with database.session_factory() as session:
+        run = await session.get(LibraryScanRun, queued.run_id)
+        count = await session.scalar(
+            select(func.count()).select_from(LibraryScanEntry)
+        )
+    assert run is not None
+    assert run.state == "running"
+    assert run.lease_token == new_lease.lease_token
+    assert run.pages_read == 0
+    assert count == 0
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_direct_scans_share_one_execution_lease(tmp_path):
+    database = await _database(tmp_path)
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    class _SlowGateway:
+        def __init__(self):
+            self.calls = 0
+
+        async def list_directory(
+            self, directory_id: str, *, page: int = 1, page_size=100
+        ):
+            assert directory_id == ROOT_ID
+            assert page == 1
+            assert page_size == 1
+            self.calls += 1
+            started.set()
+            await release.wait()
+            return DirectoryPage(
+                items=(
+                    LibraryEntry(
+                        directory_id=None,
+                        file_id="1001",
+                        parent_id=ROOT_ID,
+                        name="title.mkv",
+                        is_directory=False,
+                        size_bytes=1,
+                        modified_at=None,
+                        pickcode=None,
+                        path="title.mkv",
+                    ),
+                ),
+                page=1,
+                page_count=1,
+                total=1,
+                scan_complete=True,
+                state=ScanState.COMPLETE,
+                has_more=False,
+                terminal=True,
+            )
+
+    first_gateway = _SlowGateway()
+    first = LibraryIndexService(
+        database.session_factory,
+        first_gateway,
+        library_id=LIBRARY_ID,
+        root_directory_id=ROOT_ID,
+        page_size=1,
+    )
+    second = LibraryIndexService(
+        database.session_factory,
+        first_gateway,
+        library_id=LIBRARY_ID,
+        root_directory_id=ROOT_ID,
+        page_size=1,
+    )
+    first_task = asyncio.create_task(first.scan_tree("same-direct-key"))
+    await started.wait()
+    second_result = await second.scan_tree("same-direct-key")
+    assert second_result.state.value == "running"
+    assert first_gateway.calls == 1
+
+    release.set()
+    first_result = await first_task
+    assert first_result.complete is True
+    repeated = await second.scan_tree("same-direct-key")
+    assert repeated.complete is True
+    async with database.session_factory() as session:
+        assert (
+            await session.scalar(select(func.count()).select_from(LibraryScanEntry))
+            == 1
+        )
     await database.engine.dispose()

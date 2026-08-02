@@ -378,6 +378,31 @@ async def test_out_of_scope_entry_is_rejected_before_persistence(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_parent_traversal_path_is_rejected_before_persistence(tmp_path):
+    database = await _database(tmp_path)
+
+    class _UnsafePathGateway(_ReadOnlyGateway):
+        async def list_directory(self, directory_id: str, *, page=1, page_size=100):
+            page_value = await super().list_directory(
+                directory_id, page=page, page_size=page_size
+            )
+            return replace(
+                page_value,
+                items=(replace(page_value.items[0], path="../outside.mkv"),),
+            )
+
+    result = await _service(database, _UnsafePathGateway(1)).scan("unsafe-path")
+
+    assert result.state is ScanRunState.FAILED
+    assert result.complete is False
+    assert result.error_code == "entry_path_invalid"
+    async with database.session_factory() as session:
+        count = await session.scalar(select(func.count()).select_from(LibraryScanEntry))
+    assert count == 0
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_scope_gate_rejects_unverified_library_before_gateway(tmp_path):
     database = await _database(tmp_path)
     async with database.session_factory() as session:

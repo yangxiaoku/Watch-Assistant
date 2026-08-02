@@ -396,29 +396,66 @@ class LibraryScanOperationService:
         requeue: bool = False,
     ) -> None:
         async with self._session_factory() as session:
+            current_time = datetime.now(UTC)
             run = await session.get(LibraryScanRun, lease.run_id)
             if (
                 run is None
+                or run.state
+                not in {
+                    ScanRunState.RUNNING.value,
+                    ScanRunState.FAILED.value,
+                    ScanRunState.CANCELLED.value,
+                }
                 or run.lease_owner != lease.lease_owner
                 or run.lease_token != lease.lease_token
+                or run.lease_expires_at is None
+                or _as_utc(run.lease_expires_at) <= current_time
             ):
                 return
-            run.lease_owner = None
-            run.lease_token = None
-            run.lease_expires_at = None
+            next_state = run.state
+            next_error = run.error_code
             if run.cancel_requested and not run.complete:
-                run.state = ScanRunState.CANCELLED.value
-                run.error_code = "cancelled"
+                next_state = ScanRunState.CANCELLED.value
+                next_error = "cancelled"
             elif requeue and not run.complete:
-                run.state = ScanRunState.QUEUED.value
-                run.error_code = "scan_worker_recovered"
+                next_state = ScanRunState.QUEUED.value
+                next_error = "scan_worker_recovered"
             if error_code is not None and not run.complete:
                 if run.cancel_requested:
-                    run.state = ScanRunState.CANCELLED.value
-                    run.error_code = "cancelled"
+                    next_state = ScanRunState.CANCELLED.value
+                    next_error = "cancelled"
                 else:
-                    run.state = ScanRunState.FAILED.value
-                    run.error_code = error_code
+                    next_state = ScanRunState.FAILED.value
+                    next_error = error_code
+            result = await session.execute(
+                update(LibraryScanRun)
+                .where(
+                    LibraryScanRun.id == lease.run_id,
+                    LibraryScanRun.state.in_(
+                        (
+                            ScanRunState.RUNNING.value,
+                            ScanRunState.FAILED.value,
+                            ScanRunState.CANCELLED.value,
+                        )
+                    ),
+                    LibraryScanRun.lease_owner == lease.lease_owner,
+                    LibraryScanRun.lease_token == lease.lease_token,
+                    LibraryScanRun.lease_expires_at.is_not(None),
+                    LibraryScanRun.lease_expires_at > current_time,
+                )
+                .values(
+                    state=next_state,
+                    error_code=next_error,
+                    lease_owner=None,
+                    lease_token=None,
+                    lease_expires_at=None,
+                    updated_at=current_time,
+                )
+                .execution_options(synchronize_session=False)
+            )
+            if result.rowcount != 1:
+                await session.rollback()
+                return
             await session.commit()
 
     async def renew(
@@ -558,6 +595,8 @@ class LibraryScanWorker:
             page_size=1,
             propagate_cancelled=True,
             cancel_event=lease_lost,
+            lease_owner=lease.lease_owner,
+            lease_token=lease.lease_token,
         ).scan_tree(
             lease.idempotency_key,
             max_directories=lease.max_directories,

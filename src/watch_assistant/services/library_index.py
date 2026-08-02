@@ -6,11 +6,11 @@ import asyncio
 import json
 import uuid
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import PurePosixPath
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -118,6 +118,8 @@ class LibraryIndexService:
         max_reported_changes: int = 100,
         propagate_cancelled: bool = False,
         cancel_event: asyncio.Event | None = None,
+        lease_owner: str | None = None,
+        lease_token: str | None = None,
     ) -> None:
         _validate_identity(library_id)
         _validate_identity(root_directory_id)
@@ -133,6 +135,12 @@ class LibraryIndexService:
             or not 0 <= max_reported_changes <= 1000
         ):
             raise LibraryIndexError("invalid_change_limit")
+        if (lease_owner is None) != (lease_token is None):
+            raise LibraryIndexError("invalid_lease")
+        if lease_owner is not None:
+            _validate_identity(lease_owner)
+        if lease_token is not None:
+            _validate_identity(lease_token)
         self._session_factory = session_factory
         self._gateway = gateway
         self._library_id = library_id
@@ -141,6 +149,11 @@ class LibraryIndexService:
         self._max_reported_changes = max_reported_changes
         self._propagate_cancelled = propagate_cancelled
         self._cancel_event = cancel_event
+        self._lease_owner = lease_owner
+        self._lease_token = lease_token
+        self._external_lease = lease_token is not None
+        self._execution_active = False
+        self._direct_lease_duration = timedelta(hours=1)
         # A service instance is scoped to one worker operation.  Keeping the
         # cursor here preserves the old _persist_tree_page test seam while the
         # cursor itself remains durable in LibraryScanCheckpoint.
@@ -151,6 +164,8 @@ class LibraryIndexService:
         await self._verify_scope()
         run = await self._get_or_create_run(idempotency_key, scan_mode="root")
         if run.complete and run.state == ScanRunState.COMPLETED.value:
+            return await self._result_for_run(run.id)
+        if not await self._claim_execution_lease(run.id):
             return await self._result_for_run(run.id)
         try:
             await self._mark_running(run.id)
@@ -243,6 +258,8 @@ class LibraryIndexService:
         await self._verify_scope()
         run = await self._get_or_create_run(idempotency_key, scan_mode="tree")
         if run.complete and run.state == ScanRunState.COMPLETED.value:
+            return await self._result_for_run(run.id)
+        if not await self._claim_execution_lease(run.id):
             return await self._result_for_run(run.id)
         await self._reset_tree_run(run.id)
         cursor = await self._tree_cursor_for_run(run.id)
@@ -351,6 +368,16 @@ class LibraryIndexService:
                 raise LibraryIndexError("scan_run_missing")
             if run.complete:
                 return
+            if (
+                self._lease_token is None
+                and run.state == ScanRunState.RUNNING.value
+                and run.lease_token is not None
+                and run.lease_expires_at is not None
+                and _as_utc(run.lease_expires_at) > datetime.now(UTC)
+            ):
+                return
+            self._assert_execution_lease(run)
+            await self._fence_write(session, run)
             raw_cursor = checkpoint.cursor_json
             cursor = _decode_tree_cursor(raw_cursor)
             if cursor is None and raw_cursor not in {"", "{}"}:
@@ -407,6 +434,8 @@ class LibraryIndexService:
             checkpoint = await session.get(LibraryScanCheckpoint, run_id)
             if run is None or checkpoint is None:
                 raise LibraryIndexError("scan_run_missing")
+            self._assert_execution_lease(run)
+            await self._fence_write(session, run)
             seen: set[tuple[str, str]] = set()
             for entry in page.items:
                 object_type, object_id = _entry_identity(entry)
@@ -503,13 +532,89 @@ class LibraryIndexService:
                 return existing
             return run
 
-    async def _mark_running(self, run_id: str) -> None:
+    async def _claim_execution_lease(self, run_id: str) -> bool:
+        """Fence direct callers and validate the queue worker's lease.
+
+        Queue workers already own a durable lease from
+        ``LibraryScanOperationService``. Direct service callers receive a
+        short-lived local lease through the same columns, so concurrent
+        idempotent calls cannot both mutate one snapshot.
+        """
+
+        current_time = datetime.now(UTC)
         async with self._session_factory() as session:
             run = await session.get(LibraryScanRun, run_id)
             if run is None:
                 raise LibraryIndexError("scan_run_missing")
-            run.state = ScanRunState.RUNNING.value
-            run.error_code = None
+            if run.complete:
+                return False
+            if self._external_lease:
+                if not self._lease_is_current(run, current_time):
+                    raise LibraryIndexError("lease_claim_lost")
+                return True
+            if self._execution_active:
+                return False
+            self._lease_owner = None
+            self._lease_token = None
+
+            token = uuid.uuid4().hex
+            owner = "library-index"
+            expires_at = current_time + self._direct_lease_duration
+            result = await session.execute(
+                update(LibraryScanRun)
+                .where(
+                    LibraryScanRun.id == run_id,
+                    LibraryScanRun.complete.is_(False),
+                    or_(
+                        LibraryScanRun.lease_expires_at.is_(None),
+                        LibraryScanRun.lease_expires_at <= current_time,
+                    ),
+                )
+                .values(
+                    state=ScanRunState.RUNNING.value,
+                    lease_owner=owner,
+                    lease_token=token,
+                    lease_expires_at=expires_at,
+                    error_code=None,
+                    updated_at=current_time,
+                )
+                .execution_options(synchronize_session=False)
+            )
+            if result.rowcount != 1:
+                await session.rollback()
+                return False
+            await session.commit()
+        self._lease_owner = owner
+        self._lease_token = token
+        self._execution_active = True
+        return True
+
+    async def _mark_running(self, run_id: str) -> None:
+        async with self._session_factory() as session:
+            current_time = datetime.now(UTC)
+            conditions = [
+                LibraryScanRun.id == run_id,
+                LibraryScanRun.state == ScanRunState.RUNNING.value,
+                LibraryScanRun.complete.is_(False),
+            ]
+            if self._lease_token is not None:
+                conditions.extend(
+                    (
+                        LibraryScanRun.lease_token == self._lease_token,
+                        LibraryScanRun.lease_expires_at.is_not(None),
+                        LibraryScanRun.lease_expires_at > current_time,
+                    )
+                )
+                if self._lease_owner is not None:
+                    conditions.append(LibraryScanRun.lease_owner == self._lease_owner)
+            result = await session.execute(
+                update(LibraryScanRun)
+                .where(*conditions)
+                .values(error_code=None, updated_at=current_time)
+            )
+            if result.rowcount != 1:
+                await session.rollback()
+                raise LibraryIndexError("lease_claim_lost")
             await session.commit()
 
     async def _checkpoint_for_run(self, run_id: str) -> LibraryScanCheckpoint:
@@ -532,6 +637,8 @@ class LibraryIndexService:
             checkpoint = await session.get(LibraryScanCheckpoint, run_id)
             if run is None or checkpoint is None:
                 raise LibraryIndexError("scan_run_missing")
+            self._assert_execution_lease(run)
+            await self._fence_write(session, run)
             seen: set[tuple[str, str]] = set()
             for entry in page.items:
                 object_type, object_id = _entry_identity(entry)
@@ -576,10 +683,20 @@ class LibraryIndexService:
             run = await session.get(LibraryScanRun, run_id)
             if run is None:
                 raise LibraryIndexError("scan_run_missing")
+            self._assert_execution_lease(run)
+            await self._fence_write(session, run)
             run.state = state.value
             run.complete = False
             run.error_code = error_code
+            if not self._external_lease:
+                run.lease_owner = None
+                run.lease_token = None
+                run.lease_expires_at = None
             await session.commit()
+        if not self._external_lease:
+            self._lease_owner = None
+            self._lease_token = None
+            self._execution_active = False
 
     async def _complete_run(self, run_id: str) -> LibraryScanResult:
         async with self._session_factory() as session:
@@ -587,6 +704,8 @@ class LibraryIndexService:
                 run = await session.get(LibraryScanRun, run_id)
                 if run is None:
                     raise LibraryIndexError("scan_run_missing")
+                self._assert_execution_lease(run)
+                await self._fence_write(session, run)
                 if (
                     run.expected_total is not None
                     and run.items_seen != run.expected_total
@@ -716,8 +835,57 @@ class LibraryIndexService:
                     run.added_count = added_count
                     run.changed_count = changed_count
                     run.removed_count = removed_count
+                run.lease_owner = None
+                run.lease_token = None
+                run.lease_expires_at = None
             await session.commit()
+        if not self._external_lease:
+            self._lease_owner = None
+            self._lease_token = None
+            self._execution_active = False
         return await self._result_for_run(run_id)
+
+    def _assert_execution_lease(self, run: LibraryScanRun) -> None:
+        if self._lease_token is None:
+            return
+        if not self._lease_is_current(run, datetime.now(UTC)):
+            raise LibraryIndexError("lease_claim_lost")
+
+    async def _fence_write(self, session: AsyncSession, run: LibraryScanRun) -> None:
+        if self._lease_token is None:
+            return
+        current_time = datetime.now(UTC)
+        conditions = [
+            LibraryScanRun.id == run.id,
+            LibraryScanRun.state == ScanRunState.RUNNING.value,
+            LibraryScanRun.complete.is_(False),
+            LibraryScanRun.lease_token == self._lease_token,
+            LibraryScanRun.lease_expires_at.is_not(None),
+            LibraryScanRun.lease_expires_at > current_time,
+        ]
+        if self._lease_owner is not None:
+            conditions.append(LibraryScanRun.lease_owner == self._lease_owner)
+        result = await session.execute(
+            update(LibraryScanRun)
+            .where(*conditions)
+            .values(updated_at=current_time)
+            .execution_options(synchronize_session=False)
+        )
+        if result.rowcount != 1:
+            raise LibraryIndexError("lease_claim_lost")
+        await session.refresh(run)
+
+    def _lease_is_current(self, run: LibraryScanRun, current_time: datetime) -> bool:
+        if (
+            run.state != ScanRunState.RUNNING.value
+            or run.complete
+            or run.lease_token != self._lease_token
+            or run.lease_expires_at is None
+        ):
+            return False
+        if self._lease_owner is not None and run.lease_owner != self._lease_owner:
+            return False
+        return _as_utc(run.lease_expires_at) > current_time
 
     async def _result_for_run(self, run_id: str) -> LibraryScanResult:
         async with self._session_factory() as session:
@@ -935,16 +1103,24 @@ def _validate_identity(value: str) -> None:
         raise LibraryIndexError("invalid_identity")
 
 
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
 def _materialize_tree_paths(page: DirectoryPage, parent_path: str) -> DirectoryPage:
     """Fill relative paths for gateways that intentionally omit remote paths."""
 
-    items = tuple(
-        entry
-        if entry.path is not None
-        else replace(entry, path=_join_tree_path(parent_path, entry.name))
-        for entry in page.items
-    )
-    return replace(page, items=items)
+    _validate_remote_path(parent_path, allow_empty=True)
+    items = []
+    for entry in page.items:
+        if entry.path is None:
+            items.append(replace(entry, path=_join_tree_path(parent_path, entry.name)))
+        else:
+            _validate_remote_path(entry.path)
+            items.append(entry)
+    return replace(page, items=tuple(items))
 
 
 def _join_tree_path(parent_path: str, name: str) -> str:
@@ -1047,6 +1223,8 @@ def _validate_page(
     for entry in page.items:
         if entry.parent_id != root_directory_id:
             raise LibraryIndexError("entry_out_of_scope")
+        if entry.path is not None:
+            _validate_remote_path(entry.path)
         _entry_identity(entry)
     terminal = terminal_by_count or page.terminal is True or page.has_more is False
     if terminal and expected_total is not None and expected_total < 0:
@@ -1109,6 +1287,10 @@ def _decode_tree_cursor(value: str | None) -> dict[str, object] | None:
             or not _optional_nonnegative_int(total)
         ):
             return None
+        try:
+            _validate_remote_path(parent_path, allow_empty=True)
+        except LibraryIndexError:
+            return None
         normalized_pending.append(
             {
                 "directory_id": directory_id,
@@ -1129,6 +1311,19 @@ def _optional_nonnegative_int(value: object) -> bool:
     return value is None or (
         isinstance(value, int) and not isinstance(value, bool) and value >= 0
     )
+
+
+def _validate_remote_path(value: str, *, allow_empty: bool = False) -> None:
+    if (
+        not isinstance(value, str)
+        or (not value and not allow_empty)
+        or len(value) > 4096
+        or "\x00" in value
+        or "\\" in value
+        or "://" in value
+        or any(part == ".." for part in value.split("/"))
+    ):
+        raise LibraryIndexError("entry_path_invalid")
 
 
 def _advance_tree_cursor(

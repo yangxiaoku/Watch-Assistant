@@ -252,6 +252,7 @@ class OrganizationExecutor:
             )
 
         observations: list[OrganizationStepCheck] = []
+        replacement_observations: list[str] = []
         transport_calls = 0
         last_error = "outcome_unknown"
         for step in steps:
@@ -297,9 +298,57 @@ class OrganizationExecutor:
                 if result.error_code is not None:
                     last_error = result.error_code
 
+            if step.replacement_object_id is None:
+                continue
+            if _is_cancelled(cancel_event):
+                return OrganizationExecutionResult(
+                    operation_id,
+                    OrganizationExecutionStatus.UNCERTAIN,
+                    "cancelled",
+                    0,
+                    transport_calls,
+                )
+            if transport_calls >= self._max_transport_calls:
+                return OrganizationExecutionResult(
+                    operation_id,
+                    OrganizationExecutionStatus.UNCERTAIN,
+                    "rate_limited",
+                    0,
+                    transport_calls,
+                )
+            transport_calls += 1
+            try:
+                replacement = await self._transport.read_object(
+                    step.replacement_object_id
+                )
+            except asyncio.CancelledError:
+                raise
+            except TimeoutError:
+                replacement_observations.append("uncertain")
+                last_error = "timeout"
+                continue
+            except Exception:  # noqa: BLE001 - remote details stay private
+                replacement_observations.append("uncertain")
+                last_error = "outcome_unknown"
+                continue
+            if replacement is None:
+                # A missing replacement is evidence that recycle may have
+                # happened, but it cannot prove the destination was handled
+                # when the primary operation is only partially observed.
+                replacement_observations.append("removed")
+            elif (
+                replacement.object_id == step.replacement_object_id
+                and replacement.parent_id == step.replacement_parent_id
+                and replacement.name == step.replacement_name
+            ):
+                replacement_observations.append("present")
+            else:
+                replacement_observations.append("uncertain")
+                last_error = "replacement_reconciliation_unverified"
+
         if (
             all(status is OrganizationStepCheck.ALREADY_APPLIED for status in observations)
-            and not any(step.replacement_object_id is not None for step in steps)
+            and all(status == "removed" for status in replacement_observations)
         ):
             first = steps[0].members[0]
             try:
@@ -331,7 +380,10 @@ class OrganizationExecutor:
                 transport_calls,
             )
 
-        if all(status is OrganizationStepCheck.NOT_APPLIED for status in observations):
+        if (
+            all(status is OrganizationStepCheck.NOT_APPLIED for status in observations)
+            and all(status == "present" for status in replacement_observations)
+        ):
             try:
                 await self._operation_service.reconcile_not_applied(
                     operation_id,
