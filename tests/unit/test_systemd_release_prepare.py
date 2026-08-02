@@ -19,6 +19,7 @@ PREPARE_PATHS = (
     "scripts/systemd_release_prepare.py",
     "scripts/systemd_release_update.py",
     "scripts/postdeploy_release_check.py",
+    "scripts/release_manifest.py",
     "scripts/release_startup_smoke.py",
 )
 
@@ -137,6 +138,23 @@ def test_prepare_rejects_missing_and_version_mismatch(tmp_path: Path):
             required_files=PREPARE_PATHS,
         )
     assert mismatch.value.code == "version_mismatch"
+
+
+def test_prepare_rejects_missing_release_manifest_helper(tmp_path: Path):
+    allowed_root = tmp_path / "releases"
+    allowed_root.mkdir()
+    release_root, _ = _write_release(allowed_root)
+    (release_root / "scripts" / "release_manifest.py").unlink()
+
+    with pytest.raises(prepare.ReleasePrepareError) as missing:
+        prepare.prepare_release(
+            release_root,
+            FULL_COMMIT,
+            allowed_root,
+            required_files=PREPARE_PATHS,
+        )
+
+    assert missing.value.code == "required_path_missing"
 
 
 def test_prepare_rejects_root_scope_and_allowed_root_itself(tmp_path: Path):

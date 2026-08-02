@@ -21,6 +21,15 @@ if [[ "$(git rev-parse HEAD)" != "$EXPECTED_COMMIT" ]]; then
     exit 1
 fi
 
+if [[ -x "$ROOT_DIR/.venv/Scripts/python.exe" ]]; then
+    RELEASE_SMOKE_PYTHON="$ROOT_DIR/.venv/Scripts/python.exe"
+elif [[ -x "$ROOT_DIR/.venv/bin/python" ]]; then
+    RELEASE_SMOKE_PYTHON="$ROOT_DIR/.venv/bin/python"
+else
+    echo "release refused: worktree .venv Python is required for release manifest and startup smoke" >&2
+    exit 1
+fi
+
 COMMIT_HASH="${EXPECTED_COMMIT:0:7}"
 BRANCH_NAME="$(git branch --show-current)"
 if [[ -z "$BRANCH_NAME" ]]; then
@@ -78,38 +87,18 @@ build_time=${BUILD_TIME}
 branch=${BRANCH_NAME}
 EOF
 
-if ! command -v jq >/dev/null 2>&1; then
-    echo "release refused: jq is required to write release metadata" >&2
-    exit 1
-fi
-jq -n \
-    --arg commit "$EXPECTED_COMMIT" \
-    --arg short_commit "$COMMIT_HASH" \
-    --arg source_sha256 "$SOURCE_SHA256" \
-    --arg frontend_sha256 "$FRONTEND_SHA256" \
-    --arg build_time "$BUILD_TIME" \
-    --arg branch "$BRANCH_NAME" \
-    '{
-      schema_version: 2,
-      commit: $commit,
-      short_commit: $short_commit,
-      source_sha256: $source_sha256,
-      frontend_sha256: $frontend_sha256,
-      build_time: $build_time,
-      branch: $branch
-    }' > "$PACKAGE_ROOT/release-manifest.json"
+"$RELEASE_SMOKE_PYTHON" "$ROOT_DIR/scripts/release_manifest.py" write-build \
+    --output "$PACKAGE_ROOT/release-manifest.json" \
+    --commit "$EXPECTED_COMMIT" \
+    --short-commit "$COMMIT_HASH" \
+    --source-sha256 "$SOURCE_SHA256" \
+    --frontend-sha256 "$FRONTEND_SHA256" \
+    --build-time "$BUILD_TIME" \
+    --branch "$BRANCH_NAME"
 
 PACKAGE_FILE="$TEMP_DIR/$PACKAGE_NAME"
 tar -czf "$PACKAGE_FILE" -C "$TEMP_DIR" "watch-assistant-${COMMIT_HASH}"
 
-if [[ -x "$ROOT_DIR/.venv/Scripts/python.exe" ]]; then
-    RELEASE_SMOKE_PYTHON="$ROOT_DIR/.venv/Scripts/python.exe"
-elif [[ -x "$ROOT_DIR/.venv/bin/python" ]]; then
-    RELEASE_SMOKE_PYTHON="$ROOT_DIR/.venv/bin/python"
-else
-    echo "release refused: worktree .venv Python is required for startup smoke" >&2
-    exit 1
-fi
 SMOKE_DIR="$TEMP_DIR/release-smoke"
 mkdir -p "$SMOKE_DIR"
 tar -xzf "$PACKAGE_FILE" -C "$SMOKE_DIR"

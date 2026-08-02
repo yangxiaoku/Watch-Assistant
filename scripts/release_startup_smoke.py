@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import json
 import os
 import re
 import sqlite3
@@ -16,6 +15,12 @@ from pathlib import Path
 import httpx
 from cryptography.fernet import Fernet
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+from release_manifest import validate_runtime_manifest_file
+
 _REQUIRED_FILES = (
     "VERSION",
     "release-manifest.json",
@@ -23,6 +28,7 @@ _REQUIRED_FILES = (
     "src/watch_assistant/app.py",
     "src/watch_assistant/release_metadata.py",
     "scripts/release_startup_smoke.py",
+    "scripts/release_manifest.py",
     "scripts/systemd_release_update.py",
     "scripts/systemd_release_prepare.py",
     "scripts/postdeploy_release_check.py",
@@ -60,22 +66,7 @@ def _version_commit(release_root: Path) -> str:
 
 
 def _validate_manifest(release_root: Path, release: str) -> None:
-    try:
-        manifest = json.loads(
-            (release_root / "release-manifest.json").read_text(encoding="utf-8")
-        )
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise ValueError("invalid release manifest") from exc
-    if (
-        not isinstance(manifest, dict)
-        or manifest.get("schema_version") != 2
-        or manifest.get("commit") != release
-    ):
-        raise ValueError("release manifest commit mismatch")
-    for name in ("source_sha256", "frontend_sha256"):
-        value = manifest.get(name)
-        if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
-            raise ValueError("invalid release manifest hash")
+    validate_runtime_manifest_file(release_root / "release-manifest.json", release)
 
 
 def _create_legacy_database(database_path: Path, migration_ids: list[str]) -> None:
