@@ -31,8 +31,6 @@ class P115CookieResponse(BaseModel):
     source: Literal["managed", "file"]
     configured: bool
     structure_valid: bool
-    sync_status: Literal["success", "failed", "unknown"]
-    last_sync_at: datetime | None
 
 
 class P115CapabilitiesResponse(BaseModel):

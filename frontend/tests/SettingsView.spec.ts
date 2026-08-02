@@ -27,8 +27,6 @@ const p115 = {
     source: "file" as const,
     configured: true,
     structure_valid: true,
-    sync_status: "success" as const,
-    last_sync_at: "2026-07-25T02:00:00Z",
   },
   target_configured: true,
   max_concurrency: 1,

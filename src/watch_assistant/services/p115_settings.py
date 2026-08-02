@@ -15,7 +15,6 @@ from watch_assistant.services.p115_credentials import (
 )
 
 P115_COOKIE_SOURCE = "file"
-COOKIE_SYNC_STATUSES = frozenset(("success", "failed", "unknown"))
 
 
 class P115ValidationError(Exception):
@@ -44,8 +43,6 @@ class P115CookieSnapshot:
     source: str
     configured: bool
     structure_valid: bool
-    sync_status: str
-    last_sync_at: datetime | None
 
 
 @dataclass(frozen=True)
@@ -76,8 +73,6 @@ class P115SettingsService:
         max_concurrency: int,
         adapter: P115ValidationAdapter | None = None,
         cookie_path: str | Path | None = None,
-        sync_status: str | None = None,
-        last_sync_at: datetime | None = None,
         validation_limit: int = 6,
         validation_window: timedelta = timedelta(minutes=1),
         validation_timeout_seconds: float = 10,
@@ -90,16 +85,12 @@ class P115SettingsService:
             raise ValueError("validation_window must be positive")
         if validation_timeout_seconds <= 0:
             raise ValueError("validation_timeout_seconds must be positive")
-        if sync_status is not None and sync_status not in COOKIE_SYNC_STATUSES:
-            raise ValueError("sync_status is invalid")
         self._enabled = enabled
         self._cookie_provider = cookie_provider
         self._cookie_path = Path(cookie_path) if cookie_path is not None else None
         self._target_configured = target_configured
         self._max_concurrency = max_concurrency
         self._adapter = adapter
-        self._sync_status = sync_status
-        self._last_sync_at = last_sync_at
         self._validation_limit = validation_limit
         self._validation_window = validation_window
         self._validation_timeout_seconds = validation_timeout_seconds
@@ -173,7 +164,6 @@ class P115SettingsService:
         except Exception:  # noqa: BLE001 - local credential state fails closed
             structure_valid = False
         configured = configured or structure_valid
-        sync_status = self._sync_status or "unknown"
         source = (
             self._cookie_provider.source
             if isinstance(self._cookie_provider, CompositeCookieProvider)
@@ -183,8 +173,6 @@ class P115SettingsService:
             source=source,
             configured=configured,
             structure_valid=structure_valid,
-            sync_status=sync_status,
-            last_sync_at=self._last_sync_at,
         )
 
     @staticmethod

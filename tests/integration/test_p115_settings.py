@@ -102,8 +102,6 @@ async def test_get_settings_is_local_and_redacts_cookie(tmp_path):
             "source": "file",
             "configured": True,
             "structure_valid": True,
-            "sync_status": "unknown",
-            "last_sync_at": None,
         },
         "target_configured": True,
         "max_concurrency": 2,
@@ -244,27 +242,6 @@ async def test_get_settings_uses_strict_runtime_readiness(
         "magnet": expected_magnet,
         "share": False,
     }
-
-
-@pytest.mark.integration
-async def test_cookie_sync_state_requires_explicit_trusted_values(tmp_path):
-    path = tmp_path / "p115-cookie"
-    _write_cookie(path)
-    synced_at = datetime(2026, 1, 2, tzinfo=UTC)
-    service = P115SettingsService(
-        enabled=True,
-        cookie_provider=CookieProvider(path),
-        cookie_path=path,
-        target_configured=True,
-        max_concurrency=1,
-        sync_status="success",
-        last_sync_at=synced_at,
-    )
-
-    snapshot = service.snapshot(runtime_ready=True, runtime_magnet_capability=True)
-
-    assert snapshot.cookie.sync_status == "success"
-    assert snapshot.cookie.last_sync_at == synced_at
 
 
 @pytest.mark.integration

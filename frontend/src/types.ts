@@ -604,8 +604,6 @@ export interface P115SettingsResponse {
     source: "managed" | "file";
     configured: boolean;
     structure_valid: boolean;
-    sync_status: "success" | "failed" | "unknown";
-    last_sync_at: string | null;
   };
   target_configured: boolean;
   max_concurrency: number;
