@@ -26,6 +26,15 @@ if [[ -n "$(git status --porcelain --untracked-files=all)" ]]; then
     exit 1
 fi
 
+if [[ -x "$ROOT_DIR/.venv/Scripts/python.exe" ]]; then
+    RELEASE_SMOKE_PYTHON="$ROOT_DIR/.venv/Scripts/python.exe"
+elif [[ -x "$ROOT_DIR/.venv/bin/python" ]]; then
+    RELEASE_SMOKE_PYTHON="$ROOT_DIR/.venv/bin/python"
+else
+    echo "release artifact refused: worktree .venv Python is required for manifest validation and startup smoke" >&2
+    exit 1
+fi
+
 PACKAGE_NAME="$(basename "$PACKAGE_FILE")"
 SHORT_COMMIT="${EXPECTED_COMMIT:0:7}"
 PACKAGE_PATTERN="^watch-assistant-${SHORT_COMMIT}-[0-9]{8}-[0-9]{4}\.tar\.gz$"
@@ -65,6 +74,7 @@ REQUIRED_ENTRIES=(
     "$PACKAGE_ROOT/frontend/dist/index.html"
     "$PACKAGE_ROOT/src/watch_assistant/app.py"
     "$PACKAGE_ROOT/src/watch_assistant/release_metadata.py"
+    "$PACKAGE_ROOT/scripts/release_manifest.py"
     "$PACKAGE_ROOT/scripts/release_startup_smoke.py"
 )
 for required in "${REQUIRED_ENTRIES[@]}"; do
@@ -94,31 +104,8 @@ if [[ "$VERSION_COMMIT" != "$EXPECTED_COMMIT" ]]; then
     exit 1
 fi
 
-if ! command -v jq >/dev/null 2>&1; then
-    echo "release artifact refused: jq is required to verify release metadata" >&2
-    exit 1
-fi
 MANIFEST_FILE="$TEMP_DIR/$PACKAGE_ROOT/release-manifest.json"
-if ! jq -e \
-    --arg commit "$EXPECTED_COMMIT" \
-    --arg short_commit "$SHORT_COMMIT" \
-    '.schema_version == 2
-     and .commit == $commit
-     and .short_commit == $short_commit
-     and (.source_sha256 | type == "string" and test("^[0-9a-f]{64}$"))
-     and (.frontend_sha256 | type == "string" and test("^[0-9a-f]{64}$"))
-     and (.build_time | type == "string" and length > 0)' \
-    "$MANIFEST_FILE" >/dev/null; then
-    echo "release artifact refused: release manifest is invalid" >&2
-    exit 1
-fi
-
 SOURCE_SHA256="$(git archive --format=tar "$EXPECTED_COMMIT" | sha256sum | awk '{print $1}')"
-MANIFEST_SOURCE_SHA256="$(jq -r '.source_sha256' "$MANIFEST_FILE")"
-if [[ "$MANIFEST_SOURCE_SHA256" != "$SOURCE_SHA256" ]]; then
-    echo "release artifact refused: source hash does not match expected commit" >&2
-    exit 1
-fi
 
 frontend_hash() {
     local directory="$1"
@@ -133,10 +120,12 @@ frontend_hash() {
 }
 
 FRONTEND_SHA256="$(frontend_hash "$TEMP_DIR/$PACKAGE_ROOT/frontend/dist")"
-if [[ "$(jq -r '.frontend_sha256' "$MANIFEST_FILE")" != "$FRONTEND_SHA256" ]]; then
-    echo "release artifact refused: frontend hash does not match archive content" >&2
-    exit 1
-fi
+"$RELEASE_SMOKE_PYTHON" "$TEMP_DIR/$PACKAGE_ROOT/scripts/release_manifest.py" verify-build \
+    --manifest "$MANIFEST_FILE" \
+    --expected-commit "$EXPECTED_COMMIT" \
+    --expected-short-commit "$SHORT_COMMIT" \
+    --expected-source-sha256 "$SOURCE_SHA256" \
+    --expected-frontend-sha256 "$FRONTEND_SHA256"
 
 PACKAGE_SHA256="$(sha256sum "$PACKAGE_FILE" | awk '{print $1}')"
 PACKAGE_SIZE="$(stat -c '%s' "$PACKAGE_FILE")"
@@ -145,40 +134,22 @@ cp "$PACKAGE_FILE" "$OUTPUT_DIR/$PACKAGE_NAME"
 cp "$VERSION_FILE" "$OUTPUT_DIR/VERSION"
 printf '%s  %s\n' "$PACKAGE_SHA256" "$PACKAGE_NAME" > "$OUTPUT_DIR/SHA256SUMS"
 
-jq -n \
-    --arg artifact "$PACKAGE_NAME" \
-    --arg commit "$EXPECTED_COMMIT" \
-    --arg short_commit "$SHORT_COMMIT" \
-    --arg package_sha256 "$PACKAGE_SHA256" \
-    --arg package_size "$PACKAGE_SIZE" \
-    --arg source_sha256 "$SOURCE_SHA256" \
-    --arg frontend_sha256 "$FRONTEND_SHA256" \
-    --arg version "$(<"$VERSION_FILE")" \
-    '{
-      schema_version: 2,
-      artifact: $artifact,
-      commit: $commit,
-      short_commit: $short_commit,
-      package_sha256: $package_sha256,
-      package_size_bytes: ($package_size | tonumber),
-      source_sha256: $source_sha256,
-      frontend_sha256: $frontend_sha256,
-      version: $version
-    }' > "$OUTPUT_DIR/release-manifest.json"
+"$RELEASE_SMOKE_PYTHON" "$TEMP_DIR/$PACKAGE_ROOT/scripts/release_manifest.py" write-artifact \
+    --output "$OUTPUT_DIR/release-manifest.json" \
+    --artifact "$PACKAGE_NAME" \
+    --commit "$EXPECTED_COMMIT" \
+    --short-commit "$SHORT_COMMIT" \
+    --package-sha256 "$PACKAGE_SHA256" \
+    --package-size-bytes "$PACKAGE_SIZE" \
+    --source-sha256 "$SOURCE_SHA256" \
+    --frontend-sha256 "$FRONTEND_SHA256" \
+    --version-file "$VERSION_FILE"
 
 (
     cd "$OUTPUT_DIR"
     sha256sum --check SHA256SUMS
 )
 
-if [[ -x "$ROOT_DIR/.venv/Scripts/python.exe" ]]; then
-    RELEASE_SMOKE_PYTHON="$ROOT_DIR/.venv/Scripts/python.exe"
-elif [[ -x "$ROOT_DIR/.venv/bin/python" ]]; then
-    RELEASE_SMOKE_PYTHON="$ROOT_DIR/.venv/bin/python"
-else
-    echo "release artifact refused: worktree .venv Python is required for startup smoke" >&2
-    exit 1
-fi
 "$RELEASE_SMOKE_PYTHON" \
     "$TEMP_DIR/$PACKAGE_ROOT/scripts/release_startup_smoke.py" \
     --release-root "$TEMP_DIR/$PACKAGE_ROOT"
