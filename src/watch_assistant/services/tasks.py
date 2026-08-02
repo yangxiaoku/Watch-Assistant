@@ -19,11 +19,11 @@ from watch_assistant.schemas import (
 )
 from watch_assistant.services.observability import EventLogger, emit_event
 from watch_assistant.services.workflows import (
+    WorkflowConflict,
     advance_availability_from_evidence,
     link_child,
     record_evidence,
     sync_child_stage,
-    WorkflowConflict,
 )
 
 REUSABLE_STATES = (
@@ -305,7 +305,7 @@ class TaskService:
             remote_ref = task.remote_ref
         try:
             remote_status = await adapter.get_status(remote_ref)
-        except Exception as exc:  # noqa: BLE001 - remote details stay private
+        except Exception as exc:
             raise ReconciliationUnavailable("reconciliation_unavailable") from exc
         if remote_status is None:
             raise ReconciliationUnavailable("reconciliation_unavailable")

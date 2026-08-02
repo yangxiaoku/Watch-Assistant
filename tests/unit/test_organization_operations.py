@@ -52,8 +52,8 @@ from watch_assistant.services.organization_plan import (
     PlanSource,
     _entry_remote_version,
 )
-from watch_assistant.services.workflows import WorkflowService
 from watch_assistant.services.tasks import TaskService
+from watch_assistant.services.workflows import WorkflowService
 
 LIBRARY_ID = "library-1"
 ROOT_ID = "7000"

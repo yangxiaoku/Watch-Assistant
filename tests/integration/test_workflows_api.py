@@ -11,7 +11,7 @@ from watch_assistant.adapters.tmdb import TmdbClient
 from watch_assistant.app import create_app
 from watch_assistant.crypto import SecretCrypto
 from watch_assistant.db import create_database, initialize_database
-from watch_assistant.models import Resource, WorkflowStage, Task
+from watch_assistant.models import Resource, Task, WorkflowStage
 from watch_assistant.schemas import RemoteStatus, WorkflowStageStatus
 from watch_assistant.services.tasks import TaskService
 from watch_assistant.services.workflows import WorkflowService
