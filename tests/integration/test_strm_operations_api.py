@@ -177,6 +177,7 @@ async def test_strm_operations_are_visible_and_legacy_cleanup_is_preview_only(
             cancelled_history.json()["items"][0]["error_code"]
             == "strm_operation_cancelled"
         )
+        monkeypatch.undo()
 
         async with database.session_factory() as session:
             session.add(
