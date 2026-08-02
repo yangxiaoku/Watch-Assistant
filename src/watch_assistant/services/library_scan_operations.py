@@ -170,6 +170,7 @@ class LibraryScanOperationService:
                     max_directories=max_directories,
                 )
                 session.add(run)
+                await session.flush()
                 from watch_assistant.library_models import LibraryScanCheckpoint
 
                 session.add(LibraryScanCheckpoint(scan_run_id=run.id))

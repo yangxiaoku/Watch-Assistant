@@ -307,6 +307,7 @@ class LibraryIndexService:
                         terminal=terminal,
                         max_directories=max_directories,
                     )
+                    cursor = next_cursor
                     self._tree_cursors[run.id] = next_cursor
                     await self._persist_tree_page(
                         run.id, page, pages_read=pages_read + 1
