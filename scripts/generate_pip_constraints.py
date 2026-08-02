@@ -16,12 +16,12 @@ def build_constraints(lock_file: Path) -> list[str]:
     document = tomllib.loads(lock_file.read_text(encoding="utf-8"))
     packages = document.get("package")
     if not isinstance(packages, list):
-        raise ValueError("lock file has no package records")
+        raise TypeError("lock file has no package records")
 
     versions: dict[str, str] = {}
     for package in packages:
         if not isinstance(package, dict):
-            raise ValueError("lock file contains an invalid package record")
+            raise TypeError("lock file contains an invalid package record")
         name = package.get("name")
         version = package.get("version")
         if not isinstance(name, str) or not _PACKAGE_NAME.fullmatch(name):
