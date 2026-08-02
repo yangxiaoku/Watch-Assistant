@@ -13,12 +13,13 @@ if [[ ! -f "$COOKIE_PATH" ]]; then
     exit 1
 fi
 
-if [[ -x "$ROOT_DIR/.venv/bin/python" ]]; then
-    PYTHON_BIN="$ROOT_DIR/.venv/bin/python"
-elif [[ -x "$ROOT_DIR/.venv/Scripts/python.exe" ]]; then
+if [[ -x "$ROOT_DIR/.venv/Scripts/python.exe" ]]; then
     PYTHON_BIN="$ROOT_DIR/.venv/Scripts/python.exe"
+elif [[ -x "$ROOT_DIR/.venv/bin/python" ]]; then
+    PYTHON_BIN="$ROOT_DIR/.venv/bin/python"
 else
-    PYTHON_BIN="${PYTHON_BIN:-python}"
+    echo "live verification refused: worktree .venv Python is required" >&2
+    exit 2
 fi
 
 exec "$PYTHON_BIN" scripts/p115_c03_live_runner.py \

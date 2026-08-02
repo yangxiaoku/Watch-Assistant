@@ -6,7 +6,10 @@ COPY frontend/ ./
 RUN npm run build
 
 FROM python:3.12-slim AS runtime
-ARG WATCH_ASSISTANT_RELEASE=unknown
+ARG WATCH_ASSISTANT_RELEASE
+RUN test -n "$WATCH_ASSISTANT_RELEASE" \
+    && printf '%s\n' "$WATCH_ASSISTANT_RELEASE" \
+    | grep -Eq '^[0-9a-fA-F]{40}$'
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     FRONTEND_DIST_DIR=/app/frontend/dist \

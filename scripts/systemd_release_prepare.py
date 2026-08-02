@@ -16,13 +16,17 @@ SRC_ROOT = SCRIPT_ROOT / "src"
 if SRC_ROOT.is_dir():
     sys.path.insert(0, str(SRC_ROOT))
 
-from watch_assistant.release_metadata import normalize_release, read_release_commit
+from watch_assistant.release_metadata import (
+    normalize_full_release,
+    read_release_commit,
+)
 
 DEFAULT_ALLOWED_RELEASES_ROOT = Path("/opt/watch-assistant/releases")
 DEFAULT_RELEASES_ROOT = DEFAULT_ALLOWED_RELEASES_ROOT
 DEFAULT_SERVICE_USER = "watch-assistant"
 DEFAULT_REQUIRED_PATHS = (
     "VERSION",
+    "release-manifest.json",
     "config/tgto-contract.json",
     "frontend/dist/index.html",
     "src/watch_assistant",
@@ -293,7 +297,7 @@ def prepare_release(
 ) -> str:
     """Validate and prepare one release; return its normalized release id."""
 
-    expected = normalize_release(expected_release)
+    expected = normalize_full_release(expected_release)
     if expected is None:
         raise ReleasePrepareError("expected_release_invalid")
 

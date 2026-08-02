@@ -6,8 +6,10 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
+FULL_COMMIT = "abcdef1" + "0" * 33
 PREPARE_PATHS = (
     "VERSION",
+    "release-manifest.json",
     "config/tgto-contract.json",
     "frontend/dist/index.html",
     "src/watch_assistant",
@@ -40,9 +42,9 @@ def _mode(path: Path) -> int:
 
 
 def _write_release(
-    allowed_root: Path, commit: str = "abcdef1"
+    allowed_root: Path, commit: str = FULL_COMMIT
 ) -> tuple[Path, dict[str, Path]]:
-    release_root = allowed_root / "watch-assistant-abcdef1"
+    release_root = allowed_root / f"watch-assistant-{commit[:7]}"
     (release_root / "frontend" / "dist").mkdir(parents=True)
     (release_root / "src" / "watch_assistant").mkdir(parents=True)
     (release_root / "scripts").mkdir()
@@ -77,7 +79,7 @@ def _write_release(
     protected["backup"].parent.mkdir()
     protected["backup"].write_text("backup", encoding="utf-8")
     protected["release_env"].write_text(
-        "WATCH_ASSISTANT_RELEASE=abcdef1\n", encoding="utf-8"
+        f"WATCH_ASSISTANT_RELEASE={commit}\n", encoding="utf-8"
     )
     return release_root, protected
 
@@ -101,11 +103,11 @@ def test_prepare_fixes_root_mode_without_recursing_into_release(tmp_path: Path):
     assert (
         prepare.prepare_release(
             release_root,
-            "abcdef1",
+            FULL_COMMIT,
             allowed_root,
             required_files=PREPARE_PATHS,
         )
-        == "abcdef1"
+        == FULL_COMMIT
     )
 
     assert _mode(release_root) == 0o755
@@ -121,7 +123,7 @@ def test_prepare_rejects_missing_and_version_mismatch(tmp_path: Path):
     with pytest.raises(prepare.ReleasePrepareError) as missing:
         prepare.prepare_release(
             release_root,
-            "abcdef1",
+            FULL_COMMIT,
             allowed_root,
             required_files=PREPARE_PATHS,
         )
@@ -131,7 +133,7 @@ def test_prepare_rejects_missing_and_version_mismatch(tmp_path: Path):
     with pytest.raises(prepare.ReleasePrepareError) as mismatch:
         prepare.prepare_release(
             release_root,
-            "0123456",
+            "0123456" + "0" * 33,
             allowed_root / "second",
             required_files=PREPARE_PATHS,
         )
@@ -147,7 +149,7 @@ def test_prepare_rejects_root_scope_and_allowed_root_itself(tmp_path: Path):
     with pytest.raises(prepare.ReleasePrepareError) as out_of_scope:
         prepare.prepare_release(
             outside_root,
-            "abcdef1",
+            FULL_COMMIT,
             allowed_root,
             required_files=("VERSION",),
         )
@@ -156,7 +158,7 @@ def test_prepare_rejects_root_scope_and_allowed_root_itself(tmp_path: Path):
     with pytest.raises(prepare.ReleasePrepareError) as same_root:
         prepare.prepare_release(
             allowed_root,
-            "abcdef1",
+            FULL_COMMIT,
             allowed_root,
             required_files=("VERSION",),
         )
@@ -167,7 +169,7 @@ def test_prepare_cli_accepts_configured_root_and_service_user_on_offline_hosts(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ):
     allowed_root = tmp_path / "releases"
-    release_root = allowed_root / "watch-assistant-abcdef1"
+    release_root = allowed_root / f"watch-assistant-{FULL_COMMIT[:7]}"
     release_root.mkdir(parents=True)
 
     assert (
@@ -176,7 +178,7 @@ def test_prepare_cli_accepts_configured_root_and_service_user_on_offline_hosts(
                 "--release-root",
                 str(release_root),
                 "--expected-release",
-                "abcdef1",
+                FULL_COMMIT,
                 "--allowed-releases-root",
                 str(allowed_root),
                 "--service-user",
@@ -201,7 +203,7 @@ def test_prepare_rejects_release_root_symlink(tmp_path: Path):
     with pytest.raises(prepare.ReleasePrepareError) as error:
         prepare.prepare_release(
             link,
-            "abcdef1",
+            FULL_COMMIT,
             allowed_root,
             required_files=PREPARE_PATHS,
         )
@@ -222,7 +224,7 @@ def test_prepare_rejects_required_file_symlink_escape(tmp_path: Path):
     with pytest.raises(prepare.ReleasePrepareError) as error:
         prepare.prepare_release(
             release_root,
-            "abcdef1",
+            FULL_COMMIT,
             allowed_root,
             required_files=PREPARE_PATHS,
         )
@@ -240,7 +242,7 @@ def test_prepare_requires_parent_traversal_bit(tmp_path: Path):
     with pytest.raises(prepare.ReleasePrepareError) as error:
         prepare.prepare_release(
             release_root,
-            "abcdef1",
+            FULL_COMMIT,
             allowed_root,
             required_files=PREPARE_PATHS,
             service_identity=service_identity,

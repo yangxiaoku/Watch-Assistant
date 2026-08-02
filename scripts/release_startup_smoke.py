@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import os
 import re
 import sqlite3
@@ -17,6 +18,7 @@ from cryptography.fernet import Fernet
 
 _REQUIRED_FILES = (
     "VERSION",
+    "release-manifest.json",
     "config/tgto-contract.json",
     "frontend/dist/index.html",
     "src/watch_assistant/app.py",
@@ -56,6 +58,25 @@ def _version_commit(release_root: Path) -> str:
     if match is None:
         raise ValueError("invalid release version")
     return match.group(1)
+
+
+def _validate_manifest(release_root: Path, release: str) -> None:
+    try:
+        manifest = json.loads(
+            (release_root / "release-manifest.json").read_text(encoding="utf-8")
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("invalid release manifest") from exc
+    if (
+        not isinstance(manifest, dict)
+        or manifest.get("schema_version") != 2
+        or manifest.get("commit") != release
+    ):
+        raise ValueError("release manifest commit mismatch")
+    for name in ("source_sha256", "frontend_sha256"):
+        value = manifest.get(name)
+        if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
+            raise ValueError("invalid release manifest hash")
 
 
 def _create_legacy_database(database_path: Path, migration_ids: list[str]) -> None:
@@ -170,6 +191,7 @@ def main() -> int:
 
     try:
         release = _version_commit(release_root)
+        _validate_manifest(release_root, release)
         sys.path.insert(0, str(release_root / "src"))
         asyncio.run(_start_and_check_health(release_root, release))
     except Exception as exc:  # noqa: BLE001 - report only a stable diagnostic

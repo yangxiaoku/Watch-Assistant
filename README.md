@@ -44,8 +44,8 @@ python -c "from pwdlib import PasswordHash; print(PasswordHash.recommended().has
 3. 检查并启动：
 
 ```powershell
-docker compose config
-docker compose up -d --build
+WATCH_ASSISTANT_RELEASE="$(git rev-parse HEAD)" docker compose config
+WATCH_ASSISTANT_RELEASE="$(git rev-parse HEAD)" docker compose up -d --build
 curl http://127.0.0.1:8000/api/v1/health
 ```
 
@@ -68,7 +68,7 @@ curl http://127.0.0.1:8000/api/v1/health
 `PERMANENT_DELETE_CONTRACT_VERIFIED=true`。契约未验收时，即使功能开关被误设为 true，
 应用也不会启动真实 worker 或删除入口。发布时构建参数 `WATCH_ASSISTANT_RELEASE` 注入镜像
 环境；健康接口和设置页使用同一版本值。缺少构建注入时安全回退为 `unknown`，不能据此判断
-生产版本。
+生产版本；Compose/Docker 发布不会接受缺少或非 full SHA 的构建参数。
 
 使用 systemd 部署时，`watch-assistant.service` 可独立重启。qBittorrent sidecar 的升级或重启必须作为独立维护操作执行；不得通过重启应用隐式管理 qBittorrent 的生命周期。
 
@@ -90,8 +90,8 @@ mv -T "$STAGING_ROOT" "$RELEASE_ROOT"
 
 ```bash
 RELEASES_ROOT=/opt/watch-assistant/releases
-EXPECTED_RELEASE=<hash7>
-RELEASE_ROOT="$RELEASES_ROOT/watch-assistant-$EXPECTED_RELEASE"
+EXPECTED_RELEASE=<full-git-sha>
+RELEASE_ROOT="$RELEASES_ROOT/watch-assistant-${EXPECTED_RELEASE:0:7}"
 "$RELEASE_ROOT/scripts/systemd_release_prepare.py" \
   --release-root "$RELEASE_ROOT" \
   --expected-release "$EXPECTED_RELEASE" \
@@ -99,16 +99,21 @@ RELEASE_ROOT="$RELEASES_ROOT/watch-assistant-$EXPECTED_RELEASE"
   --service-user watch-assistant
 ```
 
-prepare 成功后，才允许将 `current` 原子切换到该最终目录；prepare 失败时禁止切换，禁止手工
-递归 chmod、跳过校验或直接重启服务。切换完成后使用发布脚本更新 release 元数据并重启服务，
-该脚本要求显式传入相同的 expected release，并会再次执行 prepare 门禁：
+prepare 成功后，发布脚本会记录旧 `current`、旧 release 元数据和新 manifest 摘要，再将 `current`
+与 `release.env` 原子切换。prepare 失败时禁止切换，禁止手工递归 chmod、跳过校验或直接重启
+服务。健康、release 精确匹配或部署诊断失败时，脚本会自动恢复旧 `current` 和 `release.env`，
+执行 `daemon-reload` 后只重启 `watch-assistant.service`：
 
 ```bash
-ln -s "$RELEASE_ROOT" /opt/watch-assistant/.current.new
-mv -Tf /opt/watch-assistant/.current.new /opt/watch-assistant/current
-
 "$RELEASE_ROOT/scripts/deploy_systemd_release.sh" \
   "$RELEASE_ROOT" "$EXPECTED_RELEASE"
+```
+
+人工回退必须使用明确确认命令，且不会由应用 Web 进程执行：
+
+```bash
+WATCH_ASSISTANT_DIAGNOSTICS_TOKEN="<agent-token>" \
+  "$RELEASE_ROOT/scripts/deploy_systemd_release.sh" rollback --confirm
 ```
 
 prepare 工具只修改 release 顶层目录权限，不触碰 `data`、`backup`、`release.env`、
@@ -130,6 +135,18 @@ tailscale serve --bg http://127.0.0.1:8000
 
 ```powershell
 pwsh ./scripts/backup_db.ps1
+```
+
+systemd 部署使用独立工具写入成对的 SQLite/manifest 文件，完成 SHA-256 和 `integrity_check`
+后才发布备份；恢复默认只有预览，不会被发布脚本隐式执行：
+
+```bash
+/opt/watch-assistant/venv/bin/python /opt/watch-assistant/current/scripts/systemd_backup.py \
+  create --database /var/lib/watch-assistant/watch-assistant.db \
+  --output-dir /var/lib/watch-assistant/backups \
+  --version-file /opt/watch-assistant/current/VERSION
+/opt/watch-assistant/venv/bin/python /opt/watch-assistant/current/scripts/systemd_backup.py \
+  restore-preview --manifest /var/lib/watch-assistant/backups/<backup>.json
 ```
 
 ## 本地验证

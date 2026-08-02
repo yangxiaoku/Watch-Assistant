@@ -5,10 +5,11 @@ PACKAGE_FILE="${1:?usage: verify_release_artifact.sh PACKAGE_FILE EXPECTED_COMMI
 EXPECTED_COMMIT="${2:?usage: verify_release_artifact.sh PACKAGE_FILE EXPECTED_COMMIT OUTPUT_DIR}"
 OUTPUT_DIR="${3:?usage: verify_release_artifact.sh PACKAGE_FILE EXPECTED_COMMIT OUTPUT_DIR}"
 
-if [[ ! "$EXPECTED_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+if [[ ! "$EXPECTED_COMMIT" =~ ^[0-9a-fA-F]{40}$ ]]; then
     echo "release artifact refused: expected commit is not a full SHA" >&2
     exit 1
 fi
+EXPECTED_COMMIT="$(printf '%s' "$EXPECTED_COMMIT" | tr '[:upper:]' '[:lower:]')"
 if [[ ! -f "$PACKAGE_FILE" ]]; then
     echo "release artifact refused: package is missing" >&2
     exit 1
@@ -58,15 +59,82 @@ while IFS= read -r entry; do
     esac
 done < "$TAR_LIST"
 
+REQUIRED_ENTRIES=(
+    "$PACKAGE_ROOT/VERSION"
+    "$PACKAGE_ROOT/release-manifest.json"
+    "$PACKAGE_ROOT/frontend/dist/index.html"
+    "$PACKAGE_ROOT/src/watch_assistant/app.py"
+    "$PACKAGE_ROOT/src/watch_assistant/release_metadata.py"
+    "$PACKAGE_ROOT/scripts/release_startup_smoke.py"
+)
+for required in "${REQUIRED_ENTRIES[@]}"; do
+    if ! grep -Fxq "$required" "$TAR_LIST"; then
+        echo "release artifact refused: required archive entry is missing" >&2
+        exit 1
+    fi
+done
+if grep -Eq '(^|/)node_modules(/|$)|(^|/)\.git(/|$)' "$TAR_LIST"; then
+    echo "release artifact refused: archive contains build or git metadata" >&2
+    exit 1
+fi
+
 tar -xzf "$PACKAGE_FILE" -C "$TEMP_DIR"
+if find "$TEMP_DIR/$PACKAGE_ROOT" -type l -print -quit | grep -q .; then
+    echo "release artifact refused: archive contains symlinks" >&2
+    exit 1
+fi
 VERSION_FILE="$TEMP_DIR/$PACKAGE_ROOT/VERSION"
 if [[ ! -f "$VERSION_FILE" ]]; then
     echo "release artifact refused: VERSION is missing" >&2
     exit 1
 fi
 VERSION_COMMIT="$(awk -F= '$1 == "commit" { print $2; exit }' "$VERSION_FILE")"
-if [[ "$VERSION_COMMIT" != "$SHORT_COMMIT" && "$VERSION_COMMIT" != "$EXPECTED_COMMIT" ]]; then
+if [[ "$VERSION_COMMIT" != "$EXPECTED_COMMIT" ]]; then
     echo "release artifact refused: VERSION does not identify the expected commit" >&2
+    exit 1
+fi
+
+if ! command -v jq >/dev/null 2>&1; then
+    echo "release artifact refused: jq is required to verify release metadata" >&2
+    exit 1
+fi
+MANIFEST_FILE="$TEMP_DIR/$PACKAGE_ROOT/release-manifest.json"
+if ! jq -e \
+    --arg commit "$EXPECTED_COMMIT" \
+    --arg short_commit "$SHORT_COMMIT" \
+    '.schema_version == 2
+     and .commit == $commit
+     and .short_commit == $short_commit
+     and (.source_sha256 | type == "string" and test("^[0-9a-f]{64}$"))
+     and (.frontend_sha256 | type == "string" and test("^[0-9a-f]{64}$"))
+     and (.build_time | type == "string" and length > 0)' \
+    "$MANIFEST_FILE" >/dev/null; then
+    echo "release artifact refused: release manifest is invalid" >&2
+    exit 1
+fi
+
+SOURCE_SHA256="$(git archive --format=tar "$EXPECTED_COMMIT" | sha256sum | awk '{print $1}')"
+MANIFEST_SOURCE_SHA256="$(jq -r '.source_sha256' "$MANIFEST_FILE")"
+if [[ "$MANIFEST_SOURCE_SHA256" != "$SOURCE_SHA256" ]]; then
+    echo "release artifact refused: source hash does not match expected commit" >&2
+    exit 1
+fi
+
+frontend_hash() {
+    local directory="$1"
+    (
+        cd "$directory"
+        find . -type f -print0 \
+            | LC_ALL=C sort -z \
+            | while IFS= read -r -d '' file; do
+                sha256sum "$file"
+            done
+    ) | sha256sum | awk '{print $1}'
+}
+
+FRONTEND_SHA256="$(frontend_hash "$TEMP_DIR/$PACKAGE_ROOT/frontend/dist")"
+if [[ "$(jq -r '.frontend_sha256' "$MANIFEST_FILE")" != "$FRONTEND_SHA256" ]]; then
+    echo "release artifact refused: frontend hash does not match archive content" >&2
     exit 1
 fi
 
@@ -83,14 +151,18 @@ jq -n \
     --arg short_commit "$SHORT_COMMIT" \
     --arg package_sha256 "$PACKAGE_SHA256" \
     --arg package_size "$PACKAGE_SIZE" \
+    --arg source_sha256 "$SOURCE_SHA256" \
+    --arg frontend_sha256 "$FRONTEND_SHA256" \
     --arg version "$(<"$VERSION_FILE")" \
     '{
-      schema_version: 1,
+      schema_version: 2,
       artifact: $artifact,
       commit: $commit,
       short_commit: $short_commit,
       package_sha256: $package_sha256,
       package_size_bytes: ($package_size | tonumber),
+      source_sha256: $source_sha256,
+      frontend_sha256: $frontend_sha256,
       version: $version
     }' > "$OUTPUT_DIR/release-manifest.json"
 
@@ -98,6 +170,18 @@ jq -n \
     cd "$OUTPUT_DIR"
     sha256sum --check SHA256SUMS
 )
+
+if [[ -x "$ROOT_DIR/.venv/Scripts/python.exe" ]]; then
+    RELEASE_SMOKE_PYTHON="$ROOT_DIR/.venv/Scripts/python.exe"
+elif [[ -x "$ROOT_DIR/.venv/bin/python" ]]; then
+    RELEASE_SMOKE_PYTHON="$ROOT_DIR/.venv/bin/python"
+else
+    echo "release artifact refused: worktree .venv Python is required for startup smoke" >&2
+    exit 1
+fi
+"$RELEASE_SMOKE_PYTHON" \
+    "$TEMP_DIR/$PACKAGE_ROOT/scripts/release_startup_smoke.py" \
+    --release-root "$TEMP_DIR/$PACKAGE_ROOT"
 
 echo "release artifact verified: $PACKAGE_NAME"
 echo "release artifact SHA256: $PACKAGE_SHA256"

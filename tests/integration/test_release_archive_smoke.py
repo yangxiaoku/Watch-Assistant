@@ -1,5 +1,6 @@
 import importlib
 import importlib.util
+import json
 import shutil
 import sys
 from pathlib import Path
@@ -39,6 +40,18 @@ def test_release_archive_smoke_uses_staged_version_with_old_current_present(
         "<!doctype html><title>release smoke</title>", encoding="utf-8"
     )
     _write_version(release_root / "VERSION", "abcdef1")
+    (release_root / "release-manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "commit": "abcdef1",
+                "short_commit": "abcdef1",
+                "source_sha256": "a" * 64,
+                "frontend_sha256": "b" * 64,
+            }
+        ),
+        encoding="utf-8",
+    )
 
     old_current = tmp_path / "current"
     _write_version(old_current / "VERSION", "0123456")

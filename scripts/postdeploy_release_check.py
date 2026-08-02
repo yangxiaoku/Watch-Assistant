@@ -19,6 +19,7 @@ if SRC_ROOT.is_dir():
     sys.path.insert(0, str(SRC_ROOT))
 
 from watch_assistant.release_metadata import (
+    normalize_full_release,
     normalize_release,
     read_release_commit,
 )
@@ -97,7 +98,45 @@ def _read_health(url: str, timeout: float) -> str | None:
             payload = json.load(response)
     except (OSError, URLError, ValueError, json.JSONDecodeError):
         return None
-    return normalize_release(payload.get("release")) if isinstance(payload, dict) else None
+    if not isinstance(payload, dict) or payload.get("status") != "ok":
+        return None
+    return normalize_release(payload.get("release"))
+
+
+def _read_diagnostics(
+    url: str, timeout: float, token: str | None, expected: str | None = None
+) -> str:
+    if not token:
+        return "diagnostics_token_missing"
+    request = Request(
+        url,
+        headers={
+            "Accept": "application/json",
+            "Authorization": f"Bearer {token}",
+        },
+    )
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            if response.getcode() != 200:
+                return "diagnostics_http_failed"
+            payload = json.load(response)
+    except (OSError, URLError, ValueError, json.JSONDecodeError):
+        return "diagnostics_unavailable"
+    if not isinstance(payload, dict):
+        return "diagnostics_invalid"
+    release = normalize_release(payload.get("release"))
+    if release is None:
+        return "diagnostics_release_invalid"
+    if expected is not None and release != expected:
+        return "diagnostics_release_mismatch"
+    if payload.get("database_integrity") != "supported":
+        return "database_integrity_not_supported"
+    pending = payload.get("pending_migrations")
+    if not isinstance(pending, list):
+        return "pending_migrations_invalid"
+    if pending:
+        return "pending_migrations"
+    return "ok"
 
 
 def check_release_consistency(
@@ -109,11 +148,20 @@ def check_release_consistency(
     stale_drop_in: Path | None = None,
     release_env: Path = _DEFAULT_RELEASE_ENV,
     current_root: Path | None = None,
+    expected_release: str | None = None,
+    diagnostics_url: str | None = None,
+    diagnostics_token: str | None = None,
     timeout: float = 5.0,
 ) -> tuple[bool, str]:
     expected = read_release_commit(version_file)
     if expected is None:
         return False, "version_invalid"
+    if expected_release is not None:
+        exact_expected = normalize_full_release(expected_release)
+        if exact_expected is None:
+            return False, "expected_release_invalid"
+        if expected != exact_expected:
+            return False, "version_expected_mismatch"
     current_root = current_root or version_file.parent
     current_release = read_release_commit(current_root / "VERSION")
     if current_release is None:
@@ -160,6 +208,12 @@ def check_release_consistency(
         return False, "health_not_reported"
     if health != expected:
         return False, "release_mismatch"
+    if diagnostics_url is not None:
+        diagnostics_code = _read_diagnostics(
+            diagnostics_url, timeout, diagnostics_token, expected
+        )
+        if diagnostics_code != "ok":
+            return False, diagnostics_code
     return True, "ok"
 
 
@@ -172,6 +226,8 @@ def main() -> int:
     parser.add_argument("--stale-drop-in", type=Path)
     parser.add_argument("--release-env", type=Path, default=_DEFAULT_RELEASE_ENV)
     parser.add_argument("--current-root", type=Path)
+    parser.add_argument("--expected-release")
+    parser.add_argument("--diagnostics-url")
     parser.add_argument("--timeout", type=float, default=5.0)
     args = parser.parse_args()
     passed, code = check_release_consistency(
@@ -182,6 +238,9 @@ def main() -> int:
         stale_drop_in=args.stale_drop_in,
         release_env=args.release_env,
         current_root=args.current_root,
+        expected_release=args.expected_release,
+        diagnostics_url=args.diagnostics_url,
+        diagnostics_token=os.environ.get("WATCH_ASSISTANT_DIAGNOSTICS_TOKEN"),
         timeout=args.timeout,
     )
     if not passed:
@@ -190,7 +249,7 @@ def main() -> int:
         return 1
     release = read_release_commit(args.version_file)
     print("POSTDEPLOY_RELEASE_CHECK=ok")
-    print(f"POSTDEPLOY_RELEASE={release[:7]}")
+    print(f"POSTDEPLOY_RELEASE={release}")
     return 0
 
 

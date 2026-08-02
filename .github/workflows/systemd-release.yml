@@ -86,7 +86,7 @@ jobs:
           printf 'ci-placeholder\n' > secrets/tmdb_api_key
           printf 'ci-placeholder\n' > secrets/web_password_hash
           printf 'ci-placeholder\n' > secrets/script_token_hash
-          docker compose --env-file .env.example config --quiet
+          WATCH_ASSISTANT_RELEASE="$GITHUB_SHA" docker compose --env-file .env.example config --quiet
 
       - name: Build and verify systemd release package
         id: package
@@ -98,7 +98,7 @@ jobs:
           test -z "$(git diff --cached --name-only)"
           test -z "$(git status --porcelain --untracked-files=all)"
           export RELEASE_OUTPUT_DIR="$RUNNER_TEMP/release-output"
-          bash scripts/build_release.sh
+          bash scripts/build_release.sh "$GITHUB_SHA"
           package_file="$(find "$RELEASE_OUTPUT_DIR" -type f -name 'watch-assistant-*.tar.gz' -print -quit)"
           test -n "$package_file"
           artifact_dir="$RUNNER_TEMP/release-artifact"

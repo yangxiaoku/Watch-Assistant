@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 
 RELEASE_SHA_PATTERN = re.compile(r"[0-9a-f]{7}|[0-9a-f]{40}", re.IGNORECASE)
+FULL_RELEASE_SHA_PATTERN = re.compile(r"[0-9a-f]{40}", re.IGNORECASE)
 VERSION_COMMIT_PATTERN = re.compile(
     r"^commit=(?P<commit>[0-9a-f]{7}|[0-9a-f]{40})$", re.IGNORECASE | re.MULTILINE
 )
@@ -18,6 +19,17 @@ def normalize_release(value: str | None) -> str | None:
         return None
     candidate = value.strip()
     if RELEASE_SHA_PATTERN.fullmatch(candidate) is None:
+        return None
+    return candidate.lower()
+
+
+def normalize_full_release(value: str | None) -> str | None:
+    """Return a normalized full git SHA; short release labels are rejected."""
+
+    if not isinstance(value, str):
+        return None
+    candidate = value.strip()
+    if FULL_RELEASE_SHA_PATTERN.fullmatch(candidate) is None:
         return None
     return candidate.lower()
 

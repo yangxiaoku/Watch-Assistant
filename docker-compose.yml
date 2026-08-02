@@ -3,7 +3,7 @@ services:
     build:
       context: .
       args:
-        WATCH_ASSISTANT_RELEASE: ${WATCH_ASSISTANT_RELEASE:-unknown}
+        WATCH_ASSISTANT_RELEASE: ${WATCH_ASSISTANT_RELEASE:?WATCH_ASSISTANT_RELEASE must be set to a full git SHA}
     image: watch-assistant:local
     container_name: watch-assistant
     restart: unless-stopped
