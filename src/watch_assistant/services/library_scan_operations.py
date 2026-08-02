@@ -559,6 +559,7 @@ class LibraryScanWorker:
             # The verified P115 contract intentionally remains one item per page.
             page_size=1,
             propagate_cancelled=True,
+            cancel_event=lease_lost,
         ).scan_tree(
             lease.idempotency_key,
             max_directories=lease.max_directories,

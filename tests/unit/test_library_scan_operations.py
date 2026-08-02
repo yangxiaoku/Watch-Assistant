@@ -340,6 +340,7 @@ async def test_cancelled_scan_cannot_overwrite_a_reclaimed_lease(tmp_path):
                 terminal=True,
             )
 
+    lease_lost_event = asyncio.Event()
     scan = LibraryIndexService(
         database.session_factory,
         _BlockingGateway(),
@@ -347,6 +348,7 @@ async def test_cancelled_scan_cannot_overwrite_a_reclaimed_lease(tmp_path):
         root_directory_id=ROOT_ID,
         page_size=1,
         propagate_cancelled=True,
+        cancel_event=lease_lost_event,
     )
     task = asyncio.create_task(scan.scan_tree("reclaimed-lease"))
     await gateway_started.wait()
@@ -357,6 +359,7 @@ async def test_cancelled_scan_cannot_overwrite_a_reclaimed_lease(tmp_path):
     assert new_lease is not None
     assert new_lease.lease_token != old_lease.lease_token
 
+    lease_lost_event.set()
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
