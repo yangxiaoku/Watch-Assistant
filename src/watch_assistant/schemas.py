@@ -1,5 +1,6 @@
 """Shared API and adapter data types."""
 
+from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 from typing import Any, Literal
@@ -127,6 +128,51 @@ class EvidenceSource(StrEnum):
     RESOURCE_RECORD = "resource_record"
     SUBMISSION_RECEIPT = "submission_receipt"
     READONLY_RECONCILIATION = "readonly_reconciliation"
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class RemoteObservation:
+    """Sanitized remote state plus the minimum file evidence for availability."""
+
+    status: RemoteStatus
+    file_id: str | None = None
+    parent_id: str | None = None
+    is_directory: bool | None = None
+    error_code: str | None = None
+
+    @property
+    def availability_verified(self) -> bool:
+        try:
+            status = RemoteStatus(self.status)
+        except (TypeError, ValueError):
+            return False
+        return bool(
+            status is RemoteStatus.AVAILABLE
+            and _stable_remote_id(self.file_id)
+            and _stable_remote_id(self.parent_id)
+            and self.is_directory is False
+            and self.error_code is None
+        )
+
+    def __repr__(self) -> str:
+        try:
+            status = RemoteStatus(self.status).value
+        except (TypeError, ValueError):
+            status = "unknown"
+        return (
+            "RemoteObservation(status="
+            f"{status!r}, availability_verified="
+            f"{self.availability_verified!r}, error_code={self.error_code!r})"
+        )
+
+
+def _stable_remote_id(value: object) -> str | None:
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        return None
+    normalized = str(value)
+    if not normalized.isdigit() or normalized.startswith("0"):
+        return None
+    return normalized
 
 
 class LoggingLevel(StrEnum):

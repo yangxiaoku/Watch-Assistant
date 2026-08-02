@@ -4,13 +4,14 @@ import pytest
 
 from tests.unit.factories import make_task
 from watch_assistant.models import Resource, TaskState
-from watch_assistant.schemas import RemoteStatus
+from watch_assistant.schemas import RemoteObservation, RemoteStatus
 from watch_assistant.services.tasks import (
     InvalidCancelState,
     InvalidRetryState,
     choose_existing_task,
     prepare_manual_retry,
     recover_after_restart,
+    task_state_from_remote_observation,
     task_state_from_remote_status,
 )
 
@@ -40,8 +41,73 @@ def test_remote_acceptance_never_means_available():
     assert task_state_from_remote_status(RemoteStatus.AVAILABLE) is TaskState.UNCERTAIN
     assert (
         task_state_from_remote_status(RemoteStatus.AVAILABLE, allow_available=True)
-        is TaskState.AVAILABLE
+        is TaskState.UNCERTAIN
     )
+
+
+@pytest.mark.parametrize(
+    ("file_id", "parent_id", "is_directory"),
+    [
+        (None, "7", False),
+        ("101", None, False),
+        ("101", "7", True),
+    ],
+)
+def test_incomplete_available_observation_stays_uncertain(
+    file_id, parent_id, is_directory
+):
+    observation = RemoteObservation(
+        status=RemoteStatus.AVAILABLE,
+        file_id=file_id,
+        parent_id=parent_id,
+        is_directory=is_directory,
+    )
+
+    assert task_state_from_remote_observation(observation) is TaskState.UNCERTAIN
+
+
+def test_complete_file_observation_is_the_only_available_transition():
+    observation = RemoteObservation(
+        status=RemoteStatus.AVAILABLE,
+        file_id="101",
+        parent_id="7",
+        is_directory=False,
+    )
+
+    assert task_state_from_remote_observation(observation) is TaskState.AVAILABLE
+
+
+def test_remote_observation_repr_redacts_identity_fields():
+    observation = RemoteObservation(
+        status=RemoteStatus.AVAILABLE,
+        file_id="101",
+        parent_id="7",
+        is_directory=False,
+    )
+
+    rendered = repr(observation)
+
+    assert "101" not in rendered
+    assert "7" not in rendered
+    assert "availability_verified=True" in rendered
+
+
+def test_recovery_requires_complete_file_observation_for_available():
+    task = make_task(state=TaskState.SUBMITTING)
+
+    recover_after_restart(task, RemoteStatus.AVAILABLE)
+    assert task.state is TaskState.UNCERTAIN
+
+    recover_after_restart(
+        task,
+        RemoteObservation(
+            status=RemoteStatus.AVAILABLE,
+            file_id="101",
+            parent_id="7",
+            is_directory=False,
+        ),
+    )
+    assert task.state is TaskState.AVAILABLE
 
 
 def test_duplicate_resource_reuses_recent_task():

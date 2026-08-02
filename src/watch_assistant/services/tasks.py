@@ -12,6 +12,7 @@ from watch_assistant.models import Resource, Task, TaskState, WorkflowEvidence
 from watch_assistant.schemas import (
     EvidenceSource,
     EvidenceStatus,
+    RemoteObservation,
     RemoteStatus,
     TaskAction,
     WorkflowStageName,
@@ -36,7 +37,9 @@ REUSABLE_STATES = (
 
 
 class TaskStatusAdapter(Protocol):
-    async def get_status(self, remote_ref: str) -> RemoteStatus | None: ...
+    async def get_status(
+        self, remote_ref: str
+    ) -> RemoteStatus | RemoteObservation | None: ...
 
 
 class ResourceNotFound(LookupError):
@@ -63,20 +66,41 @@ class ReconciliationUnavailable(RuntimeError):
     pass
 
 
+AVAILABILITY_OBSERVATION_UNVERIFIED = "availability_observation_unverified"
+
+
+RemoteState = RemoteStatus | RemoteObservation
+
+
 def task_state_from_remote_status(
     status: RemoteStatus, *, allow_available: bool = False
 ) -> TaskState:
+    del allow_available
     if status in {RemoteStatus.ACCEPTED, RemoteStatus.SUBMITTED}:
         return TaskState.SUBMITTED
     if status is RemoteStatus.DOWNLOADING:
         return TaskState.DOWNLOADING
-    if status is RemoteStatus.AVAILABLE and allow_available:
-        return TaskState.AVAILABLE
     if status is RemoteStatus.NEEDS_AUTH:
         return TaskState.NEEDS_AUTH
     if status is RemoteStatus.FAILED:
         return TaskState.FAILED
     return TaskState.UNCERTAIN
+
+
+def task_state_from_remote_observation(observation: RemoteObservation) -> TaskState:
+    """Convert a remote result without trusting a bare AVAILABLE marker."""
+
+    try:
+        status = RemoteStatus(observation.status)
+    except (TypeError, ValueError):
+        return TaskState.UNCERTAIN
+    if status is RemoteStatus.AVAILABLE:
+        return (
+            TaskState.AVAILABLE
+            if observation.availability_verified
+            else TaskState.UNCERTAIN
+        )
+    return task_state_from_remote_status(status)
 
 
 def workflow_stage_status_for_task_state(state: TaskState) -> WorkflowStageStatus:
@@ -108,25 +132,32 @@ def evidence_status_for_task_state(state: TaskState) -> EvidenceStatus:
 async def apply_remote_status(
     session: AsyncSession,
     task: Task,
-    remote_status: RemoteStatus,
+    remote_status: RemoteState,
     *,
     source: EvidenceSource,
-    verified_available: bool,
+    verified_available: bool = False,
 ) -> WorkflowEvidence:
-    """Apply a read-only remote observation without ever submitting again."""
+    """Apply a remote result without trusting a caller-supplied AVAILABLE flag."""
 
-    if verified_available and source is not EvidenceSource.READONLY_RECONCILIATION:
+    del verified_available
+    observation = _as_remote_observation(remote_status)
+    if observation is None:
+        raise WorkflowConflict("workflow_evidence_required")
+    state = task_state_from_remote_observation(observation)
+    availability_verified = state is TaskState.AVAILABLE
+    if availability_verified and source is not EvidenceSource.READONLY_RECONCILIATION:
         raise WorkflowConflict("workflow_evidence_required")
     if task.state is TaskState.AVAILABLE and (
-        remote_status is not RemoteStatus.AVAILABLE or not verified_available
+        not availability_verified
     ):
         raise WorkflowConflict("workflow_stage_terminal")
-    state = task_state_from_remote_status(
-        remote_status, allow_available=verified_available
-    )
     task.state = state
-    task.error_code = None if state not in {TaskState.FAILED, TaskState.UNCERTAIN} else task.error_code
-    task.error_message = None if state not in {TaskState.FAILED, TaskState.UNCERTAIN} else task.error_message
+    if state not in {TaskState.FAILED, TaskState.UNCERTAIN}:
+        task.error_code = None
+        task.error_message = None
+    elif observation.error_code is not None:
+        task.error_code = observation.error_code
+        task.error_message = _observation_error_message(observation.error_code)
     task.updated_at = datetime.now(UTC)
     evidence = await record_evidence(
         session,
@@ -143,10 +174,10 @@ async def apply_remote_status(
         source=source,
         subject_id=task.id,
         status=evidence_status_for_task_state(state),
-        verified=state is TaskState.AVAILABLE and verified_available,
+        verified=availability_verified,
     )
     if task.workflow_id is not None:
-        if state is TaskState.AVAILABLE and verified_available:
+        if availability_verified:
             await advance_availability_from_evidence(
                 session, task.workflow_id, task.id, evidence
             )
@@ -164,17 +195,23 @@ async def apply_remote_status(
     return evidence
 
 
-def recover_after_restart(task: Task, remote_status: RemoteStatus | None) -> None:
+def recover_after_restart(task: Task, remote_status: RemoteState | None) -> None:
     task.lease_owner = None
     task.lease_expires_at = None
     task.updated_at = datetime.now(UTC)
     if task.state is TaskState.AVAILABLE:
         return
-    task.state = (
-        task_state_from_remote_status(remote_status, allow_available=False)
-        if remote_status is not None
-        else TaskState.UNCERTAIN
-    )
+    if remote_status is None:
+        task.state = TaskState.UNCERTAIN
+        return
+    observation = _as_remote_observation(remote_status)
+    if observation is None:
+        task.state = TaskState.UNCERTAIN
+        return
+    task.state = task_state_from_remote_observation(observation)
+    if observation.error_code is not None:
+        task.error_code = observation.error_code
+        task.error_message = _observation_error_message(observation.error_code)
 
 
 def choose_existing_task(
@@ -327,16 +364,18 @@ class TaskService:
             if not task.remote_ref:
                 raise TaskNotReconcilable("task_not_reconcilable")
             remote_ref = task.remote_ref
+            target_directory_id = task.target_directory_id
         try:
-            remote_status = await adapter.get_status(remote_ref)
+            remote_status = await _read_task_status(
+                adapter, remote_ref, target_directory_id=target_directory_id
+            )
         except Exception as exc:
             raise ReconciliationUnavailable("reconciliation_unavailable") from exc
         if remote_status is None:
             raise ReconciliationUnavailable("reconciliation_unavailable")
-        try:
-            normalized_status = RemoteStatus(remote_status)
-        except ValueError as exc:
-            raise ReconciliationUnavailable("reconciliation_unavailable") from exc
+        normalized_observation = _as_remote_observation(remote_status)
+        if normalized_observation is None:
+            raise ReconciliationUnavailable("reconciliation_unavailable")
 
         async with self._reconcile_lock, self._session_factory() as session:
             task = await session.get(Task, task_id)
@@ -347,9 +386,8 @@ class TaskService:
             evidence = await apply_remote_status(
                 session,
                 task,
-                normalized_status,
+                normalized_observation,
                 source=EvidenceSource.READONLY_RECONCILIATION,
-                verified_available=True,
             )
             await session.commit()
             return task, evidence
@@ -460,6 +498,63 @@ class TaskService:
             resource_id=task.resource_id,
         )
         return task
+
+
+async def _read_task_status(
+    adapter: TaskStatusAdapter,
+    remote_ref: str,
+    *,
+    target_directory_id: str | None,
+) -> RemoteState | None:
+    """Use a target-aware adapter hook when it exists, preserving old adapters."""
+
+    target_aware = getattr(adapter, "get_status_for_task", None)
+    if callable(target_aware):
+        return await target_aware(
+            remote_ref, target_directory_id=target_directory_id
+        )
+    return await adapter.get_status(remote_ref)
+
+
+def _as_remote_observation(value: object) -> RemoteObservation | None:
+    if isinstance(value, RemoteObservation):
+        try:
+            status = RemoteStatus(value.status)
+        except (TypeError, ValueError):
+            return None
+        error_code = value.error_code
+        if status is RemoteStatus.AVAILABLE and not value.availability_verified:
+            error_code = error_code or AVAILABILITY_OBSERVATION_UNVERIFIED
+        if status is value.status and error_code == value.error_code:
+            return value
+        return RemoteObservation(
+            status=status,
+            file_id=value.file_id,
+            parent_id=value.parent_id,
+            is_directory=value.is_directory,
+            error_code=error_code,
+        )
+    try:
+        status = RemoteStatus(value)
+    except (TypeError, ValueError):
+        return None
+    return RemoteObservation(
+        status=status,
+        error_code=(
+            AVAILABILITY_OBSERVATION_UNVERIFIED
+            if status is RemoteStatus.AVAILABLE
+            else None
+        ),
+    )
+
+
+def _observation_error_message(error_code: str) -> str:
+    return {
+        AVAILABILITY_OBSERVATION_UNVERIFIED: "远端文件可用性尚未完成只读核验。",
+        "availability_file_id_unavailable": "无法可靠取得远端文件 ID。",
+        "availability_parent_mismatch": "远端文件父目录核验不一致。",
+        "availability_observer_unavailable": "远端文件只读观察器暂不可用。",
+    }.get(error_code, "远端结果待确认，系统未重复提交。")
 
 
 def _as_utc(value: datetime) -> datetime:

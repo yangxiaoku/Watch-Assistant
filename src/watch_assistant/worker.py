@@ -13,6 +13,7 @@ from watch_assistant.models import Task, TaskState
 from watch_assistant.schemas import (
     EvidenceSource,
     LoggingLevel,
+    RemoteObservation,
     RemoteStatus,
     SubmissionResult,
     TaskAction,
@@ -62,7 +63,9 @@ class TaskAdapter(Protocol):
         target_cid: str | None = None,
     ) -> SubmissionResult: ...
 
-    async def get_status(self, remote_ref: str) -> RemoteStatus | None: ...
+    async def get_status(
+        self, remote_ref: str
+    ) -> RemoteStatus | RemoteObservation | None: ...
 
 
 class TaskWorker:
@@ -268,7 +271,11 @@ class TaskWorker:
                 remote_status = None
                 if task.remote_ref:
                     try:
-                        remote_status = await self._adapter.get_status(task.remote_ref)
+                        remote_status = await _read_task_status(
+                            self._adapter,
+                            task.remote_ref,
+                            target_directory_id=task.target_directory_id,
+                        )
                     except Exception:  # noqa: BLE001 - status failure is uncertain
                         remote_status = None
                 recover_after_restart(task, remote_status)
@@ -278,7 +285,6 @@ class TaskWorker:
                         task,
                         remote_status,
                         source=EvidenceSource.READONLY_RECONCILIATION,
-                        verified_available=True,
                     )
                 elif task.workflow_id is not None:
                     await sync_child_stage(
@@ -327,3 +333,17 @@ def _inventory_error_message(code: str) -> str:
     return _INVENTORY_ERROR_MESSAGES_ZH.get(
         code, "库存检查未完成，已阻止远端提交。"
     )
+
+
+async def _read_task_status(
+    adapter: TaskAdapter,
+    remote_ref: str,
+    *,
+    target_directory_id: str | None,
+) -> RemoteStatus | RemoteObservation | None:
+    target_aware = getattr(adapter, "get_status_for_task", None)
+    if callable(target_aware):
+        return await target_aware(
+            remote_ref, target_directory_id=target_directory_id
+        )
+    return await adapter.get_status(remote_ref)

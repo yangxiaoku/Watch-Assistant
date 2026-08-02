@@ -12,7 +12,11 @@ from watch_assistant.app import create_app
 from watch_assistant.crypto import SecretCrypto
 from watch_assistant.db import create_database, initialize_database
 from watch_assistant.models import Resource, Task, WorkflowStage
-from watch_assistant.schemas import RemoteStatus, WorkflowStageStatus
+from watch_assistant.schemas import (
+    RemoteObservation,
+    RemoteStatus,
+    WorkflowStageStatus,
+)
 from watch_assistant.services.tasks import TaskService
 from watch_assistant.services.workflows import WorkflowService
 
@@ -286,7 +290,12 @@ async def test_workflow_approval_and_cancel_are_guarded(tmp_path):
         class AvailableAdapter:
             async def get_status(self, remote_ref: str):
                 assert remote_ref == "remote-available"
-                return RemoteStatus.AVAILABLE
+                return RemoteObservation(
+                    status=RemoteStatus.AVAILABLE,
+                    file_id="101",
+                    parent_id="7",
+                    is_directory=False,
+                )
 
         await TaskService(database.session_factory).reconcile(
             task.id, AvailableAdapter()

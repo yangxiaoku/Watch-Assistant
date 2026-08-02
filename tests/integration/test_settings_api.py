@@ -10,7 +10,12 @@ from watch_assistant.app import create_app
 from watch_assistant.crypto import SecretCrypto
 from watch_assistant.db import create_database, initialize_database
 from watch_assistant.models import Resource, Task
-from watch_assistant.schemas import LogCategory, LoggingLevel, RemoteStatus
+from watch_assistant.schemas import (
+    LogCategory,
+    LoggingLevel,
+    RemoteObservation,
+    RemoteStatus,
+)
 from watch_assistant.security import SecurityManager
 from watch_assistant.services.tasks import TaskService
 
@@ -411,7 +416,12 @@ async def test_strm_routes_enforce_independent_flags_and_reach_service(tmp_path)
         class AvailableAdapter:
             async def get_status(self, remote_ref: str):
                 assert remote_ref == "remote-available"
-                return RemoteStatus.AVAILABLE
+                return RemoteObservation(
+                    status=RemoteStatus.AVAILABLE,
+                    file_id="101",
+                    parent_id="7",
+                    is_directory=False,
+                )
 
         app.state.task_adapter = AvailableAdapter()
         reconciled = await client.post(

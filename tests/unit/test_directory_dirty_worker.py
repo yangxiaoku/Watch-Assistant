@@ -15,6 +15,7 @@ from watch_assistant.models import (
 )
 from watch_assistant.schemas import (
     MediaType,
+    RemoteObservation,
     RemoteStatus,
     WorkflowCreateRequest,
     WorkflowDiscoveryRequest,
@@ -76,7 +77,12 @@ async def _claimed(database, *, workflow_id=None):
         class AvailableAdapter:
             async def get_status(self, remote_ref: str):
                 assert remote_ref == "dirty-available"
-                return RemoteStatus.AVAILABLE
+                return RemoteObservation(
+                    status=RemoteStatus.AVAILABLE,
+                    file_id="101",
+                    parent_id="7",
+                    is_directory=False,
+                )
 
         await TaskService(database.session_factory).reconcile(
             task.id, AvailableAdapter()

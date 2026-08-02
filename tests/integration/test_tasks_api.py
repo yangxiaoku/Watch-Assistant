@@ -11,7 +11,7 @@ from watch_assistant.app import create_app
 from watch_assistant.crypto import SecretCrypto
 from watch_assistant.db import create_database, initialize_database
 from watch_assistant.models import Resource, Task, TaskState
-from watch_assistant.schemas import RemoteStatus
+from watch_assistant.schemas import RemoteObservation, RemoteStatus
 
 
 class FakeTaskAdapter:
@@ -250,7 +250,12 @@ async def test_readonly_reconciliation_promotes_availability_and_records_evidenc
         task.state = TaskState.SUBMITTED
         task.remote_ref = "remote-available"
         await session.commit()
-    app.state.task_adapter.remote_status = RemoteStatus.AVAILABLE
+    app.state.task_adapter.remote_status = RemoteObservation(
+        status=RemoteStatus.AVAILABLE,
+        file_id="101",
+        parent_id="7",
+        is_directory=False,
+    )
 
     reconciled = await client.post(f"/api/v1/tasks/{task_id}/reconcile")
     workflow_after = await client.get(f"/api/v1/workflows/{workflow_id}")
@@ -268,6 +273,37 @@ async def test_readonly_reconciliation_promotes_availability_and_records_evidenc
     assert stages["organization"] == "pending"
     assert evidence.status_code == 200
     assert evidence.json()[0]["status"] == "available"
+    await client.aclose()
+    await tmdb.aclose()
+    await pansou.aclose()
+    await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_bare_available_status_is_persisted_as_uncertain(tmp_path):
+    client, database, tmdb, pansou, app = await _make_task_client(tmp_path)
+    created = await client.post("/api/v1/tasks", json={"resource_id": "res_task_api"})
+    task_id = created.json()["id"]
+    async with database.session_factory() as session:
+        task = await session.get(Task, task_id)
+        assert task is not None
+        task.state = TaskState.SUBMITTED
+        task.remote_ref = "remote-bare-available"
+        await session.commit()
+    app.state.task_adapter.remote_status = RemoteStatus.AVAILABLE
+
+    response = await client.post(f"/api/v1/tasks/{task_id}/reconcile")
+
+    assert response.status_code == 200
+    assert response.json()["task"]["state"] == "uncertain"
+    assert response.json()["task"]["error_code"] == (
+        "availability_observation_unverified"
+    )
+    assert response.json()["task"]["error_message"] == (
+        "远端文件可用性尚未完成只读核验。"
+    )
+    assert response.json()["evidence"]["status"] == "uncertain"
+    assert response.json()["evidence"]["verified"] is False
     await client.aclose()
     await tmdb.aclose()
     await pansou.aclose()

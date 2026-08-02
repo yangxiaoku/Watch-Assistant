@@ -8,6 +8,7 @@ from watch_assistant.crypto import SecretCrypto
 from watch_assistant.db import create_database, initialize_database
 from watch_assistant.models import Resource, Task, TaskState
 from watch_assistant.schemas import (
+    RemoteObservation,
     RemoteStatus,
     SubmissionResult,
     WorkflowCreateRequest,
@@ -168,7 +169,12 @@ async def test_reusing_available_task_advances_new_workflow_availability(tmp_pat
         await session.commit()
 
     adapter = FakeAdapter()
-    adapter.remote_status = RemoteStatus.AVAILABLE
+    adapter.remote_status = RemoteObservation(
+        status=RemoteStatus.AVAILABLE,
+        file_id="101",
+        parent_id="7",
+        is_directory=False,
+    )
     await task_service.reconcile(existing.id, adapter)
 
     workflow = await workflow_service.create(
@@ -230,7 +236,12 @@ async def test_concurrent_reconciliation_upserts_one_available_evidence(tmp_path
         await session.commit()
 
     adapter = FakeAdapter()
-    adapter.remote_status = RemoteStatus.AVAILABLE
+    adapter.remote_status = RemoteObservation(
+        status=RemoteStatus.AVAILABLE,
+        file_id="101",
+        parent_id="7",
+        is_directory=False,
+    )
     results = await asyncio.gather(
         task_service.reconcile(task.id, adapter),
         task_service.reconcile(task.id, adapter),
@@ -480,7 +491,12 @@ async def test_worker_terminal_state_updates_linked_workflow_stage(tmp_path):
     push_stage = next(stage for stage in updated.stages if stage.stage.value == "push")
     assert push_stage.status.value == "waiting_external"
 
-    adapter.remote_status = RemoteStatus.AVAILABLE
+    adapter.remote_status = RemoteObservation(
+        status=RemoteStatus.AVAILABLE,
+        file_id="101",
+        parent_id="7",
+        is_directory=False,
+    )
     await task_service.reconcile(task.id, adapter)
 
     updated = await workflow_service.get(workflow.id)
@@ -595,6 +611,33 @@ async def test_recovery_preserves_confirmed_remote_failure(tmp_path):
     stored = await service.get(task.id)
 
     assert stored.state == TaskState.FAILED
+    await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_recovery_bare_available_stays_uncertain(tmp_path):
+    database = await _database(tmp_path)
+    crypto = SecretCrypto(Fernet.generate_key().decode("ascii"))
+    await _add_resource(database, crypto)
+    service = TaskService(database.session_factory)
+    task, _ = await service.create("res_magnet")
+    async with database.session_factory() as session:
+        stored = await session.get(Task, task.id)
+        stored.state = TaskState.SUBMITTING
+        stored.remote_ref = "remote-bare-available"
+        stored.lease_owner = "dead-worker"
+        stored.lease_expires_at = datetime.now(UTC) - timedelta(minutes=1)
+        await session.commit()
+
+    adapter = FakeAdapter()
+    adapter.remote_status = RemoteStatus.AVAILABLE
+    worker = TaskWorker(database.session_factory, crypto, adapter, owner="new-worker")
+
+    assert await worker.recover_expired() == 1
+    stored = await service.get(task.id)
+
+    assert stored.state == TaskState.UNCERTAIN
+    assert stored.error_code == "availability_observation_unverified"
     await database.engine.dispose()
 
 
