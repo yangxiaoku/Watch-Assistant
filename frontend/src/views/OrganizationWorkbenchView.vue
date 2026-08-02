@@ -96,6 +96,11 @@ function normalizePlan(plan: OrganizationPlanSummary): OrganizationPlanSummary {
   };
 }
 
+function planLabel(plan: Pick<OrganizationPlanSummary, "alias" | "plan_id">): string {
+  const alias = plan.alias?.trim();
+  return alias || `计划 ${diagnosticReference(plan.plan_id)}`;
+}
+
 function operationFailureMessage(code: string | null): string {
   if (code === "plan_prerequisites_changed") return "扫描快照已更新，原计划已失效。请重新扫描并生成新的整理计划后再确认。";
   if (code === "postcondition_mismatch") return "远端结果未满足计划预期，系统已停止后续写入，请先核对 115 当前状态。";
@@ -420,14 +425,14 @@ onMounted(() => {
       <div class="organization-list" aria-label="计划列表">
         <button v-if="executionEnabled && activeStatus === 'needs_review'" class="primary-button organization-batch-action" type="button" :disabled="loading || busy" @click="requestBatchExecution"><ListChecks :size="16" />确认并整理当前页（{{ executableItems.length }}）</button>
         <button v-for="plan in items" :key="plan.plan_id" type="button" class="organization-plan-row" :class="{ active: selected?.plan_id === plan.plan_id }" @click="selectPlan(plan)">
-          <span class="organization-plan-row-main"><strong>{{ plan.alias || "未命名计划" }}</strong><small>{{ statusLabel[plan.status] }}</small></span>
+          <span class="organization-plan-row-main"><strong>{{ planLabel(plan) }}</strong><small>{{ statusLabel[plan.status] }}</small></span>
           <span class="organization-plan-row-meta"><span>版本 {{ plan.revision }}</span><ChevronRight :size="16" /></span>
         </button>
         <button v-if="nextCursor !== null" class="secondary-button organization-more" type="button" :disabled="loading || busy" @click="loadPlans(nextCursor!)">加载下一页</button>
       </div>
 
       <article v-if="selected" class="organization-preview">
-        <div class="organization-preview-heading"><div><p class="eyebrow">整理计划预览</p><h2>{{ selected.alias || "未命名计划" }}</h2></div><span class="organization-status">{{ statusLabel[selected.status] }}</span></div>
+        <div class="organization-preview-heading"><div><p class="eyebrow">整理计划预览</p><h2>{{ planLabel(selected) }}</h2></div><span class="organization-status">{{ statusLabel[selected.status] }}</span></div>
         <dl class="organization-facts">
           <div><dt>计划状态</dt><dd>当前计划已选中</dd></div>
           <div><dt>版本</dt><dd>{{ selected.revision }}</dd></div>
