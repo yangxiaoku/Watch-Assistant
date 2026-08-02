@@ -26,6 +26,7 @@ from watch_assistant.services.organization_execution_contract import (
     OrganizationStepCheck,
     OrganizationStepExpectation,
     RemoteObjectState,
+    reconcile_uncertain,
 )
 from watch_assistant.services.organization_operations import (
     OrganizationOperationConflict,
@@ -217,6 +218,148 @@ class OrganizationExecutor:
                 now=now,
             )
             raise
+
+    async def reconcile_uncertain(
+        self,
+        operation_id: str,
+        *,
+        expected_revision: int,
+        cancel_event: asyncio.Event | None = None,
+        now=None,
+    ) -> OrganizationExecutionResult:
+        """Read the remote state and resolve an uncertain operation by CAS.
+
+        This path intentionally does not claim a lease and never calls a
+        transport write method.  A source match makes the operation retryable;
+        only an exact target match is committed as organized.  Mixed or
+        incomplete observations remain uncertain.
+        """
+
+        summary = await self._operation_service.get(operation_id)
+        if (
+            summary.status is not OrganizationOperationStatus.UNCERTAIN
+            or summary.revision != expected_revision
+        ):
+            raise OrganizationOperationStateError("uncertain_requires_verification")
+        steps = await load_executable_steps(self._session_factory, summary.plan_id)
+        if not steps:
+            return OrganizationExecutionResult(
+                operation_id,
+                OrganizationExecutionStatus.UNCERTAIN,
+                "plan_prerequisites_changed",
+                0,
+                0,
+            )
+
+        observations: list[OrganizationStepCheck] = []
+        transport_calls = 0
+        last_error = "outcome_unknown"
+        for step in steps:
+            for member in step.members:
+                if _is_cancelled(cancel_event):
+                    return OrganizationExecutionResult(
+                        operation_id,
+                        OrganizationExecutionStatus.UNCERTAIN,
+                        "cancelled",
+                        0,
+                        transport_calls,
+                    )
+                if transport_calls >= self._max_transport_calls:
+                    return OrganizationExecutionResult(
+                        operation_id,
+                        OrganizationExecutionStatus.UNCERTAIN,
+                        "rate_limited",
+                        0,
+                        transport_calls,
+                    )
+                expectation = OrganizationStepExpectation(
+                    object_id=member.object_id,
+                    source_parent_id=member.source_parent_id,
+                    source_name=member.source_name,
+                    target_parent_id=member.target_parent_id,
+                    target_name=member.target_name,
+                )
+                transport_calls += 1
+                try:
+                    observed = await self._transport.read_object(member.object_id)
+                except asyncio.CancelledError:
+                    raise
+                except TimeoutError:
+                    observations.append(OrganizationStepCheck.UNCERTAIN)
+                    last_error = "timeout"
+                    continue
+                except Exception:  # noqa: BLE001 - remote details stay private
+                    observations.append(OrganizationStepCheck.UNCERTAIN)
+                    last_error = "outcome_unknown"
+                    continue
+                result = reconcile_uncertain(expectation, observed=observed)
+                observations.append(result.status)
+                if result.error_code is not None:
+                    last_error = result.error_code
+
+        if (
+            all(status is OrganizationStepCheck.ALREADY_APPLIED for status in observations)
+            and not any(step.replacement_object_id is not None for step in steps)
+        ):
+            first = steps[0].members[0]
+            try:
+                await self._operation_service.reconcile_organized(
+                    operation_id,
+                    expected_revision=expected_revision,
+                    source_directory_id=first.source_parent_id,
+                    target_directory_id=first.target_parent_id,
+                    directory_ids={
+                        directory_id
+                        for step in steps
+                        for directory_id in step.scope_directory_ids
+                    },
+                    now=now,
+                )
+            except OrganizationOperationConflict:
+                return OrganizationExecutionResult(
+                    operation_id,
+                    OrganizationExecutionStatus.LEASE_LOST,
+                    "lease_lost",
+                    0,
+                    transport_calls,
+                )
+            return OrganizationExecutionResult(
+                operation_id,
+                OrganizationExecutionStatus.ORGANIZED,
+                None,
+                len(steps),
+                transport_calls,
+            )
+
+        if all(status is OrganizationStepCheck.NOT_APPLIED for status in observations):
+            try:
+                await self._operation_service.reconcile_not_applied(
+                    operation_id,
+                    expected_revision=expected_revision,
+                    now=now,
+                )
+            except OrganizationOperationConflict:
+                return OrganizationExecutionResult(
+                    operation_id,
+                    OrganizationExecutionStatus.LEASE_LOST,
+                    "lease_lost",
+                    0,
+                    transport_calls,
+                )
+            return OrganizationExecutionResult(
+                operation_id,
+                OrganizationExecutionStatus.FAILED,
+                "remote_write_failed",
+                0,
+                transport_calls,
+            )
+        return OrganizationExecutionResult(
+            operation_id,
+            OrganizationExecutionStatus.UNCERTAIN,
+            last_error,
+            0,
+            transport_calls,
+        )
 
     async def _run_steps(
         self,

@@ -25,6 +25,19 @@ class WriteOperation(StrEnum):
     DELETE = "delete"
 
 
+class OrganizationWriteCapability(StrEnum):
+    """Capabilities frozen by the independently verified organization contract."""
+
+    READ_SCOPE = "read_scope"
+    MOVE = "move"
+    RENAME = "rename"
+    RECYCLE = "recycle"
+    POSTCONDITION = "postcondition"
+
+
+ORGANIZATION_CONTRACT_VERSION = "c03-organization-v1"
+
+
 class WriteStatus(StrEnum):
     SUCCESS = "success"
     FAILED = "failed"
@@ -70,6 +83,124 @@ class WriteGateDecision:
 
     def __repr__(self) -> str:
         return f"WriteGateDecision(allowed={self.allowed!r}, error_code={self.error_code!r})"
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class P115OrganizationContract:
+    """The small, explicit capability contract required by the live gateway.
+
+    A boolean environment flag is not sufficient evidence for a write.  The
+    contract records the versioned verification result and the exact methods
+    that were verified.  It intentionally has no credential or remote data.
+    """
+
+    verified: bool = False
+    capabilities: frozenset[OrganizationWriteCapability] = frozenset()
+    timeout_enforced: bool = False
+    version: str = ORGANIZATION_CONTRACT_VERSION
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.verified, bool) or not isinstance(
+            self.timeout_enforced, bool
+        ):
+            raise TypeError("invalid_organization_contract")
+        if self.version != ORGANIZATION_CONTRACT_VERSION:
+            raise ValueError("organization_contract_unverified")
+        try:
+            capabilities = frozenset(
+                capability
+                if isinstance(capability, OrganizationWriteCapability)
+                else OrganizationWriteCapability(capability)
+                for capability in self.capabilities
+            )
+        except (TypeError, ValueError):
+            raise ValueError("invalid_organization_contract") from None
+        object.__setattr__(self, "capabilities", capabilities)
+
+    def supports(self, operation: WriteOperation) -> bool:
+        required = {
+            WriteOperation.MOVE: {
+                OrganizationWriteCapability.READ_SCOPE,
+                OrganizationWriteCapability.MOVE,
+                OrganizationWriteCapability.POSTCONDITION,
+            },
+            WriteOperation.RENAME: {
+                OrganizationWriteCapability.READ_SCOPE,
+                OrganizationWriteCapability.RENAME,
+                OrganizationWriteCapability.POSTCONDITION,
+            },
+            WriteOperation.RECYCLE: {
+                OrganizationWriteCapability.READ_SCOPE,
+                OrganizationWriteCapability.RECYCLE,
+                OrganizationWriteCapability.POSTCONDITION,
+            },
+            WriteOperation.QUARANTINE: {
+                OrganizationWriteCapability.READ_SCOPE,
+                OrganizationWriteCapability.MOVE,
+                OrganizationWriteCapability.RENAME,
+                OrganizationWriteCapability.POSTCONDITION,
+            },
+            WriteOperation.RESTORE: {
+                OrganizationWriteCapability.READ_SCOPE,
+                OrganizationWriteCapability.MOVE,
+                OrganizationWriteCapability.RENAME,
+                OrganizationWriteCapability.POSTCONDITION,
+            },
+        }.get(operation)
+        return (
+            self.verified
+            and self.timeout_enforced
+            and required is not None
+            and required <= self.capabilities
+        )
+
+    def __repr__(self) -> str:
+        return (
+            "P115OrganizationContract("
+            f"verified={self.verified!r}, "
+            f"capability_count={len(self.capabilities)}, "
+            f"timeout_enforced={self.timeout_enforced!r})"
+        )
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class OrganizationWriteGate:
+    """Runtime gates for one confirmed organization operation."""
+
+    write_enabled: bool = False
+    plan_confirmed: bool = False
+    scope_confirmed: bool = False
+    contract: P115OrganizationContract = P115OrganizationContract()
+    permanent_delete_enabled: bool = False
+
+    def __repr__(self) -> str:
+        return (
+            "OrganizationWriteGate("
+            f"write_enabled={self.write_enabled!r}, "
+            f"plan_confirmed={self.plan_confirmed!r}, "
+            f"scope_confirmed={self.scope_confirmed!r}, "
+            f"permanent_delete_enabled={self.permanent_delete_enabled!r})"
+        )
+
+
+def evaluate_organization_write_gate(
+    gate: OrganizationWriteGate, operation: WriteOperation
+) -> WriteGateDecision:
+    """Fail closed before a live organization transport can be constructed."""
+
+    if not gate.write_enabled:
+        return WriteGateDecision(False, "write_disabled")
+    if not gate.contract.verified or not gate.contract.timeout_enforced:
+        return WriteGateDecision(False, "contract_unverified")
+    if not gate.scope_confirmed:
+        return WriteGateDecision(False, "scope_unverified")
+    if not gate.plan_confirmed:
+        return WriteGateDecision(False, "approval_required")
+    if operation is WriteOperation.DELETE and not gate.permanent_delete_enabled:
+        return WriteGateDecision(False, "permanent_delete_disabled")
+    if not gate.contract.supports(operation):
+        return WriteGateDecision(False, "capability_unverified")
+    return WriteGateDecision(True)
 
 
 def evaluate_write_gate(
@@ -296,8 +427,12 @@ class FakeP115LibraryWriteGateway:
 
 
 __all__ = [
+    "ORGANIZATION_CONTRACT_VERSION",
     "FakeP115LibraryWriteGateway",
+    "OrganizationWriteCapability",
+    "OrganizationWriteGate",
     "P115LibraryWriteGateway",
+    "P115OrganizationContract",
     "PostconditionResult",
     "PostconditionStatus",
     "PreparedWrite",
@@ -310,6 +445,7 @@ __all__ = [
     "WriteResult",
     "WriteStatus",
     "classify_write_exception",
+    "evaluate_organization_write_gate",
     "evaluate_write_gate",
     "prepare_delete",
     "prepare_mkdir",

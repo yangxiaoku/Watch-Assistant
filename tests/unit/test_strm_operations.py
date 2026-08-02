@@ -218,6 +218,36 @@ async def test_strm_timeout_and_cancelled_are_distinct_terminal_states(tmp_path:
         assert await service.recover_stale(max_age=timedelta(minutes=30), now=now) == 1
         assert (await service.get(timeout_operation.operation_id)).status == "timeout"
         assert (await service.cancel(cancelled_operation.operation_id)).status == "cancelled"
+        resumed = await service.resume(cancelled_operation.operation_id)
+        assert resumed.status == "queued"
+        restarted = await service.start(cancelled_operation.operation_id)
+        assert restarted.status == "running"
+    finally:
+        await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_operation_claim_start_fences_competing_resumers(tmp_path: Path):
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'operations.db'}")
+    await initialize_database(database.engine)
+    try:
+        service = StrmOperationService(database.session_factory)
+        operation = await service.create(
+            library_id="library-one",
+            source_scan_run_id="scan-claim",
+            kind=StrmOperationKind.FULL,
+        )
+        await service.cancel(operation.operation_id)
+        resumed = await service.resume(operation.operation_id)
+        assert resumed.status == "queued"
+
+        claims = await asyncio.gather(
+            service.claim_start(operation.operation_id),
+            service.claim_start(operation.operation_id),
+        )
+
+        assert sum(acquired for _, acquired in claims) == 1
+        assert {summary.status for summary, _ in claims} == {"running"}
     finally:
         await database.engine.dispose()
 

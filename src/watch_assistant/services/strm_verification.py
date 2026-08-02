@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from urllib.parse import urlsplit
@@ -240,6 +241,8 @@ def _content_valid(root: Path, relative_path: str, expected: str) -> bool:
         return False
     target = root.joinpath(*PurePosixPath(relative_path).parts)
     try:
+        if _has_symlink_component(target.parent):
+            return False
         target.parent.resolve(strict=True).relative_to(root)
     except (OSError, ValueError):
         return False
@@ -252,8 +255,11 @@ def _content_valid(root: Path, relative_path: str, expected: str) -> bool:
 
 
 def _readable_root(value: Path | str) -> Path:
+    root = Path(os.path.abspath(os.fspath(Path(value))))
+    if _has_symlink_component(root):
+        raise StrmVerificationError("strm_output_unavailable")
     try:
-        root = Path(value).resolve(strict=True)
+        root = root.resolve(strict=True)
     except OSError as error:
         raise StrmVerificationError("strm_output_unavailable") from error
     if not root.is_dir():
@@ -292,8 +298,18 @@ def _valid_relative_path(value: object) -> bool:
         return False
     path = PurePosixPath(value)
     return not path.is_absolute() and path.as_posix() == value and all(
-        part not in {"", ".", ".."} for part in path.parts
+        part not in {"", ".", ".."} and ":" not in part for part in path.parts
     )
+
+
+def _has_symlink_component(path: Path) -> bool:
+    current = Path(path.anchor) if path.anchor else Path.cwd()
+    parts = path.parts[1:] if path.anchor else path.parts
+    for part in parts:
+        current /= part
+        if current.is_symlink():
+            return True
+    return False
 
 
 __all__ = [

@@ -224,6 +224,20 @@ EVENT_CATALOG: dict[str, EventDefinition] = {
     "organize.operation.cancelled": _event(
         "organize.operation.cancelled", LogCategory.ORGANIZE, "整理操作已取消", "整理操作已取消，结果：{status}"
     ),
+    "organize.operation.reconciled": _event(
+        "organize.operation.reconciled",
+        LogCategory.ORGANIZE,
+        "整理结果已核对",
+        "整理操作已通过远端只读核对，结果：{status}",
+        suggestion="请继续关注后续库存和目录同步状态",
+    ),
+    "organize.operation.reconciled_not_applied": _event(
+        "organize.operation.reconciled_not_applied",
+        LogCategory.ORGANIZE,
+        "整理结果已核对为未执行",
+        "整理操作已核对为未执行，结果：{status}",
+        suggestion="确认计划仍然有效后，再重新确认并排队",
+    ),
     "organize.operation.cancel_requested": _event(
         "organize.operation.cancel_requested",
         LogCategory.ORGANIZE,

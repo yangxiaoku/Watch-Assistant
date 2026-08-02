@@ -2,6 +2,10 @@ import asyncio
 
 import pytest
 
+from watch_assistant.adapters.p115_library_write_contract import (
+    OrganizationWriteCapability,
+    P115OrganizationContract,
+)
 from watch_assistant.adapters.p115_organization_transport import (
     LiveP115OrganizationTransport,
     OfflineP115OrganizationTransport,
@@ -84,6 +88,22 @@ def _intent(
         source_name,
         target_parent_id,
         target_name,
+    )
+
+
+def _organization_contract() -> P115OrganizationContract:
+    return P115OrganizationContract(
+        verified=True,
+        timeout_enforced=True,
+        capabilities=frozenset(
+            {
+                OrganizationWriteCapability.READ_SCOPE,
+                OrganizationWriteCapability.MOVE,
+                OrganizationWriteCapability.RENAME,
+                OrganizationWriteCapability.RECYCLE,
+                OrganizationWriteCapability.POSTCONDITION,
+            }
+        ),
     )
 
 
@@ -205,6 +225,7 @@ async def test_live_transport_uses_scope_fixed_payloads_and_receipt_before_verif
         managed_directory_ids=("7000", "8000"),
         scope_confirmed=True,
         live_enabled=True,
+        organization_contract=_organization_contract(),
     )
 
     assert isinstance(transport, LiveP115OrganizationTransport)
@@ -250,6 +271,7 @@ async def test_live_transport_timeout_is_uncertain_and_is_not_retried():
         managed_directory_ids=("7000", "8000"),
         scope_confirmed=True,
         live_enabled=True,
+        organization_contract=_organization_contract(),
     )
 
     with pytest.raises(TimeoutError):
@@ -280,6 +302,7 @@ async def test_live_transport_recycle_uses_one_receipt():
         managed_directory_ids=("7000", "8000"),
         scope_confirmed=True,
         live_enabled=True,
+        organization_contract=_organization_contract(),
     )
 
     result = await transport.recycle("200", "8000", "movie.mkv")
@@ -310,6 +333,7 @@ async def test_live_transport_recycle_rejects_unknown_result_without_retry():
         managed_directory_ids=("7000", "8000"),
         scope_confirmed=True,
         live_enabled=True,
+        organization_contract=_organization_contract(),
     )
 
     result = await transport.recycle("200", "8000", "movie.mkv")
@@ -337,6 +361,53 @@ def test_live_transport_requires_explicit_gate_and_confirmed_scope():
             scope_confirmed=False,
             live_enabled=True,
         )
+    with pytest.raises(
+        P115OrganizationTransportError, match="organization_contract_required"
+    ):
+        create_live_p115_organization_transport(
+            client=object(),
+            call_executor=_live_call_executor,
+            intents=(_intent(),),
+            managed_directory_ids=("7000", "8000"),
+            scope_confirmed=True,
+            live_enabled=True,
+        )
+
+
+def test_live_transport_rejects_unverified_organization_contract():
+    with pytest.raises(P115OrganizationTransportError, match="contract_unverified"):
+        create_live_p115_organization_transport(
+            client=object(),
+            call_executor=_live_call_executor,
+            intents=(_intent(),),
+            managed_directory_ids=("7000", "8000"),
+            scope_confirmed=True,
+            live_enabled=True,
+            organization_contract=P115OrganizationContract(),
+        )
+
+    contract = P115OrganizationContract(
+        verified=True,
+        timeout_enforced=True,
+        capabilities=frozenset(
+            {
+                OrganizationWriteCapability.READ_SCOPE,
+                OrganizationWriteCapability.MOVE,
+                OrganizationWriteCapability.RENAME,
+                OrganizationWriteCapability.POSTCONDITION,
+            }
+        ),
+    )
+    transport = create_live_p115_organization_transport(
+        client=object(),
+        call_executor=_live_call_executor,
+        intents=(_intent(),),
+        managed_directory_ids=("7000", "8000"),
+        scope_confirmed=True,
+        live_enabled=True,
+        organization_contract=contract,
+    )
+    assert isinstance(transport, LiveP115OrganizationTransport)
 
 
 @pytest.mark.asyncio

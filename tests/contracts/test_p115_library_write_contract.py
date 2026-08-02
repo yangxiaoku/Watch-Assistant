@@ -6,6 +6,9 @@ from p115client import P115Client
 
 from watch_assistant.adapters.p115_library_write_contract import (
     FakeP115LibraryWriteGateway,
+    OrganizationWriteCapability,
+    OrganizationWriteGate,
+    P115OrganizationContract,
     PostconditionResult,
     PostconditionStatus,
     WriteGate,
@@ -13,6 +16,7 @@ from watch_assistant.adapters.p115_library_write_contract import (
     WritePostcondition,
     WriteStatus,
     classify_write_exception,
+    evaluate_organization_write_gate,
     evaluate_write_gate,
     prepare_delete,
     prepare_mkdir,
@@ -102,6 +106,62 @@ def test_all_write_gates_are_closed_by_default_and_delete_stays_disabled():
     )
     assert decision.allowed is False
     assert decision.error_code == "permanent_delete_disabled"
+
+
+def test_organization_gate_requires_verified_capabilities_and_scope():
+    contract = P115OrganizationContract(
+        verified=True,
+        timeout_enforced=True,
+        capabilities=frozenset(
+            {
+                OrganizationWriteCapability.READ_SCOPE,
+                OrganizationWriteCapability.MOVE,
+                OrganizationWriteCapability.RENAME,
+                OrganizationWriteCapability.POSTCONDITION,
+            }
+        ),
+    )
+    base = OrganizationWriteGate(
+        write_enabled=True,
+        plan_confirmed=True,
+        scope_confirmed=True,
+        contract=contract,
+    )
+
+    assert evaluate_organization_write_gate(base, WriteOperation.MOVE).allowed is True
+    assert evaluate_organization_write_gate(base, WriteOperation.RENAME).allowed is True
+    assert evaluate_organization_write_gate(
+        OrganizationWriteGate(
+            write_enabled=True,
+            plan_confirmed=True,
+            scope_confirmed=True,
+        ),
+        WriteOperation.MOVE,
+    ).error_code == "contract_unverified"
+    assert evaluate_organization_write_gate(
+        OrganizationWriteGate(
+            write_enabled=True,
+            plan_confirmed=True,
+            scope_confirmed=False,
+            contract=contract,
+        ),
+        WriteOperation.MOVE,
+    ).error_code == "scope_unverified"
+    assert evaluate_organization_write_gate(
+        OrganizationWriteGate(
+            write_enabled=True,
+            plan_confirmed=False,
+            scope_confirmed=True,
+            contract=contract,
+        ),
+        WriteOperation.MOVE,
+    ).error_code == "approval_required"
+    assert evaluate_organization_write_gate(base, WriteOperation.DELETE).error_code == (
+        "permanent_delete_disabled"
+    )
+    assert evaluate_organization_write_gate(base, WriteOperation.RECYCLE).error_code == (
+        "capability_unverified"
+    )
 
 
 @pytest.mark.asyncio
