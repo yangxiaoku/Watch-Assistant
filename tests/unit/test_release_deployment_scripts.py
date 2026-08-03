@@ -152,7 +152,10 @@ def test_verify_gate_scopes_pytest_collection_to_offline_test_roots():
     assert 'find "$test_root" -maxdepth 1 -type f -name \'test_*.py\'' in verify_gate
     assert 'find "$ROOT_DIR" -type f -name \'test_*.py\'' not in verify_gate
     assert "release-archive" not in verify_gate
-    assert "node_modules" not in verify_gate
+    find_commands = [
+        line for line in verify_gate.splitlines() if line.lstrip().startswith("find ")
+    ]
+    assert all("node_modules" not in line for line in find_commands)
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="bash is required")

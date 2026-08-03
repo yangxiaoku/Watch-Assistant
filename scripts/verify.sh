@@ -4,6 +4,10 @@ set -euo pipefail
 ROOT_DIR="$(git rev-parse --show-toplevel)"
 cd "$ROOT_DIR"
 
+# Prefer the checkout under test when the shared worktree virtualenv has an
+# editable install from another checkout.
+export PYTHONPATH="$ROOT_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
+
 if [[ -x "$ROOT_DIR/.venv/Scripts/python.exe" ]]; then
     PYTHON_BIN="$ROOT_DIR/.venv/Scripts/python.exe"
 elif [[ -x "$ROOT_DIR/.venv/bin/python" ]]; then
@@ -148,17 +152,39 @@ run_parallel_pytest_files integration-tests tests/integration 1
 run_stage contract-tests "$PYTHON_BIN" -m pytest -q tests/contracts
 run_stage ruff "$PYTHON_BIN" -m ruff check src tests scripts
 
-if [[ -n "${WATCH_ASSISTANT_FRONTEND_PM:-}" ]]; then
+if [[ -n "${WATCH_ASSISTANT_FRONTEND_NODE:-}" ]]; then
+    FRONTEND_PM=""
+elif [[ -n "${WATCH_ASSISTANT_FRONTEND_PM:-}" ]]; then
     FRONTEND_PM="$WATCH_ASSISTANT_FRONTEND_PM"
 elif command -v npm >/dev/null 2>&1; then
     FRONTEND_PM="$(command -v npm)"
 elif command -v pnpm >/dev/null 2>&1; then
     FRONTEND_PM="$(command -v pnpm)"
 else
-    echo "verification refused: npm or pnpm is required for frontend checks" >&2
-    exit 2
+    FRONTEND_PM=""
 fi
 
-run_stage frontend-tests "$FRONTEND_PM" --prefix frontend test -- --run
-run_stage frontend-build "$FRONTEND_PM" --prefix frontend run build
+if [[ -n "$FRONTEND_PM" ]]; then
+    run_stage frontend-tests "$FRONTEND_PM" --prefix frontend test -- --run
+    run_stage frontend-build "$FRONTEND_PM" --prefix frontend run build
+else
+    if [[ -n "${WATCH_ASSISTANT_FRONTEND_NODE:-}" ]]; then
+        FRONTEND_NODE="$WATCH_ASSISTANT_FRONTEND_NODE"
+    elif command -v node >/dev/null 2>&1; then
+        FRONTEND_NODE="$(command -v node)"
+    else
+        echo "verification refused: npm, pnpm, or node is required for frontend checks" >&2
+        exit 2
+    fi
+    if [[ ! -f "$ROOT_DIR/frontend/node_modules/vitest/vitest.mjs" || \
+        ! -f "$ROOT_DIR/frontend/node_modules/vite/bin/vite.js" ]]; then
+        echo "verification refused: frontend dependencies are required for direct node checks" >&2
+        exit 2
+    fi
+    (
+        cd "$ROOT_DIR/frontend"
+        run_stage frontend-tests "$FRONTEND_NODE" node_modules/vitest/vitest.mjs run
+        run_stage frontend-build "$FRONTEND_NODE" node_modules/vite/bin/vite.js build
+    )
+fi
 echo "Verification passed; evidence: $EVIDENCE_DIR"
