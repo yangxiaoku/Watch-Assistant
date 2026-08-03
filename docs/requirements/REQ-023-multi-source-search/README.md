@@ -18,9 +18,9 @@
 ## 当前集成验收状态
 
 - 本次核对的 `origin/codex/publish-main` 为
-  `caa74bbda5bfcea7315abd39ad83f0be7e042381`；该 SHA 的 [Verify CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30768232222)
-  和 [Systemd Release Package CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30768232230) 均成功。
-  这只证明当前代码和离线 CI 门禁通过，不证明真实来源或生产部署可用。
+  `04cae768d6149b8d934b927b58e10f1790f36717`。文中现有的 [Verify CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30768232222)
+  和 [Systemd Release Package CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30768232230) 对应此前的
+  `caa74bbda5bfcea7315abd39ad83f0be7e042381`，不能代替当前基线的重新验收。
 - 离线 readiness：已由 [PR #19](https://github.com/yangxiaoku/Watch-Assistant/pull/19) 和
   [PR #29](https://github.com/yangxiaoku/Watch-Assistant/pull/29) 合入，覆盖 Prowlarr 适配器契约、API Key 不回显、
   只读验证、分页、timeout/429/5xx 分类、来源状态退避/熔断、故障降级、跨源 BTIH 去重和安全 provenance；

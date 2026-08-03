@@ -77,6 +77,7 @@ class PanSouClient:
                 "/api/search",
                 params={"kw": keyword, "res": "all"},
                 timeout=self._timeout,
+                follow_redirects=False,
             )
             response.raise_for_status()
         except httpx.HTTPError as exc:
@@ -137,6 +138,7 @@ class PanSouClient:
                     "/api/check/links",
                     json=payload,
                     timeout=max(self._timeout, len(batch) * 12.0),
+                    follow_redirects=False,
                 )
                 response.raise_for_status()
                 body = response.json()

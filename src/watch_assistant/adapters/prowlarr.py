@@ -250,6 +250,7 @@ class ProwlarrClient:
                 "api/v1/search",
                 params=params,
                 timeout=self._timeout,
+                follow_redirects=False,
             )
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
@@ -373,13 +374,15 @@ def _normalise_infohash(value: object) -> str | None:
         return None
     value = value.strip()
     if _HEX_INFOHASH.fullmatch(value):
-        return value.casefold()
-    if not _BASE32_INFOHASH.fullmatch(value):
-        return None
-    try:
-        return base64.b32decode(value.upper()).hex()
-    except (binascii.Error, ValueError):
-        return None
+        normalized = value.casefold()
+    else:
+        if not _BASE32_INFOHASH.fullmatch(value):
+            return None
+        try:
+            normalized = base64.b32decode(value.upper()).hex()
+        except (binascii.Error, ValueError):
+            return None
+    return None if normalized == "0" * 40 else normalized
 
 
 def _infohash_from_magnet(value: str) -> str | None:

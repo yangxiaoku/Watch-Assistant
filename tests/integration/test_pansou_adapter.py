@@ -393,6 +393,40 @@ async def test_pansou_timeout_is_reported_without_request_details():
     assert "secret" not in str(error.value)
 
 
+async def test_pansou_does_not_follow_search_redirects():
+    requested_hosts: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested_hosts.append(request.url.host or "")
+        if len(requested_hosts) == 1:
+            return httpx.Response(
+                302,
+                headers={"Location": "https://redirect-target.test/api/search"},
+                request=request,
+            )
+        return httpx.Response(
+            200,
+            json={"code": 0, "data": {"merged_by_type": {"magnet": []}}},
+            request=request,
+        )
+
+    transport_client = httpx.AsyncClient(
+        base_url="https://pansou.test",
+        follow_redirects=True,
+        transport=httpx.MockTransport(handler),
+    )
+    client = PanSouClient("https://pansou.test", client=transport_client)
+
+    try:
+        with pytest.raises(PanSouError):
+            await client.search("Movie")
+    finally:
+        await client.aclose()
+        await transport_client.aclose()
+
+    assert requested_hosts == ["pansou.test"]
+
+
 @respx.mock
 async def test_pansou_rejects_unexpected_response_shape():
     respx.get("http://pansou.test/api/search").mock(
