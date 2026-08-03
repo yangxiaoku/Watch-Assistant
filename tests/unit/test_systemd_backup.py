@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import sqlite3
 from pathlib import Path
 
@@ -104,6 +105,48 @@ def test_systemd_backup_restore_requires_explicit_manual_confirmation(tmp_path: 
     assert connection.execute("SELECT value FROM sample").fetchone()[0] == "before"
     connection.close()
     assert (output_dir / str(manifest["database_file"])).is_file()
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["created_at", "size_bytes", "release", "schema_migrations", "integrity_check", "restore"],
+)
+def test_systemd_backup_rejects_incomplete_manifest(tmp_path: Path, field: str):
+    database = tmp_path / "watch-assistant.db"
+    output_dir = tmp_path / "backups"
+    _write_database(database)
+    manifest = backup.create_backup(
+        database=database,
+        output_dir=output_dir,
+        release=COMMIT,
+    )
+    manifest_path = output_dir / f"{manifest['backup_id']}.json"
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    payload.pop(field)
+    manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(backup.SystemdBackupError, match="manifest_invalid"):
+        backup.inspect_backup(manifest=manifest_path)
+
+
+def test_systemd_backup_preview_rejects_manifest_size_mismatch(tmp_path: Path):
+    database = tmp_path / "watch-assistant.db"
+    output_dir = tmp_path / "backups"
+    _write_database(database)
+    manifest = backup.create_backup(
+        database=database,
+        output_dir=output_dir,
+        release=COMMIT,
+    )
+    manifest_path = output_dir / f"{manifest['backup_id']}.json"
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    payload["size_bytes"] += 1
+    manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    preview = backup.inspect_backup(manifest=manifest_path)
+
+    assert preview["status"] == "invalid"
+    assert preview["size_valid"] is False
 
 
 def test_systemd_backup_rejects_unknown_release(tmp_path: Path):

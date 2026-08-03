@@ -61,7 +61,10 @@ def _load_json(path: Path) -> dict[str, Any]:
 
 
 def validate_version_commit_file(
-    path: Path, *, expected_commit: str | None = None
+    path: Path,
+    *,
+    expected_commit: str | None = None,
+    expected_branch: str | None = None,
 ) -> str:
     """Read one unambiguous release commit from a VERSION file."""
 
@@ -88,6 +91,14 @@ def validate_version_commit_file(
             raise ReleaseManifestError(
                 "version_commit_mismatch", "release VERSION commit mismatch"
             )
+    if expected_branch is not None:
+        if not isinstance(expected_branch, str) or not expected_branch:
+            raise _invalid("expected VERSION branch is invalid")
+        branch_lines = [line for line in lines if line.startswith("branch=")]
+        if branch_lines != [f"branch={expected_branch}"]:
+            raise ReleaseManifestError(
+                "version_branch_mismatch", "release VERSION branch mismatch"
+            )
     return commit
 
 
@@ -104,6 +115,7 @@ def _validate_build_payload(
     *,
     expected_commit: str | None = None,
     expected_short_commit: str | None = None,
+    expected_branch: str | None = None,
     expected_source_sha256: str | None = None,
     expected_frontend_sha256: str | None = None,
     require_build_metadata: bool,
@@ -168,6 +180,13 @@ def _validate_build_payload(
         branch = payload.get("branch")
         if not isinstance(branch, str) or not branch:
             raise _invalid("release manifest branch is invalid")
+        if expected_branch is not None:
+            if not isinstance(expected_branch, str) or not expected_branch:
+                raise _invalid("expected release manifest branch is invalid")
+            if branch != expected_branch:
+                raise ReleaseManifestError(
+                    "branch_mismatch", "release manifest branch mismatch"
+                )
 
     return payload
 
@@ -177,6 +196,7 @@ def validate_build_manifest_file(
     *,
     expected_commit: str | None = None,
     expected_short_commit: str | None = None,
+    expected_branch: str | None = None,
     expected_source_sha256: str | None = None,
     expected_frontend_sha256: str | None = None,
 ) -> dict[str, Any]:
@@ -187,6 +207,7 @@ def validate_build_manifest_file(
         payload,
         expected_commit=expected_commit,
         expected_short_commit=expected_short_commit,
+        expected_branch=expected_branch,
         expected_source_sha256=expected_source_sha256,
         expected_frontend_sha256=expected_frontend_sha256,
         require_build_metadata=True,
@@ -393,12 +414,14 @@ def _parser() -> argparse.ArgumentParser:
     verify.add_argument("--manifest", type=Path, required=True)
     verify.add_argument("--expected-commit", required=True)
     verify.add_argument("--expected-short-commit", required=True)
+    verify.add_argument("--expected-branch")
     verify.add_argument("--expected-source-sha256", required=True)
     verify.add_argument("--expected-frontend-sha256", required=True)
 
     version = commands.add_parser("verify-version", help="validate VERSION provenance")
     version.add_argument("--version-file", type=Path, required=True)
     version.add_argument("--expected-commit", required=True)
+    version.add_argument("--expected-branch")
 
     artifact = commands.add_parser(
         "write-artifact", help="write verification metadata"
@@ -433,12 +456,15 @@ def main(argv: list[str] | None = None) -> int:
                 args.manifest,
                 expected_commit=args.expected_commit,
                 expected_short_commit=args.expected_short_commit,
+                expected_branch=args.expected_branch,
                 expected_source_sha256=args.expected_source_sha256,
                 expected_frontend_sha256=args.expected_frontend_sha256,
             )
         elif args.command == "verify-version":
             validate_version_commit_file(
-                args.version_file, expected_commit=args.expected_commit
+                args.version_file,
+                expected_commit=args.expected_commit,
+                expected_branch=args.expected_branch,
             )
         elif args.command == "write-artifact":
             write_artifact_manifest(

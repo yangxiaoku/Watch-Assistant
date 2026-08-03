@@ -93,6 +93,31 @@ def test_build_manifest_validation_fails_closed(
         )
 
 
+def test_build_manifest_validation_can_require_publish_branch(tmp_path: Path):
+    manifest_path = tmp_path / "release-manifest.json"
+    release_manifest.write_build_manifest(
+        output=manifest_path,
+        commit=COMMIT,
+        short_commit=SHORT_COMMIT,
+        source_sha256=SOURCE_SHA256,
+        frontend_sha256=FRONTEND_SHA256,
+        build_time="2026-08-02T00:00:00Z",
+        branch="codex/test",
+    )
+
+    with pytest.raises(
+        release_manifest.ReleaseManifestError, match="branch mismatch"
+    ):
+        release_manifest.validate_build_manifest_file(
+            manifest_path,
+            expected_commit=COMMIT,
+            expected_short_commit=SHORT_COMMIT,
+            expected_branch="codex/publish-main",
+            expected_source_sha256=SOURCE_SHA256,
+            expected_frontend_sha256=FRONTEND_SHA256,
+        )
+
+
 def test_artifact_manifest_preserves_sha256sums_metadata(tmp_path: Path):
     version_file = tmp_path / "VERSION"
     manifest_path = tmp_path / "release-manifest.json"
@@ -146,6 +171,24 @@ def test_version_commit_validation_requires_expected_full_commit(tmp_path: Path)
     ):
         release_manifest.validate_version_commit_file(
             version_file, expected_commit="b" * 40
+        )
+
+
+def test_version_commit_validation_can_require_publish_branch(tmp_path: Path):
+    version_file = tmp_path / "VERSION"
+    version_file.write_text(
+        "commit=" + COMMIT + "\nbuild_time=2026-08-02T00:00:00Z\n"
+        "branch=codex/test\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        release_manifest.ReleaseManifestError, match="VERSION branch mismatch"
+    ):
+        release_manifest.validate_version_commit_file(
+            version_file,
+            expected_commit=COMMIT,
+            expected_branch="codex/publish-main",
         )
 
 

@@ -29,7 +29,9 @@ postdeploy_release = _load_script("postdeploy_release_check")
 def _write_version(path: Path, commit: str = "abcdef1") -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        f"commit={commit}\nbuild_time=2026-08-02T00:00:00Z\n", encoding="utf-8"
+        f"commit={commit}\nbuild_time=2026-08-02T00:00:00Z\n"
+        "branch=codex/publish-main\n",
+        encoding="utf-8",
     )
 
 
@@ -43,7 +45,7 @@ def _write_manifest(path: Path, commit: str) -> None:
                 "source_sha256": "a" * 64,
                 "frontend_sha256": "b" * 64,
                 "build_time": "2026-08-02T00:00:00Z",
-                "branch": "codex/test",
+                "branch": "codex/publish-main",
             }
         ),
         encoding="utf-8",
@@ -117,6 +119,7 @@ def test_release_build_and_verify_use_provenance_and_project_venv():
     assert "release_manifest.py" in build
     assert "release_manifest.py" in verify
     assert '"$ROOT_DIR/scripts/release_manifest.py"' in verify
+    assert '--expected-branch "$RELEASE_BRANCH"' in verify
     assert "cmp -s" in verify
     assert "jq" not in build.lower()
     assert "jq" not in verify.lower()
@@ -512,6 +515,25 @@ def test_systemd_release_switch_records_previous_metadata_and_rolls_back(
     saved = json.loads(state_file.read_text(encoding="utf-8"))
     assert saved["previous_current_target"] == str(old_root.resolve())
     assert saved["target_release"] == new_commit
+
+    state_file.write_text(
+        json.dumps(
+            {
+                key: value
+                for key, value in saved.items()
+                if key != "target_manifest_sha256"
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="rollback_state_invalid"):
+        systemd_release.rollback_release(
+            current_root=current_root,
+            release_env=release_env,
+            state_file=state_file,
+            allowed_releases_root=releases_root,
+        )
+    state_file.write_text(json.dumps(saved), encoding="utf-8")
 
     manifest_path = new_root / "release-manifest.json"
     manifest_bytes = manifest_path.read_bytes()
