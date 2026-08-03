@@ -275,6 +275,32 @@ def choose_existing_task(
     return max(candidates, key=lambda task: _as_utc(task.created_at), default=None)
 
 
+async def _verified_availability_evidence(
+    session: AsyncSession, task: Task
+) -> WorkflowEvidence | None:
+    """Return only availability evidence owned by this task and workflow."""
+
+    workflow_filter = (
+        WorkflowEvidence.workflow_id.is_(None)
+        if task.workflow_id is None
+        else WorkflowEvidence.workflow_id == task.workflow_id
+    )
+    return await session.scalar(
+        select(WorkflowEvidence)
+        .where(
+            WorkflowEvidence.task_id == task.id,
+            workflow_filter,
+            WorkflowEvidence.stage == WorkflowStageName.AVAILABILITY,
+            WorkflowEvidence.evidence_type == "availability_receipt",
+            WorkflowEvidence.source == EvidenceSource.READONLY_RECONCILIATION.value,
+            WorkflowEvidence.subject_id == task.id,
+            WorkflowEvidence.status == EvidenceStatus.AVAILABLE.value,
+            WorkflowEvidence.verified.is_(True),
+        )
+        .order_by(WorkflowEvidence.observed_at.desc(), WorkflowEvidence.id.desc())
+    )
+
+
 def prepare_manual_retry(task: Task) -> None:
     if task.state is TaskState.UNCERTAIN:
         raise InvalidRetryState("uncertain_requires_verification")
@@ -406,6 +432,13 @@ class TaskService:
                         and existing.workflow_id not in {None, workflow_id}
                     ):
                         raise WorkflowConflict("workflow_conflict")
+                    availability_evidence = None
+                    if existing.state is TaskState.AVAILABLE:
+                        availability_evidence = await _verified_availability_evidence(
+                            session, existing
+                        )
+                        if availability_evidence is None:
+                            raise WorkflowConflict("workflow_evidence_required")
                     if workflow_id is not None and existing.workflow_id is None:
                         existing.workflow_id = workflow_id
                         task_evidence = list(
@@ -427,28 +460,16 @@ class TaskService:
                             "task",
                             existing.id,
                         )
-                        if existing.state is TaskState.AVAILABLE:
-                            evidence = await session.scalar(
-                                select(WorkflowEvidence)
-                                .where(
-                                    WorkflowEvidence.task_id == existing.id,
-                                    WorkflowEvidence.workflow_id == workflow_id,
-                                    WorkflowEvidence.stage
-                                    == WorkflowStageName.AVAILABILITY,
-                                    WorkflowEvidence.evidence_type
-                                    == "availability_receipt",
-                                    WorkflowEvidence.source
-                                    == EvidenceSource.READONLY_RECONCILIATION.value,
-                                    WorkflowEvidence.status
-                                    == EvidenceStatus.AVAILABLE.value,
-                                    WorkflowEvidence.verified.is_(True),
-                                )
-                                .order_by(WorkflowEvidence.observed_at.desc())
+                        if (
+                            existing.state is TaskState.AVAILABLE
+                            and availability_evidence is not None
+                        ):
+                            await advance_availability_from_evidence(
+                                session,
+                                workflow_id,
+                                existing.id,
+                                availability_evidence,
                             )
-                            if evidence is not None:
-                                await advance_availability_from_evidence(
-                                    session, workflow_id, existing.id, evidence
-                                )
                         await session.commit()
                     return existing, True
 
