@@ -1,3 +1,4 @@
+import sys
 from argparse import Namespace
 from pathlib import Path
 
@@ -50,6 +51,27 @@ def test_runtime_environment_bridges_native_library_path(monkeypatch):
     environment = _runtime_environment()
 
     assert environment["DYLD_FALLBACK_LIBRARY_PATH"] == "/tmp/native:/tmp/old"
+
+
+def test_runtime_environment_discovers_bundled_macos_libraries(monkeypatch, tmp_path: Path):
+    dependencies = tmp_path / "dependencies"
+    native = dependencies / "native/poppler/poppler/lib"
+    native.mkdir(parents=True)
+    (native / "libssl.3.dylib").touch()
+    (native / "libcrypto.3.dylib").touch()
+    base_executable = dependencies / "python/bin/python3.12"
+    base_executable.parent.mkdir(parents=True)
+    base_executable.touch()
+
+    monkeypatch.delenv("WATCH_ASSISTANT_NATIVE_LIBRARY_PATH", raising=False)
+    monkeypatch.delenv("DYLD_FALLBACK_LIBRARY_PATH", raising=False)
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(sys, "_base_executable", str(base_executable), raising=False)
+
+    environment = _runtime_environment()
+
+    assert environment["WATCH_ASSISTANT_NATIVE_LIBRARY_PATH"] == str(native)
+    assert environment["DYLD_FALLBACK_LIBRARY_PATH"] == str(native)
 
 
 def test_dry_run_lists_fixture_and_strm_only_for_execute(tmp_path: Path):
