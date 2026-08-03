@@ -70,6 +70,10 @@ class OrganizationOperationLeaseUnavailable(ValueError):
     pass
 
 
+class _OrganizationCompletionScopeError(OrganizationOperationConflict):
+    pass
+
+
 @dataclass(frozen=True, slots=True, repr=False)
 class OrganizationOperationSummary:
     operation_id: str
@@ -727,14 +731,16 @@ class OrganizationOperationService:
             if operation is None:
                 raise OrganizationOperationNotFound
             try:
+                normalized_directory_ids = await self._validate_completion_scope(
+                    operation_id,
+                    source_directory_id=source_directory_id,
+                    target_directory_id=target_directory_id,
+                    directory_ids=directory_ids,
+                )
                 await self._outbox_service.enqueue_directory_dirty(
                     session,
                     operation_id=operation_id,
-                    directory_ids=(
-                        (source_directory_id, target_directory_id)
-                        if directory_ids is None
-                        else directory_ids
-                    ),
+                    directory_ids=normalized_directory_ids,
                 )
                 await self._record_history(
                     session,
@@ -751,6 +757,9 @@ class OrganizationOperationService:
                     reason="organization_reconciled",
                 )
                 await session.commit()
+            except _OrganizationCompletionScopeError:
+                await session.rollback()
+                raise
             except OrganizationOutboxError:
                 await session.rollback()
                 raise OrganizationOperationConflict(
@@ -858,18 +867,20 @@ class OrganizationOperationService:
                 )
                 if result.rowcount != 1:
                     raise OrganizationOperationLeaseUnavailable("lease_is_not_owned")
-                await self._outbox_service.enqueue_directory_dirty(
-                    session,
-                    operation_id=operation_id,
-                    directory_ids=(
-                        (source_directory_id, target_directory_id)
-                        if directory_ids is None
-                        else directory_ids
-                    ),
-                )
                 operation = await session.get(OrganizationOperation, operation_id)
                 if operation is None:
                     raise OrganizationOperationNotFound
+                normalized_directory_ids = await self._validate_completion_scope(
+                    operation_id,
+                    source_directory_id=source_directory_id,
+                    target_directory_id=target_directory_id,
+                    directory_ids=directory_ids,
+                )
+                await self._outbox_service.enqueue_directory_dirty(
+                    session,
+                    operation_id=operation_id,
+                    directory_ids=normalized_directory_ids,
+                )
                 await self._record_history(
                     session,
                     operation,
@@ -888,6 +899,9 @@ class OrganizationOperationService:
             except OrganizationOperationLeaseUnavailable:
                 await session.rollback()
                 raise
+            except _OrganizationCompletionScopeError:
+                await session.rollback()
+                raise
             except Exception as exc:  # noqa: BLE001 - rollback and map locally
                 await session.rollback()
                 if isinstance(exc, OrganizationOutboxError):
@@ -901,6 +915,44 @@ class OrganizationOperationService:
             summary = _summary(operation)
         await self._audit("organize.operation.completed", "整理操作已完成")
         return summary
+
+    async def _validate_completion_scope(
+        self,
+        operation_id: str,
+        *,
+        source_directory_id: str,
+        target_directory_id: str,
+        directory_ids: Iterable[str] | None,
+    ) -> tuple[str, ...]:
+        """Keep completion and dirty events inside the immutable plan scope."""
+
+        values = (source_directory_id, target_directory_id)
+        if directory_ids is None:
+            requested = values
+        elif isinstance(directory_ids, (str, bytes)):
+            raise _OrganizationCompletionScopeError("invalid_directory_scope")
+        else:
+            try:
+                requested = tuple(directory_ids)
+            except TypeError:
+                raise _OrganizationCompletionScopeError(
+                    "invalid_directory_scope"
+                ) from None
+
+        try:
+            for directory_id in (*values, *requested):
+                _validate_identifier(
+                    directory_id, "invalid_directory_id", maximum=128
+                )
+        except ValueError as error:
+            raise _OrganizationCompletionScopeError(str(error)) from None
+        if not requested:
+            raise _OrganizationCompletionScopeError("invalid_directory_scope")
+
+        plan_scope = await self.plan_execution_scope(operation_id)
+        if plan_scope is None or not set(values).union(requested) <= plan_scope:
+            raise _OrganizationCompletionScopeError("directory_scope_unverified")
+        return tuple(dict.fromkeys(requested))
 
     async def _record_history(
         self,
