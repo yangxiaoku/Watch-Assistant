@@ -202,3 +202,60 @@ async def test_high_value_business_events_are_filtered_and_notified(tmp_path):
         await tmdb.aclose()
         await pansou.aclose()
         await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_failure_notification_matrix_covers_inspection_organization_and_strm(
+    tmp_path,
+):
+    client, database, tmdb, pansou, app = await _make_client(tmp_path)
+    try:
+        await app.state.settings_service.log_event(
+            "inspection.batch_failed",
+            fields={"status": "failed", "error_code": "metadata_timeout"},
+            counts={"hidden_count": 2},
+        )
+        await app.state.settings_service.log_event(
+            "organize.automation.blocked",
+            fields={
+                "status": "blocked",
+                "error_code": "scope_not_verified",
+                "source_directory_id": "source-test",
+                "message_zh": "范围尚未校验",
+            },
+        )
+        await app.state.settings_service.log_event(
+            "organize.operation.failed",
+            fields={"status": "failed", "error_code": "target_conflict"},
+            task_id="operation-test",
+        )
+        await app.state.settings_service.log_event(
+            "strm.verify.completed",
+            fields={"status": "issues"},
+            counts={"count": 3},
+            resource_type="library",
+            resource_id="library-test",
+        )
+        await app.state.settings_service.log_event(
+            "strm.verify.completed",
+            fields={"status": "verified"},
+            counts={"count": 3},
+            resource_type="library",
+            resource_id="library-test",
+        )
+
+        response = await client.get("/api/v1/notifications")
+        assert response.status_code == 200
+        items = response.json()["items"]
+        assert {item["event_code"] for item in items} == {
+            "inspection.batch_failed",
+            "organize.automation.blocked",
+            "organize.operation.failed",
+            "strm.verify.completed",
+        }
+        assert all(item["severity"] == "error" for item in items)
+    finally:
+        await client.aclose()
+        await tmdb.aclose()
+        await pansou.aclose()
+        await database.engine.dispose()
