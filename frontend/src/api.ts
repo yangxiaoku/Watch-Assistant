@@ -5,6 +5,7 @@ import type {
   OrganizationScheduleActionResponse,
   HomeCatalogResponse,
   InspectionBatchResponse,
+  LibraryScanSummary,
   LogCategory,
   LoggingSettingsResponse,
   ContentPolicyResponse,
@@ -794,6 +795,12 @@ export class ApiClient {
       body: JSON.stringify({ idempotency_key: createIdempotencyKey() }),
     });
     return response;
+  }
+
+  async getLibraryScan(libraryId: string, scanRunId: string): Promise<LibraryScanSummary> {
+    return this.request<LibraryScanSummary>(
+      `/api/v1/libraries/${encodeURIComponent(libraryId)}/scans/${encodeURIComponent(scanRunId)}`,
+    );
   }
 
   async createOrganizationPreview(

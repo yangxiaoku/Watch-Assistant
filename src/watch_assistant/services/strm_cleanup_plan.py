@@ -291,7 +291,11 @@ class StrmCleanupPlanService:
                 if planned_state not in {"ready", "missing"}:
                     raise StrmCleanupPlanError("cleanup_plan_blocked")
                 manifest = manifests.get(item["manifest_id"])
-                if manifest is None or manifest.cloud_file_id != item["cloud_file_id"]:
+                if (
+                    manifest is None
+                    or manifest.cloud_file_id != item["cloud_file_id"]
+                    or manifest.local_relative_path != item["local_relative_path"]
+                ):
                     raise StrmCleanupPlanError("cleanup_plan_changed")
                 state = _managed_state(
                     root,

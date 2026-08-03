@@ -350,6 +350,31 @@ describe("ApiClient season and inspection requests", () => {
     });
   });
 
+  it("reads the durable library scan status endpoint", async () => {
+    const response = {
+      run_id: "scan-1",
+      state: "running",
+      complete: false,
+      snapshot_revision: null,
+      pages_read: 1,
+      items_seen: 1,
+      added_count: 1,
+      changed_count: 0,
+      removed_count: 0,
+      attempts: 1,
+      state_message_zh: "扫描中",
+      error_code: null,
+      error_message_zh: null,
+      cancel_requested: false,
+    };
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(response), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const api = new ApiClient();
+
+    await expect(api.getLibraryScan("main", "scan/1")).resolves.toEqual(response);
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/v1/libraries/main/scans/scan%2F1");
+  });
+
   it("exposes durable STRM cancellation and resume endpoints", async () => {
     const response = { operation_id: "strm_op_1", library_id: "main", source_scan_run_id: "scan-1", workflow_id: null, kind: "full", status: "cancelled", generated: 0, unchanged: 0, skipped: 0, failed: 0, retired: 0, error_code: "strm_operation_cancelled", created_at: "2026-08-01T00:00:00Z", started_at: "2026-08-01T00:00:00Z", finished_at: "2026-08-01T00:00:01Z" };
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(response), { status: 200 }));

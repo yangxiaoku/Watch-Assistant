@@ -358,6 +358,8 @@ class LiveP115OrganizationTransport:
         scope_confirmed: bool,
         timeout_seconds: float = 30.0,
         live_enabled: bool = False,
+        write_enabled: bool = False,
+        plan_confirmed: bool = False,
         organization_contract: P115OrganizationContract | None = None,
     ) -> None:
         if live_enabled is not True:
@@ -382,6 +384,8 @@ class LiveP115OrganizationTransport:
         self._managed_directory_ids = managed_ids
         self._scope_confirmed = scope_confirmed
         self._timeout_seconds = float(timeout_seconds)
+        self._write_enabled = write_enabled
+        self._plan_confirmed = plan_confirmed
         self._c03 = P115C03LiveTransport(client, call_executor=call_executor)
         self._client = client
         self._call_executor = call_executor
@@ -518,8 +522,8 @@ class LiveP115OrganizationTransport:
     def _require_write(self, operation: WriteOperation) -> None:
         decision = evaluate_organization_write_gate(
             OrganizationWriteGate(
-                write_enabled=True,
-                plan_confirmed=True,
+                write_enabled=self._write_enabled is True,
+                plan_confirmed=self._plan_confirmed is True,
                 scope_confirmed=self._scope_confirmed,
                 contract=self._organization_contract,
             ),
@@ -561,6 +565,8 @@ def create_live_p115_organization_transport(
     scope_confirmed: bool,
     timeout_seconds: float = 30.0,
     live_enabled: bool = False,
+    write_enabled: bool = False,
+    plan_confirmed: bool = False,
     organization_contract: P115OrganizationContract | None = None,
 ) -> LiveP115OrganizationTransport:
     """Build a live transport only after the application opens its write gate."""
@@ -573,6 +579,8 @@ def create_live_p115_organization_transport(
         scope_confirmed=scope_confirmed,
         timeout_seconds=timeout_seconds,
         live_enabled=live_enabled,
+        write_enabled=write_enabled,
+        plan_confirmed=plan_confirmed,
         organization_contract=organization_contract,
     )
 

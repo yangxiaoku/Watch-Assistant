@@ -12,6 +12,7 @@ import type {
   MediaLibraryResponse,
   EmptyDirectoryCleanupPlanResponse,
   CapabilityAvailability,
+  LibraryScanSummary,
   StrmCleanupPlanResponse,
   StrmGenerationResponse,
   StrmManifestItemResponse,
@@ -62,6 +63,7 @@ const pendingCleanup = ref<"strm" | "empty" | "operation" | null>(null);
 const operationDetailOpen = ref(false);
 let operationPollGeneration = 0;
 let operationPollTimer: number | null = null;
+  let scanPollGeneration = 0;
 let libraryRequestGeneration = 0;
 let mediaRequestGeneration = 0;
 let manifestRequestGeneration = 0;
@@ -143,6 +145,59 @@ function openCapabilitySettings(capability: CapabilityAvailability | undefined, 
 
 function setError(exception: unknown, fallback: string) {
   error.value = exception instanceof ApiError ? exception.message : fallback;
+}
+
+function isTerminalScan(scanSummary: LibraryScanSummary): boolean {
+  return ["completed", "failed", "cancelled"].includes(scanSummary.state);
+}
+
+function updateLibraryScan(libraryId: string, scanSummary: LibraryScanSummary): void {
+  libraries.value = libraries.value.map((item) => item.library_id === libraryId
+    ? { ...item, latest_scan: scanSummary }
+    : item);
+}
+
+async function pollLibraryScan(
+  libraryId: string,
+  initial: LibraryScanSummary,
+  generation: number,
+): Promise<LibraryScanSummary | null> {
+  let current = initial;
+  for (let attempt = 0; attempt < 120; attempt += 1) {
+    if (generation !== scanPollGeneration || selectedId.value !== libraryId) return null;
+    if (isTerminalScan(current)) return current;
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 500));
+    if (generation !== scanPollGeneration || selectedId.value !== libraryId) return null;
+    current = await props.api.getLibraryScan(libraryId, current.run_id);
+    updateLibraryScan(libraryId, current);
+  }
+  return current;
+}
+
+async function monitorLibraryScan(libraryId: string, initial: LibraryScanSummary): Promise<LibraryScanSummary | null> {
+  if (isTerminalScan(initial)) return initial;
+  const generation = ++scanPollGeneration;
+  const final = await pollLibraryScan(libraryId, initial, generation);
+  if (final && generation === scanPollGeneration && selectedId.value === libraryId && isTerminalScan(final)) {
+    await loadOutputs(libraryId);
+  }
+  return final;
+}
+
+function scanNotice(scanSummary: LibraryScanSummary): string {
+  if (scanSummary.state === "completed" && scanSummary.complete) {
+    return `扫描完成，共发现 ${scanSummary.items_seen} 项`;
+  }
+  if (scanSummary.state === "completed") {
+    return "扫描已结束但快照未完成，STRM 和清理仍保持阻断";
+  }
+  if (scanSummary.state === "failed") {
+    return scanSummary.error_message_zh || "扫描失败，请查看状态后重试";
+  }
+  if (scanSummary.state === "cancelled") {
+    return scanSummary.error_message_zh || "扫描已取消，已保存的分页结果可以继续使用";
+  }
+  return "扫描仍在进行，状态会持续更新；完成后才能执行 STRM 和清理";
 }
 
 async function loadLibraries(preferredId = selectedId.value) {
@@ -308,6 +363,7 @@ async function initializeLibrary() {
 }
 
 function selectLibrary(library: MediaLibraryResponse) {
+  scanPollGeneration += 1;
   operationPollGeneration += 1;
   operationDetailRequestGeneration += 1;
   mediaRequestGeneration += 1;
@@ -390,10 +446,12 @@ async function scanLibrary() {
   error.value = "";
   notice.value = "";
   try {
-    const result = await props.api.scanLibrary(selected.value.library_id);
-    libraries.value = libraries.value.map((item) => item.library_id === selected.value?.library_id ? { ...item, latest_scan: result } : item);
-    await loadOutputs(selected.value.library_id);
-    notice.value = result.complete ? `扫描完成，共发现 ${result.items_seen} 项` : "扫描未完成，清理操作已保持阻断";
+    const libraryId = selected.value.library_id;
+    const result = await props.api.scanLibrary(libraryId);
+    updateLibraryScan(libraryId, result);
+    const final = await monitorLibraryScan(libraryId, result);
+    if (!final || selectedId.value !== libraryId) return;
+    notice.value = scanNotice(final);
   } catch (exception) {
     setError(exception, "媒体库扫描失败");
   } finally {
@@ -737,6 +795,7 @@ function formatBytes(value: number | null) {
 
 onMounted(() => { void loadLibraries(); });
 onBeforeUnmount(() => {
+  scanPollGeneration += 1;
   operationPollGeneration += 1;
   if (operationPollTimer !== null) window.clearTimeout(operationPollTimer);
 });
