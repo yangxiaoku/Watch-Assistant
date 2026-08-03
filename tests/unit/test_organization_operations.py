@@ -434,6 +434,32 @@ async def test_claim_next_finishes_legacy_non_executable_operation(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error_code",
+    ("write_disabled", "scope_unverified", "approval_required"),
+)
+async def test_finish_persists_worker_gate_failures_as_failed(tmp_path, error_code):
+    case_dir = tmp_path / error_code
+    case_dir.mkdir()
+    database = await _database(case_dir)
+    service = OrganizationOperationService(database.session_factory)
+    operation = await _operation(database, key=f"gate-{error_code}")
+    lease = await service.claim(operation.operation_id, expected_revision=1)
+
+    finished = await service.finish(
+        operation.operation_id,
+        expected_revision=lease.revision,
+        lease_token=lease.lease_token,
+        status=OrganizationOperationStatus.FAILED,
+        error_code=error_code,
+    )
+
+    assert finished.status is OrganizationOperationStatus.FAILED
+    assert finished.error_code == error_code
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_claim_next_marks_expired_organizing_operation_uncertain(tmp_path):
     database = await _database(tmp_path)
     service = OrganizationOperationService(database.session_factory)
