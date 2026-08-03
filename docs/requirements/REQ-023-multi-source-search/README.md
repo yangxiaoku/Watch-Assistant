@@ -17,11 +17,8 @@
 
 ## 当前集成验收状态
 
-- 本次核对的 `origin/codex/publish-main` 为
-  `a5c38cdbd18499b9f9344dfed19f00fecf37301d`，对应合入 [PR #50](https://github.com/yangxiaoku/Watch-Assistant/pull/50)；first-parent 已确认 #44-#50 均合入。
-  当前 [Verify CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30791757202) 和
-  [Systemd Release Package CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30791757200) 均显示完成且成功，
-  但 CI 不能替代 live indexer 验收。
+- 本次核对的发布 commit 必须由 `git fetch --all --prune` 后执行 `git rev-parse origin/codex/publish-main` 动态解析；本文不硬编码当前 SHA。
+  最近合入 PR #50 和 #51 仅作为历史记录；Verify 与 Systemd Release Package 必须按同一 `head_sha` 重新核对，但 CI 不能替代 live indexer 验收。
 - 离线 readiness：已由 [PR #19](https://github.com/yangxiaoku/Watch-Assistant/pull/19)、
   [PR #29](https://github.com/yangxiaoku/Watch-Assistant/pull/29) 和当前基线的 [PR #45](https://github.com/yangxiaoku/Watch-Assistant/pull/45) 加固，覆盖 Prowlarr 适配器契约、API Key 不回显、
   只读验证、分页、timeout/429/5xx 分类、来源状态退避/熔断、故障降级、跨源 BTIH 去重和安全 provenance；

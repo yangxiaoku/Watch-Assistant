@@ -12,11 +12,8 @@
 
 ## 当前发布核对
 
-本次核对的 `origin/codex/publish-main` 为
-`a5c38cdbd18499b9f9344dfed19f00fecf37301d`；对应合入 [PR #50](https://github.com/yangxiaoku/Watch-Assistant/pull/50)，first-parent 已确认 #44-#50 均合入。
-该 SHA 的 [Verify CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30791757202) 和
-[Systemd Release Package CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30791757200) 均显示完成且成功，
-其中发布包校验和 systemd 发布脚本门禁通过。CI 只证明代码、配置和发布包门禁通过，不证明已经部署、升级或回滚过。
+本次核对的发布 commit 必须由 `git fetch --all --prune` 后执行 `git rev-parse origin/codex/publish-main` 动态解析；本文不硬编码当前 SHA。
+最近合入 PR #50 和 #51 仅作为历史记录。Verify 与 Systemd Release Package 必须按同一 `head_sha` 重新核对；CI 只证明对应快照的代码、配置和发布包门禁通过，不证明已经部署、升级或回滚过。
 本次未核对生产服务器的运行模式、实际版本、数据目录或线上健康状态，需求仍为“待验收”。
 
 ## 1. 一句话定义
