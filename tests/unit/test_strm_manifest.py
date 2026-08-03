@@ -609,6 +609,61 @@ async def test_cleanup_plan_apply_requires_digest_and_retires_only_managed_file(
         await database.engine.dispose()
 
 
+async def test_cleanup_plan_apply_rejects_manifest_path_changed_after_review(
+    tmp_path: Path,
+):
+    database = await _database(tmp_path)
+    try:
+        manifest_service = StrmManifestService(database.session_factory)
+        await manifest_service.generate(
+            "library-strm",
+            source_scan_run_id="scan-strm",
+            output_root=tmp_path / "output",
+            playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+        )
+        await _add_removed_episode_scan(database)
+        plan_service = StrmCleanupPlanService(database.session_factory)
+        plan = await plan_service.create_plan(
+            library_id="library-strm",
+            source_scan_run_id="scan-strm-2",
+            output_root=tmp_path / "output",
+            playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+        )
+
+        expected = (tmp_path / "output/Show/Episode.strm").read_bytes()
+        relocated = tmp_path / "output/Relocated/Episode.strm"
+        relocated.parent.mkdir(parents=True)
+        relocated.write_bytes(expected)
+        async with database.session_factory() as session:
+            manifest = await session.scalar(
+                select(StrmManifestEntry).where(
+                    StrmManifestEntry.cloud_file_id == "100"
+                )
+            )
+            assert manifest is not None
+            manifest.local_relative_path = "Relocated/Episode.strm"
+            await session.commit()
+
+        with pytest.raises(StrmCleanupPlanError, match="cleanup_plan_changed"):
+            await plan_service.apply_plan(
+                plan_id=plan.plan_id,
+                expected_revision=plan.revision,
+                digest=plan.plan_hash,
+                confirm=True,
+                idempotency_key="cleanup-path-changed",
+                output_root=tmp_path / "output",
+                playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+            )
+
+        assert (tmp_path / "output/Show/Episode.strm").read_bytes() == expected
+        assert relocated.read_bytes() == expected
+        items, total = await manifest_service.list_current("library-strm")
+        assert total == 1
+        assert items[0].local_relative_path == "Relocated/Episode.strm"
+    finally:
+        await database.engine.dispose()
+
+
 async def test_cleanup_plan_apply_fails_closed_when_terminal_idempotency_key_is_missing(
     tmp_path: Path,
 ):
