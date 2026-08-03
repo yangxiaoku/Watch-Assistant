@@ -31,23 +31,21 @@ Cookie 文件或应用内托管设备。分享推送、影视库整理、删除�
 
 - 唯一发布分支是 `codex/publish-main`。本次 2026-08-03 核对先执行了 `git fetch --all --prune`；
   `git rev-parse origin/codex/publish-main` 返回
-  `caa74bbda5bfcea7315abd39ad83f0be7e042381`，对应已合入的
-  [PR #42](https://github.com/yangxiaoku/Watch-Assistant/pull/42)。这个 SHA 是本次核对快照，后续发布仍须重新解析，
+  `80a7d4e6a2e17adec30158c3c60b252ebde60c35`，对应已合入的
+  [PR #49](https://github.com/yangxiaoku/Watch-Assistant/pull/49)。first-parent 同时确认 #44-#49 均已合入；这个 SHA 是本次核对快照，后续发布仍须重新解析，
   不能沿用旧报告中的 commit。
-- 该 SHA 的 [Verify CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30768232222) 和
-  [Systemd Release Package CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30768232230) 均为
-  `success`，其中 `compose`、`verify` 和 `package` job 均成功。CI 只证明离线门禁、Compose 配置和发布包校验通过，
+- 当前提交对应的公开 [Verify CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30785412110) 和
+  [Systemd Release Package CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30785412085) 均显示完成且成功。
+  这些工作流只证明离线门禁、Compose/发布包校验和发布脚本门禁通过，
   不证明已经部署或生产健康检查已通过。
-- 当前代码包含此前合入的 STRM/扫描/任务租约、p115 fail-closed、库存/组织门禁、前端工作台和发布门禁，
-  以及 [PR #39](https://github.com/yangxiaoku/Watch-Assistant/pull/39) 的前端回归修复、
-  [PR #40](https://github.com/yangxiaoku/Watch-Assistant/pull/40) 的 systemd 发布脚本门禁、
-  [PR #41](https://github.com/yangxiaoku/Watch-Assistant/pull/41) 的不完整扫描 fail-closed 加固和 PR #42 的任务 worker 租约加固。
-  对应代码与离线/受管夹具证据不等于生产整理、生产 STRM、播放兼容性、清理或部署验收。
-- Prowlarr 的离线 readiness 已由 [PR #19](https://github.com/yangxiaoku/Watch-Assistant/pull/19) 和
-  [PR #29](https://github.com/yangxiaoku/Watch-Assistant/pull/29) 合入，契约证据见
+- 当前 first-parent 合入记录如下：#44 `7f675a9`（P1 审查）、#45 `cf542bd`（Prowlarr/PanSou 只读 readiness）、
+  #46 `b4ecd08`（库存与整理范围门禁）、#47 `9d5e30e`（STRM 清理与提交门禁）、#48 `e1c4d24`（前端工作台验收）和
+  #49 `80a7d4e`（发布脚本 readiness gate）。这些改动只代表代码、离线或受管夹具边界，不等于生产整理、生产 STRM、播放兼容性、清理或部署验收。
+- Prowlarr 的离线 readiness 已由 [PR #19](https://github.com/yangxiaoku/Watch-Assistant/pull/19)、
+  [PR #29](https://github.com/yangxiaoku/Watch-Assistant/pull/29) 和当前基线的 [PR #45](https://github.com/yangxiaoku/Watch-Assistant/pull/45) 加固，契约证据见
   [Prowlarr 契约测试](tests/contracts/test_prowlarr_contract.py)。这只证明适配器契约、错误分类和 fail-closed 边界；
   live indexer 可搜索验收仍未完成，真实来源仍被 Internet Archive 上游 timeout 阻断，不能表述为已配置可搜索来源。
-- p115 远程可用性证据和回归测试只证明受保护的只读/失败关闭路径；本轮未执行真实写入、整理、STRM 播放/清理或生产部署。
+- p115 目前可引用的远程证据仍限于受管夹具、只读或失败关闭路径；本轮未执行生产远程验收、真实写入、真实媒体库整理、STRM 播放/清理或生产部署。
   这些能力继续保持未验收、未上线，不能由 CI 成功或 Cookie readiness 推断为生产可用。
 - 对应离线证据包括 [STRM manifest 单测](tests/unit/test_strm_manifest.py)、[空目录计划单测](tests/unit/test_empty_directory_cleanup_plan.py)、
   [空目录清理契约测试](tests/contracts/test_empty_directory_cleanup_contract.py)、[组织用户流集成测试](tests/integration/test_organization_user_flow.py)、

@@ -18,9 +18,12 @@
 ## 当前集成验收状态
 
 - 本次核对的 `origin/codex/publish-main` 为
-  `04cae768d6149b8d934b927b58e10f1790f36717`。此前记录的 CI 链接对应旧基线，不能代替当前基线的重新验收。
-- 离线 readiness：已由 [PR #19](https://github.com/yangxiaoku/Watch-Assistant/pull/19) 和
-  [PR #29](https://github.com/yangxiaoku/Watch-Assistant/pull/29) 合入，覆盖 Prowlarr 适配器契约、API Key 不回显、
+  `80a7d4e6a2e17adec30158c3c60b252ebde60c35`，对应合入 [PR #49](https://github.com/yangxiaoku/Watch-Assistant/pull/49)；first-parent 已确认 #44-#49 均合入。
+  当前 [Verify CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30785412110) 和
+  [Systemd Release Package CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30785412085) 均显示完成且成功，
+  但 CI 不能替代 live indexer 验收。
+- 离线 readiness：已由 [PR #19](https://github.com/yangxiaoku/Watch-Assistant/pull/19)、
+  [PR #29](https://github.com/yangxiaoku/Watch-Assistant/pull/29) 和当前基线的 [PR #45](https://github.com/yangxiaoku/Watch-Assistant/pull/45) 加固，覆盖 Prowlarr 适配器契约、API Key 不回显、
   只读验证、分页、timeout/429/5xx 分类、来源状态退避/熔断、故障降级、跨源 BTIH 去重和安全 provenance；
   证据见 [Prowlarr 契约测试](../../../tests/contracts/test_prowlarr_contract.py)、
   [Prowlarr 适配器测试](../../../tests/integration/test_prowlarr_adapter.py) 和
