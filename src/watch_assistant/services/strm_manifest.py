@@ -222,14 +222,15 @@ class StrmManifestService:
             await _commit_fenced(session, fence)
             mutations.clear()
         except asyncio.CancelledError:
-            await self._recover_commit_failure(
+            committed = await self._recover_commit_failure(
                 session,
                 fence,
                 expectation,
                 mutations,
                 cancelled=True,
             )
-            raise
+            if not committed:
+                raise
         except SQLAlchemyError:
             await self._recover_commit_failure(
                 session,
@@ -247,7 +248,7 @@ class StrmManifestService:
         mutations: list[_FileMutation],
         *,
         cancelled: bool,
-    ) -> None:
+    ) -> bool:
         rollback_failed = False
         try:
             await asyncio.shield(session.rollback())
@@ -260,7 +261,7 @@ class StrmManifestService:
         observed = await self._observe_manifest_commit(expectation)
         if observed is True:
             mutations.clear()
-            return
+            return True
         lease_current = await fence.observe_database_lease(self._session_factory)
         if lease_current is False:
             try:
@@ -282,6 +283,7 @@ class StrmManifestService:
             raise StrmManifestError("uncertain")
         if not cancelled:
             raise StrmManifestError("strm_operation_failed")
+        return False
 
     async def _observe_manifest_commit(
         self,

@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import watch_assistant.services.strm_cleanup_plan as strm_cleanup_plan_module
 import watch_assistant.services.strm_manifest as strm_manifest_module
 from watch_assistant.db import create_database, initialize_database
 from watch_assistant.library_models import (
@@ -16,6 +17,7 @@ from watch_assistant.library_models import (
     LibraryScanEntry,
     LibraryScanRun,
     MediaLibrary,
+    StrmCleanupPlan,
     StrmManifestEntry,
 )
 from watch_assistant.models import StrmOperation, StrmOperationKind, StrmOperationStatus
@@ -220,6 +222,39 @@ async def test_successful_manifest_commit_disarms_file_compensation(
     )
 
     assert mutations == []
+
+
+async def test_manifest_commit_cancel_after_durable_commit_keeps_success(
+    tmp_path: Path, monkeypatch
+):
+    database = await _database(tmp_path)
+    try:
+        async def commit_then_cancel(session, _fence):
+            await session.commit()
+            raise asyncio.CancelledError
+
+        monkeypatch.setattr(
+            strm_manifest_module, "_commit_fenced", commit_then_cancel
+        )
+        summary = await StrmManifestService(database.session_factory).generate(
+            "library-strm",
+            source_scan_run_id="scan-strm",
+            output_root=tmp_path / "output",
+            playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+        )
+
+        assert summary.generated == 1
+        assert (tmp_path / "output/Show/Episode.strm").exists()
+        async with database.session_factory() as session:
+            manifest = await session.scalar(
+                select(StrmManifestEntry).where(
+                    StrmManifestEntry.cloud_file_id == "100"
+                )
+            )
+            assert manifest is not None
+            assert manifest.status == "verified"
+    finally:
+        await database.engine.dispose()
 
 
 async def test_generation_requires_complete_current_scan(tmp_path: Path):
@@ -570,6 +605,115 @@ async def test_cleanup_plan_apply_requires_digest_and_retires_only_managed_file(
         items, total = await manifest_service.list_current("library-strm")
         assert total == 0
         assert items == ()
+    finally:
+        await database.engine.dispose()
+
+
+async def test_cleanup_plan_terminal_commit_uses_revision_cas(tmp_path: Path):
+    database = await _database(tmp_path)
+    try:
+        manifest_service = StrmManifestService(database.session_factory)
+        await manifest_service.generate(
+            "library-strm",
+            source_scan_run_id="scan-strm",
+            output_root=tmp_path / "output",
+            playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+        )
+        await _add_removed_episode_scan(database)
+        plan_service = StrmCleanupPlanService(database.session_factory)
+        plan = await plan_service.create_plan(
+            library_id="library-strm",
+            source_scan_run_id="scan-strm-2",
+            output_root=tmp_path / "output",
+            playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+        )
+
+        async with database.session_factory() as first_session:
+            first_plan = await first_session.get(StrmCleanupPlan, plan.plan_id)
+            assert first_plan is not None
+            first_plan.status = "applied"
+            first_plan.revision += 1
+            first_plan.applied_idempotency_key = "cleanup-cas-first"
+            first_plan.applied_retired = 1
+            await plan_service._commit_plan(
+                first_session,
+                _LeaseFence(None, None),
+                first_plan,
+                idempotency_key="cleanup-cas-first",
+                retired=1,
+                mutations=[],
+            )
+
+        async with database.session_factory() as stale_session:
+            stale_plan = await stale_session.get(StrmCleanupPlan, plan.plan_id)
+            assert stale_plan is not None
+            stale_plan.status = "applied"
+            stale_plan.revision += 1
+            stale_plan.applied_idempotency_key = "cleanup-cas-second"
+            stale_plan.applied_retired = 1
+            with pytest.raises(StrmCleanupPlanError, match="cleanup_plan_changed"):
+                await plan_service._commit_plan(
+                    stale_session,
+                    _LeaseFence(None, None),
+                    stale_plan,
+                    idempotency_key="cleanup-cas-second",
+                    retired=1,
+                    mutations=[],
+                )
+            await stale_session.rollback()
+
+        current = await plan_service.get_plan(plan.plan_id)
+        assert current.status == "applied"
+        async with database.session_factory() as session:
+            row = await session.get(StrmCleanupPlan, plan.plan_id)
+            assert row is not None
+            assert row.applied_idempotency_key == "cleanup-cas-first"
+            assert row.revision == plan.revision + 1
+    finally:
+        await database.engine.dispose()
+
+
+async def test_cleanup_commit_cancel_after_durable_commit_keeps_success(
+    tmp_path: Path, monkeypatch
+):
+    database = await _database(tmp_path)
+    try:
+        manifest_service = StrmManifestService(database.session_factory)
+        await manifest_service.generate(
+            "library-strm",
+            source_scan_run_id="scan-strm",
+            output_root=tmp_path / "output",
+            playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+        )
+        await _add_removed_episode_scan(database)
+        plan_service = StrmCleanupPlanService(database.session_factory)
+        plan = await plan_service.create_plan(
+            library_id="library-strm",
+            source_scan_run_id="scan-strm-2",
+            output_root=tmp_path / "output",
+            playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+        )
+
+        async def commit_then_cancel(session, _fence):
+            await session.commit()
+            raise asyncio.CancelledError
+
+        monkeypatch.setattr(
+            strm_cleanup_plan_module, "_commit_fenced", commit_then_cancel
+        )
+        result = await plan_service.apply_plan(
+            plan_id=plan.plan_id,
+            expected_revision=plan.revision,
+            digest=plan.plan_hash,
+            confirm=True,
+            idempotency_key="cleanup-cancel-after-commit",
+            output_root=tmp_path / "output",
+            playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+        )
+
+        assert result.retired == 1
+        assert result.plan.status == "applied"
+        assert not (tmp_path / "output/Show/Episode.strm").exists()
     finally:
         await database.engine.dispose()
 
