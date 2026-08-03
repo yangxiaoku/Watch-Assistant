@@ -17,13 +17,18 @@
 
 ## 当前集成验收状态
 
+- 本次核对的 `origin/codex/publish-main` 为
+  `caa74bbda5bfcea7315abd39ad83f0be7e042381`；该 SHA 的 [Verify CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30768232222)
+  和 [Systemd Release Package CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30768232230) 均成功。
+  这只证明当前代码和离线 CI 门禁通过，不证明真实来源或生产部署可用。
 - 离线 readiness：已由 [PR #19](https://github.com/yangxiaoku/Watch-Assistant/pull/19) 和
   [PR #29](https://github.com/yangxiaoku/Watch-Assistant/pull/29) 合入，覆盖 Prowlarr 适配器契约、API Key 不回显、
   只读验证、分页、timeout/429/5xx 分类、来源状态退避/熔断、故障降级、跨源 BTIH 去重和安全 provenance；
   证据见 [Prowlarr 契约测试](../../../tests/contracts/test_prowlarr_contract.py)、
   [Prowlarr 适配器测试](../../../tests/integration/test_prowlarr_adapter.py) 和
   [来源设置 API 测试](../../../tests/integration/test_prowlarr_settings_api.py)。
-- live/生产验收：未完成。真实来源验证当前被 Internet Archive 上游 timeout 阻断，尚无已验收的可搜索真实来源配置，
+- live indexer 可搜索/生产验收：未完成。上述离线契约测试不证明存在可搜索的真实 indexer，也不证明 Prowlarr 已在生产配置。
+  当前真实来源验证仍被 Internet Archive 上游 timeout 阻断，尚无已验收的可搜索真实来源配置，
   也未完成生产来源对照或部署验收，因此本需求仍未上线。
 
 ## 2. 背景与问题

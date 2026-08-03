@@ -53,12 +53,16 @@ docs/requirements/
 外部依赖或完整验收证据仍未完成。测试夹具不能替代生产验收。总索引与各需求主文档的状态
 必须保持一致。
 
-当前发布核对：唯一发布分支为 `codex/publish-main`。发布前执行 `git fetch origin`，再用
-`git rev-parse origin/codex/publish-main` 获取实际最新基线；本索引不固定可能过期的 commit，
-需求状态也不等同于已打包、已部署或已完成生产验收。
+当前发布核对：唯一发布分支为 `codex/publish-main`。本次 2026-08-03 执行
+`git fetch --all --prune` 后，`git rev-parse origin/codex/publish-main` 返回
+`caa74bbda5bfcea7315abd39ad83f0be7e042381`，对应合入 [PR #42](https://github.com/yangxiaoku/Watch-Assistant/pull/42)。
+该 SHA 只是本次核对快照，后续发布必须重新解析，不能引用旧报告中的 commit；需求状态也不等同于已打包、已部署或已完成生产验收。
 
-当前基线已合入 PR #31、#32、#33、#34、#35、#36 和文档状态修正 PR #37；PR #31-#37 均已合入当前发布基线。
-这些合入记录和离线测试不改变生产整理、真实媒体库、STRM 播放/清理、p115 live 或完整生产验收状态，永久删除继续关闭。
+该 SHA 的 [Verify CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30768232222) 和
+[Systemd Release Package CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30768232230) 均为 `success`，
+对应的 `compose`、`verify` 和 `package` job 均成功。CI 只证明离线门禁、Compose 配置和发布包校验通过，不能证明生产部署。
+PR #31-#42 已合入本次核对的发布基线；这些合入记录和离线测试不改变生产整理、真实媒体库、STRM 播放/清理、p115 live
+或完整生产验收状态，永久删除继续关闭。
 
 2026-08-02 状态复核是历史审查快照，锁定 `codex/integration-20260802@2c342d9`；该分支
 不是 `codex/publish-main`。复核期间集成 ref 已前进到 `3afc8d3`，随后随 PR #30 合入发布基线；

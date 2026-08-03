@@ -31,6 +31,10 @@
 
 ## 当前集成进展（2026-08-03）
 
+- 本次核对的 `origin/codex/publish-main` 为
+  `caa74bbda5bfcea7315abd39ad83f0be7e042381`；该 SHA 的 [Verify CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30768232222)
+  和 [Systemd Release Package CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30768232230) 均成功。
+  CI 证据不等于生产媒体库配置、生产扫描或生产部署证据。
 - 当前发布基线已合入 [PR #30](https://github.com/yangxiaoku/Watch-Assistant/pull/30) 的持久扫描游标 v2、
   页数/总量一致性、可恢复 worker 目录范围恢复和不完整快照门禁；扫描范围或断点无法证明时，库存不会被当作完整事实。
 - 相关回归覆盖见 [扫描范围恢复](../../../tests/integration/test_library_scan_scope_recovery.py)、
@@ -40,7 +44,7 @@
   [组织用户流集成测试](../../../tests/integration/test_organization_user_flow.py) 和
   [组织计划单测](../../../tests/unit/test_organization_plan.py)；这些改动仍不代表已部署或完成生产库存验收。
 - 生产媒体库配置、应用内新鲜完整扫描、目录增量事件和整理/隔离/恢复统一账本仍是阻断项，
-  因此本需求继续保持“开发中”。
+  生产部署和真实 115 写入也未在本次核对中验证，因此本需求继续保持“开发中”。
 
 ## 3. 功能范围
 
