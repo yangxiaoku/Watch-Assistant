@@ -375,7 +375,6 @@ class TaskWorker:
                 raise
             if lease_lost.is_set() or not await self._lease_is_active(lease):
                 raise _LeaseClaimLost
-            return result
         finally:
             await self._stop_lease_heartbeat(heartbeat_stop, heartbeat_task)
             if operation_task is not None and not operation_task.done():
@@ -383,6 +382,9 @@ class TaskWorker:
             if operation_task is not None:
                 with suppress(asyncio.CancelledError, Exception):
                     await operation_task
+        if lease_lost.is_set():
+            raise _LeaseClaimLost
+        return result
 
     async def _stop_lease_heartbeat(
         self, stop_event: asyncio.Event, heartbeat_task: asyncio.Task[None]

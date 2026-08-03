@@ -11,7 +11,7 @@ from watch_assistant.adapters.tmdb import TmdbClient
 from watch_assistant.app import create_app
 from watch_assistant.crypto import SecretCrypto
 from watch_assistant.db import create_database, initialize_database
-from watch_assistant.models import Resource, Task, WorkflowStage
+from watch_assistant.models import Resource, Task, TaskState, WorkflowStage
 from watch_assistant.schemas import (
     EvidenceSource,
     EvidenceStatus,
@@ -298,6 +298,9 @@ async def test_workflow_stage_rejects_children_from_another_workflow(tmp_path):
         assert rejected_task.json()["error"]["code"] == "workflow_conflict"
 
         async with database.session_factory() as session:
+            stored_task = await session.get(Task, foreign_task_id)
+            assert stored_task is not None
+            stored_task.state = TaskState.AVAILABLE
             evidence = await record_evidence(
                 session,
                 workflow_id=foreign_id,
