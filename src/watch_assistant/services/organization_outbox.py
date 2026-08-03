@@ -367,6 +367,7 @@ class DirectoryDirtyOutboxService:
                         error_code=None if status == DIRTY_CONSUMED else error_code,
                         updated_at=current,
                     )
+                    .execution_options(synchronize_session=False)
                 )
                 event_result = await session.execute(
                     update(DirectoryDirtyEvent)
@@ -383,6 +384,7 @@ class DirectoryDirtyOutboxService:
                         error_code=error_code,
                         updated_at=current,
                     )
+                    .execution_options(synchronize_session=False)
                 )
                 if generation_result.rowcount != 1 or event_result.rowcount != 1:
                     await session.rollback()
