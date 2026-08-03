@@ -67,10 +67,35 @@ def _json_dump(value: Mapping[str, Any]) -> str:
     return json.dumps(value, ensure_ascii=True, sort_keys=True, indent=2) + "\n"
 
 
+def _native_library_path() -> str | None:
+    configured = os.environ.get("WATCH_ASSISTANT_NATIVE_LIBRARY_PATH")
+    if configured:
+        return configured
+    if sys.platform != "darwin":
+        return None
+
+    base_executable = Path(getattr(sys, "_base_executable", sys.executable))
+    if not base_executable.is_absolute():
+        base_executable = Path.cwd() / base_executable
+    runtime_root = (base_executable.parent / "../..").resolve()
+    candidates = (
+        Path("/opt/homebrew/opt/openssl@3/lib"),
+        Path("/usr/local/opt/openssl@3/lib"),
+        runtime_root / "native/poppler/poppler/lib",
+    )
+    for candidate in candidates:
+        if (candidate / "libssl.3.dylib").is_file() and (
+            candidate / "libcrypto.3.dylib"
+        ).is_file():
+            return str(candidate)
+    return None
+
+
 def _runtime_environment() -> dict[str, str]:
     environment = dict(os.environ)
-    native_library_path = environment.get("WATCH_ASSISTANT_NATIVE_LIBRARY_PATH")
+    native_library_path = _native_library_path()
     if native_library_path:
+        environment["WATCH_ASSISTANT_NATIVE_LIBRARY_PATH"] = native_library_path
         environment["DYLD_FALLBACK_LIBRARY_PATH"] = (
             f"{native_library_path}"
             f"{os.pathsep}{environment['DYLD_FALLBACK_LIBRARY_PATH']}"
