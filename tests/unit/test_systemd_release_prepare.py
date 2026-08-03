@@ -52,7 +52,9 @@ def _write_release(
     (release_root / "config").mkdir()
     (release_root / "deploy").mkdir()
     (release_root / "VERSION").write_text(
-        f"commit={commit}\nbuild_time=2026-08-02T00:00:00Z\n", encoding="utf-8"
+        f"commit={commit}\nbuild_time=2026-08-02T00:00:00Z\n"
+        "branch=codex/publish-main\n",
+        encoding="utf-8",
     )
     (release_root / "release-manifest.json").write_text(
         json.dumps(
@@ -63,7 +65,7 @@ def _write_release(
                 "source_sha256": "a" * 64,
                 "frontend_sha256": "b" * 64,
                 "build_time": "2026-08-02T00:00:00Z",
-                "branch": "codex/test",
+                "branch": "codex/publish-main",
             }
         ),
         encoding="utf-8",

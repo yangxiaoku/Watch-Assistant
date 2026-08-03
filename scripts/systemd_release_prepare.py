@@ -162,6 +162,7 @@ def _validate_release_manifest(path: Path, expected_release: str) -> None:
             path,
             expected_commit=expected_release,
             expected_short_commit=expected_release[:7],
+            expected_branch="codex/publish-main",
         )
     except ReleaseManifestError as exc:
         raise ReleasePrepareError(f"release_manifest_{exc.code}") from None
@@ -338,7 +339,9 @@ def prepare_release(
 
     try:
         actual = validate_version_commit_file(
-            validated_paths["VERSION"], expected_commit=expected
+            validated_paths["VERSION"],
+            expected_commit=expected,
+            expected_branch="codex/publish-main",
         )
     except ReleaseManifestError as exc:
         if exc.code == "version_commit_mismatch":

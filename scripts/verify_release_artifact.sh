@@ -119,7 +119,8 @@ if [[ ! -f "$VERSION_FILE" ]]; then
 fi
 if ! "$RELEASE_SMOKE_PYTHON" "$ROOT_DIR/scripts/release_manifest.py" verify-version \
     --version-file "$VERSION_FILE" \
-    --expected-commit "$EXPECTED_COMMIT"; then
+    --expected-commit "$EXPECTED_COMMIT" \
+    --expected-branch "$RELEASE_BRANCH"; then
     echo "release artifact refused: VERSION does not identify exactly the expected commit" >&2
     exit 1
 fi
@@ -144,6 +145,7 @@ if ! "$RELEASE_SMOKE_PYTHON" "$ROOT_DIR/scripts/release_manifest.py" verify-buil
     --manifest "$MANIFEST_FILE" \
     --expected-commit "$EXPECTED_COMMIT" \
     --expected-short-commit "$SHORT_COMMIT" \
+    --expected-branch "$RELEASE_BRANCH" \
     --expected-source-sha256 "$SOURCE_SHA256" \
     --expected-frontend-sha256 "$FRONTEND_SHA256"; then
     echo "release artifact refused: release manifest validation failed" >&2

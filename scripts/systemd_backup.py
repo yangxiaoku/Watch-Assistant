@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import sqlite3
 import tempfile
@@ -24,6 +25,11 @@ if SRC_ROOT.is_dir():
 from watch_assistant.release_metadata import normalize_full_release, read_release_commit
 
 _MANIFEST_SCHEMA_VERSION = 1
+_MANIFEST_RESTORE_POLICY = "preview_or_explicit_manual_command_only"
+_BACKUP_ID_PATTERN = re.compile(
+    r"^watch-assistant-[0-9]{8}-[0-9]{6}-[0-9a-f]{8}$"
+)
+_SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
 
 class SystemdBackupError(ValueError):
@@ -79,10 +85,15 @@ def _atomic_write_json(path: Path, payload: dict[str, object]) -> None:
 
 
 def _integrity_ok(path: Path) -> bool:
-    connection = sqlite3.connect(str(path), uri=False)
+    try:
+        connection = sqlite3.connect(str(path), uri=False)
+    except sqlite3.Error:
+        return False
     try:
         result = connection.execute("PRAGMA integrity_check").fetchone()
         return bool(result and result[0] == "ok")
+    except sqlite3.Error:
+        return False
     finally:
         connection.close()
 
@@ -99,6 +110,45 @@ def _schema_migrations(path: Path) -> list[str]:
         return [row[0] for row in rows if isinstance(row[0], str)]
     finally:
         connection.close()
+
+
+def _validate_manifest_payload(payload: object) -> tuple[str, str, int, str]:
+    if not isinstance(payload, dict):
+        raise SystemdBackupError("manifest_invalid")
+    if payload.get("schema_version") != _MANIFEST_SCHEMA_VERSION:
+        raise SystemdBackupError("manifest_invalid")
+
+    backup_id = payload.get("backup_id")
+    database_name = payload.get("database_file")
+    created_at = payload.get("created_at")
+    size_bytes = payload.get("size_bytes")
+    expected_digest = payload.get("sha256")
+    release = normalize_full_release(payload.get("release"))
+    migrations = payload.get("schema_migrations")
+    if (
+        not isinstance(backup_id, str)
+        or _BACKUP_ID_PATTERN.fullmatch(backup_id) is None
+        or not isinstance(database_name, str)
+        or Path(database_name).name != database_name
+        or database_name != f"{backup_id}.db"
+        or not isinstance(created_at, str)
+        or not created_at
+        or not isinstance(size_bytes, int)
+        or size_bytes < 0
+        or not isinstance(expected_digest, str)
+        or _SHA256_PATTERN.fullmatch(expected_digest) is None
+        or release is None
+        or not isinstance(migrations, list)
+        or any(not isinstance(item, str) for item in migrations)
+        or payload.get("integrity_check") != "ok"
+        or payload.get("restore") != _MANIFEST_RESTORE_POLICY
+    ):
+        raise SystemdBackupError("manifest_invalid")
+    try:
+        datetime.fromisoformat(created_at)
+    except ValueError as exc:
+        raise SystemdBackupError("manifest_invalid") from exc
+    return backup_id, database_name, size_bytes, release
 
 
 def _release_from_inputs(release: str | None, version_file: Path | None) -> str:
@@ -158,7 +208,7 @@ def create_backup(
             "release": normalized_release,
             "schema_migrations": migrations,
             "integrity_check": "ok",
-            "restore": "preview_or_explicit_manual_command_only",
+            "restore": _MANIFEST_RESTORE_POLICY,
         }
         _atomic_write_json(manifest, payload)
         _apply_retention(output_dir, retention_count)
@@ -206,29 +256,26 @@ def inspect_backup(
         payload = json.loads(manifest.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise SystemdBackupError("manifest_invalid") from exc
-    if not isinstance(payload, dict) or payload.get("schema_version") != _MANIFEST_SCHEMA_VERSION:
-        raise SystemdBackupError("manifest_invalid")
-    database_name = payload.get("database_file")
-    expected_digest = payload.get("sha256")
-    if (
-        not isinstance(database_name, str)
-        or Path(database_name).name != database_name
-        or not isinstance(expected_digest, str)
-    ):
-        raise SystemdBackupError("manifest_invalid")
+    backup_id, database_name, expected_size, _release = _validate_manifest_payload(
+        payload
+    )
     database = manifest.parent / database_name
     if not database.is_file():
         raise SystemdBackupError("backup_database_missing")
-    sha256_valid = _sha256(database) == expected_digest
-    integrity_ok = _integrity_ok(database) if sha256_valid else False
+    try:
+        size_valid = database.stat().st_size == expected_size
+        sha256_valid = _sha256(database) == payload["sha256"]
+        integrity_ok = (
+            size_valid and sha256_valid and _integrity_ok(database)
+        )
+    except OSError as exc:
+        raise SystemdBackupError("backup_database_unreadable") from exc
     current_migrations = set(
         _schema_migrations(current_database)
         if current_database is not None and current_database.is_file()
         else []
     )
-    backup_migrations = {
-        item for item in payload.get("schema_migrations", []) if isinstance(item, str)
-    }
+    backup_migrations = set(payload["schema_migrations"])
     missing_migrations = sorted(current_migrations - backup_migrations)
     status = "ready"
     if not sha256_valid or not integrity_ok:
@@ -237,7 +284,8 @@ def inspect_backup(
         status = "incompatible"
     return {
         "status": status,
-        "backup_id": payload.get("backup_id"),
+        "backup_id": backup_id,
+        "size_valid": size_valid,
         "sha256_valid": sha256_valid,
         "integrity_ok": integrity_ok,
         "migration_compatible": not missing_migrations,
