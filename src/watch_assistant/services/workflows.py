@@ -10,7 +10,11 @@ from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from watch_assistant.models import (
+    DirectoryDirtyGeneration,
+    InspectionBatch,
+    OrganizationOperation,
     Resource,
+    StrmOperation,
     Task,
     Workflow,
     WorkflowEvidence,
@@ -333,6 +337,13 @@ class WorkflowService:
                 requested_child_id = patch.child_id or stage.child_id
                 if requested_child_type is None or requested_child_id is None:
                     raise WorkflowConflict("workflow_conflict")
+                await _validate_child_ownership(
+                    session,
+                    workflow_id,
+                    stage_name,
+                    child_type=requested_child_type,
+                    child_id=requested_child_id,
+                )
                 before_binding = (stage.child_type, stage.child_id)
                 _ensure_child_binding(
                     stage,
@@ -879,6 +890,13 @@ async def link_child(
     )
     if stage is None:
         raise WorkflowNotFound(f"{workflow_id}:{stage_name.value}")
+    await _validate_child_ownership(
+        session,
+        workflow_id,
+        stage_name,
+        child_type=child_type,
+        child_id=child_id,
+    )
     stages = list(
         await session.scalars(
             select(WorkflowStage).where(WorkflowStage.workflow_id == workflow_id)
@@ -930,6 +948,13 @@ async def sync_child_stage(
     )
     if stage is None:
         raise WorkflowNotFound(f"{workflow_id}:{stage_name.value}")
+    await _validate_child_ownership(
+        session,
+        workflow_id,
+        stage_name,
+        child_type=child_type,
+        child_id=child_id,
+    )
     stages = list(
         await session.scalars(
             select(WorkflowStage).where(WorkflowStage.workflow_id == workflow_id)
@@ -1040,6 +1065,63 @@ def _ensure_child_binding(
         return
     if stage.child_type != child_type or stage.child_id != child_id:
         raise WorkflowConflict(conflict_code)
+
+
+async def _validate_child_ownership(
+    session: AsyncSession,
+    workflow_id: str,
+    stage_name: WorkflowStageName,
+    *,
+    child_type: str,
+    child_id: str,
+) -> None:
+    """Require every workflow child binding to name a real scoped child."""
+
+    if child_type == "resource":
+        valid = stage_name is WorkflowStageName.DISCOVERY and (
+            await session.get(Resource, child_id)
+        ) is not None
+    elif child_type == "task":
+        task = await session.get(Task, child_id)
+        valid = stage_name is WorkflowStageName.PUSH and (
+            task is not None and task.workflow_id == workflow_id
+        )
+    elif child_type == "inspection_batch":
+        batch = await session.get(InspectionBatch, child_id)
+        valid = stage_name is WorkflowStageName.INSPECTION and (
+            batch is not None and batch.workflow_id == workflow_id
+        )
+    elif child_type == "workflow_evidence":
+        evidence = await session.get(WorkflowEvidence, child_id)
+        valid = stage_name is WorkflowStageName.AVAILABILITY and (
+            evidence is not None
+            and evidence.workflow_id == workflow_id
+            and evidence.stage is WorkflowStageName.AVAILABILITY
+        )
+    elif child_type == "organization_operation":
+        operation = await session.get(OrganizationOperation, child_id)
+        valid = stage_name is WorkflowStageName.ORGANIZATION and (
+            operation is not None and operation.workflow_id == workflow_id
+        )
+    elif child_type == "strm_operation":
+        operation = await session.get(StrmOperation, child_id)
+        valid = stage_name is WorkflowStageName.STRM and (
+            operation is not None and operation.workflow_id == workflow_id
+        )
+    elif child_type == "strm_dirty_generation":
+        generation = await session.get(DirectoryDirtyGeneration, child_id)
+        operation = (
+            await session.get(OrganizationOperation, generation.operation_id)
+            if generation is not None
+            else None
+        )
+        valid = stage_name is WorkflowStageName.STRM and (
+            operation is not None and operation.workflow_id == workflow_id
+        )
+    else:
+        valid = False
+    if not valid:
+        raise WorkflowConflict("workflow_conflict")
 
 
 def _validate_stage_transition(

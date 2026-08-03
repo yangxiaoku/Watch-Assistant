@@ -7,9 +7,10 @@ import hashlib
 import json
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from watch_assistant.library_models import (
     LibraryScanEntry,
@@ -18,6 +19,7 @@ from watch_assistant.library_models import (
 )
 from watch_assistant.models import (
     DirectoryDirtyEvent,
+    DirectoryDirtyGeneration,
     OrganizationOperation,
 )
 from watch_assistant.schemas import WorkflowStageName, WorkflowStageStatus
@@ -27,8 +29,10 @@ from watch_assistant.services.library_index import (
     LibraryIndexService,
 )
 from watch_assistant.services.organization_outbox import (
+    DIRTY_RUNNING,
     DirectoryDirtyLease,
     DirectoryDirtyOutboxService,
+    GENERATION_RUNNING,
 )
 from watch_assistant.services.strm_manifest import (
     StrmGenerationSummary,
@@ -44,7 +48,7 @@ from watch_assistant.services.strm_operations import (
 )
 from watch_assistant.services.workflows import (
     WorkflowNotFound,
-    sync_child_stage_in_transaction,
+    sync_child_stage,
 )
 
 IndexFactory = Callable[[str, str], LibraryIndexService]
@@ -152,33 +156,36 @@ class DirectoryDirtyWorker:
                         reason="strm_linkage_disabled",
                     )
                 if not strm_linkage_enabled and not cleanup_empty_directories:
-                    await self._outbox.complete(
+                    completed = await self._outbox.complete(
                         self._session_factory,
                         lease,
                         error_code="strm_linkage_disabled",
                     )
+                    if not completed:
+                        return True
                     await self._audit("strm.dirty_skipped", "整理完成后未启用 STRM 联动")
                     return True
             index = self._index_factory(library_id, root_directory_id)
             scan = await index.scan_tree(_dirty_idempotency_key(lease))
             if not scan.complete:
-                await self._outbox.retry(
+                retried = await self._outbox.retry(
                     self._session_factory,
                     lease,
                     error_code="scan_incomplete",
                     max_attempts=self._max_attempts,
                 )
-                await self._sync_workflow(
-                    workflow_id,
-                    lease,
-                    status=(
-                        WorkflowStageStatus.FAILED
-                        if lease.attempts >= self._max_attempts
-                        else WorkflowStageStatus.WAITING_EXTERNAL
-                    ),
-                    reason="strm_scan_incomplete",
-                    error_code="scan_incomplete",
-                )
+                if retried:
+                    await self._sync_workflow(
+                        workflow_id,
+                        lease,
+                        status=(
+                            WorkflowStageStatus.FAILED
+                            if lease.attempts >= self._max_attempts
+                            else WorkflowStageStatus.WAITING_EXTERNAL
+                        ),
+                        reason="strm_scan_incomplete",
+                        error_code="scan_incomplete",
+                    )
                 return True
             if strm_linkage_enabled:
                 operation = await self._operations.create(
@@ -204,23 +211,24 @@ class DirectoryDirtyWorker:
                             reason="strm_reused_completed",
                         )
                     else:
-                        await self._outbox.retry(
+                        retried = await self._outbox.retry(
                             self._session_factory,
                             lease,
                             error_code="strm_operation_in_progress",
                             max_attempts=self._max_attempts,
                         )
-                        await self._sync_workflow(
-                            workflow_id,
-                            lease,
-                            status=(
-                                WorkflowStageStatus.FAILED
-                                if lease.attempts >= self._max_attempts
-                                else WorkflowStageStatus.WAITING_EXTERNAL
-                            ),
-                            reason="strm_operation_in_progress",
-                            error_code="strm_operation_in_progress",
-                        )
+                        if retried:
+                            await self._sync_workflow(
+                                workflow_id,
+                                lease,
+                                status=(
+                                    WorkflowStageStatus.FAILED
+                                    if lease.attempts >= self._max_attempts
+                                    else WorkflowStageStatus.WAITING_EXTERNAL
+                                ),
+                                reason="strm_operation_in_progress",
+                                error_code="strm_operation_in_progress",
+                            )
                         return True
                 else:
                     operation_lease_owner = await self._operations.get_lease_token(
@@ -270,23 +278,24 @@ class DirectoryDirtyWorker:
                     )
                     if operation.status != "succeeded":
                         error_code = operation.error_code or "strm_operation_failed"
-                        await self._outbox.retry(
+                        retried = await self._outbox.retry(
                             self._session_factory,
                             lease,
                             error_code=error_code,
                             max_attempts=self._max_attempts,
                         )
-                        await self._sync_workflow(
-                            workflow_id,
-                            lease,
-                            status=(
-                                WorkflowStageStatus.FAILED
-                                if lease.attempts >= self._max_attempts
-                                else WorkflowStageStatus.WAITING_EXTERNAL
-                            ),
-                            reason="strm_reconcile_failed",
-                            error_code=error_code,
-                        )
+                        if retried:
+                            await self._sync_workflow(
+                                workflow_id,
+                                lease,
+                                status=(
+                                    WorkflowStageStatus.FAILED
+                                    if lease.attempts >= self._max_attempts
+                                    else WorkflowStageStatus.WAITING_EXTERNAL
+                                ),
+                                reason="strm_reconcile_failed",
+                                error_code=error_code,
+                            )
                         return True
                     await self._sync_workflow(
                         workflow_id,
@@ -308,7 +317,9 @@ class DirectoryDirtyWorker:
                         "library.empty_directory_cleanup.review_required",
                         "受管空目录清理需要预览并确认",
                     )
-            await self._outbox.complete(self._session_factory, lease)
+            completed = await self._outbox.complete(self._session_factory, lease)
+            if not completed:
+                return True
             await self._audit("strm.dirty_consumed", "目录变更已完成增量对账")
         except asyncio.CancelledError:
             raise
@@ -318,46 +329,48 @@ class DirectoryDirtyWorker:
                 operation_lease_owner,
                 error_code=getattr(error, "code", str(error)),
             )
-            await self._outbox.retry(
+            retried = await self._outbox.retry(
                 self._session_factory,
                 lease,
                 error_code="reconcile_failed",
                 max_attempts=self._max_attempts,
             )
-            await self._sync_workflow(
-                workflow_id,
-                lease,
-                status=(
-                    WorkflowStageStatus.FAILED
-                    if lease.attempts >= self._max_attempts
-                    else WorkflowStageStatus.WAITING_EXTERNAL
-                ),
-                reason="strm_reconcile_failed",
-                error_code="reconcile_failed",
-            )
+            if retried:
+                await self._sync_workflow(
+                    workflow_id,
+                    lease,
+                    status=(
+                        WorkflowStageStatus.FAILED
+                        if lease.attempts >= self._max_attempts
+                        else WorkflowStageStatus.WAITING_EXTERNAL
+                    ),
+                    reason="strm_reconcile_failed",
+                    error_code="reconcile_failed",
+                )
         except Exception:  # noqa: BLE001 - details never cross the worker boundary
             await self._fail_operation(
                 operation,
                 operation_lease_owner,
                 error_code="worker_failed",
             )
-            await self._outbox.retry(
+            retried = await self._outbox.retry(
                 self._session_factory,
                 lease,
                 error_code="worker_failed",
                 max_attempts=self._max_attempts,
             )
-            await self._sync_workflow(
-                workflow_id,
-                lease,
-                status=(
-                    WorkflowStageStatus.FAILED
-                    if lease.attempts >= self._max_attempts
-                    else WorkflowStageStatus.WAITING_EXTERNAL
-                ),
-                reason="strm_worker_failed",
-                error_code="worker_failed",
-            )
+            if retried:
+                await self._sync_workflow(
+                    workflow_id,
+                    lease,
+                    status=(
+                        WorkflowStageStatus.FAILED
+                        if lease.attempts >= self._max_attempts
+                        else WorkflowStageStatus.WAITING_EXTERNAL
+                    ),
+                    reason="strm_worker_failed",
+                    error_code="worker_failed",
+                )
         finally:
             if heartbeat_stop is not None and heartbeat_task is not None:
                 await self._stop_operation_heartbeat(heartbeat_stop, heartbeat_task)
@@ -489,23 +502,67 @@ class DirectoryDirtyWorker:
         status: WorkflowStageStatus,
         reason: str,
         error_code: str | None = None,
-    ) -> None:
+    ) -> bool:
         if workflow_id is None:
-            return
+            return False
         try:
-            await sync_child_stage_in_transaction(
-                self._session_factory,
-                workflow_id,
-                WorkflowStageName.STRM,
-                child_type="strm_dirty_generation",
-                child_id=lease.queue_id or lease.event_id,
-                status=status,
-                reason=reason,
-                error_code=error_code,
-                event_logger=self._event_logger,
-            )
+            current = datetime.now(UTC)
+            async with self._session_factory() as session:
+                if lease.queue_id is not None:
+                    queue_filters = [
+                        DirectoryDirtyGeneration.id == lease.queue_id,
+                        DirectoryDirtyGeneration.status == GENERATION_RUNNING,
+                        DirectoryDirtyGeneration.lease_token == lease.lease_token,
+                        DirectoryDirtyGeneration.lease_expires_at > current,
+                    ]
+                    if lease.generation is not None:
+                        queue_filters.append(
+                            DirectoryDirtyGeneration.generation == lease.generation
+                        )
+                    queue_result = await session.execute(
+                        update(DirectoryDirtyGeneration)
+                        .where(*queue_filters)
+                        .values(updated_at=current)
+                        .execution_options(synchronize_session=False)
+                    )
+                    if queue_result.rowcount != 1:
+                        await session.rollback()
+                        return False
+                event_result = await session.execute(
+                    update(DirectoryDirtyEvent)
+                    .where(
+                        DirectoryDirtyEvent.id == lease.event_id,
+                        DirectoryDirtyEvent.status == DIRTY_RUNNING,
+                        DirectoryDirtyEvent.lease_token == lease.lease_token,
+                        DirectoryDirtyEvent.lease_expires_at > current,
+                    )
+                    .values(updated_at=current)
+                    .execution_options(synchronize_session=False)
+                )
+                if event_result.rowcount != 1:
+                    await session.rollback()
+                    return False
+                workflow = await sync_child_stage(
+                    session,
+                    workflow_id,
+                    WorkflowStageName.STRM,
+                    child_type="strm_dirty_generation",
+                    child_id=lease.queue_id or lease.event_id,
+                    status=status,
+                    reason=reason,
+                    error_code=error_code,
+                )
+                await session.commit()
         except WorkflowNotFound:
-            return
+            return False
+        await emit_event(
+            self._event_logger,
+            "workflow.stage_changed",
+            fields={"status": status.value, "stage": WorkflowStageName.STRM.value},
+            correlation_id=workflow.correlation_id,
+            task_id=workflow.id,
+        )
+        return True
 
     async def _cleanup_candidates(
         self, scan_run_id: str, root_directory_id: str, actions_json: str
