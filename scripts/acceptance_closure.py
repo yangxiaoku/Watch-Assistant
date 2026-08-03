@@ -71,10 +71,10 @@ def _runtime_environment() -> dict[str, str]:
     environment = dict(os.environ)
     native_library_path = environment.get("WATCH_ASSISTANT_NATIVE_LIBRARY_PATH")
     if native_library_path:
-        environment["DYLD_LIBRARY_PATH"] = (
+        environment["DYLD_FALLBACK_LIBRARY_PATH"] = (
             f"{native_library_path}"
-            f"{os.pathsep}{environment['DYLD_LIBRARY_PATH']}"
-            if environment.get("DYLD_LIBRARY_PATH")
+            f"{os.pathsep}{environment['DYLD_FALLBACK_LIBRARY_PATH']}"
+            if environment.get("DYLD_FALLBACK_LIBRARY_PATH")
             else native_library_path
         )
     return environment
