@@ -7,6 +7,7 @@ import base64
 import binascii
 import hashlib
 import json
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
@@ -32,6 +33,9 @@ class StrmOperationError(ValueError):
 
 class StrmOperationNotFound(LookupError):
     """Raised when a requested STRM operation is not in the local ledger."""
+
+
+SessionFence = Callable[[AsyncSession], Awaitable[bool]]
 
 
 _CURSOR_VERSION = 1
@@ -338,6 +342,7 @@ class StrmOperationService:
         failed: int,
         retired: int,
         lease_owner: str | None = None,
+        durable_fence: SessionFence | None = None,
     ) -> StrmOperationSummary:
         _validate_counts(generated, unchanged, skipped, failed, retired)
         return await self._finish(
@@ -349,6 +354,7 @@ class StrmOperationService:
             skipped=skipped,
             failed=failed,
             retired=retired,
+            durable_fence=durable_fence,
         )
 
     async def fail(
@@ -362,6 +368,7 @@ class StrmOperationService:
         failed: int = 0,
         retired: int = 0,
         lease_owner: str | None = None,
+        durable_fence: SessionFence | None = None,
     ) -> StrmOperationSummary:
         _validate_counts(generated, unchanged, skipped, failed, retired)
         if not isinstance(error_code, str) or not error_code or len(error_code) > 100:
@@ -376,6 +383,7 @@ class StrmOperationService:
             skipped=skipped,
             failed=failed,
             retired=retired,
+            durable_fence=durable_fence,
         )
 
     async def cancel(
@@ -629,6 +637,7 @@ class StrmOperationService:
         skipped: int,
         failed: int,
         retired: int,
+        durable_fence: SessionFence | None,
     ) -> StrmOperationSummary:
         _validate_identifier(operation_id, "operation_id", maximum=64)
         _validate_optional_owner(lease_owner)
@@ -663,6 +672,10 @@ class StrmOperationService:
                 )
             else:
                 raise StrmOperationError("strm_operation_not_running")
+
+            if durable_fence is not None and not await durable_fence(session):
+                await session.rollback()
+                raise StrmOperationError("strm_operation_lease_lost")
 
             result = await session.execute(
                 update(StrmOperation)

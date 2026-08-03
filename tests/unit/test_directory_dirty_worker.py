@@ -486,6 +486,149 @@ async def test_dirty_worker_does_not_write_workflow_after_retry_lease_is_replace
 
 
 @pytest.mark.asyncio
+async def test_dirty_worker_does_not_finalize_after_dirty_lease_is_replaced(
+    tmp_path: Path,
+):
+    database = await _database(tmp_path)
+    service, operation, lease = await _claimed(database)
+    await service.finish(
+        operation.operation_id,
+        expected_revision=lease.revision,
+        lease_token=lease.lease_token,
+        status=OrganizationOperationStatus.ORGANIZED,
+        source_directory_id="7000",
+        target_directory_id="8000",
+    )
+
+    class _LeaseReplacingStrm(_FakeStrm):
+        async def incremental(self, library_id, **kwargs):
+            self.calls.append((library_id, kwargs))
+            replacement = "replacement-dirty-lease"
+            async with database.session_factory() as session:
+                generation = await session.scalar(
+                    select(DirectoryDirtyGeneration).where(
+                        DirectoryDirtyGeneration.status == "running"
+                    )
+                )
+                event = await session.scalar(
+                    select(DirectoryDirtyEvent).where(
+                        DirectoryDirtyEvent.status == "running"
+                    )
+                )
+                assert generation is not None
+                assert event is not None
+                generation.lease_token = replacement
+                generation.lease_expires_at = datetime.now(UTC) + timedelta(minutes=5)
+                event.lease_token = replacement
+                event.lease_expires_at = datetime.now(UTC) + timedelta(minutes=5)
+                await session.commit()
+            return SimpleNamespace(
+                generated=1,
+                unchanged=0,
+                skipped=0,
+                failed=0,
+                retired=0,
+            )
+
+    strm = _LeaseReplacingStrm()
+    worker = DirectoryDirtyWorker(
+        database.session_factory,
+        strm,
+        lambda _library_id, _root_id: _FakeIndex(),
+        output_root=tmp_path / "strm",
+        playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+    )
+
+    assert await worker.run_once()
+    assert len(strm.calls) == 1
+    async with database.session_factory() as session:
+        dirty_event = await session.scalar(
+            select(DirectoryDirtyEvent).where(
+                DirectoryDirtyEvent.status == "running"
+            )
+        )
+        strm_operation = await session.scalar(
+            select(StrmOperation).where(
+                StrmOperation.library_id == "library-1",
+                StrmOperation.kind == StrmOperationKind.INCREMENTAL,
+            )
+        )
+        assert dirty_event is not None
+        assert dirty_event.status == "running"
+        assert dirty_event.lease_token == "replacement-dirty-lease"
+        assert strm_operation is not None
+        assert strm_operation.status.value == "running"
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_dirty_worker_fences_strm_terminal_state_with_dirty_lease(
+    tmp_path: Path,
+):
+    database = await _database(tmp_path)
+    service, operation, lease = await _claimed(database)
+    await service.finish(
+        operation.operation_id,
+        expected_revision=lease.revision,
+        lease_token=lease.lease_token,
+        status=OrganizationOperationStatus.ORGANIZED,
+        source_directory_id="7000",
+        target_directory_id="8000",
+    )
+
+    class _LeaseReplacingOperations(StrmOperationService):
+        async def complete(self, operation_id, **kwargs):
+            replacement = "replacement-before-terminal-fence"
+            async with database.session_factory() as session:
+                generation = await session.scalar(
+                    select(DirectoryDirtyGeneration).where(
+                        DirectoryDirtyGeneration.status == "running"
+                    )
+                )
+                event = await session.scalar(
+                    select(DirectoryDirtyEvent).where(
+                        DirectoryDirtyEvent.status == "running"
+                    )
+                )
+                assert generation is not None
+                assert event is not None
+                generation.lease_token = replacement
+                generation.lease_expires_at = datetime.now(UTC) + timedelta(minutes=5)
+                event.lease_token = replacement
+                event.lease_expires_at = datetime.now(UTC) + timedelta(minutes=5)
+                await session.commit()
+            return await super().complete(operation_id, **kwargs)
+
+    worker = DirectoryDirtyWorker(
+        database.session_factory,
+        _FakeStrm(),
+        lambda _library_id, _root_id: _FakeIndex(),
+        output_root=tmp_path / "strm",
+        playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+        operation_service=_LeaseReplacingOperations(database.session_factory),
+    )
+
+    assert await worker.run_once()
+    async with database.session_factory() as session:
+        dirty_event = await session.scalar(
+            select(DirectoryDirtyEvent).where(
+                DirectoryDirtyEvent.status == "running"
+            )
+        )
+        strm_operation = await session.scalar(
+            select(StrmOperation).where(
+                StrmOperation.library_id == "library-1",
+                StrmOperation.kind == StrmOperationKind.INCREMENTAL,
+            )
+        )
+        assert dirty_event is not None
+        assert dirty_event.lease_token == "replacement-before-terminal-fence"
+        assert strm_operation is not None
+        assert strm_operation.status.value == "running"
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_dirty_worker_consumes_without_scan_when_linkage_is_disabled(tmp_path: Path):
     database = await _database(tmp_path)
     service, operation, lease = await _claimed(database)

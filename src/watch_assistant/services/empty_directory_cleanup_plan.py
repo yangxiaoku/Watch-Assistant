@@ -36,7 +36,10 @@ from watch_assistant.services.strm_manifest import (
     _commit_fenced,
     _LeaseFence,
 )
-from watch_assistant.services.strm_scope import has_newer_unsettled_scan
+from watch_assistant.services.strm_scope import (
+    active_strm_operation_id,
+    has_newer_unsettled_scan,
+)
 
 
 class EmptyDirectoryCleanupPlanError(ValueError):
@@ -241,7 +244,6 @@ class EmptyDirectoryCleanupPlanService:
             raise EmptyDirectoryCleanupPlanError("invalid_cleanup_scope")
         current_time = _utc(now)
         await _raise_if_lease_lost(lease_check)
-        fence = _LeaseFence(operation_id, lease_check)
         await self.recover_stale_applying(now=current_time)
         async with self._session_factory() as session:
             plan = await session.get(EmptyDirectoryCleanupPlan, plan_id)
@@ -268,6 +270,15 @@ class EmptyDirectoryCleanupPlanService:
             _library, run = await self._validated_current_run(
                 session, plan.library_id, plan.source_scan_run_id
             )
+            if (
+                await active_strm_operation_id(
+                    session, plan.library_id, exclude_operation_id=operation_id
+                )
+                is not None
+            ):
+                raise EmptyDirectoryCleanupPlanError(
+                    "strm_library_operation_conflict"
+                )
             candidates = _candidates(plan)
             ids = [item["directory_id"] for item in candidates]
             entries = {
@@ -306,6 +317,13 @@ class EmptyDirectoryCleanupPlanService:
                 ):
                     raise EmptyDirectoryCleanupPlanError("empty_cleanup_changed")
 
+            fence = _LeaseFence(
+                operation_id,
+                lease_check,
+                library_id=plan.library_id,
+                source_scan_run_id=plan.source_scan_run_id,
+                operation_kind=StrmOperationKind.CLEANUP,
+            )
             await _bind_fence(fence, session)
             await _assert_fence_current(fence, session)
             applying_revision = expected_revision + 1

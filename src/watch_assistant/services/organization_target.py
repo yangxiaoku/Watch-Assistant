@@ -87,6 +87,7 @@ async def read_target_catalog(
     by_path: dict[str, str] = {"": root_directory_id}
     seen_ids: set[str] = {root_directory_id}
     files: list[OrganizationTargetFile] = []
+    file_paths: dict[str, str] = {}
     while pending:
         directory_id, parent_path = pending.pop(0)
         page = 1
@@ -99,24 +100,25 @@ async def read_target_catalog(
             ):
                 raise OrganizationTargetError("target_directory_incomplete")
             for entry in result.items:
+                _validate_target_entry(entry, directory_id)
                 if not entry.is_directory:
-                    if entry.file_id is not None:
-                        if len(files) >= max_files:
-                            raise OrganizationTargetError("target_file_limit_exceeded")
-                        file_path = _join(parent_path, entry.name)
-                        if file_path is None:
-                            raise OrganizationTargetError("target_file_name_invalid")
-                        files.append(
-                            OrganizationTargetFile(
-                                entry.file_id,
-                                directory_id,
-                                entry.name,
-                                file_path,
-                                entry.size_bytes,
-                            )
+                    if len(files) >= max_files:
+                        raise OrganizationTargetError("target_file_limit_exceeded")
+                    file_path = _join(parent_path, entry.name)
+                    if file_path is None:
+                        raise OrganizationTargetError("target_file_name_invalid")
+                    if entry.file_id in file_paths:
+                        raise OrganizationTargetError("target_file_identity_conflict")
+                    file_paths[entry.file_id] = file_path
+                    files.append(
+                        OrganizationTargetFile(
+                            entry.file_id,
+                            directory_id,
+                            entry.name,
+                            file_path,
+                            entry.size_bytes,
                         )
-                    continue
-                if entry.directory_id is None:
+                    )
                     continue
                 child_id = entry.directory_id
                 child_path = _join(parent_path, entry.name)
@@ -147,6 +149,22 @@ async def read_target_catalog(
         directories=tuple(sorted(by_path.items())),
         files=tuple(sorted(files, key=lambda item: item.object_id)),
     )
+
+
+def _validate_target_entry(entry: object, directory_id: str) -> None:
+    """Require identity, type, and parent evidence before using one entry."""
+
+    is_directory = getattr(entry, "is_directory", None)
+    if not isinstance(is_directory, bool):
+        raise OrganizationTargetError("target_entry_type_unverified")
+    parent_id = getattr(entry, "parent_id", None)
+    if not _stable_id(parent_id) or parent_id != directory_id:
+        raise OrganizationTargetError("target_entry_scope_unverified")
+    identity = getattr(
+        entry, "directory_id" if is_directory else "file_id", None
+    )
+    if not _stable_id(identity):
+        raise OrganizationTargetError("target_entry_identity_unverified")
 
 
 async def _read_directory_page_with_retry(
