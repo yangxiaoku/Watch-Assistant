@@ -8,7 +8,7 @@
 `git rev-parse origin/codex/publish-main` 获取实际最新基线。本轮文档复核未生成发布包、未部署，
 也未核对生产服务器，因此不能把当前代码、离线测试或历史健康记录写成生产完成。
 
-当前发布基线已合入 PR #44-#50：#44 `7f675a9`、#45 `cf542bd`、#46 `b4ecd08`、#47 `9d5e30e`、#48 `e1c4d24`、#49 `80a7d4e` 和 #50 `a5c38cd`；这些提交位于 `origin/codex/publish-main@a5c38cdbd18499b9f9344dfed19f00fecf37301d` 的 first-parent。
+当前发布基线的 commit 必须在发布前通过 `git fetch --all --prune` 和 `git rev-parse origin/codex/publish-main` 动态解析；本文不硬编码当前发布 SHA。近期 first-parent 历史包括 PR #44 及后续合并，分别覆盖审查、搜索 readiness、库存/整理范围、STRM 清理/提交门禁、前端工作台、发布门禁、可靠性加固和基线文档同步。
 这些代码和离线证据不关闭 p115 live、生产媒体库整理、STRM 播放/清理、部署或生产验收阻断，永久删除继续关闭。
 
 2026-08-02 的 `codex/integration-20260802@2c342d9` 和后续 `3afc8d3` 仅作为历史审查窗口保留；

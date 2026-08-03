@@ -29,18 +29,15 @@ Cookie 文件或应用内托管设备。分享推送、影视库整理、删除�
 
 ## 当前发布与验收边界
 
-- 唯一发布分支是 `codex/publish-main`。本次 2026-08-03 核对先执行了 `git fetch --all --prune`；
-  `git rev-parse origin/codex/publish-main` 返回
-  `a5c38cdbd18499b9f9344dfed19f00fecf37301d`，对应已合入的
-  [PR #50](https://github.com/yangxiaoku/Watch-Assistant/pull/50)。first-parent 同时确认 #44-#50 均已合入；这个 SHA 是本次核对快照，后续发布仍须重新解析，
-  不能沿用旧报告中的 commit。
-- 当前提交对应的公开 [Verify CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30791757202) 和
-  [Systemd Release Package CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30791757200) 均显示完成且成功。
-  这些工作流只证明离线门禁、Compose/发布包校验和发布脚本门禁通过，
+- 唯一发布分支是 `codex/publish-main`。发布前先执行 `git fetch --all --prune`，再以
+  `git rev-parse origin/codex/publish-main` 的实际输出作为 commit 身份；README 不硬编码当前发布 SHA。
+  最近的 [PR #50](https://github.com/yangxiaoku/Watch-Assistant/pull/50) 和
+  [PR #51](https://github.com/yangxiaoku/Watch-Assistant/pull/51) 只作为合入历史记录。
+- Verify 与 Systemd Release Package 必须按同一 `head_sha` 重新核对；历史 Actions 链接只能证明对应快照的离线门禁、Compose/发布包校验和发布脚本门禁通过，
   不证明已经部署或生产健康检查已通过。
-- 当前 first-parent 合入记录如下：#44 `7f675a9`（P1 审查）、#45 `cf542bd`（Prowlarr/PanSou 只读 readiness）、
-  #46 `b4ecd08`（库存与整理范围门禁）、#47 `9d5e30e`（STRM 清理与提交门禁）、#48 `e1c4d24`（前端工作台验收）和
-  #49 `80a7d4e`（发布脚本 readiness gate）、#50 `a5c38cd`（readiness 与可靠性加固）。这些改动只代表代码、离线或受管夹具边界，不等于生产整理、生产 STRM、播放兼容性、清理或部署验收。
+- 近期 first-parent 合入记录包括 #44（P1 审查）、#45（Prowlarr/PanSou 只读 readiness）、
+  #46（库存与整理范围门禁）、#47（STRM 清理与提交门禁）、#48（前端工作台验收）、#49（发布脚本 readiness gate）、
+  #50（readiness 与可靠性加固）和 #51（发布基线文档同步）。这些改动只代表代码、离线或受管夹具边界，不等于生产整理、生产 STRM、播放兼容性、清理或部署验收。
 - Prowlarr 的离线 readiness 已由 [PR #19](https://github.com/yangxiaoku/Watch-Assistant/pull/19)、
   [PR #29](https://github.com/yangxiaoku/Watch-Assistant/pull/29) 和当前基线的 [PR #45](https://github.com/yangxiaoku/Watch-Assistant/pull/45) 加固，契约证据见
   [Prowlarr 契约测试](tests/contracts/test_prowlarr_contract.py)。这只证明适配器契约、错误分类和 fail-closed 边界；
