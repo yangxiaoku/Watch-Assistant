@@ -13,8 +13,17 @@ from watch_assistant.models import (
     Task,
     TaskState,
     WebSession,
+    Workflow,
+    WorkflowEvidence,
+    WorkflowStage,
 )
-from watch_assistant.schemas import InspectionItemStatus, ResourceKind
+from watch_assistant.schemas import (
+    InspectionItemStatus,
+    ResourceKind,
+    WorkflowStageName,
+    WorkflowStageStatus,
+    WorkflowStatus,
+)
 
 
 def test_task_states_are_explicit():
@@ -165,6 +174,17 @@ async def test_cleanup_keeps_resource_referenced_by_uncertain_task(tmp_path):
                     expires_at=old_resource_time,
                     created_at=old_resource_time,
                 ),
+                Resource(
+                    id="res_workflow",
+                    kind=ResourceKind.MAGNET,
+                    canonical_key="magnet:workflow",
+                    encrypted_url="encrypted-workflow",
+                    name="Workflow-owned",
+                    source="PanSou",
+                    captured_at=old_resource_time,
+                    expires_at=old_resource_time,
+                    created_at=old_resource_time,
+                ),
                 SearchCache(
                     cache_key="expired",
                     resource_ids_json="[]",
@@ -215,7 +235,50 @@ async def test_cleanup_keeps_resource_referenced_by_uncertain_task(tmp_path):
                     created_at=old_task_time,
                     updated_at=old_task_time,
                 ),
+                Task(
+                    id="task_workflow",
+                    workflow_id="workflow_retained",
+                    resource_id="res_workflow",
+                    action="offline_download",
+                    encrypted_url_snapshot="snapshot",
+                    state=TaskState.AVAILABLE,
+                    created_at=old_task_time,
+                    updated_at=old_task_time,
+                ),
+                Workflow(
+                    id="workflow_retained",
+                    correlation_id="correlation_retained",
+                    status=WorkflowStatus.COMPLETED,
+                    created_at=old_task_time,
+                    updated_at=old_task_time,
+                ),
+                WorkflowStage(
+                    id="stage_workflow_discovery",
+                    workflow_id="workflow_retained",
+                    stage=WorkflowStageName.DISCOVERY,
+                    status=WorkflowStageStatus.SUCCEEDED,
+                    child_type="resource",
+                    child_id="res_workflow",
+                    created_at=old_task_time,
+                    updated_at=old_task_time,
+                ),
             ]
+        )
+        await session.flush()
+        session.add(
+            WorkflowEvidence(
+                id="evidence_workflow_available",
+                workflow_id="workflow_retained",
+                task_id="task_workflow",
+                stage=WorkflowStageName.AVAILABILITY,
+                evidence_type="availability_receipt",
+                source="readonly_reconciliation",
+                subject_id="task_workflow",
+                status="available",
+                verified=True,
+                observed_at=old_task_time,
+                created_at=old_task_time,
+            )
         )
         await session.commit()
 
@@ -224,6 +287,8 @@ async def test_cleanup_keeps_resource_referenced_by_uncertain_task(tmp_path):
 
         resource_ids = set(await session.scalars(select(Resource.id)))
         task_ids = set(await session.scalars(select(Task.id)))
+        workflow_ids = set(await session.scalars(select(Workflow.id)))
+        evidence_ids = set(await session.scalars(select(WorkflowEvidence.id)))
         cache_keys = set(await session.scalars(select(SearchCache.cache_key)))
         metadata_cache_infohashes = set(
             await session.scalars(select(MagnetMetadataCache.infohash))
@@ -231,9 +296,11 @@ async def test_cleanup_keeps_resource_referenced_by_uncertain_task(tmp_path):
 
     await database.engine.dispose()
 
-    assert resource_ids == {"res_protected"}
+    assert resource_ids == {"res_protected", "res_workflow"}
     assert journal_mode == "wal"
-    assert task_ids == {"task_uncertain"}
+    assert task_ids == {"task_uncertain", "task_workflow"}
+    assert workflow_ids == {"workflow_retained"}
+    assert evidence_ids == {"evidence_workflow_available"}
     assert cache_keys == set()
     assert metadata_cache_infohashes == {"e" * 40, "f" * 40}
     assert result.resources_deleted == 2

@@ -893,6 +893,21 @@ async def test_availability_evidence_cannot_advance_another_workflow(tmp_path):
     )
 
     async with database.session_factory() as session:
+        stored_task = await session.get(Task, task.id)
+        assert stored_task is not None
+        with pytest.raises(WorkflowConflict, match="workflow_evidence_required"):
+            await record_evidence(
+                session,
+                workflow_id=source_workflow.id,
+                task_id=task.id,
+                stage=WorkflowStageName.AVAILABILITY,
+                evidence_type="availability_receipt",
+                source=EvidenceSource.READONLY_RECONCILIATION,
+                subject_id=task.id,
+                status=EvidenceStatus.AVAILABLE,
+                verified=True,
+            )
+        stored_task.state = TaskState.AVAILABLE
         evidence = await record_evidence(
             session,
             workflow_id=source_workflow.id,
@@ -904,6 +919,12 @@ async def test_availability_evidence_cannot_advance_another_workflow(tmp_path):
             status=EvidenceStatus.AVAILABLE,
             verified=True,
         )
+        stored_task.state = TaskState.QUEUED
+        with pytest.raises(WorkflowConflict, match="workflow_evidence_required"):
+            await advance_availability_from_evidence(
+                session, source_workflow.id, task.id, evidence
+            )
+        stored_task.state = TaskState.AVAILABLE
         with pytest.raises(WorkflowConflict, match="workflow_evidence_required"):
             await advance_availability_from_evidence(
                 session, other_workflow.id, task.id, evidence

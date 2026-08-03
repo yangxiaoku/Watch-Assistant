@@ -22,6 +22,8 @@ from watch_assistant.models import (
     SearchCache,
     Task,
     TaskState,
+    WorkflowEvidence,
+    WorkflowStage,
 )
 from watch_assistant.schemas import InspectionBatchStatus, InspectionItemStatus
 
@@ -84,10 +86,15 @@ async def cleanup_expired(
     task_cutoff = current_time - timedelta(days=90)
     resource_cutoff = current_time - timedelta(days=30)
 
+    protected_evidence_task_ids = select(WorkflowEvidence.task_id).where(
+        WorkflowEvidence.task_id.is_not(None)
+    )
     task_result = await session.execute(
         delete(Task).where(
             Task.state.in_(TERMINAL_TASK_STATES),
             Task.updated_at < task_cutoff,
+            Task.workflow_id.is_(None),
+            Task.id.not_in(protected_evidence_task_ids),
         )
     )
 
@@ -106,12 +113,21 @@ async def cleanup_expired(
             ),
         )
     )
+    protected_workflow_resource_ids = select(Task.resource_id).where(
+        Task.resource_id.is_not(None), Task.workflow_id.is_not(None)
+    )
+    protected_workflow_stage_resource_ids = select(WorkflowStage.child_id).where(
+        WorkflowStage.child_type == "resource",
+        WorkflowStage.child_id.is_not(None),
+    )
     resource_result = await session.execute(
         delete(Resource).where(
             Resource.created_at < resource_cutoff,
             Resource.expires_at <= current_time,
             Resource.id.not_in(protected_resource_ids),
             Resource.id.not_in(protected_inspection_resource_ids),
+            Resource.id.not_in(protected_workflow_resource_ids),
+            Resource.id.not_in(protected_workflow_stage_resource_ids),
         )
     )
     cache_result = await session.execute(

@@ -16,6 +16,7 @@ from watch_assistant.models import (
     Resource,
     StrmOperation,
     Task,
+    TaskState,
     Workflow,
     WorkflowEvidence,
     WorkflowStage,
@@ -711,6 +712,7 @@ async def record_evidence(
             and evidence_type == "availability_receipt"
             and source is EvidenceSource.READONLY_RECONCILIATION
             and status is EvidenceStatus.AVAILABLE
+            and task.state is TaskState.AVAILABLE
         )
         valid_source = source in {
             EvidenceSource.SUBMISSION_RECEIPT,
@@ -880,7 +882,11 @@ async def advance_availability_from_evidence(
     if workflow is None:
         raise WorkflowNotFound(workflow_id)
     task = await session.get(Task, task_id)
-    if task is None or task.workflow_id != workflow_id:
+    if (
+        task is None
+        or task.workflow_id != workflow_id
+        or task.state is not TaskState.AVAILABLE
+    ):
         raise WorkflowConflict("workflow_evidence_required")
     stages = list(
         await session.scalars(

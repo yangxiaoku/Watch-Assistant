@@ -5,7 +5,7 @@ import pytest
 
 from watch_assistant.models import TaskAction
 from watch_assistant.services.tasks import TaskLease
-from watch_assistant.worker import TaskWorker
+from watch_assistant.worker import TaskWorker, _LeaseClaimLost
 
 
 class _LeaseService:
@@ -40,6 +40,25 @@ class _InFlightRenewalService:
             raise
         self.renew_completed = True
         return True
+
+
+class _ShutdownRenewalFailureService:
+    def __init__(self):
+        self.active_checks = 0
+        self.renew_started = asyncio.Event()
+        self.renew_release = asyncio.Event()
+
+    async def is_lease_active(self, _lease):
+        self.active_checks += 1
+        if self.active_checks == 2:
+            self.renew_release.set()
+        return True
+
+    async def renew(self, _lease, *, lease_duration):
+        del lease_duration
+        self.renew_started.set()
+        await self.renew_release.wait()
+        return False
 
 
 def _lease() -> TaskLease:
@@ -89,3 +108,18 @@ async def test_external_call_waits_for_inflight_renewal_before_stopping_heartbea
     assert await worker._run_external_call(_lease(), operation) == "result"
     assert renewal.renew_completed is True
     assert renewal.renew_cancelled is False
+
+
+@pytest.mark.asyncio
+async def test_external_call_discards_result_when_shutdown_renewal_fails():
+    worker = object.__new__(TaskWorker)
+    worker._lease_seconds = 0.03
+    renewal = _ShutdownRenewalFailureService()
+    worker._tasks = renewal
+
+    async def operation():
+        await renewal.renew_started.wait()
+        return "result"
+
+    with pytest.raises(_LeaseClaimLost):
+        await worker._run_external_call(_lease(), operation)
