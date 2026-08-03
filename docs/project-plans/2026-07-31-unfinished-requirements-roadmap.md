@@ -6,13 +6,13 @@
 
 当前发布核对：唯一发布分支为 `codex/publish-main`。本次执行 `git fetch --all --prune` 后，
 `git rev-parse origin/codex/publish-main` 返回
-`80a7d4e6a2e17adec30158c3c60b252ebde60c35`，对应合入 [PR #49](https://github.com/yangxiaoku/Watch-Assistant/pull/49)。
+`a5c38cdbd18499b9f9344dfed19f00fecf37301d`，对应合入 [PR #50](https://github.com/yangxiaoku/Watch-Assistant/pull/50)。
 first-parent 已确认 #44-#49 均合入。
-该 SHA 的 [Verify CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30785412110) 和
-[Systemd Release Package CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30785412085) 均显示完成且成功；
+该 SHA 的 [Verify CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30791757202) 和
+[Systemd Release Package CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30791757200) 均显示完成且成功；
 CI 只证明离线门禁、Compose/发布包校验和发布脚本 readiness gate 通过，不证明生产部署。
 当前基线已合入 PR #30-#49 的扫描、STRM/task worker 门禁、p115 fail-closed 证据、工作台调整、库存/组织门禁和发布门禁，
-其中 PR #44-#49 分别加固 P1 审查、Prowlarr/PanSou 只读 readiness、库存/整理范围、STRM 清理/提交门禁、前端工作台验收和发布脚本门禁。上述代码和离线测试不改变下方需求状态，也不构成生产部署
+其中 PR #44-#50 分别加固 P1 审查、Prowlarr/PanSou 只读 readiness、库存/整理范围、STRM 清理/提交门禁、前端工作台验收、发布脚本门禁和 readiness/可靠性边界。上述代码和离线测试不改变下方需求状态，也不构成生产部署
 或真实外部验收证据；Prowlarr 离线契约不等于 live indexer 可搜索验收，真实来源仍被 Internet Archive 上游 timeout 阻断，
 p115 生产远程证据、真实媒体库整理、STRM 播放/清理和生产验收仍未完成，永久删除保持关闭。
 

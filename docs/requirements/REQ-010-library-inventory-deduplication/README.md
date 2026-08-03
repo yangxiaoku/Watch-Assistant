@@ -32,9 +32,9 @@
 ## 当前集成进展（2026-08-03）
 
 - 本次核对的 `origin/codex/publish-main` 为
-  `80a7d4e6a2e17adec30158c3c60b252ebde60c35`；对应合入 [PR #49](https://github.com/yangxiaoku/Watch-Assistant/pull/49)，first-parent 已确认 #44-#49 均合入。
-  [Verify CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30785412110) 和
-  [Systemd Release Package CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30785412085) 均显示完成且成功。
+  `a5c38cdbd18499b9f9344dfed19f00fecf37301d`；对应合入 [PR #50](https://github.com/yangxiaoku/Watch-Assistant/pull/50)，first-parent 已确认 #44-#50 均合入。
+  [Verify CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30791757202) 和
+  [Systemd Release Package CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30791757200) 均显示完成且成功。
   CI 证据不等于生产媒体库配置、生产扫描或生产部署证据。
 - 当前发布基线已合入 [PR #30](https://github.com/yangxiaoku/Watch-Assistant/pull/30) 的持久扫描游标 v2、
   页数/总量一致性、可恢复 worker 目录范围恢复和不完整快照门禁；扫描范围或断点无法证明时，库存不会被当作完整事实。

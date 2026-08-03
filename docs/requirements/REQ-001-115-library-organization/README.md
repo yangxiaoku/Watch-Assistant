@@ -33,9 +33,9 @@
 ## 当前集成验收状态
 
 - 本次核对的 `origin/codex/publish-main` 为
-  `80a7d4e6a2e17adec30158c3c60b252ebde60c35`；对应合入 [PR #49](https://github.com/yangxiaoku/Watch-Assistant/pull/49)，first-parent 已确认 #44-#49 均合入。
-  [Verify CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30785412110) 和
-  [Systemd Release Package CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30785412085) 均显示完成且成功。
+  `a5c38cdbd18499b9f9344dfed19f00fecf37301d`；对应合入 [PR #50](https://github.com/yangxiaoku/Watch-Assistant/pull/50)，first-parent 已确认 #44-#50 均合入。
+  [Verify CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30791757202) 和
+  [Systemd Release Package CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30791757200) 均显示完成且成功。
   CI 证据只覆盖代码、离线门禁、Compose/发布包校验和发布脚本 readiness，不覆盖生产部署或真实 115 写入。
 - 当前发布基线已合入 [PR #30](https://github.com/yangxiaoku/Watch-Assistant/pull/30) 的扫描/整理门禁、
   任务关联和中文工作台调整；对应回归见 [扫描范围恢复](../../../tests/integration/test_library_scan_scope_recovery.py)、
