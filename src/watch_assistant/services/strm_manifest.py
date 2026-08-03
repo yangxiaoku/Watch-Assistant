@@ -25,7 +25,7 @@ from watch_assistant.library_models import (
     StrmManifestEntry,
     StrmManifestStatus,
 )
-from watch_assistant.models import StrmOperation, StrmOperationStatus
+from watch_assistant.models import StrmOperation, StrmOperationKind, StrmOperationStatus
 from watch_assistant.services.library_index import (
     LibraryIndexError,
     validate_complete_scan_evidence,
@@ -70,6 +70,7 @@ class StrmGenerationSummary:
 
 CancelCheck = Callable[[], Awaitable[bool]]
 LeaseCheck = Callable[[], Awaitable[bool]]
+SessionFence = Callable[[AsyncSession], Awaitable[bool]]
 ProgressCallback = Callable[[StrmGenerationSummary], Awaitable[None]]
 
 
@@ -112,9 +113,22 @@ class _LeaseFence:
         self,
         operation_id: str | None,
         lease_check: LeaseCheck | None,
+        *,
+        library_id: str | None = None,
+        source_scan_run_id: str | None = None,
+        operation_kind: StrmOperationKind | str | None = None,
+        durable_fence: SessionFence | None = None,
     ) -> None:
         self.operation_id = operation_id
         self.lease_check = lease_check
+        self.library_id = library_id
+        self.source_scan_run_id = source_scan_run_id
+        self.operation_kind = (
+            StrmOperationKind(operation_kind)
+            if operation_kind is not None
+            else None
+        )
+        self.durable_fence = durable_fence
         self._lease_owner: str | None = None
         self._database_lease = False
 
@@ -122,7 +136,11 @@ class _LeaseFence:
         await _raise_if_lease_lost(self.lease_check)
         if self.operation_id is not None:
             operation = await session.get(StrmOperation, self.operation_id)
-            if operation is None or not _operation_lease_is_current(operation):
+            if (
+                operation is None
+                or not _operation_lease_is_current(operation)
+                or not self._operation_matches_scope(operation)
+            ):
                 raise StrmManifestError("strm_operation_lease_lost")
             self._lease_owner = operation.lease_owner
             self._database_lease = True
@@ -130,6 +148,8 @@ class _LeaseFence:
 
     async def assert_current(self, session: AsyncSession) -> None:
         await _raise_if_lease_lost(self.lease_check)
+        if self.durable_fence is not None and not await self.durable_fence(session):
+            raise StrmManifestError("strm_operation_lease_lost")
         if not self._database_lease or self.operation_id is None:
             return
         operation = await session.scalar(
@@ -137,8 +157,12 @@ class _LeaseFence:
             .where(StrmOperation.id == self.operation_id)
             .execution_options(populate_existing=True)
         )
-        if operation is None or not _operation_lease_is_current(
-            operation, expected_owner=self._lease_owner
+        if (
+            operation is None
+            or not _operation_lease_is_current(
+                operation, expected_owner=self._lease_owner
+            )
+            or not self._operation_matches_scope(operation)
         ):
             raise StrmManifestError("strm_operation_lease_lost")
 
@@ -151,6 +175,8 @@ class _LeaseFence:
         """
 
         await _raise_if_lease_lost(self.lease_check)
+        if self.durable_fence is not None and not await self.durable_fence(session):
+            raise StrmManifestError("strm_operation_lease_lost")
         if not self._database_lease or self.operation_id is None:
             return
         result = await session.execute(
@@ -161,6 +187,7 @@ class _LeaseFence:
                 StrmOperation.lease_owner == self._lease_owner,
                 StrmOperation.lease_expires_at.is_not(None),
                 StrmOperation.lease_expires_at > datetime.now(UTC),
+                *self._scope_predicates(),
             )
             # A no-op UPDATE still takes the database row/write lock without
             # changing the externally visible lease value.
@@ -184,9 +211,34 @@ class _LeaseFence:
                     and _operation_lease_is_current(
                         operation, expected_owner=self._lease_owner
                     )
+                    and self._operation_matches_scope(operation)
                 )
         except SQLAlchemyError:
             return None
+
+    def _scope_predicates(self) -> tuple[object, ...]:
+        predicates: list[object] = []
+        if self.library_id is not None:
+            predicates.append(StrmOperation.library_id == self.library_id)
+        if self.source_scan_run_id is not None:
+            predicates.append(
+                StrmOperation.source_scan_run_id == self.source_scan_run_id
+            )
+        if self.operation_kind is not None:
+            predicates.append(StrmOperation.kind == self.operation_kind)
+        return tuple(predicates)
+
+    def _operation_matches_scope(self, operation: StrmOperation) -> bool:
+        return bool(
+            (self.library_id is None or operation.library_id == self.library_id)
+            and (
+                self.source_scan_run_id is None
+                or operation.source_scan_run_id == self.source_scan_run_id
+            )
+            and (
+                self.operation_kind is None or operation.kind is self.operation_kind
+            )
+        )
 
 
 async def _commit_fenced(
@@ -345,6 +397,7 @@ class StrmManifestService:
         playback_url_prefix: str,
         cancel_check: CancelCheck | None = None,
         lease_check: LeaseCheck | None = None,
+        durable_fence: SessionFence | None = None,
         operation_id: str | None = None,
         progress_callback: ProgressCallback | None = None,
     ) -> StrmGenerationSummary:
@@ -352,7 +405,14 @@ class StrmManifestService:
             raise StrmManifestError("invalid_request")
         _validate_fencing(operation_id, lease_check)
         await _raise_if_lease_lost(lease_check)
-        fence = _LeaseFence(operation_id, lease_check)
+        fence = _LeaseFence(
+            operation_id,
+            lease_check,
+            library_id=library_id,
+            source_scan_run_id=source_scan_run_id,
+            operation_kind=StrmOperationKind.FULL,
+            durable_fence=durable_fence,
+        )
         prefix = _safe_prefix(playback_url_prefix)
         root = _safe_root(output_root, self._managed_output_roots)
         async with self._session_factory() as session:
@@ -467,6 +527,7 @@ class StrmManifestService:
         retire_removed: bool = True,
         cancel_check: CancelCheck | None = None,
         lease_check: LeaseCheck | None = None,
+        durable_fence: SessionFence | None = None,
         operation_id: str | None = None,
         progress_callback: ProgressCallback | None = None,
     ) -> StrmGenerationSummary:
@@ -481,7 +542,9 @@ class StrmManifestService:
             retire_removed=retire_removed,
             cancel_check=cancel_check,
             lease_check=lease_check,
+            durable_fence=durable_fence,
             operation_id=operation_id,
+            operation_kind=StrmOperationKind.INCREMENTAL,
             progress_callback=progress_callback,
         )
 
@@ -494,6 +557,7 @@ class StrmManifestService:
         playback_url_prefix: str,
         cancel_check: CancelCheck | None = None,
         lease_check: LeaseCheck | None = None,
+        durable_fence: SessionFence | None = None,
         operation_id: str | None = None,
         progress_callback: ProgressCallback | None = None,
     ) -> StrmGenerationSummary:
@@ -508,7 +572,9 @@ class StrmManifestService:
             retire_removed=True,
             cancel_check=cancel_check,
             lease_check=lease_check,
+            durable_fence=durable_fence,
             operation_id=operation_id,
+            operation_kind=StrmOperationKind.CLEANUP,
             progress_callback=progress_callback,
         )
 
@@ -523,14 +589,23 @@ class StrmManifestService:
         retire_removed: bool,
         cancel_check: CancelCheck | None,
         lease_check: LeaseCheck | None,
+        durable_fence: SessionFence | None,
         operation_id: str | None,
+        operation_kind: StrmOperationKind,
         progress_callback: ProgressCallback | None,
     ) -> StrmGenerationSummary:
         if not _valid_id(library_id) or not _valid_id(source_scan_run_id):
             raise StrmManifestError("invalid_request")
         _validate_fencing(operation_id, lease_check)
         await _raise_if_lease_lost(lease_check)
-        fence = _LeaseFence(operation_id, lease_check)
+        fence = _LeaseFence(
+            operation_id,
+            lease_check,
+            library_id=library_id,
+            source_scan_run_id=source_scan_run_id,
+            operation_kind=operation_kind,
+            durable_fence=durable_fence,
+        )
         prefix = _safe_prefix(playback_url_prefix)
         root = _safe_root(output_root, self._managed_output_roots)
         generated = unchanged = skipped = failed = retired = 0

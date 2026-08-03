@@ -140,21 +140,12 @@ class DirectoryDirtyOutboxService:
         claimable = (GENERATION_QUEUED, GENERATION_RETRY_WAIT)
         for _ in range(3):
             async with session_factory() as session:
+                generation_claim = _generation_claim_predicate(current, claimable)
                 queue = await session.scalar(
                     select(DirectoryDirtyGeneration)
                     .where(
                         DirectoryDirtyGeneration.available_at <= current,
-                        or_(
-                            DirectoryDirtyGeneration.status.in_(claimable),
-                            (
-                                (DirectoryDirtyGeneration.status == GENERATION_DIRTY)
-                                & DirectoryDirtyGeneration.lease_token.is_(None)
-                            ),
-                            (
-                                (DirectoryDirtyGeneration.status == GENERATION_RUNNING)
-                                & (DirectoryDirtyGeneration.lease_expires_at <= current)
-                            ),
-                        ),
+                        generation_claim,
                     )
                     .order_by(
                         DirectoryDirtyGeneration.created_at,
@@ -170,17 +161,7 @@ class DirectoryDirtyOutboxService:
                     .where(
                         DirectoryDirtyGeneration.id == queue.id,
                         DirectoryDirtyGeneration.generation == queue.generation,
-                        or_(
-                            DirectoryDirtyGeneration.status.in_(claimable),
-                            (
-                                (DirectoryDirtyGeneration.status == GENERATION_DIRTY)
-                                & DirectoryDirtyGeneration.lease_token.is_(None)
-                            ),
-                            (
-                                (DirectoryDirtyGeneration.status == GENERATION_RUNNING)
-                                & (DirectoryDirtyGeneration.lease_expires_at <= current)
-                            ),
-                        ),
+                        generation_claim,
                     )
                     .values(
                         status=GENERATION_RUNNING,
@@ -246,6 +227,134 @@ class DirectoryDirtyOutboxService:
                     generation=queue.generation,
                 )
         return None
+
+    async def renew_generation(
+        self,
+        session_factory,
+        lease: DirectoryDirtyLease,
+        *,
+        lease_seconds: int = 300,
+        now: datetime | None = None,
+    ) -> bool:
+        """Extend a live generation and event lease without changing ownership."""
+
+        if isinstance(lease_seconds, bool) or not 1 <= lease_seconds <= 3600:
+            raise OrganizationOutboxError("invalid_lease_duration")
+        current = _as_utc(now or datetime.now(UTC))
+        expires = current + timedelta(seconds=lease_seconds)
+        async with session_factory() as session:
+            if lease.queue_id is None:
+                await session.rollback()
+                return False
+            queue_filters = [
+                DirectoryDirtyGeneration.id == lease.queue_id,
+                DirectoryDirtyGeneration.status.in_((GENERATION_RUNNING, GENERATION_DIRTY)),
+                DirectoryDirtyGeneration.lease_token == lease.lease_token,
+                DirectoryDirtyGeneration.lease_expires_at.is_not(None),
+                DirectoryDirtyGeneration.lease_expires_at > current,
+            ]
+            if lease.generation is not None:
+                queue_filters.append(
+                    DirectoryDirtyGeneration.generation >= lease.generation
+                )
+            queue_result = await session.execute(
+                update(DirectoryDirtyGeneration)
+                .where(*queue_filters)
+                .values(lease_expires_at=expires, updated_at=current)
+                .execution_options(synchronize_session=False)
+            )
+            event_result = await session.execute(
+                update(DirectoryDirtyEvent)
+                .where(
+                    DirectoryDirtyEvent.id == lease.event_id,
+                    DirectoryDirtyEvent.status == DIRTY_RUNNING,
+                    DirectoryDirtyEvent.lease_token == lease.lease_token,
+                    DirectoryDirtyEvent.lease_expires_at.is_not(None),
+                    DirectoryDirtyEvent.lease_expires_at > current,
+                )
+                .values(lease_expires_at=expires, updated_at=current)
+                .execution_options(synchronize_session=False)
+            )
+            if queue_result.rowcount != 1 or event_result.rowcount != 1:
+                await session.rollback()
+                return False
+            await session.commit()
+            return True
+
+    async def fence_generation(
+        self,
+        session: AsyncSession,
+        lease: DirectoryDirtyLease,
+        *,
+        now: datetime | None = None,
+    ) -> bool:
+        """Conditionally lock both lease rows for a caller's transaction commit."""
+
+        current = _as_utc(now or datetime.now(UTC))
+        if lease.queue_id is None:
+            return False
+        queue_filters = [
+            DirectoryDirtyGeneration.id == lease.queue_id,
+            DirectoryDirtyGeneration.status.in_((GENERATION_RUNNING, GENERATION_DIRTY)),
+            DirectoryDirtyGeneration.lease_token == lease.lease_token,
+            DirectoryDirtyGeneration.lease_expires_at.is_not(None),
+            DirectoryDirtyGeneration.lease_expires_at > current,
+        ]
+        if lease.generation is not None:
+            queue_filters.append(DirectoryDirtyGeneration.generation >= lease.generation)
+        queue_result = await session.execute(
+            update(DirectoryDirtyGeneration)
+            .where(*queue_filters)
+            .values(lease_expires_at=DirectoryDirtyGeneration.lease_expires_at)
+            .execution_options(synchronize_session=False)
+        )
+        event_result = await session.execute(
+            update(DirectoryDirtyEvent)
+            .where(
+                DirectoryDirtyEvent.id == lease.event_id,
+                DirectoryDirtyEvent.status == DIRTY_RUNNING,
+                DirectoryDirtyEvent.lease_token == lease.lease_token,
+                DirectoryDirtyEvent.lease_expires_at.is_not(None),
+                DirectoryDirtyEvent.lease_expires_at > current,
+            )
+            .values(lease_expires_at=DirectoryDirtyEvent.lease_expires_at)
+            .execution_options(synchronize_session=False)
+        )
+        return queue_result.rowcount == 1 and event_result.rowcount == 1
+
+    async def is_generation_lease_active(
+        self,
+        session_factory,
+        lease: DirectoryDirtyLease,
+        *,
+        now: datetime | None = None,
+    ) -> bool:
+        """Read both durable lease rows before allowing another write step."""
+
+        current = _as_utc(now or datetime.now(UTC))
+        async with session_factory() as session:
+            event = await session.get(DirectoryDirtyEvent, lease.event_id)
+            if (
+                event is None
+                or event.status != DIRTY_RUNNING
+                or event.lease_token != lease.lease_token
+                or event.lease_expires_at is None
+                or _as_utc(event.lease_expires_at) <= current
+            ):
+                return False
+            if lease.queue_id is None:
+                return True
+            queue = await session.get(DirectoryDirtyGeneration, lease.queue_id)
+            return bool(
+                queue is not None
+                and queue.status in (GENERATION_RUNNING, GENERATION_DIRTY)
+                and queue.lease_token == lease.lease_token
+                and queue.lease_expires_at is not None
+                and _as_utc(queue.lease_expires_at) > current
+                and (
+                    lease.generation is None or queue.generation >= lease.generation
+                )
+            )
 
     async def claim_next(
         self,
@@ -554,6 +663,26 @@ def _normalize_directory_ids(directory_ids: Iterable[str]) -> tuple[str, ...]:
             seen.add(directory_id)
             values.append(directory_id)
     return tuple(values)
+
+
+def _generation_claim_predicate(current: datetime, claimable: tuple[str, ...]):
+    return or_(
+        DirectoryDirtyGeneration.status.in_(claimable),
+        (
+            (DirectoryDirtyGeneration.status == GENERATION_DIRTY)
+            & (
+                DirectoryDirtyGeneration.lease_token.is_(None)
+                | (
+                    DirectoryDirtyGeneration.lease_expires_at.is_not(None)
+                    & (DirectoryDirtyGeneration.lease_expires_at <= current)
+                )
+            )
+        ),
+        (
+            (DirectoryDirtyGeneration.status == GENERATION_RUNNING)
+            & (DirectoryDirtyGeneration.lease_expires_at <= current)
+        ),
+    )
 
 
 def _validate_identifier(value: str, error: str, *, maximum: int) -> None:

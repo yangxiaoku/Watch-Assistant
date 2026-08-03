@@ -119,6 +119,73 @@ async def test_generation_coalesces_running_change_and_requeues_latest_generatio
 
 
 @pytest.mark.asyncio
+async def test_expired_dirty_generation_reclaims_latest_event_after_worker_crash(
+    tmp_path: Path,
+):
+    database = await _database(tmp_path)
+    service = OrganizationOperationService(database.session_factory)
+    first_operation = await _operation(database, key="crash-generation-operation-1")
+    first_lease = await service.claim(first_operation.operation_id, expected_revision=1)
+    await service.finish(
+        first_operation.operation_id,
+        expected_revision=first_lease.revision,
+        lease_token=first_lease.lease_token,
+        status=OrganizationOperationStatus.ORGANIZED,
+        source_directory_id="7000",
+        target_directory_id="8000",
+    )
+    outbox = DirectoryDirtyOutboxService()
+    now = datetime.now(UTC) + timedelta(seconds=1)
+    first_dirty_lease = await outbox.claim_generation(
+        database.session_factory, now=now
+    )
+    assert first_dirty_lease is not None
+
+    second_plan = await OrganizationPlanService(database.session_factory).create_plan(
+        library_id="library-1",
+        scan_run_id="scan-1",
+        items=(_item(),),
+        parser_version="parser-v2",
+    )
+    second_operation = await OrganizationOperationService(
+        database.session_factory
+    ).create(second_plan.plan_id, idempotency_key="crash-generation-operation-2")
+    second_lease = await service.claim(second_operation.operation_id, expected_revision=1)
+    await service.finish(
+        second_operation.operation_id,
+        expected_revision=second_lease.revision,
+        lease_token=second_lease.lease_token,
+        status=OrganizationOperationStatus.ORGANIZED,
+        source_directory_id="7000",
+        target_directory_id="8000",
+    )
+
+    async with database.session_factory() as session:
+        queue = await session.get(DirectoryDirtyGeneration, first_dirty_lease.queue_id)
+        old_event = await session.get(DirectoryDirtyEvent, first_dirty_lease.event_id)
+        assert queue is not None
+        assert old_event is not None
+        assert queue.status == "dirty"
+        queue.lease_expires_at = now - timedelta(seconds=1)
+        old_event.lease_expires_at = now - timedelta(seconds=1)
+        await session.commit()
+
+    reclaimed = await outbox.claim_generation(database.session_factory, now=now)
+    assert reclaimed is not None
+    assert reclaimed.generation == 2
+    assert reclaimed.operation_id == second_operation.operation_id
+    assert reclaimed.event_id != first_dirty_lease.event_id
+    assert reclaimed.lease_token != first_dirty_lease.lease_token
+    assert await outbox.complete(database.session_factory, reclaimed, now=now)
+
+    async with database.session_factory() as session:
+        queue = await session.get(DirectoryDirtyGeneration, reclaimed.queue_id)
+        assert queue is not None
+        assert queue.status == "clean"
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_repeated_or_stale_completion_does_not_duplicate_events(tmp_path: Path):
     database = await _database(tmp_path)
     service, operation, lease = await _claimed(database)
