@@ -222,6 +222,16 @@ class P115OrganizationContract:
             and required <= self.capabilities
         )
 
+    def supports_read_scope(self) -> bool:
+        """Return whether bounded read-only observations are independently verified."""
+
+        return (
+            self.verified
+            and self.evidence is not None
+            and self.timeout_enforced
+            and OrganizationWriteCapability.READ_SCOPE in self.capabilities
+        )
+
     def __repr__(self) -> str:
         return (
             "P115OrganizationContract("
@@ -268,6 +278,20 @@ def evaluate_organization_write_gate(
     if operation is WriteOperation.DELETE and not gate.permanent_delete_enabled:
         return WriteGateDecision(False, "permanent_delete_disabled")
     if not gate.contract.supports(operation):
+        return WriteGateDecision(False, "capability_unverified")
+    return WriteGateDecision(True)
+
+
+def evaluate_organization_read_gate(gate: OrganizationWriteGate) -> WriteGateDecision:
+    """Gate remote reconciliation without opening any write capability."""
+
+    if not gate.contract.verified or not gate.contract.timeout_enforced:
+        return WriteGateDecision(False, "contract_unverified")
+    if not gate.scope_confirmed:
+        return WriteGateDecision(False, "scope_unverified")
+    if not gate.plan_confirmed:
+        return WriteGateDecision(False, "approval_required")
+    if not gate.contract.supports_read_scope():
         return WriteGateDecision(False, "capability_unverified")
     return WriteGateDecision(True)
 
@@ -515,6 +539,7 @@ __all__ = [
     "WriteResult",
     "WriteStatus",
     "classify_write_exception",
+    "evaluate_organization_read_gate",
     "evaluate_organization_write_gate",
     "evaluate_write_gate",
     "prepare_delete",
