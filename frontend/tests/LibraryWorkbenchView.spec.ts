@@ -137,6 +137,45 @@ describe("LibraryWorkbenchView", () => {
     expect(wrapper.text()).toContain("现在可以重新推送");
   });
 
+  it("polls an asynchronous scan until the complete snapshot is available", async () => {
+    vi.useFakeTimers();
+    try {
+      const library = {
+        library_id: "main",
+        name: "115 媒体库",
+        root_directory_id: "123",
+        enabled: true,
+        scope_verified: true,
+        revision: 2,
+        latest_scan: { run_id: "old-scan", state: "completed" as const, complete: true, snapshot_revision: 1, pages_read: 1, items_seen: 1, added_count: 1, changed_count: 0, removed_count: 0, error_code: null },
+      };
+      const queued = { run_id: "scan-queued", state: "queued" as const, complete: false, snapshot_revision: null, pages_read: 0, items_seen: 0, added_count: 0, changed_count: 0, removed_count: 0, attempts: 1, state_message_zh: "等待扫描", error_code: null, error_message_zh: null, cancel_requested: false };
+      const running = { ...queued, state: "running" as const, state_message_zh: "扫描中", pages_read: 1, items_seen: 1 };
+      const completed = { ...running, state: "completed" as const, complete: true, state_message_zh: "扫描完成", snapshot_revision: 2, items_seen: 2, added_count: 1 };
+      const api = {
+        libraries: vi.fn().mockResolvedValue({ items: [library], next_cursor: null }),
+        scanLibrary: vi.fn().mockResolvedValue(queued),
+        getLibraryScan: vi.fn().mockResolvedValueOnce(running).mockResolvedValueOnce(completed),
+        libraryMedia: vi.fn().mockResolvedValue({ items: [], next_cursor: null }),
+        strmManifest: vi.fn().mockResolvedValue({ items: [], page: 1, page_size: 50, total: 0, total_pages: 0 }),
+        strmOperations: vi.fn().mockResolvedValue({ items: [], next_cursor: null }),
+      };
+      const wrapper = mountWorkbench(api);
+      await flushPromises();
+
+      await wrapper.findAll("button").find((button) => button.text().includes("扫描目录"))!.trigger("click");
+      await flushPromises();
+      await vi.advanceTimersByTimeAsync(1_000);
+      await flushPromises();
+
+      expect(api.getLibraryScan).toHaveBeenCalledTimes(2);
+      expect(wrapper.text()).toContain("扫描完成，共发现 2 项");
+      expect(wrapper.text()).toContain("已完成");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("generates STRM after a complete scan and confirms reviewed cleanup", async () => {
     const library = {
       library_id: "main",

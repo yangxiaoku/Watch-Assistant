@@ -335,7 +335,11 @@ export interface LibraryScanSummary {
   added_count: number;
   changed_count: number;
   removed_count: number;
+  attempts: number;
+  state_message_zh: string;
   error_code: string | null;
+  error_message_zh: string | null;
+  cancel_requested: boolean;
 }
 
 export interface MediaLibraryResponse {
