@@ -18,10 +18,41 @@ RUN_STAMP="$(date -u +%Y%m%d-%H%M%S)"
 TEMP_DIR="$(mktemp -d)"
 EVIDENCE_DIR="$ROOT_DIR/evidence/${COMMIT_HASH}-${RUN_STAMP}"
 
+write_evidence() {
+    local status="$1"
+    local exit_code="$2"
+
+    mkdir -p "$EVIDENCE_DIR"
+    if compgen -G "$TEMP_DIR/*.log" >/dev/null; then
+        cp "$TEMP_DIR"/*.log "$EVIDENCE_DIR/"
+    fi
+    cat > "$EVIDENCE_DIR/SUMMARY.txt" <<EOF
+commit=${COMMIT_HASH}
+timestamp=${RUN_STAMP}
+status=${status}
+exit_code=${exit_code}
+EOF
+}
+
 cleanup() {
     rm -rf "$TEMP_DIR"
 }
-trap cleanup EXIT
+
+finish() {
+    local exit_code=$?
+    # Preserve the original verification result even if evidence storage is
+    # unavailable. Failed runs need their logs for CI diagnosis as well.
+    set +e
+    if (( exit_code == 0 )); then
+        write_evidence passed 0
+    else
+        write_evidence failed "$exit_code"
+    fi
+    cleanup
+    trap - EXIT
+    exit "$exit_code"
+}
+trap finish EXIT
 
 run_stage() {
     local name="$1"
@@ -130,12 +161,4 @@ fi
 
 run_stage frontend-tests "$FRONTEND_PM" --prefix frontend test -- --run
 run_stage frontend-build "$FRONTEND_PM" --prefix frontend run build
-
-mkdir -p "$EVIDENCE_DIR"
-cp "$TEMP_DIR"/*.log "$EVIDENCE_DIR/"
-cat > "$EVIDENCE_DIR/SUMMARY.txt" <<EOF
-commit=${COMMIT_HASH}
-timestamp=${RUN_STAMP}
-status=passed
-EOF
 echo "Verification passed; evidence: $EVIDENCE_DIR"
