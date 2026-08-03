@@ -34,6 +34,7 @@ from watch_assistant.services.strm_scope import (
     active_strm_operation_id,
     has_newer_unsettled_scan,
     normalize_playback_url_prefix,
+    source_snapshot_is_current,
 )
 
 VIDEO_EXTENSIONS = frozenset(
@@ -118,6 +119,7 @@ class _LeaseFence:
         source_scan_run_id: str | None = None,
         operation_kind: StrmOperationKind | str | None = None,
         durable_fence: SessionFence | None = None,
+        source_snapshot_revision: int | None = None,
     ) -> None:
         self.operation_id = operation_id
         self.lease_check = lease_check
@@ -129,6 +131,7 @@ class _LeaseFence:
             else None
         )
         self.durable_fence = durable_fence
+        self.source_snapshot_revision = source_snapshot_revision
         self._lease_owner: str | None = None
         self._database_lease = False
 
@@ -148,6 +151,18 @@ class _LeaseFence:
 
     async def assert_current(self, session: AsyncSession) -> None:
         await _raise_if_lease_lost(self.lease_check)
+        if (
+            self.source_snapshot_revision is not None
+            and self.library_id is not None
+            and self.source_scan_run_id is not None
+            and not await source_snapshot_is_current(
+                session,
+                library_id=self.library_id,
+                source_scan_run_id=self.source_scan_run_id,
+                source_snapshot_revision=self.source_snapshot_revision,
+            )
+        ):
+            raise StrmManifestError("source_snapshot_not_current")
         if self.durable_fence is not None and not await self.durable_fence(session):
             raise StrmManifestError("strm_operation_lease_lost")
         if not self._database_lease or self.operation_id is None:
@@ -166,7 +181,12 @@ class _LeaseFence:
         ):
             raise StrmManifestError("strm_operation_lease_lost")
 
-    async def fence_commit(self, session: AsyncSession) -> None:
+    async def fence_commit(
+        self,
+        session: AsyncSession,
+        *,
+        check_source_snapshot: bool = True,
+    ) -> None:
         """Acquire the lease row's write lock immediately before commit.
 
         The conditional update and the manifest transaction commit are one
@@ -178,6 +198,23 @@ class _LeaseFence:
         if self.durable_fence is not None and not await self.durable_fence(session):
             raise StrmManifestError("strm_operation_lease_lost")
         if not self._database_lease or self.operation_id is None:
+            if self.source_snapshot_revision is not None:
+                # Force pending manifest/plan changes into this transaction so
+                # the source check and the terminal commit have one ordering.
+                await session.flush()
+            if (
+                check_source_snapshot
+                and self.source_snapshot_revision is not None
+                and self.library_id is not None
+                and self.source_scan_run_id is not None
+                and not await source_snapshot_is_current(
+                    session,
+                    library_id=self.library_id,
+                    source_scan_run_id=self.source_scan_run_id,
+                    source_snapshot_revision=self.source_snapshot_revision,
+                )
+            ):
+                raise StrmManifestError("source_snapshot_not_current")
             return
         result = await session.execute(
             update(StrmOperation)
@@ -196,6 +233,19 @@ class _LeaseFence:
         )
         if result.rowcount != 1:
             raise StrmManifestError("strm_operation_lease_lost")
+        if (
+            check_source_snapshot
+            and self.source_snapshot_revision is not None
+            and self.library_id is not None
+            and self.source_scan_run_id is not None
+            and not await source_snapshot_is_current(
+                session,
+                library_id=self.library_id,
+                source_scan_run_id=self.source_scan_run_id,
+                source_snapshot_revision=self.source_snapshot_revision,
+            )
+        ):
+            raise StrmManifestError("source_snapshot_not_current")
 
     async def observe_database_lease(
         self,
@@ -244,8 +294,12 @@ class _LeaseFence:
 async def _commit_fenced(
     session: AsyncSession,
     fence: _LeaseFence,
+    *,
+    check_source_snapshot: bool = True,
 ) -> None:
-    await fence.fence_commit(session)
+    await fence.fence_commit(
+        session, check_source_snapshot=check_source_snapshot
+    )
     await session.commit()
 
 
@@ -405,14 +459,6 @@ class StrmManifestService:
             raise StrmManifestError("invalid_request")
         _validate_fencing(operation_id, lease_check)
         await _raise_if_lease_lost(lease_check)
-        fence = _LeaseFence(
-            operation_id,
-            lease_check,
-            library_id=library_id,
-            source_scan_run_id=source_scan_run_id,
-            operation_kind=StrmOperationKind.FULL,
-            durable_fence=durable_fence,
-        )
         prefix = _safe_prefix(playback_url_prefix)
         root = _safe_root(output_root, self._managed_output_roots)
         async with self._session_factory() as session:
@@ -421,6 +467,15 @@ class StrmManifestService:
             )
             await _raise_if_conflicting_operation(
                 session, library_id, operation_id=operation_id
+            )
+            fence = _LeaseFence(
+                operation_id,
+                lease_check,
+                library_id=library_id,
+                source_scan_run_id=source_scan_run_id,
+                operation_kind=StrmOperationKind.FULL,
+                durable_fence=durable_fence,
+                source_snapshot_revision=run.snapshot_revision,
             )
             await fence.bind(session)
             library_pk = library.id
@@ -598,14 +653,6 @@ class StrmManifestService:
             raise StrmManifestError("invalid_request")
         _validate_fencing(operation_id, lease_check)
         await _raise_if_lease_lost(lease_check)
-        fence = _LeaseFence(
-            operation_id,
-            lease_check,
-            library_id=library_id,
-            source_scan_run_id=source_scan_run_id,
-            operation_kind=operation_kind,
-            durable_fence=durable_fence,
-        )
         prefix = _safe_prefix(playback_url_prefix)
         root = _safe_root(output_root, self._managed_output_roots)
         generated = unchanged = skipped = failed = retired = 0
@@ -615,6 +662,15 @@ class StrmManifestService:
             )
             await _raise_if_conflicting_operation(
                 session, library_id, operation_id=operation_id
+            )
+            fence = _LeaseFence(
+                operation_id,
+                lease_check,
+                library_id=library_id,
+                source_scan_run_id=source_scan_run_id,
+                operation_kind=operation_kind,
+                durable_fence=durable_fence,
+                source_snapshot_revision=run.snapshot_revision,
             )
             await fence.bind(session)
             library_pk = library.id

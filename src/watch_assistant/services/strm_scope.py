@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from watch_assistant.library_models import LibraryScanRun
@@ -44,6 +44,45 @@ async def has_newer_unsettled_scan(
         .limit(1)
     )
     return row_id is not None
+
+
+async def source_snapshot_is_current(
+    session: AsyncSession,
+    *,
+    library_id: str,
+    source_scan_run_id: str,
+    source_snapshot_revision: int,
+) -> bool:
+    """Return whether a source run is still the latest complete snapshot.
+
+    This check is used immediately before a mutating transaction commits.  It
+    deliberately re-reads the run instead of relying on an ORM identity-map
+    value captured at operation start.
+    """
+
+    source_run = await session.scalar(
+        select(LibraryScanRun)
+        .where(
+            LibraryScanRun.id == source_scan_run_id,
+            LibraryScanRun.library_id == library_id,
+            LibraryScanRun.state == "completed",
+            LibraryScanRun.complete.is_(True),
+            LibraryScanRun.snapshot_revision == source_snapshot_revision,
+        )
+        .execution_options(populate_existing=True)
+    )
+    if source_run is None:
+        return False
+    latest_revision = await session.scalar(
+        select(func.max(LibraryScanRun.snapshot_revision)).where(
+            LibraryScanRun.library_id == library_id,
+            LibraryScanRun.complete.is_(True),
+            LibraryScanRun.state == "completed",
+        )
+    )
+    if latest_revision != source_snapshot_revision:
+        return False
+    return not await has_newer_unsettled_scan(session, source_run)
 
 
 async def active_strm_operation_id(
@@ -94,4 +133,5 @@ __all__ = [
     "active_strm_operation_id",
     "has_newer_unsettled_scan",
     "normalize_playback_url_prefix",
+    "source_snapshot_is_current",
 ]

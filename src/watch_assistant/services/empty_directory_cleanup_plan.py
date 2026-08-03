@@ -323,6 +323,7 @@ class EmptyDirectoryCleanupPlanService:
                 library_id=plan.library_id,
                 source_scan_run_id=plan.source_scan_run_id,
                 operation_kind=StrmOperationKind.CLEANUP,
+                source_snapshot_revision=run.snapshot_revision,
             )
             await _bind_fence(fence, session)
             await _assert_fence_current(fence, session)
@@ -469,7 +470,11 @@ class EmptyDirectoryCleanupPlanService:
             ):
                 plan.status = "invalidated"
                 plan.revision += 1
-                await _commit_fenced(session, fence or _LeaseFence(None, None))
+                await _commit_fenced(
+                    session,
+                    fence or _LeaseFence(None, None),
+                    check_source_snapshot=False,
+                )
 
     async def _heartbeat_claim(
         self,
