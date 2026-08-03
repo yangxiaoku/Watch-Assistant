@@ -31,7 +31,7 @@ const statusLabels: Record<WorkflowStatus, string> = {
   in_progress: "处理中",
   waiting_user_confirmation: "等待确认",
   waiting_external: "等待外部服务",
-  partial: "部分成功",
+  partial: "部分完成",
   completed: "成功",
   cancelled: "已取消",
   failed: "失败",
