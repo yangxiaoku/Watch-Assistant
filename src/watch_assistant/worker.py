@@ -377,15 +377,38 @@ class TaskWorker:
                 raise _LeaseClaimLost
             return result
         finally:
-            heartbeat_stop.set()
-            heartbeat_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await heartbeat_task
+            await self._stop_lease_heartbeat(heartbeat_stop, heartbeat_task)
             if operation_task is not None and not operation_task.done():
                 operation_task.cancel()
             if operation_task is not None:
                 with suppress(asyncio.CancelledError, Exception):
                     await operation_task
+
+    async def _stop_lease_heartbeat(
+        self, stop_event: asyncio.Event, heartbeat_task: asyncio.Task[None]
+    ) -> None:
+        """Stop renewal without interrupting an in-flight database commit."""
+
+        stop_event.set()
+        if heartbeat_task.done():
+            with suppress(asyncio.CancelledError):
+                await heartbeat_task
+            return
+
+        grace_period = max(min(self._lease_seconds / 3, 5.0), 0.05) * 2
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(heartbeat_task), timeout=grace_period
+            )
+        except TimeoutError:
+            heartbeat_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await heartbeat_task
+        except asyncio.CancelledError:
+            heartbeat_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await heartbeat_task
+            raise
 
     async def _lease_is_active(self, lease: TaskLease) -> bool:
         try:
