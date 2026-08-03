@@ -16,13 +16,13 @@
 ## 2026-08-03 当前基线状态（发布门禁按 SHA 复核，生产未验收）
 
 本次执行 `git fetch --all --prune` 后，以 `git rev-parse origin/codex/publish-main` 的实际输出作为本次核对的 commit 身份；本文不再硬编码当前发布 SHA。
-最近合入的 [PR #50](https://github.com/yangxiaoku/Watch-Assistant/pull/50) 和文档同步 [PR #51](https://github.com/yangxiaoku/Watch-Assistant/pull/51) 仅作为 first-parent 历史记录；后续发布必须重新解析实际 ref，不能引用旧报告中的 commit。
+最近合入的 [PR #50](https://github.com/yangxiaoku/Watch-Assistant/pull/50)、文档同步 [PR #51](https://github.com/yangxiaoku/Watch-Assistant/pull/51)、动态基线修正 [PR #52](https://github.com/yangxiaoku/Watch-Assistant/pull/52) 和通知失败矩阵 [PR #53](https://github.com/yangxiaoku/Watch-Assistant/pull/53) 仅作为 first-parent 历史记录；后续发布必须重新解析实际 ref，不能引用旧报告中的 commit。
 Verify 与 Systemd Release Package 必须按同一 `head_sha` 重新核对；历史 run 链接只作为对应快照的证据，不能代替当前发布门禁。
 CI 成功仅证明离线门禁、Compose/发布包校验和发布脚本 readiness gate 通过，不能证明已部署。
 本轮没有在本地生成 release 包、执行部署或核对生产服务器，因此当前生产版本、运行模式、数据目录和能力开关均未验证。
 
-- #44 `7f675a9`、#45 `cf542bd`、#46 `b4ecd08`、#47 `9d5e30e`、#48 `e1c4d24`、#49 `80a7d4e`、#50 和 #51 已进入近期 first-parent 历史；
-  分别覆盖 P1 审查、Prowlarr/PanSou 只读 readiness、库存/整理范围、STRM 清理/提交门禁、前端工作台验收、发布脚本 readiness gate 和 readiness/可靠性加固。
+- #44 `7f675a9`、#45 `cf542bd`、#46 `b4ecd08`、#47 `9d5e30e`、#48 `e1c4d24`、#49 `80a7d4e`、#50、#51、#52 和 #53 已进入近期 first-parent 历史；
+  分别覆盖 P1 审查、Prowlarr/PanSou 只读 readiness、库存/整理范围、STRM 清理/提交门禁、前端工作台验收、发布脚本 readiness gate、readiness/可靠性加固、发布基线动态解析和通知失败矩阵。
   这些提交的代码与离线/受管夹具证据不等于生产整理、生产 STRM、播放兼容性、清理或部署验收。
 - Prowlarr 的离线 readiness 由 [PR #19](https://github.com/yangxiaoku/Watch-Assistant/pull/19)、
   [PR #29](https://github.com/yangxiaoku/Watch-Assistant/pull/29) 和 [PR #45](https://github.com/yangxiaoku/Watch-Assistant/pull/45) 加固，契约见
