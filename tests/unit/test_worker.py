@@ -20,6 +20,28 @@ class _LeaseService:
         return False
 
 
+class _InFlightRenewalService:
+    def __init__(self):
+        self.renew_started = asyncio.Event()
+        self.renew_release = asyncio.Event()
+        self.renew_completed = False
+        self.renew_cancelled = False
+
+    async def is_lease_active(self, _lease):
+        return True
+
+    async def renew(self, _lease, *, lease_duration):
+        del lease_duration
+        self.renew_started.set()
+        try:
+            await self.renew_release.wait()
+        except asyncio.CancelledError:
+            self.renew_cancelled = True
+            raise
+        self.renew_completed = True
+        return True
+
+
 def _lease() -> TaskLease:
     return TaskLease(
         task_id="task-fixture",
@@ -50,3 +72,20 @@ async def test_external_call_cleans_heartbeat_when_operation_setup_fails():
 
     await asyncio.sleep(0.05)
     assert worker._tasks.renew_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_external_call_waits_for_inflight_renewal_before_stopping_heartbeat():
+    worker = object.__new__(TaskWorker)
+    worker._lease_seconds = 0.03
+    renewal = _InFlightRenewalService()
+    worker._tasks = renewal
+
+    async def operation():
+        await renewal.renew_started.wait()
+        renewal.renew_release.set()
+        return "result"
+
+    assert await worker._run_external_call(_lease(), operation) == "result"
+    assert renewal.renew_completed is True
+    assert renewal.renew_cancelled is False
