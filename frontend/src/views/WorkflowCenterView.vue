@@ -83,7 +83,7 @@ const confirmationSummary = computed(() => {
 const confirmationDetails = computed(() => {
   const workflow = selected.value;
   if (!workflow) return [];
-  const pendingStages = workflow.stages.filter((stage) => stage.status === "pending" || stage.status === "waiting_confirmation");
+  const pendingStages = workflow.stages.filter(isCancellableStage);
   return [
     `当前状态：${statusLabel(workflow.status)}`,
     pendingStages.length ? `待处理阶段：${pendingStages.map((stage) => stageLabel(stage.stage)).join("、")}` : "当前没有可继续的待处理阶段",
@@ -91,6 +91,7 @@ const confirmationDetails = computed(() => {
   ];
 });
 const confirmationLabel = computed(() => pendingAction.value === "approve" ? "确认继续" : pendingAction.value === "reject" ? "拒绝并停止" : "确认取消");
+const cancellableStageStatuses: WorkflowStageResponse["status"][] = ["pending", "waiting_confirmation", "waiting_external"];
 
 function statusLabel(status: WorkflowStatus): string { return workflowStatusPresentation(status).label; }
 function stageLabel(stage: WorkflowStageResponse["stage"]): string { return stageLabels[stage] ?? "未命名阶段"; }
@@ -108,11 +109,14 @@ function stageClass(status: WorkflowStageResponse["status"]): string { return `w
 function nextStep(workflow: WorkflowResponse): string {
   return workflowStatusPresentation(workflow.status).nextStep;
 }
+function isCancellableStage(stage: WorkflowStageResponse): boolean {
+  return cancellableStageStatuses.includes(stage.status);
+}
 const approvalWaiting = computed(() => selected.value?.stages.some((stage) => stage.stage === "approval" && stage.status === "waiting_confirmation") ?? false);
 const workflowCanCancel = computed(() => {
   const workflow = selected.value;
   if (!workflow || ["completed", "cancelled", "failed"].includes(workflow.status)) return false;
-  return !workflow.stages.some((stage) => stage.status === "running" || stage.status === "uncertain");
+  return workflow.stages.some(isCancellableStage);
 });
 
 async function loadWorkflows(targetPage = page.value) {
