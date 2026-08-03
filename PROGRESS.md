@@ -13,18 +13,18 @@
 
 整理计划和受管夹具写入契约已验收；生产整理写入、永久删除和生产媒体库 STRM 联动仍未开启。
 
-## 2026-08-03 当前基线状态（CI 已通过，生产未验收）
+## 2026-08-03 当前基线状态（发布门禁按 SHA 复核，生产未验收）
 
-本次执行 `git fetch --all --prune` 后，`git rev-parse origin/codex/publish-main` 返回
-`80a7d4e6a2e17adec30158c3c60b252ebde60c35`（对应合入 [PR #49](https://github.com/yangxiaoku/Watch-Assistant/pull/49)）。
-这是 2026-08-03 的核对快照；first-parent 同时确认 #44-#49 已合入，后续发布必须重新解析，不能引用旧报告中的 commit。
-该 SHA 的 [Verify CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30785412110) 与
-[Systemd Release Package CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30785412085) 均显示完成且成功。
+本次执行 `git fetch --all --prune` 后，以 `git rev-parse origin/codex/publish-main` 的实际输出作为本次核对的 commit 身份；本文不再硬编码当前发布 SHA。
+最近合入的 PR #50-#61 仅作为 first-parent 历史记录；后续发布必须重新解析实际 ref，不能引用旧报告中的 commit。
+Verify 与 Systemd Release Package 必须按同一 `head_sha` 重新核对；历史 run 链接只作为对应快照的证据，不能代替当前发布门禁。
+本次核对的公开 [Verify CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30802795497) 与
+[Systemd Release Package CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30802795447) 均显示完成且成功；
+应先确认其 `head_sha` 与当前 `origin/codex/publish-main` 一致，CI 结果不能替代发布前的动态核对。
 CI 成功仅证明离线门禁、Compose/发布包校验和发布脚本 readiness gate 通过，不能证明已部署。
 本轮没有在本地生成 release 包、执行部署或核对生产服务器，因此当前生产版本、运行模式、数据目录和能力开关均未验证。
 
-- #44 `7f675a9`、#45 `cf542bd`、#46 `b4ecd08`、#47 `9d5e30e`、#48 `e1c4d24` 和 #49 `80a7d4e` 已进入当前 first-parent；
-  分别覆盖 P1 审查、Prowlarr/PanSou 只读 readiness、库存/整理范围、STRM 清理/提交门禁、前端工作台验收和发布脚本 readiness gate。
+- #44-#61 已进入近期 first-parent 历史，分别覆盖 P1 审查、Prowlarr/PanSou 只读 readiness、库存/整理范围、STRM 清理/提交门禁、前端工作台验收、发布脚本 readiness gate、readiness/可靠性加固、发布基线动态解析、通知失败矩阵、发布后文档、workflow 证据、任务 worker fencing、p115 整理 readiness、验证证据、STRM 清理 readiness、Prowlarr live readiness 和前端工作台。
   这些提交的代码与离线/受管夹具证据不等于生产整理、生产 STRM、播放兼容性、清理或部署验收。
 - Prowlarr 的离线 readiness 由 [PR #19](https://github.com/yangxiaoku/Watch-Assistant/pull/19)、
   [PR #29](https://github.com/yangxiaoku/Watch-Assistant/pull/29) 和 [PR #45](https://github.com/yangxiaoku/Watch-Assistant/pull/45) 加固，契约见

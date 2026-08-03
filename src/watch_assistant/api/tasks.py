@@ -80,6 +80,7 @@ async def create_task(
             "workflow_prerequisite_not_met",
             "workflow_stage_regression",
             "workflow_stage_terminal",
+            "workflow_evidence_required",
         }:
             code = "workflow_conflict"
         raise HTTPException(status_code=409, detail=code) from None

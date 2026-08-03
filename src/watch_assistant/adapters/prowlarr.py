@@ -108,6 +108,10 @@ _MAX_PAGES = 20
 _MAX_PAGE_SIZE = 100
 _DEFAULT_PAGE_SIZE = 100
 _MAX_TEXT_LENGTH = 500
+_MAX_RESPONSE_BYTES = 4 * 1024 * 1024
+_MAX_JSON_DEPTH = 12
+_MAX_JSON_ITEMS = 2048
+_MAX_JSON_STRING_LENGTH = 8192
 
 
 class ProwlarrClient:
@@ -279,13 +283,21 @@ class ProwlarrClient:
         except httpx.HTTPError:
             raise ProwlarrError("Prowlarr request failed") from None
 
+        raw_payload = response.content
+        if (
+            len(raw_payload) > _MAX_RESPONSE_BYTES
+            or not _is_json_content_type(response)
+        ):
+            raise ProwlarrInvalidResponseError(
+                "Unexpected Prowlarr response shape"
+            )
         try:
             payload = response.json()
         except (UnicodeDecodeError, ValueError):
             raise ProwlarrInvalidResponseError(
                 "Unexpected Prowlarr response shape"
             ) from None
-        if not isinstance(payload, list):
+        if not isinstance(payload, list) or not _json_payload_is_bounded(payload):
             raise ProwlarrInvalidResponseError("Unexpected Prowlarr response shape")
         return payload
 
@@ -404,3 +416,34 @@ def _retry_after_seconds(response: httpx.Response) -> int | None:
         return None
     seconds = int(value)
     return seconds if 0 < seconds <= 3600 else None
+
+
+def _is_json_content_type(response: httpx.Response) -> bool:
+    content_type = response.headers.get("content-type", "")
+    media_type = content_type.split(";", 1)[0].strip().casefold()
+    return media_type == "application/json" or media_type.endswith("+json")
+
+
+def _json_payload_is_bounded(value: object) -> bool:
+    pending: list[tuple[object, int]] = [(value, 0)]
+    while pending:
+        current, depth = pending.pop()
+        if depth > _MAX_JSON_DEPTH:
+            return False
+        if isinstance(current, str):
+            if len(current) > _MAX_JSON_STRING_LENGTH:
+                return False
+            continue
+        if isinstance(current, dict):
+            if len(current) > _MAX_JSON_ITEMS:
+                return False
+            for key, item in current.items():
+                if not isinstance(key, str) or len(key) > _MAX_JSON_STRING_LENGTH:
+                    return False
+                pending.append((item, depth + 1))
+            continue
+        if isinstance(current, list):
+            if len(current) > _MAX_JSON_ITEMS:
+                return False
+            pending.extend((item, depth + 1) for item in current)
+    return True

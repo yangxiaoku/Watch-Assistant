@@ -24,6 +24,7 @@ from watch_assistant.services.observability import EventLogger, emit_event
 DEDUPLICATION_WINDOW = timedelta(minutes=30)
 _NOTIFIABLE_EVENTS = frozenset(
     {
+        "inspection.batch_failed",
         "task.submitted",
         "task.accepted",
         "task.downloading",
@@ -34,16 +35,39 @@ _NOTIFIABLE_EVENTS = frozenset(
         "p115.readiness",
         "p115.credentials_expired",
         "subscription.resources_observed",
+        "organize.automation.blocked",
         "organize.needs_review",
+        "organize.operation.failed",
         "organize.operation.uncertain",
         "organize.operation.completed",
         "strm.cleanup_blocked",
         "strm.dirty_consumed",
+        "strm.verify.completed",
         "backup.failed",
         "backup.restore_preview",
         "workflow.stage_changed",
         "workflow.approval_decided",
         "workflow.cancelled",
+    }
+)
+REQUIRED_NOTIFICATION_EVENTS = frozenset(
+    {
+        "subscription.resources_observed",
+        "task.accepted",
+        "task.failed",
+        "task.uncertain",
+        "p115.credentials_expired",
+        "p115.readiness",
+        "organize.automation.blocked",
+        "organize.needs_review",
+        "organize.operation.failed",
+        "organize.operation.uncertain",
+        "strm.cleanup_blocked",
+        "strm.dirty_consumed",
+        "strm.verify.completed",
+        "backup.failed",
+        "backup.restore_preview",
+        "workflow.approval_decided",
     }
 )
 _WORKFLOW_VISIBLE_STATUSES = frozenset(
@@ -92,6 +116,8 @@ class NotificationService:
             if not isinstance(count, int) or count <= 0:
                 return
         if event_code == "backup.restore_preview" and status == "ready":
+            return
+        if event_code == "strm.verify.completed" and status != "issues":
             return
         if event_code == "workflow.stage_changed" and status not in _WORKFLOW_VISIBLE_STATUSES:
             return
@@ -301,11 +327,15 @@ def _decode_codes(value: str) -> set[str]:
 
 def _severity(event_code: str, status: object) -> NotificationSeverity:
     if event_code in {
+        "inspection.batch_failed",
         "task.failed",
         "task.uncertain",
         "p115.credentials_expired",
+        "organize.operation.failed",
+        "organize.automation.blocked",
         "organize.operation.uncertain",
         "strm.cleanup_blocked",
+        "strm.verify.completed",
         "backup.failed",
         "p115.readiness",
     }:

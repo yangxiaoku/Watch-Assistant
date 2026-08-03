@@ -32,6 +32,7 @@ from watch_assistant.services.workflows import (
     WorkflowService,
     advance_availability_from_evidence,
     record_evidence,
+    sync_child_stage,
 )
 from watch_assistant.worker import TaskWorker
 
@@ -560,6 +561,249 @@ async def test_reusing_available_task_advances_new_workflow_availability(tmp_pat
         evidence.workflow_id == workflow.id
         for evidence in await task_service.evidence(existing.id)
     )
+    await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_reusing_available_task_requires_owned_verified_evidence(tmp_path):
+    database = await _database(tmp_path)
+    crypto = SecretCrypto(Fernet.generate_key().decode("ascii"))
+    await _add_resource(database, crypto)
+    task_service = TaskService(database.session_factory)
+    workflow_service = WorkflowService(database.session_factory)
+
+    workflow = await workflow_service.create(
+        WorkflowCreateRequest(
+            media_type="movie", tmdb_id=27205, resource_id="res_magnet"
+        )
+    )
+    for stage in (
+        WorkflowStageName.INSPECTION,
+        WorkflowStageName.APPROVAL,
+    ):
+        await workflow_service.patch_stage(
+            workflow.id,
+            stage,
+            WorkflowStagePatch(status=WorkflowStageStatus.SUCCEEDED),
+        )
+    task, reused = await task_service.create(
+        "res_magnet", workflow_id=workflow.id
+    )
+    assert reused is False
+
+    async with database.session_factory() as session:
+        stored = await session.get(Task, task.id)
+        assert stored is not None
+        stored.state = TaskState.AVAILABLE
+        await session.commit()
+
+    with pytest.raises(WorkflowConflict, match="workflow_evidence_required"):
+        await task_service.create("res_magnet", workflow_id=workflow.id)
+
+    stored = await task_service.get(task.id)
+    assert stored is not None
+    assert stored.state is TaskState.AVAILABLE
+    assert stored.workflow_id == workflow.id
+    unchanged = await workflow_service.get(workflow.id)
+    push = next(
+        stage for stage in unchanged.stages if stage.stage is WorkflowStageName.PUSH
+    )
+    assert push.status is WorkflowStageStatus.RUNNING
+    assert push.child_id == task.id
+    await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_concurrent_terminal_stage_replay_preserves_first_reason(tmp_path):
+    database = await _database(tmp_path)
+    crypto = SecretCrypto(Fernet.generate_key().decode("ascii"))
+    await _add_resource(database, crypto)
+    workflow_service = WorkflowService(database.session_factory)
+    workflow = await workflow_service.create(
+        WorkflowCreateRequest(
+            media_type="movie", tmdb_id=27205, resource_id="res_magnet"
+        )
+    )
+    for stage in (
+        WorkflowStageName.INSPECTION,
+        WorkflowStageName.APPROVAL,
+    ):
+        await workflow_service.patch_stage(
+            workflow.id,
+            stage,
+            WorkflowStagePatch(status=WorkflowStageStatus.SUCCEEDED),
+        )
+
+    update_barrier = threading.Barrier(2)
+    update_count = 0
+    update_lock = threading.Lock()
+
+    def synchronize_stage_updates(
+        _connection, _cursor, statement, _parameters, _context, _executemany
+    ):
+        nonlocal update_count
+        normalized = statement.upper()
+        if (
+            "UPDATE WORKFLOW_STAGES" not in normalized
+            or "UPDATED_AT" not in normalized
+        ):
+            return
+        with update_lock:
+            update_count += 1
+            should_wait = update_count <= 2
+        if should_wait:
+            update_barrier.wait(timeout=5)
+
+    database_url = f"sqlite+aiosqlite:///{tmp_path / 'tasks.db'}"
+
+    def patch_on_peer(reason: str, error_code: str):
+        async def run():
+            peer_database = create_database(database_url)
+            event.listen(
+                peer_database.engine.sync_engine,
+                "before_cursor_execute",
+                synchronize_stage_updates,
+            )
+            try:
+                return await WorkflowService(
+                    peer_database.session_factory
+                ).patch_stage(
+                    workflow.id,
+                    WorkflowStageName.PUSH,
+                    WorkflowStagePatch(
+                        status=WorkflowStageStatus.FAILED,
+                        reason=reason,
+                        error_code=error_code,
+                    ),
+                )
+            finally:
+                event.remove(
+                    peer_database.engine.sync_engine,
+                    "before_cursor_execute",
+                    synchronize_stage_updates,
+                )
+                await peer_database.engine.dispose()
+
+        return asyncio.run(run())
+
+    first, second = await asyncio.gather(
+        asyncio.to_thread(patch_on_peer, "终态原因 A", "failure_a"),
+        asyncio.to_thread(patch_on_peer, "终态原因 B", "failure_b"),
+    )
+
+    assert update_count >= 2
+    response_reasons = {
+        next(stage for stage in response.stages if stage.stage is WorkflowStageName.PUSH).reason
+        for response in (first, second)
+    }
+    persisted = await workflow_service.get(workflow.id)
+    persisted_push = next(
+        stage for stage in persisted.stages if stage.stage is WorkflowStageName.PUSH
+    )
+    assert response_reasons == {persisted_push.reason}
+    assert {response.status for response in (first, second)} == {persisted.status}
+    assert persisted_push.reason in {"终态原因 A", "终态原因 B"}
+    assert persisted_push.error_code in {"failure_a", "failure_b"}
+    await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_concurrent_child_terminal_updates_preserve_first_reason(tmp_path):
+    database = await _database(tmp_path)
+    crypto = SecretCrypto(Fernet.generate_key().decode("ascii"))
+    await _add_resource(database, crypto)
+    task_service = TaskService(database.session_factory)
+    workflow_service = WorkflowService(database.session_factory)
+    workflow = await workflow_service.create(
+        WorkflowCreateRequest(
+            media_type="movie", tmdb_id=27205, resource_id="res_magnet"
+        )
+    )
+    for stage in (
+        WorkflowStageName.INSPECTION,
+        WorkflowStageName.APPROVAL,
+    ):
+        await workflow_service.patch_stage(
+            workflow.id,
+            stage,
+            WorkflowStagePatch(status=WorkflowStageStatus.SUCCEEDED),
+        )
+    task, reused = await task_service.create(
+        "res_magnet", workflow_id=workflow.id
+    )
+    assert reused is False
+
+    update_barrier = threading.Barrier(2)
+    update_count = 0
+    update_lock = threading.Lock()
+
+    def synchronize_stage_updates(
+        _connection, _cursor, statement, _parameters, _context, _executemany
+    ):
+        nonlocal update_count
+        normalized = statement.upper()
+        if (
+            "UPDATE WORKFLOW_STAGES" not in normalized
+            or "UPDATED_AT" not in normalized
+        ):
+            return
+        with update_lock:
+            update_count += 1
+            should_wait = update_count <= 2
+        if should_wait:
+            update_barrier.wait(timeout=5)
+
+    database_url = f"sqlite+aiosqlite:///{tmp_path / 'tasks.db'}"
+
+    def sync_on_peer(reason: str, error_code: str):
+        async def run():
+            peer_database = create_database(database_url)
+            event.listen(
+                peer_database.engine.sync_engine,
+                "before_cursor_execute",
+                synchronize_stage_updates,
+            )
+            try:
+                async with peer_database.session_factory() as session:
+                    workflow_result = await sync_child_stage(
+                        session,
+                        workflow.id,
+                        WorkflowStageName.PUSH,
+                        child_type="task",
+                        child_id=task.id,
+                        status=WorkflowStageStatus.FAILED,
+                        reason=reason,
+                        error_code=error_code,
+                    )
+                    await session.commit()
+                    return workflow_result
+            finally:
+                event.remove(
+                    peer_database.engine.sync_engine,
+                    "before_cursor_execute",
+                    synchronize_stage_updates,
+                )
+                await peer_database.engine.dispose()
+
+        return asyncio.run(run())
+
+    first, second = await asyncio.gather(
+        asyncio.to_thread(sync_on_peer, "子任务终态原因 A", "child_failure_a"),
+        asyncio.to_thread(sync_on_peer, "子任务终态原因 B", "child_failure_b"),
+    )
+
+    assert first.id == workflow.id
+    assert second.id == workflow.id
+    assert update_count >= 2
+    persisted = await workflow_service.get(workflow.id)
+    persisted_push = next(
+        stage for stage in persisted.stages if stage.stage is WorkflowStageName.PUSH
+    )
+    assert (persisted_push.reason, persisted_push.error_code) in {
+        ("子任务终态原因 A", "child_failure_a"),
+        ("子任务终态原因 B", "child_failure_b"),
+    }
+    assert {first.status, second.status} == {persisted.status}
     await database.engine.dispose()
 
 

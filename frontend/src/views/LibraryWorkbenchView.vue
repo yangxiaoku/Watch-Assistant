@@ -469,6 +469,7 @@ function operationStatusMessage(
     case "running":
       return `STRM ${label}同步执行中，请稍候`;
     case "succeeded":
+      if (operation.failed > 0) return `STRM ${label}同步部分完成，生成 ${operation.generated} 个，未变化 ${operation.unchanged} 个，失败 ${operation.failed} 个，请查看失败统计并按需重试`;
       return `STRM ${label}同步完成，生成 ${operation.generated} 个，未变化 ${operation.unchanged} 个`;
     case "failed":
       return `STRM ${label}同步失败，请查看详情后重试`;

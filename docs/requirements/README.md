@@ -53,15 +53,11 @@ docs/requirements/
 外部依赖或完整验收证据仍未完成。测试夹具不能替代生产验收。总索引与各需求主文档的状态
 必须保持一致。
 
-当前发布核对：唯一发布分支为 `codex/publish-main`。本次 2026-08-03 执行
-`git fetch --all --prune` 后，`git rev-parse origin/codex/publish-main` 返回
-`80a7d4e6a2e17adec30158c3c60b252ebde60c35`，对应合入 [PR #49](https://github.com/yangxiaoku/Watch-Assistant/pull/49)。
-first-parent 确认 #44-#49 均已合入。该 SHA 只是本次核对快照，后续发布必须重新解析，不能引用旧报告中的 commit；需求状态也不等同于已打包、已部署或已完成生产验收。
+当前发布核对只认唯一发布分支 `codex/publish-main`。发布前执行 `git fetch --all --prune`，再以
+`git rev-parse origin/codex/publish-main` 的实际输出作为 commit 身份；本文不硬编码当前发布 SHA。
+最近合入的 PR #50-#61 仅作为 first-parent 历史记录，不能替代发布前的动态解析；需求状态也不等同于已打包、已部署或已完成生产验收。
 
-该 SHA 的 [Verify CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30785412110) 和
-[Systemd Release Package CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30785412085) 均显示完成且成功，
-对应的离线门禁、Compose/发布包校验和发布脚本 readiness gate 均通过。CI 只证明代码与发布门禁，不证明生产部署。
-PR #44-#49 已合入本次核对的发布基线：#44 `7f675a9`、#45 `cf542bd`、#46 `b4ecd08`、#47 `9d5e30e`、#48 `e1c4d24`、#49 `80a7d4e`。
+Verify 与 Systemd Release Package 必须按同一 `head_sha` 重新核对；历史 Actions 结果只能证明对应快照的离线门禁、Compose/发布包校验和发布脚本 readiness gate，不证明生产部署。
 这些合入记录和离线测试不改变生产整理、真实媒体库、STRM 播放/清理、p115 live
 或完整生产验收状态，永久删除继续关闭。
 
