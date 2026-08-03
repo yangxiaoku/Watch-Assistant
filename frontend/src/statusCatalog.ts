@@ -31,7 +31,7 @@ const WORKFLOW_STATUS: Record<WorkflowStatus, StatusPresentation> = {
   in_progress: { label: "处理中", tone: "info", nextStep: "等待当前阶段完成。" },
   waiting_user_confirmation: { label: "等待确认", tone: "warning", nextStep: "查看影响摘要后完成所需确认。" },
   waiting_external: { label: "等待外部服务", tone: "warning", nextStep: "等待外部服务返回，不要重复提交。" },
-  partial: { label: "部分成功", tone: "warning", nextStep: "查看未完成阶段，再处理可执行的下一步。" },
+  partial: { label: "部分完成", tone: "warning", nextStep: "查看未完成阶段，再处理可执行的下一步。" },
   completed: { label: "成功", tone: "success", nextStep: "流程已完成。" },
   cancelled: { label: "已取消", tone: "neutral", nextStep: "未开始的后续阶段已停止。" },
   failed: { label: "失败", tone: "danger", nextStep: "查看失败阶段，按阶段规则重试或重新生成计划。" },
@@ -88,7 +88,7 @@ export function workflowStageStatusLabel(status: WorkflowStageStatus): string {
 export function strmOperationStatusLabel(
   operation: Pick<StrmOperationResponse, "status" | "failed" | "skipped">,
 ): string {
-  if (operation.status === "succeeded" && operation.failed > 0) return "部分成功";
+  if (operation.status === "succeeded" && operation.failed > 0) return "部分完成";
   return STRM_OPERATION_STATUS[operation.status] ?? "状态待确认";
 }
 
@@ -98,7 +98,7 @@ export function strmOperationNextStep(
   if (operation.status === "timeout") return "先刷新并核对操作结果，确认前不要恢复执行。";
   if (operation.status === "failed") return "查看失败原因，确认快照仍有效后再恢复执行。";
   if (operation.status === "cancelled") return "确认没有遗留处理中操作后，再决定是否恢复执行。";
-  if (operation.status === "succeeded" && operation.failed > 0) return "部分条目未完成，请查看统计并按需重试。";
+  if (operation.status === "succeeded" && operation.failed > 0) return "部分条目未完成，请查看失败统计并按需重试。";
   if (operation.status === "queued" || operation.status === "running") return "等待当前操作完成，页面会持续更新状态。";
   return "操作已完成。";
 }

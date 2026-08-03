@@ -79,6 +79,11 @@ The currently available tests prove the mock's route, header-only request
 recording, repeated search arrays, protocol values, bare-array pagination
 boundary, Chinese error descriptors, adapter query construction, NZB filtering,
 bounded pagination, cross-source deduplication, and partial-source fallback.
+Success responses from both controlled adapters also require a JSON media type
+and bounded bytes, nesting, collection, and string sizes before the payload is
+used. PanSou transport and link-check errors suppress the underlying HTTPX
+exception chain, so request URLs and query details cannot escape through a
+traceback.
 
 ## Offline readiness additions
 
@@ -106,8 +111,22 @@ safe `source_observations` containing only normalized source IDs and capture
 times.  Prowlarr query text is intentionally not copied into normalized
 metadata; the existing PanSou query metadata behavior is unchanged.
 
-This remains offline readiness evidence.  No real Prowlarr host, API key,
-indexer configuration, or indexer write operation has been used or verified.
+## Read-only live audit (2026-08-03)
+
+The deployed Prowlarr service was checked without changing configuration:
+
+- The official system status endpoint reported Prowlarr `2.5.2.5491`.
+- The read-only indexer listing contained zero configured indexers, and the
+  authenticated search endpoint returned the expected bare array with zero
+  releases for the audit query.
+- PanSou's deployed search endpoint returned `code=0` with a magnet result
+  group for the audit query.
+
+No Prowlarr indexer was created, enabled, or otherwise modified.  Because the
+deployed Prowlarr has no configured indexer, this proves endpoint reachability
+only and does not constitute live searchable-source acceptance.  REQ-023
+remains `待验收`; offline readiness evidence and this read-only audit do not
+claim production source readiness.
 
 ## Follow-up review evidence
 

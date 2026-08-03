@@ -248,10 +248,7 @@ class StrmCleanupPlanService:
             if not hmac.compare_digest(plan.plan_hash, digest.lower()):
                 raise StrmCleanupPlanError("plan_digest_mismatch")
             if plan.status == "applied":
-                if (
-                    plan.applied_idempotency_key is not None
-                    and plan.applied_idempotency_key != idempotency_key
-                ):
+                if plan.applied_idempotency_key != idempotency_key:
                     raise StrmCleanupPlanError("cleanup_plan_already_applied")
                 return StrmCleanupApplyView(
                     _view(plan), int(plan.applied_retired or 0)
@@ -290,6 +287,9 @@ class StrmCleanupPlanService:
             preflight: list[tuple[StrmManifestEntry, str]] = []
             for item in candidates:
                 await _assert_fence_current(fence, session)
+                planned_state = item["state"]
+                if planned_state not in {"ready", "missing"}:
+                    raise StrmCleanupPlanError("cleanup_plan_blocked")
                 manifest = manifests.get(item["manifest_id"])
                 if manifest is None or manifest.cloud_file_id != item["cloud_file_id"]:
                     raise StrmCleanupPlanError("cleanup_plan_changed")
@@ -298,7 +298,7 @@ class StrmCleanupPlanService:
                     manifest.local_relative_path,
                     f"{prefix}{manifest.manifest_id}\n",
                 )
-                if state not in {"ready", "missing"}:
+                if state != planned_state:
                     raise StrmCleanupPlanError("cleanup_plan_blocked")
                 preflight.append((manifest, state))
             retired = 0

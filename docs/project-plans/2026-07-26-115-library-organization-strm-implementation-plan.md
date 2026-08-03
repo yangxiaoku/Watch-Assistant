@@ -12,17 +12,16 @@
 
 2026-08-03 当前核对：唯一发布分支为 `codex/publish-main`；执行 `git fetch --all --prune` 后，
 `git rev-parse origin/codex/publish-main` 返回
-`caa74bbda5bfcea7315abd39ad83f0be7e042381`，对应合入 [PR #42](https://github.com/yangxiaoku/Watch-Assistant/pull/42)。
+`80a7d4e6a2e17adec30158c3c60b252ebde60c35`，对应合入 [PR #49](https://github.com/yangxiaoku/Watch-Assistant/pull/49)。
+first-parent 已确认 #44-#49 均已合入。
 该 SHA 是本次核对快照，后续发布必须重新解析，本计划不从文档推断生产版本。
-该 SHA 的 [Verify CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30768232222) 和
-[Systemd Release Package CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30768232230) 均成功；
-CI 只证明离线门禁、Compose 配置和发布包校验通过，不证明生产部署。
-当前基线包含 PR #30-#37 的扫描、STRM、p115 fail-closed、库存/组织、工作台和发布门禁，以及
-[PR #39](https://github.com/yangxiaoku/Watch-Assistant/pull/39) 前端回归修复、
-[PR #40](https://github.com/yangxiaoku/Watch-Assistant/pull/40) systemd 发布脚本门禁、
-[PR #41](https://github.com/yangxiaoku/Watch-Assistant/pull/41) 不完整扫描 fail-closed 加固和 PR #42 任务 worker 租约加固。
-对应代码与离线测试只提高 readiness；REQ-001/REQ-002 仍按总索引和 `BLOCKERS.md` 保持“待验收”；p115 live、生产媒体库整理、
-真实 115 写入、STRM 播放/清理、元数据联动和生产验收仍未完成，永久删除保持关闭。Prowlarr 离线契约不等于 live indexer
+该 SHA 的 [Verify CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30785412110) 和
+[Systemd Release Package CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30785412085) 均显示完成且成功；
+CI 只证明离线门禁、Compose/发布包校验和发布脚本 readiness gate 通过，不证明生产部署。
+当前基线包含 PR #30-#43 的既有扫描、STRM、p115 fail-closed、库存/组织、工作台、任务和发布门禁；随后
+PR #44-#49 依次合入 P1 审查、Prowlarr/PanSou 只读 readiness、库存/整理范围、STRM 清理/提交门禁、前端工作台验收和发布脚本 readiness gate。
+对应代码与离线测试只提高 readiness；REQ-001/REQ-002 仍按总索引和 `BLOCKERS.md` 保持“待验收”；p115 生产远程证据、真实 115 写入、生产媒体库整理、
+STRM 播放/清理、元数据联动和生产验收仍未完成，永久删除保持关闭。Prowlarr 离线契约不等于 live indexer
 可搜索验收；真实来源仍被 Internet Archive 上游 timeout 阻断，不能写成可搜索来源已配置。
 
 2026-08-02 文档复核为历史审查窗口，锁定 `codex/integration-20260802@2c342d9`；复核期间集成 ref

@@ -5,6 +5,7 @@ import pytest
 import respx
 
 from watch_assistant.adapters.pansou import (
+    _MAX_RESPONSE_BYTES,
     LinkCheckItem,
     LinkCheckState,
     PanSouClient,
@@ -391,6 +392,8 @@ async def test_pansou_timeout_is_reported_without_request_details():
     await client.aclose()
 
     assert "secret" not in str(error.value)
+    assert error.value.__cause__ is None
+    assert error.value.__suppress_context__ is True
 
 
 async def test_pansou_does_not_follow_search_redirects():
@@ -538,6 +541,47 @@ async def test_pansou_link_check_failure_redacts_link_details():
     await client.aclose()
 
     assert "secret" not in str(error.value)
+    assert error.value.__cause__ is None
+    assert error.value.__suppress_context__ is True
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        httpx.Response(
+            200,
+            content=b'{"code":0,"data":{"merged_by_type":{}}}',
+            headers={"content-type": "text/plain"},
+        ),
+        httpx.Response(
+            200,
+            content=b"x" * (_MAX_RESPONSE_BYTES + 1),
+            headers={"content-type": "application/json"},
+        ),
+        httpx.Response(
+            200,
+            content=b"[" * 13 + b"0" + b"]" * 13,
+            headers={"content-type": "application/json"},
+        ),
+        httpx.Response(
+            200,
+            content=b'{"message":"' + b"x" * 8193 + b'"}',
+            headers={"content-type": "application/json"},
+        ),
+    ],
+)
+@respx.mock
+async def test_pansou_rejects_unbounded_or_non_json_success_response(
+    response: httpx.Response,
+):
+    respx.get("http://pansou.test/api/search").mock(return_value=response)
+    client = PanSouClient("http://pansou.test")
+
+    with pytest.raises(PanSouError, match="response shape") as error:
+        await client.search("Movie")
+    await client.aclose()
+
+    assert error.value.__cause__ is None
 
 
 @respx.mock

@@ -57,6 +57,10 @@ _SIZE_MULTIPLIERS = {
     "TB": 1024**4,
     "TIB": 1024**4,
 }
+_MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+_MAX_JSON_DEPTH = 12
+_MAX_JSON_ITEMS = 10_000
+_MAX_JSON_STRING_LENGTH = 8192
 
 
 class PanSouClient:
@@ -80,18 +84,10 @@ class PanSouClient:
                 follow_redirects=False,
             )
             response.raise_for_status()
-        except httpx.HTTPError as exc:
-            raise PanSouError("PanSou request failed") from exc
+        except httpx.HTTPError:
+            raise PanSouError("PanSou request failed") from None
 
-        try:
-            payload = response.json()
-        except (UnicodeDecodeError, ValueError):
-            try:
-                # PanSou may embed scraper text with invalid UTF-8 bytes while
-                # keeping the surrounding response valid JSON.
-                payload = json.loads(response.content.decode("utf-8", errors="replace"))
-            except (UnicodeDecodeError, ValueError) as exc:
-                raise PanSouError("Unexpected PanSou response shape") from exc
+        payload = _parse_json_response(response, "Unexpected PanSou response shape")
 
         if not isinstance(payload, dict) or payload.get("code") != 0:
             raise PanSouError("Unexpected PanSou response shape")
@@ -141,9 +137,11 @@ class PanSouClient:
                     follow_redirects=False,
                 )
                 response.raise_for_status()
-                body = response.json()
-            except (httpx.HTTPError, ValueError) as exc:
-                raise PanSouError("PanSou link check failed") from exc
+            except httpx.HTTPError:
+                raise PanSouError("PanSou link check failed") from None
+            body = _parse_json_response(
+                response, "Unexpected PanSou link check response shape"
+            )
             results = body.get("results") if isinstance(body, dict) else None
             if not isinstance(results, list) or len(results) != len(batch):
                 raise PanSouError("Unexpected PanSou link check response shape")
@@ -151,10 +149,10 @@ class PanSouClient:
                 raise PanSouError("Unexpected PanSou link check response shape")
             try:
                 states.extend(LinkCheckState(result["state"]) for result in results)
-            except (KeyError, ValueError) as exc:
+            except (KeyError, ValueError):
                 raise PanSouError(
                     "Unexpected PanSou link check response shape"
-                ) from exc
+                ) from None
             if len(states) != offset + len(batch):
                 raise PanSouError("Unexpected PanSou link check response shape")
         return states
@@ -375,3 +373,55 @@ def _magnet_infohash(value: object) -> str | None:
         if decoded != "0" * 40:
             return decoded
     return None
+
+
+def _parse_json_response(response: httpx.Response, error_message: str) -> object:
+    raw_payload = response.content
+    if (
+        len(raw_payload) > _MAX_RESPONSE_BYTES
+        or not _is_json_content_type(response)
+    ):
+        raise PanSouError(error_message)
+    try:
+        payload = response.json()
+    except (UnicodeDecodeError, ValueError):
+        try:
+            # PanSou may embed scraper text with invalid UTF-8 bytes while
+            # keeping the surrounding response valid JSON.
+            payload = json.loads(raw_payload.decode("utf-8", errors="replace"))
+        except (UnicodeDecodeError, ValueError):
+            raise PanSouError(error_message) from None
+    if not _json_payload_is_bounded(payload):
+        raise PanSouError(error_message)
+    return payload
+
+
+def _is_json_content_type(response: httpx.Response) -> bool:
+    content_type = response.headers.get("content-type", "")
+    media_type = content_type.split(";", 1)[0].strip().casefold()
+    return media_type == "application/json" or media_type.endswith("+json")
+
+
+def _json_payload_is_bounded(value: object) -> bool:
+    pending: list[tuple[object, int]] = [(value, 0)]
+    while pending:
+        current, depth = pending.pop()
+        if depth > _MAX_JSON_DEPTH:
+            return False
+        if isinstance(current, str):
+            if len(current) > _MAX_JSON_STRING_LENGTH:
+                return False
+            continue
+        if isinstance(current, dict):
+            if len(current) > _MAX_JSON_ITEMS:
+                return False
+            for key, item in current.items():
+                if not isinstance(key, str) or len(key) > _MAX_JSON_STRING_LENGTH:
+                    return False
+                pending.append((item, depth + 1))
+            continue
+        if isinstance(current, list):
+            if len(current) > _MAX_JSON_ITEMS:
+                return False
+            pending.extend((item, depth + 1) for item in current)
+    return True

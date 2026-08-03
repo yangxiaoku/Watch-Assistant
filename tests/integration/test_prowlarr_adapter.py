@@ -7,11 +7,13 @@ import pytest
 import respx
 
 from watch_assistant.adapters.prowlarr import (
+    _MAX_RESPONSE_BYTES,
     ProwlarrAuthError,
     ProwlarrClient,
     ProwlarrError,
     ProwlarrInvalidResponseError,
 )
+from watch_assistant.services.source_health import SourceHealthTracker
 
 
 @pytest.mark.integration
@@ -186,6 +188,50 @@ async def test_prowlarr_rejects_non_array_response_without_returning_body():
 
     assert str(error.value) == "Unexpected Prowlarr response shape"
     assert "unexpected" not in str(error.value)
+
+
+@pytest.mark.integration
+@respx.mock
+async def test_prowlarr_rejects_unbounded_or_non_json_success_response():
+    route = respx.get("http://prowlarr.test/api/v1/search").mock(
+        side_effect=[
+            httpx.Response(
+                200,
+                content=b"[]",
+                headers={"content-type": "text/plain"},
+            ),
+            httpx.Response(
+                200,
+                content=b"x" * (_MAX_RESPONSE_BYTES + 1),
+                headers={"content-type": "application/json"},
+            ),
+            httpx.Response(
+                200,
+                content=b"[" * 13 + b"0" + b"]" * 13,
+                headers={"content-type": "application/json"},
+            ),
+            httpx.Response(
+                200,
+                content=b'[{"title":"' + b"x" * 8193 + b'"}]',
+                headers={"content-type": "application/json"},
+            ),
+        ]
+    )
+    client = ProwlarrClient(
+        "http://prowlarr.test",
+        "fixture-only",
+        health_tracker=SourceHealthTracker(failure_threshold=10),
+    )
+
+    try:
+        for _ in range(4):
+            with pytest.raises(ProwlarrInvalidResponseError) as error:
+                await client.search("Movie")
+            assert error.value.__cause__ is None
+    finally:
+        await client.aclose()
+
+    assert route.call_count == 4
 
 
 @pytest.mark.integration

@@ -350,8 +350,9 @@ class TaskWorker:
             self._renew_lease_forever(lease, heartbeat_stop, lease_lost),
             name=f"watch-assistant-task-lease-{lease.task_id}",
         )
-        operation_task = asyncio.create_task(operation())
+        operation_task = None
         try:
+            operation_task = asyncio.ensure_future(operation())
             done, _pending = await asyncio.wait(
                 {operation_task, heartbeat_task},
                 return_when=asyncio.FIRST_COMPLETED,
@@ -380,10 +381,11 @@ class TaskWorker:
             heartbeat_task.cancel()
             with suppress(asyncio.CancelledError):
                 await heartbeat_task
-            if not operation_task.done():
+            if operation_task is not None and not operation_task.done():
                 operation_task.cancel()
-            with suppress(asyncio.CancelledError, Exception):
-                await operation_task
+            if operation_task is not None:
+                with suppress(asyncio.CancelledError, Exception):
+                    await operation_task
 
     async def _lease_is_active(self, lease: TaskLease) -> bool:
         try:

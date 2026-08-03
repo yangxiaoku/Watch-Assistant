@@ -330,21 +330,33 @@ class DirectoryDirtyOutboxService:
         async with session_factory() as session:
             if lease.queue_id is not None:
                 queue = await session.get(DirectoryDirtyGeneration, lease.queue_id)
+                event = await session.get(DirectoryDirtyEvent, lease.event_id)
                 if (
                     queue is None
                     or queue.status not in (GENERATION_RUNNING, GENERATION_DIRTY)
                     or queue.lease_token != lease.lease_token
+                    or queue.lease_expires_at is None
+                    or _as_utc(queue.lease_expires_at) <= current
+                    or event is None
+                    or event.status != DIRTY_RUNNING
+                    or event.lease_token != lease.lease_token
+                    or event.lease_expires_at is None
+                    or _as_utc(event.lease_expires_at) <= current
                 ):
                     await session.rollback()
                     return False
                 has_newer_generation = (
                     lease.generation is not None and queue.generation > lease.generation
                 )
-                await session.execute(
+                generation_result = await session.execute(
                     update(DirectoryDirtyGeneration)
                     .where(
                         DirectoryDirtyGeneration.id == lease.queue_id,
+                        DirectoryDirtyGeneration.status.in_(
+                            (GENERATION_RUNNING, GENERATION_DIRTY)
+                        ),
                         DirectoryDirtyGeneration.lease_token == lease.lease_token,
+                        DirectoryDirtyGeneration.lease_expires_at > current,
                     )
                     .values(
                         status=GENERATION_QUEUED if has_newer_generation else GENERATION_CLEAN,
@@ -355,12 +367,15 @@ class DirectoryDirtyOutboxService:
                         error_code=None if status == DIRTY_CONSUMED else error_code,
                         updated_at=current,
                     )
+                    .execution_options(synchronize_session=False)
                 )
-                await session.execute(
+                event_result = await session.execute(
                     update(DirectoryDirtyEvent)
                     .where(
                         DirectoryDirtyEvent.id == lease.event_id,
+                        DirectoryDirtyEvent.status == DIRTY_RUNNING,
                         DirectoryDirtyEvent.lease_token == lease.lease_token,
+                        DirectoryDirtyEvent.lease_expires_at > current,
                     )
                     .values(
                         status=status,
@@ -369,7 +384,11 @@ class DirectoryDirtyOutboxService:
                         error_code=error_code,
                         updated_at=current,
                     )
+                    .execution_options(synchronize_session=False)
                 )
+                if generation_result.rowcount != 1 or event_result.rowcount != 1:
+                    await session.rollback()
+                    return False
                 await session.commit()
                 return True
             result = await session.execute(
@@ -378,6 +397,7 @@ class DirectoryDirtyOutboxService:
                     DirectoryDirtyEvent.id == lease.event_id,
                     DirectoryDirtyEvent.status == DIRTY_RUNNING,
                     DirectoryDirtyEvent.lease_token == lease.lease_token,
+                    DirectoryDirtyEvent.lease_expires_at > current,
                 )
                 .values(
                     status=status,
@@ -388,8 +408,11 @@ class DirectoryDirtyOutboxService:
                 )
                 .execution_options(synchronize_session=False)
             )
+            if result.rowcount != 1:
+                await session.rollback()
+                return False
             await session.commit()
-            return result.rowcount == 1
+            return True
 
     async def retry(
         self,

@@ -33,22 +33,23 @@
 ## 当前集成验收状态
 
 - 本次核对的 `origin/codex/publish-main` 为
-  `caa74bbda5bfcea7315abd39ad83f0be7e042381`；该 SHA 的 [Verify CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30768232222)
-  和 [Systemd Release Package CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30768232230) 均成功。
-  CI 证据只覆盖代码、离线门禁、Compose 配置和发布包校验，不覆盖生产部署或真实 115 写入。
+  `80a7d4e6a2e17adec30158c3c60b252ebde60c35`；对应合入 [PR #49](https://github.com/yangxiaoku/Watch-Assistant/pull/49)，first-parent 已确认 #44-#49 均合入。
+  [Verify CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30785412110) 和
+  [Systemd Release Package CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30785412085) 均显示完成且成功。
+  CI 证据只覆盖代码、离线门禁、Compose/发布包校验和发布脚本 readiness，不覆盖生产部署或真实 115 写入。
 - 当前发布基线已合入 [PR #30](https://github.com/yangxiaoku/Watch-Assistant/pull/30) 的扫描/整理门禁、
   任务关联和中文工作台调整；对应回归见 [扫描范围恢复](../../../tests/integration/test_library_scan_scope_recovery.py)、
   [扫描操作](../../../tests/unit/test_library_scan_operations.py)、[组织工作台单测](../../../frontend/tests/OrganizationWorkbenchView.spec.ts)
   和 [组织工作台 E2E](../../../frontend/e2e/organization-workbench.spec.ts)。这些证据只覆盖代码、离线和受管夹具范围。
-- [PR #41](https://github.com/yangxiaoku/Watch-Assistant/pull/41) 进一步收紧不完整扫描时的库存推送、STRM manifest
-  和清理计划边界，[PR #42](https://github.com/yangxiaoku/Watch-Assistant/pull/42) 加固任务 worker 租约丢失/续租超时防护；这些修复
-  只提升 fail-closed readiness，不把生产库存或真实整理升级为已验收。
+- [PR #41](https://github.com/yangxiaoku/Watch-Assistant/pull/41)、[PR #42](https://github.com/yangxiaoku/Watch-Assistant/pull/42)、
+  [PR #44](https://github.com/yangxiaoku/Watch-Assistant/pull/44) 和 [PR #46](https://github.com/yangxiaoku/Watch-Assistant/pull/46)
+  继续收紧不完整扫描、任务租约和库存/整理范围边界；这些修复只提升 fail-closed readiness，不把生产库存或真实整理升级为已验收。
 - 库存扫描与组织门禁已由 [PR #34](https://github.com/yangxiaoku/Watch-Assistant/pull/34) 合入；对应
   [组织用户流集成测试](../../../tests/integration/test_organization_user_flow.py)、[组织计划单测](../../../tests/unit/test_organization_plan.py)
   和 [库存索引单测](../../../tests/unit/test_library_index.py) 仍只证明代码和离线证据，不证明生产媒体库已配置或已整理。
 - 受管夹具的真实低风险证据不能替代生产验收；生产媒体库范围、真实整理写入、回滚、播放兼容性和部署状态仍未验证。
-- p115 远程可用性证据已由 [PR #31](https://github.com/yangxiaoku/Watch-Assistant/pull/31) 合入发布基线；
-  其 fail-closed 代码和离线回归不等于真实 115 业务整理已完成。在 live、生产媒体库范围、回滚和部署证据完成前，
+- p115 远程可用性证据仍限于受管夹具、只读或 fail-closed 路径；[PR #46](https://github.com/yangxiaoku/Watch-Assistant/pull/46)
+  的范围门禁不等于真实 115 业务整理已完成。在生产 live、媒体库范围、回滚和部署证据完成前，
   真实 115 业务整理保持未验收、未上线。
 - live/生产验收：未完成；真实 115 写操作只可在独立契约、计划确认、receipt-before-verify、幂等和审计门禁全部满足后进行。
 - 生产部署核对：未完成；本次未核对服务器运行模式、实际版本、数据目录或能力开关。

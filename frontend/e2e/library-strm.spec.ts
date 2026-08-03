@@ -96,6 +96,25 @@ test("runs full STRM generation and reviewed cleanup on the library workbench", 
   await page.screenshot({ path: testInfo.outputPath(`library-strm-${testInfo.project.name}.png`), fullPage: true });
 });
 
+test("shows partial completion and the failed count for a succeeded STRM operation", async ({ page }) => {
+  const partialOperation = { ...operation, operation_id: "strm_op_partial", generated: 2, failed: 1 };
+  await page.route("**/api/v1/health", (route) => route.fulfill({ json: { status: "ok", push_supported: false, inspection_supported: false, strm_capabilities: { full: true, incremental: true, cleanup: true, playback: false, playback_contract_verified: false } } }));
+  await page.route("**/api/v1/auth/me", (route) => route.fulfill({ json: { authenticated: true, via_bearer: false, csrf_token: "csrf-test" } }));
+  await page.route("**/api/v1/libraries?**", (route) => route.fulfill({ json: { items: [library], next_cursor: null } }));
+  await page.route("**/api/v1/libraries/main/media**", (route) => route.fulfill({ json: { items: [], next_cursor: null } }));
+  await page.route("**/api/v1/libraries/main/strm-manifest**", (route) => route.fulfill({ json: { items: [], page: 1, page_size: 50, total: 0, total_pages: 0 } }));
+  await page.route("**/api/v1/libraries/main/strm-operations**", (route) => route.fulfill({ json: { items: [], next_cursor: null } }));
+  await page.route("**/api/v1/strm-operations/strm_op_partial", (route) => route.fulfill({ json: partialOperation }));
+  await page.route("**/api/v1/libraries/main/strm-generation", (route) => route.fulfill({ json: { operation_id: partialOperation.operation_id, library_id: "main", scan_run_id: "scan-1", generated: 2, unchanged: 0, skipped: 0, failed: 1, retired: 0 } }));
+
+  await page.goto("/library");
+  await page.getByRole("button", { name: "全量 STRM" }).click();
+  await expect(page.getByText("STRM 全量同步部分完成")).toBeVisible();
+  await expect(page.locator(".library-operation-section strong")).toHaveText("部分完成");
+  await expect(page.locator(".library-operation-stats")).toContainText("失败 1");
+  await expect(page.locator(".library-operation-next-step")).toContainText("查看失败统计并按需重试");
+});
+
 async function routeLibraryFixture(page: Page, health: object) {
   await page.route("**/api/v1/health", (route) => route.fulfill({ json: health }));
   await page.route("**/api/v1/auth/me", (route) => route.fulfill({ json: { authenticated: true, via_bearer: false, csrf_token: "csrf-capability" } }));
