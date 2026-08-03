@@ -4,14 +4,19 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from watch_assistant.api.strm import _cancel_operation
+import watch_assistant.api.strm as strm_api
+from watch_assistant.api.strm import _cancel_operation, cancel_strm_operation
 from watch_assistant.db import create_database, initialize_database
 from watch_assistant.models import StrmOperation
+from watch_assistant.security import AuthContext
+from watch_assistant.services.strm_manifest import StrmManifestError
 from watch_assistant.services.strm_operations import (
     StrmOperationError,
     StrmOperationKind,
     StrmOperationService,
+    StrmOperationSummary,
 )
 
 
@@ -61,6 +66,167 @@ async def test_strm_operation_lifecycle_is_durable_and_terminal(tmp_path: Path):
         assert persisted.status == "succeeded"
     finally:
         await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_terminal_commit_ack_loss_observes_durable_state(
+    tmp_path: Path, monkeypatch
+):
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'operations.db'}")
+    await initialize_database(database.engine)
+    try:
+        service = StrmOperationService(database.session_factory)
+        operation = await service.create(
+            library_id="library-one",
+            source_scan_run_id="scan-one",
+            kind=StrmOperationKind.FULL,
+        )
+        running = await service.start(operation.operation_id)
+        lease_owner = await service.get_lease_token(operation.operation_id)
+        assert running.status == "running"
+        assert lease_owner is not None
+
+        original_commit = AsyncSession.commit
+
+        async def commit_then_lose_ack(session):
+            await original_commit(session)
+            raise RuntimeError("commit_acknowledgement_lost")
+
+        monkeypatch.setattr(AsyncSession, "commit", commit_then_lose_ack)
+        completed = await service.complete(
+            operation.operation_id,
+            generated=1,
+            unchanged=0,
+            skipped=0,
+            failed=0,
+            retired=0,
+            lease_owner=lease_owner,
+        )
+
+        assert completed.status == "succeeded"
+        assert completed.generated == 1
+        assert (await service.get(operation.operation_id)).status == "succeeded"
+    finally:
+        await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_api_cancel_syncs_linked_workflow_stage(monkeypatch):
+    now = datetime.now(UTC)
+
+    def summary(status: str, *, error_code: str | None = None):
+        return StrmOperationSummary(
+            operation_id="strm_op_cancel",
+            library_id="library-one",
+            source_scan_run_id="scan-one",
+            kind="full",
+            status=status,
+            workflow_id="workflow-one",
+            generated=0,
+            unchanged=0,
+            skipped=0,
+            failed=0,
+            retired=0,
+            error_code=error_code,
+            created_at=now,
+            started_at=now,
+            finished_at=now if status == "cancelled" else None,
+        )
+
+    class Operations:
+        async def get(self, _operation_id):
+            return summary("running")
+
+        async def cancel(self, _operation_id):
+            return summary("cancelled", error_code="strm_operation_cancelled")
+
+    calls = []
+
+    async def sync_stage(_request, workflow_id, **kwargs):
+        calls.append((workflow_id, kwargs))
+
+    monkeypatch.setattr(strm_api, "_operation_service", lambda _request: Operations())
+    monkeypatch.setattr(strm_api, "_sync_workflow_stage", sync_stage)
+    request = SimpleNamespace(app=SimpleNamespace())
+    context = AuthContext(identity="web", via_bearer=False)
+
+    response = await cancel_strm_operation("strm_op_cancel", request, context)
+
+    assert response.status == "cancelled"
+    assert calls == [
+        (
+            "workflow-one",
+            {
+                "operation_id": "strm_op_cancel",
+                "status": strm_api.WorkflowStageStatus.FAILED,
+                "reason": "strm_cancelled",
+                "error_code": "strm_operation_cancelled",
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_api_finish_does_not_report_cancelled_operation_as_success(monkeypatch):
+    now = datetime.now(UTC)
+    operation = StrmOperationSummary(
+        operation_id="strm_op_finish",
+        library_id="library-one",
+        source_scan_run_id="scan-one",
+        kind="full",
+        status="cancelled",
+        workflow_id="workflow-one",
+        generated=0,
+        unchanged=0,
+        skipped=0,
+        failed=0,
+        retired=0,
+        error_code="strm_operation_cancelled",
+        created_at=now,
+        started_at=now,
+        finished_at=now,
+    )
+
+    class Operations:
+        async def complete(self, *_args, **_kwargs):
+            return operation
+
+    calls = []
+
+    async def sync_stage(_request, workflow_id, **kwargs):
+        calls.append((workflow_id, kwargs))
+
+    monkeypatch.setattr(strm_api, "_sync_workflow_stage", sync_stage)
+    request = SimpleNamespace(app=SimpleNamespace())
+
+    with pytest.raises(StrmManifestError, match="strm_operation_cancelled"):
+        await strm_api._finish_operation(
+            request,
+            Operations(),
+            operation.operation_id,
+            workflow_id=operation.workflow_id,
+            kind=StrmOperationKind.FULL,
+            summary=SimpleNamespace(
+                generated=1,
+                unchanged=0,
+                skipped=0,
+                failed=0,
+                retired=0,
+            ),
+            lease_owner="lease-one",
+        )
+
+    assert calls == [
+        (
+            "workflow-one",
+            {
+                "operation_id": "strm_op_finish",
+                "status": strm_api.WorkflowStageStatus.FAILED,
+                "reason": "strm_finished",
+                "error_code": "strm_operation_cancelled",
+            },
+        )
+    ]
 
 
 @pytest.mark.asyncio

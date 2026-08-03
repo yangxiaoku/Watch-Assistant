@@ -20,6 +20,7 @@ import type {
 
 const props = defineProps<{
   api: ApiClient;
+  organizationPlanCapability?: CapabilityAvailability;
   strmFullCapability?: CapabilityAvailability;
   strmIncrementalCapability?: CapabilityAvailability;
   strmCleanupCapability?: CapabilityAvailability;
@@ -62,12 +63,11 @@ let operationPollTimer: number | null = null;
 const selected = computed(() => libraries.value.find((item) => item.library_id === selectedId.value) ?? null);
 const scan = computed(() => selected.value?.latest_scan ?? null);
 const readyForSync = computed(() => Boolean(selected.value?.enabled && selected.value.scope_verified && scan.value?.complete && scan.value.state === "completed"));
-// Older callers may not have loaded health yet; the app passes an explicit
-// unavailable capability as soon as health is known.
-const strmFullAvailable = computed(() => props.strmFullCapability?.enabled ?? true);
-const strmIncrementalAvailable = computed(() => props.strmIncrementalCapability?.enabled ?? true);
-const strmCleanupAvailable = computed(() => props.strmCleanupCapability?.enabled ?? true);
-const emptyDirectoryCleanupAvailable = computed(() => props.emptyDirectoryCleanupCapability?.enabled ?? true);
+const organizationPlanAvailable = computed(() => props.organizationPlanCapability?.enabled ?? false);
+const strmFullAvailable = computed(() => props.strmFullCapability?.enabled ?? false);
+const strmIncrementalAvailable = computed(() => props.strmIncrementalCapability?.enabled ?? false);
+const strmCleanupAvailable = computed(() => props.strmCleanupCapability?.enabled ?? false);
+const emptyDirectoryCleanupAvailable = computed(() => props.emptyDirectoryCleanupCapability?.enabled ?? false);
 const cleanupDialogOpen = computed(() => pendingCleanup.value !== null);
 const cleanupDialogTitle = computed(() => {
   if (pendingCleanup.value === "empty") return "确认回收空目录";
@@ -121,6 +121,7 @@ function actionReason(action: "scan" | "organization" | "full" | "incremental" |
     return selected.value.enabled ? "请先验证媒体库范围。" : "请先启用媒体库并保存配置。";
   }
   if (!readyForSync.value) return workflowGuidance.value || "请先完成媒体库准备流程。";
+  if (action === "organization" && !organizationPlanAvailable.value) return props.organizationPlanCapability?.reason_zh || "自动整理计划当前不可用。";
   if (action === "full" && !strmFullAvailable.value) return props.strmFullCapability?.reason_zh || "STRM 全量生成当前不可用。";
   if (action === "incremental" && !strmIncrementalAvailable.value) return props.strmIncrementalCapability?.reason_zh || "STRM 增量同步当前不可用。";
   if (action === "strm-cleanup" && !strmCleanupAvailable.value) return props.strmCleanupCapability?.reason_zh || "STRM 失效清理当前不可用。";
@@ -654,7 +655,7 @@ function operationError(operation: StrmOperationResponse): string | null {
 }
 
 async function createOrganizationPreview() {
-  if (!selected.value || !scan.value || !readyForSync.value || busy.value) return;
+  if (!selected.value || !scan.value || !readyForSync.value || !organizationPlanAvailable.value || busy.value) return;
   busy.value = true;
   error.value = "";
   notice.value = "";
@@ -729,7 +730,7 @@ onBeforeUnmount(() => {
         </div>
         <div class="library-action-row">
           <button class="primary-button" type="button" :title="actionReason('scan')" :disabled="busy || !selected.enabled || !selected.scope_verified" @click="scanLibrary"><RefreshCw :size="16" />扫描目录</button>
-          <button class="secondary-button" type="button" :title="actionReason('organization')" :disabled="busy || !readyForSync" @click="createOrganizationPreview"><SlidersHorizontal :size="16" />生成整理预览</button>
+          <button class="secondary-button" type="button" :title="actionReason('organization')" :disabled="busy || !readyForSync || !organizationPlanAvailable" @click="createOrganizationPreview"><SlidersHorizontal :size="16" />生成整理预览</button>
           <button class="secondary-button" type="button" :title="actionReason('full')" :disabled="busy || !readyForSync || !strmFullAvailable" @click="syncStrm('full')"><Database :size="16" />全量 STRM</button>
            <button class="secondary-button" type="button" :title="actionReason('incremental')" :disabled="busy || !readyForSync || !strmIncrementalAvailable" @click="syncStrm('incremental')"><RefreshCw :size="16" />增量同步</button>
            <button class="secondary-button" type="button" :title="actionReason('strm-cleanup')" :disabled="busy || !readyForSync || !strmCleanupAvailable" @click="previewCleanup"><Ban :size="16" />预览失效清理</button>
@@ -737,6 +738,7 @@ onBeforeUnmount(() => {
         </div>
         <div class="library-capability-notices">
           <p v-if="workflowGuidance" class="library-workflow-note"><RefreshCw :size="15" />{{ workflowGuidance }}</p>
+          <p v-if="!organizationPlanAvailable" class="library-capability-note"><SlidersHorizontal :size="15" />{{ organizationPlanCapability?.reason_zh || "自动整理计划当前不可用。" }}<button class="text-button" type="button" @click="openCapabilitySettings(organizationPlanCapability, 'organization')"><SlidersHorizontal :size="14" />前往整理计划设置</button></p>
           <p v-if="!strmFullAvailable" class="library-capability-note"><Database :size="15" />{{ strmFullCapability?.reason_zh || "STRM 全量生成当前不可用。" }}<button class="text-button" type="button" @click="openCapabilitySettings(strmFullCapability, 'overview')"><SlidersHorizontal :size="14" />前往设置</button></p>
           <p v-if="!strmIncrementalAvailable" class="library-capability-note"><RefreshCw :size="15" />{{ strmIncrementalCapability?.reason_zh || "STRM 增量同步当前不可用。" }}<button class="text-button" type="button" @click="openCapabilitySettings(strmIncrementalCapability, 'overview')"><SlidersHorizontal :size="14" />前往设置</button></p>
           <p v-if="!strmCleanupAvailable" class="library-capability-note"><Ban :size="15" />{{ strmCleanupCapability?.reason_zh || "STRM 失效清理当前不可用。" }}<button class="text-button" type="button" @click="openCapabilitySettings(strmCleanupCapability, 'overview')"><SlidersHorizontal :size="14" />前往设置</button></p>

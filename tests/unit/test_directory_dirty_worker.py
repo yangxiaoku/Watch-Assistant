@@ -25,10 +25,15 @@ from watch_assistant.schemas import (
     WorkflowStagePatch,
     WorkflowStageStatus,
 )
-from watch_assistant.services.directory_dirty_worker import DirectoryDirtyWorker
+from watch_assistant.services.directory_dirty_worker import (
+    DirectoryDirtyWorker,
+    _dirty_idempotency_key,
+    _dirty_operation_idempotency_key,
+)
 from watch_assistant.services.organization_operations import (
     OrganizationOperationService,
 )
+from watch_assistant.services.organization_outbox import DirectoryDirtyLease
 from watch_assistant.services.strm_operations import (
     StrmOperationKind,
     StrmOperationService,
@@ -138,6 +143,47 @@ class _FakeStrm:
         )
 
 
+class _FailedStrm(_FakeStrm):
+    async def incremental(self, library_id, **kwargs):
+        self.calls.append((library_id, kwargs))
+        return SimpleNamespace(
+            generated=0,
+            unchanged=0,
+            skipped=0,
+            failed=1,
+            retired=0,
+        )
+
+
+def test_dirty_retry_idempotency_keys_stay_stable_for_one_generation():
+    expires_at = datetime.now(UTC) + timedelta(minutes=5)
+    first = DirectoryDirtyLease(
+        event_id="evt-one",
+        operation_id="org-one",
+        directory_id="dir-one",
+        lease_token="lease-one",
+        attempts=1,
+        lease_expires_at=expires_at,
+        queue_id="gen-one",
+        generation=4,
+    )
+    retry = DirectoryDirtyLease(
+        event_id="evt-one",
+        operation_id="org-one",
+        directory_id="dir-one",
+        lease_token="lease-two",
+        attempts=2,
+        lease_expires_at=expires_at,
+        queue_id="gen-one",
+        generation=4,
+    )
+
+    assert _dirty_idempotency_key(first) == _dirty_idempotency_key(retry)
+    assert _dirty_operation_idempotency_key(
+        first, "scan-one"
+    ) == _dirty_operation_idempotency_key(retry, "scan-one")
+
+
 class _OrganizationSettings:
     strm_linkage_enabled = False
     cleanup_empty_directories = False
@@ -208,6 +254,58 @@ async def test_dirty_worker_consumes_event_and_preserves_cleanup_gate(tmp_path: 
     )
     assert strm_stage.status is WorkflowStageStatus.SUCCEEDED
     assert strm_stage.child_type == "strm_dirty_generation"
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_dirty_worker_retries_when_strm_operation_is_not_successful(tmp_path: Path):
+    database = await _database(tmp_path)
+    workflow = await WorkflowService(database.session_factory).create(
+        WorkflowCreateRequest(media_type=MediaType.MOVIE, tmdb_id=1)
+    )
+    service, operation, lease = await _claimed(database, workflow_id=workflow.id)
+    await service.finish(
+        operation.operation_id,
+        expected_revision=lease.revision,
+        lease_token=lease.lease_token,
+        status=OrganizationOperationStatus.ORGANIZED,
+        source_directory_id="7000",
+        target_directory_id="8000",
+    )
+
+    failed_strm = _FailedStrm()
+    worker = DirectoryDirtyWorker(
+        database.session_factory,
+        failed_strm,
+        lambda _library_id, _root_id: _FakeIndex(),
+        output_root=tmp_path / "strm",
+        playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+    )
+
+    assert await worker.run_once()
+    async with database.session_factory() as session:
+        event = await session.scalar(
+            select(DirectoryDirtyEvent).where(
+                DirectoryDirtyEvent.directory_id == "7000"
+            )
+        )
+        assert event is not None
+        assert event.status == "pending"
+        assert event.error_code == "strm_incremental_failed"
+        operation_row = await session.scalar(
+            select(StrmOperation).where(
+                StrmOperation.library_id == "library-1",
+                StrmOperation.kind == StrmOperationKind.INCREMENTAL,
+            )
+        )
+        assert operation_row is not None
+        assert operation_row.status.value == "failed"
+
+    workflow_state = await WorkflowService(database.session_factory).get(workflow.id)
+    strm_stage = next(
+        stage for stage in workflow_state.stages if stage.stage is WorkflowStageName.STRM
+    )
+    assert strm_stage.status is WorkflowStageStatus.WAITING_EXTERNAL
     await database.engine.dispose()
 
 

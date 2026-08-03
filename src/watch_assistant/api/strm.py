@@ -378,8 +378,6 @@ async def _finish_operation(
             retired=summary.retired,
             lease_owner=lease_owner,
         )
-        status = WorkflowStageStatus.FAILED
-        error_code = operation.error_code
     else:
         operation = await operations.complete(
             operation_id,
@@ -390,8 +388,12 @@ async def _finish_operation(
             retired=summary.retired,
             lease_owner=lease_owner,
         )
+    if operation.status == "succeeded":
         status = WorkflowStageStatus.SUCCEEDED
         error_code = None
+    else:
+        status = WorkflowStageStatus.FAILED
+        error_code = operation.error_code or "strm_operation_failed"
     await _sync_workflow_stage(
         request,
         workflow_id,
@@ -400,6 +402,8 @@ async def _finish_operation(
         reason="strm_finished",
         error_code=error_code,
     )
+    if operation.status != "succeeded":
+        raise StrmManifestError(error_code or "strm_operation_failed")
     return operation
 
 
@@ -758,6 +762,17 @@ async def cancel_strm_operation(
         summary = await operations.cancel(operation_id)
     except StrmOperationNotFound:
         raise HTTPException(status_code=404, detail="strm_operation_not_found") from None
+    except StrmOperationError as error:
+        raise HTTPException(status_code=409, detail=error.code) from None
+    if summary.status == "cancelled" and current.status != "cancelled":
+        await _sync_workflow_stage(
+            request,
+            summary.workflow_id,
+            operation_id=summary.operation_id,
+            status=WorkflowStageStatus.FAILED,
+            reason="strm_cancelled",
+            error_code=summary.error_code,
+        )
     return _operation_response(summary)
 
 

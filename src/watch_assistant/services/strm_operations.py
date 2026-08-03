@@ -697,8 +697,27 @@ class StrmOperationService:
                 }:
                     return _summary(current)
                 raise StrmOperationError("strm_operation_lease_lost")
-            await session.commit()
-            await session.refresh(current)
+            try:
+                await session.commit()
+            except Exception:
+                # The database may have committed before the acknowledgement
+                # failed. Observe a fresh row before allowing the caller to
+                # mark a durable manifest result as failed.
+                try:
+                    await session.rollback()
+                except Exception:  # noqa: BLE001, S110 - preserve the commit error
+                    pass
+                observed = await self._load_terminal(operation_id)
+                if observed is not None:
+                    return observed
+                raise
+            try:
+                await session.refresh(current)
+            except Exception:
+                observed = await self._load_terminal(operation_id)
+                if observed is not None:
+                    return observed
+                raise
             return _summary(current)
 
     async def _load(self, operation_id: str) -> StrmOperation:
@@ -708,6 +727,18 @@ class StrmOperationService:
             if operation is None:
                 raise StrmOperationNotFound(operation_id)
             return operation
+
+    async def _load_terminal(self, operation_id: str) -> StrmOperationSummary | None:
+        async with self._session_factory() as session:
+            operation = await session.get(StrmOperation, operation_id)
+            if operation is None or operation.status not in {
+                StrmOperationStatus.SUCCEEDED,
+                StrmOperationStatus.FAILED,
+                StrmOperationStatus.TIMEOUT,
+                StrmOperationStatus.CANCELLED,
+            }:
+                return None
+            return _summary(operation)
 
     async def _commit(self, operation: StrmOperation) -> None:
         async with self._session_factory() as session:

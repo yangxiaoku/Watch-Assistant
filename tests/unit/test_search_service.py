@@ -143,6 +143,52 @@ async def test_query_timeout_does_not_block_other_queries():
     assert results[1] == {"query": "fast"}
 
 
+@pytest.mark.asyncio
+async def test_concurrent_resource_search_receipts_are_idempotent():
+    service = SearchService.__new__(SearchService)
+    service._resource_search_tasks = {}
+    service._resource_search_start_locks = {}
+    service._resource_search_finalize_locks = {}
+    first_load_started = asyncio.Event()
+    release_first_load = asyncio.Event()
+    load_calls = 0
+
+    async def load_latest(_key):
+        nonlocal load_calls
+        load_calls += 1
+        if load_calls == 1:
+            first_load_started.set()
+            await release_first_load.wait()
+
+    service._load_latest_resource_search_task = load_latest
+    service._snapshot_metadata = AsyncMock(return_value=("revision", 0))
+    service._save_resource_search_task = AsyncMock()
+
+    first = asyncio.create_task(
+        service.start_resource_search(
+            123,
+            media_type=MediaType.MOVIE,
+            season_number=None,
+        )
+    )
+    await first_load_started.wait()
+    second = asyncio.create_task(
+        service.start_resource_search(
+            123,
+            media_type=MediaType.MOVIE,
+            season_number=None,
+        )
+    )
+    await asyncio.sleep(0)
+    release_first_load.set()
+
+    first_response, second_response = await asyncio.gather(first, second)
+
+    assert first_response.task_id == second_response.task_id
+    assert load_calls == 1
+    service._save_resource_search_task.assert_awaited_once()
+
+
 def test_cache_key_is_versioned_by_movie_id():
     assert make_cache_key(12345) == "tmdb:movie:12345:queries:v5"
     assert make_cache_key(12345, MediaType.TV) == "tmdb:tv:12345:queries:v5"

@@ -198,9 +198,14 @@ test("retries the current resource route after canceling a pending initial page"
   await page.goto("/movie/27205");
   await expect(page.locator(".resource-surface")).toHaveAttribute("aria-busy", "true");
   const input = page.getByLabel("资源名称搜索");
-  await input.fill("temporary");
-  await page.waitForTimeout(80);
-  await input.fill("");
+  await input.evaluate((element) => {
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    if (!(element instanceof HTMLInputElement) || !setter) throw new Error("resource query input is unavailable");
+    setter.call(element, "temporary");
+    element.dispatchEvent(new Event("input", { bubbles: true }));
+    setter.call(element, "");
+    element.dispatchEvent(new Event("input", { bubbles: true }));
+  });
   await expect(input).toHaveValue("");
   await expect.poll(() => requests.length).toBe(2);
   await expect(page).not.toHaveURL(/resource_query=temporary/);
@@ -223,9 +228,14 @@ test("does not refetch when a canceled draft returns to an existing page respons
   await page.goto("/movie/27205");
   await expect.poll(() => requestCount).toBe(1);
   const input = page.getByLabel("资源名称搜索");
-  await input.fill("temporary");
-  await page.waitForTimeout(80);
-  await input.fill("");
+  await input.evaluate((element) => {
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    if (!(element instanceof HTMLInputElement) || !setter) throw new Error("resource query input is unavailable");
+    setter.call(element, "temporary");
+    element.dispatchEvent(new Event("input", { bubbles: true }));
+    setter.call(element, "");
+    element.dispatchEvent(new Event("input", { bubbles: true }));
+  });
   await expect(input).toHaveValue("");
   await page.waitForTimeout(320);
   expect(requestCount).toBe(1);

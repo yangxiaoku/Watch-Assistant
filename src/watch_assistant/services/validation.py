@@ -25,6 +25,13 @@ SEASON_RANGE_PATTERN = re.compile(
     r"第?\s*0*(\d{1,3})(?!\d)\s*季",
     re.IGNORECASE,
 )
+CHINESE_SEASON_PATTERN = re.compile(
+    r"第\s*(?P<number>[〇零一二两三四五六七八九十百千万]+)\s*季"
+)
+CHINESE_SEASON_RANGE_PATTERN = re.compile(
+    r"第\s*(?P<start>[〇零一二两三四五六七八九十百千万]+)\s*季?\s*[-~到至]\s*"
+    r"第?\s*(?P<end>[〇零一二两三四五六七八九十百千万]+)\s*季"
+)
 MEDIA_PATTERN = re.compile(
     r"\b(?:2160p|1080p|720p|4k|blu[ .-]?ray|web[ .-]?dl|webrip|"
     r"remux|brrip|dvd[ .-]?rip|hdr|x26[45]|h[ .]?26[45])\b",
@@ -325,6 +332,15 @@ def _season_numbers(value: str) -> set[int]:
             numbers.add(int(value))
     for match in SEASON_RANGE_PATTERN.finditer(normalized):
         numbers.update(int(item) for item in match.groups() if item is not None)
+    for match in CHINESE_SEASON_PATTERN.finditer(normalized):
+        season_number = _chinese_number(match.group("number"))
+        if season_number is not None:
+            numbers.add(season_number)
+    for match in CHINESE_SEASON_RANGE_PATTERN.finditer(normalized):
+        for item in (match.group("start"), match.group("end")):
+            season_number = _chinese_number(item)
+            if season_number is not None:
+                numbers.add(season_number)
     return numbers
 
 
@@ -340,4 +356,56 @@ def _season_matches_requested(value: str, season_number: int) -> bool:
             start, end = int(match.group(3)), int(match.group(4))
         if min(start, end) <= season_number <= max(start, end):
             return True
+    for match in CHINESE_SEASON_RANGE_PATTERN.finditer(normalized):
+        start = _chinese_number(match.group("start"))
+        end = _chinese_number(match.group("end"))
+        if (
+            start is not None
+            and end is not None
+            and min(start, end) <= season_number <= max(start, end)
+        ):
+            return True
     return False
+
+
+_CHINESE_DIGITS = {
+    "〇": 0,
+    "零": 0,
+    "一": 1,
+    "二": 2,
+    "两": 2,
+    "三": 3,
+    "四": 4,
+    "五": 5,
+    "六": 6,
+    "七": 7,
+    "八": 8,
+    "九": 9,
+}
+_CHINESE_UNITS = {"十": 10, "百": 100, "千": 1000, "万": 10000}
+
+
+def _chinese_number(value: str) -> int | None:
+    if not value:
+        return None
+    if all(character in _CHINESE_DIGITS for character in value):
+        return int("".join(str(_CHINESE_DIGITS[character]) for character in value))
+
+    total = 0
+    section = 0
+    number = 0
+    for character in value:
+        if character in _CHINESE_DIGITS:
+            number = _CHINESE_DIGITS[character]
+            continue
+        unit = _CHINESE_UNITS.get(character)
+        if unit is None:
+            return None
+        if number == 0:
+            number = 1
+        section += number * unit
+        number = 0
+        if unit == 10000:
+            total += section
+            section = 0
+    return total + section + number
