@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, func, select, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -320,6 +320,9 @@ class WorkflowService:
                 WorkflowStageName.AVAILABILITY,
             } and patch.status is not WorkflowStageStatus.PENDING:
                 raise WorkflowConflict("workflow_evidence_required")
+            replayed_response: WorkflowResponse | None = None
+            original_stage_status = stage.status
+            original_stage_updated_at = stage.updated_at
             stages = list(
                 await session.scalars(
                     select(WorkflowStage).where(
@@ -345,44 +348,108 @@ class WorkflowService:
                     child_id=requested_child_id,
                 )
                 before_binding = (stage.child_type, stage.child_id)
-                _ensure_child_binding(
-                    stage,
-                    child_type=requested_child_type,
-                    child_id=requested_child_id,
+                if before_binding != (None, None) and before_binding != (
+                    requested_child_type,
+                    requested_child_id,
+                ):
+                    raise WorkflowConflict("workflow_conflict")
+                child_bound = before_binding != (
+                    requested_child_type,
+                    requested_child_id,
                 )
-                child_bound = before_binding != (stage.child_type, stage.child_id)
             terminal_replay = (
                 patch.status in _TERMINAL_STAGE_STATUSES
                 and stage.status is patch.status
             )
+            stage_values = {}
+            if child_patch_supplied and child_bound:
+                stage_values.update(
+                    child_type=requested_child_type,
+                    child_id=requested_child_id,
+                )
             if not terminal_replay:
-                stage.status = patch.status
-                stage.reason = patch.reason
-                stage.error_code = patch.error_code
-                stage.updated_at = now
+                stage_values.update(
+                    status=patch.status,
+                    reason=patch.reason,
+                    error_code=patch.error_code,
+                    updated_at=now,
+                )
                 if patch.status in {
                     WorkflowStageStatus.RUNNING,
                     WorkflowStageStatus.WAITING_EXTERNAL,
                     WorkflowStageStatus.WAITING_CONFIRMATION,
                 } and stage.started_at is None:
-                    stage.started_at = now
+                    stage_values["started_at"] = now
                 if patch.status in _TERMINAL_STAGE_STATUSES:
-                    stage.completed_at = now
+                    stage_values["completed_at"] = now
             elif child_bound:
-                stage.updated_at = now
-                workflow.updated_at = now
-            stages = list(
-                await session.scalars(
-                    select(WorkflowStage).where(
-                        WorkflowStage.workflow_id == workflow_id
+                stage_values["updated_at"] = now
+            if stage_values:
+                result = await session.execute(
+                    update(WorkflowStage)
+                    .where(
+                        WorkflowStage.id == stage.id,
+                        WorkflowStage.status == original_stage_status,
+                        WorkflowStage.updated_at == original_stage_updated_at,
+                    )
+                    .values(**stage_values)
+                    .execution_options(synchronize_session=False)
+                )
+                if result.rowcount != 1:
+                    current_stage = await session.scalar(
+                        select(WorkflowStage)
+                        .where(WorkflowStage.id == stage.id)
+                        .execution_options(populate_existing=True)
+                    )
+                    if current_stage is None:
+                        raise WorkflowNotFound(f"{workflow_id}:{stage_name.value}")
+                    if (
+                        current_stage.status is patch.status
+                        and patch.status in _TERMINAL_STAGE_STATUSES
+                        and (
+                            not child_patch_supplied
+                            or (
+                                current_stage.child_type == requested_child_type
+                                and current_stage.child_id == requested_child_id
+                            )
+                        )
+                    ):
+                        workflow = await session.get(Workflow, workflow_id)
+                        if workflow is None:
+                            raise WorkflowNotFound(workflow_id)
+                        await session.refresh(
+                            workflow,
+                            ["status", "state_reason", "updated_at", "stages"],
+                        )
+                        replayed_response = _response(workflow)
+                    else:
+                        if (
+                            current_stage.status in _TERMINAL_STAGE_STATUSES
+                            and current_stage.status is patch.status
+                            and patch.status in _TERMINAL_STAGE_STATUSES
+                            and child_patch_supplied
+                        ):
+                            raise WorkflowConflict("workflow_conflict")
+                        if current_stage.status in _TERMINAL_STAGE_STATUSES:
+                            raise WorkflowConflict("workflow_stage_terminal")
+                        raise WorkflowConflict("workflow_conflict")
+                else:
+                    await session.refresh(stage)
+            if replayed_response is None:
+                stages = list(
+                    await session.scalars(
+                        select(WorkflowStage).where(
+                            WorkflowStage.workflow_id == workflow_id
+                        )
                     )
                 )
-            )
-            workflow.status, workflow.state_reason = _derive_status(stages)
-            workflow.updated_at = now
-            await session.commit()
-            await session.refresh(workflow, ["stages"])
-            response = _response(workflow)
+                workflow.status, workflow.state_reason = _derive_status(stages)
+                workflow.updated_at = now
+                await session.commit()
+                await session.refresh(workflow, ["stages"])
+                response = _response(workflow)
+            else:
+                response = replayed_response
         await emit_event(
             self._event_logger,
             "workflow.stage_changed",
@@ -961,24 +1028,82 @@ async def sync_child_stage(
         )
     )
     _validate_stage_transition(stages, stage, status)
-    _ensure_child_binding(stage, child_type=child_type, child_id=child_id)
+    original_stage_status = stage.status
+    original_stage_updated_at = stage.updated_at
+    current_binding = (stage.child_type, stage.child_id)
+    if current_binding != (None, None) and current_binding != (
+        child_type,
+        child_id,
+    ):
+        raise WorkflowConflict("workflow_conflict")
     now = datetime.now(UTC)
-    if stage.status in _TERMINAL_STAGE_STATUSES and stage.status is status:
-        return workflow
-    stage.child_type = child_type
-    stage.child_id = child_id
-    stage.status = status
-    stage.reason = reason
-    stage.error_code = error_code
-    if status in {
-        WorkflowStageStatus.RUNNING,
-        WorkflowStageStatus.WAITING_EXTERNAL,
-        WorkflowStageStatus.WAITING_CONFIRMATION,
-    } and stage.started_at is None:
-        stage.started_at = now
-    if status in _TERMINAL_STAGE_STATUSES:
-        stage.completed_at = now
-    stage.updated_at = now
+    stage_values = {
+        "child_type": child_type,
+        "child_id": child_id,
+    }
+    terminal_replay = (
+        stage.status in _TERMINAL_STAGE_STATUSES and stage.status is status
+    )
+    if terminal_replay:
+        if current_binding == (child_type, child_id):
+            return workflow
+        stage_values["updated_at"] = now
+    else:
+        stage_values.update(
+            status=status,
+            reason=reason,
+            error_code=error_code,
+            updated_at=now,
+        )
+        if status in {
+            WorkflowStageStatus.RUNNING,
+            WorkflowStageStatus.WAITING_EXTERNAL,
+            WorkflowStageStatus.WAITING_CONFIRMATION,
+        } and stage.started_at is None:
+            stage_values["started_at"] = now
+        if status in _TERMINAL_STAGE_STATUSES:
+            stage_values["completed_at"] = now
+    result = await session.execute(
+        update(WorkflowStage)
+        .where(
+            WorkflowStage.id == stage.id,
+            WorkflowStage.status == original_stage_status,
+            WorkflowStage.updated_at == original_stage_updated_at,
+        )
+        .values(**stage_values)
+        .execution_options(synchronize_session=False)
+    )
+    if result.rowcount != 1:
+        current_stage = await session.scalar(
+            select(WorkflowStage)
+            .where(WorkflowStage.id == stage.id)
+            .execution_options(populate_existing=True)
+        )
+        if (
+            current_stage is not None
+            and current_stage.status is status
+            and status in _TERMINAL_STAGE_STATUSES
+            and (current_stage.child_type, current_stage.child_id)
+            == (child_type, child_id)
+        ):
+            await session.refresh(
+                workflow,
+                ["status", "state_reason", "updated_at", "stages"],
+            )
+            return workflow
+        if (
+            current_stage is not None
+            and current_stage.status is status
+            and status in _TERMINAL_STAGE_STATUSES
+        ):
+            raise WorkflowConflict("workflow_conflict")
+        if (
+            current_stage is not None
+            and current_stage.status in _TERMINAL_STAGE_STATUSES
+        ):
+            raise WorkflowConflict("workflow_stage_terminal")
+        raise WorkflowConflict("workflow_conflict")
+    await session.refresh(stage)
     stages = list(
         await session.scalars(
             select(WorkflowStage).where(WorkflowStage.workflow_id == workflow_id)
