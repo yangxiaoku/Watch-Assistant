@@ -609,6 +609,52 @@ async def test_cleanup_plan_apply_requires_digest_and_retires_only_managed_file(
         await database.engine.dispose()
 
 
+async def test_cleanup_plan_apply_fails_closed_when_terminal_idempotency_key_is_missing(
+    tmp_path: Path,
+):
+    database = await _database(tmp_path)
+    try:
+        manifest_service = StrmManifestService(database.session_factory)
+        await manifest_service.generate(
+            "library-strm",
+            source_scan_run_id="scan-strm",
+            output_root=tmp_path / "output",
+            playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+        )
+        await _add_removed_episode_scan(database)
+        plan_service = StrmCleanupPlanService(database.session_factory)
+        plan = await plan_service.create_plan(
+            library_id="library-strm",
+            source_scan_run_id="scan-strm-2",
+            output_root=tmp_path / "output",
+            playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+        )
+
+        async with database.session_factory() as session:
+            row = await session.get(StrmCleanupPlan, plan.plan_id)
+            assert row is not None
+            row.status = "applied"
+            row.revision += 1
+            row.applied_idempotency_key = None
+            row.applied_retired = 1
+            await session.commit()
+
+        with pytest.raises(
+            StrmCleanupPlanError, match="cleanup_plan_already_applied"
+        ):
+            await plan_service.apply_plan(
+                plan_id=plan.plan_id,
+                expected_revision=plan.revision,
+                digest=plan.plan_hash,
+                confirm=True,
+                idempotency_key="cleanup-key-retry",
+                output_root=tmp_path / "output",
+                playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+            )
+    finally:
+        await database.engine.dispose()
+
+
 async def test_cleanup_plan_terminal_commit_uses_revision_cas(tmp_path: Path):
     database = await _database(tmp_path)
     try:
@@ -1126,6 +1172,52 @@ async def test_cleanup_plan_apply_rejects_modified_candidate_without_partial_ret
             )
         assert str(error.value) == "cleanup_plan_blocked"
         assert (tmp_path / "output/Show/Episode.strm").read_text() == "changed\n"
+    finally:
+        await database.engine.dispose()
+
+
+async def test_cleanup_plan_apply_rejects_candidate_blocked_at_plan_time_after_restore(
+    tmp_path: Path,
+):
+    database = await _database(tmp_path)
+    try:
+        manifest_service = StrmManifestService(database.session_factory)
+        await manifest_service.generate(
+            "library-strm",
+            source_scan_run_id="scan-strm",
+            output_root=tmp_path / "output",
+            playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+        )
+        target = tmp_path / "output/Show/Episode.strm"
+        expected = target.read_text()
+        target.write_text("user content\n")
+        await _add_removed_episode_scan(database)
+        plan_service = StrmCleanupPlanService(database.session_factory)
+        plan = await plan_service.create_plan(
+            library_id="library-strm",
+            source_scan_run_id="scan-strm-2",
+            output_root=tmp_path / "output",
+            playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+        )
+        assert plan.executable_count == 0
+        assert plan.blocked_count == 1
+
+        target.write_text(expected)
+        with pytest.raises(StrmCleanupPlanError, match="cleanup_plan_blocked"):
+            await plan_service.apply_plan(
+                plan_id=plan.plan_id,
+                expected_revision=plan.revision,
+                digest=plan.plan_hash,
+                confirm=True,
+                idempotency_key="cleanup-restored-blocked",
+                output_root=tmp_path / "output",
+                playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+            )
+
+        assert target.read_text() == expected
+        items, total = await manifest_service.list_current("library-strm")
+        assert total == 1
+        assert items[0].status == "verified"
     finally:
         await database.engine.dispose()
 
