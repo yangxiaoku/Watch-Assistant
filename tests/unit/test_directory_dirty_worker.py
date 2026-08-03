@@ -9,11 +9,13 @@ from test_organization_operations import _database, _operation
 from watch_assistant.db import create_database
 from watch_assistant.models import (
     DirectoryDirtyEvent,
+    DirectoryDirtyGeneration,
     OrganizationOperation,
     OrganizationOperationStatus,
     Resource,
     StrmOperation,
     Task,
+    WorkflowStage,
 )
 from watch_assistant.schemas import (
     MediaType,
@@ -33,7 +35,10 @@ from watch_assistant.services.directory_dirty_worker import (
 from watch_assistant.services.organization_operations import (
     OrganizationOperationService,
 )
-from watch_assistant.services.organization_outbox import DirectoryDirtyLease
+from watch_assistant.services.organization_outbox import (
+    DirectoryDirtyLease,
+    DirectoryDirtyOutboxService,
+)
 from watch_assistant.services.strm_operations import (
     StrmOperationKind,
     StrmOperationService,
@@ -410,6 +415,73 @@ async def test_dirty_worker_retries_incomplete_scan(tmp_path: Path):
         assert row.status == "pending"
         assert row.error_code == "scan_incomplete"
         assert row.attempts == 1
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_dirty_worker_does_not_write_workflow_after_retry_lease_is_replaced(
+    tmp_path: Path,
+):
+    database = await _database(tmp_path)
+    workflow = await WorkflowService(database.session_factory).create(
+        WorkflowCreateRequest(media_type=MediaType.MOVIE, tmdb_id=1)
+    )
+    service, operation, lease = await _claimed(database, workflow_id=workflow.id)
+    await service.finish(
+        operation.operation_id,
+        expected_revision=lease.revision,
+        lease_token=lease.lease_token,
+        status=OrganizationOperationStatus.ORGANIZED,
+        source_directory_id="7000",
+        target_directory_id="8000",
+    )
+
+    class _LeaseReplacedOutbox(DirectoryDirtyOutboxService):
+        async def retry(self, session_factory, current_lease, **_kwargs):
+            now = datetime.now(UTC) + timedelta(minutes=5)
+            async with session_factory() as session:
+                generation = await session.get(
+                    DirectoryDirtyGeneration, current_lease.queue_id
+                )
+                event = await session.get(DirectoryDirtyEvent, current_lease.event_id)
+                stage = await session.scalar(
+                    select(WorkflowStage).where(
+                        WorkflowStage.workflow_id == workflow.id,
+                        WorkflowStage.stage == WorkflowStageName.STRM,
+                    )
+                )
+                assert generation is not None
+                assert event is not None
+                assert stage is not None
+                generation.lease_token = "new-lease-token"
+                generation.lease_expires_at = now
+                event.lease_token = "new-lease-token"
+                event.lease_expires_at = now
+                stage.status = WorkflowStageStatus.RUNNING
+                stage.reason = "new_worker_started"
+                stage.updated_at = now
+                await session.commit()
+            return False
+
+    class _IncompleteIndex:
+        async def scan_tree(self, _key):
+            return SimpleNamespace(complete=False, run_id="scan-incomplete")
+
+    worker = DirectoryDirtyWorker(
+        database.session_factory,
+        _FakeStrm(),
+        lambda _library_id, _root_id: _IncompleteIndex(),
+        output_root=tmp_path / "strm",
+        playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+        outbox=_LeaseReplacedOutbox(),
+    )
+    assert await worker.run_once()
+    workflow_state = await WorkflowService(database.session_factory).get(workflow.id)
+    strm_stage = next(
+        stage for stage in workflow_state.stages if stage.stage is WorkflowStageName.STRM
+    )
+    assert strm_stage.status is WorkflowStageStatus.RUNNING
+    assert strm_stage.reason == "new_worker_started"
     await database.engine.dispose()
 
 

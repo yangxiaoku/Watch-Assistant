@@ -13,12 +13,15 @@ from watch_assistant.crypto import SecretCrypto
 from watch_assistant.db import create_database, initialize_database
 from watch_assistant.models import Resource, Task, WorkflowStage
 from watch_assistant.schemas import (
+    EvidenceSource,
+    EvidenceStatus,
     RemoteObservation,
     RemoteStatus,
+    WorkflowStageName,
     WorkflowStageStatus,
 )
 from watch_assistant.services.tasks import TaskService
-from watch_assistant.services.workflows import WorkflowService
+from watch_assistant.services.workflows import WorkflowService, record_evidence
 
 
 class FakeTaskAdapter:
@@ -196,6 +199,13 @@ async def test_terminal_stage_replay_preserves_reason_and_child_binding(tmp_path
             )
             assert response.status_code == 200
 
+        task = await client.post(
+            "/api/v1/tasks",
+            json={"resource_id": "res_workflow_api", "workflow_id": workflow_id},
+        )
+        assert task.status_code == 202
+        task_id = task.json()["id"]
+
         first = await client.patch(
             f"/api/v1/workflows/{workflow_id}/stages/push",
             json={
@@ -203,7 +213,7 @@ async def test_terminal_stage_replay_preserves_reason_and_child_binding(tmp_path
                 "reason": "首次失败原因",
                 "error_code": "first_failure",
                 "child_type": "task",
-                "child_id": "task-first",
+                "child_id": task_id,
             },
         )
         assert first.status_code == 200
@@ -215,7 +225,7 @@ async def test_terminal_stage_replay_preserves_reason_and_child_binding(tmp_path
                 "reason": "迟到事件不应覆盖",
                 "error_code": "late_failure",
                 "child_type": "task",
-                "child_id": "task-first",
+                "child_id": task_id,
             },
         )
         assert replay.status_code == 200
@@ -225,7 +235,7 @@ async def test_terminal_stage_replay_preserves_reason_and_child_binding(tmp_path
         assert push["status"] == "failed"
         assert push["reason"] == "首次失败原因"
         assert push["error_code"] == "first_failure"
-        assert push["child_id"] == "task-first"
+        assert push["child_id"] == task_id
 
         conflicting_child = await client.patch(
             f"/api/v1/workflows/{workflow_id}/stages/push",
@@ -239,6 +249,78 @@ async def test_terminal_stage_replay_preserves_reason_and_child_binding(tmp_path
         )
         assert conflicting_child.status_code == 409
         assert conflicting_child.json()["error"]["code"] == "workflow_conflict"
+    finally:
+        await client.aclose()
+        await tmdb.aclose()
+        await pansou.aclose()
+        await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_workflow_stage_rejects_children_from_another_workflow(tmp_path):
+    client, database, tmdb, pansou = await _make_client(tmp_path)
+    try:
+        target = await client.post("/api/v1/workflows", json={"media_type": "movie"})
+        target_id = target.json()["id"]
+        await _record_discovery(client, target_id)
+        for stage in ("inspection", "approval"):
+            advanced = await client.patch(
+                f"/api/v1/workflows/{target_id}/stages/{stage}",
+                json={"status": "succeeded"},
+            )
+            assert advanced.status_code == 200
+
+        foreign = await client.post("/api/v1/workflows", json={"media_type": "movie"})
+        foreign_id = foreign.json()["id"]
+        await _record_discovery(client, foreign_id)
+        for stage in ("inspection", "approval"):
+            advanced = await client.patch(
+                f"/api/v1/workflows/{foreign_id}/stages/{stage}",
+                json={"status": "succeeded"},
+            )
+            assert advanced.status_code == 200
+        foreign_task = await client.post(
+            "/api/v1/tasks",
+            json={"resource_id": "res_workflow_api", "workflow_id": foreign_id},
+        )
+        assert foreign_task.status_code == 202
+        foreign_task_id = foreign_task.json()["id"]
+
+        rejected_task = await client.patch(
+            f"/api/v1/workflows/{target_id}/stages/push",
+            json={
+                "status": "failed",
+                "child_type": "task",
+                "child_id": foreign_task_id,
+            },
+        )
+        assert rejected_task.status_code == 409
+        assert rejected_task.json()["error"]["code"] == "workflow_conflict"
+
+        async with database.session_factory() as session:
+            evidence = await record_evidence(
+                session,
+                workflow_id=foreign_id,
+                task_id=foreign_task_id,
+                stage=WorkflowStageName.AVAILABILITY,
+                evidence_type="availability_receipt",
+                source=EvidenceSource.READONLY_RECONCILIATION,
+                subject_id=foreign_task_id,
+                status=EvidenceStatus.AVAILABLE,
+                verified=True,
+            )
+            await session.commit()
+
+        rejected_evidence = await client.patch(
+            f"/api/v1/workflows/{target_id}/stages/availability",
+            json={
+                "status": "pending",
+                "child_type": "workflow_evidence",
+                "child_id": evidence.id,
+            },
+        )
+        assert rejected_evidence.status_code == 409
+        assert rejected_evidence.json()["error"]["code"] == "workflow_conflict"
     finally:
         await client.aclose()
         await tmdb.aclose()
