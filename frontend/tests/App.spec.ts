@@ -2,7 +2,7 @@ import { flushPromises, mount } from "@vue/test-utils";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import App from "../src/App.vue";
-import { ApiClient } from "../src/api";
+import { ApiClient, ApiError } from "../src/api";
 
 describe("App capability wiring", () => {
   afterEach(() => {
@@ -77,6 +77,133 @@ describe("App capability wiring", () => {
     const organizationButton = wrapper.findAll("button").find((button) => button.text().includes("生成整理预览"));
     expect(organizationButton?.attributes("disabled")).toBeDefined();
     expect(wrapper.text()).toContain("自动整理计划未启用");
+    wrapper.unmount();
+  });
+
+  it("retries metadata with the media type and TMDB id in the API order", async () => {
+    window.history.replaceState({}, "", "/movie/27205");
+    const metadata = {
+      tmdb_id: 27205,
+      media_type: "movie" as const,
+      title: "测试电影",
+      original_title: "Test Movie",
+      release_year: 2026,
+      overview: "测试简介",
+      poster_path: null,
+      backdrop_path: null,
+      genre_ids: [],
+      vote_average: 7.5,
+    };
+    const mediaMetadata = vi.spyOn(ApiClient.prototype, "mediaMetadata")
+      .mockRejectedValueOnce(new ApiError("资料暂时不可用", 503, "tmdb_unavailable"))
+      .mockResolvedValueOnce(metadata);
+    vi.spyOn(ApiClient.prototype, "recordMediaDetailMetric").mockResolvedValue(undefined);
+    vi.spyOn(ApiClient.prototype, "health").mockResolvedValue({ status: "ok", release: "test", push_supported: false });
+    vi.spyOn(ApiClient.prototype, "me").mockResolvedValue(undefined);
+    vi.spyOn(ApiClient.prototype, "startResourceSearch").mockResolvedValue({
+      task_id: "resource-search-1",
+      tmdb_id: 27205,
+      media_type: "movie",
+      season_number: null,
+      status: "ready",
+      snapshot_revision: "snapshot-1",
+      query_plan_version: "v1",
+      selected_season: null,
+      sources: [],
+      warnings: [],
+      cache_age_seconds: null,
+      error_code: null,
+      created_at: "2026-08-01T00:00:00Z",
+      updated_at: "2026-08-01T00:00:00Z",
+    });
+    vi.spyOn(ApiClient.prototype, "resources").mockResolvedValue({
+      items: [],
+      page: 1,
+      page_size: 25,
+      total: 0,
+      total_pages: 1,
+      facets: { magnet: 0, share: 0, "4k": 0, "1080p": 0, "720p": 0, subtitle: 0 },
+      snapshot_revision: "snapshot-1",
+    });
+
+    const wrapper = mount(App);
+    await flushPromises();
+    expect(wrapper.text()).toContain("影视资料暂时无法加载");
+
+    const retryButton = wrapper.findAll("button").find((button) => button.text().includes("重试资料"));
+    expect(retryButton).toBeDefined();
+    await retryButton!.trigger("click");
+    await flushPromises();
+
+    expect(mediaMetadata).toHaveBeenLastCalledWith("movie", 27205, expect.any(AbortSignal));
+    expect(wrapper.text()).toContain("测试电影");
+    wrapper.unmount();
+  });
+
+  it("keeps the current resource page visible while a refresh page is pending", async () => {
+    window.history.replaceState({}, "", "/movie/27205");
+    const metadata = {
+      tmdb_id: 27205,
+      media_type: "movie" as const,
+      title: "测试电影",
+      original_title: "Test Movie",
+      release_year: 2026,
+      overview: null,
+      poster_path: null,
+      backdrop_path: null,
+      genre_ids: [],
+      vote_average: 7.5,
+    };
+    const resourceSearchResponse = {
+      task_id: "resource-search-1",
+      tmdb_id: 27205,
+      media_type: "movie" as const,
+      season_number: null,
+      status: "ready" as const,
+      snapshot_revision: "snapshot-1",
+      query_plan_version: "v1",
+      selected_season: null,
+      sources: [],
+      warnings: [],
+      cache_age_seconds: null,
+      error_code: null,
+      created_at: "2026-08-01T00:00:00Z",
+      updated_at: "2026-08-01T00:00:00Z",
+    };
+    const facets = { magnet: 1, share: 0, "4k": 0, "1080p": 0, "720p": 0, subtitle: 0 };
+    const oldResource = { resource_id: "old-resource", kind: "magnet" as const, name: "旧资源", size_bytes: null, seeders: null, source: "test", captured_at: "2026-08-01T00:00:00Z" };
+    const newResource = { ...oldResource, resource_id: "new-resource", name: "新资源" };
+    const initialPage = { items: [oldResource], page: 1, page_size: 25 as const, total: 1, total_pages: 1, facets, snapshot_revision: "snapshot-1" };
+    const refreshedPage = { items: [newResource], page: 1, page_size: 25 as const, total: 1, total_pages: 1, facets, snapshot_revision: "snapshot-2" };
+    let resourcePageCalls = 0;
+    let releaseRefreshPage: (() => void) | null = null;
+    const resources = vi.spyOn(ApiClient.prototype, "resources").mockImplementation(async () => {
+      resourcePageCalls += 1;
+      if (resourcePageCalls === 2) {
+        await new Promise<void>((resolve) => { releaseRefreshPage = resolve; });
+        return refreshedPage;
+      }
+      return initialPage;
+    });
+    vi.spyOn(ApiClient.prototype, "recordMediaDetailMetric").mockResolvedValue(undefined);
+    vi.spyOn(ApiClient.prototype, "health").mockResolvedValue({ status: "ok", release: "test", push_supported: false });
+    vi.spyOn(ApiClient.prototype, "me").mockResolvedValue(undefined);
+    vi.spyOn(ApiClient.prototype, "mediaMetadata").mockResolvedValue(metadata);
+    vi.spyOn(ApiClient.prototype, "startResourceSearch").mockResolvedValue(resourceSearchResponse);
+
+    const wrapper = mount(App);
+    await flushPromises();
+    expect(resources).toHaveBeenCalledTimes(1);
+    expect(wrapper.text()).toContain("旧资源");
+
+    await wrapper.get(".refresh-button").trigger("click");
+    await flushPromises();
+    expect(resources).toHaveBeenCalledTimes(2);
+    expect(wrapper.text()).toContain("旧资源");
+
+    releaseRefreshPage?.();
+    await flushPromises();
+    expect(wrapper.text()).toContain("新资源");
     wrapper.unmount();
   });
 });

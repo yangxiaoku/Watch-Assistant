@@ -31,6 +31,71 @@ describe("core workflow navigation", () => {
     expect(wrapper.emitted("open-push-tasks")).toHaveLength(1);
   });
 
+  it("keeps cancellation available for pending stages beside running work", async () => {
+    const workflow = {
+      id: "workflow-mixed",
+      correlation_id: "correlation-mixed",
+      media_type: "movie" as const,
+      tmdb_id: 27205,
+      subscription_id: null,
+      status: "in_progress" as const,
+      status_zh: "处理中",
+      state_reason: "stage_in_progress",
+      state_reason_zh: "当前阶段处理中。",
+      created_at: "2026-08-01T00:00:00Z",
+      updated_at: "2026-08-01T00:01:00Z",
+      stages: [
+        {
+          id: "stage-running",
+          stage: "push" as const,
+          status: "running" as const,
+          status_zh: "处理中",
+          reason: null,
+          reason_zh: null,
+          error_code: null,
+          child_type: "task",
+          child_id: "task-running",
+          started_at: "2026-08-01T00:00:00Z",
+          completed_at: null,
+          updated_at: "2026-08-01T00:01:00Z",
+        },
+        {
+          id: "stage-pending",
+          stage: "availability" as const,
+          status: "pending" as const,
+          status_zh: "待开始",
+          reason: null,
+          reason_zh: null,
+          error_code: null,
+          child_type: null,
+          child_id: null,
+          started_at: null,
+          completed_at: null,
+          updated_at: "2026-08-01T00:01:00Z",
+        },
+      ],
+    };
+    const cancelWorkflow = vi.fn().mockResolvedValue({ ...workflow, status: "partial", status_zh: "部分完成" });
+    const api = {
+      workflows: vi.fn().mockResolvedValue({ items: [workflow], page: 1, page_size: 20, total: 1 }),
+      workflow: vi.fn().mockResolvedValue(workflow),
+      cancelWorkflow,
+    };
+    const wrapper = mount(WorkflowCenterView, { props: { api: api as never } });
+    await flushPromises();
+
+    await wrapper.get(".workflow-row").trigger("click");
+    await flushPromises();
+    expect(wrapper.get(".workflow-actions").text()).toContain("取消工作流");
+    await wrapper.get(".workflow-actions").get("button:last-child").trigger("click");
+    expect(wrapper.text()).toContain("运行中或结果待确认的远端操作不会被伪造撤回");
+
+    await wrapper.get(".confirm-dialog-acknowledgement input").setValue(true);
+    await wrapper.get(".confirm-dialog-actions button:last-child").trigger("click");
+    await flushPromises();
+    expect(cancelWorkflow).toHaveBeenCalledWith("workflow-mixed");
+  });
+
   it("shows submitted states separately and advances only from read-only evidence", async () => {
     const submitted = {
       id: "task-submitted",
