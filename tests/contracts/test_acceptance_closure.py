@@ -45,11 +45,11 @@ def test_write_stage_timeout_is_uncertain_and_never_normal_retry():
 
 def test_runtime_environment_bridges_native_library_path(monkeypatch):
     monkeypatch.setenv("WATCH_ASSISTANT_NATIVE_LIBRARY_PATH", "/tmp/native")
-    monkeypatch.setenv("DYLD_LIBRARY_PATH", "/tmp/old")
+    monkeypatch.setenv("DYLD_FALLBACK_LIBRARY_PATH", "/tmp/old")
 
     environment = _runtime_environment()
 
-    assert environment["DYLD_LIBRARY_PATH"] == "/tmp/native:/tmp/old"
+    assert environment["DYLD_FALLBACK_LIBRARY_PATH"] == "/tmp/native:/tmp/old"
 
 
 def test_dry_run_lists_fixture_and_strm_only_for_execute(tmp_path: Path):

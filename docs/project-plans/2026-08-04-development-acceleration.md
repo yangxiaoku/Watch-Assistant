@@ -27,8 +27,11 @@ The main delay was coordination rather than one missing feature:
 - `scripts/bootstrap_dev.sh` creates the local Python environment, installs the
   lock-derived constraints, installs frontend dependencies with npm or the
   bundled pnpm fallback, verifies that `cryptography` can load OpenSSL 3, and
-  can run the offline gate with `--verify`. On macOS, a bundled Python whose
-  native library directory is separate must be started with
+  can run the offline gate with `--verify`. After a successful run it records
+  lock-file fingerprints inside ignored dependency directories and reuses
+  healthy `.venv` and `frontend/node_modules` on later runs; a changed lock
+  file or failed import/check invalidates that fast path. On macOS, a bundled
+  Python whose native library directory is separate must be started with
   `WATCH_ASSISTANT_NATIVE_LIBRARY_PATH` pointing at that OpenSSL 3 `lib`
   directory.
 - `scripts/acceptance_closure.py` is the single bounded acceptance entry point.
