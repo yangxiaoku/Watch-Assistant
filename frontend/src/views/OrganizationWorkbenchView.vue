@@ -24,6 +24,7 @@ const loading = ref(false);
 const busy = ref(false);
 const error = ref("");
 const notice = ref("");
+const lastPlanCursor = ref<number | undefined>(undefined);
 const pendingExecution = ref<
   | { kind: "single"; plan: OrganizationPlanSummary }
   | { kind: "batch"; plans: OrganizationPlanSummary[] }
@@ -88,6 +89,10 @@ const operationStatusLabel: Record<OrganizationOperationResponse["status"], stri
   cancelled: "已取消",
 };
 
+let planRequestGeneration = 0;
+let operationRequestGeneration = 0;
+let operationPollGeneration = 0;
+
 function normalizePlan(plan: OrganizationPlanSummary): OrganizationPlanSummary {
   return {
     ...plan,
@@ -108,42 +113,72 @@ function operationFailureMessage(code: string | null): string {
   return "整理操作未完成，请查看当前状态后再决定下一步。";
 }
 
+function invalidateOperationRequests(): void {
+  operationRequestGeneration += 1;
+  operationPollGeneration += 1;
+}
+
 async function loadPlanOperation(plan: OrganizationPlanSummary | null) {
+  const requestGeneration = ++operationRequestGeneration;
   operation.value = null;
   const getter = props.api.organizationPlanOperation;
   if (!plan || typeof getter !== "function") return;
   try {
-    operation.value = await getter.call(props.api, plan.plan_id);
+    const current = await getter.call(props.api, plan.plan_id);
+    if (requestGeneration !== operationRequestGeneration || selected.value?.plan_id !== plan.plan_id) return;
+    operation.value = current;
   } catch (exception) {
-    if (!(exception instanceof ApiError) || exception.code !== "operation_not_found") {
+    if (requestGeneration === operationRequestGeneration && selected.value?.plan_id === plan.plan_id && (!(exception instanceof ApiError) || exception.code !== "operation_not_found")) {
       operation.value = null;
     }
   }
 }
 
 async function loadPlans(cursor?: number) {
+  const requestGeneration = ++planRequestGeneration;
+  lastPlanCursor.value = cursor;
+  if (cursor === undefined) {
+    invalidateOperationRequests();
+    operation.value = null;
+  }
   loading.value = true;
   error.value = "";
   try {
     const response = await props.api.organizationPlans({ status: activeStatus.value, cursor, limit: 20 });
-    items.value = response.items.map(normalizePlan);
-    nextCursor.value = response.next_cursor;
-    selected.value = items.value[0] ?? null;
+    if (requestGeneration !== planRequestGeneration) return;
+    const pageItems = response.items.map(normalizePlan);
+    const previousSelectedId = selected.value?.plan_id;
+    if (cursor === undefined) {
+      items.value = pageItems;
+      selected.value = pageItems.find((item) => item.plan_id === previousSelectedId) ?? pageItems[0] ?? null;
+    } else {
+      const existingIds = new Set(items.value.map((item) => item.plan_id));
+      items.value = [...items.value, ...pageItems.filter((item) => !existingIds.has(item.plan_id))];
+      selected.value = selected.value ?? pageItems[0] ?? null;
+    }
+    nextCursor.value = response.next_cursor ?? null;
     aliasInput.value = selected.value?.alias ?? "";
-    await loadPlanOperation(selected.value);
+    if (cursor === undefined || selected.value?.plan_id !== previousSelectedId) {
+      invalidateOperationRequests();
+      await loadPlanOperation(selected.value);
+    }
   } catch (exception) {
-    error.value = exception instanceof ApiError ? exception.message : "计划列表加载失败，请稍后重试";
+    if (requestGeneration === planRequestGeneration) {
+      error.value = exception instanceof ApiError ? exception.message : "计划列表加载失败，请稍后重试";
+    }
   } finally {
-    loading.value = false;
+    if (requestGeneration === planRequestGeneration) loading.value = false;
   }
 }
 
 function selectPlan(plan: OrganizationPlanSummary) {
+  invalidateOperationRequests();
   selected.value = plan;
   aliasInput.value = plan.alias ?? "";
   searchQuery.value = "";
   searchSourceIndex.value = 0;
   notice.value = "";
+  void loadPlanOperation(plan);
 }
 
 async function refreshAfterConflict() {
@@ -193,7 +228,7 @@ async function queueOperation(plan = selected.value) {
     const queuedOperation = await props.api.queueOrganizationOperation(plan.plan_id, plan.revision);
     await loadPlanOperation(plan);
     if (!operation.value) operation.value = queuedOperation;
-    await handleQueuedOperation(queuedOperation);
+    await handleQueuedOperation(queuedOperation, plan.plan_id);
   } catch (exception) {
     focusFirstFieldError(exception);
     if (exception instanceof ApiError && exception.code === "plan_prerequisites_changed") {
@@ -215,7 +250,7 @@ async function confirmAndQueueOperation(plan = selected.value) {
     selected.value = { ...plan, status: "planned", revision: plan.revision + 1 };
     await loadPlanOperation(selected.value);
     if (!operation.value) operation.value = queuedOperation;
-    await handleQueuedOperation(queuedOperation);
+    await handleQueuedOperation(queuedOperation, plan.plan_id);
   } catch (exception) {
     focusFirstFieldError(exception);
     if (exception instanceof ApiError && exception.status === 409) {
@@ -287,7 +322,7 @@ async function searchCandidates() {
   }
 }
 
-async function handleQueuedOperation(queuedOperation: OrganizationOperationResponse) {
+async function handleQueuedOperation(queuedOperation: OrganizationOperationResponse, planId: string) {
   if (queuedOperation.status === "organized") {
     notice.value = "整理已完成";
   } else if (queuedOperation.status === "failed" || queuedOperation.status === "uncertain") {
@@ -296,7 +331,7 @@ async function handleQueuedOperation(queuedOperation: OrganizationOperationRespo
       : "后台整理未完成，请查看操作状态";
   } else {
     notice.value = "整理已提交，后台正在执行";
-    await pollOperation(queuedOperation.operation_id);
+    await pollOperation(queuedOperation.operation_id, planId);
   }
 }
 
@@ -340,12 +375,15 @@ async function confirmPendingExecution(): Promise<void> {
   else await queueOperation(pending.plan);
 }
 
-async function pollOperation(operationId: string) {
+async function pollOperation(operationId: string, planId: string) {
   if (typeof props.api.organizationOperation !== "function") return;
+  const pollGeneration = ++operationPollGeneration;
   for (let attempt = 0; attempt < 60; attempt += 1) {
     await new Promise((resolve) => window.setTimeout(resolve, 1000));
+    if (pollGeneration !== operationPollGeneration || selected.value?.plan_id !== planId) return;
     try {
       const current = await props.api.organizationOperation(operationId);
+      if (pollGeneration !== operationPollGeneration || selected.value?.plan_id !== planId) return;
       operation.value = current;
       if (current.status === "organized") {
         notice.value = "整理已完成";
@@ -409,7 +447,7 @@ onMounted(() => {
       <button class="icon-button" type="button" title="刷新计划" aria-label="刷新计划" :disabled="loading || busy" @click="loadPlans()"><RefreshCw :size="17" :class="{ spin: loading }" /></button>
     </div>
 
-    <p v-if="error" class="error-strip"><Ban :size="16" />{{ error }}</p>
+    <p v-if="error" class="error-strip" role="alert"><Ban :size="16" /><span>{{ error }}</span><button class="text-button" type="button" @click="loadPlans(lastPlanCursor)">重试</button></p>
     <p v-if="notice" class="success-strip"><Check :size="16" />{{ notice }}</p>
 
     <div class="organization-tabs" role="tablist" aria-label="计划状态">
@@ -420,9 +458,11 @@ onMounted(() => {
     </div>
 
     <div v-if="loading && !items.length" class="organization-empty"><LoaderCircle class="spin" :size="22" /><span>正在加载计划</span></div>
+    <div v-else-if="error && !items.length" class="organization-empty" role="alert"><Ban :size="22" /><strong>计划加载失败</strong><span>请重试，当前没有可展示的计划。</span></div>
     <div v-else-if="!items.length" class="organization-empty"><Eye :size="22" /><strong>暂无计划</strong><span>当前状态没有可展示的本地计划。</span></div>
     <div v-else class="organization-layout">
       <div class="organization-list" aria-label="计划列表">
+        <p v-if="loading" class="organization-list-loading" role="status"><LoaderCircle class="spin" :size="16" />正在加载下一页</p>
         <button v-if="executionEnabled && activeStatus === 'needs_review'" class="primary-button organization-batch-action" type="button" :disabled="loading || busy" @click="requestBatchExecution"><ListChecks :size="16" />确认并整理当前页（{{ executableItems.length }}）</button>
         <button v-for="plan in items" :key="plan.plan_id" type="button" class="organization-plan-row" :class="{ active: selected?.plan_id === plan.plan_id }" @click="selectPlan(plan)">
           <span class="organization-plan-row-main"><strong>{{ planLabel(plan) }}</strong><small>{{ statusLabel[plan.status] }}</small></span>

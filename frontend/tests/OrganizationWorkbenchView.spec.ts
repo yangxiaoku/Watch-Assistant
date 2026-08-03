@@ -33,6 +33,12 @@ function makeApi(overrides: Partial<Record<keyof ApiClient, unknown>> = {}) {
   } as unknown as ApiClient;
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => { resolve = resolvePromise; });
+  return { promise, resolve };
+}
+
 async function confirmRiskyAction(wrapper: ReturnType<typeof mount>) {
   await wrapper.get(".confirm-dialog-acknowledgement input").setValue(true);
   await wrapper.get(".confirm-dialog-actions button:last-child").trigger("click");
@@ -88,6 +94,59 @@ describe("OrganizationWorkbenchView", () => {
     await confirmRiskyAction(wrapper);
     expect(api.confirmAndQueueOrganizationOperation).toHaveBeenCalledWith("plan-local-1", 4);
     expect(wrapper.text()).toContain("整理已提交，后台正在执行");
+  });
+
+  it("appends cursor pages and loads operation details for the selected plan", async () => {
+    const second = { ...plan, plan_id: "plan-local-2", alias: "第二计划", revision: 7 };
+    const operationFor = vi.fn().mockImplementation(async (planId: string) => ({
+      operation_id: `operation-${planId}`,
+      plan_id: planId,
+      status: "organized" as const,
+      revision: 1,
+      attempts: 1,
+      error_code: null,
+      cancel_requested: false,
+    }));
+    const api = makeApi({
+      organizationPlans: vi.fn()
+        .mockResolvedValueOnce({ items: [plan], next_cursor: 12 })
+        .mockResolvedValueOnce({ items: [second], next_cursor: null }),
+      organizationPlanOperation: operationFor,
+    });
+    const wrapper = mount(OrganizationWorkbenchView, { props: { api } });
+    await flushPromises();
+
+    await wrapper.get(".organization-more").trigger("click");
+    await flushPromises();
+    expect(api.organizationPlans).toHaveBeenNthCalledWith(2, { status: "needs_review", cursor: 12, limit: 20 });
+    expect(wrapper.findAll(".organization-plan-row")).toHaveLength(2);
+    expect(wrapper.get(".organization-preview h2").text()).toBe("计划 plan-local-1");
+
+    await wrapper.findAll(".organization-plan-row")[1].trigger("click");
+    await flushPromises();
+    expect(operationFor).toHaveBeenCalledWith("plan-local-2");
+    expect(wrapper.get(".organization-preview h2").text()).toBe("第二计划");
+    expect(wrapper.text()).toContain("整理操作：已完成");
+  });
+
+  it("ignores an older plan response after the status filter changes", async () => {
+    const firstResponse = deferred<OrganizationPlanListResponse>();
+    const secondResponse = deferred<OrganizationPlanListResponse>();
+    const api = makeApi({
+      organizationPlans: vi.fn()
+        .mockReturnValueOnce(firstResponse.promise)
+        .mockReturnValueOnce(secondResponse.promise),
+    });
+    const wrapper = mount(OrganizationWorkbenchView, { props: { api } });
+
+    await wrapper.findAll(".organization-tabs button")[1].trigger("click");
+    secondResponse.resolve({ items: [{ ...plan, status: "planned" }], next_cursor: null });
+    await flushPromises();
+    firstResponse.resolve({ items: [plan], next_cursor: null });
+    await flushPromises();
+
+    expect(wrapper.get(".organization-status").text()).toContain("已确认");
+    expect(wrapper.text()).not.toContain("待确认当前计划已选中");
   });
 
   it("refreshes after a stale revision and never reports success", async () => {

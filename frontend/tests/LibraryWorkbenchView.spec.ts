@@ -25,6 +25,12 @@ function mountWorkbench(api: unknown, overrides: Record<string, unknown> = {}) {
   });
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => { resolve = resolvePromise; });
+  return { promise, resolve };
+}
+
 async function confirmRiskyAction(wrapper: ReturnType<typeof mount>) {
   await wrapper.get(".confirm-dialog-acknowledgement input").setValue(true);
   await wrapper.get(".confirm-dialog-actions button:last-child").trigger("click");
@@ -208,6 +214,70 @@ describe("LibraryWorkbenchView", () => {
 
     expect(strmManifest).toHaveBeenNthCalledWith(2, "main", 2, 1);
     expect(wrapper.text()).toContain("第二项");
+  });
+
+  it("appends media and STRM operation cursor pages", async () => {
+    const library = {
+      library_id: "main",
+      name: "115 媒体库",
+      root_directory_id: "123",
+      enabled: true,
+      scope_verified: true,
+      revision: 2,
+      latest_scan: { run_id: "scan-1", state: "completed" as const, complete: true, snapshot_revision: 1, pages_read: 1, items_seen: 2, added_count: 2, changed_count: 0, removed_count: 0, error_code: null },
+    };
+    const firstMedia = { media_id: "media-1", library_id: "main", scan_run_id: "scan-1", object_type: "file" as const, object_id: "object-1", parent_id: null, name: "第一文件.mkv", size_bytes: 1, modified_at: null, state: "indexed" as const };
+    const secondMedia = { ...firstMedia, media_id: "media-2", object_id: "object-2", name: "第二文件.mkv" };
+    const firstOperation = { operation_id: "operation-1", library_id: "main", source_scan_run_id: "scan-1", workflow_id: null, kind: "full" as const, status: "succeeded" as const, generated: 1, unchanged: 0, skipped: 0, failed: 0, retired: 0, error_code: null, created_at: "2026-08-01T00:00:00Z", started_at: null, finished_at: null };
+    const secondOperation = { ...firstOperation, operation_id: "operation-2", created_at: "2026-08-02T00:00:00Z" };
+    const libraryMedia = vi.fn()
+      .mockResolvedValueOnce({ items: [firstMedia], next_cursor: 101 })
+      .mockResolvedValueOnce({ items: [secondMedia], next_cursor: null });
+    const strmOperations = vi.fn()
+      .mockResolvedValueOnce({ items: [firstOperation], next_cursor: "operation-cursor" })
+      .mockResolvedValueOnce({ items: [secondOperation], next_cursor: null });
+    const api = {
+      libraries: vi.fn().mockResolvedValue({ items: [library], next_cursor: null }),
+      libraryMedia,
+      strmManifest: vi.fn().mockResolvedValue({ items: [], page: 1, page_size: 50, total: 0, total_pages: 0 }),
+      strmOperations,
+    };
+    const wrapper = mountWorkbench(api);
+    await flushPromises();
+
+    await wrapper.findAll("button").find((button) => button.text() === "加载更多索引文件")!.trigger("click");
+    await wrapper.findAll("button").find((button) => button.text() === "加载更多操作")!.trigger("click");
+    await flushPromises();
+
+    expect(libraryMedia).toHaveBeenNthCalledWith(2, "main", 101);
+    expect(strmOperations).toHaveBeenNthCalledWith(2, "main", "operation-cursor");
+    expect(wrapper.text()).toContain("第一文件.mkv");
+    expect(wrapper.text()).toContain("第二文件.mkv");
+    expect(wrapper.text()).toContain("2 条");
+  });
+
+  it("drops stale output responses after switching libraries", async () => {
+    const firstMedia = deferred<{ items: Array<Record<string, unknown>>; next_cursor: number | null }>();
+    const secondMedia = deferred<{ items: Array<Record<string, unknown>>; next_cursor: number | null }>();
+    const firstLibrary = { library_id: "first", name: "第一媒体库", root_directory_id: "1", enabled: true, scope_verified: true, revision: 1, latest_scan: null };
+    const secondLibrary = { library_id: "second", name: "第二媒体库", root_directory_id: "2", enabled: true, scope_verified: true, revision: 1, latest_scan: null };
+    const api = {
+      libraries: vi.fn().mockResolvedValue({ items: [firstLibrary, secondLibrary], next_cursor: null }),
+      libraryMedia: vi.fn().mockReturnValueOnce(firstMedia.promise).mockReturnValueOnce(secondMedia.promise),
+      strmManifest: vi.fn().mockResolvedValue({ items: [], page: 1, page_size: 50, total: 0, total_pages: 0 }),
+      strmOperations: vi.fn().mockResolvedValue({ items: [], next_cursor: null }),
+    };
+    const wrapper = mountWorkbench(api);
+    await flushPromises();
+
+    await wrapper.findAll(".library-scope-row")[1].trigger("click");
+    secondMedia.resolve({ items: [{ media_id: "second-media", library_id: "second", scan_run_id: "scan-2", object_type: "file", object_id: "object-2", parent_id: null, name: "第二媒体文件.mkv", size_bytes: null, modified_at: null, state: "indexed" }], next_cursor: null });
+    await flushPromises();
+    firstMedia.resolve({ items: [{ media_id: "first-media", library_id: "first", scan_run_id: "scan-1", object_type: "file", object_id: "object-1", parent_id: null, name: "第一媒体文件.mkv", size_bytes: null, modified_at: null, state: "indexed" }], next_cursor: null });
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("第二媒体文件.mkv");
+    expect(wrapper.text()).not.toContain("第一媒体文件.mkv");
   });
 
   it("previews and confirms reversible empty-directory cleanup", async () => {
