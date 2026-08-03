@@ -39,8 +39,8 @@ async def test_organized_completion_and_directory_dedup_are_atomic(tmp_path: Pat
         operation.operation_id,
         expected_revision=lease.revision,
         lease_token=lease.lease_token,
-        source_directory_id="source-directory",
-        target_directory_id="source-directory",
+        source_directory_id="7000",
+        target_directory_id="7000",
     )
     assert completed.status is OrganizationOperationStatus.ORGANIZED
     async with database.session_factory() as session:
@@ -63,8 +63,8 @@ async def test_generation_coalesces_running_change_and_requeues_latest_generatio
         expected_revision=first_lease.revision,
         lease_token=first_lease.lease_token,
         status=OrganizationOperationStatus.ORGANIZED,
-        source_directory_id="source-directory",
-        target_directory_id="target-directory",
+        source_directory_id="7000",
+        target_directory_id="8000",
     )
 
     outbox = DirectoryDirtyOutboxService()
@@ -88,8 +88,8 @@ async def test_generation_coalesces_running_change_and_requeues_latest_generatio
         expected_revision=second_lease.revision,
         lease_token=second_lease.lease_token,
         status=OrganizationOperationStatus.ORGANIZED,
-        source_directory_id="source-directory",
-        target_directory_id="target-directory",
+        source_directory_id="7000",
+        target_directory_id="8000",
     )
     async with database.session_factory() as session:
         queue = await session.scalar(select(DirectoryDirtyGeneration))
@@ -127,16 +127,16 @@ async def test_repeated_or_stale_completion_does_not_duplicate_events(tmp_path: 
         expected_revision=lease.revision,
         lease_token=lease.lease_token,
         status=OrganizationOperationStatus.ORGANIZED,
-        source_directory_id="source-directory",
-        target_directory_id="target-directory",
+        source_directory_id="7000",
+        target_directory_id="8000",
     )
     with pytest.raises(OrganizationOperationLeaseUnavailable):
         await service.complete_organized_with_dirty_events(
             operation.operation_id,
             expected_revision=lease.revision,
             lease_token=lease.lease_token,
-            source_directory_id="source-directory",
-            target_directory_id="target-directory",
+            source_directory_id="7000",
+            target_directory_id="8000",
         )
     async with database.session_factory() as session:
         assert (
@@ -155,8 +155,8 @@ async def test_terminal_non_success_states_never_enqueue_events(tmp_path: Path):
             operation.operation_id,
             expected_revision=1,
             lease_token="a" * 32,
-            source_directory_id="source-directory",
-            target_directory_id="target-directory",
+            source_directory_id="7000",
+            target_directory_id="8000",
         )
     lease = await service.claim(operation.operation_id, expected_revision=1)
     await service.finish(
@@ -192,6 +192,29 @@ async def test_invalid_scope_rolls_back_organized_state_and_event(tmp_path: Path
 
 
 @pytest.mark.asyncio
+async def test_completion_rejects_directory_ids_outside_plan_scope(tmp_path: Path):
+    database = await _database(tmp_path)
+    service, operation, lease = await _claimed(database)
+    with pytest.raises(
+        OrganizationOperationConflict, match="directory_scope_unverified"
+    ):
+        await service.complete_organized_with_dirty_events(
+            operation.operation_id,
+            expected_revision=lease.revision,
+            lease_token=lease.lease_token,
+            source_directory_id="7000",
+            target_directory_id="8000",
+            directory_ids=("7000", "8000", "9000"),
+        )
+    current = await service.get(operation.operation_id)
+    assert current.status is OrganizationOperationStatus.ORGANIZING
+    assert current.revision == lease.revision
+    async with database.session_factory() as session:
+        assert await session.scalar(select(DirectoryDirtyEvent)) is None
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_outbox_failure_rolls_back_operation_and_event(tmp_path: Path):
     database = await _database(tmp_path)
 
@@ -211,8 +234,8 @@ async def test_outbox_failure_rolls_back_operation_and_event(tmp_path: Path):
             operation.operation_id,
             expected_revision=lease.revision,
             lease_token=lease.lease_token,
-            source_directory_id="source-directory",
-            target_directory_id="target-directory",
+            source_directory_id="7000",
+            target_directory_id="8000",
         )
     current = await service.get(operation.operation_id)
     assert current.status is OrganizationOperationStatus.ORGANIZING
@@ -233,8 +256,8 @@ async def test_cancelled_operation_has_no_dirty_event(tmp_path: Path):
             operation.operation_id,
             expected_revision=1,
             lease_token="a" * 32,
-            source_directory_id="source-directory",
-            target_directory_id="target-directory",
+            source_directory_id="7000",
+            target_directory_id="8000",
         )
     async with database.session_factory() as session:
         assert await session.scalar(select(DirectoryDirtyEvent)) is None
@@ -305,8 +328,8 @@ async def test_dirty_lease_reclaims_and_retries_with_backoff(tmp_path: Path):
         expected_revision=lease.revision,
         lease_token=lease.lease_token,
         status=OrganizationOperationStatus.ORGANIZED,
-        source_directory_id="source-directory",
-        target_directory_id="target-directory",
+        source_directory_id="7000",
+        target_directory_id="8000",
     )
     outbox = DirectoryDirtyOutboxService()
     now = datetime.now(UTC) + timedelta(seconds=1)
