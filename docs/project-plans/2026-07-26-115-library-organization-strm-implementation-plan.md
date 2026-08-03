@@ -18,10 +18,7 @@ first-parent 已确认 #44-#49 均已合入。
 该 SHA 的 [Verify CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30785412110) 和
 [Systemd Release Package CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30785412085) 均显示完成且成功；
 CI 只证明离线门禁、Compose/发布包校验和发布脚本 readiness gate 通过，不证明生产部署。
-当前基线包含 PR #30-#37 的扫描、STRM、p115 fail-closed、库存/组织、工作台和发布门禁，以及
-[PR #39](https://github.com/yangxiaoku/Watch-Assistant/pull/39) 前端回归修复、
-[PR #40](https://github.com/yangxiaoku/Watch-Assistant/pull/40) systemd 发布脚本门禁、
-[PR #41](https://github.com/yangxiaoku/Watch-Assistant/pull/41) 不完整扫描 fail-closed 加固和 PR #42 任务 worker 租约加固；随后
+当前基线包含 PR #30-#43 的既有扫描、STRM、p115 fail-closed、库存/组织、工作台、任务和发布门禁；随后
 PR #44-#49 依次合入 P1 审查、Prowlarr/PanSou 只读 readiness、库存/整理范围、STRM 清理/提交门禁、前端工作台验收和发布脚本 readiness gate。
 对应代码与离线测试只提高 readiness；REQ-001/REQ-002 仍按总索引和 `BLOCKERS.md` 保持“待验收”；p115 生产远程证据、真实 115 写入、生产媒体库整理、
 STRM 播放/清理、元数据联动和生产验收仍未完成，永久删除保持关闭。Prowlarr 离线契约不等于 live indexer
