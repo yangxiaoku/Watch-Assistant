@@ -15,6 +15,7 @@ from watch_assistant.adapters.p115_library_write_contract import (
     OrganizationWriteGate,
     P115OrganizationContract,
     WriteOperation,
+    evaluate_organization_read_gate,
     evaluate_organization_write_gate,
 )
 from watch_assistant.adapters.p115_organization_transport import (
@@ -277,16 +278,15 @@ class OrganizationWorker:
             scope_confirmed=scope_confirmed,
             contract=self._organization_contract,
         )
-        for operation in _required_write_operations(steps):
-            decision = evaluate_organization_write_gate(gate, operation)
-            if not decision.allowed:
-                return OrganizationExecutionResult(
-                    operation_id,
-                    OrganizationExecutionStatus.UNCERTAIN,
-                    decision.error_code or "contract_unverified",
-                    0,
-                    0,
-                )
+        decision = evaluate_organization_read_gate(gate)
+        if not decision.allowed:
+            return OrganizationExecutionResult(
+                operation_id,
+                OrganizationExecutionStatus.UNCERTAIN,
+                decision.error_code or "contract_unverified",
+                0,
+                0,
+            )
         client = await self._build_client()
         if client is None:
             return OrganizationExecutionResult(
@@ -306,6 +306,7 @@ class OrganizationWorker:
                 live_enabled=self._live_enabled,
                 write_enabled=self._write_enabled,
                 plan_confirmed=plan_confirmed,
+                read_only=True,
                 organization_contract=self._organization_contract,
             )
             executor = OrganizationExecutor(

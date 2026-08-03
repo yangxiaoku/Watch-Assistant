@@ -31,9 +31,11 @@ The main delay was coordination rather than one missing feature:
   lock-file fingerprints inside ignored dependency directories and reuses
   healthy `.venv` and `frontend/node_modules` on later runs; a changed lock
   file or failed import/check invalidates that fast path. On macOS, a bundled
-  Python whose native library directory is separate must be started with
-  `WATCH_ASSISTANT_NATIVE_LIBRARY_PATH` pointing at that OpenSSL 3 `lib`
-  directory.
+  Python whose native library directory is separate is resolved automatically
+  from the Python runtime when the Codex runtime exposes its OpenSSL 3
+  libraries; `WATCH_ASSISTANT_NATIVE_LIBRARY_PATH` remains the explicit
+  override. The same runtime discovery supplies Node.js when it is not on
+  `PATH`.
 - `scripts/acceptance_closure.py` is the single bounded acceptance entry point.
   Its `preview` phase performs production read-only inventory and organization
   plan generation. Its `execute` phase requires an explicit fixture
@@ -48,9 +50,9 @@ The main delay was coordination rather than one missing feature:
 From a clean worktree based on the current publish ref:
 
 ```bash
-# Only needed when the selected Python runtime does not bundle OpenSSL 3.
+# Usually auto-detected; set this only when the runtime is outside the known paths.
 export WATCH_ASSISTANT_NATIVE_LIBRARY_PATH=/path/to/openssl-3/lib
-# Only needed when Node is installed outside PATH (for example, a bundled runtime).
+# Usually auto-detected; set this only when Node is installed elsewhere.
 export WATCH_ASSISTANT_FRONTEND_NODE=/path/to/node
 bash scripts/bootstrap_dev.sh --verify
 

@@ -259,7 +259,7 @@ class StrmCleanupPlanService:
                 raise StrmCleanupPlanError("cleanup_plan_not_reviewable")
             if _utc(plan.expires_at) <= current_time:
                 raise StrmCleanupPlanError("cleanup_plan_expired")
-            library, _run = await self._validated_current_run(
+            library, run = await self._validated_current_run(
                 session, plan.library_id, plan.source_scan_run_id
             )
             if (
@@ -275,6 +275,7 @@ class StrmCleanupPlanService:
                 library_id=library.id,
                 source_scan_run_id=plan.source_scan_run_id,
                 operation_kind=StrmOperationKind.CLEANUP,
+                source_snapshot_revision=run.snapshot_revision,
             )
             await _bind_fence(fence, session)
             candidates = _candidates(plan)

@@ -461,6 +461,54 @@ async def test_strm_operations_block_newer_unsettled_scan_for_every_reconciliati
         await database.engine.dispose()
 
 
+async def test_manifest_terminal_commit_rejects_newer_complete_snapshot(
+    tmp_path: Path, monkeypatch
+):
+    database = await _database(tmp_path)
+    try:
+        service = StrmManifestService(database.session_factory)
+        await service.generate(
+            "library-strm",
+            source_scan_run_id="scan-strm",
+            output_root=tmp_path / "output",
+            playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+        )
+        target = tmp_path / "output/Show/Episode.strm"
+        original_content = target.read_bytes()
+        original_commit = strm_manifest_module._commit_fenced
+
+        async def racing_commit(session, fence):
+            session.add(
+                LibraryScanRun(
+                    id="scan-newer-final",
+                    library_id="library-strm",
+                    root_directory_id="root-strm",
+                    idempotency_key="scan-newer-final-key",
+                    state="completed",
+                    complete=True,
+                    snapshot_revision=2,
+                )
+            )
+            await session.flush()
+            await original_commit(session, fence)
+
+        monkeypatch.setattr(strm_manifest_module, "_commit_fenced", racing_commit)
+        summary = await service.generate(
+            "library-strm",
+            source_scan_run_id="scan-strm",
+            output_root=tmp_path / "output",
+            playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+        )
+
+        assert summary.failed == 1
+        assert target.read_bytes() == original_content
+        items, total = await service.list_current("library-strm")
+        assert total == 1
+        assert items[0].status == "verified"
+    finally:
+        await database.engine.dispose()
+
+
 async def test_generation_enforces_managed_root_and_rejects_symlink_path(
     tmp_path: Path,
 ):
@@ -804,6 +852,66 @@ async def test_cleanup_plan_terminal_commit_uses_revision_cas(tmp_path: Path):
             assert row is not None
             assert row.applied_idempotency_key == "cleanup-cas-first"
             assert row.revision == plan.revision + 1
+    finally:
+        await database.engine.dispose()
+
+
+async def test_cleanup_terminal_commit_rejects_newer_complete_snapshot(
+    tmp_path: Path, monkeypatch
+):
+    database = await _database(tmp_path)
+    try:
+        manifest_service = StrmManifestService(database.session_factory)
+        await manifest_service.generate(
+            "library-strm",
+            source_scan_run_id="scan-strm",
+            output_root=tmp_path / "output",
+            playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+        )
+        target = tmp_path / "output/Show/Episode.strm"
+        original_content = target.read_bytes()
+        await _add_removed_episode_scan(database)
+        plan_service = StrmCleanupPlanService(database.session_factory)
+        plan = await plan_service.create_plan(
+            library_id="library-strm",
+            source_scan_run_id="scan-strm-2",
+            output_root=tmp_path / "output",
+            playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+        )
+        original_commit = strm_cleanup_plan_module._commit_fenced
+
+        async def racing_commit(session, fence):
+            session.add(
+                LibraryScanRun(
+                    id="scan-cleanup-newer-final",
+                    library_id="library-strm",
+                    root_directory_id="root-strm",
+                    idempotency_key="scan-cleanup-newer-final-key",
+                    state="completed",
+                    complete=True,
+                    snapshot_revision=3,
+                )
+            )
+            await session.flush()
+            await original_commit(session, fence)
+
+        monkeypatch.setattr(strm_cleanup_plan_module, "_commit_fenced", racing_commit)
+        with pytest.raises(StrmCleanupPlanError, match="cleanup_plan_blocked"):
+            await plan_service.apply_plan(
+                plan_id=plan.plan_id,
+                expected_revision=plan.revision,
+                digest=plan.plan_hash,
+                confirm=True,
+                idempotency_key="cleanup-newer-final",
+                output_root=tmp_path / "output",
+                playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+            )
+
+        assert target.read_bytes() == original_content
+        assert (await plan_service.get_plan(plan.plan_id)).status == "needs_review"
+        items, total = await manifest_service.list_current("library-strm")
+        assert total == 1
+        assert items[0].status == "verified"
     finally:
         await database.engine.dispose()
 

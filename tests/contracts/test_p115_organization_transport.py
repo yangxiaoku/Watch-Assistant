@@ -264,6 +264,48 @@ async def test_live_transport_uses_scope_fixed_payloads_and_receipt_before_verif
 
 
 @pytest.mark.asyncio
+async def test_live_transport_read_only_mode_observes_with_writes_closed():
+    client = _LiveFakeP115Client(
+        {
+            "fs_info": [],
+            "fs_files": [
+                _file_page("100", "7000", "before.mkv"),
+                _empty_page(),
+            ],
+            "fs_move": [],
+            "fs_rename": [],
+            "fs_delete": [],
+        }
+    )
+    transport = create_live_p115_organization_transport(
+        client=client,
+        call_executor=_live_call_executor,
+        intents=(_intent(),),
+        managed_directory_ids=("7000", "8000"),
+        scope_confirmed=True,
+        live_enabled=True,
+        write_enabled=False,
+        plan_confirmed=True,
+        read_only=True,
+        organization_contract=_organization_contract(),
+    )
+
+    assert await transport.read_object("100") == RemoteObjectState(
+        "100", "7000", "before.mkv"
+    )
+    for write in (
+        lambda: transport.move("100", "8000"),
+        lambda: transport.rename("100", "after.mkv"),
+        lambda: transport.recycle("100", "8000", "after.mkv"),
+    ):
+        with pytest.raises(P115OrganizationTransportError) as error:
+            await write()
+        assert error.value.code == "write_disabled"
+
+    assert [call[0] for call in client.calls] == ["fs_files", "fs_files"]
+
+
+@pytest.mark.asyncio
 async def test_live_transport_timeout_is_uncertain_and_is_not_retried():
     client = _LiveFakeP115Client(
         {

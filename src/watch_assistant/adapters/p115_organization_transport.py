@@ -360,6 +360,7 @@ class LiveP115OrganizationTransport:
         live_enabled: bool = False,
         write_enabled: bool = False,
         plan_confirmed: bool = False,
+        read_only: bool = False,
         organization_contract: P115OrganizationContract | None = None,
     ) -> None:
         if live_enabled is not True:
@@ -386,13 +387,18 @@ class LiveP115OrganizationTransport:
         self._timeout_seconds = float(timeout_seconds)
         self._write_enabled = write_enabled
         self._plan_confirmed = plan_confirmed
+        if not isinstance(read_only, bool):
+            raise TypeError("invalid_transport_mode")
+        self._read_only = read_only
         self._c03 = P115C03LiveTransport(client, call_executor=call_executor)
         self._client = client
         self._call_executor = call_executor
         self._organization_contract = organization_contract
         self._receipts: list[OrganizationTransportResult] = []
-        for operation in (WriteOperation.MOVE, WriteOperation.RENAME):
-            self._require_write(operation)
+        self._require_read_scope()
+        if not self._read_only:
+            for operation in (WriteOperation.MOVE, WriteOperation.RENAME):
+                self._require_write(operation)
 
     def __repr__(self) -> str:
         return (
@@ -520,6 +526,8 @@ class LiveP115OrganizationTransport:
             raise P115OrganizationTransportError("scope_unverified")
 
     def _require_write(self, operation: WriteOperation) -> None:
+        if self._read_only:
+            raise P115OrganizationTransportError("write_disabled")
         decision = evaluate_organization_write_gate(
             OrganizationWriteGate(
                 write_enabled=self._write_enabled is True,
@@ -533,6 +541,18 @@ class LiveP115OrganizationTransport:
             raise P115OrganizationTransportError(
                 decision.error_code or "capability_unverified"
             )
+
+    def _require_read_scope(self) -> None:
+        if not self._organization_contract.supports_read_scope():
+            error_code = (
+                "contract_unverified"
+                if not self._organization_contract.verified
+                or not self._organization_contract.timeout_enforced
+                or self._organization_contract.evidence is None
+                else "capability_unverified"
+            )
+            raise P115OrganizationTransportError(error_code)
+
 
 def create_p115_organization_transport(
     *,
@@ -567,9 +587,10 @@ def create_live_p115_organization_transport(
     live_enabled: bool = False,
     write_enabled: bool = False,
     plan_confirmed: bool = False,
+    read_only: bool = False,
     organization_contract: P115OrganizationContract | None = None,
 ) -> LiveP115OrganizationTransport:
-    """Build a live transport only after the application opens its write gate."""
+    """Build a live transport with either a write gate or an explicit read-only mode."""
 
     return LiveP115OrganizationTransport(
         client=client,
@@ -581,6 +602,7 @@ def create_live_p115_organization_transport(
         live_enabled=live_enabled,
         write_enabled=write_enabled,
         plan_confirmed=plan_confirmed,
+        read_only=read_only,
         organization_contract=organization_contract,
     )
 

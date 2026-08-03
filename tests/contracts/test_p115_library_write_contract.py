@@ -17,6 +17,7 @@ from watch_assistant.adapters.p115_library_write_contract import (
     WritePostcondition,
     WriteStatus,
     classify_write_exception,
+    evaluate_organization_read_gate,
     evaluate_organization_write_gate,
     evaluate_write_gate,
     prepare_delete,
@@ -137,6 +138,32 @@ def test_organization_gate_requires_verified_capabilities_and_scope():
 
     assert evaluate_organization_write_gate(base, WriteOperation.MOVE).allowed is True
     assert evaluate_organization_write_gate(base, WriteOperation.RENAME).allowed is True
+    assert evaluate_organization_read_gate(
+        OrganizationWriteGate(
+            write_enabled=False,
+            plan_confirmed=True,
+            scope_confirmed=True,
+            contract=contract,
+        )
+    ).allowed is True
+    read_capabilities = capabilities - {OrganizationWriteCapability.READ_SCOPE}
+    read_unverified = P115OrganizationContract(
+        verified=True,
+        timeout_enforced=True,
+        capabilities=read_capabilities,
+        evidence=OrganizationContractEvidence(
+            evidence_id="c03-fixture-organization-no-read-v1",
+            capabilities=read_capabilities,
+            timeout_enforced=True,
+        ),
+    )
+    assert evaluate_organization_read_gate(
+        OrganizationWriteGate(
+            plan_confirmed=True,
+            scope_confirmed=True,
+            contract=read_unverified,
+        )
+    ).error_code == "capability_unverified"
     assert evaluate_organization_write_gate(
         OrganizationWriteGate(
             write_enabled=True,

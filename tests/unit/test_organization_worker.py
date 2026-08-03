@@ -8,6 +8,10 @@ from watch_assistant.adapters.p115_library_write_contract import (
     P115OrganizationContract,
 )
 from watch_assistant.models import OrganizationOperationStatus
+from watch_assistant.services.organization_executor import (
+    OrganizationExecutionResult,
+    OrganizationExecutionStatus,
+)
 from watch_assistant.services.organization_worker import OrganizationWorker
 
 
@@ -26,6 +30,12 @@ class _Operations:
 
     async def claim_next(self):
         return _Lease()
+
+    async def get(self, _operation_id):
+        return SimpleNamespace(
+            status=OrganizationOperationStatus.UNCERTAIN,
+            revision=1,
+        )
 
     async def plan_execution_scope(self, _operation_id):
         return self.scope
@@ -177,4 +187,52 @@ async def test_confirmed_runtime_forwards_all_live_gate_values(monkeypatch):
     assert transport_calls[0]["scope_confirmed"] is True
     assert transport_calls[0]["organization_contract"] == _contract()
     assert len(executor_calls) == 1
+    assert client.closed is True
+
+
+@pytest.mark.asyncio
+async def test_reconcile_uses_read_only_transport_when_writes_are_disabled(monkeypatch):
+    operations = _Operations(scope=frozenset({"7000", "9000"}), steps=_steps())
+    client = _Client()
+    transport_calls = []
+
+    class _Executor:
+        def __init__(self, _operations, _session_factory, transport, **_kwargs):
+            self.transport = transport
+
+        async def reconcile_uncertain(self, *_args, **_kwargs):
+            return OrganizationExecutionResult(
+                "operation-one",
+                OrganizationExecutionStatus.ORGANIZED,
+                None,
+                1,
+                1,
+            )
+
+    def create_transport(**kwargs):
+        transport_calls.append(kwargs)
+        return object()
+
+    monkeypatch.setattr(
+        "watch_assistant.services.organization_worker.create_live_p115_organization_transport",
+        create_transport,
+    )
+    monkeypatch.setattr(
+        "watch_assistant.services.organization_worker.OrganizationExecutor",
+        _Executor,
+    )
+    worker = _worker(
+        operations,
+        write_enabled=False,
+        client_factory=lambda _credential: client,
+    )
+
+    result = await worker.reconcile_once("operation-one", expected_revision=1)
+
+    assert result.status is OrganizationExecutionStatus.ORGANIZED
+    assert len(transport_calls) == 1
+    assert transport_calls[0]["read_only"] is True
+    assert transport_calls[0]["write_enabled"] is False
+    assert transport_calls[0]["plan_confirmed"] is True
+    assert transport_calls[0]["scope_confirmed"] is True
     assert client.closed is True

@@ -48,9 +48,52 @@ fi
 
 "$PYTHON_BIN" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 12) else "Python 3.12+ is required")'
 
+PLATFORM="$(uname -s 2>/dev/null || printf 'unknown')"
+
+runtime_dependencies_dir() {
+    local base_python
+    local python_bin_dir
+
+    base_python="$($PYTHON_BIN -c 'import sys; print(sys._base_executable)' 2>/dev/null || true)"
+    if [[ -z "$base_python" || ! -x "$base_python" ]]; then
+        return 0
+    fi
+    python_bin_dir="$(dirname "$base_python")"
+    if [[ ! -d "$python_bin_dir/../.." ]]; then
+        return 0
+    fi
+    (cd "$python_bin_dir/../.." && pwd -P)
+}
+
+native_library_path_ready() {
+    [[ -f "$1/libssl.3.dylib" && -f "$1/libcrypto.3.dylib" ]]
+}
+
+if [[ -z "${WATCH_ASSISTANT_NATIVE_LIBRARY_PATH:-}" && "$PLATFORM" == "Darwin" ]]; then
+    RUNTIME_DEPENDENCIES_DIR="$(runtime_dependencies_dir || true)"
+    for CANDIDATE_NATIVE_LIBRARY_PATH in \
+        "/opt/homebrew/opt/openssl@3/lib" \
+        "/usr/local/opt/openssl@3/lib" \
+        "$RUNTIME_DEPENDENCIES_DIR/native/poppler/poppler/lib"; do
+        if native_library_path_ready "$CANDIDATE_NATIVE_LIBRARY_PATH"; then
+            WATCH_ASSISTANT_NATIVE_LIBRARY_PATH="$CANDIDATE_NATIVE_LIBRARY_PATH"
+            echo "Detected macOS OpenSSL 3 runtime: $WATCH_ASSISTANT_NATIVE_LIBRARY_PATH"
+            break
+        fi
+    done
+fi
+
+if [[ "$PLATFORM" == "Darwin" && -n "${WATCH_ASSISTANT_NATIVE_LIBRARY_PATH:-}" ]] && \
+    ! native_library_path_ready "$WATCH_ASSISTANT_NATIVE_LIBRARY_PATH"; then
+    echo "bootstrap refused: OpenSSL 3 libraries were not found in WATCH_ASSISTANT_NATIVE_LIBRARY_PATH" >&2
+    echo "set WATCH_ASSISTANT_NATIVE_LIBRARY_PATH to a directory containing libssl.3.dylib and libcrypto.3.dylib" >&2
+    exit 2
+fi
+
 if [[ -n "${WATCH_ASSISTANT_NATIVE_LIBRARY_PATH:-}" ]]; then
     # Use a fallback search path so bundled OpenSSL does not override macOS
     # system libraries used by unrelated tools.
+    export WATCH_ASSISTANT_NATIVE_LIBRARY_PATH
     export DYLD_FALLBACK_LIBRARY_PATH="${WATCH_ASSISTANT_NATIVE_LIBRARY_PATH}${DYLD_FALLBACK_LIBRARY_PATH:+:$DYLD_FALLBACK_LIBRARY_PATH}"
 fi
 
@@ -116,6 +159,16 @@ if [[ -n "$FRONTEND_NODE" ]]; then
     fi
     FRONTEND_NODE_DIR="$(cd "$(dirname "$FRONTEND_NODE")" && pwd)"
     export PATH="$FRONTEND_NODE_DIR${PATH:+:$PATH}"
+fi
+if [[ -z "$FRONTEND_NODE" && "$PLATFORM" == "Darwin" ]]; then
+    RUNTIME_DEPENDENCIES_DIR="${RUNTIME_DEPENDENCIES_DIR:-$(runtime_dependencies_dir || true)}"
+    CANDIDATE_FRONTEND_NODE="$RUNTIME_DEPENDENCIES_DIR/node/bin/node"
+    if [[ -x "$CANDIDATE_FRONTEND_NODE" ]]; then
+        FRONTEND_NODE="$CANDIDATE_FRONTEND_NODE"
+        FRONTEND_NODE_DIR="$(cd "$(dirname "$FRONTEND_NODE")" && pwd)"
+        export PATH="$FRONTEND_NODE_DIR${PATH:+:$PATH}"
+        echo "Detected bundled Node.js runtime: $FRONTEND_NODE"
+    fi
 fi
 if [[ -z "$FRONTEND_NODE" ]] && command -v node >/dev/null 2>&1; then
     FRONTEND_NODE="$(command -v node)"
