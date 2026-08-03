@@ -1,5 +1,7 @@
 import importlib.util
 import json
+import os
+import stat
 from pathlib import Path
 
 import pytest
@@ -38,6 +40,8 @@ def test_build_manifest_round_trip_uses_expected_provenance(tmp_path: Path):
     )
 
     payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if os.name == "posix":
+        assert stat.S_IMODE(manifest_path.stat().st_mode) == 0o644
     assert payload == {
         "schema_version": 2,
         "commit": COMMIT,
@@ -137,6 +141,8 @@ def test_artifact_manifest_preserves_sha256sums_metadata(tmp_path: Path):
     )
 
     payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if os.name == "posix":
+        assert stat.S_IMODE(manifest_path.stat().st_mode) == 0o644
     assert payload["commit"] == COMMIT
     assert payload["short_commit"] == SHORT_COMMIT
     assert payload["package_size_bytes"] == 1234

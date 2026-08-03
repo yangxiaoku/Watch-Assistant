@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 _SCHEMA_VERSION = 2
+_PUBLIC_MANIFEST_MODE = 0o644
 _FULL_SHA_PATTERN = re.compile(r"[0-9a-f]{40}", re.IGNORECASE)
 _SHORT_SHA_PATTERN = re.compile(r"[0-9a-f]{7}", re.IGNORECASE)
 _SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
@@ -251,6 +252,7 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
                 temporary_name = stream.name
                 json.dump(payload, stream, ensure_ascii=True, indent=2)
                 stream.write("\n")
+            os.chmod(temporary_name, _PUBLIC_MANIFEST_MODE)
             os.replace(temporary_name, path)
             temporary_name = None
         finally:
