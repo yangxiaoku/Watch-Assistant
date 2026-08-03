@@ -39,6 +39,8 @@ Prowlarr does not define Watch Assistant's infohash normalization, duplicate
 merge, source observation, timeout fallback, pagination loop, or Chinese error
 catalog. Those are local policies covered by the passing offline contract tests
 in `tests/contracts/test_prowlarr_contract.py`.
+An all-zero BTIH is rejected as an unsupported identity before it can enter the
+common resource model.
 
 ## Watch Assistant seam
 
@@ -49,6 +51,9 @@ service:
 - `watch_assistant.adapters.prowlarr.ProwlarrClient(base_url, api_key,
   timeout, client)` uses the frozen query names and returns
   `ProwlarrSearchResult`;
+- The Prowlarr and PanSou adapters force `follow_redirects=False` on upstream
+  requests, including injected HTTP clients, so a read-only call cannot follow
+  a redirect to another target.
 - `watch_assistant.services.search.SearchService._query_sources` preserves a
   healthy PanSou result when Prowlarr fails and reports a partial warning;
 - `SearchService` normalization exposes the common magnet canonical key and

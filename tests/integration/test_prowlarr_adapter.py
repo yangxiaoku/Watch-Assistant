@@ -9,6 +9,7 @@ import respx
 from watch_assistant.adapters.prowlarr import (
     ProwlarrAuthError,
     ProwlarrClient,
+    ProwlarrError,
     ProwlarrInvalidResponseError,
 )
 
@@ -105,6 +106,69 @@ async def test_prowlarr_auth_error_does_not_expose_api_key():
 
     assert str(error.value) == "Prowlarr authentication failed"
     assert api_key not in str(error.value)
+
+
+@pytest.mark.integration
+async def test_prowlarr_does_not_follow_search_redirects():
+    requested_hosts: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested_hosts.append(request.url.host or "")
+        if len(requested_hosts) == 1:
+            return httpx.Response(
+                302,
+                headers={"Location": "https://redirect-target.test/api/v1/search"},
+                request=request,
+            )
+        return httpx.Response(
+            200,
+            json=[],
+            request=request,
+        )
+
+    transport_client = httpx.AsyncClient(
+        base_url="https://prowlarr.test",
+        follow_redirects=True,
+        transport=httpx.MockTransport(handler),
+    )
+    client = ProwlarrClient(
+        "https://prowlarr.test", "fixture-only", client=transport_client
+    )
+
+    try:
+        with pytest.raises(ProwlarrError):
+            await client.search("Movie")
+    finally:
+        await client.aclose()
+        await transport_client.aclose()
+
+    assert requested_hosts == ["prowlarr.test"]
+
+
+@pytest.mark.integration
+@respx.mock
+async def test_prowlarr_rejects_zero_infohash():
+    respx.get("http://prowlarr.test/api/v1/search").mock(
+        return_value=httpx.Response(
+            200,
+            json=[
+                {
+                    "title": "Invalid release",
+                    "protocol": "torrent",
+                    "infoHash": "0" * 40,
+                }
+            ],
+        )
+    )
+    client = ProwlarrClient("http://prowlarr.test", "fixture-only")
+
+    try:
+        result = await client.search("Movie")
+    finally:
+        await client.aclose()
+
+    assert result.releases == ()
+    assert result.unsupported_count == 1
 
 
 @pytest.mark.integration
