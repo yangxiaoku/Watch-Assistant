@@ -32,6 +32,7 @@ const emit = defineEmits<{
 }>();
 
 const libraries = ref<MediaLibraryResponse[]>([]);
+const libraryNextCursor = ref<number | null>(null);
 const selectedId = ref<string | null>(null);
 const media = ref<MediaEntryResponse[]>([]);
 const mediaNextCursor = ref<number | null>(null);
@@ -207,10 +208,23 @@ async function loadLibraries(preferredId = selectedId.value) {
   try {
     const response = await props.api.libraries();
     if (requestGeneration !== libraryRequestGeneration) return;
-    libraries.value = response.items;
-    selectedId.value = response.items.some((item) => item.library_id === preferredId)
+    const refreshedLibraries = [...response.items];
+    let nextCursor = response.next_cursor ?? null;
+    const visitedCursors = new Set<number>();
+    while (preferredId && nextCursor !== null && !refreshedLibraries.some((item) => item.library_id === preferredId)) {
+      if (visitedCursors.has(nextCursor)) break;
+      visitedCursors.add(nextCursor);
+      const nextPage = await props.api.libraries(nextCursor);
+      if (requestGeneration !== libraryRequestGeneration) return;
+      const existingIds = new Set(refreshedLibraries.map((item) => item.library_id));
+      refreshedLibraries.push(...nextPage.items.filter((item) => !existingIds.has(item.library_id)));
+      nextCursor = nextPage.next_cursor ?? null;
+    }
+    libraries.value = refreshedLibraries;
+    libraryNextCursor.value = nextCursor;
+    selectedId.value = refreshedLibraries.some((item) => item.library_id === preferredId)
       ? preferredId
-      : response.items[0]?.library_id ?? null;
+      : refreshedLibraries[0]?.library_id ?? null;
     if (selected.value) {
       form.value = {
         libraryId: selected.value.library_id,
@@ -221,6 +235,25 @@ async function loadLibraries(preferredId = selectedId.value) {
     }
   } catch (exception) {
     if (requestGeneration === libraryRequestGeneration) setError(exception, "媒体库加载失败，请稍后重试");
+  } finally {
+    if (requestGeneration === libraryRequestGeneration) loading.value = false;
+  }
+}
+
+async function loadMoreLibraries(): Promise<void> {
+  const cursor = libraryNextCursor.value;
+  if (cursor === null || loading.value) return;
+  const requestGeneration = ++libraryRequestGeneration;
+  loading.value = true;
+  error.value = "";
+  try {
+    const response = await props.api.libraries(cursor);
+    if (requestGeneration !== libraryRequestGeneration) return;
+    const existingIds = new Set(libraries.value.map((item) => item.library_id));
+    libraries.value = [...libraries.value, ...response.items.filter((item) => !existingIds.has(item.library_id))];
+    libraryNextCursor.value = response.next_cursor ?? null;
+  } catch (exception) {
+    if (requestGeneration === libraryRequestGeneration) setError(exception, "更多媒体库加载失败，请重试");
   } finally {
     if (requestGeneration === libraryRequestGeneration) loading.value = false;
   }
@@ -823,7 +856,8 @@ onBeforeUnmount(() => {
             <strong>{{ item.name }}</strong><small>{{ item.scope_verified ? "已验证" : "待验证" }} · {{ item.enabled ? "已启用" : "未启用" }}</small>
           </button>
         </div>
-        <p v-else class="library-muted">还没有媒体库配置。</p>
+        <button v-if="libraryNextCursor !== null" class="secondary-button library-load-more" type="button" :disabled="loading" @click="loadMoreLibraries"><LoaderCircle v-if="loading" class="spin" :size="15" />{{ loading ? "正在加载媒体库" : "加载更多媒体库" }}</button>
+        <p v-if="!libraries.length" class="library-muted">还没有媒体库配置。</p>
         <form class="library-config-form" @submit.prevent="saveConfiguration">
           <label for="library-id">标识</label><input id="library-id" v-model="form.libraryId" name="libraryId" maxlength="128" :disabled="Boolean(selected)" required />
           <label for="library-name">名称</label><input id="library-name" v-model="form.name" name="name" maxlength="200" required />

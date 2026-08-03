@@ -295,6 +295,42 @@ describe("LibraryWorkbenchView", () => {
     expect(wrapper.text()).toContain("2 条");
   });
 
+  it("paginates media library choices while keeping the current selection", async () => {
+    const firstLibrary = { library_id: "first", name: "第一媒体库", root_directory_id: "1", enabled: true, scope_verified: true, revision: 1, latest_scan: null };
+    const secondLibrary = { library_id: "second", name: "第二媒体库", root_directory_id: "2", enabled: true, scope_verified: true, revision: 1, latest_scan: null };
+    const libraries = vi.fn()
+      .mockResolvedValueOnce({ items: [firstLibrary], next_cursor: 50 })
+      .mockResolvedValueOnce({ items: [secondLibrary], next_cursor: null })
+      .mockResolvedValueOnce({ items: [firstLibrary], next_cursor: 50 })
+      .mockResolvedValueOnce({ items: [secondLibrary], next_cursor: null });
+    const api = {
+      libraries,
+      libraryMedia: vi.fn().mockResolvedValue({ items: [], next_cursor: null }),
+      strmManifest: vi.fn().mockResolvedValue({ items: [], page: 1, page_size: 50, total: 0, total_pages: 0 }),
+      strmOperations: vi.fn().mockResolvedValue({ items: [], next_cursor: null }),
+    };
+    const wrapper = mountWorkbench(api);
+    await flushPromises();
+
+    expect(wrapper.get(".library-detail-heading h2").text()).toBe("第一媒体库");
+    await wrapper.get("button.library-load-more").trigger("click");
+    await flushPromises();
+
+    expect(libraries).toHaveBeenNthCalledWith(2, 50);
+    expect(wrapper.findAll(".library-scope-row")).toHaveLength(2);
+    expect(wrapper.get(".library-detail-heading h2").text()).toBe("第一媒体库");
+    await wrapper.findAll(".library-scope-row")[1].trigger("click");
+    await flushPromises();
+    expect(wrapper.get(".library-detail-heading h2").text()).toBe("第二媒体库");
+    expect(wrapper.find("button.library-load-more").exists()).toBe(false);
+
+    await wrapper.get('button[aria-label="刷新媒体库"]').trigger("click");
+    await flushPromises();
+    expect(libraries).toHaveBeenNthCalledWith(3);
+    expect(libraries).toHaveBeenNthCalledWith(4, 50);
+    expect(wrapper.get(".library-detail-heading h2").text()).toBe("第二媒体库");
+  });
+
   it("drops stale output responses after switching libraries", async () => {
     const firstMedia = deferred<{ items: Array<Record<string, unknown>>; next_cursor: number | null }>();
     const secondMedia = deferred<{ items: Array<Record<string, unknown>>; next_cursor: number | null }>();

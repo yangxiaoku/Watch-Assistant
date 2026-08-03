@@ -181,6 +181,7 @@ input { outline: none; }
 .library-scope-row:hover, .library-scope-row.active { border-color: #68a0ff; }
 .library-scope-row strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
 .library-scope-row small, .library-detail-heading small, .library-section-heading > span { color: #858a94; font-size: 11px; }
+.library-load-more { width: 100%; margin-bottom: 20px; }
 .library-config-form { display: grid; gap: 7px; padding-top: 16px; border-top: 1px solid #2b2e34; }
 .library-config-form label { color: #858a94; font-size: 11px; }
 .library-config-form input { min-width: 0; min-height: 38px; padding: 0 10px; color: #f4f5f7; background: #202328; border: 1px solid #3a3d44; border-radius: 4px; }
