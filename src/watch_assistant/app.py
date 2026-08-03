@@ -1005,6 +1005,7 @@ def create_app(
                 application.state.security_manager = SecurityManager(
                     web_password_hash=settings.web_password_hash.get_secret_value(),
                     script_token_hash=settings.script_token_hash.get_secret_value(),
+                    diagnostics_token=settings.diagnostics_token.get_secret_value(),
                     cookie_secure=settings.cookie_secure,
                     session_factory=runtime_database.session_factory,
                     session_ttl=timedelta(hours=settings.web_session_ttl_hours),

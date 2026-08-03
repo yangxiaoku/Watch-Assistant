@@ -25,6 +25,7 @@ async def test_deployment_diagnostics_is_authenticated_and_conservative(tmp_path
         security_manager=SecurityManager(
             web_password_hash=password_hash.hash("diagnostics-password"),
             script_token_hash=password_hash.hash("diagnostics-token"),
+            diagnostics_token="deployment-diagnostics-token",
             cookie_secure=False,
         ),
         frontend_dir=tmp_path / "missing",
@@ -34,6 +35,17 @@ async def test_deployment_diagnostics_is_authenticated_and_conservative(tmp_path
     ) as client:
         unauthorized = await client.get("/api/v1/deployment/diagnostics")
         assert unauthorized.status_code == 401
+
+        dedicated = await client.get(
+            "/api/v1/deployment/diagnostics",
+            headers={"Authorization": "Bearer deployment-diagnostics-token"},
+        )
+        assert dedicated.status_code == 200
+        dedicated_scope = await client.get(
+            "/api/v1/settings/overview",
+            headers={"Authorization": "Bearer deployment-diagnostics-token"},
+        )
+        assert dedicated_scope.status_code == 401
 
         login = await client.post(
             "/api/v1/auth/login", json={"password": "diagnostics-password"}
@@ -55,6 +67,7 @@ async def test_deployment_diagnostics_is_authenticated_and_conservative(tmp_path
     }
     assert str(database.engine.url.database) not in response.text
     assert "diagnostics-token" not in response.text
+    assert "deployment-diagnostics-token" not in response.text
     assert "diagnostics-password" not in response.text
     await database.engine.dispose()
 

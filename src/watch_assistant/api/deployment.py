@@ -5,10 +5,10 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from watch_assistant.schemas import DeploymentDiagnosticsResponse
-from watch_assistant.security import require_api_auth
+from watch_assistant.security import AuthContext, require_diagnostics_auth
 from watch_assistant.services.deployment_diagnostics import DeploymentDiagnosticsService
 
-router = APIRouter(prefix="/api/v1", dependencies=[Depends(require_api_auth)])
+router = APIRouter(prefix="/api/v1")
 
 
 def get_deployment_service(request: Request) -> DeploymentDiagnosticsService:
@@ -23,11 +23,12 @@ def get_deployment_service(request: Request) -> DeploymentDiagnosticsService:
 DeploymentDependency = Annotated[
     DeploymentDiagnosticsService, Depends(get_deployment_service)
 ]
+DiagnosticsAuthDependency = Annotated[AuthContext, Depends(require_diagnostics_auth)]
 
 
 @router.get("/deployment/diagnostics", response_model=DeploymentDiagnosticsResponse)
 async def deployment_diagnostics(
+    _: DiagnosticsAuthDependency,
     service: DeploymentDependency,
 ) -> DeploymentDiagnosticsResponse:
     return await service.snapshot()
-
