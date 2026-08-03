@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -369,10 +369,31 @@ class StrmCleanupPlanService:
         plan_id = plan.id
         plan_revision = plan.revision
         try:
+            # A direct service caller may not have an operation ledger claim.
+            # Keep the plan revision as the final idempotency fence so two
+            # confirmations cannot both publish different terminal results.
+            with session.no_autoflush:
+                result = await session.execute(
+                    update(StrmCleanupPlan)
+                    .where(
+                        StrmCleanupPlan.id == plan_id,
+                        StrmCleanupPlan.status == "needs_review",
+                        StrmCleanupPlan.revision == plan_revision - 1,
+                    )
+                    .values(
+                        status="applied",
+                        revision=plan_revision,
+                        applied_idempotency_key=idempotency_key,
+                        applied_retired=retired,
+                    )
+                    .execution_options(synchronize_session=False)
+                )
+            if result.rowcount != 1:
+                raise StrmCleanupPlanError("cleanup_plan_changed")
             await _commit_fenced(session, fence)
             mutations.clear()
         except asyncio.CancelledError:
-            await self._recover_commit_failure(
+            committed = await self._recover_commit_failure(
                 session,
                 fence,
                 plan_id=plan_id,
@@ -382,7 +403,8 @@ class StrmCleanupPlanService:
                 mutations=mutations,
                 cancelled=True,
             )
-            raise
+            if not committed:
+                raise
         except SQLAlchemyError:
             await self._recover_commit_failure(
                 session,
@@ -406,7 +428,7 @@ class StrmCleanupPlanService:
         retired: int,
         mutations: list[_FileMutation],
         cancelled: bool,
-    ) -> None:
+    ) -> bool:
         rollback_failed = False
         try:
             await asyncio.shield(session.rollback())
@@ -422,7 +444,7 @@ class StrmCleanupPlanService:
         )
         if observed is True:
             mutations.clear()
-            return
+            return True
         lease_current = await fence.observe_database_lease(self._session_factory)
         if lease_current is False:
             try:
@@ -444,6 +466,7 @@ class StrmCleanupPlanService:
             raise StrmCleanupPlanError("uncertain")
         if not cancelled:
             raise StrmCleanupPlanError("uncertain")
+        return False
 
     async def _observe_plan_commit(
         self,
