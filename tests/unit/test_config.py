@@ -27,6 +27,7 @@ def test_inspection_settings_have_production_defaults():
     assert settings.prowlarr_configured is False
     assert settings.prowlarr_timeout_seconds == 12
     assert settings.prowlarr_max_concurrency == 4
+    assert settings.diagnostics_token.get_secret_value() == ""
     assert settings.organization_plan_enabled is False
     assert settings.organization_execution_enabled is False
     assert settings.organization_write_enabled is False
@@ -49,6 +50,17 @@ def test_organization_plan_flag_can_be_enabled_explicitly():
     assert (
         make_settings(ORGANIZATION_PLAN_ENABLED="true").organization_plan_enabled
         is True
+    )
+
+
+def test_diagnostics_token_can_be_configured_separately_from_script_token():
+    settings = make_settings(
+        WATCH_ASSISTANT_DIAGNOSTICS_TOKEN="deployment-diagnostics-token"
+    )
+
+    assert (
+        settings.diagnostics_token.get_secret_value()
+        == "deployment-diagnostics-token"
     )
 
 

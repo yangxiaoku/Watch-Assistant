@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     script_token_hash: SecretStr = Field(
         min_length=1, validation_alias="SCRIPT_TOKEN_HASH"
     )
+    diagnostics_token: SecretStr = Field(
+        default=SecretStr(""), validation_alias="WATCH_ASSISTANT_DIAGNOSTICS_TOKEN"
+    )
     pansou_base_url: str = Field(min_length=1, validation_alias="PANSOU_BASE_URL")
     tmdb_base_url: str = Field(
         default="https://api.themoviedb.org/3",

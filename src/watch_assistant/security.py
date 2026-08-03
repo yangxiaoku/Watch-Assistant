@@ -72,6 +72,7 @@ class SecurityManager:
         *,
         web_password_hash: str,
         script_token_hash: str,
+        diagnostics_token: str = "",
         cookie_secure: bool = False,
         push_limit: int = 10,
         session_factory: async_sessionmaker[AsyncSession] | None = None,
@@ -81,6 +82,7 @@ class SecurityManager:
         self._password_hash = PasswordHash.recommended()
         self._web_password_hash = web_password_hash
         self._script_token_hash = script_token_hash
+        self._diagnostics_token = diagnostics_token
         self.cookie_secure = cookie_secure
         self.push_limit = push_limit
         self._session_factory = session_factory
@@ -205,6 +207,26 @@ class SecurityManager:
             raise AuthError(403, "csrf_required")
         self._check_rate_limit(request, context.identity)
         return context
+
+    async def authenticate_diagnostics_async(self, request: Request) -> AuthContext:
+        """Authenticate the read-only deployment diagnostics endpoint."""
+        scheme, _, token = request.headers.get("Authorization", "").partition(" ")
+        if (
+            scheme.casefold() == "bearer"
+            and token
+            and self._diagnostics_token
+            and secrets.compare_digest(token, self._diagnostics_token)
+        ):
+            context = AuthContext(
+                identity="diagnostics:"
+                + hashlib.sha256(token.encode("utf-8")).hexdigest(),
+                via_bearer=True,
+                token_kind="diagnostics",
+                scopes=frozenset({"system:read"}),
+            )
+            self._check_rate_limit(request, context.identity)
+            return context
+        return await self.authenticate_async(request)
 
     def _authenticate_memory(self, request: Request) -> AuthContext:
         authorization = request.headers.get("Authorization", "")
@@ -391,7 +413,26 @@ async def require_api_auth(request: Request) -> AuthContext:
     )
     if manager is None:
         return AuthContext(identity="internal", via_bearer=True)
-    result = manager.authenticate_async(request)
+    return await _require_authenticated_context(
+        request, manager, manager.authenticate_async
+    )
+
+
+async def require_diagnostics_auth(request: Request) -> AuthContext:
+    manager: SecurityManager | None = getattr(
+        request.app.state, "security_manager", None
+    )
+    if manager is None:
+        return AuthContext(identity="internal", via_bearer=True)
+    return await _require_authenticated_context(
+        request, manager, manager.authenticate_diagnostics_async
+    )
+
+
+async def _require_authenticated_context(
+    request: Request, manager: SecurityManager, authenticate: Any
+) -> AuthContext:
+    result = authenticate(request)
     if inspect.isawaitable(result):
         context = await result
     else:
