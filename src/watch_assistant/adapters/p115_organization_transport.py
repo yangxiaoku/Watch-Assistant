@@ -388,7 +388,7 @@ class LiveP115OrganizationTransport:
         self._write_enabled = write_enabled
         self._plan_confirmed = plan_confirmed
         if not isinstance(read_only, bool):
-            raise ValueError("invalid_transport_mode")
+            raise TypeError("invalid_transport_mode")
         self._read_only = read_only
         self._c03 = P115C03LiveTransport(client, call_executor=call_executor)
         self._client = client
