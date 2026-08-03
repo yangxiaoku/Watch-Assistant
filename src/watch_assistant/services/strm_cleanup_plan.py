@@ -26,6 +26,7 @@ from watch_assistant.library_models import (
     StrmCleanupPlan,
     StrmManifestEntry,
 )
+from watch_assistant.models import StrmOperationKind
 from watch_assistant.services.library_index import (
     LibraryIndexError,
     validate_complete_scan_evidence,
@@ -237,7 +238,6 @@ class StrmCleanupPlanService:
         if operation_id is not None and lease_check is None:
             raise StrmCleanupPlanError("strm_operation_lease_required")
         await _raise_if_lease_lost(lease_check)
-        fence = _LeaseFence(operation_id, lease_check)
         root = _readable_root(output_root, self._managed_output_roots)
         prefix = _safe_prefix(playback_url_prefix)
         current_time = _utc(now)
@@ -269,6 +269,13 @@ class StrmCleanupPlanService:
                 is not None
             ):
                 raise StrmCleanupPlanError("strm_library_operation_conflict")
+            fence = _LeaseFence(
+                operation_id,
+                lease_check,
+                library_id=library.id,
+                source_scan_run_id=plan.source_scan_run_id,
+                operation_kind=StrmOperationKind.CLEANUP,
+            )
             await _bind_fence(fence, session)
             candidates = _candidates(plan)
             manifest_ids = [item["manifest_id"] for item in candidates]

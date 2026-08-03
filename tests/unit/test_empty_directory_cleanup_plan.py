@@ -14,7 +14,7 @@ from watch_assistant.library_models import (
     LibraryScanRun,
     MediaLibrary,
 )
-from watch_assistant.models import StrmOperationKind
+from watch_assistant.models import StrmOperation, StrmOperationKind, StrmOperationStatus
 from watch_assistant.services.empty_directory_cleanup import (
     EmptyDirectoryCleanupStatus,
 )
@@ -296,6 +296,107 @@ async def test_empty_directory_plan_claim_is_compare_and_set_under_concurrent_co
             "plan_revision_changed",
         }
         assert calls == ["300"]
+    finally:
+        await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_empty_directory_service_rejects_other_library_operation(tmp_path):
+    database = await _database(tmp_path)
+    try:
+        await _seed(database)
+        plan_service = EmptyDirectoryCleanupPlanService(database.session_factory)
+        plan = await plan_service.create_plan(
+            library_id="library-1",
+            source_scan_run_id="run-1",
+            protected_directory_ids=("200",),
+            system_created_directory_ids=("300",),
+        )
+        operation_service = StrmOperationService(database.session_factory)
+        operation = await operation_service.create(
+            library_id="library-1",
+            source_scan_run_id="run-1",
+            kind=StrmOperationKind.FULL,
+            idempotency_key="empty-cleanup-conflict",
+        )
+        await operation_service.start(operation.operation_id)
+        calls = []
+
+        async def execute(candidate):
+            calls.append(candidate["directory_id"])
+            return EmptyDirectoryCleanupStatus.SUCCESS
+
+        with pytest.raises(
+            EmptyDirectoryCleanupPlanError,
+            match="strm_library_operation_conflict",
+        ):
+            await plan_service.apply_plan(
+                plan_id=plan.plan_id,
+                expected_revision=plan.revision,
+                digest=plan.plan_hash,
+                confirm=True,
+                idempotency_key="empty-cleanup-conflict-apply",
+                executor=execute,
+                system_created_directory_ids=("300",),
+            )
+        assert calls == []
+        assert (await plan_service.get_plan(plan.plan_id)).status == "needs_review"
+    finally:
+        await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_empty_directory_service_rejects_wrong_operation_scope(tmp_path):
+    database = await _database(tmp_path)
+    try:
+        await _seed(database)
+        plan_service = EmptyDirectoryCleanupPlanService(database.session_factory)
+        plan = await plan_service.create_plan(
+            library_id="library-1",
+            source_scan_run_id="run-1",
+            protected_directory_ids=("200",),
+            system_created_directory_ids=("300",),
+        )
+        async with database.session_factory() as session:
+            session.add(
+                StrmOperation(
+                    id="strm_op_wrong_cleanup_scope",
+                    library_id="library-1",
+                    kind=StrmOperationKind.CLEANUP,
+                    source_scan_run_id="other-run",
+                    status=StrmOperationStatus.RUNNING,
+                    lease_owner="owner-cleanup-scope",
+                    lease_expires_at=datetime.now(UTC) + timedelta(minutes=5),
+                )
+            )
+            await session.commit()
+
+        calls = []
+
+        async def execute(candidate):
+            calls.append(candidate["directory_id"])
+            return EmptyDirectoryCleanupStatus.SUCCESS
+
+        async def lease_check():
+            return True
+
+        with pytest.raises(
+            EmptyDirectoryCleanupPlanError,
+            match="strm_operation_lease_lost",
+        ):
+            await plan_service.apply_plan(
+                plan_id=plan.plan_id,
+                expected_revision=plan.revision,
+                digest=plan.plan_hash,
+                confirm=True,
+                idempotency_key="empty-cleanup-wrong-scope-apply",
+                executor=execute,
+                system_created_directory_ids=("300",),
+                operation_id="strm_op_wrong_cleanup_scope",
+                lease_check=lease_check,
+            )
+        assert calls == []
+        assert (await plan_service.get_plan(plan.plan_id)).status == "needs_review"
     finally:
         await database.engine.dispose()
 

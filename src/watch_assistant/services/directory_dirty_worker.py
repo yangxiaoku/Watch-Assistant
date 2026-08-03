@@ -56,6 +56,8 @@ from watch_assistant.services.workflows import (
 
 IndexFactory = Callable[[str, str], LibraryIndexService]
 EmptyDirectoryCleaner = Callable[[str, str, str], Awaitable[EmptyDirectoryCleanupStatus]]
+_DIRTY_LEASE_SECONDS = 300
+_DIRTY_LEASE_HEARTBEAT_SECONDS = 60
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,6 +121,27 @@ class DirectoryDirtyWorker:
         operation_lease_owner: str | None = None
         heartbeat_stop: asyncio.Event | None = None
         heartbeat_task: asyncio.Task[None] | None = None
+        dirty_heartbeat_stop: asyncio.Event | None = None
+        dirty_heartbeat_task: asyncio.Task[None] | None = None
+        dirty_lease_lost = asyncio.Event()
+        terminal_fence: Callable[[AsyncSession], Awaitable[bool]] | None = None
+        dirty_heartbeat_stop, dirty_heartbeat_task = (
+            self._start_dirty_lease_heartbeat(lease, dirty_lease_lost)
+        )
+
+        async def dirty_lease_check() -> bool:
+            if dirty_lease_lost.is_set():
+                return False
+            try:
+                active = await self._outbox.is_generation_lease_active(
+                    self._session_factory, lease
+                )
+            except Exception:  # noqa: BLE001 - stale workers fail closed
+                active = False
+            if not active:
+                dirty_lease_lost.set()
+            return active
+
         try:
             context = await self._load_context(lease)
             if context is None:
@@ -130,6 +153,8 @@ class DirectoryDirtyWorker:
                 )
                 return True
             library_id, root_directory_id, actions_json, workflow_id = context
+            if not await dirty_lease_check():
+                return True
             await self._sync_workflow(
                 workflow_id,
                 lease,
@@ -170,6 +195,8 @@ class DirectoryDirtyWorker:
                     return True
             index = self._index_factory(library_id, root_directory_id)
             scan = await index.scan_tree(_dirty_idempotency_key(lease))
+            if not await dirty_lease_check():
+                return True
             if not scan.complete:
                 await self._retry_with_workflow(
                     lease,
@@ -232,10 +259,17 @@ class DirectoryDirtyWorker:
                     )
 
                     async def lease_check() -> bool:
+                        if not await dirty_lease_check():
+                            return False
                         return await self._operations.is_lease_active(
                             operation.operation_id,
                             lease_owner=operation_lease_owner,
                         )
+
+                    async def durable_fence(session: AsyncSession) -> bool:
+                        return await self._outbox.fence_generation(session, lease)
+
+                    terminal_fence = durable_fence
 
                     async def progress_callback(
                         progress: StrmGenerationSummary,
@@ -259,13 +293,17 @@ class DirectoryDirtyWorker:
                         # entries. Retirement is a separate reviewed cleanup plan.
                         retire_removed=False,
                         lease_check=lease_check,
+                        durable_fence=durable_fence,
                         operation_id=operation.operation_id,
                         progress_callback=progress_callback,
                     )
+                    if not await dirty_lease_check():
+                        return True
                     operation = await self._finish_operation(
                         operation,
                         summary,
                         lease_owner=operation_lease_owner,
+                        durable_fence=terminal_fence,
                     )
                     if operation.status != "succeeded":
                         error_code = operation.error_code or "strm_operation_failed"
@@ -302,6 +340,8 @@ class DirectoryDirtyWorker:
                         "library.empty_directory_cleanup.review_required",
                         "受管空目录清理需要预览并确认",
                     )
+            if not await dirty_lease_check():
+                return True
             completed = await self._outbox.complete(self._session_factory, lease)
             if not completed:
                 return True
@@ -309,10 +349,13 @@ class DirectoryDirtyWorker:
         except asyncio.CancelledError:
             raise
         except (LibraryIndexError, StrmManifestError, StrmOperationError) as error:
+            if dirty_lease_lost.is_set():
+                return True
             await self._fail_operation(
                 operation,
                 operation_lease_owner,
                 error_code=getattr(error, "code", str(error)),
+                durable_fence=terminal_fence,
             )
             await self._retry_with_workflow(
                 lease,
@@ -327,10 +370,13 @@ class DirectoryDirtyWorker:
                 max_attempts=self._max_attempts,
             )
         except Exception:  # noqa: BLE001 - details never cross the worker boundary
+            if dirty_lease_lost.is_set():
+                return True
             await self._fail_operation(
                 operation,
                 operation_lease_owner,
                 error_code="worker_failed",
+                durable_fence=terminal_fence,
             )
             await self._retry_with_workflow(
                 lease,
@@ -347,6 +393,13 @@ class DirectoryDirtyWorker:
         finally:
             if heartbeat_stop is not None and heartbeat_task is not None:
                 await self._stop_operation_heartbeat(heartbeat_stop, heartbeat_task)
+            if (
+                dirty_heartbeat_stop is not None
+                and dirty_heartbeat_task is not None
+            ):
+                await self._stop_dirty_lease_heartbeat(
+                    dirty_heartbeat_stop, dirty_heartbeat_task
+                )
         return True
 
     async def run_forever(self, stop_event: asyncio.Event | None = None) -> None:
@@ -366,6 +419,7 @@ class DirectoryDirtyWorker:
         summary,
         *,
         lease_owner: str,
+        durable_fence: Callable[[AsyncSession], Awaitable[bool]] | None = None,
     ) -> StrmOperationSummary:
         counts = {
             "generated": int(getattr(summary, "generated", 0)),
@@ -379,11 +433,13 @@ class DirectoryDirtyWorker:
                 operation.operation_id,
                 error_code="strm_incremental_failed",
                 lease_owner=lease_owner,
+                durable_fence=durable_fence,
                 **counts,
             )
         return await self._operations.complete(
             operation.operation_id,
             lease_owner=lease_owner,
+            durable_fence=durable_fence,
             **counts,
         )
 
@@ -393,6 +449,7 @@ class DirectoryDirtyWorker:
         lease_owner: str | None,
         *,
         error_code: str,
+        durable_fence: Callable[[AsyncSession], Awaitable[bool]] | None = None,
     ) -> None:
         if operation is None or lease_owner is None:
             return
@@ -401,6 +458,7 @@ class DirectoryDirtyWorker:
                 operation.operation_id,
                 error_code=error_code,
                 lease_owner=lease_owner,
+                durable_fence=durable_fence,
             )
         except (StrmOperationError, StrmOperationNotFound):
             # A newer executor may already own or have terminalized the row.
@@ -432,6 +490,45 @@ class DirectoryDirtyWorker:
                     return
 
     async def _stop_operation_heartbeat(
+        self, stop: asyncio.Event, task: asyncio.Task[None]
+    ) -> None:
+        stop.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    def _start_dirty_lease_heartbeat(
+        self, lease: DirectoryDirtyLease, lost: asyncio.Event
+    ) -> tuple[asyncio.Event, asyncio.Task[None]]:
+        stop = asyncio.Event()
+        task = asyncio.create_task(
+            self._run_dirty_lease_heartbeat(lease, stop, lost),
+            name=f"watch-assistant-dirty-lease-heartbeat-{lease.queue_id or lease.event_id}",
+        )
+        return stop, task
+
+    async def _run_dirty_lease_heartbeat(
+        self, lease: DirectoryDirtyLease, stop: asyncio.Event, lost: asyncio.Event
+    ) -> None:
+        while not stop.is_set():
+            try:
+                await asyncio.wait_for(
+                    stop.wait(), timeout=_DIRTY_LEASE_HEARTBEAT_SECONDS
+                )
+            except TimeoutError:
+                try:
+                    renewed = await self._outbox.renew_generation(
+                        self._session_factory,
+                        lease,
+                        lease_seconds=_DIRTY_LEASE_SECONDS,
+                    )
+                except Exception:  # noqa: BLE001 - stale workers fail closed
+                    renewed = False
+                if not renewed:
+                    lost.set()
+                    return
+
+    async def _stop_dirty_lease_heartbeat(
         self, stop: asyncio.Event, task: asyncio.Task[None]
     ) -> None:
         stop.set()

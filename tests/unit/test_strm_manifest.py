@@ -257,6 +257,40 @@ async def test_manifest_commit_cancel_after_durable_commit_keeps_success(
         await database.engine.dispose()
 
 
+async def test_manifest_durable_fence_rejection_restores_file_and_manifest(
+    tmp_path: Path,
+):
+    database = await _database(tmp_path)
+    try:
+        fence_calls = 0
+
+        async def durable_fence(_session: AsyncSession) -> bool:
+            nonlocal fence_calls
+            fence_calls += 1
+            return fence_calls < 5
+
+        with pytest.raises(StrmManifestError, match="strm_operation_lease_lost"):
+            await StrmManifestService(database.session_factory).generate(
+                "library-strm",
+                source_scan_run_id="scan-strm",
+                output_root=tmp_path / "output",
+                playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+                durable_fence=durable_fence,
+            )
+
+        assert fence_calls == 5
+        assert not (tmp_path / "output/Show/Episode.strm").exists()
+        async with database.session_factory() as session:
+            manifest = await session.scalar(
+                select(StrmManifestEntry).where(
+                    StrmManifestEntry.cloud_file_id == "100"
+                )
+            )
+            assert manifest is None
+    finally:
+        await database.engine.dispose()
+
+
 async def test_generation_requires_complete_current_scan(tmp_path: Path):
     database = await _database(tmp_path)
     try:
@@ -1091,6 +1125,41 @@ async def test_database_lease_takeover_is_fenced_at_manifest_commit(
             assert operation.lease_owner == "owner-b"
     finally:
         await peer_database.engine.dispose()
+        await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_manifest_rejects_operation_from_another_library_scope(tmp_path: Path):
+    database = await _database(tmp_path)
+    try:
+        async with database.session_factory() as session:
+            session.add(
+                StrmOperation(
+                    id="strm_op_wrong_scope",
+                    library_id="library-other",
+                    kind=StrmOperationKind.FULL,
+                    source_scan_run_id="scan-strm",
+                    status=StrmOperationStatus.RUNNING,
+                    lease_owner="owner-scope",
+                    lease_expires_at=datetime.now(UTC) + timedelta(minutes=5),
+                )
+            )
+            await session.commit()
+
+        async def lease_check():
+            return True
+
+        with pytest.raises(StrmManifestError, match="strm_operation_lease_lost"):
+            await StrmManifestService(database.session_factory).generate(
+                "library-strm",
+                source_scan_run_id="scan-strm",
+                output_root=tmp_path / "output",
+                playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+                lease_check=lease_check,
+                operation_id="strm_op_wrong_scope",
+            )
+        assert not (tmp_path / "output/Show/Episode.strm").exists()
+    finally:
         await database.engine.dispose()
 
 

@@ -111,6 +111,44 @@ async def test_terminal_commit_ack_loss_observes_durable_state(
 
 
 @pytest.mark.asyncio
+async def test_terminal_fence_rejection_keeps_operation_running(tmp_path: Path):
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'operations.db'}")
+    await initialize_database(database.engine)
+    try:
+        service = StrmOperationService(database.session_factory)
+        operation = await service.create(
+            library_id="library-one",
+            source_scan_run_id="scan-one",
+            kind=StrmOperationKind.INCREMENTAL,
+        )
+        running = await service.start(operation.operation_id)
+        lease_owner = await service.get_lease_token(operation.operation_id)
+        assert running.status == "running"
+        assert lease_owner is not None
+
+        async def durable_fence(_session: AsyncSession) -> bool:
+            return False
+
+        with pytest.raises(StrmOperationError, match="strm_operation_lease_lost"):
+            await service.complete(
+                operation.operation_id,
+                generated=1,
+                unchanged=0,
+                skipped=0,
+                failed=0,
+                retired=0,
+                lease_owner=lease_owner,
+                durable_fence=durable_fence,
+            )
+
+        persisted = await service.get(operation.operation_id)
+        assert persisted.status == "running"
+        assert persisted.generated == 0
+    finally:
+        await database.engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_api_cancel_syncs_linked_workflow_stage(monkeypatch):
     now = datetime.now(UTC)
 
