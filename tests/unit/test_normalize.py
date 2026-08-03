@@ -288,6 +288,35 @@ def test_duplicate_infohash_keeps_and_merges_richer_result():
     assert resource.password == "code"
 
 
+def test_duplicate_infohash_preserves_all_safe_pansou_sources():
+    resources = normalize_pansou(
+        _magnet_data(
+            {
+                "url": f"magnet:?xt=urn:btih:{HEX_HASH}",
+                "note": "Show S01E01",
+                "source": "plugin:first",
+                "datetime": "2026-07-25T04:00:00Z",
+            },
+            {
+                "url": f"magnet:?xt=urn:btih:{HEX_HASH}&dn=Duplicate",
+                "note": "Show S01E01",
+                "source": "https://indexer.test/plugin?marker=source-secret",
+                "datetime": "2026-07-25T05:00:00Z",
+            },
+        )
+    )
+
+    resource = resources[0]
+    sources = resource.metadata["sources"]
+    assert sources[0] == "plugin:first"
+    assert len(sources) == 2
+    assert sources[1].startswith("source:")
+    assert "source-secret" not in str(resource.metadata)
+    assert {
+        item["source"] for item in resource.metadata["source_observations"]
+    } == set(sources)
+
+
 def test_duplicate_infohash_keeps_plugin_metadata_but_structured_fields_win():
     resources = normalize_pansou(
         _magnet_data(

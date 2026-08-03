@@ -181,6 +181,72 @@ async def test_workflow_stage_order_and_uncertain_priority(tmp_path):
 
 
 @pytest.mark.integration
+async def test_terminal_stage_replay_preserves_reason_and_child_binding(tmp_path):
+    client, database, tmdb, pansou = await _make_client(tmp_path)
+    try:
+        created = await client.post(
+            "/api/v1/workflows", json={"media_type": "movie"}
+        )
+        workflow_id = created.json()["id"]
+        await _record_discovery(client, workflow_id)
+        for stage in ("inspection", "approval"):
+            response = await client.patch(
+                f"/api/v1/workflows/{workflow_id}/stages/{stage}",
+                json={"status": "succeeded"},
+            )
+            assert response.status_code == 200
+
+        first = await client.patch(
+            f"/api/v1/workflows/{workflow_id}/stages/push",
+            json={
+                "status": "failed",
+                "reason": "首次失败原因",
+                "error_code": "first_failure",
+                "child_type": "task",
+                "child_id": "task-first",
+            },
+        )
+        assert first.status_code == 200
+
+        replay = await client.patch(
+            f"/api/v1/workflows/{workflow_id}/stages/push",
+            json={
+                "status": "failed",
+                "reason": "迟到事件不应覆盖",
+                "error_code": "late_failure",
+                "child_type": "task",
+                "child_id": "task-first",
+            },
+        )
+        assert replay.status_code == 200
+        push = next(
+            item for item in replay.json()["stages"] if item["stage"] == "push"
+        )
+        assert push["status"] == "failed"
+        assert push["reason"] == "首次失败原因"
+        assert push["error_code"] == "first_failure"
+        assert push["child_id"] == "task-first"
+
+        conflicting_child = await client.patch(
+            f"/api/v1/workflows/{workflow_id}/stages/push",
+            json={
+                "status": "failed",
+                "reason": "不应写入",
+                "error_code": "different_child",
+                "child_type": "task",
+                "child_id": "task-second",
+            },
+        )
+        assert conflicting_child.status_code == 409
+        assert conflicting_child.json()["error"]["code"] == "workflow_conflict"
+    finally:
+        await client.aclose()
+        await tmdb.aclose()
+        await pansou.aclose()
+        await database.engine.dispose()
+
+
+@pytest.mark.integration
 async def test_workflow_approval_and_cancel_are_guarded(tmp_path):
     client, database, tmdb, pansou = await _make_client(tmp_path)
     try:

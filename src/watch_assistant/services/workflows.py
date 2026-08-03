@@ -9,7 +9,13 @@ from sqlalchemy import and_, func, select
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from watch_assistant.models import Resource, Workflow, WorkflowEvidence, WorkflowStage
+from watch_assistant.models import (
+    Resource,
+    Task,
+    Workflow,
+    WorkflowEvidence,
+    WorkflowStage,
+)
 from watch_assistant.schemas import (
     EvidenceSource,
     EvidenceStatus,
@@ -318,20 +324,42 @@ class WorkflowService:
                 )
             )
             _validate_stage_transition(stages, stage, patch.status)
-            stage.status = patch.status
-            stage.reason = patch.reason
-            stage.error_code = patch.error_code
-            stage.child_type = patch.child_type or stage.child_type
-            stage.child_id = patch.child_id or stage.child_id
-            stage.updated_at = now
-            if patch.status in {
-                WorkflowStageStatus.RUNNING,
-                WorkflowStageStatus.WAITING_EXTERNAL,
-                WorkflowStageStatus.WAITING_CONFIRMATION,
-            } and stage.started_at is None:
-                stage.started_at = now
-            if patch.status in _TERMINAL_STAGE_STATUSES:
-                stage.completed_at = now
+            child_patch_supplied = (
+                patch.child_type is not None or patch.child_id is not None
+            )
+            child_bound = False
+            if child_patch_supplied:
+                requested_child_type = patch.child_type or stage.child_type
+                requested_child_id = patch.child_id or stage.child_id
+                if requested_child_type is None or requested_child_id is None:
+                    raise WorkflowConflict("workflow_conflict")
+                before_binding = (stage.child_type, stage.child_id)
+                _ensure_child_binding(
+                    stage,
+                    child_type=requested_child_type,
+                    child_id=requested_child_id,
+                )
+                child_bound = before_binding != (stage.child_type, stage.child_id)
+            terminal_replay = (
+                patch.status in _TERMINAL_STAGE_STATUSES
+                and stage.status is patch.status
+            )
+            if not terminal_replay:
+                stage.status = patch.status
+                stage.reason = patch.reason
+                stage.error_code = patch.error_code
+                stage.updated_at = now
+                if patch.status in {
+                    WorkflowStageStatus.RUNNING,
+                    WorkflowStageStatus.WAITING_EXTERNAL,
+                    WorkflowStageStatus.WAITING_CONFIRMATION,
+                } and stage.started_at is None:
+                    stage.started_at = now
+                if patch.status in _TERMINAL_STAGE_STATUSES:
+                    stage.completed_at = now
+            elif child_bound:
+                stage.updated_at = now
+                workflow.updated_at = now
             stages = list(
                 await session.scalars(
                     select(WorkflowStage).where(
@@ -537,6 +565,91 @@ async def record_evidence(
 ) -> WorkflowEvidence:
     """Atomically insert or refresh one safe, idempotent evidence record."""
 
+    workflow = None
+    workflow_stage = None
+    if workflow_id is not None:
+        workflow = await session.get(Workflow, workflow_id)
+        if workflow is None:
+            raise WorkflowNotFound(workflow_id)
+        if stage is None:
+            raise WorkflowConflict("workflow_evidence_required")
+        workflow_stage = await session.scalar(
+            select(WorkflowStage).where(
+                WorkflowStage.workflow_id == workflow_id,
+                WorkflowStage.stage == stage,
+            )
+        )
+        if workflow_stage is None:
+            raise WorkflowConflict("workflow_evidence_required")
+
+    task = None
+    if task_id is not None:
+        task = await session.get(Task, task_id)
+        if task is None:
+            raise WorkflowConflict("workflow_evidence_required")
+        if task.workflow_id != workflow_id or subject_id != task_id:
+            raise WorkflowConflict("workflow_evidence_required")
+    elif workflow_id is None:
+        raise WorkflowConflict("workflow_evidence_required")
+
+    if source is EvidenceSource.RESOURCE_RECORD:
+        resource = await session.get(Resource, subject_id)
+        valid_discovery = (
+            workflow is not None
+            and workflow_stage is not None
+            and task is None
+            and resource is not None
+            and stage is WorkflowStageName.DISCOVERY
+            and evidence_type == "discovery"
+            and status is EvidenceStatus.DISCOVERED
+            and workflow_stage.child_type == "resource"
+            and workflow_stage.child_id == subject_id
+        )
+        if not valid_discovery:
+            raise WorkflowConflict("workflow_evidence_required")
+    elif task is not None:
+        valid_task_stage = stage in {
+            WorkflowStageName.PUSH,
+            WorkflowStageName.AVAILABILITY,
+        }
+        valid_type = (
+            evidence_type == "availability_receipt"
+            if stage is WorkflowStageName.AVAILABILITY
+            else evidence_type == "remote_status"
+        )
+        valid_push_status = (
+            status
+            in {
+                EvidenceStatus.SUBMITTED,
+                EvidenceStatus.DOWNLOADING,
+                EvidenceStatus.FAILED,
+                EvidenceStatus.UNCERTAIN,
+            }
+            if stage is WorkflowStageName.PUSH
+            else True
+        )
+        valid_availability = (
+            stage is WorkflowStageName.AVAILABILITY
+            and evidence_type == "availability_receipt"
+            and source is EvidenceSource.READONLY_RECONCILIATION
+            and status is EvidenceStatus.AVAILABLE
+        )
+        valid_source = source in {
+            EvidenceSource.SUBMISSION_RECEIPT,
+            EvidenceSource.READONLY_RECONCILIATION,
+        }
+        if (
+            not valid_task_stage
+            or not valid_type
+            or not valid_source
+            or not valid_push_status
+        ):
+            raise WorkflowConflict("workflow_evidence_required")
+        if stage is WorkflowStageName.AVAILABILITY and not valid_availability:
+            raise WorkflowConflict("workflow_evidence_required")
+    else:
+        raise WorkflowConflict("workflow_evidence_required")
+
     unique_filters = [
         WorkflowEvidence.evidence_type == evidence_type,
         WorkflowEvidence.source == source.value,
@@ -613,12 +726,15 @@ async def record_discovery_evidence(
         if (
             stage.status is WorkflowStageStatus.SUCCEEDED
             and stage.child_id == resource_id
+            and stage.child_type == "resource"
         ):
             evidence = await session.scalar(
                 select(WorkflowEvidence).where(
                     WorkflowEvidence.workflow_id == workflow.id,
                     WorkflowEvidence.stage == WorkflowStageName.DISCOVERY,
                     WorkflowEvidence.subject_id == resource_id,
+                    WorkflowEvidence.evidence_type == "discovery",
+                    WorkflowEvidence.source == EvidenceSource.RESOURCE_RECORD.value,
                     WorkflowEvidence.status == EvidenceStatus.DISCOVERED.value,
                 )
             )
@@ -626,6 +742,12 @@ async def record_discovery_evidence(
                 return evidence
         raise WorkflowConflict("workflow_discovery_conflict")
     _validate_stage_transition(stages, stage, WorkflowStageStatus.RUNNING)
+    _ensure_child_binding(
+        stage,
+        child_type="resource",
+        child_id=resource_id,
+        conflict_code="workflow_discovery_conflict",
+    )
     now = datetime.now(UTC)
     stage.status = WorkflowStageStatus.RUNNING
     stage.started_at = stage.started_at or now
@@ -661,15 +783,27 @@ async def advance_availability_from_evidence(
 ) -> Workflow:
     """Close push and open downstream stages only after an available receipt."""
 
+    stored_evidence = await session.get(WorkflowEvidence, evidence.id)
+    if stored_evidence is None:
+        raise WorkflowConflict("workflow_evidence_required")
+    evidence = stored_evidence
     if (
-        evidence.status != EvidenceStatus.AVAILABLE.value
+        evidence.workflow_id != workflow_id
+        or evidence.stage is not WorkflowStageName.AVAILABILITY
+        or evidence.evidence_type != "availability_receipt"
+        or evidence.source != EvidenceSource.READONLY_RECONCILIATION.value
+        or evidence.status != EvidenceStatus.AVAILABLE.value
         or not evidence.verified
         or evidence.task_id != task_id
+        or evidence.subject_id != task_id
     ):
         raise WorkflowConflict("workflow_evidence_required")
     workflow = await session.get(Workflow, workflow_id)
     if workflow is None:
         raise WorkflowNotFound(workflow_id)
+    task = await session.get(Task, task_id)
+    if task is None or task.workflow_id != workflow_id:
+        raise WorkflowConflict("workflow_evidence_required")
     stages = list(
         await session.scalars(
             select(WorkflowStage).where(WorkflowStage.workflow_id == workflow_id)
@@ -679,12 +813,22 @@ async def advance_availability_from_evidence(
     availability = next(
         item for item in stages if item.stage is WorkflowStageName.AVAILABILITY
     )
-    if availability.status is WorkflowStageStatus.SUCCEEDED:
-        if availability.child_id != evidence.id:
-            raise WorkflowConflict("workflow_stage_terminal")
-        return workflow
     if push.status is not WorkflowStageStatus.SUCCEEDED:
         _validate_stage_transition(stages, push, WorkflowStageStatus.SUCCEEDED)
+    _ensure_child_binding(
+        push,
+        child_type="task",
+        child_id=task_id,
+    )
+    if availability.status is WorkflowStageStatus.SUCCEEDED:
+        _ensure_child_binding(
+            availability,
+            child_type="workflow_evidence",
+            child_id=evidence.id,
+            conflict_code="workflow_stage_terminal",
+        )
+        return workflow
+    if push.status is not WorkflowStageStatus.SUCCEEDED:
         now = datetime.now(UTC)
         push.status = WorkflowStageStatus.SUCCEEDED
         push.reason = "task_available"
@@ -697,6 +841,12 @@ async def advance_availability_from_evidence(
         )
     )
     _validate_stage_transition(stages, availability, WorkflowStageStatus.SUCCEEDED)
+    _ensure_child_binding(
+        availability,
+        child_type="workflow_evidence",
+        child_id=evidence.id,
+        conflict_code="workflow_stage_terminal",
+    )
     now = datetime.now(UTC)
     availability.status = WorkflowStageStatus.SUCCEEDED
     availability.reason = "availability_evidence"
@@ -735,6 +885,9 @@ async def link_child(
         )
     )
     _validate_stage_transition(stages, stage, WorkflowStageStatus.RUNNING)
+    _ensure_child_binding(stage, child_type=child_type, child_id=child_id)
+    if stage.status is WorkflowStageStatus.RUNNING:
+        return workflow
     stage.child_type = child_type
     stage.child_id = child_id
     now = datetime.now(UTC)
@@ -783,7 +936,10 @@ async def sync_child_stage(
         )
     )
     _validate_stage_transition(stages, stage, status)
+    _ensure_child_binding(stage, child_type=child_type, child_id=child_id)
     now = datetime.now(UTC)
+    if stage.status in _TERMINAL_STAGE_STATUSES and stage.status is status:
+        return workflow
     stage.child_type = child_type
     stage.child_id = child_id
     stage.status = status
@@ -865,6 +1021,25 @@ def _derive_status(
     if WorkflowStageStatus.CANCELLED in statuses:
         return WorkflowStatus.PARTIAL, "workflow_cancelled"
     return WorkflowStatus.COMPLETED, "all_stages_terminal"
+
+
+def _ensure_child_binding(
+    stage: WorkflowStage,
+    *,
+    child_type: str,
+    child_id: str,
+    conflict_code: str = "workflow_conflict",
+) -> None:
+    """Keep one workflow stage bound to one durable child identity."""
+
+    if not child_type or not child_id:
+        raise WorkflowConflict(conflict_code)
+    if stage.child_type is None and stage.child_id is None:
+        stage.child_type = child_type
+        stage.child_id = child_id
+        return
+    if stage.child_type != child_type or stage.child_id != child_id:
+        raise WorkflowConflict(conflict_code)
 
 
 def _validate_stage_transition(

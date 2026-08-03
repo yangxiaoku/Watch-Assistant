@@ -10,17 +10,20 @@
 本计划只覆盖 REQ-001 和 REQ-002。Agent CLI 与中文结构化日志应分别依据 REQ-003、REQ-004 制定独立实施计划。
 状态：供产品、研发、测试和运维评审；不代表功能已经上线
 
-2026-08-03 当前核对：唯一发布分支为 `codex/publish-main`；发布前执行 `git fetch origin`，再用
-`git rev-parse origin/codex/publish-main` 获取实际最新基线。本计划不固定当前 commit，也不从文档推断生产版本。
-当前基线包含 [PR #30](https://github.com/yangxiaoku/Watch-Assistant/pull/30) 的扫描/STRM/租约门禁和工作台调整，
-以及已合入的 [PR #31](https://github.com/yangxiaoku/Watch-Assistant/pull/31) p115 fail-closed 远程可用性证据、
-后续工作台调整 [PR #32](https://github.com/yangxiaoku/Watch-Assistant/pull/32)、STRM/空目录清理加固
-[PR #33](https://github.com/yangxiaoku/Watch-Assistant/pull/33)、库存/组织门禁 [PR #34](https://github.com/yangxiaoku/Watch-Assistant/pull/34)、
-发布门禁 [PR #35](https://github.com/yangxiaoku/Watch-Assistant/pull/35) 和 task worker readiness [PR #36](https://github.com/yangxiaoku/Watch-Assistant/pull/36)。
-对应代码与离线测试只提高 readiness；文档状态修正 [PR #37](https://github.com/yangxiaoku/Watch-Assistant/pull/37) 已合入当前发布基线，
-PR #31-#37 均已合入；REQ-001/REQ-002 仍按总索引和 `BLOCKERS.md` 保持“待验收”；p115 live、生产媒体库整理、
-STRM 播放/清理、元数据联动和生产验收仍未完成，永久删除保持关闭。Prowlarr live 仍被 Internet Archive 上游 timeout
-阻断，不能写成可搜索来源已配置。
+2026-08-03 当前核对：唯一发布分支为 `codex/publish-main`；执行 `git fetch --all --prune` 后，
+`git rev-parse origin/codex/publish-main` 返回
+`caa74bbda5bfcea7315abd39ad83f0be7e042381`，对应合入 [PR #42](https://github.com/yangxiaoku/Watch-Assistant/pull/42)。
+该 SHA 是本次核对快照，后续发布必须重新解析，本计划不从文档推断生产版本。
+该 SHA 的 [Verify CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30768232222) 和
+[Systemd Release Package CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30768232230) 均成功；
+CI 只证明离线门禁、Compose 配置和发布包校验通过，不证明生产部署。
+当前基线包含 PR #30-#37 的扫描、STRM、p115 fail-closed、库存/组织、工作台和发布门禁，以及
+[PR #39](https://github.com/yangxiaoku/Watch-Assistant/pull/39) 前端回归修复、
+[PR #40](https://github.com/yangxiaoku/Watch-Assistant/pull/40) systemd 发布脚本门禁、
+[PR #41](https://github.com/yangxiaoku/Watch-Assistant/pull/41) 不完整扫描 fail-closed 加固和 PR #42 任务 worker 租约加固。
+对应代码与离线测试只提高 readiness；REQ-001/REQ-002 仍按总索引和 `BLOCKERS.md` 保持“待验收”；p115 live、生产媒体库整理、
+真实 115 写入、STRM 播放/清理、元数据联动和生产验收仍未完成，永久删除保持关闭。Prowlarr 离线契约不等于 live indexer
+可搜索验收；真实来源仍被 Internet Archive 上游 timeout 阻断，不能写成可搜索来源已配置。
 
 2026-08-02 文档复核为历史审查窗口，锁定 `codex/integration-20260802@2c342d9`；复核期间集成 ref
 前进到 `3afc8d3`，随后随 PR #30 合入发布基线。该历史记录不代表发布包、部署或真实外部验收。

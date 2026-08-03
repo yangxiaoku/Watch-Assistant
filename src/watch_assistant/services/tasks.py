@@ -401,8 +401,25 @@ class TaskService:
                     existing_tasks, resource_id, target_directory_id
                 )
                 if existing is not None:
+                    if (
+                        workflow_id is not None
+                        and existing.workflow_id not in {None, workflow_id}
+                    ):
+                        raise WorkflowConflict("workflow_conflict")
                     if workflow_id is not None and existing.workflow_id is None:
                         existing.workflow_id = workflow_id
+                        task_evidence = list(
+                            await session.scalars(
+                                select(WorkflowEvidence).where(
+                                    WorkflowEvidence.task_id == existing.id
+                                )
+                            )
+                        )
+                        for evidence in task_evidence:
+                            if evidence.workflow_id is None:
+                                evidence.workflow_id = workflow_id
+                            elif evidence.workflow_id != workflow_id:
+                                raise WorkflowConflict("workflow_conflict")
                         await link_child(
                             session,
                             workflow_id,
@@ -415,8 +432,13 @@ class TaskService:
                                 select(WorkflowEvidence)
                                 .where(
                                     WorkflowEvidence.task_id == existing.id,
+                                    WorkflowEvidence.workflow_id == workflow_id,
                                     WorkflowEvidence.stage
                                     == WorkflowStageName.AVAILABILITY,
+                                    WorkflowEvidence.evidence_type
+                                    == "availability_receipt",
+                                    WorkflowEvidence.source
+                                    == EvidenceSource.READONLY_RECONCILIATION.value,
                                     WorkflowEvidence.status
                                     == EvidenceStatus.AVAILABLE.value,
                                     WorkflowEvidence.verified.is_(True),

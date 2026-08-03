@@ -177,6 +177,9 @@ class SearchService:
         self._resource_search_tasks: dict[
             tuple[MediaType, int, int | None], _ResourceSearchTask
         ] = {}
+        self._resource_search_start_locks: dict[
+            tuple[MediaType, int, int | None], asyncio.Lock
+        ] = {}
         self._resource_search_finalize_locks: dict[str, asyncio.Lock] = {}
 
     async def get_movie(self, tmdb_id: int) -> MovieMetadata:
@@ -310,6 +313,25 @@ class SearchService:
         refresh: bool = False,
     ) -> ResourceSearchResponse:
         key = (media_type, tmdb_id, season_number)
+        lock = self._resource_search_start_locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            return await self._start_resource_search_locked(
+                tmdb_id,
+                media_type=media_type,
+                season_number=season_number,
+                refresh=refresh,
+                key=key,
+            )
+
+    async def _start_resource_search_locked(
+        self,
+        tmdb_id: int,
+        *,
+        media_type: MediaType,
+        season_number: int | None,
+        refresh: bool,
+        key: tuple[MediaType, int, int | None],
+    ) -> ResourceSearchResponse:
         existing = self._resource_search_tasks.get(key)
         restored = False
         if existing is None:
@@ -1141,10 +1163,13 @@ class SearchService:
                 captured_at=now,
             ):
                 resource.metadata["search_queries"] = [query]
-                resource.metadata["sources"] = [resource.source]
-                resource.metadata["source_observations"] = [
-                    _source_observation(resource)
-                ]
+                resource.metadata["sources"] = _merge_safe_source_ids(
+                    resource.metadata.get("sources"), resource.source
+                )
+                resource.metadata["source_observations"] = _merge_source_observations(
+                    resource.metadata.get("source_observations"),
+                    [_source_observation(resource)],
+                )
                 existing = normalized_by_key.get(resource.canonical_key)
                 normalized_by_key[resource.canonical_key] = (
                     resource
@@ -1161,10 +1186,13 @@ class SearchService:
         normalized_by_key: dict[str, NormalizedResource] = {}
         for _query, result in results:
             for resource in normalize_prowlarr(result.releases, captured_at=now):
-                resource.metadata["sources"] = [resource.source]
-                resource.metadata["source_observations"] = [
-                    _source_observation(resource)
-                ]
+                resource.metadata["sources"] = _merge_safe_source_ids(
+                    resource.metadata.get("sources"), resource.source
+                )
+                resource.metadata["source_observations"] = _merge_source_observations(
+                    resource.metadata.get("source_observations"),
+                    [_source_observation(resource)],
+                )
                 existing = normalized_by_key.get(resource.canonical_key)
                 normalized_by_key[resource.canonical_key] = (
                     resource

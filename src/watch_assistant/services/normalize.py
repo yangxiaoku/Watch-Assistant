@@ -88,8 +88,6 @@ def normalize_prowlarr(
             "category": "magnet",
             "prowlarr_protocol": release.protocol,
         }
-        if release.indexer:
-            metadata["prowlarr_indexer"] = release.indexer
         if release.indexer_id is not None:
             metadata["prowlarr_indexer_id"] = release.indexer_id
         if release.size_bytes is not None:
@@ -147,10 +145,15 @@ def _normalize_item(
         label_source = None
     source = normalize_source_id(item.get("source"))
     raw_datetime = item.get("datetime")
+    captured_at = _parse_datetime(raw_datetime) or fallback_time
     password = item.get("password")
     if not isinstance(password, str) or not password:
         password = None
-    metadata: dict[str, Any] = {"category": category}
+    metadata: dict[str, Any] = {
+        "category": category,
+        "sources": [source],
+        "source_observations": [_source_observation(source, captured_at)],
+    }
     if label_source:
         metadata["label_source"] = label_source
     if note:
@@ -181,7 +184,7 @@ def _normalize_item(
         size_bytes=size_bytes,
         seeders=seeders,
         source=source,
-        captured_at=_parse_datetime(raw_datetime) or fallback_time,
+        captured_at=captured_at,
         metadata=metadata,
     )
 
@@ -268,6 +271,18 @@ def merge_normalized_resources(
     else:
         base, other = existing, candidate
     metadata = {**other.metadata, **base.metadata}
+    metadata["sources"] = _merge_source_ids(
+        existing.metadata.get("sources"),
+        existing.source,
+        candidate.metadata.get("sources"),
+        candidate.source,
+    )
+    metadata["source_observations"] = _merge_source_observations(
+        existing.metadata.get("source_observations"),
+        [_source_observation(existing.source, existing.captured_at)],
+        candidate.metadata.get("source_observations"),
+        [_source_observation(candidate.source, candidate.captured_at)],
+    )
     size_bytes, size_owner = _merge_optional_field(
         base, other, "size_bytes", "size_source"
     )
@@ -372,6 +387,63 @@ def normalize_source_id(value: object) -> str:
     if SAFE_SOURCE.fullmatch(source):
         return source
     return "source:" + sha256(source.encode("utf-8")).hexdigest()[:16]
+
+
+def _source_observation(source: str, captured_at: datetime) -> dict[str, str]:
+    if captured_at.tzinfo is None:
+        captured_at = captured_at.replace(tzinfo=UTC)
+    else:
+        captured_at = captured_at.astimezone(UTC)
+    return {
+        "source": normalize_source_id(source),
+        "captured_at": captured_at.isoformat(),
+    }
+
+
+def _merge_source_ids(*values: object) -> list[str]:
+    sources: list[str] = []
+    for value in values:
+        candidates = (
+            [value]
+            if isinstance(value, str)
+            else value
+            if isinstance(value, list)
+            else []
+        )
+        for candidate in candidates:
+            if not isinstance(candidate, str) or not candidate.strip():
+                continue
+            normalized = normalize_source_id(candidate)
+            if normalized not in sources:
+                sources.append(normalized)
+    return sources
+
+
+def _merge_source_observations(*values: object) -> list[dict[str, str]]:
+    merged: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for value in values:
+        if not isinstance(value, list):
+            continue
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            source = item.get("source")
+            captured_at = item.get("captured_at")
+            if not isinstance(source, str) or not isinstance(captured_at, str):
+                continue
+            normalized_source = normalize_source_id(source)
+            normalized_time = captured_at.strip()[:64]
+            if not normalized_time:
+                continue
+            observation = (normalized_source, normalized_time)
+            if observation in seen:
+                continue
+            seen.add(observation)
+            merged.append(
+                {"source": normalized_source, "captured_at": normalized_time}
+            )
+    return merged
 
 
 def _parse_datetime(value: object) -> datetime | None:

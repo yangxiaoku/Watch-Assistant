@@ -152,6 +152,26 @@ def test_season_numbers_do_not_treat_years_as_seasons():
     assert _season_numbers("第2季至第3季 2012 1080p") == {2, 3}
 
 
+def test_season_numbers_support_chinese_numerals_for_selected_seasons():
+    assert _season_numbers("剧名 第二季 2012 1080p") == {2}
+    assert _season_numbers("剧名 第二季至第三季 2012 1080p") == {2, 3}
+
+    show = MovieMetadata(
+        tmdb_id=1399,
+        media_type=MediaType.TV,
+        title="剧名",
+        release_year=2011,
+    )
+    resources, rejected = validate_and_rank_resources(
+        show,
+        [_resource("剧名 第二季 2012 1080p")],
+        season_number=2,
+    )
+
+    assert [item.name for item in resources] == ["剧名 第二季 2012 1080p"]
+    assert rejected == 0
+
+
 def test_validation_keeps_later_tv_season_in_all_seasons_search():
     show = MovieMetadata(
         tmdb_id=1399,

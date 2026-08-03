@@ -268,6 +268,26 @@ class DirectoryDirtyWorker:
                         summary,
                         lease_owner=operation_lease_owner,
                     )
+                    if operation.status != "succeeded":
+                        error_code = operation.error_code or "strm_operation_failed"
+                        await self._outbox.retry(
+                            self._session_factory,
+                            lease,
+                            error_code=error_code,
+                            max_attempts=self._max_attempts,
+                        )
+                        await self._sync_workflow(
+                            workflow_id,
+                            lease,
+                            status=(
+                                WorkflowStageStatus.FAILED
+                                if lease.attempts >= self._max_attempts
+                                else WorkflowStageStatus.WAITING_EXTERNAL
+                            ),
+                            reason="strm_reconcile_failed",
+                            error_code=error_code,
+                        )
+                        return True
                     await self._sync_workflow(
                         workflow_id,
                         lease,
@@ -564,7 +584,10 @@ def _directory_in_plan_scope(directory_id: str, root_directory_id: str, actions_
 
 
 def _dirty_idempotency_key(lease: DirectoryDirtyLease) -> str:
-    return f"dirty-{lease.event_id}-{lease.attempts}"
+    scope = lease.queue_id or lease.event_id
+    if lease.generation is not None:
+        scope = f"{scope}-{lease.generation}"
+    return f"dirty-{scope}"
 
 
 def _dirty_operation_idempotency_key(
@@ -573,7 +596,7 @@ def _dirty_operation_idempotency_key(
     scope = "|".join(
         (
             lease.queue_id or lease.event_id,
-            str(lease.generation if lease.generation is not None else lease.attempts),
+            str(lease.generation if lease.generation is not None else 0),
             source_scan_run_id,
         )
     )

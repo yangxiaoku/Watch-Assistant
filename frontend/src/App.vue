@@ -76,16 +76,17 @@ const inspectionAutoStartEnabled = ref<boolean | "unknown">("unknown");
 const organizationPlanEnabled = ref(false);
 const organizationExecutionEnabled = ref(false);
 const settingsInitialSection = ref<"overview" | "organization">("overview");
-const unavailableCapability = (): CapabilityAvailability => ({
+const unavailableCapability = (settingsSection: CapabilityAvailability["settings_section"] = "overview"): CapabilityAvailability => ({
   enabled: false,
   reason_code: "capability_unknown",
   reason_zh: "当前未读取能力状态，请刷新页面后重试。",
-  settings_section: "overview",
+  settings_section: settingsSection,
 });
 const strmFullCapability = ref<CapabilityAvailability>(unavailableCapability());
 const strmIncrementalCapability = ref<CapabilityAvailability>(unavailableCapability());
 const strmCleanupCapability = ref<CapabilityAvailability>(unavailableCapability());
 const emptyDirectoryCleanupCapability = ref<CapabilityAvailability>(unavailableCapability());
+const organizationPlanCapability = ref<CapabilityAvailability>(unavailableCapability());
 const selectedSeason = ref<number | null>(null);
 const seasonDetail = ref<SeasonDetailResponse | null>(null);
 const seasonDetailLoading = ref(false);
@@ -501,13 +502,14 @@ function healthCapability(
   enabled: boolean | undefined,
   reasonCode: string,
   label: string,
+  settingsSection: CapabilityAvailability["settings_section"] = "overview",
 ): CapabilityAvailability {
-  if (enabled === undefined) return unavailableCapability();
+  if (enabled === undefined) return unavailableCapability(settingsSection);
   return {
     enabled,
     reason_code: enabled ? null : reasonCode,
-    reason_zh: enabled ? "可执行" : `${label}未启用，请在设置概览查看功能状态。`,
-    settings_section: "overview",
+    reason_zh: enabled ? "可执行" : `${label}未启用，请在${settingsSection === "organization" ? "自动整理设置" : "设置概览"}查看功能状态。`,
+    settings_section: settingsSection,
   };
 }
 
@@ -1469,7 +1471,8 @@ onMounted(async () => {
     pushCapabilities.value = resolvePushCapabilities(health);
     inspectionSupported.value = health.inspection_supported === true;
     inspectionAutoStartEnabled.value = health.inspection_auto_start_enabled === true;
-    organizationPlanEnabled.value = health.organization_plan_enabled === true;
+    organizationPlanCapability.value = healthCapability(health.organization_plan_enabled, "organization_plan_disabled", "自动整理计划", "organization");
+    organizationPlanEnabled.value = organizationPlanCapability.value.enabled;
     organizationExecutionEnabled.value = health.organization_execution_enabled === true;
     strmFullCapability.value = healthCapability(health.strm_capabilities?.full, "strm_full_disabled", "STRM 全量生成");
     strmIncrementalCapability.value = healthCapability(health.strm_capabilities?.incremental, "strm_incremental_disabled", "STRM 增量同步");
@@ -1537,7 +1540,7 @@ onBeforeUnmount(() => {
         <SettingsView v-else-if="activeView === 'settings'" :api="api" :initial-section="settingsInitialSection" @auto-start-enabled="inspectionAutoStartEnabled = $event" />
         <OrganizationWorkbenchView v-else-if="activeView === 'organization-plans' && organizationPlanEnabled" :api="api" :execution-enabled="organizationExecutionEnabled" />
         <OrganizationHistoryView v-else-if="activeView === 'organization-history' && organizationPlanEnabled" :api="api" />
-        <LibraryWorkbenchView v-else-if="activeView === 'library'" :api="api" :strm-full-capability="strmFullCapability" :strm-incremental-capability="strmIncrementalCapability" :strm-cleanup-capability="strmCleanupCapability" :empty-directory-cleanup-capability="emptyDirectoryCleanupCapability" @open-settings="openOrganizationSettings" />
+        <LibraryWorkbenchView v-else-if="activeView === 'library'" :api="api" :organization-plan-capability="organizationPlanCapability" :strm-full-capability="strmFullCapability" :strm-incremental-capability="strmIncrementalCapability" :strm-cleanup-capability="strmCleanupCapability" :empty-directory-cleanup-capability="emptyDirectoryCleanupCapability" @open-settings="openOrganizationSettings" />
         <WorkflowCenterView v-else-if="activeView === 'workflows'" :api="api" @open-push-tasks="openTaskDrawer" />
         <NotificationCenterView v-else-if="activeView === 'notifications'" :api="api" @navigate="selectView" />
         <SearchView v-else v-model="searchInput" :loading="catalogLoading" :movies="catalogMovies" :heading="catalogHeading" :favorite-ids="favoriteIds" :page="currentPage" :total-pages="totalPages" :total-results="totalResults" @search="searchMovies" @reset="selectView('home')" @open="openMovie" @favorite="toggleFavorite" @page="loadPage" />

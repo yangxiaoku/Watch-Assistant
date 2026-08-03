@@ -195,6 +195,8 @@ class OrganizationOperationService:
                     )
                 )
                 if existing is not None and existing.plan_id == plan_id:
+                    if workflow_id is not None and existing.workflow_id != workflow_id:
+                        raise OrganizationOperationConflict("workflow_id_conflict")
                     return _summary(existing)
                 existing = await session.scalar(
                     select(OrganizationOperation).where(

@@ -17,16 +17,24 @@
 
 ## 当前集成验收状态
 
+- 本次核对的 `origin/codex/publish-main` 为
+  `caa74bbda5bfcea7315abd39ad83f0be7e042381`；该 SHA 的 [Verify CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30768232222)
+  和 [Systemd Release Package CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30768232230) 均成功。
+  CI 证据只覆盖代码、离线门禁、Compose 配置和发布包校验，不覆盖生产部署、真实 115 直链或媒体服务器播放。
 - 当前发布基线已合入 [PR #30](https://github.com/yangxiaoku/Watch-Assistant/pull/30) 的 STRM manifest、
   dirty worker、扫描完整性和租约门禁；对应回归见 [STRM manifest](../../../tests/unit/test_strm_manifest.py)、
   [STRM 操作](../../../tests/unit/test_strm_operations.py)、[dirty worker](../../../tests/unit/test_directory_dirty_worker.py)
   和 [STRM API](../../../tests/integration/test_strm_operations_api.py)。这些证据只覆盖代码、离线和受管夹具范围。
+- [PR #41](https://github.com/yangxiaoku/Watch-Assistant/pull/41) 继续收紧不完整扫描、manifest 和空目录清理计划的
+  fail-closed 边界，[PR #42](https://github.com/yangxiaoku/Watch-Assistant/pull/42) 加固任务 worker 租约边界；这些修复不等于
+  生产 STRM、播放或清理已上线。
 - 后续 STRM manifest 与空目录清理加固已由 [PR #33](https://github.com/yangxiaoku/Watch-Assistant/pull/33) 合入；
   对应 [空目录计划单测](../../../tests/unit/test_empty_directory_cleanup_plan.py) 和
   [空目录清理契约测试](../../../tests/contracts/test_empty_directory_cleanup_contract.py) 仍只证明离线 readiness。
 - STRM 全量/增量、受管清单和空目录清理仍必须受完整扫描、清理计划、人工确认和功能开关约束；永久删除保持关闭。
   临时输出目录的结果不能替代生产媒体库、播放、媒体服务器或元数据验收。
 - live/生产验收：未完成；未执行真实 115 直链、播放兼容性、生产媒体库清单或生产部署验收，因此本需求仍未上线。
+- 生产部署核对：未完成；本次未核对服务器运行模式、实际版本、数据目录或 STRM/播放/清理能力开关。
 
 ## 2. 背景与问题
 

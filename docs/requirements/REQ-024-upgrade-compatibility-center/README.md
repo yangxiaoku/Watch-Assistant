@@ -5,10 +5,18 @@
 | 版本 | V1.0 |
 | 状态 | 待验收 |
 | 创建日期 | 2026-07-26 |
-| 更新日期 | 2026-07-26 |
+| 更新日期 | 2026-08-03 |
 | 负责人 | 待指定 |
 | 优先级 | P1 |
 | 依赖 | REQ-004、REQ-009、REQ-017、部署清单与数据库迁移机制 |
+
+## 当前发布核对
+
+本次核对的 `origin/codex/publish-main` 为
+`caa74bbda5bfcea7315abd39ad83f0be7e042381`；该 SHA 的 [Verify CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30768232222)
+和 [Systemd Release Package CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30768232230) 均成功，
+其中发布包校验和 systemd 发布脚本门禁通过。CI 只证明代码、配置和发布包门禁通过，不证明已经部署、升级或回滚过。
+本次未核对生产服务器的运行模式、实际版本、数据目录或线上健康状态，需求仍为“待验收”。
 
 ## 1. 一句话定义
 

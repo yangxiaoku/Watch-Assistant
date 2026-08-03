@@ -11,6 +11,8 @@ from watch_assistant.crypto import SecretCrypto
 from watch_assistant.db import create_database, initialize_database
 from watch_assistant.models import Resource, Task, TaskState
 from watch_assistant.schemas import (
+    EvidenceSource,
+    EvidenceStatus,
     RemoteObservation,
     RemoteStatus,
     SubmissionResult,
@@ -25,7 +27,12 @@ from watch_assistant.services.inventory_push_guard import (
 )
 from watch_assistant.services.library_inventory import InventoryDecision
 from watch_assistant.services.tasks import TaskService
-from watch_assistant.services.workflows import WorkflowService
+from watch_assistant.services.workflows import (
+    WorkflowConflict,
+    WorkflowService,
+    advance_availability_from_evidence,
+    record_evidence,
+)
 from watch_assistant.worker import TaskWorker
 
 
@@ -549,6 +556,114 @@ async def test_reusing_available_task_advances_new_workflow_availability(tmp_pat
     stages = {stage.stage.value: stage.status.value for stage in updated.stages}
     assert stages["push"] == "succeeded"
     assert stages["availability"] == "succeeded"
+    assert all(
+        evidence.workflow_id == workflow.id
+        for evidence in await task_service.evidence(existing.id)
+    )
+    await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_reusing_task_from_another_workflow_is_rejected(tmp_path):
+    database = await _database(tmp_path)
+    crypto = SecretCrypto(Fernet.generate_key().decode("ascii"))
+    await _add_resource(database, crypto)
+    task_service = TaskService(database.session_factory)
+    workflow_service = WorkflowService(database.session_factory)
+
+    first_workflow = await workflow_service.create(
+        WorkflowCreateRequest(
+            media_type="movie", tmdb_id=27205, resource_id="res_magnet"
+        )
+    )
+    for stage in (
+        WorkflowStageName.INSPECTION,
+        WorkflowStageName.APPROVAL,
+    ):
+        await workflow_service.patch_stage(
+            first_workflow.id,
+            stage,
+            WorkflowStagePatch(status=WorkflowStageStatus.SUCCEEDED),
+        )
+    existing, reused = await task_service.create(
+        "res_magnet", workflow_id=first_workflow.id
+    )
+    assert reused is False
+
+    second_workflow = await workflow_service.create(
+        WorkflowCreateRequest(
+            media_type="movie", tmdb_id=27205, resource_id="res_magnet"
+        )
+    )
+    for stage in (
+        WorkflowStageName.INSPECTION,
+        WorkflowStageName.APPROVAL,
+    ):
+        await workflow_service.patch_stage(
+            second_workflow.id,
+            stage,
+            WorkflowStagePatch(status=WorkflowStageStatus.SUCCEEDED),
+        )
+
+    with pytest.raises(WorkflowConflict, match="workflow_conflict"):
+        await task_service.create("res_magnet", workflow_id=second_workflow.id)
+
+    stored = await task_service.get(existing.id)
+    assert stored is not None
+    assert stored.workflow_id == first_workflow.id
+    first_detail = await workflow_service.get(first_workflow.id)
+    first_push = next(
+        stage for stage in first_detail.stages if stage.stage is WorkflowStageName.PUSH
+    )
+    assert first_push.child_id == existing.id
+    await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_availability_evidence_cannot_advance_another_workflow(tmp_path):
+    database = await _database(tmp_path)
+    crypto = SecretCrypto(Fernet.generate_key().decode("ascii"))
+    await _add_resource(database, crypto)
+    task_service = TaskService(database.session_factory)
+    workflow_service = WorkflowService(database.session_factory)
+
+    source_workflow = await workflow_service.create(
+        WorkflowCreateRequest(
+            media_type="movie", tmdb_id=27205, resource_id="res_magnet"
+        )
+    )
+    for stage in (
+        WorkflowStageName.INSPECTION,
+        WorkflowStageName.APPROVAL,
+    ):
+        await workflow_service.patch_stage(
+            source_workflow.id,
+            stage,
+            WorkflowStagePatch(status=WorkflowStageStatus.SUCCEEDED),
+        )
+    task, _ = await task_service.create(
+        "res_magnet", workflow_id=source_workflow.id
+    )
+    other_workflow = await workflow_service.create(
+        WorkflowCreateRequest(media_type="movie")
+    )
+
+    async with database.session_factory() as session:
+        evidence = await record_evidence(
+            session,
+            workflow_id=source_workflow.id,
+            task_id=task.id,
+            stage=WorkflowStageName.AVAILABILITY,
+            evidence_type="availability_receipt",
+            source=EvidenceSource.READONLY_RECONCILIATION,
+            subject_id=task.id,
+            status=EvidenceStatus.AVAILABLE,
+            verified=True,
+        )
+        with pytest.raises(WorkflowConflict, match="workflow_evidence_required"):
+            await advance_availability_from_evidence(
+                session, other_workflow.id, task.id, evidence
+            )
     await database.engine.dispose()
 
 

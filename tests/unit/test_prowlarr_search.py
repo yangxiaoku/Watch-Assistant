@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 import pytest
 
 from watch_assistant.adapters.prowlarr import ProwlarrRelease, ProwlarrSearchResult
+from watch_assistant.services.normalize import normalize_prowlarr
 from watch_assistant.services.search import SearchService
 
 
@@ -185,6 +186,27 @@ async def test_pansou_and_prowlarr_results_dedupe_by_infohash():
     assert set(normalized[0].metadata["sources"]) == {"plugin:pansou", "prowlarr"}
     assert normalized[0].size_bytes == 1024
     assert normalized[0].seeders == 4
+
+
+def test_prowlarr_indexer_name_is_not_persisted_as_raw_provenance():
+    release = ProwlarrRelease(
+        title="Movie 2010 1080p",
+        magnet_url="magnet:?xt=urn:btih:abcdef0123456789abcdef0123456789abcdef01",
+        info_hash="abcdef0123456789abcdef0123456789abcdef01",
+        size_bytes=None,
+        seeders=None,
+        indexer="https://indexer.test/search?marker=source-secret",
+        indexer_id=7,
+        guid=None,
+        publish_date=None,
+        protocol="torrent",
+    )
+
+    resource = normalize_prowlarr([release])[0]
+
+    assert "source-secret" not in str(resource.metadata)
+    assert "prowlarr_indexer" not in resource.metadata
+    assert resource.metadata["prowlarr_indexer_id"] == 7
 
 
 @pytest.mark.asyncio

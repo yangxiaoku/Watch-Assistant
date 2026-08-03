@@ -2,6 +2,28 @@ import { flushPromises, mount } from "@vue/test-utils";
 import { describe, expect, it, vi } from "vitest";
 
 import LibraryWorkbenchView from "../src/views/LibraryWorkbenchView.vue";
+import type { CapabilityAvailability } from "../src/types";
+
+const enabledCapability: CapabilityAvailability = {
+  enabled: true,
+  reason_code: null,
+  reason_zh: "可执行",
+  settings_section: "overview",
+};
+
+function mountWorkbench(api: unknown, overrides: Record<string, unknown> = {}) {
+  return mount(LibraryWorkbenchView, {
+    props: {
+      api: api as never,
+      organizationPlanCapability: { ...enabledCapability, settings_section: "organization" },
+      strmFullCapability: enabledCapability,
+      strmIncrementalCapability: enabledCapability,
+      strmCleanupCapability: enabledCapability,
+      emptyDirectoryCleanupCapability: { ...enabledCapability, settings_section: "organization" },
+      ...overrides,
+    },
+  });
+}
 
 async function confirmRiskyAction(wrapper: ReturnType<typeof mount>) {
   await wrapper.get(".confirm-dialog-acknowledgement input").setValue(true);
@@ -10,6 +32,32 @@ async function confirmRiskyAction(wrapper: ReturnType<typeof mount>) {
 }
 
 describe("LibraryWorkbenchView", () => {
+  it("fails closed when capability status has not been loaded", async () => {
+    const library = {
+      library_id: "main",
+      name: "115 媒体库",
+      root_directory_id: "123",
+      enabled: true,
+      scope_verified: true,
+      revision: 2,
+      latest_scan: { run_id: "scan-1", state: "completed" as const, complete: true, snapshot_revision: 1, pages_read: 1, items_seen: 1, added_count: 1, changed_count: 0, removed_count: 0, error_code: null },
+    };
+    const api = {
+      libraries: vi.fn().mockResolvedValue({ items: [library], next_cursor: null }),
+      libraryMedia: vi.fn().mockResolvedValue({ items: [], next_cursor: null }),
+      strmManifest: vi.fn().mockResolvedValue({ items: [], page: 1, page_size: 50, total: 0, total_pages: 0 }),
+      strmOperations: vi.fn().mockResolvedValue({ items: [], next_cursor: null }),
+    };
+    const wrapper = mount(LibraryWorkbenchView, { props: { api: api as never } });
+    await flushPromises();
+
+    for (const label of ["生成整理预览", "全量 STRM", "增量同步", "预览失效清理", "预览空目录清理"]) {
+      const button = wrapper.findAll("button").find((item) => item.text().includes(label));
+      expect(button?.attributes("disabled")).toBeDefined();
+    }
+    expect(wrapper.text()).toContain("自动整理计划当前不可用。");
+  });
+
   it("keeps the library entry reachable while explaining the disabled STRM gate", async () => {
     const library = {
       library_id: "main",
@@ -26,11 +74,8 @@ describe("LibraryWorkbenchView", () => {
       strmManifest: vi.fn().mockResolvedValue({ items: [], page: 1, page_size: 50, total: 0, total_pages: 0 }),
       strmOperations: vi.fn().mockResolvedValue({ items: [], next_cursor: null }),
     };
-    const wrapper = mount(LibraryWorkbenchView, {
-      props: {
-        api: api as never,
-        strmFullCapability: { enabled: false, reason_code: "strm_full_disabled", reason_zh: "STRM 全量生成未启用，请检查部署功能开关。", settings_section: "overview" },
-      },
+    const wrapper = mountWorkbench(api, {
+      strmFullCapability: { enabled: false, reason_code: "strm_full_disabled", reason_zh: "STRM 全量生成未启用，请检查部署功能开关。", settings_section: "overview" },
     });
     await flushPromises();
 
@@ -49,7 +94,7 @@ describe("LibraryWorkbenchView", () => {
       strmManifest: vi.fn(),
       strmOperations: vi.fn(),
     };
-    const wrapper = mount(LibraryWorkbenchView, { props: { api: api as never } });
+    const wrapper = mountWorkbench(api);
     await flushPromises();
 
     expect(wrapper.text()).toContain("下一步：读取服务器配置的 115 根目录，保存配置、验证范围，再完成首次扫描。");
@@ -71,7 +116,7 @@ describe("LibraryWorkbenchView", () => {
       strmManifest: vi.fn().mockResolvedValue({ items: [], page: 1, page_size: 50, total: 0, total_pages: 0 }),
       strmOperations: vi.fn().mockResolvedValue({ items: [], next_cursor: null }),
     };
-    const wrapper = mount(LibraryWorkbenchView, { props: { api: api as never } });
+    const wrapper = mountWorkbench(api);
     await flushPromises();
 
     const initialize = wrapper.findAll("button").find((button) => button.text().includes("初始化并扫描媒体库"));
@@ -108,7 +153,7 @@ describe("LibraryWorkbenchView", () => {
       createStrmCleanupPlan: vi.fn().mockResolvedValue(plan),
       applyStrmCleanupPlan: vi.fn().mockResolvedValue({ plan: { ...plan, status: "applied", revision: 2 }, retired: 1 }),
     };
-    const wrapper = mount(LibraryWorkbenchView, { props: { api: api as never } });
+    const wrapper = mountWorkbench(api);
     await flushPromises();
 
     await wrapper.findAll("button").find((button) => button.text().includes("全量 STRM"))!.trigger("click");
@@ -153,7 +198,7 @@ describe("LibraryWorkbenchView", () => {
       strmManifest,
       strmOperations: vi.fn().mockResolvedValue({ items: [], next_cursor: null }),
     };
-    const wrapper = mount(LibraryWorkbenchView, { props: { api: api as never } });
+    const wrapper = mountWorkbench(api);
     await flushPromises();
 
     expect(wrapper.text()).toContain("第一项");
@@ -197,7 +242,7 @@ describe("LibraryWorkbenchView", () => {
       createEmptyDirectoryCleanupPlan: vi.fn().mockResolvedValue(plan),
       applyEmptyDirectoryCleanupPlan: vi.fn().mockResolvedValue({ plan: { ...plan, status: "applied", revision: 3 }, deleted: 1 }),
     };
-    const wrapper = mount(LibraryWorkbenchView, { props: { api: api as never } });
+    const wrapper = mountWorkbench(api);
     await flushPromises();
 
     await wrapper.findAll("button").find((button) => button.text().includes("预览空目录清理"))!.trigger("click");
@@ -238,7 +283,7 @@ describe("LibraryWorkbenchView", () => {
       generateStrm: vi.fn().mockResolvedValue({ operation_id: queued.operation_id, library_id: "main", scan_run_id: "scan-1", generated: 1, unchanged: 0, skipped: 0, failed: 0, retired: 0 }),
       strmOperation,
     };
-    const wrapper = mount(LibraryWorkbenchView, { props: { api: api as never } });
+    const wrapper = mountWorkbench(api);
     await vi.runOnlyPendingTimersAsync();
     await vi.advanceTimersByTimeAsync(0);
     await wrapper.findAll("button").find((button) => button.text().includes("全量 STRM"))!.trigger("click");
@@ -279,7 +324,7 @@ describe("LibraryWorkbenchView", () => {
       generateStrm: vi.fn().mockResolvedValue({ operation_id: operation.operation_id, library_id: "main", scan_run_id: "scan-1", generated: 0, unchanged: 0, skipped: 0, failed: operation.failed, retired: 0 }),
       strmOperation: vi.fn().mockResolvedValue(operation),
     };
-    const wrapper = mount(LibraryWorkbenchView, { props: { api: api as never } });
+    const wrapper = mountWorkbench(api);
     await flushPromises();
     await wrapper.findAll("button").find((button) => button.text().includes("全量 STRM"))!.trigger("click");
     await flushPromises();
@@ -309,7 +354,7 @@ describe("LibraryWorkbenchView", () => {
       strmOperations,
       resumeStrmOperation: vi.fn().mockResolvedValue(succeeded),
     };
-    const wrapper = mount(LibraryWorkbenchView, { props: { api: api as never } });
+    const wrapper = mountWorkbench(api);
     await flushPromises();
 
     expect(wrapper.text()).toContain("恢复执行");
@@ -342,7 +387,7 @@ describe("LibraryWorkbenchView", () => {
       strmOperations,
       cancelStrmOperation: vi.fn().mockResolvedValue(cancelled),
     };
-    const wrapper = mount(LibraryWorkbenchView, { props: { api: api as never } });
+    const wrapper = mountWorkbench(api);
     await flushPromises();
 
     await wrapper.findAll("button").find((button) => button.text().includes("取消操作"))!.trigger("click");
@@ -365,7 +410,7 @@ describe("LibraryWorkbenchView", () => {
       strmManifest: vi.fn().mockResolvedValue({ items: [], page: 1, page_size: 50, total: 0, total_pages: 0 }),
       strmOperations,
     };
-    const wrapper = mount(LibraryWorkbenchView, { props: { api: api as never } });
+    const wrapper = mountWorkbench(api);
     await flushPromises();
     expect(wrapper.text()).toContain("操作历史加载失败");
     expect(wrapper.text()).toContain("重试");
@@ -395,12 +440,7 @@ describe("LibraryWorkbenchView", () => {
       strmOperations: vi.fn().mockResolvedValue({ items: [], next_cursor: null }),
     };
     const capability = { enabled: false, reason_code: "disabled", reason_zh: reason as string, settings_section: section };
-    const wrapper = mount(LibraryWorkbenchView, {
-      props: {
-        api: api as never,
-        ...(section === "overview" ? { strmCleanupCapability: capability } : { emptyDirectoryCleanupCapability: capability }),
-      },
-    });
+    const wrapper = mountWorkbench(api, section === "overview" ? { strmCleanupCapability: capability } : { emptyDirectoryCleanupCapability: capability });
     await flushPromises();
 
     const cleanupButton = wrapper.findAll("button").find((button) => button.text().includes(label));
