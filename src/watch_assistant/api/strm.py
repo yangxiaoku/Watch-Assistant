@@ -5,6 +5,7 @@ import hashlib
 import ipaddress
 import json
 import math
+import threading
 from collections.abc import Collection
 from pathlib import Path
 from typing import Annotated
@@ -52,6 +53,10 @@ from watch_assistant.services.strm_operations import (
     StrmOperationService,
     StrmOperationSummary,
 )
+from watch_assistant.services.strm_playback import (
+    CachedStrmPlaybackGateway,
+    validate_current_manifest_scope,
+)
 from watch_assistant.services.strm_verification import (
     StrmVerificationError,
     StrmVerificationService,
@@ -63,6 +68,7 @@ from watch_assistant.services.workflows import (
 
 router = APIRouter(prefix="/api/v1", dependencies=[Depends(require_api_auth)])
 AuthDependency = Annotated[AuthContext, Depends(require_api_auth)]
+_PLAYBACK_RESOLVER_INIT_LOCK = threading.Lock()
 
 
 async def require_strm_enabled(request: Request) -> None:
@@ -1336,9 +1342,7 @@ async def play_manifest(
         )
     except PlaybackContractError as error:
         raise HTTPException(status_code=416, detail="invalid_playback_request") from error
-    gateway = getattr(request.app.state, "strm_playback_gateway", None)
-    if gateway is None or not callable(getattr(gateway, "resolve", None)):
-        raise HTTPException(status_code=503, detail="strm_playback_unavailable")
+    gateway = _playback_gateway(request)
     allowed_library_ids = (
         context.library_ids
         if context.via_bearer and context.library_ids
@@ -1357,6 +1361,47 @@ async def play_manifest(
     if outcome.status is not PlaybackStatus.READY or outcome.url is None:
         raise _playback_error(outcome.status)
     return await _proxy_playback(request, playback_request, outcome.url, outcome.request_headers)
+
+
+def _playback_gateway(request: Request):
+    gateway = getattr(request.app.state, "strm_playback_gateway", None)
+    if gateway is None or not callable(getattr(gateway, "resolve", None)):
+        raise HTTPException(status_code=503, detail="strm_playback_unavailable")
+    if isinstance(gateway, CachedStrmPlaybackGateway):
+        return gateway
+
+    resolver = getattr(request.app.state, "strm_playback_resolver", None)
+    if (
+        isinstance(resolver, CachedStrmPlaybackGateway)
+        and resolver.upstream is gateway
+    ):
+        return resolver
+    with _PLAYBACK_RESOLVER_INIT_LOCK:
+        resolver = getattr(request.app.state, "strm_playback_resolver", None)
+        if (
+            not isinstance(resolver, CachedStrmPlaybackGateway)
+            or resolver.upstream is not gateway
+        ):
+            resolver = CachedStrmPlaybackGateway(
+                gateway,
+                cache_validator=_cache_validator(request),
+            )
+            request.app.state.strm_playback_resolver = resolver
+    return resolver
+
+
+def _cache_validator(request: Request):
+    database = getattr(request.app.state, "database", None)
+    session_factory = getattr(database, "session_factory", None)
+
+    async def validate(playback_request, allowed_library_ids):
+        if not callable(session_factory):
+            return False
+        return await validate_current_manifest_scope(
+            session_factory, playback_request, allowed_library_ids
+        )
+
+    return validate
 
 
 async def _proxy_playback(
