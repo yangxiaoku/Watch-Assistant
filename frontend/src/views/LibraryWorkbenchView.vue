@@ -33,8 +33,10 @@ const emit = defineEmits<{
 const libraries = ref<MediaLibraryResponse[]>([]);
 const selectedId = ref<string | null>(null);
 const media = ref<MediaEntryResponse[]>([]);
+const mediaNextCursor = ref<number | null>(null);
 const manifest = ref<StrmManifestItemResponse[]>([]);
 const operations = ref<StrmOperationResponse[]>([]);
+const operationsNextCursor = ref<string | null>(null);
 const mediaLoading = ref(false);
 const mediaError = ref("");
 const manifestPage = ref(1);
@@ -43,6 +45,7 @@ const manifestTotal = ref(0);
 const manifestTotalPages = ref(1);
 const manifestLoading = ref(false);
 const manifestError = ref("");
+const operationsLoading = ref(false);
 const operationsError = ref("");
 const loading = ref(false);
 const busy = ref(false);
@@ -59,6 +62,11 @@ const pendingCleanup = ref<"strm" | "empty" | "operation" | null>(null);
 const operationDetailOpen = ref(false);
 let operationPollGeneration = 0;
 let operationPollTimer: number | null = null;
+let libraryRequestGeneration = 0;
+let mediaRequestGeneration = 0;
+let manifestRequestGeneration = 0;
+let operationsRequestGeneration = 0;
+let operationDetailRequestGeneration = 0;
 
 const selected = computed(() => libraries.value.find((item) => item.library_id === selectedId.value) ?? null);
 const scan = computed(() => selected.value?.latest_scan ?? null);
@@ -138,10 +146,12 @@ function setError(exception: unknown, fallback: string) {
 }
 
 async function loadLibraries(preferredId = selectedId.value) {
+  const requestGeneration = ++libraryRequestGeneration;
   loading.value = true;
   error.value = "";
   try {
     const response = await props.api.libraries();
+    if (requestGeneration !== libraryRequestGeneration) return;
     libraries.value = response.items;
     selectedId.value = response.items.some((item) => item.library_id === preferredId)
       ? preferredId
@@ -155,58 +165,84 @@ async function loadLibraries(preferredId = selectedId.value) {
       await loadOutputs(selected.value.library_id);
     }
   } catch (exception) {
-    setError(exception, "媒体库加载失败，请稍后重试");
+    if (requestGeneration === libraryRequestGeneration) setError(exception, "媒体库加载失败，请稍后重试");
   } finally {
-    loading.value = false;
+    if (requestGeneration === libraryRequestGeneration) loading.value = false;
   }
 }
 
 async function loadOutputs(libraryId: string) {
+  if (selectedId.value !== libraryId) return;
+  mediaNextCursor.value = null;
+  operationsNextCursor.value = null;
+  mediaRequestGeneration += 1;
+  manifestRequestGeneration += 1;
+  operationsRequestGeneration += 1;
   operationsError.value = "";
   await Promise.all([loadMedia(libraryId), loadManifestPage(libraryId, 1), loadOperations(libraryId)]);
 }
 
-async function loadMedia(libraryId: string): Promise<void> {
+async function loadMedia(libraryId: string, cursor?: number): Promise<void> {
+  const requestGeneration = ++mediaRequestGeneration;
   mediaLoading.value = true;
   mediaError.value = "";
   try {
-    const response = await props.api.libraryMedia(libraryId);
-    if (selectedId.value !== libraryId) return;
-    media.value = response.items;
+    const response = cursor === undefined
+      ? await props.api.libraryMedia(libraryId)
+      : await props.api.libraryMedia(libraryId, cursor);
+    if (selectedId.value !== libraryId || requestGeneration !== mediaRequestGeneration) return;
+    const existingIds = new Set(media.value.map((item) => item.media_id));
+    media.value = cursor === undefined
+      ? response.items
+      : [...media.value, ...response.items.filter((item) => !existingIds.has(item.media_id))];
+    mediaNextCursor.value = response.next_cursor ?? null;
   } catch (exception) {
-    if (selectedId.value === libraryId) mediaError.value = exception instanceof ApiError ? exception.message : "索引文件加载失败，请重试";
+    if (selectedId.value === libraryId && requestGeneration === mediaRequestGeneration) mediaError.value = exception instanceof ApiError ? exception.message : "索引文件加载失败，请重试";
   } finally {
-    if (selectedId.value === libraryId) mediaLoading.value = false;
+    if (selectedId.value === libraryId && requestGeneration === mediaRequestGeneration) mediaLoading.value = false;
   }
 }
 
 async function loadManifestPage(libraryId = selectedId.value, targetPage = manifestPage.value): Promise<void> {
   if (!libraryId) return;
+  const requestGeneration = ++manifestRequestGeneration;
   manifestLoading.value = true;
   manifestError.value = "";
   try {
     const response = await props.api.strmManifest(libraryId, Math.max(1, targetPage), manifestPageSize.value);
-    if (selectedId.value !== libraryId) return;
+    if (selectedId.value !== libraryId || requestGeneration !== manifestRequestGeneration) return;
     manifest.value = response.items;
     manifestPage.value = Math.max(1, response.page || targetPage);
     manifestPageSize.value = Math.max(1, response.page_size || manifestPageSize.value);
     manifestTotal.value = Math.max(0, response.total || 0);
     manifestTotalPages.value = Math.max(1, response.total_pages || 1);
   } catch (exception) {
-    if (selectedId.value === libraryId) manifestError.value = exception instanceof ApiError ? exception.message : "STRM 清单加载失败，请重试";
+    if (selectedId.value === libraryId && requestGeneration === manifestRequestGeneration) manifestError.value = exception instanceof ApiError ? exception.message : "STRM 清单加载失败，请重试";
   } finally {
-    if (selectedId.value === libraryId) manifestLoading.value = false;
+    if (selectedId.value === libraryId && requestGeneration === manifestRequestGeneration) manifestLoading.value = false;
   }
 }
 
-async function loadOperations(libraryId: string): Promise<void> {
+async function loadOperations(libraryId: string, cursor?: string): Promise<void> {
+  const requestGeneration = ++operationsRequestGeneration;
+  operationsLoading.value = true;
+  operationsError.value = "";
   try {
-    const operationsResponse = await props.api.strmOperations(libraryId);
-    if (selectedId.value !== libraryId) return;
-    operations.value = operationsResponse.items;
-    if (operations.value[0]) latestOperation.value = operations.value[0];
+    const operationsResponse = cursor === undefined
+      ? await props.api.strmOperations(libraryId)
+      : await props.api.strmOperations(libraryId, cursor);
+    if (selectedId.value !== libraryId || requestGeneration !== operationsRequestGeneration) return;
+    const existingIds = new Set(operations.value.map((item) => item.operation_id));
+    operations.value = cursor === undefined
+      ? operationsResponse.items
+      : [...operations.value, ...operationsResponse.items.filter((item) => !existingIds.has(item.operation_id))];
+    operationsNextCursor.value = operationsResponse.next_cursor ?? null;
+    if (cursor === undefined && operations.value[0]) latestOperation.value = operations.value[0];
+    else if (!latestOperation.value && operations.value[0]) latestOperation.value = operations.value[0];
   } catch {
-    if (selectedId.value === libraryId) operationsError.value = "STRM 操作历史加载失败，请重试";
+    if (selectedId.value === libraryId && requestGeneration === operationsRequestGeneration) operationsError.value = "STRM 操作历史加载失败，请重试";
+  } finally {
+    if (selectedId.value === libraryId && requestGeneration === operationsRequestGeneration) operationsLoading.value = false;
   }
 }
 
@@ -273,6 +309,10 @@ async function initializeLibrary() {
 
 function selectLibrary(library: MediaLibraryResponse) {
   operationPollGeneration += 1;
+  operationDetailRequestGeneration += 1;
+  mediaRequestGeneration += 1;
+  manifestRequestGeneration += 1;
+  operationsRequestGeneration += 1;
   if (operationPollTimer !== null) {
     window.clearTimeout(operationPollTimer);
     operationPollTimer = null;
@@ -287,13 +327,20 @@ function selectLibrary(library: MediaLibraryResponse) {
   emptyCleanupIdempotencyKey.value = null;
   pendingCleanup.value = null;
   manifestPage.value = 1;
+  manifest.value = [];
   manifestTotal.value = 0;
   manifestTotalPages.value = 1;
+  media.value = [];
+  mediaNextCursor.value = null;
+  mediaLoading.value = false;
   manifestError.value = "";
+  manifestLoading.value = false;
   mediaError.value = "";
   operationDetailOpen.value = false;
   operationsError.value = "";
+  operationsLoading.value = false;
   operations.value = [];
+  operationsNextCursor.value = null;
   notice.value = "";
   void loadOutputs(library.library_id);
 }
@@ -433,12 +480,17 @@ function operationStatusMessage(
 }
 
 async function refreshLatestOperation() {
-  if (!latestOperation.value) return;
+  const current = latestOperation.value;
+  const libraryId = selectedId.value;
+  if (!current || !libraryId) return;
+  const requestGeneration = ++operationDetailRequestGeneration;
   try {
-    latestOperation.value = await props.api.strmOperation(latestOperation.value.operation_id);
-    notice.value = operationStatusMessage(latestOperation.value);
+    const refreshed = await props.api.strmOperation(current.operation_id);
+    if (selectedId.value !== libraryId || requestGeneration !== operationDetailRequestGeneration || latestOperation.value?.operation_id !== current.operation_id) return;
+    latestOperation.value = refreshed;
+    notice.value = operationStatusMessage(refreshed);
   } catch (exception) {
-    setError(exception, "STRM 操作详情加载失败，请重试");
+    if (selectedId.value === libraryId && requestGeneration === operationDetailRequestGeneration) setError(exception, "STRM 操作详情加载失败，请重试");
   }
 }
 
@@ -773,9 +825,9 @@ onBeforeUnmount(() => {
            <button v-if="emptyCleanupPlan.status === 'needs_review' && emptyCleanupPlan.executable_count" class="danger-button" type="button" :disabled="busy" @click="confirmEmptyDirectoryCleanup"><Check :size="16" />查看摘要并确认回收</button>
            <p v-else-if="emptyCleanupPlan.status === 'needs_review'" class="library-muted">当前没有可执行的受管空目录。</p>
          </section>
-        <section v-if="operationsError || operations.length" class="library-output-section"><div class="library-section-heading"><div><p class="eyebrow">操作历史</p><h3>STRM 操作</h3></div><span v-if="operations.length">{{ operations.length }} 条</span></div><p v-if="operationsError" class="library-operation-history-error" role="alert">{{ operationsError }} <button class="text-button" type="button" @click="retryOutputs">重试</button></p><div v-else class="library-operation-list"><div v-for="operation in operations" :key="operation.operation_id" class="library-operation-row"><span><strong>{{ operationLabels[operation.kind] }}</strong><small>{{ strmOperationStatusLabel(operation) }} · {{ new Date(operation.created_at).toLocaleString() }}</small></span><span>生成 {{ operation.generated }} · 失败 {{ operation.failed }}</span></div></div></section>
-        <section class="library-output-section"><div class="library-section-heading"><div><p class="eyebrow">受管清单</p><h3>STRM 文件</h3></div><span>{{ manifestTotal }} 条</span></div><p v-if="manifestError" class="library-operation-history-error" role="alert">{{ manifestError }} <button class="text-button" type="button" @click="loadManifestPage()">重试</button></p><div v-else-if="manifestLoading && !manifest.length" class="library-output-loading" role="status"><LoaderCircle class="spin" :size="18" />正在加载 STRM 清单</div><div v-else-if="manifest.length" class="library-table-wrap" :class="{ 'library-list-loading': manifestLoading }"><table><thead><tr><th>云端路径</th><th>本地路径</th><th>状态</th></tr></thead><tbody><tr v-for="item in manifest" :key="item.manifest_id"><td>{{ item.cloud_relative_path }}</td><td>{{ item.local_relative_path }}</td><td>{{ manifestStatusLabel(item.status) }}</td></tr></tbody></table></div><p v-else class="library-muted">暂无受管 STRM。完成扫描后可以执行全量生成。</p><PaginationBar :page="manifestPage" :total-pages="manifestTotalPages" :total-results="manifestTotal" :loading="manifestLoading" @page="(page) => loadManifestPage(selectedId, page)" /></section>
-        <section class="library-output-section"><div class="library-section-heading"><div><p class="eyebrow">最近扫描</p><h3>索引文件</h3></div><span>{{ media.length }} 项</span></div><p v-if="mediaError" class="library-operation-history-error" role="alert">{{ mediaError }} <button class="text-button" type="button" @click="selectedId && loadMedia(selectedId)">重试</button></p><div v-else-if="mediaLoading && !media.length" class="library-output-loading" role="status"><LoaderCircle class="spin" :size="18" />正在加载索引文件</div><div v-else-if="media.length" class="library-table-wrap" :class="{ 'library-list-loading': mediaLoading }"><table><thead><tr><th>文件名</th><th>大小</th><th>修改时间</th></tr></thead><tbody><tr v-for="item in media" :key="item.media_id"><td>{{ item.name }}</td><td>{{ formatBytes(item.size_bytes) }}</td><td>{{ item.modified_at ? new Date(item.modified_at).toLocaleString() : "未知" }}</td></tr></tbody></table></div><p v-else class="library-muted">完成一次完整扫描后，这里会显示索引文件。</p></section>
+        <section v-if="operationsError || operations.length || operationsNextCursor !== null || operationsLoading" class="library-output-section"><div class="library-section-heading"><div><p class="eyebrow">操作历史</p><h3>STRM 操作</h3></div><span v-if="operations.length">{{ operations.length }} 条</span></div><p v-if="operationsError" class="library-operation-history-error" role="alert">{{ operationsError }} <button class="text-button" type="button" @click="retryOutputs">重试</button></p><div v-if="operationsLoading && !operations.length" class="library-output-loading" role="status"><LoaderCircle class="spin" :size="18" />正在加载操作历史</div><div v-if="operations.length" class="library-operation-list" :class="{ 'library-list-loading': operationsLoading }"><div v-for="operation in operations" :key="operation.operation_id" class="library-operation-row"><span><strong>{{ operationLabels[operation.kind] }}</strong><small>{{ strmOperationStatusLabel(operation) }} · {{ new Date(operation.created_at).toLocaleString() }}</small></span><span>生成 {{ operation.generated }} · 失败 {{ operation.failed }}</span></div></div><p v-else-if="!operationsError && !operationsLoading" class="library-muted">暂无 STRM 操作记录。</p><button v-if="operationsNextCursor !== null" class="secondary-button" type="button" :disabled="operationsLoading" @click="selectedId && loadOperations(selectedId, operationsNextCursor!)">加载更多操作</button></section>
+        <section class="library-output-section"><div class="library-section-heading"><div><p class="eyebrow">受管清单</p><h3>STRM 文件</h3></div><span>{{ manifestTotal }} 条</span></div><p v-if="manifestError" class="library-operation-history-error" role="alert">{{ manifestError }} <button class="text-button" type="button" @click="loadManifestPage()">重试</button></p><div v-if="manifestLoading && !manifest.length" class="library-output-loading" role="status"><LoaderCircle class="spin" :size="18" />正在加载 STRM 清单</div><div v-if="manifest.length" class="library-table-wrap" :class="{ 'library-list-loading': manifestLoading }"><table><thead><tr><th>云端路径</th><th>本地路径</th><th>状态</th></tr></thead><tbody><tr v-for="item in manifest" :key="item.manifest_id"><td>{{ item.cloud_relative_path }}</td><td>{{ item.local_relative_path }}</td><td>{{ manifestStatusLabel(item.status) }}</td></tr></tbody></table></div><p v-else-if="!manifestError && !manifestLoading" class="library-muted">暂无受管 STRM。完成扫描后可以执行全量生成。</p><PaginationBar :page="manifestPage" :total-pages="manifestTotalPages" :total-results="manifestTotal" :loading="manifestLoading" @page="(page) => loadManifestPage(selectedId, page)" /></section>
+        <section class="library-output-section"><div class="library-section-heading"><div><p class="eyebrow">最近扫描</p><h3>索引文件</h3></div><span>{{ media.length }} 项</span></div><p v-if="mediaError" class="library-operation-history-error" role="alert">{{ mediaError }} <button class="text-button" type="button" @click="selectedId && loadMedia(selectedId, mediaNextCursor ?? undefined)">重试</button></p><div v-if="mediaLoading && !media.length" class="library-output-loading" role="status"><LoaderCircle class="spin" :size="18" />正在加载索引文件</div><div v-if="media.length" class="library-table-wrap" :class="{ 'library-list-loading': mediaLoading }"><table><thead><tr><th>文件名</th><th>大小</th><th>修改时间</th></tr></thead><tbody><tr v-for="item in media" :key="item.media_id"><td>{{ item.name }}</td><td>{{ formatBytes(item.size_bytes) }}</td><td>{{ item.modified_at ? new Date(item.modified_at).toLocaleString() : "未知" }}</td></tr></tbody></table></div><p v-else-if="!mediaError && !mediaLoading" class="library-muted">完成一次完整扫描后，这里会显示索引文件。</p><button v-if="mediaNextCursor !== null" class="secondary-button" type="button" :disabled="mediaLoading" @click="selectedId && loadMedia(selectedId, mediaNextCursor!)">加载更多索引文件</button></section>
       </main>
       <div v-else class="library-empty"><Database :size="24" /><strong>尚未配置库存媒体库</strong><span>下一步：读取服务器配置的 115 根目录，保存配置、验证范围，再完成首次扫描。</span><button class="primary-button" type="button" :disabled="busy" @click="initializeLibrary"><Database :size="16" />初始化并扫描媒体库</button><button class="text-button" type="button" @click="openCapabilitySettings(undefined, 'organization')"><SlidersHorizontal :size="14" />先检查 115 整理设置</button></div>
     </div>
