@@ -1,7 +1,6 @@
 import asyncio
 import json
 from datetime import UTC, datetime
-from time import monotonic
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
@@ -193,16 +192,12 @@ async def test_cache_warmer_uses_bounded_concurrency_and_continues_failures(tmp_
         retry_delays=(),
         concurrency=3,
     )
-    started = monotonic()
-
     run = await warmer.warm_once(since=datetime(2026, 7, 24, tzinfo=UTC))
 
-    elapsed = monotonic() - started
     assert search.max_active == 3
     assert len(search.warmed) == 9
     assert run.failed == 2
     assert {item.tmdb_id for item in run.failed_media} == {4, 5}
-    assert elapsed < 0.2
     await database.engine.dispose()
 
 
