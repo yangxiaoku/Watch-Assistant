@@ -214,9 +214,16 @@ def _scan_http_error(error: LibraryScanOperationError) -> HTTPException:
 
 
 async def _latest_scans(session, library_ids: set[str] | None = None) -> dict[str, LibraryScanRun]:
-    query = select(LibraryScanRun).where(
-        LibraryScanRun.complete.is_(True),
-        LibraryScanRun.state == "completed",
+    query = (
+        select(LibraryScanRun)
+        .join(MediaLibrary, MediaLibrary.id == LibraryScanRun.library_id)
+        .where(
+            LibraryScanRun.complete.is_(True),
+            LibraryScanRun.state == "completed",
+            MediaLibrary.enabled.is_(True),
+            MediaLibrary.scope_verified.is_(True),
+            LibraryScanRun.root_directory_id == MediaLibrary.root_directory_id,
+        )
     )
     if library_ids:
         query = query.where(LibraryScanRun.library_id.in_(library_ids))

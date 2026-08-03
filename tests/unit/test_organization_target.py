@@ -100,7 +100,7 @@ async def test_reads_complete_recursive_catalog_and_ignores_files():
                 terminal=False,
             ),
             ("100", 2): _page(_entry(name="ignored.mkv", file_id="300")),
-            ("200", 1): _page(_entry(name="4K", directory_id="400")),
+            ("200", 1): _page(_entry(name="4K", directory_id="400", parent_id="200")),
             ("400", 1): _page(),
         }
     )
@@ -235,3 +235,61 @@ async def test_rejects_target_file_limit_before_collecting_more_files():
         await read_target_catalog(gateway, "100", max_files=1)
 
     assert error.value.code == "target_file_limit_exceeded"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("entry", "error_code"),
+    (
+        (_entry(name="missing-id"), "target_entry_identity_unverified"),
+        (
+            _entry(name="wrong-parent", file_id="301", parent_id="999"),
+            "target_entry_scope_unverified",
+        ),
+        (
+            LibraryEntry(
+                directory_id=None,
+                file_id=None,
+                parent_id="100",
+                name="missing-directory-id",
+                is_directory=True,
+                size_bytes=None,
+                modified_at=None,
+                pickcode=None,
+            ),
+            "target_entry_identity_unverified",
+        ),
+    ),
+)
+async def test_rejects_target_entries_without_identity_or_scope_evidence(
+    entry, error_code
+):
+    gateway = _DirectoryGateway({("100", 1): _page(entry)})
+
+    with pytest.raises(OrganizationTargetError) as error:
+        await read_target_catalog(gateway, "100")
+
+    assert error.value.code == error_code
+
+
+@pytest.mark.asyncio
+async def test_rejects_duplicate_file_identity_across_target_paths():
+    gateway = _DirectoryGateway(
+        {
+            ("100", 1): _page(
+                _entry(name="Movies", directory_id="200"),
+                _entry(name="Series", directory_id="201"),
+            ),
+            ("200", 1): _page(
+                _entry(name="movie.mkv", file_id="300", parent_id="200")
+            ),
+            ("201", 1): _page(
+                _entry(name="same-file.mkv", file_id="300", parent_id="201")
+            ),
+        }
+    )
+
+    with pytest.raises(OrganizationTargetError) as error:
+        await read_target_catalog(gateway, "100")
+
+    assert error.value.code == "target_file_identity_conflict"

@@ -39,13 +39,20 @@ VALID_OPERATION_ERROR_CODES = frozenset(
         "contract_unverified",
         "lease_lost",
         "local_failure",
+        "organization_lease_required",
         "outcome_unknown",
         "postcondition_mismatch",
+        "approval_required",
+        "permanent_delete_disabled",
         "plan_not_executable",
         "plan_prerequisites_changed",
         "rate_limited",
         "remote_write_failed",
+        "scope_unverified",
+        "target_directory_create_failed",
+        "target_directory_parent_missing",
         "timeout",
+        "write_disabled",
     }
 )
 

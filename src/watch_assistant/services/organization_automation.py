@@ -661,6 +661,10 @@ _STABLE_AUTOMATION_ERROR_CODES = frozenset(
         "target_directory_incomplete",
         "target_directory_parent_missing",
         "target_directory_read_failed",
+        "target_entry_identity_unverified",
+        "target_entry_scope_unverified",
+        "target_entry_type_unverified",
+        "target_file_identity_conflict",
     }
 )
 
@@ -693,6 +697,10 @@ _BLOCKED_MESSAGES_ZH = {
     "target_directory_id_invalid": "归档目录 ID 无效，已阻止整理。",
     "target_directory_incomplete": "归档目录扫描未完成，已阻止整理。",
     "target_directory_read_failed": "读取归档目录失败，115 当前未返回完整目录；已停止本轮整理，请确认账号可访问该目录后重试。",
+    "target_entry_identity_unverified": "归档目录条目缺少可靠 ID，已阻止整理。",
+    "target_entry_scope_unverified": "归档目录条目的父目录证据不一致，已阻止整理。",
+    "target_entry_type_unverified": "归档目录条目类型证据不可靠，已阻止整理。",
+    "target_file_identity_conflict": "归档目录发现重复文件 ID，已阻止整理。",
 }
 
 
@@ -709,7 +717,14 @@ def _phase_for_code(
         return "tmdb"
     if error_code in _EXECUTION_CODES:
         return "execution"
-    if error_code in {"target_directory_read_failed", "target_directory_incomplete"}:
+    if error_code in {
+        "target_directory_read_failed",
+        "target_directory_incomplete",
+        "target_entry_identity_unverified",
+        "target_entry_scope_unverified",
+        "target_entry_type_unverified",
+        "target_file_identity_conflict",
+    }:
         return "directory_read"
     return default
 

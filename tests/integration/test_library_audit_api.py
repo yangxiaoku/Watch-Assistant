@@ -281,6 +281,34 @@ async def test_inventory_rejects_failed_incomplete_and_wrong_scope_snapshots(tmp
 
 
 @pytest.mark.integration
+async def test_media_endpoints_hide_completed_snapshots_after_scope_is_disabled(tmp_path):
+    client, database = await _client(tmp_path)
+    login = await client.post("/api/v1/auth/login", json={"password": WEB_PASSWORD})
+    assert login.status_code == 200
+
+    async with database.session_factory() as session:
+        library = await session.get(MediaLibrary, "library-one")
+        assert library is not None
+        library.enabled = False
+        await session.commit()
+
+    libraries = await client.get("/api/v1/libraries")
+    assert libraries.status_code == 200
+    assert libraries.json()["items"][0]["latest_scan"] is None
+
+    media = await client.get("/api/v1/media", params={"library": "library-one"})
+    assert media.status_code == 200
+    assert media.json()["items"] == []
+
+    detail = await client.get("/api/v1/media/file:file-one")
+    assert detail.status_code == 404
+    assert detail.json()["detail"] == "media_not_found"
+
+    await client.aclose()
+    await database.engine.dispose()
+
+
+@pytest.mark.integration
 async def test_library_scope_not_found_does_not_leak_other_library(tmp_path):
     client, database = await _client(tmp_path)
     login = await client.post("/api/v1/auth/login", json={"password": WEB_PASSWORD})
