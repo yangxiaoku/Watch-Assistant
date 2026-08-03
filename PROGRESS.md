@@ -16,15 +16,15 @@
 ## 2026-08-03 当前基线状态（CI 已通过，生产未验收）
 
 本次执行 `git fetch --all --prune` 后，`git rev-parse origin/codex/publish-main` 返回
-`80a7d4e6a2e17adec30158c3c60b252ebde60c35`（对应合入 [PR #49](https://github.com/yangxiaoku/Watch-Assistant/pull/49)）。
-这是 2026-08-03 的核对快照；first-parent 同时确认 #44-#49 已合入，后续发布必须重新解析，不能引用旧报告中的 commit。
-该 SHA 的 [Verify CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30785412110) 与
-[Systemd Release Package CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30785412085) 均显示完成且成功。
+`a5c38cdbd18499b9f9344dfed19f00fecf37301d`（对应合入 [PR #50](https://github.com/yangxiaoku/Watch-Assistant/pull/50)）。
+这是 2026-08-03 的核对快照；first-parent 同时确认 #44-#50 已合入，后续发布必须重新解析，不能引用旧报告中的 commit。
+该 SHA 的 [Verify CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30791757202) 与
+[Systemd Release Package CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30791757200) 均显示完成且成功。
 CI 成功仅证明离线门禁、Compose/发布包校验和发布脚本 readiness gate 通过，不能证明已部署。
 本轮没有在本地生成 release 包、执行部署或核对生产服务器，因此当前生产版本、运行模式、数据目录和能力开关均未验证。
 
-- #44 `7f675a9`、#45 `cf542bd`、#46 `b4ecd08`、#47 `9d5e30e`、#48 `e1c4d24` 和 #49 `80a7d4e` 已进入当前 first-parent；
-  分别覆盖 P1 审查、Prowlarr/PanSou 只读 readiness、库存/整理范围、STRM 清理/提交门禁、前端工作台验收和发布脚本 readiness gate。
+- #44 `7f675a9`、#45 `cf542bd`、#46 `b4ecd08`、#47 `9d5e30e`、#48 `e1c4d24`、#49 `80a7d4e` 和 #50 `a5c38cd` 已进入当前 first-parent；
+  分别覆盖 P1 审查、Prowlarr/PanSou 只读 readiness、库存/整理范围、STRM 清理/提交门禁、前端工作台验收、发布脚本 readiness gate 和 readiness/可靠性加固。
   这些提交的代码与离线/受管夹具证据不等于生产整理、生产 STRM、播放兼容性、清理或部署验收。
 - Prowlarr 的离线 readiness 由 [PR #19](https://github.com/yangxiaoku/Watch-Assistant/pull/19)、
   [PR #29](https://github.com/yangxiaoku/Watch-Assistant/pull/29) 和 [PR #45](https://github.com/yangxiaoku/Watch-Assistant/pull/45) 加固，契约见
