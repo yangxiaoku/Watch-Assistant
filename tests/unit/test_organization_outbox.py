@@ -372,6 +372,77 @@ async def test_dirty_lease_reclaims_and_retries_with_backoff(tmp_path: Path):
     await database.engine.dispose()
 
 
+@pytest.mark.asyncio
+async def test_expired_generation_completion_cannot_release_old_lease(tmp_path: Path):
+    database = await _database(tmp_path)
+    service, operation, lease = await _claimed(database)
+    await service.finish(
+        operation.operation_id,
+        expected_revision=lease.revision,
+        lease_token=lease.lease_token,
+        status=OrganizationOperationStatus.ORGANIZED,
+        source_directory_id="7000",
+        target_directory_id="8000",
+    )
+    outbox = DirectoryDirtyOutboxService()
+    now = datetime.now(UTC) + timedelta(seconds=1)
+    claimed = await outbox.claim_generation(database.session_factory, now=now)
+    assert claimed is not None
+
+    async with database.session_factory() as session:
+        queue = await session.get(DirectoryDirtyGeneration, claimed.queue_id)
+        event = await session.get(DirectoryDirtyEvent, claimed.event_id)
+        assert queue is not None
+        assert event is not None
+        queue.lease_expires_at = now - timedelta(seconds=1)
+        event.lease_expires_at = now - timedelta(seconds=1)
+        await session.commit()
+
+    assert not await outbox.complete(database.session_factory, claimed, now=now)
+    async with database.session_factory() as session:
+        queue = await session.get(DirectoryDirtyGeneration, claimed.queue_id)
+        event = await session.get(DirectoryDirtyEvent, claimed.event_id)
+        assert queue is not None
+        assert event is not None
+        assert queue.status == "running"
+        assert queue.lease_token == claimed.lease_token
+        assert event.status == "running"
+        assert event.lease_token == claimed.lease_token
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_expired_event_completion_cannot_consume_old_lease(tmp_path: Path):
+    database = await _database(tmp_path)
+    service, operation, lease = await _claimed(database)
+    await service.finish(
+        operation.operation_id,
+        expected_revision=lease.revision,
+        lease_token=lease.lease_token,
+        status=OrganizationOperationStatus.ORGANIZED,
+        source_directory_id="7000",
+        target_directory_id="8000",
+    )
+    outbox = DirectoryDirtyOutboxService()
+    now = datetime.now(UTC) + timedelta(seconds=1)
+    claimed = await outbox.claim_next(database.session_factory, now=now)
+    assert claimed is not None
+
+    async with database.session_factory() as session:
+        event = await session.get(DirectoryDirtyEvent, claimed.event_id)
+        assert event is not None
+        event.lease_expires_at = now - timedelta(seconds=1)
+        await session.commit()
+
+    assert not await outbox.complete(database.session_factory, claimed, now=now)
+    async with database.session_factory() as session:
+        event = await session.get(DirectoryDirtyEvent, claimed.event_id)
+        assert event is not None
+        assert event.status == "running"
+        assert event.lease_token == claimed.lease_token
+    await database.engine.dispose()
+
+
 def test_dirty_event_repr_redacts_identifiers():
     event = DirectoryDirtyEvent(
         id="evt-secret-id",
