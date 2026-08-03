@@ -121,7 +121,10 @@ def test_incomplete_snapshot_never_claims_missing():
     )
 
     assert snapshot.freshness.status is FreshnessStatus.INCOMPLETE
-    assert check_inventory(snapshot, name="Other.2024.1080p.mkv") is InventoryDecision.INDEX_INCOMPLETE
+    assert (
+        check_inventory(snapshot, name="Other.2024.1080p.mkv")
+        is InventoryDecision.INDEX_INCOMPLETE
+    )
 
 
 def test_freshness_has_explicit_unknown_and_stale_states():
@@ -135,6 +138,51 @@ def test_freshness_has_explicit_unknown_and_stale_states():
     assert unknown.status is FreshnessStatus.UNKNOWN
     assert stale.status is FreshnessStatus.STALE
     assert stale.age_seconds == 960
+
+
+@pytest.mark.parametrize(
+    "captured_at",
+    (None, NOW - timedelta(minutes=16)),
+)
+def test_stale_or_unknown_snapshot_never_claims_missing(captured_at):
+    snapshot = build_snapshot(
+        (InventoryFile("one", "Movie.2024.1080p.mkv"),),
+        complete=True,
+        captured_at=captured_at,
+        now=NOW,
+    )
+
+    assert check_inventory(snapshot, name="Other.2024.1080p.mkv") is InventoryDecision.INDEX_INCOMPLETE
+
+
+def test_trusted_version_duplicate_groups_are_exposed():
+    snapshot = build_snapshot(
+        (
+            InventoryFile(
+                "movie-1",
+                "Movie.2024.1080p.WEB-DL.mkv",
+                tmdb_id=7,
+                media_type="movie",
+            ),
+            InventoryFile(
+                "movie-2",
+                "Movie.2024.1080p.WEB-DL.mkv",
+                tmdb_id=7,
+                media_type="movie",
+            ),
+        ),
+        complete=True,
+        captured_at=NOW,
+        now=NOW,
+    )
+
+    version_groups = [
+        group
+        for group in snapshot.duplicate_groups
+        if group.kind is DuplicateKind.VERSION
+    ]
+    assert len(version_groups) == 1
+    assert version_groups[0].object_ids == ("movie-1", "movie-2")
 
 
 def test_api_inventory_requires_a_completed_scoped_snapshot():

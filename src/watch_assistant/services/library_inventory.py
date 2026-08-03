@@ -297,6 +297,7 @@ def find_duplicate_groups(
     items = tuple(identities)
     exact: dict[str, list[str]] = {}
     trusted_media: dict[str, list[str]] = {}
+    trusted_version: dict[str, list[str]] = {}
     candidate_media: dict[str, list[str]] = {}
     for item in items:
         if item.file.content_digest:
@@ -310,6 +311,9 @@ def find_duplicate_groups(
         key = item.identity.key
         if item.identity.tmdb_id is not None:
             trusted_media.setdefault(key, []).append(item.file.object_id)
+            trusted_version.setdefault(_version_identity_key(item), []).append(
+                item.file.object_id
+            )
         elif item.identity.confidence == "candidate":
             candidate_media.setdefault(key, []).append(item.file.object_id)
     groups: list[DuplicateGroup] = []
@@ -330,6 +334,17 @@ def find_duplicate_groups(
                 DuplicateGroup(
                     group_key=_group_key(DuplicateKind.MEDIA, key),
                     kind=DuplicateKind.MEDIA,
+                    identity_key=key,
+                    object_ids=tuple(sorted(object_ids)),
+                    confidence="trusted",
+                )
+            )
+    for key, object_ids in sorted(trusted_version.items()):
+        if len(object_ids) > 1:
+            groups.append(
+                DuplicateGroup(
+                    group_key=_group_key(DuplicateKind.VERSION, key),
+                    kind=DuplicateKind.VERSION,
                     identity_key=key,
                     object_ids=tuple(sorted(object_ids)),
                     confidence="trusted",
@@ -362,7 +377,11 @@ def check_inventory(
     episode_end: int | None = None,
     name: str | None = None,
 ) -> InventoryDecision:
-    if not snapshot.complete or snapshot.freshness.status == FreshnessStatus.INCOMPLETE:
+    if (
+        not snapshot.complete
+        or snapshot.freshness.complete is not True
+        or snapshot.freshness.status is not FreshnessStatus.FRESH
+    ):
         return InventoryDecision.INDEX_INCOMPLETE
     if object_id and any(item.file.object_id == object_id for item in snapshot.files):
         return InventoryDecision.EXACT_DUPLICATE
@@ -428,6 +447,18 @@ def _same_version(item: InventoryIdentity, name: str) -> bool:
         and item.parsed.source == parsed.source
         and item.parsed.video_codec == parsed.video_codec
         and item.parsed.hdr == parsed.hdr
+    )
+
+
+def _version_identity_key(item: InventoryIdentity) -> str:
+    return ":".join(
+        (
+            item.identity.key,
+            f"resolution={item.identity.resolution or '-'}",
+            f"source={item.identity.source or '-'}",
+            f"video_codec={item.identity.video_codec or '-'}",
+            f"hdr={item.identity.hdr or '-'}",
+        )
     )
 
 

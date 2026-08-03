@@ -232,6 +232,8 @@ async def test_live_transport_uses_scope_fixed_payloads_and_receipt_before_verif
         managed_directory_ids=("7000", "8000"),
         scope_confirmed=True,
         live_enabled=True,
+        write_enabled=True,
+        plan_confirmed=True,
         organization_contract=_organization_contract(),
     )
 
@@ -278,6 +280,8 @@ async def test_live_transport_timeout_is_uncertain_and_is_not_retried():
         managed_directory_ids=("7000", "8000"),
         scope_confirmed=True,
         live_enabled=True,
+        write_enabled=True,
+        plan_confirmed=True,
         organization_contract=_organization_contract(),
     )
 
@@ -309,6 +313,8 @@ async def test_live_transport_recycle_uses_one_receipt():
         managed_directory_ids=("7000", "8000"),
         scope_confirmed=True,
         live_enabled=True,
+        write_enabled=True,
+        plan_confirmed=True,
         organization_contract=_organization_contract(),
     )
 
@@ -340,6 +346,8 @@ async def test_live_transport_recycle_rejects_unknown_result_without_retry():
         managed_directory_ids=("7000", "8000"),
         scope_confirmed=True,
         live_enabled=True,
+        write_enabled=True,
+        plan_confirmed=True,
         organization_contract=_organization_contract(),
     )
 
@@ -381,6 +389,28 @@ def test_live_transport_requires_explicit_gate_and_confirmed_scope():
         )
 
 
+@pytest.mark.parametrize(
+    ("gate", "error_code"),
+    (
+        ({}, "write_disabled"),
+        ({"write_enabled": True}, "approval_required"),
+        ({"write_enabled": False, "plan_confirmed": True}, "write_disabled"),
+    ),
+)
+def test_live_transport_requires_explicit_runtime_write_gate(gate, error_code):
+    with pytest.raises(P115OrganizationTransportError, match=error_code):
+        create_live_p115_organization_transport(
+            client=object(),
+            call_executor=_live_call_executor,
+            intents=(_intent(),),
+            managed_directory_ids=("7000", "8000"),
+            scope_confirmed=True,
+            live_enabled=True,
+            organization_contract=_organization_contract(),
+            **gate,
+        )
+
+
 def test_live_transport_rejects_unverified_organization_contract():
     with pytest.raises(P115OrganizationTransportError, match="contract_unverified"):
         create_live_p115_organization_transport(
@@ -390,6 +420,8 @@ def test_live_transport_rejects_unverified_organization_contract():
             managed_directory_ids=("7000", "8000"),
             scope_confirmed=True,
             live_enabled=True,
+            write_enabled=True,
+            plan_confirmed=True,
             organization_contract=P115OrganizationContract(),
         )
 
@@ -401,6 +433,8 @@ def test_live_transport_rejects_unverified_organization_contract():
         managed_directory_ids=("7000", "8000"),
         scope_confirmed=True,
         live_enabled=True,
+        write_enabled=True,
+        plan_confirmed=True,
         organization_contract=contract,
     )
     assert isinstance(transport, LiveP115OrganizationTransport)
