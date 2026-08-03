@@ -54,6 +54,7 @@ class OrganizationDirectoryProvisioner:
         target_root_id: str,
         existing_directories: Mapping[str, str],
         paths: Collection[str],
+        write_enabled: bool = False,
         plan_confirmed: bool = False,
         scope_confirmed: bool = False,
         lease_active: bool = False,
@@ -62,7 +63,7 @@ class OrganizationDirectoryProvisioner:
             raise OrganizationDirectoryProvisionError("organization_lease_required")
         decision = evaluate_organization_write_gate(
             OrganizationWriteGate(
-                write_enabled=True,
+                write_enabled=write_enabled is True,
                 plan_confirmed=plan_confirmed,
                 scope_confirmed=scope_confirmed,
                 contract=self._organization_contract,

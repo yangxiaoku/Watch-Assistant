@@ -631,6 +631,11 @@ def create_app(
                     summary = await application.state.organization_operation_service.get(
                         operation_id
                     )
+                    plan_scope = (
+                        await application.state.organization_operation_service.plan_execution_scope(
+                            operation_id
+                        )
+                    )
                     paths = await application.state.organization_plan_service.plan_target_directory_paths(
                         summary.plan_id
                     )
@@ -668,8 +673,13 @@ def create_app(
                             target_root_id=application.state.organization_target_root_id,
                             existing_directories=catalog.by_path,
                             paths=missing_paths,
-                            plan_confirmed=True,
-                            scope_confirmed=True,
+                            write_enabled=write_enabled,
+                            plan_confirmed=plan_scope is not None,
+                            scope_confirmed=(
+                                plan_scope is not None
+                                and application.state.organization_target_root_id
+                                in plan_scope
+                            ),
                             lease_active=True,
                         )
                     finally:
@@ -682,6 +692,7 @@ def create_app(
                     application.state.organization_cookie_provider,
                     production_root_id=application.state.organization_target_root_id,
                     live_enabled=True,
+                    write_enabled=write_enabled,
                     event_logger=application.state.settings_service,
                     settings_service=application.state.settings_service,
                     organization_contract=organization_contract,

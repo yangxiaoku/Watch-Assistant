@@ -53,6 +53,7 @@ class OrganizationWorker:
         *,
         production_root_id: str,
         live_enabled: bool,
+        write_enabled: bool = False,
         poll_interval_seconds: float = 5.0,
         client_factory: P115ClientFactory | None = None,
         call_executor=None,
@@ -73,6 +74,8 @@ class OrganizationWorker:
         self._operations = operation_service
         self._cookie_provider = cookie_provider
         self._production_root_id = production_root_id
+        self._live_enabled = live_enabled is True
+        self._write_enabled = write_enabled is True
         self._poll_interval_seconds = float(poll_interval_seconds)
         self._client_factory = client_factory or _default_client_factory
         self._call_executor = call_executor or p115_c03_timeout_executor
@@ -110,16 +113,17 @@ class OrganizationWorker:
             await self._finish_failed(lease, "plan_prerequisites_changed")
             return True
 
+        scope_confirmed = self._production_root_id in plan_scope
+        # ``load_execution_steps`` only returns durable plans in the confirmed
+        # ``planned`` state, so its result is the worker's confirmation evidence.
+        plan_confirmed = bool(steps)
         gate = OrganizationWriteGate(
-            write_enabled=True,
-            plan_confirmed=True,
-            scope_confirmed=self._production_root_id in plan_scope,
+            write_enabled=self._write_enabled,
+            plan_confirmed=plan_confirmed,
+            scope_confirmed=scope_confirmed,
             contract=self._organization_contract,
         )
-        required_operations = [WriteOperation.MOVE, WriteOperation.RENAME]
-        if any(step.replacement_object_id is not None for step in steps):
-            required_operations.append(WriteOperation.RECYCLE)
-        for operation in required_operations:
+        for operation in _required_write_operations(steps):
             decision = evaluate_organization_write_gate(gate, operation)
             if not decision.allowed:
                 await self._finish_failed(
@@ -161,8 +165,10 @@ class OrganizationWorker:
                 call_executor=self._call_executor,
                 intents=intents,
                 managed_directory_ids=plan_scope,
-                scope_confirmed=True,
-                live_enabled=True,
+                scope_confirmed=scope_confirmed,
+                live_enabled=self._live_enabled,
+                write_enabled=self._write_enabled,
+                plan_confirmed=plan_confirmed,
                 organization_contract=self._organization_contract,
             )
             executor = OrganizationExecutor(
@@ -263,6 +269,24 @@ class OrganizationWorker:
                 0,
                 0,
             )
+        scope_confirmed = self._production_root_id in plan_scope
+        plan_confirmed = bool(steps)
+        gate = OrganizationWriteGate(
+            write_enabled=self._write_enabled,
+            plan_confirmed=plan_confirmed,
+            scope_confirmed=scope_confirmed,
+            contract=self._organization_contract,
+        )
+        for operation in _required_write_operations(steps):
+            decision = evaluate_organization_write_gate(gate, operation)
+            if not decision.allowed:
+                return OrganizationExecutionResult(
+                    operation_id,
+                    OrganizationExecutionStatus.UNCERTAIN,
+                    decision.error_code or "contract_unverified",
+                    0,
+                    0,
+                )
         client = await self._build_client()
         if client is None:
             return OrganizationExecutionResult(
@@ -278,8 +302,10 @@ class OrganizationWorker:
                 call_executor=self._call_executor,
                 intents=intents,
                 managed_directory_ids=plan_scope,
-                scope_confirmed=True,
-                live_enabled=True,
+                scope_confirmed=scope_confirmed,
+                live_enabled=self._live_enabled,
+                write_enabled=self._write_enabled,
+                plan_confirmed=plan_confirmed,
                 organization_contract=self._organization_contract,
             )
             executor = OrganizationExecutor(
@@ -357,6 +383,13 @@ async def _close_client(client: Any) -> None:
             await result
     except Exception as exc:  # noqa: BLE001 - client cleanup is best effort
         del exc
+
+
+def _required_write_operations(steps) -> tuple[WriteOperation, ...]:
+    operations = [WriteOperation.MOVE, WriteOperation.RENAME]
+    if any(step.replacement_object_id is not None for step in steps):
+        operations.append(WriteOperation.RECYCLE)
+    return tuple(operations)
 
 
 __all__ = ["OrganizationWorker"]
