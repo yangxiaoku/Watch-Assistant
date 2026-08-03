@@ -50,6 +50,10 @@ Cookie 文件或应用内托管设备。分享推送、影视库整理、删除�
   [空目录清理契约测试](tests/contracts/test_empty_directory_cleanup_contract.py)、[组织用户流集成测试](tests/integration/test_organization_user_flow.py)、
   [组织计划单测](tests/unit/test_organization_plan.py)、[库存索引单测](tests/unit/test_library_index.py) 和
   [worker 恢复集成测试](tests/integration/test_worker_recovery.py)。它们只证明代码和受管夹具边界，不证明生产媒体库已配置或已整理。
+- 开发闭环和提速入口见 [开发加速与验收闭环计划](docs/project-plans/2026-08-04-development-acceleration.md)。
+  `scripts/bootstrap_dev.sh --verify` 准备 worktree 依赖并运行离线门禁；
+  `scripts/acceptance_closure.py` 将只读库存、整理预览、受管夹具和临时 STRM 输出统一到一份脱敏证据中。
+  默认不触碰 115 写入口，真实夹具执行必须额外提供人工确认、范围和一次性授权。
 - 发布 manifest、来源、systemd 回退和发布物 smoke 测试只证明发布门禁覆盖；实际生产运行模式、版本、数据目录、能力开关和线上健康状态，
   必须在发布前通过只读核对和 `/api/v1/health` 重新确认。本次未执行服务器核对。
 

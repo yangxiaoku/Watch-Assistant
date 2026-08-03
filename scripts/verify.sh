@@ -4,6 +4,10 @@ set -euo pipefail
 ROOT_DIR="$(git rev-parse --show-toplevel)"
 cd "$ROOT_DIR"
 
+if [[ -n "${WATCH_ASSISTANT_NATIVE_LIBRARY_PATH:-}" ]]; then
+    export DYLD_LIBRARY_PATH="${WATCH_ASSISTANT_NATIVE_LIBRARY_PATH}${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
+fi
+
 # Prefer the checkout under test when the shared worktree virtualenv has an
 # editable install from another checkout.
 export PYTHONPATH="$ROOT_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
