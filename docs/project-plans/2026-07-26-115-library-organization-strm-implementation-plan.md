@@ -12,10 +12,10 @@
 
 2026-08-03 当前核对：唯一发布分支为 `codex/publish-main`；发布前执行 `git fetch --all --prune`，
 再以 `git rev-parse origin/codex/publish-main` 的实际输出作为 commit 身份。本计划不硬编码当前发布 SHA，
-也不从文档推断生产版本；近期 PR #50 和 #51 仅作为 first-parent 历史记录。
+也不从文档推断生产版本；PR #50-#61 仅作为 first-parent 历史记录。
 Verify 与 Systemd Release Package 必须按同一 `head_sha` 重新核对；历史 Actions 结果只证明对应快照的离线门禁、Compose/发布包校验和发布脚本 readiness gate 通过，不证明生产部署。
 当前代码基线包含 PR #30-#43 的既有扫描、STRM、p115 fail-closed、库存/组织、工作台、任务和发布门禁；随后
-PR #44 及后续合入 P1 审查、Prowlarr/PanSou 只读 readiness、库存/整理范围、STRM 清理/提交门禁、前端工作台验收、发布脚本 readiness gate、readiness/可靠性边界和基线文档同步。
+PR #44-#61 依次合入 P1 审查、Prowlarr/PanSou 只读 readiness、库存/整理范围、STRM 清理/提交门禁、前端工作台验收、发布脚本 readiness gate、readiness/可靠性边界、基线文档同步、通知失败矩阵、workflow 证据、任务 worker fencing、p115 整理 readiness、验证证据、STRM 清理 readiness、Prowlarr live readiness 和前端工作台。
 对应代码与离线测试只提高 readiness；REQ-001/REQ-002 仍按总索引和 `BLOCKERS.md` 保持“待验收”；p115 生产远程证据、真实 115 写入、生产媒体库整理、
 STRM 播放/清理、元数据联动和生产验收仍未完成，永久删除保持关闭。Prowlarr 离线契约不等于 live indexer
 可搜索验收；真实来源仍被 Internet Archive 上游 timeout 阻断，不能写成可搜索来源已配置。

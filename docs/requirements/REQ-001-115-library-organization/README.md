@@ -33,7 +33,7 @@
 ## 当前集成验收状态
 
 - 本次核对的发布 commit 必须由 `git fetch --all --prune` 后执行 `git rev-parse origin/codex/publish-main` 动态解析；本文不硬编码当前 SHA。
-  最近合入 PR #50 和 #51 仅作为历史记录。Verify 与 Systemd Release Package 必须按同一 `head_sha` 重新核对，且 CI 不能替代生产部署或真实 115 写入验收。
+  最近合入 PR #50-#61 仅作为历史记录。Verify 与 Systemd Release Package 必须按同一 `head_sha` 重新核对，且 CI 不能替代生产部署或真实 115 写入验收。
 - 当前发布基线已合入 [PR #30](https://github.com/yangxiaoku/Watch-Assistant/pull/30) 的扫描/整理门禁、
   任务关联和中文工作台调整；对应回归见 [扫描范围恢复](../../../tests/integration/test_library_scan_scope_recovery.py)、
   [扫描操作](../../../tests/unit/test_library_scan_operations.py)、[组织工作台单测](../../../frontend/tests/OrganizationWorkbenchView.spec.ts)

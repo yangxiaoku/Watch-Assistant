@@ -13,7 +13,7 @@
 ## 当前发布核对
 
 本次核对的发布 commit 必须由 `git fetch --all --prune` 后执行 `git rev-parse origin/codex/publish-main` 动态解析；本文不硬编码当前 SHA。
-最近合入 PR #50 和 #51 仅作为历史记录。Verify 与 Systemd Release Package 必须按同一 `head_sha` 重新核对；CI 只证明对应快照的代码、配置和发布包门禁通过，不证明已经部署、升级或回滚过。
+最近合入 PR #50-#61 仅作为历史记录。Verify 与 Systemd Release Package 必须按同一 `head_sha` 重新核对；CI 只证明对应快照的代码、配置和发布包门禁通过，不证明已经部署、升级或回滚过。
 本次未核对生产服务器的运行模式、实际版本、数据目录或线上健康状态，需求仍为“待验收”。
 
 ## 1. 一句话定义

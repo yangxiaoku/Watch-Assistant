@@ -55,7 +55,7 @@ docs/requirements/
 
 当前发布核对只认唯一发布分支 `codex/publish-main`。发布前执行 `git fetch --all --prune`，再以
 `git rev-parse origin/codex/publish-main` 的实际输出作为 commit 身份；本文不硬编码当前发布 SHA。
-最近合入的 PR #50、#51、#52 和 #53 仅作为 first-parent 历史记录，不能替代发布前的动态解析；需求状态也不等同于已打包、已部署或已完成生产验收。
+最近合入的 PR #50-#61 仅作为 first-parent 历史记录，不能替代发布前的动态解析；需求状态也不等同于已打包、已部署或已完成生产验收。
 
 Verify 与 Systemd Release Package 必须按同一 `head_sha` 重新核对；历史 Actions 结果只能证明对应快照的离线门禁、Compose/发布包校验和发布脚本 readiness gate，不证明生产部署。
 这些合入记录和离线测试不改变生产整理、真实媒体库、STRM 播放/清理、p115 live
