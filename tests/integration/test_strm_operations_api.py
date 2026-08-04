@@ -9,6 +9,7 @@ import pytest
 from cryptography.fernet import Fernet
 from pwdlib import PasswordHash
 
+from watch_assistant.api.strm import _cleanup_request_fingerprint
 from watch_assistant.app import create_app
 from watch_assistant.crypto import SecretCrypto
 from watch_assistant.db import create_database, initialize_database
@@ -17,7 +18,9 @@ from watch_assistant.library_models import (
     LibraryScanEntry,
     LibraryScanRun,
     MediaLibrary,
+    StrmCleanupPlan,
 )
+from watch_assistant.schemas import StrmCleanupPlanApplyRequest
 from watch_assistant.security import SecurityManager
 from watch_assistant.services.strm_manifest import (
     StrmGenerationSummary,
@@ -445,5 +448,122 @@ async def test_same_idempotency_key_reuses_running_operation_explicitly(
         release.set()
         if first_task is not None and not first_task.done():
             await first_task
+        await client.aclose()
+        await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_applied_cleanup_plan_recovers_failed_idempotent_operation(
+    tmp_path: Path,
+):
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'strm-recovery.db'}")
+    await initialize_database(database.engine)
+    plan_id = "strm_cleanup_recovery"
+    scan_run_id = "scan-recovery"
+    idempotency_key = "cleanup-recovery-key"
+    digest = "a" * 64
+    payload = StrmCleanupPlanApplyRequest(
+        expected_revision=2,
+        digest=digest,
+        confirm=True,
+        idempotency_key=idempotency_key,
+    )
+    async with database.session_factory() as session:
+        session.add(
+            MediaLibrary(
+                id="library-recovery",
+                name="测试媒体库",
+                root_directory_id="1000",
+                scope_verified=True,
+                enabled=True,
+                revision=1,
+            )
+        )
+        await session.flush()
+        session.add(
+            LibraryScanRun(
+                id=scan_run_id,
+                library_id="library-recovery",
+                root_directory_id="1000",
+                idempotency_key="scan-recovery-key",
+                state="completed",
+                complete=True,
+                snapshot_revision=1,
+            )
+        )
+        session.add(
+            StrmCleanupPlan(
+                id=plan_id,
+                library_id="library-recovery",
+                source_scan_run_id=scan_run_id,
+                source_snapshot_revision=1,
+                candidates_json="[]",
+                status="applied",
+                revision=2,
+                expires_at=datetime.now(UTC) + timedelta(hours=1),
+                plan_hash=digest,
+                applied_idempotency_key=idempotency_key,
+                applied_retired=1,
+            )
+        )
+        await session.commit()
+
+    operation_service = StrmOperationService(database.session_factory)
+    operation = await operation_service.create(
+        library_id="library-recovery",
+        source_scan_run_id=scan_run_id,
+        kind=StrmOperationKind.CLEANUP,
+        workflow_id=_cleanup_request_fingerprint(plan_id, payload),
+        idempotency_key=idempotency_key,
+    )
+    running = await operation_service.start(operation.operation_id)
+    lease_owner = await operation_service.get_lease_token(operation.operation_id)
+    assert running.status == "running"
+    assert lease_owner is not None
+    failed = await operation_service.fail(
+        operation.operation_id,
+        error_code="strm_operation_failed",
+        lease_owner=lease_owner,
+    )
+    assert failed.status == "failed"
+
+    password = token_urlsafe(16)
+    password_hash = PasswordHash.recommended()
+    app = create_app(
+        database=database,
+        crypto=SecretCrypto(Fernet.generate_key().decode("ascii")),
+        tmdb_client=_FakeClient(),
+        pansou_client=_FakeClient(),
+        security_manager=SecurityManager(
+            web_password_hash=password_hash.hash(password),
+            script_token_hash=password_hash.hash(token_urlsafe(16)),
+            cookie_secure=False,
+        ),
+        frontend_dir=tmp_path / "missing",
+        strm_full_enabled=True,
+        strm_cleanup_enabled=True,
+        strm_output_root=tmp_path / "strm-output",
+    )
+    client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://app.test"
+    )
+    try:
+        login = await client.post("/api/v1/auth/login", json={"password": password})
+        assert login.status_code == 200
+        headers = {"X-CSRF-Token": login.json()["csrf_token"]}
+        response = await client.post(
+            f"/api/v1/strm-cleanup-plans/{plan_id}/apply",
+            json=payload.model_dump(),
+            headers=headers,
+        )
+
+        assert response.status_code == 200
+        assert response.json()["retired"] == 1
+        assert idempotency_key not in response.text
+        recovered = await operation_service.get(operation.operation_id)
+        assert recovered.status == "succeeded"
+        assert recovered.retired == 1
+        assert recovered.error_code is None
+    finally:
         await client.aclose()
         await database.engine.dispose()

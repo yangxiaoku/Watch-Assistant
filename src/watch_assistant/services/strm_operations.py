@@ -517,6 +517,89 @@ class StrmOperationService:
             await session.refresh(current)
             return _summary(current)
 
+    async def reconcile_cleanup_applied(
+        self, operation_id: str, *, retired: int
+    ) -> StrmOperationSummary:
+        """Close a failed cleanup ledger row after its plan is proven applied.
+
+        The caller must establish the applied-plan proof separately. This method
+        only performs a compare-and-set over terminal cleanup failures, so an
+        active or newly claimed executor cannot be overwritten.
+        """
+
+        _validate_counts(0, 0, 0, 0, retired)
+        _validate_identifier(operation_id, "operation_id", maximum=64)
+        now = datetime.now(UTC)
+        async with self._session_factory() as session:
+            current = await session.get(StrmOperation, operation_id)
+            if current is None:
+                raise StrmOperationNotFound(operation_id)
+            if current.status is StrmOperationStatus.SUCCEEDED:
+                return _summary(current)
+            if current.kind is not StrmOperationKind.CLEANUP or current.status not in {
+                StrmOperationStatus.FAILED,
+                StrmOperationStatus.TIMEOUT,
+                StrmOperationStatus.CANCELLED,
+            }:
+                raise StrmOperationError("strm_operation_not_reconcilable")
+            result = await session.execute(
+                update(StrmOperation)
+                .where(
+                    StrmOperation.id == operation_id,
+                    StrmOperation.kind == StrmOperationKind.CLEANUP,
+                    StrmOperation.status.in_(
+                        (
+                            StrmOperationStatus.FAILED,
+                            StrmOperationStatus.TIMEOUT,
+                            StrmOperationStatus.CANCELLED,
+                        )
+                    ),
+                )
+                .execution_options(synchronize_session=False)
+                .values(
+                    status=StrmOperationStatus.SUCCEEDED,
+                    generated=0,
+                    unchanged=0,
+                    skipped=0,
+                    failed=0,
+                    retired=retired,
+                    error_code=None,
+                    started_at=current.started_at or now,
+                    finished_at=now,
+                    updated_at=now,
+                    lease_owner=None,
+                    lease_expires_at=None,
+                    heartbeat_at=None,
+                )
+            )
+            if result.rowcount != 1:
+                await session.rollback()
+                observed = await session.get(StrmOperation, operation_id)
+                if observed is None:
+                    raise StrmOperationNotFound(operation_id)
+                if observed.status is StrmOperationStatus.SUCCEEDED:
+                    return _summary(observed)
+                raise StrmOperationError("strm_operation_not_reconcilable")
+            try:
+                await session.commit()
+            except Exception:
+                try:
+                    await session.rollback()
+                except Exception:  # noqa: BLE001, S110 - preserve the commit error
+                    pass
+                observed = await self._load_terminal(operation_id)
+                if observed is not None:
+                    return observed
+                raise
+            try:
+                await session.refresh(current)
+            except Exception:
+                observed = await self._load_terminal(operation_id)
+                if observed is not None:
+                    return observed
+                raise
+            return _summary(current)
+
     async def is_cancelled(self, operation_id: str) -> bool:
         """Read the cancellation bit without exposing persisted credentials."""
 

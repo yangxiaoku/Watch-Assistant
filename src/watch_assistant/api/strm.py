@@ -1093,6 +1093,25 @@ async def apply_cleanup_plan(
         } else 422
         raise HTTPException(status_code=status, detail=error.code) from None
     if not acquired:
+        if (
+            current_plan.status == "applied"
+            and current_plan.applied_idempotency_key == payload.idempotency_key
+            and running.status in {"failed", "timeout", "cancelled"}
+        ):
+            try:
+                running = await operations.reconcile_cleanup_applied(
+                    running.operation_id,
+                    retired=current_plan.applied_retired,
+                )
+            except StrmOperationError as error:
+                raise HTTPException(status_code=409, detail=error.code) from None
+            if running.status == "succeeded":
+                return StrmCleanupPlanApplyResponse(
+                    plan=StrmCleanupPlanResponse.model_validate(
+                        current_plan.to_public_dict()
+                    ),
+                    retired=running.retired,
+                )
         if running.status == "succeeded":
             current_plan = await service.get_plan(plan_id)
             return StrmCleanupPlanApplyResponse(
@@ -1405,7 +1424,7 @@ def _cache_validator(request: Request):
 
     async def validate(playback_request, allowed_library_ids):
         if not callable(session_factory):
-            return False
+            return None
         return await validate_current_manifest_scope(
             session_factory, playback_request, allowed_library_ids
         )
