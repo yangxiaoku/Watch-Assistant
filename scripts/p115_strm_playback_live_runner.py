@@ -129,16 +129,9 @@ async def _run(*, root_id: str, file_id: str, cookie_path: Path) -> dict[str, ob
             json={"source_scan_run_id": scan["run_id"]},
         )
         _expect(generated, "generation_failed")
-        manifest = await client.get(
-            "/api/v1/libraries/strm-playback-live/strm-manifest", headers=headers
-        )
-        _expect(manifest, "manifest_failed")
-        items = manifest.json().get("items")
-        if not isinstance(items, list) or len(items) != 1:
-            return _blocked("fixture_manifest_count_invalid")
-        item = items[0]
+        item = await _find_fixture_manifest(client, headers, file_id)
         manifest_id = item.get("manifest_id")
-        if not isinstance(manifest_id, str):
+        if not isinstance(manifest_id, str) or not manifest_id:
             return _blocked("fixture_manifest_invalid")
 
         head = await client.head(
@@ -220,6 +213,51 @@ async def _scan(
         _expect(status, "scan_status_failed")
         body = status.json()
     return body
+
+
+async def _find_fixture_manifest(
+    client: httpx.AsyncClient,
+    headers: Mapping[str, str],
+    file_id: str,
+) -> dict[str, object]:
+    """Select the explicitly authorized file from a multi-file fixture scope."""
+
+    page = 1
+    while page <= 100:
+        response = await client.get(
+            "/api/v1/libraries/strm-playback-live/strm-manifest"
+            f"?page={page}&page_size=100",
+            headers=headers,
+        )
+        _expect(response, "manifest_failed")
+        body = response.json()
+        items = body.get("items") if isinstance(body, dict) else None
+        if not isinstance(items, list):
+            raise AcceptanceError("fixture_manifest_invalid")
+        matches = [
+            item
+            for item in items
+            if isinstance(item, dict) and item.get("cloud_file_id") == file_id
+        ]
+        if len(matches) > 1:
+            raise AcceptanceError("fixture_manifest_duplicate")
+        if matches:
+            return matches[0]
+        total_pages = body.get("total_pages") if isinstance(body, dict) else None
+        if (
+            not isinstance(total_pages, int)
+            or isinstance(total_pages, bool)
+            or total_pages < 0
+        ):
+            raise AcceptanceError("fixture_manifest_pagination_invalid")
+        if total_pages == 0:
+            raise AcceptanceError("fixture_file_not_media")
+        if total_pages < page:
+            raise AcceptanceError("fixture_manifest_pagination_invalid")
+        if page == total_pages:
+            raise AcceptanceError("fixture_file_not_media")
+        page += 1
+    raise AcceptanceError("fixture_manifest_pagination_limit")
 
 
 def _response_public(response: httpx.Response) -> dict[str, object]:
