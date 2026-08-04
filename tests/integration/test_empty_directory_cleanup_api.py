@@ -20,6 +20,7 @@ from watch_assistant.library_models import (
     LibraryScanCheckpoint,
     LibraryScanEntry,
     LibraryScanRun,
+    ManagedDirectoryOwnership,
     MediaLibrary,
 )
 from watch_assistant.security import SecurityManager
@@ -107,6 +108,19 @@ async def test_empty_directory_cleanup_api_is_preview_confirm_idempotent_and_rev
                         "visited": ["100", "200", "300"],
                     }
                 ),
+            )
+        )
+        session.add(
+            ManagedDirectoryOwnership(
+                directory_id="300",
+                library_id="library-one",
+                parent_directory_id="200",
+                name="空目录",
+                relative_path="受管来源/空目录",
+                status="active",
+                revision=1,
+                created_at=now,
+                updated_at=now,
             )
         )
         await session.commit()

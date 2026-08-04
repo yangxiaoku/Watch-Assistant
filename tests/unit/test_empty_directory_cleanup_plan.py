@@ -12,6 +12,7 @@ from watch_assistant.library_models import (
     LibraryScanCheckpoint,
     LibraryScanEntry,
     LibraryScanRun,
+    ManagedDirectoryOwnership,
     MediaLibrary,
 )
 from watch_assistant.models import StrmOperation, StrmOperationKind, StrmOperationStatus
@@ -78,6 +79,19 @@ async def _seed(database, *, snapshot_revision=1, run_id="run-1"):
                         "visited": ["100", "200", "300"],
                     }
                 ),
+            )
+        )
+        session.add(
+            ManagedDirectoryOwnership(
+                directory_id="300",
+                library_id="library-1",
+                parent_directory_id="200",
+                name="空目录",
+                relative_path="受管来源/空目录",
+                status="active",
+                revision=1,
+                created_at=now,
+                updated_at=now,
             )
         )
         await session.commit()
@@ -406,6 +420,11 @@ async def test_empty_directory_plan_blocks_missing_system_created_evidence(tmp_p
     database = await _database(tmp_path)
     try:
         await _seed(database)
+        async with database.session_factory() as session:
+            ownership = await session.get(ManagedDirectoryOwnership, "300")
+            assert ownership is not None
+            ownership.status = "recycled"
+            await session.commit()
         service = EmptyDirectoryCleanupPlanService(database.session_factory)
         plan = await service.create_plan(
             library_id="library-1",

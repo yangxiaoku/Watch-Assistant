@@ -8,7 +8,7 @@ import hmac
 import inspect
 import json
 import uuid
-from collections.abc import Awaitable, Callable, Collection
+from collections.abc import Awaitable, Callable, Collection, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
@@ -21,6 +21,8 @@ from watch_assistant.library_models import (
     LibraryScanCheckpoint,
     LibraryScanEntry,
     LibraryScanRun,
+    ManagedDirectoryOwnership,
+    ManagedDirectoryOwnershipStatus,
     MediaLibrary,
 )
 from watch_assistant.models import StrmOperation, StrmOperationKind, StrmOperationStatus
@@ -30,6 +32,10 @@ from watch_assistant.services.empty_directory_cleanup import (
 from watch_assistant.services.library_index import (
     LibraryIndexError,
     validate_complete_scan_evidence,
+)
+from watch_assistant.services.managed_directory_ownership import (
+    ManagedDirectoryOwnershipError,
+    ManagedDirectoryOwnershipService,
 )
 from watch_assistant.services.strm_manifest import (
     StrmManifestError,
@@ -103,6 +109,7 @@ class EmptyDirectoryCleanupPlanService:
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
         self._session_factory = session_factory
+        self._ownership_service = ManagedDirectoryOwnershipService(session_factory)
 
     async def create_plan(
         self,
@@ -110,7 +117,7 @@ class EmptyDirectoryCleanupPlanService:
         library_id: str,
         source_scan_run_id: str,
         protected_directory_ids: Collection[str] = (),
-        system_created_directory_ids: Collection[str] = (),
+        system_created_directory_ids: Collection[str] | None = None,
         now: datetime | None = None,
     ) -> EmptyDirectoryCleanupPlanView:
         if not _valid_id(library_id) or not _valid_id(source_scan_run_id):
@@ -118,9 +125,9 @@ class EmptyDirectoryCleanupPlanService:
         protected = frozenset(protected_directory_ids)
         if any(not _valid_id(item) for item in protected):
             raise EmptyDirectoryCleanupPlanError("invalid_cleanup_scope")
-        system_created = frozenset(system_created_directory_ids)
-        if any(not _valid_id(item) for item in system_created):
-            raise EmptyDirectoryCleanupPlanError("invalid_cleanup_scope")
+        # Kept as a compatibility-only argument.  Authorization is always
+        # loaded from the durable ownership table below.
+        del system_created_directory_ids
         current_time = _utc(now)
         async with self._session_factory() as session:
             library, run = await self._validated_current_run(
@@ -148,13 +155,23 @@ class EmptyDirectoryCleanupPlanService:
                 ).all()
                 if entry.parent_id is not None
             }
+            ownership = {
+                record.directory_id: record
+                for record in (
+                    await session.scalars(
+                        select(ManagedDirectoryOwnership).where(
+                            ManagedDirectoryOwnership.library_id == library.id
+                        )
+                    )
+                ).all()
+            }
             candidates = [
                 _candidate_from_entry(
                     entry,
                     library.root_directory_id,
                     protected,
                     occupied,
-                    system_created,
+                    ownership,
                 )
                 for entry in sorted(entries, key=lambda item: item.object_id)
             ]
@@ -218,7 +235,7 @@ class EmptyDirectoryCleanupPlanService:
         confirm: bool,
         idempotency_key: str,
         executor: EmptyDirectoryExecutor | None,
-        system_created_directory_ids: Collection[str] = (),
+        system_created_directory_ids: Collection[str] | None = None,
         now: datetime | None = None,
         lease_check: LeaseCheck | None = None,
         operation_id: str | None = None,
@@ -239,9 +256,9 @@ class EmptyDirectoryCleanupPlanService:
             raise EmptyDirectoryCleanupPlanError("empty_directory_cleanup_unavailable")
         if operation_id is not None and lease_check is None:
             raise EmptyDirectoryCleanupPlanError("strm_operation_lease_required")
-        system_created = frozenset(system_created_directory_ids)
-        if any(not _valid_id(item) for item in system_created):
-            raise EmptyDirectoryCleanupPlanError("invalid_cleanup_scope")
+        # Kept as a compatibility-only argument.  Authorization is always
+        # reloaded from the durable ownership table at execution time.
+        del system_created_directory_ids
         current_time = _utc(now)
         await _raise_if_lease_lost(lease_check)
         await self.recover_stale_applying(now=current_time)
@@ -293,6 +310,17 @@ class EmptyDirectoryCleanupPlanService:
                     )
                 ).all()
             } if ids else {}
+            ownership = {
+                record.directory_id: record
+                for record in (
+                    await session.scalars(
+                        select(ManagedDirectoryOwnership).where(
+                            ManagedDirectoryOwnership.library_id == plan.library_id,
+                            ManagedDirectoryOwnership.directory_id.in_(ids),
+                        )
+                    )
+                ).all()
+            } if ids else {}
             occupied = {
                 entry.parent_id
                 for entry in (
@@ -309,13 +337,21 @@ class EmptyDirectoryCleanupPlanService:
                 entry = entries.get(candidate["directory_id"])
                 if (
                     candidate["state"] != "ready"
-                    or candidate["directory_id"] not in system_created
                     or entry is None
                     or entry.parent_id != candidate["parent_id"]
                     or entry.name != candidate["name"]
                     or candidate["directory_id"] in occupied
                 ):
                     raise EmptyDirectoryCleanupPlanError("empty_cleanup_changed")
+                record = ownership.get(candidate["directory_id"])
+                if (
+                    record is None
+                    or record.status != ManagedDirectoryOwnershipStatus.ACTIVE.value
+                    or record.parent_directory_id != candidate["parent_id"]
+                    or record.name != candidate["name"]
+                    or record.relative_path != candidate["path"]
+                ):
+                    raise EmptyDirectoryCleanupPlanError("cleanup_scope_unverified")
 
             fence = _LeaseFence(
                 operation_id,
@@ -383,6 +419,18 @@ class EmptyDirectoryCleanupPlanService:
                     ) from None
                 if result is EmptyDirectoryCleanupStatus.SUCCESS:
                     deleted += 1
+                    try:
+                        await self._ownership_service.mark_recycled(
+                            directory_id=candidate["directory_id"],
+                            library_id=plan.library_id,
+                            parent_directory_id=candidate["parent_id"],
+                            name=candidate["name"],
+                            relative_path=candidate["path"],
+                        )
+                    except ManagedDirectoryOwnershipError:
+                        raise EmptyDirectoryCleanupPlanError(
+                            "cleanup_scope_unverified"
+                        ) from None
                 elif result is EmptyDirectoryCleanupStatus.SKIPPED:
                     raise EmptyDirectoryCleanupPlanError("empty_cleanup_changed")
                 elif result is EmptyDirectoryCleanupStatus.UNCERTAIN:
@@ -699,7 +747,7 @@ def _candidate_from_entry(
     root_directory_id: str,
     protected: Collection[str],
     occupied: Collection[str | None],
-    system_created: Collection[str],
+    ownership: Mapping[str, ManagedDirectoryOwnership],
 ) -> dict[str, str] | None:
     if (
         entry.object_id == root_directory_id
@@ -713,7 +761,7 @@ def _candidate_from_entry(
     state = (
         "ready"
         if (
-            entry.object_id in system_created
+            _owned_entry_matches(entry, ownership.get(entry.object_id))
             and _safe_name(entry.name)
             and _valid_id(entry.parent_id)
             and safe_path
@@ -727,6 +775,19 @@ def _candidate_from_entry(
         "path": path if safe_path else "",
         "state": state,
     }
+
+
+def _owned_entry_matches(
+    entry: LibraryScanEntry, record: ManagedDirectoryOwnership | None
+) -> bool:
+    return bool(
+        record is not None
+        and record.status == ManagedDirectoryOwnershipStatus.ACTIVE.value
+        and record.directory_id == entry.object_id
+        and record.parent_directory_id == entry.parent_id
+        and record.name == entry.name
+        and record.relative_path == (entry.path or "")
+    )
 
 
 def _view(plan: EmptyDirectoryCleanupPlan) -> EmptyDirectoryCleanupPlanView:

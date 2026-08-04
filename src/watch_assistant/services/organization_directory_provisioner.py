@@ -17,6 +17,10 @@ from watch_assistant.adapters.p115_library_write_contract import (
     evaluate_organization_write_gate,
     prepare_mkdir,
 )
+from watch_assistant.services.managed_directory_ownership import (
+    ManagedDirectoryOwnershipError,
+    ManagedDirectoryOwnershipService,
+)
 
 
 class OrganizationDirectoryProvisionError(ValueError):
@@ -37,6 +41,7 @@ class OrganizationDirectoryProvisioner:
         *,
         call_executor: P115C03CallExecutor,
         organization_contract: P115OrganizationContract | None = None,
+        ownership_service: ManagedDirectoryOwnershipService | None = None,
         event_logger: object | None = None,
         timeout_seconds: float = 30.0,
     ) -> None:
@@ -47,12 +52,15 @@ class OrganizationDirectoryProvisioner:
         )
         self._timeout_seconds = timeout_seconds
         self._organization_contract = organization_contract or P115OrganizationContract()
+        self._ownership_service = ownership_service
         self._event_logger = event_logger
 
     async def ensure(
         self,
         *,
         target_root_id: str,
+        library_id: str | None = None,
+        operation_id: str | None = None,
         existing_directories: Mapping[str, str],
         paths: Collection[str],
         write_enabled: bool = False,
@@ -75,6 +83,16 @@ class OrganizationDirectoryProvisioner:
             raise OrganizationDirectoryProvisionError(
                 decision.error_code or "capability_unverified"
             )
+        if (
+            self._ownership_service is None
+            or not isinstance(library_id, str)
+            or not library_id
+            or not isinstance(operation_id, str)
+            or not operation_id
+        ):
+            raise OrganizationDirectoryProvisionError(
+                "directory_ownership_unavailable", uncertain=True
+            )
         directory_ids = dict(existing_directories)
         directory_ids.setdefault("", target_root_id)
         normalized_paths = sorted(
@@ -85,6 +103,7 @@ class OrganizationDirectoryProvisioner:
             },
             key=lambda value: (value.count("/"), value),
         )
+        created_count = 0
         for path in normalized_paths:
             parts = path.split("/")
             parent_path = ""
@@ -131,8 +150,22 @@ class OrganizationDirectoryProvisioner:
                         "target_directory_create_failed", uncertain=True
                     )
                 directory_ids[current_path] = receipt.file_id
+                try:
+                    await self._ownership_service.register_created(
+                        directory_id=receipt.file_id,
+                        library_id=library_id,
+                        parent_directory_id=parent_id,
+                        name=part,
+                        relative_path=current_path,
+                        operation_id=operation_id,
+                    )
+                except ManagedDirectoryOwnershipError:
+                    raise OrganizationDirectoryProvisionError(
+                        "directory_ownership_unrecorded", uncertain=True
+                    ) from None
+                created_count += 1
                 parent_path = current_path
-        await self._log_provisioned(len(normalized_paths))
+        await self._log_provisioned(created_count)
 
     async def _log_provisioned(self, count: int) -> None:
         method = getattr(self._event_logger, "log_event", None)

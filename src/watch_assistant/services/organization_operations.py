@@ -50,6 +50,8 @@ VALID_OPERATION_ERROR_CODES = frozenset(
         "remote_write_failed",
         "scope_unverified",
         "target_directory_create_failed",
+        "directory_ownership_unavailable",
+        "directory_ownership_unrecorded",
         "target_directory_parent_missing",
         "timeout",
         "write_disabled",
