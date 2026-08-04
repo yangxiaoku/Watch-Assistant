@@ -32,7 +32,10 @@ from watch_assistant.services.organization_automation import (
     OrganizationAutomationService,
 )
 from watch_assistant.services.p115_credentials import CookieProvider
-from watch_assistant.services.settings import OrganizationSettingsValidationError
+from watch_assistant.services.settings import (
+    DEFAULT_ORGANIZATION_VIDEO_EXTENSIONS,
+    OrganizationSettingsValidationError,
+)
 
 LIVE_ENV = "WATCH_ASSISTANT_P115_ORGANIZATION_APPLICATION_LIVE"
 
@@ -136,7 +139,7 @@ async def _run(
                 "schedule_enabled": False,
                 "source_directory_ids": [source_id],
                 "target_directory_id": target_id,
-                "video_extensions": ["mp4"],
+                "video_extensions": _default_video_extensions(),
                 "rename_enabled": True,
                 "revision": revision,
             },
@@ -238,6 +241,12 @@ def _configure_preview_scope(app, *, source_id: str, target_id: str) -> None:
     """Mirror the explicitly supplied managed IDs in the temporary app state."""
     app.state.organization_target_root_id = target_id
     app.state.p115_browsed_directory_ids = {source_id, target_id}
+
+
+def _default_video_extensions() -> list[str]:
+    """Keep live preview input aligned with the application's media defaults."""
+
+    return list(DEFAULT_ORGANIZATION_VIDEO_EXTENSIONS)
 
 
 def _stable_id(value: object) -> bool:

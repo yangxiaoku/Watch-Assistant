@@ -113,6 +113,18 @@ class OrganizationSettingsValidationError(ValueError):
 _CID_PATTERN = re.compile(r"^[1-9][0-9]{0,127}$")
 _EXTENSION_PATTERN = re.compile(r"^[a-z0-9][a-z0-9+_-]{0,15}$")
 _DIRECTORY_LABEL_SEGMENT = re.compile(r"^[^\\/:*?\"<>|\r\n]+$")
+DEFAULT_ORGANIZATION_VIDEO_EXTENSIONS = (
+    "mkv",
+    "mp4",
+    "avi",
+    "mov",
+    "ts",
+    "m2ts",
+    "wmv",
+    "flv",
+    "webm",
+)
+
 _ORGANIZATION_DEFAULTS: dict[str, object] = {
     "schedule_enabled": False,
     "scan_interval_minutes": 30,
@@ -122,7 +134,7 @@ _ORGANIZATION_DEFAULTS: dict[str, object] = {
     "target_directory_label": None,
     "push_directory_id": None,
     "push_directory_label": None,
-    "video_extensions": ["mkv", "mp4", "avi", "mov", "ts", "m2ts", "wmv", "flv", "webm"],
+    "video_extensions": list(DEFAULT_ORGANIZATION_VIDEO_EXTENSIONS),
     "metadata_extensions": ["srt", "ass", "ssa", "sub", "vtt", "nfo", "jpg", "jpeg", "png", "webp"],
     "rename_enabled": True,
     "media_probe_enabled": True,
