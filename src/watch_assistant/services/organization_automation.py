@@ -462,7 +462,7 @@ class OrganizationAutomationService:
                     raise OrganizationAutomationError(
                         "gateway_error", phase="directory_read"
                     ) from None
-                if page.state.value != "complete" or page.scan_complete is False:
+                if page.state.value != "complete" or page.scan_complete is not True:
                     raise OrganizationAutomationError(
                         "source_scope_unverified", phase="directory_read"
                     )
