@@ -6,9 +6,9 @@ import pytest
 
 import scripts.acceptance_closure as closure
 from scripts.acceptance_closure import (
-    ClosureInputError,
     PRODUCTION_ACCEPTANCE_ENV,
     PRODUCTION_PYTHON_ENV,
+    ClosureInputError,
     _dry_run,
     _runtime_environment,
     _select_runtime,

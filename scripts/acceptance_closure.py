@@ -184,9 +184,12 @@ def _production_python_input(
     raw_cli_value = getattr(args, "production_python", None)
     cli_value = None if raw_cli_value is None else Path(raw_cli_value)
     environment_value = environment.get(PRODUCTION_PYTHON_ENV)
-    if cli_value is not None and environment_value:
-        if _absolute_path(cli_value) != _absolute_path(Path(environment_value)):
-            raise ClosureInputError("production_python_conflict")
+    if (
+        cli_value is not None
+        and environment_value
+        and _absolute_path(cli_value) != _absolute_path(Path(environment_value))
+    ):
+        raise ClosureInputError("production_python_conflict")
     if cli_value is not None:
         return cli_value, "cli"
     if environment_value:
