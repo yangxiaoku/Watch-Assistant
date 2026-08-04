@@ -38,6 +38,7 @@ from watch_assistant.services.organization_executor import OrganizationTransport
 try:
     from scripts.p115_c03_live_runner import (
         _authorization_matches,
+        _c03_organization_contract,
         _consume_authorization,
         _p115client_timeout_executor,
         _read_cookie,
@@ -45,6 +46,7 @@ try:
 except ModuleNotFoundError:
     from p115_c03_live_runner import (  # type: ignore[no-redef]
         _authorization_matches,
+        _c03_organization_contract,
         _consume_authorization,
         _p115client_timeout_executor,
         _read_cookie,
@@ -234,6 +236,7 @@ async def _execute(
         managed_directory_ids=(root_id, candidate.parent_id),
         scope_confirmed=True,
         live_enabled=True,
+        organization_contract=_c03_organization_contract(),
     )
     source = await transport.read_object(candidate.file_id)
     target = await transport.read_target(candidate.parent_id, target_name)
@@ -267,6 +270,7 @@ async def _execute(
         managed_directory_ids=(root_id, candidate.parent_id),
         scope_confirmed=True,
         live_enabled=True,
+        organization_contract=_c03_organization_contract(),
     )
     restore_source = await restore.read_object(candidate.file_id)
     restore_target = await restore.read_target(candidate.parent_id, candidate.name)

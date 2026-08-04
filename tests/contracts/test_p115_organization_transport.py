@@ -2,6 +2,7 @@ import asyncio
 
 import pytest
 
+from scripts.p115_c03_live_runner import _c03_organization_contract
 from watch_assistant.adapters.p115_c03_fixture_probe import (
     C03DirectoryListing,
     C03RemoteEntry,
@@ -116,6 +117,16 @@ def _organization_contract() -> P115OrganizationContract:
             timeout_enforced=True,
         ),
     )
+
+
+def test_c03_live_contract_covers_the_bounded_fixture_operations():
+    contract = _c03_organization_contract()
+
+    assert contract.verified is True
+    assert contract.timeout_enforced is True
+    assert contract.evidence is not None
+    assert contract.evidence.evidence_id == "c03-fixture-organization-v1"
+    assert contract.supports_read_scope() is True
 
 
 def _transport(**kwargs) -> OfflineP115OrganizationTransport:

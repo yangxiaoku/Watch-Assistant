@@ -28,6 +28,7 @@ try:
         C03_LIVE_ENV,
         C03_MANAGED_FIXTURE_ENV,
         C03_WRITE_ENABLED_ENV,
+        _c03_organization_contract,
         _p115client_timeout_executor,
         _read_cookie,
     )
@@ -37,6 +38,7 @@ except ModuleNotFoundError:
         C03_LIVE_ENV,
         C03_MANAGED_FIXTURE_ENV,
         C03_WRITE_ENABLED_ENV,
+        _c03_organization_contract,
         _p115client_timeout_executor,
         _read_cookie,
     )
@@ -175,6 +177,7 @@ async def _restore_organization(
         managed_directory_ids=(parent_id, temporary_directory.file_id),
         scope_confirmed=True,
         live_enabled=True,
+        organization_contract=_c03_organization_contract(),
     )
     try:
         source = await transport.read_object(candidate.file_id)

@@ -38,6 +38,7 @@ try:
         C03_MANAGED_FIXTURE_ENV,
         C03_WRITE_ENABLED_ENV,
         _authorization_matches,
+        _c03_organization_contract,
         _consume_authorization,
         _p115client_timeout_executor,
         _read_cookie,
@@ -49,6 +50,7 @@ except ModuleNotFoundError:
         C03_MANAGED_FIXTURE_ENV,
         C03_WRITE_ENABLED_ENV,
         _authorization_matches,
+        _c03_organization_contract,
         _consume_authorization,
         _p115client_timeout_executor,
         _read_cookie,
@@ -277,6 +279,7 @@ async def _restore(
         managed_directory_ids=(root_id, candidate.parent_id),
         scope_confirmed=True,
         live_enabled=True,
+        organization_contract=_c03_organization_contract(),
     )
     expected = RemoteObjectState(candidate.file_id, candidate.parent_id, candidate.name)
     current = await transport.read_object(candidate.file_id)

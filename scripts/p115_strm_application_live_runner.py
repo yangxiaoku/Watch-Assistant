@@ -36,9 +36,13 @@ from watch_assistant.security import SecurityManager
 from watch_assistant.services.p115_credentials import CookieProvider
 
 try:
-    from scripts.p115_c03_live_runner import _p115client_timeout_executor
+    from scripts.p115_c03_live_runner import (
+        _c03_organization_contract,
+        _p115client_timeout_executor,
+    )
 except ModuleNotFoundError:
     from p115_c03_live_runner import (  # type: ignore[no-redef]
+        _c03_organization_contract,
         _p115client_timeout_executor,
     )
 
@@ -325,6 +329,7 @@ async def _rename_remote(
         managed_directory_ids=(root_id,),
         scope_confirmed=True,
         live_enabled=True,
+        organization_contract=_c03_organization_contract(),
     )
     before = await transport.read_object(file_id)
     target = await transport.read_target(root_id, target_name)
