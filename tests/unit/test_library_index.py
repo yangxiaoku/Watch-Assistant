@@ -623,6 +623,62 @@ async def test_repeat_snapshot_is_idempotent_and_path_change_uses_stable_identit
 
 
 @pytest.mark.asyncio
+async def test_pickcode_is_persisted_and_is_a_snapshot_change_without_path_change(tmp_path):
+    database = await _database(tmp_path)
+    try:
+        first = await _service(database, _ReadOnlyGateway(1)).scan("pickcode-first")
+        async with database.session_factory() as session:
+            entry = await session.scalar(
+                select(LibraryScanEntry).where(
+                    LibraryScanEntry.scan_run_id == first.run_id,
+                    LibraryScanEntry.object_id == "1000",
+                )
+            )
+            assert entry is not None
+            assert entry.pickcode == SECRET_PICKCODE
+
+        class _ChangedPickcodeGateway(_ReadOnlyGateway):
+            async def list_directory(self, directory_id: str, *, page=1, page_size=100):
+                page_value = await super().list_directory(
+                    directory_id, page=page, page_size=page_size
+                )
+                return replace(
+                    page_value,
+                    items=(
+                        replace(
+                            page_value.items[0],
+                            pickcode="private-pickcode-rotated",
+                        ),
+                    ),
+                )
+
+        changed = await _service(database, _ChangedPickcodeGateway(1)).scan(
+            "pickcode-second"
+        )
+        assert changed.changed_count == 1
+        assert changed.changes[0].path_changed is False
+        async with database.session_factory() as session:
+            diff = await session.scalar(
+                select(LibraryScanDiff).where(
+                    LibraryScanDiff.scan_run_id == changed.run_id
+                )
+            )
+            entry = await session.scalar(
+                select(LibraryScanEntry).where(
+                    LibraryScanEntry.scan_run_id == changed.run_id,
+                    LibraryScanEntry.object_id == "1000",
+                )
+            )
+        assert diff is not None
+        assert diff.change_kind == "changed"
+        assert diff.path_changed is False
+        assert entry is not None
+        assert entry.pickcode == "private-pickcode-rotated"
+    finally:
+        await database.engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_tree_scan_includes_discovered_child_directories(tmp_path):
     database = await _database(tmp_path)
     gateway = _TreeGateway()
@@ -639,6 +695,11 @@ async def test_tree_scan_includes_discovered_child_directories(tmp_path):
         run = await session.get(LibraryScanRun, result.run_id)
         checkpoint = await session.get(LibraryScanCheckpoint, result.run_id)
     assert {entry.object_id for entry in entries} == {"7100", "1000", "1001"}
+    assert {
+        entry.pickcode
+        for entry in entries
+        if entry.object_type == "file"
+    } == {SECRET_PICKCODE}
     assert run is not None
     assert run.expected_total == 3
     assert checkpoint is not None

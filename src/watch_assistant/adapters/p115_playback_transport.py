@@ -27,7 +27,7 @@ P115_PLAYBACK_USER_AGENT = (
 
 
 class P115PlaybackClient(Protocol):
-    def download_url(self, file_id: str, **kwargs: Any) -> object: ...
+    def download_url(self, pickcode: str, **kwargs: Any) -> object: ...
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -50,7 +50,7 @@ P115PlaybackCallExecutor = Callable[..., Any]
 
 class P115PlaybackTransportProtocol(Protocol):
     async def download_url(
-        self, file_id: str, *, timeout_seconds: float
+        self, pickcode: str, *, timeout_seconds: float
     ) -> PlaybackLink: ...
 
 
@@ -70,11 +70,12 @@ class P115FixedPlaybackTransport:
         return "P115FixedPlaybackTransport(methods='download_url')"
 
     async def download_url(
-        self, file_id: str, *, timeout_seconds: float
+        self, pickcode: str, *, timeout_seconds: float
     ) -> PlaybackLink:
         timeout = _positive_timeout(timeout_seconds)
-        if not isinstance(file_id, str) or not file_id.isdigit():
-            raise P115PlaybackTransportUnavailable("invalid_file_id")
+        if not isinstance(pickcode, str) or not pickcode.strip():
+            raise P115PlaybackTransportUnavailable("invalid_pickcode")
+        pickcode = pickcode.strip()
         try:
             value = await asyncio.wait_for(
                 asyncio.to_thread(
@@ -83,7 +84,7 @@ class P115FixedPlaybackTransport:
                         self._client.download_url,
                         user_agent=P115_PLAYBACK_USER_AGENT,
                     ),
-                    file_id,
+                    pickcode,
                     timeout_seconds=timeout,
                 ),
                 timeout=timeout,

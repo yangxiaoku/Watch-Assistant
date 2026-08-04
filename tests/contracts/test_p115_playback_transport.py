@@ -17,10 +17,12 @@ class _Url:
 
 class _Client:
     def __init__(self):
+        self.pickcodes = []
         self.user_agents = []
 
     def download_url(self, pickcode, *, user_agent=None, **kwargs):
-        del pickcode, kwargs
+        del kwargs
+        self.pickcodes.append(pickcode)
         self.user_agents.append(user_agent)
         return _Url()
 
@@ -33,7 +35,8 @@ async def test_playback_transport_requests_and_forwards_verified_user_agent():
         return method(payload, timeout_seconds=timeout_seconds)
 
     transport = P115FixedPlaybackTransport(client, call_executor=executor)
-    link = await transport.download_url("3484457646776387438", timeout_seconds=2)
+    link = await transport.download_url("SYNTHETIC_PROTECTED_VALUE", timeout_seconds=2)
 
+    assert client.pickcodes == ["SYNTHETIC_PROTECTED_VALUE"]
     assert client.user_agents == [P115_PLAYBACK_USER_AGENT]
     assert link.request_headers == (("User-Agent", P115_PLAYBACK_USER_AGENT),)

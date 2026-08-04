@@ -131,6 +131,7 @@ class LibraryScanEntry(Base):
     parent_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     name: Mapped[str] = mapped_column(Text)
     path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    pickcode: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_directory: Mapped[bool] = mapped_column(Boolean)
     size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     modified_at: Mapped[datetime | None] = mapped_column(
