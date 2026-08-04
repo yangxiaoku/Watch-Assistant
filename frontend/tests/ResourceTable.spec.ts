@@ -58,6 +58,25 @@ describe("ResourceTable", () => {
     expect(wrapper.get(".resource-surface").attributes("aria-busy")).toBe("true");
   });
 
+  it("separates resource search loading from pagination loading", () => {
+    const wrapper = mount(ResourceTable, {
+      props: { resources: [], total: 0, resourceSearchLoading: true, onPush: vi.fn() },
+    });
+
+    expect(wrapper.get(".resource-surface").attributes("aria-busy")).toBe("true");
+    expect(wrapper.get('[role="status"]').text()).toContain("正在搜索资源");
+    expect(wrapper.text()).not.toContain("正在加载资源分页");
+  });
+
+  it("does not show an empty state together with a resource error", () => {
+    const wrapper = mount(ResourceTable, {
+      props: { resources: [], resourceError: "资源搜索失败，请重试", onPush: vi.fn() },
+    });
+
+    expect(wrapper.get('[role="alert"]').text()).toContain("资源搜索失败，请重试");
+    expect(wrapper.find(".empty-state").exists()).toBe(false);
+  });
+
   it("preserves unknown content fields and only labels verified sources", () => {
     const wrapper = mount(ResourceTable, {
       props: {

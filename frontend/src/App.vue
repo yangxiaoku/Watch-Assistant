@@ -108,6 +108,7 @@ const inspectionAutoRequestId = ref<number | null>(null);
 const resourceResponse = ref<ResourcePageResponse | null>(null);
 const resourceItemsFallback = ref<ResourceSummary[]>([]);
 const resourceLoading = ref(false);
+const resourceSearchLoading = ref(false);
 const resourceError = ref("");
 const resourcePaginationUnavailable = ref(false);
 const resourcePage = ref(1);
@@ -243,6 +244,7 @@ function clearResourcePagination() {
   resourceResponse.value = null;
   resourceItemsFallback.value = [];
   resourceLoading.value = false;
+  resourceSearchLoading.value = false;
   resourceError.value = "";
   resourcePaginationUnavailable.value = false;
   resourceTotal.value = 0;
@@ -1000,12 +1002,17 @@ async function loadResources(
   resourceSearchAbortController?.abort();
   const controller = new AbortController();
   resourceSearchAbortController = controller;
+  const isCurrentSearch = () => requestId === searchRequestId
+    && resourceSearchAbortController === controller
+    && !controller.signal.aborted
+    && !!result.value
+    && result.value.movie.tmdb_id === id;
   resetInspection();
   detailMediaType.value = mediaType;
   if (clearResult) {
     clearResourcePagination();
   }
-  resourceLoading.value = true;
+  resourceSearchLoading.value = true;
   resourceError.value = "";
   resourceSearchCached = false;
   try {
@@ -1021,7 +1028,7 @@ async function loadResources(
       currentRequestId: () => searchRequestId,
       signal: controller.signal,
     });
-    if (requestId !== searchRequestId || !result.value || result.value.movie.tmdb_id !== id || !response) {
+    if (!isCurrentSearch() || !response) {
       if (requestId !== searchRequestId) reportDetailMetric(requestId, "late_response", "discarded");
       return;
     }
@@ -1049,11 +1056,11 @@ async function loadResources(
     beginResourceSnapshot([], 0, preserveResourceSnapshot);
     void loadResourcePage(initialResourceRoute, "none");
   } catch (exception) {
-    if (controller.signal.aborted) return;
+    if (controller.signal.aborted || resourceSearchAbortController !== controller) return;
     if (exception instanceof ApiError && [404, 405, 501, 503].includes(exception.status)) {
       try {
         const legacy = await api.search(id, mediaType, refresh, mediaType === "tv" ? seasonNumber ?? undefined : undefined);
-        if (requestId !== searchRequestId || !result.value) return;
+        if (!isCurrentSearch()) return;
         result.value = {
           ...result.value,
           movie: legacy.movie,
@@ -1082,7 +1089,10 @@ async function loadResources(
       reportDetailMetric(requestId, "resource_failed", "failed", { errorCode: exception instanceof ApiError ? exception.code : "resource_search_failed", once: true });
     }
   } finally {
-    if (resourceSearchAbortController === controller) resourceSearchAbortController = null;
+    if (resourceSearchAbortController === controller) {
+      resourceSearchAbortController = null;
+      resourceSearchLoading.value = false;
+    }
   }
 }
 
@@ -1562,7 +1572,7 @@ onBeforeUnmount(() => {
       <section v-else-if="loading && !result" class="detail-loading" aria-busy="true"><LoaderCircle class="spin" :size="24" /><strong>正在加载影视资料</strong><span>资源将在资料下方独立加载</span></section>
        <p v-if="result && !pushCapabilities.magnet && !pushCapabilities.share" class="warning-strip">115 推送当前不可用，推送按钮已禁用。</p>
        <p v-else-if="result && pushCapabilities.magnet && !pushCapabilities.share" class="warning-strip">磁力云下载可用，115 分享转存尚未验证</p>
-       <section v-if="result" class="detail-workspace"><MovieView :result="result" :resources="resourceItems" :resource-facets="resourceFacets" :resource-total="resourceTotal" :resource-hidden-total="resourceHiddenTotal" :resource-page="resourcePage" :resource-page-size="resourcePageSize" :resource-total-pages="resourceTotalPages" :resource-kind="resourceKind" :resource-quality="resourceQuality" :resource-query="resourceQuery" :resource-sort="resourceSort" :resource-loading="resourceLoading" :resource-error="resourceError" :source-names="searchSourceNames" :metadata-loading="metadataLoading" :metadata-error="metadataError" :metadata-stale="metadataStale" :pagination-unavailable="resourcePaginationUnavailable" :media-type="detailMediaType" :season-number="selectedSeason" :season-detail="seasonDetail" :season-detail-loading="seasonDetailLoading" :season-detail-error="seasonDetailError" :pushing-id="pushingId" :push-capabilities="pushCapabilities" :favorite="detailFavorite" :inspection-supported="inspectionSupported" :inspection-state="inspectionState" :inspection-completed="inspectionCompleted" :inspection-total="inspectionTotal" :inspection-failed="inspectionFailed" :inspection-error="inspectionError" :inspection-more-available="inspectionMoreAvailable" :inspection-retry-available="inspectionRetryAvailable" :inspection-started="inspectionSeenIds.size > 0" @push="startPush" @favorite="toggleFavorite(result.movie)" @refresh="refreshResources" @retry-metadata="loadMetadata(result.movie.tmdb_id, detailMediaType, result.movie.title === '正在加载影视资料' ? undefined : result.movie)" @season="selectSeason" @inspect-more="inspectMore" @retry-failed="retryFailed" @retry-page="resourcePaginationUnavailable ? () => loadResourcePage(currentResourceRoute(), 'replace') : refreshResources" @page="changeResourcePage" @kind="(value) => changeResourceFilter({ kind: value })" @quality="(value) => changeResourceFilter({ quality: value })" @query="changeResourceQuery" @sort="(value) => changeResourceFilter({ sort: value })" @page-size="(value) => changeResourceFilter({ pageSize: value })" @back="returnToBrowse" /></section>
+       <section v-if="result" class="detail-workspace"><MovieView :result="result" :resources="resourceItems" :resource-facets="resourceFacets" :resource-total="resourceTotal" :resource-hidden-total="resourceHiddenTotal" :resource-page="resourcePage" :resource-page-size="resourcePageSize" :resource-total-pages="resourceTotalPages" :resource-kind="resourceKind" :resource-quality="resourceQuality" :resource-query="resourceQuery" :resource-sort="resourceSort" :resource-loading="resourceLoading" :resource-search-loading="resourceSearchLoading" :resource-error="resourceError" :source-names="searchSourceNames" :metadata-loading="metadataLoading" :metadata-error="metadataError" :metadata-stale="metadataStale" :pagination-unavailable="resourcePaginationUnavailable" :media-type="detailMediaType" :season-number="selectedSeason" :season-detail="seasonDetail" :season-detail-loading="seasonDetailLoading" :season-detail-error="seasonDetailError" :pushing-id="pushingId" :push-capabilities="pushCapabilities" :favorite="detailFavorite" :inspection-supported="inspectionSupported" :inspection-state="inspectionState" :inspection-completed="inspectionCompleted" :inspection-total="inspectionTotal" :inspection-failed="inspectionFailed" :inspection-error="inspectionError" :inspection-more-available="inspectionMoreAvailable" :inspection-retry-available="inspectionRetryAvailable" :inspection-started="inspectionSeenIds.size > 0" @push="startPush" @favorite="toggleFavorite(result.movie)" @refresh="refreshResources" @retry-metadata="loadMetadata(result.movie.tmdb_id, detailMediaType, result.movie.title === '正在加载影视资料' ? undefined : result.movie)" @season="selectSeason" @inspect-more="inspectMore" @retry-failed="retryFailed" @retry-page="resourcePaginationUnavailable ? () => loadResourcePage(currentResourceRoute(), 'replace') : refreshResources" @page="changeResourcePage" @kind="(value) => changeResourceFilter({ kind: value })" @quality="(value) => changeResourceFilter({ quality: value })" @query="changeResourceQuery" @sort="(value) => changeResourceFilter({ sort: value })" @page-size="(value) => changeResourceFilter({ pageSize: value })" @back="returnToBrowse" /></section>
     </template>
     <TaskDrawer :api="api" :tasks="tasks" :open="drawerOpen" @close="drawerOpen = false" @navigate="navigateFromTaskDrawer" @updated="updateTask" @loaded="replaceTasks" />
   </main>

@@ -201,6 +201,44 @@ describe("MovieView seasons", () => {
     expect(withZeroWrapper.get('option[value="0"]').text()).toContain("特别篇");
   });
 
+  it("uses season summary metadata while the detail request is pending", () => {
+    const result = response("tv");
+    result.movie.seasons = [
+      { season_number: 0, name: "", episode_count: 1, air_date: "2010-01-01", poster_path: "/special.jpg" },
+      ...result.movie.seasons,
+    ];
+    const wrapper = mount(MovieView, {
+      props: {
+        result,
+        mediaType: "tv",
+        seasonNumber: 0,
+        seasonDetailLoading: true,
+        pushingId: null,
+        pushCapabilities: { magnet: true, share: true },
+        favorite: false,
+      },
+    });
+
+    expect(wrapper.get('option[value="0"]').text()).toContain("特别篇");
+    expect(wrapper.get(".season-detail-section h2").text()).toBe("特别篇");
+    expect(wrapper.get(".season-detail-meta").text()).toContain("2010-01-01");
+    expect(wrapper.get(".season-detail-meta").text()).toContain("1 集");
+    expect(wrapper.get(".resource-heading-copy h2").text()).toContain("特别篇可用资源");
+    expect(wrapper.get(".detail-poster img").attributes("src")).toContain("/special.jpg");
+
+    const allSeasons = mount(MovieView, {
+      props: {
+        result,
+        mediaType: "tv",
+        seasonNumber: null,
+        pushingId: null,
+        pushCapabilities: { magnet: true, share: true },
+        favorite: false,
+      },
+    });
+    expect(allSeasons.get(".resource-heading-copy h2").text()).toContain("全部季度资源");
+  });
+
   it("shows independent season overview instead of the series overview", () => {
     const result = response("tv");
     result.movie.overview = "剧集总简介，不应冒充季度简介";

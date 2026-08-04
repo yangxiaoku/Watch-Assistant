@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import App from "../src/App.vue";
 import { ApiClient, ApiError } from "../src/api";
+import type { ResourceSearchResponse } from "../src/types";
 
 describe("App capability wiring", () => {
   afterEach(() => {
@@ -204,6 +205,55 @@ describe("App capability wiring", () => {
     releaseRefreshPage?.();
     await flushPromises();
     expect(wrapper.text()).toContain("新资源");
+    wrapper.unmount();
+  });
+
+  it("shows search loading separately and avoids an empty state after search failure", async () => {
+    window.history.replaceState({}, "", "/movie/27205");
+    const metadata = {
+      tmdb_id: 27205,
+      media_type: "movie" as const,
+      title: "测试电影",
+      original_title: "Test Movie",
+      release_year: 2026,
+      overview: null,
+      poster_path: null,
+      genre_ids: [],
+      vote_average: 7.5,
+    };
+    let resolveSearch!: (value: ResourceSearchResponse) => void;
+    const searchPromise = new Promise<ResourceSearchResponse>((resolve) => { resolveSearch = resolve; });
+    vi.spyOn(ApiClient.prototype, "recordMediaDetailMetric").mockResolvedValue(undefined);
+    vi.spyOn(ApiClient.prototype, "health").mockResolvedValue({ status: "ok", release: "test", push_supported: false });
+    vi.spyOn(ApiClient.prototype, "me").mockResolvedValue(undefined);
+    vi.spyOn(ApiClient.prototype, "mediaMetadata").mockResolvedValue(metadata);
+    vi.spyOn(ApiClient.prototype, "startResourceSearch").mockReturnValue(searchPromise);
+
+    const wrapper = mount(App);
+    await flushPromises();
+    expect(wrapper.text()).toContain("正在搜索资源");
+    expect(wrapper.text()).not.toContain("正在加载资源分页");
+
+    resolveSearch({
+      task_id: "resource-search-failed",
+      tmdb_id: 27205,
+      media_type: "movie",
+      season_number: null,
+      status: "failed",
+      snapshot_revision: null,
+      query_plan_version: "v1",
+      selected_season: null,
+      sources: [],
+      warnings: [],
+      cache_age_seconds: null,
+      error_code: "resource_search_failed",
+      created_at: "2026-08-01T00:00:00Z",
+      updated_at: "2026-08-01T00:00:00Z",
+    });
+    await flushPromises();
+
+    expect(wrapper.get(".resource-page-error").text()).toContain("本次操作未完成");
+    expect(wrapper.find(".empty-state").exists()).toBe(false);
     wrapper.unmount();
   });
 });

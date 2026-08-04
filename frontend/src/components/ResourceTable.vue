@@ -10,6 +10,7 @@ import type { ResourceFacets, ResourceKind, ResourceQuality, ResourceSort, Resou
 
 const props = defineProps<{
   resources: ResourceSummary[];
+  heading?: string;
   facets?: ResourceFacets;
   total?: number;
   hiddenTotal?: number;
@@ -22,6 +23,7 @@ const props = defineProps<{
   resourceQuery?: string;
   resourceSort?: ResourceSort;
   resourceLoading?: boolean;
+  resourceSearchLoading?: boolean;
   resourceError?: string;
   paginationUnavailable?: boolean;
   pushingId?: string | null;
@@ -138,18 +140,18 @@ function pushTitle(resource: ResourceSummary): string {
   return "推送到 115";
 }
 function pageRequest(target: number) {
-  if (props.resourceLoading) return;
+  if (props.resourceLoading || props.resourceSearchLoading) return;
   const safeTarget = Math.max(1, Math.min(totalPages.value, target));
   if (safeTarget !== page.value) emit("page", safeTarget);
 }
 </script>
 
 <template>
-  <section class="resource-surface" :aria-busy="resourceLoading ? 'true' : 'false'">
+  <section class="resource-surface" :aria-busy="resourceLoading || resourceSearchLoading ? 'true' : 'false'">
     <div class="resource-toolbar">
       <div class="resource-heading-copy">
         <p class="eyebrow">资源分页</p>
-        <h2>可用资源 <span>{{ total }}</span></h2><p v-if="hiddenTotal" class="resource-hidden-count">已隐藏 {{ hiddenTotal }} 条</p>
+        <h2>{{ heading ?? '可用资源' }} <span>{{ total }}</span></h2><p v-if="hiddenTotal" class="resource-hidden-count">已隐藏 {{ hiddenTotal }} 条</p>
         <p v-if="sourceSummary" class="resource-source-summary">{{ sourceSummary }}</p>
         <p v-if="inspectionState === 'running'" class="inspection-progress" role="status">检测中 {{ inspectionCompleted ?? 0 }} / {{ inspectionTotal ?? 0 }} 条磁力<span v-if="inspectionFailed"> · 失败 {{ inspectionFailed }} 条</span></p>
         <p v-else-if="inspectionState === 'completed'" class="inspection-progress success" role="status">检测完成 · {{ inspectionCompleted ?? 0 }} / {{ inspectionTotal ?? 0 }}<span v-if="inspectionFailed"> · 失败 {{ inspectionFailed }} 条</span></p>
@@ -173,7 +175,7 @@ function pageRequest(target: number) {
     </div>
     <p v-if="paginationUnavailable" class="resource-page-notice" role="status">{{ resourceError }}</p>
     <p v-else-if="resourceError" class="resource-page-error" role="alert">{{ resourceError }} <button class="text-button" type="button" @click="emit('retryPage')">重试</button></p>
-    <div v-if="resources.length" class="resource-table-wrap" :class="{ 'resource-list-loading': resourceLoading }">
+    <div v-if="resources.length" class="resource-table-wrap" :class="{ 'resource-list-loading': resourceLoading || resourceSearchLoading }">
       <table class="resource-table">
         <thead><tr><th>资源名称</th><th>质量</th><th>大小</th><th>做种</th><th>内容检测</th><th>来源 / 时间</th><th>推送</th></tr></thead>
         <tbody>
@@ -189,7 +191,7 @@ function pageRequest(target: number) {
         </tbody>
       </table>
     </div>
-    <div v-if="resources.length" class="resource-cards" :class="{ 'resource-list-loading': resourceLoading }">
+    <div v-if="resources.length" class="resource-cards" :class="{ 'resource-list-loading': resourceLoading || resourceSearchLoading }">
       <article v-for="resource in resources" :key="resource.resource_id" class="resource-card">
         <div class="card-heading"><span class="kind-label">{{ resource.kind === 'magnet' ? '磁力' : '115 分享' }}</span><strong class="source-badge">{{ resourceSourceLabel(resource) }}</strong></div>
         <h3 class="resource-card-title">{{ resource.name }}</h3><details class="source-evidence"><summary>{{ resourceSourceCount(resource) }} 个来源</summary><span>{{ resourceSourceEvidence(resource) }}</span></details>
@@ -199,11 +201,12 @@ function pageRequest(target: number) {
         <PushButton :busy="pushingId === resource.resource_id" :disabled="!canPush(resource)" :title="pushTitle(resource)" @push="emit('push', resource)" />
       </article>
     </div>
+    <div v-else-if="resourceSearchLoading" class="resource-loading-local" role="status"><LoaderCircle class="spin" :size="18" />正在搜索资源</div>
     <div v-else-if="resourceLoading" class="resource-loading-local" role="status"><LoaderCircle class="spin" :size="18" />正在加载资源分页</div>
-    <div v-else class="empty-state">当前没有资源</div>
+    <div v-else-if="!resourceError || paginationUnavailable" class="empty-state">当前没有资源</div>
     <nav v-if="!paginationUnavailable && totalPages > 1" class="resource-pagination" aria-label="资源分页">
       <span>第 {{ page }} / {{ totalPages }} 页</span>
-      <div><button type="button" aria-label="第一页" :disabled="resourceLoading || page <= 1" @click="pageRequest(1)"><ChevronFirst :size="15" /></button><button type="button" aria-label="上一页" :disabled="resourceLoading || page <= 1" @click="pageRequest(page - 1)"><ChevronLeft :size="15" /></button><button type="button" aria-label="下一页" :disabled="resourceLoading || page >= totalPages" @click="pageRequest(page + 1)"><ChevronRight :size="15" /></button><button type="button" aria-label="最后一页" :disabled="resourceLoading || page >= totalPages" @click="pageRequest(totalPages)"><ChevronLast :size="15" /></button></div>
+      <div><button type="button" aria-label="第一页" :disabled="resourceLoading || resourceSearchLoading || page <= 1" @click="pageRequest(1)"><ChevronFirst :size="15" /></button><button type="button" aria-label="上一页" :disabled="resourceLoading || resourceSearchLoading || page <= 1" @click="pageRequest(page - 1)"><ChevronLeft :size="15" /></button><button type="button" aria-label="下一页" :disabled="resourceLoading || resourceSearchLoading || page >= totalPages" @click="pageRequest(page + 1)"><ChevronRight :size="15" /></button><button type="button" aria-label="最后一页" :disabled="resourceLoading || resourceSearchLoading || page >= totalPages" @click="pageRequest(totalPages)"><ChevronLast :size="15" /></button></div>
     </nav>
   </section>
 </template>

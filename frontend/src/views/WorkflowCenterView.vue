@@ -26,6 +26,8 @@ const page = ref(1);
 const pageSize = 20;
 const total = ref(0);
 const pendingAction = ref<"approve" | "reject" | "cancel" | null>(null);
+let workflowListRequestId = 0;
+let workflowDetailRequestId = 0;
 
 const statusLabels: Record<WorkflowStatus, string> = {
   in_progress: "处理中",
@@ -120,6 +122,7 @@ const workflowCanCancel = computed(() => {
 });
 
 async function loadWorkflows(targetPage = page.value) {
+  const requestId = ++workflowListRequestId;
   loading.value = true;
   error.value = "";
   try {
@@ -131,6 +134,7 @@ async function loadWorkflows(targetPage = page.value) {
       page: targetPage,
       pageSize,
     });
+    if (requestId !== workflowListRequestId) return;
     items.value = response.items;
     page.value = Math.max(1, response.page || targetPage);
     total.value = Math.max(0, response.total || 0);
@@ -139,9 +143,10 @@ async function loadWorkflows(targetPage = page.value) {
       if (refreshed) selected.value = refreshed;
     }
   } catch (exception) {
+    if (requestId !== workflowListRequestId) return;
     error.value = exception instanceof ApiError ? exception.message : "任务中心暂时无法加载";
   } finally {
-    loading.value = false;
+    if (requestId === workflowListRequestId) loading.value = false;
   }
 }
 
@@ -158,19 +163,29 @@ function goToPage(targetPage: number): void {
 }
 
 async function selectWorkflow(workflow: WorkflowResponse) {
+  const requestId = ++workflowDetailRequestId;
   selected.value = workflow;
   detailLoading.value = true;
   detailError.value = "";
   try {
-    selected.value = await props.api.workflow(workflow.id);
+    const response = await props.api.workflow(workflow.id);
+    if (requestId !== workflowDetailRequestId) return;
+    selected.value = response;
   } catch (exception) {
+    if (requestId !== workflowDetailRequestId) return;
     detailError.value = exception instanceof ApiError ? exception.message : "任务详情暂时无法加载";
   } finally {
-    detailLoading.value = false;
+    if (requestId === workflowDetailRequestId) detailLoading.value = false;
   }
 }
 
-function clearSelection() { selected.value = null; detailError.value = ""; actionError.value = ""; }
+function clearSelection() {
+  workflowDetailRequestId += 1;
+  selected.value = null;
+  detailLoading.value = false;
+  detailError.value = "";
+  actionError.value = "";
+}
 
 function requestApproval(decision: "approve" | "reject"): void {
   if (!selected.value || actionLoading.value) return;
