@@ -575,6 +575,39 @@ async def test_migrations_run_in_order_and_skip_applied_ids(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_library_scan_pickcode_migration_is_forward_and_idempotent(tmp_path):
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'legacy-library.db'}")
+    migration = next(
+        migration
+        for migration in MIGRATIONS
+        if migration.id == "063_library_scan_pickcode"
+    )
+    async with database.engine.begin() as connection:
+        await connection.execute(
+            text(
+                "CREATE TABLE library_scan_entries ("
+                "scan_run_id VARCHAR(64) NOT NULL, "
+                "object_type VARCHAR(16) NOT NULL, "
+                "object_id VARCHAR(128) NOT NULL, "
+                "parent_id VARCHAR(128), name TEXT NOT NULL, path TEXT, "
+                "is_directory BOOLEAN NOT NULL, size_bytes BIGINT, "
+                "modified_at DATETIME, "
+                "PRIMARY KEY (scan_run_id, object_type, object_id))"
+            )
+        )
+        await connection.run_sync(lambda sync: run_migrations(sync, (migration,)))
+        await connection.run_sync(lambda sync: run_migrations(sync, (migration,)))
+        columns = await connection.run_sync(
+            lambda sync: {
+                column["name"]
+                for column in inspect(sync).get_columns("library_scan_entries")
+            }
+        )
+    assert "pickcode" in columns
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_audit_schema_compatibility_migration_preserves_legacy_columns(tmp_path):
     database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'audit-legacy.db'}")
     async with database.engine.begin() as connection:

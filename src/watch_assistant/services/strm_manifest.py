@@ -910,7 +910,7 @@ class StrmManifestService:
                 library_id=library_id,
                 cloud_file_id=entry.object_id,
                 cloud_directory_id=entry.parent_id,
-                pickcode=None,
+                pickcode=entry.pickcode,
                 cloud_relative_path=cloud_path,
                 local_relative_path=local_path,
                 size_bytes=entry.size_bytes,
@@ -924,6 +924,13 @@ class StrmManifestService:
         else:
             old_path = manifest.local_relative_path
         content = f"{prefix}{quote(manifest.manifest_id, safe='')}\n".encode()
+        existing_target = _read_target(root, local_path)
+        if (
+            existing_target is not None
+            and old_path != local_path
+            and existing_target != content
+        ):
+            raise StrmManifestError("managed_file_changed")
         await fence.assert_current(session)
         written, mutation = _write_with_undo(root, local_path, content)
         if mutation is not None:
@@ -936,6 +943,7 @@ class StrmManifestService:
                 mutations.append(mutation)
             await fence.assert_current(session)
         manifest.cloud_directory_id = entry.parent_id
+        manifest.pickcode = entry.pickcode
         manifest.cloud_relative_path = cloud_path
         manifest.local_relative_path = local_path
         manifest.size_bytes = entry.size_bytes

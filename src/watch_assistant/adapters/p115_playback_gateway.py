@@ -92,16 +92,19 @@ class P115LivePlaybackGateway(P115PlaybackGateway):
                 or not library.enabled
                 or not library.scope_verified
                 or (allowed and library.id not in allowed)
+                or not isinstance(manifest.cloud_file_id, str)
                 or not manifest.cloud_file_id.isdigit()
+                or not isinstance(manifest.pickcode, str)
+                or not manifest.pickcode.strip()
             ):
                 return DynamicLinkOutcome(
                     PlaybackStatus.NOT_FOUND, "manifest_out_of_scope"
                 )
-            file_id = manifest.cloud_file_id
+            pickcode = manifest.pickcode.strip()
 
         try:
             async with self._semaphore:
-                link = await self._download_link(file_id)
+                link = await self._download_link(pickcode)
         except asyncio.CancelledError:
             raise
         except TimeoutError:
@@ -117,11 +120,11 @@ class P115LivePlaybackGateway(P115PlaybackGateway):
             request_headers=link.request_headers,
         )
 
-    async def _download_link(self, file_id: str):
+    async def _download_link(self, pickcode: str):
         transport = await self._get_transport()
         return await asyncio.wait_for(
             transport.download_url(
-                file_id, timeout_seconds=self._remaining_timeout()
+                pickcode, timeout_seconds=self._remaining_timeout()
             ),
             timeout=self._remaining_timeout(),
         )

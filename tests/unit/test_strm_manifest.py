@@ -77,6 +77,7 @@ async def _database(tmp_path: Path, *, include_second_video: bool = False):
                 path="Show/Episode.mkv",
                 is_directory=False,
                 size_bytes=100,
+                pickcode="protected-episode-pickcode",
             ),
             LibraryScanEntry(
                 scan_run_id="scan-strm",
@@ -153,6 +154,10 @@ async def test_generation_is_bounded_to_complete_scan_and_idempotent(tmp_path: P
             content
             == f"http://127.0.0.1:8115/api/v1/strm/play/{items[0].manifest_id}\n"
         )
+        async with database.session_factory() as session:
+            manifest = await session.get(StrmManifestEntry, items[0].manifest_id)
+        assert manifest is not None
+        assert manifest.pickcode == "protected-episode-pickcode"
         assert "pickcode" not in content.lower()
         assert "token" not in content.lower()
         assert "cookie" not in content.lower()
@@ -579,6 +584,34 @@ async def test_generation_rejects_local_path_collision(tmp_path: Path):
         await database.engine.dispose()
 
 
+async def test_generation_does_not_overwrite_unmanaged_existing_strm(tmp_path: Path):
+    database = await _database(tmp_path)
+    target = tmp_path / "output/Show/Episode.strm"
+    original_content = b"user-owned content\n"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(original_content)
+    try:
+        summary = await StrmManifestService(database.session_factory).generate(
+            "library-strm",
+            source_scan_run_id="scan-strm",
+            output_root=tmp_path / "output",
+            playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+        )
+
+        assert summary.generated == 0
+        assert summary.failed == 1
+        assert target.read_bytes() == original_content
+        async with database.session_factory() as session:
+            manifest = await session.scalar(
+                select(StrmManifestEntry).where(
+                    StrmManifestEntry.cloud_file_id == "100"
+                )
+            )
+            assert manifest is None
+    finally:
+        await database.engine.dispose()
+
+
 async def test_cleanup_plan_is_persistent_read_only_and_idempotent(tmp_path: Path):
     database = await _database(tmp_path)
     try:
@@ -636,6 +669,40 @@ async def test_cleanup_plan_marks_user_modified_strm_blocked(tmp_path: Path):
         assert plan.executable_count == 0
         assert plan.blocked_count == 1
         assert (tmp_path / "output/Show/Episode.strm").read_text() == "user content\n"
+    finally:
+        await database.engine.dispose()
+
+
+async def test_incremental_does_not_overwrite_unmanaged_renamed_target(tmp_path: Path):
+    database = await _database(tmp_path)
+    try:
+        service = StrmManifestService(database.session_factory)
+        await service.generate(
+            "library-strm",
+            source_scan_run_id="scan-strm",
+            output_root=tmp_path / "output",
+            playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+        )
+        target = tmp_path / "output/Show/Episode-renamed.strm"
+        original_content = b"user-owned content\n"
+        target.write_bytes(original_content)
+        await _add_changed_scan(database)
+
+        summary = await service.incremental(
+            "library-strm",
+            source_scan_run_id="scan-strm-2",
+            output_root=tmp_path / "output",
+            playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+        )
+
+        assert summary.generated == 1
+        assert summary.failed == 1
+        assert target.read_bytes() == original_content
+        assert (tmp_path / "output/Show/Episode.strm").exists()
+        items, total = await service.list_current("library-strm")
+        assert total == 2
+        renamed = next(item for item in items if item.cloud_file_id == "100")
+        assert renamed.local_relative_path == "Show/Episode.strm"
     finally:
         await database.engine.dispose()
 
@@ -1551,6 +1618,7 @@ async def _add_changed_scan(database) -> None:
                     path="Show/Episode-renamed.mkv",
                     is_directory=False,
                     size_bytes=101,
+                    pickcode="protected-episode-pickcode-rotated",
                 ),
                 LibraryScanEntry(
                     scan_run_id="scan-strm-2",
@@ -1775,9 +1843,17 @@ async def test_incremental_reconciles_only_complete_scan_diffs(tmp_path: Path):
                     StrmManifestEntry.cloud_file_id == "102"
                 )
             )
+            updated = await session.scalar(
+                select(StrmManifestEntry).where(
+                    StrmManifestEntry.cloud_file_id == "100",
+                    StrmManifestEntry.is_current.is_(True),
+                )
+            )
             assert retired is not None
             assert retired.is_current is False
             assert retired.status == "retired"
+            assert updated is not None
+            assert updated.pickcode == "protected-episode-pickcode-rotated"
     finally:
         await database.engine.dispose()
 

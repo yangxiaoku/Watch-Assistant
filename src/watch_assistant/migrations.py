@@ -137,6 +137,7 @@ def _create_library_index_tables(connection: Connection) -> None:
                 parent_id VARCHAR(128),
                 name TEXT NOT NULL,
                 path TEXT,
+                pickcode TEXT,
                 is_directory BOOLEAN NOT NULL,
                 size_bytes BIGINT,
                 modified_at DATETIME,
@@ -1030,6 +1031,20 @@ def _add_task_target_directory(connection: Connection) -> None:
     )
 
 
+def _add_library_scan_pickcode(connection: Connection) -> None:
+    """Persist the protected playback identity on library scan snapshots."""
+
+    if not inspect(connection).has_table("library_scan_entries"):
+        return
+    columns = {
+        item["name"] for item in inspect(connection).get_columns("library_scan_entries")
+    }
+    if "pickcode" not in columns:
+        connection.execute(
+            text("ALTER TABLE library_scan_entries ADD COLUMN pickcode TEXT")
+        )
+
+
 def _add_task_lease_token(connection: Connection) -> None:
     """Add a fencing token so an expired worker cannot write back later."""
 
@@ -1119,6 +1134,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration("060_workflow_evidence", _create_workflow_evidence_table),
     Migration("061_library_scan_mode_evidence", _invalidate_legacy_library_scan_modes),
     Migration("062_task_lease_fencing", _add_task_lease_token),
+    Migration("063_library_scan_pickcode", _add_library_scan_pickcode),
 )
 
 

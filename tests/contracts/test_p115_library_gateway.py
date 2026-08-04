@@ -117,7 +117,7 @@ def _gateway(
 
 
 @pytest.mark.asyncio
-async def test_verified_fs_files_page_maps_entries_without_pickcode_or_path_leaks():
+async def test_verified_fs_files_page_maps_pickcode_without_path_or_repr_leaks():
     client = _FsFilesClient((_page([_file()]),))
     gateway, source, factory_calls = _gateway(client)
 
@@ -126,7 +126,7 @@ async def test_verified_fs_files_page_maps_entries_without_pickcode_or_path_leak
     assert result.scan_complete is True
     assert result.terminal is True
     assert result.has_more is False
-    assert result.items[0].pickcode is None
+    assert result.items[0].pickcode == "SYNTHETIC_PICKCODE_SECRET"
     assert result.items[0].path is None
     assert client.calls == [
         {
@@ -266,7 +266,7 @@ class _DetailClient(_FsFilesClient):
 
 
 @pytest.mark.asyncio
-async def test_fs_info_maps_verified_file_detail_without_pickcode_or_path():
+async def test_fs_info_maps_verified_file_detail_without_path_or_repr_leaks():
     client = _DetailClient(
         {
             "state": True,
@@ -289,7 +289,7 @@ async def test_fs_info_maps_verified_file_detail_without_pickcode_or_path():
     assert client.detail_calls == [{"fid": "101"}]
     assert result.file_id == "101"
     assert result.parent_id == "7"
-    assert result.pickcode is None
+    assert result.pickcode == "SYNTHETIC_PICKCODE_SECRET"
     assert result.path is None
     rendered = repr(result)
     assert "secret-file-name.mkv" not in rendered
@@ -316,6 +316,7 @@ async def test_fs_info_uses_previously_observed_identity_when_response_omits_it(
     assert result.file_id == "101"
     assert result.parent_id == "7"
     assert result.modified_at is None
+    assert result.pickcode == "SYNTHETIC_PICKCODE_SECRET"
 
 
 @pytest.mark.asyncio

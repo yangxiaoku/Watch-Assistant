@@ -354,6 +354,7 @@ def _parse_entry(
     size = _single_nonnegative_int(
         record, ("size_bytes", "size", "s", "fs", "file_size")
     )
+    pickcode = _optional_pickcode(record, error_code="entry_unverified")
     normalized = {
         "is_directory": is_directory,
         "name": name,
@@ -361,8 +362,7 @@ def _parse_entry(
         "file_id": file_id,
         "parent_id": parent_id,
         "size": size,
-        # Listing pickcodes are deliberately not trusted or propagated here.
-        "pickcode": None,
+        "pickcode": pickcode,
     }
     return parse_library_entry(normalized)
 
@@ -418,6 +418,9 @@ def _parse_detail(
         and response_parent_id != observed_parent_id
     ):
         raise P115ReadOnlyGatewayError("detail_unverified")
+    pickcode = _optional_pickcode(detail, error_code="detail_unverified")
+    if pickcode is None and observed_entry is not None:
+        pickcode = observed_entry.pickcode
     normalized = {
         "is_directory": is_directory,
         "name": name,
@@ -430,8 +433,7 @@ def _parse_detail(
         "modified_at": _optional_timestamp(
             detail, ("modified_at", "user_utime", "ptime", "t", "te")
         ),
-        # Detail pickcodes and paths are outside this Phase 1 gateway boundary.
-        "pickcode": None,
+        "pickcode": pickcode,
         "path": None,
     }
     try:
@@ -474,6 +476,18 @@ def _single_text(record: Mapping[str, Any], names: tuple[str, ...]) -> str | Non
     if not values or any(value != values[0] for value in values[1:]):
         return None
     return values[0]
+
+
+def _optional_pickcode(
+    record: Mapping[str, Any], *, error_code: str
+) -> str | None:
+    names = ("pickcode", "pick_code")
+    value = _single_text(record, names)
+    if _contains_any(record, names) and value is None and any(
+        record[name] is not None for name in names if name in record
+    ):
+        raise P115ReadOnlyGatewayError(error_code)
+    return value
 
 
 def _single_id(
