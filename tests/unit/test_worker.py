@@ -61,6 +61,28 @@ class _ShutdownRenewalFailureService:
         return False
 
 
+class _DelayedRenewalService:
+    def __init__(self, delay: float):
+        self.delay = delay
+        self.renew_started = asyncio.Event()
+        self.renew_completed = False
+        self.renew_cancelled = False
+
+    async def is_lease_active(self, _lease):
+        return True
+
+    async def renew(self, _lease, *, lease_duration):
+        del lease_duration
+        self.renew_started.set()
+        try:
+            await asyncio.sleep(self.delay)
+        except asyncio.CancelledError:
+            self.renew_cancelled = True
+            raise
+        self.renew_completed = True
+        return True
+
+
 def _lease() -> TaskLease:
     return TaskLease(
         task_id="task-fixture",
@@ -123,3 +145,19 @@ async def test_external_call_discards_result_when_shutdown_renewal_fails():
 
     with pytest.raises(_LeaseClaimLost):
         await worker._run_external_call(_lease(), operation)
+
+
+@pytest.mark.asyncio
+async def test_external_call_waits_for_slow_live_renewal_before_returning_result():
+    worker = object.__new__(TaskWorker)
+    worker._lease_seconds = 0.3
+    renewal = _DelayedRenewalService(0.12)
+    worker._tasks = renewal
+
+    async def operation():
+        await renewal.renew_started.wait()
+        return "result"
+
+    assert await worker._run_external_call(_lease(), operation) == "result"
+    assert renewal.renew_completed is True
+    assert renewal.renew_cancelled is False

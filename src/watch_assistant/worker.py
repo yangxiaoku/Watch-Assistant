@@ -450,7 +450,10 @@ class TaskWorker:
         failure_event: asyncio.Event,
     ) -> None:
         interval = max(min(self._lease_seconds / 3, 30.0), 0.01)
-        renew_timeout = max(min(interval, 5.0), 0.05)
+        # A SQLite commit can outlive one heartbeat interval under runner load.
+        # Keep the timeout inside the lease budget; the renewal predicate still
+        # rejects a claim that expires while the database call is in flight.
+        renew_timeout = max(min(self._lease_seconds / 2, 5.0), 0.05)
         while not stop_event.is_set():
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=interval)
