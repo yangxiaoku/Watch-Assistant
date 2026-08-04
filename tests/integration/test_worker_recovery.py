@@ -523,6 +523,102 @@ async def test_stale_worker_cannot_renew_or_finalize_after_expired_claim_takeove
 
 
 @pytest.mark.integration
+async def test_submission_terminal_write_is_fenced_again_if_local_finalize_is_slow(
+    tmp_path, monkeypatch
+):
+    database = await _database(tmp_path)
+    crypto = SecretCrypto(Fernet.generate_key().decode("ascii"))
+    await _add_resource(database, crypto)
+    service = TaskService(database.session_factory)
+    workflow_service = WorkflowService(database.session_factory)
+    workflow = await workflow_service.create(
+        WorkflowCreateRequest(
+            media_type="movie", tmdb_id=27205, resource_id="res_magnet"
+        )
+    )
+    for stage in (WorkflowStageName.INSPECTION, WorkflowStageName.APPROVAL):
+        await workflow_service.patch_stage(
+            workflow.id,
+            stage,
+            WorkflowStagePatch(status=WorkflowStageStatus.SUCCEEDED),
+        )
+    task, _ = await service.create("res_magnet", workflow_id=workflow.id)
+    lease = await service.claim_next(
+        owner="slow-finalizer",
+        lease_duration=timedelta(milliseconds=30),
+    )
+    assert lease is not None
+
+    async def slow_record(*args, **kwargs):
+        evidence = await record_evidence(*args, **kwargs)
+        await asyncio.sleep(0.08)
+        return evidence
+
+    monkeypatch.setattr(
+        "watch_assistant.services.tasks.record_evidence", slow_record
+    )
+
+    finished = await service.finish_submission(
+        lease,
+        SubmissionResult(status=RemoteStatus.ACCEPTED, remote_ref="remote-slow"),
+    )
+
+    assert finished is None
+    stored = await service.get(task.id)
+    assert stored is not None
+    assert stored.state is TaskState.SUBMITTING
+    assert stored.remote_ref is None
+    assert stored.lease_owner == "slow-finalizer"
+    assert stored.lease_token == lease.lease_token
+    assert await service.evidence(task.id) == []
+    workflow_state = await workflow_service.get(workflow.id)
+    push = next(
+        stage for stage in workflow_state.stages if stage.stage is WorkflowStageName.PUSH
+    )
+    assert push.status is WorkflowStageStatus.RUNNING
+    await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_recovery_terminal_write_is_fenced_again_if_local_finalize_is_slow(
+    tmp_path, monkeypatch
+):
+    database = await _database(tmp_path)
+    crypto = SecretCrypto(Fernet.generate_key().decode("ascii"))
+    await _add_resource(database, crypto)
+    service = TaskService(database.session_factory)
+    task, _ = await service.create("res_magnet")
+    lease = await service.claim_next(
+        owner="slow-recovery-finalizer",
+        lease_duration=timedelta(milliseconds=30),
+    )
+    assert lease is not None
+
+    async def slow_apply(session, claimed_task, remote_status, **kwargs):
+        del session, remote_status, kwargs
+        claimed_task.state = TaskState.SUBMITTED
+        await asyncio.sleep(0.08)
+
+    monkeypatch.setattr(
+        "watch_assistant.services.tasks.apply_remote_status", slow_apply
+    )
+
+    finished = await service.finish_recovery(
+        lease,
+        RemoteStatus.ACCEPTED,
+    )
+
+    assert finished is None
+    stored = await service.get(task.id)
+    assert stored is not None
+    assert stored.state is TaskState.SUBMITTING
+    assert stored.remote_ref is None
+    assert stored.lease_owner == "slow-recovery-finalizer"
+    assert stored.lease_token == lease.lease_token
+    await database.engine.dispose()
+
+
+@pytest.mark.integration
 async def test_reusing_available_task_advances_new_workflow_availability(tmp_path):
     database = await _database(tmp_path)
     crypto = SecretCrypto(Fernet.generate_key().decode("ascii"))
