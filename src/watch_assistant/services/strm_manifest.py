@@ -32,7 +32,6 @@ from watch_assistant.services.library_index import (
 )
 from watch_assistant.services.strm_scope import (
     active_strm_operation_id,
-    has_newer_unsettled_scan,
     normalize_playback_url_prefix,
     source_snapshot_is_current,
 )
@@ -837,16 +836,12 @@ class StrmManifestService:
             or run.snapshot_revision is None
         ):
             raise StrmManifestError("source_snapshot_not_ready")
-        latest = await session.scalar(
-            select(func.max(LibraryScanRun.snapshot_revision)).where(
-                LibraryScanRun.library_id == library_id,
-                LibraryScanRun.complete.is_(True),
-                LibraryScanRun.state == "completed",
-            )
-        )
-        if latest != run.snapshot_revision:
-            raise StrmManifestError("source_snapshot_not_current")
-        if await has_newer_unsettled_scan(session, run):
+        if not await source_snapshot_is_current(
+            session,
+            library_id=library_id,
+            source_scan_run_id=run.id,
+            source_snapshot_revision=run.snapshot_revision,
+        ):
             raise StrmManifestError("source_snapshot_not_current")
         checkpoint = await session.get(LibraryScanCheckpoint, run.id)
         entries = list(

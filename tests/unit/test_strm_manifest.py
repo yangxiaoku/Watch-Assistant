@@ -343,6 +343,104 @@ async def test_generation_requires_complete_current_scan(tmp_path: Path):
         await database.engine.dispose()
 
 
+async def test_strm_consumers_reject_ambiguous_current_snapshot_revision(
+    tmp_path: Path,
+):
+    database = await _database(tmp_path)
+    output_root = tmp_path / "output"
+    output_root.mkdir()
+    try:
+        async with database.session_factory() as session:
+            source = await session.get(LibraryScanRun, "scan-strm")
+            checkpoint = await session.get(LibraryScanCheckpoint, "scan-strm")
+            entries = list(
+                (
+                    await session.scalars(
+                        select(LibraryScanEntry).where(
+                            LibraryScanEntry.scan_run_id == "scan-strm"
+                        )
+                    )
+                ).all()
+            )
+            assert source is not None
+            assert checkpoint is not None
+            duplicate = LibraryScanRun(
+                id="scan-strm-duplicate",
+                library_id=source.library_id,
+                root_directory_id=source.root_directory_id,
+                idempotency_key="scan-strm-duplicate-key",
+                scan_mode=source.scan_mode,
+                max_directories=source.max_directories,
+                state=source.state,
+                complete=source.complete,
+                snapshot_revision=source.snapshot_revision,
+                expected_page_count=source.expected_page_count,
+                expected_total=source.expected_total,
+                pages_read=source.pages_read,
+                items_seen=source.items_seen,
+            )
+            session.add(duplicate)
+            await session.flush()
+            session.add(
+                LibraryScanCheckpoint(
+                    scan_run_id=duplicate.id,
+                    page=checkpoint.page,
+                    items_seen=checkpoint.items_seen,
+                    cursor_json=checkpoint.cursor_json,
+                )
+            )
+            session.add_all(
+                [
+                    LibraryScanEntry(
+                        scan_run_id=duplicate.id,
+                        object_type=entry.object_type,
+                        object_id=entry.object_id,
+                        parent_id=entry.parent_id,
+                        name=entry.name,
+                        path=entry.path,
+                        pickcode=entry.pickcode,
+                        is_directory=entry.is_directory,
+                        size_bytes=entry.size_bytes,
+                        modified_at=entry.modified_at,
+                    )
+                    for entry in entries
+                ]
+            )
+            await session.commit()
+
+        manifest = StrmManifestService(database.session_factory)
+        with pytest.raises(StrmManifestError, match="source_snapshot_not_current"):
+            await manifest.generate(
+                "library-strm",
+                source_scan_run_id="scan-strm",
+                output_root=output_root,
+                playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+            )
+        with pytest.raises(StrmManifestError, match="source_snapshot_not_current"):
+            await manifest.incremental(
+                "library-strm",
+                source_scan_run_id="scan-strm",
+                output_root=output_root,
+                playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+            )
+        with pytest.raises(StrmCleanupPlanError, match="source_snapshot_not_current"):
+            await StrmCleanupPlanService(database.session_factory).create_plan(
+                library_id="library-strm",
+                source_scan_run_id="scan-strm",
+                output_root=output_root,
+                playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+            )
+        with pytest.raises(StrmVerificationError, match="source_snapshot_not_current"):
+            await StrmVerificationService(database.session_factory).verify(
+                library_id="library-strm",
+                source_scan_run_id="scan-strm",
+                output_root=output_root,
+                playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+            )
+    finally:
+        await database.engine.dispose()
+
+
 async def test_generation_rejects_complete_snapshot_with_broken_tree_evidence(
     tmp_path: Path,
 ):

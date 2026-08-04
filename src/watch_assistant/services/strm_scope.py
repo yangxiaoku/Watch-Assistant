@@ -82,7 +82,32 @@ async def source_snapshot_is_current(
     )
     if latest_revision != source_snapshot_revision:
         return False
+    if not await current_snapshot_is_unique(
+        session,
+        library_id=library_id,
+        snapshot_revision=source_snapshot_revision,
+    ):
+        return False
     return not await has_newer_unsettled_scan(session, source_run)
+
+
+async def current_snapshot_is_unique(
+    session: AsyncSession,
+    *,
+    library_id: str,
+    snapshot_revision: int,
+) -> bool:
+    """Return false when concurrent completion produced an ambiguous revision."""
+
+    count = await session.scalar(
+        select(func.count(LibraryScanRun.id)).where(
+            LibraryScanRun.library_id == library_id,
+            LibraryScanRun.complete.is_(True),
+            LibraryScanRun.state == "completed",
+            LibraryScanRun.snapshot_revision == snapshot_revision,
+        )
+    )
+    return count == 1
 
 
 async def active_strm_operation_id(
@@ -131,6 +156,7 @@ def normalize_playback_url_prefix(value: object) -> str:
 
 __all__ = [
     "active_strm_operation_id",
+    "current_snapshot_is_unique",
     "has_newer_unsettled_scan",
     "normalize_playback_url_prefix",
     "source_snapshot_is_current",
