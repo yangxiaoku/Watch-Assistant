@@ -2,6 +2,10 @@ import asyncio
 
 import pytest
 
+from watch_assistant.adapters.p115_c03_fixture_probe import (
+    C03DirectoryListing,
+    C03RemoteEntry,
+)
 from watch_assistant.adapters.p115_library_write_contract import (
     OrganizationContractEvidence,
     OrganizationWriteCapability,
@@ -261,6 +265,128 @@ async def test_live_transport_uses_scope_fixed_payloads_and_receipt_before_verif
     ]
     assert client.calls[3][1] == {"fid": "100", "pid": "8000"}
     assert client.calls[4][1] == {"files_new_name[100]": "after.mkv"}
+
+
+@pytest.mark.asyncio
+async def test_live_transport_reads_replacement_across_the_frozen_scope():
+    client = _LiveFakeP115Client(
+        {
+            "fs_info": [],
+            "fs_files": [
+                _file_page("100", "7000", "before.mkv"),
+                _empty_page(),
+            ],
+            "fs_move": [],
+            "fs_rename": [],
+            "fs_delete": [],
+        }
+    )
+    transport = create_live_p115_organization_transport(
+        client=client,
+        call_executor=_live_call_executor,
+        intents=(_intent(),),
+        managed_directory_ids=("7000", "8000"),
+        scope_confirmed=True,
+        live_enabled=True,
+        read_only=True,
+        organization_contract=_organization_contract(),
+    )
+
+    observed = await transport.read_object_in_scope("100", ("7000", "8000"))
+
+    assert observed == RemoteObjectState("100", "7000", "before.mkv")
+    assert [call[0] for call in client.calls] == ["fs_files", "fs_files"]
+    assert [call[1]["cid"] for call in client.calls] == ["7000", "8000"]
+
+
+@pytest.mark.asyncio
+async def test_live_transport_returns_missing_for_absent_object_in_complete_scope():
+    client = _LiveFakeP115Client(
+        {
+            "fs_info": [],
+            "fs_files": [_empty_page(), _empty_page()],
+            "fs_move": [],
+            "fs_rename": [],
+            "fs_delete": [],
+        }
+    )
+    transport = create_live_p115_organization_transport(
+        client=client,
+        call_executor=_live_call_executor,
+        intents=(_intent(),),
+        managed_directory_ids=("7000", "8000"),
+        scope_confirmed=True,
+        live_enabled=True,
+        read_only=True,
+        organization_contract=_organization_contract(),
+    )
+
+    assert await transport.read_object_in_scope("100", ("7000", "8000")) is None
+
+
+@pytest.mark.asyncio
+async def test_live_transport_rejects_scope_outside_managed_directories():
+    client = _LiveFakeP115Client(
+        {
+            "fs_info": [],
+            "fs_files": [],
+            "fs_move": [],
+            "fs_rename": [],
+            "fs_delete": [],
+        }
+    )
+    transport = create_live_p115_organization_transport(
+        client=client,
+        call_executor=_live_call_executor,
+        intents=(_intent(),),
+        managed_directory_ids=("7000", "8000"),
+        scope_confirmed=True,
+        live_enabled=True,
+        read_only=True,
+        organization_contract=_organization_contract(),
+    )
+
+    with pytest.raises(P115OrganizationTransportError) as error:
+        await transport.read_object_in_scope("100", ("7000", "9000"))
+
+    assert error.value.code == "scope_unverified"
+    assert client.calls == []
+
+
+@pytest.mark.asyncio
+async def test_live_transport_rejects_non_boolean_complete_listing():
+    client = _LiveFakeP115Client(
+        {
+            "fs_info": [],
+            "fs_files": [],
+            "fs_move": [],
+            "fs_rename": [],
+            "fs_delete": [],
+        }
+    )
+    transport = create_live_p115_organization_transport(
+        client=client,
+        call_executor=_live_call_executor,
+        intents=(_intent(),),
+        managed_directory_ids=("7000", "8000"),
+        scope_confirmed=True,
+        live_enabled=True,
+        read_only=True,
+        organization_contract=_organization_contract(),
+    )
+
+    async def malformed_listing(parent_id, *, timeout_seconds):
+        return C03DirectoryListing(
+            (C03RemoteEntry("100", parent_id, "before.mkv", False),),
+            complete=1,
+        )
+
+    transport._c03.list_children = malformed_listing
+
+    with pytest.raises(P115OrganizationTransportError) as error:
+        await transport.read_target("8000", "after.mkv")
+
+    assert error.value.code == "observation_unverified"
 
 
 @pytest.mark.asyncio

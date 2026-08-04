@@ -261,6 +261,38 @@ async def test_explicit_terminal_is_a_valid_completion_boundary():
 
 
 @pytest.mark.asyncio
+async def test_scope_verification_requires_explicit_terminal_completion():
+    page = replace(
+        _fixture("page_1.json"), page_count=None, total=2, terminal=True
+    )
+    result = await scan_directory(
+        FakeP115LibraryGateway({1: page}),
+        "directory",
+        require_explicit_complete=True,
+    )
+
+    assert result.state is ScanState.PARTIAL
+    assert result.scan_complete is False
+    assert result.error_code == "scan_complete_unverified"
+
+
+@pytest.mark.asyncio
+async def test_scan_directory_enforces_bounded_page_verification():
+    first = _fixture("page_1.json")
+    second = _fixture("page_2.json")
+    result = await scan_directory(
+        FakeP115LibraryGateway({1: first, 2: second}),
+        "directory",
+        max_pages=1,
+    )
+
+    assert result.state is ScanState.PARTIAL
+    assert result.scan_complete is False
+    assert result.error_code == "page_limit_exceeded"
+    assert result.pages_read == 1
+
+
+@pytest.mark.asyncio
 async def test_gateway_exception_returns_partial_without_exception_details():
     gateway = FakeP115LibraryGateway(
         {1: _fixture("page_1.json"), 2: _fixture("page_2.json")}, fail_page=2

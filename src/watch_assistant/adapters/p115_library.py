@@ -352,6 +352,8 @@ async def scan_directory(
     directory_id: str,
     *,
     page_size: int = 100,
+    max_pages: int | None = None,
+    require_explicit_complete: bool = False,
 ) -> ScanResult:
     """Read pages until complete, conservatively marking anomalies partial."""
 
@@ -361,6 +363,14 @@ async def scan_directory(
         or not 1 <= page_size <= 1000
     ):
         raise ValueError("invalid_page_size")
+    if max_pages is not None and (
+        not isinstance(max_pages, int)
+        or isinstance(max_pages, bool)
+        or not 1 <= max_pages <= 100_000
+    ):
+        raise ValueError("invalid_max_pages")
+    if not isinstance(require_explicit_complete, bool):
+        raise TypeError("invalid_explicit_completion")
     items: list[LibraryEntry] = []
     seen_pages: set[int] = set()
     seen_entries: set[tuple[str | None, str | None]] = set()
@@ -371,6 +381,16 @@ async def scan_directory(
     pages_read = 0
     page_number = 1
     while True:
+        if max_pages is not None and pages_read >= max_pages:
+            return ScanResult(
+                tuple(items),
+                pages_read,
+                expected_page_count,
+                total,
+                False,
+                ScanState.PARTIAL,
+                "page_limit_exceeded",
+            )
         try:
             page = await gateway.list_directory(
                 directory_id, page=page_number, page_size=page_size
@@ -523,6 +543,16 @@ async def scan_directory(
                     False,
                     ScanState.PARTIAL,
                     "total_mismatch",
+                )
+            if require_explicit_complete and page.scan_complete is not True:
+                return ScanResult(
+                    tuple(items),
+                    pages_read,
+                    expected_page_count,
+                    total,
+                    False,
+                    ScanState.PARTIAL,
+                    "scan_complete_unverified",
                 )
             return ScanResult(
                 tuple(items),

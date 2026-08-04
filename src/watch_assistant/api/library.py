@@ -9,8 +9,13 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import select
 
-from watch_assistant.adapters.p115_library import LibraryContractError
+from watch_assistant.adapters.p115_library import (
+    LibraryContractError,
+    ScanState,
+    scan_directory,
+)
 from watch_assistant.adapters.p115_library_gateway import (
+    MAX_SCOPE_VERIFICATION_PAGES,
     P115ReadOnlyDirectoryGateway,
     P115ReadOnlyGatewayError,
 )
@@ -366,8 +371,12 @@ async def verify_library_scope(
                 request_timeout_seconds=30,
             )
             try:
-                page = await gateway.list_directory(
-                    library.root_directory_id, page=1, page_size=1
+                scan = await scan_directory(
+                    gateway,
+                    library.root_directory_id,
+                    page_size=1,
+                    max_pages=MAX_SCOPE_VERIFICATION_PAGES,
+                    require_explicit_complete=True,
                 )
             except (
                 LibraryContractError,
@@ -378,7 +387,7 @@ async def verify_library_scope(
                 raise HTTPException(
                     status_code=503, detail="library_scope_verification_failed"
                 ) from None
-            if page.state.value != "complete" or page.scan_complete is not True:
+            if scan.state is not ScanState.COMPLETE or scan.scan_complete is not True:
                 raise HTTPException(
                     status_code=503, detail="library_scope_verification_failed"
                 )

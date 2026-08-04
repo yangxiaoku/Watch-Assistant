@@ -85,6 +85,18 @@ class FakeOrganizationTransport:
 
         return RemoteObjectState(object_id, parent_id, name)
 
+    async def read_object_in_scope(self, object_id, parent_ids):
+        self.calls.append(("read_object_in_scope", object_id, tuple(parent_ids)))
+        state = self.states.get(object_id)
+        if state is None or state[0] not in set(parent_ids):
+            return None
+        parent_id, name = state
+        from watch_assistant.services.organization_execution_contract import (
+            RemoteObjectState,
+        )
+
+        return RemoteObjectState(object_id, parent_id, name)
+
     async def read_target(self, parent_id, name):
         self.calls.append(("read_target", parent_id, name))
         for object_id, state in self.states.items():
@@ -325,16 +337,15 @@ async def test_uncertain_recycle_with_missing_replacement_stays_uncertain(
     assert reconciled.status is OrganizationExecutionStatus.UNCERTAIN
     assert [call[0] for call in transport.calls[call_count:]] == [
         "read_object",
-        "read_object",
+        "read_object_in_scope",
     ]
     current = await operation_service.get(operation.operation_id)
     assert current.status is OrganizationOperationStatus.UNCERTAIN
-    assert reconciled.error_code == "replacement_reconciliation_unverified"
     await database.engine.dispose()
 
 
 @pytest.mark.asyncio
-async def test_target_reconciliation_does_not_infer_missing_replacement_removed(
+async def test_target_reconciliation_confirms_missing_replacement_in_frozen_scope(
     tmp_path: Path,
 ):
     database = await _database(tmp_path)
@@ -372,12 +383,12 @@ async def test_target_reconciliation_does_not_infer_missing_replacement_removed(
     )
 
     assert (reconciled.status, reconciled.error_code) == (
-        OrganizationExecutionStatus.UNCERTAIN,
-        "replacement_reconciliation_unverified",
+        OrganizationExecutionStatus.ORGANIZED,
+        None,
     )
     assert [call[0] for call in transport.calls[call_count:]] == [
         "read_object",
-        "read_object",
+        "read_object_in_scope",
     ]
     assert all(
         call[0] not in {"move", "rename", "recycle"}
@@ -385,18 +396,23 @@ async def test_target_reconciliation_does_not_infer_missing_replacement_removed(
     )
     assert (
         await operation_service.get(operation.operation_id)
-    ).status is OrganizationOperationStatus.UNCERTAIN
+    ).status is OrganizationOperationStatus.ORGANIZED
     await database.engine.dispose()
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "replacement_state",
-    (("7000", "movie.mkv"), ("8000", "movie.mkv")),
+    ("replacement_state", "expected_status"),
+    (
+        (("7000", "movie.mkv"), OrganizationExecutionStatus.UNCERTAIN),
+        (("8000", "movie.mkv"), OrganizationExecutionStatus.UNCERTAIN),
+    ),
     ids=("replacement-at-source", "replacement-at-target"),
 )
 async def test_reconciliation_keeps_non_removed_replacement_observations_uncertain(
-    tmp_path: Path, replacement_state: tuple[str, str]
+    tmp_path: Path,
+    replacement_state: tuple[str, str],
+    expected_status: OrganizationExecutionStatus,
 ):
     database = await _database(tmp_path)
     operation_service, operation, lease = await _replacement_operation(
@@ -430,7 +446,7 @@ async def test_reconciliation_keeps_non_removed_replacement_observations_uncerta
         expected_revision=summary.revision,
     )
 
-    assert reconciled.status is OrganizationExecutionStatus.UNCERTAIN
+    assert reconciled.status is expected_status
     assert all(
         call[0] not in {"move", "rename", "recycle"}
         for call in transport.calls[call_count:]
@@ -439,7 +455,7 @@ async def test_reconciliation_keeps_non_removed_replacement_observations_uncerta
 
 
 @pytest.mark.asyncio
-async def test_mixed_steps_do_not_complete_when_one_replacement_is_unobserved(
+async def test_mixed_steps_complete_when_replacement_leaves_frozen_scope(
     tmp_path: Path,
 ):
     database = await _database(tmp_path)
@@ -525,13 +541,10 @@ async def test_mixed_steps_do_not_complete_when_one_replacement_is_unobserved(
         expected_revision=summary.revision,
     )
 
-    assert (reconciled.status, reconciled.error_code) == (
-        OrganizationExecutionStatus.UNCERTAIN,
-        "replacement_reconciliation_unverified",
-    )
+    assert reconciled.status is OrganizationExecutionStatus.ORGANIZED
     assert (
         await operation_service.get(operation.operation_id)
-    ).status is OrganizationOperationStatus.UNCERTAIN
+    ).status is OrganizationOperationStatus.ORGANIZED
     await database.engine.dispose()
 
 

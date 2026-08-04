@@ -266,6 +266,63 @@ async def test_automation_requires_explicit_complete_source_scope(
 
 
 @pytest.mark.asyncio
+async def test_automation_scope_verification_reads_all_source_pages(tmp_path: Path):
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'automation-pages.db'}")
+    await initialize_database(database.engine)
+
+    class _MultiPageSourceGateway:
+        def __init__(self):
+            self.calls: list[tuple[str, int, int]] = []
+
+        async def list_directory(self, directory_id, *, page, page_size):
+            self.calls.append((directory_id, page, page_size))
+            item = _entry(
+                name=f"source-{page}.mkv",
+                parent_id=directory_id,
+                file_id=str(7000 + page),
+                path=f"source-{page}.mkv",
+            )
+            return DirectoryPage(
+                items=(item,),
+                page=page,
+                page_count=2,
+                total=2,
+                scan_complete=None if page == 1 else True,
+                state=ScanState.COMPLETE,
+                has_more=page == 1,
+                next_page=2 if page == 1 else None,
+                terminal=page == 2,
+            )
+
+    gateway = _MultiPageSourceGateway()
+    plan_service = OrganizationPlanService(database.session_factory)
+    preview = OrganizationPreviewService(
+        database.session_factory, _TmdbClient(), plan_service
+    )
+    service = OrganizationAutomationService(
+        database.session_factory,
+        _Settings(configured=True),
+        preview,
+        plan_service,
+        lambda _authorized: gateway,
+    )
+
+    assert (
+        await service._ensure_source_library(gateway, "1000")
+        == automation_module._source_library_id("1000")
+    )
+    assert gateway.calls == [("1000", 1, 1), ("1000", 2, 1)]
+    async with database.session_factory() as session:
+        library = await session.get(
+            MediaLibrary, automation_module._source_library_id("1000")
+        )
+        assert library is not None
+        assert library.scope_verified is True
+        assert library.enabled is True
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_automation_does_not_read_when_settings_are_unconfigured(tmp_path: Path):
     database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'automation-empty.db'}")
     await initialize_database(database.engine)

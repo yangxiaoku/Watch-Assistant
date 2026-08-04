@@ -15,8 +15,15 @@ from typing import Literal
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from watch_assistant.adapters.p115_library import P115LibraryGateway
-from watch_assistant.adapters.p115_library_gateway import P115ReadOnlyGatewayError
+from watch_assistant.adapters.p115_library import (
+    P115LibraryGateway,
+    ScanState,
+    scan_directory,
+)
+from watch_assistant.adapters.p115_library_gateway import (
+    MAX_SCOPE_VERIFICATION_PAGES,
+    P115ReadOnlyGatewayError,
+)
 from watch_assistant.library_models import (
     LibraryScanEntry,
     MediaLibrary,
@@ -448,7 +455,13 @@ class OrganizationAutomationService:
 
             if not library.scope_verified or not library.enabled:
                 try:
-                    page = await gateway.list_directory(source_id, page=1, page_size=1)
+                    scan = await scan_directory(
+                        gateway,
+                        source_id,
+                        page_size=1,
+                        max_pages=MAX_SCOPE_VERIFICATION_PAGES,
+                        require_explicit_complete=True,
+                    )
                 except asyncio.CancelledError:
                     raise
                 except P115ReadOnlyGatewayError as error:
@@ -462,7 +475,7 @@ class OrganizationAutomationService:
                     raise OrganizationAutomationError(
                         "gateway_error", phase="directory_read"
                     ) from None
-                if page.state.value != "complete" or page.scan_complete is not True:
+                if scan.state is not ScanState.COMPLETE or scan.scan_complete is not True:
                     raise OrganizationAutomationError(
                         "source_scope_unverified", phase="directory_read"
                     )

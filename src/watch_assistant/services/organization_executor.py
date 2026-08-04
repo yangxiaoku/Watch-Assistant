@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Collection
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol
@@ -71,6 +71,10 @@ class OrganizationExecutorTransport(Protocol):
     """Read/write seam for a future controlled gateway; fake-only in Phase 2."""
 
     async def read_object(self, object_id: str) -> RemoteObjectState | None: ...
+
+    async def read_object_in_scope(
+        self, object_id: str, parent_ids: Collection[str]
+    ) -> RemoteObjectState | None: ...
 
     async def read_target(
         self, parent_id: str, name: str
@@ -318,8 +322,9 @@ class OrganizationExecutor:
                 )
             transport_calls += 1
             try:
-                replacement = await self._transport.read_object(
-                    step.replacement_object_id
+                replacement = await self._transport.read_object_in_scope(
+                    step.replacement_object_id,
+                    step.scope_directory_ids,
                 )
             except asyncio.CancelledError:
                 raise
@@ -332,11 +337,10 @@ class OrganizationExecutor:
                 last_error = "outcome_unknown"
                 continue
             if replacement is None:
-                # ``read_object`` only reports the transport's observed
-                # source/target scope.  A missing object is therefore not
-                # proof that recycle completed; it may be outside that scope.
-                replacement_observations.append("uncertain")
-                last_error = "replacement_reconciliation_unverified"
+                # The transport searched every directory frozen by the plan.
+                # An object absent from that complete scope has left the
+                # managed tree, which is the recycle postcondition.
+                replacement_observations.append("removed")
             elif (
                 replacement.object_id == step.replacement_object_id
                 and replacement.parent_id == step.replacement_parent_id

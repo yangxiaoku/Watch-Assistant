@@ -5,7 +5,7 @@ import pytest
 from cryptography.fernet import Fernet
 from pwdlib import PasswordHash
 
-from watch_assistant.adapters.p115_library import DirectoryPage, ScanState
+from watch_assistant.adapters.p115_library import DirectoryPage, LibraryEntry, ScanState
 from watch_assistant.app import create_app
 from watch_assistant.crypto import SecretCrypto
 from watch_assistant.db import create_database, initialize_database
@@ -48,6 +48,61 @@ class _FakeGateway:
                 else ScanState.COMPLETE
             ),
             has_more=False,
+            terminal=True,
+        )
+
+
+class _MultiPageGateway(_FakeGateway):
+    def __init__(self, *_args, **_kwargs):
+        super().__init__(*_args, **_kwargs)
+        self.calls = []
+
+    async def list_directory(self, directory_id, *, page, page_size):
+        assert page_size == 1
+        self.calls.append((directory_id, page, page_size))
+        if page == 1:
+            return DirectoryPage(
+                items=(
+                    LibraryEntry(
+                        directory_id=None,
+                        file_id="1001",
+                        parent_id=directory_id,
+                        name="scope-file-1.mkv",
+                        is_directory=False,
+                        size_bytes=0,
+                        modified_at=None,
+                        pickcode=None,
+                    ),
+                ),
+                page=1,
+                page_count=2,
+                total=2,
+                scan_complete=None,
+                state=ScanState.COMPLETE,
+                has_more=True,
+                next_page=2,
+                terminal=False,
+            )
+        return DirectoryPage(
+            items=(
+                LibraryEntry(
+                    directory_id=None,
+                    file_id="1002",
+                    parent_id=directory_id,
+                    name="scope-file-2.mkv",
+                    is_directory=False,
+                    size_bytes=0,
+                    modified_at=None,
+                    pickcode=None,
+                ),
+            ),
+            page=2,
+            page_count=2,
+            total=2,
+            scan_complete=True,
+            state=ScanState.COMPLETE,
+            has_more=False,
+            next_page=None,
             terminal=True,
         )
 
@@ -199,6 +254,47 @@ async def test_library_scope_verification_requires_explicit_complete_scan(
         assert library.scope_verified is False
         assert library.enabled is False
         assert library.revision == 0
+    await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_library_scope_verification_reads_all_pages_before_enabling(
+    tmp_path, monkeypatch
+):
+    app, database = await _client(tmp_path)
+    gateway = _MultiPageGateway()
+    monkeypatch.setattr(
+        "watch_assistant.api.library.P115ReadOnlyDirectoryGateway",
+        lambda *args, **kwargs: gateway,
+    )
+    async with database.session_factory() as session:
+        session.add(
+            MediaLibrary(
+                id="production",
+                name="Production",
+                root_directory_id="2988794667098701570",
+                scope_verified=False,
+                enabled=False,
+            )
+        )
+        await session.commit()
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://app.test"
+    ) as client:
+        login = await client.post("/api/v1/auth/login", json={"password": WEB_PASSWORD})
+        response = await client.post(
+            "/api/v1/libraries/production/verify-scope",
+            headers={"X-CSRF-Token": login.json()["csrf_token"]},
+        )
+
+    assert response.status_code == 200
+    assert [call[1] for call in gateway.calls] == [1, 2]
+    async with database.session_factory() as session:
+        library = await session.get(MediaLibrary, "production")
+        assert library is not None
+        assert library.scope_verified is True
+        assert library.enabled is True
     await database.engine.dispose()
 
 

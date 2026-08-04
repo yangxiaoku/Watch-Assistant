@@ -172,6 +172,36 @@ class OfflineP115OrganizationTransport:
             raise P115OrganizationTransportError("observation_unverified")
         return state
 
+    async def read_object_in_scope(
+        self, object_id: str, parent_ids: Collection[str]
+    ) -> RemoteObjectState | None:
+        self._require_scope()
+        scope = _observation_scope(parent_ids, self._managed_directory_ids)
+        if _stable_id(object_id) is None or scope is None:
+            raise P115OrganizationTransportError("scope_unverified")
+        self._calls.append(
+            OrganizationTransportCall(P115OrganizationMethod.READ_OBJECT)
+        )
+        outcome = self._injected(P115OrganizationMethod.READ_OBJECT, object_id)
+        if outcome is _MISSING:
+            matches = [
+                state
+                for state in self._states.values()
+                if state.object_id == object_id and state.parent_id in scope
+            ]
+        elif outcome is None:
+            matches = []
+        else:
+            matches = [outcome]
+        if len(matches) > 1 or any(
+            not isinstance(state, RemoteObjectState)
+            or state.object_id != object_id
+            or state.parent_id not in scope
+            for state in matches
+        ):
+            raise P115OrganizationTransportError("observation_unverified")
+        return matches[0] if matches else None
+
     async def read_target(self, parent_id: str, name: str) -> RemoteObjectState | None:
         self._require_scope()
         if (parent_id, name) not in self._targets:
@@ -444,6 +474,34 @@ class LiveP115OrganizationTransport:
             raise P115OrganizationTransportError("observation_unverified")
         return state
 
+    async def read_object_in_scope(
+        self, object_id: str, parent_ids: Collection[str]
+    ) -> RemoteObjectState | None:
+        self._require_scope()
+        scope = _observation_scope(parent_ids, self._managed_directory_ids)
+        if _stable_id(object_id) is None or scope is None:
+            raise P115OrganizationTransportError("scope_unverified")
+        observations: list[RemoteObjectState] = []
+        for parent_id in sorted(scope):
+            listing = await self._c03.list_children(
+                parent_id, timeout_seconds=self._timeout_seconds
+            )
+            if listing.complete is not True:
+                raise P115OrganizationTransportError("observation_unverified")
+            observations.extend(
+                RemoteObjectState(entry.file_id, entry.parent_id, entry.name)
+                for entry in listing.entries
+                if entry.file_id == object_id
+            )
+        if len(observations) > 1:
+            raise P115OrganizationTransportError("observation_unverified")
+        if not observations:
+            return None
+        state = observations[0]
+        if state.parent_id not in scope or state.parent_id not in self._managed_directory_ids:
+            raise P115OrganizationTransportError("observation_unverified")
+        return state
+
     async def read_target(self, parent_id: str, name: str) -> RemoteObjectState | None:
         self._require_scope()
         if (parent_id, name) not in self._targets:
@@ -451,7 +509,7 @@ class LiveP115OrganizationTransport:
         listing = await self._c03.list_children(
             parent_id, timeout_seconds=self._timeout_seconds
         )
-        if not listing.complete:
+        if listing.complete is not True:
             raise P115OrganizationTransportError("observation_unverified")
         matches = [
             RemoteObjectState(entry.file_id, entry.parent_id, entry.name)
@@ -643,6 +701,20 @@ def _validate_live_scope(
         != len(intents)
     ):
         raise ValueError("invalid_organization_scope")
+
+
+def _observation_scope(
+    parent_ids: Collection[str], managed_ids: frozenset[str]
+) -> frozenset[str] | None:
+    if isinstance(parent_ids, (str, bytes)):
+        return None
+    try:
+        scope = frozenset(parent_ids)
+    except TypeError:
+        return None
+    if not scope or any(_stable_id(value) is None for value in scope):
+        return None
+    return scope if scope <= managed_ids else None
 
 
 def _normalize_live_object_response(
