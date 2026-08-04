@@ -38,6 +38,82 @@ async function confirmRiskyAction(wrapper: ReturnType<typeof mount>) {
 }
 
 describe("LibraryWorkbenchView", () => {
+  it("keeps guarded workbench handlers closed when called outside disabled buttons", async () => {
+    const library = {
+      library_id: "main",
+      name: "115 媒体库",
+      root_directory_id: "123",
+      enabled: true,
+      scope_verified: true,
+      revision: 2,
+      latest_scan: { run_id: "scan-1", state: "completed" as const, complete: true, snapshot_revision: 1, pages_read: 1, items_seen: 1, added_count: 1, changed_count: 0, removed_count: 0, attempts: 1, state_message_zh: "扫描完成", error_code: null, error_message_zh: null, cancel_requested: false },
+    };
+    const api = {
+      libraries: vi.fn().mockResolvedValue({ items: [library], next_cursor: null }),
+      libraryMedia: vi.fn().mockResolvedValue({ items: [], next_cursor: null }),
+      strmManifest: vi.fn().mockResolvedValue({ items: [], page: 1, page_size: 50, total: 0, total_pages: 0 }),
+      strmOperations: vi.fn().mockResolvedValue({ items: [], next_cursor: null }),
+      generateStrm: vi.fn(),
+      incrementalStrm: vi.fn(),
+      createStrmCleanupPlan: vi.fn(),
+      createEmptyDirectoryCleanupPlan: vi.fn(),
+      createOrganizationPreview: vi.fn(),
+    };
+    const unavailable = { enabled: false, reason_code: "disabled", reason_zh: "当前能力不可用。", settings_section: "overview" as const };
+    const wrapper = mountWorkbench(api, {
+      organizationPlanCapability: { ...unavailable, settings_section: "organization" },
+      strmFullCapability: unavailable,
+      strmIncrementalCapability: unavailable,
+      strmCleanupCapability: unavailable,
+      emptyDirectoryCleanupCapability: { ...unavailable, settings_section: "organization" },
+    });
+    await flushPromises();
+
+    const vm = wrapper.vm as unknown as {
+      syncStrm: (action: "full" | "incremental") => Promise<void>;
+      previewCleanup: () => Promise<void>;
+      previewEmptyDirectoryCleanup: () => Promise<void>;
+      createOrganizationPreview: () => Promise<void>;
+    };
+    await vm.syncStrm("full");
+    await vm.syncStrm("incremental");
+    await vm.previewCleanup();
+    await vm.previewEmptyDirectoryCleanup();
+    await vm.createOrganizationPreview();
+
+    expect(api.generateStrm).not.toHaveBeenCalled();
+    expect(api.incrementalStrm).not.toHaveBeenCalled();
+    expect(api.createStrmCleanupPlan).not.toHaveBeenCalled();
+    expect(api.createEmptyDirectoryCleanupPlan).not.toHaveBeenCalled();
+    expect(api.createOrganizationPreview).not.toHaveBeenCalled();
+  });
+
+  it("keeps directory scans closed until the selected scope is enabled and verified", async () => {
+    const library = {
+      library_id: "main",
+      name: "115 媒体库",
+      root_directory_id: "123",
+      enabled: false,
+      scope_verified: false,
+      revision: 2,
+      latest_scan: null,
+    };
+    const api = {
+      libraries: vi.fn().mockResolvedValue({ items: [library], next_cursor: null }),
+      scanLibrary: vi.fn(),
+      libraryMedia: vi.fn().mockResolvedValue({ items: [], next_cursor: null }),
+      strmManifest: vi.fn().mockResolvedValue({ items: [], page: 1, page_size: 50, total: 0, total_pages: 0 }),
+      strmOperations: vi.fn().mockResolvedValue({ items: [], next_cursor: null }),
+    };
+    const wrapper = mountWorkbench(api);
+    await flushPromises();
+
+    const vm = wrapper.vm as unknown as { scanLibrary: () => Promise<void> };
+    await vm.scanLibrary();
+
+    expect(api.scanLibrary).not.toHaveBeenCalled();
+  });
+
   it("fails closed when capability status has not been loaded", async () => {
     const library = {
       library_id: "main",
@@ -444,6 +520,44 @@ describe("LibraryWorkbenchView", () => {
     expect(strmOperation).toHaveBeenCalledTimes(3);
     wrapper.unmount();
     vi.useRealTimers();
+  });
+
+  it("keeps a polling timeout as a pending result instead of an error", async () => {
+    vi.useFakeTimers();
+    try {
+      const library = {
+        library_id: "main",
+        name: "115 媒体库",
+        root_directory_id: "123",
+        enabled: true,
+        scope_verified: true,
+        revision: 2,
+        latest_scan: { run_id: "scan-1", state: "completed" as const, complete: true, snapshot_revision: 1, pages_read: 1, items_seen: 1, added_count: 1, changed_count: 0, removed_count: 0, attempts: 1, state_message_zh: "扫描完成", error_code: null, error_message_zh: null, cancel_requested: false },
+      };
+      const running = { operation_id: "strm_op_running", library_id: "main", source_scan_run_id: "scan-1", workflow_id: null, kind: "full" as const, status: "running" as const, generated: 0, unchanged: 0, skipped: 0, failed: 0, retired: 0, error_code: null, created_at: "2026-08-01T00:00:00Z", started_at: "2026-08-01T00:00:00Z", finished_at: null };
+      const api = {
+        libraries: vi.fn().mockResolvedValue({ items: [library], next_cursor: null }),
+        libraryMedia: vi.fn().mockResolvedValue({ items: [], next_cursor: null }),
+        strmManifest: vi.fn().mockResolvedValue({ items: [], page: 1, page_size: 50, total: 0, total_pages: 0 }),
+        strmOperations: vi.fn().mockResolvedValue({ items: [], next_cursor: null }),
+        generateStrm: vi.fn().mockResolvedValue({ operation_id: running.operation_id, library_id: "main", scan_run_id: "scan-1", generated: 0, unchanged: 0, skipped: 0, failed: 0, retired: 0 }),
+        strmOperation: vi.fn().mockResolvedValue(running),
+      };
+      const wrapper = mountWorkbench(api);
+      await vi.runOnlyPendingTimersAsync();
+      await vi.advanceTimersByTimeAsync(0);
+      await wrapper.findAll("button").find((button) => button.text().includes("全量 STRM"))!.trigger("click");
+      await vi.advanceTimersByTimeAsync(60_000);
+      await flushPromises();
+
+      expect(wrapper.get(".success-strip").text()).toContain("页面已停止自动等待");
+      expect(wrapper.find(".error-strip").exists()).toBe(false);
+      expect(wrapper.text()).toContain("确认前不要恢复执行");
+      expect(api.strmOperation).toHaveBeenCalledTimes(120);
+      wrapper.unmount();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it.each([
