@@ -130,6 +130,7 @@ def test_release_build_and_verify_use_provenance_and_project_venv():
     assert '--expected-branch "$RELEASE_BRANCH"' in verify
     assert "--unit-sha256" in build
     assert "--expected-unit-sha256" in verify
+    assert "wc -c" in verify
     for required in (
         "deploy/watch-assistant.service",
         "scripts/deploy_systemd_release.sh",

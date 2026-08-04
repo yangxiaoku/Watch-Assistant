@@ -175,7 +175,8 @@ if ! "$RELEASE_SMOKE_PYTHON" "$ROOT_DIR/scripts/release_manifest.py" verify-buil
 fi
 
 PACKAGE_SHA256="$(sha256sum "$PACKAGE_FILE" | awk '{print $1}')"
-PACKAGE_SIZE="$(stat -c '%s' "$PACKAGE_FILE")"
+# Use a POSIX-friendly byte count so local macOS verification matches Linux CI.
+PACKAGE_SIZE="$(wc -c < "$PACKAGE_FILE" | tr -d '[:space:]')"
 mkdir -p "$OUTPUT_DIR"
 cp "$PACKAGE_FILE" "$OUTPUT_DIR/$PACKAGE_NAME"
 cp "$VERSION_FILE" "$OUTPUT_DIR/VERSION"
