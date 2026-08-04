@@ -15,6 +15,9 @@ from watch_assistant.schemas import (
     OrganizationPlanMutationRequest,
 )
 from watch_assistant.security import AuthContext, require_api_auth
+from watch_assistant.services.organization_capability import (
+    organization_execution_supported,
+)
 from watch_assistant.services.organization_operations import (
     OrganizationOperationNotFound,
     OrganizationOperationService,
@@ -34,6 +37,17 @@ async def require_organization_execution_enabled(request: Request) -> None:
             detail={
                 "code": "organization_execution_disabled",
                 "message": "整理操作功能未启用",
+            },
+        )
+
+
+async def require_organization_execution_available(request: Request) -> None:
+    if not organization_execution_supported(request.app):
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "organization_execution_unavailable",
+                "message": "整理执行能力暂不可用，本次操作未排队",
             },
         )
 
@@ -104,6 +118,7 @@ WorkerDependency = Annotated[OrganizationWorker, Depends(_get_organization_worke
 @router.post(
     "/organization-plans/{plan_id}/operation",
     response_model=OrganizationOperationResponse,
+    dependencies=[Depends(require_organization_execution_available)],
 )
 async def queue_organization_operation(
     plan_id: str,
@@ -129,6 +144,7 @@ async def queue_organization_operation(
 @router.post(
     "/organization-plans/{plan_id}/confirm-and-operation",
     response_model=OrganizationOperationResponse,
+    dependencies=[Depends(require_organization_execution_available)],
 )
 async def confirm_and_queue_organization_operation(
     plan_id: str,
@@ -201,6 +217,7 @@ async def get_plan_organization_operation(
 @router.post(
     "/organization-operations/batch",
     response_model=OrganizationOperationBatchResponse,
+    dependencies=[Depends(require_organization_execution_available)],
 )
 async def queue_organization_operations_batch(
     payload: OrganizationOperationBatchRequest,
@@ -242,6 +259,7 @@ async def queue_organization_operations_batch(
 @router.post(
     "/organization-operations/confirm-and-batch",
     response_model=OrganizationOperationBatchResponse,
+    dependencies=[Depends(require_organization_execution_available)],
 )
 async def confirm_and_queue_organization_operations_batch(
     payload: OrganizationOperationBatchRequest,
@@ -438,6 +456,7 @@ _STATUSES = {
     "workflow_id_conflict": 409,
     "operation_not_found": 404,
     "confirmation_required": 409,
+    "organization_execution_unavailable": 503,
     "plan_digest_required": 422,
     "plan_digest_mismatch": 409,
     "stale_revision": 409,
@@ -467,6 +486,7 @@ _MESSAGES = {
     "workflow_id_conflict": "操作已关联其他工作流",
     "operation_not_found": "操作不存在",
     "confirmation_required": "缺少操作确认",
+    "organization_execution_unavailable": "整理执行能力暂不可用，本次操作未排队",
     "capability_unverified": "115 整理能力尚未完成契约验收",
     "contract_unverified": "115 整理写入契约尚未验收",
     "organization_contract_evidence_required": "115 整理写入缺少独立契约验收证据",

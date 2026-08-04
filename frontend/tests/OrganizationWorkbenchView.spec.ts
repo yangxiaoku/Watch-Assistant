@@ -70,7 +70,7 @@ describe("OrganizationWorkbenchView", () => {
         next_cursor: null,
       }),
     });
-    const wrapper = mount(OrganizationWorkbenchView, { props: { api, executionEnabled: true } });
+    const wrapper = mount(OrganizationWorkbenchView, { props: { api, executionSupported: true } });
     await flushPromises();
 
     expect(wrapper.get(".organization-status").text()).toContain("已失效");
@@ -80,7 +80,7 @@ describe("OrganizationWorkbenchView", () => {
 
   it("loads a safe cursor page and sends the current revision for local actions", async () => {
     const api = makeApi();
-    const wrapper = mount(OrganizationWorkbenchView, { props: { api, executionEnabled: true } });
+    const wrapper = mount(OrganizationWorkbenchView, { props: { api, executionSupported: true } });
     await flushPromises();
 
     expect(api.organizationPlans).toHaveBeenCalledWith({ status: "needs_review", cursor: undefined, limit: 20 });
@@ -153,7 +153,7 @@ describe("OrganizationWorkbenchView", () => {
     const api = makeApi({
       confirmAndQueueOrganizationOperation: vi.fn().mockRejectedValue(new ApiError("计划版本已变化，请刷新后重试", 409, "stale_revision")),
     });
-    const wrapper = mount(OrganizationWorkbenchView, { props: { api, executionEnabled: true } });
+    const wrapper = mount(OrganizationWorkbenchView, { props: { api, executionSupported: true } });
     await flushPromises();
     await wrapper.findAll(".primary-button").find((button) => button.text().includes("确认并开始整理"))!.trigger("click");
     await confirmRiskyAction(wrapper);
@@ -182,7 +182,7 @@ describe("OrganizationWorkbenchView", () => {
         ],
       }),
     });
-    const wrapper = mount(OrganizationWorkbenchView, { props: { api, executionEnabled: true } });
+    const wrapper = mount(OrganizationWorkbenchView, { props: { api, executionSupported: true } });
     await flushPromises();
 
     await wrapper.get(".organization-batch-action").trigger("click");
@@ -213,7 +213,7 @@ describe("OrganizationWorkbenchView", () => {
       organizationPlans: vi.fn().mockResolvedValue({ items: [planned], next_cursor: null }),
       queueOrganizationOperation: vi.fn().mockResolvedValue({ operation_id: "op-1", plan_id: planned.plan_id, status: "planned", revision: 1, attempts: 0, error_code: null }),
     });
-    const wrapper = mount(OrganizationWorkbenchView, { props: { api, executionEnabled: true } });
+    const wrapper = mount(OrganizationWorkbenchView, { props: { api, executionSupported: true } });
     await flushPromises();
 
     const operationButton = wrapper.findAll("button").find((button) => button.text().includes("立即整理"));
@@ -222,6 +222,29 @@ describe("OrganizationWorkbenchView", () => {
     await confirmRiskyAction(wrapper);
     expect(api.queueOrganizationOperation).toHaveBeenCalledWith("plan-local-1", 4);
     expect(wrapper.text()).toContain("整理已提交，后台正在执行");
+  });
+
+  it("labels a legacy planned operation as not executed when capability is unavailable", async () => {
+    const planned = { ...plan, status: "planned" as const };
+    const api = makeApi({
+      organizationPlans: vi.fn().mockResolvedValue({ items: [planned], next_cursor: null }),
+      organizationPlanOperation: vi.fn().mockResolvedValue({
+        operation_id: "op-legacy",
+        plan_id: planned.plan_id,
+        status: "planned",
+        revision: 1,
+        attempts: 0,
+        error_code: null,
+        cancel_requested: false,
+      }),
+    });
+    const wrapper = mount(OrganizationWorkbenchView, { props: { api } });
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("整理操作：等待执行能力（未执行）");
+    expect(wrapper.text()).toContain("本次操作尚未执行");
+    expect(wrapper.text()).not.toContain("整理操作：已排队");
+    expect(wrapper.findAll("button").some((button) => button.text().includes("立即整理"))).toBe(false);
   });
 
   it("does not queue immediately after selecting a candidate", async () => {
@@ -256,7 +279,7 @@ describe("OrganizationWorkbenchView", () => {
         cancel_requested: false,
       }),
     });
-    const wrapper = mount(OrganizationWorkbenchView, { props: { api, executionEnabled: true } });
+    const wrapper = mount(OrganizationWorkbenchView, { props: { api, executionSupported: true } });
     await flushPromises();
 
     await wrapper.get(".organization-candidate").trigger("click");
@@ -306,7 +329,7 @@ describe("OrganizationWorkbenchView", () => {
       selectOrganizationCandidate: vi.fn().mockResolvedValue(planned),
       queueOrganizationOperation: vi.fn().mockResolvedValue({ operation_id: "op-manual", plan_id: plan.plan_id, status: "organized", revision: 1, attempts: 1, error_code: null, cancel_requested: false }),
     });
-    const wrapper = mount(OrganizationWorkbenchView, { props: { api, executionEnabled: true } });
+    const wrapper = mount(OrganizationWorkbenchView, { props: { api, executionSupported: true } });
     await flushPromises();
 
     expect(wrapper.findAll("button").some((button) => button.text().includes("确认并开始整理"))).toBe(false);
@@ -338,7 +361,7 @@ describe("OrganizationWorkbenchView", () => {
         cancel_requested: false,
       }),
     });
-    const wrapper = mount(OrganizationWorkbenchView, { props: { api, executionEnabled: true } });
+    const wrapper = mount(OrganizationWorkbenchView, { props: { api, executionSupported: true } });
     await flushPromises();
 
     expect(wrapper.text()).toContain("整理操作：已失败");
@@ -361,7 +384,7 @@ describe("OrganizationWorkbenchView", () => {
       ],
     };
     const api = makeApi({ organizationPlans: vi.fn().mockResolvedValue({ items: [blockedPlan], next_cursor: null }) });
-    const wrapper = mount(OrganizationWorkbenchView, { props: { api, executionEnabled: true } });
+    const wrapper = mount(OrganizationWorkbenchView, { props: { api, executionSupported: true } });
     await flushPromises();
 
     expect(wrapper.get(".organization-execution-blockers").text()).toContain("来源快照已变化");

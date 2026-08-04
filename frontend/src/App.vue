@@ -75,7 +75,7 @@ const pushCapabilities = ref<PushCapabilities>({ ...NO_PUSH_CAPABILITIES });
 const inspectionSupported = ref(false);
 const inspectionAutoStartEnabled = ref<boolean | "unknown">("unknown");
 const organizationPlanEnabled = ref(false);
-const organizationExecutionEnabled = ref(false);
+const organizationExecutionSupported = ref(false);
 const settingsInitialSection = ref<"overview" | "organization">("overview");
 const unavailableCapability = (settingsSection: CapabilityAvailability["settings_section"] = "overview"): CapabilityAvailability => ({
   enabled: false,
@@ -1496,7 +1496,7 @@ onMounted(async () => {
     inspectionAutoStartEnabled.value = health.inspection_auto_start_enabled === true;
     organizationPlanCapability.value = healthCapability(health.organization_plan_enabled, "organization_plan_disabled", "自动整理计划", "organization");
     organizationPlanEnabled.value = organizationPlanCapability.value.enabled;
-    organizationExecutionEnabled.value = health.organization_execution_enabled === true;
+    organizationExecutionSupported.value = health.organization_execution_supported === true;
     strmFullCapability.value = healthCapability(health.strm_capabilities?.full, "strm_full_disabled", "STRM 全量生成");
     strmIncrementalCapability.value = healthCapability(health.strm_capabilities?.incremental, "strm_incremental_disabled", "STRM 增量同步");
     const strmCleanup = health.strm_capabilities?.cleanup_capability;
@@ -1562,7 +1562,7 @@ onBeforeUnmount(() => {
         <LibraryView v-else-if="activeView === 'movies' || activeView === 'tv'" :movies="catalogMovies" :loading="catalogLoading" :favorite-ids="favoriteIds" :genre-id="genreId" :year="year" :sort="sort" :media-type="activeView" :page="currentPage" :total-pages="totalPages" :total-results="totalResults" @open="openMovie" @favorite="toggleFavorite" @filters="loadDiscover" @page="loadPage" />
         <CollectionView v-else-if="activeView === 'favorites' || activeView === 'history'" :mode="activeView" :movies="activeView === 'favorites' ? favorites : history" :favorite-ids="favoriteIds" @open="openMovie" @favorite="toggleFavorite" />
         <SettingsView v-else-if="activeView === 'settings'" :api="api" :initial-section="settingsInitialSection" @auto-start-enabled="inspectionAutoStartEnabled = $event" />
-        <OrganizationWorkbenchView v-else-if="activeView === 'organization-plans' && organizationPlanEnabled" :api="api" :execution-enabled="organizationExecutionEnabled" />
+        <OrganizationWorkbenchView v-else-if="activeView === 'organization-plans' && organizationPlanEnabled" :api="api" :execution-supported="organizationExecutionSupported" />
         <OrganizationHistoryView v-else-if="activeView === 'organization-history' && organizationPlanEnabled" :api="api" />
         <LibraryWorkbenchView v-else-if="activeView === 'library'" :api="api" :organization-plan-capability="organizationPlanCapability" :strm-full-capability="strmFullCapability" :strm-incremental-capability="strmIncrementalCapability" :strm-cleanup-capability="strmCleanupCapability" :empty-directory-cleanup-capability="emptyDirectoryCleanupCapability" @open-settings="openOrganizationSettings" />
         <WorkflowCenterView v-else-if="activeView === 'workflows'" :api="api" @open-push-tasks="openTaskDrawer" />

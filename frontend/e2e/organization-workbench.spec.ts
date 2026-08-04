@@ -37,7 +37,7 @@ test.beforeEach(async ({ page }) => {
   confirmationCalls = 0;
   activePlan = needsReview;
   await page.route("**/api/v1/health", (route) =>
-    route.fulfill({ json: { status: "ok", push_supported: false, organization_plan_enabled: true, organization_execution_enabled: true } }),
+    route.fulfill({ json: { status: "ok", push_supported: false, organization_plan_enabled: true, organization_execution_enabled: true, organization_execution_supported: true } }),
   );
   await page.route("**/api/v1/auth/me", (route) =>
     route.fulfill({ json: { authenticated: true, via_bearer: false, csrf_token: "csrf-local" } }),

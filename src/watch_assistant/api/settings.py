@@ -36,6 +36,9 @@ from watch_assistant.schemas import (
     SettingsOverviewResponse,
 )
 from watch_assistant.security import AuthContext, require_api_auth
+from watch_assistant.services.organization_capability import (
+    organization_execution_supported,
+)
 from watch_assistant.services.settings import (
     ContentPolicyValidationError,
     OrganizationSettingsValidationError,
@@ -123,6 +126,7 @@ async def settings_overview(request: Request) -> SettingsOverviewResponse:
             ).cleanup_empty_directories
         except Exception:  # noqa: BLE001 - capability diagnostics stay conservative
             empty_cleanup_setting = False
+    execution_supported = organization_execution_supported(request.app)
     capabilities = {
         "inspection": bool(getattr(request.app.state, "inspection_supported", False)),
         "magnet": bool(
@@ -135,18 +139,17 @@ async def settings_overview(request: Request) -> SettingsOverviewResponse:
             getattr(request.app.state, "organization_plan_enabled", False)
         ),
         "organization_execution": bool(
-            getattr(request.app.state, "organization_execution_supported", False)
-            or getattr(request.app.state, "organization_worker", None) is not None
+            execution_supported
         ),
         "organization_write": bool(
-            getattr(request.app.state, "organization_worker", None) is not None
+            execution_supported
             and getattr(request.app.state, "organization_write_enabled", False)
             and getattr(
                 request.app.state, "organization_write_contract_verified", False
             )
         ),
         "permanent_delete": bool(
-            getattr(request.app.state, "organization_worker", None) is not None
+            execution_supported
             and getattr(request.app.state, "organization_write_enabled", False)
             and getattr(
                 request.app.state, "organization_write_contract_verified", False
@@ -189,7 +192,7 @@ async def settings_overview(request: Request) -> SettingsOverviewResponse:
         else None
     )
     execution_success_at = await _latest_organization_success_at(database)
-    worker_running = getattr(request.app.state, "organization_worker", None) is not None
+    worker_running = execution_supported
     write_contract_verified = bool(
         getattr(request.app.state, "organization_write_contract_verified", False)
     )

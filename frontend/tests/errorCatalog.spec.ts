@@ -49,6 +49,10 @@ describe("中文错误目录", () => {
         title: "整理写入缺少契约证据",
         action: "inspect_configuration",
       },
+      organization_execution_unavailable: {
+        title: "整理执行能力暂不可用",
+        action: "inspect_configuration",
+      },
       organization_lease_required: {
         title: "整理操作租约无效",
         action: "refresh_snapshot",
@@ -71,6 +75,7 @@ describe("中文错误目录", () => {
       });
       expect(taskErrorMessage(code)).toContain(descriptor.title);
     }
+    expect(describeUiError("organization_execution_unavailable", 503).message).toContain("未排队");
   });
 
   it("keeps actions available for backend operational codes", () => {

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   capabilityStatusPresentation,
   libraryScanStatusLabel,
+  organizationOperationStatusLabel,
   strmOperationNextStep,
   strmOperationStatusLabel,
   taskStatusPresentation,
@@ -34,5 +35,10 @@ describe("statusCatalog", () => {
   it("does not describe an incomplete scan as complete", () => {
     expect(libraryScanStatusLabel({ state: "completed", complete: false })).toBe("未完成");
     expect(libraryScanStatusLabel(null)).toBe("未扫描");
+  });
+
+  it("does not label a planned operation as queued without execution capability", () => {
+    expect(organizationOperationStatusLabel("planned", false)).toBe("等待执行能力（未执行）");
+    expect(organizationOperationStatusLabel("planned", true)).toBe("已排队");
   });
 });

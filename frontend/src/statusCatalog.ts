@@ -1,6 +1,7 @@
 import type {
   CapabilityAvailability,
   LibraryScanSummary,
+  OrganizationOperationStatus,
   StrmManifestItemResponse,
   StrmOperationResponse,
   TaskState,
@@ -77,6 +78,15 @@ const STRM_OPERATION_STATUS: Record<StrmOperationResponse["status"], string> = {
   cancelled: "已取消",
 };
 
+const ORGANIZATION_OPERATION_STATUS: Record<OrganizationOperationStatus, string> = {
+  planned: "已排队",
+  organizing: "执行中",
+  organized: "已完成",
+  failed: "已失败",
+  uncertain: "结果待确认",
+  cancelled: "已取消",
+};
+
 const MANIFEST_STATUS: Record<StrmManifestItemResponse["status"], string> = {
   pending: "待生成",
   verified: "有效",
@@ -108,6 +118,14 @@ export function strmOperationStatusLabel(
 ): string {
   if (operation.status === "succeeded" && operation.failed > 0) return "部分完成";
   return STRM_OPERATION_STATUS[operation.status] ?? "状态待确认";
+}
+
+export function organizationOperationStatusLabel(
+  status: OrganizationOperationStatus,
+  executionSupported = true,
+): string {
+  if (status === "planned" && !executionSupported) return "等待执行能力（未执行）";
+  return ORGANIZATION_OPERATION_STATUS[status] ?? "状态待确认";
 }
 
 export function strmOperationNextStep(
