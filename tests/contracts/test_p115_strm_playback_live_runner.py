@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import pytest
 
@@ -67,6 +68,24 @@ def test_playback_runner_cli_requires_explicit_live_flag(tmp_path, capsys):
     )
     report = json.loads(capsys.readouterr().out)
     assert report["error_code"] == "live_gate_closed"
+
+
+def test_playback_runner_keeps_redirect_and_range_status_contracts():
+    source = Path(__file__).resolve().parents[2].joinpath(
+        "scripts/p115_strm_playback_live_runner.py"
+    ).read_text(encoding="utf-8")
+    run_source = source.split("async def _run", 1)[1].split(
+        "async def _login", 1
+    )[0]
+
+    assert run_source.count("await client.get(") == 3
+    assert "get_redirect = await client.get(" in run_source
+    assert "get_range = await client.get(" in run_source
+    assert (
+        "get_redirect, PLAYBACK_REDIRECT_STATUS, \"playback_get_redirect_failed\""
+        in run_source
+    )
+    assert "get_range, PLAYBACK_RANGE_STATUS, \"playback_range_failed\"" in run_source
 
 
 @pytest.mark.asyncio

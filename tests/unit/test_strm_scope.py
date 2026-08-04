@@ -9,7 +9,10 @@ from watch_assistant.library_models import (
     LibraryScanRun,
     MediaLibrary,
 )
-from watch_assistant.services.strm_scope import normalize_playback_url_prefix
+from watch_assistant.services.strm_scope import (
+    normalize_playback_url_prefix,
+    source_snapshot_is_current,
+)
 
 
 @pytest.mark.asyncio
@@ -111,3 +114,59 @@ def test_playback_prefix_is_the_stable_route_without_sensitive_url_parts():
     ):
         with pytest.raises(ValueError, match="invalid_playback_url_prefix"):
             normalize_playback_url_prefix(invalid)
+
+
+@pytest.mark.asyncio
+async def test_duplicate_complete_snapshot_revision_fails_closed(tmp_path: Path):
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'ambiguous.db'}")
+    await initialize_database(database.engine)
+    try:
+        async with database.session_factory() as session:
+            session.add(
+                MediaLibrary(
+                    id="library-ambiguous",
+                    name="媒体库",
+                    root_directory_id="1000",
+                    scope_verified=True,
+                    enabled=True,
+                )
+            )
+            await session.flush()
+            session.add_all(
+                [
+                    LibraryScanRun(
+                        id="scan-a",
+                        library_id="library-ambiguous",
+                        root_directory_id="1000",
+                        idempotency_key="scan-a-key",
+                        state="completed",
+                        complete=True,
+                        snapshot_revision=1,
+                    ),
+                    LibraryScanRun(
+                        id="scan-b",
+                        library_id="library-ambiguous",
+                        root_directory_id="1000",
+                        idempotency_key="scan-b-key",
+                        state="completed",
+                        complete=True,
+                        snapshot_revision=1,
+                    ),
+                ]
+            )
+            await session.commit()
+
+            assert not await source_snapshot_is_current(
+                session,
+                library_id="library-ambiguous",
+                source_scan_run_id="scan-a",
+                source_snapshot_revision=1,
+            )
+            assert not await source_snapshot_is_current(
+                session,
+                library_id="library-ambiguous",
+                source_scan_run_id="scan-b",
+                source_snapshot_revision=1,
+            )
+    finally:
+        await database.engine.dispose()

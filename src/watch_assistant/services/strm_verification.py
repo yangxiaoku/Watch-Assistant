@@ -24,8 +24,8 @@ from watch_assistant.services.library_index import (
 from watch_assistant.services.strm_manifest import _paths
 from watch_assistant.services.strm_scope import (
     active_strm_operation_id,
-    has_newer_unsettled_scan,
     normalize_playback_url_prefix,
+    source_snapshot_is_current,
 )
 
 
@@ -232,19 +232,12 @@ class StrmVerificationService:
             or run.snapshot_revision is None
         ):
             raise StrmVerificationError("source_snapshot_not_ready")
-        latest = await session.scalar(
-            select(LibraryScanRun.snapshot_revision)
-            .where(
-                LibraryScanRun.library_id == library_id,
-                LibraryScanRun.complete.is_(True),
-                LibraryScanRun.state == "completed",
-            )
-            .order_by(LibraryScanRun.snapshot_revision.desc())
-            .limit(1)
-        )
-        if latest != run.snapshot_revision:
-            raise StrmVerificationError("source_snapshot_not_current")
-        if await has_newer_unsettled_scan(session, run):
+        if not await source_snapshot_is_current(
+            session,
+            library_id=library_id,
+            source_scan_run_id=run.id,
+            source_snapshot_revision=run.snapshot_revision,
+        ):
             raise StrmVerificationError("source_snapshot_not_current")
         checkpoint = await session.get(LibraryScanCheckpoint, run.id)
         entries = list(
