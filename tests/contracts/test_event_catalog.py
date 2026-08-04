@@ -26,7 +26,11 @@ def _literal_event_calls() -> set[str]:
                 if isinstance(function, ast.Attribute)
                 else None
             )
-            argument_index = 1 if name == "_emit_security_event" else 0
+            argument_index = (
+                1
+                if name in {"_emit_security_event", "emit_event"}
+                else 0
+            )
             if name not in {"emit_event", "log_event", "_audit", "_emit_security_event"}:
                 continue
             if len(node.args) <= argument_index:
