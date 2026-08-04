@@ -17,7 +17,10 @@ from scripts.acceptance_closure import (
     _validate_execute_args,
     _validate_production_python,
 )
-from scripts.p115_organization_application_live_runner import _configure_preview_scope
+from scripts.p115_organization_application_live_runner import (
+    _configure_preview_scope,
+    _default_video_extensions,
+)
 
 
 def test_inventory_and_plan_success_require_complete_read_only_evidence():
@@ -273,3 +276,20 @@ def test_live_plan_preview_registers_both_managed_directory_ids():
         "3482085898508567892",
         "3482969620225197691",
     }
+
+
+def test_live_plan_preview_uses_supported_video_defaults():
+    extensions = _default_video_extensions()
+
+    assert extensions == [
+        "mkv",
+        "mp4",
+        "avi",
+        "mov",
+        "ts",
+        "m2ts",
+        "wmv",
+        "flv",
+        "webm",
+    ]
+    assert "iso" not in extensions
