@@ -474,7 +474,7 @@ async function verifyScope() {
 }
 
 async function scanLibrary() {
-  if (!selected.value || busy.value) return;
+  if (!selected.value || !selected.value.enabled || !selected.value.scope_verified || busy.value) return;
   busy.value = true;
   error.value = "";
   notice.value = "";
@@ -484,7 +484,9 @@ async function scanLibrary() {
     updateLibraryScan(libraryId, result);
     const final = await monitorLibraryScan(libraryId, result);
     if (!final || selectedId.value !== libraryId) return;
-    notice.value = scanNotice(final);
+    notice.value = isTerminalScan(final)
+      ? scanNotice(final)
+      : "扫描仍在执行，页面已停止自动等待，请点击“刷新媒体库”核对状态；完成前不能执行 STRM 和清理";
   } catch (exception) {
     setError(exception, "媒体库扫描失败");
   } finally {
@@ -493,7 +495,8 @@ async function scanLibrary() {
 }
 
 async function syncStrm(action: "full" | "incremental") {
-  if (!selected.value || !scan.value || !readyForSync.value || busy.value) return;
+  const capabilityAvailable = action === "full" ? strmFullAvailable.value : strmIncrementalAvailable.value;
+  if (!selected.value || !scan.value || !readyForSync.value || !capabilityAvailable || busy.value) return;
   busy.value = true;
   error.value = "";
   notice.value = "";
@@ -508,6 +511,9 @@ async function syncStrm(action: "full" | "incremental") {
     if (operation.status === "succeeded") {
       latestResult.value = result;
       notice.value = operationStatusMessage(operation, action);
+    } else if (operation.status === "queued" || operation.status === "running") {
+      latestResult.value = null;
+      notice.value = operationPollingTimeoutMessage(operation, action);
     } else {
       latestResult.value = null;
       error.value = operationStatusMessage(operation, action);
@@ -546,7 +552,20 @@ async function pollStrmOperation(
     }
     return operation;
   }
-  return latestOperation.value;
+  const current = latestOperation.value;
+  if (current && (current.status === "queued" || current.status === "running")) {
+    notice.value = operationPollingTimeoutMessage(current, action);
+  }
+  return current;
+}
+
+function operationPollingTimeoutMessage(
+  operation: Pick<StrmOperationResponse, "status">,
+  action: "full" | "incremental",
+): string {
+  const label = action === "full" ? "全量" : "增量";
+  const state = operation.status === "queued" ? "排队中" : "执行中";
+  return `STRM ${label}同步仍在${state}，页面已停止自动等待，请刷新状态核对结果；确认前不要恢复执行`;
 }
 
 function operationStatusMessage(
@@ -624,12 +643,13 @@ async function retryLatestOperation() {
     || (operation.status !== "failed" && operation.status !== "cancelled")
     || busy.value
   ) return;
+  const action = operation.kind === "incremental" ? "incremental" : "full";
+  if (action === "full" ? !strmFullAvailable.value : !strmIncrementalAvailable.value) return;
   busy.value = true;
   error.value = "";
   notice.value = "";
   operationDetailOpen.value = false;
   const pollGeneration = ++operationPollGeneration;
-  const action = operation.kind === "incremental" ? "incremental" : "full";
   try {
     const resumed = await props.api.resumeStrmOperation(operation.operation_id);
     latestOperation.value = resumed;
@@ -650,6 +670,9 @@ async function retryLatestOperation() {
         retired: terminal.retired,
       };
       notice.value = operationStatusMessage(terminal, action);
+    } else if (terminal.status === "queued" || terminal.status === "running") {
+      latestResult.value = null;
+      notice.value = operationPollingTimeoutMessage(terminal, action);
     } else {
       latestResult.value = null;
       error.value = operationStatusMessage(terminal, action);
@@ -692,7 +715,7 @@ async function confirmCleanup() {
 
 async function applyCleanup(): Promise<void> {
   const plan = cleanupPlan.value;
-  if (!plan || plan.status !== "needs_review" || plan.executable_count === 0 || busy.value) return;
+  if (!plan || plan.status !== "needs_review" || plan.executable_count === 0 || !strmCleanupAvailable.value || busy.value) return;
   busy.value = true;
   error.value = "";
   notice.value = "";
@@ -744,7 +767,7 @@ async function confirmEmptyDirectoryCleanup() {
 
 async function applyEmptyDirectoryCleanup(): Promise<void> {
   const plan = emptyCleanupPlan.value;
-  if (!plan || plan.status !== "needs_review" || plan.executable_count === 0 || busy.value) return;
+  if (!plan || plan.status !== "needs_review" || plan.executable_count === 0 || !emptyDirectoryCleanupAvailable.value || busy.value) return;
   busy.value = true;
   error.value = "";
   notice.value = "";
@@ -845,8 +868,8 @@ onBeforeUnmount(() => {
       <button class="icon-button" type="button" title="刷新媒体库" aria-label="刷新媒体库" :disabled="loading || busy" @click="loadLibraries()"><RefreshCw :size="17" :class="{ spin: loading }" /></button>
     </header>
 
-    <p v-if="error" class="error-strip"><Ban :size="16" />{{ error }}</p>
-    <p v-if="notice" class="success-strip"><Check :size="16" />{{ notice }}</p>
+    <p v-if="error" class="error-strip" role="alert"><Ban :size="16" />{{ error }}</p>
+    <p v-if="notice" class="success-strip" role="status"><Check :size="16" />{{ notice }}</p>
 
     <div class="library-workbench-layout">
       <aside class="library-scope-panel">
@@ -890,14 +913,14 @@ onBeforeUnmount(() => {
           <p v-if="!strmCleanupAvailable" class="library-capability-note"><Ban :size="15" />{{ strmCleanupCapability?.reason_zh || "STRM 失效清理当前不可用。" }}<button class="text-button" type="button" @click="openCapabilitySettings(strmCleanupCapability, 'overview')"><SlidersHorizontal :size="14" />前往设置</button></p>
           <p v-if="!emptyDirectoryCleanupAvailable" class="library-capability-note"><Trash2 :size="15" />{{ emptyDirectoryCleanupCapability?.reason_zh || "空目录回收当前不可用。" }}<button class="text-button" type="button" @click="openCapabilitySettings(emptyDirectoryCleanupCapability, 'organization')"><SlidersHorizontal :size="14" />前往自动整理设置</button></p>
         </div>
-        <p v-if="busy" class="library-progress"><LoaderCircle class="spin" :size="16" />正在处理当前媒体库</p>
+        <p v-if="busy" class="library-progress" role="status"><LoaderCircle class="spin" :size="16" />正在处理当前媒体库</p>
         <div v-if="latestResult" class="library-result"><strong>最近一次同步</strong><span>生成 {{ latestResult.generated }}</span><span>未变化 {{ latestResult.unchanged }}</span><span>跳过 {{ latestResult.skipped }}</span><span>失败 {{ latestResult.failed }}</span><span>退休 {{ latestResult.retired }}</span></div>
         <section v-if="latestOperation" class="library-operation-section" :class="`is-${latestOperation.status}`">
           <div class="library-section-heading"><div><p class="eyebrow">持久操作状态</p><h3>{{ operationLabels[latestOperation.kind] }}</h3></div><strong>{{ strmOperationStatusLabel(latestOperation) }}</strong></div>
           <div class="library-operation-stats"><span>生成 {{ latestOperation.generated }}</span><span>未变化 {{ latestOperation.unchanged }}</span><span>跳过 {{ latestOperation.skipped }}</span><span>失败 {{ latestOperation.failed }}</span><span>退休 {{ latestOperation.retired }}</span></div>
           <p class="library-operation-next-step">下一步：{{ strmOperationNextStep(latestOperation) }}</p>
           <p v-if="operationError(latestOperation)" class="library-operation-error">{{ operationError(latestOperation) }}</p>
-          <div class="library-operation-actions"><button class="text-button" type="button" @click="operationDetailOpen = !operationDetailOpen">{{ operationDetailOpen ? "收起详情" : "查看详情" }}</button><button v-if="['queued', 'running'].includes(latestOperation.status)" class="text-button" type="button" @click="requestCancelLatestOperation"><Ban :size="14" />取消操作</button><button v-if="['failed', 'cancelled'].includes(latestOperation.status) && latestOperation.kind !== 'cleanup'" class="text-button" type="button" @click="retryLatestOperation"><RefreshCw :size="14" />恢复执行</button><button class="text-button" type="button" @click="refreshLatestOperation"><RefreshCw :size="14" />刷新状态</button></div>
+          <div class="library-operation-actions"><button class="text-button" type="button" @click="operationDetailOpen = !operationDetailOpen">{{ operationDetailOpen ? "收起详情" : "查看详情" }}</button><button v-if="['queued', 'running'].includes(latestOperation.status)" class="text-button" type="button" @click="requestCancelLatestOperation"><Ban :size="14" />取消操作</button><button v-if="['failed', 'cancelled'].includes(latestOperation.status) && latestOperation.kind !== 'cleanup'" class="text-button" type="button" :disabled="busy || (latestOperation.kind === 'incremental' ? !strmIncrementalAvailable : !strmFullAvailable)" :title="actionReason(latestOperation.kind === 'incremental' ? 'incremental' : 'full')" @click="retryLatestOperation"><RefreshCw :size="14" />恢复执行</button><button class="text-button" type="button" @click="refreshLatestOperation"><RefreshCw :size="14" />刷新状态</button></div>
           <div v-if="operationDetailOpen" class="library-operation-detail"><small>操作标识：{{ diagnosticReference(latestOperation.operation_id) }}</small><small>创建 {{ new Date(latestOperation.created_at).toLocaleString() }}</small><small v-if="latestOperation.finished_at">结束 {{ new Date(latestOperation.finished_at).toLocaleString() }}</small></div>
         </section>
          <section v-if="cleanupPlan" class="library-cleanup-plan" :class="`is-${cleanupPlan.status}`">

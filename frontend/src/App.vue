@@ -1534,10 +1534,10 @@ onBeforeUnmount(() => {
     <p v-if="!isOnline" class="offline-strip" role="status">当前处于离线状态，仅显示最近一次只读摘要；写操作已暂停。</p>
     <p v-else-if="offlineDataAt" class="offline-data-strip" role="status">网络已恢复，之前显示过离线缓存（{{ new Date(offlineDataAt).toLocaleString('zh-CN') }}）。</p>
 
-    <section v-if="!authenticated" class="auth-gate"><div class="auth-mark"><LogIn :size="20" /></div><p class="eyebrow">私有工作区</p><h1>进入观影工作台</h1><p>你的 PanSou 聚合和 115 推送只在本地网络可见。</p><form @submit.prevent="login"><label for="password">Web 密码</label><input id="password" name="password" v-model="password" type="password" autocomplete="current-password" placeholder="输入访问密码" /><button class="primary-button" type="submit"><LogIn :size="17" />登录</button></form><p v-if="error" class="error-text">{{ error }}</p></section>
+    <section v-if="!authenticated" class="auth-gate"><div class="auth-mark"><LogIn :size="20" /></div><p class="eyebrow">私有工作区</p><h1>进入观影工作台</h1><p>你的 PanSou 聚合和 115 推送只在本地网络可见。</p><form @submit.prevent="login"><label for="password">Web 密码</label><input id="password" name="password" v-model="password" type="password" autocomplete="current-password" placeholder="输入访问密码" /><button class="primary-button" type="submit"><LogIn :size="17" />登录</button></form><p v-if="error" class="error-text" role="alert">{{ error }}</p></section>
 
     <template v-else>
-      <p v-if="error" class="error-strip"><X :size="16" />{{ error }}</p>
+      <p v-if="error" class="error-strip" role="alert"><X :size="16" />{{ error }}</p>
       <template v-if="!result && !loading">
         <HomeView v-if="activeView === 'home'" :catalog="homeCatalog" :loading="catalogLoading" :favorite-ids="favoriteIds" @open="openMovie" @favorite="toggleFavorite" @navigate="selectView" />
         <LibraryView v-else-if="activeView === 'movies' || activeView === 'tv'" :movies="catalogMovies" :loading="catalogLoading" :favorite-ids="favoriteIds" :genre-id="genreId" :year="year" :sort="sort" :media-type="activeView" :page="currentPage" :total-pages="totalPages" :total-results="totalResults" @open="openMovie" @favorite="toggleFavorite" @filters="loadDiscover" @page="loadPage" />
