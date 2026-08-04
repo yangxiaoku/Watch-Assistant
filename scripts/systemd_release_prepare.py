@@ -24,6 +24,7 @@ from release_manifest import (
     validate_build_manifest_file,
     validate_version_commit_file,
 )
+from systemd_unit import SystemdUnitError, validate_package_unit
 
 from watch_assistant.release_metadata import (
     normalize_full_release,
@@ -45,6 +46,8 @@ DEFAULT_REQUIRED_PATHS = (
     "scripts/systemd_release_update.py",
     "scripts/postdeploy_release_check.py",
     "scripts/release_manifest.py",
+    "scripts/systemd_unit.py",
+    "scripts/systemd_backup.py",
     "scripts/release_startup_smoke.py",
 )
 _TOP_LEVEL_MODE = 0o755
@@ -158,14 +161,22 @@ def _validate_required_path(relative: str, path: Path) -> None:
 
 def _validate_release_manifest(path: Path, expected_release: str) -> None:
     try:
-        validate_build_manifest_file(
+        payload = validate_build_manifest_file(
             path,
             expected_commit=expected_release,
             expected_short_commit=expected_release[:7],
             expected_branch="codex/publish-main",
+            require_unit_sha256=True,
         )
     except ReleaseManifestError as exc:
         raise ReleasePrepareError(f"release_manifest_{exc.code}") from None
+    try:
+        validate_package_unit(
+            path.parent,
+            expected_sha256=payload["unit_sha256"],
+        )
+    except SystemdUnitError as exc:
+        raise ReleasePrepareError(exc.code) from None
 
 
 def _validate_parent_traversal(release_root: Path) -> None:
@@ -386,6 +397,19 @@ def _message(code: str) -> str:
         "release_root_mode_update_failed": "发布根目录权限规范化失败。",
         "release_root_mode_invalid": "发布根目录权限校验失败。",
         "service_user_unavailable": "无法解析 systemd 服务用户。",
+        "unit_source_owner": "发布包 unit 所有者不符合要求。",
+        "unit_source_group": "发布包 unit 组不符合要求。",
+        "unit_source_mode": "发布包 unit 权限不符合要求。",
+        "unit_source_content": "发布包 unit 内容不符合 systemd 契约。",
+        "unit_source_sha256_mismatch": "发布包 unit 摘要与清单不一致。",
+        "unit_destination_scope": "systemd unit 目标路径超出允许范围。",
+        "unit_destination_owner": "现有 systemd unit 所有者不符合要求。",
+        "unit_destination_group": "现有 systemd unit 组不符合要求。",
+        "unit_destination_mode": "现有 systemd unit 权限不符合要求。",
+        "unit_missing": "现有 systemd unit 缺失。",
+        "unit_drift": "现有 systemd unit 与发布包不一致。",
+        "unit_drop_in_present": "检测到未受管 systemd drop-in。",
+        "unit_drop_in_scope": "systemd drop-in 目录超出允许范围。",
     }
     if code.startswith("release_manifest_"):
         return "发布来源证明校验失败。"

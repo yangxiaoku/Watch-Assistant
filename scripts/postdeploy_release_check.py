@@ -23,7 +23,12 @@ if SRC_ROOT.is_dir():
 if SCRIPTS_ROOT.is_dir():
     sys.path.insert(0, str(SCRIPTS_ROOT))
 
-from release_manifest import ReleaseManifestError, validate_version_commit_file
+from release_manifest import (
+    ReleaseManifestError,
+    validate_build_manifest_file,
+    validate_version_commit_file,
+)
+from systemd_unit import SystemdUnitError, verify_installed_unit
 
 from watch_assistant.release_metadata import (
     normalize_full_release,
@@ -209,6 +214,10 @@ def check_release_consistency(
     expected_release: str | None = None,
     diagnostics_url: str | None = None,
     diagnostics_token: str | None = None,
+    unit_path: Path | None = None,
+    drop_in_dir: Path | None = None,
+    unit_uid: int = 0,
+    unit_gid: int = 0,
     timeout: float = 5.0,
     health_timeout: float = DEFAULT_HEALTH_TIMEOUT,
     health_poll_interval: float = DEFAULT_HEALTH_POLL_INTERVAL,
@@ -232,6 +241,35 @@ def check_release_consistency(
         return False, "current_release_mismatch"
     if stale_drop_in is not None and stale_drop_in.exists():
         return False, "stale_release_drop_in"
+    expected_unit_sha256: str | None = None
+    if unit_path is not None:
+        try:
+            manifest = validate_build_manifest_file(
+                current_root / "release-manifest.json",
+                expected_commit=expected,
+                expected_short_commit=expected[:7]
+                if len(expected) == 40
+                else None,
+                expected_branch="codex/publish-main",
+                require_unit_sha256=True,
+            )
+        except ReleaseManifestError:
+            return False, "unit_manifest_invalid"
+        value = manifest.get("unit_sha256")
+        if not isinstance(value, str):
+            return False, "unit_manifest_invalid"
+        expected_unit_sha256 = value
+        try:
+            verify_installed_unit(
+                current_root,
+                destination=unit_path,
+                expected_sha256=expected_unit_sha256,
+                unit_uid=unit_uid,
+                unit_gid=unit_gid,
+                drop_in_dir=drop_in_dir,
+            )
+        except SystemdUnitError as exc:
+            return False, exc.code
     try:
         result = subprocess.run(
             [
@@ -292,6 +330,8 @@ def main() -> int:
     parser.add_argument("--health-url", required=True)
     parser.add_argument("--systemctl-bin", default="systemctl")
     parser.add_argument("--stale-drop-in", type=Path)
+    parser.add_argument("--unit-path", type=Path)
+    parser.add_argument("--drop-in-dir", type=Path)
     parser.add_argument("--release-env", type=Path, default=_DEFAULT_RELEASE_ENV)
     parser.add_argument("--current-root", type=Path)
     parser.add_argument("--expected-release")
@@ -315,6 +355,8 @@ def main() -> int:
         expected_release=args.expected_release,
         diagnostics_url=args.diagnostics_url,
         diagnostics_token=os.environ.get("WATCH_ASSISTANT_DIAGNOSTICS_TOKEN"),
+        unit_path=args.unit_path,
+        drop_in_dir=args.drop_in_dir,
         timeout=args.timeout,
         health_timeout=args.health_timeout,
         health_poll_interval=args.health_poll_interval,

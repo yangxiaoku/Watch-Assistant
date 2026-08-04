@@ -3,10 +3,11 @@ set -euo pipefail
 
 ROOT_DIR="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-COMMAND="${1:?usage: deploy_systemd_release.sh RELEASE_ROOT EXPECTED_RELEASE | rollback --confirm}"
+COMMAND="${1:?usage: deploy_systemd_release.sh RELEASE_ROOT EXPECTED_RELEASE [--install-unit] | rollback --confirm}"
 
 RELEASE_ENV="${WATCH_ASSISTANT_RELEASE_ENV:-/var/lib/watch-assistant/release.env}"
-DROP_IN="${WATCH_ASSISTANT_RELEASE_DROP_IN:-/etc/systemd/system/watch-assistant.service.d/release.conf}"
+UNIT_PATH="/etc/systemd/system/watch-assistant.service"
+DROP_IN_DIR="/etc/systemd/system/watch-assistant.service.d"
 CURRENT_ROOT="${WATCH_ASSISTANT_CURRENT_ROOT:-/opt/watch-assistant/current}"
 RELEASES_ROOT="${WATCH_ASSISTANT_RELEASES_ROOT:-/opt/watch-assistant/releases}"
 STATE_FILE="${WATCH_ASSISTANT_RELEASE_STATE:-/var/lib/watch-assistant/release-rollback.json}"
@@ -18,6 +19,16 @@ HEALTH_POLL_INTERVAL="${WATCH_ASSISTANT_HEALTH_POLL_INTERVAL_SECONDS:-1}"
 PYTHON_BIN="${WATCH_ASSISTANT_PYTHON:-/opt/watch-assistant/venv/bin/python}"
 SYSTEMCTL_BIN="${WATCH_ASSISTANT_SYSTEMCTL:-systemctl}"
 UPDATE_SCRIPT_SUFFIX="update"
+INSTALL_UNIT=false
+INSTALL_ARGS=()
+case "${WATCH_ASSISTANT_INSTALL_UNIT:-0}" in
+    1|true|TRUE|yes|YES) INSTALL_UNIT=true ;;
+    0|false|FALSE|no|NO|"") ;;
+    *)
+        echo "deployment refused: WATCH_ASSISTANT_INSTALL_UNIT must be 1 or 0" >&2
+        exit 2
+        ;;
+esac
 
 postdeploy_check() {
     local check_script="$1"
@@ -36,12 +47,13 @@ postdeploy_check() {
         --health-poll-interval "$HEALTH_POLL_INTERVAL" \
         --release-env "$RELEASE_ENV" \
         --current-root "$CURRENT_ROOT" \
-        --stale-drop-in "$DROP_IN" \
+        --unit-path "$UNIT_PATH" \
+        --drop-in-dir "$DROP_IN_DIR" \
         --diagnostics-url "$DIAGNOSTICS_URL"
 }
 
 if [[ "$COMMAND" == "rollback" ]]; then
-    if [[ "${2:-}" != "--confirm" ]]; then
+    if [[ "${2:-}" != "--confirm" || "$#" -ne 2 ]]; then
         echo "rollback refused: explicit --confirm is required" >&2
         exit 2
     fi
@@ -56,7 +68,9 @@ if [[ "$COMMAND" == "rollback" ]]; then
         --release-env "$RELEASE_ENV" \
         --current-root "$CURRENT_ROOT" \
         --state-file "$STATE_FILE" \
-        --allowed-releases-root "$RELEASES_ROOT"
+        --allowed-releases-root "$RELEASES_ROOT" \
+        --unit-path "$UNIT_PATH" \
+        --drop-in-dir "$DROP_IN_DIR"
     "$SYSTEMCTL_BIN" daemon-reload
     "$SYSTEMCTL_BIN" restart watch-assistant.service
     postdeploy_check "$TOOL_ROOT/scripts/postdeploy_release_check.py" \
@@ -66,6 +80,19 @@ fi
 
 RELEASE_ROOT="$COMMAND"
 EXPECTED_RELEASE="${2:-${WATCH_ASSISTANT_EXPECTED_RELEASE:-}}"
+shift 2 || true
+while [[ $# -gt 0 ]]; do
+    if [[ "$1" == "--install-unit" ]]; then
+        INSTALL_UNIT=true
+    else
+        echo "deployment refused: unknown option" >&2
+        exit 2
+    fi
+    shift
+done
+if [[ "$INSTALL_UNIT" == true ]]; then
+    INSTALL_ARGS+=(--install-unit)
+fi
 if [[ ! "$EXPECTED_RELEASE" =~ ^[0-9a-fA-F]{40}$ ]]; then
     echo "deployment refused: EXPECTED_RELEASE must be a full git SHA" >&2
     exit 2
@@ -92,7 +119,9 @@ fi
     --current-root "$CURRENT_ROOT" \
     --state-file "$STATE_FILE" \
     --allowed-releases-root "$RELEASES_ROOT" \
-    --stale-drop-in "$DROP_IN"
+    --unit-path "$UNIT_PATH" \
+    --drop-in-dir "$DROP_IN_DIR" \
+    "${INSTALL_ARGS[@]}"
 
 rollback_after_failure() {
     local reason="$1"
@@ -103,7 +132,9 @@ rollback_after_failure() {
         --release-env "$RELEASE_ENV" \
         --current-root "$CURRENT_ROOT" \
         --state-file "$STATE_FILE" \
-        --allowed-releases-root "$RELEASES_ROOT"
+        --allowed-releases-root "$RELEASES_ROOT" \
+        --unit-path "$UNIT_PATH" \
+        --drop-in-dir "$DROP_IN_DIR"
     local rollback_code=$?
     "$SYSTEMCTL_BIN" daemon-reload
     local reload_code=$?

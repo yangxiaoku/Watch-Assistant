@@ -1,3 +1,4 @@
+import hashlib
 import importlib.util
 import json
 import os
@@ -21,6 +22,8 @@ PREPARE_PATHS = (
     "scripts/systemd_release_update.py",
     "scripts/postdeploy_release_check.py",
     "scripts/release_manifest.py",
+    "scripts/systemd_unit.py",
+    "scripts/systemd_backup.py",
     "scripts/release_startup_smoke.py",
 )
 
@@ -56,6 +59,10 @@ def _write_release(
         "branch=codex/publish-main\n",
         encoding="utf-8",
     )
+    unit_source = ROOT / "deploy" / "watch-assistant.service"
+    unit_path = release_root / "deploy" / "watch-assistant.service"
+    unit_path.write_bytes(unit_source.read_bytes())
+    unit_sha256 = hashlib.sha256(unit_path.read_bytes()).hexdigest()
     (release_root / "release-manifest.json").write_text(
         json.dumps(
             {
@@ -64,6 +71,7 @@ def _write_release(
                 "short_commit": commit[:7],
                 "source_sha256": "a" * 64,
                 "frontend_sha256": "b" * 64,
+                "unit_sha256": unit_sha256,
                 "build_time": "2026-08-02T00:00:00Z",
                 "branch": "codex/publish-main",
             }
@@ -78,7 +86,12 @@ def _write_release(
     )
     for relative in PREPARE_PATHS[1:]:
         path = release_root / relative
-        if relative in {"release-manifest.json", "frontend/dist/index.html", "src/watch_assistant"}:
+        if relative in {
+            "release-manifest.json",
+            "frontend/dist/index.html",
+            "src/watch_assistant",
+            "deploy/watch-assistant.service",
+        }:
             continue
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("#!/bin/sh\n", encoding="utf-8")
