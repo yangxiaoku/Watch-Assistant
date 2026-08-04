@@ -17,6 +17,23 @@ if [[ "$BRANCH_NAME" != "$RELEASE_BRANCH" ]]; then
     echo "release refused: packages must be built from ${RELEASE_BRANCH}" >&2
     exit 1
 fi
+REMOTE_REF="refs/heads/${RELEASE_BRANCH}"
+if ! REMOTE_PUBLISH_COMMIT="$(
+    git ls-remote --exit-code origin "$REMOTE_REF" 2>/dev/null |
+        awk -v expected_ref="$REMOTE_REF" 'NF == 2 && $2 == expected_ref { print $1 }'
+)"; then
+    echo "release refused: remote ${RELEASE_BRANCH} could not be verified" >&2
+    exit 1
+fi
+REMOTE_PUBLISH_COMMIT="$(printf '%s' "$REMOTE_PUBLISH_COMMIT" | tr '[:upper:]' '[:lower:]')"
+if [[ ! "$REMOTE_PUBLISH_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "release refused: remote ${RELEASE_BRANCH} returned an invalid commit" >&2
+    exit 1
+fi
+if [[ "$REMOTE_PUBLISH_COMMIT" != "$EXPECTED_COMMIT" ]]; then
+    echo "release refused: expected commit is not the current remote ${RELEASE_BRANCH}" >&2
+    exit 1
+fi
 if ! PUBLISH_COMMIT="$(git rev-parse --verify "refs/remotes/origin/${RELEASE_BRANCH}" 2>/dev/null)"; then
     echo "release refused: origin/${RELEASE_BRANCH} is unavailable" >&2
     exit 1
