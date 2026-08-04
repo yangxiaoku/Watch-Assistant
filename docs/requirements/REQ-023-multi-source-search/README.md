@@ -5,7 +5,7 @@
 | 版本 | V1.0 |
 | 状态 | 待验收 |
 | 创建日期 | 2026-07-26 |
-| 更新日期 | 2026-08-03 |
+| 更新日期 | 2026-08-04 |
 | 负责人 | 待指定 |
 | 优先级 | P0 |
 | 依赖 | REQ-004、REQ-005、统一资源模型 |
@@ -25,9 +25,15 @@
   证据见 [Prowlarr 契约测试](../../../tests/contracts/test_prowlarr_contract.py)、
   [Prowlarr 适配器测试](../../../tests/integration/test_prowlarr_adapter.py) 和
   [来源设置 API 测试](../../../tests/integration/test_prowlarr_settings_api.py)。
-- live indexer 可搜索/生产验收：未完成。上述离线契约测试不证明存在可搜索的真实 indexer，也不证明 Prowlarr 已在生产配置。
-  当前真实来源验证仍被 Internet Archive 上游 timeout 阻断，尚无已验收的可搜索真实来源配置，
-  也未完成生产来源对照或部署验收，因此本需求仍未上线。
+- 受限 live evidence（2026-08-04）：Prowlarr 版本为 `2.5.2.5491`。官方内置 schema 共筛得 622 个来源定义，其中
+  85 个符合 `public+torrent`，83 个支持 search；按本次明确授权和内容边界筛选后，唯一选用 `LinuxTracker`，其公开说明限定为
+  Linux ISO torrent 分发，且不要求外部凭据。官方 test 返回 HTTP `200`，create 返回 HTTP `201`；当前 Prowlarr indexer 为 1 个、启用 1 个，
+  `indexerstatus` 异常项为 0。
+- 受限搜索与聚合：LinuxTracker 搜索返回 17 个 torrent 结果。Watch Assistant `SearchService` 使用真实 PanSou/Prowlarr 客户端和隔离临时 SQLite
+  完成聚合，结果为 `complete=True`、`warnings=none`、PanSou `0`、Prowlarr `17`、canonical `17`。本次运行时来源为 PanSou 加 1 个 Prowlarr 来源；
+  认证材料仅在远端进程内使用，本文不记录配置内容。
+- 授权边界和剩余验收：本次证据只覆盖公开 Linux ISO 分发，不代表电影/电视剧召回率、95% 召回基线、广泛来源质量或生产 HTTP 鉴权路由已验证，
+  也不替代完整来源对照和部署验收。因此本需求总体状态仍为“待验收”，不能表述为完整影视搜索能力已上线。
 
 ## 2. 背景与问题
 

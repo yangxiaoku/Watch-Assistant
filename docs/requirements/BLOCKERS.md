@@ -1,12 +1,12 @@
 # 需求阻断记录
 
-更新时间：2026-08-03（当前发布状态复核；各项历史证据日期按原记录保留）
+更新时间：2026-08-04（当前发布状态复核；各项历史证据日期按原记录保留）
 
 本记录用于按需求优先级推进时记录无法安全继续的事项。阻断某项需求后，继续处理不依赖该阻断的需求；未完成的能力不得描述为已上线。
 
 当前发布核对只认唯一发布分支 `codex/publish-main`；发布前执行 `git fetch origin`，再用
-`git rev-parse origin/codex/publish-main` 获取实际最新基线。本轮文档复核未生成发布包、未部署，
-也未核对生产服务器，因此不能把当前代码、离线测试或历史健康记录写成生产完成。
+`git rev-parse origin/codex/publish-main` 获取实际最新基线。本轮文档收口未生成发布包、未部署；此前已在明确授权的受限范围内完成
+REQ-023 的 Prowlarr/PanSou live evidence。该证据不覆盖生产部署、电影/电视剧召回或其他需求的生产验收。
 
 当前发布基线的 commit 必须在发布前通过 `git fetch --all --prune` 和 `git rev-parse origin/codex/publish-main` 动态解析；本文不硬编码当前发布 SHA。当前 first-parent 已包含 PR #44-#61，分别覆盖审查、搜索 readiness、库存/整理范围、STRM 清理/提交门禁、前端工作台、发布门禁、可靠性加固、基线文档同步、动态基线解析、通知失败矩阵、发布后文档、workflow 证据、任务 worker fencing、p115 整理 readiness、验证证据、STRM 清理 readiness、Prowlarr live readiness 和前端工作台。
 这些代码和离线证据不关闭 p115 live、生产媒体库整理、STRM 播放/清理、部署或生产验收阻断，永久删除继续关闭。
@@ -75,7 +75,7 @@
 | REQ-024 | 第一阶段完成，升级执行阶段阻断 | 只读诊断已能核对应用版本、运行时、SQLite 完整性、迁移清单及外部组件脱敏状态；但升级源、签名/摘要、前后端/CLI/MCP 兼容矩阵和维护期间任务排空契约尚未冻结，无法安全实现升级、迁移覆盖或回退。 | 冻结可信发布元数据格式、目标版本兼容矩阵、升级批准 Scope、维护模式状态机和恢复检查点演练；在此之前仅允许读取诊断和本地备份。 |
 | REQ-014 | 第一阶段完成，媒体/云端联动阻断 | 字幕分析接口只处理受限文件名，不读取正文、不接收路径、不访问外部字幕源；内封轨道信息需要真实媒体探测，STRM 同步需要 REQ-002 播放/清理契约，视频移动后的跨版本关联需要 REQ-001/010 稳定库存身份。 | 提供受控媒体样本和内封轨道工具契约，冻结字幕与视频版本、STRM 同步和外部来源权限后，再实现正文不落盘的轨道检测和同步计划。 |
 | REQ-029 | 第一阶段完成，完整业务联动阻断 | 季度详情已独立于资源搜索缓存并支持语言回退、stale 标记和旧响应丢弃；但完整度矩阵依赖 REQ-010/011 稳定库存，订阅日历依赖 REQ-007，动漫集序依赖 REQ-025，真实多季资料和移动端视觉验收尚未完成。 | 冻结季度详情与库存/订阅/动漫映射的统一身份，提供受控多季样本并完成桌面/360px 移动端验收；在此前只开放季度资料读取。 |
-| REQ-023 | 离线 readiness 已具备，真实来源阻断 | Prowlarr 离线契约已通过 [PR #19](https://github.com/yangxiaoku/Watch-Assistant/pull/19) 和 [PR #29](https://github.com/yangxiaoku/Watch-Assistant/pull/29)，当前基线又由 [PR #45](https://github.com/yangxiaoku/Watch-Assistant/pull/45) 加固，测试见 [`test_prowlarr_contract.py`](../../tests/contracts/test_prowlarr_contract.py)。真实来源 live 仍被 Internet Archive 上游 timeout 阻断，当前不能写成已配置可搜索来源，也不能用 fake 来源冒充生产召回证据。 | 提供可用且获授权的真实来源，排除或记录上游 timeout，完成来源对照、健康/熔断、跨来源去重和生产验收。 |
+| REQ-023 | 受限 live 已完成，完整影视召回仍阻断 | Prowlarr 离线契约已通过 [PR #19](https://github.com/yangxiaoku/Watch-Assistant/pull/19) 和 [PR #29](https://github.com/yangxiaoku/Watch-Assistant/pull/29)，当前基线又由 [PR #45](https://github.com/yangxiaoku/Watch-Assistant/pull/45) 加固。Prowlarr `2.5.2.5491` 的官方 test 返回 HTTP `200`、create 返回 HTTP `201`；按明确授权和内容边界，唯一选用的公开来源为 `LinuxTracker`，当前 1 个 indexer 启用 1 个，`indexerstatus` 异常项为 0，受限 search 返回 17 个 torrent。Watch Assistant 聚合为 `complete=True`、`warnings=none`、PanSou `0`、Prowlarr `17`、canonical `17`。授权范围仅覆盖公开 Linux ISO 分发；电影/电视剧召回率、95% 基线、广泛来源质量、完整来源对照和生产 HTTP 鉴权路由仍未验证，REQ-023 不能关闭。 | 在不扩大授权边界的前提下，补齐受控电影/电视剧样本、95% 召回基线、来源质量/对照和生产 HTTP 鉴权路由验收；继续保持未验证范围不进入生产承诺。 |
 | REQ-019 | 阶段实现，真实投递验收阻断 | 已完成 HTTPS/DNS 私网拦截、端点独立加密 Secret、版本化事件 envelope、HMAC 签名、持久 Outbox、指数重试、死信状态和管理员手动重试；端点列表新增由成功/失败历史派生的 `health_status`，DNS SSRF 及重试状态回归通过。当前没有受控 HTTPS 接收端证书/地址，真实接收端篡改/重放/重启恢复和完整事件矩阵尚未验收，证据见 `evidence/req-019-021-external-fixtures-blocked-20260729.md`。 | 提供受控 HTTPS 接收端完成签名/重放/重启恢复验收，并补齐完整事件矩阵后再开放自动发送。 |
 | REQ-020 | 第二阶段部分完成，HTTPS/恢复/兼容性阻断 | 已实现只读 MCP HTTP JSON-RPC 与 stdio 适配、allow-list Resources/Tools、Scope/媒体库二次校验、任务/通知/工作流/整理计划分页、整理操作查询、digest/confirm/幂等排队工具、结构化结果/错误、调用审计和每身份调用限流；本轮修复 stdio 非对象输入、HTTP 错误和非对象响应导致的会话崩溃/非结构化输出，证据见 `evidence/req-020-stdio-contract-20260729.json`。受控远端 HTTP loopback Agent/MCP 验收是历史环境证据，MCP 写工具复用本地 operation service，未绕过业务执行器。Tailscale Serve 被 tailnet 策略阻止，远程 HTTPS、断线/重启恢复和完整兼容性验收仍缺失，证据见 `evidence/req-020-https-blocked-20260729.md`。 | 由 tailnet 管理员启用 Tailscale Serve 或提供受控反向代理证书和地址，再演练断线与服务重启后的任务/Token 语义，完成 CLI/MCP 兼容性矩阵和真实服务验收；真实 115 写入继续由独立 transport/worker 门控。 |
 | REQ-021 | 第二阶段部分完成，Push/跨平台验收阻断 | 已实现 Manifest/静态应用壳、健康/任务/通知/workflow 只读网络优先缓存、版本化失效、离线写保护、写请求幂等键和 PWA 设备订阅加密存储/撤销/字段校验，并加入本站 Push 深链安全处理；当前没有 VAPID 配置和真实 Push 设备，Push 实际投递、认证恢复以及 Android/iOS/桌面核心流程和弱网验收仍缺失，证据见 `evidence/req-019-021-external-fixtures-blocked-20260729.md`。 | 提供受控 Push 服务、VAPID 密钥和 Android/iOS/桌面验收设备，完成登录失效后的目标页面恢复、缓存时间展示、三平台和弱网验收；离线继续禁止写操作。 |

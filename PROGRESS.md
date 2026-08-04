@@ -6,14 +6,14 @@
 
 当前 Git 发布基线：唯一发布分支为 `codex/publish-main`；发布前执行 `git fetch origin`，再以
 `git rev-parse origin/codex/publish-main` 的实际解析值为准。本记录不固定可能过期的 commit。
-本轮只在本地核对仓库文档和 Git 状态，未在本地生成 release 包、未执行部署，
-也未对 `192.168.6.236:8115` 做服务器只读核对；同时只读核对了当前 SHA 对应的公开 Actions 页面和工作流结果。
+本轮未在本地生成 release 包、未执行部署；REQ-023 的 Prowlarr/PanSou 受限 live evidence 已在明确授权边界内完成，
+但未覆盖 `192.168.6.236:8115` 的生产应用 HTTP 鉴权路由。只读核对了当前 SHA 对应的公开 Actions 页面和工作流结果，
 因此不能把历史更新日志中的 release 包、健康检查或线上开关直接当作当前生产状态。详细历史核对记录见
 `docs/更新日志-2026-08-02-发布基线核对.md`。生产实际版本和健康状态必须在发布前重新核对。
 
 整理计划和受管夹具写入契约已验收；生产整理写入、永久删除和生产媒体库 STRM 联动仍未开启。
 
-## 2026-08-03 当前基线状态（发布门禁按 SHA 复核，生产未验收）
+## 2026-08-04 当前基线状态（发布门禁按 SHA 复核，REQ-023 受限 live 已验收）
 
 本次执行 `git fetch --all --prune` 后，以 `git rev-parse origin/codex/publish-main` 的实际输出作为本次核对的 commit 身份；本文不再硬编码当前发布 SHA。
 最近合入的 PR #50-#61 仅作为 first-parent 历史记录；后续发布必须重新解析实际 ref，不能引用旧报告中的 commit。
@@ -28,8 +28,9 @@ CI 成功仅证明离线门禁、Compose/发布包校验和发布脚本 readines
   这些提交的代码与离线/受管夹具证据不等于生产整理、生产 STRM、播放兼容性、清理或部署验收。
 - Prowlarr 的离线 readiness 由 [PR #19](https://github.com/yangxiaoku/Watch-Assistant/pull/19)、
   [PR #29](https://github.com/yangxiaoku/Watch-Assistant/pull/29) 和 [PR #45](https://github.com/yangxiaoku/Watch-Assistant/pull/45) 加固，契约见
-  [Prowlarr 契约测试](tests/contracts/test_prowlarr_contract.py)。离线契约通过不等于 live indexer 可搜索；
-  当前仍没有已验收的真实可搜索 indexer 配置，Internet Archive 上游 timeout 仍是阻断项。
+  [Prowlarr 契约测试](tests/contracts/test_prowlarr_contract.py)。受限 live evidence 已验证 Prowlarr `2.5.2.5491`、唯一选用的公开来源 `LinuxTracker`、
+  test HTTP `200`、search `17`、1 个启用 indexer 和 `indexerstatus` 异常项 `0`；聚合为 `complete=True`、`warnings=none`、
+  PanSou `0`、Prowlarr `17`、canonical `17`。授权范围仅覆盖公开 Linux ISO 分发，电影/电视剧召回率、95% 基线、广泛来源质量和生产 HTTP 鉴权路由仍未验证。
 - p115 远程证据仍限于受管夹具、只读或 fail-closed 路径。本轮未执行生产远程验收、真实写入、真实媒体库整理、STRM 播放/清理或生产部署，
   不能把 p115 readiness 写成生产可用性或发布完成。
 - [发布 manifest 测试](tests/unit/test_release_manifest.py)、[部署脚本测试](tests/unit/test_release_deployment_scripts.py)、
@@ -61,8 +62,8 @@ CI 成功仅证明离线门禁、Compose/发布包校验和发布脚本 readines
   门禁控制。固定测试 CID 的组织闭环，以及受管视频夹具的 STRM 范围验证、完整扫描、全量生成、
   改名后的增量对账、恢复和清理验收均已有证据；这些夹具结果不等于生产能力已开启，永久删除保持关闭。
 - 发现与搜索：TMDB 榜单、季度资料、PanSou 聚合、BTIH 校验、质量筛选、缓存和多来源/Prowlarr
-  离线只读 readiness 已合入当前基线；Prowlarr 真实来源仍受 Internet Archive 上游 timeout 阻断，
-  当前不能写成已配置可搜索来源，真实来源对照和生产验收仍按 REQ-023 门禁处理。
+  离线只读 readiness 已合入当前基线；REQ-023 另有受限 live evidence，确认 1 个公开 Linux ISO 来源可测试和搜索并完成 PanSou/Prowlarr 聚合。
+  该证据不覆盖电影/电视剧召回率、95% 基线、广泛来源质量、完整来源对照或生产 HTTP 鉴权路由。
 - 任务与安全：SQLite 状态机、`uncertain` 防重复提交、Web 会话、CSRF、Bearer Token、加密、
   workflow 阶段关联和中文错误映射已合入当前基线。
 - 前端工作台：PR #30 和后续 [PR #32](https://github.com/yangxiaoku/Watch-Assistant/pull/32) 均已合入当前基线；
@@ -88,8 +89,7 @@ CI 成功仅证明离线门禁、Compose/发布包校验和发布脚本 readines
 - `REQ-004`、`REQ-012`、`REQ-019`：结构化日志、站内通知和 Webhook 阶段能力已具备；完整业务
   事件矩阵、真实外部接收端、渠道健康、重试/死信和重放/重启验收仍待完成。
 - `REQ-005`、`REQ-006`、`REQ-023`：搜索召回、qB 检测和来源聚合阶段能力已有离线/受控证据；
-  脱敏 PanSou 对照、真实样本基线、第二真实来源和生产来源验收仍阻断；Prowlarr live 验证当前受
-  Internet Archive 上游 timeout 阻断。
+  REQ-023 已完成公开 Linux ISO 范围内的 Prowlarr live 与 PanSou 聚合验证，但电影/电视剧召回率、95% 基线、广泛来源质量、完整来源对照和生产 HTTP 鉴权路由仍阻断。
 - `REQ-007`、`REQ-008`：订阅调度、观察账本和质量策略阶段能力已具备；自动动作、库存联动、
   确认/拒绝幂等和洗版回滚仍未完成。
 - `REQ-009`：workflow、整理/STRM 阶段关联和安全取消已接入；跨任务关联、完整通知矩阵和所有
@@ -129,9 +129,9 @@ PR #31-#49 已合入本次核对的发布基线，不列入本节；后续分支
 - P115 `errno=990009`：live runner 使用 3 秒重试；live 不进入离线门禁。
 - p115 远程可用性 PR #31 已合入当前基线，但本轮未执行 live 或真实写入；在 live、生产部署和回归证据完成前，相关能力保持未验收。
 - 代码与文档 PR #31-#49 均已合入本次核对的发布基线；这些合入记录和 CI 成功不改变生产版本或验收状态。
-- Prowlarr 离线 readiness 已具备，但离线契约不等于 live indexer 可搜索验收；真实来源仍受 Internet Archive 上游 timeout 阻断，不能据此认定可搜索来源已配置。
+- Prowlarr 离线 readiness 已具备；受限 live evidence 已确认 1 个公开 Linux ISO 来源可测试和搜索，但该结果不等于电影/电视剧召回、95% 基线、广泛来源质量或生产 HTTP 鉴权路由已验收。
 - iPad Cookie：只允许从 `C:\Users\98275\.115ts-secrets\.p115-cookie` 读取，过期会阻断 live。
-- `192.168.6.236`：当前部署和 live 验证的内网单点；本轮未核对实际运行模式、版本、数据目录或
+- `192.168.6.236`：当前部署和 live 验证的内网单点；本轮仅完成 REQ-023 受限来源证据，未核对应用实际运行模式、数据目录或
   反向代理暴露方式。
 - 任何真实 P115 写操作仍需显式 gate、确认、receipt-before-verify 和回滚证据。
 - 离线门禁按 `scripts/verify.sh` 分 unit、integration、contracts 三批执行，避免历史
