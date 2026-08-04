@@ -18,7 +18,8 @@ from watch_assistant.adapters.tmdb import (
     _parse_media,
     build_search_queries,
 )
-from watch_assistant.schemas import MediaType, MovieMetadata
+from watch_assistant.schemas import MediaType, MovieMetadata, ResourceKind
+from watch_assistant.services.normalize import normalize_pansou
 
 
 @respx.mock
@@ -43,6 +44,94 @@ async def test_pansou_client_returns_merged_result_shape():
 
     assert result == {"total": 1, "merged_by_type": {"magnet": []}}
     assert route.called
+
+
+@respx.mock
+async def test_pansou_falls_back_to_result_links_and_filters_unsupported_types():
+    respx.get("http://pansou.test/api/search").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "code": 0,
+                "data": {
+                    "total": 1,
+                    "results": [
+                        {
+                            "title": "Baidu result",
+                            "links": [
+                                {
+                                    "type": "baidu",
+                                    "url": "https://pan.baidu.com/s/synthetic",
+                                    "password": "fixture-password",
+                                    "datetime": "2026-08-04T00:00:00Z",
+                                }
+                            ],
+                        }
+                    ],
+                },
+            },
+        )
+    )
+    client = PanSouClient("http://pansou.test")
+
+    result = await client.search("Baidu only")
+    await client.aclose()
+
+    assert result["merged_by_type"]["baidu"][0]["note"] == "Baidu result"
+    assert normalize_pansou(result, share_domains=("115.com",)) == []
+
+
+@respx.mock
+async def test_pansou_falls_back_to_magnet_and_115_result_links():
+    magnet_hash = "a" * 40
+    magnet_url = f"magnet:?xt=urn:btih:{magnet_hash}"
+    share_url = "https://115.com/s/synthetic-share"
+    respx.get("http://pansou.test/api/search").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "code": 0,
+                "data": {
+                    "total": 2,
+                    "results": [
+                        {
+                            "title": "Fallback magnet",
+                            "links": [
+                                {
+                                    "type": "magnet",
+                                    "url": magnet_url,
+                                    "datetime": "2026-08-04T00:00:00Z",
+                                }
+                            ],
+                        },
+                        {
+                            "title": "Fallback share",
+                            "links": [
+                                {
+                                    "type": "115",
+                                    "url": share_url,
+                                    "password": "fixture-password",
+                                    "datetime": "2026-08-04T00:00:00Z",
+                                }
+                            ],
+                        },
+                    ],
+                },
+            },
+        )
+    )
+    client = PanSouClient("http://pansou.test")
+
+    result = await client.search("Magnet and share")
+    await client.aclose()
+
+    resources = normalize_pansou(result, share_domains=("115.com",))
+    assert {item.kind for item in resources} == {
+        ResourceKind.MAGNET,
+        ResourceKind.SHARE,
+    }
+    share = next(item for item in resources if item.kind == ResourceKind.SHARE)
+    assert share.password == "fixture-password"
 
 
 @respx.mock

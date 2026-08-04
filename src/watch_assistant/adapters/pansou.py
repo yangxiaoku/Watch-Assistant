@@ -95,8 +95,12 @@ class PanSouClient:
         if not isinstance(data, dict):
             raise PanSouError("Unexpected PanSou response shape")
         merged_by_type = data.get("merged_by_type")
-        if merged_by_type is None and data.get("total") == 0:
-            merged_by_type = {}
+        if merged_by_type is None:
+            results = data.get("results")
+            if isinstance(results, list):
+                merged_by_type = _group_result_links(results)
+            elif data.get("total") == 0:
+                merged_by_type = {}
         if not isinstance(merged_by_type, dict):
             raise PanSouError("Unexpected PanSou response shape")
         if not all(isinstance(items, list) for items in merged_by_type.values()):
@@ -160,6 +164,36 @@ class PanSouClient:
     async def aclose(self) -> None:
         if self._owns_client:
             await self._client.aclose()
+
+
+def _group_result_links(results: list[Any]) -> dict[str, list[dict[str, Any]]]:
+    """Adapt result/link responses to the existing normalized input shape."""
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for result in results:
+        if not isinstance(result, dict):
+            continue
+        links = result.get("links")
+        if not isinstance(links, list):
+            continue
+        title = result.get("title")
+        for link in links:
+            if not isinstance(link, dict):
+                continue
+            url = link.get("url")
+            if not isinstance(url, str) or not url.strip():
+                continue
+            category = link.get("type")
+            if not isinstance(category, str) or not category.strip():
+                category = "unknown"
+            item: dict[str, Any] = {"url": url.strip()}
+            if isinstance(title, str) and title.strip():
+                item["note"] = title.strip()
+            for field in ("password", "datetime"):
+                value = link.get(field)
+                if isinstance(value, str):
+                    item[field] = value
+            grouped.setdefault(category.strip(), []).append(item)
+    return grouped
 
 
 def _enrich_magnet_metadata(
