@@ -42,8 +42,10 @@ Cookie 文件或应用内托管设备。分享推送、影视库整理、删除�
   这些改动只代表代码、离线或受管夹具边界，不等于生产整理、生产 STRM、播放兼容性、清理或部署验收。
 - Prowlarr 的离线 readiness 已由 [PR #19](https://github.com/yangxiaoku/Watch-Assistant/pull/19)、
   [PR #29](https://github.com/yangxiaoku/Watch-Assistant/pull/29) 和当前基线的 [PR #45](https://github.com/yangxiaoku/Watch-Assistant/pull/45) 加固，契约证据见
-  [Prowlarr 契约测试](tests/contracts/test_prowlarr_contract.py)。这只证明适配器契约、错误分类和 fail-closed 边界；
-  live indexer 可搜索验收仍未完成，真实来源仍被 Internet Archive 上游 timeout 阻断，不能表述为已配置可搜索来源。
+  [Prowlarr 契约测试](tests/contracts/test_prowlarr_contract.py)。受限 live evidence 已验证 Prowlarr `2.5.2.5491`、唯一选用的公开来源 `LinuxTracker`、
+  官方 test HTTP `200`、search `17`，以及 1 个启用 indexer、`indexerstatus` 异常项 `0`；Watch Assistant 聚合为
+  `complete=True`、`warnings=none`、PanSou `0`、Prowlarr `17`、canonical `17`。授权范围仅覆盖公开 Linux ISO 分发，电影/电视剧召回率、95% 基线、
+  广泛来源质量、完整来源对照和生产 HTTP 鉴权路由仍未验证，不能据此宣称 REQ-023 完整验收或已上线。
 - p115 目前可引用的远程证据仍限于受管夹具、只读或失败关闭路径；本轮未执行生产远程验收、真实写入、真实媒体库整理、STRM 播放/清理或生产部署。
   这些能力继续保持未验收、未上线，不能由 CI 成功或 Cookie readiness 推断为生产可用。
 - 对应离线证据包括 [STRM manifest 单测](tests/unit/test_strm_manifest.py)、[空目录计划单测](tests/unit/test_empty_directory_cleanup_plan.py)、

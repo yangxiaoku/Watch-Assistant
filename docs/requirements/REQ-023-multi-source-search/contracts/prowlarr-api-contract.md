@@ -1,7 +1,8 @@
 # Prowlarr API Contract Evidence
 
-Status: offline test contract only. This document does not claim that Prowlarr
-is connected or that the Watch Assistant adapter is production-ready.
+Status: offline contract plus scoped live evidence. This document records a
+bounded acceptance result and does not claim full production readiness or
+complete film/TV recall.
 
 ## Verified public source
 
@@ -111,22 +112,31 @@ safe `source_observations` containing only normalized source IDs and capture
 times.  Prowlarr query text is intentionally not copied into normalized
 metadata; the existing PanSou query metadata behavior is unchanged.
 
-## Read-only live audit (2026-08-03)
+## Scoped live acceptance (2026-08-04)
 
-The deployed Prowlarr service was checked without changing configuration:
+The deployed Prowlarr service was exercised within an explicitly authorized,
+bounded source scope. Secrets and configuration values were used only inside
+the remote process and are not recorded here:
 
-- The official system status endpoint reported Prowlarr `2.5.2.5491`.
-- The read-only indexer listing contained zero configured indexers, and the
-  authenticated search endpoint returned the expected bare array with zero
-  releases for the audit query.
-- PanSou's deployed search endpoint returned `code=0` with a magnet result
-  group for the audit query.
+- The reported Prowlarr version was `2.5.2.5491`.
+- The official schema contained 622 source definitions; 85 matched
+  `public+torrent` and 83 supported search. After authorization and content
+  review, `LinuxTracker` was the only selected Prowlarr source. Its public
+  description limits it to Linux ISO torrent distribution and it requires no
+  external credential.
+- The official indexer test returned HTTP `200`; creation returned HTTP
+  `201`. The current listing contains 1 configured and 1 enabled indexer, and
+  `indexerstatus` reports 0 abnormal entries.
+- The scoped search returned 17 torrent releases. Watch Assistant's
+  `SearchService`, using the real PanSou and Prowlarr clients with an isolated
+  temporary SQLite database, returned `complete=True`, `warnings=none`,
+  PanSou `0`, Prowlarr `17`, and canonical `17`.
 
-No Prowlarr indexer was created, enabled, or otherwise modified.  Because the
-deployed Prowlarr has no configured indexer, this proves endpoint reachability
-only and does not constitute live searchable-source acceptance.  REQ-023
-remains `待验收`; offline readiness evidence and this read-only audit do not
-claim production source readiness.
+The runtime source count for this evidence is PanSou plus one Prowlarr source.
+The authorization boundary covers only public Linux ISO distribution. Film/TV
+recall, the 95% recall baseline, broad source quality, full source comparison,
+and the production Watch Assistant HTTP authentication route remain
+unverified. REQ-023 therefore remains `待验收`.
 
 ## Follow-up review evidence
 
