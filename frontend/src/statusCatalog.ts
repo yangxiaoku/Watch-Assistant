@@ -1,4 +1,5 @@
 import type {
+  CapabilityAvailability,
   LibraryScanSummary,
   StrmManifestItemResponse,
   StrmOperationResponse,
@@ -6,6 +7,7 @@ import type {
   WorkflowStageStatus,
   WorkflowStatus,
 } from "./types";
+import { safeLocalizedCopy } from "./uiSafety";
 
 export type StatusTone = "neutral" | "info" | "success" | "warning" | "danger";
 
@@ -13,6 +15,22 @@ export interface StatusPresentation {
   label: string;
   tone: StatusTone;
   nextStep: string;
+}
+
+export function capabilityStatusPresentation(
+  capability: Pick<CapabilityAvailability, "enabled" | "reason_code" | "reason_zh"> | null | undefined,
+): StatusPresentation {
+  if (capability?.enabled) {
+    return { label: "可用", tone: "success", nextStep: "可以进入对应工作区继续操作。" };
+  }
+  if (!capability || capability.reason_code === "capability_unknown") {
+    return { label: "状态待确认", tone: "warning", nextStep: "请刷新设置概览后再决定下一步。" };
+  }
+  return {
+    label: "需配置",
+    tone: "warning",
+    nextStep: safeLocalizedCopy(capability.reason_zh, "请前往设置查看功能状态。"),
+  };
 }
 
 const TASK_STATUS: Record<TaskState, StatusPresentation> = {

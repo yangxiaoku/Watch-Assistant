@@ -37,6 +37,10 @@ describe("settings route", () => {
   it("restores the settings view", () => {
     expect(extractBrowseView("/settings")).toBe("settings");
   });
+
+  it("restores the Chinese workbench entry", () => {
+    expect(extractBrowseView("/workbench")).toBe("workbench");
+  });
 });
 
 describe("catalog routes", () => {

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Bell, ClipboardCheck, Clock3, Database, Film, Flame, Heart, Home, ListTodo, LoaderCircle, LogIn, PanelRight, Search, Settings, Tv, X } from "@lucide/vue";
+import { Bell, ClipboardCheck, Clock3, Database, Film, Flame, Heart, Home, LayoutDashboard, ListTodo, LoaderCircle, LogIn, PanelRight, Search, Settings, Tv, X } from "@lucide/vue";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 import { ApiClient, ApiError, browserIsOnline, focusFirstFieldError } from "./api";
 import TaskDrawer from "./components/TaskDrawer.vue";
@@ -35,6 +35,7 @@ import WorkflowCenterView from "./views/WorkflowCenterView.vue";
 import NotificationCenterView from "./views/NotificationCenterView.vue";
 import OrganizationHistoryView from "./views/OrganizationHistoryView.vue";
 import OrganizationWorkbenchView from "./views/OrganizationWorkbenchView.vue";
+import WorkbenchView from "./views/WorkbenchView.vue";
 
 const FAVORITES_KEY = "watch-assistant:favorites";
 const HISTORY_KEY = "watch-assistant:history";
@@ -482,6 +483,7 @@ const inspectionMoreAvailable = computed(() => {
 });
 
 const navItems = [
+  { view: "workbench" as const, label: "工作台", icon: LayoutDashboard },
   { view: "home" as const, label: "首页", icon: Home },
   { view: "movies" as const, label: "电影", icon: Film },
   { view: "tv" as const, label: "剧集", icon: Tv },
@@ -494,8 +496,9 @@ const navItems = [
 ];
 
 const navGroups = [
-  { label: "发现", items: navItems.slice(0, 6) },
-  { label: "入库", items: navItems.slice(6) },
+  { label: "主线", items: navItems.slice(0, 1) },
+  { label: "发现", items: navItems.slice(1, 7) },
+  { label: "入库", items: navItems.slice(7) },
 ];
 
 function healthCapability(
@@ -575,6 +578,11 @@ async function performSearch(updateUrl: boolean, page = 1) {
   previousView.value = "search";
   result.value = null;
   await requestCatalog({ view: "search", query: searchQuery, page, sort: "popular" }, updateUrl ? "push" : "none");
+}
+
+async function searchFromWorkbench(value: string): Promise<void> {
+  searchInput.value = value;
+  await performSearch(true);
 }
 
 async function searchMovies() {
@@ -1539,6 +1547,7 @@ onBeforeUnmount(() => {
     <template v-else>
       <p v-if="error" class="error-strip" role="alert"><X :size="16" />{{ error }}</p>
       <template v-if="!result && !loading">
+        <WorkbenchView v-if="activeView === 'workbench'" :organization-plan-capability="organizationPlanCapability" :strm-full-capability="strmFullCapability" :strm-incremental-capability="strmIncrementalCapability" @navigate="selectView" @search="searchFromWorkbench" />
         <HomeView v-if="activeView === 'home'" :catalog="homeCatalog" :loading="catalogLoading" :favorite-ids="favoriteIds" @open="openMovie" @favorite="toggleFavorite" @navigate="selectView" />
         <LibraryView v-else-if="activeView === 'movies' || activeView === 'tv'" :movies="catalogMovies" :loading="catalogLoading" :favorite-ids="favoriteIds" :genre-id="genreId" :year="year" :sort="sort" :media-type="activeView" :page="currentPage" :total-pages="totalPages" :total-results="totalResults" @open="openMovie" @favorite="toggleFavorite" @filters="loadDiscover" @page="loadPage" />
         <CollectionView v-else-if="activeView === 'favorites' || activeView === 'history'" :mode="activeView" :movies="activeView === 'favorites' ? favorites : history" :favorite-ids="favoriteIds" @open="openMovie" @favorite="toggleFavorite" />

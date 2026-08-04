@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  capabilityStatusPresentation,
   libraryScanStatusLabel,
   strmOperationNextStep,
   strmOperationStatusLabel,
@@ -9,6 +10,12 @@ import {
 } from "../src/statusCatalog";
 
 describe("statusCatalog", () => {
+  it("uses the same actionable states for workbench capabilities", () => {
+    expect(capabilityStatusPresentation({ enabled: true, reason_code: null, reason_zh: "可执行" })).toMatchObject({ label: "可用", tone: "success" });
+    expect(capabilityStatusPresentation({ enabled: false, reason_code: "strm_full_disabled", reason_zh: "STRM 全量生成未启用。" })).toMatchObject({ label: "需配置", nextStep: "STRM 全量生成未启用。" });
+    expect(capabilityStatusPresentation({ enabled: false, reason_code: "capability_unknown", reason_zh: "当前未读取能力状态。" })).toMatchObject({ label: "状态待确认" });
+  });
+
   it("maps task and workflow states to actionable Chinese copy", () => {
     expect(taskStatusPresentation("queued")).toMatchObject({ label: "排队中", tone: "info" });
     expect(taskStatusPresentation("uncertain")).toMatchObject({ label: "结果待确认", nextStep: expect.stringContaining("只读核对") });

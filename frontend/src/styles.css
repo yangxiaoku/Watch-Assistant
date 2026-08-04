@@ -963,6 +963,33 @@ html, body { overflow-x: hidden; }
 .settings-nav-group + .settings-nav-group { margin-top: 13px; padding-top: 13px; border-top: 1px solid #2b2e33; }
 .settings-nav-group-label { margin: 0 10px 2px; color: #6f7580; font-size: 10px; font-weight: 800; }
 
+.workbench-view { max-width: 1180px; margin: 0 auto; padding-top: 38px; }
+.workbench-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; margin-bottom: 28px; padding-bottom: 22px; border-bottom: 1px solid #2b2d32; }
+.workbench-heading h1 { margin: 0 0 8px; font-size: 32px; line-height: 1.1; }
+.workbench-heading p:last-child { margin: 0; color: #8f949e; font-size: 13px; line-height: 1.5; }
+.workbench-heading > svg { flex: 0 0 auto; margin-top: 8px; color: #68a0ff; }
+.workbench-search { display: grid; grid-template-columns: minmax(170px, .7fr) minmax(0, 1.3fr); gap: 8px 24px; padding: 18px 0 16px; border-bottom: 1px solid #2b2d32; }
+.workbench-search label { display: block; color: #dce4f1; font-size: 14px; font-weight: 800; }
+.workbench-search > div:first-child p { margin: 6px 0 0; color: #858b95; font-size: 12px; line-height: 1.5; }
+.workbench-search-control { display: flex; min-width: 0; align-items: center; gap: 8px; padding-left: 11px; color: #858b95; background: #1d2024; border: 1px solid #353940; border-radius: 4px; }
+.workbench-search-control:focus-within { border-color: #68a0ff; box-shadow: 0 0 0 3px #68a0ff20; }
+.workbench-search-control input { min-width: 0; flex: 1; min-height: 40px; padding: 0; color: #f4f5f7; background: transparent; border: 0; }
+.workbench-search-control .primary-button { min-height: 34px; margin-right: 4px; padding: 0 11px; white-space: nowrap; }
+.workbench-search-help { grid-column: 2; margin: 0; color: #858b95; font-size: 11px; line-height: 1.45; }
+.workbench-search-error { color: #ffb0b0; }
+.workbench-entry-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 24px; }
+.workbench-entry { display: flex; min-width: 0; min-height: 238px; flex-direction: column; padding: 17px; background: #191b1f; border: 1px solid #2f3339; border-radius: 5px; }
+.workbench-entry:hover { border-color: #4d6587; }
+.workbench-entry-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 22px; }
+.workbench-entry-icon { display: grid; width: 34px; height: 34px; place-items: center; color: #b9d5ff; background: #24364e; border: 1px solid #385a82; border-radius: 4px; }
+.workbench-entry-status { display: inline-flex; min-height: 22px; align-items: center; padding: 0 7px; border: 1px solid transparent; border-radius: 3px; font-size: 10px; font-weight: 800; white-space: nowrap; }
+.workbench-entry .eyebrow { margin-bottom: 5px; }
+.workbench-entry h2 { margin: 0 0 8px; color: #f4f5f7; font-size: 17px; }
+.workbench-entry > p:not(.eyebrow) { min-height: 40px; margin: 0; color: #aeb2bb; font-size: 12px; line-height: 1.55; }
+.workbench-entry > small { min-height: 34px; margin-top: 13px; color: #858b95; font-size: 11px; line-height: 1.45; }
+.workbench-entry-action { width: fit-content; min-height: 34px; margin-top: auto; padding: 0 10px; }
+.workbench-safety-note { margin: 18px 0 0; padding: 10px 11px; color: #aeb5c1; background: #202328; border-left: 2px solid #5c94d8; font-size: 11px; line-height: 1.5; }
+
 @media (max-width: 760px) {
   .primary-nav { gap: 7px; justify-content: flex-start; }
   .primary-nav-group + .primary-nav-group { padding-left: 7px; }
@@ -974,4 +1001,16 @@ html, body { overflow-x: hidden; }
   .resource-search-summary { display: grid; gap: 6px; }
   .resource-search-summary span { justify-content: space-between; }
   .settings-nav-group + .settings-nav-group { margin-top: 0; padding-top: 0; border-top: 0; }
+  .workbench-view { padding-top: 24px; }
+  .workbench-heading { margin-bottom: 20px; padding-bottom: 18px; }
+  .workbench-heading h1 { font-size: 28px; }
+  .workbench-heading > svg { display: none; }
+  .workbench-search { display: block; padding: 15px 0; }
+  .workbench-search-control { margin-top: 12px; }
+  .workbench-search-help { margin-top: 8px; }
+  .workbench-entry-grid { grid-template-columns: minmax(0, 1fr); gap: 10px; margin-top: 18px; }
+  .workbench-entry { min-height: 0; padding: 15px; }
+  .workbench-entry > p:not(.eyebrow) { min-height: 0; }
+  .workbench-entry > small { min-height: 0; }
+  .workbench-entry-action { width: 100%; margin-top: 16px; justify-content: center; }
 }
