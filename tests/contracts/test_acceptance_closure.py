@@ -175,6 +175,7 @@ def test_preview_uses_selected_runtime_for_every_child_stage(monkeypatch, tmp_pa
         cookie_path=cookie,
         managed_scope_path=managed_scope,
         live_read=True,
+        timeout_seconds=60,
     )
     commands: list[tuple[str, ...]] = []
 
