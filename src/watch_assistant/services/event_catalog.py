@@ -333,6 +333,26 @@ EVENT_CATALOG: dict[str, EventDefinition] = {
         "媒体库范围校验已完成，当前状态：{status}，媒体库已启用：{enabled}",
         fields=frozenset({"enabled"}),
     ),
+    "library.scan.queued": _event(
+        "library.scan.queued",
+        LogCategory.LIBRARY,
+        "媒体库扫描已排队",
+        "媒体库扫描已排队，当前状态：{status}",
+    ),
+    "library.scan.completed": _event(
+        "library.scan.completed",
+        LogCategory.LIBRARY,
+        "媒体库扫描已完成",
+        "媒体库扫描已完成，读取 {items_seen} 个条目",
+        fields=frozenset({"items_seen"}),
+    ),
+    "library.scan.failed": _event(
+        "library.scan.failed",
+        LogCategory.LIBRARY,
+        "媒体库扫描失败",
+        "媒体库扫描未完成，错误码：{error_code}",
+        suggestion="请检查 115 目录读取状态和扫描断点后重试",
+    ),
     "agent.permission_denied": _event(
         "agent.permission_denied", LogCategory.AGENT, "Agent 权限不足", "当前 Agent 缺少执行所需权限，未执行操作"
     ),
