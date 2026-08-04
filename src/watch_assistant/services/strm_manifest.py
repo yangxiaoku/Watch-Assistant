@@ -924,6 +924,13 @@ class StrmManifestService:
         else:
             old_path = manifest.local_relative_path
         content = f"{prefix}{quote(manifest.manifest_id, safe='')}\n".encode()
+        existing_target = _read_target(root, local_path)
+        if (
+            existing_target is not None
+            and old_path != local_path
+            and existing_target != content
+        ):
+            raise StrmManifestError("managed_file_changed")
         await fence.assert_current(session)
         written, mutation = _write_with_undo(root, local_path, content)
         if mutation is not None:
