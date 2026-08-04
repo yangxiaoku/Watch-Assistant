@@ -12,6 +12,7 @@ from scripts.acceptance_closure import (
     _stage_success,
     _validate_execute_args,
 )
+from scripts.p115_organization_application_live_runner import _configure_preview_scope
 
 
 def test_inventory_and_plan_success_require_complete_read_only_evidence():
@@ -109,3 +110,21 @@ def test_execute_requires_confirmation_before_reading_scope(tmp_path: Path):
     )
     with pytest.raises(ClosureInputError, match="fixture_confirmation_required"):
         _validate_execute_args(args)
+
+
+def test_live_plan_preview_registers_both_managed_directory_ids():
+    from types import SimpleNamespace
+
+    app = SimpleNamespace(state=SimpleNamespace())
+
+    _configure_preview_scope(
+        app,
+        source_id="3482085898508567892",
+        target_id="3482969620225197691",
+    )
+
+    assert app.state.organization_target_root_id == "3482969620225197691"
+    assert app.state.p115_browsed_directory_ids == {
+        "3482085898508567892",
+        "3482969620225197691",
+    }

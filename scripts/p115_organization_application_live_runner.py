@@ -121,7 +121,7 @@ async def _run(
             strm_cleanup_enabled=False,
         )
         app.state.organization_cookie_provider = CookieProvider(cookie_path)
-        app.state.organization_target_root_id = target_id
+        _configure_preview_scope(app, source_id=source_id, target_id=target_id)
         client = httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://app.test"
         )
@@ -232,6 +232,12 @@ def _scope_contains(path: Path, directory_id: str) -> bool:
     return isinstance(values, Collection) and not isinstance(values, (str, bytes)) and directory_id in {
         str(item) for item in values
     }
+
+
+def _configure_preview_scope(app, *, source_id: str, target_id: str) -> None:
+    """Mirror the explicitly supplied managed IDs in the temporary app state."""
+    app.state.organization_target_root_id = target_id
+    app.state.p115_browsed_directory_ids = {source_id, target_id}
 
 
 def _stable_id(value: object) -> bool:
