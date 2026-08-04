@@ -238,6 +238,8 @@ async def validate_current_manifest_scope(
                 and library.scope_verified
                 and (not allowed or library.id in allowed)
                 and manifest.cloud_file_id.isdigit()
+                and isinstance(manifest.pickcode, str)
+                and bool(manifest.pickcode.strip())
             )
     except asyncio.CancelledError:
         raise

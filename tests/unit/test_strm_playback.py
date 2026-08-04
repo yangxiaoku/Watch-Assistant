@@ -27,6 +27,7 @@ from watch_assistant.services.strm_playback import (
 MANIFEST_ID = "strm_7qXh5Mptv9K2dR4a"
 OTHER_MANIFEST_ID = "strm_8qXh5Mptv9K2dR4a"
 SAFE_URL = "https://cdn.example.invalid/media?sig=redacted"
+SYNTHETIC_PICKCODE = "synthetic-pickcode"
 ENABLED_GATE = PlaybackGate(enabled=True, contract_verified=True)
 
 
@@ -185,6 +186,7 @@ async def test_manifest_scope_validator_fails_closed_for_scope_and_revocation(tm
                     local_relative_path="Episode.strm",
                     size_bytes=10,
                     source_version=1,
+                    pickcode=SYNTHETIC_PICKCODE,
                     status=StrmManifestStatus.VERIFIED,
                     is_current=True,
                 )
@@ -204,6 +206,50 @@ async def test_manifest_scope_validator_fails_closed_for_scope_and_revocation(tm
             assert manifest is not None
             manifest.status = StrmManifestStatus.RETIRED
             await session.commit()
+        assert not await validate_current_manifest_scope(
+            database.session_factory, request, {"library-one"}
+        )
+    finally:
+        await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pickcode", (None, "", "   "))
+async def test_manifest_scope_validator_rejects_missing_or_blank_pickcode(
+    tmp_path, pickcode
+):
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'playback.db'}")
+    await initialize_database(database.engine)
+    try:
+        async with database.session_factory() as session:
+            session.add(
+                MediaLibrary(
+                    id="library-one",
+                    name="test-library",
+                    root_directory_id="100",
+                    scope_verified=True,
+                    enabled=True,
+                    revision=1,
+                )
+            )
+            session.add(
+                StrmManifestEntry(
+                    manifest_id=MANIFEST_ID,
+                    library_id="library-one",
+                    cloud_file_id="200",
+                    cloud_directory_id="100",
+                    cloud_relative_path="Episode.mkv",
+                    local_relative_path="Episode.strm",
+                    size_bytes=10,
+                    source_version=1,
+                    pickcode=pickcode,
+                    status=StrmManifestStatus.VERIFIED,
+                    is_current=True,
+                )
+            )
+            await session.commit()
+
+        request = make_playback_request(MANIFEST_ID, "GET")
         assert not await validate_current_manifest_scope(
             database.session_factory, request, {"library-one"}
         )
