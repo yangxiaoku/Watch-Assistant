@@ -61,7 +61,7 @@ Verify 与 Systemd Release Package 必须按同一 `head_sha` 重新核对；历
 这些合入记录和离线测试不改变生产整理、真实媒体库、STRM 播放/清理、p115 live
 或完整生产验收状态，永久删除继续关闭。
 
-2026-08-04 当前只读核对补充：公开 Verify run 292 和 Systemd Release Package run 78 的 `head_sha` 与动态解析的当前发布 ref 一致且成功；服务器 systemd 当前 release 与该 ref 一致，健康接口返回 `status=ok`。生产只读预览已完成完整递归库存（54 页、12 个目录、43 个文件、54 个唯一对象身份）和整理计划预览（远程写调用为 0、计划进入 `needs_review`）；这不等于真实整理、STRM 播放/清理或媒体服务器验收。Prowlarr 当前只读状态正常，唯一授权来源为 `LinuxTracker`，配置/启用各 1 个，受限 GET search 返回 30 个 torrent；范围仅为公开 Linux ISO 分发，不代表完整影视召回。
+2026-08-04 当前只读核对补充：公开 Verify run `30906727468` 和 Systemd Release Package run `30906727470` 的 `head_sha` 与动态解析的当前发布 ref 一致且成功；服务器 systemd 当前 release 与该 ref 一致，健康接口返回 `status=ok`。生产只读预览已完成完整递归库存（54 页、12 个目录、43 个文件、54 个唯一对象身份）和整理计划预览（远程写调用为 0、计划进入 `needs_review`）；这不等于真实整理、STRM 播放/清理或媒体服务器验收。Prowlarr 当前只读状态正常，唯一授权来源为 `LinuxTracker`，配置/启用各 1 个，受限 GET search 返回 30 个 torrent；范围仅为公开 Linux ISO 分发，不代表完整影视召回。
 
 2026-08-02 状态复核是历史审查快照，锁定 `codex/integration-20260802@2c342d9`；该分支
 不是 `codex/publish-main`。复核期间集成 ref 已前进到 `3afc8d3`，随后随 PR #30 合入发布基线；
