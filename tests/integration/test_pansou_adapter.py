@@ -135,6 +135,52 @@ async def test_pansou_falls_back_to_magnet_and_115_result_links():
 
 
 @respx.mock
+async def test_pansou_supplements_partial_grouped_results_from_result_links():
+    magnet_hash = "b" * 40
+    respx.get("http://pansou.test/api/search").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "code": 0,
+                "data": {
+                    "total": 1,
+                    "merged_by_type": {"115": []},
+                    "results": [
+                        {
+                            "title": "Supplemental magnet",
+                            "links": [
+                                {
+                                    "type": "magnet",
+                                    "url": f"magnet:?xt=urn:btih:{magnet_hash}",
+                                },
+                                {
+                                    "type": "magnet",
+                                    "url": (
+                                        "magnet:?xt=urn:btih:"
+                                        f"{magnet_hash}&dn=Duplicate"
+                                    ),
+                                },
+                            ],
+                        }
+                    ],
+                },
+            },
+        )
+    )
+    client = PanSouClient("http://pansou.test")
+
+    result = await client.search("Partial grouped response")
+    await client.aclose()
+
+    assert result["merged_by_type"]["magnet"] == [
+        {
+            "url": f"magnet:?xt=urn:btih:{magnet_hash}",
+            "note": "Supplemental magnet",
+        }
+    ]
+
+
+@respx.mock
 async def test_pansou_extracts_nyaa_and_tpb_plugin_metadata_by_infohash():
     nyaa_hash = "a" * 40
     tpb_hash = "b" * 40

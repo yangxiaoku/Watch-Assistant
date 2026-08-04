@@ -195,13 +195,14 @@ class ProwlarrClient:
                     (("limit", str(request_limit)), ("offset", str(current_offset)))
                 )
                 payload = await self._request_page(params)
-                if len(payload) > request_limit:
+                if len(payload) > _MAX_PAGE_SIZE:
                     raise ProwlarrInvalidResponseError(
                         "Unexpected Prowlarr response shape"
                     )
 
-                items_seen += len(payload)
-                for item in payload:
+                page_items = payload[:remaining]
+                items_seen += len(page_items)
+                for item in page_items:
                     if not isinstance(item, dict):
                         raise ProwlarrInvalidResponseError(
                             "Unexpected Prowlarr response shape"
