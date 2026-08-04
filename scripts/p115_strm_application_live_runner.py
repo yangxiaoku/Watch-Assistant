@@ -44,6 +44,8 @@ except ModuleNotFoundError:
 
 LIVE_ENV = "WATCH_ASSISTANT_P115_STRM_LIVE"
 DEFAULT_PLAYBACK_PREFIX = "http://127.0.0.1:8115/api/v1/strm/play"
+SCAN_POLL_INTERVAL_SECONDS = 0.1
+SCAN_POLL_TIMEOUT_SECONDS = 30 * 60
 
 
 class LiveAcceptanceError(RuntimeError):
@@ -91,6 +93,8 @@ async def _run(
     database = None
     app_client: httpx.AsyncClient | None = None
     remote_client = None
+    lifespan_context = None
+    lifespan_entered = False
     renamed = False
     try:
         base = Path(temporary.name)
@@ -117,6 +121,10 @@ async def _run(
         )
         app.state.organization_target_root_id = root_id
         app.state.organization_cookie_provider = CookieProvider(cookie_path)
+        # ASGITransport does not start FastAPI lifespan workers by itself.
+        lifespan_context = app.router.lifespan_context(app)
+        await lifespan_context.__aenter__()
+        lifespan_entered = True
         app_client = httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://app.test"
         )
@@ -242,6 +250,8 @@ async def _run(
             await app_client.aclose()
         if remote_client is not None and hasattr(remote_client, "close"):
             remote_client.close()
+        if lifespan_entered and lifespan_context is not None:
+            await lifespan_context.__aexit__(None, None, None)
         if database is not None:
             await database.engine.dispose()
         temporary.cleanup()
@@ -263,8 +273,19 @@ async def _scan(
     )
     _expect(response, "scan_failed")
     body = response.json()
-    if body.get("complete") is not True:
-        raise LiveAcceptanceError("scan_incomplete")
+    run_id = body.get("run_id")
+    if not isinstance(run_id, str) or not run_id:
+        raise LiveAcceptanceError("scan_run_missing")
+    deadline = time.monotonic() + SCAN_POLL_TIMEOUT_SECONDS
+    while body.get("complete") is not True:
+        if body.get("state") in {"failed", "cancelled"} or time.monotonic() >= deadline:
+            raise LiveAcceptanceError("scan_incomplete")
+        await asyncio.sleep(SCAN_POLL_INTERVAL_SECONDS)
+        status = await client.get(
+            f"/api/v1/libraries/strm-live/scans/{run_id}", headers=headers
+        )
+        _expect(status, "scan_status_failed")
+        body = status.json()
     return body
 
 

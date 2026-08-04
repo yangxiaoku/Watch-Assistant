@@ -14,6 +14,7 @@ import asyncio
 import json
 import secrets
 import tempfile
+import time
 from collections.abc import Mapping, Sequence
 from importlib.metadata import version
 from pathlib import Path
@@ -32,6 +33,8 @@ from watch_assistant.services.p115_credentials import CookieProvider
 
 LIVE_ENV = "WATCH_ASSISTANT_P115_STRM_PLAYBACK_LIVE"
 PLAYBACK_PREFIX = "http://127.0.0.1:8115/api/v1/strm/play"
+SCAN_POLL_INTERVAL_SECONDS = 0.1
+SCAN_POLL_TIMEOUT_SECONDS = 30 * 60
 
 
 def run_acceptance(
@@ -62,6 +65,8 @@ async def _run(*, root_id: str, file_id: str, cookie_path: Path) -> dict[str, ob
     temporary = tempfile.TemporaryDirectory(prefix="wa-strm-playback-live-")
     database = None
     client: httpx.AsyncClient | None = None
+    lifespan_context = None
+    lifespan_entered = False
     try:
         base = Path(temporary.name)
         database = create_database(f"sqlite+aiosqlite:///{base / 'acceptance.db'}")
@@ -96,6 +101,10 @@ async def _run(*, root_id: str, file_id: str, cookie_path: Path) -> dict[str, ob
         )
         app.state.organization_target_root_id = root_id
         app.state.organization_cookie_provider = CookieProvider(cookie_path)
+        # ASGITransport does not start FastAPI lifespan workers by itself.
+        lifespan_context = app.router.lifespan_context(app)
+        await lifespan_context.__aenter__()
+        lifespan_entered = True
         app_client = httpx.ASGITransport(app=app)
         client = httpx.AsyncClient(transport=app_client, base_url="http://app.test")
         headers = await _login(client, password)
@@ -171,6 +180,8 @@ async def _run(*, root_id: str, file_id: str, cookie_path: Path) -> dict[str, ob
     finally:
         if client is not None:
             await client.aclose()
+        if lifespan_entered and lifespan_context is not None:
+            await lifespan_context.__aexit__(None, None, None)
         if database is not None:
             await database.engine.dispose()
         temporary.cleanup()
@@ -195,8 +206,19 @@ async def _scan(
     )
     _expect(response, "scan_failed")
     body = response.json()
-    if body.get("complete") is not True:
-        raise AcceptanceError("scan_incomplete")
+    run_id = body.get("run_id")
+    if not isinstance(run_id, str) or not run_id:
+        raise AcceptanceError("scan_run_missing")
+    deadline = time.monotonic() + SCAN_POLL_TIMEOUT_SECONDS
+    while body.get("complete") is not True:
+        if body.get("state") in {"failed", "cancelled"} or time.monotonic() >= deadline:
+            raise AcceptanceError("scan_incomplete")
+        await asyncio.sleep(SCAN_POLL_INTERVAL_SECONDS)
+        status = await client.get(
+            f"/api/v1/libraries/strm-playback-live/scans/{run_id}", headers=headers
+        )
+        _expect(status, "scan_status_failed")
+        body = status.json()
     return body
 
 
