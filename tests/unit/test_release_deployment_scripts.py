@@ -5,6 +5,7 @@ import os
 import shlex
 import shutil
 import subprocess
+import sys
 import tarfile
 from pathlib import Path
 
@@ -151,6 +152,10 @@ def test_release_build_and_verify_use_provenance_and_project_venv():
     assert "${PYTHON_BIN:-python}" not in build
     assert "${PYTHON_BIN:-python}" not in verify_gate
     assert "worktree .venv Python is required" in verify_gate
+    for script in (build, verify):
+        assert 'git ls-remote --exit-code origin "$REMOTE_REF"' in script
+        assert "could not be verified" in script
+        assert 'refs/remotes/origin/${RELEASE_BRANCH}' in script
 
 
 def test_release_package_gate_is_limited_to_publish_main():
@@ -195,26 +200,41 @@ def test_release_shell_scripts_have_valid_bash_syntax():
         assert result.returncode == 0, result.stderr
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX shell release semantics are required")
-@pytest.mark.skipif(shutil.which("bash") is None, reason="bash is required")
-@pytest.mark.skipif(shutil.which("tar") is None, reason="tar is required")
-@pytest.mark.skipif(shutil.which("sha256sum") is None, reason="sha256sum is required")
-def test_build_release_normalizes_archive_uid_and_gid(tmp_path: Path):
+def _create_build_release_fixture(
+    tmp_path: Path,
+) -> tuple[Path, str, Path, Path, Path, dict[str, str]]:
     fixture_root = tmp_path / "fixture-repo"
     (fixture_root / "scripts").mkdir(parents=True)
     (fixture_root / "frontend").mkdir()
     (fixture_root / "deploy").mkdir()
     shutil.copy2(ROOT / "scripts" / "build_release.sh", fixture_root / "scripts")
+    shutil.copy2(
+        ROOT / "scripts" / "verify_release_artifact.sh", fixture_root / "scripts"
+    )
     (fixture_root / "frontend" / "package.json").write_text("{}\n", encoding="utf-8")
     (fixture_root / "deploy" / "watch-assistant.service").write_text(
         "[Unit]\nDescription=fixture\n", encoding="utf-8"
     )
-    (fixture_root / "scripts" / "release_manifest.py").write_text(
-        "# fixture\n", encoding="utf-8"
+    shutil.copy2(
+        ROOT / "scripts" / "release_manifest.py",
+        fixture_root / "scripts" / "release_manifest.py",
     )
     (fixture_root / "scripts" / "release_startup_smoke.py").write_text(
         "# fixture\n", encoding="utf-8"
     )
+    for relative in (
+        "src/watch_assistant/app.py",
+        "src/watch_assistant/release_metadata.py",
+        "scripts/deploy_systemd_release.sh",
+        "scripts/systemd_release_prepare.py",
+        "scripts/systemd_release_update.py",
+        "scripts/postdeploy_release_check.py",
+        "scripts/systemd_unit.py",
+        "scripts/systemd_backup.py",
+    ):
+        destination = fixture_root / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ROOT / relative, destination)
 
     subprocess.run(["git", "init", "-q"], cwd=fixture_root, check=True)
     subprocess.run(
@@ -235,15 +255,7 @@ def test_build_release_normalizes_archive_uid_and_gid(tmp_path: Path):
     python_stub.parent.mkdir(parents=True)
     python_stub.write_text(
         "#!/bin/sh\n"
-        "if [ \"${2:-}\" = \"write-build\" ]; then\n"
-        "    while [ \"$#\" -gt 0 ]; do\n"
-        "        if [ \"$1\" = \"--output\" ]; then\n"
-        "            printf '{}\\n' > \"$2\"\n"
-        "            break\n"
-        "        fi\n"
-        "        shift\n"
-        "    done\n"
-        "fi\n",
+        f"exec {shlex.quote(sys.executable)} \"$@\"\n",
         encoding="utf-8",
     )
     python_stub.chmod(0o755)
@@ -260,6 +272,25 @@ def test_build_release_normalizes_archive_uid_and_gid(tmp_path: Path):
     commit = subprocess.check_output(
         ["git", "rev-parse", "HEAD"], cwd=fixture_root, text=True
     ).strip()
+
+    remote_root = tmp_path / "remote.git"
+    subprocess.run(["git", "init", "--bare", "-q", str(remote_root)], check=True)
+    subprocess.run(
+        ["git", "remote", "add", "origin", str(remote_root)],
+        cwd=fixture_root,
+        check=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "push",
+            "-q",
+            "origin",
+            "codex/publish-main:refs/heads/codex/publish-main",
+        ],
+        cwd=fixture_root,
+        check=True,
+    )
     subprocess.run(
         [
             "git",
@@ -300,7 +331,13 @@ def test_build_release_normalizes_archive_uid_and_gid(tmp_path: Path):
     environment["PATH"] = f"{tool_bin}{os.pathsep}{environment['PATH']}"
     environment["RELEASE_OUTPUT_DIR"] = str(output_dir)
     environment["WATCH_ASSISTANT_FRONTEND_PM"] = str(npm_stub)
-    result = subprocess.run(
+    return fixture_root, commit, remote_root, output_dir, tar_log, environment
+
+
+def _run_fixture_build(
+    fixture_root: Path, commit: str, environment: dict[str, str]
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
         ["bash", str(fixture_root / "scripts" / "build_release.sh"), commit],
         cwd=fixture_root,
         env=environment,
@@ -308,6 +345,61 @@ def test_build_release_normalizes_archive_uid_and_gid(tmp_path: Path):
         text=True,
         check=False,
     )
+
+
+def _set_fixture_remote_commit(
+    fixture_root: Path, parent_commit: str
+) -> str:
+    tree = subprocess.check_output(
+        ["git", "rev-parse", f"{parent_commit}^{{tree}}"],
+        cwd=fixture_root,
+        text=True,
+    ).strip()
+    drift_commit = subprocess.check_output(
+        ["git", "commit-tree", tree, "-p", parent_commit],
+        cwd=fixture_root,
+        input="remote drift\n",
+        text=True,
+    ).strip()
+    subprocess.run(
+        [
+            "git",
+            "push",
+            "-q",
+            "origin",
+            f"{drift_commit}:refs/heads/codex/publish-main",
+        ],
+        cwd=fixture_root,
+        check=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "update-ref",
+            "refs/remotes/origin/codex/publish-main",
+            parent_commit,
+        ],
+        cwd=fixture_root,
+        check=True,
+    )
+    cached_commit = subprocess.check_output(
+        ["git", "rev-parse", "refs/remotes/origin/codex/publish-main"],
+        cwd=fixture_root,
+        text=True,
+    ).strip()
+    assert cached_commit == parent_commit
+    return drift_commit
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shell release semantics are required")
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash is required")
+@pytest.mark.skipif(shutil.which("tar") is None, reason="tar is required")
+@pytest.mark.skipif(shutil.which("sha256sum") is None, reason="sha256sum is required")
+def test_build_release_normalizes_archive_uid_and_gid(tmp_path: Path):
+    fixture_root, commit, _, output_dir, tar_log, environment = (
+        _create_build_release_fixture(tmp_path)
+    )
+    result = _run_fixture_build(fixture_root, commit, environment)
     assert result.returncode == 0, result.stderr
 
     packages = list(output_dir.glob("watch-assistant-*.tar.gz"))
@@ -322,6 +414,122 @@ def test_build_release_normalizes_archive_uid_and_gid(tmp_path: Path):
         "--owner=0" in line and "--group=0" in line
         for line in tar_log.read_text(encoding="utf-8").splitlines()
     )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shell release semantics are required")
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash is required")
+@pytest.mark.skipif(shutil.which("tar") is None, reason="tar is required")
+@pytest.mark.skipif(shutil.which("sha256sum") is None, reason="sha256sum is required")
+def test_release_scripts_accept_current_remote_publish_main(tmp_path: Path):
+    fixture_root, commit, _, output_dir, _, environment = _create_build_release_fixture(
+        tmp_path
+    )
+    build_result = _run_fixture_build(fixture_root, commit, environment)
+    assert build_result.returncode == 0, build_result.stderr
+    package_file = next(output_dir.glob("watch-assistant-*.tar.gz"))
+
+    verify_result = subprocess.run(
+        [
+            "bash",
+            str(fixture_root / "scripts" / "verify_release_artifact.sh"),
+            str(package_file),
+            commit,
+            str(tmp_path / "verified-output"),
+        ],
+        cwd=fixture_root,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert verify_result.returncode == 0, verify_result.stderr
+    assert "release artifact verified" in verify_result.stdout
+
+
+@pytest.mark.parametrize("remote_failure", ["drift", "unavailable"])
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shell release semantics are required")
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash is required")
+@pytest.mark.skipif(shutil.which("tar") is None, reason="tar is required")
+@pytest.mark.skipif(shutil.which("sha256sum") is None, reason="sha256sum is required")
+def test_build_release_fails_closed_on_remote_publish_main_failure(
+    tmp_path: Path, remote_failure: str
+):
+    fixture_root, commit, _, output_dir, _, environment = (
+        _create_build_release_fixture(tmp_path)
+    )
+    if remote_failure == "drift":
+        _set_fixture_remote_commit(fixture_root, commit)
+        expected_message = "not the current remote"
+    else:
+        subprocess.run(
+            [
+                "git",
+                "remote",
+                "set-url",
+                "origin",
+                str(tmp_path / "missing-remote.git"),
+            ],
+            cwd=fixture_root,
+            check=True,
+        )
+        expected_message = "could not be verified"
+
+    result = _run_fixture_build(fixture_root, commit, environment)
+    assert result.returncode != 0
+    assert "release refused" in result.stderr
+    assert expected_message in result.stderr
+    assert not list(output_dir.glob("watch-assistant-*.tar.gz"))
+
+
+@pytest.mark.parametrize("remote_failure", ["drift", "unavailable"])
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shell release semantics are required")
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash is required")
+@pytest.mark.skipif(shutil.which("tar") is None, reason="tar is required")
+@pytest.mark.skipif(shutil.which("sha256sum") is None, reason="sha256sum is required")
+def test_verify_release_fails_closed_on_remote_publish_main_failure(
+    tmp_path: Path, remote_failure: str
+):
+    fixture_root, commit, _, output_dir, _, environment = (
+        _create_build_release_fixture(tmp_path)
+    )
+    build_result = _run_fixture_build(fixture_root, commit, environment)
+    assert build_result.returncode == 0, build_result.stderr
+    package_file = next(output_dir.glob("watch-assistant-*.tar.gz"))
+
+    if remote_failure == "drift":
+        _set_fixture_remote_commit(fixture_root, commit)
+        expected_message = "not the current remote"
+    else:
+        subprocess.run(
+            [
+                "git",
+                "remote",
+                "set-url",
+                "origin",
+                str(tmp_path / "missing-remote.git"),
+            ],
+            cwd=fixture_root,
+            check=True,
+        )
+        expected_message = "could not be verified"
+
+    result = subprocess.run(
+        [
+            "bash",
+            str(fixture_root / "scripts" / "verify_release_artifact.sh"),
+            str(package_file),
+            commit,
+            str(tmp_path / "verified-output"),
+        ],
+        cwd=fixture_root,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "release artifact refused" in result.stderr
+    assert expected_message in result.stderr
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Linux shell release semantics are required")
