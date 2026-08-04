@@ -345,6 +345,7 @@ class OrganizationExecutor:
                 replacement.object_id == step.replacement_object_id
                 and replacement.parent_id == step.replacement_parent_id
                 and replacement.name == step.replacement_name
+                and replacement.is_directory is False
             ):
                 replacement_observations.append("present")
             else:
@@ -509,9 +510,13 @@ class OrganizationExecutor:
                 if (
                     replacement_target is None
                     or replacement_target.object_id != step.replacement_object_id
+                    or replacement_target.is_directory is not False
                     or any(
                         target is not None
-                        and target.object_id != step.replacement_object_id
+                        and (
+                            target.object_id != step.replacement_object_id
+                            or target.is_directory is not False
+                        )
                         for key, target in targets.items()
                         if key != (step.replacement_parent_id, step.replacement_name)
                     )
