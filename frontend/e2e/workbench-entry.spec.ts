@@ -35,6 +35,7 @@ test("connects Chinese workbench entries without horizontal overflow", async ({ 
 
   await page.goto("/workbench");
   await expect(page.getByRole("heading", { name: "观影工作台" })).toBeVisible();
+  await expect(page.locator(".search-view")).toHaveCount(0);
   for (const label of ["搜索影视资源", "任务中心", "整理计划", "媒体库与 STRM", "设置"]) {
     await expect(page.getByRole("heading", { name: label, exact: true })).toBeVisible();
   }

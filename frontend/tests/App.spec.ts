@@ -47,6 +47,24 @@ describe("App capability wiring", () => {
     wrapper.unmount();
   });
 
+  it("does not render an empty search view alongside the workbench", async () => {
+    window.history.replaceState({}, "", "/workbench");
+    vi.spyOn(ApiClient.prototype, "health").mockResolvedValue({
+      status: "ok",
+      release: "test",
+      push_supported: false,
+    });
+    vi.spyOn(ApiClient.prototype, "me").mockResolvedValue();
+
+    const wrapper = mount(App);
+    await flushPromises();
+
+    expect(wrapper.find(".workbench-view").exists()).toBe(true);
+    expect(wrapper.find(".search-view").exists()).toBe(false);
+    expect(wrapper.text()).not.toContain("没有找到相关影视");
+    wrapper.unmount();
+  });
+
   it("passes a disabled organization-plan capability to the library workbench", async () => {
     window.history.replaceState({}, "", "/library");
     const library = {
