@@ -19,9 +19,10 @@
 ## 115 影视库整理与 STRM 状态
 
 REQ-001（115 影视库自动整理）和 REQ-002（STRM 全量与增量同步）当前均为“待验收”：
-受管夹具和离线阶段证据已具备，但生产范围、生产媒体库和外部播放/联动证据仍未完成，
-相关代码和开关不代表已上线。生产能力、实际版本和部署方式必须以发布前的只读核对以及
-`/api/v1/health` 返回为准；本文不硬编码生产 commit 或开关状态。
+受管夹具、离线阶段证据以及生产只读范围/库存预览已具备，但生产整理写入、生产 STRM
+受管清单、媒体服务器兼容和元数据联动仍未完成。相关代码和开关不代表已上线；生产能力、
+实际版本和部署方式必须以发布前的只读核对以及 `/api/v1/health` 返回为准，本文不硬编码生产
+commit 或开关状态。
 
 磁力和 115 分享任务统一通过独立的 p115 gateway；P115 Cookie 只来自服务端配置的只读
 Cookie 文件或应用内托管设备。分享推送、影视库整理、删除和 STRM 写入继续受独立契约、
@@ -46,8 +47,8 @@ Cookie 文件或应用内托管设备。分享推送、影视库整理、删除�
   官方 test HTTP `200`、search `17`，以及 1 个启用 indexer、`indexerstatus` 异常项 `0`；Watch Assistant 聚合为
   `complete=True`、`warnings=none`、PanSou `0`、Prowlarr `17`、canonical `17`。授权范围仅覆盖公开 Linux ISO 分发，电影/电视剧召回率、95% 基线、
   广泛来源质量、完整来源对照和生产 HTTP 鉴权路由仍未验证，不能据此宣称 REQ-023 完整验收或已上线。
-- p115 目前可引用的远程证据仍限于受管夹具、只读或失败关闭路径；本轮未执行生产远程验收、真实写入、真实媒体库整理、STRM 播放/清理或生产部署。
-  这些能力继续保持未验收、未上线，不能由 CI 成功或 Cookie readiness 推断为生产可用。
+- p115 目前可引用的远程证据仍限于受管夹具、生产只读库存/计划预览或失败关闭路径；本轮未执行真实写入、真实媒体库整理、生产 STRM 播放/清理或媒体服务器兼容验收。
+  systemd 当前 release 和健康接口已完成只读核对，但这些能力继续保持未验收、未上线，不能由 CI 成功或 Cookie readiness 推断为生产可用。
 - 对应离线证据包括 [STRM manifest 单测](tests/unit/test_strm_manifest.py)、[空目录计划单测](tests/unit/test_empty_directory_cleanup_plan.py)、
   [空目录清理契约测试](tests/contracts/test_empty_directory_cleanup_contract.py)、[组织用户流集成测试](tests/integration/test_organization_user_flow.py)、
   [组织计划单测](tests/unit/test_organization_plan.py)、[库存索引单测](tests/unit/test_library_index.py) 和
@@ -56,8 +57,9 @@ Cookie 文件或应用内托管设备。分享推送、影视库整理、删除�
   `scripts/bootstrap_dev.sh --verify` 准备 worktree 依赖并运行离线门禁；
   `scripts/acceptance_closure.py` 将只读库存、整理预览、受管夹具和临时 STRM 输出统一到一份脱敏证据中。
   默认不触碰 115 写入口，真实夹具执行必须额外提供人工确认、范围和一次性授权。
-- 发布 manifest、来源、systemd 回退和发布物 smoke 测试只证明发布门禁覆盖；实际生产运行模式、版本、数据目录、能力开关和线上健康状态，
-  必须在发布前通过只读核对和 `/api/v1/health` 重新确认。本次未执行服务器核对。
+- 发布 manifest、来源、systemd 回退和发布物 smoke 测试只证明发布门禁覆盖；本轮已通过服务器只读核对确认
+  systemd 当前 release、`/api/v1/health` 状态和生产只读预览，但没有在本轮执行部署或真实写操作。
+  健康接口报告整理写契约未验证、整理执行不受支持、STRM 清理关闭；STRM 全量/增量/播放开关状态和播放契约状态必须与完整生产验收分开记录。
 
 ## 部署
 
