@@ -482,7 +482,8 @@ def _single_text(record: Mapping[str, Any], names: tuple[str, ...]) -> str | Non
 def _optional_pickcode(
     record: Mapping[str, Any], *, error_code: str
 ) -> str | None:
-    names = ("pickcode", "pick_code")
+    # p115's verified app listing uses the compact ``pc`` field.
+    names = ("pickcode", "pick_code", "pc")
     value = _single_text(record, names)
     if _contains_any(record, names) and value is None and any(
         record[name] is not None for name in names if name in record

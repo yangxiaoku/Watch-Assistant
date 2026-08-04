@@ -147,6 +147,20 @@ async def test_verified_fs_files_page_maps_pickcode_without_path_or_repr_leaks()
 
 
 @pytest.mark.asyncio
+async def test_verified_app_listing_compact_pc_maps_to_pickcode():
+    record = _file()
+    record.pop("pick_code")
+    record["pc"] = "SYNTHETIC_PICKCODE_SECRET"
+    client = _FsFilesClient((_page([record]),))
+    gateway, _, _ = _gateway(client)
+
+    result = await gateway.list_directory("7")
+
+    assert result.items[0].pickcode == "SYNTHETIC_PICKCODE_SECRET"
+    assert "SYNTHETIC_PICKCODE_SECRET" not in repr(result.items[0])
+
+
+@pytest.mark.asyncio
 async def test_consecutive_offset_count_pages_complete_only_at_verified_terminal_page():
     client = _FsFilesClient(
         (
