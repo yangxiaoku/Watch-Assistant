@@ -70,6 +70,7 @@ const RETRYABLE_CODES = new Set([
   "empty_cleanup_already_applied",
   "empty_cleanup_not_reviewable",
   "empty_cleanup_plan_invalid",
+  "directory_ownership_unavailable",
 ]);
 
 const ACTION_BY_CODE: Record<string, UiErrorAction> = {
@@ -124,6 +125,8 @@ const ACTION_BY_CODE: Record<string, UiErrorAction> = {
   empty_cleanup_already_applied: "refresh_snapshot",
   empty_cleanup_not_reviewable: "refresh_snapshot",
   empty_cleanup_plan_invalid: "refresh_snapshot",
+  directory_ownership_unavailable: "retry",
+  directory_ownership_unrecorded: "view_task",
   plan_already_has_operation: "view_task",
   plan_prerequisites_changed: "reload_settings",
   plan_revision_changed: "reload_settings",
@@ -217,6 +220,7 @@ const ADDITIONAL_CODES = [
   "empty_cleanup_already_applied",
   "empty_cleanup_not_reviewable",
   "empty_cleanup_plan_invalid",
+  "cleanup_scope_unverified", "directory_ownership_unavailable", "directory_ownership_unrecorded",
   "invalid_playback_request", "strm_playback_disabled", "strm_playback_unverified",
   "strm_playback_unavailable", "playback_file_not_found", "playback_network_forbidden",
   "playback_timeout", "playback_remote_failed",
@@ -243,6 +247,9 @@ const CATALOG: Record<string, Omit<UiErrorDescriptor, "code">> = {
   plan_prerequisites_changed: { title: "整理计划已失效", message: "扫描快照已更新，本次整理未执行。", suggestion: "请重新扫描并生成新的整理计划后再确认。", retryable: false, action: "reload_settings" },
   organization_contract_evidence_required: { title: "整理写入缺少契约证据", message: "本次 115 写入操作未执行。", suggestion: "环境开关不能代替契约验收，请先提供独立的契约验收证据。", retryable: false, action: "inspect_configuration" },
   organization_execution_unavailable: { title: "整理执行能力暂不可用", message: "本次整理操作未排队，也未执行远端写入。", suggestion: "请检查 115 readiness、整理写入契约和后台 worker 后再试。", retryable: false, action: "inspect_configuration" },
+  cleanup_scope_unverified: { title: "空目录归属范围未验证", message: "本次空目录清理未执行，系统没有足够的持久化归属证据。", suggestion: "请重新完成整理目录登记和媒体库扫描。", retryable: false, action: "refresh_snapshot" },
+  directory_ownership_unavailable: { title: "归档目录归属记录不可用", message: "本次目标目录没有创建，系统无法建立持久化归属证据。", suggestion: "请检查数据库迁移和整理状态后重试。", retryable: true, action: "retry" },
+  directory_ownership_unrecorded: { title: "归档目录归属记录缺失", message: "远端目录写入结果待核对，系统不会自动重复创建。", suggestion: "请先核对 115 远端目录和本地整理记录。", retryable: false, action: "view_task" },
   organization_lease_required: { title: "整理操作租约无效", message: "本次目标目录没有创建。", suggestion: "请从已确认的整理操作重新执行，系统不会在预览阶段创建目录。", retryable: false, action: "refresh_snapshot" },
   target_directory_create_failed: { title: "归档目录创建失败", message: "本次目标目录没有完成创建。", suggestion: "请先核对 115 远端目录状态，再决定是否重新执行。", retryable: false, action: "view_task" },
   target_directory_parent_missing: { title: "归档目录父级不存在", message: "本次目标目录没有创建。", suggestion: "请确认整理计划和目标目录范围后重新生成计划。", retryable: false, action: "refresh_snapshot" },
