@@ -14,7 +14,10 @@ from typing import NamedTuple
 UNIT_NAME = "watch-assistant.service"
 DEFAULT_UNIT_PATH = Path("/etc/systemd/system") / UNIT_NAME
 DEFAULT_DROP_IN_DIR = DEFAULT_UNIT_PATH.parent / f"{UNIT_NAME}.d"
+MANAGED_DROP_IN_NAME = "inspection.conf"
+MANAGED_DROP_IN_SOURCE_NAME = "watch-assistant-inspection.override.conf"
 UNIT_MODE = 0o644
+DROP_IN_MODE = 0o644
 BACKUP_MODE = 0o600
 
 
@@ -240,10 +243,24 @@ def _drop_in_directory(destination: Path, drop_in_dir: Path | None) -> Path:
     return drop_in_dir if drop_in_dir is not None else destination.parent / f"{UNIT_NAME}.d"
 
 
+def _normalized_drop_in_bytes(path: Path, code: str) -> bytes:
+    try:
+        content = path.read_bytes()
+    except (OSError, UnicodeError) as exc:
+        raise SystemdUnitError(code) from exc
+    content = content.replace(b"\r\n", b"\n")
+    if b"\r" in content or b"\x00" in content:
+        raise SystemdUnitError(code)
+    return content
+
+
 def validate_no_drop_ins(
     destination: Path,
     *,
     drop_in_dir: Path | None = None,
+    expected_drop_in: Path | None = None,
+    drop_in_uid: int | None = None,
+    drop_in_gid: int | None = None,
 ) -> None:
     directory = _drop_in_directory(destination, drop_in_dir)
     if not directory.exists() and not directory.is_symlink():
@@ -257,8 +274,34 @@ def validate_no_drop_ins(
         entries = tuple(resolved.iterdir())
     except OSError as exc:
         raise SystemdUnitError("unit_drop_in_unreadable") from exc
-    if entries:
+    if not entries:
+        return
+    if len(entries) != 1 or entries[0].name != MANAGED_DROP_IN_NAME:
         raise SystemdUnitError("unit_drop_in_present")
+    if expected_drop_in is None:
+        raise SystemdUnitError("unit_drop_in_present")
+
+    installed = entries[0]
+    installed_metadata = _validate_regular_file(installed, "unit_drop_in_present")
+    expected_metadata = _validate_regular_file(
+        expected_drop_in, "unit_drop_in_contract_missing"
+    )
+    if stat.S_IMODE(installed_metadata.st_mode) != DROP_IN_MODE:
+        raise SystemdUnitError("unit_drop_in_mode")
+    if stat.S_IMODE(expected_metadata.st_mode) != DROP_IN_MODE:
+        raise SystemdUnitError("unit_drop_in_contract_mode")
+    if drop_in_uid is not None and installed_metadata.st_uid != drop_in_uid:
+        raise SystemdUnitError("unit_drop_in_owner")
+    if drop_in_gid is not None and installed_metadata.st_gid != drop_in_gid:
+        raise SystemdUnitError("unit_drop_in_group")
+    if drop_in_uid is not None and expected_metadata.st_uid != drop_in_uid:
+        raise SystemdUnitError("unit_drop_in_contract_owner")
+    if drop_in_gid is not None and expected_metadata.st_gid != drop_in_gid:
+        raise SystemdUnitError("unit_drop_in_contract_group")
+    if _normalized_drop_in_bytes(installed, "unit_drop_in_content") != _normalized_drop_in_bytes(
+        expected_drop_in, "unit_drop_in_contract_content"
+    ):
+        raise SystemdUnitError("unit_drop_in_content")
 
 
 def _backup_path(state_directory: Path) -> Path:
@@ -348,7 +391,13 @@ def plan_unit_change(
     drop_in_dir: Path | None = None,
 ) -> UnitChange:
     _validate_destination_scope(destination)
-    validate_no_drop_ins(destination, drop_in_dir=drop_in_dir)
+    validate_no_drop_ins(
+        destination,
+        drop_in_dir=drop_in_dir,
+        expected_drop_in=release_root / "deploy" / MANAGED_DROP_IN_SOURCE_NAME,
+        drop_in_uid=unit_uid,
+        drop_in_gid=unit_gid,
+    )
     source, source_digest = validate_package_unit(
         release_root,
         expected_sha256=expected_source_sha256,
@@ -509,7 +558,13 @@ def verify_installed_unit(
     drop_in_dir: Path | None = None,
 ) -> str:
     _validate_destination_scope(destination)
-    validate_no_drop_ins(destination, drop_in_dir=drop_in_dir)
+    validate_no_drop_ins(
+        destination,
+        drop_in_dir=drop_in_dir,
+        expected_drop_in=release_root / "deploy" / MANAGED_DROP_IN_SOURCE_NAME,
+        drop_in_uid=unit_uid,
+        drop_in_gid=unit_gid,
+    )
     _source, source_digest = validate_package_unit(
         release_root,
         expected_sha256=expected_sha256,
@@ -541,7 +596,14 @@ def verify_installed_unit_digest(
     ):
         raise SystemdUnitError("unit_expected_sha256_invalid")
     _validate_destination_scope(destination)
-    validate_no_drop_ins(destination, drop_in_dir=drop_in_dir)
+    expected_drop_in = Path(__file__).resolve().parents[1] / "deploy" / MANAGED_DROP_IN_SOURCE_NAME
+    validate_no_drop_ins(
+        destination,
+        drop_in_dir=drop_in_dir,
+        expected_drop_in=expected_drop_in,
+        drop_in_uid=unit_uid,
+        drop_in_gid=unit_gid,
+    )
     installed = _snapshot(destination, uid=unit_uid, gid=unit_gid)
     if not installed.exists:
         raise SystemdUnitError("unit_missing")

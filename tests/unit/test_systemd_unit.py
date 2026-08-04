@@ -40,6 +40,10 @@ def _write_package(
     if marker:
         content += f"\n# {marker}\n"
     service.write_text(content, encoding="utf-8")
+    shutil.copy2(
+        ROOT / "deploy" / "watch-assistant-inspection.override.conf",
+        root / "deploy" / "watch-assistant-inspection.override.conf",
+    )
     if write_manifest:
         manifest = {
             "schema_version": 2,
@@ -121,7 +125,7 @@ def test_unknown_drop_in_blocks_install_and_is_not_removed(tmp_path: Path):
     destination.write_bytes((ROOT / "deploy" / "watch-assistant.service").read_bytes())
     drop_in_dir = systemd_dir / f"{unit.UNIT_NAME}.d"
     drop_in_dir.mkdir()
-    unknown = drop_in_dir / "inspection.conf"
+    unknown = drop_in_dir / "unknown.conf"
     unknown.write_text("[Service]\nEnvironment=INSPECTION_ENABLED=false\n", encoding="utf-8")
     uid, gid = _owner()
 
@@ -136,6 +140,37 @@ def test_unknown_drop_in_blocks_install_and_is_not_removed(tmp_path: Path):
             unit_gid=gid,
         )
     assert unknown.exists()
+
+
+def test_managed_inspection_drop_in_allows_crlf_and_checks_contract(tmp_path: Path):
+    package = tmp_path / "release"
+    source = _write_package(package, "a" * 40)
+    systemd_dir = tmp_path / "systemd"
+    systemd_dir.mkdir()
+    destination = systemd_dir / unit.UNIT_NAME
+    shutil.copy2(package / "deploy" / unit.UNIT_NAME, destination)
+    drop_in_dir = systemd_dir / f"{unit.UNIT_NAME}.d"
+    drop_in_dir.mkdir()
+    managed = drop_in_dir / unit.MANAGED_DROP_IN_NAME
+    managed.write_bytes(
+        (package / "deploy" / unit.MANAGED_DROP_IN_SOURCE_NAME)
+        .read_bytes()
+        .replace(b"\n", b"\r\n")
+    )
+    uid, gid = _owner()
+
+    change = unit.plan_unit_change(
+        package,
+        destination=destination,
+        state_directory=tmp_path / "state",
+        install=False,
+        expected_source_sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
+        unit_uid=uid,
+        unit_gid=gid,
+        drop_in_dir=drop_in_dir,
+    )
+
+    assert change.install is False
 
 
 def test_postdeploy_verifies_unit_digest_and_drop_ins(tmp_path: Path, monkeypatch):
@@ -181,7 +216,7 @@ def test_postdeploy_verifies_unit_digest_and_drop_ins(tmp_path: Path, monkeypatc
     ) == (True, "ok")
 
     drop_in_dir.mkdir()
-    (drop_in_dir / "inspection.conf").write_text("[Service]\n", encoding="utf-8")
+    (drop_in_dir / "unknown.conf").write_text("[Service]\n", encoding="utf-8")
     assert postdeploy.check_release_consistency(
         version_file=current_root / "VERSION",
         unit="watch-assistant.service",

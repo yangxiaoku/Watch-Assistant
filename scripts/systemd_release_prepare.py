@@ -409,6 +409,15 @@ def _message(code: str) -> str:
         "unit_missing": "现有 systemd unit 缺失。",
         "unit_drift": "现有 systemd unit 与发布包不一致。",
         "unit_drop_in_present": "检测到未受管 systemd drop-in。",
+        "unit_drop_in_owner": "现有 systemd drop-in 所有者不符合要求。",
+        "unit_drop_in_group": "现有 systemd drop-in 组不符合要求。",
+        "unit_drop_in_mode": "现有 systemd drop-in 权限不符合要求。",
+        "unit_drop_in_content": "现有 systemd drop-in 内容与发布契约不一致。",
+        "unit_drop_in_contract_missing": "发布包缺少 systemd drop-in 契约。",
+        "unit_drop_in_contract_owner": "发布包 systemd drop-in 所有者不符合要求。",
+        "unit_drop_in_contract_group": "发布包 systemd drop-in 组不符合要求。",
+        "unit_drop_in_contract_mode": "发布包 systemd drop-in 权限不符合要求。",
+        "unit_drop_in_contract_content": "发布包 systemd drop-in 内容无效。",
         "unit_drop_in_scope": "systemd drop-in 目录超出允许范围。",
     }
     if code.startswith("release_manifest_"):
