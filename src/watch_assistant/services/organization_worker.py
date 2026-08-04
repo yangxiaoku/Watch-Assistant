@@ -146,7 +146,10 @@ class OrganizationWorker:
                 error_code = getattr(error, "code", None)
                 if not isinstance(error_code, str) or not error_code:
                     error_code = "target_directory_create_failed"
-                await self._finish_failed(lease, error_code)
+                if getattr(error, "uncertain", False) is True:
+                    await self._finish_uncertain(lease, error_code)
+                else:
+                    await self._finish_failed(lease, error_code)
                 return True
 
         client = await self._build_client()
@@ -355,6 +358,26 @@ class OrganizationWorker:
                 error_code=error_code,
             )
         except Exception as exc:  # noqa: BLE001 - lease outcome stays private
+            del exc
+            try:
+                await self._operations.finish_after_lease_loss(
+                    lease.operation_id,
+                    expected_revision=lease.revision,
+                    lease_token=lease.lease_token,
+                )
+            except Exception as exc:  # noqa: BLE001 - preserve uncertainty
+                del exc
+
+    async def _finish_uncertain(self, lease, error_code: str) -> None:
+        try:
+            await self._operations.finish(
+                lease.operation_id,
+                expected_revision=lease.revision,
+                lease_token=lease.lease_token,
+                status=OrganizationOperationStatus.UNCERTAIN,
+                error_code=error_code,
+            )
+        except Exception as exc:  # noqa: BLE001 - preserve uncertainty
             del exc
             try:
                 await self._operations.finish_after_lease_loss(

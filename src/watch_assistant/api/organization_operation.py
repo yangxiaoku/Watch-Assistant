@@ -143,17 +143,37 @@ async def confirm_and_queue_organization_operation(
         await _validate_operation_confirmation(
             context, service, plan_id, digest=payload.digest, confirm=payload.confirm
         )
-        if not await service.has_executable_steps(plan_id, allow_unconfirmed=True):
-            raise ValueError("plan_not_executable")
-        confirmed = await plan_service.confirm_plan(
-            plan_id, expected_revision=payload.expected_revision
-        )
-        summary = await service.create(
+        summary = await service.get_by_idempotency_key(
             plan_id,
             idempotency_key=payload.idempotency_key,
-            expected_plan_revision=confirmed.revision,
             workflow_id=payload.workflow_id,
         )
+        if summary is None:
+            if not await service.has_executable_steps(
+                plan_id, allow_unconfirmed=True
+            ):
+                raise ValueError("plan_not_executable")
+            try:
+                confirmed = await plan_service.confirm_plan(
+                    plan_id, expected_revision=payload.expected_revision
+                )
+            except OrganizationPlanError as error:
+                if error.code != "stale_revision":
+                    raise
+                summary = await service.get_by_idempotency_key(
+                    plan_id,
+                    idempotency_key=payload.idempotency_key,
+                    workflow_id=payload.workflow_id,
+                )
+                if summary is None:
+                    raise
+            else:
+                summary = await service.create(
+                    plan_id,
+                    idempotency_key=payload.idempotency_key,
+                    expected_plan_revision=confirmed.revision,
+                    workflow_id=payload.workflow_id,
+                )
     except Exception as exc:  # noqa: BLE001 - map only stable local errors
         raise _http_error(exc) from None
     return _response(summary)
@@ -241,19 +261,37 @@ async def confirm_and_queue_organization_operations_batch(
                 digest=item.digest,
                 confirm=item.confirm,
             )
-            if not await service.has_executable_steps(
-                item.plan_id, allow_unconfirmed=True
-            ):
-                raise ValueError("plan_not_executable")
-            confirmed = await plan_service.confirm_plan(
-                item.plan_id, expected_revision=item.expected_revision
-            )
-            summary = await service.create(
+            summary = await service.get_by_idempotency_key(
                 item.plan_id,
                 idempotency_key=item.idempotency_key,
-                expected_plan_revision=confirmed.revision,
                 workflow_id=item.workflow_id,
             )
+            if summary is None:
+                if not await service.has_executable_steps(
+                    item.plan_id, allow_unconfirmed=True
+                ):
+                    raise ValueError("plan_not_executable")
+                try:
+                    confirmed = await plan_service.confirm_plan(
+                        item.plan_id, expected_revision=item.expected_revision
+                    )
+                except OrganizationPlanError as error:
+                    if error.code != "stale_revision":
+                        raise
+                    summary = await service.get_by_idempotency_key(
+                        item.plan_id,
+                        idempotency_key=item.idempotency_key,
+                        workflow_id=item.workflow_id,
+                    )
+                    if summary is None:
+                        raise
+                else:
+                    summary = await service.create(
+                        item.plan_id,
+                        idempotency_key=item.idempotency_key,
+                        expected_plan_revision=confirmed.revision,
+                        workflow_id=item.workflow_id,
+                    )
         except Exception as exc:  # noqa: BLE001 - isolate each local item
             _status_code, code, message = _error_values(exc)
             results.append(

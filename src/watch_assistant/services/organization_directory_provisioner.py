@@ -22,8 +22,9 @@ from watch_assistant.adapters.p115_library_write_contract import (
 class OrganizationDirectoryProvisionError(ValueError):
     """Stable local error for a failed directory provision step."""
 
-    def __init__(self, code: str) -> None:
+    def __init__(self, code: str, *, uncertain: bool = False) -> None:
         self.code = code
+        self.uncertain = uncertain is True
         super().__init__(code)
 
 
@@ -101,9 +102,33 @@ class OrganizationDirectoryProvisioner:
                     prepare_mkdir(parent_id, part),
                     timeout_seconds=self._timeout_seconds,
                 )
+                if receipt.status is WriteStatus.UNCERTAIN:
+                    raise OrganizationDirectoryProvisionError(
+                        "target_directory_create_failed", uncertain=True
+                    )
                 if receipt.status is not WriteStatus.SUCCESS or not receipt.file_id:
                     raise OrganizationDirectoryProvisionError(
-                        "target_directory_create_failed"
+                        "target_directory_create_failed",
+                        uncertain=receipt.status is WriteStatus.UNCERTAIN,
+                    )
+                try:
+                    observed = await self._transport.read(
+                        receipt.file_id,
+                        timeout_seconds=self._timeout_seconds,
+                    )
+                except Exception:  # noqa: BLE001 - remote details stay private
+                    raise OrganizationDirectoryProvisionError(
+                        "target_directory_create_failed", uncertain=True
+                    ) from None
+                if (
+                    observed is None
+                    or observed.file_id != receipt.file_id
+                    or observed.is_directory is not True
+                    or observed.parent_id != parent_id
+                    or observed.name != part
+                ):
+                    raise OrganizationDirectoryProvisionError(
+                        "target_directory_create_failed", uncertain=True
                     )
                 directory_ids[current_path] = receipt.file_id
                 parent_path = current_path

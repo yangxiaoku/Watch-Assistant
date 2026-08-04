@@ -430,6 +430,17 @@ async def test_confirm_and_queue_is_one_action_for_review_plan(tmp_path: Path):
 
     assert queued.status_code == 200
     assert queued.json()["status"] == "planned"
+    replayed = await client.post(
+        "/api/v1/organization-plans/plan-ready/confirm-and-operation",
+        json={
+            "expected_revision": 2,
+            "idempotency_key": "confirm-and-queue-key",
+            "confirm": True,
+        },
+        headers=headers,
+    )
+    assert replayed.status_code == 200
+    assert replayed.json()["operation_id"] == queued.json()["operation_id"]
     async with database.session_factory() as session:
         plan = await session.get(OrganizationPlan, "plan-ready")
         assert plan is not None
@@ -486,6 +497,30 @@ async def test_confirm_and_queue_batch_isolates_review_only_plans(tmp_path: Path
         review_plan = await session.get(OrganizationPlan, "plan-review")
         assert review_plan is not None
         assert review_plan.status == "needs_review"
+    replayed = await client.post(
+        "/api/v1/organization-operations/confirm-and-batch",
+        json={
+            "items": [
+                {
+                    "plan_id": "plan-batch",
+                    "expected_revision": 2,
+                    "idempotency_key": "confirm-batch-good",
+                    "confirm": True,
+                },
+                {
+                    "plan_id": "plan-review",
+                    "expected_revision": 1,
+                    "idempotency_key": "confirm-batch-review",
+                    "confirm": True,
+                },
+            ]
+        },
+        headers=headers,
+    )
+    assert replayed.status_code == 200
+    replayed_items = replayed.json()["items"]
+    assert replayed_items[0]["operation_id"] == items[0]["operation_id"]
+    assert replayed_items[1]["error_code"] == "plan_not_executable"
     await _close(client, database)
 
 
