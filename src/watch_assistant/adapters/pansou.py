@@ -95,16 +95,22 @@ class PanSouClient:
         if not isinstance(data, dict):
             raise PanSouError("Unexpected PanSou response shape")
         merged_by_type = data.get("merged_by_type")
+        result_groups = (
+            _group_result_links(data["results"])
+            if isinstance(data.get("results"), list)
+            else None
+        )
         if merged_by_type is None:
-            results = data.get("results")
-            if isinstance(results, list):
-                merged_by_type = _group_result_links(results)
+            if result_groups is not None:
+                merged_by_type = result_groups
             elif data.get("total") == 0:
                 merged_by_type = {}
         if not isinstance(merged_by_type, dict):
             raise PanSouError("Unexpected PanSou response shape")
         if not all(isinstance(items, list) for items in merged_by_type.values()):
             raise PanSouError("Unexpected PanSou response shape")
+        if result_groups:
+            merged_by_type = _merge_result_link_groups(merged_by_type, result_groups)
         return {
             **data,
             "merged_by_type": _enrich_magnet_metadata(data, merged_by_type),
@@ -194,6 +200,46 @@ def _group_result_links(results: list[Any]) -> dict[str, list[dict[str, Any]]]:
                     item[field] = value
             grouped.setdefault(category.strip(), []).append(item)
     return grouped
+
+
+def _merge_result_link_groups(
+    merged_by_type: dict[str, list[Any]],
+    result_groups: dict[str, list[dict[str, Any]]],
+) -> dict[str, list[Any]]:
+    """Fill missing grouped categories without overriding canonical groups."""
+    merged = {category: list(items) for category, items in merged_by_type.items()}
+    for category, additions in result_groups.items():
+        if merged.get(category):
+            continue
+        merged[category] = _dedupe_result_links(category, additions)
+    return merged
+
+
+def _dedupe_result_links(
+    category: str, items: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    deduplicated: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in items:
+        key = _result_link_key(category, item)
+        if key is None or key not in seen:
+            deduplicated.append(item)
+            if key is not None:
+                seen.add(key)
+    return deduplicated
+
+
+def _result_link_key(category: str, item: object) -> str | None:
+    if not isinstance(item, dict):
+        return None
+    url = item.get("url")
+    if not isinstance(url, str) or not url.strip():
+        return None
+    if category.casefold() == "magnet":
+        infohash = _magnet_infohash(url)
+        if infohash is not None:
+            return f"magnet:{infohash}"
+    return f"url:{url.strip()}"
 
 
 def _enrich_magnet_metadata(

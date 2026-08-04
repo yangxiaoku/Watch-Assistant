@@ -248,3 +248,43 @@ async def test_prowlarr_preserves_base_url_path_prefix():
     await client.aclose()
 
     assert route.called
+
+
+@pytest.mark.integration
+@respx.mock
+async def test_prowlarr_accepts_bounded_upstream_overfetch():
+    first_page = [
+        {
+            "title": f"Release {index}",
+            "protocol": "torrent",
+            "infoHash": f"{index:040x}",
+        }
+        for index in range(1, 31)
+    ]
+    second_page = [
+        {
+            "title": f"Release {index}",
+            "protocol": "torrent",
+            "infoHash": f"{index:040x}",
+        }
+        for index in range(31, 51)
+    ]
+    route = respx.get("http://prowlarr.test/api/v1/search").mock(
+        side_effect=[
+            httpx.Response(200, json=first_page),
+            httpx.Response(200, json=second_page),
+        ]
+    )
+    client = ProwlarrClient("http://prowlarr.test", secrets.token_urlsafe(24))
+
+    try:
+        result = await client.search("Movie", limit=50, page_size=1)
+    finally:
+        await client.aclose()
+
+    assert route.call_count == 2
+    assert [call.request.url.params["limit"] for call in route.calls] == ["1", "1"]
+    assert [call.request.url.params["offset"] for call in route.calls] == ["0", "30"]
+    assert result.truncated is False
+    assert len(result.releases) == 50
+    assert result.releases[0].info_hash == f"{1:040x}"
