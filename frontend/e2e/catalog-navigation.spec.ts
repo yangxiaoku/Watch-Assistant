@@ -23,12 +23,32 @@ function catalogMovie(pageNumber: number, index: number, mediaType: "movie" | "t
   };
 }
 
+type RequestGate = {
+  started: Promise<void>;
+  released: Promise<void>;
+  completed: Promise<void>;
+  markStarted: () => void;
+  release: () => void;
+  markCompleted: () => void;
+};
+
+function createRequestGate(): RequestGate {
+  let markStarted!: () => void;
+  let release!: () => void;
+  let markCompleted!: () => void;
+  const started = new Promise<void>((resolve) => { markStarted = resolve; });
+  const released = new Promise<void>((resolve) => { release = resolve; });
+  const completed = new Promise<void>((resolve) => { markCompleted = resolve; });
+  return { started, released, completed, markStarted, release, markCompleted };
+}
+
 async function installCatalogMocks(page: Page) {
   const discoverRequests: Array<{ page: number; genre: number | null; year: number | null; sort: string }> = [];
   const popularRequests: number[] = [];
   const searchRequests: Array<{ query: string; page: number }> = [];
   const failedPages = new Set<number>();
   const delayedGenres = new Map<number, number>();
+  const gatedGenres = new Map<number, RequestGate>();
   const delayedMediaTypes = new Map<string, number>();
   const responsePageOverrides = new Map<number, number>();
 
@@ -56,24 +76,31 @@ async function installCatalogMocks(page: Page) {
       year: requestedYear === null ? null : Number(requestedYear),
       sort: params.get("sort") ?? "popular",
     });
+    const gate = requestedGenre === null ? undefined : gatedGenres.get(requestedGenre);
+    gate?.markStarted();
+    if (gate) await gate.released;
     const delay = Math.max(
       requestedGenre === null ? 0 : delayedGenres.get(requestedGenre) ?? 0,
       delayedMediaTypes.get(mediaType) ?? 0,
     );
     if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
-    if (failedPages.has(requestedPage)) {
-      await route.fulfill({ status: 502, json: { error: { code: "tmdb_unavailable" } } });
-      return;
+    try {
+      if (failedPages.has(requestedPage)) {
+        await route.fulfill({ status: 502, json: { error: { code: "tmdb_unavailable" } } });
+        return;
+      }
+      const responsePage = responsePageOverrides.get(requestedPage) ?? requestedPage;
+      await route.fulfill({
+        json: {
+          results: Array.from({ length: 12 }, (_, index) => catalogMovie(responsePage, index, mediaType, requestedGenre === null ? "" : `类型 ${requestedGenre}`)),
+          page: responsePage,
+          total_pages: responsePage === 500 ? 999 : 3,
+          total_results: 60,
+        },
+      });
+    } finally {
+      gate?.markCompleted();
     }
-    const responsePage = responsePageOverrides.get(requestedPage) ?? requestedPage;
-    await route.fulfill({
-      json: {
-        results: Array.from({ length: 12 }, (_, index) => catalogMovie(responsePage, index, mediaType, requestedGenre === null ? "" : `类型 ${requestedGenre}`)),
-        page: responsePage,
-        total_pages: responsePage === 500 ? 999 : 3,
-        total_results: 60,
-      },
-    });
   });
   await page.route("**/api/v1/movies/popular?**", (route) => {
     const requestedPage = Number(new URL(route.request().url()).searchParams.get("page") ?? "1");
@@ -112,7 +139,7 @@ async function installCatalogMocks(page: Page) {
     }),
   );
 
-  return { discoverRequests, popularRequests, searchRequests, failedPages, delayedGenres, delayedMediaTypes, responsePageOverrides };
+  return { discoverRequests, popularRequests, searchRequests, failedPages, delayedGenres, gatedGenres, delayedMediaTypes, responsePageOverrides };
 }
 
 async function expectNoHorizontalOverflow(page: Page) {
@@ -198,21 +225,25 @@ test("restores catalog state on browser back and forward", async ({ page }) => {
 
 test("resets filters to page 1 and ignores an older response", async ({ page }) => {
   const mocks = await installCatalogMocks(page);
-  mocks.delayedGenres.set(28, 220);
-  mocks.delayedGenres.set(12, 10);
+  const actionResponse = createRequestGate();
+  mocks.gatedGenres.set(28, actionResponse);
   await page.goto("/movies?page=2");
   await expect(page.getByText("第 2 / 3 页 · 共 60 条")).toBeVisible();
 
   const action = page.getByRole("button", { name: "动作", exact: true });
   const adventure = page.getByRole("button", { name: "冒险", exact: true });
   await action.click();
+  await actionResponse.started;
+  expect(mocks.discoverRequests.at(-1)).toEqual({ page: 1, genre: 28, year: null, sort: "popular" });
   await expect(page.getByText("第 2 / 3 页 · 共 60 条")).toBeVisible();
   await expect(page.locator(".movie-card").first()).toContainText("第 2 页");
   await adventure.click();
   await expect(page).toHaveURL(/\/movies\?genre=12$/);
   await expect(page.getByRole("button", { name: "查看 类型 12第 1 页 1", exact: true })).toBeVisible();
-  await page.waitForTimeout(260);
-  expect(mocks.discoverRequests.at(-1)?.genre).toBe(12);
+  expect(mocks.discoverRequests.at(-1)).toEqual({ page: 1, genre: 12, year: null, sort: "popular" });
+  actionResponse.release();
+  await actionResponse.completed;
+  await expect(page).toHaveURL(/\/movies\?genre=12$/);
   await expect(page.locator(".movie-card").first()).toContainText("类型 12");
 });
 
