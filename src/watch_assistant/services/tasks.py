@@ -347,19 +347,23 @@ async def _fenced_task(
     session: AsyncSession,
     lease: TaskLease,
     current_time: datetime,
+    *,
+    require_live_lease: bool = True,
 ) -> Task | None:
     """Acquire the task row for a final write using the lease predicates."""
 
+    predicates = [
+        Task.id == lease.task_id,
+        Task.state == TaskState.SUBMITTING,
+        Task.lease_owner == lease.lease_owner,
+        Task.lease_token == lease.lease_token,
+        Task.lease_expires_at.is_not(None),
+    ]
+    if require_live_lease:
+        predicates.append(Task.lease_expires_at > current_time)
     result = await session.execute(
         update(Task)
-        .where(
-            Task.id == lease.task_id,
-            Task.state == TaskState.SUBMITTING,
-            Task.lease_owner == lease.lease_owner,
-            Task.lease_token == lease.lease_token,
-            Task.lease_expires_at.is_not(None),
-            Task.lease_expires_at > current_time,
-        )
+        .where(*predicates)
         .values(updated_at=current_time)
         .execution_options(synchronize_session=False)
     )
@@ -707,9 +711,17 @@ class TaskService:
             return task
 
     async def finish_recovery(
-        self, lease: TaskLease, remote_status: RemoteState | None
+        self,
+        lease: TaskLease,
+        remote_status: RemoteState | None,
+        *,
+        allow_expired: bool = False,
     ) -> Task | None:
-        """Persist a read-only recovery observation under the new claim."""
+        """Persist a read-only recovery observation under the exact claim fence.
+
+        ``allow_expired`` is reserved for marking a lost old claim.  The
+        owner/token predicates still prevent a later worker from being changed.
+        """
 
         current_time = datetime.now(UTC)
         observation = _as_remote_observation(remote_status)
@@ -719,7 +731,12 @@ class TaskService:
                 error_code=REMOTE_OBSERVATION_MISSING,
             )
         async with self._session_factory() as session:
-            task = await _fenced_task(session, lease, current_time)
+            task = await _fenced_task(
+                session,
+                lease,
+                current_time,
+                require_live_lease=not allow_expired,
+            )
             if task is None:
                 return None
             observation = _scope_observation_to_task(task, observation)
@@ -743,6 +760,7 @@ class TaskService:
                 status=RemoteStatus.UNCERTAIN,
                 error_code=TASK_LEASE_LOST,
             ),
+            allow_expired=True,
         )
 
     async def reconcile(

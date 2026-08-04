@@ -301,13 +301,13 @@ def find_duplicate_groups(
     candidate_media: dict[str, list[str]] = {}
     for item in items:
         if item.file.content_digest:
-            exact.setdefault("digest:" + item.file.content_digest.casefold(), []).append(
-                item.file.object_id
-            )
+            exact.setdefault(
+                "digest:" + _normalize_exact_identity(item.file.content_digest), []
+            ).append(item.file.object_id)
         elif item.file.infohash:
-            exact.setdefault("infohash:" + item.file.infohash.casefold(), []).append(
-                item.file.object_id
-            )
+            exact.setdefault(
+                "infohash:" + _normalize_exact_identity(item.file.infohash), []
+            ).append(item.file.object_id)
         key = item.identity.key
         if item.identity.tmdb_id is not None:
             trusted_media.setdefault(key, []).append(item.file.object_id)
@@ -386,10 +386,25 @@ def check_inventory(
     if object_id and any(item.file.object_id == object_id for item in snapshot.files):
         return InventoryDecision.EXACT_DUPLICATE
     if content_digest or infohash:
+        normalized_digest = (
+            _normalize_exact_identity(content_digest) if content_digest else None
+        )
+        normalized_infohash = (
+            _normalize_exact_identity(infohash) if infohash else None
+        )
         for item in snapshot.files:
-            if content_digest and item.file.content_digest == content_digest:
+            if (
+                normalized_digest is not None
+                and item.file.content_digest is not None
+                and _normalize_exact_identity(item.file.content_digest)
+                == normalized_digest
+            ):
                 return InventoryDecision.EXACT_DUPLICATE
-            if infohash and item.file.infohash == infohash:
+            if (
+                normalized_infohash is not None
+                and item.file.infohash is not None
+                and _normalize_exact_identity(item.file.infohash) == normalized_infohash
+            ):
                 return InventoryDecision.EXACT_DUPLICATE
     if tmdb_id is not None:
         matches = [
@@ -503,6 +518,10 @@ def _normalize_title(value: str | None) -> str | None:
     normalized = re.sub(r"[^\w]+", " ", normalized, flags=re.UNICODE)
     normalized = " ".join(normalized.split())
     return normalized or None
+
+
+def _normalize_exact_identity(value: str) -> str:
+    return value.casefold()
 
 
 def _safe_identity(value: object, *, max_length: int) -> bool:

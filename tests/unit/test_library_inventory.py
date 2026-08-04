@@ -47,6 +47,41 @@ def test_exact_digest_is_the_only_automatic_duplicate_blocker():
     )
 
 
+@pytest.mark.parametrize(
+    ("identity_field", "first", "second", "query"),
+    (
+        ("content_digest", "SHA-A", "sha-a", "sHa-A"),
+        ("infohash", "ABC123", "abc123", "AbC123"),
+    ),
+)
+def test_exact_identity_guard_matches_duplicate_group_normalization(
+    identity_field, first, second, query
+):
+    snapshot = build_snapshot(
+        (
+            InventoryFile(
+                "one",
+                "Movie.2024.1080p.mkv",
+                **{identity_field: first},
+            ),
+            InventoryFile(
+                "two",
+                "Movie.2024.2160p.mkv",
+                **{identity_field: second},
+            ),
+        ),
+        complete=True,
+        captured_at=NOW,
+        now=NOW,
+    )
+
+    assert any(group.kind is DuplicateKind.EXACT for group in snapshot.duplicate_groups)
+    assert (
+        check_inventory(snapshot, **{identity_field: query})
+        is InventoryDecision.EXACT_DUPLICATE
+    )
+
+
 def test_trusted_tmdb_identity_distinguishes_media_and_version_duplicates():
     snapshot = build_snapshot(
         (
