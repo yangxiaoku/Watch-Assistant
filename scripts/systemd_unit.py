@@ -60,6 +60,7 @@ _REQUIRED_LINES = (
     "WorkingDirectory=/opt/watch-assistant/current",
     "EnvironmentFile=/etc/watch-assistant.env",
     "EnvironmentFile=-/var/lib/watch-assistant/release.env",
+    "Environment=PYTHONPATH=/opt/watch-assistant/current/src",
     "Environment=FRONTEND_DIST_DIR=/opt/watch-assistant/current/frontend/dist",
     "Environment=HOME=/var/lib/watch-assistant",
     "ExecStart=/opt/watch-assistant/venv/bin/uvicorn watch_assistant.app:app --host 0.0.0.0 --port 8115 --workers 1",
