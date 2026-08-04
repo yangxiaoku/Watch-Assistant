@@ -26,11 +26,14 @@ class RemoteObjectState:
     object_id: str
     parent_id: str
     name: str
+    is_directory: bool = False
 
     def __post_init__(self) -> None:
         for value in (self.object_id, self.parent_id, self.name):
             if not isinstance(value, str) or not value:
                 raise ValueError("invalid_remote_state")
+        if not isinstance(self.is_directory, bool):
+            raise TypeError("invalid_remote_state")
 
     def __repr__(self) -> str:
         return "RemoteObjectState(<redacted>)"
@@ -161,6 +164,7 @@ def _matches_source(
         observed.object_id == expectation.object_id
         and observed.parent_id == expectation.source_parent_id
         and observed.name == expectation.source_name
+        and observed.is_directory is False
     )
 
 
@@ -171,6 +175,7 @@ def _matches_target(
         observed.object_id == expectation.object_id
         and observed.parent_id == expectation.target_parent_id
         and observed.name == expectation.target_name
+        and observed.is_directory is False
     )
 
 

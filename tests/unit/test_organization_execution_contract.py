@@ -72,6 +72,19 @@ def test_existing_target_is_a_conflict_not_an_overwrite():
     )
 
 
+def test_directory_observation_cannot_satisfy_file_expectation():
+    result = check_before_write(
+        _expectation(),
+        source=RemoteObjectState("file-1", "source", "before.mkv", True),
+        target=None,
+    )
+
+    assert (result.status, result.error_code) == (
+        OrganizationStepCheck.CONFLICT,
+        "source_precondition_changed",
+    )
+
+
 def test_missing_source_is_uncertain_not_a_new_write_attempt():
     result = check_before_write(_expectation(), source=None, target=None)
 

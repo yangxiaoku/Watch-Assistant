@@ -80,6 +80,16 @@ def _file_page(file_id, parent_id, name):
     }
 
 
+def _directory_page(file_id, parent_id, name):
+    return {
+        "state": True,
+        "data": [{"fc": 0, "fid": file_id, "cid": parent_id, "n": name}],
+        "offset": 0,
+        "limit": 1,
+        "count": 1,
+    }
+
+
 def _intent(
     *,
     object_id: str = "100",
@@ -333,6 +343,34 @@ async def test_live_transport_returns_missing_for_absent_object_in_complete_scop
     )
 
     assert await transport.read_object_in_scope("100", ("7000", "8000")) is None
+
+
+@pytest.mark.asyncio
+async def test_live_transport_rejects_directory_with_planned_file_identity():
+    client = _LiveFakeP115Client(
+        {
+            "fs_info": [],
+            "fs_files": [_directory_page("100", "7000", "before.mkv")],
+            "fs_move": [],
+            "fs_rename": [],
+            "fs_delete": [],
+        }
+    )
+    transport = create_live_p115_organization_transport(
+        client=client,
+        call_executor=_live_call_executor,
+        intents=(_intent(),),
+        managed_directory_ids=("7000", "8000"),
+        scope_confirmed=True,
+        live_enabled=True,
+        read_only=True,
+        organization_contract=_organization_contract(),
+    )
+
+    with pytest.raises(P115OrganizationTransportError, match="observation_unverified"):
+        await transport.read_object("100")
+
+    assert [call[0] for call in client.calls] == ["fs_files"]
 
 
 @pytest.mark.asyncio

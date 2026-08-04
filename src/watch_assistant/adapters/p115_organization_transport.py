@@ -197,6 +197,7 @@ class OfflineP115OrganizationTransport:
             not isinstance(state, RemoteObjectState)
             or state.object_id != object_id
             or state.parent_id not in scope
+            or state.is_directory is not False
             for state in matches
         ):
             raise P115OrganizationTransportError("observation_unverified")
@@ -251,7 +252,7 @@ class OfflineP115OrganizationTransport:
         if state.parent_id != intent.source_parent_id:
             return _uncertain(OrganizationTransportOperation.MOVE)
         self._states[object_id] = RemoteObjectState(
-            object_id, intent.target_parent_id, state.name
+            object_id, intent.target_parent_id, state.name, state.is_directory
         )
         return _success(OrganizationTransportOperation.MOVE)
 
@@ -275,7 +276,7 @@ class OfflineP115OrganizationTransport:
         if state.parent_id != intent.target_parent_id:
             return _uncertain(OrganizationTransportOperation.RENAME)
         self._states[object_id] = RemoteObjectState(
-            object_id, state.parent_id, intent.target_name
+            object_id, state.parent_id, intent.target_name, state.is_directory
         )
         return _success(OrganizationTransportOperation.RENAME)
 
@@ -303,6 +304,7 @@ class OfflineP115OrganizationTransport:
             or state.parent_id != parent_id
             or state.name != name
             or state.parent_id not in self._managed_directory_ids
+            or state.is_directory is not False
         ):
             return _uncertain(OrganizationTransportOperation.RECYCLE)
         del self._states[object_id]
@@ -326,6 +328,7 @@ class OfflineP115OrganizationTransport:
             and state.parent_id in {intent.source_parent_id, intent.target_parent_id}
             and state.parent_id in self._managed_directory_ids
             and state.name in {intent.source_name, intent.target_name}
+            and state.is_directory is False
         )
 
     def _injected(self, method: P115OrganizationMethod, identity: str) -> Outcome:
@@ -459,7 +462,9 @@ class LiveP115OrganizationTransport:
             if listing.complete is not True:
                 raise P115OrganizationTransportError("observation_unverified")
             observations.extend(
-                RemoteObjectState(entry.file_id, entry.parent_id, entry.name)
+                RemoteObjectState(
+                    entry.file_id, entry.parent_id, entry.name, entry.is_directory
+                )
                 for entry in listing.entries
                 if entry.file_id == object_id
             )
@@ -489,7 +494,9 @@ class LiveP115OrganizationTransport:
             if listing.complete is not True:
                 raise P115OrganizationTransportError("observation_unverified")
             observations.extend(
-                RemoteObjectState(entry.file_id, entry.parent_id, entry.name)
+                RemoteObjectState(
+                    entry.file_id, entry.parent_id, entry.name, entry.is_directory
+                )
                 for entry in listing.entries
                 if entry.file_id == object_id
             )
@@ -498,7 +505,11 @@ class LiveP115OrganizationTransport:
         if not observations:
             return None
         state = observations[0]
-        if state.parent_id not in scope or state.parent_id not in self._managed_directory_ids:
+        if (
+            state.parent_id not in scope
+            or state.parent_id not in self._managed_directory_ids
+            or state.is_directory is not False
+        ):
             raise P115OrganizationTransportError("observation_unverified")
         return state
 
@@ -512,7 +523,9 @@ class LiveP115OrganizationTransport:
         if listing.complete is not True:
             raise P115OrganizationTransportError("observation_unverified")
         matches = [
-            RemoteObjectState(entry.file_id, entry.parent_id, entry.name)
+            RemoteObjectState(
+                entry.file_id, entry.parent_id, entry.name, entry.is_directory
+            )
             for entry in listing.entries
             if entry.name == name
         ]
@@ -739,7 +752,7 @@ def _normalize_live_object_response(
     name = _live_single_text(detail)
     if object_id != requested_id or parent_id is None or name is None:
         return None
-    return RemoteObjectState(object_id, parent_id, name)
+    return RemoteObjectState(object_id, parent_id, name, is_directory)
 
 
 def _live_directory_marker(record: Mapping[str, Any]) -> bool | None:
@@ -795,6 +808,7 @@ def _valid_live_observation(
         and state.parent_id in {intent.source_parent_id, intent.target_parent_id}
         and state.parent_id in managed_directory_ids
         and state.name in {intent.source_name, intent.target_name}
+        and state.is_directory is False
     )
 
 
