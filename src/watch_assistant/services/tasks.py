@@ -372,6 +372,32 @@ async def _fenced_task(
     return await session.get(Task, lease.task_id)
 
 
+async def _fence_task_commit(
+    session: AsyncSession,
+    lease: TaskLease,
+    current_time: datetime,
+    *,
+    require_live_lease: bool = True,
+) -> bool:
+    """Prove the claim still owns the transaction immediately before commit."""
+
+    predicates = [
+        Task.id == lease.task_id,
+        Task.lease_owner == lease.lease_owner,
+        Task.lease_token == lease.lease_token,
+        Task.lease_expires_at.is_not(None),
+    ]
+    if require_live_lease:
+        predicates.append(Task.lease_expires_at > current_time)
+    result = await session.execute(
+        update(Task)
+        .where(*predicates)
+        .values(updated_at=current_time)
+        .execution_options(synchronize_session=False)
+    )
+    return result.rowcount == 1
+
+
 def _release_task_lease(task: Task) -> None:
     task.lease_owner = None
     task.lease_token = None
@@ -705,8 +731,11 @@ class TaskService:
                 source=EvidenceSource.SUBMISSION_RECEIPT,
                 verified_available=False,
             )
+            commit_time = datetime.now(UTC)
+            if not await _fence_task_commit(session, lease, commit_time):
+                return None
             _release_task_lease(task)
-            task.updated_at = current_time
+            task.updated_at = commit_time
             await session.commit()
             return task
 
@@ -746,8 +775,16 @@ class TaskService:
                 observation,
                 source=EvidenceSource.READONLY_RECONCILIATION,
             )
+            commit_time = datetime.now(UTC)
+            if not await _fence_task_commit(
+                session,
+                lease,
+                commit_time,
+                require_live_lease=not allow_expired,
+            ):
+                return None
             _release_task_lease(task)
-            task.updated_at = current_time
+            task.updated_at = commit_time
             await session.commit()
             return task
 
