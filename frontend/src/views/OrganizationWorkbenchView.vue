@@ -4,12 +4,13 @@ import { computed, onMounted, ref } from "vue";
 import { ApiClient, ApiError, focusFirstFieldError } from "../api";
 import ConfirmDialog from "../components/ConfirmDialog.vue";
 import { describeUiError } from "../errorCatalog";
+import { organizationOperationStatusLabel } from "../statusCatalog";
 import { diagnosticCode, diagnosticReference } from "../uiSafety";
 import type { OrganizationExecutionBlocker, OrganizationOperationResponse, OrganizationPlanStatus, OrganizationPlanSummary } from "../types";
 
-const props = withDefaults(defineProps<{ api: ApiClient; enabled?: boolean; executionEnabled?: boolean }>(), {
+const props = withDefaults(defineProps<{ api: ApiClient; enabled?: boolean; executionSupported?: boolean }>(), {
   enabled: true,
-  executionEnabled: false,
+  executionSupported: false,
 });
 
 const activeStatus = ref<OrganizationPlanStatus>("needs_review");
@@ -78,15 +79,6 @@ const statusLabel: Record<OrganizationPlanStatus, string> = {
   planned: "已确认（本地预览）",
   invalidated: "已失效",
   ignored: "已忽略",
-};
-
-const operationStatusLabel: Record<OrganizationOperationResponse["status"], string> = {
-  planned: "已排队",
-  organizing: "执行中",
-  organized: "已完成",
-  failed: "已失败",
-  uncertain: "结果待确认",
-  cancelled: "已取消",
 };
 
 let planRequestGeneration = 0;
@@ -193,13 +185,13 @@ async function confirmPlan() {
 }
 
 function requestExecution(plan: OrganizationPlanSummary): void {
-  if (busy.value || !props.executionEnabled || !plan.can_execute) return;
+  if (busy.value || !props.executionSupported || !plan.can_execute) return;
   pendingExecution.value = { kind: "single", plan: normalizePlan(plan) };
 }
 
 function requestBatchExecution(): void {
   const executable = executableItems.value;
-  if (busy.value || !props.executionEnabled || activeStatus.value !== "needs_review" || !executable.length) return;
+  if (busy.value || !props.executionSupported || activeStatus.value !== "needs_review" || !executable.length) return;
   pendingExecution.value = { kind: "batch", plans: executable.map(normalizePlan) };
 }
 
@@ -220,7 +212,7 @@ async function saveAlias() {
 }
 
 async function queueOperation(plan = selected.value) {
-  if (!plan || busy.value || plan.status !== "planned" || !selectedCanExecute.value || !props.executionEnabled) return;
+  if (!plan || busy.value || plan.status !== "planned" || !selectedCanExecute.value || !props.executionSupported) return;
   busy.value = true;
   error.value = "";
   notice.value = "";
@@ -241,7 +233,7 @@ async function queueOperation(plan = selected.value) {
 }
 
 async function confirmAndQueueOperation(plan = selected.value) {
-  if (!plan || busy.value || plan.status !== "needs_review" || !selectedCanExecute.value || !props.executionEnabled) return;
+  if (!plan || busy.value || plan.status !== "needs_review" || !selectedCanExecute.value || !props.executionSupported) return;
   busy.value = true;
   error.value = "";
   notice.value = "";
@@ -329,6 +321,8 @@ async function handleQueuedOperation(queuedOperation: OrganizationOperationRespo
     error.value = queuedOperation.error_code
       ? describeUiError(queuedOperation.error_code, 409).message
       : "后台整理未完成，请查看操作状态";
+  } else if (queuedOperation.status === "planned" && !props.executionSupported) {
+    notice.value = "整理操作已保存，当前没有执行能力，尚未执行远端操作";
   } else {
     notice.value = "整理已提交，后台正在执行";
     await pollOperation(queuedOperation.operation_id, planId);
@@ -337,7 +331,7 @@ async function handleQueuedOperation(queuedOperation: OrganizationOperationRespo
 
 async function confirmAndQueueCurrentPage() {
   const executable = executableItems.value;
-  if (!props.executionEnabled || activeStatus.value !== "needs_review" || !executable.length || busy.value) return;
+  if (!props.executionSupported || activeStatus.value !== "needs_review" || !executable.length || busy.value) return;
   busy.value = true;
   error.value = "";
   notice.value = "";
@@ -442,7 +436,7 @@ onMounted(() => {
       <div>
         <p class="eyebrow">本地审核</p>
         <h1>整理计划工作台</h1>
-        <p>{{ executionEnabled ? "可执行计划可一次确认并进入后台整理。" : "这里只改变本地计划状态，不会执行远端操作。" }}</p>
+        <p>{{ executionSupported ? "可执行计划可一次确认并进入后台整理。" : "这里只改变本地计划状态，不会执行远端操作。" }}</p>
       </div>
       <button class="icon-button" type="button" title="刷新计划" aria-label="刷新计划" :disabled="loading || busy" @click="loadPlans()"><RefreshCw :size="17" :class="{ spin: loading }" /></button>
     </div>
@@ -463,7 +457,7 @@ onMounted(() => {
     <div v-else class="organization-layout">
       <div class="organization-list" aria-label="计划列表">
         <p v-if="loading" class="organization-list-loading" role="status"><LoaderCircle class="spin" :size="16" />正在加载下一页</p>
-        <button v-if="executionEnabled && activeStatus === 'needs_review'" class="primary-button organization-batch-action" type="button" :disabled="loading || busy" @click="requestBatchExecution"><ListChecks :size="16" />确认并整理当前页（{{ executableItems.length }}）</button>
+        <button v-if="executionSupported && activeStatus === 'needs_review'" class="primary-button organization-batch-action" type="button" :disabled="loading || busy" @click="requestBatchExecution"><ListChecks :size="16" />确认并整理当前页（{{ executableItems.length }}）</button>
         <button v-for="plan in items" :key="plan.plan_id" type="button" class="organization-plan-row" :class="{ active: selected?.plan_id === plan.plan_id }" @click="selectPlan(plan)">
           <span class="organization-plan-row-main"><strong>{{ planLabel(plan) }}</strong><small>{{ statusLabel[plan.status] }}</small></span>
           <span class="organization-plan-row-meta"><span>版本 {{ plan.revision }}</span><ChevronRight :size="16" /></span>
@@ -504,16 +498,17 @@ onMounted(() => {
         </form>
         <p class="organization-safe-note">预览只显示本地摘要。</p>
         <div v-if="operation" class="organization-operation-status" :class="{ failed: operation.status === 'failed', uncertain: operation.status === 'uncertain' }">
-          <strong>整理操作：{{ operationStatusLabel[operation.status] }}</strong>
+          <strong>整理操作：{{ organizationOperationStatusLabel(operation.status, executionSupported) }}</strong>
+          <span v-if="operation.status === 'planned' && !executionSupported">当前没有可用整理 worker，本次操作尚未执行；恢复执行能力后请重新确认。</span>
           <span v-if="operation.status === 'failed'">{{ operationFailureMessage(operation.error_code) }}</span>
           <span v-else-if="operation.status === 'uncertain'">{{ operationFailureMessage(operation.error_code) }}</span>
           <span v-else-if="operation.status === 'organizing'">后台正在执行，页面刷新后仍会保留当前状态。</span>
           <details v-if="operation.error_code" class="diagnostic-details"><summary>诊断信息</summary><small>错误码：{{ diagnosticCode(operation.error_code) }}</small><small>操作标识：{{ diagnosticReference(operation.operation_id) }}</small></details>
         </div>
-        <div v-if="selectedCanEdit || (selected.status === 'planned' && executionEnabled)" class="organization-actions">
-          <button v-if="selectedIsReviewable && executionEnabled && selectedCanExecute" class="primary-button" type="button" :disabled="busy" @click="requestExecution(selected)"><Play :size="16" />确认并开始整理</button>
+        <div v-if="selectedCanEdit || (selected.status === 'planned' && executionSupported)" class="organization-actions">
+          <button v-if="selectedIsReviewable && executionSupported && selectedCanExecute" class="primary-button" type="button" :disabled="busy" @click="requestExecution(selected)"><Play :size="16" />确认并开始整理</button>
           <button v-else-if="selectedIsReviewable && selectedCanExecute" class="primary-button" type="button" :disabled="busy" @click="confirmPlan"><Check :size="16" />确认本地计划</button>
-          <button v-if="selected.status === 'planned' && executionEnabled && selectedCanExecute" class="primary-button" type="button" :disabled="busy" @click="requestExecution(selected)"><Play :size="16" />立即整理</button>
+          <button v-if="selected.status === 'planned' && executionSupported && selectedCanExecute" class="primary-button" type="button" :disabled="busy" @click="requestExecution(selected)"><Play :size="16" />立即整理</button>
           <button class="secondary-button" type="button" :disabled="busy" @click="ignorePlan"><Ban :size="16" />忽略</button>
         </div>
         <form v-if="selectedCanEdit" class="organization-alias" @submit.prevent="saveAlias">

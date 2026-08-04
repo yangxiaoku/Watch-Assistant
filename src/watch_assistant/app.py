@@ -116,6 +116,9 @@ from watch_assistant.services.observability import emit_event
 from watch_assistant.services.organization_automation import (
     OrganizationAutomationService,
 )
+from watch_assistant.services.organization_capability import (
+    organization_execution_supported,
+)
 from watch_assistant.services.organization_directory_provisioner import (
     OrganizationDirectoryProvisioner,
 )
@@ -1887,7 +1890,7 @@ def create_app(
                 )
             ),
             "organization_execution_supported": bool(
-                getattr(application.state, "organization_worker", None) is not None
+                organization_execution_supported(application)
             ),
             "library_scan_supported": bool(
                 getattr(application.state, "library_scan_worker", None) is not None

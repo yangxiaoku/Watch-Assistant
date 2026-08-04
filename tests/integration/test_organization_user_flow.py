@@ -282,7 +282,7 @@ async def test_legacy_contract_flag_does_not_open_organization_write_runtime(
 
 
 @pytest.mark.integration
-async def test_manual_organization_flow_survives_unready_p115_and_restart(
+async def test_manual_organization_flow_fails_closed_unready_p115_and_restart(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     monkeypatch.setattr(
@@ -371,9 +371,11 @@ async def test_manual_organization_flow_survives_unready_p115_and_restart(
                     "confirm": True,
                 },
             )
-            assert confirmed.status_code == 200
-            operation = confirmed.json()
-            assert operation["status"] == "planned"
+            assert confirmed.status_code == 503
+            assert confirmed.json()["detail"] == {
+                "code": "organization_execution_unavailable",
+                "message": "整理执行能力暂不可用，本次操作未排队",
+            }
 
     restarted = _app(
         database,
@@ -394,8 +396,8 @@ async def test_manual_organization_flow_survives_unready_p115_and_restart(
                 f"/api/v1/organization-plans/{plan['plan_id']}/operation",
                 headers=headers,
             )
-            assert persisted.status_code == 200
-            assert persisted.json()["status"] == "planned"
+            assert persisted.status_code == 404
+            assert persisted.json()["detail"]["code"] == "operation_not_found"
 
     await database.engine.dispose()
 
@@ -513,7 +515,10 @@ async def test_no_candidates_can_be_searched_selected_and_queued_as_one_confirme
                 "confirm": True,
             },
         )
-        assert confirmed.status_code == 200, confirmed.text
-        assert confirmed.json()["status"] == "planned"
+        assert confirmed.status_code == 503, confirmed.text
+        assert confirmed.json()["detail"] == {
+            "code": "organization_execution_unavailable",
+            "message": "整理执行能力暂不可用，本次操作未排队",
+        }
         assert not hasattr(app.state, "organization_worker")
     await app.state.database.engine.dispose()

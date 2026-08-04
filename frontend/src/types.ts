@@ -268,6 +268,7 @@ export interface HealthResponse {
   inspection_auto_start_enabled?: boolean;
   organization_plan_enabled?: boolean;
   organization_execution_enabled?: boolean;
+  organization_execution_supported?: boolean;
   organization_write_enabled?: boolean;
   organization_write_contract_verified?: boolean;
   permanent_delete_enabled?: boolean;

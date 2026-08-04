@@ -33,6 +33,7 @@ describe("App capability wiring", () => {
       push_supported: false,
       organization_plan_enabled: true,
       organization_execution_enabled: true,
+      organization_execution_supported: true,
     });
     vi.spyOn(ApiClient.prototype, "me").mockResolvedValue();
     vi.spyOn(ApiClient.prototype, "organizationPlans").mockResolvedValue({ items: [plan], next_cursor: null });
@@ -64,6 +65,7 @@ describe("App capability wiring", () => {
       push_supported: false,
       organization_plan_enabled: false,
       organization_execution_enabled: false,
+      organization_execution_supported: false,
       strm_capabilities: { full: true, incremental: true, cleanup: true, playback: false, playback_contract_verified: false },
     });
     vi.spyOn(ApiClient.prototype, "me").mockResolvedValue();

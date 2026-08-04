@@ -160,6 +160,7 @@ _CATALOG: dict[str, ApiErrorDescriptor] = {
     "organization_preview_unavailable": ApiErrorDescriptor("organization_preview_unavailable", "整理预览服务暂时不可用", "本次整理预览未完成。", "请稍后重试。", True, "retry"),
     "target_catalog_unavailable": ApiErrorDescriptor("target_catalog_unavailable", "目标目录暂时无法读取", "本次整理预览未完成，目标目录清单没有得到可靠验证。", "请检查 115 连接和目标目录后重试。", True, "retry"),
     "organization_execution_disabled": ApiErrorDescriptor("organization_execution_disabled", "整理执行功能未启用", "本次整理操作未执行。", "请查看整理功能配置。", False, "inspect_configuration"),
+    "organization_execution_unavailable": ApiErrorDescriptor("organization_execution_unavailable", "整理执行能力暂不可用", "本次整理操作未排队，也未执行远端写入。", "请检查 115 readiness、整理写入契约和后台 worker 后再试。", False, "inspect_configuration"),
     "organization_write_disabled": ApiErrorDescriptor("organization_write_disabled", "真实整理写入未启用", "本次 115 写入操作未执行。", "请先检查真实写入开关。", False, "inspect_configuration"),
     "organization_write_unverified": ApiErrorDescriptor("organization_write_unverified", "真实整理写入契约未验收", "本次 115 写入操作未执行。", "请先完成受管测试目录的写入契约验收。", False, "inspect_configuration"),
     "organization_contract_evidence_required": ApiErrorDescriptor("organization_contract_evidence_required", "整理写入缺少契约证据", "本次 115 写入操作未执行。", "环境开关不能代替契约验收，请先提供独立的契约验收证据。", False, "inspect_configuration"),

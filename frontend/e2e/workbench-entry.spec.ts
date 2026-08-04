@@ -21,6 +21,7 @@ test("connects Chinese workbench entries without horizontal overflow", async ({ 
       inspection_supported: false,
       organization_plan_enabled: true,
       organization_execution_enabled: false,
+      organization_execution_supported: false,
       strm_capabilities: { full: true, incremental: true, cleanup: false, playback: false, playback_contract_verified: false },
     },
   }));

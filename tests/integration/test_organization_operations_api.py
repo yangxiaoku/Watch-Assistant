@@ -9,6 +9,11 @@ from cryptography.fernet import Fernet
 from pwdlib import PasswordHash
 from sqlalchemy import select
 
+from watch_assistant.adapters.p115_library_write_contract import (
+    OrganizationContractEvidence,
+    OrganizationWriteCapability,
+    P115OrganizationContract,
+)
 from watch_assistant.app import create_app
 from watch_assistant.crypto import SecretCrypto
 from watch_assistant.db import create_database, initialize_database
@@ -43,6 +48,7 @@ from watch_assistant.services.organization_plan import (
     PlanSource,
     _entry_remote_version,
 )
+from watch_assistant.services.organization_worker import OrganizationWorker
 
 WEB_PASSWORD = "organization-operation-password"
 REMOTE_SECRET = "remote-id-private"
@@ -65,6 +71,28 @@ def _source_version() -> str:
 class _FakeClient:
     async def aclose(self):
         return None
+
+
+def _execution_contract() -> P115OrganizationContract:
+    capabilities = frozenset(
+        {
+            OrganizationWriteCapability.READ_SCOPE,
+            OrganizationWriteCapability.MOVE,
+            OrganizationWriteCapability.RENAME,
+            OrganizationWriteCapability.RECYCLE,
+            OrganizationWriteCapability.POSTCONDITION,
+        }
+    )
+    return P115OrganizationContract(
+        verified=True,
+        capabilities=capabilities,
+        timeout_enforced=True,
+        evidence=OrganizationContractEvidence(
+            evidence_id="organization-api-worker-fixture",
+            capabilities=capabilities,
+            timeout_enforced=True,
+        ),
+    )
 
 
 def _plan(
@@ -108,7 +136,11 @@ def _plan(
 
 
 async def _client(
-    tmp_path: Path, *, execution_enabled: bool = False, plan_enabled: bool = True
+    tmp_path: Path,
+    *,
+    execution_enabled: bool = False,
+    plan_enabled: bool = True,
+    worker_available: bool | None = None,
 ):
     database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'organization.db'}")
     await initialize_database(database.engine)
@@ -265,6 +297,23 @@ async def _client(
         organization_plan_enabled=plan_enabled,
         organization_execution_enabled=execution_enabled,
     )
+    if worker_available is None:
+        worker_available = execution_enabled
+    if worker_available:
+        contract = _execution_contract()
+        app.state.organization_contract = contract
+        app.state.organization_write_enabled = True
+        app.state.organization_write_contract_verified = True
+        app.state.organization_target_root_id = "115"
+        app.state.organization_worker = OrganizationWorker(
+            app.state.database.session_factory,
+            app.state.organization_operation_service,
+            app.state.organization_cookie_provider,
+            production_root_id="115",
+            live_enabled=True,
+            write_enabled=True,
+            organization_contract=contract,
+        )
     client = httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://app.test"
     )
@@ -306,9 +355,78 @@ async def test_operation_routes_require_auth_csrf_and_execution_gate(tmp_path: P
         "code": "organization_execution_disabled",
         "message": "整理操作功能未启用",
     }
-    assert (await client.get("/api/v1/health")).json()[
-        "organization_execution_enabled"
-    ] is False
+    health = (await client.get("/api/v1/health")).json()
+    assert health["organization_execution_enabled"] is False
+    assert health["organization_execution_supported"] is False
+    await _close(client, database)
+
+
+@pytest.mark.integration
+async def test_enabled_but_unavailable_execution_fails_closed_without_persisting(
+    tmp_path: Path,
+):
+    client, database = await _client(
+        tmp_path, execution_enabled=True, worker_available=False
+    )
+    headers = await _auth_headers(client)
+    detail = {
+        "code": "organization_execution_unavailable",
+        "message": "整理执行能力暂不可用，本次操作未排队",
+    }
+    requests = (
+        (
+            "/api/v1/organization-plans/plan-ready/operation",
+            {
+                "expected_revision": 1,
+                "idempotency_key": "unavailable-single",
+                "confirm": True,
+            },
+        ),
+        (
+            "/api/v1/organization-plans/plan-ready/confirm-and-operation",
+            {
+                "expected_revision": 1,
+                "idempotency_key": "unavailable-confirm",
+                "confirm": True,
+            },
+        ),
+        (
+            "/api/v1/organization-operations/batch",
+            {
+                "items": [
+                    {
+                        "plan_id": "plan-ready",
+                        "expected_revision": 1,
+                        "idempotency_key": "unavailable-batch",
+                        "confirm": True,
+                    }
+                ]
+            },
+        ),
+        (
+            "/api/v1/organization-operations/confirm-and-batch",
+            {
+                "items": [
+                    {
+                        "plan_id": "plan-ready",
+                        "expected_revision": 1,
+                        "idempotency_key": "unavailable-confirm-batch",
+                        "confirm": True,
+                    }
+                ]
+            },
+        ),
+    )
+    for path, payload in requests:
+        response = await client.post(path, json=payload, headers=headers)
+        assert response.status_code == 503
+        assert response.json()["detail"] == detail
+
+    health = (await client.get("/api/v1/health")).json()
+    assert health["organization_execution_enabled"] is True
+    assert health["organization_execution_supported"] is False
+    async with database.session_factory() as session:
+        assert await session.scalar(select(OrganizationOperation)) is None
     await _close(client, database)
 
 
@@ -318,6 +436,8 @@ async def test_queue_is_idempotent_and_rejects_unconfirmed_stale_or_expired_plan
 ):
     client, database = await _client(tmp_path, execution_enabled=True)
     headers = await _auth_headers(client)
+    health = (await client.get("/api/v1/health")).json()
+    assert health["organization_execution_supported"] is True
     missing_confirmation = await client.post(
         "/api/v1/organization-plans/plan-ready/operation",
         json={"expected_revision": 1, "idempotency_key": "missing-confirmation"},
