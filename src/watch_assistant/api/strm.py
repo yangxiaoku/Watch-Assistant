@@ -12,11 +12,14 @@ from typing import Annotated
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from fastapi.responses import StreamingResponse
+from fastapi.responses import RedirectResponse, StreamingResponse
 
 from watch_assistant.adapters.p115_playback_contract import (
+    ForwardingPolicy,
     PlaybackContractError,
     PlaybackGate,
+    PlaybackMethod,
+    PlaybackRequest,
     PlaybackStatus,
     make_playback_request,
 )
@@ -1360,7 +1363,13 @@ async def play_manifest(
     )
     if outcome.status is not PlaybackStatus.READY or outcome.url is None:
         raise _playback_error(outcome.status)
-    return await _proxy_playback(request, playback_request, outcome.url, outcome.request_headers)
+    return await _serve_playback(
+        request,
+        playback_request,
+        upstream_url=outcome.url,
+        policy=outcome.policy,
+        upstream_headers=outcome.request_headers,
+    )
 
 
 def _playback_gateway(request: Request):
@@ -1402,6 +1411,31 @@ def _cache_validator(request: Request):
         )
 
     return validate
+
+
+async def _serve_playback(
+    request: Request,
+    playback_request: PlaybackRequest,
+    *,
+    upstream_url: str,
+    policy: ForwardingPolicy | None,
+    upstream_headers: tuple[tuple[str, str], ...],
+) -> Response:
+    if policy is None or policy.upstream_method is not playback_request.method:
+        raise HTTPException(status_code=502, detail="playback_remote_failed")
+    if (
+        policy.forward_range
+        != (
+            playback_request.method is PlaybackMethod.GET
+            and playback_request.byte_range is not None
+        )
+    ):
+        raise HTTPException(status_code=502, detail="playback_remote_failed")
+    if playback_request.byte_range is not None:
+        return await _proxy_playback(
+            request, playback_request, upstream_url, upstream_headers
+        )
+    return RedirectResponse(url=upstream_url, status_code=307)
 
 
 async def _proxy_playback(
