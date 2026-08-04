@@ -8,6 +8,9 @@ from watch_assistant.adapters.p115_library_write_contract import (
     P115OrganizationContract,
 )
 from watch_assistant.models import OrganizationOperationStatus
+from watch_assistant.services.organization_directory_provisioner import (
+    OrganizationDirectoryProvisionError,
+)
 from watch_assistant.services.organization_executor import (
     OrganizationExecutionResult,
     OrganizationExecutionStatus,
@@ -42,6 +45,13 @@ class _Operations:
 
     async def load_execution_steps(self, _operation_id):
         return self.steps
+
+    async def renew_lease(self, operation_id, *, expected_revision, lease_token):
+        return SimpleNamespace(
+            operation_id=operation_id,
+            revision=expected_revision + 1,
+            lease_token=lease_token,
+        )
 
     async def finish(self, _operation_id, **kwargs):
         self.finished.append(kwargs)
@@ -96,7 +106,13 @@ def _steps():
     return (SimpleNamespace(members=(member,), replacement_object_id=None),)
 
 
-def _worker(operations, *, write_enabled, client_factory=None):
+def _worker(
+    operations,
+    *,
+    write_enabled,
+    client_factory=None,
+    directory_provisioner=None,
+):
     return OrganizationWorker(
         session_factory=object(),
         operation_service=operations,
@@ -106,6 +122,7 @@ def _worker(operations, *, write_enabled, client_factory=None):
         write_enabled=write_enabled,
         organization_contract=_contract(),
         client_factory=client_factory,
+        directory_provisioner=directory_provisioner,
     )
 
 
@@ -188,6 +205,26 @@ async def test_confirmed_runtime_forwards_all_live_gate_values(monkeypatch):
     assert transport_calls[0]["organization_contract"] == _contract()
     assert len(executor_calls) == 1
     assert client.closed is True
+
+
+@pytest.mark.asyncio
+async def test_uncertain_directory_provision_is_not_marked_retryable():
+    operations = _Operations(scope=frozenset({"7000", "9000"}), steps=_steps())
+
+    async def provision(_operation_id):
+        raise OrganizationDirectoryProvisionError(
+            "target_directory_create_failed", uncertain=True
+        )
+
+    worker = _worker(
+        operations,
+        write_enabled=True,
+        directory_provisioner=provision,
+    )
+
+    assert await worker.run_once() is True
+    assert operations.finished[0]["status"] is OrganizationOperationStatus.UNCERTAIN
+    assert operations.finished[0]["error_code"] == "target_directory_create_failed"
 
 
 @pytest.mark.asyncio

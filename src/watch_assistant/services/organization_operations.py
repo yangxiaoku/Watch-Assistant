@@ -142,6 +142,17 @@ class OrganizationOperationService:
         if workflow_id is not None:
             _validate_identifier(workflow_id, "invalid_workflow_id", maximum=40)
         async with self._session_factory() as session:
+            existing = await session.scalar(
+                select(OrganizationOperation).where(
+                    OrganizationOperation.idempotency_key == idempotency_key
+                )
+            )
+            if existing is not None:
+                return _existing_operation_summary(
+                    existing,
+                    plan_id=plan_id,
+                    workflow_id=workflow_id,
+                )
             plan = await session.get(OrganizationPlan, plan_id)
             await self._ensure_planned_and_current(session, plan)
             workflow = None
@@ -154,18 +165,6 @@ class OrganizationOperationService:
                 and plan.revision != expected_plan_revision
             ):
                 raise OrganizationOperationConflict("plan_revision_changed")
-
-            existing = await session.scalar(
-                select(OrganizationOperation).where(
-                    OrganizationOperation.idempotency_key == idempotency_key
-                )
-            )
-            if existing is not None:
-                if existing.plan_id != plan_id:
-                    raise OrganizationOperationConflict("idempotency_key_conflict")
-                if workflow_id is not None and existing.workflow_id != workflow_id:
-                    raise OrganizationOperationConflict("workflow_id_conflict")
-                return _summary(existing)
 
             if not await self._has_executable_steps(plan_id):
                 raise OrganizationOperationPrerequisiteError("plan_not_executable")
@@ -224,6 +223,33 @@ class OrganizationOperationService:
             summary = _summary(operation)
         await self._audit("organize.operation.queued", "整理操作已排队")
         return summary
+
+    async def get_by_idempotency_key(
+        self,
+        plan_id: str,
+        *,
+        idempotency_key: str,
+        workflow_id: str | None = None,
+    ) -> OrganizationOperationSummary | None:
+        """Return an accepted operation before rechecking mutable plan state."""
+
+        _validate_identifier(plan_id, "invalid_plan_id", maximum=64)
+        _validate_identifier(idempotency_key, "invalid_idempotency_key", maximum=255)
+        if workflow_id is not None:
+            _validate_identifier(workflow_id, "invalid_workflow_id", maximum=40)
+        async with self._session_factory() as session:
+            existing = await session.scalar(
+                select(OrganizationOperation).where(
+                    OrganizationOperation.idempotency_key == idempotency_key
+                )
+            )
+            if existing is None:
+                return None
+            return _existing_operation_summary(
+                existing,
+                plan_id=plan_id,
+                workflow_id=workflow_id,
+            )
 
     async def get(self, operation_id: str) -> OrganizationOperationSummary:
         _validate_identifier(operation_id, "invalid_operation_id", maximum=40)
@@ -1203,6 +1229,19 @@ def _summary(operation: OrganizationOperation) -> OrganizationOperationSummary:
         workflow_id=operation.workflow_id,
         cancel_requested=operation.cancel_requested,
     )
+
+
+def _existing_operation_summary(
+    operation: OrganizationOperation,
+    *,
+    plan_id: str,
+    workflow_id: str | None,
+) -> OrganizationOperationSummary:
+    if operation.plan_id != plan_id:
+        raise OrganizationOperationConflict("idempotency_key_conflict")
+    if workflow_id is not None and operation.workflow_id != workflow_id:
+        raise OrganizationOperationConflict("workflow_id_conflict")
+    return _summary(operation)
 
 
 async def _sync_workflow_stage(
