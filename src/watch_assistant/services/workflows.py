@@ -1008,6 +1008,7 @@ async def sync_child_stage(
     status: WorkflowStageStatus,
     reason: str | None = None,
     error_code: str | None = None,
+    allow_uncertain_resume: bool = False,
 ) -> Workflow:
     """Persist a child task's stage state in the same transaction as its outcome."""
     workflow = await session.get(Workflow, workflow_id)
@@ -1033,7 +1034,12 @@ async def sync_child_stage(
             select(WorkflowStage).where(WorkflowStage.workflow_id == workflow_id)
         )
     )
-    _validate_stage_transition(stages, stage, status)
+    _validate_stage_transition(
+        stages,
+        stage,
+        status,
+        allow_uncertain_resume=allow_uncertain_resume,
+    )
     original_stage_status = stage.status
     original_stage_updated_at = stage.updated_at
     current_binding = (stage.child_type, stage.child_id)
@@ -1067,6 +1073,11 @@ async def sync_child_stage(
             WorkflowStageStatus.WAITING_CONFIRMATION,
         } and stage.started_at is None:
             stage_values["started_at"] = now
+        if (
+            stage.status is WorkflowStageStatus.UNCERTAIN
+            and status not in _TERMINAL_STAGE_STATUSES
+        ):
+            stage_values["completed_at"] = None
         if status in _TERMINAL_STAGE_STATUSES:
             stage_values["completed_at"] = now
     result = await session.execute(
@@ -1130,6 +1141,7 @@ async def sync_child_stage_in_transaction(
     status: WorkflowStageStatus,
     reason: str | None = None,
     error_code: str | None = None,
+    allow_uncertain_resume: bool = False,
     event_logger: EventLogger | None = None,
 ) -> None:
     """Update a child stage for workers that do not own an open transaction."""
@@ -1143,6 +1155,7 @@ async def sync_child_stage_in_transaction(
             status=status,
             reason=reason,
             error_code=error_code,
+            allow_uncertain_resume=allow_uncertain_resume,
         )
         await session.commit()
     await emit_event(
@@ -1259,6 +1272,8 @@ def _validate_stage_transition(
     stages: list[WorkflowStage],
     stage: WorkflowStage,
     requested: WorkflowStageStatus,
+    *,
+    allow_uncertain_resume: bool = False,
 ) -> None:
     """Enforce the ordered workflow contract at every child update boundary."""
 
@@ -1273,12 +1288,21 @@ def _validate_stage_transition(
         WorkflowStageStatus.CANCELLED,
     } and requested is not current:
         raise WorkflowConflict("workflow_stage_terminal")
-    if current is WorkflowStageStatus.UNCERTAIN and requested not in {
-        WorkflowStageStatus.SUCCEEDED,
-        WorkflowStageStatus.FAILED,
-        WorkflowStageStatus.UNCERTAIN,
-    }:
-        raise WorkflowConflict("workflow_stage_regression")
+    if current is WorkflowStageStatus.UNCERTAIN:
+        allowed_uncertain_responses = {
+            WorkflowStageStatus.SUCCEEDED,
+            WorkflowStageStatus.FAILED,
+            WorkflowStageStatus.UNCERTAIN,
+        }
+        if allow_uncertain_resume:
+            allowed_uncertain_responses.update(
+                {
+                    WorkflowStageStatus.WAITING_EXTERNAL,
+                    WorkflowStageStatus.WAITING_CONFIRMATION,
+                }
+            )
+        if requested not in allowed_uncertain_responses:
+            raise WorkflowConflict("workflow_stage_regression")
     if current is WorkflowStageStatus.FAILED and requested not in {
         WorkflowStageStatus.RUNNING,
         WorkflowStageStatus.FAILED,

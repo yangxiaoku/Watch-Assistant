@@ -226,6 +226,9 @@ async def apply_remote_status(
                 status=workflow_stage_status_for_task_state(state),
                 reason=f"task_{state.value}",
                 error_code=task.error_code,
+                allow_uncertain_resume=(
+                    source is EvidenceSource.READONLY_RECONCILIATION
+                ),
             )
     return evidence
 

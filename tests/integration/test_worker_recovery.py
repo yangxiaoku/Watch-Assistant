@@ -91,6 +91,20 @@ class CancelledSubmissionAdapter(FakeAdapter):
         raise asyncio.CancelledError
 
 
+class UncertainReceiptAdapter(FakeAdapter):
+    async def submit_magnet(
+        self, url: str, *, target_cid: str | None = None
+    ) -> SubmissionResult:
+        self.submissions += 1
+        self.target_cids.append(target_cid)
+        assert url.startswith("magnet:")
+        return SubmissionResult(
+            status=RemoteStatus.UNCERTAIN,
+            remote_ref="remote-recovered",
+            error_code="adapter_uncertain",
+        )
+
+
 class EventRecorder:
     def __init__(self):
         self.events = []
@@ -1234,6 +1248,62 @@ async def test_worker_terminal_state_updates_linked_workflow_stage(tmp_path):
     assert push_stage.status.value == "succeeded"
     assert availability_stage.status.value == "succeeded"
     assert push_stage.child_id == task.id
+    await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_readonly_reconciliation_resumes_uncertain_workflow_push_stage(tmp_path):
+    database = await _database(tmp_path)
+    crypto = SecretCrypto(Fernet.generate_key().decode("ascii"))
+    await _add_resource(database, crypto)
+    task_service = TaskService(database.session_factory)
+    workflow_service = WorkflowService(database.session_factory)
+    workflow = await workflow_service.create(
+        WorkflowCreateRequest(
+            media_type="movie", tmdb_id=27205, resource_id="res_magnet"
+        )
+    )
+    for stage in (
+        WorkflowStageName.INSPECTION,
+        WorkflowStageName.APPROVAL,
+    ):
+        await workflow_service.patch_stage(
+            workflow.id,
+            stage,
+            WorkflowStagePatch(status=WorkflowStageStatus.SUCCEEDED),
+        )
+    task, _ = await task_service.create("res_magnet", workflow_id=workflow.id)
+    adapter = UncertainReceiptAdapter()
+    worker = TaskWorker(
+        database.session_factory,
+        crypto,
+        adapter,
+        owner="uncertain-recovery-worker",
+    )
+
+    assert await worker.run_once() is True
+    uncertain = await task_service.get(task.id)
+    assert uncertain is not None
+    assert uncertain.state is TaskState.UNCERTAIN
+    assert uncertain.remote_ref == "remote-recovered"
+    before = await workflow_service.get(workflow.id)
+    push_before = next(
+        stage for stage in before.stages if stage.stage is WorkflowStageName.PUSH
+    )
+    assert push_before.status is WorkflowStageStatus.UNCERTAIN
+
+    adapter.remote_status = RemoteStatus.ACCEPTED
+    reconciled, evidence = await task_service.reconcile(task.id, adapter)
+
+    assert reconciled.state is TaskState.SUBMITTED
+    assert evidence.source == EvidenceSource.READONLY_RECONCILIATION.value
+    assert evidence.status == EvidenceStatus.SUBMITTED.value
+    after = await workflow_service.get(workflow.id)
+    push_after = next(
+        stage for stage in after.stages if stage.stage is WorkflowStageName.PUSH
+    )
+    assert push_after.status is WorkflowStageStatus.WAITING_EXTERNAL
+    assert push_after.completed_at is None
     await database.engine.dispose()
 
 
