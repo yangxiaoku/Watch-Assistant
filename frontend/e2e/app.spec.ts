@@ -252,6 +252,7 @@ test("automatically inspects eight magnets and continues without duplicates", as
 
   await page.goto("/tv/1399?season=2");
   await expect(page.locator("#season-select")).toHaveValue("2");
+  await expect(page.locator(".resource-heading-copy h2")).toContainText("第 2 季可用资源");
   await expect(page.locator(".resource-table tbody tr")).toHaveCount(32);
   const shareResource = testInfo.project.name.startsWith("mobile")
     ? page.locator(".resource-cards").getByText("115 分享资源")
@@ -283,6 +284,7 @@ test("automatically inspects eight magnets and continues without duplicates", as
 
   await page.goto("/tv/1399?season=0");
   await expect(page.locator("#season-select")).toHaveValue("0");
+  await expect(page.locator(".resource-heading-copy h2")).toContainText("特别篇可用资源");
   expect(searchRequests.at(-1)?.season_number).toBe(0);
   await expect.poll(() => inspectedBatches.length).toBe(3);
   expect(inspectGetCount).toBe(2);
