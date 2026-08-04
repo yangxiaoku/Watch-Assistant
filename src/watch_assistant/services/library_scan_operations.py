@@ -219,7 +219,6 @@ class LibraryScanOperationService:
             "library.scan.queued",
             fields={
                 "status": summary.state,
-                "attempts": summary.attempts,
                 "count": 1,
             },
             resource_type="library_scan",
@@ -731,17 +730,21 @@ class LibraryScanWorker:
         error_code: str | None,
     ) -> None:
         state = result.state.value if result is not None else "failed"
+        if state == "completed":
+            fields = {
+                "status": state,
+                "items_seen": result.items_seen if result is not None else 0,
+            }
+        else:
+            fields = {
+                "status": state,
+                "error_code": error_code or "scan_worker_failed",
+            }
         await emit_event(
             self._event_logger,
             "library.scan.completed" if state == "completed" else "library.scan.failed",
             level=LoggingLevel.INFO if state == "completed" else LoggingLevel.WARNING,
-            fields={
-                "status": state,
-                "complete": result.complete if result is not None else False,
-                "pages_read": result.pages_read if result is not None else 0,
-                "items_seen": result.items_seen if result is not None else 0,
-                "error_code": error_code,
-            },
+            fields=fields,
             resource_type="library_scan",
             resource_id=lease.run_id,
         )

@@ -28,6 +28,14 @@ ROOT_ID = "7000"
 LIBRARY_ID = "library-scan"
 
 
+class _EventLogger:
+    def __init__(self):
+        self.events = []
+
+    async def log_event(self, event, **kwargs):
+        self.events.append((event, kwargs.get("fields")))
+
+
 class _Gateway:
     def __init__(
         self,
@@ -138,7 +146,10 @@ async def test_active_idempotent_enqueue_does_not_steal_lease_and_expired_lease_
 @pytest.mark.asyncio
 async def test_worker_failure_is_persisted_then_same_key_requeues_and_completes(tmp_path):
     database = await _database(tmp_path)
-    service = LibraryScanOperationService(database.session_factory)
+    logger = _EventLogger()
+    service = LibraryScanOperationService(
+        database.session_factory, event_logger=logger
+    )
     gateway = _Gateway(fail_once=True, total=2)
     worker = LibraryScanWorker(
         database.session_factory,
@@ -146,6 +157,7 @@ async def test_worker_failure_is_persisted_then_same_key_requeues_and_completes(
         lambda _root_id, _scope: gateway,
         owner="scan-worker",
         poll_interval_seconds=0.01,
+        event_logger=logger,
     )
     queued = await service.enqueue(LIBRARY_ID, idempotency_key="recoverable")
 
@@ -163,6 +175,12 @@ async def test_worker_failure_is_persisted_then_same_key_requeues_and_completes(
     assert completed.complete is True
     assert completed.attempts == 2
     assert gateway.calls == [1, 1, 2]
+    assert logger.events == [
+        ("library.scan.queued", {"status": "queued", "count": 1}),
+        ("library.scan.failed", {"status": "failed", "error_code": "gateway_error"}),
+        ("library.scan.queued", {"status": "queued", "count": 1}),
+        ("library.scan.completed", {"status": "completed", "items_seen": 2}),
+    ]
     await database.engine.dispose()
 
 

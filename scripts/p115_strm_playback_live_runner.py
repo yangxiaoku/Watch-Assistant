@@ -2,7 +2,7 @@
 
 The runner creates a temporary application database and output root, indexes
 one explicitly scoped fixture file, and exercises the application playback
-route with HEAD, GET, and a single byte range.  It reports only status codes
+route with HEAD, non-range GET, and a single byte range.  It reports only status codes
 and allow-listed response headers; dynamic links and provider payloads never
 cross the report boundary.
 """
@@ -35,6 +35,8 @@ LIVE_ENV = "WATCH_ASSISTANT_P115_STRM_PLAYBACK_LIVE"
 PLAYBACK_PREFIX = "http://127.0.0.1:8115/api/v1/strm/play"
 SCAN_POLL_INTERVAL_SECONDS = 0.1
 SCAN_POLL_TIMEOUT_SECONDS = 30 * 60
+PLAYBACK_REDIRECT_STATUS = 307
+PLAYBACK_RANGE_STATUS = 206
 
 
 def run_acceptance(
@@ -144,8 +146,8 @@ async def _run(*, root_id: str, file_id: str, cookie_path: Path) -> dict[str, ob
         out_of_scope = await client.get(
             "/api/v1/strm/play/strm_foreign_manifest_id_0001", headers=headers
         )
-        _expect_status(head, 200, "playback_head_failed")
-        _expect_status(get, 206, "playback_range_failed")
+        _expect_status(head, PLAYBACK_REDIRECT_STATUS, "playback_head_failed")
+        _expect_status(get, PLAYBACK_RANGE_STATUS, "playback_range_failed")
         _expect_status(out_of_scope, 404, "playback_scope_failed")
         return {
             "status": "success",
