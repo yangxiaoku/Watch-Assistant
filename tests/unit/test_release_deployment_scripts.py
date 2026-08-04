@@ -79,7 +79,7 @@ def _mock_systemctl(
     return calls
 
 
-def test_systemd_release_update_is_atomic_and_removes_stale_drop_in(tmp_path: Path):
+def test_systemd_release_update_is_atomic_and_preserves_stale_drop_in(tmp_path: Path):
     version_file = tmp_path / "VERSION"
     release_env = tmp_path / "state" / "release.env"
     stale_drop_in = tmp_path / "systemd" / "release.conf"
@@ -97,7 +97,9 @@ def test_systemd_release_update_is_atomic_and_removes_stale_drop_in(tmp_path: Pa
 
     assert release == "abcdef1"
     assert release_env.read_text(encoding="utf-8") == "WATCH_ASSISTANT_RELEASE=abcdef1\n"
-    assert not stale_drop_in.exists()
+    assert stale_drop_in.read_text(encoding="utf-8") == (
+        "[Service]\nEnvironment=WATCH_ASSISTANT_RELEASE=0123456\n"
+    )
     assert list(release_env.parent.glob(".release.env.*.tmp")) == []
 
 
@@ -120,6 +122,18 @@ def test_release_build_and_verify_use_provenance_and_project_venv():
     assert "release_manifest.py" in verify
     assert '"$ROOT_DIR/scripts/release_manifest.py"' in verify
     assert '--expected-branch "$RELEASE_BRANCH"' in verify
+    assert "--unit-sha256" in build
+    assert "--expected-unit-sha256" in verify
+    for required in (
+        "deploy/watch-assistant.service",
+        "scripts/deploy_systemd_release.sh",
+        "scripts/systemd_release_prepare.py",
+        "scripts/systemd_release_update.py",
+        "scripts/postdeploy_release_check.py",
+        "scripts/systemd_unit.py",
+        "scripts/systemd_backup.py",
+    ):
+        assert required in verify
     assert "cmp -s" in verify
     assert "jq" not in build.lower()
     assert "jq" not in verify.lower()
@@ -197,6 +211,7 @@ def test_verify_release_rejects_tampered_package_helper_or_manifest(tmp_path: Pa
         (package_root / "frontend" / "dist").mkdir(parents=True)
         (package_root / "src" / "watch_assistant").mkdir(parents=True)
         (package_root / "scripts").mkdir()
+        (package_root / "deploy").mkdir()
         (package_root / "VERSION").write_text(
             f"commit={commit}\nbuild_time=2026-08-02T00:00:00Z\n",
             encoding="utf-8",
@@ -213,6 +228,19 @@ def test_verify_release_rejects_tampered_package_helper_or_manifest(tmp_path: Pa
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("raise SystemExit(0)\n", encoding="utf-8")
 
+        for relative in (
+            "deploy/watch-assistant.service",
+            "scripts/deploy_systemd_release.sh",
+            "scripts/systemd_release_prepare.py",
+            "scripts/systemd_release_update.py",
+            "scripts/postdeploy_release_check.py",
+            "scripts/systemd_unit.py",
+            "scripts/systemd_backup.py",
+        ):
+            path = package_root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes((ROOT / relative).read_bytes())
+
         helper = package_root / "scripts" / "release_manifest.py"
         helper.write_bytes((ROOT / "scripts" / "release_manifest.py").read_bytes())
         manifest = {
@@ -221,8 +249,11 @@ def test_verify_release_rejects_tampered_package_helper_or_manifest(tmp_path: Pa
             "short_commit": short_commit,
             "source_sha256": source_sha256,
             "frontend_sha256": frontend_sha256,
+            "unit_sha256": hashlib.sha256(
+                (package_root / "deploy/watch-assistant.service").read_bytes()
+            ).hexdigest(),
             "build_time": "2026-08-02T00:00:00Z",
-            "branch": "codex/test",
+            "branch": "codex/publish-main",
         }
         if tampered_file == "helper":
             helper.write_text("# tampered helper\n", encoding="utf-8")

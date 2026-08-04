@@ -93,6 +93,7 @@ frontend_hash() {
 }
 
 FRONTEND_SHA256="$(frontend_hash "$PACKAGE_ROOT/frontend/dist")"
+UNIT_SHA256="$(sha256sum "$PACKAGE_ROOT/deploy/watch-assistant.service" | awk '{print $1}')"
 cat > "$PACKAGE_ROOT/VERSION" <<EOF
 commit=${EXPECTED_COMMIT}
 build_time=${BUILD_TIME}
@@ -105,6 +106,7 @@ EOF
     --short-commit "$COMMIT_HASH" \
     --source-sha256 "$SOURCE_SHA256" \
     --frontend-sha256 "$FRONTEND_SHA256" \
+    --unit-sha256 "$UNIT_SHA256" \
     --build-time "$BUILD_TIME" \
     --branch "$BRANCH_NAME"
 

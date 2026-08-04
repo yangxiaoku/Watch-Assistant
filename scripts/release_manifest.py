@@ -119,6 +119,8 @@ def _validate_build_payload(
     expected_branch: str | None = None,
     expected_source_sha256: str | None = None,
     expected_frontend_sha256: str | None = None,
+    expected_unit_sha256: str | None = None,
+    require_unit_sha256: bool = False,
     require_build_metadata: bool,
 ) -> dict[str, Any]:
     _validate_schema(payload)
@@ -174,6 +176,16 @@ def _validate_build_payload(
                 "frontend hash does not match archive content",
             )
 
+    unit_sha256 = payload.get("unit_sha256")
+    if require_unit_sha256 or unit_sha256 is not None:
+        unit_sha256 = _require_sha256(unit_sha256, "unit_sha256")
+    if expected_unit_sha256 is not None:
+        expected_unit = _require_sha256(expected_unit_sha256, "expected unit_sha256")
+        if unit_sha256 != expected_unit:
+            raise ReleaseManifestError(
+                "unit_sha256_mismatch", "unit hash does not match archive content"
+            )
+
     if require_build_metadata:
         build_time = payload.get("build_time")
         if not isinstance(build_time, str) or not build_time:
@@ -200,6 +212,8 @@ def validate_build_manifest_file(
     expected_branch: str | None = None,
     expected_source_sha256: str | None = None,
     expected_frontend_sha256: str | None = None,
+    expected_unit_sha256: str | None = None,
+    require_unit_sha256: bool = False,
 ) -> dict[str, Any]:
     """Validate the manifest written inside a release archive."""
 
@@ -211,6 +225,8 @@ def validate_build_manifest_file(
         expected_branch=expected_branch,
         expected_source_sha256=expected_source_sha256,
         expected_frontend_sha256=expected_frontend_sha256,
+        expected_unit_sha256=expected_unit_sha256,
+        require_unit_sha256=require_unit_sha256,
         require_build_metadata=True,
     )
 
@@ -270,6 +286,7 @@ def _build_payload(
     short_commit: str,
     source_sha256: str,
     frontend_sha256: str,
+    unit_sha256: str | None,
     build_time: str,
     branch: str,
 ) -> dict[str, Any]:
@@ -282,12 +299,15 @@ def _build_payload(
         "build_time": build_time,
         "branch": branch,
     }
+    if unit_sha256 is not None:
+        payload["unit_sha256"] = unit_sha256
     _validate_build_payload(
         payload,
         expected_commit=commit,
         expected_short_commit=short_commit,
         expected_source_sha256=source_sha256,
         expected_frontend_sha256=frontend_sha256,
+        expected_unit_sha256=unit_sha256,
         require_build_metadata=True,
     )
     return payload
@@ -302,6 +322,7 @@ def write_build_manifest(
     frontend_sha256: str,
     build_time: str,
     branch: str,
+    unit_sha256: str | None = None,
 ) -> None:
     _write_json(
         output,
@@ -310,6 +331,7 @@ def write_build_manifest(
             short_commit=short_commit,
             source_sha256=source_sha256,
             frontend_sha256=frontend_sha256,
+            unit_sha256=unit_sha256,
             build_time=build_time,
             branch=branch,
         ),
@@ -409,6 +431,7 @@ def _parser() -> argparse.ArgumentParser:
     build.add_argument("--short-commit", required=True)
     build.add_argument("--source-sha256", required=True)
     build.add_argument("--frontend-sha256", required=True)
+    build.add_argument("--unit-sha256")
     build.add_argument("--build-time", required=True)
     build.add_argument("--branch", required=True)
 
@@ -419,6 +442,7 @@ def _parser() -> argparse.ArgumentParser:
     verify.add_argument("--expected-branch")
     verify.add_argument("--expected-source-sha256", required=True)
     verify.add_argument("--expected-frontend-sha256", required=True)
+    verify.add_argument("--expected-unit-sha256")
 
     version = commands.add_parser("verify-version", help="validate VERSION provenance")
     version.add_argument("--version-file", type=Path, required=True)
@@ -450,6 +474,7 @@ def main(argv: list[str] | None = None) -> int:
                 short_commit=args.short_commit,
                 source_sha256=args.source_sha256,
                 frontend_sha256=args.frontend_sha256,
+                unit_sha256=args.unit_sha256,
                 build_time=args.build_time,
                 branch=args.branch,
             )
@@ -461,6 +486,7 @@ def main(argv: list[str] | None = None) -> int:
                 expected_branch=args.expected_branch,
                 expected_source_sha256=args.expected_source_sha256,
                 expected_frontend_sha256=args.expected_frontend_sha256,
+                expected_unit_sha256=args.expected_unit_sha256,
             )
         elif args.command == "verify-version":
             validate_version_commit_file(

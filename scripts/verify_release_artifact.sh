@@ -88,6 +88,13 @@ REQUIRED_ENTRIES=(
     "$PACKAGE_ROOT/frontend/dist/index.html"
     "$PACKAGE_ROOT/src/watch_assistant/app.py"
     "$PACKAGE_ROOT/src/watch_assistant/release_metadata.py"
+    "$PACKAGE_ROOT/deploy/watch-assistant.service"
+    "$PACKAGE_ROOT/scripts/deploy_systemd_release.sh"
+    "$PACKAGE_ROOT/scripts/systemd_release_prepare.py"
+    "$PACKAGE_ROOT/scripts/systemd_release_update.py"
+    "$PACKAGE_ROOT/scripts/postdeploy_release_check.py"
+    "$PACKAGE_ROOT/scripts/systemd_unit.py"
+    "$PACKAGE_ROOT/scripts/systemd_backup.py"
     "$PACKAGE_ROOT/scripts/release_manifest.py"
     "$PACKAGE_ROOT/scripts/release_startup_smoke.py"
 )
@@ -107,6 +114,19 @@ if find "$TEMP_DIR/$PACKAGE_ROOT" -type l -print -quit | grep -q .; then
     echo "release artifact refused: archive contains symlinks" >&2
     exit 1
 fi
+for relative in \
+    "deploy/watch-assistant.service" \
+    "scripts/deploy_systemd_release.sh" \
+    "scripts/systemd_release_prepare.py" \
+    "scripts/systemd_release_update.py" \
+    "scripts/postdeploy_release_check.py" \
+    "scripts/systemd_unit.py" \
+    "scripts/systemd_backup.py"; do
+    if ! cmp -s "$ROOT_DIR/$relative" "$TEMP_DIR/$PACKAGE_ROOT/$relative"; then
+        echo "release artifact refused: systemd release file does not match expected commit" >&2
+        exit 1
+    fi
+done
 if ! cmp -s "$ROOT_DIR/scripts/release_manifest.py" \
     "$TEMP_DIR/$PACKAGE_ROOT/scripts/release_manifest.py"; then
     echo "release artifact refused: release manifest helper does not match expected commit" >&2
@@ -141,13 +161,15 @@ frontend_hash() {
 }
 
 FRONTEND_SHA256="$(frontend_hash "$TEMP_DIR/$PACKAGE_ROOT/frontend/dist")"
+UNIT_SHA256="$(sha256sum "$TEMP_DIR/$PACKAGE_ROOT/deploy/watch-assistant.service" | awk '{print $1}')"
 if ! "$RELEASE_SMOKE_PYTHON" "$ROOT_DIR/scripts/release_manifest.py" verify-build \
     --manifest "$MANIFEST_FILE" \
     --expected-commit "$EXPECTED_COMMIT" \
     --expected-short-commit "$SHORT_COMMIT" \
     --expected-branch "$RELEASE_BRANCH" \
     --expected-source-sha256 "$SOURCE_SHA256" \
-    --expected-frontend-sha256 "$FRONTEND_SHA256"; then
+    --expected-frontend-sha256 "$FRONTEND_SHA256" \
+    --expected-unit-sha256 "$UNIT_SHA256"; then
     echo "release artifact refused: release manifest validation failed" >&2
     exit 1
 fi

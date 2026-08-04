@@ -96,6 +96,10 @@ def test_systemd_release_deploy_runs_prepare_before_metadata_update():
     assert "--expected-release \"$EXPECTED_RELEASE\"" in script
     assert "--allowed-releases-root \"$RELEASES_ROOT\"" in script
     assert "--service-user \"$SERVICE_USER\"" in script
+    assert '--unit-path "$UNIT_PATH"' in script
+    assert '--drop-in-dir "$DROP_IN_DIR"' in script
+    assert "WATCH_ASSISTANT_INSTALL_UNIT" in script
+    assert "--install-unit" in script
 
 
 def test_systemd_release_deploy_rechecks_previous_health_after_rollback():
@@ -106,5 +110,9 @@ def test_systemd_release_deploy_rechecks_previous_health_after_rollback():
     assert '"$CURRENT_ROOT/VERSION"' in script
     assert "automatic rollback health verification failed" in script
     assert "--unit watch-assistant.service" in script
+    assert "--unit-path \"$UNIT_PATH\"" in script
+    assert "SYSTEMD_RELEASE_ROLLBACK_UNIT_SHA256" in script
+    assert "--unit-sha256" in script
+    assert "rollback_release_update" in script
     assert "restart watch-assistant-qbittorrent.service" not in script
     assert "systemctl restart" not in script

@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import sys
 import tempfile
 import uuid
@@ -26,6 +27,16 @@ from release_manifest import (
     validate_build_manifest_file,
     validate_version_commit_file,
 )
+from systemd_unit import (
+    SystemdUnitError,
+    UnitChange,
+    UnitSnapshot,
+    apply_unit_change,
+    plan_unit_change,
+    restore_unit_change,
+    verify_installed_unit,
+    verify_installed_unit_digest,
+)
 
 from watch_assistant.release_metadata import (
     normalize_full_release,
@@ -33,7 +44,7 @@ from watch_assistant.release_metadata import (
 )
 
 _RELEASE_ENV_NAME = "WATCH_ASSISTANT_RELEASE"
-_STATE_SCHEMA_VERSION = 1
+_STATE_SCHEMA_VERSION = 2
 
 
 def _write_atomic(path: Path, content: str) -> None:
@@ -76,8 +87,8 @@ def update_release_metadata(
     except ReleaseManifestError:
         raise ValueError("invalid_release_version")
     _write_atomic(release_env, f"{_RELEASE_ENV_NAME}={release}\n")
-    if stale_drop_in is not None and stale_drop_in.is_file():
-        stale_drop_in.unlink()
+    # A drop-in may contain administrator-managed values.  The metadata-only
+    # compatibility path must never remove it; formal deployment checks it.
     return release
 
 
@@ -249,6 +260,102 @@ def _state_digest(
     return value
 
 
+def _unit_state(change: UnitChange) -> dict[str, object]:
+    previous = change.destination_before
+    return {
+        "unit_managed": True,
+        "unit_path": _path_key(change.destination),
+        "unit_source": str(change.source),
+        "unit_source_sha256": change.source_sha256,
+        "unit_install": change.install,
+        "unit_previous_exists": previous.exists,
+        "unit_previous_sha256": previous.sha256,
+        "unit_previous_mode": previous.mode,
+        "unit_previous_uid": previous.uid,
+        "unit_previous_gid": previous.gid,
+        "unit_backup_path": str(change.backup_path) if change.backup_path else None,
+        "unit_backup_sha256": change.backup_sha256,
+        "unit_backup_mode": change.backup_mode,
+        "unit_backup_uid": change.backup_uid,
+        "unit_backup_gid": change.backup_gid,
+    }
+
+
+def _state_int(state: dict[str, object], key: str, *, required: bool) -> int | None:
+    value = state.get(key)
+    if value is None:
+        if required:
+            raise ValueError("rollback_state_invalid")
+        return None
+    if type(value) is not int or value < 0:
+        raise ValueError("rollback_state_invalid")
+    return value
+
+
+def _unit_change_from_state(
+    state: dict[str, object],
+    *,
+    target: Path,
+    unit_path: Path,
+    state_directory: Path,
+) -> UnitChange | None:
+    if state.get("unit_managed") is not True:
+        if any(key.startswith("unit_") for key in state):
+            raise ValueError("rollback_state_invalid")
+        return None
+    stored_path = state.get("unit_path")
+    if not isinstance(stored_path, str) or stored_path != _path_key(unit_path):
+        raise ValueError("rollback_unit_path_mismatch")
+    source_digest = _state_digest(state, "unit_source_sha256", required=True)
+    previous_exists = state.get("unit_previous_exists")
+    if not isinstance(previous_exists, bool):
+        raise TypeError("rollback_state_invalid")
+    previous_sha256 = _state_digest(
+        state, "unit_previous_sha256", required=previous_exists
+    )
+    previous_mode = _state_int(state, "unit_previous_mode", required=previous_exists)
+    previous_uid = _state_int(state, "unit_previous_uid", required=previous_exists)
+    previous_gid = _state_int(state, "unit_previous_gid", required=previous_exists)
+    install = state.get("unit_install")
+    if not isinstance(install, bool):
+        raise TypeError("rollback_state_invalid")
+    backup_value = state.get("unit_backup_path")
+    backup_path = Path(backup_value) if isinstance(backup_value, str) else None
+    if backup_path is not None:
+        try:
+            if backup_path.resolve(strict=False).parent != state_directory.resolve(strict=True):
+                raise ValueError("rollback_unit_backup_scope")
+        except (OSError, RuntimeError) as exc:
+            raise ValueError("rollback_unit_backup_scope") from exc
+    backup_sha256 = _state_digest(
+        state, "unit_backup_sha256", required=install and previous_exists
+    )
+    backup_mode = _state_int(state, "unit_backup_mode", required=install and previous_exists)
+    backup_uid = _state_int(state, "unit_backup_uid", required=install and previous_exists)
+    backup_gid = _state_int(state, "unit_backup_gid", required=install and previous_exists)
+    if install and previous_exists and backup_path is None:
+        raise ValueError("rollback_state_invalid")
+    previous = UnitSnapshot(
+        previous_exists,
+        previous_sha256,
+        previous_mode,
+        previous_uid,
+        previous_gid,
+    )
+    return UnitChange(
+        target / "deploy" / "watch-assistant.service",
+        unit_path,
+        source_digest,
+        previous,
+        install,
+        backup_path,
+        backup_sha256,
+        backup_mode,
+        backup_uid,
+        backup_gid,
+    )
+
+
 def _manifest_sha256(release_root: Path) -> str | None:
     manifest = release_root / "release-manifest.json"
     if not manifest.is_file():
@@ -270,13 +377,19 @@ def _file_sha256(path: Path) -> str | None:
     return digest.hexdigest()
 
 
-def _validate_release_manifest(release_root: Path, expected_release: str) -> None:
+def _validate_release_manifest(
+    release_root: Path,
+    expected_release: str,
+    *,
+    require_unit_sha256: bool = False,
+) -> dict[str, object]:
     try:
-        validate_build_manifest_file(
+        return validate_build_manifest_file(
             release_root / "release-manifest.json",
             expected_commit=expected_release,
             expected_short_commit=expected_release[:7],
             expected_branch="codex/publish-main",
+            require_unit_sha256=require_unit_sha256,
         )
     except ReleaseManifestError as exc:
         raise ValueError(f"release_manifest_{exc.code}") from None
@@ -291,8 +404,13 @@ def switch_release(
     state_file: Path,
     allowed_releases_root: Path,
     stale_drop_in: Path | None = None,
+    unit_path: Path | None = None,
+    install_unit: bool = False,
+    drop_in_dir: Path | None = None,
+    unit_uid: int = 0,
+    unit_gid: int = 0,
 ) -> dict[str, object]:
-    """Record the old deployment, then atomically switch current and release.env."""
+    """Switch release metadata and, when requested, the managed systemd unit."""
 
     expected = normalize_full_release(expected_release)
     if expected is None:
@@ -308,7 +426,11 @@ def switch_release(
         if exc.code == "version_commit_mismatch":
             raise ValueError("version_expected_mismatch") from None
         raise ValueError("version_invalid") from None
-    _validate_release_manifest(target, expected)
+    manifest = _validate_release_manifest(
+        target,
+        expected,
+        require_unit_sha256=unit_path is not None,
+    )
     previous_target = _current_target(current_root)
     if previous_target is None:
         previous_release = None
@@ -331,6 +453,25 @@ def switch_release(
     if previous_target is not None and not previous_env_present:
         raise ValueError("previous_release_env_missing")
 
+    unit_change: UnitChange | None = None
+    if unit_path is not None:
+        unit_sha256 = manifest.get("unit_sha256")
+        if not isinstance(unit_sha256, str):
+            raise ValueError("release_manifest_unit_sha256_missing")
+        try:
+            unit_change = plan_unit_change(
+                target,
+                destination=unit_path,
+                state_directory=state_file.parent,
+                install=install_unit,
+                expected_source_sha256=unit_sha256,
+                unit_uid=unit_uid,
+                unit_gid=unit_gid,
+                drop_in_dir=drop_in_dir,
+            )
+        except SystemdUnitError as exc:
+            raise ValueError(exc.code) from None
+
     state: dict[str, object] = {
         "schema_version": _STATE_SCHEMA_VERSION,
         "status": "switching",
@@ -352,17 +493,36 @@ def switch_release(
         "previous_release_env_present": previous_env_present,
         "previous_release_env_release": previous_env,
     }
+    if unit_change is not None:
+        state.update(_unit_state(unit_change))
     _write_state(state_file, state)
     try:
+        if unit_change is not None:
+            try:
+                apply_unit_change(
+                    unit_change,
+                    unit_uid=unit_uid,
+                    unit_gid=unit_gid,
+                )
+            except SystemdUnitError as exc:
+                raise ValueError(exc.code) from None
         _atomic_switch(current_root, target)
         _write_release_env(release_env, expected)
         state["status"] = "deployed"
         state["deployed_at"] = datetime.now(UTC).isoformat()
         _write_state(state_file, state)
-        if stale_drop_in is not None and stale_drop_in.is_file():
-            stale_drop_in.unlink()
         return state
     except Exception:
+        restore_error: Exception | None = None
+        if unit_change is not None and unit_change.install:
+            try:
+                restore_unit_change(
+                    unit_change,
+                    unit_uid=unit_uid,
+                    unit_gid=unit_gid,
+                )
+            except SystemdUnitError as exc:
+                restore_error = ValueError(exc.code)
         try:
             if previous_target is None:
                 _remove_current(current_root)
@@ -372,8 +532,10 @@ def switch_release(
                 _write_atomic(release_env, f"{_RELEASE_ENV_NAME}={previous_env}\n")
             elif release_env.exists():
                 release_env.unlink()
-        except OSError:
-            pass
+        except OSError as exc:
+            restore_error = restore_error or exc
+        if restore_error is not None:
+            raise restore_error
         raise
 
 
@@ -383,8 +545,12 @@ def rollback_release(
     release_env: Path,
     state_file: Path,
     allowed_releases_root: Path,
+    unit_path: Path | None = None,
+    drop_in_dir: Path | None = None,
+    unit_uid: int = 0,
+    unit_gid: int = 0,
 ) -> dict[str, object]:
-    """Restore the recorded previous release only when current still matches it."""
+    """Restore the recorded previous release and managed unit transactionally."""
 
     state = _read_state(state_file)
     if state.get("current_root") != _path_key(current_root):
@@ -452,6 +618,28 @@ def rollback_release(
     if not previous_env_present and previous_env_release is not None:
         raise ValueError("rollback_state_invalid")
 
+    unit_change: UnitChange | None = None
+    if unit_path is not None:
+        unit_change = _unit_change_from_state(
+            state,
+            target=target,
+            unit_path=unit_path,
+            state_directory=state_file.parent,
+        )
+        if unit_change is None:
+            raise ValueError("rollback_unit_state_missing")
+        try:
+            verify_installed_unit(
+                target,
+                destination=unit_path,
+                expected_sha256=unit_change.source_sha256,
+                unit_uid=unit_uid,
+                unit_gid=unit_gid,
+                drop_in_dir=drop_in_dir,
+            )
+        except SystemdUnitError as exc:
+            raise ValueError(exc.code) from None
+
     try:
         if previous_target is None:
             _remove_current(current_root)
@@ -464,10 +652,54 @@ def rollback_release(
             )
         elif release_env.exists():
             release_env.unlink()
+        if unit_change is not None and unit_change.install:
+            try:
+                restore_unit_change(
+                    unit_change,
+                    unit_uid=unit_uid,
+                    unit_gid=unit_gid,
+                )
+            except SystemdUnitError as exc:
+                raise ValueError(exc.code) from None
+        if unit_change is not None and unit_change.destination_before.exists:
+            try:
+                previous_unit_sha256 = unit_change.destination_before.sha256
+                if not isinstance(previous_unit_sha256, str):
+                    raise TypeError("rollback_unit_state_missing")
+                verify_installed_unit_digest(
+                    destination=unit_path,
+                    expected_sha256=previous_unit_sha256,
+                    unit_uid=unit_uid,
+                    unit_gid=unit_gid,
+                    drop_in_dir=drop_in_dir,
+                )
+            except SystemdUnitError as exc:
+                raise ValueError(exc.code) from None
         state["status"] = "rolled_back"
         state["rolled_back_at"] = datetime.now(UTC).isoformat()
         _write_state(state_file, state)
     except Exception:
+        if unit_change is not None and unit_change.install:
+            try:
+                # Reinstall the verified target unit if rollback failed after
+                # changing it; the release switch itself is restored below.
+                target_unit = plan_unit_change(
+                    target,
+                    destination=unit_path,
+                    state_directory=state_file.parent,
+                    install=True,
+                    expected_source_sha256=unit_change.source_sha256,
+                    unit_uid=unit_uid,
+                    unit_gid=unit_gid,
+                    drop_in_dir=drop_in_dir,
+                )
+                apply_unit_change(
+                    target_unit,
+                    unit_uid=unit_uid,
+                    unit_gid=unit_gid,
+                )
+            except (SystemdUnitError, TypeError):
+                pass
         try:
             _atomic_switch(current_root, target)
             target_release = state.get("target_release")
@@ -486,6 +718,9 @@ def main() -> int:
     parser.add_argument("--version-file", type=Path)
     parser.add_argument("--release-env", type=Path, required=True)
     parser.add_argument("--stale-drop-in", type=Path)
+    parser.add_argument("--unit-path", type=Path)
+    parser.add_argument("--drop-in-dir", type=Path)
+    parser.add_argument("--install-unit", action="store_true")
     parser.add_argument("--release-root", type=Path)
     parser.add_argument("--expected-release")
     parser.add_argument("--current-root", type=Path)
@@ -513,6 +748,9 @@ def main() -> int:
                 state_file=args.state_file,
                 allowed_releases_root=args.allowed_releases_root,
                 stale_drop_in=args.stale_drop_in,
+                unit_path=args.unit_path,
+                install_unit=args.install_unit,
+                drop_in_dir=args.drop_in_dir,
             )
             print("SYSTEMD_RELEASE_UPDATE_RESULT=ok")
             print(f"SYSTEMD_RELEASE_UPDATE_RELEASE={state['target_release']}")
@@ -532,9 +770,17 @@ def main() -> int:
                 release_env=args.release_env,
                 state_file=args.state_file,
                 allowed_releases_root=args.allowed_releases_root,
+                unit_path=args.unit_path,
+                drop_in_dir=args.drop_in_dir,
             )
             print("SYSTEMD_RELEASE_ROLLBACK_RESULT=ok")
             print(f"SYSTEMD_RELEASE_ROLLBACK_RELEASE={state.get('previous_release')}")
+            previous_unit_sha256 = state.get("unit_previous_sha256")
+            if args.unit_path is not None and isinstance(previous_unit_sha256, str):
+                print(
+                    "SYSTEMD_RELEASE_ROLLBACK_UNIT_SHA256="
+                    f"{previous_unit_sha256}"
+                )
             return 0
         if args.version_file is None:
             raise ValueError("version_file_missing")
@@ -543,9 +789,14 @@ def main() -> int:
             release_env=args.release_env,
             stale_drop_in=args.stale_drop_in,
         )
-    except (OSError, TypeError, ValueError):
+    except (OSError, TypeError, ValueError) as exc:
         print("SYSTEMD_RELEASE_UPDATE_RESULT=failed")
-        print("SYSTEMD_RELEASE_UPDATE_CODE=invalid_release_metadata")
+        code = getattr(exc, "code", None)
+        if not isinstance(code, str) or re.fullmatch(r"[a-z0-9_]+", code) is None:
+            code = str(exc)
+        if re.fullmatch(r"[a-z0-9_]+", code) is None:
+            code = "invalid_release_metadata"
+        print(f"SYSTEMD_RELEASE_UPDATE_CODE={code}")
         return 1
     print("SYSTEMD_RELEASE_UPDATE_RESULT=ok")
     print(f"SYSTEMD_RELEASE_UPDATE_RELEASE={release[:7]}")
