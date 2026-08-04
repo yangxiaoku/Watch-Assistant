@@ -60,7 +60,7 @@ class _ReviewTmdbClient(_TmdbClient):
 
 
 class _Gateway:
-    def __init__(self):
+    def __init__(self, *, source_scan_complete: bool | None = True):
         self.calls: list[tuple[str, int, int]] = []
         self.pages = {
             ("9000", 1): _page(
@@ -86,7 +86,8 @@ class _Gateway:
                     file_id="7000",
                     parent_id="1000",
                     path="incoming/The.Office.2005.1080p.mkv",
-                )
+                ),
+                scan_complete=source_scan_complete,
             ),
         }
 
@@ -166,14 +167,14 @@ def _entry(
     )
 
 
-def _page(*items: LibraryEntry) -> DirectoryPage:
+def _page(*items: LibraryEntry, scan_complete: bool | None = True) -> DirectoryPage:
     return DirectoryPage(
         items=tuple(items),
         page=1,
         page_count=1,
         total=len(items),
-        scan_complete=True,
-        state=ScanState.COMPLETE,
+        scan_complete=scan_complete,
+        state=ScanState.PARTIAL if scan_complete is False else ScanState.COMPLETE,
         has_more=False,
         next_page=None,
         terminal=True,
@@ -222,6 +223,45 @@ async def test_automation_scans_source_and_freezes_target_catalog(tmp_path: Path
         assert library.scope_verified is True
         assert library.enabled is True
     assert events.events[0][0] == "organize.preview.created"
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scan_complete", [None, False])
+async def test_automation_requires_explicit_complete_source_scope(
+    tmp_path: Path, scan_complete
+):
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'automation-scope.db'}")
+    await initialize_database(database.engine)
+    gateway = _Gateway(source_scan_complete=scan_complete)
+    plan_service = OrganizationPlanService(database.session_factory)
+    preview = OrganizationPreviewService(
+        database.session_factory, _TmdbClient(), plan_service
+    )
+    service = OrganizationAutomationService(
+        database.session_factory,
+        _Settings(configured=True),
+        preview,
+        plan_service,
+        lambda _authorized: gateway,
+    )
+
+    assert await service.run_once() is True
+    assert service.last_result is not None
+    assert service.last_result.scanned_count == 0
+    assert service.last_result.plan_count == 0
+    assert service.last_result.blocked_count == 1
+    assert service.last_result.blocked_details[0].error_code == "source_scope_unverified"
+    assert gateway.calls[-1] == ("1000", 1, 1)
+    assert gateway.calls.count(("1000", 1, 1)) == 1
+    async with database.session_factory() as session:
+        assert await session.scalar(select(OrganizationPlan)) is None
+        assert (
+            await session.scalar(
+                select(MediaLibrary).where(MediaLibrary.root_directory_id == "1000")
+            )
+            is None
+        )
     await database.engine.dispose()
 
 

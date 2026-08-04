@@ -378,7 +378,7 @@ async def verify_library_scope(
                 raise HTTPException(
                     status_code=503, detail="library_scope_verification_failed"
                 ) from None
-            if page.state.value != "complete" or page.scan_complete is False:
+            if page.state.value != "complete" or page.scan_complete is not True:
                 raise HTTPException(
                     status_code=503, detail="library_scope_verification_failed"
                 )

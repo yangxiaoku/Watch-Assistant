@@ -30,8 +30,8 @@ class _FakeCookieProvider:
 
 
 class _FakeGateway:
-    def __init__(self, *_args, **_kwargs):
-        pass
+    def __init__(self, *_args, scan_complete: bool | None = True, **_kwargs):
+        self.scan_complete = scan_complete
 
     async def list_directory(self, _directory_id, *, page, page_size):
         assert page == 1
@@ -41,8 +41,12 @@ class _FakeGateway:
             page=1,
             page_count=1,
             total=0,
-            scan_complete=True,
-            state=ScanState.COMPLETE,
+            scan_complete=self.scan_complete,
+            state=(
+                ScanState.PARTIAL
+                if self.scan_complete is False
+                else ScanState.COMPLETE
+            ),
             has_more=False,
             terminal=True,
         )
@@ -149,6 +153,52 @@ async def test_library_configuration_is_scoped_optimistic_and_read_verified(tmp_
         assert verified.json()["verified"] is True
         assert verified.json()["enabled"] is True
 
+    await database.engine.dispose()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("scan_complete", [None, False])
+async def test_library_scope_verification_requires_explicit_complete_scan(
+    tmp_path, monkeypatch, scan_complete
+):
+    app, database = await _client(tmp_path)
+    monkeypatch.setattr(
+        "watch_assistant.api.library.P115ReadOnlyDirectoryGateway",
+        lambda *args, **kwargs: _FakeGateway(
+            *args, scan_complete=scan_complete, **kwargs
+        ),
+    )
+    async with database.session_factory() as session:
+        session.add(
+            MediaLibrary(
+                id="production",
+                name="Production",
+                root_directory_id="2988794667098701570",
+                scope_verified=False,
+                enabled=False,
+            )
+        )
+        await session.commit()
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://app.test"
+    ) as client:
+        login = await client.post(
+            "/api/v1/auth/login", json={"password": WEB_PASSWORD}
+        )
+        response = await client.post(
+            "/api/v1/libraries/production/verify-scope",
+            headers={"X-CSRF-Token": login.json()["csrf_token"]},
+        )
+        assert response.status_code == 503
+        assert response.json()["detail"] == "library_scope_verification_failed"
+
+    async with database.session_factory() as session:
+        library = await session.get(MediaLibrary, "production")
+        assert library is not None
+        assert library.scope_verified is False
+        assert library.enabled is False
+        assert library.revision == 0
     await database.engine.dispose()
 
 
