@@ -65,16 +65,41 @@ git archive --format=tar "$EXPECTED_COMMIT" -o "$SOURCE_ARCHIVE"
 SOURCE_SHA256="$(sha256sum "$SOURCE_ARCHIVE" | awk '{print $1}')"
 tar -xf "$SOURCE_ARCHIVE" -C "$PACKAGE_ROOT"
 
-if ! command -v npm >/dev/null 2>&1; then
-    echo "release refused: npm is required to build the frontend" >&2
+FRONTEND_PM="${WATCH_ASSISTANT_FRONTEND_PM:-}"
+if [[ -z "$FRONTEND_PM" ]] && command -v npm >/dev/null 2>&1; then
+    FRONTEND_PM="$(command -v npm)"
+fi
+if [[ -z "$FRONTEND_PM" ]] && command -v pnpm >/dev/null 2>&1; then
+    FRONTEND_PM="$(command -v pnpm)"
+fi
+if [[ -z "$FRONTEND_PM" ]]; then
+    echo "release refused: npm or pnpm is required to build the frontend" >&2
     exit 1
 fi
-(
-    cd "$PACKAGE_ROOT/frontend"
-    npm ci
-    npm run build
-    rm -rf node_modules
-)
+
+case "$(basename "$FRONTEND_PM")" in
+    npm)
+        (
+            cd "$PACKAGE_ROOT/frontend"
+            "$FRONTEND_PM" ci
+            "$FRONTEND_PM" run build
+            rm -rf node_modules
+        )
+        ;;
+    pnpm)
+        (
+            cd "$PACKAGE_ROOT"
+            # The source tree has an npm lockfile; avoid creating a second pnpm lockfile.
+            "$FRONTEND_PM" --dir frontend install --no-lockfile
+            "$FRONTEND_PM" --dir frontend run build
+            rm -rf frontend/node_modules
+        )
+        ;;
+    *)
+        echo "release refused: WATCH_ASSISTANT_FRONTEND_PM must point to npm or pnpm" >&2
+        exit 1
+        ;;
+esac
 if [[ ! -f "$PACKAGE_ROOT/frontend/dist/index.html" ]]; then
     echo "release refused: frontend production build did not produce index.html" >&2
     exit 1

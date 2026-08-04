@@ -111,8 +111,14 @@ def test_release_build_and_verify_use_provenance_and_project_venv():
     verify_gate = (ROOT / "scripts" / "verify.sh").read_text(encoding="utf-8")
 
     assert 'git archive --format=tar "$EXPECTED_COMMIT"' in build
-    assert "npm ci" in build
-    assert "npm run build" in build
+    assert 'FRONTEND_PM="${WATCH_ASSISTANT_FRONTEND_PM:-}"' in build
+    assert 'command -v npm' in build
+    assert 'command -v pnpm' in build
+    assert '"$FRONTEND_PM" ci' in build
+    assert '"$FRONTEND_PM" run build' in build
+    assert '"$FRONTEND_PM" --dir frontend install --no-lockfile' in build
+    assert '"$FRONTEND_PM" --dir frontend run build' in build
+    assert 'must point to npm or pnpm' in build
     assert "release-manifest.json" in build
     assert "--source-sha256" in build and "--frontend-sha256" in build
     assert "release_startup_smoke.py" in verify
