@@ -149,6 +149,54 @@ async def test_terminal_fence_rejection_keeps_operation_running(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_cleanup_applied_reconciliation_is_terminal_and_compare_and_set(
+    tmp_path: Path,
+):
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'operations.db'}")
+    await initialize_database(database.engine)
+    try:
+        service = StrmOperationService(database.session_factory)
+        operation = await service.create(
+            library_id="library-one",
+            source_scan_run_id="scan-one",
+            kind=StrmOperationKind.CLEANUP,
+        )
+        await service.start(operation.operation_id)
+        lease_owner = await service.get_lease_token(operation.operation_id)
+        assert lease_owner is not None
+        await service.fail(
+            operation.operation_id,
+            error_code="strm_operation_failed",
+            lease_owner=lease_owner,
+        )
+
+        recovered = await service.reconcile_cleanup_applied(
+            operation.operation_id, retired=2
+        )
+        repeated = await service.reconcile_cleanup_applied(
+            operation.operation_id, retired=99
+        )
+
+        assert recovered.status == "succeeded"
+        assert recovered.retired == 2
+        assert recovered.error_code is None
+        assert repeated.retired == 2
+
+        running_operation = await service.create(
+            library_id="library-one",
+            source_scan_run_id="scan-two",
+            kind=StrmOperationKind.CLEANUP,
+        )
+        await service.start(running_operation.operation_id)
+        with pytest.raises(StrmOperationError, match="strm_operation_not_reconcilable"):
+            await service.reconcile_cleanup_applied(
+                running_operation.operation_id, retired=1
+            )
+    finally:
+        await database.engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_api_cancel_syncs_linked_workflow_stage(monkeypatch):
     now = datetime.now(UTC)
 

@@ -32,7 +32,7 @@ ENABLED_GATE = PlaybackGate(enabled=True, contract_verified=True)
 
 
 async def _valid_cache(_request, _allowed_library_ids):
-    return True
+    return "a" * 64
 
 
 class _CountingGateway:
@@ -144,7 +144,7 @@ async def test_cache_hit_rechecks_current_manifest_scope_before_reuse():
     async def validator(_request, _allowed_library_ids):
         nonlocal validations
         validations += 1
-        return valid
+        return "a" * 64 if valid else None
 
     gateway = _CountingGateway(DynamicLinkOutcome(PlaybackStatus.READY, url=SAFE_URL))
     resolver = CachedStrmPlaybackGateway(
@@ -156,8 +156,68 @@ async def test_cache_hit_rechecks_current_manifest_scope_before_reuse():
     valid = False
     await resolver.resolve(request, gate=ENABLED_GATE)
 
-    assert validations == 1
+    assert validations == 3
     assert gateway.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_cache_hit_rejects_rotated_manifest_pickcode(tmp_path):
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'playback.db'}")
+    await initialize_database(database.engine)
+    try:
+        async with database.session_factory() as session:
+            session.add(
+                MediaLibrary(
+                    id="library-one",
+                    name="test-library",
+                    root_directory_id="100",
+                    scope_verified=True,
+                    enabled=True,
+                    revision=1,
+                )
+            )
+            session.add(
+                StrmManifestEntry(
+                    manifest_id=MANIFEST_ID,
+                    library_id="library-one",
+                    cloud_file_id="200",
+                    cloud_directory_id="100",
+                    cloud_relative_path="Episode.mkv",
+                    local_relative_path="Episode.strm",
+                    size_bytes=10,
+                    source_version=1,
+                    pickcode="fixture-pickcode-a",
+                    status=StrmManifestStatus.VERIFIED,
+                    is_current=True,
+                )
+            )
+            await session.commit()
+
+        async def validator(request, allowed_library_ids):
+            return await validate_current_manifest_scope(
+                database.session_factory, request, allowed_library_ids
+            )
+
+        gateway = _CountingGateway(
+            DynamicLinkOutcome(PlaybackStatus.READY, url=SAFE_URL)
+        )
+        resolver = CachedStrmPlaybackGateway(
+            gateway, cache_validator=validator, ttl_seconds=30
+        )
+        request = make_playback_request(MANIFEST_ID, "GET")
+
+        await resolver.resolve(request, gate=ENABLED_GATE)
+        async with database.session_factory() as session:
+            manifest = await session.get(StrmManifestEntry, MANIFEST_ID)
+            assert manifest is not None
+            manifest.pickcode = "fixture-pickcode-b"
+            await session.commit()
+
+        await resolver.resolve(request, gate=ENABLED_GATE)
+
+        assert gateway.calls == 2
+    finally:
+        await database.engine.dispose()
 
 
 @pytest.mark.asyncio

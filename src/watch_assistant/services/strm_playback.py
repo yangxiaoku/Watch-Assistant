@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Collection
 from dataclasses import dataclass
@@ -28,8 +30,9 @@ from watch_assistant.library_models import (
 
 DEFAULT_DYNAMIC_LINK_CACHE_TTL_SECONDS = 30.0
 DEFAULT_DYNAMIC_LINK_CACHE_MAX_ENTRIES = 1024
+PlaybackCacheValidation = str | None
 PlaybackCacheValidator = Callable[
-    [PlaybackRequest, Collection[str] | None], Awaitable[bool]
+    [PlaybackRequest, Collection[str] | None], Awaitable[PlaybackCacheValidation]
 ]
 
 
@@ -38,6 +41,7 @@ class _PlaybackCacheEntry:
     url: str
     request_headers: tuple[tuple[str, str], ...]
     expires_at: float
+    pickcode_fingerprint: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,7 +108,10 @@ class CachedStrmPlaybackGateway(P115PlaybackGateway):
             cached = self._cache.get(key)
             if cached is not None:
                 if cached.expires_at > self._clock():
-                    if await self._cache_is_current(request, allowed_library_ids):
+                    validation = await self._cache_is_current(
+                        request, allowed_library_ids
+                    )
+                    if _cache_entry_matches(cached, validation):
                         self._cache.move_to_end(key)
                         return _ready_outcome(request, cached)
                     self._cache.pop(key, None)
@@ -129,13 +136,13 @@ class CachedStrmPlaybackGateway(P115PlaybackGateway):
         self,
         request: PlaybackRequest,
         allowed_library_ids: Collection[str] | None,
-    ) -> bool:
+    ) -> PlaybackCacheValidation:
         try:
             return await self._cache_validator(request, allowed_library_ids)
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - cache validation fails closed
-            return False
+            return None
 
     async def _resolve_and_cache(
         self,
@@ -153,15 +160,20 @@ class CachedStrmPlaybackGateway(P115PlaybackGateway):
                 allowed_library_ids=allowed_library_ids,
             )
             if outcome.status is PlaybackStatus.READY and outcome.url is not None:
-                async with self._lock:
-                    self._cache[key] = _PlaybackCacheEntry(
-                        url=outcome.url,
-                        request_headers=outcome.request_headers,
-                        expires_at=self._clock() + self._ttl_seconds,
-                    )
-                    self._cache.move_to_end(key)
-                    while len(self._cache) > self._max_entries:
-                        self._cache.popitem(last=False)
+                validation = await self._cache_is_current(
+                    request, allowed_library_ids
+                )
+                if _cache_validation_allowed(validation):
+                    async with self._lock:
+                        self._cache[key] = _PlaybackCacheEntry(
+                            url=outcome.url,
+                            request_headers=outcome.request_headers,
+                            expires_at=self._clock() + self._ttl_seconds,
+                            pickcode_fingerprint=_cache_fingerprint(validation),
+                        )
+                        self._cache.move_to_end(key)
+                        while len(self._cache) > self._max_entries:
+                            self._cache.popitem(last=False)
             return outcome
         finally:
             async with self._lock:
@@ -216,8 +228,8 @@ async def validate_current_manifest_scope(
     session_factory: async_sessionmaker[AsyncSession],
     request: PlaybackRequest,
     allowed_library_ids: Collection[str] | None,
-) -> bool:
-    """Recheck revocation and library scope before serving a cached link."""
+) -> str | None:
+    """Recheck scope and return an in-memory fingerprint of the pickcode."""
 
     allowed = frozenset(allowed_library_ids or ())
     try:
@@ -230,9 +242,9 @@ async def validate_current_manifest_scope(
                 )
             )
             if manifest is None:
-                return False
+                return None
             library = await session.get(MediaLibrary, manifest.library_id)
-            return bool(
+            if not (
                 library is not None
                 and library.enabled
                 and library.scope_verified
@@ -240,17 +252,46 @@ async def validate_current_manifest_scope(
                 and manifest.cloud_file_id.isdigit()
                 and isinstance(manifest.pickcode, str)
                 and bool(manifest.pickcode.strip())
-            )
+            ):
+                return None
+            return _pickcode_fingerprint(manifest.pickcode)
     except asyncio.CancelledError:
         raise
     except Exception:  # noqa: BLE001 - validation fails closed without details
+        return None
+
+
+def _cache_validation_allowed(validation: PlaybackCacheValidation) -> bool:
+    return (
+        isinstance(validation, str)
+        and len(validation) == 64
+        and all(character in "0123456789abcdef" for character in validation)
+    )
+
+
+def _cache_fingerprint(validation: PlaybackCacheValidation) -> str | None:
+    return validation if _cache_validation_allowed(validation) else None
+
+
+def _cache_entry_matches(
+    entry: _PlaybackCacheEntry, validation: PlaybackCacheValidation
+) -> bool:
+    if not _cache_validation_allowed(validation):
         return False
+    if entry.pickcode_fingerprint is None:
+        return False
+    return hmac.compare_digest(entry.pickcode_fingerprint, validation)
+
+
+def _pickcode_fingerprint(pickcode: str) -> str:
+    return hashlib.sha256(pickcode.strip().encode("utf-8")).hexdigest()
 
 
 __all__ = [
     "DEFAULT_DYNAMIC_LINK_CACHE_MAX_ENTRIES",
     "DEFAULT_DYNAMIC_LINK_CACHE_TTL_SECONDS",
     "CachedStrmPlaybackGateway",
+    "PlaybackCacheValidation",
     "PlaybackCacheValidator",
     "validate_current_manifest_scope",
 ]

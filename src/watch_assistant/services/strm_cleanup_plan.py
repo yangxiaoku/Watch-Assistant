@@ -9,7 +9,7 @@ import json
 import os
 import uuid
 from collections.abc import Awaitable, Callable, Collection
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
 
@@ -70,6 +70,10 @@ class StrmCleanupPlanView:
     candidate_count: int
     executable_count: int
     blocked_count: int
+    applied_idempotency_key: str | None = field(
+        default=None, repr=False, compare=False
+    )
+    applied_retired: int = field(default=0, repr=False, compare=False)
 
     def to_public_dict(self) -> dict[str, object]:
         return {
@@ -574,6 +578,8 @@ def _view(plan: StrmCleanupPlan) -> StrmCleanupPlanView:
         candidate_count=len(candidates),
         executable_count=executable,
         blocked_count=len(candidates) - executable,
+        applied_idempotency_key=plan.applied_idempotency_key,
+        applied_retired=int(plan.applied_retired or 0),
     )
 
 
