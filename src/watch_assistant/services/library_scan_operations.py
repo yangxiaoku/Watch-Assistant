@@ -42,6 +42,8 @@ SCAN_STATE_LABELS_ZH = {
 SCAN_ERROR_MESSAGES_ZH = {
     "cancelled": "扫描已取消，已保存的分页结果可以继续使用。",
     "gateway_error": "115 目录读取失败，已保存已完成分页，请核对登录状态后重试。",
+    "entry_scope_unverified": "文件详情的归属范围无法确认，扫描已停止。",
+    "pickcode_unavailable": "文件播放标识读取失败，未生成可播放快照。",
     "storage_error": "扫描结果保存失败，远端目录未被修改，请稍后重试。",
     "total_mismatch": "115 返回的目录总数与扫描结果不一致，未生成完整快照。",
     "page_count_changed": "115 返回的分页范围发生变化，未生成完整快照。",
@@ -586,6 +588,7 @@ class LibraryScanWorker:
         owner: str,
         poll_interval_seconds: float = 1.0,
         lease_duration: timedelta = timedelta(minutes=5),
+        hydrate_file_details: bool = False,
         event_logger: EventLogger | None = None,
     ) -> None:
         if poll_interval_seconds <= 0:
@@ -598,6 +601,7 @@ class LibraryScanWorker:
         self._owner = owner
         self._poll_interval_seconds = float(poll_interval_seconds)
         self._lease_duration = lease_duration
+        self._hydrate_file_details = bool(hydrate_file_details)
         self._event_logger = event_logger
 
     async def run_once(self) -> bool:
@@ -672,6 +676,7 @@ class LibraryScanWorker:
             root_directory_id=lease.root_directory_id,
             # The verified P115 contract intentionally remains one item per page.
             page_size=1,
+            hydrate_file_details=self._hydrate_file_details,
             propagate_cancelled=True,
             cancel_event=lease_lost,
             lease_owner=lease.lease_owner,

@@ -76,6 +76,7 @@ class _RecursiveGateway:
                 terminal=True,
                 has_more=False,
             )
+
         if directory_id == NESTED_ID and page == 1:
             return _page(
                 page,
@@ -98,6 +99,20 @@ class _RecursiveGateway:
                 has_more=False,
             )
         raise AssertionError(f"unexpected directory page: {directory_id}:{page}")
+
+    async def get_file_detail(self, file_id: str) -> LibraryEntry:
+        parent_id = ROOT_ID if file_id == "1000" else NESTED_ID
+        return LibraryEntry(
+            directory_id=None,
+            file_id=file_id,
+            parent_id=parent_id,
+            name="Inventory fixture.mkv",
+            is_directory=False,
+            size_bytes=100,
+            modified_at=None,
+            pickcode="inventory-fixture-pickcode",
+            path=None,
+        )
 
 
 def _page(page, items, *, page_count, total, terminal, has_more):

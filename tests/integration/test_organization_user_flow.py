@@ -122,6 +122,21 @@ class _FakeDirectoryGateway:
             terminal=True,
         )
 
+    async def get_file_detail(self, file_id: str) -> LibraryEntry:
+        if file_id != "7000":
+            raise AssertionError(f"unexpected file detail: {file_id}")
+        return LibraryEntry(
+            directory_id=None,
+            file_id=file_id,
+            parent_id="1000",
+            name="The.Office.2005.1080p.mkv",
+            is_directory=False,
+            size_bytes=10_000_000,
+            modified_at=None,
+            pickcode="fixture-pickcode",
+            path=None,
+        )
+
     @staticmethod
     def _directory(directory_id: str, parent_id: str, name: str) -> LibraryEntry:
         return LibraryEntry(

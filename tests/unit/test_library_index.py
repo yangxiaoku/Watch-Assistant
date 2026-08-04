@@ -100,6 +100,48 @@ class _TreeGateway:
         )
 
 
+class _HydratedTreeGateway(_TreeGateway):
+    def __init__(self):
+        super().__init__()
+        self.detail_calls: list[str] = []
+
+    async def list_directory(self, directory_id: str, *, page: int = 1, page_size=100):
+        page_value = await super().list_directory(
+            directory_id, page=page, page_size=page_size
+        )
+        return replace(
+            page_value,
+            items=tuple(
+                replace(entry, pickcode=None)
+                if not entry.is_directory
+                else entry
+                for entry in page_value.items
+            ),
+        )
+
+    async def get_file_detail(self, file_id: str):
+        self.detail_calls.append(file_id)
+        return _file_entry(
+            file_id,
+            parent_id=ROOT_ID if file_id == "1000" else "7100",
+            path=None,
+        )
+
+
+class _MismatchedDetailGateway(_ReadOnlyGateway):
+    async def list_directory(self, directory_id: str, *, page: int = 1, page_size=100):
+        page_value = await super().list_directory(
+            directory_id, page=page, page_size=page_size
+        )
+        return replace(
+            page_value,
+            items=tuple(replace(entry, pickcode=None) for entry in page_value.items),
+        )
+
+    async def get_file_detail(self, file_id: str):
+        return _file_entry(file_id, parent_id="9999")
+
+
 class _PathlessTreeGateway:
     async def list_directory(self, directory_id: str, *, page: int = 1, page_size=100):
         del page_size
@@ -706,6 +748,45 @@ async def test_tree_scan_includes_discovered_child_directories(tmp_path):
     cursor = json.loads(checkpoint.cursor_json)
     assert cursor["directory_totals"] == {ROOT_ID: 2, "7100": 1}
     assert cursor["expected_total"] == 3
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_tree_scan_hydrates_missing_pickcodes_from_verified_file_details(tmp_path):
+    database = await _database(tmp_path)
+    gateway = _HydratedTreeGateway()
+
+    result = await _service(
+        database, gateway, page_size=1, hydrate_file_details=True
+    ).scan_tree("tree-pickcode-hydration")
+
+    assert result.state is ScanRunState.COMPLETED
+    assert gateway.detail_calls == ["1000", "1001"]
+    async with database.session_factory() as session:
+        entries = list(await session.scalars(select(LibraryScanEntry)))
+    assert {
+        entry.pickcode
+        for entry in entries
+        if entry.object_type == "file"
+    } == {SECRET_PICKCODE}
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_pickcode_hydration_rejects_detail_outside_listed_parent_scope(tmp_path):
+    database = await _database(tmp_path)
+
+    result = await _service(
+        database,
+        _MismatchedDetailGateway(1),
+        hydrate_file_details=True,
+    ).scan("pickcode-scope-mismatch")
+
+    assert result.state is ScanRunState.FAILED
+    assert result.complete is False
+    assert result.error_code == "entry_scope_unverified"
+    async with database.session_factory() as session:
+        assert await session.scalar(select(LibraryScanEntry)) is None
     await database.engine.dispose()
 
 
