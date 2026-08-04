@@ -63,6 +63,7 @@ def test_compose_and_systemd_runtime_contracts_use_distinct_explicit_ports_and_s
         "Environment=FRONTEND_DIST_DIR=/opt/watch-assistant/current/frontend/dist"
         in systemd
     )
+    assert "Environment=PYTHONPATH=/opt/watch-assistant/current/src" in systemd
 
 
 def test_release_startup_smoke_is_tracked_as_executable():

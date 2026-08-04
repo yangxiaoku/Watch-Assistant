@@ -42,6 +42,11 @@ The main delay was coordination rather than one missing feature:
   confirmation, all existing C03 gates, separate one-shot authorizations, and
   stops on an uncertain result before the next write. Its `offline` phase
   validates the fake C03 lifecycle and organization/STRM integration contracts.
+- The systemd unit keeps the external dependency virtualenv for execution but
+  sets `PYTHONPATH=/opt/watch-assistant/current/src`, and the unit contract
+  requires that release-source path. This keeps the running application and
+  release smoke checks on the published source instead of a stale installed
+  package from the shared virtualenv.
 - Every stage writes a small public JSON report and `SUMMARY.json`; runner
   stdout and stderr are never copied into evidence.
 
@@ -70,6 +75,27 @@ file, the persistent cookie path, and the existing one-shot authorization
 files. They must be run only after the operator has checked the scope and the
 authorization artifacts. No mode deploys, restarts systemd, permanently
 deletes, or changes a production root automatically.
+
+The default `preview`, `execute`, and `offline` runtime gate accepts only the
+current worktree `.venv`. A systemd release may use an external virtualenv only
+when production acceptance is explicitly authorized and the interpreter is
+declared, for example:
+
+```bash
+WATCH_ASSISTANT_PRODUCTION_ACCEPTANCE=1 \
+WATCH_ASSISTANT_PRODUCTION_PYTHON=/opt/watch-assistant/venv/bin/python \
+PYTHONPATH=/opt/watch-assistant/current/src \
+/opt/watch-assistant/venv/bin/python \
+  /opt/watch-assistant/current/scripts/acceptance_closure.py preview
+```
+
+The equivalent command-line authorization is
+`--production-acceptance --production-python /opt/watch-assistant/venv/bin/python`.
+The closure overwrites the child-stage `PYTHONPATH` with the current release's
+`src` directory, so an inherited editable install or unrelated path cannot take
+precedence. The summary records only the selected runtime class and authorization
+source; it never records environment contents, credentials, or the supplied
+interpreter path.
 
 ## Completion definition
 

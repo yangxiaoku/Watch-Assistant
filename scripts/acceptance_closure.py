@@ -16,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,8 @@ EXIT_BLOCKED = 2
 EXIT_UNCERTAIN = 3
 DEFAULT_TIMEOUT_SECONDS = 30 * 60
 PYTHON_ENV_MARKERS = (Path(".venv") / "bin", Path(".venv") / "Scripts")
+PRODUCTION_ACCEPTANCE_ENV = "WATCH_ASSISTANT_PRODUCTION_ACCEPTANCE"
+PRODUCTION_PYTHON_ENV = "WATCH_ASSISTANT_PRODUCTION_PYTHON"
 C03_GATES = (
     "WATCH_ASSISTANT_P115_C03_WRITE",
     "WATCH_ASSISTANT_P115_C03_MANAGED_FIXTURE",
@@ -34,6 +37,15 @@ C03_GATES = (
 
 class ClosureInputError(ValueError):
     """Raised for a preflight failure that must not start a subprocess."""
+
+
+@dataclass(frozen=True)
+class RuntimeSelection:
+    """The selected interpreter and runtime contract for child stages."""
+
+    python_executable: str
+    environment: dict[str, str]
+    audit: dict[str, str]
 
 
 def _stable_id(value: object) -> bool:
@@ -63,12 +75,55 @@ def _python_is_worktree_venv(root: Path) -> bool:
     return any(relative.parts[:2] == marker.parts for marker in PYTHON_ENV_MARKERS)
 
 
+def _path_is_within(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+    except ValueError:
+        return False
+    return True
+
+
+def _absolute_path(path: Path) -> Path:
+    return Path(os.path.abspath(os.path.expanduser(os.fspath(path))))
+
+
+def _release_source_path(root: Path) -> Path:
+    source = root / "src"
+    if (
+        source.is_symlink()
+        or not source.is_dir()
+        or not (source / "watch_assistant").is_dir()
+    ):
+        raise ClosureInputError("release_source_missing")
+    return source.resolve()
+
+
+def _validate_production_python(value: Path | None, root: Path) -> Path:
+    if value is None:
+        raise ClosureInputError("production_python_required")
+    if not value.is_absolute():
+        raise ClosureInputError("production_python_must_be_absolute")
+
+    candidate = _absolute_path(value)
+    release_root = _absolute_path(root)
+    if _path_is_within(candidate, release_root) or _path_is_within(
+        candidate.resolve(), release_root.resolve()
+    ):
+        raise ClosureInputError("production_python_must_be_external")
+    if not candidate.is_file():
+        raise ClosureInputError("production_python_file_missing")
+    if not os.access(candidate, os.X_OK):
+        raise ClosureInputError("production_python_not_executable")
+    return candidate
+
+
 def _json_dump(value: Mapping[str, Any]) -> str:
     return json.dumps(value, ensure_ascii=True, sort_keys=True, indent=2) + "\n"
 
 
-def _native_library_path() -> str | None:
-    configured = os.environ.get("WATCH_ASSISTANT_NATIVE_LIBRARY_PATH")
+def _native_library_path(environment: Mapping[str, str] | None = None) -> str | None:
+    source = os.environ if environment is None else environment
+    configured = source.get("WATCH_ASSISTANT_NATIVE_LIBRARY_PATH")
     if configured:
         return configured
     if sys.platform != "darwin":
@@ -91,9 +146,13 @@ def _native_library_path() -> str | None:
     return None
 
 
-def _runtime_environment() -> dict[str, str]:
-    environment = dict(os.environ)
-    native_library_path = _native_library_path()
+def _runtime_environment(
+    root: Path | None = None,
+    *,
+    base_environment: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    environment = dict(os.environ if base_environment is None else base_environment)
+    native_library_path = _native_library_path(environment)
     if native_library_path:
         environment["WATCH_ASSISTANT_NATIVE_LIBRARY_PATH"] = native_library_path
         environment["DYLD_FALLBACK_LIBRARY_PATH"] = (
@@ -102,7 +161,77 @@ def _runtime_environment() -> dict[str, str]:
             if environment.get("DYLD_FALLBACK_LIBRARY_PATH")
             else native_library_path
         )
+    if root is not None:
+        # Source must win over an editable or stale package in an external venv.
+        environment["PYTHONPATH"] = str(_release_source_path(root))
     return environment
+
+
+def _production_authorization_source(
+    args: argparse.Namespace, environment: Mapping[str, str]
+) -> str | None:
+    sources: list[str] = []
+    if getattr(args, "production_acceptance", False):
+        sources.append("cli")
+    if environment.get(PRODUCTION_ACCEPTANCE_ENV) == "1":
+        sources.append("environment")
+    return "+".join(sources) or None
+
+
+def _production_python_input(
+    args: argparse.Namespace, environment: Mapping[str, str]
+) -> tuple[Path | None, str | None]:
+    raw_cli_value = getattr(args, "production_python", None)
+    cli_value = None if raw_cli_value is None else Path(raw_cli_value)
+    environment_value = environment.get(PRODUCTION_PYTHON_ENV)
+    if cli_value is not None and environment_value:
+        if _absolute_path(cli_value) != _absolute_path(Path(environment_value)):
+            raise ClosureInputError("production_python_conflict")
+    if cli_value is not None:
+        return cli_value, "cli"
+    if environment_value:
+        return Path(environment_value), "environment"
+    return None, None
+
+
+def _select_runtime(
+    args: argparse.Namespace,
+    *,
+    root: Path,
+    base_environment: Mapping[str, str] | None = None,
+) -> RuntimeSelection:
+    environment = dict(os.environ if base_environment is None else base_environment)
+    authorization_source = _production_authorization_source(args, environment)
+    production_python, python_source = _production_python_input(args, environment)
+    production_requested = authorization_source is not None or production_python is not None
+
+    if production_requested:
+        if authorization_source is None:
+            raise ClosureInputError("production_acceptance_required")
+        executable = _validate_production_python(production_python, root)
+        return RuntimeSelection(
+            python_executable=str(executable),
+            environment=_runtime_environment(root, base_environment=environment),
+            audit={
+                "mode": "production_external",
+                "authorization_source": authorization_source,
+                "python_source": python_source or "unknown",
+                "pythonpath_scope": "release_src",
+            },
+        )
+
+    if not _python_is_worktree_venv(root):
+        raise ClosureInputError("worktree_venv_required")
+    return RuntimeSelection(
+        python_executable=sys.executable,
+        environment=_runtime_environment(root, base_environment=environment),
+        audit={
+            "mode": "worktree",
+            "authorization_source": "default_worktree_venv",
+            "python_source": "process",
+            "pythonpath_scope": "release_src",
+        },
+    )
 
 
 def _read_public_json(stdout: str) -> dict[str, Any] | None:
@@ -222,6 +351,7 @@ def _summary(
     reports: Sequence[Mapping[str, Any]],
     *,
     mode: str,
+    runtime: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     statuses = [str(report.get("status")) for report in reports]
     if "uncertain" in statuses:
@@ -238,6 +368,8 @@ def _summary(
         "permanent_delete_used": False,
         "evidence_dir": str(output_dir),
     }
+    if runtime is not None:
+        summary["runtime"] = dict(runtime)
     (output_dir / "SUMMARY.json").write_text(_json_dump(summary), encoding="utf-8")
     return summary
 
@@ -263,6 +395,16 @@ def _base_parser() -> argparse.ArgumentParser:
     parser.add_argument("--strm-file-id")
     parser.add_argument("--strm-rename-authorization", type=Path)
     parser.add_argument("--strm-restore-authorization", type=Path)
+    parser.add_argument(
+        "--production-acceptance",
+        action="store_true",
+        help="explicitly authorize use of an external production Python runtime",
+    )
+    parser.add_argument(
+        "--production-python",
+        type=Path,
+        help="absolute external Python executable for production acceptance",
+    )
     parser.add_argument("--timeout-seconds", type=float, default=DEFAULT_TIMEOUT_SECONDS)
     return parser
 
@@ -303,14 +445,16 @@ def _preview(
     root: Path,
     output_dir: Path,
     environment: Mapping[str, str],
+    python_executable: str | None = None,
 ) -> list[dict[str, Any]]:
     _validate_preview_args(args)
+    python = sys.executable if python_executable is None else python_executable
     inventory = _run_stage(
         root=root,
         output_dir=output_dir,
         stage="inventory",
         command=(
-            sys.executable,
+            python,
             "scripts/p115_production_inventory.py",
             "--root-id",
             args.root_id,
@@ -331,7 +475,7 @@ def _preview(
         output_dir=output_dir,
         stage="organization_plan",
         command=(
-            sys.executable,
+            python,
             "scripts/p115_organization_application_live_runner.py",
             "--source-id",
             args.source_id,
@@ -371,9 +515,17 @@ def _execute(
     root: Path,
     output_dir: Path,
     environment: Mapping[str, str],
+    python_executable: str | None = None,
 ) -> list[dict[str, Any]]:
     _validate_execute_args(args)
-    reports = _preview(args, root=root, output_dir=output_dir, environment=environment)
+    python = sys.executable if python_executable is None else python_executable
+    reports = _preview(
+        args,
+        root=root,
+        output_dir=output_dir,
+        environment=environment,
+        python_executable=python,
+    )
     if any(report["status"] != "success" for report in reports):
         return reports
     missing_gate = next((name for name in C03_GATES if environment.get(name) != "1"), None)
@@ -392,7 +544,7 @@ def _execute(
         output_dir=output_dir,
         stage="fixture",
         command=(
-            sys.executable,
+            python,
             "scripts/p115_c03_live_runner.py",
             "--parent-id",
             args.fixture_parent_id,
@@ -416,7 +568,7 @@ def _execute(
         output_dir=output_dir,
         stage="strm",
         command=(
-            sys.executable,
+            python,
             "scripts/p115_strm_application_live_runner.py",
             "--root-id",
             args.strm_root_id,
@@ -448,9 +600,11 @@ def _offline(
     root: Path,
     output_dir: Path,
     environment: Mapping[str, str],
+    python_executable: str | None = None,
 ) -> list[dict[str, Any]]:
     if not args.confirm_fixture:
         raise ClosureInputError("fixture_confirmation_required")
+    python = sys.executable if python_executable is None else python_executable
     fixture_parent = _require_stable_id(args.fixture_parent_id or "7000", "fixture_parent_id")
     offline_env = dict(environment)
     for name in C03_GATES[:3]:
@@ -460,7 +614,7 @@ def _offline(
         output_dir=output_dir,
         stage="fixture",
         command=(
-            sys.executable,
+            python,
             "scripts/p115_c03_fixture_probe.py",
             "--parent-id",
             fixture_parent,
@@ -478,7 +632,7 @@ def _offline(
         output_dir=output_dir,
         stage="strm_and_plan_contracts",
         command=(
-            sys.executable,
+            python,
             "-m",
             "pytest",
             "-q",
@@ -528,18 +682,32 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.mode == "dry-run":
             summary = _dry_run(args, output_dir)
         else:
-            if not _python_is_worktree_venv(root):
-                raise ClosureInputError("worktree_venv_required")
-            environment = _runtime_environment()
+            runtime = _select_runtime(args, root=root)
             if args.mode == "preview":
-                reports = _preview(args, root=root, output_dir=output_dir, environment=environment)
-                summary = _summary(output_dir, reports, mode=args.mode)
+                reports = _preview(
+                    args,
+                    root=root,
+                    output_dir=output_dir,
+                    environment=runtime.environment,
+                    python_executable=runtime.python_executable,
+                )
             elif args.mode == "execute":
-                reports = _execute(args, root=root, output_dir=output_dir, environment=environment)
-                summary = _summary(output_dir, reports, mode=args.mode)
+                reports = _execute(
+                    args,
+                    root=root,
+                    output_dir=output_dir,
+                    environment=runtime.environment,
+                    python_executable=runtime.python_executable,
+                )
             else:
-                reports = _offline(args, root=root, output_dir=output_dir, environment=environment)
-                summary = _summary(output_dir, reports, mode=args.mode)
+                reports = _offline(
+                    args,
+                    root=root,
+                    output_dir=output_dir,
+                    environment=runtime.environment,
+                    python_executable=runtime.python_executable,
+                )
+            summary = _summary(output_dir, reports, mode=args.mode, runtime=runtime.audit)
     except ClosureInputError as error:
         summary = {
             "mode": args.mode,
@@ -549,6 +717,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "production_write_started": False,
             "permanent_delete_used": False,
             "evidence_dir": str(output_dir),
+            "runtime": {"mode": "unselected"},
         }
         output_dir.mkdir(parents=True, exist_ok=True)
         (output_dir / "SUMMARY.json").write_text(_json_dump(summary), encoding="utf-8")

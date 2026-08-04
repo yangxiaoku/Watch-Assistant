@@ -122,6 +122,9 @@ def test_release_build_and_verify_use_provenance_and_project_venv():
     assert 'must point to npm or pnpm' in build
     assert "release-manifest.json" in build
     assert "--source-sha256" in build and "--frontend-sha256" in build
+    assert "Environment=PYTHONPATH=/opt/watch-assistant/current/src" in (
+        ROOT / "deploy" / "watch-assistant.service"
+    ).read_text(encoding="utf-8")
     assert "release_startup_smoke.py" in verify
     assert "git archive --format=tar \"$EXPECTED_COMMIT\"" in verify
     assert "--frontend-sha256" in verify
