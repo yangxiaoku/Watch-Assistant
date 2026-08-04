@@ -155,6 +155,7 @@ class OrganizationAutomationService:
         operation_service: OrganizationOperationService | None = None,
         auto_execute: bool = False,
         directory_provisioner: DirectoryProvisioner | None = None,
+        hydrate_file_details: bool = False,
         event_logger: object | None = None,
     ) -> None:
         self._session_factory = session_factory
@@ -163,6 +164,7 @@ class OrganizationAutomationService:
         self._plans = plan_service
         self._gateway_factory = gateway_factory
         self._operations = operation_service
+        self._hydrate_file_details = bool(hydrate_file_details)
         # Kept in the constructor for compatibility with older wiring.  A
         # planning pass must never use either value to obtain write authority.
         del auto_execute, directory_provisioner
@@ -272,6 +274,7 @@ class OrganizationAutomationService:
                     library_id=library_id,
                     root_directory_id=source_id,
                     page_size=1,
+                    hydrate_file_details=self._hydrate_file_details,
                 )
                 scan = await scanner.scan_tree(_scan_idempotency_key(source_id))
                 if not scan.complete:

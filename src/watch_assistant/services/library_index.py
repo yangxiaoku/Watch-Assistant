@@ -117,6 +117,7 @@ class LibraryIndexService:
         root_directory_id: str,
         page_size: int = 100,
         max_reported_changes: int = 100,
+        hydrate_file_details: bool = False,
         propagate_cancelled: bool = False,
         cancel_event: asyncio.Event | None = None,
         lease_owner: str | None = None,
@@ -148,6 +149,7 @@ class LibraryIndexService:
         self._root_directory_id = root_directory_id
         self._page_size = page_size
         self._max_reported_changes = max_reported_changes
+        self._hydrate_file_details = bool(hydrate_file_details)
         self._propagate_cancelled = propagate_cancelled
         self._cancel_event = cancel_event
         self._lease_owner = lease_owner
@@ -213,6 +215,7 @@ class LibraryIndexService:
                     return await self._result_for_run(run.id)
 
                 try:
+                    page = await self._hydrate_missing_pickcodes(run.id, page)
                     await self._persist_page(
                         run.id,
                         page,
@@ -326,6 +329,7 @@ class LibraryIndexService:
                         expected_total=expected_total,
                         require_total=True,
                     )
+                    page = await self._hydrate_missing_pickcodes(run.id, page)
                     next_cursor = _advance_tree_cursor(
                         cursor,
                         page,
@@ -460,6 +464,38 @@ class LibraryIndexService:
             self._assert_execution_lease(run)
             await self._fence_write(session, run)
             await session.commit()
+
+    async def _hydrate_missing_pickcodes(
+        self, run_id: str, page: DirectoryPage
+    ) -> DirectoryPage:
+        """Fill playback identities only for explicitly enabled real scans."""
+
+        if not self._hydrate_file_details:
+            return page
+        hydrated: list[LibraryEntry] = []
+        for entry in page.items:
+            if entry.is_directory or entry.pickcode is not None:
+                hydrated.append(entry)
+                continue
+            if entry.file_id is None or entry.parent_id is None:
+                raise LibraryIndexError("entry_scope_unverified")
+            await self._fence_before_remote_page(run_id)
+            try:
+                detail = await self._gateway.get_file_detail(entry.file_id)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - remote details stay private
+                raise LibraryIndexError("gateway_error") from None
+            if (
+                detail.is_directory
+                or detail.file_id != entry.file_id
+                or detail.parent_id != entry.parent_id
+            ):
+                raise LibraryIndexError("entry_scope_unverified")
+            if detail.pickcode is None:
+                raise LibraryIndexError("pickcode_unavailable")
+            hydrated.append(replace(entry, pickcode=detail.pickcode))
+        return replace(page, items=tuple(hydrated))
 
     async def _persist_tree_page(
         self, run_id: str, page: DirectoryPage, *, pages_read: int

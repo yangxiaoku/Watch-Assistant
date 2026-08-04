@@ -258,6 +258,7 @@ async def _refresh_inventory_before_push(
                 library_id=library.id,
                 root_directory_id=library.root_directory_id,
                 page_size=1,
+                hydrate_file_details=True,
             ).scan_tree(f"push-inventory-{uuid4().hex}")
         except Exception:  # noqa: BLE001 - remote details stay private
             await emit_event(
@@ -482,6 +483,7 @@ def create_app(
                     library_id=library_id,
                     root_directory_id=root_directory_id,
                     page_size=1,
+                    hydrate_file_details=True,
                 )
 
             worker = DirectoryDirtyWorker(
@@ -748,6 +750,7 @@ def create_app(
                 application.state.organization_preview_service,
                 application.state.organization_plan_service,
                 gateway_factory,
+                hydrate_file_details=True,
                 event_logger=application.state.settings_service,
             )
             application.state.organization_automation_service = automation
@@ -1283,6 +1286,7 @@ def create_app(
                 scan_operations,
                 scan_gateway_factory,
                 owner=_worker_owner(),
+                hydrate_file_details=True,
                 event_logger=getattr(application.state, "settings_service", None),
             )
             await scan_worker.recover_expired()
