@@ -1,8 +1,8 @@
 import pytest
 
 import scripts.p115_strm_application_live_runner as application_runner
-from scripts.p115_strm_application_live_runner import _scan as application_scan
 import scripts.p115_strm_playback_live_runner as playback_runner
+from scripts.p115_strm_application_live_runner import _scan as application_scan
 from scripts.p115_strm_playback_live_runner import _scan as playback_scan
 
 

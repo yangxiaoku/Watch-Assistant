@@ -14,8 +14,8 @@ from scripts.acceptance_closure import (
     _select_runtime,
     _stage_status,
     _stage_success,
-    _validate_production_python,
     _validate_execute_args,
+    _validate_production_python,
 )
 from scripts.p115_organization_application_live_runner import _configure_preview_scope
 
