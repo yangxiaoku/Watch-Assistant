@@ -2,6 +2,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import tarfile
@@ -189,6 +190,135 @@ def test_release_shell_scripts_have_valid_bash_syntax():
             check=False,
         )
         assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shell release semantics are required")
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash is required")
+@pytest.mark.skipif(shutil.which("tar") is None, reason="tar is required")
+@pytest.mark.skipif(shutil.which("sha256sum") is None, reason="sha256sum is required")
+def test_build_release_normalizes_archive_uid_and_gid(tmp_path: Path):
+    fixture_root = tmp_path / "fixture-repo"
+    (fixture_root / "scripts").mkdir(parents=True)
+    (fixture_root / "frontend").mkdir()
+    (fixture_root / "deploy").mkdir()
+    shutil.copy2(ROOT / "scripts" / "build_release.sh", fixture_root / "scripts")
+    (fixture_root / "frontend" / "package.json").write_text("{}\n", encoding="utf-8")
+    (fixture_root / "deploy" / "watch-assistant.service").write_text(
+        "[Unit]\nDescription=fixture\n", encoding="utf-8"
+    )
+    (fixture_root / "scripts" / "release_manifest.py").write_text(
+        "# fixture\n", encoding="utf-8"
+    )
+    (fixture_root / "scripts" / "release_startup_smoke.py").write_text(
+        "# fixture\n", encoding="utf-8"
+    )
+
+    subprocess.run(["git", "init", "-q"], cwd=fixture_root, check=True)
+    subprocess.run(
+        ["git", "config", "user.name", "release-fixture"],
+        cwd=fixture_root,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "release-fixture@example.invalid"],
+        cwd=fixture_root,
+        check=True,
+    )
+    (fixture_root / ".git" / "info" / "exclude").write_text(
+        ".venv/\n", encoding="utf-8"
+    )
+
+    python_stub = fixture_root / ".venv" / "bin" / "python"
+    python_stub.parent.mkdir(parents=True)
+    python_stub.write_text(
+        "#!/bin/sh\n"
+        "if [ \"${2:-}\" = \"write-build\" ]; then\n"
+        "    while [ \"$#\" -gt 0 ]; do\n"
+        "        if [ \"$1\" = \"--output\" ]; then\n"
+        "            printf '{}\\n' > \"$2\"\n"
+        "            break\n"
+        "        fi\n"
+        "        shift\n"
+        "    done\n"
+        "fi\n",
+        encoding="utf-8",
+    )
+    python_stub.chmod(0o755)
+
+    subprocess.run(["git", "add", "."], cwd=fixture_root, check=True)
+    subprocess.run(
+        ["git", "commit", "-qm", "fixture"], cwd=fixture_root, check=True
+    )
+    subprocess.run(
+        ["git", "switch", "-q", "-c", "codex/publish-main"],
+        cwd=fixture_root,
+        check=True,
+    )
+    commit = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=fixture_root, text=True
+    ).strip()
+    subprocess.run(
+        [
+            "git",
+            "update-ref",
+            "refs/remotes/origin/codex/publish-main",
+            commit,
+        ],
+        cwd=fixture_root,
+        check=True,
+    )
+
+    tool_bin = tmp_path / "tools"
+    tool_bin.mkdir()
+    npm_stub = tool_bin / "npm"
+    npm_stub.write_text(
+        "#!/bin/sh\n"
+        "if [ \"${1:-}\" = \"run\" ] && [ \"${2:-}\" = \"build\" ]; then\n"
+        "    mkdir -p dist\n"
+        "    printf '<!doctype html>\\n' > dist/index.html\n"
+        "fi\n",
+        encoding="utf-8",
+    )
+    npm_stub.chmod(0o755)
+
+    tar_path = Path(shutil.which("tar")).resolve()
+    tar_log = tmp_path / "tar.log"
+    tar_stub = tool_bin / "tar"
+    tar_stub.write_text(
+        "#!/bin/sh\n"
+        f"printf '%s\\n' \"$*\" >> {shlex.quote(str(tar_log))}\n"
+        f"exec {shlex.quote(str(tar_path))} \"$@\"\n",
+        encoding="utf-8",
+    )
+    tar_stub.chmod(0o755)
+
+    output_dir = tmp_path / "release-output"
+    environment = os.environ.copy()
+    environment["PATH"] = f"{tool_bin}{os.pathsep}{environment['PATH']}"
+    environment["RELEASE_OUTPUT_DIR"] = str(output_dir)
+    environment["WATCH_ASSISTANT_FRONTEND_PM"] = str(npm_stub)
+    result = subprocess.run(
+        ["bash", str(fixture_root / "scripts" / "build_release.sh"), commit],
+        cwd=fixture_root,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+    packages = list(output_dir.glob("watch-assistant-*.tar.gz"))
+    assert len(packages) == 1
+    with tarfile.open(packages[0], "r:gz") as archive:
+        members = archive.getmembers()
+    assert members
+    assert all(
+        member.uid == 0 and member.gid == 0 for member in members
+    ), [(member.name, member.uid, member.gid) for member in members]
+    assert any(
+        "--owner=0" in line and "--group=0" in line
+        for line in tar_log.read_text(encoding="utf-8").splitlines()
+    )
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Linux shell release semantics are required")

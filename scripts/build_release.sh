@@ -136,7 +136,8 @@ EOF
     --branch "$BRANCH_NAME"
 
 PACKAGE_FILE="$TEMP_DIR/$PACKAGE_NAME"
-tar -czf "$PACKAGE_FILE" -C "$TEMP_DIR" "watch-assistant-${COMMIT_HASH}"
+# Keep release ownership stable across macOS BSD tar and Linux GNU tar.
+tar --owner=0 --group=0 -czf "$PACKAGE_FILE" -C "$TEMP_DIR" "watch-assistant-${COMMIT_HASH}"
 
 SMOKE_DIR="$TEMP_DIR/release-smoke"
 mkdir -p "$SMOKE_DIR"
