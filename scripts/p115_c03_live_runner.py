@@ -41,6 +41,11 @@ from watch_assistant.adapters.p115_c03_live_transport import (
     P115C03LiveTransport,
     P115ClientLike,
 )
+from watch_assistant.adapters.p115_library_write_contract import (
+    OrganizationContractEvidence,
+    OrganizationWriteCapability,
+    P115OrganizationContract,
+)
 
 MAX_COOKIE_BYTES = 16 * 1024
 MAX_AUTHORIZATION_BYTES = 8 * 1024
@@ -48,6 +53,30 @@ AUTHORIZATION_VERSION = 1
 P115_BUSY_OPERATION_ERRNO = 990009
 P115_BUSY_OPERATION_RETRY_DELAY_SECONDS = 3.0
 _SAFE_NONCE = re.compile(r"[A-Za-z0-9._-]+")
+
+
+def _c03_organization_contract() -> P115OrganizationContract:
+    """Return the explicit contract used by the bounded C03 write probes."""
+
+    capabilities = frozenset(
+        {
+            OrganizationWriteCapability.READ_SCOPE,
+            OrganizationWriteCapability.MOVE,
+            OrganizationWriteCapability.RENAME,
+            OrganizationWriteCapability.RECYCLE,
+            OrganizationWriteCapability.POSTCONDITION,
+        }
+    )
+    return P115OrganizationContract(
+        verified=True,
+        timeout_enforced=True,
+        capabilities=capabilities,
+        evidence=OrganizationContractEvidence(
+            evidence_id="c03-fixture-organization-v1",
+            capabilities=capabilities,
+            timeout_enforced=True,
+        ),
+    )
 
 
 def run_live_probe(

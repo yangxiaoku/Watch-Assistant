@@ -24,6 +24,7 @@ try:
         C03_MANAGED_FIXTURE_ENV,
         C03_WRITE_ENABLED_ENV,
         _authorization_matches,
+        _c03_organization_contract,
         _consume_authorization,
         _p115client_timeout_executor,
         _read_cookie,
@@ -35,6 +36,7 @@ except ModuleNotFoundError:
         C03_MANAGED_FIXTURE_ENV,
         C03_WRITE_ENABLED_ENV,
         _authorization_matches,
+        _c03_organization_contract,
         _consume_authorization,
         _p115client_timeout_executor,
         _read_cookie,
@@ -216,6 +218,7 @@ async def _execute_and_restore(
         managed_directory_ids=(parent_id, temporary_id),
         scope_confirmed=True,
         live_enabled=True,
+        organization_contract=_c03_organization_contract(),
     )
     try:
         source = await transport.read_object(intent.object_id)
@@ -255,6 +258,7 @@ async def _execute_and_restore(
         managed_directory_ids=(parent_id, temporary_id),
         scope_confirmed=True,
         live_enabled=True,
+        organization_contract=_c03_organization_contract(),
     )
     try:
         restored_source = await restore.read_object(intent.object_id)
