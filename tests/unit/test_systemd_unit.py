@@ -30,7 +30,9 @@ def _owner() -> tuple[int, int]:
     return os.getuid(), os.getgid()
 
 
-def _write_package(root: Path, commit: str, marker: str = "") -> Path:
+def _write_package(
+    root: Path, commit: str, marker: str = "", *, write_manifest: bool = True
+) -> Path:
     root.mkdir(parents=True)
     (root / "deploy").mkdir()
     service = root / "deploy" / "watch-assistant.service"
@@ -38,19 +40,20 @@ def _write_package(root: Path, commit: str, marker: str = "") -> Path:
     if marker:
         content += f"\n# {marker}\n"
     service.write_text(content, encoding="utf-8")
-    manifest = {
-        "schema_version": 2,
-        "commit": commit,
-        "short_commit": commit[:7],
-        "source_sha256": "a" * 64,
-        "frontend_sha256": "b" * 64,
-        "unit_sha256": hashlib.sha256(service.read_bytes()).hexdigest(),
-        "build_time": "2026-08-02T00:00:00Z",
-        "branch": "codex/publish-main",
-    }
-    (root / "release-manifest.json").write_text(
-        json.dumps(manifest), encoding="utf-8"
-    )
+    if write_manifest:
+        manifest = {
+            "schema_version": 2,
+            "commit": commit,
+            "short_commit": commit[:7],
+            "source_sha256": "a" * 64,
+            "frontend_sha256": "b" * 64,
+            "unit_sha256": hashlib.sha256(service.read_bytes()).hexdigest(),
+            "build_time": "2026-08-02T00:00:00Z",
+            "branch": "codex/publish-main",
+        }
+        (root / "release-manifest.json").write_text(
+            json.dumps(manifest), encoding="utf-8"
+        )
     (root / "VERSION").write_text(
         f"commit={commit}\nbuild_time=2026-08-02T00:00:00Z\n"
         "branch=codex/publish-main\n",
@@ -194,14 +197,19 @@ def test_postdeploy_verifies_unit_digest_and_drop_ins(tmp_path: Path, monkeypatc
     ) == (False, "unit_drop_in_present")
 
 
+@pytest.mark.parametrize("write_previous_manifest", [True, False])
 @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink replacement is required")
-def test_release_rollback_restores_backed_up_unit(tmp_path: Path):
+def test_release_rollback_restores_backed_up_unit(
+    tmp_path: Path, write_previous_manifest: bool
+):
     old_commit = "a" * 40
     new_commit = "b" * 40
     releases = tmp_path / "releases"
     old_root = releases / "watch-assistant-old"
     new_root = releases / "watch-assistant-new"
-    old_unit = _write_package(old_root, old_commit, "old")
+    old_unit = _write_package(
+        old_root, old_commit, "old", write_manifest=write_previous_manifest
+    )
     new_unit = _write_package(new_root, new_commit, "new")
     current = tmp_path / "current"
     current.symlink_to(old_root, target_is_directory=True)
@@ -254,6 +262,50 @@ def test_release_rollback_restores_backed_up_unit(tmp_path: Path):
     )
     assert current.resolve() == old_root.resolve()
     assert installed.read_bytes() == old_unit.read_bytes()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX symlink replacement is required")
+def test_postdeploy_rollback_unit_digest_does_not_require_legacy_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    commit = "a" * 40
+    current_root = tmp_path / "current"
+    service = _write_package(current_root, commit, write_manifest=False)
+    release_env = tmp_path / "release.env"
+    release_env.write_text(f"WATCH_ASSISTANT_RELEASE={commit}\n", encoding="utf-8")
+    systemd_dir = tmp_path / "systemd"
+    systemd_dir.mkdir()
+    destination = systemd_dir / unit.UNIT_NAME
+    shutil.copy2(service, destination)
+    monkeypatch.setattr(
+        postdeploy.subprocess,
+        "run",
+        lambda args, **kwargs: subprocess.CompletedProcess(
+            args,
+            0,
+            stdout=(
+                f"EnvironmentFiles={release_env}\n"
+                "MainPID=1234\n"
+                f"WorkingDirectory={current_root}\n"
+            ),
+            stderr="",
+        ),
+    )
+    monkeypatch.setattr(postdeploy, "_read_health", lambda *_args: commit)
+
+    assert postdeploy.check_release_consistency(
+        version_file=current_root / "VERSION",
+        unit="watch-assistant.service",
+        health_url="http://fixture.invalid/health",
+        release_env=release_env,
+        current_root=current_root,
+        unit_path=destination,
+        unit_sha256=hashlib.sha256(destination.read_bytes()).hexdigest(),
+        unit_uid=os.getuid(),
+        unit_gid=os.getgid(),
+        health_timeout=0.01,
+        health_poll_interval=0.005,
+    ) == (True, "ok")
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink replacement is required")

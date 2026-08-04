@@ -111,5 +111,8 @@ def test_systemd_release_deploy_rechecks_previous_health_after_rollback():
     assert "automatic rollback health verification failed" in script
     assert "--unit watch-assistant.service" in script
     assert "--unit-path \"$UNIT_PATH\"" in script
+    assert "SYSTEMD_RELEASE_ROLLBACK_UNIT_SHA256" in script
+    assert "--unit-sha256" in script
+    assert "rollback_release_update" in script
     assert "restart watch-assistant-qbittorrent.service" not in script
     assert "systemctl restart" not in script

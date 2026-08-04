@@ -522,3 +522,32 @@ def verify_installed_unit(
     if installed.sha256 != source_digest:
         raise SystemdUnitError("unit_drift")
     return source_digest
+
+
+def verify_installed_unit_digest(
+    *,
+    destination: Path,
+    expected_sha256: str,
+    unit_uid: int = 0,
+    unit_gid: int = 0,
+    drop_in_dir: Path | None = None,
+) -> str:
+    """Verify an installed unit when its trusted digest is saved externally."""
+
+    if (
+        not isinstance(expected_sha256, str)
+        or len(expected_sha256) != 64
+        or any(character not in "0123456789abcdef" for character in expected_sha256)
+    ):
+        raise SystemdUnitError("unit_expected_sha256_invalid")
+    _validate_destination_scope(destination)
+    validate_no_drop_ins(destination, drop_in_dir=drop_in_dir)
+    installed = _snapshot(destination, uid=unit_uid, gid=unit_gid)
+    if not installed.exists:
+        raise SystemdUnitError("unit_missing")
+    # The digest proves identity; the content check keeps this path subject to
+    # the same unit contract as package-backed verification.
+    validate_unit_content(destination)
+    if installed.sha256 != expected_sha256:
+        raise SystemdUnitError("unit_drift")
+    return installed.sha256

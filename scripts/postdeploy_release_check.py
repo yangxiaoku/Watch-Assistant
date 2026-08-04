@@ -28,7 +28,11 @@ from release_manifest import (
     validate_build_manifest_file,
     validate_version_commit_file,
 )
-from systemd_unit import SystemdUnitError, verify_installed_unit
+from systemd_unit import (
+    SystemdUnitError,
+    verify_installed_unit,
+    verify_installed_unit_digest,
+)
 
 from watch_assistant.release_metadata import (
     normalize_full_release,
@@ -215,6 +219,7 @@ def check_release_consistency(
     diagnostics_url: str | None = None,
     diagnostics_token: str | None = None,
     unit_path: Path | None = None,
+    unit_sha256: str | None = None,
     drop_in_dir: Path | None = None,
     unit_uid: int = 0,
     unit_gid: int = 0,
@@ -243,33 +248,45 @@ def check_release_consistency(
         return False, "stale_release_drop_in"
     expected_unit_sha256: str | None = None
     if unit_path is not None:
-        try:
-            manifest = validate_build_manifest_file(
-                current_root / "release-manifest.json",
-                expected_commit=expected,
-                expected_short_commit=expected[:7]
-                if len(expected) == 40
-                else None,
-                expected_branch="codex/publish-main",
-                require_unit_sha256=True,
-            )
-        except ReleaseManifestError:
-            return False, "unit_manifest_invalid"
-        value = manifest.get("unit_sha256")
-        if not isinstance(value, str):
-            return False, "unit_manifest_invalid"
-        expected_unit_sha256 = value
-        try:
-            verify_installed_unit(
-                current_root,
-                destination=unit_path,
-                expected_sha256=expected_unit_sha256,
-                unit_uid=unit_uid,
-                unit_gid=unit_gid,
-                drop_in_dir=drop_in_dir,
-            )
-        except SystemdUnitError as exc:
-            return False, exc.code
+        if unit_sha256 is None:
+            try:
+                manifest = validate_build_manifest_file(
+                    current_root / "release-manifest.json",
+                    expected_commit=expected,
+                    expected_short_commit=expected[:7]
+                    if len(expected) == 40
+                    else None,
+                    expected_branch="codex/publish-main",
+                    require_unit_sha256=True,
+                )
+            except ReleaseManifestError:
+                return False, "unit_manifest_invalid"
+            value = manifest.get("unit_sha256")
+            if not isinstance(value, str):
+                return False, "unit_manifest_invalid"
+            expected_unit_sha256 = value
+            try:
+                verify_installed_unit(
+                    current_root,
+                    destination=unit_path,
+                    expected_sha256=expected_unit_sha256,
+                    unit_uid=unit_uid,
+                    unit_gid=unit_gid,
+                    drop_in_dir=drop_in_dir,
+                )
+            except SystemdUnitError as exc:
+                return False, exc.code
+        else:
+            try:
+                verify_installed_unit_digest(
+                    destination=unit_path,
+                    expected_sha256=unit_sha256,
+                    unit_uid=unit_uid,
+                    unit_gid=unit_gid,
+                    drop_in_dir=drop_in_dir,
+                )
+            except SystemdUnitError as exc:
+                return False, exc.code
     try:
         result = subprocess.run(
             [
@@ -331,6 +348,7 @@ def main() -> int:
     parser.add_argument("--systemctl-bin", default="systemctl")
     parser.add_argument("--stale-drop-in", type=Path)
     parser.add_argument("--unit-path", type=Path)
+    parser.add_argument("--unit-sha256")
     parser.add_argument("--drop-in-dir", type=Path)
     parser.add_argument("--release-env", type=Path, default=_DEFAULT_RELEASE_ENV)
     parser.add_argument("--current-root", type=Path)
@@ -356,6 +374,7 @@ def main() -> int:
         diagnostics_url=args.diagnostics_url,
         diagnostics_token=os.environ.get("WATCH_ASSISTANT_DIAGNOSTICS_TOKEN"),
         unit_path=args.unit_path,
+        unit_sha256=args.unit_sha256,
         drop_in_dir=args.drop_in_dir,
         timeout=args.timeout,
         health_timeout=args.health_timeout,

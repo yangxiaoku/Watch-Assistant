@@ -35,6 +35,7 @@ from systemd_unit import (
     plan_unit_change,
     restore_unit_change,
     verify_installed_unit,
+    verify_installed_unit_digest,
 )
 
 from watch_assistant.release_metadata import (
@@ -660,18 +661,12 @@ def rollback_release(
                 )
             except SystemdUnitError as exc:
                 raise ValueError(exc.code) from None
-        if unit_path is not None and previous_target is not None:
+        if unit_change is not None and unit_change.destination_before.exists:
             try:
-                previous_manifest = _validate_release_manifest(
-                    previous_target,
-                    str(previous_release),
-                    require_unit_sha256=True,
-                )
-                previous_unit_sha256 = previous_manifest.get("unit_sha256")
+                previous_unit_sha256 = unit_change.destination_before.sha256
                 if not isinstance(previous_unit_sha256, str):
-                    raise TypeError("rollback_previous_unit_manifest_invalid")
-                verify_installed_unit(
-                    previous_target,
+                    raise TypeError("rollback_unit_state_missing")
+                verify_installed_unit_digest(
                     destination=unit_path,
                     expected_sha256=previous_unit_sha256,
                     unit_uid=unit_uid,
@@ -780,6 +775,12 @@ def main() -> int:
             )
             print("SYSTEMD_RELEASE_ROLLBACK_RESULT=ok")
             print(f"SYSTEMD_RELEASE_ROLLBACK_RELEASE={state.get('previous_release')}")
+            previous_unit_sha256 = state.get("unit_previous_sha256")
+            if args.unit_path is not None and isinstance(previous_unit_sha256, str):
+                print(
+                    "SYSTEMD_RELEASE_ROLLBACK_UNIT_SHA256="
+                    f"{previous_unit_sha256}"
+                )
             return 0
         if args.version_file is None:
             raise ValueError("version_file_missing")

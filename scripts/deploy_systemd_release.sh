@@ -34,9 +34,14 @@ postdeploy_check() {
     local check_script="$1"
     local version_file="$2"
     local expected_release="${3:-}"
+    local unit_sha256="${4:-}"
     local expected_args=()
+    local unit_sha256_args=()
     if [[ -n "$expected_release" ]]; then
         expected_args=(--expected-release "$expected_release")
+    fi
+    if [[ -n "$unit_sha256" ]]; then
+        unit_sha256_args=(--unit-sha256 "$unit_sha256")
     fi
     "$PYTHON_BIN" "$check_script" \
         --version-file "$version_file" \
@@ -48,8 +53,32 @@ postdeploy_check() {
         --release-env "$RELEASE_ENV" \
         --current-root "$CURRENT_ROOT" \
         --unit-path "$UNIT_PATH" \
+        "${unit_sha256_args[@]}" \
         --drop-in-dir "$DROP_IN_DIR" \
         --diagnostics-url "$DIAGNOSTICS_URL"
+}
+
+ROLLBACK_UNIT_SHA256=""
+rollback_release_update() {
+    local update_script="$1"
+    local rollback_output=""
+    local rollback_code
+    if rollback_output="$("$PYTHON_BIN" "$update_script" \
+        --rollback \
+        --release-env "$RELEASE_ENV" \
+        --current-root "$CURRENT_ROOT" \
+        --state-file "$STATE_FILE" \
+        --allowed-releases-root "$RELEASES_ROOT" \
+        --unit-path "$UNIT_PATH" \
+        --drop-in-dir "$DROP_IN_DIR")"; then
+        rollback_code=0
+    else
+        rollback_code=$?
+    fi
+    printf '%s\n' "$rollback_output"
+    ROLLBACK_UNIT_SHA256="$(printf '%s\n' "$rollback_output" | sed -n \
+        's/^SYSTEMD_RELEASE_ROLLBACK_UNIT_SHA256=\([0-9a-f]\{64\}\)$/\1/p' | tail -n 1)"
+    return "$rollback_code"
 }
 
 if [[ "$COMMAND" == "rollback" ]]; then
@@ -63,18 +92,17 @@ if [[ "$COMMAND" == "rollback" ]]; then
     fi
     # Resolve the release containing this script before current is switched.
     TOOL_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd -P)"
-    "$PYTHON_BIN" "$TOOL_ROOT/scripts/systemd_release_${UPDATE_SCRIPT_SUFFIX}.py" \
-        --rollback \
-        --release-env "$RELEASE_ENV" \
-        --current-root "$CURRENT_ROOT" \
-        --state-file "$STATE_FILE" \
-        --allowed-releases-root "$RELEASES_ROOT" \
-        --unit-path "$UNIT_PATH" \
-        --drop-in-dir "$DROP_IN_DIR"
+    if ! rollback_release_update \
+        "$TOOL_ROOT/scripts/systemd_release_${UPDATE_SCRIPT_SUFFIX}.py"; then
+        echo "rollback refused: release state restoration failed" >&2
+        exit 1
+    fi
     "$SYSTEMCTL_BIN" daemon-reload
     "$SYSTEMCTL_BIN" restart watch-assistant.service
     postdeploy_check "$TOOL_ROOT/scripts/postdeploy_release_check.py" \
-        "$CURRENT_ROOT/VERSION"
+        "$CURRENT_ROOT/VERSION" \
+        "" \
+        "$ROLLBACK_UNIT_SHA256"
     exit 0
 fi
 
@@ -127,14 +155,8 @@ rollback_after_failure() {
     local reason="$1"
     set +e
     echo "deployment failed: ${reason}; attempting automatic rollback" >&2
-    "$PYTHON_BIN" "$RELEASE_ROOT/scripts/systemd_release_${UPDATE_SCRIPT_SUFFIX}.py" \
-        --rollback \
-        --release-env "$RELEASE_ENV" \
-        --current-root "$CURRENT_ROOT" \
-        --state-file "$STATE_FILE" \
-        --allowed-releases-root "$RELEASES_ROOT" \
-        --unit-path "$UNIT_PATH" \
-        --drop-in-dir "$DROP_IN_DIR"
+    rollback_release_update \
+        "$RELEASE_ROOT/scripts/systemd_release_${UPDATE_SCRIPT_SUFFIX}.py"
     local rollback_code=$?
     "$SYSTEMCTL_BIN" daemon-reload
     local reload_code=$?
@@ -151,7 +173,9 @@ rollback_after_failure() {
     fi
     if ! postdeploy_check \
         "$RELEASE_ROOT/scripts/postdeploy_release_check.py" \
-        "$CURRENT_ROOT/VERSION"; then
+        "$CURRENT_ROOT/VERSION" \
+        "" \
+        "$ROLLBACK_UNIT_SHA256"; then
         echo "automatic rollback health verification failed" >&2
         return 1
     fi
