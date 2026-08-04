@@ -106,6 +106,9 @@ from watch_assistant.services.library_scan_operations import (
     LibraryScanWorker,
 )
 from watch_assistant.services.maintenance import MaintenanceService
+from watch_assistant.services.managed_directory_ownership import (
+    ManagedDirectoryOwnershipService,
+)
 from watch_assistant.services.manual_import import ManualImportService
 from watch_assistant.services.mcp import McpService
 from watch_assistant.services.notifications import NotificationService
@@ -328,6 +331,7 @@ async def _current_managed_directory_ids(
     session_factory,
     directory_id: str,
     parent_id: str,
+    library_id: str | None = None,
 ) -> frozenset[str]:
     """Return one library's latest complete directory scope for a candidate."""
 
@@ -345,6 +349,11 @@ async def _current_managed_directory_ids(
                         LibraryScanRun.state == "completed",
                         LibraryScanRun.complete.is_(True),
                         LibraryScanRun.snapshot_revision.is_not(None),
+                        *(
+                            (MediaLibrary.id == library_id,)
+                            if library_id is not None
+                            else ()
+                        ),
                     )
                 )
             ).all()
@@ -583,10 +592,30 @@ def create_app(
                         if not cookie:
                             raise EmptyDirectoryCleanupError("credentials_unavailable")
                         client = await asyncio.to_thread(_default_client_factory, cookie)
+                        ownership_service = getattr(
+                            application.state,
+                            "managed_directory_ownership_service",
+                            None,
+                        )
+                        if ownership_service is None:
+                            raise EmptyDirectoryCleanupError(
+                                "cleanup_scope_unverified"
+                            )
+                        ownership = await ownership_service.get_active(
+                            directory_id,
+                            parent_directory_id=parent_id,
+                            name=name,
+                            relative_path=candidate.get("path"),
+                        )
+                        if ownership is None:
+                            raise EmptyDirectoryCleanupError(
+                                "cleanup_scope_unverified"
+                            )
                         managed_directory_ids = await _current_managed_directory_ids(
                             application.state.database.session_factory,
                             directory_id,
                             parent_id,
+                            ownership.library_id,
                         )
                         if not managed_directory_ids:
                             raise EmptyDirectoryCleanupError(
@@ -596,11 +625,7 @@ def create_app(
                             client=client,
                             call_executor=p115_c03_timeout_executor,
                             managed_directory_ids=managed_directory_ids,
-                            system_created_directory_ids=getattr(
-                                application.state,
-                                "system_created_directory_ids",
-                                frozenset(),
-                            ),
+                            system_created_directory_ids=(ownership.directory_id,),
                             scope_confirmed=True,
                         )
                         return await cleaner.cleanup(
@@ -667,10 +692,15 @@ def create_app(
                             client,
                             call_executor=p115_c03_timeout_executor,
                             organization_contract=organization_contract,
+                            ownership_service=application.state.managed_directory_ownership_service,
                             event_logger=application.state.settings_service,
                         )
                         await provisioner.ensure(
                             target_root_id=application.state.organization_target_root_id,
+                            library_id=await application.state.organization_plan_service.plan_library_id(
+                                summary.plan_id
+                            ),
+                            operation_id=operation_id,
                             existing_directories=catalog.by_path,
                             paths=missing_paths,
                             write_enabled=write_enabled,
@@ -875,6 +905,9 @@ def create_app(
             )
             application.state.organization_plan_service = OrganizationPlanService(
                 runtime_database.session_factory
+            )
+            application.state.managed_directory_ownership_service = (
+                ManagedDirectoryOwnershipService(runtime_database.session_factory)
             )
             application.state.library_scan_operation_service = (
                 LibraryScanOperationService(
@@ -1535,20 +1568,19 @@ def create_app(
     )
     application.state.strm_playback_gateway = strm_playback_gateway
     application.state.strm_playback_supported = strm_playback_gateway is not None
-    if system_created_directory_ids is None:
-        system_created_directory_ids = ()
-    if isinstance(system_created_directory_ids, (str, bytes)):
-        raise TypeError("invalid_system_created_directory_ids")
-    evidence = frozenset(system_created_directory_ids)
-    if any(
-        not isinstance(item, str)
-        or not item.isascii()
-        or not item.isdigit()
-        or item.startswith("0")
-        for item in evidence
-    ):
-        raise ValueError("invalid_system_created_directory_ids")
-    application.state.system_created_directory_ids = evidence
+    # Keep validating the legacy argument for callers, but never use process
+    # memory as proof that a remote directory is owned by this system.
+    if system_created_directory_ids is not None:
+        if isinstance(system_created_directory_ids, (str, bytes)):
+            raise TypeError("invalid_system_created_directory_ids")
+        if any(
+            not isinstance(item, str)
+            or not item.isascii()
+            or not item.isdigit()
+            or item.startswith("0")
+            for item in system_created_directory_ids
+        ):
+            raise ValueError("invalid_system_created_directory_ids")
     application.state.strm_output_root = strm_output_root or Path(
         os.environ.get("STRM_OUTPUT_ROOT", "./data/strm")
     )
@@ -1648,6 +1680,9 @@ def create_app(
         )
         application.state.organization_plan_service = OrganizationPlanService(
             database.session_factory, tmdb_client=tmdb_client
+        )
+        application.state.managed_directory_ownership_service = (
+            ManagedDirectoryOwnershipService(database.session_factory)
         )
         application.state.library_scan_operation_service = (
             LibraryScanOperationService(
@@ -1788,9 +1823,18 @@ def create_app(
                 ).cleanup_empty_directories
             except Exception:  # noqa: BLE001 - health remains conservative
                 empty_cleanup_setting = False
+        ownership_service = getattr(
+            application.state, "managed_directory_ownership_service", None
+        )
+        has_ownership = False
+        if ownership_service is not None:
+            try:
+                has_ownership = await ownership_service.has_active_records()
+            except Exception:  # noqa: BLE001 - health remains conservative
+                has_ownership = False
         empty_cleanup_enabled = bool(
             empty_cleanup_setting
-            and getattr(application.state, "system_created_directory_ids", frozenset())
+            and has_ownership
             and callable(
                 getattr(application.state, "empty_directory_cleanup_executor", None)
             )

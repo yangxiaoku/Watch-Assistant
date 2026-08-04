@@ -37,11 +37,20 @@ def _contract() -> P115OrganizationContract:
     )
 
 
+class _OwnershipService:
+    def __init__(self):
+        self.calls = []
+
+    async def register_created(self, **kwargs):
+        self.calls.append(kwargs)
+
+
 def _provisioner() -> OrganizationDirectoryProvisioner:
     return OrganizationDirectoryProvisioner(
         object(),
         call_executor=lambda *_args, **_kwargs: None,
         organization_contract=_contract(),
+        ownership_service=_OwnershipService(),
     )
 
 
@@ -59,6 +68,8 @@ async def test_directory_provisioner_defaults_write_gate_closed():
     with pytest.raises(OrganizationDirectoryProvisionError, match="write_disabled"):
         await provisioner.ensure(
             target_root_id="9000",
+            library_id="library-1",
+            operation_id="op-directory-test",
             existing_directories={"": "9000"},
             paths=("Movies",),
             plan_confirmed=True,
@@ -88,6 +99,8 @@ async def test_directory_provisioner_forwards_confirmed_write_gate():
 
     await provisioner.ensure(
         target_root_id="9000",
+        library_id="library-1",
+        operation_id="op-directory-test",
         existing_directories={"": "9000"},
         paths=("Movies",),
         write_enabled=True,
@@ -112,6 +125,8 @@ async def test_uncertain_mkdir_receipt_is_not_retryable():
     with pytest.raises(OrganizationDirectoryProvisionError) as error:
         await provisioner.ensure(
             target_root_id="9000",
+            library_id="library-1",
+            operation_id="op-directory-test",
             existing_directories={"": "9000"},
             paths=("Movies",),
             write_enabled=True,
@@ -140,6 +155,8 @@ async def test_successful_mkdir_requires_exact_read_after_write_postcondition():
     with pytest.raises(OrganizationDirectoryProvisionError) as error:
         await provisioner.ensure(
             target_root_id="9000",
+            library_id="library-1",
+            operation_id="op-directory-test",
             existing_directories={"": "9000"},
             paths=("Movies",),
             write_enabled=True,

@@ -373,6 +373,44 @@ class EmptyDirectoryCleanupPlan(Base):
     )
 
 
+class ManagedDirectoryOwnershipStatus(StrEnum):
+    ACTIVE = "active"
+    RECYCLED = "recycled"
+
+
+class ManagedDirectoryOwnership(Base):
+    """Durable proof that one remote directory was created by this system."""
+
+    __tablename__ = "managed_directory_ownership"
+
+    directory_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    library_id: Mapped[str] = mapped_column(
+        String(128), ForeignKey("media_libraries.id", ondelete="RESTRICT"), index=True
+    )
+    parent_directory_id: Mapped[str] = mapped_column(String(128))
+    name: Mapped[str] = mapped_column(Text)
+    relative_path: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(
+        String(16),
+        default=ManagedDirectoryOwnershipStatus.ACTIVE.value,
+        server_default=ManagedDirectoryOwnershipStatus.ACTIVE.value,
+        index=True,
+    )
+    created_by_operation_id: Mapped[str | None] = mapped_column(
+        String(40), nullable=True, index=True
+    )
+    revision: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utc_now
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utc_now, onupdate=_utc_now
+    )
+    recycled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
 class OrganizationPlan(Base):
     """Immutable local preview of a possible organization operation."""
 

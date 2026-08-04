@@ -473,6 +473,8 @@ _MESSAGES = {
     "organization_lease_required": "整理操作租约无效，未创建目标目录",
     "target_directory_parent_missing": "归档目录父级不存在，请重新生成计划",
     "target_directory_create_failed": "归档目录创建失败，请先核对远端状态",
+    "directory_ownership_unavailable": "归档目录归属记录不可用，请检查数据库迁移",
+    "directory_ownership_unrecorded": "归档目录归属记录缺失，请先核对远端状态",
     "plan_digest_required": "缺少计划摘要",
     "plan_digest_mismatch": "计划摘要已变化，请刷新后重试",
     "stale_revision": "计划版本已变化，请刷新后重试",

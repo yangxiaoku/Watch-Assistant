@@ -799,6 +799,20 @@ def _create_empty_directory_cleanup_plan_table(connection: Connection) -> None:
     )
 
 
+def _create_managed_directory_ownership_table(connection: Connection) -> None:
+    """Persist explicit ownership proof for directories created by organization."""
+
+    from watch_assistant.library_models import ManagedDirectoryOwnership
+
+    ManagedDirectoryOwnership.__table__.create(connection, checkfirst=True)
+    connection.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_managed_directory_ownership_active "
+            "ON managed_directory_ownership (library_id, status, directory_id)"
+        )
+    )
+
+
 def _add_organization_cancel_requested(connection: Connection) -> None:
     """Add a durable, local cancellation request for running operations."""
 
@@ -1135,6 +1149,10 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration("061_library_scan_mode_evidence", _invalidate_legacy_library_scan_modes),
     Migration("062_task_lease_fencing", _add_task_lease_token),
     Migration("063_library_scan_pickcode", _add_library_scan_pickcode),
+    Migration(
+        "064_managed_directory_ownership",
+        _create_managed_directory_ownership_table,
+    ),
 )
 
 
