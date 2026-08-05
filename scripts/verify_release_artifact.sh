@@ -131,6 +131,22 @@ if find "$TEMP_DIR/$PACKAGE_ROOT" -type l -print -quit | grep -q .; then
     echo "release artifact refused: archive contains symlinks" >&2
     exit 1
 fi
+EXECUTABLE_ENTRIES=(
+    "$PACKAGE_ROOT/scripts/deploy_systemd_release.sh"
+    "$PACKAGE_ROOT/scripts/systemd_release_prepare.py"
+    "$PACKAGE_ROOT/scripts/systemd_release_update.py"
+    "$PACKAGE_ROOT/scripts/postdeploy_release_check.py"
+    "$PACKAGE_ROOT/scripts/systemd_unit.py"
+    "$PACKAGE_ROOT/scripts/systemd_backup.py"
+    "$PACKAGE_ROOT/scripts/release_manifest.py"
+    "$PACKAGE_ROOT/scripts/release_startup_smoke.py"
+)
+for executable in "${EXECUTABLE_ENTRIES[@]}"; do
+    if [[ ! -f "$TEMP_DIR/$executable" || ! -x "$TEMP_DIR/$executable" ]]; then
+        echo "release artifact refused: required release script is not executable" >&2
+        exit 1
+    fi
+done
 for relative in \
     "deploy/watch-assistant.service" \
     "scripts/deploy_systemd_release.sh" \
