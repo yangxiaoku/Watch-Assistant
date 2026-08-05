@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import base64
 import secrets
 from urllib.parse import unquote
@@ -12,8 +14,89 @@ from watch_assistant.adapters.prowlarr import (
     ProwlarrClient,
     ProwlarrError,
     ProwlarrInvalidResponseError,
+    _PinnedAsyncHTTPTransport,
 )
+from watch_assistant.services.prowlarr_settings import _normalize_base_url_details
 from watch_assistant.services.source_health import SourceHealthTracker
+
+
+class _RecordingStream:
+    def __init__(self) -> None:
+        self.writes: list[bytes] = []
+        self.sni_hostname: str | None = None
+        self._response_sent = False
+
+    async def read(self, _max_bytes: int, timeout: float | None = None) -> bytes:
+        if self._response_sent:
+            return b""
+        self._response_sent = True
+        return (
+            b"HTTP/1.1 200 OK\r\n"
+            b"Content-Type: application/json\r\n"
+            b"Content-Length: 2\r\n"
+            b"Connection: close\r\n"
+            b"\r\n[]"
+        )
+
+    async def write(self, buffer: bytes, timeout: float | None = None) -> None:
+        self.writes.append(buffer)
+
+    async def aclose(self) -> None:
+        return None
+
+    async def start_tls(
+        self,
+        ssl_context,
+        server_hostname: str | None = None,
+        timeout: float | None = None,
+    ) -> _RecordingStream:
+        del ssl_context
+        self.sni_hostname = server_hostname
+        return self
+
+    def get_extra_info(self, _info: str):
+        return None
+
+
+class _RecordingBackend:
+    def __init__(self, stream: _RecordingStream) -> None:
+        self.stream = stream
+        self.connected_host: str | None = None
+
+    async def connect_tcp(self, host: str, port: int, **_kwargs):
+        self.connected_host = host
+        return self.stream
+
+    async def connect_unix_socket(self, path: str, **_kwargs):
+        raise AssertionError(f"unexpected unix socket: {path}")
+
+    async def sleep(self, _seconds: float):
+        return None
+
+
+@pytest.mark.integration
+async def test_pinned_transport_reuses_validated_address_and_preserves_hostname():
+    validated_url, validated_address = _normalize_base_url_details(
+        "https://prowlarr.test",
+        hostname_resolver=lambda _hostname: ("93.184.216.34",),
+    )
+    assert validated_url == "https://prowlarr.test"
+    assert validated_address == "93.184.216.34"
+
+    stream = _RecordingStream()
+    backend = _RecordingBackend(stream)
+    transport = _PinnedAsyncHTTPTransport(validated_address, backend=backend)
+    async with httpx.AsyncClient(
+        base_url=validated_url,
+        transport=transport,
+        follow_redirects=False,
+    ) as client:
+        response = await client.get("/api/v1/search")
+
+    assert response.status_code == 200
+    assert backend.connected_host == validated_address
+    assert stream.sni_hostname == "prowlarr.test"
+    assert b"host: prowlarr.test" in b"".join(stream.writes).lower()
 
 
 @pytest.mark.integration

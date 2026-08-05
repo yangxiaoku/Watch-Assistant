@@ -317,3 +317,32 @@ async def test_prowlarr_runtime_client_rechecks_persisted_hostname(tmp_path):
     assert await service.runtime_client() is None
     assert calls >= 2
     await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_prowlarr_runtime_client_pins_the_validated_address(tmp_path):
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'settings.db'}")
+    await initialize_database(database.engine)
+    service = ProwlarrSettingsService(
+        database.session_factory,
+        SecretCrypto(Fernet.generate_key().decode("ascii")),
+        hostname_resolver=_public_fixture_resolver,
+    )
+    initial = await service.snapshot()
+
+    await service.update(
+        enabled=True,
+        base_url="https://prowlarr.test",
+        api_key="fixture-only",
+        fields_set={"enabled", "base_url", "api_key"},
+        revision=initial["revision"],
+    )
+    client = await service.runtime_client()
+
+    assert client is not None
+    assert (
+        client._client._transport._pool._network_backend._address
+        == "93.184.216.34"
+    )
+    await client.aclose()
+    await database.engine.dispose()

@@ -287,15 +287,16 @@ class ProwlarrSettingsService:
 
     def _effective_values(self, settings: ApplicationSettings) -> dict[str, object]:
         managed_key = self._decrypt(settings.managed_prowlarr_api_key_encrypted)
-        managed_url = _safe_normalize_base_url(
+        managed_url, managed_address = _safe_normalize_base_url_details(
             settings.managed_prowlarr_base_url,
             hostname_resolver=self._hostname_resolver,
         )
-        environment_url = _safe_normalize_base_url(
+        environment_url, environment_address = _safe_normalize_base_url_details(
             self._environment_base_url,
             hostname_resolver=self._hostname_resolver,
         )
         base_url = managed_url or environment_url
+        resolved_address = managed_address if managed_url else environment_address
         api_key = managed_key or self._environment_api_key or None
         enabled = (
             settings.managed_prowlarr_enabled
@@ -327,9 +328,10 @@ class ProwlarrSettingsService:
                 else "none"
             ),
             "enabled": bool(enabled),
-            "configured": bool(enabled and base_url and api_key),
+            "configured": bool(enabled and base_url and api_key and resolved_address),
             "base_url": base_url,
             "api_key": api_key,
+            "resolved_address": resolved_address,
             "updated_at": _as_utc(settings.managed_prowlarr_updated_at),
             "revision": settings.revision,
         }
@@ -342,6 +344,7 @@ class ProwlarrSettingsService:
             str(values["api_key"]),
             timeout=self._timeout_seconds,
             health_tracker=self._health,
+            resolved_address=str(values["resolved_address"]),
         )
 
     def _verify_result(
@@ -436,13 +439,24 @@ def _normalize_base_url(
     *,
     hostname_resolver: Callable[[str], Iterable[str]] | None = None,
 ) -> str | None:
+    normalized, _address = _normalize_base_url_details(
+        value, hostname_resolver=hostname_resolver
+    )
+    return normalized
+
+
+def _normalize_base_url_details(
+    value: object,
+    *,
+    hostname_resolver: Callable[[str], Iterable[str]] | None = None,
+) -> tuple[str | None, str | None]:
     if value is None:
-        return None
+        return None, None
     if not isinstance(value, str):
         raise ProwlarrSettingsRejected
     value = value.strip()
     if not value:
-        return None
+        return None, None
     try:
         parsed = urlsplit(value)
         hostname = parsed.hostname
@@ -462,9 +476,12 @@ def _normalize_base_url(
     resolver = (
         hostname_resolver if hostname_resolver is not None else _resolve_hostname
     )
-    _validate_public_hostname(hostname, resolver)
+    resolved_address = _validate_public_hostname(hostname, resolver)
     path = parsed.path.rstrip("/")
-    return urlunsplit((parsed.scheme.casefold(), parsed.netloc, path, "", ""))
+    return (
+        urlunsplit((parsed.scheme.casefold(), parsed.netloc, path, "", "")),
+        resolved_address,
+    )
 
 
 def _safe_normalize_base_url(
@@ -473,9 +490,24 @@ def _safe_normalize_base_url(
     hostname_resolver: Callable[[str], Iterable[str]] | None = None,
 ) -> str | None:
     try:
-        return _normalize_base_url(value, hostname_resolver=hostname_resolver)
+        return _normalize_base_url_details(
+            value, hostname_resolver=hostname_resolver
+        )[0]
     except ProwlarrSettingsRejected:
         return None
+
+
+def _safe_normalize_base_url_details(
+    value: object,
+    *,
+    hostname_resolver: Callable[[str], Iterable[str]] | None = None,
+) -> tuple[str | None, str | None]:
+    try:
+        return _normalize_base_url_details(
+            value, hostname_resolver=hostname_resolver
+        )
+    except ProwlarrSettingsRejected:
+        return None, None
 
 
 def _resolve_hostname(hostname: str) -> tuple[str, ...]:
@@ -492,7 +524,7 @@ def _resolve_hostname(hostname: str) -> tuple[str, ...]:
 def _validate_public_hostname(
     hostname: str,
     hostname_resolver: Callable[[str], Iterable[str]],
-) -> None:
+) -> str:
     try:
         address = ipaddress.ip_address(hostname)
     except ValueError:
@@ -502,13 +534,15 @@ def _validate_public_hostname(
             raise ProwlarrSettingsRejected from None
         if not resolved_addresses:
             raise ProwlarrSettingsRejected
-        for resolved_address in resolved_addresses:
+        validated_addresses = tuple(
             _validate_public_address(resolved_address)
-        return
-    _validate_public_address(address)
+            for resolved_address in resolved_addresses
+        )
+        return validated_addresses[0]
+    return _validate_public_address(address)
 
 
-def _validate_public_address(value: object) -> None:
+def _validate_public_address(value: object) -> str:
     try:
         address = (
             value
@@ -526,6 +560,7 @@ def _validate_public_address(value: object) -> None:
         or address.is_reserved
     ):
         raise ProwlarrSettingsRejected
+    return str(address)
 
 
 def _as_utc(value: datetime | None) -> datetime | None:
