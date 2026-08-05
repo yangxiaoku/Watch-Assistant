@@ -5,9 +5,10 @@ import PaginationBar from "../components/PaginationBar.vue";
 import { mediaKey } from "../media";
 import type { MovieMetadata } from "../types";
 
-defineProps<{
+withDefaults(defineProps<{
   movies: MovieMetadata[];
   loading: boolean;
+  error?: string;
   favoriteIds: Set<string>;
   genreId?: number;
   year?: number;
@@ -16,12 +17,13 @@ defineProps<{
   page: number;
   totalPages: number;
   totalResults: number;
-}>();
+}>(), { error: "" });
 defineEmits<{
   open: [movie: MovieMetadata];
   favorite: [movie: MovieMetadata];
   filters: [filters: { genreId?: number; year?: number; sort: "popular" | "rating" | "release" }];
   page: [page: number];
+  retry: [];
 }>();
 
 const movieGenres = [
@@ -49,7 +51,8 @@ const years = [undefined, ...Array.from({ length: 8 }, (_, index) => currentYear
       <div class="filter-row"><strong>排序</strong><div class="filter-options"><button type="button" :class="{ active: sort === 'popular' }" @click="$emit('filters', { genreId, year, sort: 'popular' })">热度优先</button><button type="button" :class="{ active: sort === 'rating' }" @click="$emit('filters', { genreId, year, sort: 'rating' })">评分优先</button><button type="button" :class="{ active: sort === 'release' }" @click="$emit('filters', { genreId, year, sort: 'release' })">最新上映</button></div></div>
     </div>
     <div v-if="loading && !movies.length" class="movie-grid catalog-grid" :aria-label="`正在加载${mediaType === 'tv' ? '电视剧' : '电影'}`"><div v-for="index in 12" :key="index" class="movie-skeleton"><span /></div></div>
-    <div v-else-if="movies.length" class="catalog-results" :aria-busy="loading ? 'true' : 'false'"><div class="movie-grid catalog-grid"><MovieCard v-for="movie in movies" :key="mediaKey(movie)" :movie="movie" :favorite="favoriteIds.has(mediaKey(movie))" @open="$emit('open', $event)" @favorite="$emit('favorite', $event)" /></div><p v-if="loading" class="catalog-loading" role="status">正在加载第 {{ page }} 页</p></div>
+    <div v-else-if="movies.length" class="catalog-results" :aria-busy="loading ? 'true' : 'false'"><div class="movie-grid catalog-grid"><MovieCard v-for="movie in movies" :key="mediaKey(movie)" :movie="movie" :favorite="favoriteIds.has(mediaKey(movie))" @open="$emit('open', $event)" @favorite="$emit('favorite', $event)" /></div><p v-if="loading" class="catalog-loading" role="status">正在加载第 {{ page }} 页</p><p v-if="error" class="catalog-inline-error" role="alert"><SlidersHorizontal :size="18" /><span>{{ error }}</span><button class="text-button" type="button" @click="$emit('retry')">重新加载目录</button></p></div>
+    <div v-else-if="error" class="empty-state catalog-error" role="alert"><SlidersHorizontal :size="24" /><strong>目录暂时无法加载</strong><span>{{ error }}</span><button class="text-button" type="button" @click="$emit('retry')">重新加载目录</button></div>
     <div v-else class="empty-state">当前筛选没有找到{{ mediaType === 'tv' ? '电视剧' : '电影' }}</div>
     <PaginationBar :page="page" :total-pages="totalPages" :total-results="totalResults" :loading="loading" @page="$emit('page', $event)" />
   </section>
