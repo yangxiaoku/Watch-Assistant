@@ -524,6 +524,48 @@ async def test_incomplete_scan_rejects_create_without_operation(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("state", "complete", "snapshot_revision"),
+    (("completed", True, 1), ("queued", False, None)),
+)
+async def test_claim_rejects_ambiguous_or_unsettled_source_scan(
+    tmp_path, state: str, complete: bool, snapshot_revision: int | None
+):
+    database = await _database(tmp_path)
+    operation = await _operation(database, key=f"scan-gate-{state}")
+    async with database.session_factory() as session:
+        now = datetime.now(UTC)
+        created_at = now - timedelta(days=1) if state == "queued" else now
+        updated_at = now + timedelta(seconds=1)
+        session.add(
+            LibraryScanRun(
+                id=f"scan-{state}",
+                library_id=LIBRARY_ID,
+                root_directory_id=ROOT_ID,
+                idempotency_key=f"scan-{state}-key",
+                scan_mode="tree",
+                state=state,
+                complete=complete,
+                snapshot_revision=snapshot_revision,
+                created_at=created_at,
+                updated_at=updated_at,
+            )
+        )
+        await session.commit()
+
+    service = OrganizationOperationService(database.session_factory)
+    with pytest.raises(
+        OrganizationOperationPrerequisiteError, match="plan_prerequisites_changed"
+    ):
+        await service.claim(operation.operation_id, expected_revision=1)
+    async with database.session_factory() as session:
+        plan = await session.get(OrganizationPlan, operation.plan_id)
+        assert plan is not None
+        assert plan.status == OrganizationPlanStatus.INVALIDATED.value
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_snapshot_or_scope_change_invalidates_plan_and_blocks_claim(tmp_path):
     database = await _database(tmp_path)
     service = OrganizationOperationService(database.session_factory)

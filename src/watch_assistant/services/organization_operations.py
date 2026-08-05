@@ -30,6 +30,7 @@ from watch_assistant.services.organization_outbox import (
     OrganizationOutboxError,
 )
 from watch_assistant.services.organization_plan import OrganizationPlanStatus
+from watch_assistant.services.strm_scope import source_snapshot_is_current
 from watch_assistant.services.workflows import sync_child_stage
 
 VALID_OPERATION_ERROR_CODES = frozenset(
@@ -1168,22 +1169,17 @@ class OrganizationOperationService:
             raise OrganizationOperationPrerequisiteError("plan_is_not_planned")
         library = await session.get(MediaLibrary, plan.library_id)
         run = await session.get(LibraryScanRun, plan.source_scan_run_id)
-        latest = None
-        if library is not None:
-            latest = await session.scalar(
-                select(LibraryScanRun)
-                .where(
-                    LibraryScanRun.library_id == plan.library_id,
-                    LibraryScanRun.root_directory_id == library.root_directory_id,
-                    LibraryScanRun.state == ScanRunState.COMPLETED.value,
-                    LibraryScanRun.complete.is_(True),
-                    LibraryScanRun.snapshot_revision.is_not(None),
-                )
-                .order_by(
-                    LibraryScanRun.snapshot_revision.desc(),
-                    LibraryScanRun.id.desc(),
-                )
-                .limit(1)
+        source_snapshot_current = False
+        if (
+            library is not None
+            and run is not None
+            and plan.source_snapshot_revision is not None
+        ):
+            source_snapshot_current = await source_snapshot_is_current(
+                session,
+                library_id=plan.library_id,
+                source_scan_run_id=run.id,
+                source_snapshot_revision=plan.source_snapshot_revision,
             )
         current = (
             library is not None
@@ -1195,10 +1191,8 @@ class OrganizationOperationService:
             and run.root_directory_id == library.root_directory_id
             and run.state == ScanRunState.COMPLETED.value
             and run.complete
-            and latest is not None
-            and latest.id == run.id
             and run.snapshot_revision == plan.source_snapshot_revision
-            and latest.snapshot_revision == plan.source_snapshot_revision
+            and source_snapshot_current
             and _as_utc(plan.expires_at) > datetime.now(UTC)
         )
         if current:

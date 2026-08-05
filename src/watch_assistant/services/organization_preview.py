@@ -52,6 +52,7 @@ from watch_assistant.services.organization_policy import (
     evidence_from_parse,
 )
 from watch_assistant.services.organization_target import OrganizationTargetFile
+from watch_assistant.services.strm_scope import source_snapshot_is_current
 
 
 class OrganizationPreviewError(ValueError):
@@ -406,18 +407,12 @@ class OrganizationPreviewService:
                 or run.snapshot_revision is None
             ):
                 raise OrganizationPreviewError("scan_not_current")
-            latest = await session.scalar(
-                select(LibraryScanRun)
-                .where(
-                    LibraryScanRun.library_id == library_id,
-                    LibraryScanRun.root_directory_id == library.root_directory_id,
-                    LibraryScanRun.complete.is_(True),
-                    LibraryScanRun.state == ScanRunState.COMPLETED.value,
-                )
-                .order_by(LibraryScanRun.snapshot_revision.desc())
-                .limit(1)
-            )
-            if latest is None or latest.id != run.id:
+            if not await source_snapshot_is_current(
+                session,
+                library_id=library_id,
+                source_scan_run_id=run.id,
+                source_snapshot_revision=run.snapshot_revision,
+            ):
                 raise OrganizationPreviewError("scan_not_current")
             entries = list(
                 (

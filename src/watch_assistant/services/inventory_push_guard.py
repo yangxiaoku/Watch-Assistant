@@ -29,6 +29,7 @@ from watch_assistant.services.library_inventory import (
     build_snapshot,
     check_inventory,
 )
+from watch_assistant.services.strm_scope import source_snapshot_is_current
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,6 +119,13 @@ class InventoryPushGuard:
                     or run.state != "completed"
                     or run.snapshot_revision is None
                     or not await _run_covers_scope(session, run, library)
+                ):
+                    return InventoryPushCheck(False, "inventory_index_incomplete")
+                if not await source_snapshot_is_current(
+                    session,
+                    library_id=library.id,
+                    source_scan_run_id=run.id,
+                    source_snapshot_revision=run.snapshot_revision,
                 ):
                     return InventoryPushCheck(False, "inventory_index_incomplete")
                 snapshot = await _snapshot(session, run, library.id, self._freshness_threshold_seconds)

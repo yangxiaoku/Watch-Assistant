@@ -50,6 +50,7 @@ from watch_assistant.services.organization_policy import (
     VersionDecision,
     VersionEvidence,
 )
+from watch_assistant.services.strm_scope import source_snapshot_is_current
 
 
 class OrganizationPlanStatus(StrEnum):
@@ -1050,18 +1051,12 @@ class OrganizationPlanService:
             or run.snapshot_revision is None
         ):
             raise OrganizationPlanError("scan_not_current")
-        latest = await session.scalar(
-            select(LibraryScanRun)
-            .where(
-                LibraryScanRun.library_id == library_id,
-                LibraryScanRun.root_directory_id == library.root_directory_id,
-                LibraryScanRun.state == ScanRunState.COMPLETED.value,
-                LibraryScanRun.complete.is_(True),
-            )
-            .order_by(LibraryScanRun.snapshot_revision.desc())
-            .limit(1)
-        )
-        if latest is None or latest.id != run.id:
+        if not await source_snapshot_is_current(
+            session,
+            library_id=library_id,
+            source_scan_run_id=run.id,
+            source_snapshot_revision=run.snapshot_revision,
+        ):
             raise OrganizationPlanError("scan_not_current")
         checkpoint = await session.get(LibraryScanCheckpoint, run.id)
         entries = list(
@@ -1990,7 +1985,7 @@ def _library_snapshot(library: MediaLibrary) -> dict[str, object]:
 async def _latest_completed_scan(
     session: AsyncSession, *, library_id: str, root_directory_id: str
 ) -> LibraryScanRun | None:
-    return await session.scalar(
+    latest = await session.scalar(
         select(LibraryScanRun)
         .where(
             LibraryScanRun.library_id == library_id,
@@ -2002,6 +1997,16 @@ async def _latest_completed_scan(
         .order_by(LibraryScanRun.snapshot_revision.desc(), LibraryScanRun.id.desc())
         .limit(1)
     )
+    if latest is None or latest.snapshot_revision is None:
+        return None
+    if not await source_snapshot_is_current(
+        session,
+        library_id=library_id,
+        source_scan_run_id=latest.id,
+        source_snapshot_revision=latest.snapshot_revision,
+    ):
+        return None
+    return latest
 
 
 def _plan_scan_binding_is_current(
