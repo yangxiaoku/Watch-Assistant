@@ -317,6 +317,7 @@ def _success_report(
 ) -> dict[str, object]:
     return {
         "status": "success",
+        "write_started": False,
         "error_code": None,
         "error_message": None,
         "complete": True,

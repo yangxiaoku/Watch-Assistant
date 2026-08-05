@@ -21,7 +21,7 @@ API、worker 或发布流程。入口默认关闭，只有设置
 
 成功报告必须包含 `complete`、`root_identity_verified`、递归 `scope`、两次扫描的
 分页和条目统计、全量/增量统计、`output_root_is_temporary`、
-`database_is_temporary`，以及 `write_calls=0` 和 `remote_write_calls=0`。
+`database_is_temporary`，以及 `write_started=false`、`write_calls=0` 和 `remote_write_calls=0`。
 报告只允许输出稳定 ID 和计数，不输出 Cookie、Token、pickcode、文件名或完整远端
 路径。失败统一为 `status=blocked`，附稳定机器码和中文错误说明，并保持
 `fail_closed=true`。

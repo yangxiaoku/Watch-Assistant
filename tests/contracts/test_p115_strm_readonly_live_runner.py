@@ -1,6 +1,7 @@
 import json
 
 import scripts.p115_strm_readonly_live_runner as runner
+from scripts.acceptance_closure import _stage_success
 from scripts.p115_strm_readonly_live_runner import (
     EXPECTED_P115CLIENT_VERSION,
     LIVE_ENV,
@@ -132,6 +133,7 @@ def test_success_path_outputs_complete_scans_and_zero_remote_writes(monkeypatch)
     assert report["incremental_output"]["retire_removed"] is False
     assert report["remote"]["allowed_methods"] == ["fs_files", "fs_info"]
     assert report["remote_write_calls"] == 0
+    assert report["write_started"] is False
     assert report["write_calls"] == 0
     assert report["output_root_is_temporary"] is True
     assert report["database_is_temporary"] is True
@@ -139,6 +141,7 @@ def test_success_path_outputs_complete_scans_and_zero_remote_writes(monkeypatch)
     assert report["remote_restore"] is False
     assert report["remote_cleanup"] is False
     assert report["remote_playback"] is False
+    assert _stage_success("strm_readonly", report)
     assert [call[0] for call in transport.calls] == [
         "fs_files",
         "fs_files",

@@ -33,6 +33,7 @@ C03_GATES = (
     "WATCH_ASSISTANT_P115_C03_CLEANUP_PLAN",
     "WATCH_ASSISTANT_P115_C03_LIVE",
 )
+STRM_READONLY_STAGE = "strm_readonly"
 
 
 class ClosureInputError(ValueError):
@@ -245,6 +246,69 @@ def _read_public_json(stdout: str) -> dict[str, Any] | None:
     return value if isinstance(value, dict) else None
 
 
+def _is_integer(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _is_nonnegative_integer(value: object) -> bool:
+    return _is_integer(value) and value >= 0
+
+
+def _is_positive_integer(value: object) -> bool:
+    return _is_integer(value) and value > 0
+
+
+def _readonly_scan_evidence(value: object) -> bool:
+    if not isinstance(value, Mapping):
+        return False
+    return (
+        value.get("state") == "completed"
+        and value.get("complete") is True
+        and _is_positive_integer(value.get("pages_read"))
+        and _is_nonnegative_integer(value.get("items_seen"))
+        and _is_positive_integer(value.get("snapshot_revision"))
+    )
+
+
+def _readonly_generation_evidence(value: object) -> bool:
+    if not isinstance(value, Mapping):
+        return False
+    return (
+        _is_nonnegative_integer(value.get("generated"))
+        and _is_nonnegative_integer(value.get("unchanged"))
+        and _is_nonnegative_integer(value.get("skipped"))
+        and _is_integer(value.get("failed"))
+        and value.get("failed") == 0
+        and _is_nonnegative_integer(value.get("retired"))
+        and value.get("retire_removed") is False
+    )
+
+
+def _readonly_strm_success(result: Mapping[str, Any]) -> bool:
+    scope = result.get("scope")
+    if not isinstance(scope, Mapping):
+        return False
+    return (
+        result.get("status") == "success"
+        and result.get("complete") is True
+        and result.get("root_identity_verified") is True
+        and _stable_id(scope.get("root_id"))
+        and scope.get("mode") == "single_configured_root_recursive"
+        and scope.get("recursive") is True
+        and _is_integer(scope.get("page_size"))
+        and scope.get("page_size") == 1
+        and _is_integer(result.get("remote_write_calls"))
+        and result.get("remote_write_calls") == 0
+        and result.get("write_started") is False
+        and result.get("output_root_is_temporary") is True
+        and result.get("database_is_temporary") is True
+        and _readonly_scan_evidence(result.get("initial_scan"))
+        and _readonly_scan_evidence(result.get("incremental_scan"))
+        and _readonly_generation_evidence(result.get("full_output"))
+        and _readonly_generation_evidence(result.get("incremental_output"))
+    )
+
+
 def _stage_success(stage: str, result: Mapping[str, Any]) -> bool:
     if stage == "inventory":
         return result.get("complete") is True and result.get("root_identity_verified") is True
@@ -267,6 +331,8 @@ def _stage_success(stage: str, result: Mapping[str, Any]) -> bool:
             and result.get("output_root_is_temporary") is True
             and result.get("permanent_delete_used") is False
         )
+    if stage == STRM_READONLY_STAGE:
+        return _readonly_strm_success(result)
     if stage == "strm_and_plan_contracts":
         return result.get("return_code") == 0
     return False

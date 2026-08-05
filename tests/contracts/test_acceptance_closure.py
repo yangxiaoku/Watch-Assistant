@@ -37,6 +37,94 @@ def test_inventory_and_plan_success_require_complete_read_only_evidence():
     )
 
 
+def _readonly_strm_report() -> dict[str, object]:
+    scan = {
+        "state": "completed",
+        "complete": True,
+        "pages_read": 2,
+        "items_seen": 1,
+        "snapshot_revision": 1,
+    }
+    generation = {
+        "generated": 1,
+        "unchanged": 0,
+        "skipped": 0,
+        "failed": 0,
+        "retired": 0,
+        "retire_removed": False,
+    }
+    return {
+        "status": "success",
+        "complete": True,
+        "root_identity_verified": True,
+        "scope": {
+            "mode": "single_configured_root_recursive",
+            "root_id": "7000",
+            "recursive": True,
+            "page_size": 1,
+        },
+        "initial_scan": dict(scan),
+        "incremental_scan": dict(scan),
+        "full_output": dict(generation),
+        "incremental_output": dict(generation),
+        "remote_write_calls": 0,
+        "write_started": False,
+        "output_root_is_temporary": True,
+        "database_is_temporary": True,
+    }
+
+
+def test_readonly_strm_success_requires_the_complete_evidence_contract():
+    assert _stage_success("strm_readonly", _readonly_strm_report())
+    assert _stage_success(
+        "strm",
+        {
+            "status": "success",
+            "output_root_is_temporary": True,
+            "permanent_delete_used": False,
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("remote_write_calls", 1),
+        ("remote_write_calls", False),
+        ("write_started", None),
+        ("write_started", True),
+        ("output_root_is_temporary", False),
+        ("database_is_temporary", False),
+        ("complete", False),
+        ("root_identity_verified", False),
+    ),
+)
+def test_readonly_strm_rejects_missing_or_unsafe_top_level_evidence(field, value):
+    report = _readonly_strm_report()
+    report[field] = value
+
+    assert not _stage_success("strm_readonly", report)
+
+
+def test_readonly_strm_rejects_incomplete_recursive_pagination_or_object_scope():
+    report = _readonly_strm_report()
+    report["scope"] = {
+        "mode": "single_configured_root_recursive",
+        "root_id": "0",
+        "recursive": False,
+        "page_size": 1,
+    }
+    report["initial_scan"] = {
+        "state": "failed",
+        "complete": False,
+        "pages_read": 0,
+        "items_seen": 0,
+        "snapshot_revision": None,
+    }
+
+    assert not _stage_success("strm_readonly", report)
+
+
 def test_write_stage_timeout_is_uncertain_and_never_normal_retry():
     assert (
         _stage_status(
