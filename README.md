@@ -12,7 +12,7 @@
 - 电视剧详情包含季度元数据，指定季度追加四个季度查询并使用独立 v4 缓存；预热只处理全部季度。
 - 24 小时新鲜缓存、7 天故障回退，以及香港时间每天零点对七个首页榜单进行预热和失败重试。
 - 持续复查暂时无资源的电影或电视剧，并根据语义误匹配与 115 失效记录降低不可靠来源排序。
-- Web 密码会话、用户脚本独立 Bearer Token、CSRF 与限流。
+- 管理员 Web 账号会话、用户脚本独立 Bearer Token、CSRF 与限流。
 - SQLite WAL、Fernet 敏感字段加密和保留期清理。
 - 持久任务状态机与崩溃后的 `uncertain` 防重复提交。
 
@@ -72,7 +72,7 @@ Cookie 文件或应用内托管设备。分享推送、影视库整理、删除�
 该网络访问 PanSou；qBittorrent 和 115 按各自适配器配置，不随应用容器重启。
 
 1. 从示例创建 `.env`，并建立 `secrets` 目录。
-2. 生成四个只读 Secret 文件：
+2. 常规密码哈希模式生成四个只读 Secret 文件：
 
 ```powershell
 New-Item -ItemType Directory -Force secrets
@@ -82,6 +82,11 @@ python -c "from pwdlib import PasswordHash; print(PasswordHash.recommended().has
 python -c "from pwdlib import PasswordHash; print(PasswordHash.recommended().hash(input('Userscript token: ')))" | Set-Content -NoNewline secrets/script_token_hash
 ```
 
+如果使用隔离环境的 bootstrap 模式，不要设置 `WEB_PASSWORD_HASH_FILE`；改为将引导密码保存到
+受保护文件，并设置 `WEB_AUTH_BOOTSTRAP_ENABLED=true` 与
+`WEB_AUTH_BOOTSTRAP_PASSWORD_FILE`。Compose 会为未启用的密码模式使用空 Secret，应用仍会在
+没有正式哈希或有效 bootstrap 配置时拒绝启动。
+
 3. 检查并启动：
 
 ```powershell
@@ -89,6 +94,12 @@ WATCH_ASSISTANT_RELEASE="$(git rev-parse HEAD)" docker compose config
 WATCH_ASSISTANT_RELEASE="$(git rev-parse HEAD)" docker compose up -d --build
 curl http://127.0.0.1:8000/api/v1/health
 ```
+
+Web 登录账号默认为 `admin`。生产环境应继续使用 `WEB_PASSWORD_HASH`，不要使用公开的默认密码。
+如果只是隔离环境首次启动，可临时设置 `WEB_AUTH_BOOTSTRAP_ENABLED=true`，并通过受保护的
+`WEB_AUTH_BOOTSTRAP_PASSWORD`（systemd）或 `WEB_AUTH_BOOTSTRAP_PASSWORD_FILE`（Compose）
+提供引导密码。引导模式不与正式密码哈希同时启用，也不会自动消费；完成初始化后应关闭开关、
+配置 Argon2 密码哈希并重启服务。bootstrap 不应暴露到公网或共享网络，初始化密码不得写入仓库。
 
 访问 `http://服务器地址:8115/`。构建后的用户脚本位于容器内 Web 根目录，可从 `http://服务器地址:8115/watch-assistant.user.js` 获取。
 

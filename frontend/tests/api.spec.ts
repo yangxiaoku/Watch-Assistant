@@ -5,6 +5,22 @@ import { ApiClient, ApiError, focusFirstFieldError } from "../src/api";
 afterEach(() => vi.unstubAllGlobals());
 
 describe("ApiClient season and inspection requests", () => {
+  it("sends the configured account name with the web password", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ csrf_token: "csrf-admin" }),
+      { status: 200 },
+    ));
+    vi.stubGlobal("fetch", fetchMock);
+    const api = new ApiClient();
+
+    await api.login("admin", "configured-password");
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body as string)).toEqual({
+      username: "admin",
+      password: "configured-password",
+    });
+  });
+
   it("focuses the first structured field error by id or name", () => {
     document.body.innerHTML = '<input id="blocked_keywords" />';
     const error = new ApiError("输入内容有误", 422, "validation_error", {
