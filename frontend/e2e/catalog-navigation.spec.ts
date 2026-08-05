@@ -366,6 +366,7 @@ test("replaces the season detail URL and returns to the cached catalog page", as
   const catalogRequests = mocks.discoverRequests.length;
   await page.getByRole("button", { name: /查看 剧集第 2 页/ }).first().click();
   await expect(page.getByRole("heading", { name: "剧集第 2 页 1" })).toBeVisible();
+  expect(await page.evaluate(() => window.history.state?.catalogScrollY)).toBe(savedScroll);
   const detailHistoryLength = await page.evaluate(() => window.history.length);
 
   await page.locator("#season-select").selectOption("2");

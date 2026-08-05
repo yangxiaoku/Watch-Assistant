@@ -450,6 +450,7 @@ test("returns from an internal resource route to the original catalog entry", as
   const savedScroll = await page.evaluate(() => window.scrollY);
   await page.getByRole("button", { name: /查看 目录第 2 页/ }).first().click();
   await expect(page.getByRole("heading", { name: "目录电影" })).toBeVisible();
+  expect(await page.evaluate(() => window.history.state?.catalogScrollY)).toBe(savedScroll);
   await page.getByRole("button", { name: "下一页" }).click();
   await expect(page).toHaveURL(/resource_page=2/);
   await expect(page.locator(".resource-title").first()).toContainText("page 2");

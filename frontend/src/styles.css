@@ -1066,6 +1066,8 @@ html, body { overflow-x: hidden; }
     overflow-wrap: anywhere;
   }
   .primary-nav button svg { width: 14px; height: 14px; }
+  /* Keep a partially visible catalog card from changing the saved browse position on tap. */
+  .catalog-grid .movie-card { scroll-margin-bottom: -38px; }
   .settings-section-heading { display: grid; gap: 14px; }
   .settings-section-heading > div:first-child { min-width: 0; }
   .settings-section-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
