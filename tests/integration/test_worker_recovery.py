@@ -452,7 +452,11 @@ async def test_renewal_failure_stops_follow_up_submission_and_marks_uncertain(
 
 
 @pytest.mark.integration
-async def test_external_call_rechecks_owner_before_adapter_invocation(tmp_path):
+@pytest.mark.parametrize("iteration", range(20))
+async def test_external_call_rechecks_owner_before_adapter_invocation(
+    tmp_path, iteration
+):
+    del iteration
     database = await _database(tmp_path)
     crypto = SecretCrypto(Fernet.generate_key().decode("ascii"))
     await _add_resource(database, crypto)
