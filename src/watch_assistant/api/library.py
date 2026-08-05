@@ -242,8 +242,46 @@ async def _latest_scans(session, library_ids: set[str] | None = None) -> dict[st
     )
     latest: dict[str, LibraryScanRun] = {}
     for run in (await session.scalars(query)).all():
-        latest.setdefault(run.library_id, run)
+        if run.library_id in latest:
+            continue
+        if await _scan_is_current_and_verified(session, run):
+            latest[run.library_id] = run
     return latest
+
+
+async def _scan_is_current_and_verified(
+    session, run: LibraryScanRun
+) -> bool:
+    if run.snapshot_revision is None:
+        return False
+    if not await source_snapshot_is_current(
+        session,
+        library_id=run.library_id,
+        source_scan_run_id=run.id,
+        source_snapshot_revision=run.snapshot_revision,
+    ):
+        return False
+    checkpoint = await session.get(LibraryScanCheckpoint, run.id)
+    entries = list(
+        (
+            await session.scalars(
+                select(LibraryScanEntry).where(
+                    LibraryScanEntry.scan_run_id == run.id
+                )
+            )
+        ).all()
+    )
+    try:
+        validate_complete_scan_evidence(
+            run,
+            checkpoint,
+            entries,
+            root_directory_id=run.root_directory_id,
+            require_tree=True,
+        )
+    except LibraryIndexError:
+        return False
+    return True
 
 
 @router.get("/libraries", response_model=MediaLibraryListResponse)
