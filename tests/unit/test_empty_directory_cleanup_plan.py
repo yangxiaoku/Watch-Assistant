@@ -474,6 +474,47 @@ async def test_empty_directory_plan_rejects_newer_unsettled_scan(tmp_path):
         await database.engine.dispose()
 
 
+@pytest.mark.asyncio
+async def test_empty_directory_plan_rejects_ambiguous_current_snapshot_revision(
+    tmp_path,
+):
+    database = await _database(tmp_path)
+    try:
+        await _seed(database)
+        async with database.session_factory() as session:
+            now = datetime.now(UTC)
+            session.add(
+                LibraryScanRun(
+                    id="run-duplicate-revision",
+                    library_id="library-1",
+                    root_directory_id="100",
+                    idempotency_key="run-duplicate-revision",
+                    state="completed",
+                    complete=True,
+                    snapshot_revision=1,
+                    pages_read=1,
+                    items_seen=0,
+                    expected_total=0,
+                    created_at=now + timedelta(seconds=1),
+                    updated_at=now + timedelta(seconds=1),
+                )
+            )
+            await session.commit()
+
+        with pytest.raises(
+            EmptyDirectoryCleanupPlanError, match="source_snapshot_not_current"
+        ):
+            await EmptyDirectoryCleanupPlanService(
+                database.session_factory
+            ).create_plan(
+                library_id="library-1",
+                source_scan_run_id="run-1",
+                protected_directory_ids=("200",),
+            )
+    finally:
+        await database.engine.dispose()
+
+
 async def test_empty_directory_plan_rejects_malformed_complete_scan(tmp_path):
     database = await _database(tmp_path)
     try:

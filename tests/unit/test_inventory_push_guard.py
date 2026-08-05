@@ -170,6 +170,92 @@ async def test_root_only_scan_cannot_prove_inventory_is_complete(tmp_path):
     await database.engine.dispose()
 
 
+async def test_ambiguous_complete_snapshot_revision_blocks_inventory_push(tmp_path):
+    database = await _database(tmp_path)
+    crypto = SecretCrypto(Fernet.generate_key().decode("ascii"))
+    await _resource(database, crypto)
+    await _library(database)
+    async with database.session_factory() as session:
+        now = datetime.now(UTC)
+        session.add(
+            LibraryScanRun(
+                id="scan-guard-duplicate",
+                library_id="library-guard",
+                root_directory_id="root-guard",
+                idempotency_key="scan-guard-duplicate-key",
+                scan_mode="tree",
+                state="completed",
+                complete=True,
+                snapshot_revision=1,
+                expected_total=0,
+                pages_read=1,
+                items_seen=0,
+                created_at=now + timedelta(seconds=1),
+                updated_at=now + timedelta(seconds=1),
+            )
+        )
+        await session.flush()
+        session.add(
+            LibraryScanCheckpoint(
+                scan_run_id="scan-guard-duplicate",
+                page=1,
+                items_seen=0,
+                cursor_json=json.dumps(
+                    {
+                        "version": 2,
+                        "directory_totals": {"root-guard": 0},
+                        "expected_total": 0,
+                        "pending": [],
+                        "visited": ["root-guard"],
+                    }
+                ),
+            )
+        )
+        await session.commit()
+
+    try:
+        result = await InventoryPushGuard(database.session_factory).check(
+            "resource-guard"
+        )
+        assert result.allowed is False
+        assert result.code == "inventory_index_incomplete"
+    finally:
+        await database.engine.dispose()
+
+
+async def test_newer_requeued_scan_blocks_inventory_push(tmp_path):
+    database = await _database(tmp_path)
+    crypto = SecretCrypto(Fernet.generate_key().decode("ascii"))
+    await _resource(database, crypto)
+    await _library(database)
+    async with database.session_factory() as session:
+        now = datetime.now(UTC)
+        session.add(
+            LibraryScanRun(
+                id="scan-guard-requeued",
+                library_id="library-guard",
+                root_directory_id="root-guard",
+                idempotency_key="scan-guard-requeued-key",
+                scan_mode="tree",
+                state="queued",
+                complete=False,
+                snapshot_revision=None,
+                created_at=now - timedelta(minutes=1),
+                updated_at=now + timedelta(seconds=1),
+            )
+        )
+        await session.commit()
+
+    try:
+        result = await InventoryPushGuard(database.session_factory).check(
+            "resource-guard"
+        )
+        assert result.allowed is False
+        assert result.code == "inventory_index_incomplete"
+    finally:
+        await database.engine.dispose()
+
+
 async def test_malformed_complete_scope_blocks_inventory_push(tmp_path):
     database = await _database(tmp_path)
     crypto = SecretCrypto(Fernet.generate_key().decode("ascii"))
