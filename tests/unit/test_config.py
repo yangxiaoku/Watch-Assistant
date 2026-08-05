@@ -23,6 +23,8 @@ def make_settings(**overrides: object) -> Settings:
 def test_inspection_settings_have_production_defaults():
     settings = make_settings()
 
+    assert settings.web_username == "admin"
+    assert settings.web_auth_bootstrap_enabled is False
     assert settings.prowlarr_enabled is False
     assert settings.prowlarr_configured is False
     assert settings.prowlarr_timeout_seconds == 12
@@ -44,6 +46,53 @@ def test_inspection_settings_have_production_defaults():
     assert settings.inspection_poll_interval_seconds == 0.75
     assert settings.inspection_request_timeout_seconds == 10
     assert settings.web_session_ttl_hours == 12
+
+
+def test_admin_bootstrap_can_replace_the_environment_password_hash():
+    values = dict(BASE_SETTINGS)
+    values.pop("WEB_PASSWORD_HASH")
+    settings = Settings(
+        **values,
+        WEB_AUTH_BOOTSTRAP_ENABLED=True,
+        WEB_AUTH_BOOTSTRAP_PASSWORD="bootstrap-password",
+    )
+
+    assert settings.web_username == "admin"
+    assert settings.web_password_hash is None
+    assert settings.web_auth_bootstrap_enabled is True
+    assert settings.web_auth_bootstrap_password.get_secret_value() == "bootstrap-password"
+
+
+def test_admin_bootstrap_requires_a_separate_password():
+    values = dict(BASE_SETTINGS)
+    values.pop("WEB_PASSWORD_HASH")
+
+    with pytest.raises(ValidationError, match="WEB_AUTH_BOOTSTRAP_PASSWORD"):
+        Settings(**values, WEB_AUTH_BOOTSTRAP_ENABLED=True)
+
+
+def test_admin_bootstrap_rejects_a_configured_password_hash():
+    with pytest.raises(ValidationError, match="WEB_PASSWORD_HASH"):
+        make_settings(
+            WEB_AUTH_BOOTSTRAP_ENABLED=True,
+            WEB_AUTH_BOOTSTRAP_PASSWORD="bootstrap-password",
+        )
+
+
+def test_web_password_hash_is_required_when_admin_bootstrap_is_disabled():
+    values = dict(BASE_SETTINGS)
+    values.pop("WEB_PASSWORD_HASH")
+
+    with pytest.raises(ValidationError, match="WEB_PASSWORD_HASH"):
+        Settings(**values)
+
+
+def test_admin_bootstrap_rejects_a_non_admin_username():
+    with pytest.raises(ValidationError, match="WEB_USERNAME=admin"):
+        make_settings(
+            WEB_USERNAME="operator",
+            WEB_AUTH_BOOTSTRAP_ENABLED=True,
+        )
 
 
 def test_organization_plan_flag_can_be_enabled_explicitly():

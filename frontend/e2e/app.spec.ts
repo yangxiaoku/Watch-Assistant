@@ -51,6 +51,10 @@ test("login, popular browsing, and resource detail remain usable", async ({ page
       : route.fulfill({ status: 401, json: { detail: "unauthorized" } }),
   );
   await page.route("**/api/v1/auth/login", (route) => {
+    expect(route.request().postDataJSON()).toEqual({
+      username: "admin",
+      password: "test-password",
+    });
     authenticated = true;
     return route.fulfill({ json: { csrf_token: "csrf-test" } });
   });
