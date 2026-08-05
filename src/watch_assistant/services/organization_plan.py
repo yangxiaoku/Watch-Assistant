@@ -6,7 +6,7 @@ import hashlib
 import json
 import re
 import uuid
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
@@ -531,6 +531,7 @@ class OrganizationPlanService:
         status: OrganizationPlanStatus | None = None,
         cursor: int = 0,
         limit: int = 50,
+        library_ids: Collection[str] | None = None,
     ) -> tuple[list[OrganizationPlanView], int | None]:
         if cursor < 0 or limit < 1 or limit > 100:
             raise OrganizationPlanError("invalid_pagination")
@@ -540,6 +541,8 @@ class OrganizationPlanService:
             )
             if status is not None:
                 statement = statement.where(OrganizationPlan.status == status.value)
+            if library_ids:
+                statement = statement.where(OrganizationPlan.library_id.in_(library_ids))
             rows = list(
                 (await session.scalars(statement.offset(cursor).limit(limit + 1))).all()
             )

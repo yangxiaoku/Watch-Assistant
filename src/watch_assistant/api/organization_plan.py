@@ -5,6 +5,10 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
+from watch_assistant.api.resource_scope import (
+    require_plan_library_scope,
+    scoped_library_ids,
+)
 from watch_assistant.schemas import (
     OrganizationPlanAliasRequest,
     OrganizationPlanCandidateRequest,
@@ -13,7 +17,7 @@ from watch_assistant.schemas import (
     OrganizationPlanMutationRequest,
     OrganizationPlanResponse,
 )
-from watch_assistant.security import require_api_auth
+from watch_assistant.security import AuthContext, require_api_auth
 from watch_assistant.services.organization_plan import (
     OrganizationPlanError,
     OrganizationPlanService,
@@ -45,18 +49,23 @@ def get_organization_plan_service(request: Request) -> OrganizationPlanService:
 ServiceDependency = Annotated[
     OrganizationPlanService, Depends(get_organization_plan_service)
 ]
+AuthDependency = Annotated[AuthContext, Depends(require_api_auth)]
 
 
 @router.get("/organization-plans", response_model=OrganizationPlanListResponse)
 async def list_organization_plans(
     service: ServiceDependency,
+    context: AuthDependency,
     status: Annotated[OrganizationPlanStatus | None, Query()] = None,
     cursor: Annotated[int, Query(ge=0)] = 0,
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
 ) -> OrganizationPlanListResponse:
     try:
         items, next_cursor = await service.list_plans(
-            status=status, cursor=cursor, limit=limit
+            status=status,
+            cursor=cursor,
+            limit=limit,
+            library_ids=scoped_library_ids(context),
         )
     except OrganizationPlanError as exc:
         raise _http_error(exc) from None
@@ -71,8 +80,12 @@ async def list_organization_plans(
 
 @router.get("/organization-plans/{plan_id}", response_model=OrganizationPlanResponse)
 async def get_organization_plan(
-    plan_id: str, service: ServiceDependency
+    plan_id: str,
+    request: Request,
+    context: AuthDependency,
+    service: ServiceDependency,
 ) -> OrganizationPlanResponse:
+    await require_plan_library_scope(request, context, plan_id)
     try:
         item = await service.get_plan(plan_id)
     except OrganizationPlanError as exc:
@@ -86,9 +99,12 @@ async def get_organization_plan(
 async def confirm_organization_plan(
     plan_id: str,
     payload: OrganizationPlanMutationRequest,
+    request: Request,
+    context: AuthDependency,
     service: ServiceDependency,
 ) -> OrganizationPlanResponse:
     try:
+        await require_plan_library_scope(request, context, plan_id)
         if payload.plan_hash is not None:
             current = await service.get_plan(plan_id)
             if not hmac.compare_digest(current.plan_hash, payload.plan_hash):
@@ -107,9 +123,12 @@ async def confirm_organization_plan(
 async def select_organization_candidate(
     plan_id: str,
     payload: OrganizationPlanCandidateRequest,
+    request: Request,
+    context: AuthDependency,
     service: ServiceDependency,
 ) -> OrganizationPlanResponse:
     try:
+        await require_plan_library_scope(request, context, plan_id)
         item = await service.select_candidate(
             plan_id,
             source_object_id=payload.source_object_id,
@@ -128,9 +147,12 @@ async def select_organization_candidate(
 async def search_organization_candidates(
     plan_id: str,
     payload: OrganizationPlanCandidateSearchRequest,
+    request: Request,
+    context: AuthDependency,
     service: ServiceDependency,
 ) -> OrganizationPlanResponse:
     try:
+        await require_plan_library_scope(request, context, plan_id)
         item = await service.search_candidates(
             plan_id,
             expected_revision=payload.expected_revision,
@@ -150,9 +172,12 @@ async def search_organization_candidates(
 async def ignore_organization_plan(
     plan_id: str,
     payload: OrganizationPlanMutationRequest,
+    request: Request,
+    context: AuthDependency,
     service: ServiceDependency,
 ) -> OrganizationPlanResponse:
     try:
+        await require_plan_library_scope(request, context, plan_id)
         item = await service.ignore_plan_at_revision(
             plan_id, expected_revision=payload.expected_revision
         )
@@ -167,9 +192,12 @@ async def ignore_organization_plan(
 async def alias_organization_plan(
     plan_id: str,
     payload: OrganizationPlanAliasRequest,
+    request: Request,
+    context: AuthDependency,
     service: ServiceDependency,
 ) -> OrganizationPlanResponse:
     try:
+        await require_plan_library_scope(request, context, plan_id)
         item = await service.alias_plan(
             plan_id,
             alias=payload.alias,

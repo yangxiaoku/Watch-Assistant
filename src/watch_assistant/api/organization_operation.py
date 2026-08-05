@@ -6,6 +6,10 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from watch_assistant.api.organization_plan import require_organization_plan_enabled
+from watch_assistant.api.resource_scope import (
+    require_operation_library_scope,
+    require_plan_library_scope,
+)
 from watch_assistant.schemas import (
     OrganizationOperationBatchRequest,
     OrganizationOperationBatchResponse,
@@ -123,9 +127,11 @@ WorkerDependency = Annotated[OrganizationWorker, Depends(_get_organization_worke
 async def queue_organization_operation(
     plan_id: str,
     payload: OrganizationOperationQueueRequest,
+    request: Request,
     context: AuthDependency,
     service: ServiceDependency,
 ) -> OrganizationOperationResponse:
+    await require_plan_library_scope(request, context, plan_id)
     try:
         await _validate_operation_confirmation(
             context, service, plan_id, digest=payload.digest, confirm=payload.confirm
@@ -149,12 +155,14 @@ async def queue_organization_operation(
 async def confirm_and_queue_organization_operation(
     plan_id: str,
     payload: OrganizationOperationQueueRequest,
+    request: Request,
     context: AuthDependency,
     plan_service: PlanServiceDependency,
     service: ServiceDependency,
 ) -> OrganizationOperationResponse:
     """Confirm a local preview and enqueue its operation in one action."""
 
+    await require_plan_library_scope(request, context, plan_id)
     try:
         await _validate_operation_confirmation(
             context, service, plan_id, digest=payload.digest, confirm=payload.confirm
@@ -200,8 +208,12 @@ async def confirm_and_queue_organization_operation(
     response_model=OrganizationOperationResponse,
 )
 async def get_plan_organization_operation(
-    plan_id: str, service: ServiceDependency
+    plan_id: str,
+    request: Request,
+    context: AuthDependency,
+    service: ServiceDependency,
 ) -> OrganizationOperationResponse:
+    await require_plan_library_scope(request, context, plan_id)
     try:
         summary = await service.get_for_plan(plan_id)
     except Exception as exc:  # noqa: BLE001 - map only stable local errors
@@ -221,12 +233,14 @@ async def get_plan_organization_operation(
 )
 async def queue_organization_operations_batch(
     payload: OrganizationOperationBatchRequest,
+    request: Request,
     context: AuthDependency,
     service: ServiceDependency,
 ) -> OrganizationOperationBatchResponse:
     results: list[OrganizationOperationBatchResult] = []
     for item in payload.items:
         try:
+            await require_plan_library_scope(request, context, item.plan_id)
             await _validate_operation_confirmation(
                 context,
                 service,
@@ -263,6 +277,7 @@ async def queue_organization_operations_batch(
 )
 async def confirm_and_queue_organization_operations_batch(
     payload: OrganizationOperationBatchRequest,
+    request: Request,
     context: AuthDependency,
     plan_service: PlanServiceDependency,
     service: ServiceDependency,
@@ -272,6 +287,7 @@ async def confirm_and_queue_organization_operations_batch(
     results: list[OrganizationOperationBatchResult] = []
     for item in payload.items:
         try:
+            await require_plan_library_scope(request, context, item.plan_id)
             await _validate_operation_confirmation(
                 context,
                 service,
@@ -332,8 +348,11 @@ async def confirm_and_queue_organization_operations_batch(
 async def cancel_organization_operation(
     operation_id: str,
     payload: OrganizationPlanMutationRequest,
+    request: Request,
+    context: AuthDependency,
     service: ServiceDependency,
 ) -> OrganizationOperationResponse:
+    await require_operation_library_scope(request, context, operation_id)
     try:
         summary = await service.cancel(
             operation_id, expected_revision=payload.expected_revision
@@ -350,11 +369,14 @@ async def cancel_organization_operation(
 async def reconcile_organization_operation(
     operation_id: str,
     payload: OrganizationPlanMutationRequest,
+    request: Request,
+    context: AuthDependency,
     service: ServiceDependency,
     worker: WorkerDependency,
 ) -> OrganizationOperationResponse:
     """核对 uncertain 结果；该路径只允许远端只读查询。"""
 
+    await require_operation_library_scope(request, context, operation_id)
     try:
         await worker.reconcile_once(
             operation_id,
@@ -371,8 +393,12 @@ async def reconcile_organization_operation(
     response_model=OrganizationOperationResponse,
 )
 async def get_organization_operation(
-    operation_id: str, service: ServiceDependency
+    operation_id: str,
+    request: Request,
+    context: AuthDependency,
+    service: ServiceDependency,
 ) -> OrganizationOperationResponse:
+    await require_operation_library_scope(request, context, operation_id)
     try:
         summary = await service.get(operation_id)
     except Exception as exc:  # noqa: BLE001 - map only stable local errors
@@ -415,6 +441,15 @@ def _http_error(error: Exception) -> HTTPException:
 
 
 def _error_values(error: Exception) -> tuple[int, str, str]:
+    if isinstance(error, HTTPException):
+        detail = error.detail
+        if isinstance(detail, dict):
+            return (
+                error.status_code,
+                str(detail.get("code", "operation_unavailable")),
+                str(detail.get("message", "整理操作暂不可用")),
+            )
+        return error.status_code, "operation_unavailable", "整理操作暂不可用"
     if isinstance(error, OrganizationOperationNotFound):
         code = "operation_not_found"
     elif isinstance(error, OrganizationPlanError):
