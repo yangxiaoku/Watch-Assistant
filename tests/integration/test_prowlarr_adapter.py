@@ -252,16 +252,19 @@ async def test_prowlarr_does_not_follow_search_redirects():
 @respx.mock(using="httpx")
 async def test_prowlarr_rejects_zero_infohash(respx_mock):
     respx_mock.get(path="/api/v1/search").mock(
-        return_value=httpx.Response(
-            200,
-            json=[
-                {
-                    "title": "Invalid release",
-                    "protocol": "torrent",
-                    "infoHash": "0" * 40,
-                }
-            ],
-        )
+        side_effect=[
+            httpx.Response(
+                200,
+                json=[
+                    {
+                        "title": "Invalid release",
+                        "protocol": "torrent",
+                        "infoHash": "0" * 40,
+                    }
+                ],
+            ),
+            httpx.Response(200, json=[]),
+        ]
     )
     client = _mocked_client(respx_mock, "http://prowlarr.test", "fixture-only")
 
