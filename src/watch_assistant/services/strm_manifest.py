@@ -922,8 +922,11 @@ class StrmManifestService:
         existing_target = _read_target(root, local_path)
         if (
             existing_target is not None
-            and old_path != local_path
             and existing_target != content
+            and (
+                old_path != local_path
+                or not _is_managed_content(existing_target, manifest.manifest_id)
+            )
         ):
             raise StrmManifestError("managed_file_changed")
         await fence.assert_current(session)
@@ -1200,6 +1203,25 @@ def _read_target(root: Path, relative_path: str) -> bytes | None:
         return target.read_bytes()
     except OSError as error:
         raise StrmManifestError("managed_file_not_readable") from error
+
+
+def _is_managed_content(content: bytes, manifest_id: str) -> bool:
+    """Recognize a prior stable playback entry for this manifest only."""
+
+    if not content.endswith(b"\n") or b"\n" in content[:-1] or b"\r" in content:
+        return False
+    try:
+        value = content[:-1].decode("ascii")
+    except UnicodeDecodeError:
+        return False
+    marker = quote(manifest_id, safe="")
+    if not value.endswith(marker):
+        return False
+    try:
+        normalize_playback_url_prefix(value[: -len(marker)])
+    except ValueError:
+        return False
+    return True
 
 
 def _safe_root(
