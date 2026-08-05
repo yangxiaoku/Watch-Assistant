@@ -1,4 +1,5 @@
 import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -195,6 +196,47 @@ async def test_preview_uses_scan_snapshot_and_requires_verified_target(
     assert result.status is expected
     assert result.source_count == 1
     assert client.calls == 1
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("state", "complete", "snapshot_revision"),
+    (("completed", True, 1), ("queued", False, None)),
+)
+async def test_preview_rejects_ambiguous_or_unsettled_source_scan(
+    tmp_path: Path, state: str, complete: bool, snapshot_revision: int | None
+):
+    database = await _database(tmp_path, target_exists=True)
+    async with database.session_factory() as session:
+        now = datetime.now(UTC)
+        created_at = now - timedelta(days=1) if state == "queued" else now
+        updated_at = now + timedelta(seconds=1)
+        session.add(
+            LibraryScanRun(
+                id=f"scan-preview-{state}",
+                library_id="library-preview",
+                root_directory_id="root-preview",
+                idempotency_key=f"preview-{state}",
+                scan_mode="tree",
+                state=state,
+                complete=complete,
+                snapshot_revision=snapshot_revision,
+                created_at=created_at,
+                updated_at=updated_at,
+            )
+        )
+        await session.commit()
+
+    client = _TmdbClient()
+    service = OrganizationPreviewService(
+        database.session_factory, client, OrganizationPlanService(database.session_factory)
+    )
+    with pytest.raises(OrganizationPreviewError, match="scan_not_current"):
+        await service.create_preview(
+            library_id="library-preview", scan_run_id="scan-preview"
+        )
+    assert client.calls == 0
     await database.engine.dispose()
 
 

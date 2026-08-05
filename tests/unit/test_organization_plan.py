@@ -536,6 +536,50 @@ async def test_unrelated_new_scan_invalidates_bound_plan(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("state", "complete", "snapshot_revision"),
+    (("completed", True, 1), ("queued", False, None)),
+)
+async def test_plan_and_executable_loader_reject_ambiguous_or_unsettled_scan(
+    tmp_path, state: str, complete: bool, snapshot_revision: int | None
+):
+    database = await _database(tmp_path)
+    service = OrganizationPlanService(database.session_factory)
+    plan_view = await service.create_plan(
+        library_id=LIBRARY_ID, scan_run_id=SCAN_ID, items=(_item(),)
+    )
+    async with database.session_factory() as session:
+        now = datetime.now(UTC)
+        created_at = now - timedelta(days=1) if state == "queued" else now
+        updated_at = now + timedelta(seconds=1)
+        session.add(
+            LibraryScanRun(
+                id=f"scan-{state}",
+                library_id=LIBRARY_ID,
+                root_directory_id=ROOT_ID,
+                idempotency_key=f"scan-{state}-key",
+                scan_mode="tree",
+                state=state,
+                complete=complete,
+                snapshot_revision=snapshot_revision,
+                created_at=created_at,
+                updated_at=updated_at,
+            )
+        )
+        await session.commit()
+
+    with pytest.raises(OrganizationPlanError, match="scan_not_current"):
+        await service.create_plan(
+            library_id=LIBRARY_ID, scan_run_id=SCAN_ID, items=(_item(),)
+        )
+    async with database.session_factory() as session:
+        stored = await session.get(OrganizationPlan, plan_view.plan_id)
+        assert stored is not None
+        assert await load_executable_steps(database.session_factory, stored) is None
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_execution_scope_includes_configured_target_root(tmp_path):
     database = await _database(tmp_path)
     service = OrganizationPlanService(database.session_factory)
