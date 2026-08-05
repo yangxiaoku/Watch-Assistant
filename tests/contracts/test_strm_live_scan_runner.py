@@ -1,3 +1,7 @@
+import json
+import time
+from types import SimpleNamespace
+
 import pytest
 
 import scripts.p115_strm_application_live_runner as application_runner
@@ -58,3 +62,59 @@ async def test_strm_live_scan_waits_for_queued_operation(
 
     assert result["complete"] is True
     assert client.get_calls == [path]
+
+
+@pytest.mark.asyncio
+async def test_strm_live_rename_passes_explicit_write_confirmation(tmp_path, monkeypatch):
+    authorization = tmp_path / "rename-authorization.json"
+    authorization.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "parent_id": "7",
+                "expires_at": time.time() + 60,
+                "nonce": "rename-test",
+            }
+        ),
+        encoding="utf-8",
+    )
+    captured = {}
+
+    class _Transport:
+        receipts = ("receipt",)
+
+        def __init__(self):
+            self.name = "wa-live-probe.mp4"
+
+        async def read_object(self, _file_id):
+            return SimpleNamespace(name=self.name)
+
+        async def read_target(self, _parent_id, _name):
+            return None
+
+        async def rename(self, _file_id, _name):
+            self.name = _name
+            return SimpleNamespace(status=SimpleNamespace(value="success"))
+
+    def factory(**kwargs):
+        captured.update(kwargs)
+        return _Transport()
+
+    monkeypatch.setattr(
+        application_runner,
+        "create_live_p115_organization_transport",
+        factory,
+    )
+
+    result = await application_runner._rename_remote(
+        object(),
+        "7",
+        "8",
+        authorization,
+        "wa-live-probe.mp4",
+        "wa-strm-probe-renamed.mp4",
+    )
+
+    assert result == {"status": "success", "receipt_count": 1}
+    assert captured["write_enabled"] is True
+    assert captured["plan_confirmed"] is True

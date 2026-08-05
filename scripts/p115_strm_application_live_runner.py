@@ -329,6 +329,8 @@ async def _rename_remote(
         managed_directory_ids=(root_id,),
         scope_confirmed=True,
         live_enabled=True,
+        write_enabled=True,
+        plan_confirmed=True,
         organization_contract=_c03_organization_contract(),
     )
     before = await transport.read_object(file_id)
