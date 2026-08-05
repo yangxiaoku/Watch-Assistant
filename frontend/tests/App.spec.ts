@@ -65,6 +65,44 @@ describe("App capability wiring", () => {
     wrapper.unmount();
   });
 
+  it("opens unavailable organization settings at the 115整理 section", async () => {
+    window.history.replaceState({}, "", "/workbench");
+    vi.spyOn(ApiClient.prototype, "health").mockResolvedValue({
+      status: "ok",
+      release: "test",
+      push_supported: false,
+      organization_plan_enabled: false,
+      organization_execution_enabled: false,
+      organization_execution_supported: false,
+      strm_capabilities: { full: false, incremental: false, cleanup: false, playback: false, playback_contract_verified: false },
+    });
+    vi.spyOn(ApiClient.prototype, "me").mockResolvedValue();
+    const settingsMethods = [
+      "settingsOverview",
+      "loggingSettings",
+      "inspectionSettings",
+      "p115Settings",
+      "prowlarrSettings",
+      "p115Devices",
+      "credentialSettings",
+      "organizationSettings",
+      "organizationResult",
+    ] as const;
+    for (const method of settingsMethods) {
+      vi.spyOn(ApiClient.prototype, method).mockRejectedValue(new ApiError("设置暂不可用", 503, "settings_unavailable"));
+    }
+
+    const wrapper = mount(App);
+    await flushPromises();
+    const organizationEntry = wrapper.findAll(".workbench-entry-action").find((button) => button.text().includes("查看整理设置"));
+    expect(organizationEntry).toBeDefined();
+    await organizationEntry!.trigger("click");
+    await wrapper.vm.$nextTick();
+
+    expect(wrapper.get(".settings-section h2").text()).toBe("自动整理");
+    wrapper.unmount();
+  });
+
   it("keeps homepage catalog failures in a neutral retryable empty state", async () => {
     const home = vi.spyOn(ApiClient.prototype, "homeCatalog")
       .mockRejectedValueOnce(new ApiError("本次影视资料没有更新。", 503, "tmdb_unavailable"))

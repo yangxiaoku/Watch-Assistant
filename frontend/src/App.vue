@@ -657,6 +657,14 @@ function navigateFromTaskDrawer(view: "library" | "settings" | "workflows") {
   void selectView(view);
 }
 
+function navigateFromWorkbench(
+  view: Exclude<BrowseView, "search">,
+  settingsSection: "overview" | "organization" = "overview",
+): void {
+  settingsInitialSection.value = settingsSection;
+  void selectView(view);
+}
+
 function openTaskDrawer(): void {
   drawerOpen.value = true;
 }
@@ -1580,7 +1588,7 @@ onBeforeUnmount(() => {
     <template v-else>
       <p v-if="error" class="error-strip" role="alert"><X :size="16" />{{ error }}</p>
       <template v-if="!result && !loading">
-        <WorkbenchView v-if="activeView === 'workbench'" :organization-plan-capability="organizationPlanCapability" :strm-full-capability="strmFullCapability" :strm-incremental-capability="strmIncrementalCapability" @navigate="selectView" @search="searchFromWorkbench" />
+        <WorkbenchView v-if="activeView === 'workbench'" :organization-plan-capability="organizationPlanCapability" :strm-full-capability="strmFullCapability" :strm-incremental-capability="strmIncrementalCapability" @navigate="navigateFromWorkbench" @search="searchFromWorkbench" />
         <HomeView v-if="activeView === 'home'" :catalog="homeCatalog" :loading="catalogLoading" :error="homeError" :favorite-ids="favoriteIds" @open="openMovie" @favorite="toggleFavorite" @navigate="selectView" @retry="retryHome" />
         <LibraryView v-else-if="activeView === 'movies' || activeView === 'tv'" :movies="catalogMovies" :loading="catalogLoading" :error="catalogError" :favorite-ids="favoriteIds" :genre-id="genreId" :year="year" :sort="sort" :media-type="activeView" :page="currentPage" :total-pages="totalPages" :total-results="totalResults" @open="openMovie" @favorite="toggleFavorite" @filters="loadDiscover" @page="loadPage" @retry="retryCatalog" />
         <CollectionView v-else-if="activeView === 'favorites' || activeView === 'history'" :mode="activeView" :movies="activeView === 'favorites' ? favorites : history" :favorite-ids="favoriteIds" @open="openMovie" @favorite="toggleFavorite" />
