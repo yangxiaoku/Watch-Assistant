@@ -710,6 +710,45 @@ async def test_generation_does_not_overwrite_unmanaged_existing_strm(tmp_path: P
         await database.engine.dispose()
 
 
+async def test_generation_does_not_overwrite_user_modified_current_strm(
+    tmp_path: Path,
+):
+    database = await _database(tmp_path)
+    target = tmp_path / "output/Show/Episode.strm"
+    try:
+        service = StrmManifestService(database.session_factory)
+        first = await service.generate(
+            "library-strm",
+            source_scan_run_id="scan-strm",
+            output_root=tmp_path / "output",
+            playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+        )
+        assert first.generated == 1
+        target.write_text("user-edited\n", encoding="utf-8")
+
+        second = await service.generate(
+            "library-strm",
+            source_scan_run_id="scan-strm",
+            output_root=tmp_path / "output",
+            playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+        )
+
+        assert second.generated == 0
+        assert second.failed == 1
+        assert target.read_text(encoding="utf-8") == "user-edited\n"
+        async with database.session_factory() as session:
+            manifest = await session.scalar(
+                select(StrmManifestEntry).where(
+                    StrmManifestEntry.cloud_file_id == "100",
+                    StrmManifestEntry.is_current.is_(True),
+                )
+            )
+            assert manifest is not None
+            assert manifest.status == "verified"
+    finally:
+        await database.engine.dispose()
+
+
 async def test_cleanup_plan_is_persistent_read_only_and_idempotent(tmp_path: Path):
     database = await _database(tmp_path)
     try:
