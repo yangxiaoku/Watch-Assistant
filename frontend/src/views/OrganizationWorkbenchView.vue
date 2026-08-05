@@ -110,6 +110,10 @@ function invalidateOperationRequests(): void {
   operationPollGeneration += 1;
 }
 
+function shouldPollOperation(status: OrganizationOperationResponse["status"]): boolean {
+  return status === "organizing" || (status === "planned" && props.executionSupported);
+}
+
 async function loadPlanOperation(plan: OrganizationPlanSummary | null) {
   const requestGeneration = ++operationRequestGeneration;
   operation.value = null;
@@ -119,9 +123,13 @@ async function loadPlanOperation(plan: OrganizationPlanSummary | null) {
     const current = await getter.call(props.api, plan.plan_id);
     if (requestGeneration !== operationRequestGeneration || selected.value?.plan_id !== plan.plan_id) return;
     operation.value = current;
+    if (shouldPollOperation(current.status)) void pollOperation(current.operation_id, plan.plan_id);
   } catch (exception) {
-    if (requestGeneration === operationRequestGeneration && selected.value?.plan_id === plan.plan_id && (!(exception instanceof ApiError) || exception.code !== "operation_not_found")) {
-      operation.value = null;
+    if (requestGeneration === operationRequestGeneration && selected.value?.plan_id === plan.plan_id) {
+      if (!(exception instanceof ApiError) || exception.code !== "operation_not_found") {
+        operation.value = null;
+        error.value = exception instanceof ApiError ? exception.message : "整理操作状态加载失败，请重试";
+      }
     }
   }
 }
@@ -390,7 +398,11 @@ async function pollOperation(operationId: string, planId: string) {
         notice.value = "";
         return;
       }
-    } catch {
+    } catch (exception) {
+      if (pollGeneration === operationPollGeneration && selected.value?.plan_id === planId) {
+        error.value = exception instanceof ApiError ? exception.message : "整理操作状态暂时无法更新，请重试";
+        notice.value = "";
+      }
       return;
     }
   }

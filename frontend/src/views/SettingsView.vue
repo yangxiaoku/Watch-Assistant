@@ -155,6 +155,8 @@ const p115CredentialResetting = ref(false);
 const tmdbCredentialError = ref("");
 const p115CredentialError = ref("");
 const p115Devices = ref<P115LoginDevice[]>([]);
+const p115DevicesLoading = ref(true);
+const p115DevicesError = ref("");
 const p115QrImage = ref("");
 const p115QrSessionId = ref("");
 const p115QrStatus = ref<"idle" | "waiting" | "scanned" | "ready" | "expired" | "error">("idle");
@@ -184,6 +186,7 @@ const organizationActionBusy = ref(false);
 const organizationActionMessage = ref("");
 const organizationResult = ref<OrganizationAutomationResultResponse | null>(null);
 const organizationResultLoading = ref(false);
+const organizationResultError = ref("");
 const organizationStatusLabels: Record<OrganizationResultStatus, string> = {
   unknown: "尚未整理",
   success: "整理完成",
@@ -472,10 +475,18 @@ async function resetProwlarr() {
 }
 
 async function loadP115Devices() {
+  p115DevicesLoading.value = true;
+  p115DevicesError.value = "";
   try {
-    p115Devices.value = (await props.api.p115Devices()).items ?? [];
-  } catch {
-    p115Devices.value = [];
+    const response = await props.api.p115Devices();
+    if (!settingsMounted) return;
+    p115Devices.value = response.items ?? [];
+  } catch (exception) {
+    if (settingsMounted) {
+      p115DevicesError.value = exception instanceof ApiError ? exception.message : "扫码设备加载失败，请稍后重试";
+    }
+  } finally {
+    if (settingsMounted) p115DevicesLoading.value = false;
   }
 }
 
@@ -537,6 +548,7 @@ async function pollP115QrLogin() {
 async function activateP115Device(device: P115LoginDevice) {
   if (!credentials.value || device.active || p115QrBusy.value) return;
   p115QrError.value = "";
+  p115DevicesError.value = "";
   try {
     p115Devices.value = (await props.api.activateP115Device(device.id, credentials.value.revision)).items ?? [];
     await Promise.all([loadCredentials(), loadP115()]);
@@ -548,6 +560,7 @@ async function activateP115Device(device: P115LoginDevice) {
 
 async function revokeP115Device(device: P115LoginDevice) {
   if (device.active || p115QrBusy.value) return;
+  p115DevicesError.value = "";
   try {
     await props.api.revokeP115Device(device.id);
     await loadP115Devices();
@@ -761,36 +774,42 @@ async function loadOrganization() {
 
 async function loadOrganizationResult() {
   organizationResultLoading.value = true;
+  organizationResultError.value = "";
   try {
     organizationResult.value = await props.api.organizationResult();
   } catch (exception) {
-    if (!organizationActionMessage.value) {
-      organizationActionMessage.value = exception instanceof ApiError ? exception.message : "整理结果加载失败，请稍后重试";
-    }
+    organizationResultError.value = exception instanceof ApiError ? exception.message : "整理结果加载失败，请稍后重试";
   } finally {
     organizationResultLoading.value = false;
   }
 }
 
 async function pollOrganizationResult(runId: string | null) {
-  for (let attempt = 0; attempt < 60; attempt += 1) {
-    await new Promise((resolve) => window.setTimeout(resolve, 500));
-    try {
-      const response = await props.api.organizationResult();
-      organizationResult.value = response;
-      const pending = response.items?.some(
-        (item) => item.status === "queued" || item.status === "organizing",
-      );
-      if (runId && response.run_id === runId && response.finished_at && !pending) {
-        organizationActionMessage.value = organizationResultActionMessage(response);
+  organizationResultLoading.value = true;
+  organizationResultError.value = "";
+  try {
+    for (let attempt = 0; attempt < 60; attempt += 1) {
+      await new Promise((resolve) => window.setTimeout(resolve, 500));
+      try {
+        const response = await props.api.organizationResult();
+        organizationResult.value = response;
+        const pending = response.items?.some(
+          (item) => item.status === "queued" || item.status === "organizing",
+        );
+        if (runId && response.run_id === runId && response.finished_at && !pending) {
+          organizationActionMessage.value = organizationResultActionMessage(response);
+          return;
+        }
+      } catch (exception) {
+        organizationResultError.value = exception instanceof ApiError ? exception.message : "整理结果暂时无法更新，请稍后重试";
+        organizationActionMessage.value = "整理任务已排队，但结果暂时无法更新，请先重试结果查询。";
         return;
       }
-    } catch {
-      organizationActionMessage.value = "整理任务已排队，但结果暂时无法更新。请刷新结果并查看诊断信息。";
-      return;
     }
+    organizationActionMessage.value = "整理任务仍在处理，暂时未收到最终结果。请稍后刷新结果；结果不确定时不要重复提交。";
+  } finally {
+    organizationResultLoading.value = false;
   }
-  organizationActionMessage.value = "整理任务仍在处理，暂时未收到最终结果。请稍后刷新结果；结果不确定时不要重复提交。";
 }
 
 async function openDirectoryPicker(mode: "source" | "target" | "push") {
@@ -1535,7 +1554,7 @@ watch(autoRefreshLogs, syncLogsRefreshTimer);
                 <div v-if="p115QrImage" class="p115-qr-content"><img :src="p115QrImage" alt="115 登录二维码" /><div><p class="settings-note">请使用上方选择的设备类型扫码确认。</p><strong v-if="p115QrStatus === 'scanned'" class="status-ok">已扫码，等待确认</strong><strong v-else-if="p115QrStatus === 'waiting'" class="status-unknown">等待扫码</strong></div></div>
                 <p v-if="p115QrError" class="settings-action-message" role="status">{{ p115QrError }}</p>
               </div>
-              <div class="p115-device-list"><div class="p115-device-list-heading"><h4>已保存的登录设备</h4><button class="text-button" type="button" @click="loadP115Devices">刷新</button></div><p v-if="!p115Devices.length" class="settings-note">暂无扫码设备。手动 Cookie 不会显示在这里。</p><div v-for="device in p115Devices" :key="device.id" class="p115-device-row"><div><strong>{{ device.name }}</strong><small>{{ device.device_code }} · {{ device.last_used_at ? formatTimestamp(device.last_used_at) : '未使用' }}</small></div><div><strong v-if="device.active" class="status-ok">当前使用</strong><button v-else class="text-button" type="button" @click="activateP115Device(device)">切换</button><button v-if="!device.active" class="text-button danger-text" type="button" @click="revokeP115Device(device)">移除</button></div></div></div>
+              <div class="p115-device-list"><div class="p115-device-list-heading"><h4>已保存的登录设备</h4><button class="text-button" type="button" :disabled="p115DevicesLoading" @click="loadP115Devices"><LoaderCircle v-if="p115DevicesLoading" class="spin" :size="14" /><RefreshCw v-else :size="14" />{{ p115DevicesLoading ? '刷新中' : '刷新' }}</button></div><div v-if="p115DevicesLoading" class="settings-loading" role="status"><LoaderCircle class="spin" :size="18" />正在加载扫码设备</div><div v-else-if="p115DevicesError" class="settings-state settings-state-error" role="alert"><AlertTriangle :size="18" /><span>{{ p115DevicesError }}</span><button class="text-button" type="button" @click="loadP115Devices">重试</button></div><p v-else-if="!p115Devices.length" class="settings-note">暂无扫码设备。手动 Cookie 不会显示在这里。</p><div v-else><div v-for="device in p115Devices" :key="device.id" class="p115-device-row"><div><strong>{{ device.name }}</strong><small>{{ device.device_code }} · {{ device.last_used_at ? formatTimestamp(device.last_used_at) : '未使用' }}</small></div><div><strong v-if="device.active" class="status-ok">当前使用</strong><button v-else class="text-button" type="button" @click="activateP115Device(device)">切换</button><button v-if="!device.active" class="text-button danger-text" type="button" @click="revokeP115Device(device)">移除</button></div></div></div></div>
             </section>
           </div>
         </section>
@@ -1569,6 +1588,7 @@ watch(autoRefreshLogs, syncLogsRefreshTimer);
                   <div><strong>最近一次整理结果</strong><p class="organization-result-summary">{{ organizationResultSummary }}</p></div>
                   <div class="organization-result-meta"><span v-if="organizationResultLoading">正在更新</span><span v-else>{{ organizationResult?.finished_at ? formatTimestamp(organizationResult.finished_at) : '尚未执行' }}</span></div>
                 </div>
+                <div v-if="organizationResultError" class="settings-state settings-state-error" role="alert"><AlertTriangle :size="18" /><span>{{ organizationResultError }}</span><button class="text-button" type="button" @click="loadOrganizationResult">重试</button></div>
                 <div :class="['organization-result-state', organizationResultStateClass]">{{ organizationResultHeadline }}</div>
                 <div v-if="organizationResultStatusBreakdown.length" class="organization-result-statuses" aria-label="影片处理状态">
                   <span v-for="entry in organizationResultStatusBreakdown" :key="entry.status" :class="['organization-result-status', `is-${entry.status}`]">{{ entry.label }} <strong>{{ entry.count }}</strong></span>

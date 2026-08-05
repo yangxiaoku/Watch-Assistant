@@ -129,6 +129,90 @@ describe("OrganizationWorkbenchView", () => {
     expect(wrapper.text()).toContain("整理操作：已完成");
   });
 
+  it("resumes a persisted organizing operation after loading", async () => {
+    vi.useFakeTimers();
+    try {
+      const organizing = {
+        operation_id: "op-running",
+        plan_id: plan.plan_id,
+        status: "organizing" as const,
+        revision: 1,
+        attempts: 1,
+        error_code: null,
+        cancel_requested: false,
+      };
+      const organized = { ...organizing, status: "organized" as const };
+      const organizationOperation = vi.fn().mockResolvedValue(organized);
+      const api = makeApi({
+        organizationPlanOperation: vi.fn().mockResolvedValue(organizing),
+        organizationOperation,
+      });
+      const wrapper = mount(OrganizationWorkbenchView, { props: { api, executionSupported: true } });
+      await flushPromises();
+
+      expect(wrapper.text()).toContain("整理操作：执行中");
+      await vi.advanceTimersByTimeAsync(1_000);
+      await flushPromises();
+
+      expect(organizationOperation).toHaveBeenCalledWith("op-running");
+      expect(wrapper.text()).toContain("整理操作：已完成");
+      expect(wrapper.text()).toContain("整理已完成");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("shows a structured error when a persisted operation cannot be loaded", async () => {
+    const operationFor = vi.fn()
+      .mockRejectedValueOnce(new ApiError("整理操作状态服务暂不可用，请稍后重试", 503, "organization_operation_unavailable"))
+      .mockResolvedValueOnce({
+        operation_id: "op-recovered",
+        plan_id: plan.plan_id,
+        status: "organized",
+        revision: 1,
+        attempts: 1,
+        error_code: null,
+        cancel_requested: false,
+      });
+    const api = makeApi({ organizationPlanOperation: operationFor });
+    const wrapper = mount(OrganizationWorkbenchView, { props: { api } });
+    await flushPromises();
+
+    expect(wrapper.get(".error-strip").text()).toContain("整理操作状态服务暂不可用，请稍后重试");
+    await wrapper.get(".error-strip .text-button").trigger("click");
+    await flushPromises();
+    expect(operationFor).toHaveBeenCalledTimes(2);
+    expect(wrapper.find(".error-strip").exists()).toBe(false);
+  });
+
+  it("keeps an operation polling error visible with a retry action", async () => {
+    vi.useFakeTimers();
+    try {
+      const organizing = {
+        operation_id: "op-poll-error",
+        plan_id: plan.plan_id,
+        status: "organizing" as const,
+        revision: 1,
+        attempts: 1,
+        error_code: null,
+        cancel_requested: false,
+      };
+      const api = makeApi({
+        organizationPlanOperation: vi.fn().mockResolvedValue(organizing),
+        organizationOperation: vi.fn().mockRejectedValue(new ApiError("整理状态暂时无法更新，请稍后重试", 503, "organization_operation_unavailable")),
+      });
+      const wrapper = mount(OrganizationWorkbenchView, { props: { api, executionSupported: true } });
+      await flushPromises();
+      await vi.advanceTimersByTimeAsync(1_000);
+      await flushPromises();
+
+      expect(wrapper.get(".error-strip").text()).toContain("整理状态暂时无法更新，请稍后重试");
+      expect(wrapper.get(".error-strip .text-button").text()).toBe("重试");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("ignores an older plan response after the status filter changes", async () => {
     const firstResponse = deferred<OrganizationPlanListResponse>();
     const secondResponse = deferred<OrganizationPlanListResponse>();
