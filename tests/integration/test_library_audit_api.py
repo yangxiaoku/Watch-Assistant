@@ -226,6 +226,60 @@ async def test_inventory_reports_freshness_and_only_exact_identity_blocks(tmp_pa
 
 
 @pytest.mark.integration
+async def test_inventory_rejects_requeued_scan_even_when_created_earlier(tmp_path):
+    client, database = await _client(tmp_path)
+    login = await client.post("/api/v1/auth/login", json={"password": WEB_PASSWORD})
+    assert login.status_code == 200
+    csrf = login.json()["csrf_token"]
+
+    async with database.session_factory() as session:
+        current = await session.get(LibraryScanRun, "scan-one")
+        assert current is not None
+        assert current.created_at is not None
+        assert current.updated_at is not None
+        session.add(
+            LibraryScanRun(
+                id="scan-requeued",
+                library_id="library-one",
+                root_directory_id="root-one",
+                idempotency_key="scan-requeued-key",
+                scan_mode="tree",
+                state="queued",
+                complete=False,
+                snapshot_revision=None,
+                created_at=current.created_at - timedelta(minutes=1),
+                updated_at=current.updated_at + timedelta(minutes=1),
+            )
+        )
+        await session.commit()
+
+    inventory = await client.get("/api/v1/libraries/library-one/inventory")
+    assert inventory.status_code == 200
+    assert inventory.json()["scan_run_id"] == "scan-one"
+    assert inventory.json()["freshness"]["complete"] is False
+    assert inventory.json()["freshness"]["status"] == "incomplete"
+
+    check = await client.get(
+        "/api/v1/libraries/library-one/inventory/check",
+        params={"object_id": "file-one"},
+    )
+    assert check.status_code == 200
+    assert check.json()["decision"] == "index_incomplete"
+    assert check.json()["matched_object_count"] == 0
+
+    bound = await client.put(
+        "/api/v1/libraries/library-one/inventory/identities/file-one",
+        headers={"X-CSRF-Token": csrf},
+        json={"tmdb_id": 7, "media_type": "movie", "revision": 0},
+    )
+    assert bound.status_code == 409
+    assert bound.json()["detail"] == "library_inventory_incomplete"
+
+    await client.aclose()
+    await database.engine.dispose()
+
+
+@pytest.mark.integration
 async def test_inventory_rejects_failed_incomplete_and_wrong_scope_snapshots(tmp_path):
     client, database = await _client(tmp_path)
     login = await client.post("/api/v1/auth/login", json={"password": WEB_PASSWORD})

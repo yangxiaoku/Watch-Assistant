@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -248,6 +248,28 @@ async def test_episode_completeness_api_joins_confirmed_inventory_identities(
         response = await client.get(
             "/api/v1/libraries/library-tv/media/tv/1399/seasons/2/completeness"
         )
+        async with database.session_factory() as session:
+            current = await session.get(LibraryScanRun, "scan-tv")
+            assert current is not None
+            assert current.created_at is not None
+            assert current.updated_at is not None
+            session.add(
+                LibraryScanRun(
+                    id="scan-tv-requeued",
+                    library_id="library-tv",
+                    root_directory_id="root-tv",
+                    idempotency_key="scan-tv-requeued-key",
+                    state="queued",
+                    complete=False,
+                    snapshot_revision=None,
+                    created_at=current.created_at - timedelta(minutes=1),
+                    updated_at=current.updated_at + timedelta(minutes=1),
+                )
+            )
+            await session.commit()
+        requeued = await client.get(
+            "/api/v1/libraries/library-tv/media/tv/1399/seasons/2/completeness"
+        )
 
     assert login.status_code == 200
     assert response.status_code == 200
@@ -258,6 +280,12 @@ async def test_episode_completeness_api_joins_confirmed_inventory_identities(
     assert [item["status"] for item in payload["items"]] == ["multiple", "owned"]
     assert payload["duplicate_episodes"] == [1]
     assert payload["missing_episodes"] == []
+    assert requeued.status_code == 200
+    requeued_payload = requeued.json()
+    assert requeued_payload["freshness"]["status"] == "incomplete"
+    assert requeued_payload["inventory_complete"] is False
+    assert requeued_payload["conclusion_available"] is False
+    assert requeued_payload["missing_episodes"] == []
     await database.engine.dispose()
 
 

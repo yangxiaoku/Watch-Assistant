@@ -64,9 +64,11 @@ from watch_assistant.services.library_index import (
     validate_complete_scan_evidence,
 )
 from watch_assistant.services.library_inventory import (
+    FreshnessStatus,
     InventoryFile,
     InventorySnapshot,
     build_snapshot,
+    calculate_freshness,
     check_inventory,
 )
 from watch_assistant.services.library_scan_operations import (
@@ -92,6 +94,7 @@ from watch_assistant.services.strm_operations import (
     StrmOperationKind,
     StrmOperationService,
 )
+from watch_assistant.services.strm_scope import source_snapshot_is_current
 
 router = APIRouter(prefix="/api/v1", dependencies=[Depends(require_api_auth)])
 AuthDependency = Annotated[AuthContext, Depends(require_api_auth)]
@@ -1305,6 +1308,14 @@ async def bind_library_identity(
         run = await _latest_scan_any(session, library_id)
         if not _scan_is_complete(run, library):
             raise HTTPException(status_code=409, detail="library_inventory_incomplete")
+        if not await _scan_snapshot_is_current(session, run):
+            raise HTTPException(status_code=409, detail="library_inventory_incomplete")
+        captured_at = run.updated_at
+        if captured_at.tzinfo is None:
+            captured_at = captured_at.replace(tzinfo=UTC)
+        freshness = calculate_freshness(complete=True, captured_at=captured_at)
+        if freshness.status is not FreshnessStatus.FRESH:
+            raise HTTPException(status_code=409, detail="library_inventory_incomplete")
         checkpoint = await session.get(LibraryScanCheckpoint, run.id)
         all_entries = list(
             (
@@ -1437,6 +1448,8 @@ async def _inventory_snapshot(
         ).all()
     )
     complete = _scan_is_complete(run, library)
+    if complete and not await _scan_snapshot_is_current(session, run):
+        complete = False
     if complete:
         checkpoint = await session.get(LibraryScanCheckpoint, run.id)
         try:
@@ -1508,6 +1521,17 @@ async def _inventory_snapshot(
             if run.updated_at.tzinfo is not None
             else run.updated_at.replace(tzinfo=UTC)
         ),
+    )
+
+
+async def _scan_snapshot_is_current(session, run: LibraryScanRun | None) -> bool:
+    if run is None or run.snapshot_revision is None:
+        return False
+    return await source_snapshot_is_current(
+        session,
+        library_id=run.library_id,
+        source_scan_run_id=run.id,
+        source_snapshot_revision=run.snapshot_revision,
     )
 
 
