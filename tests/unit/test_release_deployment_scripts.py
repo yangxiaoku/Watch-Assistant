@@ -171,9 +171,60 @@ def test_release_package_gate_is_limited_to_publish_main():
     assert 'test "${GITHUB_REF}" = "refs/heads/codex/publish-main"' in workflow
     assert 'test "$(git branch --show-current)" = "codex/publish-main"' in workflow
     assert 'refs/remotes/origin/codex/publish-main' in workflow
+    assert 'PYTHON_VERSION: "3.12.13"' in workflow
+    assert 'NODE_VERSION: "24"' in workflow
+    assert 'NPM_VERSION: "11.9.0"' in workflow
     for script in (build, verify):
         assert 'RELEASE_BRANCH="codex/publish-main"' in script
         assert 'refs/remotes/origin/${RELEASE_BRANCH}' in script
+
+
+def test_ci_workflows_cover_locked_offline_browser_compose_and_release_gates():
+    verify_workflow = (ROOT / ".github" / "workflows" / "verify.yml").read_text(
+        encoding="utf-8"
+    )
+    release_workflow = (ROOT / ".github" / "workflows" / "systemd-release.yml").read_text(
+        encoding="utf-8"
+    )
+    verify_gate = (ROOT / "scripts" / "verify.sh").read_text(encoding="utf-8")
+
+    assert 'PYTHON_VERSION: "3.12.13"' in verify_workflow
+    assert 'NODE_VERSION: "24"' in verify_workflow
+    assert 'NPM_VERSION: "11.9.0"' in verify_workflow
+    assert 'python-version: ${{ env.PYTHON_VERSION }}' in verify_workflow
+    assert 'test "$(python --version 2>&1)" = "Python ${PYTHON_VERSION}"' in verify_workflow
+    assert '"$PYTHON_BIN" scripts/generate_pip_constraints.py' in verify_workflow
+    assert "--lock-file uv.lock" in verify_workflow
+    assert '--constraint "$LOCK_CONSTRAINTS"' in verify_workflow
+    assert '"$PYTHON_BIN" -m pip check' in verify_workflow
+    assert "run: bash scripts/verify.sh" in verify_workflow
+
+    assert "offline_verify:" in verify_workflow
+    assert "e2e:" in verify_workflow
+    assert "npx playwright install --with-deps chromium" in verify_workflow
+    assert "npm --prefix frontend run test:e2e" in verify_workflow
+    assert "needs:\n      - offline_verify\n      - e2e\n      - compose" in verify_workflow
+    assert 'OFFLINE_VERIFY_RESULT: ${{ needs.offline_verify.result }}' in verify_workflow
+    assert 'E2E_RESULT: ${{ needs.e2e.result }}' in verify_workflow
+    assert 'COMPOSE_RESULT: ${{ needs.compose.result }}' in verify_workflow
+    assert 'WATCH_ASSISTANT_RELEASE="${{ github.sha }}" docker compose' in verify_workflow
+    assert "runs-on: ubuntu-latest" not in verify_workflow
+
+    for required in (
+        "run_parallel_pytest_files unit-tests tests/unit 8",
+        "run_parallel_pytest_files integration-tests tests/integration 1",
+        "run_stage contract-tests",
+        "run_stage ruff",
+        "run_stage frontend-tests",
+        "run_stage frontend-build",
+    ):
+        assert required in verify_gate
+
+    assert 'PYTHON_VERSION: "3.12.13"' in release_workflow
+    assert "run: bash scripts/verify.sh" in release_workflow
+    assert "docker compose --env-file .env.example config --quiet" in release_workflow
+    assert 'bash scripts/build_release.sh "$GITHUB_SHA"' in release_workflow
+    assert "bash scripts/verify_release_artifact.sh" in release_workflow
 
 
 def test_verify_gate_scopes_pytest_collection_to_offline_test_roots():
@@ -223,9 +274,9 @@ def _create_build_release_fixture(
         ROOT / "scripts" / "release_manifest.py",
         fixture_root / "scripts" / "release_manifest.py",
     )
-    (fixture_root / "scripts" / "release_startup_smoke.py").write_text(
-        "# fixture\n", encoding="utf-8"
-    )
+    startup_smoke = fixture_root / "scripts" / "release_startup_smoke.py"
+    startup_smoke.write_text("# fixture\n", encoding="utf-8")
+    startup_smoke.chmod(0o755)
     for relative in (
         "src/watch_assistant/app.py",
         "src/watch_assistant/release_metadata.py",
@@ -450,6 +501,45 @@ def test_release_scripts_accept_current_remote_publish_main(tmp_path: Path):
     assert "release artifact verified" in verify_result.stdout
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shell release semantics are required")
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash is required")
+@pytest.mark.skipif(shutil.which("tar") is None, reason="tar is required")
+@pytest.mark.skipif(shutil.which("sha256sum") is None, reason="sha256sum is required")
+def test_verify_release_rejects_non_executable_package_script(tmp_path: Path):
+    fixture_root, commit, _, output_dir, _, environment = _create_build_release_fixture(
+        tmp_path
+    )
+    build_result = _run_fixture_build(fixture_root, commit, environment)
+    assert build_result.returncode == 0, build_result.stderr
+    package_file = next(output_dir.glob("watch-assistant-*.tar.gz"))
+
+    extracted_root = tmp_path / "tampered-release"
+    with tarfile.open(package_file, "r:gz") as archive:
+        archive.extractall(tmp_path, filter="data")
+    package_root = tmp_path / f"watch-assistant-{commit[:7]}"
+    package_root.rename(extracted_root)
+    (extracted_root / "scripts" / "deploy_systemd_release.sh").chmod(0o644)
+    with tarfile.open(package_file, "w:gz") as archive:
+        archive.add(extracted_root, arcname=f"watch-assistant-{commit[:7]}")
+
+    result = subprocess.run(
+        [
+            "bash",
+            str(fixture_root / "scripts" / "verify_release_artifact.sh"),
+            str(package_file),
+            commit,
+            str(tmp_path / "verified-output"),
+        ],
+        cwd=fixture_root,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "required release script is not executable" in result.stderr
+
+
 @pytest.mark.parametrize("remote_failure", ["drift", "unavailable"])
 @pytest.mark.skipif(os.name == "nt", reason="POSIX shell release semantics are required")
 @pytest.mark.skipif(shutil.which("bash") is None, reason="bash is required")
@@ -583,6 +673,8 @@ def test_verify_release_rejects_tampered_package_helper_or_manifest(tmp_path: Pa
             path = package_root / relative
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("raise SystemExit(0)\n", encoding="utf-8")
+            if relative.startswith("scripts/"):
+                path.chmod(0o755)
 
         for relative in (
             "deploy/watch-assistant.service",
@@ -596,9 +688,12 @@ def test_verify_release_rejects_tampered_package_helper_or_manifest(tmp_path: Pa
             path = package_root / relative
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes((ROOT / relative).read_bytes())
+            if relative.startswith("scripts/"):
+                path.chmod(0o755)
 
         helper = package_root / "scripts" / "release_manifest.py"
         helper.write_bytes((ROOT / "scripts" / "release_manifest.py").read_bytes())
+        helper.chmod(0o755)
         manifest = {
             "schema_version": 2,
             "commit": commit,
