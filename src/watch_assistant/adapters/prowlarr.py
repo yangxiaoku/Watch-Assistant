@@ -114,6 +114,57 @@ _MAX_JSON_ITEMS = 2048
 _MAX_JSON_STRING_LENGTH = 8192
 
 
+class _PinnedNetworkBackend:
+    """Keep the validated address while preserving the request hostname."""
+
+    def __init__(self, address: str, backend: Any) -> None:
+        self._address = address
+        self._backend = backend
+
+    async def connect_tcp(
+        self,
+        host: str,
+        port: int,
+        *,
+        timeout: float | None = None,
+        local_address: str | None = None,
+        socket_options: Any = None,
+    ) -> Any:
+        del host
+        return await self._backend.connect_tcp(
+            self._address,
+            port,
+            timeout=timeout,
+            local_address=local_address,
+            socket_options=socket_options,
+        )
+
+    async def connect_unix_socket(
+        self,
+        path: str,
+        *,
+        timeout: float | None = None,
+        socket_options: Any = None,
+    ) -> Any:
+        return await self._backend.connect_unix_socket(
+            path,
+            timeout=timeout,
+            socket_options=socket_options,
+        )
+
+    async def sleep(self, seconds: float) -> Any:
+        return await self._backend.sleep(seconds)
+
+
+class _PinnedAsyncHTTPTransport(httpx.AsyncHTTPTransport):
+    """Use one validated IP for TCP while retaining HTTPX URL semantics."""
+
+    def __init__(self, address: str, *, backend: Any | None = None) -> None:
+        super().__init__()
+        delegate = backend if backend is not None else self._pool._network_backend
+        self._pool._network_backend = _PinnedNetworkBackend(address, delegate)
+
+
 class ProwlarrClient:
     """Call Prowlarr's public search API without exposing its API key."""
 
@@ -126,15 +177,23 @@ class ProwlarrClient:
         max_results: int = _MAX_RESULTS,
         client: httpx.AsyncClient | None = None,
         health_tracker: SourceHealthTracker | None = None,
+        resolved_address: str | None = None,
     ) -> None:
         self._timeout = timeout
         self._max_results = max(1, min(max_results, _MAX_RESULTS))
         self._health = health_tracker or SourceHealthTracker()
         self._owns_client = client is None
         if client is None:
+            transport = (
+                _PinnedAsyncHTTPTransport(resolved_address)
+                if resolved_address is not None
+                else None
+            )
             self._client = httpx.AsyncClient(
                 base_url=base_url.rstrip("/") + "/",
                 headers={"X-Api-Key": api_key},
+                follow_redirects=False,
+                transport=transport,
             )
         else:
             self._client = client
