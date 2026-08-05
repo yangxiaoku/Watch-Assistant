@@ -113,7 +113,8 @@ _BASE32_INFOHASH = re.compile(r"[A-Z2-7a-z2-7]{32}")
 _MAX_RESULTS = 500
 _MAX_PAGES = 20
 _MAX_PAGE_SIZE = 100
-_DEFAULT_PAGE_SIZE = 100
+# Some indexers overfetch a one-item request but time out on larger limits.
+_DEFAULT_PAGE_SIZE = 1
 _MAX_TEXT_LENGTH = 500
 _MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 _MAX_JSON_DEPTH = 12
