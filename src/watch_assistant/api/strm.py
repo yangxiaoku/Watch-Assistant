@@ -12,7 +12,7 @@ from typing import Annotated
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from fastapi.responses import RedirectResponse, StreamingResponse
+from fastapi.responses import StreamingResponse
 
 from watch_assistant.adapters.p115_playback_contract import (
     ForwardingPolicy,
@@ -1450,11 +1450,9 @@ async def _serve_playback(
         )
     ):
         raise HTTPException(status_code=502, detail="playback_remote_failed")
-    if playback_request.byte_range is not None:
-        return await _proxy_playback(
-            request, playback_request, upstream_url, upstream_headers
-        )
-    return RedirectResponse(url=upstream_url, status_code=307)
+    return await _proxy_playback(
+        request, playback_request, upstream_url, upstream_headers
+    )
 
 
 async def _proxy_playback(

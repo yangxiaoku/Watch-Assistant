@@ -70,7 +70,7 @@ def test_playback_runner_cli_requires_explicit_live_flag(tmp_path, capsys):
     assert report["error_code"] == "live_gate_closed"
 
 
-def test_playback_runner_keeps_redirect_and_range_status_contracts():
+def test_playback_runner_keeps_no_range_and_range_status_contracts():
     source = Path(__file__).resolve().parents[2].joinpath(
         "scripts/p115_strm_playback_live_runner.py"
     ).read_text(encoding="utf-8")
@@ -79,10 +79,14 @@ def test_playback_runner_keeps_redirect_and_range_status_contracts():
     )[0]
 
     assert run_source.count("await client.get(") == 3
-    assert "get_redirect = await client.get(" in run_source
+    assert "get = await client.get(" in run_source
     assert "get_range = await client.get(" in run_source
     assert (
-        "get_redirect, PLAYBACK_REDIRECT_STATUS, \"playback_get_redirect_failed\""
+        "head, PLAYBACK_NO_RANGE_STATUS, \"playback_head_failed\""
+        in run_source
+    )
+    assert (
+        "get, PLAYBACK_NO_RANGE_STATUS, \"playback_get_failed\""
         in run_source
     )
     assert "get_range, PLAYBACK_RANGE_STATUS, \"playback_range_failed\"" in run_source
