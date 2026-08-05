@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import socket
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -30,6 +31,7 @@ from watch_assistant.schemas import (
     SearchSourcesResponse,
 )
 from watch_assistant.services.api_errors import build_error_payload
+from watch_assistant.services.prowlarr_endpoint import ProwlarrEndpointRejected
 from watch_assistant.services.search import (
     SearchService,
     SearchUnavailable,
@@ -44,6 +46,29 @@ def _mapping_value(item: object, name: str) -> Any:
     if isinstance(item, Mapping):
         return item[name]
     return getattr(item, name)
+
+
+async def test_endpoint_contract_requires_explicit_private_address_allowlist(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(
+        "watch_assistant.services.prowlarr_endpoint.socket.getaddrinfo",
+        lambda *_args, **_kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.168.6.236", 80))
+        ],
+    )
+
+    with pytest.raises(ProwlarrEndpointRejected):
+        await ProwlarrClient.create(
+            "http://prowlarr.fixture.invalid", "fixture-only"
+        )
+
+    client = await ProwlarrClient.create(
+        "http://prowlarr.fixture.invalid",
+        "fixture-only",
+        allowed_private_addresses={"192.168.6.236"},
+    )
+    await client.aclose()
 
 
 def _new_target_adapter(

@@ -15,6 +15,13 @@ from urllib.parse import parse_qsl, urlencode, urlsplit
 
 import httpx
 
+from watch_assistant.services.prowlarr_endpoint import (
+    ProwlarrEndpointRejected,
+    ResolvedProwlarrEndpoint,
+    normalize_prowlarr_base_url,
+    parse_prowlarr_allowed_private_addresses,
+    resolve_prowlarr_endpoint,
+)
 from watch_assistant.services.source_health import SourceHealthTracker
 
 
@@ -114,6 +121,73 @@ _MAX_JSON_ITEMS = 2048
 _MAX_JSON_STRING_LENGTH = 8192
 
 
+class _PinnedProwlarrTransport(httpx.AsyncBaseTransport):
+    """Connect to one validated address while preserving Host and TLS SNI."""
+
+    def __init__(
+        self,
+        base_url: str,
+        allowed_private_addresses: frozenset[str],
+        resolved_endpoint: ResolvedProwlarrEndpoint | None = None,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
+        normalized = normalize_prowlarr_base_url(base_url)
+        if normalized is None:
+            raise ProwlarrEndpointRejected
+        parsed = urlsplit(normalized)
+        hostname = parsed.hostname
+        if not hostname:
+            raise ProwlarrEndpointRejected
+        self._base_url = normalized
+        self._scheme = parsed.scheme.casefold()
+        self._hostname = hostname
+        self._port = parsed.port or (443 if self._scheme == "https" else 80)
+        self._allowed_private_addresses = allowed_private_addresses
+        self._pinned_address = (
+            resolved_endpoint.pinned_address if resolved_endpoint else None
+        )
+        self._resolve_lock = asyncio.Lock()
+        self._transport = transport or httpx.AsyncHTTPTransport(trust_env=False)
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        if request.url.host != self._hostname:
+            raise ProwlarrEndpointRejected
+        pinned_address = await self._get_pinned_address()
+        target_url = request.url.copy_with(host=pinned_address)
+        headers = request.headers.copy()
+        headers["Host"] = _host_header(self._hostname, self._port, self._scheme)
+        extensions = dict(request.extensions)
+        if self._scheme == "https":
+            extensions["sni_hostname"] = self._hostname
+        pinned_request = httpx.Request(
+            request.method,
+            target_url,
+            headers=headers,
+            content=request.stream,
+            extensions=extensions,
+        )
+        return await self._transport.handle_async_request(pinned_request)
+
+    async def _get_pinned_address(self) -> str:
+        if self._pinned_address is None:
+            async with self._resolve_lock:
+                if self._pinned_address is None:
+                    endpoint = await resolve_prowlarr_endpoint(
+                        self._base_url, self._allowed_private_addresses
+                    )
+                    self._pinned_address = endpoint.pinned_address
+        return self._pinned_address
+
+    async def aclose(self) -> None:
+        await self._transport.aclose()
+
+
+def _host_header(hostname: str, port: int, scheme: str) -> str:
+    host = f"[{hostname}]" if ":" in hostname else hostname
+    default_port = 443 if scheme == "https" else 80
+    return host if port == default_port else f"{host}:{port}"
+
+
 class ProwlarrClient:
     """Call Prowlarr's public search API without exposing its API key."""
 
@@ -126,20 +200,59 @@ class ProwlarrClient:
         max_results: int = _MAX_RESULTS,
         client: httpx.AsyncClient | None = None,
         health_tracker: SourceHealthTracker | None = None,
+        allowed_private_addresses: Iterable[str] = (),
+        resolved_endpoint: ResolvedProwlarrEndpoint | None = None,
     ) -> None:
         self._timeout = timeout
         self._max_results = max(1, min(max_results, _MAX_RESULTS))
         self._health = health_tracker or SourceHealthTracker()
+        normalized_base_url = normalize_prowlarr_base_url(base_url)
+        if normalized_base_url is None:
+            raise ProwlarrEndpointRejected
+        self._allowed_private_addresses = _normalize_allowed_private_addresses(
+            allowed_private_addresses
+        )
         self._owns_client = client is None
         if client is None:
             self._client = httpx.AsyncClient(
-                base_url=base_url.rstrip("/") + "/",
+                base_url=normalized_base_url.rstrip("/") + "/",
                 headers={"X-Api-Key": api_key},
+                follow_redirects=False,
+                trust_env=False,
+                transport=_PinnedProwlarrTransport(
+                    normalized_base_url,
+                    self._allowed_private_addresses,
+                    resolved_endpoint,
+                ),
             )
         else:
             self._client = client
             self._client.headers.pop("Authorization", None)
             self._client.headers["X-Api-Key"] = api_key
+
+    @classmethod
+    async def create(
+        cls,
+        base_url: str,
+        api_key: str,
+        *,
+        allowed_private_addresses: Iterable[str] = (),
+        timeout: float = 12.0,
+        max_results: int = _MAX_RESULTS,
+        health_tracker: SourceHealthTracker | None = None,
+    ) -> "ProwlarrClient":
+        """Resolve, validate, and pin the endpoint before opening a client."""
+        allowed = _normalize_allowed_private_addresses(allowed_private_addresses)
+        endpoint = await resolve_prowlarr_endpoint(base_url, allowed)
+        return cls(
+            endpoint.base_url,
+            api_key,
+            timeout=timeout,
+            max_results=max_results,
+            health_tracker=health_tracker,
+            allowed_private_addresses=allowed,
+            resolved_endpoint=endpoint,
+        )
 
     async def search(
         self,
@@ -305,6 +418,20 @@ class ProwlarrClient:
     async def aclose(self) -> None:
         if self._owns_client:
             await self._client.aclose()
+
+
+def _normalize_allowed_private_addresses(
+    value: Iterable[str] | str,
+) -> frozenset[str]:
+    if isinstance(value, str):
+        return parse_prowlarr_allowed_private_addresses(value)
+    try:
+        values = tuple(value)
+    except TypeError as exc:
+        raise ProwlarrEndpointRejected from exc
+    if any(not isinstance(item, str) for item in values):
+        raise ProwlarrEndpointRejected
+    return parse_prowlarr_allowed_private_addresses(",".join(values))
 
 
 def _array_params(name: str, values: Iterable[int] | None) -> list[tuple[str, str]]:

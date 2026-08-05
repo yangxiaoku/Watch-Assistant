@@ -15,12 +15,32 @@ from watch_assistant.db import create_database, initialize_database
 from watch_assistant.models import ApplicationSettings
 
 
-async def _make_client(tmp_path: Path):
+class _MockProwlarrClient(ProwlarrClient):
+    def __init__(self, respx_mock, base_url: str, api_key: str, **kwargs):
+        self._injected_client = httpx.AsyncClient(
+            base_url=base_url.rstrip("/") + "/",
+            transport=httpx.MockTransport(respx_mock.async_handler),
+        )
+        super().__init__(base_url, api_key, client=self._injected_client, **kwargs)
+
+    async def aclose(self) -> None:
+        await self._injected_client.aclose()
+
+
+async def _make_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("PROWLARR_ALLOWED_PRIVATE_ADDRESSES", "127.0.0.1")
+
+    async def _create(_cls, base_url: str, api_key: str, **kwargs):
+        return _MockProwlarrClient(respx.mock, base_url, api_key, **kwargs)
+
+    monkeypatch.setattr(ProwlarrClient, "create", classmethod(_create))
     database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'settings-api.db'}")
     await initialize_database(database.engine)
     tmdb = TmdbClient("unused")
     pansou = PanSouClient("http://pansou.test")
-    prowlarr = ProwlarrClient("http://prowlarr.test", secrets.token_urlsafe(24))
+    prowlarr = _MockProwlarrClient(
+        respx.mock, "http://127.0.0.1", secrets.token_urlsafe(24)
+    )
     app = create_app(
         database=database,
         crypto=SecretCrypto(Fernet.generate_key().decode("ascii")),
@@ -36,24 +56,26 @@ async def _make_client(tmp_path: Path):
 
 @pytest.mark.integration
 @respx.mock
-async def test_prowlarr_settings_never_echo_key_and_verify_is_read_only(tmp_path):
+async def test_prowlarr_settings_never_echo_key_and_verify_is_read_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     api_key = secrets.token_urlsafe(24)
-    route = respx.get("http://prowlarr.test/api/v1/search").mock(
+    route = respx.get("http://127.0.0.1/api/v1/search").mock(
         return_value=httpx.Response(200, json=[])
     )
-    client, database, tmdb, pansou, prowlarr = await _make_client(tmp_path)
+    client, database, tmdb, pansou, prowlarr = await _make_client(tmp_path, monkeypatch)
     try:
         saved = await client.patch(
             "/api/v1/settings/search-sources/prowlarr",
             json={
                 "enabled": True,
-                "base_url": "http://prowlarr.test/",
+                "base_url": "http://127.0.0.1/",
                 "api_key": api_key,
                 "revision": 0,
             },
         )
         assert saved.status_code == 200
-        assert saved.json()["base_url"] == "http://prowlarr.test"
+        assert saved.json()["base_url"] == "http://127.0.0.1"
         assert saved.json()["api_key_source"] == "managed"
         assert api_key not in saved.text
 
@@ -121,26 +143,27 @@ async def test_prowlarr_settings_never_echo_key_and_verify_is_read_only(tmp_path
 @respx.mock
 async def test_prowlarr_verify_returns_safe_health_reason_and_retry_window(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
     status_code: int,
     headers: dict[str, str],
     expected_state: str,
     expected_reason: str,
 ):
-    route = respx.get("http://prowlarr.test/api/v1/search").mock(
+    route = respx.get("http://127.0.0.1/api/v1/search").mock(
         return_value=httpx.Response(
             status_code,
             json={"error": "fixture_upstream_detail"},
             headers=headers,
         )
     )
-    client, database, tmdb, pansou, prowlarr = await _make_client(tmp_path)
+    client, database, tmdb, pansou, prowlarr = await _make_client(tmp_path, monkeypatch)
     api_key = "fixture-only"
     try:
         saved = await client.patch(
             "/api/v1/settings/search-sources/prowlarr",
             json={
                 "enabled": True,
-                "base_url": "http://prowlarr.test",
+                "base_url": "http://127.0.0.1",
                 "api_key": api_key,
                 "revision": 0,
             },

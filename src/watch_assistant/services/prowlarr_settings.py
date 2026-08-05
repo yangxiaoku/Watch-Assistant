@@ -7,7 +7,6 @@ import re
 from collections import deque
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from urllib.parse import urlsplit, urlunsplit
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -20,6 +19,12 @@ from watch_assistant.adapters.prowlarr import (
 from watch_assistant.crypto import SecretCrypto
 from watch_assistant.models import ApplicationSettings
 from watch_assistant.services.observability import EventLogger, emit_event
+from watch_assistant.services.prowlarr_endpoint import (
+    ProwlarrEndpointRejected,
+    normalize_prowlarr_base_url,
+    parse_prowlarr_allowed_private_addresses,
+    resolve_prowlarr_endpoint,
+)
 from watch_assistant.services.settings import shared_settings_mutation_lock
 from watch_assistant.services.source_health import (
     SourceHealthState,
@@ -59,6 +64,7 @@ class ProwlarrSettingsService:
         environment_enabled: bool = False,
         environment_base_url: str = "",
         environment_api_key: str = "",
+        environment_allowed_private_addresses: str = "",
         timeout_seconds: float = 12.0,
         event_logger: EventLogger | None = None,
         runtime_state: Any | None = None,
@@ -69,6 +75,12 @@ class ProwlarrSettingsService:
         self._environment_enabled = environment_enabled
         self._environment_base_url = environment_base_url
         self._environment_api_key = environment_api_key
+        try:
+            self._allowed_private_addresses = parse_prowlarr_allowed_private_addresses(
+                environment_allowed_private_addresses
+            )
+        except ProwlarrEndpointRejected as exc:
+            raise ProwlarrSettingsRejected from exc
         self._timeout_seconds = timeout_seconds
         self._event_logger = event_logger
         self._runtime_state = runtime_state
@@ -117,7 +129,7 @@ class ProwlarrSettingsService:
         async with self._mutation_lock, self._session_factory() as session:
             settings = await self._get_or_create(session)
             values = self._effective_values(settings)
-        return self._new_client(values)
+        return await self._new_client(values)
 
     async def update(
         self,
@@ -146,6 +158,7 @@ class ProwlarrSettingsService:
                 if "enabled" in fields_set:
                     settings.managed_prowlarr_enabled = enabled
                 if fields_set:
+                    await self._validate_candidate(self._effective_values(settings))
                     settings.managed_prowlarr_updated_at = datetime.now(UTC)
                     settings.revision += 1
                     try:
@@ -319,15 +332,29 @@ class ProwlarrSettingsService:
             "revision": settings.revision,
         }
 
-    def _new_client(self, values: dict[str, object]) -> ProwlarrClient | None:
+    async def _new_client(self, values: dict[str, object]) -> ProwlarrClient | None:
         if not values["configured"]:
             return None
-        return ProwlarrClient(
-            str(values["base_url"]),
-            str(values["api_key"]),
-            timeout=self._timeout_seconds,
-            health_tracker=self._health,
-        )
+        try:
+            return await ProwlarrClient.create(
+                str(values["base_url"]),
+                str(values["api_key"]),
+                allowed_private_addresses=self._allowed_private_addresses,
+                timeout=self._timeout_seconds,
+                health_tracker=self._health,
+            )
+        except ProwlarrEndpointRejected as exc:
+            raise ProwlarrSettingsRejected from exc
+
+    async def _validate_candidate(self, values: dict[str, object]) -> None:
+        if not values["base_url"]:
+            return
+        try:
+            await resolve_prowlarr_endpoint(
+                str(values["base_url"]), self._allowed_private_addresses
+            )
+        except ProwlarrEndpointRejected as exc:
+            raise ProwlarrSettingsRejected from exc
 
     def _verify_result(
         self, snapshot: dict[str, object], message_code: str, checked_at: datetime
@@ -417,33 +444,10 @@ class ProwlarrSettingsService:
 
 
 def _normalize_base_url(value: object) -> str | None:
-    if value is None:
-        return None
-    if not isinstance(value, str):
-        raise ProwlarrSettingsRejected
-    value = value.strip()
-    if not value:
-        return None
     try:
-        parsed = urlsplit(value)
-    except ValueError as exc:
+        return normalize_prowlarr_base_url(value)
+    except ProwlarrEndpointRejected as exc:
         raise ProwlarrSettingsRejected from exc
-    try:
-        _ = parsed.port
-    except ValueError as exc:
-        raise ProwlarrSettingsRejected from exc
-    if (
-        parsed.scheme.casefold() not in {"http", "https"}
-        or not parsed.hostname
-        or parsed.username is not None
-        or parsed.password is not None
-        or parsed.query
-        or parsed.fragment
-        or any(ord(char) < 0x20 or ord(char) == 0x7F for char in value)
-    ):
-        raise ProwlarrSettingsRejected
-    path = parsed.path.rstrip("/")
-    return urlunsplit((parsed.scheme.casefold(), parsed.netloc, path, "", ""))
 
 
 def _safe_normalize_base_url(value: object) -> str | None:

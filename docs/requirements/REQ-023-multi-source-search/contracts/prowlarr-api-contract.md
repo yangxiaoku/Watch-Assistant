@@ -52,6 +52,10 @@ service:
 - `watch_assistant.adapters.prowlarr.ProwlarrClient(base_url, api_key,
   timeout, client)` uses the frozen query names and returns
   `ProwlarrSearchResult`;
+- Production settings use the asynchronous
+  `ProwlarrClient.create(base_url, api_key, allowed_private_addresses, ...)`
+  factory, which resolves and validates the endpoint before creating a
+  pinned transport. The injected `client` form remains an offline test seam.
 - The Prowlarr and PanSou adapters force `follow_redirects=False` on upstream
   requests, including injected HTTP clients, so a read-only call cannot follow
   a redirect to another target.
@@ -102,6 +106,16 @@ open a bounded local circuit.  After the retry window, exactly one probe is
 allowed.  The source-status endpoint exposes only the state, safe reason code,
 Chinese reason text, counters, and timestamps.  It does not expose the API
 key, request header, query text, response body, or retry header value.
+
+Prowlarr endpoint policy is explicit and applies equally to environment and
+managed URLs. `PROWLARR_ALLOWED_PRIVATE_ADDRESSES` is empty by default and
+accepts only exact private IP literals; CIDR, wildcard, credential-bearing,
+query-bearing, fragment-bearing, and control-character inputs are rejected.
+DNS answers must all be global or exact allowlist matches. A validated result
+is pinned to one address for the client lifetime, while a new runtime client
+resolves again. The transport preserves the configured hostname for the HTTP
+`Host` header and HTTPS SNI, connects only to the pinned address, disables
+proxy environment inheritance, and never follows redirects.
 
 Aggregation continues to execute PanSou and Prowlarr independently.  A
 Prowlarr timeout, rate limit, server failure, or open circuit leaves successful

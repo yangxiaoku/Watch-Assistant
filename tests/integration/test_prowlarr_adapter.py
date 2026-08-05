@@ -12,17 +12,35 @@ from watch_assistant.adapters.prowlarr import (
     ProwlarrClient,
     ProwlarrError,
     ProwlarrInvalidResponseError,
+    _PinnedProwlarrTransport,
 )
+from watch_assistant.services.prowlarr_endpoint import ResolvedProwlarrEndpoint
 from watch_assistant.services.source_health import SourceHealthTracker
 
 
+class _MockProwlarrClient(ProwlarrClient):
+    def __init__(self, respx_mock, base_url: str, api_key: str, **kwargs):
+        self._injected_client = httpx.AsyncClient(
+            base_url=base_url.rstrip("/") + "/",
+            transport=httpx.MockTransport(respx_mock.async_handler),
+        )
+        super().__init__(base_url, api_key, client=self._injected_client, **kwargs)
+
+    async def aclose(self) -> None:
+        await self._injected_client.aclose()
+
+
+def _mocked_client(respx_mock, base_url: str, api_key: str, **kwargs):
+    return _MockProwlarrClient(respx_mock, base_url, api_key, **kwargs)
+
+
 @pytest.mark.integration
-@respx.mock
-async def test_prowlarr_search_uses_read_only_contract_and_filters_nzb():
+@respx.mock(using="httpx")
+async def test_prowlarr_search_uses_read_only_contract_and_filters_nzb(respx_mock):
     api_key = secrets.token_urlsafe(24)
     info_hash = "abcdef0123456789abcdef0123456789abcdef01"
-    route = respx.get(
-        "http://prowlarr.test/api/v1/search",
+    route = respx_mock.get(
+        path="/api/v1/search",
         params={
             "query": "Inception 2010",
             "type": "search",
@@ -53,7 +71,7 @@ async def test_prowlarr_search_uses_read_only_contract_and_filters_nzb():
             ],
         )
     )
-    client = ProwlarrClient("http://prowlarr.test", api_key)
+    client = _mocked_client(respx_mock, "http://prowlarr.test", api_key)
 
     result = await client.search("Inception 2010")
     await client.aclose()
@@ -68,11 +86,11 @@ async def test_prowlarr_search_uses_read_only_contract_and_filters_nzb():
 
 
 @pytest.mark.integration
-@respx.mock
-async def test_prowlarr_builds_magnet_from_verified_infohash_when_needed():
+@respx.mock(using="httpx")
+async def test_prowlarr_builds_magnet_from_verified_infohash_when_needed(respx_mock):
     info_hash = "0123456789abcdef0123456789abcdef01234567"
     base32_hash = base64.b32encode(bytes.fromhex(info_hash)).decode().rstrip("=")
-    respx.get("http://prowlarr.test/api/v1/search").mock(
+    respx_mock.get(path="/api/v1/search").mock(
         return_value=httpx.Response(
             200,
             json=[
@@ -84,7 +102,9 @@ async def test_prowlarr_builds_magnet_from_verified_infohash_when_needed():
             ],
         )
     )
-    client = ProwlarrClient("http://prowlarr.test", secrets.token_urlsafe(24))
+    client = _mocked_client(
+        respx_mock, "http://prowlarr.test", secrets.token_urlsafe(24)
+    )
 
     result = await client.search("Movie")
     await client.aclose()
@@ -94,13 +114,13 @@ async def test_prowlarr_builds_magnet_from_verified_infohash_when_needed():
 
 
 @pytest.mark.integration
-@respx.mock
-async def test_prowlarr_auth_error_does_not_expose_api_key():
+@respx.mock(using="httpx")
+async def test_prowlarr_auth_error_does_not_expose_api_key(respx_mock):
     api_key = secrets.token_urlsafe(24)
-    respx.get("http://prowlarr.test/api/v1/search").mock(
+    respx_mock.get(path="/api/v1/search").mock(
         return_value=httpx.Response(401, json={"message": "unauthorized"})
     )
-    client = ProwlarrClient("http://prowlarr.test", api_key)
+    client = _mocked_client(respx_mock, "http://prowlarr.test", api_key)
 
     with pytest.raises(ProwlarrAuthError) as error:
         await client.search("Movie")
@@ -148,9 +168,64 @@ async def test_prowlarr_does_not_follow_search_redirects():
 
 
 @pytest.mark.integration
-@respx.mock
-async def test_prowlarr_rejects_zero_infohash():
-    respx.get("http://prowlarr.test/api/v1/search").mock(
+async def test_prowlarr_transport_pins_ip_but_preserves_host_and_sni():
+    captured: list[httpx.Request] = []
+
+    class CaptureTransport(httpx.AsyncBaseTransport):
+        async def handle_async_request(
+            self, request: httpx.Request
+        ) -> httpx.Response:
+            captured.append(request)
+            return httpx.Response(
+                200,
+                content=b"[]",
+                headers={"content-type": "application/json"},
+                request=request,
+            )
+
+        async def aclose(self) -> None:
+            return None
+
+    endpoint = ResolvedProwlarrEndpoint(
+        base_url="https://prowlarr.test:8443/prowlarr",
+        hostname="prowlarr.test",
+        port=8443,
+        pinned_address="192.168.6.236",
+    )
+    transport = _PinnedProwlarrTransport(
+        endpoint.base_url,
+        frozenset({"192.168.6.236"}),
+        endpoint,
+        transport=CaptureTransport(),
+    )
+    transport_client = httpx.AsyncClient(
+        base_url=endpoint.base_url,
+        transport=transport,
+    )
+    client = ProwlarrClient(
+        endpoint.base_url,
+        "fixture-only",
+        client=transport_client,
+    )
+
+    try:
+        result = await client.search("Movie", limit=1)
+    finally:
+        await client.aclose()
+        await transport_client.aclose()
+
+    assert result.releases == ()
+    assert len(captured) == 1
+    request = captured[0]
+    assert request.url.host == "192.168.6.236"
+    assert request.headers["Host"] == "prowlarr.test:8443"
+    assert request.extensions["sni_hostname"] == "prowlarr.test"
+
+
+@pytest.mark.integration
+@respx.mock(using="httpx")
+async def test_prowlarr_rejects_zero_infohash(respx_mock):
+    respx_mock.get(path="/api/v1/search").mock(
         return_value=httpx.Response(
             200,
             json=[
@@ -162,7 +237,7 @@ async def test_prowlarr_rejects_zero_infohash():
             ],
         )
     )
-    client = ProwlarrClient("http://prowlarr.test", "fixture-only")
+    client = _mocked_client(respx_mock, "http://prowlarr.test", "fixture-only")
 
     try:
         result = await client.search("Movie")
@@ -174,13 +249,13 @@ async def test_prowlarr_rejects_zero_infohash():
 
 
 @pytest.mark.integration
-@respx.mock
-async def test_prowlarr_rejects_non_array_response_without_returning_body():
+@respx.mock(using="httpx")
+async def test_prowlarr_rejects_non_array_response_without_returning_body(respx_mock):
     api_key = secrets.token_urlsafe(24)
-    respx.get("http://prowlarr.test/api/v1/search").mock(
+    respx_mock.get(path="/api/v1/search").mock(
         return_value=httpx.Response(200, json={"error": "unexpected"})
     )
-    client = ProwlarrClient("http://prowlarr.test", api_key)
+    client = _mocked_client(respx_mock, "http://prowlarr.test", api_key)
 
     with pytest.raises(ProwlarrInvalidResponseError) as error:
         await client.search("Movie")
@@ -191,9 +266,9 @@ async def test_prowlarr_rejects_non_array_response_without_returning_body():
 
 
 @pytest.mark.integration
-@respx.mock
-async def test_prowlarr_rejects_unbounded_or_non_json_success_response():
-    route = respx.get("http://prowlarr.test/api/v1/search").mock(
+@respx.mock(using="httpx")
+async def test_prowlarr_rejects_unbounded_or_non_json_success_response(respx_mock):
+    route = respx_mock.get(path="/api/v1/search").mock(
         side_effect=[
             httpx.Response(
                 200,
@@ -217,7 +292,8 @@ async def test_prowlarr_rejects_unbounded_or_non_json_success_response():
             ),
         ]
     )
-    client = ProwlarrClient(
+    client = _mocked_client(
+        respx_mock,
         "http://prowlarr.test",
         "fixture-only",
         health_tracker=SourceHealthTracker(failure_threshold=10),
@@ -235,12 +311,13 @@ async def test_prowlarr_rejects_unbounded_or_non_json_success_response():
 
 
 @pytest.mark.integration
-@respx.mock
-async def test_prowlarr_preserves_base_url_path_prefix():
-    route = respx.get("http://prowlarr.test/prowlarr/api/v1/search").mock(
+@respx.mock(using="httpx")
+async def test_prowlarr_preserves_base_url_path_prefix(respx_mock):
+    route = respx_mock.get(path="/prowlarr/api/v1/search").mock(
         return_value=httpx.Response(200, json=[])
     )
-    client = ProwlarrClient(
+    client = _mocked_client(
+        respx_mock,
         "http://prowlarr.test/prowlarr", secrets.token_urlsafe(24)
     )
 
@@ -251,8 +328,8 @@ async def test_prowlarr_preserves_base_url_path_prefix():
 
 
 @pytest.mark.integration
-@respx.mock
-async def test_prowlarr_accepts_bounded_upstream_overfetch():
+@respx.mock(using="httpx")
+async def test_prowlarr_accepts_bounded_upstream_overfetch(respx_mock):
     first_page = [
         {
             "title": f"Release {index}",
@@ -269,13 +346,15 @@ async def test_prowlarr_accepts_bounded_upstream_overfetch():
         }
         for index in range(31, 51)
     ]
-    route = respx.get("http://prowlarr.test/api/v1/search").mock(
+    route = respx_mock.get(path="/api/v1/search").mock(
         side_effect=[
             httpx.Response(200, json=first_page),
             httpx.Response(200, json=second_page),
         ]
     )
-    client = ProwlarrClient("http://prowlarr.test", secrets.token_urlsafe(24))
+    client = _mocked_client(
+        respx_mock, "http://prowlarr.test", secrets.token_urlsafe(24)
+    )
 
     try:
         result = await client.search("Movie", limit=50, page_size=1)

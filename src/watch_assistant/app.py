@@ -882,6 +882,9 @@ def create_app(
                 environment_enabled=settings.prowlarr_enabled,
                 environment_base_url=settings.prowlarr_base_url,
                 environment_api_key=settings.prowlarr_api_key.get_secret_value(),
+                environment_allowed_private_addresses=(
+                    settings.prowlarr_allowed_private_addresses
+                ),
                 timeout_seconds=settings.prowlarr_timeout_seconds,
                 event_logger=application.state.settings_service,
                 runtime_state=application.state,
@@ -1638,6 +1641,9 @@ def create_app(
             environment_enabled=_env_flag("PROWLARR_ENABLED"),
             environment_base_url=os.environ.get("PROWLARR_BASE_URL", ""),
             environment_api_key=os.environ.get("PROWLARR_API_KEY", ""),
+            environment_allowed_private_addresses=os.environ.get(
+                "PROWLARR_ALLOWED_PRIVATE_ADDRESSES", ""
+            ),
             timeout_seconds=float(os.environ.get("PROWLARR_TIMEOUT_SECONDS", "12")),
             event_logger=application.state.settings_service,
             runtime_state=application.state,

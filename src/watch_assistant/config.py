@@ -5,6 +5,12 @@ from pathlib import Path
 from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from watch_assistant.services.prowlarr_endpoint import (
+    ProwlarrEndpointRejected,
+    normalize_prowlarr_base_url,
+    parse_prowlarr_allowed_private_addresses,
+)
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -67,6 +73,9 @@ class Settings(BaseSettings):
     )
     prowlarr_api_key: SecretStr = Field(
         default=SecretStr(""), validation_alias="PROWLARR_API_KEY"
+    )
+    prowlarr_allowed_private_addresses: str = Field(
+        default="", validation_alias="PROWLARR_ALLOWED_PRIVATE_ADDRESSES"
     )
     prowlarr_timeout_seconds: float = Field(
         default=12, ge=1, le=30, validation_alias="PROWLARR_TIMEOUT_SECONDS"
@@ -228,6 +237,16 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_prowlarr_configuration(self) -> "Settings":
+        try:
+            parse_prowlarr_allowed_private_addresses(
+                self.prowlarr_allowed_private_addresses
+            )
+            if self.prowlarr_base_url.strip():
+                normalize_prowlarr_base_url(self.prowlarr_base_url)
+        except ProwlarrEndpointRejected as exc:
+            raise ValueError(
+                "PROWLARR_BASE_URL or PROWLARR_ALLOWED_PRIVATE_ADDRESSES is invalid"
+            ) from exc
         if self.prowlarr_enabled and not self.prowlarr_base_url.strip():
             raise ValueError("PROWLARR_ENABLED requires PROWLARR_BASE_URL")
         if self.prowlarr_enabled and not self.prowlarr_api_key.get_secret_value():
