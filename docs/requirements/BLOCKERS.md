@@ -5,8 +5,9 @@
 本记录用于按需求优先级推进时记录无法安全继续的事项。阻断某项需求后，继续处理不依赖该阻断的需求；未完成的能力不得描述为已上线。
 
 当前发布核对只认唯一发布分支 `codex/publish-main`；发布前执行 `git fetch --all --prune`，再用
-`git rev-parse origin/codex/publish-main` 获取实际最新基线。本轮文档收口未生成发布包、未执行部署；只读核对确认服务器当前
-systemd release 与动态 ref 一致、健康接口正常，并保留一次受限生产目标目录库存快照和整理预览。这里的“库存快照完成”仅表示该次只读扫描证据，
+`git rev-parse origin/codex/publish-main` 获取实际最新基线。本审计会话未在本地生成发布包、未执行部署；当前基线对应的公开
+[Verify run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30971086025) 与 [Systemd Release Package run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30971086083)
+均成功。只读核对确认服务器当前 systemd release 与动态 ref 一致、健康接口正常，并保留一次受限生产目标目录库存快照和整理预览。这里的“库存快照完成”仅表示该次只读扫描证据，
 不等于 REQ-010 稳定生产库存基线，也不覆盖真实 115 写入、媒体服务器兼容、生产 HTTP 鉴权路由或其他需求的完整验收。
 
 当前发布基线的 commit 必须在发布前通过 `git fetch --all --prune` 和 `git rev-parse origin/codex/publish-main` 动态解析；本文不硬编码当前发布 SHA。当前 first-parent 已包含 PR #44-#61，分别覆盖审查、搜索 readiness、库存/整理范围、STRM 清理/提交门禁、前端工作台、发布门禁、可靠性加固、基线文档同步、动态基线解析、通知失败矩阵、发布后文档、workflow 证据、任务 worker fencing、p115 整理 readiness、验证证据、STRM 清理 readiness、Prowlarr live readiness 和前端工作台。
