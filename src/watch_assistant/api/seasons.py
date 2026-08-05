@@ -8,6 +8,7 @@ from sqlalchemy import select
 
 from watch_assistant.library_models import (
     LibraryMediaIdentity,
+    LibraryScanCheckpoint,
     LibraryScanEntry,
     LibraryScanRun,
     MediaLibrary,
@@ -23,6 +24,10 @@ from watch_assistant.services.episode_completeness import (
     EpisodeFileReference,
     build_episode_matrix,
 )
+from watch_assistant.services.library_index import (
+    LibraryIndexError,
+    validate_complete_scan_evidence,
+)
 from watch_assistant.services.library_inventory import (
     InventoryFile,
     build_snapshot,
@@ -32,6 +37,7 @@ from watch_assistant.services.season_metadata import (
     SeasonMetadataError,
     SeasonMetadataService,
 )
+from watch_assistant.services.strm_scope import source_snapshot_is_current
 
 router = APIRouter(prefix="/api/v1", dependencies=[Depends(require_api_auth)])
 
@@ -91,7 +97,7 @@ async def get_episode_completeness(
     fallback_language: str = Query(default="en-US", min_length=2, max_length=32),
     refresh: bool = Query(default=False),
 ) -> EpisodeCompletenessResponse:
-    library, run, entries, identities = await _load_library_scope(
+    library, run, entries, identities, snapshot_current = await _load_library_scope(
         request, library_id
     )
     try:
@@ -108,7 +114,9 @@ async def get_episode_completeness(
             status = 502
         raise HTTPException(status_code=status, detail=exc.code) from exc
 
-    snapshot = _inventory_snapshot(run, entries, identities)
+    snapshot = _inventory_snapshot(
+        run, entries, identities, snapshot_current=snapshot_current
+    )
     # Stale, unknown, and incomplete scans all remain non-conclusive.  This
     # prevents a delayed or partial remote listing from becoming a "missing"
     # episode conclusion.
@@ -166,19 +174,45 @@ async def _load_library_scope(request: Request, library_id: str):
             .limit(1)
         )
         if run is None:
-            return library, None, [], {}
-        entries = list(
+            return library, None, [], {}, False
+        snapshot_current = bool(
+            library.enabled
+            and library.scope_verified
+            and run.root_directory_id == library.root_directory_id
+            and run.complete
+            and run.state == "completed"
+            and run.snapshot_revision is not None
+            and await source_snapshot_is_current(
+                session,
+                library_id=library_id,
+                source_scan_run_id=run.id,
+                source_snapshot_revision=run.snapshot_revision,
+            )
+        )
+        all_entries = list(
             (
                 await session.scalars(
                     select(LibraryScanEntry)
                     .where(
-                        LibraryScanEntry.scan_run_id == run.id,
-                        LibraryScanEntry.is_directory.is_(False),
+                        LibraryScanEntry.scan_run_id == run.id
                     )
                     .order_by(LibraryScanEntry.object_id)
                 )
             ).all()
         )
+        if snapshot_current:
+            checkpoint = await session.get(LibraryScanCheckpoint, run.id)
+            try:
+                validate_complete_scan_evidence(
+                    run,
+                    checkpoint,
+                    all_entries,
+                    root_directory_id=library.root_directory_id,
+                    require_tree=True,
+                )
+            except LibraryIndexError:
+                snapshot_current = False
+        entries = [entry for entry in all_entries if not entry.is_directory]
         identities = {
             identity.object_id: identity
             for identity in (
@@ -189,10 +223,10 @@ async def _load_library_scope(request: Request, library_id: str):
                 )
             ).all()
         }
-    return library, run, entries, identities
+    return library, run, entries, identities, snapshot_current
 
 
-def _inventory_snapshot(run, entries, identities):
+def _inventory_snapshot(run, entries, identities, *, snapshot_current: bool):
     if run is None:
         return build_snapshot((), complete=False, captured_at=None)
     captured_at = run.updated_at
@@ -233,7 +267,9 @@ def _inventory_snapshot(run, entries, identities):
             )
             for entry in entries
         ),
-        complete=bool(run.complete and run.state == "completed"),
+        complete=bool(
+            snapshot_current and run.complete and run.state == "completed"
+        ),
         captured_at=captured_at,
     )
 

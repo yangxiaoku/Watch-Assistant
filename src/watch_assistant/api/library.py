@@ -2,6 +2,7 @@
 
 import asyncio
 import hashlib
+import json
 import re
 from datetime import UTC
 from typing import Annotated, Literal
@@ -64,9 +65,11 @@ from watch_assistant.services.library_index import (
     validate_complete_scan_evidence,
 )
 from watch_assistant.services.library_inventory import (
+    FreshnessStatus,
     InventoryFile,
     InventorySnapshot,
     build_snapshot,
+    calculate_freshness,
     check_inventory,
 )
 from watch_assistant.services.library_scan_operations import (
@@ -92,6 +95,7 @@ from watch_assistant.services.strm_operations import (
     StrmOperationKind,
     StrmOperationService,
 )
+from watch_assistant.services.strm_scope import source_snapshot_is_current
 
 router = APIRouter(prefix="/api/v1", dependencies=[Depends(require_api_auth)])
 AuthDependency = Annotated[AuthContext, Depends(require_api_auth)]
@@ -239,8 +243,46 @@ async def _latest_scans(session, library_ids: set[str] | None = None) -> dict[st
     )
     latest: dict[str, LibraryScanRun] = {}
     for run in (await session.scalars(query)).all():
-        latest.setdefault(run.library_id, run)
+        if run.library_id in latest:
+            continue
+        if await _scan_is_current_and_verified(session, run):
+            latest[run.library_id] = run
     return latest
+
+
+async def _scan_is_current_and_verified(
+    session, run: LibraryScanRun
+) -> bool:
+    if run.snapshot_revision is None:
+        return False
+    if not await source_snapshot_is_current(
+        session,
+        library_id=run.library_id,
+        source_scan_run_id=run.id,
+        source_snapshot_revision=run.snapshot_revision,
+    ):
+        return False
+    checkpoint = await session.get(LibraryScanCheckpoint, run.id)
+    entries = list(
+        (
+            await session.scalars(
+                select(LibraryScanEntry).where(
+                    LibraryScanEntry.scan_run_id == run.id
+                )
+            )
+        ).all()
+    )
+    try:
+        validate_complete_scan_evidence(
+            run,
+            checkpoint,
+            entries,
+            root_directory_id=run.root_directory_id,
+            require_tree=True,
+        )
+    except LibraryIndexError:
+        return False
+    return True
 
 
 @router.get("/libraries", response_model=MediaLibraryListResponse)
@@ -630,8 +672,21 @@ def _empty_cleanup_error_status(code: str) -> int:
     return 404 if code == "plan_not_found" else 409
 
 
-def _empty_cleanup_operation_scope(plan_id: str) -> str:
-    return "cleanup:" + hashlib.sha256(plan_id.encode("ascii")).hexdigest()[:32]
+def _empty_cleanup_operation_scope(
+    plan_id: str, payload: EmptyDirectoryCleanupPlanApplyRequest
+) -> str:
+    canonical = json.dumps(
+        {
+            "confirm": payload.confirm,
+            "digest": payload.digest.lower(),
+            "expected_revision": payload.expected_revision,
+            "plan_id": plan_id,
+        },
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("ascii")
+    return "cleanup:" + hashlib.sha256(canonical).hexdigest()[:32]
 
 
 async def _run_empty_cleanup_operation_heartbeat(
@@ -773,7 +828,7 @@ async def apply_empty_directory_cleanup_plan(
             library_id=current_plan.library_id,
             source_scan_run_id=current_plan.source_scan_run_id,
             kind=StrmOperationKind.CLEANUP,
-            workflow_id=_empty_cleanup_operation_scope(plan_id),
+            workflow_id=_empty_cleanup_operation_scope(plan_id, payload),
             idempotency_key=payload.idempotency_key,
         )
         running, acquired = await operations.claim_start(queued.operation_id)
@@ -1305,6 +1360,14 @@ async def bind_library_identity(
         run = await _latest_scan_any(session, library_id)
         if not _scan_is_complete(run, library):
             raise HTTPException(status_code=409, detail="library_inventory_incomplete")
+        if not await _scan_snapshot_is_current(session, run):
+            raise HTTPException(status_code=409, detail="library_inventory_incomplete")
+        captured_at = run.updated_at
+        if captured_at.tzinfo is None:
+            captured_at = captured_at.replace(tzinfo=UTC)
+        freshness = calculate_freshness(complete=True, captured_at=captured_at)
+        if freshness.status is not FreshnessStatus.FRESH:
+            raise HTTPException(status_code=409, detail="library_inventory_incomplete")
         checkpoint = await session.get(LibraryScanCheckpoint, run.id)
         all_entries = list(
             (
@@ -1437,6 +1500,8 @@ async def _inventory_snapshot(
         ).all()
     )
     complete = _scan_is_complete(run, library)
+    if complete and not await _scan_snapshot_is_current(session, run):
+        complete = False
     if complete:
         checkpoint = await session.get(LibraryScanCheckpoint, run.id)
         try:
@@ -1508,6 +1573,17 @@ async def _inventory_snapshot(
             if run.updated_at.tzinfo is not None
             else run.updated_at.replace(tzinfo=UTC)
         ),
+    )
+
+
+async def _scan_snapshot_is_current(session, run: LibraryScanRun | None) -> bool:
+    if run is None or run.snapshot_revision is None:
+        return False
+    return await source_snapshot_is_current(
+        session,
+        library_id=run.library_id,
+        source_scan_run_id=run.id,
+        source_snapshot_revision=run.snapshot_revision,
     )
 
 
