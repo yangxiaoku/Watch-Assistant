@@ -27,6 +27,7 @@ def test_inspection_settings_have_production_defaults():
     assert settings.web_auth_bootstrap_enabled is False
     assert settings.prowlarr_enabled is False
     assert settings.prowlarr_configured is False
+    assert settings.prowlarr_allowed_private_addresses == ""
     assert settings.prowlarr_timeout_seconds == 12
     assert settings.prowlarr_max_concurrency == 4
     assert settings.diagnostics_token.get_secret_value() == ""
@@ -198,3 +199,23 @@ def test_prowlarr_is_configured_only_with_explicit_complete_settings():
     )
 
     assert settings.prowlarr_configured is True
+
+
+def test_prowlarr_accepts_an_explicit_private_endpoint_allowlist():
+    settings = make_settings(
+        PROWLARR_ENABLED=True,
+        PROWLARR_BASE_URL="http://127.0.0.1:9696",
+        PROWLARR_API_KEY=secrets.token_urlsafe(24),
+        PROWLARR_ALLOWED_PRIVATE_ADDRESSES="127.0.0.1",
+    )
+
+    assert settings.prowlarr_allowed_private_addresses == "127.0.0.1"
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["127.0.0.0/8", "127.0.*", "8.8.8.8", "127.0.0.1,"],
+)
+def test_prowlarr_rejects_non_exact_private_endpoint_allowlist(value: str):
+    with pytest.raises(ValidationError, match="PROWLARR_ALLOWED_PRIVATE_ADDRESSES"):
+        make_settings(PROWLARR_ALLOWED_PRIVATE_ADDRESSES=value)

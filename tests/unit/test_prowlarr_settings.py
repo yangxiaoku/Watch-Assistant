@@ -68,8 +68,9 @@ async def test_prowlarr_settings_are_encrypted_and_fall_back_after_reset(tmp_pat
         database.session_factory,
         SecretCrypto(Fernet.generate_key().decode("ascii")),
         environment_enabled=True,
-        environment_base_url="http://env-prowlarr.test/",
+        environment_base_url="http://127.0.0.1/",
         environment_api_key=environment_key,
+        environment_allowed_private_addresses="127.0.0.1",
         runtime_state=SimpleNamespace(search_service=fake_search),
         hostname_resolver=_public_fixture_resolver,
     )
@@ -77,7 +78,7 @@ async def test_prowlarr_settings_are_encrypted_and_fall_back_after_reset(tmp_pat
     initial = await service.snapshot()
     managed = await service.update(
         enabled=True,
-        base_url="http://managed-prowlarr.test/prowlarr/",
+        base_url="http://127.0.0.1/prowlarr/",
         api_key=managed_key,
         fields_set={"enabled", "base_url", "api_key"},
         revision=initial["revision"],
@@ -86,7 +87,7 @@ async def test_prowlarr_settings_are_encrypted_and_fall_back_after_reset(tmp_pat
     assert managed["source"] == "managed"
     assert managed["api_key_source"] == "managed"
     assert managed["api_key_configured"] is True
-    assert managed["base_url"] == "http://managed-prowlarr.test/prowlarr"
+    assert managed["base_url"] == "http://127.0.0.1/prowlarr"
     assert managed_key not in str(managed)
     assert len(fake_search.clients) == 1
     async with database.session_factory() as session:
@@ -96,7 +97,7 @@ async def test_prowlarr_settings_are_encrypted_and_fall_back_after_reset(tmp_pat
 
     fallback = await service.reset(managed["revision"])
     assert fallback["source"] == "environment"
-    assert fallback["base_url"] == "http://env-prowlarr.test"
+    assert fallback["base_url"] == "http://127.0.0.1"
     assert fallback["api_key_source"] == "environment"
     assert len(fake_search.clients) == 2
 
@@ -118,6 +119,14 @@ async def test_prowlarr_settings_reject_unsafe_url_and_stale_revision(tmp_path):
         await service.update(
             enabled=True,
             base_url="https://user:password@prowlarr.test/search?key=secret",
+            api_key=api_key,
+            fields_set={"enabled", "base_url", "api_key"},
+            revision=snapshot["revision"],
+        )
+    with pytest.raises(ProwlarrSettingsRejected):
+        await service.update(
+            enabled=True,
+            base_url="http://127.0.0.1",
             api_key=api_key,
             fields_set={"enabled", "base_url", "api_key"},
             revision=snapshot["revision"],
@@ -165,6 +174,7 @@ async def test_cancelled_commit_still_applies_persisted_runtime_state(tmp_path, 
     service = ProwlarrSettingsService(
         database.session_factory,
         SecretCrypto(Fernet.generate_key().decode("ascii")),
+        environment_allowed_private_addresses="127.0.0.1",
         runtime_state=SimpleNamespace(search_service=fake_search),
         hostname_resolver=_public_fixture_resolver,
     )
@@ -179,7 +189,7 @@ async def test_cancelled_commit_still_applies_persisted_runtime_state(tmp_path, 
     with pytest.raises(asyncio.CancelledError):
         await service.update(
             enabled=True,
-            base_url="http://managed-prowlarr.test",
+            base_url="http://127.0.0.1",
             api_key=secrets.token_urlsafe(24),
             fields_set={"enabled", "base_url", "api_key"},
             revision=initial["revision"],

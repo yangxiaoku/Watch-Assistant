@@ -41,7 +41,9 @@ async def _make_client(tmp_path: Path):
 
 @pytest.mark.integration
 @respx.mock
-async def test_prowlarr_settings_never_echo_key_and_verify_is_read_only(tmp_path):
+async def test_prowlarr_settings_never_echo_key_and_verify_is_read_only(
+    tmp_path: Path,
+):
     api_key = secrets.token_urlsafe(24)
     route = respx.get("http://prowlarr.test/api/v1/search").mock(
         return_value=httpx.Response(200, json=[])

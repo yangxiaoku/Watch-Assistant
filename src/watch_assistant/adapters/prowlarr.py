@@ -15,6 +15,13 @@ from urllib.parse import parse_qsl, urlencode, urlsplit
 
 import httpx
 
+from watch_assistant.services.prowlarr_endpoint import (
+    ProwlarrEndpointRejected,
+    ResolvedProwlarrEndpoint,
+    normalize_prowlarr_base_url,
+    parse_prowlarr_allowed_private_addresses,
+    resolve_prowlarr_endpoint,
+)
 from watch_assistant.services.source_health import SourceHealthTracker
 
 
@@ -160,7 +167,7 @@ class _PinnedAsyncHTTPTransport(httpx.AsyncHTTPTransport):
     """Use one validated IP for TCP while retaining HTTPX URL semantics."""
 
     def __init__(self, address: str, *, backend: Any | None = None) -> None:
-        super().__init__()
+        super().__init__(trust_env=False)
         delegate = backend if backend is not None else self._pool._network_backend
         self._pool._network_backend = _PinnedNetworkBackend(address, delegate)
 
@@ -178,10 +185,20 @@ class ProwlarrClient:
         client: httpx.AsyncClient | None = None,
         health_tracker: SourceHealthTracker | None = None,
         resolved_address: str | None = None,
+        allowed_private_addresses: Iterable[str] = (),
+        resolved_endpoint: ResolvedProwlarrEndpoint | None = None,
     ) -> None:
         self._timeout = timeout
         self._max_results = max(1, min(max_results, _MAX_RESULTS))
         self._health = health_tracker or SourceHealthTracker()
+        normalized_base_url = normalize_prowlarr_base_url(base_url)
+        if normalized_base_url is None:
+            raise ProwlarrEndpointRejected
+        if resolved_endpoint is not None and resolved_address is None:
+            resolved_address = resolved_endpoint.pinned_address
+        self._allowed_private_addresses = _normalize_allowed_private_addresses(
+            allowed_private_addresses
+        )
         self._owns_client = client is None
         if client is None:
             transport = (
@@ -190,15 +207,40 @@ class ProwlarrClient:
                 else None
             )
             self._client = httpx.AsyncClient(
-                base_url=base_url.rstrip("/") + "/",
+                base_url=normalized_base_url.rstrip("/") + "/",
                 headers={"X-Api-Key": api_key},
                 follow_redirects=False,
+                trust_env=False,
                 transport=transport,
             )
         else:
             self._client = client
             self._client.headers.pop("Authorization", None)
             self._client.headers["X-Api-Key"] = api_key
+
+    @classmethod
+    async def create(
+        cls,
+        base_url: str,
+        api_key: str,
+        *,
+        allowed_private_addresses: Iterable[str] = (),
+        timeout: float = 12.0,
+        max_results: int = _MAX_RESULTS,
+        health_tracker: SourceHealthTracker | None = None,
+    ) -> "ProwlarrClient":
+        """Resolve, validate, and pin the endpoint before opening a client."""
+        allowed = _normalize_allowed_private_addresses(allowed_private_addresses)
+        endpoint = await resolve_prowlarr_endpoint(base_url, allowed)
+        return cls(
+            endpoint.base_url,
+            api_key,
+            timeout=timeout,
+            max_results=max_results,
+            health_tracker=health_tracker,
+            allowed_private_addresses=allowed,
+            resolved_address=endpoint.pinned_address,
+        )
 
     async def search(
         self,
@@ -364,6 +406,20 @@ class ProwlarrClient:
     async def aclose(self) -> None:
         if self._owns_client:
             await self._client.aclose()
+
+
+def _normalize_allowed_private_addresses(
+    value: Iterable[str] | str,
+) -> frozenset[str]:
+    if isinstance(value, str):
+        return parse_prowlarr_allowed_private_addresses(value)
+    try:
+        values = tuple(value)
+    except TypeError as exc:
+        raise ProwlarrEndpointRejected from exc
+    if any(not isinstance(item, str) for item in values):
+        raise ProwlarrEndpointRejected
+    return parse_prowlarr_allowed_private_addresses(",".join(values))
 
 
 def _array_params(name: str, values: Iterable[int] | None) -> list[tuple[str, str]]:
