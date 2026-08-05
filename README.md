@@ -105,6 +105,7 @@ Web 登录账号默认为 `admin`。生产环境应继续使用 `WEB_PASSWORD_HA
 `WEB_AUTH_BOOTSTRAP_PASSWORD`（systemd）或 `WEB_AUTH_BOOTSTRAP_PASSWORD_FILE`（Compose）
 提供引导密码。引导模式不与正式密码哈希同时启用，也不会自动消费；完成初始化后应关闭开关、
 配置 Argon2 密码哈希并重启服务。bootstrap 不应暴露到公网或共享网络，初始化密码不得写入仓库。
+登录 API 兼容旧版仅提交密码的客户端；新客户端可以同时提交 `WEB_USERNAME` 和密码。
 
 访问 `http://服务器地址:8115/`。构建后的用户脚本位于容器内 Web 根目录，可从 `http://服务器地址:8115/watch-assistant.user.js` 获取。
 

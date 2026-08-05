@@ -51,16 +51,20 @@ def test_inspection_settings_have_production_defaults():
 def test_admin_bootstrap_can_replace_the_environment_password_hash():
     values = dict(BASE_SETTINGS)
     values.pop("WEB_PASSWORD_HASH")
+    bootstrap_password = secrets.token_urlsafe(24)
     settings = Settings(
         **values,
         WEB_AUTH_BOOTSTRAP_ENABLED=True,
-        WEB_AUTH_BOOTSTRAP_PASSWORD="bootstrap-password",
+        WEB_AUTH_BOOTSTRAP_PASSWORD=bootstrap_password,
     )
 
     assert settings.web_username == "admin"
     assert settings.web_password_hash is None
     assert settings.web_auth_bootstrap_enabled is True
-    assert settings.web_auth_bootstrap_password.get_secret_value() == "bootstrap-password"
+    assert (
+        settings.web_auth_bootstrap_password.get_secret_value()
+        == bootstrap_password
+    )
 
 
 def test_admin_bootstrap_requires_a_separate_password():

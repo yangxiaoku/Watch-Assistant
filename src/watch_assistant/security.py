@@ -410,7 +410,7 @@ class SecurityManager:
             raise AuthError(503, "auth_unavailable") from None
 
     def _verify_web_credentials(self, username: str | None, password: str) -> None:
-        effective_username = username or self._web_username
+        effective_username = self._web_username if username is None else username
         username_valid = secrets.compare_digest(
             effective_username, self._web_username
         )
