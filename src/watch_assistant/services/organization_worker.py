@@ -90,12 +90,18 @@ class OrganizationWorker:
         lease = await self._operations.claim_next()
         if lease is None:
             return False
-        plan_scope = await self._operations.plan_execution_scope(lease.operation_id)
+        plan_scope = await self._operations.plan_execution_scope(
+            lease.operation_id,
+            expected_operation_revision=lease.revision,
+        )
         if plan_scope is None or self._production_root_id not in plan_scope:
             await self._finish_failed(lease, "plan_prerequisites_changed")
             return True
 
-        steps = await self._operations.load_execution_steps(lease.operation_id)
+        steps = await self._operations.load_execution_steps(
+            lease.operation_id,
+            expected_operation_revision=lease.revision,
+        )
         if not steps:
             await self._finish_failed(lease, "plan_prerequisites_changed")
             return True
@@ -240,8 +246,14 @@ class OrganizationWorker:
             or summary.revision != expected_revision
         ):
             raise OrganizationOperationStateError("uncertain_requires_verification")
-        plan_scope = await self._operations.plan_execution_scope(operation_id)
-        steps = await self._operations.load_execution_steps(operation_id)
+        plan_scope = await self._operations.plan_execution_scope(
+            operation_id,
+            expected_operation_revision=expected_revision,
+        )
+        steps = await self._operations.load_execution_steps(
+            operation_id,
+            expected_operation_revision=expected_revision,
+        )
         if (
             not plan_scope
             or self._production_root_id not in plan_scope

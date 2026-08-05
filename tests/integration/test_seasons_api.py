@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from watch_assistant.crypto import SecretCrypto
 from watch_assistant.db import create_database, initialize_database
 from watch_assistant.library_models import (
     LibraryMediaIdentity,
+    LibraryScanCheckpoint,
     LibraryScanEntry,
     LibraryScanRun,
     MediaLibrary,
@@ -151,9 +153,11 @@ async def test_episode_completeness_api_joins_confirmed_inventory_identities(
                 library_id="library-tv",
                 root_directory_id="root-tv",
                 idempotency_key="scan-tv-key",
+                scan_mode="tree",
                 state="completed",
                 complete=True,
                 snapshot_revision=1,
+                expected_total=3,
                 pages_read=1,
                 items_seen=3,
                 updated_at=now,
@@ -168,6 +172,7 @@ async def test_episode_completeness_api_joins_confirmed_inventory_identities(
                     object_id="file-ep1-a",
                     parent_id="root-tv",
                     name="Show.S02E01.1080p.mkv",
+                    path="Show.S02E01.1080p.mkv",
                     is_directory=False,
                 ),
                 LibraryScanEntry(
@@ -176,6 +181,7 @@ async def test_episode_completeness_api_joins_confirmed_inventory_identities(
                     object_id="file-ep1-b",
                     parent_id="root-tv",
                     name="Show.S02E01.2160p.mkv",
+                    path="Show.S02E01.2160p.mkv",
                     is_directory=False,
                 ),
                 LibraryScanEntry(
@@ -184,9 +190,26 @@ async def test_episode_completeness_api_joins_confirmed_inventory_identities(
                     object_id="file-ep2",
                     parent_id="root-tv",
                     name="Show.S02E02.1080p.mkv",
+                    path="Show.S02E02.1080p.mkv",
                     is_directory=False,
                 ),
             ]
+        )
+        session.add(
+            LibraryScanCheckpoint(
+                scan_run_id="scan-tv",
+                page=1,
+                items_seen=3,
+                cursor_json=json.dumps(
+                    {
+                        "version": 2,
+                        "directory_totals": {"root-tv": 3},
+                        "expected_total": 3,
+                        "pending": [],
+                        "visited": ["root-tv"],
+                    }
+                ),
+            )
         )
         await session.flush()
         session.add_all(

@@ -910,7 +910,8 @@ def create_app(
                 event_logger=application.state.settings_service,
             )
             application.state.organization_plan_service = OrganizationPlanService(
-                runtime_database.session_factory
+                runtime_database.session_factory,
+                event_logger=application.state.settings_service,
             )
             application.state.managed_directory_ownership_service = (
                 ManagedDirectoryOwnershipService(runtime_database.session_factory)
@@ -1686,7 +1687,9 @@ def create_app(
             database.session_factory
         )
         application.state.organization_plan_service = OrganizationPlanService(
-            database.session_factory, tmdb_client=tmdb_client
+            database.session_factory,
+            tmdb_client=tmdb_client,
+            event_logger=application.state.settings_service,
         )
         application.state.managed_directory_ownership_service = (
             ManagedDirectoryOwnershipService(database.session_factory)

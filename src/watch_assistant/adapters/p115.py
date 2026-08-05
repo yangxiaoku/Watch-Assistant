@@ -283,6 +283,7 @@ class P115Adapter:
             return _uncertain_observation(_AVAILABILITY_OBSERVER_UNAVAILABLE)
         try:
             detail = await gateway.get_file_detail(file_id)
+            parent_detail = await gateway.get_directory_detail(parent_id)
         except asyncio.CancelledError:
             raise
         except P115ReadOnlyGatewayError as error:
@@ -294,9 +295,11 @@ class P115Adapter:
         except Exception:  # noqa: BLE001 - remote detail stays redacted
             return _uncertain_observation(_AVAILABILITY_OBSERVER_UNAVAILABLE)
         if (
-            detail.file_id != file_id
-            or detail.parent_id != parent_id
-            or detail.is_directory is not False
+            getattr(detail, "file_id", None) != file_id
+            or getattr(detail, "parent_id", None) != parent_id
+            or getattr(detail, "is_directory", None) is not False
+            or getattr(parent_detail, "directory_id", None) != parent_id
+            or getattr(parent_detail, "is_directory", None) is not True
         ):
             return _uncertain_observation(_AVAILABILITY_PARENT_MISMATCH)
         return RemoteObservation(

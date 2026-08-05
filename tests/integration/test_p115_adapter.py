@@ -93,16 +93,24 @@ class FakeP115Client:
 
 
 class FakeReadOnlyGateway:
-    def __init__(self, detail=None, *, error=None):
+    def __init__(self, detail=None, *, directory_detail=None, error=None):
         self.detail = detail
+        self.directory_detail = directory_detail
         self.error = error
         self.file_ids = []
+        self.directory_ids = []
 
     async def get_file_detail(self, file_id):
         self.file_ids.append(file_id)
         if self.error is not None:
             raise self.error
         return self.detail
+
+    async def get_directory_detail(self, directory_id):
+        self.directory_ids.append(directory_id)
+        if self.error is not None:
+            raise self.error
+        return self.directory_detail
 
 
 def _provider(tmp_path, value=COOKIE):
@@ -351,7 +359,17 @@ async def test_available_status_requires_readonly_file_detail_evidence(tmp_path)
             size_bytes=None,
             modified_at=None,
             pickcode=None,
-        )
+        ),
+        directory_detail=LibraryEntry(
+            directory_id="7",
+            file_id=None,
+            parent_id=None,
+            name="target",
+            is_directory=True,
+            size_bytes=None,
+            modified_at=None,
+            pickcode=None,
+        ),
     )
     adapter = P115Adapter(
         provider,
@@ -369,6 +387,7 @@ async def test_available_status_requires_readonly_file_detail_evidence(tmp_path)
     assert observation.is_directory is False
     assert observation.availability_verified is True
     assert gateway.file_ids == ["101"]
+    assert gateway.directory_ids == ["7"]
     await adapter.aclose()
 
 
@@ -394,7 +413,17 @@ async def test_available_status_rejects_wrong_parent_from_readonly_detail(tmp_pa
             size_bytes=None,
             modified_at=None,
             pickcode=None,
-        )
+        ),
+        directory_detail=LibraryEntry(
+            directory_id="7",
+            file_id=None,
+            parent_id=None,
+            name="target",
+            is_directory=True,
+            size_bytes=None,
+            modified_at=None,
+            pickcode=None,
+        ),
     )
     adapter = P115Adapter(
         provider,
@@ -408,6 +437,57 @@ async def test_available_status_rejects_wrong_parent_from_readonly_detail(tmp_pa
     assert isinstance(observation, RemoteObservation)
     assert observation.status is RemoteStatus.UNCERTAIN
     assert observation.error_code == "availability_parent_mismatch"
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
+async def test_available_status_requires_readonly_parent_directory_evidence(tmp_path):
+    provider, _path = _provider(tmp_path)
+    infohash = "c" * 40
+    fake = FakeP115Client(
+        task_response={
+            "state": True,
+            "data": [
+                {"info_hash": infohash, "status": "available", "fid": "101"}
+            ],
+        }
+    )
+    gateway = FakeReadOnlyGateway(
+        LibraryEntry(
+            directory_id=None,
+            file_id="101",
+            parent_id="7",
+            name="hidden-name.mkv",
+            is_directory=False,
+            size_bytes=None,
+            modified_at=None,
+            pickcode=None,
+        ),
+        directory_detail=LibraryEntry(
+            directory_id="8",
+            file_id=None,
+            parent_id=None,
+            name="wrong-target",
+            is_directory=True,
+            size_bytes=None,
+            modified_at=None,
+            pickcode=None,
+        ),
+    )
+    adapter = P115Adapter(
+        provider,
+        7,
+        client_factory=lambda _cookie: fake,
+        readonly_gateway=gateway,
+    )
+
+    observation = await adapter.get_status("infohash:" + infohash)
+
+    assert isinstance(observation, RemoteObservation)
+    assert observation.status is RemoteStatus.UNCERTAIN
+    assert observation.error_code == "availability_parent_mismatch"
+    assert gateway.file_ids == ["101"]
+    assert gateway.directory_ids == ["7"]
     await adapter.aclose()
 
 

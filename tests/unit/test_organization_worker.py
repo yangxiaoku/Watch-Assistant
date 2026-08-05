@@ -30,6 +30,8 @@ class _Operations:
         self.steps = steps
         self.finished = []
         self.finish_after_lease_loss_calls = 0
+        self.scope_revisions = []
+        self.step_revisions = []
 
     async def claim_next(self):
         return _Lease()
@@ -40,10 +42,16 @@ class _Operations:
             revision=1,
         )
 
-    async def plan_execution_scope(self, _operation_id):
+    async def plan_execution_scope(
+        self, _operation_id, *, expected_operation_revision=None
+    ):
+        self.scope_revisions.append(expected_operation_revision)
         return self.scope
 
-    async def load_execution_steps(self, _operation_id):
+    async def load_execution_steps(
+        self, _operation_id, *, expected_operation_revision=None
+    ):
+        self.step_revisions.append(expected_operation_revision)
         return self.steps
 
     async def renew_lease(self, operation_id, *, expected_revision, lease_token):
@@ -147,6 +155,8 @@ async def test_disabled_runtime_fails_before_constructing_live_transport(monkeyp
     assert client_calls == []
     assert operations.finished[0]["status"] is OrganizationOperationStatus.FAILED
     assert operations.finished[0]["error_code"] == "write_disabled"
+    assert operations.scope_revisions == [1]
+    assert operations.step_revisions == [1]
 
 
 @pytest.mark.asyncio
@@ -205,6 +215,8 @@ async def test_confirmed_runtime_forwards_all_live_gate_values(monkeypatch):
     assert transport_calls[0]["organization_contract"] == _contract()
     assert len(executor_calls) == 1
     assert client.closed is True
+    assert operations.scope_revisions == [1]
+    assert operations.step_revisions == [1]
 
 
 @pytest.mark.asyncio
@@ -273,3 +285,5 @@ async def test_reconcile_uses_read_only_transport_when_writes_are_disabled(monke
     assert transport_calls[0]["plan_confirmed"] is True
     assert transport_calls[0]["scope_confirmed"] is True
     assert client.closed is True
+    assert operations.scope_revisions == [1]
+    assert operations.step_revisions == [1]
