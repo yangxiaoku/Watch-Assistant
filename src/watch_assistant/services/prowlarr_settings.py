@@ -10,6 +10,7 @@ from collections import deque
 from collections.abc import Callable, Iterable
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
