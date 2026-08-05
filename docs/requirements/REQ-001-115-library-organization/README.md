@@ -5,7 +5,7 @@
 | 版本 | V1.0 |
 | 状态 | 待验收 |
 | 创建日期 | 2026-07-26 |
-| 更新日期 | 2026-08-03 |
+| 更新日期 | 2026-08-05 |
 | 负责人 | 待指定 |
 | 优先级 | P0 |
 | 依赖 | TMDB、115 目录读写契约、任务系统、REQ-004 |
@@ -32,7 +32,7 @@
 
 ## 当前集成验收状态
 
-- 本次核对的发布 commit 必须由 `git fetch --all --prune` 后执行 `git rev-parse origin/codex/publish-main` 动态解析；本文不硬编码当前 SHA。
+- 本次核对的发布 commit 必须由 `git fetch --all --prune` 后执行 `git rev-parse origin/codex/publish-main` 动态解析；本文不使用未注明日期的固定 SHA。
   最近合入 PR #50-#61 仅作为历史记录。Verify 与 Systemd Release Package 必须按同一 `head_sha` 重新核对，且 CI 不能替代生产部署或真实 115 写入验收。
 - 当前发布基线已合入 [PR #30](https://github.com/yangxiaoku/Watch-Assistant/pull/30) 的扫描/整理门禁、
   任务关联和中文工作台调整；对应回归见 [扫描范围恢复](../../../tests/integration/test_library_scan_scope_recovery.py)、
@@ -44,12 +44,14 @@
 - 库存扫描与组织门禁已由 [PR #34](https://github.com/yangxiaoku/Watch-Assistant/pull/34) 合入；对应
   [组织用户流集成测试](../../../tests/integration/test_organization_user_flow.py)、[组织计划单测](../../../tests/unit/test_organization_plan.py)
   和 [库存索引单测](../../../tests/unit/test_library_index.py) 仍只证明代码和离线证据，不证明生产媒体库已配置或已整理。
-- 受管夹具的真实低风险证据不能替代生产验收；生产媒体库范围、真实整理写入、回滚、播放兼容性和部署状态仍未验证。
+- 受管夹具的真实低风险证据不能替代生产验收；生产媒体库范围、真实整理写入、回滚、播放兼容性和完整生产验收证据仍未完成。
 - p115 远程可用性证据仍限于受管夹具、只读或 fail-closed 路径；[PR #46](https://github.com/yangxiaoku/Watch-Assistant/pull/46)
-  的范围门禁不等于真实 115 业务整理已完成。在生产 live、媒体库范围、回滚和部署证据完成前，
+  的范围门禁不等于真实 115 业务整理已完成。在生产 live、媒体库范围、回滚和完整生产验收证据完成前，
   真实 115 业务整理保持未验收、未上线。
+- 2026-08-05 当前生产/发布 ref 短标识为 `249aa582`。生产只读快照为 54 页、12 个目录、43 个文件和 54 个唯一对象；整理计划预览为 1 个
+  `needs_review`、远程写入 0。C03 因一次性授权已消费而 blocked，整理写入保持关闭。
 - live/生产验收：未完成；真实 115 写操作只可在独立契约、计划确认、receipt-before-verify、幂等和审计门禁全部满足后进行。
-- 生产部署核对：未完成；本次未核对服务器运行模式、实际版本、数据目录或能力开关。
+- 生产部署/运行状态只读核对（2026-08-05）：已确认服务器 systemd 当前 release 与动态发布 ref 一致，健康接口正常；整理写契约未验证、整理执行不受支持，生产范围、真实整理写入、回滚和媒体服务器兼容性仍未完成。
 
 ## 3. 产品目标
 

@@ -1,6 +1,7 @@
 import { flushPromises, mount } from "@vue/test-utils";
 import { describe, expect, it, vi } from "vitest";
 
+import { ApiError } from "../src/api";
 import LibraryWorkbenchView from "../src/views/LibraryWorkbenchView.vue";
 import type { CapabilityAvailability } from "../src/types";
 
@@ -213,6 +214,40 @@ describe("LibraryWorkbenchView", () => {
     expect(wrapper.text()).toContain("现在可以重新推送");
   });
 
+  it("continues polling the first scan during initialization", async () => {
+    vi.useFakeTimers();
+    try {
+      const saved = { library_id: "main", name: "115 媒体库", root_directory_id: "123", enabled: false, scope_verified: false, revision: 1, latest_scan: null };
+      const verified = { ...saved, enabled: true, scope_verified: true, revision: 2 };
+      const queued = { run_id: "scan-queued", state: "queued" as const, complete: false, snapshot_revision: null, pages_read: 0, items_seen: 0, added_count: 0, changed_count: 0, removed_count: 0, attempts: 1, state_message_zh: "等待扫描", error_code: null, error_message_zh: null, cancel_requested: false };
+      const running = { ...queued, state: "running" as const, state_message_zh: "扫描中", pages_read: 1, items_seen: 1 };
+      const completed = { ...running, state: "completed" as const, complete: true, state_message_zh: "扫描完成", snapshot_revision: 2, items_seen: 2, added_count: 2 };
+      const api = {
+        libraries: vi.fn().mockResolvedValue({ items: [], next_cursor: null }),
+        p115Directories: vi.fn().mockResolvedValue({ parent_id: "123", items: [], has_more: false, next_page: null }),
+        configureLibrary: vi.fn().mockResolvedValue(saved),
+        verifyLibraryScope: vi.fn().mockResolvedValue({ library: verified, verified: true, enabled: true }),
+        scanLibrary: vi.fn().mockResolvedValue(queued),
+        getLibraryScan: vi.fn().mockResolvedValueOnce(running).mockResolvedValueOnce(completed),
+        libraryMedia: vi.fn().mockResolvedValue({ items: [], next_cursor: null }),
+        strmManifest: vi.fn().mockResolvedValue({ items: [], page: 1, page_size: 50, total: 0, total_pages: 0 }),
+        strmOperations: vi.fn().mockResolvedValue({ items: [], next_cursor: null }),
+      };
+      const wrapper = mountWorkbench(api);
+      await flushPromises();
+
+      await wrapper.findAll("button").find((button) => button.text().includes("初始化并扫描媒体库"))!.trigger("click");
+      await flushPromises();
+      await vi.advanceTimersByTimeAsync(1_000);
+      await flushPromises();
+
+      expect(api.getLibraryScan).toHaveBeenCalledTimes(2);
+      expect(wrapper.text()).toContain("媒体库已启用并完成首次扫描，共发现 2 项");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("polls an asynchronous scan until the complete snapshot is available", async () => {
     vi.useFakeTimers();
     try {
@@ -247,6 +282,32 @@ describe("LibraryWorkbenchView", () => {
       expect(api.getLibraryScan).toHaveBeenCalledTimes(2);
       expect(wrapper.text()).toContain("扫描完成，共发现 2 项");
       expect(wrapper.text()).toContain("已完成");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("resumes a running scan after the workbench is loaded", async () => {
+    vi.useFakeTimers();
+    try {
+      const running = { run_id: "scan-running", state: "running" as const, complete: false, snapshot_revision: null, pages_read: 1, items_seen: 1, added_count: 1, changed_count: 0, removed_count: 0, attempts: 1, state_message_zh: "扫描中", error_code: null, error_message_zh: null, cancel_requested: false };
+      const completed = { ...running, state: "completed" as const, complete: true, snapshot_revision: 2, state_message_zh: "扫描完成", items_seen: 2 };
+      const library = { library_id: "main", name: "115 媒体库", root_directory_id: "123", enabled: true, scope_verified: true, revision: 2, latest_scan: running };
+      const api = {
+        libraries: vi.fn().mockResolvedValue({ items: [library], next_cursor: null }),
+        getLibraryScan: vi.fn().mockResolvedValue(completed),
+        libraryMedia: vi.fn().mockResolvedValue({ items: [], next_cursor: null }),
+        strmManifest: vi.fn().mockResolvedValue({ items: [], page: 1, page_size: 50, total: 0, total_pages: 0 }),
+        strmOperations: vi.fn().mockResolvedValue({ items: [], next_cursor: null }),
+      };
+      const wrapper = mountWorkbench(api);
+      await flushPromises();
+      await vi.advanceTimersByTimeAsync(500);
+      await flushPromises();
+
+      expect(api.getLibraryScan).toHaveBeenCalledWith("main", "scan-running");
+      expect(wrapper.get(".library-stat-grid").text()).toContain("扫描状态已完成");
+      expect(wrapper.get(".library-stat-grid").text()).toContain("文件数2");
     } finally {
       vi.useRealTimers();
     }
@@ -661,7 +722,7 @@ describe("LibraryWorkbenchView", () => {
 
   it("keeps STRM operation history errors visible with retry", async () => {
     const strmOperations = vi.fn()
-      .mockRejectedValueOnce(new Error("offline"))
+      .mockRejectedValueOnce(new ApiError("STRM 操作历史服务暂不可用，请稍后重试", 503, "operation_unavailable"))
       .mockResolvedValueOnce({ items: [], next_cursor: null });
     const api = {
       libraries: vi.fn().mockResolvedValue({ items: [{ library_id: "main", name: "115 媒体库", root_directory_id: "123", enabled: false, scope_verified: false, revision: 1, latest_scan: null }], next_cursor: null }),
@@ -671,7 +732,7 @@ describe("LibraryWorkbenchView", () => {
     };
     const wrapper = mountWorkbench(api);
     await flushPromises();
-    expect(wrapper.text()).toContain("操作历史加载失败");
+    expect(wrapper.text()).toContain("STRM 操作历史服务暂不可用，请稍后重试");
     expect(wrapper.text()).toContain("重试");
     await wrapper.findAll("button").find((button) => button.text() === "重试")!.trigger("click");
     await flushPromises();

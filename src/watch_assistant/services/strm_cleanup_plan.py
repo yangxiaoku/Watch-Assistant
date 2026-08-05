@@ -55,6 +55,7 @@ class StrmCleanupPlanError(ValueError):
 
 
 LeaseCheck = Callable[[], Awaitable[bool]]
+_CLEANUP_PLAN_HASH_VERSION = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,15 +174,14 @@ class StrmCleanupPlanService:
                         "state": state,
                     }
                 )
-            canonical = {
-                "library_id": library.id,
-                "source_scan_run_id": run.id,
-                "source_snapshot_revision": run.snapshot_revision,
-                "candidates": candidates,
-            }
-            plan_hash = hashlib.sha256(
-                json.dumps(canonical, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode()
-            ).hexdigest()
+            plan_hash = _plan_hash(
+                library_id=library.id,
+                source_scan_run_id=run.id,
+                source_snapshot_revision=run.snapshot_revision,
+                output_root=root,
+                playback_url_prefix=prefix,
+                candidates=candidates,
+            )
             existing = await session.scalar(
                 select(StrmCleanupPlan).where(StrmCleanupPlan.plan_hash == plan_hash)
             )
@@ -263,6 +263,19 @@ class StrmCleanupPlanService:
                 raise StrmCleanupPlanError("cleanup_plan_not_reviewable")
             if _utc(plan.expires_at) <= current_time:
                 raise StrmCleanupPlanError("cleanup_plan_expired")
+            candidates = _candidates(plan)
+            if not hmac.compare_digest(
+                plan.plan_hash,
+                _plan_hash(
+                    library_id=plan.library_id,
+                    source_scan_run_id=plan.source_scan_run_id,
+                    source_snapshot_revision=plan.source_snapshot_revision,
+                    output_root=root,
+                    playback_url_prefix=prefix,
+                    candidates=candidates,
+                ),
+            ):
+                raise StrmCleanupPlanError("cleanup_plan_changed")
             library, run = await self._validated_current_run(
                 session, plan.library_id, plan.source_scan_run_id
             )
@@ -282,7 +295,6 @@ class StrmCleanupPlanService:
                 source_snapshot_revision=run.snapshot_revision,
             )
             await _bind_fence(fence, session)
-            candidates = _candidates(plan)
             manifest_ids = [item["manifest_id"] for item in candidates]
             manifests = {
                 item.manifest_id: item
@@ -596,6 +608,34 @@ def _candidates(plan: StrmCleanupPlan) -> list[dict[str, str]]:
     ):
         raise StrmCleanupPlanError("plan_invalid")
     return candidates
+
+
+def _plan_hash(
+    *,
+    library_id: str,
+    source_scan_run_id: str,
+    source_snapshot_revision: int,
+    output_root: Path,
+    playback_url_prefix: str,
+    candidates: list[dict[str, str]],
+) -> str:
+    canonical = {
+        "version": _CLEANUP_PLAN_HASH_VERSION,
+        "library_id": library_id,
+        "source_scan_run_id": source_scan_run_id,
+        "source_snapshot_revision": source_snapshot_revision,
+        "output_root": os.path.normcase(os.fspath(output_root)),
+        "playback_url_prefix": playback_url_prefix,
+        "candidates": candidates,
+    }
+    return hashlib.sha256(
+        json.dumps(
+            canonical,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("ascii")
+    ).hexdigest()
 
 
 def _managed_state(root: Path, relative_path: str, expected: str) -> str:

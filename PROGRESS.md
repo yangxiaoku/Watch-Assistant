@@ -6,42 +6,46 @@
 
 当前 Git 发布基线：唯一发布分支为 `codex/publish-main`；发布前执行 `git fetch origin`，再以
 `git rev-parse origin/codex/publish-main` 的实际解析值为准。本记录不固定可能过期的 commit。
-本轮未在本地生成 release 包、未执行部署；已对 `192.168.6.236` 做 systemd、健康接口、生产只读库存/整理预览和 Prowlarr
-只读搜索核对，但未覆盖生产应用 HTTP 鉴权路由、真实 115 写入或媒体服务器兼容性。公开 Actions 结果只证明对应
-当前 head 的离线门禁和发布包校验通过，不能替代部署或完整生产验收。详细历史核对记录见
+本审计会话未在本地生成 release 包、未执行部署；当前发布基线对应的公开 [Verify CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30971086025)
+和 [Systemd Release Package CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30971086083) 均成功。已对
+`192.168.6.236` 做 systemd、健康接口、生产只读库存/整理预览和 Prowlarr 只读配置/搜索尝试，但未覆盖生产应用 HTTP 鉴权路由、真实
+115 写入或媒体服务器兼容性。公开 Actions 结果只证明对应当前 head 的离线门禁和发布包校验通过；本次服务器只读核对另行确认了当前
+systemd release 与动态 ref 一致，仍不能替代完整生产验收。详细历史核对记录见
 `docs/更新日志-2026-08-02-发布基线核对.md`。
 
-整理计划和受管夹具写入契约已验收；生产整理写入、永久删除和生产媒体库 STRM 联动仍未开启。
+整理计划和受管夹具写入契约的历史证据已具备；C03 当前因一次性授权已消费而 blocked。生产整理写入、
+STRM/空目录清理、永久删除和生产媒体库联动仍未开启。
 
-## 2026-08-04 当前基线状态（发布门禁按 SHA 复核，REQ-023 受限 live 已验收）
+## 2026-08-05 当前基线状态（发布门禁按 SHA 复核；REQ-023 受限 live 证据日期为 2026-08-04）
 
-本次执行 `git fetch --all --prune` 后，以 `git rev-parse origin/codex/publish-main` 的实际输出作为本次核对的 commit 身份；本文不再硬编码当前发布 SHA。
+本次执行 `git fetch --all --prune` 后，以 `git rev-parse origin/codex/publish-main` 实际解析的完整 SHA
+`249aa5826db6e06683be6426aa5243a1aa4ed0f5` 作为本次核对的 commit 身份（短标识 `249aa582`）；该日期快照不替代后续动态解析。
 最近合入的 PR #50-#61 仅作为 first-parent 历史记录；后续发布必须重新解析实际 ref，不能引用旧报告中的 commit。
 Verify 与 Systemd Release Package 必须按同一 `head_sha` 重新核对；历史 run 链接只作为对应快照的证据，不能代替当前发布门禁。
-本次核对的公开 [Verify CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30906727468) 与
-[Systemd Release Package CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30906727470) 均显示完成且成功，
+本次核对的公开 [Verify CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30971086025) 与
+[Systemd Release Package CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30971086083) 均显示完成且成功，
 两者的 `head_sha` 均与本次动态解析的 `origin/codex/publish-main` 一致。CI 成功仅证明离线门禁、Compose/发布包校验和发布脚本
-readiness gate 通过，不能替代部署或完整生产验收。
-服务器只读核对显示 systemd 当前 release 与该动态 ref 一致、健康接口 `status=ok`；健康状态还显示整理写契约未验证且整理执行不受支持，
-STRM 全量/增量/播放开关为启用、清理为关闭，播放契约已验证。开关状态、契约状态和需求验收不互相替代。
+readiness gate 通过；本次只读核对另确认了服务器运行 release 与动态 ref 一致，仍不能替代完整生产验收。
+服务器只读核对显示 systemd 当前 release 与该动态 ref 一致、健康接口 `status=ok`；健康状态还显示整理写契约未验证且整理执行不受支持。
+本轮受限 STRM 全量生成 40 个并 verify 40/40，但媒体服务器真实播放兼容仍未验收；STRM/空目录清理和整理写入继续关闭。
+开关状态、契约状态和需求验收不互相替代。
 
-- 生产只读 acceptance preview 成功：递归扫描完整，54 页、12 个目录（含根目录）、43 个文件、54 个唯一对象身份；整理计划预览无远程写调用，
-  结果为 `needs_review`。生产数据库只读统计显示 2 个媒体库范围均已验证且启用，222 次扫描完整成功、1 次取消；组织计划和失败操作仍需按账本继续收口。
-- Prowlarr 当前只读探测为 `2.5.2.5491`、状态正常；明确授权的 `LinuxTracker` 为唯一来源，配置/启用各 1 个，`indexerstatus` 异常项为 0，
-  GET search HTTP `200` 返回 30 个 torrent。授权范围仅为公开 Linux ISO 分发；电影/电视剧召回率、95% 基线、广泛来源质量和生产 HTTP 鉴权路由仍未验证。
+- 2026-08-05 生产只读 acceptance preview 成功：递归扫描完整，54 页、12 个目录（含根目录）、43 个文件、54 个唯一对象身份；整理计划预览为 1 个
+  `needs_review`、远程写入 0。生产数据库只读统计显示 2 个媒体库范围均已验证且启用，222 次扫描完整成功、1 次取消；C03 因一次性授权已消费而 blocked。
+- 2026-08-04 的 Prowlarr 证据属于历史/受限 Linux ISO 快照：曾观察到 `2.5.2.5491`、`LinuxTracker`、test HTTP `200` 和受限搜索结果；该结果不代表当前可用。
+- 2026-08-05 当前 Prowlarr 仍为 `2.5.2.5491`，`LinuxTracker` 已安装并配置，但搜索超时 HTTP `000`，不能写成可搜索完成或聚合完成。
 
 - #44-#61 已进入近期 first-parent 历史，分别覆盖 P1 审查、Prowlarr/PanSou 只读 readiness、库存/整理范围、STRM 清理/提交门禁、前端工作台验收、发布脚本 readiness gate、readiness/可靠性加固、发布基线动态解析、通知失败矩阵、发布后文档、workflow 证据、任务 worker fencing、p115 整理 readiness、验证证据、STRM 清理 readiness、Prowlarr live readiness 和前端工作台。
   这些提交的代码与离线/受管夹具证据不等于生产整理、生产 STRM、播放兼容性、清理或部署验收。
 - Prowlarr 的离线 readiness 由 [PR #19](https://github.com/yangxiaoku/Watch-Assistant/pull/19)、
   [PR #29](https://github.com/yangxiaoku/Watch-Assistant/pull/29) 和 [PR #45](https://github.com/yangxiaoku/Watch-Assistant/pull/45) 加固，契约见
-  [Prowlarr 契约测试](tests/contracts/test_prowlarr_contract.py)。受限 live evidence 已验证 Prowlarr `2.5.2.5491`、唯一选用的公开来源 `LinuxTracker`、
-  test HTTP `200`、search `17`、1 个启用 indexer 和 `indexerstatus` 异常项 `0`；聚合为 `complete=True`、`warnings=none`、
-  PanSou `0`、Prowlarr `17`、canonical `17`。授权范围仅覆盖公开 Linux ISO 分发，电影/电视剧召回率、95% 基线、广泛来源质量和生产 HTTP 鉴权路由仍未验证。
+  [Prowlarr 契约测试](tests/contracts/test_prowlarr_contract.py)。2026-08-04 历史/受限证据曾在公开 Linux ISO 范围得到 test HTTP `200`、search `17`、
+  PanSou `0`、Prowlarr `17`、canonical `17`；2026-08-05 当前搜索超时 HTTP `000`，不能把该历史证据写成当前可搜索完成。
 - p115 远程证据仍限于受管夹具、生产只读或 fail-closed 路径。本轮未执行真实写入、真实媒体库整理、STRM 播放/清理或媒体服务器验收，
   不能把 p115 readiness 写成生产可用性或需求完成。
 - [发布 manifest 测试](tests/unit/test_release_manifest.py)、[部署脚本测试](tests/unit/test_release_deployment_scripts.py)、
   [systemd 单元测试](tests/unit/test_systemd_units.py) 和 [发布物 smoke 测试](tests/integration/test_release_archive_smoke.py)
-  只证明发布门禁覆盖；公开 CI 的 package 成功也不等于已部署。
+  只证明发布门禁覆盖；公开 CI 的 package 成功也不等于自动部署，本次部署状态仍以服务器只读核对为准。
 
 ## 2026-08-02 集成审查记录（未发布）
 
@@ -66,10 +70,11 @@ STRM 全量/增量/播放开关为启用、清理为关闭，播放契约已验�
 
 - 115 受控能力：整理计划、执行、移动/重命名写入、永久删除和 STRM 播放均受独立开关与契约
   门禁控制。固定测试 CID 的组织闭环，以及受管视频夹具的 STRM 范围验证、完整扫描、全量生成、
-  改名后的增量对账、恢复和清理验收均已有证据；这些夹具结果不等于生产能力已开启，永久删除保持关闭。
+  改名后的增量对账、恢复和清理验收均已有历史证据；本轮受限 STRM 全量生成 40 个并 verify 40/40，
+  这些结果不等于媒体服务器播放或生产清理已验收，整理写入和 STRM/空目录清理继续关闭。
 - 发现与搜索：TMDB 榜单、季度资料、PanSou 聚合、BTIH 校验、质量筛选、缓存和多来源/Prowlarr
-  离线只读 readiness 已合入当前基线；REQ-023 另有受限 live evidence，确认 1 个公开 Linux ISO 来源可测试和搜索并完成 PanSou/Prowlarr 聚合。
-  该证据不覆盖电影/电视剧召回率、95% 基线、广泛来源质量、完整来源对照或生产 HTTP 鉴权路由。
+  离线只读 readiness 已合入当前基线；REQ-023 的 Linux ISO 搜索结果仅属于 2026-08-04 历史/受限证据，
+  2026-08-05 当前搜索超时 HTTP `000`，不覆盖电影/电视剧召回率、95% 基线、广泛来源质量、完整来源对照或生产 HTTP 鉴权路由。
 - 任务与安全：SQLite 状态机、`uncertain` 防重复提交、Web 会话、CSRF、Bearer Token、加密、
   workflow 阶段关联和中文错误映射已合入当前基线。
 - 前端工作台：PR #30 和后续 [PR #32](https://github.com/yangxiaoku/Watch-Assistant/pull/32) 均已合入当前基线；
@@ -86,16 +91,18 @@ STRM 全量/增量/播放开关为启用、清理为关闭，播放契约已验�
   继续加固租约丢失和续租超时边界；对应 [worker 恢复集成测试](tests/integration/test_worker_recovery.py) 和
   [任务状态单测](tests/unit/test_tasks.py) 只证明恢复/租约边界，不证明生产任务或 115 live 已验收。
 - 发布治理：release manifest 完整性/来源校验、systemd release 权限和回退边界、独立 p115 runtime
-  已合入当前基线，PR #40 还修复了 systemd 发布驱动权限；当前 SHA 的公开 package CI 已成功，但仍需按发布流程做生产部署核对。
+  已合入当前基线，PR #40 还修复了 systemd 发布驱动权限；当前基线的公开 package CI 已成功，服务器当前 release 也已按发布流程只读核对，
+  但这仍不替代完整生产验收。
 
 ## 待验收
 
-- `REQ-001`、`REQ-002`：受管夹具、生产范围和生产只读首次完整扫描/整理预览证据已具备；真实整理写入、生产
-  STRM 受管清单、稳定播放入口、媒体服务器兼容性、元数据联动和生产清理仍未完成。
+- `REQ-001`、`REQ-002`：生产只读首次完整扫描为 54 页/12 个目录/43 个文件/54 个唯一对象，整理预览为 1 个
+  `needs_review` 且写入 0；本轮受限 STRM 全量 40、verify 40/40，但真实整理写入、生产 STRM 受管清单、稳定播放入口、
+  媒体服务器兼容性、元数据联动和 STRM/空目录清理仍未完成。
 - `REQ-004`、`REQ-012`、`REQ-019`：结构化日志、站内通知和 Webhook 阶段能力已具备；完整业务
   事件矩阵、真实外部接收端、渠道健康、重试/死信和重放/重启验收仍待完成。
-- `REQ-005`、`REQ-006`、`REQ-023`：搜索召回、qB 检测和来源聚合阶段能力已有离线/受控证据；
-  REQ-023 已完成公开 Linux ISO 范围内的 Prowlarr live 与 PanSou 聚合验证，但电影/电视剧召回率、95% 基线、广泛来源质量、完整来源对照和生产 HTTP 鉴权路由仍阻断。
+- `REQ-005`、`REQ-006`、`REQ-023`：搜索召回、qB 检测和来源聚合阶段能力已有离线/受限历史证据；
+  REQ-023 当前 Prowlarr 搜索超时 HTTP `000`，电影/电视剧召回率、95% 基线、广泛来源质量、完整来源对照和生产 HTTP 鉴权路由仍阻断。
 - `REQ-007`、`REQ-008`：订阅调度、观察账本和质量策略阶段能力已具备；自动动作、库存联动、
   确认/拒绝幂等和洗版回滚仍未完成。
 - `REQ-009`：workflow、整理/STRM 阶段关联和安全取消已接入；跨任务关联、完整通知矩阵和所有
@@ -111,7 +118,7 @@ STRM 全量/增量/播放开关为启用、清理为关闭，播放契约已验�
 
 - `REQ-003`：CLI 只读和部分受保护命令已完成；高风险 Web 批准、完整任务关联、生产播放入口和
   跨平台端到端验收仍缺失。
-- `REQ-010`：库存派生层、生产媒体库配置和应用内完整新鲜扫描证据已具备；目录增量事件以及整理/隔离/恢复统一账本仍在开发。
+- `REQ-010`：生产媒体库配置已只读核对，受限完整快照为 54 页/12 个目录/43 个文件/54 个唯一对象；目录增量事件以及整理/隔离/恢复统一账本仍在开发。
 - `REQ-020`、`REQ-021`：MCP/PWA 的本地安全基础已具备；远程 HTTPS、断线/重启恢复、真实 Push
   和跨平台兼容性仍在开发与验收准备中。
 
@@ -134,9 +141,9 @@ PR #31-#49 已合入本次核对的发布基线，不列入本节；后续分支
 - P115 `errno=990009`：live runner 使用 3 秒重试；live 不进入离线门禁。
 - p115 远程可用性 PR #31 已合入当前基线，但本轮未执行 live 或真实写入；在 live、生产部署和回归证据完成前，相关能力保持未验收。
 - 代码与文档 PR #31-#49 均已合入本次核对的发布基线；这些合入记录和 CI 成功不改变生产版本或验收状态。
-- Prowlarr 离线 readiness 已具备；受限 live evidence 已确认 1 个公开 Linux ISO 来源可测试和搜索，但该结果不等于电影/电视剧召回、95% 基线、广泛来源质量或生产 HTTP 鉴权路由已验收。
+- Prowlarr 离线 readiness 已具备；2026-08-04 的公开 Linux ISO 搜索属于历史/受限证据，2026-08-05 当前搜索超时 HTTP `000`，因此不等于电影/电视剧召回、95% 基线、广泛来源质量或生产 HTTP 鉴权路由已验收。
 - iPad Cookie：只允许从 `C:\Users\98275\.115ts-secrets\.p115-cookie` 读取，过期会阻断 live。
-- `192.168.6.236`：本轮只读核对了 systemd 当前 release、健康接口、生产库存/整理预览和 Prowlarr 受限来源；未核对
+- `192.168.6.236`：本轮只读核对了 systemd 当前 release、健康接口、生产库存/整理预览和 Prowlarr 受限来源配置/搜索尝试；未核对
   生产应用 HTTP 鉴权路由、反向代理暴露方式，也未执行真实写入。
 - 任何真实 P115 写操作仍需显式 gate、确认、receipt-before-verify 和回滚证据。
 - 离线门禁按 `scripts/verify.sh` 分 unit、integration、contracts 三批执行，避免历史

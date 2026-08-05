@@ -225,6 +225,26 @@ describe("SettingsView", () => {
     expect(picker.element.value).toBe("web");
   });
 
+  it("keeps P115 device loading errors visible instead of showing a false empty state", async () => {
+    const p115Devices = vi.fn()
+      .mockRejectedValueOnce(new ApiError("扫码设备服务暂不可用，请稍后重试", 503, "p115_settings_unavailable"))
+      .mockResolvedValueOnce({ items: [] });
+    const api = makeApi({ p115Devices });
+    const wrapper = mount(SettingsView, { props: { api } });
+    await flushPromises();
+    await wrapper.findAll("button").find((button) => button.text().includes("连接配置"))?.trigger("click");
+    await flushPromises();
+
+    expect(wrapper.get(".p115-device-list .settings-state-error").text()).toContain("扫码设备服务暂不可用，请稍后重试");
+    expect(wrapper.get(".p115-device-list").text()).not.toContain("暂无扫码设备");
+    await wrapper.get(".p115-device-list .settings-state-error .text-button").trigger("click");
+    await flushPromises();
+
+    expect(p115Devices).toHaveBeenCalledTimes(2);
+    expect(wrapper.get(".p115-device-list").text()).toContain("暂无扫码设备");
+    expect(wrapper.find(".p115-device-list .settings-state-error").exists()).toBe(false);
+  });
+
   it("keeps manual organization independent from the schedule switch", async () => {
     const api = makeApi();
     const wrapper = mount(SettingsView, { props: { api } });
@@ -369,6 +389,46 @@ describe("SettingsView", () => {
       expect(wrapper.get(".settings-action-message").text()).toContain("115 登录凭据未配置");
       expect(wrapper.get(".settings-action-message").text()).toContain("下一步");
       expect(wrapper.get(".organization-blocked-details").text()).toContain("credentials_missing");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps structured organization result polling errors visible with retry", async () => {
+    vi.useFakeTimers();
+    try {
+      const initial = {
+        status: "unknown" as const,
+        available_statuses: ["unknown", "success", "skipped", "deleted", "replace", "failed"],
+        source_count: 0,
+        scanned_count: 0,
+        plan_count: 0,
+        queued_count: 0,
+        blocked_count: 0,
+        blocked_details: [],
+        items: [],
+        finished_at: null,
+        run_id: null,
+      };
+      const resultMock = vi.fn()
+        .mockResolvedValueOnce(initial)
+        .mockRejectedValueOnce(new ApiError("整理结果服务暂时不可用，请稍后重试", 503, "organization_reconciliation_unavailable"))
+        .mockResolvedValueOnce(initial);
+      const api = makeApi({ organizationResult: resultMock });
+      const wrapper = mount(SettingsView, { props: { api } });
+      await flushPromises();
+      await wrapper.findAll("button").find((button) => button.text().includes("115 整理"))?.trigger("click");
+      await flushPromises();
+      await wrapper.findAll("button").find((button) => button.text().includes("开始整理"))?.trigger("click");
+      await flushPromises();
+      await vi.advanceTimersByTimeAsync(500);
+      await flushPromises();
+
+      expect(wrapper.get(".organization-result-panel .settings-state-error").text()).toContain("整理结果服务暂时不可用，请稍后重试");
+      await wrapper.get(".organization-result-panel .settings-state-error .text-button").trigger("click");
+      await flushPromises();
+      expect(resultMock).toHaveBeenCalledTimes(3);
+      expect(wrapper.find(".organization-result-panel .settings-state-error").exists()).toBe(false);
     } finally {
       vi.useRealTimers();
     }

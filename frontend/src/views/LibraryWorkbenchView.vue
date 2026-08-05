@@ -64,7 +64,7 @@ const pendingCleanup = ref<"strm" | "empty" | "operation" | null>(null);
 const operationDetailOpen = ref(false);
 let operationPollGeneration = 0;
 let operationPollTimer: number | null = null;
-  let scanPollGeneration = 0;
+let scanPollGeneration = 0;
 let libraryRequestGeneration = 0;
 let mediaRequestGeneration = 0;
 let manifestRequestGeneration = 0;
@@ -176,9 +176,10 @@ async function pollLibraryScan(
 }
 
 async function monitorLibraryScan(libraryId: string, initial: LibraryScanSummary): Promise<LibraryScanSummary | null> {
-  if (isTerminalScan(initial)) return initial;
   const generation = ++scanPollGeneration;
-  const final = await pollLibraryScan(libraryId, initial, generation);
+  const final = isTerminalScan(initial)
+    ? initial
+    : await pollLibraryScan(libraryId, initial, generation);
   if (final && generation === scanPollGeneration && selectedId.value === libraryId && isTerminalScan(final)) {
     await loadOutputs(libraryId);
   }
@@ -203,6 +204,7 @@ function scanNotice(scanSummary: LibraryScanSummary): string {
 
 async function loadLibraries(preferredId = selectedId.value) {
   const requestGeneration = ++libraryRequestGeneration;
+  scanPollGeneration += 1;
   loading.value = true;
   error.value = "";
   try {
@@ -232,6 +234,14 @@ async function loadLibraries(preferredId = selectedId.value) {
         rootDirectoryId: selected.value.root_directory_id,
       };
       await loadOutputs(selected.value.library_id);
+      const initialScan = selected.value.latest_scan;
+      if (initialScan && !isTerminalScan(initialScan)) {
+        void monitorLibraryScan(selected.value.library_id, initialScan).catch((exception) => {
+          if (requestGeneration === libraryRequestGeneration && selectedId.value === selected.value?.library_id) {
+            setError(exception, "媒体库扫描状态更新失败，请重试");
+          }
+        });
+      }
     }
   } catch (exception) {
     if (requestGeneration === libraryRequestGeneration) setError(exception, "媒体库加载失败，请稍后重试");
@@ -327,8 +337,10 @@ async function loadOperations(libraryId: string, cursor?: string): Promise<void>
     operationsNextCursor.value = operationsResponse.next_cursor ?? null;
     if (cursor === undefined && operations.value[0]) latestOperation.value = operations.value[0];
     else if (!latestOperation.value && operations.value[0]) latestOperation.value = operations.value[0];
-  } catch {
-    if (selectedId.value === libraryId && requestGeneration === operationsRequestGeneration) operationsError.value = "STRM 操作历史加载失败，请重试";
+  } catch (exception) {
+    if (selectedId.value === libraryId && requestGeneration === operationsRequestGeneration) {
+      operationsError.value = exception instanceof ApiError ? exception.message : "STRM 操作历史加载失败，请重试";
+    }
   } finally {
     if (selectedId.value === libraryId && requestGeneration === operationsRequestGeneration) operationsLoading.value = false;
   }
@@ -383,10 +395,11 @@ async function initializeLibrary() {
     libraries.value = libraries.value.map((item) => item.library_id === verification.library.library_id ? verification.library : item);
     const result = await props.api.scanLibrary(saved.library_id);
     libraries.value = libraries.value.map((item) => item.library_id === saved.library_id ? { ...item, latest_scan: result } : item);
-    await loadOutputs(saved.library_id);
-    notice.value = result.complete
-      ? `媒体库已启用并完成首次扫描，共发现 ${result.items_seen} 项，现在可以重新推送`
-      : "媒体库已验证，但首次扫描未完成，推送仍保持阻断";
+    const final = await monitorLibraryScan(saved.library_id, result);
+    if (!final || selectedId.value !== saved.library_id) return;
+    notice.value = final.complete
+      ? `媒体库已启用并完成首次扫描，共发现 ${final.items_seen} 项，现在可以重新推送`
+      : scanNotice(final);
   } catch (exception) {
     focusFirstFieldError(exception);
     setError(exception, "媒体库初始化失败，请检查 115 登录和目标目录配置");

@@ -710,6 +710,45 @@ async def test_generation_does_not_overwrite_unmanaged_existing_strm(tmp_path: P
         await database.engine.dispose()
 
 
+async def test_generation_does_not_overwrite_user_modified_current_strm(
+    tmp_path: Path,
+):
+    database = await _database(tmp_path)
+    target = tmp_path / "output/Show/Episode.strm"
+    try:
+        service = StrmManifestService(database.session_factory)
+        first = await service.generate(
+            "library-strm",
+            source_scan_run_id="scan-strm",
+            output_root=tmp_path / "output",
+            playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+        )
+        assert first.generated == 1
+        target.write_text("user-edited\n", encoding="utf-8")
+
+        second = await service.generate(
+            "library-strm",
+            source_scan_run_id="scan-strm",
+            output_root=tmp_path / "output",
+            playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+        )
+
+        assert second.generated == 0
+        assert second.failed == 1
+        assert target.read_text(encoding="utf-8") == "user-edited\n"
+        async with database.session_factory() as session:
+            manifest = await session.scalar(
+                select(StrmManifestEntry).where(
+                    StrmManifestEntry.cloud_file_id == "100",
+                    StrmManifestEntry.is_current.is_(True),
+                )
+            )
+            assert manifest is not None
+            assert manifest.status == "verified"
+    finally:
+        await database.engine.dispose()
+
+
 async def test_cleanup_plan_is_persistent_read_only_and_idempotent(tmp_path: Path):
     database = await _database(tmp_path)
     try:
@@ -852,6 +891,74 @@ async def test_cleanup_plan_apply_requires_digest_and_retires_only_managed_file(
         items, total = await manifest_service.list_current("library-strm")
         assert total == 0
         assert items == ()
+    finally:
+        await database.engine.dispose()
+
+
+async def test_cleanup_plan_hash_binds_output_root_and_playback_prefix(
+    tmp_path: Path,
+):
+    database = await _database(tmp_path)
+    prefix = "http://127.0.0.1:8115/api/v1/strm/play"
+    alternate_prefix = "https://watch-assistant.example.ts.net/api/v1/strm/play"
+    try:
+        manifest_service = StrmManifestService(database.session_factory)
+        output = tmp_path / "output"
+        await manifest_service.generate(
+            "library-strm",
+            source_scan_run_id="scan-strm",
+            output_root=output,
+            playback_url_prefix=prefix,
+        )
+        await _add_removed_episode_scan(database)
+
+        alternate_output = tmp_path / "alternate-output"
+        alternate_file = alternate_output / "Show/Episode.strm"
+        alternate_file.parent.mkdir(parents=True)
+        alternate_file.write_bytes((output / "Show/Episode.strm").read_bytes())
+        plan_service = StrmCleanupPlanService(database.session_factory)
+        plan = await plan_service.create_plan(
+            library_id="library-strm",
+            source_scan_run_id="scan-strm-2",
+            output_root=output,
+            playback_url_prefix=prefix,
+        )
+        alternate_root_plan = await plan_service.create_plan(
+            library_id="library-strm",
+            source_scan_run_id="scan-strm-2",
+            output_root=alternate_output,
+            playback_url_prefix=prefix,
+        )
+        assert alternate_root_plan.plan_hash != plan.plan_hash
+
+        with pytest.raises(StrmCleanupPlanError, match="cleanup_plan_changed"):
+            await plan_service.apply_plan(
+                plan_id=plan.plan_id,
+                expected_revision=plan.revision,
+                digest=plan.plan_hash,
+                confirm=True,
+                idempotency_key="cleanup-scope-root-mismatch",
+                output_root=alternate_output,
+                playback_url_prefix=prefix,
+            )
+        assert alternate_file.exists()
+        assert (await plan_service.get_plan(plan.plan_id)).status == "needs_review"
+
+        missing_output = tmp_path / "missing-output"
+        missing_output.mkdir()
+        prefix_plan = await plan_service.create_plan(
+            library_id="library-strm",
+            source_scan_run_id="scan-strm-2",
+            output_root=missing_output,
+            playback_url_prefix=prefix,
+        )
+        alternate_prefix_plan = await plan_service.create_plan(
+            library_id="library-strm",
+            source_scan_run_id="scan-strm-2",
+            output_root=missing_output,
+            playback_url_prefix=alternate_prefix,
+        )
+        assert alternate_prefix_plan.plan_hash != prefix_plan.plan_hash
     finally:
         await database.engine.dispose()
 

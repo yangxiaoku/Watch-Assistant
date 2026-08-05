@@ -54,14 +54,18 @@ docs/requirements/
 必须保持一致。
 
 当前发布核对只认唯一发布分支 `codex/publish-main`。发布前执行 `git fetch --all --prune`，再以
-`git rev-parse origin/codex/publish-main` 的实际输出作为 commit 身份；本文不硬编码当前发布 SHA。
+`git rev-parse origin/codex/publish-main` 的实际输出作为 commit 身份；本文不使用未注明日期的固定 SHA。
 最近合入的 PR #50-#61 仅作为 first-parent 历史记录，不能替代发布前的动态解析；需求状态也不等同于已打包、已部署或已完成生产验收。
 
 Verify 与 Systemd Release Package 必须按同一 `head_sha` 重新核对；历史 Actions 结果只能证明对应快照的离线门禁、Compose/发布包校验和发布脚本 readiness gate，不证明生产部署。
 这些合入记录和离线测试不改变生产整理、真实媒体库、STRM 播放/清理、p115 live
 或完整生产验收状态，永久删除继续关闭。
 
-2026-08-04 当前只读核对补充：公开 Verify run `30906727468` 和 Systemd Release Package run `30906727470` 的 `head_sha` 与动态解析的当前发布 ref 一致且成功；服务器 systemd 当前 release 与该 ref 一致，健康接口返回 `status=ok`。生产只读预览已完成完整递归库存（54 页、12 个目录、43 个文件、54 个唯一对象身份）和整理计划预览（远程写调用为 0、计划进入 `needs_review`）；这不等于真实整理、STRM 播放/清理或媒体服务器验收。Prowlarr 当前只读状态正常，唯一授权来源为 `LinuxTracker`，配置/启用各 1 个，受限 GET search 返回 30 个 torrent；范围仅为公开 Linux ISO 分发，不代表完整影视召回。
+2026-08-04 历史/受限只读核对补充：生产只读预览已完成完整递归库存（54 页、12 个目录、43 个文件、54 个唯一对象身份）和整理计划预览（远程写调用为 0、计划进入 `needs_review`）；这不等于真实整理、STRM 播放/清理或媒体服务器验收。受限 Prowlarr live 证据显示版本为 `2.5.2.5491`，唯一授权来源为 `LinuxTracker`，配置/启用各 1 个，受限 GET search 曾返回 30 个 torrent；范围仅为公开 Linux ISO 分发，不代表完整影视召回。该日的 Verify run `30906727468` 和 Systemd Release Package run `30906727470` 属于当时的历史快照，不应作为当前发布 ref 的证据。
+
+2026-08-05 当前发布基线只读核对：本次生产/发布 ref 的完整 SHA 为 `249aa5826db6e06683be6426aa5243a1aa4ed0f5`（短标识 `249aa582`）。公开 [Verify run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30971086025) 和 [Systemd Release Package run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30971086083) 均成功，且 `head_sha` 与动态解析的当前发布 ref 一致。服务器 systemd 当前 release 与该 ref 一致，健康接口返回 `status=ok`；生产只读库存为 54 页、12 个目录、43 个文件、54 个唯一对象，整理预览为 1 个 `needs_review`、远程写入 0。本轮受限 STRM 全量生成 40 个并 verify 40/40，但媒体服务器真实播放兼容仍未验收；C03 因一次性授权已消费而 blocked，STRM/空目录清理和整理写入继续关闭。
+
+2026-08-05 当前 Prowlarr 只读状态：版本为 `2.5.2.5491`，`LinuxTracker` 已安装并配置，但搜索超时 HTTP `000`，不能写成可搜索完成或聚合完成。2026-08-04 的 Linux ISO 搜索和聚合结果保留为历史/受限证据，不代表当前可用或完整影视召回。
 
 2026-08-02 状态复核是历史审查快照，锁定 `codex/integration-20260802@2c342d9`；该分支
 不是 `codex/publish-main`。复核期间集成 ref 已前进到 `3afc8d3`，随后随 PR #30 合入发布基线；
