@@ -18,6 +18,7 @@ from watch_assistant.models import AgentToken, WebSession
 
 SESSION_COOKIE = "watch_session"
 SESSION_TTL = timedelta(hours=12)
+DEFAULT_ADMIN_USERNAME = "admin"
 AGENT_TOKEN_PREFIX = "wa_at_"
 AGENT_SCOPES = frozenset(
     {
@@ -70,8 +71,11 @@ class SecurityManager:
     def __init__(
         self,
         *,
-        web_password_hash: str,
+        web_password_hash: str | None,
         script_token_hash: str,
+        web_username: str = DEFAULT_ADMIN_USERNAME,
+        bootstrap_admin_enabled: bool = False,
+        bootstrap_admin_password: str | None = None,
         diagnostics_token: str = "",
         cookie_secure: bool = False,
         push_limit: int = 10,
@@ -82,14 +86,50 @@ class SecurityManager:
         self._password_hash = PasswordHash.recommended()
         self._web_password_hash = web_password_hash
         self._script_token_hash = script_token_hash
+        self._web_username = web_username
+        self._bootstrap_admin_enabled = bootstrap_admin_enabled
+        self._bootstrap_admin_password = bootstrap_admin_password
+        if not web_username:
+            raise ValueError("web_username must not be empty")
+        if bootstrap_admin_enabled and web_username != DEFAULT_ADMIN_USERNAME:
+            raise ValueError(
+                "bootstrap_admin_enabled requires the admin username"
+            )
+        if not web_password_hash and not bootstrap_admin_enabled:
+            raise ValueError(
+                "web_password_hash is required unless admin bootstrap is enabled"
+            )
+        if bootstrap_admin_enabled and not bootstrap_admin_password:
+            raise ValueError(
+                "bootstrap_admin_password is required when admin bootstrap is enabled"
+            )
         self._diagnostics_token = diagnostics_token
         self.cookie_secure = cookie_secure
         self.push_limit = push_limit
         self._session_factory = session_factory
         self._session_ttl = session_ttl
         self._event_logger = event_logger
+        fingerprint_input = web_password_hash or ""
+        bootstrap_fingerprint = (
+            hashlib.sha256(bootstrap_admin_password.encode("utf-8")).hexdigest()
+            if bootstrap_admin_password
+            else ""
+        )
+        if (
+            web_username != DEFAULT_ADMIN_USERNAME
+            or bootstrap_admin_enabled
+            or bootstrap_fingerprint
+        ):
+            fingerprint_input = "\0".join(
+                (
+                    web_username,
+                    fingerprint_input,
+                    "bootstrap" if bootstrap_admin_enabled else "configured",
+                    bootstrap_fingerprint,
+                )
+            )
         self._credential_fingerprint = hashlib.sha256(
-            web_password_hash.encode("utf-8")
+            fingerprint_input.encode("utf-8")
         ).hexdigest()
         self._sessions: dict[str, SessionRecord] = {}
         self._rate_windows: dict[tuple[str, str], deque[datetime]] = {}
@@ -112,15 +152,12 @@ class SecurityManager:
     def configure_event_logger(self, event_logger: Any | None) -> None:
         self._event_logger = event_logger
 
-    def login(self, password: str) -> tuple[str, str]:
+    def login(
+        self, password: str, *, username: str | None = None
+    ) -> tuple[str, str]:
         if self._session_factory is not None:
             raise AuthError(503, "auth_unavailable")
-        try:
-            valid = self._password_hash.verify(password, self._web_password_hash)
-        except Exception:  # noqa: BLE001 - invalid configured hash fails closed
-            valid = False
-        if not valid:
-            raise AuthError(401, "invalid_credentials")
+        self._verify_web_credentials(username, password)
         session_id = secrets.token_urlsafe(32)
         csrf_token = secrets.token_urlsafe(24)
         self._sessions[session_id] = SessionRecord(
@@ -129,10 +166,12 @@ class SecurityManager:
         )
         return session_id, csrf_token
 
-    async def login_async(self, password: str) -> tuple[str, str]:
-        self._verify_web_password(password)
+    async def login_async(
+        self, password: str, *, username: str | None = None
+    ) -> tuple[str, str]:
+        self._verify_web_credentials(username, password)
         if self._session_factory is None:
-            return self.login(password)
+            return self.login(password, username=username)
         session_id = secrets.token_urlsafe(32)
         csrf_token = secrets.token_urlsafe(24)
         now = datetime.now(UTC)
@@ -366,13 +405,32 @@ class SecurityManager:
         except Exception:  # noqa: BLE001 - storage failures fail closed
             raise AuthError(503, "auth_unavailable") from None
 
-    def _verify_web_password(self, password: str) -> None:
-        try:
-            valid = self._password_hash.verify(password, self._web_password_hash)
-        except Exception:  # noqa: BLE001 - invalid configured hash fails closed
-            valid = False
-        if not valid:
+    def _verify_web_credentials(self, username: str | None, password: str) -> None:
+        effective_username = self._web_username if username is None else username
+        username_valid = secrets.compare_digest(
+            effective_username, self._web_username
+        )
+        password_valid = False
+        if self._web_password_hash:
+            try:
+                password_valid = self._password_hash.verify(
+                    password, self._web_password_hash
+                )
+            except Exception:  # noqa: BLE001 - invalid configured hash fails closed
+                password_valid = False
+        bootstrap_valid = (
+            self._bootstrap_admin_enabled
+            and self._bootstrap_admin_password is not None
+            and secrets.compare_digest(effective_username, DEFAULT_ADMIN_USERNAME)
+            and secrets.compare_digest(password, self._bootstrap_admin_password)
+        )
+        if not username_valid or not (password_valid or bootstrap_valid):
             raise AuthError(401, "invalid_credentials")
+
+    def _verify_web_password(self, password: str) -> None:
+        """Keep the password-only helper compatible with internal callers."""
+
+        self._verify_web_credentials(None, password)
 
     @staticmethod
     def _session_digest(session_id: str) -> str:

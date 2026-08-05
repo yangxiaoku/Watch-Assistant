@@ -32,7 +32,9 @@ async def login(
     response: Response,
     manager: SecurityManagerDependency,
 ) -> AuthLoginResponse:
-    session_id, csrf_token = await manager.login_async(payload.password)
+    session_id, csrf_token = await manager.login_async(
+        payload.password, username=payload.username
+    )
     response.set_cookie(
         SESSION_COOKIE,
         session_id,

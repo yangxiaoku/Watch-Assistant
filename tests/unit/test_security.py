@@ -1,6 +1,26 @@
+import pytest
+from pwdlib import PasswordHash
 from starlette.requests import Request
 
-from watch_assistant.security import _required_scope, redact_mapping
+from watch_assistant.security import (
+    AuthError,
+    SecurityManager,
+    _required_scope,
+    redact_mapping,
+)
+
+
+def test_explicit_empty_username_is_not_treated_as_password_only_login():
+    password_hash = PasswordHash.recommended()
+    manager = SecurityManager(
+        web_password_hash=password_hash.hash("fixture-password"),
+        script_token_hash=password_hash.hash("fixture-token"),
+    )
+
+    with pytest.raises(AuthError) as error:
+        manager.login("fixture-password", username="")
+
+    assert error.value.status_code == 401
 
 
 def test_structured_log_redaction_removes_sensitive_keys_and_values():

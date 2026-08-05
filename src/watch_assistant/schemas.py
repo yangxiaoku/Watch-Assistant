@@ -1908,6 +1908,7 @@ class TaskReconciliationResponse(BaseModel):
 class AuthLoginRequest(BaseModel):
     model_config = {"extra": "forbid"}
 
+    username: str | None = Field(default=None, min_length=1, max_length=64)
     password: str = Field(min_length=1)
 
 

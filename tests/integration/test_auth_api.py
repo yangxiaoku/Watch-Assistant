@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import secrets
 from datetime import UTC, datetime, timedelta
 
 import httpx
@@ -15,7 +16,11 @@ from watch_assistant.app import create_app
 from watch_assistant.crypto import SecretCrypto
 from watch_assistant.db import create_database, initialize_database
 from watch_assistant.models import Resource, WebSession
-from watch_assistant.security import AuthError, SecurityManager
+from watch_assistant.security import (
+    DEFAULT_ADMIN_USERNAME,
+    AuthError,
+    SecurityManager,
+)
 
 WEB_PASSWORD = "web-secret"
 SCRIPT_TOKEN = "script-secret"
@@ -34,7 +39,15 @@ class FakeTaskAdapter:
         return None
 
 
-async def _make_auth_client(tmp_path, *, push_limit=10):
+async def _make_auth_client(
+    tmp_path,
+    *,
+    push_limit=10,
+    bootstrap_admin_enabled=False,
+    bootstrap_admin_password=None,
+    configured_username="admin",
+    configured_password=WEB_PASSWORD,
+):
     database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'auth.db'}")
     await initialize_database(database.engine)
     crypto = SecretCrypto(Fernet.generate_key().decode("ascii"))
@@ -54,8 +67,15 @@ async def _make_auth_client(tmp_path, *, push_limit=10):
         await session.commit()
     password_hash = PasswordHash.recommended()
     security = SecurityManager(
-        web_password_hash=password_hash.hash(WEB_PASSWORD),
+        web_password_hash=(
+            password_hash.hash(configured_password)
+            if configured_password is not None
+            else None
+        ),
         script_token_hash=password_hash.hash(SCRIPT_TOKEN),
+        web_username=configured_username,
+        bootstrap_admin_enabled=bootstrap_admin_enabled,
+        bootstrap_admin_password=bootstrap_admin_password,
         cookie_secure=False,
         push_limit=push_limit,
     )
@@ -91,6 +111,84 @@ async def test_invalid_web_password_returns_401(tmp_path):
 
     assert response.status_code == 401
     assert resources.status_code == 401
+    await _close(client, database, tmdb, pansou)
+
+
+@pytest.mark.integration
+async def test_bootstrap_credentials_are_rejected_when_disabled(tmp_path):
+    bootstrap_password = secrets.token_urlsafe(24)
+    client, database, tmdb, pansou = await _make_auth_client(
+        tmp_path, bootstrap_admin_password=bootstrap_password
+    )
+
+    response = await client.post(
+        "/api/v1/auth/login",
+        json={
+            "username": DEFAULT_ADMIN_USERNAME,
+            "password": bootstrap_password,
+        },
+    )
+
+    assert response.status_code == 401
+    await _close(client, database, tmdb, pansou)
+
+
+@pytest.mark.integration
+async def test_admin_bootstrap_accepts_admin_credentials_only_when_enabled(tmp_path):
+    bootstrap_password = secrets.token_urlsafe(24)
+    client, database, tmdb, pansou = await _make_auth_client(
+        tmp_path,
+        bootstrap_admin_enabled=True,
+        bootstrap_admin_password=bootstrap_password,
+        configured_password=None,
+    )
+
+    accepted = await client.post(
+        "/api/v1/auth/login",
+        json={
+            "username": DEFAULT_ADMIN_USERNAME,
+            "password": bootstrap_password,
+        },
+    )
+    wrong_username = await client.post(
+        "/api/v1/auth/login",
+        json={
+            "username": "operator",
+            "password": bootstrap_password,
+        },
+    )
+    wrong_password = await client.post(
+        "/api/v1/auth/login",
+        json={"username": "admin", "password": "wrong"},
+    )
+
+    assert accepted.status_code == 200
+    assert wrong_username.status_code == 401
+    assert wrong_password.status_code == 401
+    await _close(client, database, tmdb, pansou)
+
+
+@pytest.mark.integration
+async def test_password_only_login_remains_compatible_with_configured_username(tmp_path):
+    client, database, tmdb, pansou = await _make_auth_client(
+        tmp_path, configured_username="operator"
+    )
+
+    password_only = await client.post(
+        "/api/v1/auth/login", json={"password": WEB_PASSWORD}
+    )
+    explicit_username = await client.post(
+        "/api/v1/auth/login",
+        json={"username": "operator", "password": WEB_PASSWORD},
+    )
+    wrong_username = await client.post(
+        "/api/v1/auth/login",
+        json={"username": "admin", "password": WEB_PASSWORD},
+    )
+
+    assert password_only.status_code == 200
+    assert explicit_username.status_code == 200
+    assert wrong_username.status_code == 401
     await _close(client, database, tmdb, pansou)
 
 
