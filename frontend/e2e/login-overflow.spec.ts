@@ -24,7 +24,8 @@ test("keeps the unauthenticated login page inside the viewport", async ({ page }
     const boxes = {
       title: rect(".auth-gate h1"),
       description: rect(".auth-gate > p:not(.eyebrow):not(.error-text)"),
-      input: rect(".auth-gate input"),
+      username: rect("#username"),
+      password: rect("#password"),
       button: rect(".auth-gate .primary-button"),
     };
     const values = Object.values(boxes);
@@ -79,5 +80,5 @@ test("keeps the unauthenticated login page inside the viewport", async ({ page }
   const loginButton = page.getByRole("button", { name: "登录" });
   await expect(loginButton).toBeEnabled();
   await loginButton.click();
-  await expect(page.getByText("密码不正确")).toBeVisible();
+  await expect(page.getByText("账号或密码不正确")).toBeVisible();
 });

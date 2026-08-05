@@ -40,6 +40,7 @@ import WorkbenchView from "./views/WorkbenchView.vue";
 const FAVORITES_KEY = "watch-assistant:favorites";
 const HISTORY_KEY = "watch-assistant:history";
 const api = new ApiClient();
+const username = ref("admin");
 const password = ref("");
 const query = ref("");
 const searchInput = ref("");
@@ -1223,13 +1224,13 @@ async function initializeWorkspace() {
 async function login() {
   error.value = "";
   try {
-    await api.login(password.value);
+    await api.login(username.value, password.value);
     authenticated.value = true;
     password.value = "";
     await initializeWorkspace();
   } catch (exception) {
     focusFirstFieldError(exception);
-    error.value = exception instanceof ApiError ? "密码不正确" : "登录失败";
+    error.value = exception instanceof ApiError ? "账号或密码不正确" : "登录失败";
   }
 }
 
@@ -1568,7 +1569,7 @@ onBeforeUnmount(() => {
     <p v-if="!isOnline" class="offline-strip" role="status">当前处于离线状态，仅显示最近一次只读摘要；写操作已暂停。</p>
     <p v-else-if="offlineDataAt" class="offline-data-strip" role="status">网络已恢复，之前显示过离线缓存（{{ new Date(offlineDataAt).toLocaleString('zh-CN') }}）。</p>
 
-    <section v-if="!authenticated" class="auth-gate"><div class="auth-mark"><LogIn :size="20" /></div><p class="eyebrow">私有工作区</p><h1>进入观影工作台</h1><p>你的 PanSou 聚合和 115 推送只在本地网络可见。</p><form @submit.prevent="login"><label for="password">Web 密码</label><input id="password" name="password" v-model="password" type="password" autocomplete="current-password" placeholder="输入访问密码" /><button class="primary-button" type="submit"><LogIn :size="17" />登录</button></form><p v-if="error" class="error-text" role="alert">{{ error }}</p></section>
+    <section v-if="!authenticated" class="auth-gate"><div class="auth-mark"><LogIn :size="20" /></div><p class="eyebrow">私有工作区</p><h1>进入观影工作台</h1><p>你的 PanSou 聚合和 115 推送只在本地网络可见。</p><form @submit.prevent="login"><label for="username">账号</label><input id="username" name="username" v-model="username" type="text" autocomplete="username" placeholder="输入账号" /><label for="password">Web 密码</label><input id="password" name="password" v-model="password" type="password" autocomplete="current-password" placeholder="输入访问密码" /><button class="primary-button" type="submit"><LogIn :size="17" />登录</button></form><p v-if="error" class="error-text" role="alert">{{ error }}</p></section>
 
     <template v-else>
       <p v-if="error" class="error-strip" role="alert"><X :size="16" />{{ error }}</p>

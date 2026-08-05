@@ -113,10 +113,10 @@ export function focusFirstFieldError(exception: unknown): void {
 export class ApiClient {
   private csrfToken: string | null = null;
 
-  async login(password: string): Promise<void> {
+  async login(username: string, password: string): Promise<void> {
     const response = await this.request<{ csrf_token: string }>(
       "/api/v1/auth/login",
-      { method: "POST", body: JSON.stringify({ password }) },
+      { method: "POST", body: JSON.stringify({ username, password }) },
     );
     this.csrfToken = response.csrf_token;
   }
