@@ -327,6 +327,41 @@ async def test_target_adapter_uses_header_only_and_passes_official_search_query(
     assert len(mock.requests) == 1
 
 
+async def test_target_adapter_defaults_to_one_item_page_for_bare_array_overfetch():
+    first_page = [
+        {
+            "title": f"Release {index}",
+            "protocol": "torrent",
+            "infoHash": f"{index:040x}",
+        }
+        for index in range(1, 31)
+    ]
+    mock = ProwlarrMock(
+        [MockResponse.json(first_page), MockResponse.json([])]
+    )
+    adapter, transport_client = _new_target_adapter(mock)
+    try:
+        result = await adapter.search("Example Show")
+    finally:
+        await _close_target_adapter(adapter, transport_client)
+
+    assert len(result.releases) == 30
+    assert result.unsupported_count == 0
+    assert result.truncated is False
+    assert [request.values("type") for request in mock.requests] == [
+        ("search",),
+        ("search",),
+    ]
+    assert [request.values("limit") for request in mock.requests] == [
+        ("1",),
+        ("1",),
+    ]
+    assert [request.values("offset") for request in mock.requests] == [
+        ("0",),
+        ("30",),
+    ]
+
+
 async def test_target_adapter_distinguishes_torrent_and_excludes_nzb_from_results():
     mock = ProwlarrMock([MockResponse.json(load_fixture("search_page_1.json"))])
     adapter, transport_client = _new_target_adapter(mock, max_results=2)

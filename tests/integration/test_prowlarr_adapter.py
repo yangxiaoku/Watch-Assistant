@@ -21,37 +21,32 @@ from watch_assistant.services.source_health import SourceHealthTracker
 async def test_prowlarr_search_uses_read_only_contract_and_filters_nzb():
     api_key = secrets.token_urlsafe(24)
     info_hash = "abcdef0123456789abcdef0123456789abcdef01"
-    route = respx.get(
-        "http://prowlarr.test/api/v1/search",
-        params={
-            "query": "Inception 2010",
-            "type": "search",
-            "limit": "100",
-            "offset": "0",
-        },
-    ).mock(
-        return_value=httpx.Response(
-            200,
-            json=[
-                {
-                    "guid": "release-1",
-                    "title": "Inception 2010 1080p",
-                    "protocol": "Torrent",
-                    "magnetUrl": f"magnet:?xt=urn:btih:{info_hash}",
-                    "infoHash": info_hash,
-                    "size": 1234,
-                    "seeders": 8,
-                    "indexer": "Indexer A",
-                    "indexerId": 7,
-                    "publishDate": "2026-08-01T00:00:00Z",
-                },
-                {
-                    "title": "Inception NZB",
-                    "protocol": "Usenet",
-                    "downloadUrl": "https://example.test/inception.nzb",
-                },
-            ],
-        )
+    route = respx.get("http://prowlarr.test/api/v1/search").mock(
+        side_effect=[
+            httpx.Response(
+                200,
+                json=[
+                    {
+                        "guid": "release-1",
+                        "title": "Inception 2010 1080p",
+                        "protocol": "Torrent",
+                        "magnetUrl": f"magnet:?xt=urn:btih:{info_hash}",
+                        "infoHash": info_hash,
+                        "size": 1234,
+                        "seeders": 8,
+                        "indexer": "Indexer A",
+                        "indexerId": 7,
+                        "publishDate": "2026-08-01T00:00:00Z",
+                    },
+                    {
+                        "title": "Inception NZB",
+                        "protocol": "Usenet",
+                        "downloadUrl": "https://example.test/inception.nzb",
+                    },
+                ],
+            ),
+            httpx.Response(200, json=[]),
+        ]
     )
     client = ProwlarrClient("http://prowlarr.test", api_key)
 
@@ -59,6 +54,11 @@ async def test_prowlarr_search_uses_read_only_contract_and_filters_nzb():
     await client.aclose()
 
     assert route.called
+    assert route.call_count == 2
+    assert route.calls[0].request.url.params["limit"] == "1"
+    assert route.calls[0].request.url.params["offset"] == "0"
+    assert route.calls[1].request.url.params["limit"] == "1"
+    assert route.calls[1].request.url.params["offset"] == "2"
     assert route.calls[0].request.headers["X-Api-Key"] == api_key
     assert api_key not in str(route.calls[0].request.url)
     assert result.unsupported_count == 1
