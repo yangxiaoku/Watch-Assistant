@@ -38,7 +38,7 @@ describe("WorkbenchView", () => {
     const actions = wrapper.findAll(".workbench-entry-action");
     await actions[2].trigger("click");
     await actions[3].trigger("click");
-    expect(wrapper.emitted("navigate")).toEqual([["settings"], ["settings"]]);
+    expect(wrapper.emitted("navigate")).toEqual([["settings", "organization"], ["settings"]]);
     expect(wrapper.text()).toContain("全量和增量 STRM 均未启用");
   });
 

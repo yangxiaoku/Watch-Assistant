@@ -64,6 +64,12 @@ test("connects Chinese workbench entries without horizontal overflow", async ({ 
     expect(button.left).toBeGreaterThanOrEqual(-1);
     expect(button.right).toBeLessThanOrEqual((testInfo.project.use.viewport?.width ?? 0) + 1);
   }
+  const navRows = new Set(navLayout.buttons.map((button) => Math.round(button.top)));
+  if (testInfo.project.name.startsWith("mobile")) {
+    expect(navRows.size).toBe(2);
+  } else {
+    expect(navRows.size).toBe(1);
+  }
 
   await page.getByLabel("快速搜索").fill("沙丘");
   await page.getByRole("button", { name: "搜索", exact: true }).click();
