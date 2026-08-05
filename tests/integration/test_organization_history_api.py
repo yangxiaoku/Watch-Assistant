@@ -50,6 +50,7 @@ async def _client(tmp_path: Path):
                     revision=1,
                 )
             )
+            await session.flush()
             session.add(
                 LibraryScanRun(
                     id=scan_id,
@@ -61,6 +62,7 @@ async def _client(tmp_path: Path):
                     snapshot_revision=1,
                 )
             )
+            await session.flush()
             session.add(
                 OrganizationPlan(
                     id=plan_id,
@@ -81,6 +83,7 @@ async def _client(tmp_path: Path):
                     plan_hash=("a" if suffix == "allowed" else "b") * 64,
                 )
             )
+            await session.flush()
             session.add(
                 OrganizationOperation(
                     id=operation_id,
@@ -92,6 +95,7 @@ async def _client(tmp_path: Path):
                     finished_at=now,
                 )
             )
+            await session.flush()
             session.add(
                 OrganizationHistoryEntry(
                     id=f"history-{suffix}",
@@ -120,7 +124,7 @@ async def _client(tmp_path: Path):
                 name="history-scope",
                 token_digest=hashlib.sha256(agent_token.encode()).hexdigest(),
                 token_prefix=agent_token[:16],
-                scopes_json=json.dumps([]),
+                scopes_json=json.dumps(["system:read"]),
                 library_ids_json=json.dumps(["library-allowed"]),
                 expires_at=now + timedelta(hours=1),
                 created_at=now,
