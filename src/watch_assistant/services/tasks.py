@@ -378,6 +378,7 @@ async def _fence_task_commit(
     current_time: datetime,
     *,
     require_live_lease: bool = True,
+    expected_expires_at: datetime | None = None,
 ) -> bool:
     """Prove the claim still owns the transaction immediately before commit."""
 
@@ -387,7 +388,12 @@ async def _fence_task_commit(
         Task.lease_token == lease.lease_token,
         Task.lease_expires_at.is_not(None),
     ]
+    observed_expires_at = None
     if require_live_lease:
+        if expected_expires_at is None:
+            return False
+        observed_expires_at = _as_utc(expected_expires_at)
+        current_time = max(_as_utc(current_time), datetime.now(UTC))
         predicates.append(Task.lease_expires_at > current_time)
     result = await session.execute(
         update(Task)
@@ -395,7 +401,19 @@ async def _fence_task_commit(
         .values(updated_at=current_time)
         .execution_options(synchronize_session=False)
     )
-    return result.rowcount == 1
+    if result.rowcount != 1:
+        await session.rollback()
+        return False
+    if (
+        require_live_lease
+        and observed_expires_at is not None
+        and observed_expires_at <= datetime.now(UTC)
+    ):
+        # The final conditional update can itself wait behind SQLite's write
+        # lock. Roll back if the observed lease expired before that write ran.
+        await session.rollback()
+        return False
+    return True
 
 
 def _release_task_lease(task: Task) -> None:
@@ -659,8 +677,8 @@ class TaskService:
     ) -> bool:
         current_time = _as_utc(now or datetime.now(UTC))
         async with self._session_factory() as session:
-            task_id = await session.scalar(
-                select(Task.id).where(
+            lease_expires_at = await session.scalar(
+                select(Task.lease_expires_at).where(
                     Task.id == lease.task_id,
                     Task.state == TaskState.SUBMITTING,
                     Task.lease_owner == lease.lease_owner,
@@ -669,7 +687,13 @@ class TaskService:
                     Task.lease_expires_at > current_time,
                 )
             )
-            return task_id is not None
+            if lease_expires_at is None:
+                return False
+            # The SQL predicate uses the time captured before the query. A
+            # slow SQLite read must not turn an already expired claim into a
+            # positive liveness result.
+            check_time = current_time if now is not None else datetime.now(UTC)
+            return _as_utc(lease_expires_at) > check_time
 
     async def renew(
         self,
@@ -681,9 +705,25 @@ class TaskService:
         """Renew only the still-live claim that owns this exact token."""
 
         _validate_lease_parameters(lease.lease_owner, lease_duration)
-        current_time = _as_utc(now or datetime.now(UTC))
-        expires_at = current_time + lease_duration
         async with self._session_factory() as session:
+            current_time = _as_utc(now or datetime.now(UTC))
+            observed_expires_at = await session.scalar(
+                select(Task.lease_expires_at).where(
+                    Task.id == lease.task_id,
+                    Task.state == TaskState.SUBMITTING,
+                    Task.lease_owner == lease.lease_owner,
+                    Task.lease_token == lease.lease_token,
+                    Task.lease_expires_at.is_not(None),
+                )
+            )
+            if observed_expires_at is None:
+                return False
+            observed_expires_at = _as_utc(observed_expires_at)
+            if now is None:
+                current_time = datetime.now(UTC)
+            if observed_expires_at <= current_time:
+                return False
+            expires_at = current_time + lease_duration
             result = await session.execute(
                 update(Task)
                 .where(
@@ -697,8 +737,16 @@ class TaskService:
                 .values(lease_expires_at=expires_at, updated_at=current_time)
                 .execution_options(synchronize_session=False)
             )
+            if result.rowcount != 1:
+                await session.rollback()
+                return False
+            if now is None and observed_expires_at <= datetime.now(UTC):
+                # The conditional update can be delayed behind SQLite's write
+                # lock. Do not commit a renewal that crossed the old expiry.
+                await session.rollback()
+                return False
             await session.commit()
-            return result.rowcount == 1
+            return True
 
     async def finish_submission(
         self, lease: TaskLease, result: SubmissionResult
@@ -732,7 +780,12 @@ class TaskService:
                 verified_available=False,
             )
             commit_time = datetime.now(UTC)
-            if not await _fence_task_commit(session, lease, commit_time):
+            if not await _fence_task_commit(
+                session,
+                lease,
+                commit_time,
+                expected_expires_at=task.lease_expires_at,
+            ):
                 return None
             _release_task_lease(task)
             task.updated_at = commit_time
@@ -781,6 +834,7 @@ class TaskService:
                 lease,
                 commit_time,
                 require_live_lease=not allow_expired,
+                expected_expires_at=task.lease_expires_at,
             ):
                 return None
             _release_task_lease(task)
