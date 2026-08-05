@@ -21,6 +21,35 @@ const show = {
   original_title: "Game of Thrones",
 };
 
+test("shows an external homepage failure as a neutral retryable state", async ({ page }) => {
+  let homeAttempts = 0;
+  await page.route("**/api/v1/health", (route) => route.fulfill({ json: { status: "ok", push_supported: false } }));
+  await page.route("**/api/v1/auth/me", (route) => route.fulfill({ json: { authenticated: true, via_bearer: false, csrf_token: null } }));
+  await page.route("**/api/v1/movies/home", (route) => {
+    homeAttempts += 1;
+    if (homeAttempts === 1) return route.fulfill({ status: 503, json: { detail: "tmdb_unavailable" } });
+    return route.fulfill({
+      json: {
+        popular: [movie],
+        now_playing: [],
+        upcoming: [],
+        top_rated: [],
+        tv_popular: [],
+        tv_on_the_air: [],
+        tv_top_rated: [],
+      },
+    });
+  });
+
+  await page.goto("/");
+  await expect(page.locator(".home-empty-state").getByText("首页资料暂时不可用", { exact: true })).toBeVisible();
+  await expect(page.locator(".error-strip")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "重新加载首页", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "重新加载首页", exact: true }).click();
+  await expect(page.locator(".feature-hero").getByText("盗梦空间", { exact: true })).toBeVisible();
+  expect(homeAttempts).toBe(2);
+});
+
 function inspectionResult(resourceId: string, status: "verified" | "unsupported" | "timeout" | "failed") {
   return {
     resource_id: resourceId,

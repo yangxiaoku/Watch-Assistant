@@ -81,3 +81,44 @@ test("keeps the unauthenticated login page inside the viewport", async ({ page }
   await loginButton.click();
   await expect(page.getByText("密码不正确")).toBeVisible();
 });
+
+test("keeps authenticated workbench navigation visible at compact width", async ({ page }, testInfo) => {
+  await page.route("**/api/v1/health", (route) => route.fulfill({
+    json: {
+      status: "ok",
+      push_supported: false,
+      inspection_supported: false,
+      organization_plan_enabled: true,
+      organization_execution_enabled: false,
+      organization_execution_supported: false,
+      strm_capabilities: { full: false, incremental: false, cleanup: false, playback: false, playback_contract_verified: false },
+    },
+  }));
+  await page.route("**/api/v1/auth/me", (route) => route.fulfill({ json: { authenticated: true, via_bearer: false, csrf_token: null } }));
+
+  await page.goto("/workbench");
+  await expect(page.getByRole("heading", { name: "观影工作台" })).toBeVisible();
+  const nav = page.getByRole("navigation", { name: "主导航" });
+  for (const label of ["工作台", "首页", "电影", "剧集", "热门", "收藏", "记录", "整理", "整理历史", "媒体库"]) {
+    await expect(nav.getByRole("button", { name: label, exact: true })).toBeVisible();
+  }
+
+  const layout = await page.evaluate(() => {
+    const element = document.querySelector<HTMLElement>(".primary-nav");
+    if (!element) throw new Error("missing primary navigation");
+    const buttons = Array.from(element.querySelectorAll<HTMLElement>("button")).map((button) => {
+      const box = button.getBoundingClientRect();
+      return { left: box.left, right: box.right, top: box.top, bottom: box.bottom };
+    });
+    return { width: window.innerWidth, scrollWidth: element.scrollWidth, clientWidth: element.clientWidth, buttons };
+  });
+  expect(layout.scrollWidth).toBeLessThanOrEqual(layout.clientWidth);
+  for (const button of layout.buttons) {
+    expect(button.left).toBeGreaterThanOrEqual(-1);
+    expect(button.right).toBeLessThanOrEqual(layout.width + 1);
+  }
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+  if (testInfo.project.name === "mobile-compact") {
+    await page.screenshot({ path: testInfo.outputPath("workbench-navigation-compact.png"), fullPage: true });
+  }
+});

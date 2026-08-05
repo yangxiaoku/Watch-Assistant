@@ -77,6 +77,18 @@ describe("ResourceTable", () => {
     expect(wrapper.find(".empty-state").exists()).toBe(false);
   });
 
+  it("shows a neutral Chinese notice when the resource snapshot is unavailable", () => {
+    const wrapper = mount(ResourceTable, {
+      props: { resources: [resource], paginationUnavailable: true, total: 1, totalPages: 1, onPush: vi.fn() },
+    });
+
+    expect(wrapper.get(".resource-page-notice").attributes("role")).toBe("status");
+    expect(wrapper.get(".resource-page-notice").text()).toContain("分页暂不可用");
+    expect(wrapper.find(".resource-page-error").exists()).toBe(false);
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false);
+    expect(wrapper.find(".resource-pagination").exists()).toBe(false);
+  });
+
   it("preserves unknown content fields and only labels verified sources", () => {
     const wrapper = mount(ResourceTable, {
       props: {

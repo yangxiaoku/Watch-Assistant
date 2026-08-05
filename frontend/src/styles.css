@@ -1014,3 +1014,25 @@ html, body { overflow-x: hidden; }
   .workbench-entry > small { min-height: 0; }
   .workbench-entry-action { width: 100%; margin-top: 16px; justify-content: center; }
 }
+
+@media (max-width: 1440px) {
+  .primary-nav {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(66px, 1fr));
+    gap: 3px;
+    overflow: visible;
+    align-content: center;
+  }
+  .primary-nav-group { display: contents; }
+  .primary-nav-group + .primary-nav-group { padding-left: 0; border-left: 0; }
+  .primary-nav-group-label { display: none; }
+  .primary-nav button {
+    width: 100%;
+    min-width: 0;
+    justify-content: center;
+    gap: 3px;
+    padding: 0 3px;
+    line-height: 1.2;
+    white-space: normal;
+  }
+}

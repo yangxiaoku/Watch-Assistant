@@ -73,7 +73,7 @@ const entries = computed<WorkbenchEntry[]>(() => [
     status: organizationStatus.value,
     icon: ClipboardCheck,
     destination: props.organizationPlanCapability.enabled ? "organization-plans" : "settings",
-    actionLabel: props.organizationPlanCapability.enabled ? "打开整理计划" : "查看设置",
+    actionLabel: props.organizationPlanCapability.enabled ? "打开整理计划" : "查看整理设置",
   },
   {
     key: "strm",
@@ -83,7 +83,7 @@ const entries = computed<WorkbenchEntry[]>(() => [
     status: strmStatus.value,
     icon: Database,
     destination: strmStatus.value.label === "可用" ? "library" : "settings",
-    actionLabel: strmStatus.value.label === "可用" ? "打开媒体库" : "查看设置",
+    actionLabel: strmStatus.value.label === "可用" ? "打开媒体库" : "查看 STRM 设置",
   },
   {
     key: "settings",
