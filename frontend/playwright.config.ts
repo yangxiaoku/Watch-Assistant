@@ -4,7 +4,8 @@ export default defineConfig({
   testDir: "./e2e",
   testIgnore: "**/live-api.spec.ts",
   webServer: {
-    command: "npm run dev -- --host 127.0.0.1 --port 4175",
+    // Invoke Vite directly so npm/pnpm wrappers cannot rewrite CLI arguments.
+    command: "node node_modules/vite/bin/vite.js --host 127.0.0.1 --port 4175",
     url: "http://127.0.0.1:4175",
     reuseExistingServer: true,
   },
