@@ -34,7 +34,7 @@ from watch_assistant.services.workflows import (
     record_evidence,
     sync_child_stage,
 )
-from watch_assistant.worker import TaskWorker
+from watch_assistant.worker import TaskWorker, _LeaseClaimLost
 
 
 class FakeAdapter:
@@ -361,6 +361,66 @@ async def test_renewal_failure_stops_follow_up_submission_and_marks_uncertain(
     # A fenced loss is terminal for this attempt; the worker cannot submit again.
     assert await worker.run_once() is False
     assert adapter.submissions == 1
+    await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_external_call_rechecks_owner_before_adapter_invocation(tmp_path):
+    database = await _database(tmp_path)
+    crypto = SecretCrypto(Fernet.generate_key().decode("ascii"))
+    await _add_resource(database, crypto)
+    service = TaskService(database.session_factory)
+    task, _ = await service.create("res_magnet")
+    old_lease = await service.claim_next(
+        owner="old-owner",
+        lease_duration=timedelta(minutes=1),
+    )
+    assert old_lease is not None
+
+    adapter = FakeAdapter()
+    worker = TaskWorker(
+        database.session_factory,
+        crypto,
+        adapter,
+        owner="old-owner",
+        lease_seconds=60,
+    )
+    original_is_active = worker._tasks.is_lease_active
+    checks = 0
+    new_lease = None
+
+    async def takeover_after_initial_check(lease):
+        nonlocal checks, new_lease
+        checks += 1
+        if checks == 2:
+            async with database.session_factory() as session:
+                stored = await session.get(Task, task.id)
+                assert stored is not None
+                stored.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+                await session.commit()
+            new_lease = await service.claim_expired(
+                owner="new-owner",
+                lease_duration=timedelta(minutes=1),
+            )
+            assert new_lease is not None
+        return await original_is_active(lease)
+
+    worker._tasks.is_lease_active = takeover_after_initial_check
+
+    with pytest.raises(_LeaseClaimLost):
+        await worker._run_external_call(
+            old_lease,
+            lambda: adapter.submit_magnet("magnet:?xt=urn:btih:fixture"),
+        )
+
+    assert checks >= 2
+    assert new_lease is not None
+    assert adapter.submissions == 0
+    stored = await service.get(task.id)
+    assert stored is not None
+    assert stored.state is TaskState.SUBMITTING
+    assert stored.lease_owner == "new-owner"
+    assert stored.lease_token == new_lease.lease_token
     await database.engine.dispose()
 
 
