@@ -247,6 +247,19 @@ async def test_empty_directory_cleanup_api_is_preview_confirm_idempotent_and_rev
         )
         assert repeated.status_code == 200
         assert repeated.json()["deleted"] == 1
+
+        changed_request = {
+            **apply_payload,
+            "expected_revision": apply_payload["expected_revision"] + 1,
+            "digest": "0" * 64,
+        }
+        changed = await client.post(
+            f"/api/v1/empty-directory-cleanup-plans/{plan['plan_id']}/apply",
+            json=changed_request,
+            headers=headers,
+        )
+        assert changed.status_code == 409
+        assert changed.json()["detail"] == "idempotency_key_conflict"
         assert calls == ["300"]
     finally:
         release.set()

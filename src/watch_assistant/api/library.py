@@ -2,6 +2,7 @@
 
 import asyncio
 import hashlib
+import json
 import re
 from datetime import UTC
 from typing import Annotated, Literal
@@ -630,8 +631,21 @@ def _empty_cleanup_error_status(code: str) -> int:
     return 404 if code == "plan_not_found" else 409
 
 
-def _empty_cleanup_operation_scope(plan_id: str) -> str:
-    return "cleanup:" + hashlib.sha256(plan_id.encode("ascii")).hexdigest()[:32]
+def _empty_cleanup_operation_scope(
+    plan_id: str, payload: EmptyDirectoryCleanupPlanApplyRequest
+) -> str:
+    canonical = json.dumps(
+        {
+            "confirm": payload.confirm,
+            "digest": payload.digest.lower(),
+            "expected_revision": payload.expected_revision,
+            "plan_id": plan_id,
+        },
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("ascii")
+    return "cleanup:" + hashlib.sha256(canonical).hexdigest()[:32]
 
 
 async def _run_empty_cleanup_operation_heartbeat(
@@ -773,7 +787,7 @@ async def apply_empty_directory_cleanup_plan(
             library_id=current_plan.library_id,
             source_scan_run_id=current_plan.source_scan_run_id,
             kind=StrmOperationKind.CLEANUP,
-            workflow_id=_empty_cleanup_operation_scope(plan_id),
+            workflow_id=_empty_cleanup_operation_scope(plan_id, payload),
             idempotency_key=payload.idempotency_key,
         )
         running, acquired = await operations.claim_start(queued.operation_id)
