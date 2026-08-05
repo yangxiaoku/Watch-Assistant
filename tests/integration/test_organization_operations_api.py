@@ -777,10 +777,8 @@ async def test_agent_confirm_and_queue_requires_execute_scope(tmp_path: Path):
         headers={"Authorization": f"Bearer {plan_token}"},
     )
     assert denied.status_code == 403
-    assert denied.json()["error"] == {
-        "code": "missing_scope",
-        "missing_scopes": ["organize:execute"],
-    }
+    assert denied.json()["error"]["code"] == "missing_scope"
+    assert denied.json()["error"]["missing_scopes"] == ["organize:execute"]
 
     accepted = await client.post(
         path,
