@@ -20,9 +20,11 @@
 
 REQ-001（115 影视库自动整理）和 REQ-002（STRM 全量与增量同步）当前均为“待验收”：
 受管夹具、离线阶段证据以及生产只读范围/库存预览已具备，但生产整理写入、生产 STRM
-受管清单、媒体服务器兼容和元数据联动仍未完成。相关代码和开关不代表已上线；生产能力、
-实际版本和部署方式必须以发布前的只读核对以及 `/api/v1/health` 返回为准，本文不硬编码生产
-commit 或开关状态。
+受管清单、媒体服务器兼容和元数据联动仍未完成。2026-08-05 当前生产只读快照为 54 页、
+12 个目录、43 个文件和 54 个唯一对象；整理计划预览为 1 个 `needs_review`、远程写入 0。
+C03 因一次性授权已消费而当前 blocked，整理写入保持关闭。本轮受限 STRM 全量生成 40 个并
+verify 40/40，但媒体服务器真实播放兼容仍未验收。相关代码和开关不代表已上线；生产能力、
+实际版本和部署方式必须以发布前的只读核对以及 `/api/v1/health` 返回为准。
 
 磁力和 115 分享任务统一通过独立的 p115 gateway；P115 Cookie 只来自服务端配置的只读
 Cookie 文件或应用内托管设备。分享推送、影视库整理、删除和 STRM 写入继续受独立契约、
@@ -31,8 +33,10 @@ Cookie 文件或应用内托管设备。分享推送、影视库整理、删除�
 ## 当前发布与验收边界
 
 - 唯一发布分支是 `codex/publish-main`。发布前先执行 `git fetch --all --prune`，再以
-  `git rev-parse origin/codex/publish-main` 的实际输出作为 commit 身份；README 不硬编码当前发布 SHA。
+  `git rev-parse origin/codex/publish-main` 的实际输出作为 commit 身份；README 不使用未注明日期的固定 SHA。
   最近合入的 PR #50-#61 只作为 first-parent 历史记录；发布前仍须重新解析实际 ref，不能沿用旧报告中的 commit。
+- 2026-08-05 本次生产/发布 ref 的完整 SHA 为
+  `249aa5826db6e06683be6426aa5243a1aa4ed0f5`（短标识 `249aa582`）；该日期快照不替代后续发布前的动态解析。
 - Verify 与 Systemd Release Package 必须按同一 `head_sha` 重新核对；历史 Actions 链接只能证明对应快照的离线门禁、Compose/发布包校验和发布脚本门禁通过，
   不证明已经部署或生产健康检查已通过。
 - 近期 first-parent 合入记录包括 #44（P1 审查）、#45（Prowlarr/PanSou 只读 readiness）、
@@ -43,10 +47,10 @@ Cookie 文件或应用内托管设备。分享推送、影视库整理、删除�
   这些改动只代表代码、离线或受管夹具边界，不等于生产整理、生产 STRM、播放兼容性、清理或部署验收。
 - Prowlarr 的离线 readiness 已由 [PR #19](https://github.com/yangxiaoku/Watch-Assistant/pull/19)、
   [PR #29](https://github.com/yangxiaoku/Watch-Assistant/pull/29) 和当前基线的 [PR #45](https://github.com/yangxiaoku/Watch-Assistant/pull/45) 加固，契约证据见
-  [Prowlarr 契约测试](tests/contracts/test_prowlarr_contract.py)。受限 live evidence 已验证 Prowlarr `2.5.2.5491`、唯一选用的公开来源 `LinuxTracker`、
-  官方 test HTTP `200`、search `17`，以及 1 个启用 indexer、`indexerstatus` 异常项 `0`；Watch Assistant 聚合为
-  `complete=True`、`warnings=none`、PanSou `0`、Prowlarr `17`、canonical `17`。授权范围仅覆盖公开 Linux ISO 分发，电影/电视剧召回率、95% 基线、
-  广泛来源质量、完整来源对照和生产 HTTP 鉴权路由仍未验证，不能据此宣称 REQ-023 完整验收或已上线。
+  [Prowlarr 契约测试](tests/contracts/test_prowlarr_contract.py)。2026-08-05 当前只读核对显示 Prowlarr `2.5.2.5491`，
+  `LinuxTracker` 已安装并配置，但搜索请求超时并返回 HTTP `000`，因此不能写成可搜索完成、聚合完成或 REQ-023 已上线。
+  2026-08-04 的历史/受限证据曾在公开 Linux ISO 范围观察到官方 test HTTP `200`、search `17`、PanSou `0`、Prowlarr `17`、
+  canonical `17`；该历史结果不代表当前搜索可用，也不覆盖电影/电视剧召回率、95% 基线、广泛来源质量、完整来源对照和生产 HTTP 鉴权路由。
 - p115 目前可引用的远程证据仍限于受管夹具、生产只读库存/计划预览或失败关闭路径；本轮未执行真实写入、真实媒体库整理、生产 STRM 播放/清理或媒体服务器兼容验收。
   systemd 当前 release 和健康接口已完成只读核对，但这些能力继续保持未验收、未上线，不能由 CI 成功或 Cookie readiness 推断为生产可用。
 - 对应离线证据包括 [STRM manifest 单测](tests/unit/test_strm_manifest.py)、[空目录计划单测](tests/unit/test_empty_directory_cleanup_plan.py)、
@@ -59,7 +63,8 @@ Cookie 文件或应用内托管设备。分享推送、影视库整理、删除�
   默认不触碰 115 写入口，真实夹具执行必须额外提供人工确认、范围和一次性授权。
 - 发布 manifest、来源、systemd 回退和发布物 smoke 测试只证明发布门禁覆盖；本轮已通过服务器只读核对确认
   systemd 当前 release、`/api/v1/health` 状态和生产只读预览，但没有在本轮执行部署或真实写操作。
-  健康接口报告整理写契约未验证、整理执行不受支持、STRM 清理关闭；STRM 全量/增量/播放开关状态和播放契约状态必须与完整生产验收分开记录。
+  健康接口报告整理写契约未验证、整理执行不受支持；本轮 STRM 生成/verify 证据仍不能代替媒体服务器真实播放验收。
+  STRM/空目录清理和整理写入继续关闭；接口开关或契约状态必须与完整生产验收分开记录。
 
 ## 部署
 

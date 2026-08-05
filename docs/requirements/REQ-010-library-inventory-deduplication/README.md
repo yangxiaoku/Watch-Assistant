@@ -4,7 +4,7 @@
 |---|---|
 | 版本 | V1.0 |
 | 状态 | 开发中 |
-| 更新日期 | 2026-08-03 |
+| 更新日期 | 2026-08-05 |
 | 优先级 | P0 |
 | 依赖 | 115 目录只读契约、REQ-001、REQ-004 |
 | 使用方 | REQ-007、REQ-008、REQ-011、REQ-016 |
@@ -29,9 +29,9 @@
 - 不在检测到重复时自动永久删除。
 - 不把索引当作 115 的唯一真实状态。
 
-## 当前集成进展（2026-08-03）
+## 当前集成进展（2026-08-05）
 
-- 本次核对的发布 commit 必须由 `git fetch --all --prune` 后执行 `git rev-parse origin/codex/publish-main` 动态解析；本文不硬编码当前 SHA。
+- 本次核对的发布 commit 必须由 `git fetch --all --prune` 后执行 `git rev-parse origin/codex/publish-main` 动态解析；本文不使用未注明日期的固定 SHA。
   最近合入 PR #50-#61 仅作为历史记录。Verify 与 Systemd Release Package 必须按同一 `head_sha` 重新核对，且 CI 不能替代生产媒体库配置、生产扫描或生产部署验收。
 - 当前发布基线已合入 [PR #30](https://github.com/yangxiaoku/Watch-Assistant/pull/30) 的持久扫描游标 v2、
   页数/总量一致性、可恢复 worker 目录范围恢复和不完整快照门禁；扫描范围或断点无法证明时，库存不会被当作完整事实。
@@ -41,8 +41,8 @@
   [PR #34](https://github.com/yangxiaoku/Watch-Assistant/pull/34) 合入，补充证据见
   [组织用户流集成测试](../../../tests/integration/test_organization_user_flow.py) 和
   [组织计划单测](../../../tests/unit/test_organization_plan.py)；这些改动仍不代表已部署或完成生产库存验收。
-- 生产媒体库配置、应用内新鲜完整扫描、目录增量事件和整理/隔离/恢复统一账本仍是阻断项；服务器 systemd release
-  与健康接口已完成只读核对，但 p115 生产远程证据、生产重复处理和真实 115 写入仍未在本次需求核对中验证，因此本需求继续保持“开发中”。
+- 2026-08-05 当前生产/发布 ref 短标识为 `249aa582`；生产媒体库配置已只读核对，受限完整快照为 54 页、12 个目录、43 个文件和 54 个唯一对象。
+  整理计划预览为 1 个 `needs_review`、远程写入 0。该快照不等于稳定生产库存基线，目录增量事件、整理/隔离/恢复统一账本、生产重复处理和真实 115 写入仍是阻断项，因此本需求继续保持“开发中”。
 
 ## 3. 功能范围
 
