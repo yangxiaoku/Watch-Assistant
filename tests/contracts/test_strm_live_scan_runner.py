@@ -6,6 +6,7 @@ import pytest
 
 import scripts.p115_strm_application_live_runner as application_runner
 import scripts.p115_strm_playback_live_runner as playback_runner
+from scripts.p115_strm_application_live_runner import _post_cleanup
 from scripts.p115_strm_application_live_runner import _scan as application_scan
 from scripts.p115_strm_playback_live_runner import _scan as playback_scan
 
@@ -118,3 +119,35 @@ async def test_strm_live_rename_passes_explicit_write_confirmation(tmp_path, mon
     assert result == {"status": "success", "receipt_count": 1}
     assert captured["write_enabled"] is True
     assert captured["plan_confirmed"] is True
+
+
+@pytest.mark.asyncio
+async def test_strm_live_cleanup_applies_reviewed_plan():
+    class _CleanupClient:
+        def __init__(self):
+            self.calls = []
+
+        async def post(self, path, *, headers, json):
+            self.calls.append((path, headers, json))
+            if path.endswith("strm-cleanup-plan"):
+                return _Response(
+                    {
+                        "plan_id": "cleanup-plan",
+                        "revision": 1,
+                        "plan_hash": "a" * 64,
+                    }
+                )
+            return _Response({"retired": 0, "plan": {"status": "applied"}})
+
+    client = _CleanupClient()
+    result = await _post_cleanup(client, {"X-CSRF-Token": "csrf"}, "scan-run")
+
+    assert result["retired"] == 0
+    assert client.calls[0][0] == "/api/v1/libraries/strm-live/strm-cleanup-plan"
+    assert client.calls[1][0] == "/api/v1/strm-cleanup-plans/cleanup-plan/apply"
+    assert client.calls[1][2] == {
+        "expected_revision": 1,
+        "digest": "a" * 64,
+        "confirm": True,
+        "idempotency_key": "strm-live-cleanup-confirmed",
+    }
