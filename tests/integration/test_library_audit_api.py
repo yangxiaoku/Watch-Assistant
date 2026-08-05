@@ -226,6 +226,136 @@ async def test_inventory_reports_freshness_and_only_exact_identity_blocks(tmp_pa
 
 
 @pytest.mark.integration
+async def test_inventory_rejects_requeued_scan_even_when_created_earlier(tmp_path):
+    client, database = await _client(tmp_path)
+    login = await client.post("/api/v1/auth/login", json={"password": WEB_PASSWORD})
+    assert login.status_code == 200
+    csrf = login.json()["csrf_token"]
+
+    async with database.session_factory() as session:
+        current = await session.get(LibraryScanRun, "scan-one")
+        assert current is not None
+        assert current.created_at is not None
+        assert current.updated_at is not None
+        session.add(
+            LibraryScanRun(
+                id="scan-requeued",
+                library_id="library-one",
+                root_directory_id="root-one",
+                idempotency_key="scan-requeued-key",
+                scan_mode="tree",
+                state="queued",
+                complete=False,
+                snapshot_revision=None,
+                created_at=current.created_at - timedelta(minutes=1),
+                updated_at=current.updated_at + timedelta(minutes=1),
+            )
+        )
+        await session.commit()
+
+    inventory = await client.get("/api/v1/libraries/library-one/inventory")
+    assert inventory.status_code == 200
+    assert inventory.json()["scan_run_id"] == "scan-one"
+    assert inventory.json()["freshness"]["complete"] is False
+    assert inventory.json()["freshness"]["status"] == "incomplete"
+
+    check = await client.get(
+        "/api/v1/libraries/library-one/inventory/check",
+        params={"object_id": "file-one"},
+    )
+    assert check.status_code == 200
+    assert check.json()["decision"] == "index_incomplete"
+    assert check.json()["matched_object_count"] == 0
+
+    bound = await client.put(
+        "/api/v1/libraries/library-one/inventory/identities/file-one",
+        headers={"X-CSRF-Token": csrf},
+        json={"tmdb_id": 7, "media_type": "movie", "revision": 0},
+    )
+    assert bound.status_code == 409
+    assert bound.json()["detail"] == "library_inventory_incomplete"
+
+    await client.aclose()
+    await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_media_reads_hide_old_or_unverified_snapshots(tmp_path):
+    client, database = await _client(tmp_path)
+    login = await client.post("/api/v1/auth/login", json={"password": WEB_PASSWORD})
+    assert login.status_code == 200
+
+    async def assert_hidden() -> None:
+        libraries = await client.get("/api/v1/libraries")
+        assert libraries.status_code == 200
+        assert libraries.json()["items"][0]["latest_scan"] is None
+
+        library = await client.get("/api/v1/libraries/library-one")
+        assert library.status_code == 200
+        assert library.json()["latest_scan"] is None
+
+        library_media = await client.get("/api/v1/libraries/library-one/media")
+        assert library_media.status_code == 200
+        assert library_media.json()["items"] == []
+
+        media = await client.get("/api/v1/media", params={"library": "library-one"})
+        assert media.status_code == 200
+        assert media.json()["items"] == []
+
+        detail = await client.get("/api/v1/media/file:file-one")
+        assert detail.status_code == 404
+        assert detail.json()["detail"] == "media_not_found"
+
+    async with database.session_factory() as session:
+        current = await session.get(LibraryScanRun, "scan-one")
+        assert current is not None
+        assert current.created_at is not None
+        assert current.updated_at is not None
+        unsettled = LibraryScanRun(
+            id="scan-unsettled",
+            library_id="library-one",
+            root_directory_id="root-one",
+            idempotency_key="scan-unsettled-key",
+            scan_mode="tree",
+            state="queued",
+            complete=False,
+            snapshot_revision=None,
+            created_at=current.created_at - timedelta(minutes=1),
+            updated_at=current.updated_at + timedelta(minutes=1),
+        )
+        session.add(unsettled)
+        await session.commit()
+
+    for state, complete in (
+        ("queued", False),
+        ("running", False),
+        ("completed", False),
+    ):
+        async with database.session_factory() as session:
+            unsettled = await session.get(LibraryScanRun, "scan-unsettled")
+            assert unsettled is not None
+            unsettled.state = state
+            unsettled.complete = complete
+            await session.commit()
+        await assert_hidden()
+
+    async with database.session_factory() as session:
+        unverified = await session.get(LibraryScanRun, "scan-unsettled")
+        assert unverified is not None
+        unverified.state = "completed"
+        unverified.complete = True
+        unverified.snapshot_revision = 8
+        unverified.expected_total = 0
+        unverified.pages_read = 0
+        unverified.items_seen = 0
+        await session.commit()
+    await assert_hidden()
+
+    await client.aclose()
+    await database.engine.dispose()
+
+
+@pytest.mark.integration
 async def test_inventory_rejects_failed_incomplete_and_wrong_scope_snapshots(tmp_path):
     client, database = await _client(tmp_path)
     login = await client.post("/api/v1/auth/login", json={"password": WEB_PASSWORD})
