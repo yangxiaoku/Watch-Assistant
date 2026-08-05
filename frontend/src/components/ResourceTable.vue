@@ -74,6 +74,7 @@ const sort = computed(() => props.resourceSort ?? "comprehensive");
 const activePushCapabilities = computed(() => props.pushCapabilities ?? NO_PUSH_CAPABILITIES);
 const displayedSourceNames = computed(() => props.sourceNames?.length ? sourceNameList(props.sourceNames) : sourceNameList(props.resources.map((resource) => resource.source)));
 const sourceSummary = computed(() => displayedSourceNames.value.length ? "来源 " + displayedSourceNames.value.length + " 个：" + displayedSourceNames.value.join(" / ") : "");
+const paginationNotice = computed(() => props.resourceError || "资源分页暂不可用，当前显示搜索快照结果");
 
 const kindCounts = computed(() => ({ all: total.value, magnet: facets.value.magnet, share: facets.value.share }));
 const qualityCounts = computed(() => ({
@@ -173,7 +174,7 @@ function pageRequest(target: number) {
     <div class="resource-filter-bar" role="group" aria-label="资源质量筛选">
       <button v-for="tag in [{ key: 'all', label: '全部' }, { key: '4k', label: '4K/2160P' }, { key: '1080p', label: '1080P' }, { key: '720p', label: '720P' }, { key: 'subtitle', label: '字幕' }]" :key="tag.key" type="button" :class="{ active: quality === tag.key }" @click="emit('quality', tag.key as 'all' | ResourceQuality)">{{ tag.label }} <span>{{ qualityCounts[tag.key as keyof typeof qualityCounts] }}</span></button>
     </div>
-    <p v-if="paginationUnavailable" class="resource-page-notice" role="status">{{ resourceError }}</p>
+    <p v-if="paginationUnavailable" class="resource-page-notice" role="status">{{ paginationNotice }}</p>
     <p v-else-if="resourceError" class="resource-page-error" role="alert">{{ resourceError }} <button class="text-button" type="button" @click="emit('retryPage')">重试</button></p>
     <div v-if="resources.length" class="resource-table-wrap" :class="{ 'resource-list-loading': resourceLoading || resourceSearchLoading }">
       <table class="resource-table">

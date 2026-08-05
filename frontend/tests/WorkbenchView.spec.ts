@@ -33,6 +33,8 @@ describe("WorkbenchView", () => {
     });
 
     expect(wrapper.text()).toContain("需配置");
+    expect(wrapper.text()).toContain("查看整理设置");
+    expect(wrapper.text()).toContain("查看 STRM 设置");
     const actions = wrapper.findAll(".workbench-entry-action");
     await actions[2].trigger("click");
     await actions[3].trigger("click");
