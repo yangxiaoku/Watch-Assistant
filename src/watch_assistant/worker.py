@@ -351,8 +351,17 @@ class TaskWorker:
             name=f"watch-assistant-task-lease-{lease.task_id}",
         )
         operation_task = None
+
+        async def invoke_operation() -> _ExternalResult:
+            # Recheck the fencing identity in the same task immediately before
+            # entering the adapter coroutine.  This closes the scheduling gap
+            # between the initial check and creation of the external call.
+            if not await self._lease_is_active(lease):
+                raise _LeaseClaimLost
+            return await operation()
+
         try:
-            operation_task = asyncio.ensure_future(operation())
+            operation_task = asyncio.ensure_future(invoke_operation())
             done, _pending = await asyncio.wait(
                 {operation_task, heartbeat_task},
                 return_when=asyncio.FIRST_COMPLETED,

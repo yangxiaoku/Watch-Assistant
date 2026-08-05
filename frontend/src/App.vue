@@ -57,6 +57,7 @@ const metadataStale = ref(false);
 const homeCatalog = ref<HomeCatalogResponse | null>(null);
 const catalogMovies = ref<MovieMetadata[]>([]);
 const catalogHeading = ref("");
+const catalogError = ref("");
 const activeView = ref<BrowseView>("home");
 const previousView = ref<BrowseView>("home");
 const genreId = ref<number | undefined>();
@@ -127,6 +128,7 @@ let metadataRequestId = 0;
 let inspectionRunId = 0;
 let pollTimer: number | undefined;
 let catalogRequestId = 0;
+let failedCatalogRoute: CatalogRoute | null = null;
 let resourceRequestId = 0;
 let resourceAbortController: AbortController | null = null;
 let resourceSearchAbortController: AbortController | null = null;
@@ -414,6 +416,8 @@ async function requestCatalog(route: CatalogRoute, historyMode: "push" | "replac
   pendingCatalogRoute = safeRoute;
   const isCurrent = () => requestId === catalogRequestId && pendingCatalogRoute === safeRoute;
   catalogLoading.value = true;
+  catalogError.value = "";
+  failedCatalogRoute = null;
   error.value = "";
 
   const cached = readCatalogCache(safeRoute);
@@ -423,6 +427,7 @@ async function requestCatalog(route: CatalogRoute, historyMode: "push" | "replac
     applyCatalogData(committedRoute, cached);
     pendingCatalogRoute = null;
     catalogLoading.value = false;
+    catalogError.value = "";
     commitCatalogRoute(committedRoute, historyMode, restoreY ?? 0);
     catalogScroll(restoreY);
     return;
@@ -452,14 +457,23 @@ async function requestCatalog(route: CatalogRoute, historyMode: "push" | "replac
     applyCatalogData(committedRoute, entry);
     pendingCatalogRoute = null;
     catalogLoading.value = false;
+    catalogError.value = "";
     commitCatalogRoute(committedRoute, historyMode, restoreY ?? 0);
     catalogScroll(restoreY);
   } catch (exception) {
     if (!isCurrent()) return;
     pendingCatalogRoute = null;
     catalogLoading.value = false;
-    error.value = exception instanceof ApiError ? exception.message : "目录加载失败，请稍后重试";
+    failedCatalogRoute = safeRoute;
+    catalogError.value = exception instanceof ApiError ? exception.message : "目录加载失败，请稍后重试";
+    // Keep an initial failed route visible so an upstream failure is not shown as an empty result.
+    if (!committedCatalogRoute.value) applyCatalogPreview(safeRoute);
   }
+}
+
+async function retryCatalog() {
+  if (!failedCatalogRoute || catalogLoading.value) return;
+  await requestCatalog(failedCatalogRoute, "replace");
 }
 function inspectionBatchIds(limit = 8, retriesOnly = false): string[] {
   if (!result.value || !resourceItems.value.length) return [];
@@ -614,6 +628,8 @@ async function selectView(view: Exclude<BrowseView, "search">) {
   invalidateDetailRequest();
   result.value = null;
   error.value = "";
+  catalogError.value = "";
+  failedCatalogRoute = null;
   previousView.value = view;
   if (view === "movies" || view === "tv") {
     await loadDiscover({ genreId: undefined, year: undefined, sort: "popular" }, 1, "push", view);
@@ -1559,7 +1575,7 @@ onBeforeUnmount(() => {
       <template v-if="!result && !loading">
         <WorkbenchView v-if="activeView === 'workbench'" :organization-plan-capability="organizationPlanCapability" :strm-full-capability="strmFullCapability" :strm-incremental-capability="strmIncrementalCapability" @navigate="selectView" @search="searchFromWorkbench" />
         <HomeView v-if="activeView === 'home'" :catalog="homeCatalog" :loading="catalogLoading" :favorite-ids="favoriteIds" @open="openMovie" @favorite="toggleFavorite" @navigate="selectView" />
-        <LibraryView v-else-if="activeView === 'movies' || activeView === 'tv'" :movies="catalogMovies" :loading="catalogLoading" :favorite-ids="favoriteIds" :genre-id="genreId" :year="year" :sort="sort" :media-type="activeView" :page="currentPage" :total-pages="totalPages" :total-results="totalResults" @open="openMovie" @favorite="toggleFavorite" @filters="loadDiscover" @page="loadPage" />
+        <LibraryView v-else-if="activeView === 'movies' || activeView === 'tv'" :movies="catalogMovies" :loading="catalogLoading" :error="catalogError" :favorite-ids="favoriteIds" :genre-id="genreId" :year="year" :sort="sort" :media-type="activeView" :page="currentPage" :total-pages="totalPages" :total-results="totalResults" @open="openMovie" @favorite="toggleFavorite" @filters="loadDiscover" @page="loadPage" @retry="retryCatalog" />
         <CollectionView v-else-if="activeView === 'favorites' || activeView === 'history'" :mode="activeView" :movies="activeView === 'favorites' ? favorites : history" :favorite-ids="favoriteIds" @open="openMovie" @favorite="toggleFavorite" />
         <SettingsView v-else-if="activeView === 'settings'" :api="api" :initial-section="settingsInitialSection" @auto-start-enabled="inspectionAutoStartEnabled = $event" />
         <OrganizationWorkbenchView v-else-if="activeView === 'organization-plans' && organizationPlanEnabled" :api="api" :execution-supported="organizationExecutionSupported" />
@@ -1567,7 +1583,7 @@ onBeforeUnmount(() => {
         <LibraryWorkbenchView v-else-if="activeView === 'library'" :api="api" :organization-plan-capability="organizationPlanCapability" :strm-full-capability="strmFullCapability" :strm-incremental-capability="strmIncrementalCapability" :strm-cleanup-capability="strmCleanupCapability" :empty-directory-cleanup-capability="emptyDirectoryCleanupCapability" @open-settings="openOrganizationSettings" />
         <WorkflowCenterView v-else-if="activeView === 'workflows'" :api="api" @open-push-tasks="openTaskDrawer" />
         <NotificationCenterView v-else-if="activeView === 'notifications'" :api="api" @navigate="selectView" />
-        <SearchView v-else-if="activeView === 'search' || activeView === 'popular'" v-model="searchInput" :loading="catalogLoading" :movies="catalogMovies" :heading="catalogHeading" :favorite-ids="favoriteIds" :page="currentPage" :total-pages="totalPages" :total-results="totalResults" @search="searchMovies" @reset="selectView('home')" @open="openMovie" @favorite="toggleFavorite" @page="loadPage" />
+        <SearchView v-else-if="activeView === 'search' || activeView === 'popular'" v-model="searchInput" :loading="catalogLoading" :error="catalogError" :movies="catalogMovies" :heading="catalogHeading" :favorite-ids="favoriteIds" :page="currentPage" :total-pages="totalPages" :total-results="totalResults" @search="searchMovies" @reset="selectView('home')" @open="openMovie" @favorite="toggleFavorite" @page="loadPage" @retry="retryCatalog" />
       </template>
       <section v-else-if="loading && !result" class="detail-loading" aria-busy="true"><LoaderCircle class="spin" :size="24" /><strong>正在加载影视资料</strong><span>资源将在资料下方独立加载</span></section>
        <p v-if="result && !pushCapabilities.magnet && !pushCapabilities.share" class="warning-strip">115 推送当前不可用，推送按钮已禁用。</p>

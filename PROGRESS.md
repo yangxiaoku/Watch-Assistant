@@ -6,28 +6,30 @@
 
 当前 Git 发布基线：唯一发布分支为 `codex/publish-main`；发布前执行 `git fetch origin`，再以
 `git rev-parse origin/codex/publish-main` 的实际解析值为准。本记录不固定可能过期的 commit。
-本轮未在本地生成 release 包、未执行部署；已对 `192.168.6.236` 做 systemd、健康接口、生产只读库存/整理预览和 Prowlarr
-只读搜索核对，但未覆盖生产应用 HTTP 鉴权路由、真实 115 写入或媒体服务器兼容性。公开 Actions 结果只证明对应
-当前 head 的离线门禁和发布包校验通过，不能替代部署或完整生产验收。详细历史核对记录见
+本审计会话未在本地生成 release 包、未执行部署；当前发布基线对应的公开 [Verify CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30971086025)
+和 [Systemd Release Package CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30971086083) 均成功。已对
+`192.168.6.236` 做 systemd、健康接口、生产只读库存/整理预览和 Prowlarr 只读搜索核对，但未覆盖生产应用 HTTP 鉴权路由、真实
+115 写入或媒体服务器兼容性。公开 Actions 结果只证明对应当前 head 的离线门禁和发布包校验通过；本次服务器只读核对另行确认了当前
+systemd release 与动态 ref 一致，仍不能替代完整生产验收。详细历史核对记录见
 `docs/更新日志-2026-08-02-发布基线核对.md`。
 
 整理计划和受管夹具写入契约已验收；生产整理写入、永久删除和生产媒体库 STRM 联动仍未开启。
 
-## 2026-08-04 当前基线状态（发布门禁按 SHA 复核，REQ-023 受限 live 已验收）
+## 2026-08-05 当前基线状态（发布门禁按 SHA 复核；REQ-023 受限 live 证据日期为 2026-08-04）
 
 本次执行 `git fetch --all --prune` 后，以 `git rev-parse origin/codex/publish-main` 的实际输出作为本次核对的 commit 身份；本文不再硬编码当前发布 SHA。
 最近合入的 PR #50-#61 仅作为 first-parent 历史记录；后续发布必须重新解析实际 ref，不能引用旧报告中的 commit。
 Verify 与 Systemd Release Package 必须按同一 `head_sha` 重新核对；历史 run 链接只作为对应快照的证据，不能代替当前发布门禁。
-本次核对的公开 [Verify CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30906727468) 与
-[Systemd Release Package CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30906727470) 均显示完成且成功，
+本次核对的公开 [Verify CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30971086025) 与
+[Systemd Release Package CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30971086083) 均显示完成且成功，
 两者的 `head_sha` 均与本次动态解析的 `origin/codex/publish-main` 一致。CI 成功仅证明离线门禁、Compose/发布包校验和发布脚本
-readiness gate 通过，不能替代部署或完整生产验收。
+readiness gate 通过；本次只读核对另确认了服务器运行 release 与动态 ref 一致，仍不能替代完整生产验收。
 服务器只读核对显示 systemd 当前 release 与该动态 ref 一致、健康接口 `status=ok`；健康状态还显示整理写契约未验证且整理执行不受支持，
 STRM 全量/增量/播放开关为启用、清理为关闭，播放契约已验证。开关状态、契约状态和需求验收不互相替代。
 
-- 生产只读 acceptance preview 成功：递归扫描完整，54 页、12 个目录（含根目录）、43 个文件、54 个唯一对象身份；整理计划预览无远程写调用，
+- 2026-08-04 生产只读 acceptance preview 成功：递归扫描完整，54 页、12 个目录（含根目录）、43 个文件、54 个唯一对象身份；整理计划预览无远程写调用，
   结果为 `needs_review`。生产数据库只读统计显示 2 个媒体库范围均已验证且启用，222 次扫描完整成功、1 次取消；组织计划和失败操作仍需按账本继续收口。
-- Prowlarr 当前只读探测为 `2.5.2.5491`、状态正常；明确授权的 `LinuxTracker` 为唯一来源，配置/启用各 1 个，`indexerstatus` 异常项为 0，
+- 2026-08-04 受限 Prowlarr live 探测为 `2.5.2.5491`、状态正常；明确授权的 `LinuxTracker` 为唯一来源，配置/启用各 1 个，`indexerstatus` 异常项为 0，
   GET search HTTP `200` 返回 30 个 torrent。授权范围仅为公开 Linux ISO 分发；电影/电视剧召回率、95% 基线、广泛来源质量和生产 HTTP 鉴权路由仍未验证。
 
 - #44-#61 已进入近期 first-parent 历史，分别覆盖 P1 审查、Prowlarr/PanSou 只读 readiness、库存/整理范围、STRM 清理/提交门禁、前端工作台验收、发布脚本 readiness gate、readiness/可靠性加固、发布基线动态解析、通知失败矩阵、发布后文档、workflow 证据、任务 worker fencing、p115 整理 readiness、验证证据、STRM 清理 readiness、Prowlarr live readiness 和前端工作台。
@@ -41,7 +43,7 @@ STRM 全量/增量/播放开关为启用、清理为关闭，播放契约已验�
   不能把 p115 readiness 写成生产可用性或需求完成。
 - [发布 manifest 测试](tests/unit/test_release_manifest.py)、[部署脚本测试](tests/unit/test_release_deployment_scripts.py)、
   [systemd 单元测试](tests/unit/test_systemd_units.py) 和 [发布物 smoke 测试](tests/integration/test_release_archive_smoke.py)
-  只证明发布门禁覆盖；公开 CI 的 package 成功也不等于已部署。
+  只证明发布门禁覆盖；公开 CI 的 package 成功也不等于自动部署，本次部署状态仍以服务器只读核对为准。
 
 ## 2026-08-02 集成审查记录（未发布）
 
@@ -86,7 +88,8 @@ STRM 全量/增量/播放开关为启用、清理为关闭，播放契约已验�
   继续加固租约丢失和续租超时边界；对应 [worker 恢复集成测试](tests/integration/test_worker_recovery.py) 和
   [任务状态单测](tests/unit/test_tasks.py) 只证明恢复/租约边界，不证明生产任务或 115 live 已验收。
 - 发布治理：release manifest 完整性/来源校验、systemd release 权限和回退边界、独立 p115 runtime
-  已合入当前基线，PR #40 还修复了 systemd 发布驱动权限；当前 SHA 的公开 package CI 已成功，但仍需按发布流程做生产部署核对。
+  已合入当前基线，PR #40 还修复了 systemd 发布驱动权限；当前基线的公开 package CI 已成功，服务器当前 release 也已按发布流程只读核对，
+  但这仍不替代完整生产验收。
 
 ## 待验收
 
