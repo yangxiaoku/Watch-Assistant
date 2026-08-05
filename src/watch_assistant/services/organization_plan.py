@@ -233,9 +233,12 @@ class OrganizationPlanService:
         self,
         session_factory: async_sessionmaker[AsyncSession],
         tmdb_client: TmdbMatchClient | None = None,
+        *,
+        event_logger: object | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._tmdb_client = tmdb_client
+        self._event_logger = event_logger
 
     def bind_candidate_search_client(self, tmdb_client: TmdbMatchClient) -> None:
         """Attach the read-only TMDB client after runtime credentials are loaded."""
@@ -929,7 +932,34 @@ class OrganizationPlanService:
     async def confirm_plan(
         self, plan_id: str, *, expected_revision: int
     ) -> OrganizationPlanView:
-        return await self._transition_plan(
+        _validate_identity(plan_id, "invalid_plan")
+        if expected_revision < 0:
+            raise OrganizationPlanError("invalid_revision")
+        async with self._session_factory() as session:
+            plan = await session.get(OrganizationPlan, plan_id)
+            if plan is None:
+                raise OrganizationPlanError("plan_not_found")
+            if plan.revision != expected_revision:
+                raise OrganizationPlanError("stale_revision")
+            if plan.status not in {
+                OrganizationPlanStatus.NEEDS_REVIEW.value,
+                OrganizationPlanStatus.PLANNED.value,
+            }:
+                raise OrganizationPlanError("plan_not_reviewable")
+            if _utc(plan.expires_at) <= datetime.now(UTC):
+                raise OrganizationPlanError("plan_expired")
+
+        # Confirmation is an execution gate, so it must prove the same
+        # durable snapshot and payload that the worker will later execute.
+        steps = await load_executable_steps(
+            self._session_factory,
+            plan_id,
+            allow_unconfirmed=True,
+            expected_plan_revision=expected_revision,
+        )
+        if not steps:
+            raise OrganizationPlanError("plan_prerequisites_changed")
+        view = await self._transition_plan(
             plan_id,
             expected_revision=expected_revision,
             target=OrganizationPlanStatus.PLANNED,
@@ -938,16 +968,20 @@ class OrganizationPlanService:
                 OrganizationPlanStatus.PLANNED,
             ),
         )
+        await self._audit("organize.plan.confirmed", view.status.value)
+        return view
 
     async def ignore_plan_at_revision(
         self, plan_id: str, *, expected_revision: int
     ) -> OrganizationPlanView:
-        return await self._transition_plan(
+        view = await self._transition_plan(
             plan_id,
             expected_revision=expected_revision,
             target=OrganizationPlanStatus.IGNORED,
             allowed=tuple(OrganizationPlanStatus),
         )
+        await self._audit("organize.plan.ignored", view.status.value)
+        return view
 
     async def alias_plan(
         self, plan_id: str, *, alias: str, expected_revision: int
@@ -990,7 +1024,19 @@ class OrganizationPlanService:
             refreshed = await session.get(OrganizationPlan, plan_id)
             if refreshed is None:
                 raise OrganizationPlanError("plan_not_found")
-            return await self._view_for_session(session, refreshed)
+            view = await self._view_for_session(session, refreshed)
+        await self._audit("organize.plan.alias_changed", view.status.value)
+        return view
+
+    async def _audit(self, event: str, status: str) -> None:
+        logger = self._event_logger
+        log_event = getattr(logger, "log_event", None)
+        if not callable(log_event):
+            return
+        try:
+            await log_event(event, fields={"status": status})
+        except Exception:  # noqa: BLE001 - audit failure cannot alter plan state
+            return
 
     async def _transition_plan(
         self,
@@ -1516,6 +1562,7 @@ async def load_executable_steps(
     plan: OrganizationPlan | str,
     *,
     allow_unconfirmed: bool = False,
+    expected_plan_revision: int | None = None,
 ) -> tuple[OrganizationPlanExecutionStep, ...] | None:
     """Load executable steps only after revalidating durable plan state."""
 
@@ -1527,6 +1574,11 @@ async def load_executable_steps(
         if stored is None or (
             not allow_unconfirmed
             and stored.status != OrganizationPlanStatus.PLANNED.value
+        ):
+            return None
+        if (
+            expected_plan_revision is not None
+            and stored.revision != expected_plan_revision
         ):
             return None
         library = await session.get(MediaLibrary, stored.library_id)

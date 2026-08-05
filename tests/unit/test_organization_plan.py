@@ -956,6 +956,52 @@ async def test_plan_requires_current_complete_verified_scan(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_confirmation_revalidates_complete_evidence_and_payload(tmp_path):
+    database = await _database(tmp_path)
+    service = OrganizationPlanService(database.session_factory)
+    plan_view = await service.create_plan(
+        library_id=LIBRARY_ID, scan_run_id=SCAN_ID, items=(_item(),)
+    )
+    async with database.session_factory() as session:
+        plan = await session.get(OrganizationPlan, plan_view.plan_id)
+        assert plan is not None
+        plan.status = OrganizationPlanStatus.NEEDS_REVIEW.value
+        checkpoint = await session.get(LibraryScanCheckpoint, SCAN_ID)
+        assert checkpoint is not None
+        checkpoint.cursor_json = "{}"
+        await session.commit()
+
+    with pytest.raises(OrganizationPlanError, match="plan_prerequisites_changed"):
+        await service.confirm_plan(
+            plan_view.plan_id, expected_revision=plan_view.revision
+        )
+    current = await service.get_plan(plan_view.plan_id)
+    assert current.status is OrganizationPlanStatus.NEEDS_REVIEW
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_confirmation_rejects_expired_plan_before_transition(tmp_path):
+    database = await _database(tmp_path)
+    service = OrganizationPlanService(database.session_factory)
+    plan_view = await service.create_plan(
+        library_id=LIBRARY_ID, scan_run_id=SCAN_ID, items=(_item(),)
+    )
+    async with database.session_factory() as session:
+        plan = await session.get(OrganizationPlan, plan_view.plan_id)
+        assert plan is not None
+        plan.status = OrganizationPlanStatus.NEEDS_REVIEW.value
+        plan.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+        await session.commit()
+
+    with pytest.raises(OrganizationPlanError, match="plan_expired"):
+        await service.confirm_plan(
+            plan_view.plan_id, expected_revision=plan_view.revision
+        )
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_low_confidence_and_target_conflict_are_needs_review(tmp_path):
     database = await _database(tmp_path)
     service = OrganizationPlanService(database.session_factory)

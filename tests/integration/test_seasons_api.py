@@ -153,13 +153,13 @@ async def test_episode_completeness_api_joins_confirmed_inventory_identities(
                 library_id="library-tv",
                 root_directory_id="root-tv",
                 idempotency_key="scan-tv-key",
+                scan_mode="tree",
                 state="completed",
                 complete=True,
                 snapshot_revision=1,
-                scan_mode="tree",
+                expected_total=3,
                 pages_read=1,
                 items_seen=3,
-                expected_total=3,
                 updated_at=now,
             )
         )
@@ -195,6 +195,22 @@ async def test_episode_completeness_api_joins_confirmed_inventory_identities(
                 ),
             ]
         )
+        session.add(
+            LibraryScanCheckpoint(
+                scan_run_id="scan-tv",
+                page=1,
+                items_seen=3,
+                cursor_json=json.dumps(
+                    {
+                        "version": 2,
+                        "directory_totals": {"root-tv": 3},
+                        "expected_total": 3,
+                        "pending": [],
+                        "visited": ["root-tv"],
+                    }
+                ),
+            )
+        )
         await session.flush()
         session.add_all(
             [
@@ -229,22 +245,6 @@ async def test_episode_completeness_api_joins_confirmed_inventory_identities(
                     episode_end=2,
                 ),
             ]
-        )
-        session.add(
-            LibraryScanCheckpoint(
-                scan_run_id="scan-tv",
-                page=1,
-                items_seen=3,
-                cursor_json=json.dumps(
-                    {
-                        "version": 2,
-                        "directory_totals": {"root-tv": 3},
-                        "expected_total": 3,
-                        "pending": [],
-                        "visited": ["root-tv"],
-                    }
-                ),
-            )
         )
         await session.commit()
 

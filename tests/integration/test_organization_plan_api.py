@@ -135,14 +135,24 @@ async def test_plan_review_api_is_authenticated_and_redacted(tmp_path):
     assert mismatched_hash.status_code == 409
     assert mismatched_hash.json()["detail"]["code"] == "plan_hash_mismatch"
 
-    confirmed = await client.post(
+    rejected_confirmation = await client.post(
         "/api/v1/organization-plans/plan-review/confirm",
         json={"expected_revision": 1, "plan_hash": "a" * 64},
         headers=headers,
     )
-    assert confirmed.status_code == 200
-    assert confirmed.json()["status"] == "planned"
-    assert confirmed.json()["revision"] == 2
+    assert rejected_confirmation.status_code == 409
+    assert rejected_confirmation.json()["detail"]["code"] == (
+        "plan_prerequisites_changed"
+    )
+
+    aliased = await client.post(
+        "/api/v1/organization-plans/plan-review/alias",
+        json={"expected_revision": 1, "alias": "本地收藏"},
+        headers=headers,
+    )
+    assert aliased.status_code == 200
+    assert aliased.json()["alias"] == "本地收藏"
+    assert aliased.json()["revision"] == 2
 
     stale = await client.post(
         "/api/v1/organization-plans/plan-review/ignore",
@@ -153,18 +163,9 @@ async def test_plan_review_api_is_authenticated_and_redacted(tmp_path):
     assert stale.json()["detail"]["code"] == "stale_revision"
     assert "remote-private" not in stale.text
 
-    aliased = await client.post(
-        "/api/v1/organization-plans/plan-review/alias",
-        json={"expected_revision": 2, "alias": "本地收藏"},
-        headers=headers,
-    )
-    assert aliased.status_code == 200
-    assert aliased.json()["alias"] == "本地收藏"
-    assert aliased.json()["revision"] == 3
-
     invalid_alias = await client.post(
         "/api/v1/organization-plans/plan-review/alias",
-        json={"expected_revision": 3, "alias": "https://remote.invalid"},
+        json={"expected_revision": 2, "alias": "https://remote.invalid"},
         headers=headers,
     )
     assert invalid_alias.status_code == 422

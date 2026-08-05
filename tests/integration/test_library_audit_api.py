@@ -255,7 +255,7 @@ async def test_inventory_rejects_requeued_scan_even_when_created_earlier(tmp_pat
 
     inventory = await client.get("/api/v1/libraries/library-one/inventory")
     assert inventory.status_code == 200
-    assert inventory.json()["scan_run_id"] == "scan-one"
+    assert inventory.json()["scan_run_id"] is None
     assert inventory.json()["freshness"]["complete"] is False
     assert inventory.json()["freshness"]["status"] == "incomplete"
 
@@ -405,6 +405,51 @@ async def test_inventory_rejects_failed_incomplete_and_wrong_scope_snapshots(tmp
         run.root_directory_id = "other-root"
         await session.commit()
     await assert_blocked()
+
+    await client.aclose()
+    await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_inventory_fails_closed_for_unsettled_and_duplicate_revisions(tmp_path):
+    client, database = await _client(tmp_path)
+    login = await client.post("/api/v1/auth/login", json={"password": WEB_PASSWORD})
+    assert login.status_code == 200
+
+    async with database.session_factory() as session:
+        session.add(
+            LibraryScanRun(
+                id="scan-pending",
+                library_id="library-one",
+                root_directory_id="root-one",
+                idempotency_key="scan-pending-key",
+                scan_mode="tree",
+                state="running",
+                complete=False,
+                created_at=datetime.now(UTC),
+                updated_at=datetime.now(UTC),
+            )
+        )
+        await session.commit()
+
+    inventory = await client.get("/api/v1/libraries/library-one/inventory")
+    assert inventory.status_code == 200
+    assert inventory.json()["freshness"]["complete"] is False
+
+    async with database.session_factory() as session:
+        pending = await session.get(LibraryScanRun, "scan-pending")
+        assert pending is not None
+        pending.state = "completed"
+        pending.complete = True
+        pending.snapshot_revision = 7
+        pending.expected_total = 0
+        pending.pages_read = 0
+        pending.items_seen = 0
+        await session.commit()
+
+    duplicate = await client.get("/api/v1/libraries/library-one/inventory")
+    assert duplicate.status_code == 200
+    assert duplicate.json()["freshness"]["complete"] is False
 
     await client.aclose()
     await database.engine.dispose()

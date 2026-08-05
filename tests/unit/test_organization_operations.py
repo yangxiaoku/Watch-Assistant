@@ -602,6 +602,33 @@ async def test_library_revision_change_invalidates_plan_and_blocks_claim(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_renew_lease_fences_changed_plan_revision(tmp_path):
+    database = await _database(tmp_path)
+    service = OrganizationOperationService(database.session_factory)
+    operation = await _operation(database, key="renew-plan-fence")
+    lease = await service.claim(operation.operation_id, expected_revision=1)
+
+    async with database.session_factory() as session:
+        plan = await session.get(OrganizationPlan, operation.plan_id)
+        assert plan is not None
+        plan.revision += 1
+        await session.commit()
+
+    with pytest.raises(
+        OrganizationOperationLeaseUnavailable, match="plan_revision_changed"
+    ):
+        await service.renew_lease(
+            operation.operation_id,
+            expected_revision=lease.revision,
+            lease_token=lease.lease_token,
+        )
+    current = await service.get(operation.operation_id)
+    assert current.status is OrganizationOperationStatus.UNCERTAIN
+    assert current.error_code == "plan_prerequisites_changed"
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_expired_lease_recovers_after_reopening_database(tmp_path):
     database = await _database(tmp_path)
     service = OrganizationOperationService(database.session_factory)
@@ -720,6 +747,35 @@ async def test_uncertain_rejects_retry_and_error_codes_are_allowlisted(tmp_path)
         await service.retry(
             operation.operation_id, expected_revision=uncertain.revision
         )
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_does_not_commit_after_plan_revision_change(tmp_path):
+    database = await _database(tmp_path)
+    service = OrganizationOperationService(database.session_factory)
+    operation = await _operation(database, key="reconcile-plan-fence")
+    lease = await service.claim(operation.operation_id, expected_revision=1)
+    uncertain = await service.finish(
+        operation.operation_id,
+        expected_revision=lease.revision,
+        lease_token=lease.lease_token,
+        status=OrganizationOperationStatus.UNCERTAIN,
+        error_code="outcome_unknown",
+    )
+
+    async with database.session_factory() as session:
+        plan = await session.get(OrganizationPlan, operation.plan_id)
+        assert plan is not None
+        plan.revision += 1
+        await session.commit()
+
+    with pytest.raises(OrganizationOperationConflict, match="plan_revision_changed"):
+        await service.reconcile_not_applied(
+            operation.operation_id, expected_revision=uncertain.revision
+        )
+    current = await service.get(operation.operation_id)
+    assert current.status is OrganizationOperationStatus.UNCERTAIN
     await database.engine.dispose()
 
 

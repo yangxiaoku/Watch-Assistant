@@ -37,7 +37,6 @@ from watch_assistant.services.organization_operations import (
 )
 from watch_assistant.services.organization_plan import (
     OrganizationPlanExecutionStep,
-    load_executable_steps,
 )
 
 
@@ -130,6 +129,7 @@ class _ExecutionContext:
     last_call_at: float | None = None
     write_started: bool = False
     write_confirmed: bool = False
+    plan_revision_changed: bool = False
 
 
 class _TransportFailure(Exception):
@@ -194,7 +194,10 @@ class OrganizationExecutor:
             or summary.revision != expected_revision
         ):
             raise OrganizationOperationStateError("operation_is_not_claimed")
-        steps = await load_executable_steps(self._session_factory, summary.plan_id)
+        steps = await self._operation_service.load_execution_steps(
+            operation_id,
+            expected_operation_revision=expected_revision,
+        )
         context = _ExecutionContext(
             lease=OrganizationOperationLease(
                 operation_id=operation_id,
@@ -245,7 +248,10 @@ class OrganizationExecutor:
             or summary.revision != expected_revision
         ):
             raise OrganizationOperationStateError("uncertain_requires_verification")
-        steps = await load_executable_steps(self._session_factory, summary.plan_id)
+        steps = await self._operation_service.load_execution_steps(
+            operation_id,
+            expected_operation_revision=expected_revision,
+        )
         if not steps:
             return OrganizationExecutionResult(
                 operation_id,
@@ -266,6 +272,16 @@ class OrganizationExecutor:
                         operation_id,
                         OrganizationExecutionStatus.UNCERTAIN,
                         "cancelled",
+                        0,
+                        transport_calls,
+                    )
+                if not await self._operation_service.plan_revision_is_current(
+                    operation_id, expected_operation_revision=expected_revision
+                ):
+                    return OrganizationExecutionResult(
+                        operation_id,
+                        OrganizationExecutionStatus.UNCERTAIN,
+                        "plan_prerequisites_changed",
                         0,
                         transport_calls,
                     )
@@ -309,6 +325,16 @@ class OrganizationExecutor:
                     operation_id,
                     OrganizationExecutionStatus.UNCERTAIN,
                     "cancelled",
+                    0,
+                    transport_calls,
+                )
+            if not await self._operation_service.plan_revision_is_current(
+                operation_id, expected_operation_revision=expected_revision
+            ):
+                return OrganizationExecutionResult(
+                    operation_id,
+                    OrganizationExecutionStatus.UNCERTAIN,
+                    "plan_prerequisites_changed",
                     0,
                     transport_calls,
                 )
@@ -356,6 +382,16 @@ class OrganizationExecutor:
             all(status is OrganizationStepCheck.ALREADY_APPLIED for status in observations)
             and all(status == "removed" for status in replacement_observations)
         ):
+            if not await self._operation_service.plan_revision_is_current(
+                operation_id, expected_operation_revision=expected_revision
+            ):
+                return OrganizationExecutionResult(
+                    operation_id,
+                    OrganizationExecutionStatus.UNCERTAIN,
+                    "plan_prerequisites_changed",
+                    0,
+                    transport_calls,
+                )
             first = steps[0].members[0]
             try:
                 await self._operation_service.reconcile_organized(
@@ -370,7 +406,15 @@ class OrganizationExecutor:
                     },
                     now=now,
                 )
-            except OrganizationOperationConflict:
+            except OrganizationOperationConflict as error:
+                if str(error) == "plan_revision_changed":
+                    return OrganizationExecutionResult(
+                        operation_id,
+                        OrganizationExecutionStatus.UNCERTAIN,
+                        "plan_prerequisites_changed",
+                        0,
+                        transport_calls,
+                    )
                 return OrganizationExecutionResult(
                     operation_id,
                     OrganizationExecutionStatus.LEASE_LOST,
@@ -390,13 +434,31 @@ class OrganizationExecutor:
             all(status is OrganizationStepCheck.NOT_APPLIED for status in observations)
             and all(status == "present" for status in replacement_observations)
         ):
+            if not await self._operation_service.plan_revision_is_current(
+                operation_id, expected_operation_revision=expected_revision
+            ):
+                return OrganizationExecutionResult(
+                    operation_id,
+                    OrganizationExecutionStatus.UNCERTAIN,
+                    "plan_prerequisites_changed",
+                    0,
+                    transport_calls,
+                )
             try:
                 await self._operation_service.reconcile_not_applied(
                     operation_id,
                     expected_revision=expected_revision,
                     now=now,
                 )
-            except OrganizationOperationConflict:
+            except OrganizationOperationConflict as error:
+                if str(error) == "plan_revision_changed":
+                    return OrganizationExecutionResult(
+                        operation_id,
+                        OrganizationExecutionStatus.UNCERTAIN,
+                        "plan_prerequisites_changed",
+                        0,
+                        transport_calls,
+                    )
                 return OrganizationExecutionResult(
                     operation_id,
                     OrganizationExecutionStatus.LEASE_LOST,
@@ -764,7 +826,9 @@ class OrganizationExecutor:
                 lease_token=context.lease.lease_token,
                 now=now,
             )
-        except OrganizationOperationLeaseUnavailable:
+        except OrganizationOperationLeaseUnavailable as error:
+            if str(error) == "plan_revision_changed":
+                context.plan_revision_changed = True
             return False
         return True
 
@@ -816,6 +880,14 @@ class OrganizationExecutor:
     async def _handle_lease_loss(
         self, context: _ExecutionContext, *, now
     ) -> OrganizationExecutionResult:
+        if context.plan_revision_changed:
+            return OrganizationExecutionResult(
+                context.lease.operation_id,
+                OrganizationExecutionStatus.UNCERTAIN,
+                "plan_prerequisites_changed",
+                context.completed_steps,
+                context.transport_calls,
+            )
         if not context.write_started:
             return self._lease_lost(context)
         return await self._persist_lease_loss(context, now=now)
