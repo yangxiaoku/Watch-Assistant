@@ -23,6 +23,18 @@ def test_explicit_empty_username_is_not_treated_as_password_only_login():
     assert error.value.status_code == 401
 
 
+def test_admin_bootstrap_rejects_a_configured_password_hash():
+    password_hash = PasswordHash.recommended()
+
+    with pytest.raises(ValueError, match="web_password_hash"):
+        SecurityManager(
+            web_password_hash=password_hash.hash("fixture-password"),
+            script_token_hash=password_hash.hash("fixture-token"),
+            bootstrap_admin_enabled=True,
+            bootstrap_admin_password="bootstrap-fixture-password",
+        )
+
+
 def test_structured_log_redaction_removes_sensitive_keys_and_values():
     data = {
         "url": "magnet:?xt=urn:btih:secret",

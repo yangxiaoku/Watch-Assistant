@@ -174,17 +174,18 @@ async def test_admin_bootstrap_accepts_admin_credentials_only_when_enabled(tmp_p
 
 
 @pytest.mark.integration
-async def test_admin_bootstrap_accepts_the_explicit_local_default_password(tmp_path):
+async def test_admin_bootstrap_accepts_an_explicit_password(tmp_path):
+    bootstrap_password = secrets.token_urlsafe(24)
     client, database, tmdb, pansou = await _make_auth_client(
         tmp_path,
         bootstrap_admin_enabled=True,
-        bootstrap_admin_password="admin",
+        bootstrap_admin_password=bootstrap_password,
         configured_password=None,
     )
 
     response = await client.post(
         "/api/v1/auth/login",
-        json={"username": DEFAULT_ADMIN_USERNAME, "password": "admin"},
+        json={"username": DEFAULT_ADMIN_USERNAME, "password": bootstrap_password},
     )
 
     assert response.status_code == 200

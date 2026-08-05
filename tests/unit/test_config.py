@@ -80,7 +80,7 @@ def test_admin_bootstrap_rejects_a_configured_password_hash():
     with pytest.raises(ValidationError, match="WEB_PASSWORD_HASH"):
         make_settings(
             WEB_AUTH_BOOTSTRAP_ENABLED=True,
-            WEB_AUTH_BOOTSTRAP_PASSWORD="bootstrap-password",
+            WEB_AUTH_BOOTSTRAP_PASSWORD=secrets.token_urlsafe(24),
         )
 
 
