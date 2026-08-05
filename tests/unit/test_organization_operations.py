@@ -629,6 +629,35 @@ async def test_renew_lease_fences_changed_plan_revision(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_completion_fences_changed_plan_revision(tmp_path):
+    database = await _database(tmp_path)
+    service = OrganizationOperationService(database.session_factory)
+    operation = await _operation(database, key="complete-plan-fence")
+    lease = await service.claim(operation.operation_id, expected_revision=1)
+
+    async with database.session_factory() as session:
+        plan = await session.get(OrganizationPlan, operation.plan_id)
+        assert plan is not None
+        plan.revision += 1
+        await session.commit()
+
+    with pytest.raises(
+        OrganizationOperationLeaseUnavailable, match="plan_revision_changed"
+    ):
+        await service.complete_organized_with_dirty_events(
+            operation.operation_id,
+            expected_revision=lease.revision,
+            lease_token=lease.lease_token,
+            source_directory_id="7000",
+            target_directory_id="8000",
+        )
+    current = await service.get(operation.operation_id)
+    assert current.status is OrganizationOperationStatus.UNCERTAIN
+    assert current.error_code == "plan_prerequisites_changed"
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_expired_lease_recovers_after_reopening_database(tmp_path):
     database = await _database(tmp_path)
     service = OrganizationOperationService(database.session_factory)
