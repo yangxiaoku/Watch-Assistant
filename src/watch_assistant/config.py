@@ -217,6 +217,14 @@ class Settings(BaseSettings):
                 "WEB_AUTH_BOOTSTRAP_ENABLED requires WEB_USERNAME=admin"
             )
         if self.web_auth_bootstrap_enabled and (
+            self.web_password_hash is not None
+            and self.web_password_hash.get_secret_value()
+        ):
+            raise ValueError(
+                "WEB_PASSWORD_HASH must be empty when "
+                "WEB_AUTH_BOOTSTRAP_ENABLED=true"
+            )
+        if self.web_auth_bootstrap_enabled and (
             self.web_auth_bootstrap_password is None
             or not self.web_auth_bootstrap_password.get_secret_value()
         ):

@@ -129,10 +129,15 @@ async def test_admin_bootstrap_accepts_admin_credentials_only_when_enabled(tmp_p
         "/api/v1/auth/login",
         json={"username": "admin", "password": "wrong"},
     )
+    repeated = await client.post(
+        "/api/v1/auth/login",
+        json={"username": "admin", "password": "bootstrap-password"},
+    )
 
     assert accepted.status_code == 200
     assert wrong_username.status_code == 401
     assert wrong_password.status_code == 401
+    assert repeated.status_code == 200
     await _close(client, database, tmdb, pansou)
 
 

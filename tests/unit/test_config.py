@@ -71,6 +71,14 @@ def test_admin_bootstrap_requires_a_separate_password():
         Settings(**values, WEB_AUTH_BOOTSTRAP_ENABLED=True)
 
 
+def test_admin_bootstrap_rejects_a_configured_password_hash():
+    with pytest.raises(ValidationError, match="WEB_PASSWORD_HASH"):
+        make_settings(
+            WEB_AUTH_BOOTSTRAP_ENABLED=True,
+            WEB_AUTH_BOOTSTRAP_PASSWORD="bootstrap-password",
+        )
+
+
 def test_web_password_hash_is_required_when_admin_bootstrap_is_disabled():
     values = dict(BASE_SETTINGS)
     values.pop("WEB_PASSWORD_HASH")

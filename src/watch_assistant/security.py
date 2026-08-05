@@ -95,6 +95,10 @@ class SecurityManager:
             raise ValueError(
                 "bootstrap_admin_enabled requires the admin username"
             )
+        if bootstrap_admin_enabled and web_password_hash:
+            raise ValueError(
+                "web_password_hash must be absent when admin bootstrap is enabled"
+            )
         if not web_password_hash and not bootstrap_admin_enabled:
             raise ValueError(
                 "web_password_hash is required unless admin bootstrap is enabled"
