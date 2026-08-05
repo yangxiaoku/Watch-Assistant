@@ -190,7 +190,11 @@ def test_verify_gate_scopes_pytest_collection_to_offline_test_roots():
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="bash is required")
 def test_release_shell_scripts_have_valid_bash_syntax():
-    for name in ("build_release.sh", "verify_release_artifact.sh"):
+    for name in (
+        "build_release.sh",
+        "verify_release_artifact.sh",
+        "deploy_systemd_release.sh",
+    ):
         result = subprocess.run(
             ["bash", "-n", str(ROOT / "scripts" / name)],
             capture_output=True,
@@ -478,6 +482,8 @@ def test_build_release_fails_closed_on_remote_publish_main_failure(
     assert result.returncode != 0
     assert "release refused" in result.stderr
     assert expected_message in result.stderr
+    if remote_failure == "unavailable":
+        assert str(tmp_path / "missing-remote.git") not in result.stderr
     assert not list(output_dir.glob("watch-assistant-*.tar.gz"))
 
 
@@ -530,6 +536,8 @@ def test_verify_release_fails_closed_on_remote_publish_main_failure(
     assert result.returncode != 0
     assert "release artifact refused" in result.stderr
     assert expected_message in result.stderr
+    if remote_failure == "unavailable":
+        assert str(tmp_path / "missing-remote.git") not in result.stderr
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Linux shell release semantics are required")
