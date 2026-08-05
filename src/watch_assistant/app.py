@@ -6,7 +6,7 @@ import os
 import re
 import socket
 import time
-from collections.abc import AsyncIterator, Collection
+from collections.abc import AsyncIterator, Callable, Collection, Iterable
 from contextlib import asynccontextmanager, suppress
 from datetime import timedelta
 from pathlib import Path
@@ -397,6 +397,7 @@ def create_app(
     tmdb_client: TmdbClient | None = None,
     pansou_client: PanSouClient | None = None,
     prowlarr_client: ProwlarrClient | None = None,
+    prowlarr_hostname_resolver: Callable[[str], Iterable[str]] | None = None,
     security_manager: SecurityManager | None = None,
     share_domains: tuple[str, ...] = ("115.com", "115cdn.com"),
     push_supported: bool | None = None,
@@ -885,6 +886,7 @@ def create_app(
                 timeout_seconds=settings.prowlarr_timeout_seconds,
                 event_logger=application.state.settings_service,
                 runtime_state=application.state,
+                hostname_resolver=prowlarr_hostname_resolver,
             )
             application.state.prowlarr_settings_service = prowlarr_settings_service
             runtime_prowlarr = prowlarr_client or await (
@@ -1630,6 +1632,7 @@ def create_app(
             timeout_seconds=float(os.environ.get("PROWLARR_TIMEOUT_SECONDS", "12")),
             event_logger=application.state.settings_service,
             runtime_state=application.state,
+            hostname_resolver=prowlarr_hostname_resolver,
         )
         application.state.search_service = SearchService(
             database.session_factory,

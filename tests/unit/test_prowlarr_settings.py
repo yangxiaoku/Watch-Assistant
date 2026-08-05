@@ -1,5 +1,6 @@
 import asyncio
 import secrets
+import socket
 from types import SimpleNamespace
 
 import pytest
@@ -13,6 +14,7 @@ from watch_assistant.services.prowlarr_settings import (
     ProwlarrSettingsConflict,
     ProwlarrSettingsRejected,
     ProwlarrSettingsService,
+    _normalize_base_url,
 )
 
 
@@ -34,6 +36,10 @@ class _CommitSession:
         self.started.set()
         await self.release.wait()
         self.committed = True
+
+
+def _public_fixture_resolver(_hostname: str) -> tuple[str, ...]:
+    return ("93.184.216.34",)
 
 
 @pytest.mark.asyncio
@@ -65,6 +71,7 @@ async def test_prowlarr_settings_are_encrypted_and_fall_back_after_reset(tmp_pat
         environment_base_url="http://env-prowlarr.test/",
         environment_api_key=environment_key,
         runtime_state=SimpleNamespace(search_service=fake_search),
+        hostname_resolver=_public_fixture_resolver,
     )
 
     initial = await service.snapshot()
@@ -159,6 +166,7 @@ async def test_cancelled_commit_still_applies_persisted_runtime_state(tmp_path, 
         database.session_factory,
         SecretCrypto(Fernet.generate_key().decode("ascii")),
         runtime_state=SimpleNamespace(search_service=fake_search),
+        hostname_resolver=_public_fixture_resolver,
     )
     initial = await service.snapshot()
 
@@ -181,4 +189,131 @@ async def test_cancelled_commit_still_applies_persisted_runtime_state(tmp_path, 
     assert snapshot["source"] == "managed"
     assert len(fake_search.clients) == 1
     await fake_search.clients[0].aclose()
+    await database.engine.dispose()
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://127.0.0.1",
+        "http://10.0.0.8",
+        "http://169.254.1.8",
+        "http://0.0.0.0",
+        "http://240.0.0.1",
+        "http://[::1]",
+        "http://[fd00::8]",
+        "http://[fe80::8]",
+        "http://[::]",
+    ],
+)
+def test_prowlarr_rejects_non_public_ipv4_and_ipv6_addresses(url):
+    with pytest.raises(ProwlarrSettingsRejected) as error:
+        _normalize_base_url(url)
+
+    assert str(error.value) == ""
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("http://93.184.216.34/", "http://93.184.216.34"),
+        (
+            "https://[2001:4860:4860::8888]/prowlarr/",
+            "https://[2001:4860:4860::8888]/prowlarr",
+        ),
+    ],
+)
+def test_prowlarr_accepts_public_http_and_https_addresses(url, expected):
+    assert _normalize_base_url(url) == expected
+
+
+@pytest.mark.parametrize("resolved_addresses", [(), ("not-an-ip",)])
+def test_prowlarr_rejects_empty_or_invalid_hostname_resolution(resolved_addresses):
+    def resolver(_hostname: str) -> tuple[str, ...]:
+        return resolved_addresses
+
+    with pytest.raises(ProwlarrSettingsRejected):
+        _normalize_base_url(
+            "https://prowlarr.test",
+            hostname_resolver=resolver,
+        )
+
+
+@pytest.mark.parametrize(
+    "resolved_addresses",
+    [
+        ("127.0.0.1",),
+        ("::1",),
+        ("10.0.0.8",),
+        ("fe80::8",),
+        ("93.184.216.34", "192.168.1.8"),
+    ],
+)
+def test_prowlarr_rejects_hostname_resolving_to_unsafe_addresses(resolved_addresses):
+    def resolver(_hostname: str) -> tuple[str, ...]:
+        return resolved_addresses
+
+    with pytest.raises(ProwlarrSettingsRejected):
+        _normalize_base_url(
+            "https://prowlarr.test",
+            hostname_resolver=resolver,
+        )
+
+
+def test_prowlarr_rejects_hostname_resolution_failure_without_leaking_details():
+    def resolver(_hostname: str) -> tuple[str, ...]:
+        raise socket.gaierror(
+            "fixture DNS failure for https://user:secret@prowlarr.test"
+        )
+
+    with pytest.raises(ProwlarrSettingsRejected) as error:
+        _normalize_base_url(
+            "https://prowlarr.test",
+            hostname_resolver=resolver,
+        )
+
+    assert str(error.value) == ""
+    assert "user:secret" not in str(error.value)
+    assert "prowlarr.test" not in str(error.value)
+
+
+def test_prowlarr_rejects_rebinding_when_any_resolved_address_is_unsafe():
+    def resolver(_hostname: str) -> tuple[str, ...]:
+        return ("93.184.216.34", "127.0.0.1")
+
+    with pytest.raises(ProwlarrSettingsRejected):
+        _normalize_base_url(
+            "https://prowlarr.test",
+            hostname_resolver=resolver,
+        )
+
+
+@pytest.mark.asyncio
+async def test_prowlarr_runtime_client_rechecks_persisted_hostname(tmp_path):
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'settings.db'}")
+    await initialize_database(database.engine)
+    calls = 0
+
+    def resolver(_hostname: str) -> tuple[str, ...]:
+        nonlocal calls
+        calls += 1
+        return ("93.184.216.34",) if calls == 1 else ("10.0.0.8",)
+
+    service = ProwlarrSettingsService(
+        database.session_factory,
+        SecretCrypto(Fernet.generate_key().decode("ascii")),
+        hostname_resolver=resolver,
+    )
+    initial = await service.snapshot()
+    result = await service.update(
+        enabled=True,
+        base_url="https://prowlarr.test",
+        api_key="fixture-only",
+        fields_set={"enabled", "base_url", "api_key"},
+        revision=initial["revision"],
+    )
+
+    assert result["configured"] is False
+    assert await service.runtime_client() is None
+    assert calls >= 2
     await database.engine.dispose()
