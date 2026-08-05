@@ -4,11 +4,12 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
+from watch_assistant.api.resource_scope import scoped_library_ids
 from watch_assistant.schemas import (
     OrganizationHistoryListResponse,
     OrganizationHistoryResponse,
 )
-from watch_assistant.security import require_api_auth
+from watch_assistant.security import AuthContext, require_api_auth
 from watch_assistant.services.organization_history import (
     OrganizationHistoryError,
     OrganizationHistoryService,
@@ -25,16 +26,22 @@ def get_service(request: Request) -> OrganizationHistoryService:
 
 
 ServiceDependency = Annotated[OrganizationHistoryService, Depends(get_service)]
+AuthDependency = Annotated[AuthContext, Depends(require_api_auth)]
 
 
 @router.get("/organization-history", response_model=OrganizationHistoryListResponse)
 async def list_organization_history(
     service: ServiceDependency,
+    context: AuthDependency,
     cursor: Annotated[int, Query(ge=0)] = 0,
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
 ) -> OrganizationHistoryListResponse:
     try:
-        items, next_cursor = await service.list_items(cursor=cursor, limit=limit)
+        items, next_cursor = await service.list_items(
+            cursor=cursor,
+            limit=limit,
+            library_ids=scoped_library_ids(context),
+        )
     except OrganizationHistoryError as exc:
         raise _http_error(exc) from None
     return OrganizationHistoryListResponse(
@@ -44,9 +51,16 @@ async def list_organization_history(
 
 
 @router.get("/organization-history/{item_id}", response_model=OrganizationHistoryResponse)
-async def get_organization_history(item_id: str, service: ServiceDependency) -> OrganizationHistoryResponse:
+async def get_organization_history(
+    item_id: str,
+    service: ServiceDependency,
+    context: AuthDependency,
+) -> OrganizationHistoryResponse:
     try:
-        item = await service.get(item_id)
+        item = await service.get(
+            item_id,
+            library_ids=scoped_library_ids(context),
+        )
     except OrganizationHistoryError as exc:
         raise _http_error(exc) from None
     return OrganizationHistoryResponse.model_validate(item.to_public_dict())
