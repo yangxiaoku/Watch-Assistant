@@ -39,6 +39,7 @@ async def _make_auth_client(
     *,
     push_limit=10,
     bootstrap_admin_enabled=False,
+    bootstrap_admin_password="bootstrap-password",
     configured_password=WEB_PASSWORD,
 ):
     database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'auth.db'}")
@@ -67,6 +68,9 @@ async def _make_auth_client(
         ),
         script_token_hash=password_hash.hash(SCRIPT_TOKEN),
         bootstrap_admin_enabled=bootstrap_admin_enabled,
+        bootstrap_admin_password=(
+            bootstrap_admin_password if bootstrap_admin_enabled else None
+        ),
         cookie_secure=False,
         push_limit=push_limit,
     )
@@ -115,11 +119,11 @@ async def test_admin_bootstrap_accepts_admin_credentials_only_when_enabled(tmp_p
 
     accepted = await client.post(
         "/api/v1/auth/login",
-        json={"username": "admin", "password": "admin"},
+        json={"username": "admin", "password": "bootstrap-password"},
     )
     wrong_username = await client.post(
         "/api/v1/auth/login",
-        json={"username": "operator", "password": "admin"},
+        json={"username": "operator", "password": "bootstrap-password"},
     )
     wrong_password = await client.post(
         "/api/v1/auth/login",

@@ -19,7 +19,6 @@ from watch_assistant.models import AgentToken, WebSession
 SESSION_COOKIE = "watch_session"
 SESSION_TTL = timedelta(hours=12)
 DEFAULT_ADMIN_USERNAME = "admin"
-DEFAULT_ADMIN_PASSWORD = "admin"
 AGENT_TOKEN_PREFIX = "wa_at_"
 AGENT_SCOPES = frozenset(
     {
@@ -76,6 +75,7 @@ class SecurityManager:
         script_token_hash: str,
         web_username: str = DEFAULT_ADMIN_USERNAME,
         bootstrap_admin_enabled: bool = False,
+        bootstrap_admin_password: str | None = None,
         diagnostics_token: str = "",
         cookie_secure: bool = False,
         push_limit: int = 10,
@@ -88,6 +88,7 @@ class SecurityManager:
         self._script_token_hash = script_token_hash
         self._web_username = web_username
         self._bootstrap_admin_enabled = bootstrap_admin_enabled
+        self._bootstrap_admin_password = bootstrap_admin_password
         if not web_username:
             raise ValueError("web_username must not be empty")
         if bootstrap_admin_enabled and web_username != DEFAULT_ADMIN_USERNAME:
@@ -98,6 +99,10 @@ class SecurityManager:
             raise ValueError(
                 "web_password_hash is required unless admin bootstrap is enabled"
             )
+        if bootstrap_admin_enabled and not bootstrap_admin_password:
+            raise ValueError(
+                "bootstrap_admin_password is required when admin bootstrap is enabled"
+            )
         self._diagnostics_token = diagnostics_token
         self.cookie_secure = cookie_secure
         self.push_limit = push_limit
@@ -105,12 +110,22 @@ class SecurityManager:
         self._session_ttl = session_ttl
         self._event_logger = event_logger
         fingerprint_input = web_password_hash or ""
-        if web_username != DEFAULT_ADMIN_USERNAME or bootstrap_admin_enabled:
+        bootstrap_fingerprint = (
+            hashlib.sha256(bootstrap_admin_password.encode("utf-8")).hexdigest()
+            if bootstrap_admin_password
+            else ""
+        )
+        if (
+            web_username != DEFAULT_ADMIN_USERNAME
+            or bootstrap_admin_enabled
+            or bootstrap_fingerprint
+        ):
             fingerprint_input = "\0".join(
                 (
                     web_username,
                     fingerprint_input,
                     "bootstrap" if bootstrap_admin_enabled else "configured",
+                    bootstrap_fingerprint,
                 )
             )
         self._credential_fingerprint = hashlib.sha256(
@@ -403,9 +418,12 @@ class SecurityManager:
                 )
             except Exception:  # noqa: BLE001 - invalid configured hash fails closed
                 password_valid = False
-        bootstrap_valid = self._bootstrap_admin_enabled and secrets.compare_digest(
-            effective_username, DEFAULT_ADMIN_USERNAME
-        ) and secrets.compare_digest(password, DEFAULT_ADMIN_PASSWORD)
+        bootstrap_valid = (
+            self._bootstrap_admin_enabled
+            and self._bootstrap_admin_password is not None
+            and secrets.compare_digest(effective_username, DEFAULT_ADMIN_USERNAME)
+            and secrets.compare_digest(password, self._bootstrap_admin_password)
+        )
         if not username_valid or not (password_valid or bootstrap_valid):
             raise AuthError(401, "invalid_credentials")
 

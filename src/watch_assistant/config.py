@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     web_auth_bootstrap_enabled: bool = Field(
         default=False, validation_alias="WEB_AUTH_BOOTSTRAP_ENABLED"
     )
+    web_auth_bootstrap_password: SecretStr | None = Field(
+        default=None, validation_alias="WEB_AUTH_BOOTSTRAP_PASSWORD"
+    )
     script_token_hash: SecretStr = Field(
         min_length=1, validation_alias="SCRIPT_TOKEN_HASH"
     )
@@ -212,6 +215,14 @@ class Settings(BaseSettings):
         if self.web_auth_bootstrap_enabled and self.web_username != "admin":
             raise ValueError(
                 "WEB_AUTH_BOOTSTRAP_ENABLED requires WEB_USERNAME=admin"
+            )
+        if self.web_auth_bootstrap_enabled and (
+            self.web_auth_bootstrap_password is None
+            or not self.web_auth_bootstrap_password.get_secret_value()
+        ):
+            raise ValueError(
+                "WEB_AUTH_BOOTSTRAP_PASSWORD is required when "
+                "WEB_AUTH_BOOTSTRAP_ENABLED=true"
             )
         return self
 

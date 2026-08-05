@@ -91,8 +91,9 @@ curl http://127.0.0.1:8000/api/v1/health
 ```
 
 Web 登录账号默认为 `admin`。生产环境应继续使用 `WEB_PASSWORD_HASH`，不要使用公开的默认密码。
-如果只是隔离环境首次启动，可临时设置 `WEB_AUTH_BOOTSTRAP_ENABLED=true`，使用 `admin/admin` 登录；
-完成初始化后立即关闭该开关并改用 Argon2 密码哈希。bootstrap 不应暴露到公网或共享网络。
+如果只是隔离环境首次启动，可临时设置 `WEB_AUTH_BOOTSTRAP_ENABLED=true`，并通过受保护的
+`WEB_AUTH_BOOTSTRAP_PASSWORD` 提供一次性初始化密码；完成初始化后立即关闭该开关并改用
+Argon2 密码哈希。bootstrap 不应暴露到公网或共享网络，初始化密码不得写入仓库。
 
 访问 `http://服务器地址:8115/`。构建后的用户脚本位于容器内 Web 根目录，可从 `http://服务器地址:8115/watch-assistant.user.js` 获取。
 

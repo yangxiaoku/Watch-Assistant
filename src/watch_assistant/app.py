@@ -1061,6 +1061,11 @@ def create_app(
                     script_token_hash=settings.script_token_hash.get_secret_value(),
                     web_username=settings.web_username,
                     bootstrap_admin_enabled=settings.web_auth_bootstrap_enabled,
+                    bootstrap_admin_password=(
+                        settings.web_auth_bootstrap_password.get_secret_value()
+                        if settings.web_auth_bootstrap_password is not None
+                        else None
+                    ),
                     diagnostics_token=settings.diagnostics_token.get_secret_value(),
                     cookie_secure=settings.cookie_secure,
                     session_factory=runtime_database.session_factory,

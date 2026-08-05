@@ -13,11 +13,11 @@ describe("ApiClient season and inspection requests", () => {
     vi.stubGlobal("fetch", fetchMock);
     const api = new ApiClient();
 
-    await api.login("admin", "admin");
+    await api.login("admin", "configured-password");
 
     expect(JSON.parse(fetchMock.mock.calls[0][1].body as string)).toEqual({
       username: "admin",
-      password: "admin",
+      password: "configured-password",
     });
   });
 
