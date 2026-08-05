@@ -81,3 +81,38 @@ def test_strm_operation_read_routes_require_strm_read_scope():
             }
         )
         assert _required_scope(request) == "strm:read"
+
+
+@pytest.mark.parametrize(
+    ("path", "expected_scope"),
+    [
+        ("/api/v1/organization-plans/plan/confirm", "organize:plan"),
+        ("/api/v1/organization-plans/plan/candidate", "organize:plan"),
+        ("/api/v1/organization-plans/plan/operation", "organize:execute"),
+        (
+            "/api/v1/organization-plans/plan/confirm-and-operation",
+            "organize:execute",
+        ),
+        ("/api/v1/organization-operations/batch", "organize:execute"),
+        (
+            "/api/v1/organization-operations/confirm-and-batch",
+            "organize:execute",
+        ),
+    ],
+)
+def test_organization_plan_routes_require_plan_or_execute_scope(
+    path: str, expected_scope: str
+):
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": path,
+            "headers": [],
+            "scheme": "http",
+            "server": ("app.test", 80),
+            "client": ("127.0.0.1", 1234),
+            "root_path": "",
+        }
+    )
+    assert _required_scope(request) == expected_scope
