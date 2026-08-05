@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from watch_assistant.crypto import SecretCrypto
 from watch_assistant.db import create_database, initialize_database
 from watch_assistant.library_models import (
     LibraryMediaIdentity,
+    LibraryScanCheckpoint,
     LibraryScanEntry,
     LibraryScanRun,
     MediaLibrary,
@@ -154,8 +156,10 @@ async def test_episode_completeness_api_joins_confirmed_inventory_identities(
                 state="completed",
                 complete=True,
                 snapshot_revision=1,
+                scan_mode="tree",
                 pages_read=1,
                 items_seen=3,
+                expected_total=3,
                 updated_at=now,
             )
         )
@@ -168,6 +172,7 @@ async def test_episode_completeness_api_joins_confirmed_inventory_identities(
                     object_id="file-ep1-a",
                     parent_id="root-tv",
                     name="Show.S02E01.1080p.mkv",
+                    path="Show.S02E01.1080p.mkv",
                     is_directory=False,
                 ),
                 LibraryScanEntry(
@@ -176,6 +181,7 @@ async def test_episode_completeness_api_joins_confirmed_inventory_identities(
                     object_id="file-ep1-b",
                     parent_id="root-tv",
                     name="Show.S02E01.2160p.mkv",
+                    path="Show.S02E01.2160p.mkv",
                     is_directory=False,
                 ),
                 LibraryScanEntry(
@@ -184,6 +190,7 @@ async def test_episode_completeness_api_joins_confirmed_inventory_identities(
                     object_id="file-ep2",
                     parent_id="root-tv",
                     name="Show.S02E02.1080p.mkv",
+                    path="Show.S02E02.1080p.mkv",
                     is_directory=False,
                 ),
             ]
@@ -222,6 +229,22 @@ async def test_episode_completeness_api_joins_confirmed_inventory_identities(
                     episode_end=2,
                 ),
             ]
+        )
+        session.add(
+            LibraryScanCheckpoint(
+                scan_run_id="scan-tv",
+                page=1,
+                items_seen=3,
+                cursor_json=json.dumps(
+                    {
+                        "version": 2,
+                        "directory_totals": {"root-tv": 3},
+                        "expected_total": 3,
+                        "pending": [],
+                        "visited": ["root-tv"],
+                    }
+                ),
+            )
         )
         await session.commit()
 
@@ -336,6 +359,45 @@ async def test_episode_completeness_api_is_unknown_without_complete_scan(tmp_pat
     assert payload["conclusion_available"] is False
     assert {item["status"] for item in payload["items"]} == {"unknown"}
     assert payload["missing_episodes"] == []
+
+    now = datetime.now(UTC)
+    async with database.session_factory() as session:
+        session.add(
+            LibraryScanRun(
+                id="scan-missing-checkpoint",
+                library_id="library-empty",
+                root_directory_id="root-empty",
+                idempotency_key="scan-missing-checkpoint-key",
+                scan_mode="tree",
+                state="completed",
+                complete=True,
+                snapshot_revision=1,
+                pages_read=0,
+                items_seen=0,
+                expected_total=0,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        await session.commit()
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://app.test"
+    ) as missing_client:
+        missing_login = await missing_client.post(
+            "/api/v1/auth/login", json={"password": "incomplete-password"}
+        )
+        missing_evidence = await missing_client.get(
+            "/api/v1/libraries/library-empty/media/tv/1399/seasons/2/completeness"
+        )
+    assert missing_login.status_code == 200
+    assert missing_evidence.status_code == 200
+    missing_payload = missing_evidence.json()
+    assert missing_payload["freshness"]["status"] == "incomplete"
+    assert missing_payload["inventory_complete"] is False
+    assert missing_payload["conclusion_available"] is False
+    assert {item["status"] for item in missing_payload["items"]} == {"unknown"}
+    assert missing_payload["missing_episodes"] == []
     await database.engine.dispose()
 
 

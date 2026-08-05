@@ -8,6 +8,7 @@ from sqlalchemy import select
 
 from watch_assistant.library_models import (
     LibraryMediaIdentity,
+    LibraryScanCheckpoint,
     LibraryScanEntry,
     LibraryScanRun,
     MediaLibrary,
@@ -22,6 +23,10 @@ from watch_assistant.services.episode_completeness import (
     EpisodeBaseline,
     EpisodeFileReference,
     build_episode_matrix,
+)
+from watch_assistant.services.library_index import (
+    LibraryIndexError,
+    validate_complete_scan_evidence,
 )
 from watch_assistant.services.library_inventory import (
     InventoryFile,
@@ -184,18 +189,28 @@ async def _load_library_scope(request: Request, library_id: str):
                 source_snapshot_revision=run.snapshot_revision,
             )
         )
-        entries = list(
+        all_entries = list(
             (
                 await session.scalars(
                     select(LibraryScanEntry)
-                    .where(
-                        LibraryScanEntry.scan_run_id == run.id,
-                        LibraryScanEntry.is_directory.is_(False),
-                    )
+                    .where(LibraryScanEntry.scan_run_id == run.id)
                     .order_by(LibraryScanEntry.object_id)
                 )
             ).all()
         )
+        if snapshot_current:
+            checkpoint = await session.get(LibraryScanCheckpoint, run.id)
+            try:
+                validate_complete_scan_evidence(
+                    run,
+                    checkpoint,
+                    all_entries,
+                    root_directory_id=library.root_directory_id,
+                    require_tree=True,
+                )
+            except LibraryIndexError:
+                snapshot_current = False
+        entries = [entry for entry in all_entries if not entry.is_directory]
         identities = {
             identity.object_id: identity
             for identity in (
