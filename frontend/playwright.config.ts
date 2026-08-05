@@ -3,6 +3,8 @@ import { defineConfig } from "@playwright/test";
 export default defineConfig({
   testDir: "./e2e",
   testIgnore: "**/live-api.spec.ts",
+  // Four Chromium workers overload the single Vite transform server and make mobile mocks race.
+  workers: 2,
   webServer: {
     // Invoke Vite directly so npm/pnpm wrappers cannot rewrite CLI arguments.
     command: "node node_modules/vite/bin/vite.js --host 127.0.0.1 --port 4175",

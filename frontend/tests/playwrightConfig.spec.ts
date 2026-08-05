@@ -3,6 +3,10 @@ import { describe, expect, it } from "vitest";
 import playwrightConfig from "../playwright.config";
 
 describe("Playwright web server contract", () => {
+  it("keeps mock browser concurrency within the Vite server budget", () => {
+    expect(playwrightConfig.workers).toBe(2);
+  });
+
   it("starts Vite directly without package-manager argument forwarding", () => {
     const webServer = Array.isArray(playwrightConfig.webServer)
       ? playwrightConfig.webServer[0]
