@@ -6,11 +6,12 @@
 
 当前 Git 发布基线：唯一发布分支为 `codex/publish-main`；发布前执行 `git fetch origin`，再以
 `git rev-parse origin/codex/publish-main` 的实际解析值为准。本记录不固定可能过期的 commit。
-本审计会话未在本地生成 release 包、未执行部署；当前发布基线对应的公开 [Verify CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30971086025)
-和 [Systemd Release Package CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30971086083) 均成功。已对
+本审计会话未在本地生成 release 包、未执行部署；2026-08-05 动态解析的当前发布基线为
+`5df17fb003ae8ea3a4774592d1fc81cb4aa78ead`，其公开 [Verify CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30984240700)
+和 Systemd Release Package 产物 `watch-assistant-5df17fb-20260805-0719.tar.gz` 均成功。已对
 `192.168.6.236` 做 systemd、健康接口、生产只读库存/整理预览和 Prowlarr 只读配置/搜索尝试，但未覆盖生产应用 HTTP 鉴权路由、真实
-115 写入或媒体服务器兼容性。公开 Actions 结果只证明对应当前 head 的离线门禁和发布包校验通过；本次服务器只读核对另行确认了当前
-systemd release 与动态 ref 一致，仍不能替代完整生产验收。详细历史核对记录见
+115 写入或媒体服务器兼容性。公开 Actions 结果只证明当前 ref 的离线门禁和发布包校验通过；本次服务器只读核对确认生产仍运行
+`249aa5826db6e06683be6426aa5243a1aa4ed0f5`，与当前发布线不一致，仍不能替代完整生产验收。详细历史核对记录见
 `docs/更新日志-2026-08-02-发布基线核对.md`。
 
 整理计划和受管夹具写入契约的历史证据已具备；C03 当前因一次性授权已消费而 blocked。生产整理写入、
@@ -19,19 +20,21 @@ STRM/空目录清理、永久删除和生产媒体库联动仍未开启。
 ## 2026-08-05 当前基线状态（发布门禁按 SHA 复核；REQ-023 受限 live 证据日期为 2026-08-04）
 
 本次执行 `git fetch --all --prune` 后，以 `git rev-parse origin/codex/publish-main` 实际解析的完整 SHA
-`249aa5826db6e06683be6426aa5243a1aa4ed0f5` 作为本次核对的 commit 身份（短标识 `249aa582`）；该日期快照不替代后续动态解析。
+`5df17fb003ae8ea3a4774592d1fc81cb4aa78ead` 作为本次发布线身份（短标识 `5df17fb`）。服务器仍运行
+`249aa5826db6e06683be6426aa5243a1aa4ed0f5`，该 SHA 只作为本次生产部署/历史快照身份保留。
 最近合入的 PR #50-#61 仅作为 first-parent 历史记录；后续发布必须重新解析实际 ref，不能引用旧报告中的 commit。
 Verify 与 Systemd Release Package 必须按同一 `head_sha` 重新核对；历史 run 链接只作为对应快照的证据，不能代替当前发布门禁。
-本次核对的公开 [Verify CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30971086025) 与
-[Systemd Release Package CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30971086083) 均显示完成且成功，
-两者的 `head_sha` 均与本次动态解析的 `origin/codex/publish-main` 一致。CI 成功仅证明离线门禁、Compose/发布包校验和发布脚本
-readiness gate 通过；本次只读核对另确认了服务器运行 release 与动态 ref 一致，仍不能替代完整生产验收。
-服务器只读核对显示 systemd 当前 release 与该动态 ref 一致、健康接口 `status=ok`；健康状态还显示整理写契约未验证且整理执行不受支持。
-本轮受限 STRM 全量生成 40 个并 verify 40/40，但媒体服务器真实播放兼容仍未验收；STRM/空目录清理和整理写入继续关闭。
+本次核对的公开 [Verify CI run](https://github.com/yangxiaoku/Watch-Assistant/actions/runs/30984240700) 与当前 ref 的
+Systemd Release Package 均显示完成且成功。CI 成功仅证明当前 ref 的离线门禁、Compose/发布包校验和发布脚本 readiness gate 通过；
+服务器只读核对显示 systemd 当前 release 为 `249aa5826db6e06683be6426aa5243a1aa4ed0f5`、健康接口 `status=ok`，与当前发布线不一致，
+当前 `5df17fb` 尚未部署。健康状态还显示整理写契约未验证且整理执行不受支持。
+服务器当前部署版本上的生产 STRM full 终态为 `failed`：`generated=0`、`failed=40`、`skipped=3`；只读 verifier
+为 `checked=40`、`valid=0`、`invalid=40`，输出 `.strm` 文件数为 0。受管视频夹具的历史/受限记录曾有 40/40，不能替代生产成功；
+媒体服务器真实播放兼容、STRM/空目录清理和整理写入继续关闭。
 开关状态、契约状态和需求验收不互相替代。
 
-- 2026-08-05 生产只读 acceptance preview 成功：递归扫描完整，54 页、12 个目录（含根目录）、43 个文件、54 个唯一对象身份；整理计划预览为 1 个
-  `needs_review`、远程写入 0。生产数据库只读统计显示 2 个媒体库范围均已验证且启用，222 次扫描完整成功、1 次取消；C03 因一次性授权已消费而 blocked。
+- 2026-08-05 服务器当前部署的 `249aa582` 版本受限生产只读 acceptance preview 成功：递归扫描完整，54 页、12 个目录（含根目录）、43 个文件、54 个唯一对象身份；
+  整理计划预览为 1 个 `needs_review`、远程写入 0。生产数据库只读统计显示 2 个媒体库范围均已验证且启用，222 次扫描完整成功、1 次取消；C03 因一次性授权已消费而 blocked。
 - 2026-08-04 的 Prowlarr 证据属于历史/受限 Linux ISO 快照：曾观察到 `2.5.2.5491`、`LinuxTracker`、test HTTP `200` 和受限搜索结果；该结果不代表当前可用。
 - 2026-08-05 当前 Prowlarr 仍为 `2.5.2.5491`，`LinuxTracker` 已安装并配置，但搜索超时 HTTP `000`，不能写成可搜索完成或聚合完成。
 
@@ -70,8 +73,9 @@ readiness gate 通过；本次只读核对另确认了服务器运行 release �
 
 - 115 受控能力：整理计划、执行、移动/重命名写入、永久删除和 STRM 播放均受独立开关与契约
   门禁控制。固定测试 CID 的组织闭环，以及受管视频夹具的 STRM 范围验证、完整扫描、全量生成、
-  改名后的增量对账、恢复和清理验收均已有历史证据；本轮受限 STRM 全量生成 40 个并 verify 40/40，
-  这些结果不等于媒体服务器播放或生产清理已验收，整理写入和 STRM/空目录清理继续关闭。
+  改名后的增量对账、恢复和清理验收均已有历史证据；受管视频夹具的历史/受限记录曾有 STRM 全量生成 40 个并 verify 40/40，
+  但 2026-08-05 生产 full 终态为 `failed`（`generated=0`、`failed=40`、verify `valid=0`）。这些结果不等于媒体服务器播放或生产清理已验收，
+  整理写入和 STRM/空目录清理继续关闭。
 - 发现与搜索：TMDB 榜单、季度资料、PanSou 聚合、BTIH 校验、质量筛选、缓存和多来源/Prowlarr
   离线只读 readiness 已合入当前基线；REQ-023 的 Linux ISO 搜索结果仅属于 2026-08-04 历史/受限证据，
   2026-08-05 当前搜索超时 HTTP `000`，不覆盖电影/电视剧召回率、95% 基线、广泛来源质量、完整来源对照或生产 HTTP 鉴权路由。
@@ -96,9 +100,9 @@ readiness gate 通过；本次只读核对另确认了服务器运行 release �
 
 ## 待验收
 
-- `REQ-001`、`REQ-002`：生产只读首次完整扫描为 54 页/12 个目录/43 个文件/54 个唯一对象，整理预览为 1 个
-  `needs_review` 且写入 0；本轮受限 STRM 全量 40、verify 40/40，但真实整理写入、生产 STRM 受管清单、稳定播放入口、
-  媒体服务器兼容性、元数据联动和 STRM/空目录清理仍未完成。
+- `REQ-001`、`REQ-002`：服务器部署的 `249aa582` 版本有受限生产只读快照，为 54 页/12 个目录/43 个文件/54 个唯一对象，整理预览为 1 个
+  `needs_review` 且写入 0；受管视频夹具历史记录曾有 40/40，但生产 STRM full 失败（`generated=0`、`failed=40`、verify `valid=0`）。真实整理写入、
+  生产 STRM 受管清单、稳定播放入口、媒体服务器兼容性、元数据联动和 STRM/空目录清理仍未完成。
 - `REQ-004`、`REQ-012`、`REQ-019`：结构化日志、站内通知和 Webhook 阶段能力已具备；完整业务
   事件矩阵、真实外部接收端、渠道健康、重试/死信和重放/重启验收仍待完成。
 - `REQ-005`、`REQ-006`、`REQ-023`：搜索召回、qB 检测和来源聚合阶段能力已有离线/受限历史证据；
