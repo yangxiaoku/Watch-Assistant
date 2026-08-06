@@ -6,7 +6,11 @@ import pytest
 
 import scripts.p115_strm_application_live_runner as application_runner
 import scripts.p115_strm_playback_live_runner as playback_runner
-from scripts.p115_strm_application_live_runner import _post_cleanup
+from scripts.p115_strm_application_live_runner import (
+    _post_cleanup,
+    _probe_target_name,
+    _resolve_fixture_name,
+)
 from scripts.p115_strm_application_live_runner import _scan as application_scan
 from scripts.p115_strm_playback_live_runner import _scan as playback_scan
 
@@ -119,6 +123,37 @@ async def test_strm_live_rename_passes_explicit_write_confirmation(tmp_path, mon
     assert result == {"status": "success", "receipt_count": 1}
     assert captured["write_enabled"] is True
     assert captured["plan_confirmed"] is True
+
+
+@pytest.mark.asyncio
+async def test_strm_live_resolves_actual_fixture_name_before_write(monkeypatch):
+    class _Listing:
+        complete = True
+        entries = (
+            SimpleNamespace(
+                file_id="8",
+                parent_id="7",
+                name="真实夹具.mkv",
+                is_directory=False,
+            ),
+        )
+
+    class _Transport:
+        async def list_children(self, parent_id, *, timeout_seconds):
+            assert parent_id == "7"
+            assert timeout_seconds == 30
+            return _Listing()
+
+    monkeypatch.setattr(
+        application_runner,
+        "P115C03LiveTransport",
+        lambda client, call_executor: _Transport(),
+    )
+
+    source_name = await _resolve_fixture_name(object(), "7", "8")
+
+    assert source_name == "真实夹具.mkv"
+    assert _probe_target_name(source_name) == "wa-strm-probe-renamed.mkv"
 
 
 @pytest.mark.asyncio

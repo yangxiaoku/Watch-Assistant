@@ -24,7 +24,10 @@ from cryptography.fernet import Fernet
 from p115client import P115Client
 from pwdlib import PasswordHash
 
-from watch_assistant.adapters.p115_c03_live_transport import EXPECTED_P115CLIENT_VERSION
+from watch_assistant.adapters.p115_c03_live_transport import (
+    EXPECTED_P115CLIENT_VERSION,
+    P115C03LiveTransport,
+)
 from watch_assistant.adapters.p115_organization_transport import (
     OrganizationObjectIntent,
     create_live_p115_organization_transport,
@@ -100,6 +103,8 @@ async def _run(
     lifespan_context = None
     lifespan_entered = False
     renamed = False
+    original_name: str | None = None
+    target_name: str | None = None
     try:
         base = Path(temporary.name)
         database = create_database(f"sqlite+aiosqlite:///{base / 'acceptance.db'}")
@@ -156,13 +161,15 @@ async def _run(
         if not cookie:
             raise LiveAcceptanceError("credential_unavailable")
         remote_client = P115Client(cookie, console_qrcode=False)
+        original_name = await _resolve_fixture_name(remote_client, root_id, file_id)
+        target_name = _probe_target_name(original_name)
         rename_result = await _rename_remote(
             remote_client,
             root_id,
             file_id,
             rename_authorization,
-            "wa-live-probe.mp4",
-            "wa-strm-probe-renamed.mp4",
+            original_name,
+            target_name,
         )
         renamed = True
         changed = await _scan(app_client, headers, "strm-live-renamed")
@@ -189,8 +196,8 @@ async def _run(
             root_id,
             file_id,
             restore_authorization,
-            "wa-strm-probe-renamed.mp4",
-            "wa-live-probe.mp4",
+            target_name,
+            original_name,
         )
         renamed = False
         restored = await _scan(app_client, headers, "strm-live-restored")
@@ -232,15 +239,20 @@ async def _run(
     except LiveAcceptanceError as error:
         return _blocked(str(error))
     finally:
-        if renamed and remote_client is not None:
+        if (
+            renamed
+            and remote_client is not None
+            and original_name is not None
+            and target_name is not None
+        ):
             try:
                 await _rename_remote(
                     remote_client,
                     root_id,
                     file_id,
                     restore_authorization,
-                    "wa-strm-probe-renamed.mp4",
-                    "wa-live-probe.mp4",
+                    target_name,
+                    original_name,
                 )
             except Exception:  # noqa: BLE001 - preserve the original report
                 raise LiveAcceptanceError("restore_failed") from None
@@ -375,6 +387,38 @@ async def _rename_remote(
     if result.status.value != "success" or after is None or after.name != target_name:
         raise LiveAcceptanceError("rename_postcondition_unconfirmed")
     return {"status": result.status.value, "receipt_count": len(transport.receipts)}
+
+
+async def _resolve_fixture_name(client, root_id: str, file_id: str) -> str:
+    """Read the exact fixture entry before consuming a write authorization."""
+
+    listing_transport = P115C03LiveTransport(
+        client, call_executor=_p115client_timeout_executor
+    )
+    try:
+        listing = await listing_transport.list_children(root_id, timeout_seconds=30)
+    except asyncio.CancelledError:
+        raise
+    except Exception:  # noqa: BLE001 - keep provider details out of the report
+        raise LiveAcceptanceError("fixture_inventory_read_failed") from None
+    matches = [entry for entry in listing.entries if entry.file_id == file_id]
+    if (
+        listing.complete is not True
+        or len(matches) != 1
+        or matches[0].parent_id != root_id
+        or matches[0].is_directory
+        or not matches[0].name
+    ):
+        raise LiveAcceptanceError("fixture_precondition_changed")
+    return matches[0].name
+
+
+def _probe_target_name(source_name: str) -> str:
+    suffix = Path(source_name).suffix
+    target_name = f"wa-strm-probe-renamed{suffix}"
+    if target_name == source_name:
+        raise LiveAcceptanceError("fixture_name_not_supported")
+    return target_name
 
 
 def _expect(response: httpx.Response, code: str) -> None:
