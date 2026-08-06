@@ -218,6 +218,8 @@ async def _execute_and_restore(
         managed_directory_ids=(parent_id, temporary_id),
         scope_confirmed=True,
         live_enabled=True,
+        write_enabled=True,
+        plan_confirmed=True,
         organization_contract=_c03_organization_contract(),
     )
     try:
@@ -258,6 +260,8 @@ async def _execute_and_restore(
         managed_directory_ids=(parent_id, temporary_id),
         scope_confirmed=True,
         live_enabled=True,
+        write_enabled=True,
+        plan_confirmed=True,
         organization_contract=_c03_organization_contract(),
     )
     try:
