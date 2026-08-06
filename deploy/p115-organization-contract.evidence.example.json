@@ -1,0 +1,13 @@
+{
+  "version": "c03-organization-v1",
+  "evidence_id": "c03-fixture-organization-v1",
+  "capabilities": [
+    "read_scope",
+    "mkdir",
+    "move",
+    "rename",
+    "recycle",
+    "postcondition"
+  ],
+  "timeout_enforced": true
+}
