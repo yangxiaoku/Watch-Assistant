@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from watch_assistant.library_models import OrganizationHistoryEntry
+from watch_assistant.library_models import OrganizationHistoryEntry, OrganizationPlan
 
 
 class OrganizationHistoryError(ValueError):
@@ -58,7 +59,11 @@ class OrganizationHistoryService:
         self._session_factory = session_factory
 
     async def list_items(
-        self, *, cursor: int = 0, limit: int = 50
+        self,
+        *,
+        cursor: int = 0,
+        limit: int = 50,
+        library_ids: Collection[str] | None = None,
     ) -> tuple[list[OrganizationHistoryItem], int | None]:
         if isinstance(cursor, bool) or not isinstance(cursor, int) or cursor < 0:
             raise OrganizationHistoryError("invalid_pagination")
@@ -68,7 +73,7 @@ class OrganizationHistoryService:
             rows = list(
                 (
                     await session.scalars(
-                        select(OrganizationHistoryEntry)
+                        _history_query(library_ids)
                         .order_by(
                             OrganizationHistoryEntry.completed_at.desc(),
                             OrganizationHistoryEntry.id.desc(),
@@ -81,14 +86,32 @@ class OrganizationHistoryService:
         items = [_item(row) for row in rows]
         return items, (cursor + len(items) if len(items) == limit else None)
 
-    async def get(self, item_id: str) -> OrganizationHistoryItem:
+    async def get(
+        self,
+        item_id: str,
+        *,
+        library_ids: Collection[str] | None = None,
+    ) -> OrganizationHistoryItem:
         if not isinstance(item_id, str) or not item_id or len(item_id) > 64:
             raise OrganizationHistoryError("invalid_history_id")
         async with self._session_factory() as session:
-            row = await session.get(OrganizationHistoryEntry, item_id)
+            row = await session.scalar(
+                _history_query(library_ids).where(
+                    OrganizationHistoryEntry.id == item_id
+                )
+            )
         if row is None:
             raise OrganizationHistoryError("history_not_found")
         return _item(row)
+
+
+def _history_query(library_ids: Collection[str] | None):
+    query = select(OrganizationHistoryEntry).join(
+        OrganizationPlan, OrganizationPlan.id == OrganizationHistoryEntry.plan_id
+    )
+    if library_ids is not None:
+        query = query.where(OrganizationPlan.library_id.in_(library_ids))
+    return query
 
 
 def _item(row: OrganizationHistoryEntry) -> OrganizationHistoryItem:

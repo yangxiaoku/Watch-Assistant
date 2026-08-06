@@ -24,6 +24,7 @@ services:
       PROWLARR_ENABLED: ${PROWLARR_ENABLED:-false}
       PROWLARR_BASE_URL: ${PROWLARR_BASE_URL:-}
       PROWLARR_API_KEY: ${PROWLARR_API_KEY:-}
+      PROWLARR_ALLOWED_PRIVATE_ADDRESSES: ${PROWLARR_ALLOWED_PRIVATE_ADDRESSES:-}
       PROWLARR_TIMEOUT_SECONDS: ${PROWLARR_TIMEOUT_SECONDS:-12}
       PROWLARR_MAX_CONCURRENCY: ${PROWLARR_MAX_CONCURRENCY:-4}
       CACHE_WARM_CONCURRENCY: ${CACHE_WARM_CONCURRENCY:-3}
@@ -49,6 +50,7 @@ services:
       - encryption_key
       - tmdb_api_key
       - web_password_hash
+      - web_auth_bootstrap_password
       - script_token_hash
     volumes:
       - ${DATA_DIR:-./data}:/data
@@ -71,7 +73,9 @@ secrets:
   tmdb_api_key:
     file: ${TMDB_API_KEY_FILE:-./secrets/tmdb_api_key}
   web_password_hash:
-    file: ${WEB_PASSWORD_HASH_FILE:-./secrets/web_password_hash}
+    file: ${WEB_PASSWORD_HASH_FILE:-/dev/null}
+  web_auth_bootstrap_password:
+    file: ${WEB_AUTH_BOOTSTRAP_PASSWORD_FILE:-/dev/null}
   script_token_hash:
     file: ${SCRIPT_TOKEN_HASH_FILE:-./secrets/script_token_hash}
 

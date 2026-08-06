@@ -6,7 +6,7 @@ import os
 import re
 import socket
 import time
-from collections.abc import AsyncIterator, Collection
+from collections.abc import AsyncIterator, Callable, Collection, Iterable
 from contextlib import asynccontextmanager, suppress
 from datetime import timedelta
 from pathlib import Path
@@ -397,6 +397,7 @@ def create_app(
     tmdb_client: TmdbClient | None = None,
     pansou_client: PanSouClient | None = None,
     prowlarr_client: ProwlarrClient | None = None,
+    prowlarr_hostname_resolver: Callable[[str], Iterable[str]] | None = None,
     security_manager: SecurityManager | None = None,
     share_domains: tuple[str, ...] = ("115.com", "115cdn.com"),
     push_supported: bool | None = None,
@@ -882,9 +883,13 @@ def create_app(
                 environment_enabled=settings.prowlarr_enabled,
                 environment_base_url=settings.prowlarr_base_url,
                 environment_api_key=settings.prowlarr_api_key.get_secret_value(),
+                environment_allowed_private_addresses=(
+                    settings.prowlarr_allowed_private_addresses
+                ),
                 timeout_seconds=settings.prowlarr_timeout_seconds,
                 event_logger=application.state.settings_service,
                 runtime_state=application.state,
+                hostname_resolver=prowlarr_hostname_resolver,
             )
             application.state.prowlarr_settings_service = prowlarr_settings_service
             runtime_prowlarr = prowlarr_client or await (
@@ -910,7 +915,8 @@ def create_app(
                 event_logger=application.state.settings_service,
             )
             application.state.organization_plan_service = OrganizationPlanService(
-                runtime_database.session_factory
+                runtime_database.session_factory,
+                event_logger=application.state.settings_service,
             )
             application.state.managed_directory_ownership_service = (
                 ManagedDirectoryOwnershipService(runtime_database.session_factory)
@@ -1638,9 +1644,13 @@ def create_app(
             environment_enabled=_env_flag("PROWLARR_ENABLED"),
             environment_base_url=os.environ.get("PROWLARR_BASE_URL", ""),
             environment_api_key=os.environ.get("PROWLARR_API_KEY", ""),
+            environment_allowed_private_addresses=os.environ.get(
+                "PROWLARR_ALLOWED_PRIVATE_ADDRESSES", ""
+            ),
             timeout_seconds=float(os.environ.get("PROWLARR_TIMEOUT_SECONDS", "12")),
             event_logger=application.state.settings_service,
             runtime_state=application.state,
+            hostname_resolver=prowlarr_hostname_resolver,
         )
         application.state.search_service = SearchService(
             database.session_factory,
@@ -1697,7 +1707,9 @@ def create_app(
             database.session_factory
         )
         application.state.organization_plan_service = OrganizationPlanService(
-            database.session_factory, tmdb_client=tmdb_client
+            database.session_factory,
+            tmdb_client=tmdb_client,
+            event_logger=application.state.settings_service,
         )
         application.state.managed_directory_ownership_service = (
             ManagedDirectoryOwnershipService(database.session_factory)

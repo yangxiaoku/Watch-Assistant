@@ -169,7 +169,9 @@ class OrganizationOperationService:
             ):
                 raise OrganizationOperationConflict("plan_revision_changed")
 
-            if not await self._has_executable_steps(plan_id):
+            if not await self._has_executable_steps(
+                plan_id, expected_plan_revision=plan.revision
+            ):
                 raise OrganizationOperationPrerequisiteError("plan_not_executable")
 
             existing = await session.scalar(
@@ -284,6 +286,18 @@ class OrganizationOperationService:
                 )
             )
         return value is True
+
+    async def plan_revision_is_current(
+        self, operation_id: str, *, expected_operation_revision: int
+    ) -> bool:
+        """Fence a read-only recovery pass to the operation's frozen plan."""
+
+        async with self._session_factory() as session:
+            operation = await session.get(OrganizationOperation, operation_id)
+            if operation is None or operation.revision != expected_operation_revision:
+                return False
+            plan = await session.get(OrganizationPlan, operation.plan_id)
+            return plan is not None and plan.revision == operation.plan_revision
 
     async def claim_next(
         self,
@@ -400,7 +414,13 @@ class OrganizationOperationService:
         await self._audit("organize.operation.failed", "整理操作已失败")
         return summary
 
-    async def plan_execution_scope(self, operation_id: str) -> frozenset[str] | None:
+    async def plan_execution_scope(
+        self,
+        operation_id: str,
+        *,
+        expected_operation_revision: int | None = None,
+        expected_plan_revision: int | None = None,
+    ) -> frozenset[str] | None:
         """Return the complete directory scope frozen by the approved plan."""
 
         from watch_assistant.services.organization_plan import load_executable_steps
@@ -409,7 +429,21 @@ class OrganizationOperationService:
             operation = await session.get(OrganizationOperation, operation_id)
             if operation is None:
                 return None
-            steps = await load_executable_steps(self._session_factory, operation.plan_id)
+            if (
+                expected_operation_revision is not None
+                and operation.revision != expected_operation_revision
+            ):
+                return None
+            if (
+                expected_plan_revision is not None
+                and operation.plan_revision != expected_plan_revision
+            ):
+                return None
+            steps = await load_executable_steps(
+                self._session_factory,
+                operation.plan_id,
+                expected_plan_revision=operation.plan_revision,
+            )
         if not steps:
             return None
         return frozenset(
@@ -418,7 +452,12 @@ class OrganizationOperationService:
             for directory_id in step.scope_directory_ids
         )
 
-    async def load_execution_steps(self, operation_id: str):
+    async def load_execution_steps(
+        self,
+        operation_id: str,
+        *,
+        expected_operation_revision: int | None = None,
+    ):
         """Load steps again after claim, so execution uses durable plan data."""
 
         from watch_assistant.services.organization_plan import load_executable_steps
@@ -427,7 +466,16 @@ class OrganizationOperationService:
             operation = await session.get(OrganizationOperation, operation_id)
             if operation is None:
                 return None
-            return await load_executable_steps(self._session_factory, operation.plan_id)
+            if (
+                expected_operation_revision is not None
+                and operation.revision != expected_operation_revision
+            ):
+                return None
+            return await load_executable_steps(
+                self._session_factory,
+                operation.plan_id,
+                expected_plan_revision=operation.plan_revision,
+            )
 
     async def plan_digest(self, plan_id: str) -> str:
         """Return the immutable digest used by an explicit execution confirmation."""
@@ -438,10 +486,16 @@ class OrganizationOperationService:
                 raise OrganizationOperationNotFound
             return plan.plan_hash
 
-    async def _has_executable_steps(self, plan_id: str) -> bool:
+    async def _has_executable_steps(
+        self, plan_id: str, *, expected_plan_revision: int | None = None
+    ) -> bool:
         from watch_assistant.services.organization_plan import load_executable_steps
 
-        steps = await load_executable_steps(self._session_factory, plan_id)
+        steps = await load_executable_steps(
+            self._session_factory,
+            plan_id,
+            expected_plan_revision=expected_plan_revision,
+        )
         return bool(steps)
 
     async def has_executable_steps(
@@ -474,7 +528,10 @@ class OrganizationOperationService:
             await self._ensure_planned_and_current(session, plan)
             if plan.revision != operation.plan_revision:
                 raise OrganizationOperationPrerequisiteError("plan_revision_changed")
-            if not await self._has_executable_steps(operation.plan_id):
+            if not await self._has_executable_steps(
+                operation.plan_id,
+                expected_plan_revision=operation.plan_revision,
+            ):
                 raise OrganizationOperationPrerequisiteError("plan_not_executable")
             if operation.status is OrganizationOperationStatus.UNCERTAIN:
                 raise OrganizationOperationStateError("uncertain_requires_verification")
@@ -516,6 +573,11 @@ class OrganizationOperationService:
 
             token = uuid.uuid4().hex
             expires_at = current_time + duration
+            plan_revision = (
+                select(OrganizationPlan.revision)
+                .where(OrganizationPlan.id == OrganizationOperation.plan_id)
+                .scalar_subquery()
+            )
             result = await session.execute(
                 update(OrganizationOperation)
                 .where(
@@ -523,6 +585,7 @@ class OrganizationOperationService:
                     OrganizationOperation.revision == expected_revision,
                     OrganizationOperation.status
                     == OrganizationOperationStatus.PLANNED,
+                    OrganizationOperation.plan_revision == plan_revision,
                 )
                 .values(
                     status=OrganizationOperationStatus.ORGANIZING,
@@ -565,6 +628,62 @@ class OrganizationOperationService:
         current_time = _as_utc(now or datetime.now(UTC))
         expires_at = current_time + duration
         async with self._session_factory() as session:
+            operation = await session.get(OrganizationOperation, operation_id)
+            if operation is None:
+                raise OrganizationOperationNotFound
+            if operation.revision != expected_revision:
+                raise OrganizationOperationLeaseUnavailable(
+                    "operation_revision_changed"
+                )
+            if (
+                operation.status is not OrganizationOperationStatus.ORGANIZING
+                or operation.lease_token != lease_token
+                or operation.lease_expires_at is None
+                or _as_utc(operation.lease_expires_at) <= current_time
+            ):
+                raise OrganizationOperationLeaseUnavailable("lease_is_not_owned")
+            plan = await session.get(OrganizationPlan, operation.plan_id)
+            if plan is None:
+                operation.status = OrganizationOperationStatus.UNCERTAIN
+                operation.revision = expected_revision + 1
+                operation.lease_token = None
+                operation.lease_expires_at = None
+                operation.error_code = "plan_prerequisites_changed"
+                operation.finished_at = current_time
+                operation.updated_at = current_time
+                await _sync_workflow_stage(
+                    session,
+                    operation.workflow_id,
+                    status=WorkflowStageStatus.UNCERTAIN,
+                    child_id=operation.id,
+                    reason="organization_uncertain",
+                    error_code="plan_prerequisites_changed",
+                )
+                await session.commit()
+                raise OrganizationOperationLeaseUnavailable("plan_revision_changed")
+            if plan.revision != operation.plan_revision:
+                operation.status = OrganizationOperationStatus.UNCERTAIN
+                operation.revision = expected_revision + 1
+                operation.lease_token = None
+                operation.lease_expires_at = None
+                operation.error_code = "plan_prerequisites_changed"
+                operation.finished_at = current_time
+                operation.updated_at = current_time
+                await _sync_workflow_stage(
+                    session,
+                    operation.workflow_id,
+                    status=WorkflowStageStatus.UNCERTAIN,
+                    child_id=operation.id,
+                    reason="organization_uncertain",
+                    error_code="plan_prerequisites_changed",
+                )
+                await session.commit()
+                raise OrganizationOperationLeaseUnavailable("plan_revision_changed")
+            plan_revision = (
+                select(OrganizationPlan.revision)
+                .where(OrganizationPlan.id == OrganizationOperation.plan_id)
+                .scalar_subquery()
+            )
             result = await session.execute(
                 update(OrganizationOperation)
                 .where(
@@ -574,6 +693,7 @@ class OrganizationOperationService:
                     == OrganizationOperationStatus.ORGANIZING,
                     OrganizationOperation.lease_token == lease_token,
                     OrganizationOperation.lease_expires_at > current_time,
+                    OrganizationOperation.plan_revision == plan_revision,
                 )
                 .values(
                     revision=expected_revision + 1,
@@ -742,6 +862,11 @@ class OrganizationOperationService:
         _validate_identifier(target_directory_id, "invalid_directory_id", maximum=128)
         current_time = _as_utc(now or datetime.now(UTC))
         async with self._session_factory() as session:
+            plan_revision = (
+                select(OrganizationPlan.revision)
+                .where(OrganizationPlan.id == OrganizationOperation.plan_id)
+                .scalar_subquery()
+            )
             result = await session.execute(
                 update(OrganizationOperation)
                 .where(
@@ -749,6 +874,7 @@ class OrganizationOperationService:
                     OrganizationOperation.revision == expected_revision,
                     OrganizationOperation.status
                     == OrganizationOperationStatus.UNCERTAIN,
+                    OrganizationOperation.plan_revision == plan_revision,
                 )
                 .values(
                     status=OrganizationOperationStatus.ORGANIZED,
@@ -762,7 +888,9 @@ class OrganizationOperationService:
                 .execution_options(synchronize_session=False)
             )
             if result.rowcount != 1:
-                raise OrganizationOperationConflict("operation_revision_changed")
+                await self._raise_revision_conflict(
+                    session, operation_id, expected_revision
+                )
             operation = await session.get(OrganizationOperation, operation_id)
             if operation is None:
                 raise OrganizationOperationNotFound
@@ -772,6 +900,7 @@ class OrganizationOperationService:
                     source_directory_id=source_directory_id,
                     target_directory_id=target_directory_id,
                     directory_ids=directory_ids,
+                    expected_plan_revision=operation.plan_revision,
                 )
                 await self._outbox_service.enqueue_directory_dirty(
                     session,
@@ -822,6 +951,11 @@ class OrganizationOperationService:
         _validate_identifier(operation_id, "invalid_operation_id", maximum=40)
         current_time = _as_utc(now or datetime.now(UTC))
         async with self._session_factory() as session:
+            plan_revision = (
+                select(OrganizationPlan.revision)
+                .where(OrganizationPlan.id == OrganizationOperation.plan_id)
+                .scalar_subquery()
+            )
             result = await session.execute(
                 update(OrganizationOperation)
                 .where(
@@ -829,6 +963,7 @@ class OrganizationOperationService:
                     OrganizationOperation.revision == expected_revision,
                     OrganizationOperation.status
                     == OrganizationOperationStatus.UNCERTAIN,
+                    OrganizationOperation.plan_revision == plan_revision,
                 )
                 .values(
                     status=OrganizationOperationStatus.FAILED,
@@ -842,7 +977,9 @@ class OrganizationOperationService:
                 .execution_options(synchronize_session=False)
             )
             if result.rowcount != 1:
-                raise OrganizationOperationConflict("operation_revision_changed")
+                await self._raise_revision_conflict(
+                    session, operation_id, expected_revision
+                )
             operation = await session.get(OrganizationOperation, operation_id)
             if operation is None:
                 raise OrganizationOperationNotFound
@@ -880,6 +1017,11 @@ class OrganizationOperationService:
         current_time = _as_utc(now or datetime.now(UTC))
         async with self._session_factory() as session:
             try:
+                plan_revision = (
+                    select(OrganizationPlan.revision)
+                    .where(OrganizationPlan.id == OrganizationOperation.plan_id)
+                    .scalar_subquery()
+                )
                 result = await session.execute(
                     update(OrganizationOperation)
                     .where(
@@ -889,6 +1031,7 @@ class OrganizationOperationService:
                         == OrganizationOperationStatus.ORGANIZING,
                         OrganizationOperation.lease_token == lease_token,
                         OrganizationOperation.lease_expires_at > current_time,
+                        OrganizationOperation.plan_revision == plan_revision,
                     )
                     .values(
                         status=OrganizationOperationStatus.ORGANIZED,
@@ -902,6 +1045,15 @@ class OrganizationOperationService:
                     .execution_options(synchronize_session=False)
                 )
                 if result.rowcount != 1:
+                    if await self._mark_plan_revision_uncertain(
+                        session,
+                        operation_id,
+                        expected_revision=expected_revision,
+                        current_time=current_time,
+                    ):
+                        raise OrganizationOperationLeaseUnavailable(
+                            "plan_revision_changed"
+                        )
                     raise OrganizationOperationLeaseUnavailable("lease_is_not_owned")
                 operation = await session.get(OrganizationOperation, operation_id)
                 if operation is None:
@@ -911,6 +1063,7 @@ class OrganizationOperationService:
                     source_directory_id=source_directory_id,
                     target_directory_id=target_directory_id,
                     directory_ids=directory_ids,
+                    expected_plan_revision=operation.plan_revision,
                 )
                 await self._outbox_service.enqueue_directory_dirty(
                     session,
@@ -952,6 +1105,57 @@ class OrganizationOperationService:
         await self._audit("organize.operation.completed", "整理操作已完成")
         return summary
 
+    async def _raise_revision_conflict(
+        self,
+        session: AsyncSession,
+        operation_id: str,
+        expected_revision: int,
+    ) -> None:
+        operation = await session.get(OrganizationOperation, operation_id)
+        if operation is None:
+            raise OrganizationOperationNotFound
+        if operation.revision == expected_revision:
+            plan = await session.get(OrganizationPlan, operation.plan_id)
+            if plan is None or plan.revision != operation.plan_revision:
+                raise OrganizationOperationConflict("plan_revision_changed")
+        raise OrganizationOperationConflict("operation_revision_changed")
+
+    async def _mark_plan_revision_uncertain(
+        self,
+        session: AsyncSession,
+        operation_id: str,
+        *,
+        expected_revision: int,
+        current_time: datetime,
+    ) -> bool:
+        """Stop an organizing worker if its frozen plan was changed."""
+
+        operation = await session.get(OrganizationOperation, operation_id)
+        if operation is None or operation.revision != expected_revision:
+            return False
+        plan = await session.get(OrganizationPlan, operation.plan_id)
+        if plan is not None and plan.revision == operation.plan_revision:
+            return False
+        if operation.status is not OrganizationOperationStatus.ORGANIZING:
+            return False
+        operation.status = OrganizationOperationStatus.UNCERTAIN
+        operation.revision = expected_revision + 1
+        operation.lease_token = None
+        operation.lease_expires_at = None
+        operation.error_code = "plan_prerequisites_changed"
+        operation.finished_at = current_time
+        operation.updated_at = current_time
+        await _sync_workflow_stage(
+            session,
+            operation.workflow_id,
+            status=WorkflowStageStatus.UNCERTAIN,
+            child_id=operation.id,
+            reason="organization_uncertain",
+            error_code="plan_prerequisites_changed",
+        )
+        await session.commit()
+        return True
+
     async def _validate_completion_scope(
         self,
         operation_id: str,
@@ -959,6 +1163,7 @@ class OrganizationOperationService:
         source_directory_id: str,
         target_directory_id: str,
         directory_ids: Iterable[str] | None,
+        expected_plan_revision: int | None = None,
     ) -> tuple[str, ...]:
         """Keep completion and dirty events inside the immutable plan scope."""
 
@@ -985,7 +1190,10 @@ class OrganizationOperationService:
         if not requested:
             raise _OrganizationCompletionScopeError("invalid_directory_scope")
 
-        plan_scope = await self.plan_execution_scope(operation_id)
+        plan_scope = await self.plan_execution_scope(
+            operation_id,
+            expected_plan_revision=expected_plan_revision,
+        )
         if plan_scope is None or not set(values).union(requested) <= plan_scope:
             raise _OrganizationCompletionScopeError("directory_scope_unverified")
         return tuple(dict.fromkeys(requested))

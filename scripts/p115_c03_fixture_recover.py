@@ -13,10 +13,10 @@ import asyncio
 import json
 import os
 import time
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from pathlib import Path
 
-from watch_assistant.adapters.p115_c03_live_transport import P115C03LiveTransport
+from watch_assistant.adapters.p115_c03_live_transport import P115C03RecoveryTransport
 from watch_assistant.adapters.p115_library_write_contract import (
     WriteStatus,
     prepare_recycle,
@@ -29,8 +29,10 @@ try:
         C03_MANAGED_FIXTURE_ENV,
         C03_WRITE_ENABLED_ENV,
         _c03_organization_contract,
+        _managed_scope_allows,
         _p115client_timeout_executor,
         _read_cookie,
+        _read_managed_scope,
     )
 except ModuleNotFoundError:
     from p115_c03_live_runner import (  # type: ignore[no-redef]
@@ -39,10 +41,15 @@ except ModuleNotFoundError:
         C03_MANAGED_FIXTURE_ENV,
         C03_WRITE_ENABLED_ENV,
         _c03_organization_contract,
+        _managed_scope_allows,
         _p115client_timeout_executor,
         _read_cookie,
+        _read_managed_scope,
     )
-from watch_assistant.adapters.p115_c03_fixture_probe import normalize_parent_id
+from watch_assistant.adapters.p115_c03_fixture_probe import (
+    C03RemoteEntry,
+    normalize_parent_id,
+)
 from watch_assistant.adapters.p115_organization_transport import (
     OrganizationObjectIntent,
     P115OrganizationTransportError,
@@ -66,7 +73,29 @@ except ModuleNotFoundError:
         _history_original_name,
     )
 
-ROOT_PREFIXES = ("wa-c03-root-", "wa-org-probe-dir-")
+C03_ROOT_PREFIX = "wa-c03-root-"
+
+
+def _recovery_transport(client) -> P115C03RecoveryTransport:
+    return P115C03RecoveryTransport(
+        client,
+        call_executor=_p115client_timeout_executor,
+    )
+
+
+def _managed_roots(
+    entries: Collection[C03RemoteEntry], parent_id: str
+) -> tuple[C03RemoteEntry, ...]:
+    return tuple(
+        entry
+        for entry in entries
+        if (
+            entry.is_directory
+            and entry.parent_id == parent_id
+            and entry.name.startswith(C03_ROOT_PREFIX)
+            and len(entry.name) > len(C03_ROOT_PREFIX)
+        )
+    )
 
 
 async def _run(
@@ -76,24 +105,29 @@ async def _run(
     recycle: bool,
     restore_organization: bool,
     authorization_path: Path | None,
+    managed_parent_ids: Collection[object] | None = None,
 ) -> dict[str, object]:
-    transport = P115C03LiveTransport(
-        client, call_executor=_p115client_timeout_executor
-    )
-    listing = await transport.list_children(parent_id, timeout_seconds=30)
+    try:
+        normalized_parent_id = normalize_parent_id(parent_id)
+    except (TypeError, ValueError):
+        return {"status": "blocked", "error_code": "recovery_scope_unverified"}
+    if not _managed_scope_allows(
+        normalized_parent_id,
+        managed_parent_ids=managed_parent_ids,
+        scope_validator=None,
+    ):
+        return {"status": "blocked", "error_code": "recovery_scope_unverified"}
+    transport = _recovery_transport(client)
+    listing = await transport.list_children(normalized_parent_id, timeout_seconds=30)
     if listing.complete is not True:
         return {"status": "blocked", "error_code": "inventory_incomplete"}
-    roots = tuple(
-        entry
-        for entry in listing.entries
-        if entry.is_directory and entry.name.startswith(ROOT_PREFIXES)
-    )
+    roots = _managed_roots(listing.entries, normalized_parent_id)
     if not recycle:
         if restore_organization:
             if len(roots) != 1 or authorization_path is None:
                 return {"status": "blocked", "error_code": "recovery_scope_unverified"}
             return await _restore_organization(
-                client, parent_id, roots[0], authorization_path
+                client, normalized_parent_id, roots[0], authorization_path
             )
         return {
             "status": "preview",
@@ -103,6 +137,15 @@ async def _run(
         }
     if any(os.environ.get(name) != "1" for name in _GATES):
         return {"status": "blocked", "error_code": "write_gate_closed"}
+    if roots:
+        if authorization_path is None:
+            return {"status": "blocked", "error_code": "authorization_required"}
+        if not _authorization_matches(
+            authorization_path, normalized_parent_id, now=time.time
+        ):
+            return {"status": "blocked", "error_code": "authorization_invalid"}
+        if not _consume_authorization(authorization_path):
+            return {"status": "blocked", "error_code": "authorization_already_consumed"}
     results: list[str] = []
     for root in roots:
         receipt = await transport.execute(
@@ -116,11 +159,8 @@ async def _run(
                 "processed_count": len(results),
             }
         results.append(root.file_id)
-    after = await transport.list_children(parent_id, timeout_seconds=30)
-    if after.complete is not True or any(
-        entry.is_directory and entry.name.startswith(ROOT_PREFIXES)
-        for entry in after.entries
-    ):
+    after = await transport.list_children(normalized_parent_id, timeout_seconds=30)
+    if after.complete is not True or _managed_roots(after.entries, normalized_parent_id):
         return {
             "status": "uncertain",
             "error_code": "recovery_postcondition_unconfirmed",
@@ -138,13 +178,19 @@ async def _run(
 async def _restore_organization(
     client, parent_id: str, temporary_directory, authorization_path: Path
 ) -> dict[str, object]:
+    try:
+        normalized_parent_id = normalize_parent_id(parent_id)
+    except (TypeError, ValueError):
+        return {"status": "blocked", "error_code": "recovery_scope_unverified"}
+    if not _managed_roots((temporary_directory,), normalized_parent_id):
+        return {"status": "blocked", "error_code": "recovery_scope_unverified"}
     if any(os.environ.get(name) != "1" for name in _GATES):
         return {"status": "blocked", "error_code": "write_gate_closed"}
-    if not _authorization_matches(authorization_path, parent_id, now=time.time):
+    if not _authorization_matches(
+        authorization_path, normalized_parent_id, now=time.time
+    ):
         return {"status": "blocked", "error_code": "authorization_invalid"}
-    listing_transport = P115C03LiveTransport(
-        client, call_executor=_p115client_timeout_executor
-    )
+    listing_transport = _recovery_transport(client)
     listing = await listing_transport.list_children(
         temporary_directory.file_id, timeout_seconds=30
     )
@@ -167,21 +213,22 @@ async def _restore_organization(
         candidate.file_id,
         temporary_directory.file_id,
         candidate.name,
-        parent_id,
+        normalized_parent_id,
         original_name,
     )
     transport = create_live_p115_organization_transport(
         client=client,
         call_executor=_p115client_timeout_executor,
         intents=(intent,),
-        managed_directory_ids=(parent_id, temporary_directory.file_id),
+        managed_directory_ids=(normalized_parent_id, temporary_directory.file_id),
         scope_confirmed=True,
         live_enabled=True,
         organization_contract=_c03_organization_contract(),
+        c03_transport=listing_transport,
     )
     try:
         source = await transport.read_object(candidate.file_id)
-        target = await transport.read_target(parent_id, original_name)
+        target = await transport.read_target(normalized_parent_id, original_name)
         expected = RemoteObjectState(
             candidate.file_id, temporary_directory.file_id, candidate.name
         )
@@ -193,14 +240,20 @@ async def _restore_organization(
         moved = await transport.read_object(candidate.file_id)
         if (
             move.status is not OrganizationTransportStatus.SUCCESS
-            or moved != RemoteObjectState(candidate.file_id, parent_id, candidate.name)
+            or moved
+            != RemoteObjectState(
+                candidate.file_id, normalized_parent_id, candidate.name
+            )
         ):
             return {"status": "uncertain", "error_code": "recovery_move_unconfirmed"}
         rename = await transport.rename(candidate.file_id, original_name)
         final = await transport.read_object(candidate.file_id)
         if (
             rename.status is not OrganizationTransportStatus.SUCCESS
-            or final != RemoteObjectState(candidate.file_id, parent_id, original_name)
+            or final
+            != RemoteObjectState(
+                candidate.file_id, normalized_parent_id, original_name
+            )
         ):
             return {"status": "uncertain", "error_code": "recovery_rename_unconfirmed"}
         recycle = await listing_transport.execute(
@@ -225,9 +278,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--recycle", action="store_true")
     parser.add_argument("--restore-organization", action="store_true")
     parser.add_argument("--authorization-path", type=Path)
+    parser.add_argument("--managed-scope-path", type=Path)
     args = parser.parse_args(argv)
     try:
         parent_id = normalize_parent_id(args.parent_id)
+        managed_parent_ids = _read_managed_scope(args.managed_scope_path)
+        if not _managed_scope_allows(
+            parent_id,
+            managed_parent_ids=managed_parent_ids,
+            scope_validator=None,
+        ):
+            raise ValueError("recovery_scope_unverified")
         cookie = _read_cookie(args.cookie_path)
         if cookie is None:
             raise ValueError("credential_unavailable")
@@ -240,6 +301,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 recycle=args.recycle,
                 restore_organization=args.restore_organization,
                 authorization_path=args.authorization_path,
+                managed_parent_ids=managed_parent_ids,
             )
         )
     except ValueError as error:

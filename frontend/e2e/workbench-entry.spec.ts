@@ -43,6 +43,34 @@ test("connects Chinese workbench entries without horizontal overflow", async ({ 
   await expect(page.getByRole("button", { name: "打开整理计划", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "打开媒体库", exact: true })).toBeVisible();
 
+  const primaryNav = page.getByRole("navigation", { name: "主导航" });
+  for (const label of ["工作台", "首页", "电影", "剧集", "热门", "收藏", "记录", "整理", "整理历史", "媒体库"]) {
+    await expect(primaryNav.getByRole("button", { name: label, exact: true })).toBeVisible();
+  }
+  const navLayout = await page.evaluate(() => {
+    const nav = document.querySelector<HTMLElement>(".primary-nav");
+    if (!nav) throw new Error("missing primary navigation");
+    return {
+      clientWidth: nav.clientWidth,
+      scrollWidth: nav.scrollWidth,
+      buttons: Array.from(nav.querySelectorAll<HTMLElement>("button")).map((button) => {
+        const box = button.getBoundingClientRect();
+        return { left: box.left, right: box.right, top: box.top, bottom: box.bottom };
+      }),
+    };
+  });
+  expect(navLayout.scrollWidth).toBeLessThanOrEqual(navLayout.clientWidth);
+  for (const button of navLayout.buttons) {
+    expect(button.left).toBeGreaterThanOrEqual(-1);
+    expect(button.right).toBeLessThanOrEqual((testInfo.project.use.viewport?.width ?? 0) + 1);
+  }
+  const navRows = new Set(navLayout.buttons.map((button) => Math.round(button.top)));
+  if (testInfo.project.name.startsWith("mobile")) {
+    expect(navRows.size).toBe(2);
+  } else {
+    expect(navRows.size).toBe(1);
+  }
+
   await page.getByLabel("快速搜索").fill("沙丘");
   await page.getByRole("button", { name: "搜索", exact: true }).click();
   await expect(page.getByRole("heading", { name: "“沙丘”的搜索结果" })).toBeVisible();

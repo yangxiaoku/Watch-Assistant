@@ -377,6 +377,7 @@ class _FakeUpstreamResponse:
             "content-length": "3",
             "content-range": "bytes 0-2/3",
             "content-type": "video/x-matroska",
+            "location": SAFE_URL,
             "x-secret": "must-not-forward",
         }
     )
@@ -408,6 +409,9 @@ class _FakeHttpxClient:
     async def send(self, request, *, stream):
         assert request is self.request
         assert stream is True
+        self.upstream.status_code = (
+            206 if request[0] == "GET" and "Range" in request[2] else 200
+        )
         return self.upstream
 
     async def aclose(self):
@@ -428,7 +432,7 @@ async def test_proxy_forwards_get_range_but_never_head_range(monkeypatch):
     head_client = _FakeHttpxClient.instances[-1]
     assert head_client.request[0] == "HEAD"
     assert "Range" not in head_client.request[2]
-    assert head.status_code == 206
+    assert head.status_code == 200
 
     get = await strm_api._proxy_playback(
         None,
@@ -444,7 +448,9 @@ async def test_proxy_forwards_get_range_but_never_head_range(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_playback_redirects_without_range_and_preserves_range_proxy_contract(monkeypatch):
+async def test_playback_proxies_without_exposing_dynamic_url_and_preserves_range_contract(
+    monkeypatch,
+):
     monkeypatch.setattr(strm_api.httpx, "AsyncClient", _FakeHttpxClient)
     _FakeHttpxClient.instances.clear()
 
@@ -456,9 +462,13 @@ async def test_playback_redirects_without_range_and_preserves_range_proxy_contra
         policy=forwarding_policy(head_request),
         upstream_headers=(("User-Agent", "test-agent"),),
     )
-    assert head.status_code == 307
-    assert head.headers["location"] == SAFE_URL
-    assert _FakeHttpxClient.instances == []
+    head_client = _FakeHttpxClient.instances[-1]
+    assert head.status_code == 200
+    assert head_client.request[0] == "HEAD"
+    assert "Range" not in head_client.request[2]
+    assert "location" not in head.headers
+    assert "x-secret" not in head.headers
+    assert SAFE_URL not in str(head.headers)
 
     head_range_request = make_playback_request(MANIFEST_ID, "HEAD", "bytes=0-2")
     head_range = await strm_api._serve_playback(
@@ -469,7 +479,7 @@ async def test_playback_redirects_without_range_and_preserves_range_proxy_contra
         upstream_headers=(("User-Agent", "test-agent"),),
     )
     head_range_client = _FakeHttpxClient.instances[-1]
-    assert head_range.status_code == 206
+    assert head_range.status_code == 200
     assert "Range" not in head_range_client.request[2]
 
     get_request = make_playback_request(MANIFEST_ID, "GET")
@@ -480,9 +490,14 @@ async def test_playback_redirects_without_range_and_preserves_range_proxy_contra
         policy=forwarding_policy(get_request),
         upstream_headers=(("User-Agent", "test-agent"),),
     )
-    assert get.status_code == 307
-    assert get.headers["location"] == SAFE_URL
-    assert len(_FakeHttpxClient.instances) == 1
+    get_client = _FakeHttpxClient.instances[-1]
+    assert get.status_code == 200
+    assert get_client.request[0] == "GET"
+    assert "Range" not in get_client.request[2]
+    assert "location" not in get.headers
+    assert "x-secret" not in get.headers
+    assert SAFE_URL not in str(get.headers)
+    assert b"".join([chunk async for chunk in get.body_iterator]) == b"abc"
 
     ranged_request = make_playback_request(MANIFEST_ID, "GET", "bytes=0-2")
     ranged = await strm_api._serve_playback(

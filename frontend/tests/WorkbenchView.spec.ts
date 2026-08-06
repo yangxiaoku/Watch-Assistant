@@ -33,10 +33,12 @@ describe("WorkbenchView", () => {
     });
 
     expect(wrapper.text()).toContain("需配置");
+    expect(wrapper.text()).toContain("查看整理设置");
+    expect(wrapper.text()).toContain("查看 STRM 设置");
     const actions = wrapper.findAll(".workbench-entry-action");
     await actions[2].trigger("click");
     await actions[3].trigger("click");
-    expect(wrapper.emitted("navigate")).toEqual([["settings"], ["settings"]]);
+    expect(wrapper.emitted("navigate")).toEqual([["settings", "organization"], ["settings"]]);
     expect(wrapper.text()).toContain("全量和增量 STRM 均未启用");
   });
 

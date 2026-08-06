@@ -18,6 +18,7 @@ from watch_assistant.services.organization_operations import (
 from watch_assistant.services.organization_outbox import (
     DIRTY_CONSUMED,
     DIRTY_PENDING,
+    DIRTY_SUPERSEDED,
     DirectoryDirtyOutboxService,
     OrganizationOutboxError,
 )
@@ -93,9 +94,15 @@ async def test_generation_coalesces_running_change_and_requeues_latest_generatio
     )
     async with database.session_factory() as session:
         queue = await session.scalar(select(DirectoryDirtyGeneration))
+        old_event = await session.get(DirectoryDirtyEvent, running.event_id)
         assert queue is not None
+        assert old_event is not None
         assert queue.generation == 2
         assert queue.status == "dirty"
+        assert old_event.status == DIRTY_SUPERSEDED
+        assert old_event.error_code == "superseded_by_newer_generation"
+        assert old_event.lease_token is None
+        assert old_event.lease_expires_at is None
 
     assert await outbox.complete(database.session_factory, running, now=now)
     async with database.session_factory() as session:

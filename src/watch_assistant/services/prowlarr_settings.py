@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import re
+import socket
 from collections import deque
+from collections.abc import Callable, Iterable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -20,6 +23,10 @@ from watch_assistant.adapters.prowlarr import (
 from watch_assistant.crypto import SecretCrypto
 from watch_assistant.models import ApplicationSettings
 from watch_assistant.services.observability import EventLogger, emit_event
+from watch_assistant.services.prowlarr_endpoint import (
+    ProwlarrEndpointRejected,
+    parse_prowlarr_allowed_private_addresses,
+)
 from watch_assistant.services.settings import shared_settings_mutation_lock
 from watch_assistant.services.source_health import (
     SourceHealthState,
@@ -59,19 +66,30 @@ class ProwlarrSettingsService:
         environment_enabled: bool = False,
         environment_base_url: str = "",
         environment_api_key: str = "",
+        environment_allowed_private_addresses: str = "",
         timeout_seconds: float = 12.0,
         event_logger: EventLogger | None = None,
         runtime_state: Any | None = None,
         mutation_lock: asyncio.Lock | None = None,
+        hostname_resolver: Callable[[str], Iterable[str]] | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._crypto = crypto
         self._environment_enabled = environment_enabled
         self._environment_base_url = environment_base_url
         self._environment_api_key = environment_api_key
+        try:
+            self._allowed_private_addresses = parse_prowlarr_allowed_private_addresses(
+                environment_allowed_private_addresses
+            )
+        except ProwlarrEndpointRejected as exc:
+            raise ProwlarrSettingsRejected from exc
         self._timeout_seconds = timeout_seconds
         self._event_logger = event_logger
         self._runtime_state = runtime_state
+        self._hostname_resolver = (
+            hostname_resolver if hostname_resolver is not None else _resolve_hostname
+        )
         self._operation_lock = asyncio.Lock()
         self._mutation_lock = mutation_lock or shared_settings_mutation_lock(
             session_factory
@@ -117,7 +135,7 @@ class ProwlarrSettingsService:
         async with self._mutation_lock, self._session_factory() as session:
             settings = await self._get_or_create(session)
             values = self._effective_values(settings)
-        return self._new_client(values)
+        return await self._new_client(values)
 
     async def update(
         self,
@@ -136,7 +154,11 @@ class ProwlarrSettingsService:
                     raise ProwlarrSettingsConflict
                 next_revision = settings.revision
                 if "base_url" in fields_set:
-                    settings.managed_prowlarr_base_url = _normalize_base_url(base_url)
+                    settings.managed_prowlarr_base_url = _normalize_base_url(
+                        base_url,
+                        hostname_resolver=self._hostname_resolver,
+                        allowed_private_addresses=self._allowed_private_addresses,
+                    )
                 if "api_key" in fields_set:
                     if api_key is None or _API_KEY.fullmatch(api_key) is None:
                         raise ProwlarrSettingsRejected
@@ -146,6 +168,7 @@ class ProwlarrSettingsService:
                 if "enabled" in fields_set:
                     settings.managed_prowlarr_enabled = enabled
                 if fields_set:
+                    await self._validate_candidate(self._effective_values(settings))
                     settings.managed_prowlarr_updated_at = datetime.now(UTC)
                     settings.revision += 1
                     try:
@@ -278,9 +301,18 @@ class ProwlarrSettingsService:
 
     def _effective_values(self, settings: ApplicationSettings) -> dict[str, object]:
         managed_key = self._decrypt(settings.managed_prowlarr_api_key_encrypted)
-        managed_url = _safe_normalize_base_url(settings.managed_prowlarr_base_url)
-        environment_url = _safe_normalize_base_url(self._environment_base_url)
+        managed_url, managed_address = _safe_normalize_base_url_details(
+            settings.managed_prowlarr_base_url,
+            hostname_resolver=self._hostname_resolver,
+            allowed_private_addresses=self._allowed_private_addresses,
+        )
+        environment_url, environment_address = _safe_normalize_base_url_details(
+            self._environment_base_url,
+            hostname_resolver=self._hostname_resolver,
+            allowed_private_addresses=self._allowed_private_addresses,
+        )
         base_url = managed_url or environment_url
+        resolved_address = managed_address if managed_url else environment_address
         api_key = managed_key or self._environment_api_key or None
         enabled = (
             settings.managed_prowlarr_enabled
@@ -312,14 +344,15 @@ class ProwlarrSettingsService:
                 else "none"
             ),
             "enabled": bool(enabled),
-            "configured": bool(enabled and base_url and api_key),
+            "configured": bool(enabled and base_url and api_key and resolved_address),
             "base_url": base_url,
             "api_key": api_key,
+            "resolved_address": resolved_address,
             "updated_at": _as_utc(settings.managed_prowlarr_updated_at),
             "revision": settings.revision,
         }
 
-    def _new_client(self, values: dict[str, object]) -> ProwlarrClient | None:
+    async def _new_client(self, values: dict[str, object]) -> ProwlarrClient | None:
         if not values["configured"]:
             return None
         return ProwlarrClient(
@@ -327,7 +360,17 @@ class ProwlarrSettingsService:
             str(values["api_key"]),
             timeout=self._timeout_seconds,
             health_tracker=self._health,
+            resolved_address=str(values["resolved_address"]),
+            allowed_private_addresses=self._allowed_private_addresses,
         )
+
+    async def _validate_candidate(self, values: dict[str, object]) -> None:
+        if (
+            values["base_url"]
+            and values["enabled"]
+            and not values["resolved_address"]
+        ):
+            raise ProwlarrSettingsRejected
 
     def _verify_result(
         self, snapshot: dict[str, object], message_code: str, checked_at: datetime
@@ -416,25 +459,42 @@ class ProwlarrSettingsService:
             return None
 
 
-def _normalize_base_url(value: object) -> str | None:
+def _normalize_base_url(
+    value: object,
+    *,
+    hostname_resolver: Callable[[str], Iterable[str]] | None = None,
+    allowed_private_addresses: frozenset[str] = frozenset(),
+) -> str | None:
+    normalized, _address = _normalize_base_url_details(
+        value,
+        hostname_resolver=hostname_resolver,
+        allowed_private_addresses=allowed_private_addresses,
+    )
+    return normalized
+
+
+def _normalize_base_url_details(
+    value: object,
+    *,
+    hostname_resolver: Callable[[str], Iterable[str]] | None = None,
+    allowed_private_addresses: frozenset[str] = frozenset(),
+) -> tuple[str | None, str | None]:
     if value is None:
-        return None
+        return None, None
     if not isinstance(value, str):
         raise ProwlarrSettingsRejected
     value = value.strip()
     if not value:
-        return None
+        return None, None
     try:
         parsed = urlsplit(value)
-    except ValueError as exc:
-        raise ProwlarrSettingsRejected from exc
-    try:
+        hostname = parsed.hostname
         _ = parsed.port
-    except ValueError as exc:
-        raise ProwlarrSettingsRejected from exc
+    except ValueError:
+        raise ProwlarrSettingsRejected from None
     if (
         parsed.scheme.casefold() not in {"http", "https"}
-        or not parsed.hostname
+        or not hostname
         or parsed.username is not None
         or parsed.password is not None
         or parsed.query
@@ -442,15 +502,111 @@ def _normalize_base_url(value: object) -> str | None:
         or any(ord(char) < 0x20 or ord(char) == 0x7F for char in value)
     ):
         raise ProwlarrSettingsRejected
+    resolver = (
+        hostname_resolver if hostname_resolver is not None else _resolve_hostname
+    )
+    resolved_address = _validate_public_hostname(
+        hostname, resolver, allowed_private_addresses=allowed_private_addresses
+    )
     path = parsed.path.rstrip("/")
-    return urlunsplit((parsed.scheme.casefold(), parsed.netloc, path, "", ""))
-
-
-def _safe_normalize_base_url(value: object) -> str | None:
+    return (
+        urlunsplit((parsed.scheme.casefold(), parsed.netloc, path, "", "")),
+        resolved_address,
+    )
+def _safe_normalize_base_url(
+    value: object,
+    *,
+    hostname_resolver: Callable[[str], Iterable[str]] | None = None,
+    allowed_private_addresses: frozenset[str] = frozenset(),
+) -> str | None:
     try:
-        return _normalize_base_url(value)
+        return _normalize_base_url_details(
+            value,
+            hostname_resolver=hostname_resolver,
+            allowed_private_addresses=allowed_private_addresses,
+        )[0]
     except ProwlarrSettingsRejected:
         return None
+
+
+def _safe_normalize_base_url_details(
+    value: object,
+    *,
+    hostname_resolver: Callable[[str], Iterable[str]] | None = None,
+    allowed_private_addresses: frozenset[str] = frozenset(),
+) -> tuple[str | None, str | None]:
+    try:
+        return _normalize_base_url_details(
+            value,
+            hostname_resolver=hostname_resolver,
+            allowed_private_addresses=allowed_private_addresses,
+        )
+    except ProwlarrSettingsRejected:
+        return None, None
+
+
+def _resolve_hostname(hostname: str) -> tuple[str, ...]:
+    try:
+        infos = socket.getaddrinfo(hostname, None, type=socket.SOCK_STREAM)
+        addresses = tuple(info[4][0] for info in infos if info[4])
+    except (OSError, TypeError, ValueError, IndexError):
+        raise ProwlarrSettingsRejected from None
+    if not addresses:
+        raise ProwlarrSettingsRejected
+    return addresses
+
+
+def _validate_public_hostname(
+    hostname: str,
+    hostname_resolver: Callable[[str], Iterable[str]],
+    *,
+    allowed_private_addresses: frozenset[str] = frozenset(),
+) -> str:
+    try:
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        try:
+            resolved_addresses = tuple(hostname_resolver(hostname))
+        except Exception:  # noqa: BLE001 - resolver failures fail closed
+            raise ProwlarrSettingsRejected from None
+        if not resolved_addresses:
+            raise ProwlarrSettingsRejected
+        validated_addresses = tuple(
+            _validate_public_address(
+                resolved_address,
+                allowed_private_addresses=allowed_private_addresses,
+            )
+            for resolved_address in resolved_addresses
+        )
+        return validated_addresses[0]
+    return _validate_public_address(
+        address, allowed_private_addresses=allowed_private_addresses
+    )
+
+
+def _validate_public_address(
+    value: object,
+    *,
+    allowed_private_addresses: frozenset[str] = frozenset(),
+) -> str:
+    try:
+        address = (
+            value
+            if isinstance(value, (ipaddress.IPv4Address, ipaddress.IPv6Address))
+            else ipaddress.ip_address(value)
+        )
+    except (TypeError, ValueError):
+        raise ProwlarrSettingsRejected from None
+    normalized = str(address)
+    globally_routable = (
+        address.is_global
+        and not address.is_unspecified
+        and not address.is_multicast
+        and not address.is_reserved
+    )
+    if not globally_routable and normalized not in allowed_private_addresses:
+        raise ProwlarrSettingsRejected
+    return normalized
 
 
 def _as_utc(value: datetime | None) -> datetime | None:

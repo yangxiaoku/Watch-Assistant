@@ -23,6 +23,18 @@ def test_explicit_empty_username_is_not_treated_as_password_only_login():
     assert error.value.status_code == 401
 
 
+def test_admin_bootstrap_rejects_a_configured_password_hash():
+    password_hash = PasswordHash.recommended()
+
+    with pytest.raises(ValueError, match="web_password_hash"):
+        SecurityManager(
+            web_password_hash=password_hash.hash("fixture-password"),
+            script_token_hash=password_hash.hash("fixture-token"),
+            bootstrap_admin_enabled=True,
+            bootstrap_admin_password="bootstrap-fixture-password",
+        )
+
+
 def test_structured_log_redaction_removes_sensitive_keys_and_values():
     data = {
         "url": "magnet:?xt=urn:btih:secret",
@@ -81,3 +93,38 @@ def test_strm_operation_read_routes_require_strm_read_scope():
             }
         )
         assert _required_scope(request) == "strm:read"
+
+
+@pytest.mark.parametrize(
+    ("path", "expected_scope"),
+    [
+        ("/api/v1/organization-plans/plan/confirm", "organize:plan"),
+        ("/api/v1/organization-plans/plan/candidate", "organize:plan"),
+        ("/api/v1/organization-plans/plan/operation", "organize:execute"),
+        (
+            "/api/v1/organization-plans/plan/confirm-and-operation",
+            "organize:execute",
+        ),
+        ("/api/v1/organization-operations/batch", "organize:execute"),
+        (
+            "/api/v1/organization-operations/confirm-and-batch",
+            "organize:execute",
+        ),
+    ],
+)
+def test_organization_plan_routes_require_plan_or_execute_scope(
+    path: str, expected_scope: str
+):
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": path,
+            "headers": [],
+            "scheme": "http",
+            "server": ("app.test", 80),
+            "client": ("127.0.0.1", 1234),
+            "root_path": "",
+        }
+    )
+    assert _required_scope(request) == expected_scope

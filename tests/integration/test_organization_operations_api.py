@@ -731,6 +731,151 @@ async def test_agent_operation_requires_confirmation_and_current_digest(tmp_path
 
 
 @pytest.mark.integration
+async def test_agent_confirm_and_queue_requires_execute_scope(tmp_path: Path):
+    client, database = await _client(tmp_path, execution_enabled=True)
+    plan_token = "wa_at_plan_confirm_scope"
+    execute_token = "wa_at_execute_confirm_scope"
+    async with database.session_factory() as session:
+        session.add_all(
+            [
+                AgentToken(
+                    id="agent-plan-confirm-scope",
+                    name="plan-confirm-scope",
+                    token_digest=hashlib.sha256(plan_token.encode()).hexdigest(),
+                    token_prefix=plan_token[:16],
+                    scopes_json=json.dumps(["organize:plan"]),
+                    library_ids_json="[]",
+                    expires_at=datetime.now(UTC) + timedelta(hours=1),
+                    created_at=datetime.now(UTC),
+                ),
+                AgentToken(
+                    id="agent-execute-confirm-scope",
+                    name="execute-confirm-scope",
+                    token_digest=hashlib.sha256(execute_token.encode()).hexdigest(),
+                    token_prefix=execute_token[:16],
+                    scopes_json=json.dumps(["organize:execute"]),
+                    library_ids_json="[]",
+                    expires_at=datetime.now(UTC) + timedelta(hours=1),
+                    created_at=datetime.now(UTC),
+                ),
+            ]
+        )
+        plan = await session.get(OrganizationPlan, "plan-ready")
+        assert plan is not None
+        digest = plan.plan_hash
+        await session.commit()
+
+    path = "/api/v1/organization-plans/plan-ready/confirm-and-operation"
+    payload = {
+        "expected_revision": 1,
+        "digest": digest,
+        "confirm": True,
+    }
+    denied = await client.post(
+        path,
+        json={**payload, "idempotency_key": "plan-confirm-scope"},
+        headers={"Authorization": f"Bearer {plan_token}"},
+    )
+    assert denied.status_code == 403
+    assert denied.json()["error"]["code"] == "missing_scope"
+    assert denied.json()["error"]["missing_scopes"] == ["organize:execute"]
+
+    accepted = await client.post(
+        path,
+        json={**payload, "idempotency_key": "execute-confirm-scope"},
+        headers={"Authorization": f"Bearer {execute_token}"},
+    )
+    assert accepted.status_code == 200
+    assert accepted.json()["status"] == "planned"
+    await _close(client, database)
+
+
+@pytest.mark.integration
+async def test_agent_library_scope_blocks_plan_and_operation_access(tmp_path: Path):
+    client, database = await _client(tmp_path, execution_enabled=True)
+    web_headers = await _auth_headers(client)
+    queued = await client.post(
+        "/api/v1/organization-plans/plan-ready/operation",
+        json={
+            "expected_revision": 1,
+            "idempotency_key": "scope-operation-key",
+            "confirm": True,
+        },
+        headers=web_headers,
+    )
+    assert queued.status_code == 200
+    operation_id = queued.json()["operation_id"]
+
+    raw_token = "wa_at_operation_scope_test"
+    async with database.session_factory() as session:
+        session.add(
+            AgentToken(
+                id="agent-operation-scope",
+                name="operation-scope-test",
+                token_digest=hashlib.sha256(raw_token.encode()).hexdigest(),
+                token_prefix=raw_token[:16],
+                scopes_json=json.dumps(["organize:execute", "task:read"]),
+                library_ids_json=json.dumps(["library-other"]),
+                expires_at=datetime.now(UTC) + timedelta(hours=1),
+                created_at=datetime.now(UTC),
+            )
+        )
+        await session.commit()
+    headers = {"Authorization": f"Bearer {raw_token}"}
+
+    plan_operation = await client.get(
+        "/api/v1/organization-plans/plan-ready/operation", headers=headers
+    )
+    assert plan_operation.status_code == 404
+    assert plan_operation.json()["detail"]["code"] == "plan_not_found"
+
+    operation = await client.get(
+        f"/api/v1/organization-operations/{operation_id}", headers=headers
+    )
+    assert operation.status_code == 404
+    assert operation.json()["detail"]["code"] == "operation_not_found"
+
+    cancel = await client.post(
+        f"/api/v1/organization-operations/{operation_id}/cancel",
+        json={"expected_revision": 1},
+        headers=headers,
+    )
+    assert cancel.status_code == 404
+    assert cancel.json()["detail"]["code"] == "operation_not_found"
+
+    batch = await client.post(
+        "/api/v1/organization-operations/batch",
+        json={
+            "items": [
+                {
+                    "plan_id": "plan-ready",
+                    "expected_revision": 1,
+                    "idempotency_key": "scope-batch-key",
+                    "confirm": True,
+                }
+            ]
+        },
+        headers=headers,
+    )
+    assert batch.status_code == 200
+    assert batch.json()["items"] == [
+        {
+            "plan_id": "plan-ready",
+            "operation_id": None,
+            "status": "rejected",
+            "revision": None,
+            "attempts": None,
+            "error_code": "plan_not_found",
+            "message": "计划不存在",
+        }
+    ]
+    async with database.session_factory() as session:
+        operations = list((await session.scalars(select(OrganizationOperation))).all())
+    assert len(operations) == 1
+    await _close(client, database)
+
+
+@pytest.mark.integration
 async def test_batch_isolates_item_failures_and_cancel_is_local(tmp_path: Path):
     client, database = await _client(tmp_path, execution_enabled=True)
     headers = await _auth_headers(client)

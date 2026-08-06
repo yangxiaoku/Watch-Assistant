@@ -23,7 +23,7 @@ _CATALOG: dict[str, ApiErrorDescriptor] = {
     "tmdb_unavailable": ApiErrorDescriptor("tmdb_unavailable", "影视信息暂时无法加载", "本次影视资料没有更新。", "请重新加载影视资料。", True, "retry"),
     "pansou_unavailable": ApiErrorDescriptor("pansou_unavailable", "资源搜索暂时不可用", "本次资源查询没有完成，页面内容没有更新。", "请稍后重新搜索资源。", True, "retry"),
     "prowlarr_settings_unavailable": ApiErrorDescriptor("prowlarr_settings_unavailable", "Prowlarr 设置暂时不可用", "Prowlarr 配置没有更新。", "请稍后重试。", True, "retry"),
-    "invalid_prowlarr_settings": ApiErrorDescriptor("invalid_prowlarr_settings", "Prowlarr 设置有误", "Prowlarr 配置没有保存。", "请检查地址和 API Key 后再试。", False, "inspect_configuration"),
+    "invalid_prowlarr_settings": ApiErrorDescriptor("invalid_prowlarr_settings", "Prowlarr 设置有误", "Prowlarr 配置没有保存。", "请检查地址、API Key 和私网端点白名单后再试。", False, "inspect_configuration"),
     "prowlarr_disabled": ApiErrorDescriptor("prowlarr_disabled", "Prowlarr 未启用", "当前未执行 Prowlarr 连接验证。", "请先启用 Prowlarr。", False, "inspect_configuration"),
     "prowlarr_not_configured": ApiErrorDescriptor("prowlarr_not_configured", "Prowlarr 尚未配置", "当前未执行 Prowlarr 连接验证。", "请配置有效的 Prowlarr 地址和 API Key。", False, "inspect_configuration"),
     "prowlarr_auth_required": ApiErrorDescriptor("prowlarr_auth_required", "Prowlarr 认证未通过", "Prowlarr 连接验证未通过。", "请检查 API Key 后重试。", False, "inspect_configuration"),

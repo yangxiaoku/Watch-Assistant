@@ -20,11 +20,14 @@
 
 REQ-001（115 影视库自动整理）和 REQ-002（STRM 全量与增量同步）当前均为“待验收”：
 受管夹具、离线阶段证据以及生产只读范围/库存预览已具备，但生产整理写入、生产 STRM
-受管清单、媒体服务器兼容和元数据联动仍未完成。2026-08-05 当前生产只读快照为 54 页、
-12 个目录、43 个文件和 54 个唯一对象；整理计划预览为 1 个 `needs_review`、远程写入 0。
-C03 因一次性授权已消费而当前 blocked，整理写入保持关闭。本轮受限 STRM 全量生成 40 个并
-verify 40/40，但媒体服务器真实播放兼容仍未验收。相关代码和开关不代表已上线；生产能力、
-实际版本和部署方式必须以发布前的只读核对以及 `/api/v1/health` 返回为准。
+受管清单、媒体服务器兼容和元数据联动仍未完成。2026-08-05 服务器当前部署版本为
+`249aa5826db6e06683be6426aa5243a1aa4ed0f5`；该版本的受限生产只读快照为 54 页、12 个目录、
+43 个文件和 54 个唯一对象，整理计划预览为 1 个 `needs_review`、远程写入 0。C03 因一次性
+授权已消费而 blocked，整理写入保持关闭。受管视频夹具的历史/受限记录曾有 STRM 全量生成
+40 个并 verify 40/40；但同日生产 STRM full 终态为 `failed`，`generated=0`、`failed=40`，
+只读 verifier 为 `checked=40`、`valid=0`、`invalid=40`，输出 `.strm` 文件数为 0。媒体服务器
+真实播放兼容仍未验收；相关代码和开关不代表已上线，生产能力和部署方式必须以动态发布 ref
+以及 `/api/v1/health` 的只读核对为准。
 
 磁力和 115 分享任务统一通过独立的 p115 gateway；P115 Cookie 只来自服务端配置的只读
 Cookie 文件或应用内托管设备。分享推送、影视库整理、删除和 STRM 写入继续受独立契约、
@@ -35,10 +38,12 @@ Cookie 文件或应用内托管设备。分享推送、影视库整理、删除�
 - 唯一发布分支是 `codex/publish-main`。发布前先执行 `git fetch --all --prune`，再以
   `git rev-parse origin/codex/publish-main` 的实际输出作为 commit 身份；README 不使用未注明日期的固定 SHA。
   最近合入的 PR #50-#61 只作为 first-parent 历史记录；发布前仍须重新解析实际 ref，不能沿用旧报告中的 commit。
-- 2026-08-05 本次生产/发布 ref 的完整 SHA 为
-  `249aa5826db6e06683be6426aa5243a1aa4ed0f5`（短标识 `249aa582`）；该日期快照不替代后续发布前的动态解析。
-- Verify 与 Systemd Release Package 必须按同一 `head_sha` 重新核对；历史 Actions 链接只能证明对应快照的离线门禁、Compose/发布包校验和发布脚本门禁通过，
-  不证明已经部署或生产健康检查已通过。
+- 2026-08-05 本次动态解析的当前发布 ref 完整 SHA 为
+  `5df17fb003ae8ea3a4774592d1fc81cb4aa78ead`（短标识 `5df17fb`）。服务器当前部署的仍是
+  `249aa5826db6e06683be6426aa5243a1aa4ed0f5`，因此 249 是生产部署版本，不是当前发布线。
+- 当前 ref 的 Verify run `30984240700` 已成功，Systemd Release Package 产物为
+  `watch-assistant-5df17fb-20260805-0719.tar.gz`；这些 CI 证据只证明当前 ref 的离线门禁和发布包校验通过，
+  不证明 `5df17fb` 已部署或生产健康检查已通过。
 - 近期 first-parent 合入记录包括 #44（P1 审查）、#45（Prowlarr/PanSou 只读 readiness）、
   #46（库存与整理范围门禁）、#47（STRM 清理与提交门禁）、#48（前端工作台验收）、#49（发布脚本 readiness gate）、
   #50（集成 readiness 与可靠性加固）、#51（发布基线文档同步）、#52（动态解析发布基线）、#53（通知失败矩阵）、
@@ -51,8 +56,8 @@ Cookie 文件或应用内托管设备。分享推送、影视库整理、删除�
   `LinuxTracker` 已安装并配置，但搜索请求超时并返回 HTTP `000`，因此不能写成可搜索完成、聚合完成或 REQ-023 已上线。
   2026-08-04 的历史/受限证据曾在公开 Linux ISO 范围观察到官方 test HTTP `200`、search `17`、PanSou `0`、Prowlarr `17`、
   canonical `17`；该历史结果不代表当前搜索可用，也不覆盖电影/电视剧召回率、95% 基线、广泛来源质量、完整来源对照和生产 HTTP 鉴权路由。
-- p115 目前可引用的远程证据仍限于受管夹具、生产只读库存/计划预览或失败关闭路径；本轮未执行真实写入、真实媒体库整理、生产 STRM 播放/清理或媒体服务器兼容验收。
-  systemd 当前 release 和健康接口已完成只读核对，但这些能力继续保持未验收、未上线，不能由 CI 成功或 Cookie readiness 推断为生产可用。
+- p115 目前可引用的远程证据仍限于受管夹具、服务器已部署 249 版本的生产只读库存/计划预览或失败关闭路径；本轮未执行真实写入、真实媒体库整理、生产 STRM 播放/清理或媒体服务器兼容验收。
+  systemd 当前 release 仍为 249，与当前发布 ref 不一致；这些能力继续保持未验收、未上线，不能由 CI 成功或 Cookie readiness 推断为生产可用。
 - 对应离线证据包括 [STRM manifest 单测](tests/unit/test_strm_manifest.py)、[空目录计划单测](tests/unit/test_empty_directory_cleanup_plan.py)、
   [空目录清理契约测试](tests/contracts/test_empty_directory_cleanup_contract.py)、[组织用户流集成测试](tests/integration/test_organization_user_flow.py)、
   [组织计划单测](tests/unit/test_organization_plan.py)、[库存索引单测](tests/unit/test_library_index.py) 和
@@ -62,8 +67,8 @@ Cookie 文件或应用内托管设备。分享推送、影视库整理、删除�
   `scripts/acceptance_closure.py` 将只读库存、整理预览、受管夹具和临时 STRM 输出统一到一份脱敏证据中。
   默认不触碰 115 写入口，真实夹具执行必须额外提供人工确认、范围和一次性授权。
 - 发布 manifest、来源、systemd 回退和发布物 smoke 测试只证明发布门禁覆盖；本轮已通过服务器只读核对确认
-  systemd 当前 release、`/api/v1/health` 状态和生产只读预览，但没有在本轮执行部署或真实写操作。
-  健康接口报告整理写契约未验证、整理执行不受支持；本轮 STRM 生成/verify 证据仍不能代替媒体服务器真实播放验收。
+  249 版本 systemd release、`/api/v1/health` 状态和生产只读预览，但没有部署当前 `5df17fb` 或执行真实写操作。
+  健康接口报告整理写契约未验证、整理执行不受支持；生产 STRM full 失败，仍不能代替媒体服务器真实播放验收。
   STRM/空目录清理和整理写入继续关闭；接口开关或契约状态必须与完整生产验收分开记录。
 
 ## 部署
@@ -72,7 +77,7 @@ Cookie 文件或应用内托管设备。分享推送、影视库整理、删除�
 该网络访问 PanSou；qBittorrent 和 115 按各自适配器配置，不随应用容器重启。
 
 1. 从示例创建 `.env`，并建立 `secrets` 目录。
-2. 生成四个只读 Secret 文件：
+2. 常规密码哈希模式生成四个只读 Secret 文件：
 
 ```powershell
 New-Item -ItemType Directory -Force secrets
@@ -81,6 +86,11 @@ Set-Content -NoNewline secrets/tmdb_api_key "你的 TMDB API Key"
 python -c "from pwdlib import PasswordHash; print(PasswordHash.recommended().hash(input('Web password: ')))" | Set-Content -NoNewline secrets/web_password_hash
 python -c "from pwdlib import PasswordHash; print(PasswordHash.recommended().hash(input('Userscript token: ')))" | Set-Content -NoNewline secrets/script_token_hash
 ```
+
+如果使用隔离环境的 bootstrap 模式，不要设置 `WEB_PASSWORD_HASH_FILE`；改为将引导密码保存到
+受保护文件，并设置 `WEB_AUTH_BOOTSTRAP_ENABLED=true` 与
+`WEB_AUTH_BOOTSTRAP_PASSWORD_FILE`。Compose 会为未启用的密码模式使用空 Secret，应用仍会在
+没有正式哈希或有效 bootstrap 配置时拒绝启动。
 
 3. 检查并启动：
 
@@ -92,8 +102,9 @@ curl http://127.0.0.1:8000/api/v1/health
 
 Web 登录账号默认为 `admin`。生产环境应继续使用 `WEB_PASSWORD_HASH`，不要使用公开的默认密码。
 如果只是隔离环境首次启动，可临时设置 `WEB_AUTH_BOOTSTRAP_ENABLED=true`，并通过受保护的
-`WEB_AUTH_BOOTSTRAP_PASSWORD` 提供一次性初始化密码；完成初始化后立即关闭该开关并改用
-Argon2 密码哈希。bootstrap 不应暴露到公网或共享网络，初始化密码不得写入仓库。
+`WEB_AUTH_BOOTSTRAP_PASSWORD`（systemd）或 `WEB_AUTH_BOOTSTRAP_PASSWORD_FILE`（Compose）
+提供引导密码。引导模式不与正式密码哈希同时启用，也不会自动消费；完成初始化后应关闭开关、
+配置 Argon2 密码哈希并重启服务。bootstrap 不应暴露到公网或共享网络，初始化密码不得写入仓库。
 登录 API 兼容旧版仅提交密码的客户端；新客户端可以同时提交 `WEB_USERNAME` 和密码。
 
 访问 `http://服务器地址:8115/`。构建后的用户脚本位于容器内 Web 根目录，可从 `http://服务器地址:8115/watch-assistant.user.js` 获取。

@@ -2,6 +2,7 @@
 
 import asyncio
 import hashlib
+import json
 import re
 from datetime import UTC
 from typing import Annotated, Literal
@@ -22,7 +23,6 @@ from watch_assistant.adapters.p115_library_gateway import (
 from watch_assistant.library_models import (
     LibraryInventoryEvent,
     LibraryMediaIdentity,
-    LibraryScanCheckpoint,
     LibraryScanEntry,
     LibraryScanRun,
     MediaLibrary,
@@ -59,14 +59,12 @@ from watch_assistant.services.empty_directory_cleanup_plan import (
     EmptyDirectoryCleanupPlanError,
     EmptyDirectoryCleanupPlanService,
 )
-from watch_assistant.services.library_index import (
-    LibraryIndexError,
-    validate_complete_scan_evidence,
-)
 from watch_assistant.services.library_inventory import (
+    FreshnessStatus,
     InventoryFile,
     InventorySnapshot,
     build_snapshot,
+    calculate_freshness,
     check_inventory,
 )
 from watch_assistant.services.library_scan_operations import (
@@ -76,6 +74,10 @@ from watch_assistant.services.library_scan_operations import (
     LibraryScanOperationSummary,
     scan_error_message_zh,
     scan_state_message_zh,
+)
+from watch_assistant.services.library_snapshot import (
+    scan_has_verified_evidence,
+    verified_latest_scan,
 )
 from watch_assistant.services.organization_plan import OrganizationPlanError
 from watch_assistant.services.organization_preview import (
@@ -219,27 +221,18 @@ def _scan_http_error(error: LibraryScanOperationError) -> HTTPException:
 
 
 async def _latest_scans(session, library_ids: set[str] | None = None) -> dict[str, LibraryScanRun]:
-    query = (
-        select(LibraryScanRun)
-        .join(MediaLibrary, MediaLibrary.id == LibraryScanRun.library_id)
-        .where(
-            LibraryScanRun.complete.is_(True),
-            LibraryScanRun.state == "completed",
-            MediaLibrary.enabled.is_(True),
-            MediaLibrary.scope_verified.is_(True),
-            LibraryScanRun.root_directory_id == MediaLibrary.root_directory_id,
-        )
+    query = select(MediaLibrary).where(
+        MediaLibrary.enabled.is_(True),
+        MediaLibrary.scope_verified.is_(True),
     )
     if library_ids:
-        query = query.where(LibraryScanRun.library_id.in_(library_ids))
-    query = query.order_by(
-        LibraryScanRun.library_id,
-        LibraryScanRun.snapshot_revision.desc(),
-        LibraryScanRun.created_at.desc(),
-    )
+        query = query.where(MediaLibrary.id.in_(library_ids))
+    libraries = list((await session.scalars(query)).all())
     latest: dict[str, LibraryScanRun] = {}
-    for run in (await session.scalars(query)).all():
-        latest.setdefault(run.library_id, run)
+    for library in libraries:
+        run = await verified_latest_scan(session, library)
+        if run is not None:
+            latest[library.id] = run
     return latest
 
 
@@ -630,8 +623,21 @@ def _empty_cleanup_error_status(code: str) -> int:
     return 404 if code == "plan_not_found" else 409
 
 
-def _empty_cleanup_operation_scope(plan_id: str) -> str:
-    return "cleanup:" + hashlib.sha256(plan_id.encode("ascii")).hexdigest()[:32]
+def _empty_cleanup_operation_scope(
+    plan_id: str, payload: EmptyDirectoryCleanupPlanApplyRequest
+) -> str:
+    canonical = json.dumps(
+        {
+            "confirm": payload.confirm,
+            "digest": payload.digest.lower(),
+            "expected_revision": payload.expected_revision,
+            "plan_id": plan_id,
+        },
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("ascii")
+    return "cleanup:" + hashlib.sha256(canonical).hexdigest()[:32]
 
 
 async def _run_empty_cleanup_operation_heartbeat(
@@ -773,7 +779,7 @@ async def apply_empty_directory_cleanup_plan(
             library_id=current_plan.library_id,
             source_scan_run_id=current_plan.source_scan_run_id,
             kind=StrmOperationKind.CLEANUP,
-            workflow_id=_empty_cleanup_operation_scope(plan_id),
+            workflow_id=_empty_cleanup_operation_scope(plan_id, payload),
             idempotency_key=payload.idempotency_key,
         )
         running, acquired = await operations.claim_start(queued.operation_id)
@@ -1303,30 +1309,14 @@ async def bind_library_identity(
         if library is None:
             raise HTTPException(status_code=404, detail="library_not_found")
         run = await _latest_scan_any(session, library_id)
-        if not _scan_is_complete(run, library):
+        if not await scan_has_verified_evidence(session, run, library):
             raise HTTPException(status_code=409, detail="library_inventory_incomplete")
-        checkpoint = await session.get(LibraryScanCheckpoint, run.id)
-        all_entries = list(
-            (
-                await session.scalars(
-                    select(LibraryScanEntry).where(
-                        LibraryScanEntry.scan_run_id == run.id
-                    )
-                )
-            ).all()
-        )
-        try:
-            validate_complete_scan_evidence(
-                run,
-                checkpoint,
-                all_entries,
-                root_directory_id=library.root_directory_id,
-                require_tree=True,
-            )
-        except LibraryIndexError:
-            raise HTTPException(
-                status_code=409, detail="library_inventory_incomplete"
-            ) from None
+        captured_at = run.updated_at
+        if captured_at.tzinfo is None:
+            captured_at = captured_at.replace(tzinfo=UTC)
+        freshness = calculate_freshness(complete=True, captured_at=captured_at)
+        if freshness.status is not FreshnessStatus.FRESH:
+            raise HTTPException(status_code=409, detail="library_inventory_incomplete")
         entry = await session.scalar(
             select(LibraryScanEntry).where(
                 LibraryScanEntry.scan_run_id == run.id,
@@ -1408,12 +1398,8 @@ def _entry_response(library_id: str, run_id: str, entry: LibraryScanEntry) -> Me
 
 
 async def _latest_scan_any(session, library_id: str) -> LibraryScanRun | None:
-    return await session.scalar(
-        select(LibraryScanRun)
-        .where(LibraryScanRun.library_id == library_id)
-        .order_by(LibraryScanRun.created_at.desc(), LibraryScanRun.id.desc())
-        .limit(1)
-    )
+    library = await session.get(MediaLibrary, library_id)
+    return await verified_latest_scan(session, library)
 
 
 async def _inventory_snapshot(
@@ -1436,27 +1422,7 @@ async def _inventory_snapshot(
             )
         ).all()
     )
-    complete = _scan_is_complete(run, library)
-    if complete:
-        checkpoint = await session.get(LibraryScanCheckpoint, run.id)
-        try:
-            validate_complete_scan_evidence(
-                run,
-                checkpoint,
-                list(
-                    (
-                        await session.scalars(
-                            select(LibraryScanEntry).where(
-                                LibraryScanEntry.scan_run_id == run.id
-                            )
-                        )
-                    ).all()
-                ),
-                root_directory_id=run.root_directory_id,
-                require_tree=True,
-            )
-        except LibraryIndexError:
-            complete = False
+    complete = await scan_has_verified_evidence(session, run, library)
     identities = {
         identity.object_id: identity
         for identity in (
@@ -1515,6 +1481,13 @@ def _scan_is_complete(
     run: LibraryScanRun | None,
     library: MediaLibrary | None = None,
 ) -> bool:
+    """Retain the lightweight display predicate for existing callers.
+
+    Mutating identity writes and inventory conclusions use the async evidence
+    verifier above; this helper only answers the model-level completeness
+    question used by compatibility tests and response shaping.
+    """
+
     return bool(
         run is not None
         and run.complete

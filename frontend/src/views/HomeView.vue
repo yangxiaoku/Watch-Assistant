@@ -8,12 +8,14 @@ import type { HomeCatalogResponse, MovieMetadata } from "../types";
 const props = defineProps<{
   catalog: HomeCatalogResponse | null;
   loading: boolean;
+  error?: string;
   favoriteIds: Set<string>;
 }>();
 defineEmits<{
   open: [movie: MovieMetadata];
   favorite: [movie: MovieMetadata];
   navigate: [view: "movies" | "tv" | "popular"];
+  retry: [];
 }>();
 
 const hero = computed(() => props.catalog?.popular.find((movie) => movie.backdrop_path) ?? props.catalog?.popular[0] ?? null);
@@ -62,5 +64,9 @@ function posterUrl(path: string | null): string | null {
     <MovieRow title="高分佳片" eyebrow="高分推荐" :movies="catalog.top_rated" :favorite-ids="favoriteIds" @open="$emit('open', $event)" @favorite="$emit('favorite', $event)" />
     <MovieRow title="高分剧集" eyebrow="高分剧集" :movies="catalog.tv_top_rated" :favorite-ids="favoriteIds" @open="$emit('open', $event)" @favorite="$emit('favorite', $event)" />
   </div>
-  <div v-else class="empty-state">首页内容暂时不可用</div>
+  <div v-else class="empty-state home-empty-state" role="status">
+    <strong>{{ error ? '首页资料暂时不可用' : '首页暂无可展示的影视资料' }}</strong>
+    <span>{{ error || '可以前往工作台搜索影片，或稍后重新加载首页。' }}</span>
+    <button v-if="error" class="secondary-button" type="button" @click="$emit('retry')"><ArrowRight :size="15" />重新加载首页</button>
+  </div>
 </template>

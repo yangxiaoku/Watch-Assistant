@@ -35,7 +35,7 @@ LIVE_ENV = "WATCH_ASSISTANT_P115_STRM_PLAYBACK_LIVE"
 PLAYBACK_PREFIX = "http://127.0.0.1:8115/api/v1/strm/play"
 SCAN_POLL_INTERVAL_SECONDS = 0.1
 SCAN_POLL_TIMEOUT_SECONDS = 30 * 60
-PLAYBACK_REDIRECT_STATUS = 307
+PLAYBACK_NO_RANGE_STATUS = 200
 PLAYBACK_RANGE_STATUS = 206
 
 
@@ -139,7 +139,7 @@ async def _run(*, root_id: str, file_id: str, cookie_path: Path) -> dict[str, ob
         head = await client.head(
             f"/api/v1/strm/play/{manifest_id}", headers=headers
         )
-        get_redirect = await client.get(
+        get = await client.get(
             f"/api/v1/strm/play/{manifest_id}", headers=headers
         )
         get_range = await client.get(
@@ -149,10 +149,8 @@ async def _run(*, root_id: str, file_id: str, cookie_path: Path) -> dict[str, ob
         out_of_scope = await client.get(
             "/api/v1/strm/play/strm_foreign_manifest_id_0001", headers=headers
         )
-        _expect_status(head, PLAYBACK_REDIRECT_STATUS, "playback_head_failed")
-        _expect_status(
-            get_redirect, PLAYBACK_REDIRECT_STATUS, "playback_get_redirect_failed"
-        )
+        _expect_status(head, PLAYBACK_NO_RANGE_STATUS, "playback_head_failed")
+        _expect_status(get, PLAYBACK_NO_RANGE_STATUS, "playback_get_failed")
         _expect_status(get_range, PLAYBACK_RANGE_STATUS, "playback_range_failed")
         _expect_status(out_of_scope, 404, "playback_scope_failed")
         return {
@@ -170,7 +168,7 @@ async def _run(*, root_id: str, file_id: str, cookie_path: Path) -> dict[str, ob
             },
             "playback": {
                 "head": _response_public(head),
-                "get_redirect": _response_public(get_redirect),
+                "get": _response_public(get),
                 "get_range": _response_public(get_range),
                 "out_of_scope_status": out_of_scope.status_code,
             },

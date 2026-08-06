@@ -427,6 +427,31 @@ async def test_live_transport_rejects_duplicate_directory_entries_across_pages()
 
 
 @pytest.mark.asyncio
+async def test_live_transport_rejects_total_count_drift_across_pages():
+    client = _FakeP115Client(
+        {
+            "fs_mkdir": [],
+            "fs_move": [],
+            "fs_rename": [],
+            "fs_delete": [],
+            "fs_info": [],
+            "fs_files": [
+                _page([_directory("101", "7", "source")], offset=0, count=2),
+                _page([_directory("102", "7", "quarantine")], offset=1, count=3),
+            ],
+        }
+    )
+
+    listing = await P115C03LiveTransport(
+        client, call_executor=_call_executor
+    ).list_children("7", timeout_seconds=10)
+
+    assert listing.complete is False
+    assert listing.page_calls == 2
+    assert len(client.calls) == 2
+
+
+@pytest.mark.asyncio
 async def test_live_transport_without_timeout_executor_fails_before_client_call():
     client = _FakeP115Client(
         {

@@ -247,9 +247,9 @@ onMounted(() => { void loadWorkflows(); });
       <div class="workflow-toolbar"><label for="workflow-status">状态</label><select id="workflow-status" v-model="statusFilter" @change="changeFilter"><option v-for="option in statusOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select><label for="workflow-stage">阶段</label><select id="workflow-stage" v-model="stageFilter" @change="changeFilter"><option v-for="option in stageOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select><label for="workflow-stage-status">阶段状态</label><select id="workflow-stage-status" v-model="stageStatusFilter" @change="changeFilter"><option v-for="option in stageStatusOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select><label for="workflow-subscription">订阅</label><input id="workflow-subscription" v-model="subscriptionFilter" type="search" placeholder="输入订阅筛选" @change="changeFilter" /><button class="icon-button" type="button" title="刷新任务中心" aria-label="刷新任务中心" :disabled="loading" @click="loadWorkflows(page)"><RefreshCw :size="17" :class="{ spin: loading }" /></button></div>
     </header>
     <div v-if="error" class="settings-state settings-state-error" role="alert"><AlertTriangle :size="18" /><span>{{ error }}</span><button class="text-button" type="button" @click="loadWorkflows">重试</button></div>
-    <div v-else-if="loading && !items.length" class="workflow-empty" role="status"><LoaderCircle class="spin" :size="22" />正在加载任务中心</div>
-    <div v-else-if="!items.length" class="workflow-empty">当前没有关联任务</div>
-    <div v-else class="workflow-layout">
+    <div v-if="loading && !items.length && !error" class="workflow-empty" role="status"><LoaderCircle class="spin" :size="22" />正在加载任务中心</div>
+    <div v-else-if="!items.length && !error" class="workflow-empty">当前没有关联任务</div>
+    <div v-else-if="items.length" class="workflow-layout">
       <div class="workflow-list" aria-label="关联任务列表">
         <button v-for="workflow in items" :key="workflow.id" type="button" class="workflow-row" :class="{ active: selected?.id === workflow.id }" @click="selectWorkflow(workflow)"><span class="workflow-row-title">{{ workflow.media_type === 'tv' ? '电视剧' : '电影' }}</span><strong :class="`status-text-${workflowStatusPresentation(workflow.status).tone}`">{{ statusLabel(workflow.status) }}</strong><small>更新于 {{ formatTimestamp(workflow.updated_at) }}</small><small class="workflow-row-next-step">{{ nextStep(workflow) }}</small></button>
       </div>

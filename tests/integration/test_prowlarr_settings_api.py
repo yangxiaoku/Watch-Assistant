@@ -15,6 +15,10 @@ from watch_assistant.db import create_database, initialize_database
 from watch_assistant.models import ApplicationSettings
 
 
+def _fixture_hostname_resolver(_hostname: str) -> tuple[str, ...]:
+    return ("93.184.216.34",)
+
+
 async def _make_client(tmp_path: Path):
     database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'settings-api.db'}")
     await initialize_database(database.engine)
@@ -27,6 +31,7 @@ async def _make_client(tmp_path: Path):
         tmdb_client=tmdb,
         pansou_client=pansou,
         prowlarr_client=prowlarr,
+        prowlarr_hostname_resolver=_fixture_hostname_resolver,
     )
     client = httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://app.test"
@@ -36,7 +41,9 @@ async def _make_client(tmp_path: Path):
 
 @pytest.mark.integration
 @respx.mock
-async def test_prowlarr_settings_never_echo_key_and_verify_is_read_only(tmp_path):
+async def test_prowlarr_settings_never_echo_key_and_verify_is_read_only(
+    tmp_path: Path,
+):
     api_key = secrets.token_urlsafe(24)
     route = respx.get("http://prowlarr.test/api/v1/search").mock(
         return_value=httpx.Response(200, json=[])
@@ -102,6 +109,40 @@ async def test_prowlarr_settings_never_echo_key_and_verify_is_read_only(tmp_path
         )
         assert stale.status_code == 409
         assert stale.json()["detail"] == "settings_conflict"
+    finally:
+        await client.aclose()
+        await tmdb.aclose()
+        await pansou.aclose()
+        await prowlarr.aclose()
+        await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_invalid_prowlarr_url_uses_safe_chinese_error_mapping(tmp_path):
+    client, database, tmdb, pansou, prowlarr = await _make_client(tmp_path)
+    try:
+        response = await client.patch(
+            "/api/v1/settings/search-sources/prowlarr",
+            json={
+                "enabled": True,
+                "base_url": "https://user:secret@127.0.0.1/?token=hidden",
+                "api_key": "fixture-only",
+                "revision": 0,
+            },
+        )
+
+        assert response.status_code == 422
+        assert response.json()["detail"] == "invalid_prowlarr_settings"
+        assert response.json()["error"]["message_zh"]
+        assert "https://user:secret@127.0.0.1" not in response.text
+        assert "user:secret" not in response.text
+        assert "token=hidden" not in response.text
+
+        async with database.session_factory() as session:
+            stored = await session.get(ApplicationSettings, "default")
+        assert stored is not None
+        assert stored.revision == 0
+        assert stored.managed_prowlarr_base_url is None
     finally:
         await client.aclose()
         await tmdb.aclose()

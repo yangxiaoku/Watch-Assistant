@@ -1,3 +1,5 @@
+import hashlib
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -14,6 +16,7 @@ from watch_assistant.library_models import (
     MediaLibrary,
     OrganizationPlan,
 )
+from watch_assistant.models import AgentToken
 from watch_assistant.security import SecurityManager
 
 WEB_PASSWORD = "organization-review-password"
@@ -135,14 +138,24 @@ async def test_plan_review_api_is_authenticated_and_redacted(tmp_path):
     assert mismatched_hash.status_code == 409
     assert mismatched_hash.json()["detail"]["code"] == "plan_hash_mismatch"
 
-    confirmed = await client.post(
+    rejected_confirmation = await client.post(
         "/api/v1/organization-plans/plan-review/confirm",
         json={"expected_revision": 1, "plan_hash": "a" * 64},
         headers=headers,
     )
-    assert confirmed.status_code == 200
-    assert confirmed.json()["status"] == "planned"
-    assert confirmed.json()["revision"] == 2
+    assert rejected_confirmation.status_code == 409
+    assert rejected_confirmation.json()["detail"]["code"] == (
+        "plan_prerequisites_changed"
+    )
+
+    aliased = await client.post(
+        "/api/v1/organization-plans/plan-review/alias",
+        json={"expected_revision": 1, "alias": "本地收藏"},
+        headers=headers,
+    )
+    assert aliased.status_code == 200
+    assert aliased.json()["alias"] == "本地收藏"
+    assert aliased.json()["revision"] == 2
 
     stale = await client.post(
         "/api/v1/organization-plans/plan-review/ignore",
@@ -153,18 +166,9 @@ async def test_plan_review_api_is_authenticated_and_redacted(tmp_path):
     assert stale.json()["detail"]["code"] == "stale_revision"
     assert "remote-private" not in stale.text
 
-    aliased = await client.post(
-        "/api/v1/organization-plans/plan-review/alias",
-        json={"expected_revision": 2, "alias": "本地收藏"},
-        headers=headers,
-    )
-    assert aliased.status_code == 200
-    assert aliased.json()["alias"] == "本地收藏"
-    assert aliased.json()["revision"] == 3
-
     invalid_alias = await client.post(
         "/api/v1/organization-plans/plan-review/alias",
-        json={"expected_revision": 3, "alias": "https://remote.invalid"},
+        json={"expected_revision": 2, "alias": "https://remote.invalid"},
         headers=headers,
     )
     assert invalid_alias.status_code == 422
@@ -230,5 +234,46 @@ async def test_plan_review_is_disabled_by_default_for_reads_and_mutations(tmp_pa
     )
     assert confirm.status_code == 503
     assert confirm.json()["detail"] == "organization_plan_disabled"
+    await client.aclose()
+    await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_agent_library_scope_hides_plans_from_other_libraries(tmp_path):
+    client, database = await _client(tmp_path, enabled=True)
+    raw_token = "wa_at_plan_scope_test"
+    async with database.session_factory() as session:
+        session.add(
+            AgentToken(
+                id="agent-plan-scope",
+                name="plan-scope-test",
+                token_digest=hashlib.sha256(raw_token.encode()).hexdigest(),
+                token_prefix=raw_token[:16],
+                scopes_json=json.dumps(["organize:plan"]),
+                library_ids_json=json.dumps(["library-other"]),
+                expires_at=datetime.now(UTC) + timedelta(hours=1),
+                created_at=datetime.now(UTC),
+            )
+        )
+        await session.commit()
+    headers = {"Authorization": f"Bearer {raw_token}"}
+
+    listing = await client.get("/api/v1/organization-plans", headers=headers)
+    assert listing.status_code == 200
+    assert listing.json() == {"items": [], "next_cursor": None}
+
+    detail = await client.get(
+        "/api/v1/organization-plans/plan-review", headers=headers
+    )
+    assert detail.status_code == 404
+    assert detail.json()["detail"]["code"] == "plan_not_found"
+
+    mutation = await client.post(
+        "/api/v1/organization-plans/plan-review/ignore",
+        json={"expected_revision": 1},
+        headers=headers,
+    )
+    assert mutation.status_code == 404
+    assert mutation.json()["detail"]["code"] == "plan_not_found"
     await client.aclose()
     await database.engine.dispose()

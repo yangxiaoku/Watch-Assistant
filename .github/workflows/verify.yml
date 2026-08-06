@@ -10,9 +10,16 @@ on:
 permissions:
   contents: read
 
+env:
+  # Keep offline verification on the same runtime line as Docker and release packaging.
+  PYTHON_VERSION: "3.12.13"
+  NODE_VERSION: "24"
+  NPM_VERSION: "11.9.0"
+
 jobs:
-  verify:
-    runs-on: ubuntu-latest
+  offline_verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - name: Check out source
         uses: actions/checkout@v4
@@ -20,21 +27,45 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
+          python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
 
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
-          node-version: "24"
+          node-version: ${{ env.NODE_VERSION }}
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
-      - name: Install Python dependencies
+      - name: Pin npm toolchain
+        run: npm install --global "npm@${NPM_VERSION}"
+
+      - name: Verify toolchain
+        shell: bash
         run: |
+          set -euo pipefail
+          test "$(python --version 2>&1)" = "Python ${PYTHON_VERSION}"
+          case "$(node --version)" in
+            v24.*) ;;
+            *) echo "unexpected Node major version" >&2; exit 1 ;;
+          esac
+          test "$(npm --version)" = "${NPM_VERSION}"
+
+      - name: Install locked Python dependencies
+        run: |
+          set -euo pipefail
           python -m venv .venv
-          .venv/bin/python -m pip install --upgrade pip
-          .venv/bin/python -m pip install -e ".[dev]"
+          PYTHON_BIN="$PWD/.venv/bin/python"
+          "$PYTHON_BIN" -m pip install --disable-pip-version-check --upgrade "pip==25.1.1"
+          export LOCK_CONSTRAINTS="$RUNNER_TEMP/watch-assistant-uv-lock-constraints.txt"
+          "$PYTHON_BIN" scripts/generate_pip_constraints.py \
+            --lock-file uv.lock \
+            --output "$LOCK_CONSTRAINTS"
+          "$PYTHON_BIN" -m pip install \
+            --disable-pip-version-check \
+            --constraint "$LOCK_CONSTRAINTS" \
+            -e ".[dev]"
+          "$PYTHON_BIN" -m pip check
 
       - name: Install frontend dependencies
         run: npm ci --prefix frontend
@@ -50,8 +81,36 @@ jobs:
           path: evidence/
           if-no-files-found: ignore
 
+  e2e:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Pin npm toolchain
+        run: npm install --global "npm@${NPM_VERSION}"
+
+      - name: Install frontend dependencies
+        run: npm ci --prefix frontend
+
+      - name: Install Playwright browser and OS dependencies
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+
+      - name: Run Playwright E2E gate
+        run: npm --prefix frontend run test:e2e
+
   compose:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - name: Check out source
         uses: actions/checkout@v4
@@ -66,3 +125,26 @@ jobs:
 
       - name: Validate Compose configuration
         run: WATCH_ASSISTANT_RELEASE="${{ github.sha }}" docker compose --env-file .env.example config --quiet
+
+  # Preserve a single required Verify check for branch protection and release review.
+  verify:
+    if: ${{ always() }}
+    needs:
+      - offline_verify
+      - e2e
+      - compose
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require offline, Playwright, and Compose gates to pass
+        env:
+          OFFLINE_VERIFY_RESULT: ${{ needs.offline_verify.result }}
+          E2E_RESULT: ${{ needs.e2e.result }}
+          COMPOSE_RESULT: ${{ needs.compose.result }}
+        run: |
+          set -euo pipefail
+          if [[ "$OFFLINE_VERIFY_RESULT" != "success" || "$E2E_RESULT" != "success" || "$COMPOSE_RESULT" != "success" ]]; then
+            printf 'verification gate failed: offline_verify=%s e2e=%s compose=%s\n' \
+              "$OFFLINE_VERIFY_RESULT" "$E2E_RESULT" "$COMPOSE_RESULT" >&2
+            exit 1
+          fi

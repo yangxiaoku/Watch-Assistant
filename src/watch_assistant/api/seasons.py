@@ -9,7 +9,6 @@ from sqlalchemy import select
 from watch_assistant.library_models import (
     LibraryMediaIdentity,
     LibraryScanEntry,
-    LibraryScanRun,
     MediaLibrary,
 )
 from watch_assistant.schemas import (
@@ -27,6 +26,7 @@ from watch_assistant.services.library_inventory import (
     InventoryFile,
     build_snapshot,
 )
+from watch_assistant.services.library_snapshot import verified_latest_scan
 from watch_assistant.services.media_parser import parse_media_filename
 from watch_assistant.services.season_metadata import (
     SeasonMetadataError,
@@ -91,9 +91,7 @@ async def get_episode_completeness(
     fallback_language: str = Query(default="en-US", min_length=2, max_length=32),
     refresh: bool = Query(default=False),
 ) -> EpisodeCompletenessResponse:
-    library, run, entries, identities = await _load_library_scope(
-        request, library_id
-    )
+    library, run, entries, identities = await _load_library_scope(request, library_id)
     try:
         season = await service.get(
             tmdb_id,
@@ -159,12 +157,7 @@ async def _load_library_scope(request: Request, library_id: str):
         library = await session.get(MediaLibrary, library_id)
         if library is None:
             raise HTTPException(status_code=404, detail="library_not_found")
-        run = await session.scalar(
-            select(LibraryScanRun)
-            .where(LibraryScanRun.library_id == library_id)
-            .order_by(LibraryScanRun.created_at.desc(), LibraryScanRun.id.desc())
-            .limit(1)
-        )
+        run = await verified_latest_scan(session, library)
         if run is None:
             return library, None, [], {}
         entries = list(
@@ -233,7 +226,9 @@ def _inventory_snapshot(run, entries, identities):
             )
             for entry in entries
         ),
-        complete=bool(run.complete and run.state == "completed"),
+        # ``run`` is returned only after scope, freshness, revision, and
+        # complete tree evidence have passed the shared verifier.
+        complete=run is not None,
         captured_at=captured_at,
     )
 

@@ -56,6 +56,7 @@ const metadataLoading = ref(false);
 const metadataError = ref("");
 const metadataStale = ref(false);
 const homeCatalog = ref<HomeCatalogResponse | null>(null);
+const homeError = ref("");
 const catalogMovies = ref<MovieMetadata[]>([]);
 const catalogHeading = ref("");
 const catalogError = ref("");
@@ -564,14 +565,19 @@ function recordHistory(movie: MovieMetadata) {
 async function loadHome() {
   if (homeCatalog.value) return;
   catalogLoading.value = true;
-  error.value = "";
+  homeError.value = "";
   try {
     homeCatalog.value = await api.homeCatalog();
   } catch (exception) {
-    error.value = exception instanceof ApiError ? exception.message : "首页内容加载失败，请稍后重试";
+    homeError.value = exception instanceof ApiError ? exception.message : "首页资料暂不可用，请稍后重试";
   } finally {
     catalogLoading.value = false;
   }
+}
+
+async function retryHome() {
+  if (catalogLoading.value) return;
+  await loadHome();
 }
 
 async function loadDiscover(
@@ -648,6 +654,14 @@ async function selectView(view: Exclude<BrowseView, "search">) {
 
 function navigateFromTaskDrawer(view: "library" | "settings" | "workflows") {
   drawerOpen.value = false;
+  void selectView(view);
+}
+
+function navigateFromWorkbench(
+  view: Exclude<BrowseView, "search">,
+  settingsSection: "overview" | "organization" = "overview",
+): void {
+  settingsInitialSection.value = settingsSection;
   void selectView(view);
 }
 
@@ -1574,8 +1588,8 @@ onBeforeUnmount(() => {
     <template v-else>
       <p v-if="error" class="error-strip" role="alert"><X :size="16" />{{ error }}</p>
       <template v-if="!result && !loading">
-        <WorkbenchView v-if="activeView === 'workbench'" :organization-plan-capability="organizationPlanCapability" :strm-full-capability="strmFullCapability" :strm-incremental-capability="strmIncrementalCapability" @navigate="selectView" @search="searchFromWorkbench" />
-        <HomeView v-if="activeView === 'home'" :catalog="homeCatalog" :loading="catalogLoading" :favorite-ids="favoriteIds" @open="openMovie" @favorite="toggleFavorite" @navigate="selectView" />
+        <WorkbenchView v-if="activeView === 'workbench'" :organization-plan-capability="organizationPlanCapability" :strm-full-capability="strmFullCapability" :strm-incremental-capability="strmIncrementalCapability" @navigate="navigateFromWorkbench" @search="searchFromWorkbench" />
+        <HomeView v-if="activeView === 'home'" :catalog="homeCatalog" :loading="catalogLoading" :error="homeError" :favorite-ids="favoriteIds" @open="openMovie" @favorite="toggleFavorite" @navigate="selectView" @retry="retryHome" />
         <LibraryView v-else-if="activeView === 'movies' || activeView === 'tv'" :movies="catalogMovies" :loading="catalogLoading" :error="catalogError" :favorite-ids="favoriteIds" :genre-id="genreId" :year="year" :sort="sort" :media-type="activeView" :page="currentPage" :total-pages="totalPages" :total-results="totalResults" @open="openMovie" @favorite="toggleFavorite" @filters="loadDiscover" @page="loadPage" @retry="retryCatalog" />
         <CollectionView v-else-if="activeView === 'favorites' || activeView === 'history'" :mode="activeView" :movies="activeView === 'favorites' ? favorites : history" :favorite-ids="favoriteIds" @open="openMovie" @favorite="toggleFavorite" />
         <SettingsView v-else-if="activeView === 'settings'" :api="api" :initial-section="settingsInitialSection" @auto-start-enabled="inspectionAutoStartEnabled = $event" />

@@ -39,6 +39,9 @@ class _Notifications:
 
 
 class _OrganizationPlans:
+    def __init__(self):
+        self.library_ids = None
+
     async def plan_library_id(self, _plan_id):
         return "library_one"
 
@@ -47,7 +50,8 @@ class _OrganizationPlans:
             to_public_dict=lambda: {"plan_id": "plan_one", "plan_hash": "digest_one"}
         )
 
-    async def list_plans(self, *, cursor=0, limit=50):
+    async def list_plans(self, *, cursor=0, limit=50, library_ids=None):
+        self.library_ids = library_ids
         item = SimpleNamespace(
             to_public_dict=lambda: {"plan_id": "plan_one", "status": "planned"}
         )
@@ -55,6 +59,9 @@ class _OrganizationPlans:
 
 
 class _OrganizationOperations:
+    def __init__(self):
+        self.get_calls = 0
+
     async def plan_digest(self, _plan_id):
         return "digest_one"
 
@@ -69,6 +76,7 @@ class _OrganizationOperations:
         )
 
     async def get(self, _operation_id):
+        self.get_calls += 1
         return SimpleNamespace(
             model_dump=lambda **_: {"operation_id": "op_one", "status": "planned"}
         )
@@ -85,6 +93,28 @@ class _Workflows:
         return SimpleNamespace(
             model_dump=lambda **_: {"id": "wf_one", "status": "in_progress"}
         )
+
+
+class _ScopedSession:
+    def __init__(self, library_id):
+        self.library_id = library_id
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return None
+
+    async def scalar(self, _query):
+        return self.library_id
+
+
+class _ScopedSessionFactory:
+    def __init__(self, library_id):
+        self.library_id = library_id
+
+    def __call__(self):
+        return _ScopedSession(self.library_id)
 
 
 @pytest.mark.asyncio
@@ -152,12 +182,15 @@ async def test_mcp_list_resources_exposes_cursor_pagination():
 
 @pytest.mark.asyncio
 async def test_mcp_organization_tools_require_scope_library_digest_and_confirmation():
+    plans = _OrganizationPlans()
+    operations = _OrganizationOperations()
     service = McpService(
         task_service=_Tasks(),
         notification_service=_Notifications(),
-        organization_plan_service=_OrganizationPlans(),
-        organization_operation_service=_OrganizationOperations(),
+        organization_plan_service=plans,
+        organization_operation_service=operations,
         workflow_service=_Workflows(),
+        library_session_factory=_ScopedSessionFactory("library_one"),
     )
     context = _context(
         "organize:plan", "organize:execute", library_ids={"library_one"}
@@ -237,6 +270,22 @@ async def test_mcp_organization_tools_require_scope_library_digest_and_confirmat
         context=context,
     )
     assert "plan_one" in listed_plans["result"]["data"]["contents"][0]["text"]
+    assert plans.library_ids == frozenset({"library_one"})
+
+    listed_tool = await service.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": 13,
+            "method": "tools/call",
+            "params": {
+                "name": "organization.plan.list",
+                "arguments": {},
+            },
+        },
+        context=context,
+    )
+    assert "plan_one" in listed_tool["result"]["data"]["content"][0]["text"]
+    assert plans.library_ids == frozenset({"library_one"})
 
     operation = await service.handle(
         {
@@ -251,6 +300,28 @@ async def test_mcp_organization_tools_require_scope_library_digest_and_confirmat
         context=context,
     )
     assert "op_one" in operation["result"]["data"]["content"][0]["text"]
+
+    denied_service = McpService(
+        task_service=_Tasks(),
+        notification_service=_Notifications(),
+        organization_plan_service=plans,
+        organization_operation_service=operations,
+        library_session_factory=_ScopedSessionFactory("library_other"),
+    )
+    denied_operation = await denied_service.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": 12,
+            "method": "tools/call",
+            "params": {
+                "name": "organization.operation.get",
+                "arguments": {"operation_id": "op_one"},
+            },
+        },
+        context=context,
+    )
+    assert denied_operation["error"]["data"]["error_code"] == "resource_forbidden"
+    assert operations.get_calls == 1
 
     workflows = await service.handle(
         {

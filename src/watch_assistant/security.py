@@ -95,6 +95,10 @@ class SecurityManager:
             raise ValueError(
                 "bootstrap_admin_enabled requires the admin username"
             )
+        if bootstrap_admin_enabled and web_password_hash:
+            raise ValueError(
+                "web_password_hash must be absent when admin bootstrap is enabled"
+            )
         if not web_password_hash and not bootstrap_admin_enabled:
             raise ValueError(
                 "web_password_hash is required unless admin bootstrap is enabled"
@@ -565,7 +569,9 @@ def _required_scope(request: Request) -> str:
         return "task:read" if method in {"GET", "HEAD"} else "task:write"
     if path.startswith("/api/v1/organization-operations"):
         return "task:read" if method in {"GET", "HEAD"} else "organize:execute"
-    if path.startswith("/api/v1/organization-plans/") and path.endswith("/operation"):
+    if path.startswith("/api/v1/organization-plans/") and path.endswith(
+        ("/operation", "/confirm-and-operation")
+    ):
         return "organize:execute"
     if path.startswith("/api/v1/organization-plans"):
         return "organize:plan"

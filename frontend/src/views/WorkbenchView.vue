@@ -6,6 +6,7 @@ import type { CapabilityAvailability } from "../types";
 import { capabilityStatusPresentation, type StatusPresentation } from "../statusCatalog";
 
 type WorkbenchDestination = "workflows" | "organization-plans" | "library" | "settings" | "movies";
+type SettingsSection = "overview" | "organization";
 
 const props = defineProps<{
   organizationPlanCapability: CapabilityAvailability;
@@ -14,7 +15,7 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  navigate: [view: WorkbenchDestination];
+  navigate: [view: WorkbenchDestination, settingsSection?: SettingsSection];
   search: [query: string];
 }>();
 
@@ -30,6 +31,7 @@ interface WorkbenchEntry {
   status: StatusPresentation;
   icon: Component;
   destination: WorkbenchDestination;
+  settingsSection?: SettingsSection;
   actionLabel: string;
 }
 
@@ -73,7 +75,8 @@ const entries = computed<WorkbenchEntry[]>(() => [
     status: organizationStatus.value,
     icon: ClipboardCheck,
     destination: props.organizationPlanCapability.enabled ? "organization-plans" : "settings",
-    actionLabel: props.organizationPlanCapability.enabled ? "打开整理计划" : "查看设置",
+    settingsSection: props.organizationPlanCapability.enabled ? undefined : "organization",
+    actionLabel: props.organizationPlanCapability.enabled ? "打开整理计划" : "查看整理设置",
   },
   {
     key: "strm",
@@ -83,7 +86,7 @@ const entries = computed<WorkbenchEntry[]>(() => [
     status: strmStatus.value,
     icon: Database,
     destination: strmStatus.value.label === "可用" ? "library" : "settings",
-    actionLabel: strmStatus.value.label === "可用" ? "打开媒体库" : "查看设置",
+    actionLabel: strmStatus.value.label === "可用" ? "打开媒体库" : "查看 STRM 设置",
   },
   {
     key: "settings",
@@ -109,6 +112,10 @@ function submitSearch(): void {
 }
 
 function openEntry(entry: WorkbenchEntry): void {
+  if (entry.settingsSection) {
+    emit("navigate", entry.destination, entry.settingsSection);
+    return;
+  }
   emit("navigate", entry.destination);
 }
 </script>

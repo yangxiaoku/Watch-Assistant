@@ -30,6 +30,7 @@ describe("HomeView", () => {
           tv_top_rated: [{ ...movie, tmdb_id: 1399, media_type: "tv" as const, title: "权力的游戏" }],
         },
         loading: false,
+        error: "",
         favoriteIds: new Set<string>(),
       },
     });
@@ -40,5 +41,23 @@ describe("HomeView", () => {
     expect(wrapper.text()).toContain("热播剧集");
     await wrapper.get('.feature-hero').trigger("click");
     expect(wrapper.emitted("open")?.[0]).toEqual([movie]);
+  });
+
+  it("keeps an unavailable catalog in a neutral retryable empty state", async () => {
+    const wrapper = mount(HomeView, {
+      props: {
+        catalog: null,
+        loading: false,
+        error: "本次影视资料没有更新，资源区和已有页面仍可查看。",
+        favoriteIds: new Set<string>(),
+      },
+    });
+
+    expect(wrapper.get(".home-empty-state").attributes("role")).toBe("status");
+    expect(wrapper.text()).toContain("首页资料暂时不可用");
+    expect(wrapper.text()).toContain("本次影视资料没有更新");
+    expect(wrapper.find(".error-strip").exists()).toBe(false);
+    await wrapper.get("button").trigger("click");
+    expect(wrapper.emitted("retry")).toEqual([[]]);
   });
 });

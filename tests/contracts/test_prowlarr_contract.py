@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import socket
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -30,6 +31,7 @@ from watch_assistant.schemas import (
     SearchSourcesResponse,
 )
 from watch_assistant.services.api_errors import build_error_payload
+from watch_assistant.services.prowlarr_endpoint import ProwlarrEndpointRejected
 from watch_assistant.services.search import (
     SearchService,
     SearchUnavailable,
@@ -44,6 +46,29 @@ def _mapping_value(item: object, name: str) -> Any:
     if isinstance(item, Mapping):
         return item[name]
     return getattr(item, name)
+
+
+async def test_endpoint_contract_requires_explicit_private_address_allowlist(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(
+        "watch_assistant.services.prowlarr_endpoint.socket.getaddrinfo",
+        lambda *_args, **_kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.168.6.236", 80))
+        ],
+    )
+
+    with pytest.raises(ProwlarrEndpointRejected):
+        await ProwlarrClient.create(
+            "http://prowlarr.fixture.invalid", "fixture-only"
+        )
+
+    client = await ProwlarrClient.create(
+        "http://prowlarr.fixture.invalid",
+        "fixture-only",
+        allowed_private_addresses={"192.168.6.236"},
+    )
+    await client.aclose()
 
 
 def _new_target_adapter(
@@ -325,6 +350,41 @@ async def test_target_adapter_uses_header_only_and_passes_official_search_query(
     assert request.values("limit") == ("2",)
     assert request.values("offset") == ("0",)
     assert len(mock.requests) == 1
+
+
+async def test_target_adapter_defaults_to_one_item_page_for_bare_array_overfetch():
+    first_page = [
+        {
+            "title": f"Release {index}",
+            "protocol": "torrent",
+            "infoHash": f"{index:040x}",
+        }
+        for index in range(1, 31)
+    ]
+    mock = ProwlarrMock(
+        [MockResponse.json(first_page), MockResponse.json([])]
+    )
+    adapter, transport_client = _new_target_adapter(mock)
+    try:
+        result = await adapter.search("Example Show")
+    finally:
+        await _close_target_adapter(adapter, transport_client)
+
+    assert len(result.releases) == 30
+    assert result.unsupported_count == 0
+    assert result.truncated is False
+    assert [request.values("type") for request in mock.requests] == [
+        ("search",),
+        ("search",),
+    ]
+    assert [request.values("limit") for request in mock.requests] == [
+        ("1",),
+        ("1",),
+    ]
+    assert [request.values("offset") for request in mock.requests] == [
+        ("0",),
+        ("30",),
+    ]
 
 
 async def test_target_adapter_distinguishes_torrent_and_excludes_nzb_from_results():

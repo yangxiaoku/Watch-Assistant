@@ -1,9 +1,14 @@
 import asyncio
 from datetime import UTC, datetime
 
+import httpx
 import pytest
 
-from watch_assistant.adapters.prowlarr import ProwlarrRelease, ProwlarrSearchResult
+from watch_assistant.adapters.prowlarr import (
+    ProwlarrClient,
+    ProwlarrRelease,
+    ProwlarrSearchResult,
+)
 from watch_assistant.services.normalize import normalize_prowlarr
 from watch_assistant.services.search import SearchService
 
@@ -64,6 +69,35 @@ def _service(pansou, prowlarr):
     service._prowlarr_idle = {}
     service._share_domains = ("115.com",)
     return service
+
+
+@pytest.mark.asyncio
+async def test_prowlarr_client_uses_conservative_default_page_size():
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json=[], request=request)
+
+    transport_client = httpx.AsyncClient(
+        base_url="https://prowlarr.fixture.invalid",
+        transport=httpx.MockTransport(handler),
+    )
+    client = ProwlarrClient(
+        "https://prowlarr.fixture.invalid",
+        "fixture-only",
+        client=transport_client,
+    )
+    try:
+        result = await client.search("Movie")
+    finally:
+        await client.aclose()
+        await transport_client.aclose()
+
+    assert result.releases == ()
+    assert len(requests) == 1
+    assert requests[0].url.params["limit"] == "1"
+    assert requests[0].url.params["offset"] == "0"
 
 
 @pytest.mark.asyncio

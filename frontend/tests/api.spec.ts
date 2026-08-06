@@ -35,7 +35,6 @@ describe("ApiClient season and inspection requests", () => {
       password: "legacy-password",
     });
   });
-
   it("focuses the first structured field error by id or name", () => {
     document.body.innerHTML = '<input id="blocked_keywords" />';
     const error = new ApiError("输入内容有误", 422, "validation_error", {

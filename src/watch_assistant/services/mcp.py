@@ -10,7 +10,12 @@ from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 
 from sqlalchemy import select
 
-from watch_assistant.library_models import LibraryScanRun, MediaLibrary
+from watch_assistant.library_models import (
+    LibraryScanRun,
+    MediaLibrary,
+    OrganizationPlan,
+)
+from watch_assistant.models import OrganizationOperation
 from watch_assistant.security import AuthContext
 from watch_assistant.services.api_errors import build_error_payload
 from watch_assistant.services.observability import EventLogger, emit_event
@@ -137,7 +142,7 @@ class McpService:
             return await self._paged_workflows(uri)
         if base_uri == "watch://organization-plans":
             self._require(context, "organize:plan")
-            return await self._paged_organization_plans(uri)
+            return await self._paged_organization_plans(uri, context)
         raise McpError("resource_not_found")
 
     async def _paged_tasks(self, uri: str, context: AuthContext) -> dict[str, Any]:
@@ -241,13 +246,17 @@ class McpService:
             },
         }
 
-    async def _paged_organization_plans(self, uri: str) -> dict[str, Any]:
+    async def _paged_organization_plans(
+        self, uri: str, context: AuthContext
+    ) -> dict[str, Any]:
         if self._organization_plans is None:
             raise McpError("mcp_unavailable")
         limit, cursor = _page_from_uri(uri)
         try:
             items, next_cursor = await self._organization_plans.list_plans(
-                cursor=cursor, limit=limit
+                cursor=cursor,
+                limit=limit,
+                library_ids=_scoped_library_ids(context),
             )
         except Exception:  # noqa: BLE001 - keep plan details behind MCP errors
             raise McpError("organization_plan_unavailable") from None
@@ -299,13 +308,14 @@ class McpService:
         if name == "organization.plan.list":
             self._require(context, "organize:plan")
             return await self._paged_organization_plans(
-                _paged_uri("watch://organization-plans", arguments)
+                _paged_uri("watch://organization-plans", arguments), context
             )
         if name == "organization.operation.get":
             self._require(context, "organize:execute")
             if self._organization_operations is None:
                 raise McpError("mcp_unavailable")
             operation_id = _required_identifier(arguments, "operation_id")
+            await self._check_operation_scope(operation_id, context)
             try:
                 operation = await self._organization_operations.get(operation_id)
             except Exception:  # noqa: BLE001 - do not expose existence details
@@ -363,13 +373,39 @@ class McpService:
         raise McpError("tool_not_found")
 
     async def _check_plan_scope(self, service: Any, plan_id: str, context: AuthContext) -> None:
-        if not context.via_bearer or not context.library_ids:
+        allowed = _scoped_library_ids(context)
+        if allowed is None:
             return
         try:
             library_id = await service.plan_library_id(plan_id)
         except Exception:  # noqa: BLE001 - do not reveal plan existence
             raise McpError("plan_not_found") from None
-        if library_id not in context.library_ids:
+        if library_id not in allowed:
+            raise McpError("resource_forbidden")
+
+    async def _check_operation_scope(
+        self, operation_id: str, context: AuthContext
+    ) -> None:
+        allowed = _scoped_library_ids(context)
+        if allowed is None:
+            return
+        if self._library_session_factory is None:
+            raise McpError("operation_not_found")
+        try:
+            async with self._library_session_factory() as session:
+                library_id = await session.scalar(
+                    select(OrganizationPlan.library_id)
+                    .join(
+                        OrganizationOperation,
+                        OrganizationOperation.plan_id == OrganizationPlan.id,
+                    )
+                    .where(OrganizationOperation.id == operation_id)
+                )
+        except Exception:  # noqa: BLE001 - scoped lookup must fail closed
+            raise McpError("operation_not_found") from None
+        if library_id is None:
+            raise McpError("operation_not_found")
+        if library_id not in allowed:
             raise McpError("resource_forbidden")
 
     @staticmethod
@@ -398,6 +434,12 @@ def _resources(context: AuthContext) -> list[dict[str, Any]]:
             {"uri": "watch://organization-plans", "name": "整理计划", "mimeType": "application/json"}
         )
     return resources
+
+
+def _scoped_library_ids(context: AuthContext) -> frozenset[str] | None:
+    if context.via_bearer and context.library_ids:
+        return context.library_ids
+    return None
 
 
 def _tools(context: AuthContext) -> list[dict[str, Any]]:

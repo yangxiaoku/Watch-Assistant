@@ -201,13 +201,7 @@ async def _run(
             restored["run_id"],
             "restored_incremental_failed",
         )
-        cleanup = await _post_generation(
-            app_client,
-            headers,
-            "/api/v1/libraries/strm-live/strm-cleanup",
-            restored["run_id"],
-            "cleanup_failed",
-        )
+        cleanup = await _post_cleanup(app_client, headers, restored["run_id"])
         return {
             "status": "success",
             "library_id": "strm-live",
@@ -307,6 +301,45 @@ async def _post_generation(
     return response.json()
 
 
+async def _post_cleanup(
+    client: httpx.AsyncClient,
+    headers: Mapping[str, str],
+    run_id: object,
+) -> dict[str, object]:
+    plan_response = await client.post(
+        "/api/v1/libraries/strm-live/strm-cleanup-plan",
+        headers=headers,
+        json={"source_scan_run_id": str(run_id)},
+    )
+    _expect(plan_response, "cleanup_plan_failed")
+    plan = plan_response.json()
+    if not isinstance(plan, dict):
+        raise LiveAcceptanceError("cleanup_plan_invalid")
+    plan_id = plan.get("plan_id")
+    revision = plan.get("revision")
+    digest = plan.get("plan_hash")
+    if (
+        not isinstance(plan_id, str)
+        or not isinstance(revision, int)
+        or isinstance(revision, bool)
+        or not isinstance(digest, str)
+        or len(digest) != 64
+    ):
+        raise LiveAcceptanceError("cleanup_plan_invalid")
+    response = await client.post(
+        f"/api/v1/strm-cleanup-plans/{plan_id}/apply",
+        headers=headers,
+        json={
+            "expected_revision": revision,
+            "digest": digest,
+            "confirm": True,
+            "idempotency_key": "strm-live-cleanup-confirmed",
+        },
+    )
+    _expect(response, "cleanup_failed")
+    return response.json()
+
+
 async def _rename_remote(
     client,
     root_id: str,
@@ -329,6 +362,8 @@ async def _rename_remote(
         managed_directory_ids=(root_id,),
         scope_confirmed=True,
         live_enabled=True,
+        write_enabled=True,
+        plan_confirmed=True,
         organization_contract=_c03_organization_contract(),
     )
     before = await transport.read_object(file_id)

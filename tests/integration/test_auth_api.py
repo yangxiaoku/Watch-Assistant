@@ -45,7 +45,7 @@ async def _make_auth_client(
     push_limit=10,
     bootstrap_admin_enabled=False,
     bootstrap_admin_password=None,
-    configured_username="admin",
+    configured_username=DEFAULT_ADMIN_USERNAME,
     configured_password=WEB_PASSWORD,
 ):
     database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'auth.db'}")
@@ -152,34 +152,40 @@ async def test_admin_bootstrap_accepts_admin_credentials_only_when_enabled(tmp_p
     )
     wrong_username = await client.post(
         "/api/v1/auth/login",
-        json={
-            "username": "operator",
-            "password": bootstrap_password,
-        },
+        json={"username": "operator", "password": bootstrap_password},
     )
     wrong_password = await client.post(
         "/api/v1/auth/login",
-        json={"username": "admin", "password": "wrong"},
+        json={"username": DEFAULT_ADMIN_USERNAME, "password": "wrong"},
+    )
+    repeated = await client.post(
+        "/api/v1/auth/login",
+        json={
+            "username": DEFAULT_ADMIN_USERNAME,
+            "password": bootstrap_password,
+        },
     )
 
     assert accepted.status_code == 200
     assert wrong_username.status_code == 401
     assert wrong_password.status_code == 401
+    assert repeated.status_code == 200
     await _close(client, database, tmdb, pansou)
 
 
 @pytest.mark.integration
-async def test_admin_bootstrap_accepts_the_explicit_local_default_password(tmp_path):
+async def test_admin_bootstrap_accepts_an_explicit_password(tmp_path):
+    bootstrap_password = secrets.token_urlsafe(24)
     client, database, tmdb, pansou = await _make_auth_client(
         tmp_path,
         bootstrap_admin_enabled=True,
-        bootstrap_admin_password="admin",
+        bootstrap_admin_password=bootstrap_password,
         configured_password=None,
     )
 
     response = await client.post(
         "/api/v1/auth/login",
-        json={"username": "admin", "password": "admin"},
+        json={"username": DEFAULT_ADMIN_USERNAME, "password": bootstrap_password},
     )
 
     assert response.status_code == 200
@@ -201,7 +207,7 @@ async def test_password_only_login_remains_compatible_with_configured_username(t
     )
     wrong_username = await client.post(
         "/api/v1/auth/login",
-        json={"username": "admin", "password": WEB_PASSWORD},
+        json={"username": DEFAULT_ADMIN_USERNAME, "password": WEB_PASSWORD},
     )
 
     assert password_only.status_code == 200

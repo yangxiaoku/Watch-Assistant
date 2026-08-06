@@ -1,5 +1,6 @@
 import asyncio
 import threading
+import time
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 
@@ -315,6 +316,92 @@ async def test_worker_renews_lease_during_slow_external_submission(tmp_path):
 
 
 @pytest.mark.integration
+async def test_renewal_rejects_database_delay_after_lease_expiry(tmp_path):
+    database = await _database(tmp_path)
+    crypto = SecretCrypto(Fernet.generate_key().decode("ascii"))
+    await _add_resource(database, crypto)
+    service = TaskService(database.session_factory)
+    task, _ = await service.create("res_magnet")
+    lease = await service.claim_next(
+        owner="slow-renew-worker",
+        lease_duration=timedelta(milliseconds=40),
+    )
+    assert lease is not None
+
+    def delay_renewal_update(
+        _connection, _cursor, statement, _parameters, _context, _executemany
+    ):
+        if "UPDATE tasks" in statement and "lease_expires_at" in statement:
+            time.sleep(0.08)
+
+    event.listen(
+        database.engine.sync_engine,
+        "before_cursor_execute",
+        delay_renewal_update,
+    )
+    try:
+        renewed = await service.renew(
+            lease,
+            lease_duration=timedelta(seconds=1),
+        )
+    finally:
+        event.remove(
+            database.engine.sync_engine,
+            "before_cursor_execute",
+            delay_renewal_update,
+        )
+
+    assert renewed is False
+    stored = await service.get(task.id)
+    assert stored is not None
+    assert stored.lease_token == lease.lease_token
+    assert stored.lease_expires_at is not None
+    stored_expiry = stored.lease_expires_at.replace(tzinfo=UTC)
+    assert stored_expiry <= datetime.now(UTC)
+    await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_liveness_check_rejects_slow_query_after_lease_expiry(tmp_path):
+    database = await _database(tmp_path)
+    crypto = SecretCrypto(Fernet.generate_key().decode("ascii"))
+    await _add_resource(database, crypto)
+    service = TaskService(database.session_factory)
+    task, _ = await service.create("res_magnet")
+    lease = await service.claim_next(
+        owner="slow-liveness-worker",
+        lease_duration=timedelta(milliseconds=40),
+    )
+    assert lease is not None
+
+    def delay_liveness_query(
+        _connection, _cursor, statement, _parameters, _context, _executemany
+    ):
+        if "SELECT tasks.lease_expires_at" in statement:
+            time.sleep(0.08)
+
+    event.listen(
+        database.engine.sync_engine,
+        "before_cursor_execute",
+        delay_liveness_query,
+    )
+    try:
+        active = await service.is_lease_active(lease)
+    finally:
+        event.remove(
+            database.engine.sync_engine,
+            "before_cursor_execute",
+            delay_liveness_query,
+        )
+
+    assert active is False
+    stored = await service.get(task.id)
+    assert stored is not None
+    assert stored.lease_token == lease.lease_token
+    await database.engine.dispose()
+
+
+@pytest.mark.integration
 @pytest.mark.parametrize("renewal_failure", ["false", "timeout"])
 async def test_renewal_failure_stops_follow_up_submission_and_marks_uncertain(
     tmp_path, renewal_failure
@@ -365,7 +452,11 @@ async def test_renewal_failure_stops_follow_up_submission_and_marks_uncertain(
 
 
 @pytest.mark.integration
-async def test_external_call_rechecks_owner_before_adapter_invocation(tmp_path):
+@pytest.mark.parametrize("iteration", range(20))
+async def test_external_call_rechecks_owner_before_adapter_invocation(
+    tmp_path, iteration
+):
+    del iteration
     database = await _database(tmp_path)
     crypto = SecretCrypto(Fernet.generate_key().decode("ascii"))
     await _add_resource(database, crypto)
@@ -674,6 +765,60 @@ async def test_recovery_terminal_write_is_fenced_again_if_local_finalize_is_slow
     assert stored.state is TaskState.SUBMITTING
     assert stored.remote_ref is None
     assert stored.lease_owner == "slow-recovery-finalizer"
+    assert stored.lease_token == lease.lease_token
+    await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_submission_terminal_fence_rejects_database_delay_after_expiry(tmp_path):
+    database = await _database(tmp_path)
+    crypto = SecretCrypto(Fernet.generate_key().decode("ascii"))
+    await _add_resource(database, crypto)
+    service = TaskService(database.session_factory)
+    task, _ = await service.create("res_magnet")
+    lease = await service.claim_next(
+        owner="slow-terminal-fence",
+        lease_duration=timedelta(milliseconds=40),
+    )
+    assert lease is not None
+    fence_updates = 0
+
+    def delay_terminal_fence(
+        _connection, _cursor, statement, _parameters, _context, _executemany
+    ):
+        nonlocal fence_updates
+        normalized = statement.upper()
+        if (
+            "UPDATE TASKS SET UPDATED_AT" in normalized
+            and "TASKS.LEASE_OWNER" in normalized
+        ):
+            fence_updates += 1
+            if fence_updates == 2:
+                time.sleep(0.08)
+
+    event.listen(
+        database.engine.sync_engine,
+        "before_cursor_execute",
+        delay_terminal_fence,
+    )
+    try:
+        finished = await service.finish_submission(
+            lease,
+            SubmissionResult(status=RemoteStatus.ACCEPTED, remote_ref="remote-slow"),
+        )
+    finally:
+        event.remove(
+            database.engine.sync_engine,
+            "before_cursor_execute",
+            delay_terminal_fence,
+        )
+
+    assert finished is None
+    assert fence_updates == 2
+    stored = await service.get(task.id)
+    assert stored is not None
+    assert stored.state is TaskState.SUBMITTING
+    assert stored.remote_ref is None
     assert stored.lease_token == lease.lease_token
     await database.engine.dispose()
 
