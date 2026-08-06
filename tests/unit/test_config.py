@@ -35,6 +35,7 @@ def test_inspection_settings_have_production_defaults():
     assert settings.organization_execution_enabled is False
     assert settings.organization_write_enabled is False
     assert settings.organization_write_contract_verified is False
+    assert settings.p115_organization_contract_evidence_path is None
     assert settings.permanent_delete_enabled is False
     assert settings.permanent_delete_contract_verified is False
     assert settings.strm_full_enabled is False
@@ -138,6 +139,18 @@ def test_write_and_delete_contract_flags_are_independent():
     assert settings.organization_write_contract_verified is True
     assert settings.permanent_delete_enabled is True
     assert settings.permanent_delete_contract_verified is True
+
+
+def test_organization_contract_evidence_path_is_non_secret_configuration():
+    settings = make_settings(
+        P115_ORGANIZATION_CONTRACT_EVIDENCE_PATH=(
+            "/var/lib/watch-assistant/p115-organization-contract.json"
+        )
+    )
+
+    assert str(settings.p115_organization_contract_evidence_path) == (
+        "/var/lib/watch-assistant/p115-organization-contract.json"
+    )
 
 
 @pytest.mark.parametrize("value", [1, 720])

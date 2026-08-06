@@ -176,6 +176,9 @@ class Settings(BaseSettings):
         default=Path("/etc/watch-assistant/p115-cookie"),
         validation_alias="P115_COOKIE_PATH",
     )
+    p115_organization_contract_evidence_path: Path | None = Field(
+        default=None, validation_alias="P115_ORGANIZATION_CONTRACT_EVIDENCE_PATH"
+    )
     p115_target_cid: int | None = Field(
         default=None, ge=0, validation_alias="P115_TARGET_CID"
     )

@@ -25,6 +25,7 @@ from watch_assistant.adapters.p115_c03_live_transport import p115_c03_timeout_ex
 from watch_assistant.adapters.p115_library_gateway import P115ReadOnlyDirectoryGateway
 from watch_assistant.adapters.p115_library_write_contract import (
     P115OrganizationContract,
+    load_p115_organization_contract,
 )
 from watch_assistant.adapters.p115_playback_contract import P115PlaybackGateway
 from watch_assistant.adapters.p115_playback_gateway import P115LivePlaybackGateway
@@ -411,6 +412,7 @@ def create_app(
     organization_write_enabled: bool | None = None,
     organization_write_contract_verified: bool | None = None,
     organization_contract: P115OrganizationContract | None = None,
+    organization_contract_evidence_path: Path | None = None,
     permanent_delete_enabled: bool | None = None,
     permanent_delete_contract_verified: bool | None = None,
     strm_full_enabled: bool | None = None,
@@ -1545,9 +1547,14 @@ def create_app(
         organization_contract, P115OrganizationContract
     ):
         raise ValueError("invalid_organization_contract")
-    application.state.organization_contract = (
-        organization_contract or P115OrganizationContract()
-    )
+    if organization_contract is None:
+        (
+            application.state.organization_contract,
+            application.state.organization_contract_load_status,
+        ) = load_p115_organization_contract(organization_contract_evidence_path)
+    else:
+        application.state.organization_contract = organization_contract
+        application.state.organization_contract_load_status = "injected"
     # The legacy environment flag is intentionally ignored as write evidence.
     # Only an explicitly injected, versioned contract can make this true.
     del organization_write_contract_verified

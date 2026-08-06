@@ -8,9 +8,13 @@ production transport in this module.
 from __future__ import annotations
 
 import asyncio
+import json
+import os
+import stat
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
+from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Protocol
 
@@ -37,6 +41,8 @@ class OrganizationWriteCapability(StrEnum):
 
 
 ORGANIZATION_CONTRACT_VERSION = "c03-organization-v1"
+ORGANIZATION_CONTRACT_EVIDENCE_ENV = "P115_ORGANIZATION_CONTRACT_EVIDENCE_PATH"
+_MAX_CONTRACT_EVIDENCE_BYTES = 16 * 1024
 
 
 class WriteStatus(StrEnum):
@@ -129,6 +135,142 @@ class OrganizationContractEvidence:
             f"capability_count={len(self.capabilities)}, "
             f"timeout_enforced={self.timeout_enforced!r})"
         )
+
+
+class OrganizationContractEvidenceError(ValueError):
+    """Safe, non-sensitive error raised while loading runtime evidence."""
+
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__(code)
+
+
+def _evidence_error(code: str) -> OrganizationContractEvidenceError:
+    return OrganizationContractEvidenceError(code)
+
+
+def _read_contract_evidence(path: Path) -> Mapping[str, Any]:
+    """Read one bounded, regular, non-writable evidence file without following links."""
+
+    try:
+        initial = path.lstat()
+    except FileNotFoundError:
+        raise _evidence_error("organization_contract_evidence_missing") from None
+    except PermissionError:
+        raise _evidence_error("organization_contract_evidence_unreadable") from None
+    except OSError:
+        raise _evidence_error("organization_contract_evidence_unreadable") from None
+    if stat.S_ISLNK(initial.st_mode):
+        raise _evidence_error("organization_contract_evidence_symlink")
+    if not stat.S_ISREG(initial.st_mode):
+        raise _evidence_error("organization_contract_evidence_regular_file_required")
+    if stat.S_IMODE(initial.st_mode) & 0o022:
+        raise _evidence_error("organization_contract_evidence_permissions")
+    if initial.st_size > _MAX_CONTRACT_EVIDENCE_BYTES:
+        raise _evidence_error("organization_contract_evidence_too_large")
+
+    flags = os.O_RDONLY
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except FileNotFoundError:
+        raise _evidence_error("organization_contract_evidence_missing") from None
+    except PermissionError:
+        raise _evidence_error("organization_contract_evidence_unreadable") from None
+    except OSError:
+        raise _evidence_error("organization_contract_evidence_unreadable") from None
+
+    try:
+        current = os.fstat(descriptor)
+        if stat.S_ISLNK(current.st_mode) or not stat.S_ISREG(current.st_mode):
+            raise _evidence_error("organization_contract_evidence_regular_file_required")
+        if stat.S_IMODE(current.st_mode) & 0o022:
+            raise _evidence_error("organization_contract_evidence_permissions")
+        if (
+            getattr(initial, "st_dev", None) != getattr(current, "st_dev", None)
+            or getattr(initial, "st_ino", None) != getattr(current, "st_ino", None)
+        ):
+            raise _evidence_error("organization_contract_evidence_changed")
+        if current.st_size > _MAX_CONTRACT_EVIDENCE_BYTES:
+            raise _evidence_error("organization_contract_evidence_too_large")
+        with os.fdopen(descriptor, "r", encoding="utf-8") as stream:
+            descriptor = -1
+            raw = stream.read(_MAX_CONTRACT_EVIDENCE_BYTES + 1)
+    except UnicodeDecodeError:
+        raise _evidence_error("organization_contract_evidence_encoding") from None
+    except OSError:
+        raise _evidence_error("organization_contract_evidence_unreadable") from None
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    if len(raw.encode("utf-8")) > _MAX_CONTRACT_EVIDENCE_BYTES:
+        raise _evidence_error("organization_contract_evidence_too_large")
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError):
+        raise _evidence_error("organization_contract_evidence_json") from None
+    if not isinstance(payload, Mapping):
+        raise _evidence_error("organization_contract_evidence_schema")
+    return payload
+
+
+def load_organization_contract_evidence(
+    path: Path | str,
+) -> OrganizationContractEvidence:
+    """Load and strictly validate the redacted C03 evidence document."""
+
+    payload = _read_contract_evidence(Path(path))
+    expected_fields = {"version", "evidence_id", "capabilities", "timeout_enforced"}
+    if set(payload) != expected_fields:
+        raise _evidence_error("organization_contract_evidence_schema")
+    capabilities = payload["capabilities"]
+    if isinstance(capabilities, (str, bytes)) or not isinstance(capabilities, list):
+        raise _evidence_error("organization_contract_evidence_schema")
+    if not isinstance(payload["version"], str):
+        raise _evidence_error("organization_contract_evidence_schema")
+    if not isinstance(payload["evidence_id"], str):
+        raise _evidence_error("organization_contract_evidence_schema")
+    if not isinstance(payload["timeout_enforced"], bool):
+        raise _evidence_error("organization_contract_evidence_schema")
+    try:
+        return OrganizationContractEvidence(
+            evidence_id=payload["evidence_id"],
+            capabilities=frozenset(capabilities),
+            timeout_enforced=payload["timeout_enforced"],
+            version=payload["version"],
+        )
+    except (TypeError, ValueError):
+        raise _evidence_error("organization_contract_evidence_invalid") from None
+
+
+def load_p115_organization_contract(
+    path: Path | str | None = None,
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> tuple[P115OrganizationContract, str]:
+    """Load a verified contract, or return a closed contract and safe status."""
+
+    configured = str(path).strip() if path is not None else ""
+    if not configured:
+        environment = os.environ if environ is None else environ
+        configured = environment.get(
+            ORGANIZATION_CONTRACT_EVIDENCE_ENV, ""
+        ).strip()
+    if not configured:
+        return P115OrganizationContract(), "not_configured"
+    try:
+        evidence = load_organization_contract_evidence(configured)
+        contract = P115OrganizationContract(
+            verified=True,
+            capabilities=evidence.capabilities,
+            timeout_enforced=evidence.timeout_enforced,
+            version=evidence.version,
+            evidence=evidence,
+        )
+    except OrganizationContractEvidenceError as exc:
+        return P115OrganizationContract(), exc.code
+    return contract, "loaded"
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -520,9 +662,11 @@ class FakeP115LibraryWriteGateway:
 
 
 __all__ = [
+    "ORGANIZATION_CONTRACT_EVIDENCE_ENV",
     "ORGANIZATION_CONTRACT_VERSION",
     "FakeP115LibraryWriteGateway",
     "OrganizationContractEvidence",
+    "OrganizationContractEvidenceError",
     "OrganizationWriteCapability",
     "OrganizationWriteGate",
     "P115LibraryWriteGateway",
@@ -542,6 +686,8 @@ __all__ = [
     "evaluate_organization_read_gate",
     "evaluate_organization_write_gate",
     "evaluate_write_gate",
+    "load_organization_contract_evidence",
+    "load_p115_organization_contract",
     "prepare_delete",
     "prepare_mkdir",
     "prepare_move",
