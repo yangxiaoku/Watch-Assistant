@@ -40,6 +40,8 @@ PROBE_ENABLED_VALUE = "1"
 MAX_WRITE_CALLS = 10
 MAX_LIST_CALLS = 15
 MAX_LIST_PAGE_CALLS = 4
+# Recovery may inspect a larger managed parent, but remains explicitly bounded.
+MAX_RECOVERY_LIST_PAGE_CALLS = 256
 MAX_READ_CALLS = MAX_LIST_CALLS * MAX_LIST_PAGE_CALLS
 MAX_TOTAL_CALLS = MAX_WRITE_CALLS + MAX_READ_CALLS
 MAX_RUN_TIMEOUT_SECONDS = 10 * 60
@@ -101,8 +103,8 @@ class C03DirectoryListing:
         if (
             not isinstance(self.page_calls, int)
             or isinstance(self.page_calls, bool)
-            or self.page_calls < 1
-            or self.page_calls > MAX_LIST_PAGE_CALLS
+            or self.page_calls < 0
+            or self.page_calls > MAX_RECOVERY_LIST_PAGE_CALLS
         ):
             raise ValueError("invalid_page_calls")
 
@@ -1041,6 +1043,7 @@ __all__ = [
     "MAX_LIST_CALLS",
     "MAX_LIST_PAGE_CALLS",
     "MAX_READ_CALLS",
+    "MAX_RECOVERY_LIST_PAGE_CALLS",
     "MAX_RUN_TIMEOUT_SECONDS",
     "MAX_TOTAL_CALLS",
     "MAX_WRITE_CALLS",

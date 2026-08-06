@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
+from watch_assistant.adapters.p115_c03_fixture_probe import P115C03Transport
 from watch_assistant.adapters.p115_c03_live_transport import (
     P115C03CallExecutor,
     P115C03LiveTransport,
@@ -395,6 +396,7 @@ class LiveP115OrganizationTransport:
         plan_confirmed: bool = False,
         read_only: bool = False,
         organization_contract: P115OrganizationContract | None = None,
+        c03_transport: P115C03Transport | None = None,
     ) -> None:
         if live_enabled is not True:
             raise P115OrganizationTransportError("live_transport_disabled")
@@ -423,7 +425,9 @@ class LiveP115OrganizationTransport:
         if not isinstance(read_only, bool):
             raise TypeError("invalid_transport_mode")
         self._read_only = read_only
-        self._c03 = P115C03LiveTransport(client, call_executor=call_executor)
+        self._c03 = c03_transport or P115C03LiveTransport(
+            client, call_executor=call_executor
+        )
         self._client = client
         self._call_executor = call_executor
         self._organization_contract = organization_contract
@@ -660,6 +664,7 @@ def create_live_p115_organization_transport(
     plan_confirmed: bool = False,
     read_only: bool = False,
     organization_contract: P115OrganizationContract | None = None,
+    c03_transport: P115C03Transport | None = None,
 ) -> LiveP115OrganizationTransport:
     """Build a live transport with either a write gate or an explicit read-only mode."""
 
@@ -675,6 +680,7 @@ def create_live_p115_organization_transport(
         plan_confirmed=plan_confirmed,
         read_only=read_only,
         organization_contract=organization_contract,
+        c03_transport=c03_transport,
     )
 
 

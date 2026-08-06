@@ -16,6 +16,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, Protocol
 
 from watch_assistant.adapters.p115_c03_fixture_probe import (
+    MAX_RECOVERY_LIST_PAGE_CALLS,
     C03DirectoryListing,
     C03RemoteEntry,
     C03WriteReceipt,
@@ -29,6 +30,7 @@ from watch_assistant.adapters.p115_library_write_contract import (
 
 EXPECTED_P115CLIENT_VERSION = "0.0.9.6.5.1"
 MAX_FS_FILES_PAGE_CALLS = 4
+MAX_RECOVERY_FS_FILES_PAGE_CALLS = MAX_RECOVERY_LIST_PAGE_CALLS
 VERIFIED_FS_FILES_PAGE_SIZE = 1
 
 
@@ -61,6 +63,8 @@ class P115C03CallTimeoutUnavailable(RuntimeError):
 
 class P115C03LiveTransport(P115C03Transport):
     """Translate only fixed C03 calls through a caller-created client."""
+
+    _max_page_calls = MAX_FS_FILES_PAGE_CALLS
 
     def __init__(
         self,
@@ -119,7 +123,8 @@ class P115C03LiveTransport(P115C03Transport):
         entries: list[C03RemoteEntry] = []
         offset = 0
         deadline = time.monotonic() + timeout_seconds
-        for page_calls in range(1, MAX_FS_FILES_PAGE_CALLS + 1):
+        expected_total: int | None = None
+        for page_calls in range(1, self._max_page_calls + 1):
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return C03DirectoryListing(
@@ -151,13 +156,19 @@ class P115C03LiveTransport(P115C03Transport):
                     tuple(entries), complete=False, page_calls=page_calls
                 )
             page_entries, total = page
+            if expected_total is None:
+                expected_total = total
+            elif total != expected_total:
+                return C03DirectoryListing(
+                    tuple(entries), complete=False, page_calls=page_calls
+                )
             known_ids = {entry.file_id for entry in entries}
             if any(entry.file_id in known_ids for entry in page_entries):
                 return C03DirectoryListing(
                     tuple(entries), complete=False, page_calls=page_calls
                 )
             entries.extend(page_entries)
-            if offset + len(page_entries) == total:
+            if offset + len(page_entries) == expected_total:
                 return C03DirectoryListing(
                     tuple(entries), complete=True, page_calls=page_calls
                 )
@@ -167,8 +178,14 @@ class P115C03LiveTransport(P115C03Transport):
                 )
             offset += len(page_entries)
         return C03DirectoryListing(
-            tuple(entries), complete=False, page_calls=MAX_FS_FILES_PAGE_CALLS
+            tuple(entries), complete=False, page_calls=self._max_page_calls
         )
+
+
+class P115C03RecoveryTransport(P115C03LiveTransport):
+    """Use the separately bounded read cap required by fixture recovery."""
+
+    _max_page_calls = MAX_RECOVERY_FS_FILES_PAGE_CALLS
 
 
 async def _call(
@@ -505,10 +522,12 @@ def _integer(value: Any) -> int | None:
 __all__ = [
     "EXPECTED_P115CLIENT_VERSION",
     "MAX_FS_FILES_PAGE_CALLS",
+    "MAX_RECOVERY_FS_FILES_PAGE_CALLS",
     "VERIFIED_FS_FILES_PAGE_SIZE",
     "P115C03CallExecutor",
     "P115C03CallTimeoutUnavailable",
     "P115C03LiveTransport",
+    "P115C03RecoveryTransport",
     "P115ClientLike",
     "p115_c03_timeout_executor",
 ]
