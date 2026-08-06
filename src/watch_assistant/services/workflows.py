@@ -976,7 +976,12 @@ async def link_child(
         )
     )
     _validate_stage_transition(stages, stage, WorkflowStageStatus.RUNNING)
-    _ensure_child_binding(stage, child_type=child_type, child_id=child_id)
+    _ensure_child_binding(
+        stage,
+        child_type=child_type,
+        child_id=child_id,
+        allow_same_type_rebind=True,
+    )
     if stage.status is WorkflowStageStatus.RUNNING:
         return workflow
     stage.child_type = child_type
@@ -1043,10 +1048,7 @@ async def sync_child_stage(
     original_stage_status = stage.status
     original_stage_updated_at = stage.updated_at
     current_binding = (stage.child_type, stage.child_id)
-    if current_binding != (None, None) and current_binding != (
-        child_type,
-        child_id,
-    ):
+    if current_binding != (None, None) and stage.child_type != child_type:
         raise WorkflowConflict("workflow_conflict")
     now = datetime.now(UTC)
     stage_values = {
@@ -1198,8 +1200,17 @@ def _ensure_child_binding(
     child_type: str,
     child_id: str,
     conflict_code: str = "workflow_conflict",
+    allow_same_type_rebind: bool = False,
 ) -> None:
-    """Keep one workflow stage bound to one durable child identity."""
+    """Keep one workflow stage bound to one durable child identity.
+
+    A stage keeps its first child binding by default.  Callers that
+    legitimately bind a stage to a NEW child of the SAME type (a second
+    inspection batch or a later push task for the same workflow) pass
+    ``allow_same_type_rebind=True`` so the binding is replaced while a change
+    of child type is still refused.  Foreign children are rejected earlier by
+    :func:`_validate_child_ownership`.
+    """
 
     if not child_type or not child_id:
         raise WorkflowConflict(conflict_code)
@@ -1207,8 +1218,12 @@ def _ensure_child_binding(
         stage.child_type = child_type
         stage.child_id = child_id
         return
-    if stage.child_type != child_type or stage.child_id != child_id:
+    if stage.child_type != child_type:
         raise WorkflowConflict(conflict_code)
+    if stage.child_id != child_id and not allow_same_type_rebind:
+        raise WorkflowConflict(conflict_code)
+    stage.child_type = child_type
+    stage.child_id = child_id
 
 
 async def _validate_child_ownership(
