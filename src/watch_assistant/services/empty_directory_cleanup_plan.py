@@ -429,7 +429,7 @@ class EmptyDirectoryCleanupPlanService:
                         )
                     except ManagedDirectoryOwnershipError:
                         raise EmptyDirectoryCleanupPlanError(
-                            "cleanup_scope_unverified"
+                            "empty_cleanup_uncertain"
                         ) from None
                 elif result is EmptyDirectoryCleanupStatus.SKIPPED:
                     raise EmptyDirectoryCleanupPlanError("empty_cleanup_changed")

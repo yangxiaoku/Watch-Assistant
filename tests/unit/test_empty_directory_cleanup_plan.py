@@ -23,6 +23,9 @@ from watch_assistant.services.empty_directory_cleanup_plan import (
     EmptyDirectoryCleanupPlanError,
     EmptyDirectoryCleanupPlanService,
 )
+from watch_assistant.services.managed_directory_ownership import (
+    ManagedDirectoryOwnershipError,
+)
 from watch_assistant.services.strm_operations import StrmOperationService
 
 
@@ -237,6 +240,62 @@ async def test_empty_directory_plan_invalidates_after_uncertain_executor_failure
                 digest=plan.plan_hash,
                 confirm=True,
                 idempotency_key="cleanup-key-2",
+                executor=execute,
+                system_created_directory_ids=("300",),
+            )
+        assert calls == [True]
+    finally:
+        await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_empty_directory_plan_marks_ownership_write_failure_uncertain(
+    tmp_path, monkeypatch
+):
+    database = await _database(tmp_path)
+    try:
+        await _seed(database)
+        service = EmptyDirectoryCleanupPlanService(database.session_factory)
+        plan = await service.create_plan(
+            library_id="library-1",
+            source_scan_run_id="run-1",
+            protected_directory_ids=("200",),
+            system_created_directory_ids=("300",),
+        )
+        calls = []
+
+        async def execute(_candidate):
+            calls.append(True)
+            return EmptyDirectoryCleanupStatus.SUCCESS
+
+        async def fail_ownership_write(**_kwargs):
+            raise ManagedDirectoryOwnershipError("directory_ownership_unavailable")
+
+        monkeypatch.setattr(
+            service._ownership_service, "mark_recycled", fail_ownership_write
+        )
+        with pytest.raises(
+            EmptyDirectoryCleanupPlanError, match="empty_cleanup_uncertain"
+        ):
+            await service.apply_plan(
+                plan_id=plan.plan_id,
+                expected_revision=plan.revision,
+                digest=plan.plan_hash,
+                confirm=True,
+                idempotency_key="ownership-write-uncertain",
+                executor=execute,
+                system_created_directory_ids=("300",),
+            )
+        current = await service.get_plan(plan.plan_id)
+        assert current.status == "invalidated"
+        assert calls == [True]
+        with pytest.raises(EmptyDirectoryCleanupPlanError, match="empty_cleanup_not_reviewable"):
+            await service.apply_plan(
+                plan_id=plan.plan_id,
+                expected_revision=current.revision,
+                digest=plan.plan_hash,
+                confirm=True,
+                idempotency_key="ownership-write-uncertain-retry",
                 executor=execute,
                 system_created_directory_ids=("300",),
             )

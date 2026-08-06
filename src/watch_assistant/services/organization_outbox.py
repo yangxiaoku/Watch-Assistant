@@ -22,6 +22,7 @@ DIRTY_PENDING = "pending"
 DIRTY_RUNNING = "running"
 DIRTY_CONSUMED = "consumed"
 DIRTY_FAILED = "failed"
+DIRTY_SUPERSEDED = "superseded"
 GENERATION_QUEUED = "queued"
 GENERATION_RUNNING = "running"
 GENERATION_DIRTY = "dirty"
@@ -112,6 +113,23 @@ class DirectoryDirtyOutboxService:
                     )
                 )
             else:
+                await session.execute(
+                    update(DirectoryDirtyEvent)
+                    .where(
+                        DirectoryDirtyEvent.operation_id == queue.operation_id,
+                        DirectoryDirtyEvent.directory_id == directory_id,
+                        DirectoryDirtyEvent.event_kind == DIRECTORY_DIRTY_EVENT_KIND,
+                        DirectoryDirtyEvent.status.in_((DIRTY_PENDING, DIRTY_RUNNING)),
+                    )
+                    .values(
+                        status=DIRTY_SUPERSEDED,
+                        lease_token=None,
+                        lease_expires_at=None,
+                        error_code="superseded_by_newer_generation",
+                        updated_at=current,
+                    )
+                    .execution_options(synchronize_session=False)
+                )
                 queue.operation_id = operation_id
                 queue.generation += 1
                 queue.error_code = None
@@ -440,6 +458,7 @@ class DirectoryDirtyOutboxService:
             if lease.queue_id is not None:
                 queue = await session.get(DirectoryDirtyGeneration, lease.queue_id)
                 event = await session.get(DirectoryDirtyEvent, lease.event_id)
+                superseded = _superseded_generation_lease(queue, event, lease)
                 if (
                     queue is None
                     or queue.status not in (GENERATION_RUNNING, GENERATION_DIRTY)
@@ -447,10 +466,15 @@ class DirectoryDirtyOutboxService:
                     or queue.lease_expires_at is None
                     or _as_utc(queue.lease_expires_at) <= current
                     or event is None
-                    or event.status != DIRTY_RUNNING
-                    or event.lease_token != lease.lease_token
-                    or event.lease_expires_at is None
-                    or _as_utc(event.lease_expires_at) <= current
+                    or (
+                        not superseded
+                        and (
+                            event.status != DIRTY_RUNNING
+                            or event.lease_token != lease.lease_token
+                            or event.lease_expires_at is None
+                            or _as_utc(event.lease_expires_at) <= current
+                        )
+                    )
                 ):
                     await session.rollback()
                     return False
@@ -478,24 +502,28 @@ class DirectoryDirtyOutboxService:
                     )
                     .execution_options(synchronize_session=False)
                 )
-                event_result = await session.execute(
-                    update(DirectoryDirtyEvent)
-                    .where(
-                        DirectoryDirtyEvent.id == lease.event_id,
-                        DirectoryDirtyEvent.status == DIRTY_RUNNING,
-                        DirectoryDirtyEvent.lease_token == lease.lease_token,
-                        DirectoryDirtyEvent.lease_expires_at > current,
+                event_result = None
+                if not superseded:
+                    event_result = await session.execute(
+                        update(DirectoryDirtyEvent)
+                        .where(
+                            DirectoryDirtyEvent.id == lease.event_id,
+                            DirectoryDirtyEvent.status == DIRTY_RUNNING,
+                            DirectoryDirtyEvent.lease_token == lease.lease_token,
+                            DirectoryDirtyEvent.lease_expires_at > current,
+                        )
+                        .values(
+                            status=status,
+                            lease_token=None,
+                            lease_expires_at=None,
+                            error_code=error_code,
+                            updated_at=current,
+                        )
+                        .execution_options(synchronize_session=False)
                     )
-                    .values(
-                        status=status,
-                        lease_token=None,
-                        lease_expires_at=None,
-                        error_code=error_code,
-                        updated_at=current,
-                    )
-                    .execution_options(synchronize_session=False)
-                )
-                if generation_result.rowcount != 1 or event_result.rowcount != 1:
+                if generation_result.rowcount != 1 or (
+                    event_result is not None and event_result.rowcount != 1
+                ):
                     await session.rollback()
                     return False
                 await session.commit()
@@ -543,6 +571,7 @@ class DirectoryDirtyOutboxService:
             if lease.queue_id is not None:
                 queue = await session.get(DirectoryDirtyGeneration, lease.queue_id)
                 event = await session.get(DirectoryDirtyEvent, lease.event_id)
+                superseded = _superseded_generation_lease(queue, event, lease)
                 if (
                     queue is None
                     or queue.status not in (GENERATION_RUNNING, GENERATION_DIRTY)
@@ -550,10 +579,15 @@ class DirectoryDirtyOutboxService:
                     or queue.lease_expires_at is None
                     or _as_utc(queue.lease_expires_at) <= current
                     or event is None
-                    or event.status != DIRTY_RUNNING
-                    or event.lease_token != lease.lease_token
-                    or event.lease_expires_at is None
-                    or _as_utc(event.lease_expires_at) <= current
+                    or (
+                        not superseded
+                        and (
+                            event.status != DIRTY_RUNNING
+                            or event.lease_token != lease.lease_token
+                            or event.lease_expires_at is None
+                            or _as_utc(event.lease_expires_at) <= current
+                        )
+                    )
                 ):
                     await session.rollback()
                     return False
@@ -588,25 +622,31 @@ class DirectoryDirtyOutboxService:
                     )
                     .execution_options(synchronize_session=False)
                 )
-                event_result = await session.execute(
-                    update(DirectoryDirtyEvent)
-                    .where(
-                        DirectoryDirtyEvent.id == lease.event_id,
-                        DirectoryDirtyEvent.status == DIRTY_RUNNING,
-                        DirectoryDirtyEvent.lease_token == lease.lease_token,
-                        DirectoryDirtyEvent.lease_expires_at > current,
+                event_result = None
+                if not superseded:
+                    event_result = await session.execute(
+                        update(DirectoryDirtyEvent)
+                        .where(
+                            DirectoryDirtyEvent.id == lease.event_id,
+                            DirectoryDirtyEvent.status == DIRTY_RUNNING,
+                            DirectoryDirtyEvent.lease_token == lease.lease_token,
+                            DirectoryDirtyEvent.lease_expires_at > current,
+                        )
+                        .values(
+                            status=DIRTY_FAILED
+                            if terminal and not has_newer_generation
+                            else DIRTY_PENDING,
+                            lease_token=None,
+                            lease_expires_at=None,
+                            available_at=current + timedelta(seconds=delay),
+                            error_code=error_code,
+                            updated_at=current,
+                        )
+                        .execution_options(synchronize_session=False)
                     )
-                    .values(
-                        status=DIRTY_FAILED if terminal and not has_newer_generation else DIRTY_PENDING,
-                        lease_token=None,
-                        lease_expires_at=None,
-                        available_at=current + timedelta(seconds=delay),
-                        error_code=error_code,
-                        updated_at=current,
-                    )
-                    .execution_options(synchronize_session=False)
-                )
-                if generation_result.rowcount != 1 or event_result.rowcount != 1:
+                if generation_result.rowcount != 1 or (
+                    event_result is not None and event_result.rowcount != 1
+                ):
                     await session.rollback()
                     return False
                 await session.commit()
@@ -685,6 +725,25 @@ def _generation_claim_predicate(current: datetime, claimable: tuple[str, ...]):
     )
 
 
+def _superseded_generation_lease(
+    queue: DirectoryDirtyGeneration | None,
+    event: DirectoryDirtyEvent | None,
+    lease: DirectoryDirtyLease,
+) -> bool:
+    """Allow an old worker to release a coalesced queue lease only."""
+
+    return bool(
+        queue is not None
+        and event is not None
+        and lease.generation is not None
+        and queue.generation > lease.generation
+        and queue.lease_token == lease.lease_token
+        and event.status == DIRTY_SUPERSEDED
+        and event.lease_token is None
+        and event.lease_expires_at is None
+    )
+
+
 def _validate_identifier(value: str, error: str, *, maximum: int) -> None:
     if (
         not isinstance(value, str)
@@ -724,6 +783,7 @@ __all__ = [
     "DIRTY_FAILED",
     "DIRTY_PENDING",
     "DIRTY_RUNNING",
+    "DIRTY_SUPERSEDED",
     "GENERATION_CLEAN",
     "GENERATION_DIRTY",
     "GENERATION_FAILED",
