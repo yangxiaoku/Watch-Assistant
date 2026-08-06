@@ -79,3 +79,61 @@ test("routes push actions by resource capability", async ({ page }) => {
   await expect.poll(() => taskPostCount).toBe(1);
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
 });
+
+test("enables share push when share capability is advertised", async ({ page }) => {
+  const shareTaskPosts: Array<{ resource_id: string }> = [];
+  await page.route("**/api/v1/health", (route) =>
+    route.fulfill({ json: { status: "ok", push_supported: false, push_capabilities: { magnet: true, share: true } } }),
+  );
+  await page.route("**/api/v1/auth/me", (route) =>
+    route.fulfill({ json: { authenticated: true, via_bearer: false, csrf_token: "csrf-test" } }),
+  );
+  await page.route("**/api/v1/settings/organization", (route) =>
+    route.fulfill({ json: { push_directory_id: "push-directory-test" } }),
+  );
+  await page.route("**/api/v1/search", (route) => route.fulfill({
+    json: {
+      movie,
+      results: [
+        { resource_id: "magnet-1", kind: "magnet", name: "Inception 1080P", size_bytes: null, seeders: 4, source: "test", captured_at: "2026-07-24T10:00:00Z" },
+        { resource_id: "share-1", kind: "115_share", name: "115 分享资源", size_bytes: null, seeders: null, source: "test", captured_at: "2026-07-24T10:00:00Z" },
+      ],
+      warnings: [],
+      cached: false,
+      cache_age_seconds: null,
+    },
+  }));
+  await page.route("**/api/v1/tasks", async (route) => {
+    if (route.request().method() !== "POST") {
+      await route.fulfill({ json: [] });
+      return;
+    }
+    const body = route.request().postDataJSON() as { resource_id: string };
+    shareTaskPosts.push(body);
+    return route.fulfill({
+      json: {
+        id: "task-share-1",
+        resource_id: body.resource_id,
+        action: "save_share",
+        state: "queued",
+        attempts: 0,
+        remote_ref: null,
+        error_code: null,
+        error_message: null,
+        created_at: "2026-07-24T10:00:00Z",
+        updated_at: "2026-07-24T10:00:00Z",
+        submitted_at: null,
+      },
+    });
+  });
+
+  await page.goto("/movie/27205");
+  await expect(page.getByRole("heading", { name: "盗梦空间" })).toBeVisible();
+  const resourceRows = page.locator(".resource-table:visible tbody tr, .resource-cards:visible article");
+  const shareRow = resourceRows.filter({ hasText: "115 分享资源" });
+  const shareButton = shareRow.locator("button.push-button");
+  await expect(shareButton).toBeEnabled();
+  await shareButton.click();
+  await expect.poll(() => shareTaskPosts.length).toBe(1);
+  expect(shareTaskPosts[0].resource_id).toBe("share-1");
+});

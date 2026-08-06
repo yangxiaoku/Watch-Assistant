@@ -1741,7 +1741,7 @@ async def test_recovery_bare_available_stays_uncertain(tmp_path):
 
 
 @pytest.mark.integration
-async def test_queued_share_is_failed_without_calling_share_adapter(tmp_path):
+async def test_share_task_with_corrupted_snapshot_fails_before_adapter(tmp_path):
     database = await _database(tmp_path)
     crypto = SecretCrypto(Fernet.generate_key().decode("ascii"))
     await _add_share_resource(database, crypto)
@@ -1758,13 +1758,32 @@ async def test_queued_share_is_failed_without_calling_share_adapter(tmp_path):
     stored = await service.get(task.id)
 
     assert stored.state == TaskState.FAILED
-    assert stored.error_code == "push_kind_unsupported"
+    assert stored.error_code == "local_decryption_failed"
     assert adapter.submissions == 0
     await database.engine.dispose()
 
 
 @pytest.mark.integration
-async def test_expired_share_is_failed_without_status_lookup(tmp_path):
+async def test_share_task_is_submitted_through_share_adapter(tmp_path):
+    database = await _database(tmp_path)
+    crypto = SecretCrypto(Fernet.generate_key().decode("ascii"))
+    await _add_share_resource(database, crypto)
+    service = TaskService(database.session_factory)
+    task, _ = await service.create("res_share")
+    adapter = FakeAdapter()
+    worker = TaskWorker(database.session_factory, crypto, adapter, owner="test-worker")
+
+    assert await worker.run_once() is True
+    stored = await service.get(task.id)
+
+    assert stored.state == TaskState.SUBMITTED
+    assert stored.remote_ref == "remote-share"
+    assert adapter.submissions == 1
+    await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_expired_share_recovery_reads_status_through_adapter(tmp_path):
     database = await _database(tmp_path)
     crypto = SecretCrypto(Fernet.generate_key().decode("ascii"))
     await _add_share_resource(database, crypto)
@@ -1785,8 +1804,7 @@ async def test_expired_share_is_failed_without_status_lookup(tmp_path):
     assert await worker.recover_expired() == 1
     stored = await service.get(task.id)
 
-    assert stored.state == TaskState.FAILED
-    assert stored.error_code == "push_kind_unsupported"
+    assert stored.state == TaskState.SUBMITTED
     assert adapter.submissions == 0
-    assert adapter.status_lookups == 0
+    assert adapter.status_lookups == 1
     await database.engine.dispose()

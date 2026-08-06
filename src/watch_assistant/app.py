@@ -793,7 +793,7 @@ def create_app(
             )
             application.state.push_capabilities = {
                 "magnet": ready,
-                "share": False,
+                "share": ready,
             }
             adapter = getattr(application.state, "task_adapter", None)
             if adapter is None:
@@ -1165,7 +1165,7 @@ def create_app(
                     )
                     application.state.push_capabilities = {
                         "magnet": True,
-                        "share": False,
+                        "share": True,
                     }
             else:
                 application.state.strm_playback_supported = False
@@ -1803,7 +1803,7 @@ def create_app(
         application.state.push_supported = False
         application.state.push_capabilities = {
             "magnet": task_adapter is not None,
-            "share": False,
+            "share": task_adapter is not None,
         }
         if task_adapter is not None:
             application.state.task_adapter = task_adapter

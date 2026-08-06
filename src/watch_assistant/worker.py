@@ -172,14 +172,17 @@ class TaskWorker:
             if lease is None:
                 return recovered
             recovered += 1
-            if lease.action != TaskAction.OFFLINE_DOWNLOAD:
+            if lease.action not in {
+                TaskAction.OFFLINE_DOWNLOAD,
+                TaskAction.SAVE_SHARE,
+            }:
                 try:
                     await self._tasks.finish_submission(
                         lease,
                         SubmissionResult(
                             status=RemoteStatus.FAILED,
                             error_code="push_kind_unsupported",
-                            error_message="share push is not supported",
+                            error_message="push kind is not supported",
                         ),
                     )
                 except asyncio.CancelledError:
@@ -243,11 +246,14 @@ class TaskWorker:
         )
 
     async def _process_lease(self, lease: TaskLease) -> SubmissionResult:
-        if lease.action != TaskAction.OFFLINE_DOWNLOAD:
+        if lease.action not in {
+            TaskAction.OFFLINE_DOWNLOAD,
+            TaskAction.SAVE_SHARE,
+        }:
             return SubmissionResult(
                 status=RemoteStatus.FAILED,
                 error_code="push_kind_unsupported",
-                error_message="share push is not supported",
+                error_message="push kind is not supported",
             )
 
         gate = None
@@ -317,6 +323,36 @@ class TaskWorker:
                 error_code="local_decryption_failed",
                 error_message="stored submission data could not be decrypted",
             )
+        if lease.action is TaskAction.SAVE_SHARE:
+            password = None
+            if lease.encrypted_password_snapshot:
+                try:
+                    password = self._crypto.decrypt(lease.encrypted_password_snapshot)
+                except Exception:  # noqa: BLE001 - failure occurred before remote submission
+                    return SubmissionResult(
+                        status=RemoteStatus.FAILED,
+                        error_code="local_decryption_failed",
+                        error_message="stored share password could not be decrypted",
+                    )
+            try:
+                if lease.target_directory_id is None:
+                    return await self._run_external_call(
+                        lease, lambda: self._adapter.save_share(url, password)
+                    )
+                return await self._run_external_call(
+                    lease,
+                    lambda: self._adapter.save_share(
+                        url, password, target_cid=lease.target_directory_id
+                    ),
+                )
+            except _LeaseClaimLost:
+                raise
+            except Exception:  # noqa: BLE001 - remote outcome may be ambiguous
+                return SubmissionResult(
+                    status=RemoteStatus.UNCERTAIN,
+                    error_code="adapter_error",
+                    error_message="submission outcome is uncertain",
+                )
         try:
             if lease.target_directory_id is None:
                 return await self._run_external_call(
