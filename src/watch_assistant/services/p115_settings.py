@@ -97,7 +97,11 @@ class P115SettingsService:
         self._validation_windows: dict[str, deque[datetime]] = {}
 
     def snapshot(
-        self, *, runtime_ready: bool, runtime_magnet_capability: bool
+        self,
+        *,
+        runtime_ready: bool,
+        runtime_magnet_capability: bool,
+        runtime_share_capability: bool = False,
     ) -> P115SettingsSnapshot:
         cookie = self._cookie_snapshot()
         ready = (
@@ -111,7 +115,7 @@ class P115SettingsService:
             ready=ready,
             capabilities={
                 "magnet": ready and runtime_magnet_capability is True,
-                "share": False,
+                "share": ready and runtime_share_capability is True,
             },
             cookie=cookie,
             target_configured=self._target_configured,

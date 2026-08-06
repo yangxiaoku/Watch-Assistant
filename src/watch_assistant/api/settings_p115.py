@@ -154,10 +154,16 @@ async def get_p115_settings(
         and type(capabilities.get("share")) is bool
         and capabilities.get("magnet") is True
     )
+    runtime_share_capability = (
+        isinstance(capabilities, Mapping)
+        and type(capabilities.get("share")) is bool
+        and capabilities.get("share") is True
+    )
     return P115SettingsResponse.model_validate(
         service.snapshot(
             runtime_ready=runtime_ready,
             runtime_magnet_capability=runtime_magnet_capability,
+            runtime_share_capability=runtime_share_capability,
         ),
         from_attributes=True,
     )

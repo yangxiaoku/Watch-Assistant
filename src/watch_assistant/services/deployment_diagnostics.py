@@ -301,6 +301,9 @@ class DeploymentDiagnosticsService:
                 runtime_magnet_capability=bool(
                     getattr(self._state, "push_capabilities", {}).get("magnet", False)
                 ),
+                runtime_share_capability=bool(
+                    getattr(self._state, "push_capabilities", {}).get("share", False)
+                ),
             )
             ready = bool(snapshot.ready)
             enabled = bool(snapshot.enabled)
