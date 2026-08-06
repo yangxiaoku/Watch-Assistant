@@ -1,7 +1,7 @@
 import { flushPromises, mount } from "@vue/test-utils";
 import { describe, expect, it, vi } from "vitest";
 
-import { ApiClient } from "../src/api";
+import { ApiClient, ApiError } from "../src/api";
 import NotificationCenterView from "../src/views/NotificationCenterView.vue";
 
 const notifications = [
@@ -104,5 +104,23 @@ describe("NotificationCenterView", () => {
       error_bypass_quiet_hours: true,
       revision: 3,
     });
+  });
+
+  it("keeps the last notification list visible when a refresh fails", async () => {
+    const api = makeApi();
+    const notificationsRequest = api.notifications as ReturnType<typeof vi.fn>;
+    notificationsRequest
+      .mockResolvedValueOnce({ items: notifications, unread_count: 1 })
+      .mockRejectedValueOnce(new ApiError("通知中心暂时无法加载", 503, "notifications_unavailable"));
+    const wrapper = mount(NotificationCenterView, { props: { api } });
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("任务已完成");
+    await wrapper.get(".icon-button").trigger("click");
+    await flushPromises();
+
+    expect(wrapper.get(".settings-state-error").text()).toContain("通知中心暂时无法加载");
+    expect(wrapper.text()).toContain("任务已完成");
+    expect(wrapper.findAll(".notification-item")).toHaveLength(2);
   });
 });

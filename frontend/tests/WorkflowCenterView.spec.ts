@@ -1,7 +1,7 @@
 import { flushPromises, mount } from "@vue/test-utils";
 import { describe, expect, it, vi } from "vitest";
 
-import { ApiClient } from "../src/api";
+import { ApiClient, ApiError } from "../src/api";
 import type { WorkflowListResponse, WorkflowResponse } from "../src/types";
 import WorkflowCenterView from "../src/views/WorkflowCenterView.vue";
 
@@ -96,5 +96,23 @@ describe("WorkflowCenterView request ordering", () => {
     await flushPromises();
 
     expect(wrapper.get(".workflow-detail h2").text()).toContain("成功");
+  });
+
+  it("keeps the last workflow list visible when a refresh fails", async () => {
+    const api = makeApi();
+    const workflowsRequest = api.workflows as ReturnType<typeof vi.fn>;
+    workflowsRequest
+      .mockResolvedValueOnce(list([workflow()]))
+      .mockRejectedValueOnce(new ApiError("任务中心暂时无法加载", 503, "workflows_unavailable"));
+    const wrapper = mount(WorkflowCenterView, { props: { api } });
+    await flushPromises();
+
+    expect(wrapper.findAll(".workflow-row")).toHaveLength(1);
+    await wrapper.get(".workflow-toolbar .icon-button").trigger("click");
+    await flushPromises();
+
+    expect(wrapper.get(".settings-state-error").text()).toContain("任务中心暂时无法加载");
+    expect(wrapper.findAll(".workflow-row")).toHaveLength(1);
+    expect(wrapper.text()).toContain("处理中");
   });
 });
