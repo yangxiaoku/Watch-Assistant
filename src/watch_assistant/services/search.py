@@ -509,6 +509,11 @@ class SearchService:
         age = max(0, int((datetime.now(UTC) - _as_utc(cache.fetched_at)).total_seconds()))
         if not _cache_is_fresh(cache, timedelta(seconds=age)):
             return None, None
+        # A negative/partial snapshot carries no real resource list, so it must
+        # never short-circuit a fresh resource search: the user would otherwise
+        # see an empty result for up to the negative TTL with no retry.
+        if getattr(cache, "cache_kind", "positive") != "positive":
+            return None, None
         return _as_utc(cache.fetched_at).isoformat(), age
 
     async def _search_impl(

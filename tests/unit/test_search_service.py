@@ -469,3 +469,46 @@ async def test_warm_media_reports_partial_upstream_as_failure():
     )
 
     assert await service.warm_media(media) is False
+
+
+@pytest.mark.asyncio
+async def test_negative_cache_snapshot_does_not_block_re_search():
+    """A negative (empty) cache must not make start_resource_search short-circuit.
+
+    Regression: an empty negative cache was treated as a fresh snapshot, so the
+    frontend immediately received status="ready" with zero resources and never
+    triggered a real search until the 30-minute negative TTL elapsed.
+    """
+    now = datetime.now(UTC)
+    from watch_assistant.db import create_database, initialize_database
+    from watch_assistant.models import SearchCache
+
+    database = create_database("sqlite+aiosqlite:///:memory:")
+    await initialize_database(database.engine)
+    try:
+        async with database.session_factory() as session:
+            session.add(
+                SearchCache(
+                    cache_key="tmdb:movie:123:queries:v5",
+                    resource_ids_json="{}",
+                    warnings_json="[]",
+                    cache_kind="negative",
+                    fetched_at=now - timedelta(minutes=5),
+                    expires_at=now + timedelta(minutes=25),
+                )
+            )
+            await session.commit()
+
+        from watch_assistant.services.search import SearchService
+
+        service = SearchService(
+            database.session_factory,
+            tmdb_client=AsyncMock(),
+            pansou_client=AsyncMock(),
+            crypto=AsyncMock(),
+        )
+        revision, age = await service._snapshot_metadata(123, MediaType.MOVIE, None)
+        assert revision is None
+        assert age is None
+    finally:
+        await database.engine.dispose()
