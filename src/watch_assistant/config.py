@@ -78,7 +78,10 @@ class Settings(BaseSettings):
         default="", validation_alias="PROWLARR_ALLOWED_PRIVATE_ADDRESSES"
     )
     prowlarr_timeout_seconds: float = Field(
-        default=12, ge=1, le=30, validation_alias="PROWLARR_TIMEOUT_SECONDS"
+        default=12,
+        ge=1,
+        le=60,
+        validation_alias="PROWLARR_TIMEOUT_SECONDS",
     )
     prowlarr_max_concurrency: int = Field(
         default=4, ge=1, le=16, validation_alias="PROWLARR_MAX_CONCURRENCY"
