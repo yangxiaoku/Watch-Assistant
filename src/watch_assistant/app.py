@@ -791,11 +791,11 @@ def create_app(
             application.state.strm_playback_supported = bool(
                 ready and getattr(application.state, "strm_playback_gateway", None)
             )
+            adapter = getattr(application.state, "task_adapter", None)
             application.state.push_capabilities = {
                 "magnet": ready,
-                "share": ready,
+                "share": ready and _adapter_supports_share(adapter),
             }
-            adapter = getattr(application.state, "task_adapter", None)
             if adapter is None:
                 await apply_organization_runtime(False)
                 await apply_dirty_runtime(False)
@@ -1165,7 +1165,7 @@ def create_app(
                     )
                     application.state.push_capabilities = {
                         "magnet": True,
-                        "share": True,
+                        "share": _adapter_supports_share(runtime_task_adapter),
                     }
             else:
                 application.state.strm_playback_supported = False
@@ -1803,7 +1803,7 @@ def create_app(
         application.state.push_supported = False
         application.state.push_capabilities = {
             "magnet": task_adapter is not None,
-            "share": task_adapter is not None,
+            "share": task_adapter is not None and _adapter_supports_share(task_adapter),
         }
         if task_adapter is not None:
             application.state.task_adapter = task_adapter
@@ -2106,6 +2106,12 @@ async def _ensure_adapter_available(adapter: TaskAdapter) -> bool:
         return bool(await ensure_available())
     except Exception:  # noqa: BLE001 - readiness must not expose adapter details
         return False
+
+
+def _adapter_supports_share(adapter: TaskAdapter) -> bool:
+    """Share push is only advertised when the adapter actually implements it."""
+
+    return callable(getattr(adapter, "save_share", None))
 
 
 app = create_app()

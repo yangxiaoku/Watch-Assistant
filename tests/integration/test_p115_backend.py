@@ -124,7 +124,7 @@ async def test_health_capabilities_default_off_and_fake_magnet_on(tmp_path):
     async with client:
         response = await client.get("/api/v1/health")
     assert response.json()["push_supported"] is False
-    assert response.json()["push_capabilities"] == {"magnet": True, "share": False}
+    assert response.json()["push_capabilities"] == {"magnet": True, "share": True}
     await tmdb.aclose()
     await pansou.aclose()
     await database.engine.dispose()
@@ -318,16 +318,38 @@ async def test_share_create_and_retry_are_blocked_without_database_changes(tmp_p
         create_response = await client.post(
             "/api/v1/tasks", json={"resource_id": "share_task", "force": True}
         )
+        # A queued share task is not retryable until it has been processed.
         retry_response = await client.post(f"/api/v1/tasks/{historical.id}/retry")
-    assert create_response.status_code == 503
-    assert create_response.json()["detail"] == "push_kind_unsupported"
-    assert retry_response.status_code == 503
-    assert retry_response.json()["detail"] == "push_kind_unsupported"
+    assert create_response.status_code == 202
+    assert create_response.json()["action"] == "save_share"
+    assert retry_response.status_code == 409
+    assert retry_response.json()["error"]["code"] == "task_not_retryable"
     async with database.session_factory() as session:
         tasks = list(await session.scalars(select(Task)))
-    assert len(tasks) == 1
-    assert tasks[0].state == TaskState.QUEUED
-    assert adapter.save_share_calls == 0
+    assert len(tasks) == 2
+    await tmdb.aclose()
+    await pansou.aclose()
+    await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_share_capability_is_disabled_when_adapter_lacks_save_share(tmp_path):
+    class MagnetOnlyAdapter(FakeTaskAdapter):
+        # A magnet-only adapter must not advertise share push.
+        save_share = None
+
+    adapter = MagnetOnlyAdapter()
+    app, client, database, _crypto, tmdb, pansou = await _app_client(
+        tmp_path / "no-share", adapter
+    )
+
+    async with app.router.lifespan_context(app):
+        health = await client.get("/api/v1/health")
+        assert health.json()["push_capabilities"] == {
+            "magnet": True,
+            "share": False,
+        }
+    await client.aclose()
     await tmdb.aclose()
     await pansou.aclose()
     await database.engine.dispose()
@@ -393,7 +415,7 @@ async def test_readiness_success_keeps_magnet_worker_enabled(tmp_path):
         health = await client.get("/api/v1/health")
         assert health.json()["push_capabilities"] == {
             "magnet": True,
-            "share": False,
+            "share": True,
         }
         assert getattr(app.state, "task_worker", None) is not None
 
