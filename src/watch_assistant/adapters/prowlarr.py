@@ -116,6 +116,9 @@ _MAX_PAGES = 20
 _MAX_PAGE_SIZE = 100
 # Some indexers overfetch a one-item request but time out on larger limits.
 _DEFAULT_PAGE_SIZE = 1
+# Download endpoints hit the indexer behind a proxy; resolve only this many
+# to keep a large result set from stalling the search.
+_MAX_RESOLVED_DOWNLOADS = 20
 _MAX_TEXT_LENGTH = 500
 _MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 _MAX_JSON_DEPTH = 12
@@ -355,26 +358,46 @@ class ProwlarrClient:
     async def _resolve_download_magnets(
         self, releases: list[ProwlarrRelease]
     ) -> list[ProwlarrRelease]:
-        resolved: list[ProwlarrRelease] = []
-        for release in releases:
-            if not release.download_url:
-                resolved.append(release)
-                continue
+        pending = [release for release in releases if release.download_url]
+        if not pending:
+            return releases
+        # Resolving every download endpoint is expensive (each one hits the
+        # indexer behind the Prowlarr proxy and may be rate limited).  Bound the
+        # work so a large result set does not stall the whole search.
+        cap = max(1, min(len(pending), _MAX_RESOLVED_DOWNLOADS))
+
+        async def resolve(release: ProwlarrRelease) -> ProwlarrRelease | None:
             magnet = await self._resolve_download_url(release.download_url)
             if magnet is None:
-                continue
+                return None
             info_hash = _infohash_from_magnet(magnet)
             if info_hash is None:
-                continue
-            resolved.append(
-                replace(
-                    release,
-                    magnet_url=magnet,
-                    info_hash=info_hash,
-                    download_url=None,
-                )
+                return None
+            return replace(
+                release,
+                magnet_url=magnet,
+                info_hash=info_hash,
+                download_url=None,
             )
-        return resolved
+
+        resolved = await asyncio.gather(
+            *(resolve(release) for release in pending[:cap]),
+            return_exceptions=False,
+        )
+        resolved_by_guid = {
+            release.guid: resolved_release
+            for release, resolved_release in zip(pending[:cap], resolved, strict=True)
+            if resolved_release is not None
+        }
+        output: list[ProwlarrRelease] = []
+        for release in releases:
+            if not release.download_url:
+                output.append(release)
+                continue
+            replacement = resolved_by_guid.get(release.guid)
+            if replacement is not None:
+                output.append(replacement)
+        return output
 
     async def _resolve_download_url(self, download_url: str) -> str | None:
         """Resolve a release to a real magnet via the Prowlarr download proxy."""
