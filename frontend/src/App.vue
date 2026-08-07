@@ -1065,6 +1065,9 @@ async function loadResources(
     }
     if (response.status === "failed") {
       resourceLoading.value = false;
+      // Do not keep serving the previous snapshot: the user asked to refresh
+      // and the search failed, so stale rows would be presented as current.
+      beginResourceSnapshot([], 0, false);
       resourceError.value = describeUiError(response.error_code ?? "resource_search_failed", 502).message;
       reportDetailMetric(requestId, "resource_failed", "failed", { errorCode: response.error_code ?? "resource_search_failed", once: true });
       return;

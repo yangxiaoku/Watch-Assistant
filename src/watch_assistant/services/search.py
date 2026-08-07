@@ -831,6 +831,11 @@ class SearchService:
                         season_number,
                     )
                     fresh_resources = await self._persist_resources(session, candidates, now)
+                    # Refresh the cached rows too: their expires_at would otherwise
+                    # go stale while the merged snapshot still references them, and
+                    # db cleanup would delete them underneath the cache.
+                    for cached in cached_resources:
+                        cached.expires_at = now + STALE_CACHE_AGE
                     merged_resources = _dedupe_resources(
                         [*fresh_resources, *cached_resources]
                     )
@@ -1255,9 +1260,12 @@ class SearchService:
                 [LinkCheckItem(item.url, item.password) for item in shares]
             )
         except PanSouError:
+            # The link checker is unavailable; keep the shares as accepted (they
+            # were never proven invalid) and flag them as inconclusive instead of
+            # discarding them, which would cache a false "no resources" result.
             magnets = [item for item in candidates if item.kind == ResourceKind.MAGNET]
             return (
-                magnets,
+                magnets + shares,
                 list(cached_shares.values()),
                 [],
                 [],
