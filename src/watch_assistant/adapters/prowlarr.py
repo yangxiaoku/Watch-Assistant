@@ -9,7 +9,7 @@ import base64
 import binascii
 import re
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit
 
@@ -99,6 +99,7 @@ class ProwlarrRelease:
     guid: str | None
     publish_date: str | None
     protocol: str
+    download_url: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -314,7 +315,6 @@ class ProwlarrClient:
                         unsupported_count += 1
                     else:
                         releases.append(release)
-
                 if len(payload) < request_limit:
                     break
                 next_offset = current_offset + len(payload)
@@ -345,7 +345,60 @@ class ProwlarrClient:
             self._health.record_failure(error.error_code)
             raise error from None
         self._health.record_success()
+        # Some indexers (e.g. 1337x mirrors) only expose a Prowlarr download
+        # endpoint per release.  Resolve those to a real magnet so the release
+        # is usable instead of being dropped during normalization.
+        if any(release.download_url for release in releases):
+            releases = await self._resolve_download_magnets(releases)
         return ProwlarrSearchResult(tuple(releases), unsupported_count, truncated)
+
+    async def _resolve_download_magnets(
+        self, releases: list[ProwlarrRelease]
+    ) -> list[ProwlarrRelease]:
+        resolved: list[ProwlarrRelease] = []
+        for release in releases:
+            if not release.download_url:
+                resolved.append(release)
+                continue
+            magnet = await self._resolve_download_url(release.download_url)
+            if magnet is None:
+                continue
+            info_hash = _infohash_from_magnet(magnet)
+            if info_hash is None:
+                continue
+            resolved.append(
+                replace(
+                    release,
+                    magnet_url=magnet,
+                    info_hash=info_hash,
+                    download_url=None,
+                )
+            )
+        return resolved
+
+    async def _resolve_download_url(self, download_url: str) -> str | None:
+        """Follow the Prowlarr download redirect to the real magnet URI."""
+        try:
+            response = await self._client.get(
+                download_url,
+                timeout=self._timeout,
+                follow_redirects=False,
+            )
+            location = response.headers.get("location", "").strip()
+            if _infohash_from_magnet(location) is not None:
+                return location
+            if response.status_code in {301, 302, 303, 307, 308}:
+                response = await self._client.get(
+                    location,
+                    timeout=self._timeout,
+                    follow_redirects=False,
+                )
+                location = response.headers.get("location", "").strip()
+                if _infohash_from_magnet(location) is not None:
+                    return location
+            return None
+        except Exception:  # noqa: BLE001 - download resolution stays optional
+            return None
 
     @property
     def health_tracker(self) -> SourceHealthTracker:
@@ -452,6 +505,7 @@ def _parse_release(item: dict[str, Any]) -> ProwlarrRelease | None:
             "DownloadUrl",
         )
     )
+    download_url = _text(_field(item, "downloadUrl", "DownloadUrl"))
     info_hash = _normalise_infohash(_field(item, "infoHash", "InfoHash"))
     if magnet_url is not None:
         magnet_info_hash = _infohash_from_magnet(magnet_url)
@@ -462,6 +516,22 @@ def _parse_release(item: dict[str, Any]) -> ProwlarrRelease | None:
     if magnet_url is None and info_hash is not None:
         magnet_url = "magnet:?" + urlencode(
             {"xt": f"urn:btih:{info_hash}", "dn": title}
+        )
+    # A release may only expose a Prowlarr download endpoint (e.g. 1337x
+    # mirrors).  Keep it for magnet resolution instead of dropping the result.
+    if magnet_url is None and info_hash is None and download_url is not None:
+        return ProwlarrRelease(
+            title=title,
+            magnet_url="",
+            info_hash="",
+            size_bytes=_nonnegative_int(_field(item, "size", "Size")),
+            seeders=_nonnegative_int(_field(item, "seeders", "Seeders")),
+            indexer=_text(_field(item, "indexer", "Indexer")),
+            indexer_id=_nonnegative_int(_field(item, "indexerId", "IndexerId")),
+            guid=_text(_field(item, "guid", "Guid")),
+            publish_date=_text(_field(item, "publishDate", "PublishDate")),
+            protocol="torrent",
+            download_url=download_url,
         )
     if magnet_url is None or info_hash is None:
         return None

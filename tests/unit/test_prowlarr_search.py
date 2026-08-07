@@ -287,3 +287,95 @@ async def test_replacing_prowlarr_client_cleans_up_after_cancellation():
     assert service._prowlarr is replacement
     assert service._prowlarr_usage == {}
     assert service._prowlarr_idle == {}
+
+
+@pytest.mark.asyncio
+async def test_download_url_release_is_resolved_to_magnet():
+    infohash = "deadbeef0123456789deadbeef0123456789abcd"
+    magnet = f"magnet:?xt=urn:btih:{infohash}&dn=Movie"
+    requested_download = False
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal requested_download
+        if "api/v1/search" in str(request.url):
+            if request.url.params.get("offset") == "1":
+                return httpx.Response(200, json=[], request=request)
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "title": "Movie 2010 1080p",
+                        "protocol": "torrent",
+                        "size": 1024,
+                        "seeders": 4,
+                        "indexer": "1337x",
+                        "indexerId": 10,
+                        "guid": "https://www.1377x.to/torrent/1/",
+                        "downloadUrl": "https://prowlarr.fixture.invalid/10/download?link=abc",
+                    }
+                ],
+                request=request,
+            )
+        requested_download = True
+        return httpx.Response(
+            302,
+            headers={"location": magnet},
+            request=request,
+        )
+
+    transport_client = httpx.AsyncClient(
+        base_url="https://prowlarr.fixture.invalid",
+        transport=httpx.MockTransport(handler),
+    )
+    client = ProwlarrClient(
+        "https://prowlarr.fixture.invalid",
+        "fixture-only",
+        client=transport_client,
+    )
+    try:
+        result = await client.search("Movie")
+    finally:
+        await client.aclose()
+        await transport_client.aclose()
+
+    assert requested_download is True
+    assert len(result.releases) == 1
+    release = result.releases[0]
+    assert release.magnet_url == magnet
+    assert release.info_hash == infohash
+    assert release.download_url is None
+
+
+@pytest.mark.asyncio
+async def test_download_url_release_is_dropped_when_no_magnet():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if "api/v1/search" in str(request.url):
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "title": "Movie 2010 1080p",
+                        "protocol": "torrent",
+                        "downloadUrl": "https://prowlarr.fixture.invalid/10/download?link=abc",
+                    }
+                ],
+                request=request,
+            )
+        return httpx.Response(302, headers={"location": "https://example.com/file.torrent"}, request=request)
+
+    transport_client = httpx.AsyncClient(
+        base_url="https://prowlarr.fixture.invalid",
+        transport=httpx.MockTransport(handler),
+    )
+    client = ProwlarrClient(
+        "https://prowlarr.fixture.invalid",
+        "fixture-only",
+        client=transport_client,
+    )
+    try:
+        result = await client.search("Movie")
+    finally:
+        await client.aclose()
+        await transport_client.aclose()
+
+    assert result.releases == ()
