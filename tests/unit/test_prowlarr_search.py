@@ -6,6 +6,7 @@ import pytest
 
 from watch_assistant.adapters.prowlarr import (
     ProwlarrClient,
+    ProwlarrInvalidResponseError,
     ProwlarrRelease,
     ProwlarrSearchResult,
 )
@@ -98,6 +99,77 @@ async def test_prowlarr_client_uses_conservative_default_page_size():
     assert len(requests) == 1
     assert requests[0].url.params["limit"] == "1"
     assert requests[0].url.params["offset"] == "0"
+
+
+@pytest.mark.asyncio
+async def test_large_single_page_under_max_results_is_accepted():
+    # Prowlarr merges results across every queried indexer and over-fetches, so
+    # a single page can legitimately exceed the per-request page-size cap (e.g.
+    # 1337x ~80 plus YTS ~45 in one response). Only pages beyond the overall
+    # result bound should be rejected as invalid.
+    items = [
+        {
+            "title": f"Movie {index:03d}",
+            "protocol": "torrent",
+            "magnetUrl": f"magnet:?xt=urn:btih:{index:040x}&dn=Movie",
+        }
+        for index in range(1, 130)
+    ]
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        offset = int(request.url.params.get("offset", "0"))
+        page = items[offset:]
+        return httpx.Response(200, json=page, request=request)
+
+    transport_client = httpx.AsyncClient(
+        base_url="https://prowlarr.fixture.invalid",
+        transport=httpx.MockTransport(handler),
+    )
+    client = ProwlarrClient(
+        "https://prowlarr.fixture.invalid",
+        "fixture-only",
+        client=transport_client,
+    )
+    try:
+        result = await client.search("Movie")
+    finally:
+        await client.aclose()
+        await transport_client.aclose()
+
+    assert len(result.releases) == 129
+
+
+@pytest.mark.asyncio
+async def test_oversized_single_page_is_rejected():
+    # A page that exceeds the overall result bound is still rejected as an
+    # invalid response shape.
+    items = [
+        {
+            "title": f"Movie {index:03d}",
+            "protocol": "torrent",
+            "magnetUrl": f"magnet:?xt=urn:btih:{index:040x}&dn=Movie",
+        }
+        for index in range(1, 502)
+    ]
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=items, request=request)
+
+    transport_client = httpx.AsyncClient(
+        base_url="https://prowlarr.fixture.invalid",
+        transport=httpx.MockTransport(handler),
+    )
+    client = ProwlarrClient(
+        "https://prowlarr.fixture.invalid",
+        "fixture-only",
+        client=transport_client,
+    )
+    try:
+        with pytest.raises(ProwlarrInvalidResponseError):
+            await client.search("Movie")
+    finally:
+        await client.aclose()
+        await transport_client.aclose()
 
 
 @pytest.mark.asyncio

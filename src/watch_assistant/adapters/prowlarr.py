@@ -301,7 +301,11 @@ class ProwlarrClient:
                     (("limit", str(request_limit)), ("offset", str(current_offset)))
                 )
                 payload = await self._request_page(params)
-                if len(payload) > _MAX_PAGE_SIZE:
+                # A single Prowlarr response merges results across every queried
+                # indexer and over-fetches, so a page can legitimately exceed the
+                # per-request page-size cap (e.g. 1337x returns ~80 plus YTS ~45).
+                # Reject only pages beyond the overall result bound.
+                if len(payload) > _MAX_RESULTS:
                     raise ProwlarrInvalidResponseError(
                         "Unexpected Prowlarr response shape"
                     )
