@@ -130,7 +130,7 @@ async def test_p115_managed_cookie_lifecycle_uses_app_runtime_callback(
             assert update.status_code == 200
             assert COOKIE not in update.text
             assert app.state.p115_ready is True
-            assert app.state.push_capabilities == {"magnet": True, "share": False}
+            assert app.state.push_capabilities == {"magnet": True, "share": True}
             first_worker = app.state.task_worker
             await ControlledWorker.instances[0].started.wait()
 
@@ -179,7 +179,7 @@ async def test_p115_managed_cookie_lifecycle_uses_app_runtime_callback(
             )
             assert restore.status_code == 200
             assert app.state.p115_ready is True
-            assert app.state.push_capabilities == {"magnet": True, "share": False}
+            assert app.state.push_capabilities == {"magnet": True, "share": True}
             assert len(ControlledWorker.instances) == 2
             await ControlledWorker.instances[1].started.wait()
             p115_settings = await client.get("/api/v1/settings/p115")

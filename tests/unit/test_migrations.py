@@ -795,3 +795,64 @@ async def test_failed_migration_is_not_recorded_and_can_be_retried(
         "002_fail",
     ]
     await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_subscription_episode_columns_are_added_to_legacy_table(tmp_path):
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'watch.db'}")
+    legacy_migration_ids = [
+        migration.id
+        for migration in MIGRATIONS
+        if migration.id != "065_subscription_episode_columns"
+    ]
+    async with database.engine.begin() as connection:
+        # Simulate a subscriptions table created before episode columns existed.
+        await connection.exec_driver_sql(
+            """
+            CREATE TABLE subscriptions (
+                id VARCHAR(40) PRIMARY KEY,
+                tmdb_id INTEGER NOT NULL,
+                media_type VARCHAR(16) NOT NULL,
+                season_number INTEGER,
+                mode VARCHAR(16) NOT NULL DEFAULT 'remind',
+                status VARCHAR(16) NOT NULL DEFAULT 'active',
+                quality_profile_id VARCHAR(64),
+                next_check_at DATETIME,
+                last_checked_at DATETIME,
+                last_match_count INTEGER,
+                last_error_code VARCHAR(100),
+                revision INTEGER NOT NULL DEFAULT 1,
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL
+            )
+            """
+        )
+        await connection.exec_driver_sql(
+            """
+            CREATE TABLE schema_migrations (
+                migration_id TEXT PRIMARY KEY,
+                applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        await connection.execute(
+            text(
+                "INSERT INTO schema_migrations (migration_id) VALUES (:migration_id)"
+            ),
+            [{"migration_id": migration_id} for migration_id in legacy_migration_ids],
+        )
+
+    await initialize_database(database.engine)
+
+    async with database.engine.connect() as connection:
+        columns = await connection.run_sync(
+            lambda sync_connection: {
+                item["name"]
+                for item in inspect(sync_connection).get_columns("subscriptions")
+            }
+        )
+    assert {"episode_start", "episode_end"} <= columns
+
+    await initialize_database(database.engine)
+    assert await _applied_migration_ids(database) == [m.id for m in MIGRATIONS]
+    await database.engine.dispose()

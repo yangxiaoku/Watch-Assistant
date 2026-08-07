@@ -682,6 +682,26 @@ def _create_subscription_resource_observations_table(connection: Connection) -> 
     SubscriptionResourceObservation.__table__.create(connection, checkfirst=True)
 
 
+def _add_subscription_episode_columns(connection: Connection) -> None:
+    """Add the episode-range columns to subscriptions from older releases.
+
+    ``010_subscriptions`` only creates the table when it does not yet exist, so
+    subscriptions created before the episode columns were added to the model
+    would never receive them, making every subscription query fail with
+    ``no such column: subscriptions.episode_start``.
+    """
+
+    columns = {item["name"] for item in inspect(connection).get_columns("subscriptions")}
+    for name, definition in (
+        ("episode_start", "INTEGER"),
+        ("episode_end", "INTEGER"),
+    ):
+        if name not in columns:
+            connection.execute(
+                text(f"ALTER TABLE subscriptions ADD COLUMN {name} {definition}")
+            )
+
+
 def _create_quality_profiles_table(connection: Connection) -> None:
     from watch_assistant.models import QualityProfile
 
@@ -1153,6 +1173,7 @@ MIGRATIONS: tuple[Migration, ...] = (
         "064_managed_directory_ownership",
         _create_managed_directory_ownership_table,
     ),
+    Migration("065_subscription_episode_columns", _add_subscription_episode_columns),
 )
 
 
