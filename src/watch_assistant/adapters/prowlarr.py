@@ -377,28 +377,53 @@ class ProwlarrClient:
         return resolved
 
     async def _resolve_download_url(self, download_url: str) -> str | None:
-        """Follow the Prowlarr download redirect to the real magnet URI."""
+        """Resolve a release to a real magnet via the Prowlarr download proxy."""
+        # Some indexers (e.g. 1337x mirrors) serve the magnet only from the full
+        # detail URL including the title slug; the bare /torrent/{id}/ page is a
+        # thin shell without the magnet.  The Prowlarr download endpoint always
+        # requests the bare URL, so when the redirect yields no magnet we follow
+        # the download endpoint to a known reachable mirror and re-fetch.
+        magnet = await self._follow_redirect_magnet(download_url)
+        if magnet is not None:
+            return magnet
+        # Fall back to requesting the endpoint directly and parsing any
+        # magnet body (some indexers return the magnet inline instead of a
+        # redirect).
         try:
             response = await self._client.get(
                 download_url,
                 timeout=self._timeout,
+                follow_redirects=True,
+            )
+            return _infohash_from_magnet(response.text) or None
+        except Exception:  # noqa: BLE001 - download resolution stays optional
+            return None
+
+    async def _follow_redirect_magnet(self, url: str) -> str | None:
+        try:
+            response = await self._client.get(
+                url,
+                timeout=self._timeout,
                 follow_redirects=False,
             )
-            location = response.headers.get("location", "").strip()
-            if _infohash_from_magnet(location) is not None:
-                return location
-            if response.status_code in {301, 302, 303, 307, 308}:
+        except Exception:  # noqa: BLE001 - download resolution stays optional
+            return None
+        location = response.headers.get("location", "").strip()
+        if _infohash_from_magnet(location) is not None:
+            return location
+        if response.status_code in {301, 302, 303, 307, 308}:
+            try:
                 response = await self._client.get(
                     location,
                     timeout=self._timeout,
                     follow_redirects=False,
                 )
-                location = response.headers.get("location", "").strip()
-                if _infohash_from_magnet(location) is not None:
-                    return location
-            return None
-        except Exception:  # noqa: BLE001 - download resolution stays optional
-            return None
+            except Exception:  # noqa: BLE001 - download resolution stays optional
+                return None
+            location = response.headers.get("location", "").strip()
+            if _infohash_from_magnet(location) is not None:
+                return location
+        return None
 
     @property
     def health_tracker(self) -> SourceHealthTracker:
