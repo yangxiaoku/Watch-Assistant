@@ -695,11 +695,49 @@ def _add_subscription_episode_columns(connection: Connection) -> None:
     for name, definition in (
         ("episode_start", "INTEGER"),
         ("episode_end", "INTEGER"),
+        ("last_match_count", "INTEGER"),
     ):
         if name not in columns:
             connection.execute(
                 text(f"ALTER TABLE subscriptions ADD COLUMN {name} {definition}")
             )
+
+
+def _add_quality_profile_scope_columns(connection: Connection) -> None:
+    """Add the scope columns to quality_profiles from older releases.
+
+    ``011_quality_profiles`` only creates the table with ``checkfirst``, so a
+    table created before the scope columns were added to the model never
+    received them, making every quality profile query fail with
+    ``no such column: quality_profiles.scope``.
+    """
+
+    columns = {item["name"] for item in inspect(connection).get_columns("quality_profiles")}
+    for name, definition in (
+        ("scope", "VARCHAR(16) NOT NULL DEFAULT 'global'"),
+        ("scope_key", "VARCHAR(128)"),
+        ("rules_json", "TEXT NOT NULL DEFAULT '{}'"),
+    ):
+        if name not in columns:
+            connection.execute(
+                text(f"ALTER TABLE quality_profiles ADD COLUMN {name} {definition}")
+            )
+
+
+def _add_subscription_observation_seen_count(connection: Connection) -> None:
+    """Add the seen_count column to observation rows from older releases."""
+
+    columns = {
+        item["name"]
+        for item in inspect(connection).get_columns("subscription_resource_observations")
+    }
+    if "seen_count" not in columns:
+        connection.execute(
+            text(
+                "ALTER TABLE subscription_resource_observations "
+                "ADD COLUMN seen_count INTEGER NOT NULL DEFAULT 1"
+            )
+        )
 
 
 def _create_quality_profiles_table(connection: Connection) -> None:
@@ -1174,6 +1212,11 @@ MIGRATIONS: tuple[Migration, ...] = (
         _create_managed_directory_ownership_table,
     ),
     Migration("065_subscription_episode_columns", _add_subscription_episode_columns),
+    Migration("066_quality_profile_scope_columns", _add_quality_profile_scope_columns),
+    Migration(
+        "067_subscription_observation_seen_count",
+        _add_subscription_observation_seen_count,
+    ),
 )
 
 

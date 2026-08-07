@@ -851,7 +851,113 @@ async def test_subscription_episode_columns_are_added_to_legacy_table(tmp_path):
                 for item in inspect(sync_connection).get_columns("subscriptions")
             }
         )
-    assert {"episode_start", "episode_end"} <= columns
+    assert {"episode_start", "episode_end", "last_match_count"} <= columns
+
+    await initialize_database(database.engine)
+    assert await _applied_migration_ids(database) == [m.id for m in MIGRATIONS]
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_quality_profile_scope_columns_are_added_to_legacy_table(tmp_path):
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'watch.db'}")
+    legacy_migration_ids = [
+        migration.id
+        for migration in MIGRATIONS
+        if migration.id != "066_quality_profile_scope_columns"
+    ]
+    async with database.engine.begin() as connection:
+        await connection.exec_driver_sql(
+            """
+            CREATE TABLE quality_profiles (
+                id VARCHAR(40) PRIMARY KEY,
+                name VARCHAR(64) NOT NULL,
+                rules_json TEXT NOT NULL DEFAULT '{}',
+                revision INTEGER NOT NULL DEFAULT 1,
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL
+            )
+            """
+        )
+        await connection.exec_driver_sql(
+            """
+            CREATE TABLE schema_migrations (
+                migration_id TEXT PRIMARY KEY,
+                applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        await connection.execute(
+            text(
+                "INSERT INTO schema_migrations (migration_id) VALUES (:migration_id)"
+            ),
+            [{"migration_id": migration_id} for migration_id in legacy_migration_ids],
+        )
+
+    await initialize_database(database.engine)
+
+    async with database.engine.connect() as connection:
+        columns = await connection.run_sync(
+            lambda sync_connection: {
+                item["name"]
+                for item in inspect(sync_connection).get_columns("quality_profiles")
+            }
+        )
+    assert {"scope", "scope_key", "rules_json"} <= columns
+
+    await initialize_database(database.engine)
+    assert await _applied_migration_ids(database) == [m.id for m in MIGRATIONS]
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_subscription_observation_seen_count_added_to_legacy_table(tmp_path):
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'watch.db'}")
+    legacy_migration_ids = [
+        migration.id
+        for migration in MIGRATIONS
+        if migration.id != "067_subscription_observation_seen_count"
+    ]
+    async with database.engine.begin() as connection:
+        await connection.exec_driver_sql(
+            """
+            CREATE TABLE subscription_resource_observations (
+                id VARCHAR(64) PRIMARY KEY,
+                subscription_id VARCHAR(40) NOT NULL,
+                resource_id VARCHAR(40) NOT NULL,
+                canonical_key VARCHAR(255) NOT NULL,
+                first_seen_at DATETIME NOT NULL,
+                last_seen_at DATETIME NOT NULL
+            )
+            """
+        )
+        await connection.exec_driver_sql(
+            """
+            CREATE TABLE schema_migrations (
+                migration_id TEXT PRIMARY KEY,
+                applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        await connection.execute(
+            text(
+                "INSERT INTO schema_migrations (migration_id) VALUES (:migration_id)"
+            ),
+            [{"migration_id": migration_id} for migration_id in legacy_migration_ids],
+        )
+
+    await initialize_database(database.engine)
+
+    async with database.engine.connect() as connection:
+        columns = await connection.run_sync(
+            lambda sync_connection: {
+                item["name"]
+                for item in inspect(sync_connection).get_columns(
+                    "subscription_resource_observations"
+                )
+            }
+        )
+    assert "seen_count" in columns
 
     await initialize_database(database.engine)
     assert await _applied_migration_ids(database) == [m.id for m in MIGRATIONS]
