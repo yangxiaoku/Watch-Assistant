@@ -1002,7 +1002,11 @@ class SearchService:
             idle.clear()
         try:
             async with self._prowlarr_limit:
-                return await client.search(query)
+                # Ask for more results per request so the bounded paginator
+                # does not round-trip once per release (page_size defaults to 1
+                # for conservative indexers, which is very slow for a source
+                # like 1337x that returns dozens of hits per query).
+                return await client.search(query, limit=50)
         finally:
             async with self._prowlarr_state_lock:
                 usage = self._prowlarr_usage[client_key] - 1
