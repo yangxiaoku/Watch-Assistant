@@ -903,11 +903,17 @@ def _stable_directory_id(value: object) -> str | None:
     if isinstance(value, bool) or not isinstance(value, (int, str)):
         return None
     normalized = str(value)
-    return (
-        normalized
-        if normalized.isdigit() and not normalized.startswith("0")
-        else None
-    )
+    # "0" is the 115 root directory and is a legal target; the library gateway
+    # already accepts it via allow_virtual_root, so availability verification
+    # must not reject it here or root-targeted downloads can never become
+    # AVAILABLE.
+    if not normalized.isdigit():
+        return None
+    if normalized == "0":
+        return normalized
+    if normalized.startswith("0"):
+        return None
+    return normalized
 
 
 def _uncertain_observation(error_code: str) -> RemoteObservation:

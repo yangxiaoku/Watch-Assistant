@@ -1,6 +1,7 @@
 """Single-process SQLite-leased task worker."""
 
 import asyncio
+import time
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from datetime import timedelta
@@ -226,6 +227,8 @@ class TaskWorker:
                 await self._mark_lease_lost(lease)
 
     async def run_forever(self, stop_event: asyncio.Event, *, interval: float = 1.0):
+        recovery_interval = max(15.0, interval * 30)
+        next_recovery = time.monotonic() + recovery_interval
         while not stop_event.is_set():
             try:
                 await self.run_once()
@@ -234,6 +237,17 @@ class TaskWorker:
             except Exception:  # noqa: BLE001
                 # A transient claim/database error must not kill the worker loop.
                 await asyncio.sleep(0)
+            # Reclaim leases whose owner died mid-write (e.g. a submission that
+            # crossed its lease expiry under SQLite lock contention). Without a
+            # periodic sweep these tasks stay SUBMITTING until a restart.
+            if time.monotonic() >= next_recovery:
+                try:
+                    await self.recover_expired()
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001 - recovery must not kill the loop
+                    await self._mark_recovery_failed()
+                next_recovery = time.monotonic() + recovery_interval
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=interval)
             except TimeoutError:
@@ -244,6 +258,19 @@ class TaskWorker:
             owner=self._owner,
             lease_duration=timedelta(seconds=self._lease_seconds),
         )
+
+    async def _mark_recovery_failed(self) -> None:
+        """Record a failed periodic lease-recovery sweep without crashing."""
+
+        try:
+            await emit_event(
+                self._event_logger,
+                "task.recovery_failed",
+                level=LoggingLevel.WARNING,
+                fields={"status": "failed"},
+            )
+        except Exception:  # noqa: BLE001 - logging must never crash the loop
+            return
 
     async def _process_lease(self, lease: TaskLease) -> SubmissionResult:
         if lease.action not in {

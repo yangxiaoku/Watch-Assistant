@@ -170,7 +170,12 @@ def _stable_remote_id(value: object) -> str | None:
     if isinstance(value, bool) or not isinstance(value, (int, str)):
         return None
     normalized = str(value)
-    if not normalized.isdigit() or normalized.startswith("0"):
+    if not normalized.isdigit():
+        return None
+    # "0" is the 115 root directory, a legal parent for availability evidence.
+    if normalized == "0":
+        return normalized
+    if normalized.startswith("0"):
         return None
     return normalized
 

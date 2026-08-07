@@ -158,6 +158,12 @@ EVENT_CATALOG: dict[str, EventDefinition] = {
     "task.cancelled": _event(
         "task.cancelled", LogCategory.TASK, "推送任务已取消", "尚未提交的推送任务已取消"
     ),
+    "task.recovery_failed": _event(
+        "task.recovery_failed",
+        LogCategory.TASK,
+        "任务租约回收失败",
+        "周期性租约回收未能完成，卡住的任务会延迟到下次回收",
+    ),
     "inventory.refresh.started": _event(
         "inventory.refresh.started",
         LogCategory.LIBRARY,

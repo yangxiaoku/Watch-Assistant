@@ -808,3 +808,52 @@ async def test_share_listing_exception_is_failed_but_receive_exception_is_uncert
     assert result.status == RemoteStatus.UNCERTAIN
     assert len(receiving.share_payloads) == 1
     await adapter.aclose()
+
+
+@pytest.mark.asyncio
+async def test_available_status_allows_root_target_cid_zero(tmp_path):
+    """cid=0 (115 root) must verify as AVAILABLE, not parent mismatch."""
+    provider, _path = _provider(tmp_path)
+    infohash = "d" * 40
+    fake = FakeP115Client(
+        task_response={
+            "state": True,
+            "data": [{"info_hash": infohash, "status": "available", "fid": "101"}]
+        }
+    )
+    gateway = FakeReadOnlyGateway(
+        LibraryEntry(
+            directory_id=None,
+            file_id="101",
+            parent_id="0",
+            name="root.mkv",
+            is_directory=False,
+            size_bytes=None,
+            modified_at=None,
+            pickcode=None,
+        ),
+        directory_detail=LibraryEntry(
+            directory_id="0",
+            file_id=None,
+            parent_id=None,
+            name="root",
+            is_directory=True,
+            size_bytes=None,
+            modified_at=None,
+            pickcode=None,
+        ),
+    )
+    adapter = P115Adapter(
+        provider,
+        0,
+        client_factory=lambda _cookie: fake,
+        readonly_gateway=gateway,
+    )
+
+    observation = await adapter.get_status("infohash:" + infohash)
+
+    assert isinstance(observation, RemoteObservation)
+    assert observation.status is RemoteStatus.AVAILABLE
+    assert observation.availability_verified is True
+    assert observation.parent_id == "0"
+    assert gateway.directory_ids == ["0"]
