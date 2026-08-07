@@ -106,23 +106,38 @@ _HDR_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 _AUDIO_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         "TrueHD",
-        re.compile(r"(?<![A-Za-z0-9])True[ ._-]*HD(?![A-Za-z0-9])", re.IGNORECASE),
+        # The trailing lookahead allows a channel count to follow the codec
+        # (e.g. "TrueHD 5.1"), because releases often write it with no separator.
+        re.compile(r"(?<![A-Za-z0-9])True[ ._-]*HD(?![A-Za-z])", re.IGNORECASE),
     ),
     (
         "DTS-HD MA",
         re.compile(
-            r"(?<![A-Za-z0-9])DTS[ ._-]*HD[ ._-]*MA(?![A-Za-z0-9])", re.IGNORECASE
+            r"(?<![A-Za-z0-9])DTS[ ._-]*HD[ ._-]*MA(?![A-Za-z])", re.IGNORECASE
         ),
     ),
     (
         "E-AC-3",
-        re.compile(r"(?<![A-Za-z0-9])E[ ._-]*AC[ ._-]*3(?![A-Za-z0-9])", re.IGNORECASE),
+        re.compile(r"(?<![A-Za-z0-9])E[ ._-]*AC[ ._-]*3(?![A-Za-z])", re.IGNORECASE),
     ),
-    ("DTS", re.compile(r"(?<![A-Za-z0-9])DTS(?![A-Za-z0-9])", re.IGNORECASE)),
-    ("AC-3", re.compile(r"(?<![A-Za-z0-9])AC[ ._-]*3(?![A-Za-z0-9])", re.IGNORECASE)),
-    ("AAC", re.compile(r"(?<![A-Za-z0-9])AAC(?![A-Za-z0-9])", re.IGNORECASE)),
-    ("FLAC", re.compile(r"(?<![A-Za-z0-9])FLAC(?![A-Za-z0-9])", re.IGNORECASE)),
-    ("Opus", re.compile(r"(?<![A-Za-z0-9])Opus(?![A-Za-z0-9])", re.IGNORECASE)),
+    ("DTS", re.compile(r"(?<![A-Za-z0-9])DTS(?![A-Za-z])", re.IGNORECASE)),
+    ("AC-3", re.compile(r"(?<![A-Za-z0-9])AC[ ._-]*3(?![A-Za-z])", re.IGNORECASE)),
+    ("AAC", re.compile(r"(?<![A-Za-z0-9])AAC(?![A-Za-z])", re.IGNORECASE)),
+    ("FLAC", re.compile(r"(?<![A-Za-z0-9])FLAC(?![A-Za-z])", re.IGNORECASE)),
+    ("Opus", re.compile(r"(?<![A-Za-z0-9])Opus(?![A-Za-z])", re.IGNORECASE)),
+)
+# Explicit multi-channel markers such as "5.1", "7.1", or "2.0" (optionally with
+# a "ch" suffix).  The leading lookahead allows the marker to sit directly after
+# an audio codec (e.g. "AAC5.1"), while the dotted/ch shape avoids stealing
+# arbitrary digits that belong to a year or part of the title.
+_CHANNEL_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        "channel",
+        re.compile(
+            r"(?<![0-9])[2-7](?:\.[01](?:ch)?|ch)(?![A-Za-z0-9])",
+            re.IGNORECASE,
+        ),
+    ),
 )
 _EXPLICIT_SPECIAL_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("SP", re.compile(r"(?<![A-Za-z0-9])SP(?![A-Za-z0-9])", re.IGNORECASE)),
@@ -289,6 +304,7 @@ def parse_media_filename(filename: str) -> MediaParseResult:
     _, all_hdr_spans = _matches(_HDR_PATTERNS, stem)
     audio_codec, _ = _first_match(_AUDIO_PATTERNS, stem)
     _, all_audio_spans = _matches(_AUDIO_PATTERNS, stem)
+    _, all_channel_spans = _matches(_CHANNEL_PATTERNS, stem)
     language_hints, language_spans = _matches(_LANGUAGE_PATTERNS, stem)
     subtitle_hints, subtitle_spans = _matches(_SUBTITLE_HINT_PATTERNS, stem)
     atmos = _has_token(stem, r"Atmos")
@@ -312,6 +328,7 @@ def parse_media_filename(filename: str) -> MediaParseResult:
         all_codec_spans,
         all_hdr_spans,
         all_audio_spans,
+        all_channel_spans,
         language_spans,
         subtitle_spans,
         atmos_spans,
@@ -561,16 +578,57 @@ def _companion_spans(stem: str, extension: str | None) -> tuple[tuple[int, int],
     return tuple(spans)
 
 
+_RELEASE_GROUP_HYPHEN = re.compile(r"-([A-Za-z0-9]{2,40})\s*$")
+
+
 def _release_group(stem: str) -> tuple[str | None, tuple[tuple[int, int], ...]]:
     match = re.match(r"\s*\[([^\]]{1,40})\]", stem)
     if match is None:
         match = re.search(r"\[([^\]]{1,40})\]\s*$", stem)
-    if not match:
-        return None, ()
-    candidate = match.group(1).strip()
-    if not candidate or _looks_like_technical(candidate):
-        return None, ()
-    return candidate, ((match.start(), match.end()),)
+    if match:
+        candidate = match.group(1).strip()
+        if candidate and not _looks_like_technical(candidate):
+            return candidate, ((match.start(), match.end()),)
+    # Trailing hyphen release groups (e.g. "...AAC5.1-WORLD" -> WORLD).  Only
+    # considered when the file already carries a technical marker so a plain
+    # hyphenated title is not misread.  The candidate must not look like a
+    # technical/audio/language marker, otherwise tokens such as "-Atmos" or
+    # "-CHS" would be swallowed by the group.
+    if _has_technical_marker(stem):
+        hyphen = _RELEASE_GROUP_HYPHEN.search(stem)
+        if hyphen is not None:
+            candidate = hyphen.group(1)
+            if not _looks_like_technical(candidate) and not _looks_like_media_marker(
+                candidate
+            ):
+                return candidate, ((hyphen.start(), hyphen.end()),)
+    return None, ()
+
+
+def _has_technical_marker(stem: str) -> bool:
+    return any(
+        pattern.search(stem)
+        for patterns in (
+            _RESOLUTION_PATTERNS,
+            _SOURCE_PATTERNS,
+            _VIDEO_CODEC_PATTERNS,
+            _HDR_PATTERNS,
+            _AUDIO_PATTERNS,
+            _CHANNEL_PATTERNS,
+        )
+        for _, pattern in patterns
+    )
+
+
+def _looks_like_media_marker(value: str) -> bool:
+    return bool(
+        _ATMOS_RE.search(value)
+        or _DOLBY_AUDIO_RE.search(value)
+        or any(pattern.search(value) for _, pattern in _LANGUAGE_PATTERNS)
+        or any(pattern.search(value) for _, pattern in _SUBTITLE_HINT_PATTERNS)
+        or any(pattern.search(value) for _, pattern in _AUDIO_PATTERNS)
+        or _CHANNEL_PATTERNS[0][1].search(value)
+    )
 
 
 def _looks_like_technical(value: str) -> bool:

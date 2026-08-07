@@ -12,9 +12,18 @@ from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import PurePosixPath
 from typing import Any
-from urllib.parse import parse_qsl, urlsplit
+from urllib.parse import parse_qsl, quote, urlsplit
 
 import httpx
+
+# Public HTTP trackers that are commonly reachable even when UDP/DHT egress is
+# restricted (e.g. behind the GFW).  PanSou releases are infohash-only or carry
+# UDP trackers, so appending these lets qBittorrent fetch metadata over plain
+# HTTP.  Kept as a small tuple so the magnet URL stays bounded.
+_FALLBACK_HTTP_TRACKERS = (
+    "http://tracker.opentrackr.org:1337/announce",
+    "http://tracker.dler.org:6969/announce",
+)
 
 VIDEO_EXTENSIONS = {".avi", ".m2ts", ".mkv", ".mov", ".mp4", ".ts"}
 SUBTITLE_EXTENSIONS = {".ass", ".srt", ".ssa", ".sub", ".vtt"}
@@ -492,11 +501,12 @@ class QbittorrentClient:
             raise asyncio.CancelledError
 
     async def _add(self, magnet: str, marker: str) -> None:
+        urls = _with_fallback_http_trackers(magnet)
         try:
             response = await self._client.post(
                 "/api/v2/torrents/add",
                 data={
-                    "urls": magnet,
+                    "urls": urls,
                     "category": marker,
                     "tags": marker,
                     "stopCondition": "MetadataReceived",
@@ -616,6 +626,25 @@ def _parse_version(value: str) -> tuple[int, int, int] | None:
         return tuple(int(part) for part in parts)
     except ValueError:
         return None
+
+
+def _with_fallback_http_trackers(magnet: str) -> str:
+    """Append reachable public HTTP trackers to a magnet URI.
+
+    Releases indexed by PanSou often carry only an infohash or UDP trackers,
+    which cannot fetch metadata when UDP/DHT egress is restricted.  Adding a
+    couple of HTTP trackers gives qBittorrent a working metadata path without
+    touching the original trackers.
+    """
+
+    if not isinstance(magnet, str) or not magnet:
+        return magnet
+    if not magnet.casefold().startswith("magnet:"):
+        return magnet
+    appended = "".join(
+        f"&tr={quote(tracker, safe='')}" for tracker in _FALLBACK_HTTP_TRACKERS
+    )
+    return magnet + appended
 
 
 def _add_succeeded(response: httpx.Response) -> bool:

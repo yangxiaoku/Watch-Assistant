@@ -224,3 +224,26 @@ def test_invalid_input_error_does_not_include_the_input():
         parse_media_filename({"name": secret})  # type: ignore[arg-type]
 
     assert secret not in str(error.value)
+
+
+def test_audio_codec_followed_by_channel_count_keeps_title_clean():
+    parsed = parse_media_filename(
+        "Kraken.2026.1080p.BluRay.x264.AAC5.1-WORLD.mp4"
+    )
+
+    assert parsed.title == "Kraken"
+    assert parsed.year == 2026
+    assert parsed.audio_codec == "AAC"
+    assert parsed.release_group == "WORLD"
+    assert parsed.media_type_hint == "movie"
+
+
+def test_channel_count_and_hyphen_group_are_stripped_from_title():
+    parsed = parse_media_filename(
+        "Dune.2021.2160p.BluRay.REMUX.HEVC.DTS-HD.MA.TrueHD.7.1.Atmos-FGT.mkv"
+    )
+
+    assert parsed.title == "Dune"
+    assert parsed.year == 2021
+    assert parsed.audio_codec == "TrueHD"
+    assert parsed.release_group == "FGT"
