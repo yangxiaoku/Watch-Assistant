@@ -740,6 +740,20 @@ def _add_subscription_observation_seen_count(connection: Connection) -> None:
         )
 
 
+def _repair_subscription_legacy_mode(connection: Connection) -> None:
+    """Map the retired 'notify' subscription mode to its successor.
+
+    Older releases stored ``mode='notify'``; the enum now only allows
+    ``remind``/``confirm``/``auto``, so reading such a row raises
+    ``LookupError`` and every subscription query returns HTTP 500.
+    ``remind`` is the closest behavioural successor and matches the default.
+    """
+
+    connection.execute(
+        text("UPDATE subscriptions SET mode = 'remind' WHERE mode = 'notify'")
+    )
+
+
 def _create_quality_profiles_table(connection: Connection) -> None:
     from watch_assistant.models import QualityProfile
 
@@ -1217,6 +1231,7 @@ MIGRATIONS: tuple[Migration, ...] = (
         "067_subscription_observation_seen_count",
         _add_subscription_observation_seen_count,
     ),
+    Migration("068_repair_subscription_legacy_mode", _repair_subscription_legacy_mode),
 )
 
 

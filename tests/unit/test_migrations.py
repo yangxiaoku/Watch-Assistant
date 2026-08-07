@@ -962,3 +962,63 @@ async def test_subscription_observation_seen_count_added_to_legacy_table(tmp_pat
     await initialize_database(database.engine)
     assert await _applied_migration_ids(database) == [m.id for m in MIGRATIONS]
     await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_subscription_legacy_notify_mode_is_repaired(tmp_path):
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'watch.db'}")
+    legacy_migration_ids = [
+        migration.id
+        for migration in MIGRATIONS
+        if migration.id != "068_repair_subscription_legacy_mode"
+    ]
+    async with database.engine.begin() as connection:
+        await connection.exec_driver_sql(
+            """
+            CREATE TABLE subscriptions (
+                id VARCHAR(40) PRIMARY KEY,
+                tmdb_id INTEGER NOT NULL,
+                media_type VARCHAR(16) NOT NULL,
+                season_number INTEGER,
+                episode_start INTEGER,
+                episode_end INTEGER,
+                mode VARCHAR(16) NOT NULL DEFAULT 'remind',
+                status VARCHAR(16) NOT NULL DEFAULT 'active',
+                quality_profile_id VARCHAR(64),
+                next_check_at DATETIME,
+                last_checked_at DATETIME,
+                last_match_count INTEGER,
+                last_error_code VARCHAR(100),
+                revision INTEGER NOT NULL DEFAULT 1,
+                created_at DATETIME NOT NULL,
+                updated_at DATETIME NOT NULL
+            )
+            """
+        )
+        await connection.exec_driver_sql(
+            "INSERT INTO subscriptions (id, tmdb_id, media_type, mode, created_at, updated_at)"
+            " VALUES ('sub_1', 27205, 'movie', 'notify', '2026-01-01', '2026-01-01')"
+        )
+        await connection.exec_driver_sql(
+            """
+            CREATE TABLE schema_migrations (
+                migration_id TEXT PRIMARY KEY,
+                applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        await connection.execute(
+            text(
+                "INSERT INTO schema_migrations (migration_id) VALUES (:migration_id)"
+            ),
+            [{"migration_id": migration_id} for migration_id in legacy_migration_ids],
+        )
+
+    await initialize_database(database.engine)
+
+    async with database.engine.connect() as connection:
+        modes = list(
+            await connection.scalars(text("SELECT mode FROM subscriptions"))
+        )
+    assert modes == ["remind"]
+    await database.engine.dispose()
