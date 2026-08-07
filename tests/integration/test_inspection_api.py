@@ -913,3 +913,29 @@ async def test_inspection_tables_and_logs_do_not_contain_plaintext_magnets(
     assert magnet not in stored
     assert magnet not in caplog.text
     await _close(client, database, tmdb, pansou)
+
+
+@pytest.mark.integration
+async def test_inspection_with_unmet_workflow_prerequisite_returns_409_not_500(tmp_path):
+    fake = FakeInspectionClient({})
+    app, client, database, tmdb, pansou, _crypto, _magnets = await _make_app(
+        tmp_path, client=fake
+    )
+    try:
+        # A workflow whose DISCOVERY stage never completed (no resource_id) makes
+        # the INSPECTION stage prerequisite unmet.
+        workflow = await client.post(
+            "/api/v1/workflows", json={"media_type": "movie", "tmdb_id": 27205}
+        )
+        assert workflow.status_code == 201
+        workflow_id = workflow.json()["id"]
+
+        response = await client.post(
+            "/api/v1/resources/inspect",
+            json={"resource_ids": ["res_a"], "workflow_id": workflow_id},
+        )
+
+        assert response.status_code == 409
+        assert response.json()["detail"] == "workflow_prerequisite_not_met"
+    finally:
+        await _close(http_client=client, database=database, tmdb=tmdb, pansou=pansou)
