@@ -754,6 +754,22 @@ def _repair_subscription_legacy_mode(connection: Connection) -> None:
     )
 
 
+def _repair_subscription_null_match_count(connection: Connection) -> None:
+    """Replace NULL match counts left by legacy rows with the integer default.
+
+    ``last_match_count`` is ``Integer, default=0`` in the model; a legacy NULL
+    value fails the response schema's ``int`` validation and turns the whole
+    subscription listing into an HTTP 500.
+    """
+
+    connection.execute(
+        text(
+            "UPDATE subscriptions SET last_match_count = 0 "
+            "WHERE last_match_count IS NULL"
+        )
+    )
+
+
 def _create_quality_profiles_table(connection: Connection) -> None:
     from watch_assistant.models import QualityProfile
 
@@ -1232,6 +1248,10 @@ MIGRATIONS: tuple[Migration, ...] = (
         _add_subscription_observation_seen_count,
     ),
     Migration("068_repair_subscription_legacy_mode", _repair_subscription_legacy_mode),
+    Migration(
+        "069_repair_subscription_null_match_count",
+        _repair_subscription_null_match_count,
+    ),
 )
 
 
