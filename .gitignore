@@ -41,3 +41,6 @@ deployment-evidence/
 evidence/
 release-archive/
 *.tar.gz
+.run/
+.tmp_*.sh
+.tmp_*.py
