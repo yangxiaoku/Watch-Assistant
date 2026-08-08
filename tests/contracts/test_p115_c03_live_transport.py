@@ -372,8 +372,9 @@ async def test_live_transport_passes_decreasing_timeout_to_each_page():
 
 @pytest.mark.asyncio
 async def test_live_transport_fails_closed_on_unknown_write_or_pagination():
+    total = MAX_FS_FILES_PAGE_CALLS + 1
     incomplete_pages = [
-        _page([_directory(str(index), "7", f"dir-{index}")], offset=index - 1, count=6)
+        _page([_directory(str(index), "7", f"dir-{index}")], offset=index - 1, count=total)
         for index in range(1, MAX_FS_FILES_PAGE_CALLS + 1)
     ]
     client = _FakeP115Client(
@@ -397,7 +398,7 @@ async def test_live_transport_fails_closed_on_unknown_write_or_pagination():
     assert unknown_write.status is WriteStatus.UNCERTAIN
     assert bad_info is None
     assert incomplete.complete is False
-    assert incomplete.page_calls == MAX_FS_FILES_PAGE_CALLS == 4
+    assert incomplete.page_calls == MAX_FS_FILES_PAGE_CALLS
     assert len(client.calls) == 1 + 1 + MAX_FS_FILES_PAGE_CALLS
 
 

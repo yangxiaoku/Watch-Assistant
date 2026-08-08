@@ -29,7 +29,11 @@ from watch_assistant.adapters.p115_library_write_contract import (
 )
 
 EXPECTED_P115CLIENT_VERSION = "0.0.9.6.5.1"
-MAX_FS_FILES_PAGE_CALLS = 4
+# Directory listings are read one entry per page (VERIFIED_FS_FILES_PAGE_SIZE)
+# so a real source directory with several release files plus a subtitle
+# folder stays readable.  Each page is one verified round-trip; 8 pages is a
+# bounded ceiling that still fails closed on unbounded listings.
+MAX_FS_FILES_PAGE_CALLS = 8
 MAX_RECOVERY_FS_FILES_PAGE_CALLS = MAX_RECOVERY_LIST_PAGE_CALLS
 VERIFIED_FS_FILES_PAGE_SIZE = 1
 
