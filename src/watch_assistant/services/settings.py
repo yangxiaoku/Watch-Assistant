@@ -127,6 +127,7 @@ DEFAULT_ORGANIZATION_VIDEO_EXTENSIONS = (
 
 _ORGANIZATION_DEFAULTS: dict[str, object] = {
     "schedule_enabled": False,
+    "auto_execute_enabled": False,
     "scan_interval_minutes": 30,
     "source_directory_ids": [],
     "source_directory_labels": [],
@@ -1239,6 +1240,7 @@ def _validate_organization_values(values: dict[str, object]) -> dict[str, object
         raise ValueError("invalid_scan_interval_minutes")
     for key in (
         "schedule_enabled",
+        "auto_execute_enabled",
         "rename_enabled",
         "media_probe_enabled",
         "ai_identification_enabled",

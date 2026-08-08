@@ -38,8 +38,12 @@ describe("settings route", () => {
     expect(extractBrowseView("/settings")).toBe("settings");
   });
 
-  it("restores the Chinese workbench entry", () => {
-    expect(extractBrowseView("/workbench")).toBe("workbench");
+  it("restores the organization view", () => {
+    expect(extractBrowseView("/organization")).toBe("organization");
+  });
+
+  it("falls back to home for a removed workbench entry", () => {
+    expect(extractBrowseView("/workbench")).toBe("home");
   });
 });
 

@@ -130,6 +130,9 @@ input { outline: none; }
 .push-button { min-height: 32px; padding: 0 10px; color: #b9ec68; background: #252c20; border: 0; font-size: 12px; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 
+.organization-view { max-width: 1440px; margin: 0 auto; padding-top: 38px; }
+.organization-view-actions { display: flex; gap: 8px; align-items: center; }
+.organization-auto-settings { margin-bottom: 8px; }
 .organization-workbench { max-width: 1440px; margin: 0 auto; padding-top: 38px; }
 .organization-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; margin-bottom: 25px; padding-bottom: 22px; border-bottom: 1px solid #2b2d32; }
 .organization-heading h1 { margin-bottom: 8px; font-size: 32px; }

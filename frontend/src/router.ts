@@ -92,7 +92,7 @@ export function navigateHome(): void {
   window.history.pushState({}, "", "/");
 }
 
-export type BrowseView = "home" | "workbench" | "movies" | "tv" | "popular" | "favorites" | "history" | "search" | "settings" | "organization-plans" | "organization-history" | "library" | "workflows" | "notifications";
+export type BrowseView = "home" | "movies" | "tv" | "popular" | "favorites" | "history" | "search" | "settings" | "organization" | "library" | "workflows" | "notifications";
 export type CatalogView = "movies" | "tv" | "popular" | "search";
 export type CatalogSort = "popular" | "rating" | "release";
 export interface CatalogRoute {
@@ -112,15 +112,13 @@ export function clampCatalogPage(value: number): number {
 
 const VIEW_PATHS: Record<Exclude<BrowseView, "search">, string> = {
   home: "/",
-  workbench: "/workbench",
   movies: "/movies",
   tv: "/tv",
   popular: "/popular",
   favorites: "/favorites",
   history: "/history",
   settings: "/settings",
-  "organization-plans": "/organization-plans",
-  "organization-history": "/organization-history",
+  organization: "/organization",
   library: "/library",
   workflows: "/workflows",
   notifications: "/notifications",
@@ -179,15 +177,13 @@ export function navigateToSearch(query: string, page = 1): void {
 export function extractBrowseView(path: string): BrowseView {
   const pathname = path.split("?", 1)[0];
   if (pathname === "/movies") return "movies";
-  if (pathname === "/workbench") return "workbench";
   if (pathname === "/tv") return "tv";
   if (pathname === "/popular") return "popular";
   if (pathname === "/favorites") return "favorites";
   if (pathname === "/history") return "history";
   if (pathname === "/search") return "search";
   if (pathname === "/settings") return "settings";
-  if (pathname === "/organization-plans") return "organization-plans";
-  if (pathname === "/organization-history") return "organization-history";
+  if (pathname === "/organization") return "organization";
   if (pathname === "/library") return "library";
   if (pathname === "/workflows") return "workflows";
   if (pathname === "/notifications") return "notifications";

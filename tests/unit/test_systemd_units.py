@@ -1,4 +1,3 @@
-import stat
 import subprocess
 from pathlib import Path
 
@@ -81,9 +80,20 @@ def test_release_startup_smoke_is_tracked_as_executable():
 
 
 def test_systemd_release_driver_is_executable():
-    script = DEPLOY_DIR.parent / "scripts" / "deploy_systemd_release.sh"
+    # Windows checkouts never carry POSIX mode bits, so assert on the git
+    # index (which is authoritative for the tracked bit) just like the
+    # startup-smoke test above.
+    result = subprocess.run(
+        ["git", "ls-files", "--stage", "scripts/deploy_systemd_release.sh"],
+        cwd=DEPLOY_DIR.parent,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    if result.returncode != 0:
+        pytest.skip("git metadata is unavailable")
 
-    assert script.stat().st_mode & stat.S_IXUSR
+    assert result.stdout.split(maxsplit=1)[0] == "100755"
 
 
 def test_systemd_release_deploy_runs_prepare_before_metadata_update():

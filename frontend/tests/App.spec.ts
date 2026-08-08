@@ -11,8 +11,8 @@ describe("App capability wiring", () => {
     window.history.replaceState({}, "", "/");
   });
 
-  it("passes the enabled organization execution capability to the workbench", async () => {
-    window.history.replaceState({}, "", "/organization-plans");
+  it("renders the merged organization view with execution capability", async () => {
+    window.history.replaceState({}, "", "/organization");
     const plan = {
       plan_id: "plan-local-1",
       plan_hash: "a".repeat(64),
@@ -36,37 +36,90 @@ describe("App capability wiring", () => {
       organization_execution_supported: true,
     });
     vi.spyOn(ApiClient.prototype, "me").mockResolvedValue();
+    vi.spyOn(ApiClient.prototype, "organizationSettings").mockResolvedValue({
+      schedule_enabled: false,
+      auto_execute_enabled: false,
+      scan_interval_minutes: 30,
+      source_directory_ids: [],
+      source_directory_labels: [],
+      target_directory_id: null,
+      target_directory_label: null,
+      push_directory_id: null,
+      push_directory_label: null,
+      video_extensions: ["mkv"],
+      metadata_extensions: ["srt"],
+      rename_enabled: true,
+      media_probe_enabled: true,
+      ai_identification_enabled: false,
+      small_file_threshold_mb: 0,
+      cleanup_empty_directories: false,
+      strm_linkage_enabled: false,
+      operation_delay_seconds: 1.5,
+      include_children_category: false,
+      include_concert_category: false,
+      region_grouping_enabled: true,
+      year_grouping_enabled: false,
+      prefer_remux: true,
+      prefer_resolution: true,
+      prefer_dolby: false,
+      conflict_mode: 2,
+      multi_version_enabled: false,
+      revision: 0,
+    });
+    vi.spyOn(ApiClient.prototype, "organizationResult").mockResolvedValue({
+      status: "unknown",
+      available_statuses: ["unknown"],
+      source_count: 0,
+      scanned_count: 0,
+      plan_count: 0,
+      queued_count: 0,
+      blocked_count: 0,
+      blocked_details: [],
+      items: [],
+      finished_at: null,
+      run_id: null,
+    });
     vi.spyOn(ApiClient.prototype, "organizationPlans").mockResolvedValue({ items: [plan], next_cursor: null });
     vi.spyOn(ApiClient.prototype, "organizationPlanOperation").mockResolvedValue(null);
 
     const wrapper = mount(App);
     await flushPromises();
 
-    expect(wrapper.text()).toContain("确认并开始整理");
-    expect(wrapper.text()).not.toContain("这里只改变本地计划状态，不会执行远端操作。");
+    expect(wrapper.text()).toContain("开始整理");
+    expect(wrapper.text()).toContain("停止定时");
+    expect(wrapper.text()).toContain("待处理");
     wrapper.unmount();
   });
 
-  it("does not render an empty search view alongside the workbench", async () => {
-    window.history.replaceState({}, "", "/workbench");
+  it("does not render an empty search view on the home page", async () => {
+    window.history.replaceState({}, "", "/");
     vi.spyOn(ApiClient.prototype, "health").mockResolvedValue({
       status: "ok",
       release: "test",
       push_supported: false,
     });
     vi.spyOn(ApiClient.prototype, "me").mockResolvedValue();
+    vi.spyOn(ApiClient.prototype, "homeCatalog").mockResolvedValue({
+      popular: [],
+      now_playing: [],
+      upcoming: [],
+      top_rated: [],
+      tv_popular: [],
+      tv_on_the_air: [],
+      tv_top_rated: [],
+    });
 
     const wrapper = mount(App);
     await flushPromises();
 
-    expect(wrapper.find(".workbench-view").exists()).toBe(true);
+    expect(wrapper.find(".home-empty-state").exists()).toBe(true);
     expect(wrapper.find(".search-view").exists()).toBe(false);
     expect(wrapper.text()).not.toContain("没有找到相关影视");
     wrapper.unmount();
   });
 
-  it("opens unavailable organization settings at the 115整理 section", async () => {
-    window.history.replaceState({}, "", "/workbench");
+  it("falls back to home when the organization capability is disabled", async () => {
+    window.history.replaceState({}, "", "/organization");
     vi.spyOn(ApiClient.prototype, "health").mockResolvedValue({
       status: "ok",
       release: "test",
@@ -77,29 +130,21 @@ describe("App capability wiring", () => {
       strm_capabilities: { full: false, incremental: false, cleanup: false, playback: false, playback_contract_verified: false },
     });
     vi.spyOn(ApiClient.prototype, "me").mockResolvedValue();
-    const settingsMethods = [
-      "settingsOverview",
-      "loggingSettings",
-      "inspectionSettings",
-      "p115Settings",
-      "prowlarrSettings",
-      "p115Devices",
-      "credentialSettings",
-      "organizationSettings",
-      "organizationResult",
-    ] as const;
-    for (const method of settingsMethods) {
-      vi.spyOn(ApiClient.prototype, method).mockRejectedValue(new ApiError("设置暂不可用", 503, "settings_unavailable"));
-    }
+    vi.spyOn(ApiClient.prototype, "homeCatalog").mockResolvedValue({
+      popular: [],
+      now_playing: [],
+      upcoming: [],
+      top_rated: [],
+      tv_popular: [],
+      tv_on_the_air: [],
+      tv_top_rated: [],
+    });
 
     const wrapper = mount(App);
     await flushPromises();
-    const organizationEntry = wrapper.findAll(".workbench-entry-action").find((button) => button.text().includes("查看整理设置"));
-    expect(organizationEntry).toBeDefined();
-    await organizationEntry!.trigger("click");
-    await wrapper.vm.$nextTick();
 
-    expect(wrapper.get(".settings-section h2").text()).toBe("自动整理");
+    expect(wrapper.find(".home-empty-state").exists()).toBe(true);
+    expect(wrapper.find(".organization-view").exists()).toBe(false);
     wrapper.unmount();
   });
 

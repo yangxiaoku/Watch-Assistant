@@ -18,6 +18,7 @@ from watch_assistant.library_models import (
     LibraryScanRun,
     OrganizationPlan,
 )
+from watch_assistant.models import OrganizationOperation
 from watch_assistant.schemas import MediaType
 from watch_assistant.security import SecurityManager
 from watch_assistant.services.media_matcher import MediaKind, TmdbCandidate
@@ -536,4 +537,127 @@ async def test_no_candidates_can_be_searched_selected_and_queued_as_one_confirme
             "message": "整理执行能力暂不可用，本次操作未排队",
         }
         assert not hasattr(app.state, "organization_worker")
+    await app.state.database.engine.dispose()
+
+
+class _ReadyTaskAdapter:
+    async def ensure_available(self) -> bool:
+        return True
+
+    async def aclose(self) -> None:
+        return None
+
+
+@pytest.mark.integration
+async def test_scheduled_automation_queues_high_confidence_plan_when_write_enabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A scheduled pass with auto-execution enabled confirms and queues the
+    high-confidence partition; nothing requires a manual confirm step."""
+    monkeypatch.setattr(
+        "watch_assistant.app.P115ReadOnlyDirectoryGateway", _FakeDirectoryGateway
+    )
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'automation-scheduled.db'}")
+    await initialize_database(database.engine)
+    password = "automation-scheduled-password"
+    password_hash = PasswordHash.recommended()
+    password_hash_value = password_hash.hash(password)
+
+    from watch_assistant.adapters.p115_library_write_contract import (
+        OrganizationContractEvidence,
+        OrganizationWriteCapability,
+        P115OrganizationContract,
+    )
+
+    capabilities = frozenset(
+        {
+            OrganizationWriteCapability.READ_SCOPE,
+            OrganizationWriteCapability.MOVE,
+            OrganizationWriteCapability.RENAME,
+            OrganizationWriteCapability.RECYCLE,
+            OrganizationWriteCapability.POSTCONDITION,
+        }
+    )
+    contract = P115OrganizationContract(
+        verified=True,
+        capabilities=capabilities,
+        timeout_enforced=True,
+        evidence=OrganizationContractEvidence(
+            evidence_id="automation-scheduled-fixture",
+            capabilities=capabilities,
+            timeout_enforced=True,
+        ),
+    )
+
+    app = _app(
+        database,
+        task_adapter=_ReadyTaskAdapter(),
+        security=SecurityManager(
+            web_password_hash=password_hash_value,
+            script_token_hash=password_hash.hash("unused-script-token"),
+        ),
+        organization_write_enabled=True,
+        organization_write_contract_verified=True,
+    )
+    app.state.organization_contract = contract
+    app.state.organization_write_contract_verified = True
+    async with app.router.lifespan_context(app):
+        assert app.state.p115_ready is True
+        assert hasattr(app.state, "organization_worker")
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://app.test"
+        ) as client:
+            headers = await _login(client, password)
+            current = await client.get(
+                "/api/v1/settings/organization", headers=headers
+            )
+            assert current.status_code == 200
+            configured = await client.patch(
+                "/api/v1/settings/organization",
+                headers=headers,
+                json={
+                    "revision": current.json()["revision"],
+                    "schedule_enabled": False,
+                    "auto_execute_enabled": True,
+                    "source_directory_ids": ["1000"],
+                    "target_directory_id": "9000",
+                    "rename_enabled": True,
+                },
+            )
+            assert configured.status_code == 200
+            assert configured.json()["auto_execute_enabled"] is True
+
+            # Run the scheduled path directly (run-now is manual and would
+            # never queue, by design).
+            automation = app.state.organization_automation_service
+            assert await automation.run_once() is True
+            assert automation.last_result is not None
+            assert automation.last_result.queued_count == 1, (
+                automation.last_result.blocked_details
+            )
+            assert automation.last_result.plan_count == 1
+
+            result = (
+                await client.get(
+                    "/api/v1/settings/organization/result", headers=headers
+                )
+            ).json()
+            assert result["queued_count"] == 1, result
+
+            plans = await client.get(
+                "/api/v1/organization-plans",
+                params={"status": "needs_review", "limit": 20},
+                headers=headers,
+            )
+            assert plans.status_code == 200
+            assert len(plans.json()["items"]) == 0
+
+            async with database.session_factory() as session:
+                operation = await session.scalar(
+                    select(OrganizationOperation)
+                )
+                assert operation is not None
+                assert operation.status == "planned"
+                assert operation.idempotency_key.startswith("auto-")
     await app.state.database.engine.dispose()

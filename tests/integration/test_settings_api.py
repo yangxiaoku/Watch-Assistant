@@ -516,6 +516,7 @@ async def test_organization_settings_persist_and_validate_cid_scope(tmp_path):
         current = await client.get("/api/v1/settings/organization")
         assert current.status_code == 200
         assert current.json()["schedule_enabled"] is False
+        assert current.json()["auto_execute_enabled"] is False
         assert current.json()["scan_interval_minutes"] == 30
 
         updated = await client.patch(
@@ -523,6 +524,7 @@ async def test_organization_settings_persist_and_validate_cid_scope(tmp_path):
             json={
                 "revision": current.json()["revision"],
                 "schedule_enabled": True,
+                "auto_execute_enabled": True,
                 "scan_interval_minutes": 5,
                 "source_directory_ids": ["3482085898508567892"],
                 "source_directory_labels": ["待整理/剧集"],
@@ -538,6 +540,7 @@ async def test_organization_settings_persist_and_validate_cid_scope(tmp_path):
         )
         assert updated.status_code == 200
         assert updated.json()["schedule_enabled"] is True
+        assert updated.json()["auto_execute_enabled"] is True
         assert updated.json()["video_extensions"] == ["mkv", "mp4"]
         assert updated.json()["metadata_extensions"] == ["srt", "nfo"]
         assert updated.json()["push_directory_id"] == "3988794667098701570"

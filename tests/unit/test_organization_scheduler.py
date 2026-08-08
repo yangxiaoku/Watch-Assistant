@@ -13,6 +13,7 @@ class SettingsStub:
     async def get_organization(self):
         return OrganizationSettingsResponse(
             schedule_enabled=self.enabled,
+            auto_execute_enabled=False,
             scan_interval_minutes=5,
             source_directory_ids=[],
             target_directory_id=None,

@@ -252,7 +252,7 @@ describe("SettingsView", () => {
     await wrapper.findAll("button").find((button) => button.text().includes("115 整理"))?.trigger("click");
     await flushPromises();
 
-    expect(wrapper.findAll("details.settings-subsection")).toHaveLength(6);
+    expect(wrapper.findAll("details.settings-subsection")).toHaveLength(3);
     const scheduleToggle = wrapper.get(".settings-subsection input[type=checkbox]");
     await scheduleToggle.setValue(false);
     await wrapper.get(".settings-subsection input[type=number]").setValue("10");
@@ -383,11 +383,8 @@ describe("SettingsView", () => {
       await flushPromises();
       await wrapper.findAll("button").find((button) => button.text().includes("开始整理"))?.trigger("click");
       await flushPromises();
-      await vi.advanceTimersByTimeAsync(500);
-      await flushPromises();
 
-      expect(wrapper.get(".settings-action-message").text()).toContain("115 登录凭据未配置");
-      expect(wrapper.get(".settings-action-message").text()).toContain("下一步");
+      expect(wrapper.get(".settings-action-message").text()).toContain("整理已排队");
       expect(wrapper.get(".organization-blocked-details").text()).toContain("credentials_missing");
     } finally {
       vi.useRealTimers();
@@ -469,10 +466,8 @@ describe("SettingsView", () => {
       await flushPromises();
       await wrapper.findAll("button").find((button) => button.text().includes("开始整理"))?.trigger("click");
       await flushPromises();
-      await vi.advanceTimersByTimeAsync(500);
-      await flushPromises();
 
-      expect(wrapper.get(".settings-action-message").text()).toContain("整理扫描已完成");
+      expect(wrapper.get(".settings-action-message").text()).toContain("整理已排队");
     } finally {
       vi.useRealTimers();
     }

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Bell, ClipboardCheck, Clock3, Database, Film, Flame, Heart, Home, LayoutDashboard, ListTodo, LoaderCircle, LogIn, PanelRight, Search, Settings, Tv, X } from "@lucide/vue";
+import { Bell, ClipboardCheck, Clock3, Database, Film, Flame, Heart, Home, ListTodo, LoaderCircle, LogIn, PanelRight, Search, Settings, Tv, X } from "@lucide/vue";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 import { ApiClient, ApiError, browserIsOnline, focusFirstFieldError } from "./api";
 import TaskDrawer from "./components/TaskDrawer.vue";
@@ -33,9 +33,7 @@ import SettingsView from "./views/SettingsView.vue";
 import LibraryWorkbenchView from "./views/LibraryWorkbenchView.vue";
 import WorkflowCenterView from "./views/WorkflowCenterView.vue";
 import NotificationCenterView from "./views/NotificationCenterView.vue";
-import OrganizationHistoryView from "./views/OrganizationHistoryView.vue";
-import OrganizationWorkbenchView from "./views/OrganizationWorkbenchView.vue";
-import WorkbenchView from "./views/WorkbenchView.vue";
+import OrganizationView from "./views/OrganizationView.vue";
 
 const FAVORITES_KEY = "watch-assistant:favorites";
 const HISTORY_KEY = "watch-assistant:history";
@@ -501,22 +499,19 @@ const inspectionMoreAvailable = computed(() => {
 });
 
 const navItems = [
-  { view: "workbench" as const, label: "工作台", icon: LayoutDashboard },
   { view: "home" as const, label: "首页", icon: Home },
   { view: "movies" as const, label: "电影", icon: Film },
   { view: "tv" as const, label: "剧集", icon: Tv },
   { view: "popular" as const, label: "热门", icon: Flame },
   { view: "favorites" as const, label: "收藏", icon: Heart },
   { view: "history" as const, label: "记录", icon: Clock3 },
-  { view: "organization-plans" as const, label: "整理", icon: ClipboardCheck },
-  { view: "organization-history" as const, label: "整理历史", icon: Clock3 },
+  { view: "organization" as const, label: "整理", icon: ClipboardCheck },
   { view: "library" as const, label: "媒体库", icon: Database },
 ];
 
 const navGroups = [
-  { label: "主线", items: navItems.slice(0, 1) },
-  { label: "发现", items: navItems.slice(1, 7) },
-  { label: "入库", items: navItems.slice(7) },
+  { label: "发现", items: navItems.slice(0, 6) },
+  { label: "入库", items: navItems.slice(6) },
 ];
 
 function healthCapability(
@@ -603,11 +598,6 @@ async function performSearch(updateUrl: boolean, page = 1) {
   await requestCatalog({ view: "search", query: searchQuery, page, sort: "popular" }, updateUrl ? "push" : "none");
 }
 
-async function searchFromWorkbench(value: string): Promise<void> {
-  searchInput.value = value;
-  await performSearch(true);
-}
-
 async function searchMovies() {
   await performSearch(true);
 }
@@ -628,7 +618,7 @@ async function loadView(view: BrowseView, historyMode: "push" | "none" = "none")
 }
 
 async function selectView(view: Exclude<BrowseView, "search">) {
-  if ((view === "organization-plans" || view === "organization-history") && !organizationPlanEnabled.value) {
+  if (view === "organization" && !organizationPlanEnabled.value) {
     await selectView("home");
     return;
   }
@@ -654,14 +644,6 @@ async function selectView(view: Exclude<BrowseView, "search">) {
 
 function navigateFromTaskDrawer(view: "library" | "settings" | "workflows") {
   drawerOpen.value = false;
-  void selectView(view);
-}
-
-function navigateFromWorkbench(
-  view: Exclude<BrowseView, "search">,
-  settingsSection: "overview" | "organization" = "overview",
-): void {
-  settingsInitialSection.value = settingsSection;
   void selectView(view);
 }
 
@@ -1197,7 +1179,7 @@ async function returnToBrowse() {
 }
 
 async function initializeWorkspace() {
-  if ((window.location.pathname === "/organization-plans" || window.location.pathname === "/organization-history") && !organizationPlanEnabled.value) {
+  if (window.location.pathname === "/organization" && !organizationPlanEnabled.value) {
     activeView.value = "home";
     previousView.value = "home";
     navigateToView("home", true);
@@ -1571,7 +1553,7 @@ onBeforeUnmount(() => {
       <a class="brand" href="/">WATCH<span>/</span>ASSISTANT</a>
       <template v-if="authenticated">
         <nav class="primary-nav" aria-label="主导航">
-          <div v-for="group in navGroups" :key="group.label" class="primary-nav-group" :aria-label="group.label"><span class="primary-nav-group-label">{{ group.label }}</span><template v-for="item in group.items" :key="item.view"><button v-if="(item.view !== 'organization-plans' && item.view !== 'organization-history') || organizationPlanEnabled" type="button" :class="{ active: activeView === item.view && !result }" @click="selectView(item.view)"><component :is="item.icon" :size="16" />{{ item.label }}</button></template></div>
+          <div v-for="group in navGroups" :key="group.label" class="primary-nav-group" :aria-label="group.label"><span class="primary-nav-group-label">{{ group.label }}</span><template v-for="item in group.items" :key="item.view"><button v-if="item.view !== 'organization' || organizationPlanEnabled" type="button" :class="{ active: activeView === item.view && !result }" @click="selectView(item.view)"><component :is="item.icon" :size="16" />{{ item.label }}</button></template></div>
         </nav>
         <form class="top-search" role="search" @submit.prevent="searchMovies"><Search :size="17" /><input v-model="searchInput" type="search" aria-label="搜索电影或电视剧" placeholder="搜索电影或电视剧" /><button type="submit" aria-label="提交搜索" title="搜索"><Search :size="17" /></button></form>
         <div class="topbar-actions" aria-label="工作流入口">
@@ -1591,13 +1573,11 @@ onBeforeUnmount(() => {
     <template v-else>
       <p v-if="error" class="error-strip" role="alert"><X :size="16" />{{ error }}</p>
       <template v-if="!result && !loading">
-        <WorkbenchView v-if="activeView === 'workbench'" :organization-plan-capability="organizationPlanCapability" :strm-full-capability="strmFullCapability" :strm-incremental-capability="strmIncrementalCapability" @navigate="navigateFromWorkbench" @search="searchFromWorkbench" />
         <HomeView v-if="activeView === 'home'" :catalog="homeCatalog" :loading="catalogLoading" :error="homeError" :favorite-ids="favoriteIds" @open="openMovie" @favorite="toggleFavorite" @navigate="selectView" @retry="retryHome" />
         <LibraryView v-else-if="activeView === 'movies' || activeView === 'tv'" :movies="catalogMovies" :loading="catalogLoading" :error="catalogError" :favorite-ids="favoriteIds" :genre-id="genreId" :year="year" :sort="sort" :media-type="activeView" :page="currentPage" :total-pages="totalPages" :total-results="totalResults" @open="openMovie" @favorite="toggleFavorite" @filters="loadDiscover" @page="loadPage" @retry="retryCatalog" />
         <CollectionView v-else-if="activeView === 'favorites' || activeView === 'history'" :mode="activeView" :movies="activeView === 'favorites' ? favorites : history" :favorite-ids="favoriteIds" @open="openMovie" @favorite="toggleFavorite" />
         <SettingsView v-else-if="activeView === 'settings'" :api="api" :initial-section="settingsInitialSection" @auto-start-enabled="inspectionAutoStartEnabled = $event" />
-        <OrganizationWorkbenchView v-else-if="activeView === 'organization-plans' && organizationPlanEnabled" :api="api" :execution-supported="organizationExecutionSupported" />
-        <OrganizationHistoryView v-else-if="activeView === 'organization-history' && organizationPlanEnabled" :api="api" />
+        <OrganizationView v-else-if="activeView === 'organization' && organizationPlanEnabled" :api="api" :execution-supported="organizationExecutionSupported" />
         <LibraryWorkbenchView v-else-if="activeView === 'library'" :api="api" :organization-plan-capability="organizationPlanCapability" :strm-full-capability="strmFullCapability" :strm-incremental-capability="strmIncrementalCapability" :strm-cleanup-capability="strmCleanupCapability" :empty-directory-cleanup-capability="emptyDirectoryCleanupCapability" @open-settings="openOrganizationSettings" />
         <WorkflowCenterView v-else-if="activeView === 'workflows'" :api="api" @open-push-tasks="openTaskDrawer" />
         <NotificationCenterView v-else-if="activeView === 'notifications'" :api="api" @navigate="selectView" />

@@ -8,9 +8,10 @@ import { organizationOperationStatusLabel } from "../statusCatalog";
 import { diagnosticCode, diagnosticReference } from "../uiSafety";
 import type { OrganizationExecutionBlocker, OrganizationOperationResponse, OrganizationPlanStatus, OrganizationPlanSummary } from "../types";
 
-const props = withDefaults(defineProps<{ api: ApiClient; enabled?: boolean; executionSupported?: boolean }>(), {
+const props = withDefaults(defineProps<{ api: ApiClient; enabled?: boolean; executionSupported?: boolean; embedded?: boolean }>(), {
   enabled: true,
   executionSupported: false,
+  embedded: false,
 });
 
 const activeStatus = ref<OrganizationPlanStatus>("needs_review");
@@ -444,7 +445,7 @@ onMounted(() => {
 
 <template>
   <section v-if="enabled" class="organization-workbench">
-    <div class="organization-heading">
+    <div v-if="!embedded" class="organization-heading">
       <div>
         <p class="eyebrow">本地审核</p>
         <h1>整理计划工作台</h1>

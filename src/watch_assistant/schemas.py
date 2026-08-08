@@ -704,6 +704,7 @@ class OrganizationSettingsResponse(BaseModel):
     model_config = {"extra": "forbid"}
 
     schedule_enabled: bool
+    auto_execute_enabled: bool
     scan_interval_minutes: int = Field(ge=5, le=1440)
     source_directory_ids: list[str] = Field(max_length=50)
     source_directory_labels: list[str] = Field(default_factory=list, max_length=50)
@@ -736,6 +737,7 @@ class OrganizationSettingsPatch(BaseModel):
     model_config = {"extra": "forbid"}
 
     schedule_enabled: bool | None = None
+    auto_execute_enabled: bool | None = None
     scan_interval_minutes: int | None = Field(default=None, ge=5, le=1440)
     source_directory_ids: list[str] | None = Field(default=None, max_length=50)
     source_directory_labels: list[str] | None = Field(default=None, max_length=50)

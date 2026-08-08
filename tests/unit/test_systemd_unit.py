@@ -27,6 +27,9 @@ postdeploy = _load("postdeploy_release_check")
 
 
 def _owner() -> tuple[int, int]:
+    # Windows has no POSIX uid/gid; 0 is the safe default the scripts use.
+    if os.name == "nt":
+        return 0, 0
     return os.getuid(), os.getgid()
 
 
@@ -66,6 +69,7 @@ def _write_package(
     return service
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX unit mode bits are required")
 def test_unit_drift_is_rejected_without_explicit_install(tmp_path: Path):
     package = tmp_path / "release"
     source = _write_package(package, "a" * 40)
@@ -87,6 +91,7 @@ def test_unit_drift_is_rejected_without_explicit_install(tmp_path: Path):
         )
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX unit mode bits are required")
 def test_opt_in_unit_install_is_atomic_and_restorable(tmp_path: Path):
     package = tmp_path / "release"
     source = _write_package(package, "a" * 40)
@@ -142,6 +147,7 @@ def test_unknown_drop_in_blocks_install_and_is_not_removed(tmp_path: Path):
     assert unknown.exists()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX unit mode bits are required")
 def test_managed_inspection_drop_in_allows_crlf_and_checks_contract(tmp_path: Path):
     package = tmp_path / "release"
     source = _write_package(package, "a" * 40)
@@ -173,6 +179,7 @@ def test_managed_inspection_drop_in_allows_crlf_and_checks_contract(tmp_path: Pa
     assert change.install is False
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX unit mode bits are required")
 def test_postdeploy_verifies_unit_digest_and_drop_ins(tmp_path: Path, monkeypatch):
     commit = "a" * 40
     current_root = tmp_path / "current"
@@ -201,6 +208,8 @@ def test_postdeploy_verifies_unit_digest_and_drop_ins(tmp_path: Path, monkeypatc
     )
     monkeypatch.setattr(postdeploy, "_read_health", lambda *_args: commit)
 
+    uid, gid = _owner()
+
     assert postdeploy.check_release_consistency(
         version_file=current_root / "VERSION",
         unit="watch-assistant.service",
@@ -209,8 +218,8 @@ def test_postdeploy_verifies_unit_digest_and_drop_ins(tmp_path: Path, monkeypatc
         current_root=current_root,
         unit_path=destination,
         drop_in_dir=drop_in_dir,
-        unit_uid=os.getuid(),
-        unit_gid=os.getgid(),
+        unit_uid=uid,
+        unit_gid=gid,
         health_timeout=0.01,
         health_poll_interval=0.005,
     ) == (True, "ok")
@@ -225,8 +234,8 @@ def test_postdeploy_verifies_unit_digest_and_drop_ins(tmp_path: Path, monkeypatc
         current_root=current_root,
         unit_path=destination,
         drop_in_dir=drop_in_dir,
-        unit_uid=os.getuid(),
-        unit_gid=os.getgid(),
+        unit_uid=uid,
+        unit_gid=gid,
         health_timeout=0.01,
         health_poll_interval=0.005,
     ) == (False, "unit_drop_in_present")
@@ -328,6 +337,8 @@ def test_postdeploy_rollback_unit_digest_does_not_require_legacy_manifest(
     )
     monkeypatch.setattr(postdeploy, "_read_health", lambda *_args: commit)
 
+    uid, gid = _owner()
+
     assert postdeploy.check_release_consistency(
         version_file=current_root / "VERSION",
         unit="watch-assistant.service",
@@ -336,8 +347,8 @@ def test_postdeploy_rollback_unit_digest_does_not_require_legacy_manifest(
         current_root=current_root,
         unit_path=destination,
         unit_sha256=hashlib.sha256(destination.read_bytes()).hexdigest(),
-        unit_uid=os.getuid(),
-        unit_gid=os.getgid(),
+        unit_uid=uid,
+        unit_gid=gid,
         health_timeout=0.01,
         health_poll_interval=0.005,
     ) == (True, "ok")

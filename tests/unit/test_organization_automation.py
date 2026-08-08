@@ -16,7 +16,10 @@ from watch_assistant.services.organization_automation import (
     OrganizationAutomationError,
     OrganizationAutomationService,
 )
-from watch_assistant.services.organization_plan import OrganizationPlanService
+from watch_assistant.services.organization_plan import (
+    OrganizationPlanError,
+    OrganizationPlanService,
+)
 from watch_assistant.services.organization_preview import OrganizationPreviewService
 
 
@@ -99,9 +102,10 @@ class _Gateway:
 
 
 class _Settings:
-    def __init__(self, *, configured: bool):
+    def __init__(self, *, configured: bool, auto_execute_enabled: bool = False):
         self.value = OrganizationSettingsResponse(
             schedule_enabled=True,
+            auto_execute_enabled=auto_execute_enabled,
             scan_interval_minutes=5,
             source_directory_ids=["1000"] if configured else [],
             target_directory_id="9000" if configured else None,
@@ -382,14 +386,16 @@ async def test_automation_preserves_stable_inner_failure_code(
 
 
 @pytest.mark.asyncio
-async def test_automation_only_persists_pending_plan_without_confirming_or_provisioning(
+async def test_automation_auto_executes_planned_partition_and_never_provisions(
     tmp_path: Path,
 ):
     database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'automation-write.db'}")
     await initialize_database(database.engine)
     operations = _Operations()
     events = _Events()
-    plan_service = OrganizationPlanService(database.session_factory)
+    plan_service = OrganizationPlanService(
+        database.session_factory, event_logger=events
+    )
     preview = OrganizationPreviewService(
         database.session_factory, _TmdbClient(), plan_service
     )
@@ -401,7 +407,7 @@ async def test_automation_only_persists_pending_plan_without_confirming_or_provi
 
     service = OrganizationAutomationService(
         database.session_factory,
-        _Settings(configured=True),
+        _Settings(configured=True, auto_execute_enabled=True),
         preview,
         plan_service,
         lambda _authorized: _Gateway(),
@@ -413,16 +419,23 @@ async def test_automation_only_persists_pending_plan_without_confirming_or_provi
 
     assert await service.run_once() is True
     assert service.last_result is not None
-    assert service.last_result.queued_count == 0
-    assert operations.calls == []
+    assert service.last_result.queued_count == 1
+    assert service.last_result.blocked_count == 0
+    assert len(operations.calls) == 1
     assert provision_calls == []
+    assert operations.calls[0][1]["idempotency_key"].startswith("auto-")
+    assert not any(
+        event == "organize.plan.awaiting_confirmation"
+        for event, _fields in events.events
+    )
     assert any(
-        event == "organize.plan.awaiting_confirmation" for event, _fields in events.events
+        event == "organize.plan.confirmed" for event, _fields in events.events
     )
     async with database.session_factory() as session:
         plan = await session.scalar(select(OrganizationPlan))
         assert plan is not None
         assert plan.status == "planned"
+        assert plan.revision == 1
     await database.engine.dispose()
 
 
@@ -558,4 +571,229 @@ async def test_automation_exposes_incomplete_scan_block_reason_and_event(
             },
         )
     ]
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_automation_auto_execute_disabled_by_setting_queues_nothing(
+    tmp_path: Path,
+):
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'automation-no-setting.db'}")
+    await initialize_database(database.engine)
+    operations = _Operations()
+    plan_service = OrganizationPlanService(database.session_factory)
+    preview = OrganizationPreviewService(
+        database.session_factory, _TmdbClient(), plan_service
+    )
+    service = OrganizationAutomationService(
+        database.session_factory,
+        _Settings(configured=True, auto_execute_enabled=False),
+        preview,
+        plan_service,
+        lambda _authorized: _Gateway(),
+        operation_service=operations,
+        auto_execute=True,
+    )
+
+    assert await service.run_once() is True
+    assert service.last_result is not None
+    assert service.last_result.queued_count == 0
+    assert operations.calls == []
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_automation_without_operation_service_never_queues(tmp_path: Path):
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'automation-no-ops.db'}")
+    await initialize_database(database.engine)
+    plan_service = OrganizationPlanService(database.session_factory)
+    preview = OrganizationPreviewService(
+        database.session_factory, _TmdbClient(), plan_service
+    )
+    service = OrganizationAutomationService(
+        database.session_factory,
+        _Settings(configured=True, auto_execute_enabled=True),
+        preview,
+        plan_service,
+        lambda _authorized: _Gateway(),
+        operation_service=None,
+        auto_execute=True,
+    )
+
+    assert await service.run_once() is True
+    assert service.last_result is not None
+    assert service.last_result.queued_count == 0
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_automation_write_path_disabled_never_queues(tmp_path: Path):
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'automation-write-off.db'}")
+    await initialize_database(database.engine)
+    operations = _Operations()
+    plan_service = OrganizationPlanService(database.session_factory)
+    preview = OrganizationPreviewService(
+        database.session_factory, _TmdbClient(), plan_service
+    )
+    service = OrganizationAutomationService(
+        database.session_factory,
+        _Settings(configured=True, auto_execute_enabled=True),
+        preview,
+        plan_service,
+        lambda _authorized: _Gateway(),
+        operation_service=operations,
+        auto_execute=False,
+    )
+
+    assert await service.run_once() is True
+    assert service.last_result is not None
+    assert service.last_result.queued_count == 0
+    assert operations.calls == []
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_automation_manual_run_never_queues_auto_partition(tmp_path: Path):
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'automation-manual-auto.db'}")
+    await initialize_database(database.engine)
+    operations = _Operations()
+    plan_service = OrganizationPlanService(database.session_factory)
+    preview = OrganizationPreviewService(
+        database.session_factory, _TmdbClient(), plan_service
+    )
+    service = OrganizationAutomationService(
+        database.session_factory,
+        _Settings(configured=True, auto_execute_enabled=True),
+        preview,
+        plan_service,
+        lambda _authorized: _Gateway(),
+        operation_service=operations,
+        auto_execute=True,
+    )
+
+    assert await service.run_once(manual_confirmation=True) is True
+    assert service.last_result is not None
+    assert service.last_result.queued_count == 0
+    assert operations.calls == []
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_automation_stale_revision_blocks_plan_queue(tmp_path: Path, monkeypatch):
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'automation-stale.db'}")
+    await initialize_database(database.engine)
+    operations = _Operations()
+    plan_service = OrganizationPlanService(database.session_factory)
+    preview = OrganizationPreviewService(
+        database.session_factory, _TmdbClient(), plan_service
+    )
+    service = OrganizationAutomationService(
+        database.session_factory,
+        _Settings(configured=True, auto_execute_enabled=True),
+        preview,
+        plan_service,
+        lambda _authorized: _Gateway(),
+        operation_service=operations,
+        auto_execute=True,
+    )
+
+    async def failing_confirm(plan_id, *, expected_revision):
+        raise OrganizationPlanError("stale_revision")
+
+    monkeypatch.setattr(plan_service, "confirm_plan", failing_confirm)
+
+    assert await service.run_once() is True
+    assert service.last_result is not None
+    assert service.last_result.queued_count == 0
+    assert service.last_result.blocked_count == 1
+    assert service.last_result.blocked_details[0].error_code == "stale_revision"
+    assert operations.calls == []
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_automation_operation_conflict_blocks_queue(tmp_path: Path):
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'automation-conflict.db'}")
+    await initialize_database(database.engine)
+    plan_service = OrganizationPlanService(database.session_factory)
+    preview = OrganizationPreviewService(
+        database.session_factory, _TmdbClient(), plan_service
+    )
+
+    class _ConflictingOperations(_Operations):
+        async def create(self, plan_id, **kwargs):
+            self.calls.append((plan_id, kwargs))
+            from watch_assistant.services.organization_operations import (
+                OrganizationOperationConflict,
+            )
+
+            raise OrganizationOperationConflict("operation_plan_conflict")
+
+    operations = _ConflictingOperations()
+    service = OrganizationAutomationService(
+        database.session_factory,
+        _Settings(configured=True, auto_execute_enabled=True),
+        preview,
+        plan_service,
+        lambda _authorized: _Gateway(),
+        operation_service=operations,
+        auto_execute=True,
+    )
+
+    assert await service.run_once() is True
+    assert service.last_result is not None
+    assert service.last_result.queued_count == 0
+    assert service.last_result.blocked_count == 1
+    assert (
+        service.last_result.blocked_details[0].error_code
+        == "operation_plan_conflict"
+    )
+    async with database.session_factory() as session:
+        plan = await session.scalar(select(OrganizationPlan))
+        assert plan is not None
+        assert plan.status == "planned"
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_automation_queue_is_idempotent_across_runs(
+    tmp_path: Path, monkeypatch
+):
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'automation-idempotent.db'}")
+    await initialize_database(database.engine)
+    operations = _Operations()
+    plan_service = OrganizationPlanService(database.session_factory)
+    preview = OrganizationPreviewService(
+        database.session_factory, _TmdbClient(), plan_service
+    )
+    service = OrganizationAutomationService(
+        database.session_factory,
+        _Settings(configured=True, auto_execute_enabled=True),
+        preview,
+        plan_service,
+        lambda _authorized: _Gateway(),
+        operation_service=operations,
+        auto_execute=True,
+    )
+    # A stable scan idempotency key makes the second run reuse the same scan
+    # snapshot, so plan creation dedupes to the same plan and the same
+    # deterministic operation key.
+    monkeypatch.setattr(
+        automation_module,
+        "_scan_idempotency_key",
+        lambda _source_id: "fixed-scan-key",
+    )
+
+    assert await service.run_once() is True
+    assert service.last_result is not None
+    assert service.last_result.queued_count == 1
+    first_key = operations.calls[0][1]["idempotency_key"]
+
+    assert await service.run_once() is True
+    assert service.last_result.queued_count == 1
+    assert operations.calls[1][1]["idempotency_key"] == first_key
+    async with database.session_factory() as session:
+        plan = await session.scalar(select(OrganizationPlan))
+        assert plan is not None
+        assert plan.status == "planned"
     await database.engine.dispose()

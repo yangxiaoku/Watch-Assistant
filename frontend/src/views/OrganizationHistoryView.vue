@@ -4,7 +4,9 @@ import { onMounted, ref } from "vue";
 import { ApiClient, ApiError } from "../api";
 import type { OrganizationHistoryItem } from "../types";
 
-const props = defineProps<{ api: ApiClient }>();
+const props = withDefaults(defineProps<{ api: ApiClient; embedded?: boolean }>(), {
+  embedded: false,
+});
 const items = ref<OrganizationHistoryItem[]>([]);
 const nextCursor = ref<number | null>(null);
 const loading = ref(false);
@@ -33,7 +35,7 @@ onMounted(() => void load());
 
 <template>
   <main class="organization-history-page">
-    <header class="organization-heading">
+    <header v-if="!embedded" class="organization-heading">
       <div>
         <p class="eyebrow">115 网盘</p>
         <h1>整理历史</h1>

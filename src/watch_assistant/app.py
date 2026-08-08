@@ -755,6 +755,8 @@ def create_app(
                 application.state.organization_preview_service,
                 application.state.organization_plan_service,
                 gateway_factory,
+                operation_service=application.state.organization_operation_service,
+                auto_execute=write_enabled,
                 hydrate_file_details=True,
                 event_logger=application.state.settings_service,
             )

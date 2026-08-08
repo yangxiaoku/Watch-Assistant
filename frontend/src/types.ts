@@ -531,6 +531,7 @@ export interface InspectionSettingsResponse {
 
 export interface OrganizationSettingsResponse {
   schedule_enabled: boolean;
+  auto_execute_enabled: boolean;
   scan_interval_minutes: number;
   source_directory_ids: string[];
   source_directory_labels?: string[];
@@ -561,6 +562,7 @@ export interface OrganizationSettingsResponse {
 
 export interface PatchOrganizationSettingsRequest {
   schedule_enabled?: boolean;
+  auto_execute_enabled?: boolean;
   scan_interval_minutes?: number;
   source_directory_ids?: string[];
   source_directory_labels?: string[];

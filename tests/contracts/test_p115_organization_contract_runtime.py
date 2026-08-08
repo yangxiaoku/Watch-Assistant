@@ -37,6 +37,10 @@ def _write_evidence(path: Path, **overrides: object) -> None:
         path.chmod(0o600)
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="evidence permission bits are not representable on Windows",
+)
 def test_runtime_loader_accepts_only_redacted_versioned_evidence(tmp_path: Path):
     evidence_path = tmp_path / "organization-contract.json"
     _write_evidence(evidence_path)
@@ -113,6 +117,10 @@ def test_runtime_loader_rejects_symlink_evidence(tmp_path: Path):
     assert status == "organization_contract_evidence_symlink"
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="evidence permission bits are not representable on Windows",
+)
 def test_create_app_loads_runtime_evidence_but_legacy_flag_cannot_do_so(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

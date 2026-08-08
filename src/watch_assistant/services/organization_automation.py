@@ -10,6 +10,7 @@ import uuid
 from collections.abc import Awaitable, Callable, Collection, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import PurePosixPath
 from typing import Literal
 
 from sqlalchemy import select
@@ -25,7 +26,9 @@ from watch_assistant.adapters.p115_library_gateway import (
     P115ReadOnlyGatewayError,
 )
 from watch_assistant.library_models import (
+    LibraryScanCheckpoint,
     LibraryScanEntry,
+    LibraryScanRun,
     MediaLibrary,
     OrganizationPlan,
 )
@@ -40,6 +43,8 @@ from watch_assistant.services.organization_directory_provisioner import (
     OrganizationDirectoryProvisionError,
 )
 from watch_assistant.services.organization_operations import (
+    OrganizationOperationConflict,
+    OrganizationOperationPrerequisiteError,
     OrganizationOperationService,
 )
 from watch_assistant.services.organization_plan import (
@@ -52,6 +57,7 @@ from watch_assistant.services.organization_preview import (
     OrganizationPreviewService,
 )
 from watch_assistant.services.organization_target import (
+    OrganizationTargetCatalog,
     OrganizationTargetError,
     read_target_catalog,
 )
@@ -165,9 +171,11 @@ class OrganizationAutomationService:
         self._gateway_factory = gateway_factory
         self._operations = operation_service
         self._hydrate_file_details = bool(hydrate_file_details)
-        # Kept in the constructor for compatibility with older wiring.  A
-        # planning pass must never use either value to obtain write authority.
-        del auto_execute, directory_provisioner
+        # Auto-execution only confirms and queues plans; the real write gate
+        # stays at the worker/transport level.  The service never provisions
+        # directories and never holds write credentials.
+        self._auto_execute = bool(auto_execute)
+        del directory_provisioner
         self._event_logger = event_logger or settings_service
         self._lock = asyncio.Lock()
         self.last_result: OrganizationAutomationResult | None = None
@@ -285,9 +293,16 @@ class OrganizationAutomationService:
                     )
                     await self._log_blocked(source_id, error_code, phase="scan")
                     continue
-                if await self._scan_contains_directory(
-                    scan.run_id,
-                    (set(settings.source_directory_ids) | {target_id}) - {source_id},
+                target_tree_recorded = await self._target_tree_recorded(
+                    scan.run_id, target_id
+                )
+                if (
+                    not target_tree_recorded
+                    and await self._scan_contains_directory(
+                        scan.run_id,
+                        (set(settings.source_directory_ids) | {target_id})
+                        - {source_id},
+                    )
                 ):
                     blocked += 1
                     blocked_details.append(
@@ -296,6 +311,22 @@ class OrganizationAutomationService:
                         )
                     )
                     await self._log_blocked(source_id, "source_target_overlap", phase="scan")
+                    continue
+                try:
+                    await self._record_target_tree(
+                        scan.run_id, target_id, catalog
+                    )
+                except (
+                    OrganizationAutomationError,
+                    OrganizationPlanError,
+                    OrganizationTargetError,
+                ) as error:
+                    error_code, phase = _classify_error(error)
+                    blocked += 1
+                    blocked_details.append(
+                        _blocked_detail(source_id, error_code, phase=phase)
+                    )
+                    await self._log_blocked(source_id, error_code, phase=phase)
                     continue
                 scanned += 1
                 preview_kwargs = {
@@ -330,9 +361,36 @@ class OrganizationAutomationService:
                 else:
                     preview_plans = [await self._preview.create_preview(**preview_kwargs)]
                 plans += len(preview_plans)
+                queue_enabled = (
+                    self._auto_execute
+                    and self._operations is not None
+                    and not manual_confirmation
+                    and settings.auto_execute_enabled
+                )
                 for plan in preview_plans:
                     plan_ids.append(plan.plan_id)
-                    await self._log_preview(plan.status.value, plan.source_count)
+                    if (
+                        queue_enabled
+                        and plan.status == OrganizationPlanStatus.PLANNED.value
+                    ):
+                        outcome = await self._queue_auto_plan(plan.plan_id)
+                        if outcome is None:
+                            queued += 1
+                            await self._log_preview(
+                                plan.status.value,
+                                plan.source_count,
+                                auto_queued=True,
+                            )
+                        else:
+                            blocked += 1
+                            blocked_details.append(
+                                _blocked_detail(source_id, outcome, phase="plan")
+                            )
+                            await self._log_blocked(
+                                source_id, outcome, phase="plan"
+                            )
+                    else:
+                        await self._log_preview(plan.status.value, plan.source_count)
             except asyncio.CancelledError:
                 raise
             except (
@@ -503,7 +561,161 @@ class OrganizationAutomationService:
             )
         return found is not None
 
-    async def _log_preview(self, status: str, count: int) -> None:
+    async def _target_tree_recorded(self, scan_run_id: str, target_id: str) -> bool:
+        """Return whether this scan run already carries the target-tree evidence.
+
+        A completed tree run may be reused across passes (same idempotency
+        key); the target tree recorded by a previous pass must not be
+        mistaken for a source-target overlap.
+        """
+        async with self._session_factory() as session:
+            found = await session.scalar(
+                select(LibraryScanEntry.object_id)
+                .where(
+                    LibraryScanEntry.scan_run_id == scan_run_id,
+                    LibraryScanEntry.object_type == "directory",
+                    LibraryScanEntry.object_id == target_id,
+                )
+                .limit(1)
+            )
+        return found is not None
+
+    async def _record_target_tree(
+        self,
+        scan_run_id: str,
+        target_id: str,
+        catalog: OrganizationTargetCatalog,
+    ) -> None:
+        """Append the frozen target directory tree to the source scan run.
+
+        Plan confirmation re-validates executable steps against the scan run's
+        managed directory set, which must include every target directory the
+        plan may write into.  The target catalog was read (read-only) earlier
+        in this pass, so the tree is recorded after the source-target overlap
+        check and before preview creation.
+        """
+        async with self._session_factory() as session:
+            run = await session.get(LibraryScanRun, scan_run_id)
+            checkpoint = await session.get(LibraryScanCheckpoint, scan_run_id)
+            if run is None or checkpoint is None:
+                raise OrganizationAutomationError(
+                    "scan_not_current", phase="scan"
+                )
+            existing_ids = set(
+                (
+                    await session.scalars(
+                        select(LibraryScanEntry.object_id).where(
+                            LibraryScanEntry.scan_run_id == scan_run_id,
+                            LibraryScanEntry.object_type == "directory",
+                        )
+                    )
+                ).all()
+            )
+            if target_id in existing_ids:
+                return
+            by_path = catalog.by_path
+            target_rows: list[tuple[str, str, str, str]] = [
+                (target_id, run.root_directory_id, "target-root", "target-root")
+            ]
+            for path, object_id in by_path.items():
+                if not path:
+                    continue
+                parent_path = str(PurePosixPath(path).parent)
+                parent_key = "" if parent_path == "." else _index_path(parent_path)
+                parent = (
+                    run.root_directory_id
+                    if not parent_key
+                    else by_path.get(parent_key, target_id)
+                )
+                target_rows.append(
+                    (object_id, parent, PurePosixPath(path).name, path)
+                )
+            for object_id, parent_id, name, path in target_rows:
+                if object_id in existing_ids:
+                    continue
+                session.add(
+                    LibraryScanEntry(
+                        scan_run_id=scan_run_id,
+                        object_type="directory",
+                        object_id=object_id,
+                        parent_id=parent_id,
+                        name=name,
+                        path=path,
+                        is_directory=True,
+                    )
+                )
+            await session.flush()
+            entries = list(
+                (
+                    await session.scalars(
+                        select(LibraryScanEntry).where(
+                            LibraryScanEntry.scan_run_id == scan_run_id
+                        )
+                    )
+                ).all()
+            )
+            visited = [run.root_directory_id]
+            directory_totals = {run.root_directory_id: 0}
+            for entry in entries:
+                assert isinstance(entry.parent_id, str)
+                directory_totals[entry.parent_id] = (
+                    directory_totals.get(entry.parent_id, 0) + 1
+                )
+                if entry.is_directory:
+                    visited.append(entry.object_id)
+                    directory_totals.setdefault(entry.object_id, 0)
+            assert set(directory_totals) == set(visited)
+            run.scan_mode = "tree"
+            run.expected_total = len(entries)
+            run.items_seen = len(entries)
+            checkpoint.page = run.pages_read
+            checkpoint.items_seen = len(entries)
+            checkpoint.cursor_json = json.dumps(
+                {
+                    "version": 2,
+                    "directory_totals": directory_totals,
+                    "expected_total": len(entries),
+                    "pending": [],
+                    "visited": visited,
+                },
+                ensure_ascii=False,
+            )
+            await session.commit()
+
+    async def _queue_auto_plan(self, plan_id: str) -> str | None:
+        """Confirm and queue one auto-partition plan.
+
+        Returns None on success; a stable error code when the plan could not
+        be queued.  Confirmation re-validates the executable steps so a plan
+        whose snapshot prerequisites changed is never queued.
+        """
+        try:
+            async with self._session_factory() as session:
+                plan = await session.get(OrganizationPlan, plan_id)
+                if plan is None:
+                    return "plan_not_found"
+                expected_revision = plan.revision
+            view = await self._plans.confirm_plan(
+                plan_id, expected_revision=expected_revision
+            )
+            await self._operations.create(
+                plan_id,
+                idempotency_key=f"auto-{plan_id}",
+                expected_plan_revision=view.revision,
+            )
+        except (
+            OrganizationPlanError,
+            OrganizationOperationConflict,
+            OrganizationOperationPrerequisiteError,
+        ) as error:
+            return _stable_error_code(error)
+        except Exception:  # noqa: BLE001 - a queue failure never fails the pass
+            return "auto_queue_failed"
+        return None
+
+    async def _log_preview(
+        self, status: str, count: int, *, auto_queued: bool = False
+    ) -> None:
         logger = self._event_logger
         method = getattr(logger, "log_event", None)
         if callable(method):
@@ -512,10 +724,14 @@ class OrganizationAutomationService:
                 fields={"status": status},
                 counts={"count": count},
             )
-            if status in {
-                OrganizationPlanStatus.PLANNED.value,
-                OrganizationPlanStatus.NEEDS_REVIEW.value,
-            }:
+            if (
+                not auto_queued
+                and status
+                in {
+                    OrganizationPlanStatus.PLANNED.value,
+                    OrganizationPlanStatus.NEEDS_REVIEW.value,
+                }
+            ):
                 await method(
                     "organize.plan.awaiting_confirmation",
                     fields={"status": status},
@@ -564,6 +780,10 @@ def _scan_idempotency_key(source_id: str) -> str:
     return f"organization-scan:{source_id}:{bucket}:{uuid.uuid4().hex[:8]}"
 
 
+def _index_path(value: str) -> str:
+    return value.strip("/").replace("\\", "/")
+
+
 def _stable_error_code(error: Exception) -> str:
     code = getattr(error, "code", None)
     if isinstance(error, P115ReadOnlyGatewayError):
@@ -582,6 +802,8 @@ def _stable_error_code(error: Exception) -> str:
         (
             LibraryIndexError,
             OrganizationDirectoryProvisionError,
+            OrganizationOperationConflict,
+            OrganizationOperationPrerequisiteError,
             OrganizationPlanError,
             OrganizationPreviewError,
             OrganizationTargetError,
@@ -661,6 +883,7 @@ _EXECUTION_CODES = frozenset(
 
 _STABLE_AUTOMATION_ERROR_CODES = frozenset(
     {
+        "auto_queue_failed",
         "automation_failed",
         "blocked_environment",
         "candidate_target_unavailable",
@@ -668,10 +891,18 @@ _STABLE_AUTOMATION_ERROR_CODES = frozenset(
         "credentials_missing",
         "credentials_unavailable",
         "gateway_error",
+        "operation_creation_conflict",
+        "operation_plan_conflict",
         "organization_settings_incomplete",
+        "plan_expired",
+        "plan_not_found",
+        "plan_not_reviewable",
+        "plan_prerequisites_changed",
+        "plan_revision_changed",
         "source_scope_changed",
         "source_scope_unverified",
         "source_target_overlap",
+        "stale_revision",
         "target_directory_create_failed",
         "target_directory_id_invalid",
         "target_directory_incomplete",
@@ -687,6 +918,15 @@ _STABLE_AUTOMATION_ERROR_CODES = frozenset(
 
 _BLOCKED_MESSAGES_ZH = {
     "automation_failed": "自动整理执行失败，原因暂不可用。",
+    "auto_queue_failed": "自动排队未完成，已跳过该计划；请刷新后重新生成计划。",
+    "stale_revision": "计划版本已变化，自动排队已跳过；请刷新后重试。",
+    "plan_revision_changed": "计划版本已变化，自动排队已跳过；请刷新后重试。",
+    "plan_expired": "计划已过期，自动排队已跳过；请重新扫描生成新计划。",
+    "plan_not_reviewable": "计划状态不可排队，自动排队已跳过。",
+    "plan_prerequisites_changed": "计划前置条件已变化，自动排队已跳过；请重新扫描生成新计划。",
+    "plan_not_found": "计划已不存在，自动排队已跳过。",
+    "operation_plan_conflict": "该计划已有整理操作，自动排队已跳过；请到“整理”页查看操作状态。",
+    "operation_creation_conflict": "整理操作创建冲突，自动排队已跳过。",
     "organization_settings_incomplete": "整理来源或目标目录未配置。",
     "scan_incomplete": "源目录扫描未完成，已阻止生成整理预览。",
     "partial_page": "源目录分页扫描不完整，已阻止生成整理预览。",

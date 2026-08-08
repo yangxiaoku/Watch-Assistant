@@ -1,3 +1,4 @@
+import os
 import sys
 from argparse import Namespace
 from pathlib import Path
@@ -147,7 +148,9 @@ def test_runtime_environment_bridges_native_library_path(monkeypatch):
 
     environment = _runtime_environment()
 
-    assert environment["DYLD_FALLBACK_LIBRARY_PATH"] == "/tmp/native:/tmp/old"
+    assert environment["DYLD_FALLBACK_LIBRARY_PATH"] == (
+        f"/tmp/native{os.pathsep}/tmp/old"
+    )
 
 
 def test_runtime_environment_discovers_bundled_macos_libraries(monkeypatch, tmp_path: Path):
