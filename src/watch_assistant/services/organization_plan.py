@@ -538,7 +538,7 @@ class OrganizationPlanService:
             raise OrganizationPlanError("invalid_pagination")
         async with self._session_factory() as session:
             statement = select(OrganizationPlan).order_by(
-                OrganizationPlan.created_at.asc(), OrganizationPlan.id.asc()
+                OrganizationPlan.created_at.desc(), OrganizationPlan.id.desc()
             )
             if status is not None:
                 statement = statement.where(OrganizationPlan.status == status.value)
