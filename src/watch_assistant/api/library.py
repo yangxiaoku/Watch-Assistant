@@ -55,6 +55,7 @@ from watch_assistant.schemas import (
     OrganizationPreviewRequest,
 )
 from watch_assistant.security import AuthContext, require_api_auth, require_scope
+from watch_assistant.services.api_errors import error_status
 from watch_assistant.services.empty_directory_cleanup_plan import (
     EmptyDirectoryCleanupPlanError,
     EmptyDirectoryCleanupPlanService,
@@ -202,20 +203,10 @@ def _scan_http_error(error: LibraryScanOperationError) -> HTTPException:
         "scan_mode_unsupported": "扫描模式暂不受支持",
         "checkpoint_invalid": "扫描断点无效，请重新发起扫描",
     }
-    statuses = {
-        "invalid_library_id": 422,
-        "invalid_scan_run_id": 422,
-        "invalid_idempotency_key": 422,
-        "invalid_directory_limit": 422,
-        "invalid_pagination": 422,
-        "invalid_lease_duration": 500,
-        "library_scope_unverified": 409,
-        "checkpoint_invalid": 409,
-    }
     code = error.code
     message = messages.get(code, "媒体库扫描服务暂不可用")
     return HTTPException(
-        status_code=statuses.get(code, 503),
+        status_code=error_status(code) if code in messages else 503,
         detail={"code": code, "message": message},
     )
 
@@ -1001,16 +992,8 @@ async def create_organization_preview(
             multi_version_enabled=settings.multi_version_enabled if settings else False,
         )
     except OrganizationPreviewError as error:
-        statuses = {
-            "scan_not_current": 409,
-            "no_video_files": 409,
-            "scan_entry_invalid": 409,
-            "source_directory_not_found": 409,
-            "source_scope_unverified": 409,
-            "source_target_overlap": 409,
-        }
         raise HTTPException(
-            status_code=statuses.get(error.code, 409), detail=error.code
+            status_code=error_status(error.code), detail=error.code
         ) from None
     except OrganizationPlanError as error:
         raise HTTPException(status_code=409, detail=error.code) from None

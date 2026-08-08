@@ -13,6 +13,7 @@ from watch_assistant.schemas import (
 )
 from watch_assistant.security import AuthContext, require_api_auth
 from watch_assistant.services.agent_tokens import AgentTokenError, AgentTokenService
+from watch_assistant.services.api_errors import error_status
 
 router = APIRouter(prefix="/api/v1/agent")
 
@@ -159,13 +160,8 @@ def _capabilities(context: AuthContext) -> AgentCapabilitiesResponse:
 
 
 def _http_error(error: AgentTokenError) -> HTTPException:
-    statuses = {
-        "agent_token_not_found": 404,
-        "agent_token_conflict": 409,
-        "invalid_agent_token_request": 422,
-    }
     return HTTPException(
-        status_code=statuses.get(error.code, 409),
+        status_code=error_status(error.code),
         detail={"code": error.code},
     )
 

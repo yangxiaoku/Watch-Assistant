@@ -19,6 +19,7 @@ from watch_assistant.schemas import (
     OrganizationPlanMutationRequest,
 )
 from watch_assistant.security import AuthContext, require_api_auth
+from watch_assistant.services.api_errors import error_status
 from watch_assistant.services.organization_capability import (
     organization_execution_supported,
 )
@@ -458,7 +459,7 @@ def _error_values(error: Exception) -> tuple[int, str, str]:
         code = str(error) if str(error) in _MESSAGES else "operation_unavailable"
     else:
         code = "operation_unavailable"
-    status = _STATUSES.get(code, 409)
+    status = error_status(code)
     return status, code, _MESSAGES.get(code, "整理操作暂不可用")
 
 
@@ -481,24 +482,6 @@ async def _validate_operation_confirmation(
         raise ValueError("plan_digest_mismatch")
 
 
-_STATUSES = {
-    "invalid_plan_id": 422,
-    "invalid_idempotency_key": 422,
-    "invalid_operation_id": 422,
-    "invalid_workflow_id": 422,
-    "workflow_not_found": 404,
-    "workflow_stage_missing": 409,
-    "workflow_id_conflict": 409,
-    "operation_not_found": 404,
-    "confirmation_required": 409,
-    "organization_execution_unavailable": 503,
-    "plan_digest_required": 422,
-    "plan_digest_mismatch": 409,
-    "stale_revision": 409,
-    "plan_not_reviewable": 409,
-    "invalid_revision": 422,
-    "plan_not_found": 404,
-}
 _MESSAGES = {
     "plan_not_found": "计划不存在",
     "plan_is_not_planned": "计划尚未确认或已不可用",

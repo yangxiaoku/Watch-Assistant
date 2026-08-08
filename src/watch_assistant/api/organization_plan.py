@@ -18,6 +18,7 @@ from watch_assistant.schemas import (
     OrganizationPlanResponse,
 )
 from watch_assistant.security import AuthContext, require_api_auth
+from watch_assistant.services.api_errors import error_status
 from watch_assistant.services.organization_plan import (
     OrganizationPlanError,
     OrganizationPlanService,
@@ -209,29 +210,6 @@ async def alias_organization_plan(
 
 
 def _http_error(error: OrganizationPlanError) -> HTTPException:
-    statuses = {
-        "plan_not_found": 404,
-        "invalid_plan": 422,
-        "invalid_pagination": 422,
-        "invalid_revision": 422,
-        "invalid_alias": 422,
-        "stale_revision": 409,
-        "plan_hash_mismatch": 409,
-        "plan_not_reviewable": 409,
-        "plan_expired": 409,
-        "plan_prerequisites_changed": 409,
-        "plan_not_executable": 409,
-        "invalid_source_object": 422,
-        "invalid_tmdb_candidate": 422,
-        "tmdb_candidate_not_found": 404,
-        "candidate_target_unavailable": 409,
-        "source_snapshot_mismatch": 409,
-        "candidate_source_required": 422,
-        "invalid_source_index": 422,
-        "invalid_candidate_query": 422,
-        "invalid_candidate_limit": 422,
-        "candidate_search_unavailable": 503,
-    }
     messages = {
         "plan_not_found": "计划不存在",
         "invalid_plan": "计划标识无效",
@@ -256,7 +234,7 @@ def _http_error(error: OrganizationPlanError) -> HTTPException:
         "candidate_search_unavailable": "TMDB 候选搜索暂不可用，请稍后重试",
     }
     code = error.code if error.code in messages else "organization_plan_unavailable"
-    status = statuses.get(code, 409)
+    status = error_status(code)
     message = messages.get(code, "计划暂不可用")
     return HTTPException(status_code=status, detail={"code": code, "message": message})
 

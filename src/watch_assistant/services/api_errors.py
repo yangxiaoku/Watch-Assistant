@@ -303,6 +303,76 @@ def catalog_codes() -> frozenset[str]:
     return frozenset(_CATALOG)
 
 
+# Stable HTTP status for a stable error code.  Kept here (rather than in each
+# api router) so the status mapping is one source of truth.  Unknown codes
+# default to 409 (the historical fail-closed default for operation conflicts).
+_HTTP_STATUSES: dict[str, int] = {
+    # organization operations
+    "agent_token_conflict": 409,
+    "agent_token_not_found": 404,
+    "candidate_search_unavailable": 503,
+    "candidate_source_required": 422,
+    "candidate_target_unavailable": 409,
+    "checkpoint_invalid": 409,
+    "confirmation_required": 409,
+    "invalid_agent_token_request": 422,
+    "invalid_alias": 422,
+    "invalid_candidate_limit": 422,
+    "invalid_candidate_query": 422,
+    "invalid_directory_limit": 422,
+    "invalid_idempotency_key": 422,
+    "invalid_library_id": 422,
+    "invalid_lease_duration": 500,
+    "invalid_operation_id": 422,
+    "invalid_pagination": 422,
+    "invalid_plan": 422,
+    "invalid_plan_id": 422,
+    "invalid_revision": 422,
+    "invalid_scan_run_id": 422,
+    "invalid_source_index": 422,
+    "invalid_source_object": 422,
+    "invalid_tmdb_candidate": 422,
+    "invalid_workflow_id": 422,
+    "library_configuration_conflict": 409,
+    "library_not_found": 404,
+    "library_scope_mismatch": 409,
+    "library_scope_unavailable": 503,
+    "library_scope_unverified": 409,
+    "no_video_files": 409,
+    "operation_not_found": 404,
+    "organization_execution_unavailable": 503,
+    "plan_digest_mismatch": 409,
+    "plan_digest_required": 422,
+    "plan_expired": 409,
+    "plan_hash_mismatch": 409,
+    "plan_not_executable": 409,
+    "plan_not_found": 404,
+    "plan_not_reviewable": 409,
+    "plan_prerequisites_changed": 409,
+    "scan_cancel_failed": 409,
+    "scan_entry_invalid": 409,
+    "scan_in_progress": 409,
+    "scan_mode_unsupported": 422,
+    "scan_not_current": 409,
+    "scan_not_found": 404,
+    "source_directory_not_found": 409,
+    "source_scope_unverified": 409,
+    "source_snapshot_mismatch": 409,
+    "source_target_overlap": 409,
+    "stale_revision": 409,
+    "tmdb_candidate_not_found": 404,
+    "workflow_id_conflict": 409,
+    "workflow_not_found": 404,
+    "workflow_stage_missing": 409,
+}
+
+
+def error_status(code: str) -> int:
+    """Return the stable HTTP status for an error code (default 409)."""
+
+    return _HTTP_STATUSES.get(code, 409)
+
+
 def error_code_from_detail(detail: object, status_code: int) -> str:
     candidate: object = detail
     if isinstance(detail, Mapping):
