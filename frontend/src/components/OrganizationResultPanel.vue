@@ -2,6 +2,7 @@
 import { AlertTriangle, LoaderCircle } from "@lucide/vue";
 import { computed, onMounted, ref, watch } from "vue";
 import { ApiClient, ApiError } from "../api";
+import { pollUntil } from "../polling";
 import { diagnosticCode } from "../uiSafety";
 import type { OrganizationAutomationResultResponse, OrganizationResultStatus } from "../types";
 
@@ -92,26 +93,31 @@ async function loadOrganizationResult() {
   }
 }
 
-let pollTimer: ReturnType<typeof setInterval> | undefined;
+let pollTask: ReturnType<typeof pollUntil> | undefined;
 function stopPolling(): void {
-  if (pollTimer !== undefined) {
-    window.clearInterval(pollTimer);
-    pollTimer = undefined;
-  }
+  pollTask = undefined;
 }
 
 function pollOrganizationResult(runId: string | null): void {
-  if (pollTimer !== undefined) return;
-  pollTimer = window.setInterval(async () => {
-    try {
-      const response = await props.api.organizationResult();
-      organizationResult.value = response;
-      if (response.finished_at !== null || response.run_id === null) stopPolling();
-    } catch (exception) {
-      organizationResultError.value = exception instanceof ApiError ? exception.message : "整理结果暂时无法更新，请稍后重试";
-      stopPolling();
-    }
-  }, 2000);
+  if (pollTask !== undefined) return;
+  pollTask = pollUntil(
+    async () => {
+      try {
+        return await props.api.organizationResult();
+      } catch (exception) {
+        organizationResultError.value = exception instanceof ApiError ? exception.message : "整理结果暂时无法更新，请稍后重试";
+        throw exception;
+      }
+    },
+    {
+      intervalMs: 2000,
+      maxAttempts: 60,
+      onResponse: (response) => {
+        organizationResult.value = response;
+      },
+      isDone: (response) => response.finished_at !== null || response.run_id === null,
+    },
+  );
 }
 
 watch(() => props.reloadToken, () => {

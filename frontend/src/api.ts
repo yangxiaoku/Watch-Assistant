@@ -57,6 +57,13 @@ import type {
   StrmOperationListResponse,
   StrmOperationResponse,
   PwaDevice,
+  LogLevel,
+  OrganizationAutomationResultResponse,
+  OrganizationOperationBatchResponse,
+  P115DirectoryListResponse,
+  P115LoginDeviceListResponse,
+  P115QrcodeCreateResponse,
+  P115QrcodeStatusResponse,
 } from "./types";
 import { describeUiError, type UiErrorAction } from "./errorCatalog";
 import { safeLocalizedCopy } from "./uiSafety";
@@ -254,7 +261,7 @@ export class ApiClient {
 
   async logs(filters: {
     category?: LogCategory;
-    level?: import("./types").LogLevel;
+    level?: LogLevel;
     status?: string;
     eventCode?: string;
     requestId?: string;
@@ -287,8 +294,8 @@ export class ApiClient {
     return this.request<OrganizationSettingsResponse>("/api/v1/settings/organization");
   }
 
-  async organizationResult(): Promise<import("./types").OrganizationAutomationResultResponse> {
-    return this.request<import("./types").OrganizationAutomationResultResponse>("/api/v1/settings/organization/result");
+  async organizationResult(): Promise<OrganizationAutomationResultResponse> {
+    return this.request<OrganizationAutomationResultResponse>("/api/v1/settings/organization/result");
   }
 
   async updateOrganizationSettings(settings: PatchOrganizationSettingsRequest): Promise<OrganizationSettingsResponse> {
@@ -312,29 +319,29 @@ export class ApiClient {
     });
   }
 
-  async p115Directories(directoryId?: string, page = 1): Promise<import("./types").P115DirectoryListResponse> {
+  async p115Directories(directoryId?: string, page = 1): Promise<P115DirectoryListResponse> {
     const params = new URLSearchParams({ page: String(page) });
     if (directoryId) params.set("directory_id", directoryId);
-    return this.request<import("./types").P115DirectoryListResponse>(`/api/v1/settings/p115/directories?${params}`);
+    return this.request<P115DirectoryListResponse>(`/api/v1/settings/p115/directories?${params}`);
   }
 
-  async p115Devices(): Promise<import("./types").P115LoginDeviceListResponse> {
-    return this.request<import("./types").P115LoginDeviceListResponse>("/api/v1/settings/p115/devices");
+  async p115Devices(): Promise<P115LoginDeviceListResponse> {
+    return this.request<P115LoginDeviceListResponse>("/api/v1/settings/p115/devices");
   }
 
-  async createP115Qrcode(deviceCode: string, deviceName = "这台电脑"): Promise<import("./types").P115QrcodeCreateResponse> {
-    return this.request<import("./types").P115QrcodeCreateResponse>("/api/v1/settings/p115/qrcode", {
+  async createP115Qrcode(deviceCode: string, deviceName = "这台电脑"): Promise<P115QrcodeCreateResponse> {
+    return this.request<P115QrcodeCreateResponse>("/api/v1/settings/p115/qrcode", {
       method: "POST",
       body: JSON.stringify({ device_code: deviceCode, device_name: deviceName }),
     });
   }
 
-  async pollP115Qrcode(sessionId: string): Promise<import("./types").P115QrcodeStatusResponse> {
-    return this.request<import("./types").P115QrcodeStatusResponse>(`/api/v1/settings/p115/qrcode/${encodeURIComponent(sessionId)}`);
+  async pollP115Qrcode(sessionId: string): Promise<P115QrcodeStatusResponse> {
+    return this.request<P115QrcodeStatusResponse>(`/api/v1/settings/p115/qrcode/${encodeURIComponent(sessionId)}`);
   }
 
-  async activateP115Device(deviceId: string, revision: number): Promise<import("./types").P115LoginDeviceListResponse> {
-    return this.request<import("./types").P115LoginDeviceListResponse>(`/api/v1/settings/p115/devices/${encodeURIComponent(deviceId)}/activate`, {
+  async activateP115Device(deviceId: string, revision: number): Promise<P115LoginDeviceListResponse> {
+    return this.request<P115LoginDeviceListResponse>(`/api/v1/settings/p115/devices/${encodeURIComponent(deviceId)}/activate`, {
       method: "POST",
       body: JSON.stringify({ revision }),
     });
@@ -562,8 +569,8 @@ export class ApiClient {
 
   async patchWorkflowStage(
     workflowId: string,
-    stage: import("./types").WorkflowStageName,
-    patch: { status: import("./types").WorkflowStageStatus; reason?: string; errorCode?: string; childType?: string; childId?: string },
+    stage: WorkflowStageName,
+    patch: { status: WorkflowStageStatus; reason?: string; errorCode?: string; childType?: string; childId?: string },
   ): Promise<WorkflowResponse> {
     return this.request<WorkflowResponse>(`/api/v1/workflows/${encodeURIComponent(workflowId)}/stages/${stage}`, {
       method: "PATCH",
@@ -760,8 +767,8 @@ export class ApiClient {
     });
   }
 
-  async confirmAndQueueOrganizationOperations(planIds: Array<{ planId: string; expectedRevision: number }>): Promise<import("./types").OrganizationOperationBatchResponse> {
-    return this.request<import("./types").OrganizationOperationBatchResponse>("/api/v1/organization-operations/confirm-and-batch", {
+  async confirmAndQueueOrganizationOperations(planIds: Array<{ planId: string; expectedRevision: number }>): Promise<OrganizationOperationBatchResponse> {
+    return this.request<OrganizationOperationBatchResponse>("/api/v1/organization-operations/confirm-and-batch", {
       method: "POST",
       body: JSON.stringify({
         items: planIds.map(({ planId, expectedRevision }) => ({

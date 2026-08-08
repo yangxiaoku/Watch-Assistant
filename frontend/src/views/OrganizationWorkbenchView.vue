@@ -4,6 +4,7 @@ import { computed, onMounted, ref } from "vue";
 import { ApiClient, ApiError, focusFirstFieldError, isConflict } from "../api";
 import ConfirmDialog from "../components/ConfirmDialog.vue";
 import { describeUiError } from "../errorCatalog";
+import { pollUntil } from "../polling";
 import { organizationOperationStatusLabel } from "../statusCatalog";
 import { diagnosticCode, diagnosticReference } from "../uiSafety";
 import type { OrganizationExecutionBlocker, OrganizationOperationResponse, OrganizationPlanStatus, OrganizationPlanSummary } from "../types";
@@ -381,32 +382,41 @@ async function confirmPendingExecution(): Promise<void> {
 async function pollOperation(operationId: string, planId: string) {
   if (typeof props.api.organizationOperation !== "function") return;
   const pollGeneration = ++operationPollGeneration;
-  for (let attempt = 0; attempt < 60; attempt += 1) {
-    await new Promise((resolve) => window.setTimeout(resolve, 1000));
-    if (pollGeneration !== operationPollGeneration || selected.value?.plan_id !== planId) return;
-    try {
-      const current = await props.api.organizationOperation(operationId);
-      if (pollGeneration !== operationPollGeneration || selected.value?.plan_id !== planId) return;
-      operation.value = current;
-      if (current.status === "organized") {
-        notice.value = "整理已完成";
-        return;
+  const isCurrent = () =>
+    pollGeneration === operationPollGeneration && selected.value?.plan_id === planId;
+  await pollUntil(
+    async () => {
+      try {
+        return await props.api.organizationOperation(operationId);
+      } catch (exception) {
+        if (isCurrent()) {
+          error.value = exception instanceof ApiError ? exception.message : "整理操作状态暂时无法更新，请重试";
+          notice.value = "";
+        }
+        throw exception;
       }
-      if (current.status === "failed" || current.status === "uncertain") {
-        error.value = current.error_code
-          ? describeUiError(current.error_code, 409).message
-          : "后台整理未完成，请查看操作状态";
-        notice.value = "";
-        return;
-      }
-    } catch (exception) {
-      if (pollGeneration === operationPollGeneration && selected.value?.plan_id === planId) {
-        error.value = exception instanceof ApiError ? exception.message : "整理操作状态暂时无法更新，请重试";
-        notice.value = "";
-      }
-      return;
-    }
-  }
+    },
+    {
+      intervalMs: 1000,
+      maxAttempts: 60,
+      isCurrent,
+      onResponse: (current) => {
+        operation.value = current;
+        if (current.status === "organized") {
+          notice.value = "整理已完成";
+        } else if (current.status === "failed" || current.status === "uncertain") {
+          error.value = current.error_code
+            ? describeUiError(current.error_code, 409).message
+            : "后台整理未完成，请查看操作状态";
+          notice.value = "";
+        }
+      },
+      isDone: (current) =>
+        current.status === "organized"
+        || current.status === "failed"
+        || current.status === "uncertain",
+    },
+  );
 }
 
 async function mutate(action: "confirm" | "ignore" | "alias", operation: () => Promise<OrganizationPlanSummary>) {

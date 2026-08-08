@@ -391,6 +391,19 @@ async def _current_managed_directory_ids(
     return frozenset()
 
 
+async def _stop_worker(
+    stop: asyncio.Event | None,
+    task: asyncio.Task[None] | None,
+) -> None:
+    """Signal a worker task to stop, cancel, and await its completion."""
+    if stop is not None:
+        stop.set()
+    if task is not None:
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+
+
 def create_app(
     *,
     database: Database | None = None,
@@ -462,12 +475,7 @@ def create_app(
                 is not None
             )
             if not enabled:
-                if dirty_stop is not None:
-                    dirty_stop.set()
-                if dirty_task is not None:
-                    dirty_task.cancel()
-                    with suppress(asyncio.CancelledError):
-                        await dirty_task
+                await _stop_worker(dirty_stop, dirty_task)
                 dirty_stop = None
                 dirty_task = None
                 if hasattr(application.state, "directory_dirty_worker"):
@@ -517,18 +525,10 @@ def create_app(
         async def stop_organization_runtime() -> None:
             nonlocal organization_stop, organization_task
             nonlocal organization_worker_stop, organization_worker_task
-            if organization_stop is not None:
-                organization_stop.set()
-            if organization_task is not None:
-                organization_task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await organization_task
-            if organization_worker_stop is not None:
-                organization_worker_stop.set()
-            if organization_worker_task is not None:
-                organization_worker_task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await organization_worker_task
+            await _stop_worker(organization_stop, organization_task)
+            await _stop_worker(
+                organization_worker_stop, organization_worker_task
+            )
             organization_stop = None
             organization_task = None
             organization_worker_stop = None
@@ -805,12 +805,7 @@ def create_app(
                 await apply_dirty_runtime(False)
                 return
             if not ready:
-                if task_stop is not None:
-                    task_stop.set()
-                if task_task is not None:
-                    task_task.cancel()
-                    with suppress(asyncio.CancelledError):
-                        await task_task
+                await _stop_worker(task_stop, task_task)
                 task_stop = None
                 task_task = None
                 if hasattr(application.state, "task_worker"):
@@ -1387,59 +1382,18 @@ def create_app(
         try:
             yield
         finally:
-            if task_task is not None and task_stop is not None:
-                task_stop.set()
-                task_task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await task_task
-            if dirty_task is not None and dirty_stop is not None:
-                dirty_stop.set()
-                dirty_task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await dirty_task
-            if strm_recovery_task is not None and strm_recovery_stop is not None:
-                strm_recovery_stop.set()
-                strm_recovery_task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await strm_recovery_task
-            if library_scan_task is not None and library_scan_stop is not None:
-                library_scan_stop.set()
-                library_scan_task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await library_scan_task
-            if organization_task is not None and organization_stop is not None:
-                organization_stop.set()
-                organization_task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await organization_task
-            if (
-                organization_worker_task is not None
-                and organization_worker_stop is not None
-            ):
-                organization_worker_stop.set()
-                organization_worker_task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await organization_worker_task
-            if inspection_task is not None and inspection_stop is not None:
-                inspection_stop.set()
-                inspection_task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await inspection_task
-            if warm_task is not None and warm_stop is not None:
-                warm_stop.set()
-                warm_task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await warm_task
-            if subscription_task is not None and subscription_stop is not None:
-                subscription_stop.set()
-                subscription_task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await subscription_task
-            if webhook_task is not None and webhook_stop is not None:
-                webhook_stop.set()
-                webhook_task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await webhook_task
+            await _stop_worker(task_stop, task_task)
+            await _stop_worker(dirty_stop, dirty_task)
+            await _stop_worker(strm_recovery_stop, strm_recovery_task)
+            await _stop_worker(library_scan_stop, library_scan_task)
+            await _stop_worker(organization_stop, organization_task)
+            await _stop_worker(
+                organization_worker_stop, organization_worker_task
+            )
+            await _stop_worker(inspection_stop, inspection_task)
+            await _stop_worker(warm_stop, warm_task)
+            await _stop_worker(subscription_stop, subscription_task)
+            await _stop_worker(webhook_stop, webhook_task)
             inspection_client = getattr(application.state, "inspection_client", None)
             if (
                 inspection_client is not None
