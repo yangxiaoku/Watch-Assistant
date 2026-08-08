@@ -918,7 +918,7 @@ async def test_inspection_tables_and_logs_do_not_contain_plaintext_magnets(
 @pytest.mark.integration
 async def test_inspection_with_unmet_workflow_prerequisite_returns_409_not_500(tmp_path):
     fake = FakeInspectionClient({})
-    app, client, database, tmdb, pansou, _crypto, _magnets = await _make_app(
+    _app, client, database, tmdb, pansou, _crypto, _magnets = await _make_app(
         tmp_path, client=fake
     )
     try:
