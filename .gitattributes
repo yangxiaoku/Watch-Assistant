@@ -1,0 +1,5 @@
+*.service text eol=lf
+*.override.conf text eol=lf
+*.sh text eol=lf
+*.py text eol=lf
+*.env.example text eol=lf
