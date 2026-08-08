@@ -25,6 +25,11 @@ _VIDEO_EXTENSIONS = frozenset(
 )
 _SUBTITLE_EXTENSIONS = frozenset({"srt", "ass", "ssa", "sub", "vtt"})
 _IMAGE_EXTENSIONS = frozenset({"jpg", "jpeg", "png", "webp"})
+# Known media suffixes that are legitimately split off a basename.  Anything
+# else (e.g. the ".1" in "AAC5.1-WORLD") stays part of the stem.
+_KNOWN_MEDIA_EXTENSIONS = frozenset(
+    {"nfo"} | _VIDEO_EXTENSIONS | _SUBTITLE_EXTENSIONS | _IMAGE_EXTENSIONS
+)
 
 _YEAR_RE = re.compile(r"(?<![0-9])(?:19|20)[0-9]{2}(?![0-9])")
 _SEASON_EPISODE_RE = re.compile(
@@ -415,10 +420,20 @@ parse_filename = parse_media_filename
 
 
 def _split_extension(basename: str) -> tuple[str, str | None]:
+    """Split a known media extension from a basename.
+
+    A trailing ``.<suffix>`` is only treated as an extension when it is a
+    recognised video/subtitle/image container.  Other dotted suffixes (e.g.
+    the ``.1`` in ``AAC5.1-WORLD``) stay part of the stem so channel counts
+    are not torn across the stem/extension boundary.
+    """
     if "." not in basename or basename.endswith("."):
         return basename, None
     stem, extension = basename.rsplit(".", 1)
-    return stem, extension.casefold() or None
+    folded = extension.casefold()
+    if folded in _KNOWN_MEDIA_EXTENSIONS:
+        return stem, folded or None
+    return basename, None
 
 
 def _select_year_match(
