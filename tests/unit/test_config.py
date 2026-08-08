@@ -232,8 +232,8 @@ def test_prowlarr_rejects_non_exact_private_endpoint_allowlist(value: str):
 
 def test_prowlarr_indexer_ids_default_to_empty():
     settings = make_settings()
-    assert settings.prowlarr_fast_indexer_ids == ()
-    assert settings.prowlarr_slow_indexer_ids == ()
+    assert settings.prowlarr_fast_ids == ()
+    assert settings.prowlarr_slow_ids == ()
 
 
 def test_prowlarr_indexer_ids_parse_comma_string():
@@ -241,20 +241,14 @@ def test_prowlarr_indexer_ids_parse_comma_string():
         PROWLARR_FAST_INDEXER_IDS="11,16,17",
         PROWLARR_SLOW_INDEXER_IDS="10,18",
     )
-    assert settings.prowlarr_fast_indexer_ids == (11, 16, 17)
-    assert settings.prowlarr_slow_indexer_ids == (10, 18)
+    assert settings.prowlarr_fast_ids == (11, 16, 17)
+    assert settings.prowlarr_slow_ids == (10, 18)
 
 
-def test_prowlarr_indexer_ids_accept_tuple_and_empty():
-    settings = make_settings(
-        PROWLARR_FAST_INDEXER_IDS=(11,),
-        PROWLARR_SLOW_INDEXER_IDS=(10,),
-    )
-    assert settings.prowlarr_fast_indexer_ids == (11,)
-    assert settings.prowlarr_slow_indexer_ids == (10,)
+def test_prowlarr_indexer_ids_accept_empty():
     settings = make_settings(PROWLARR_FAST_INDEXER_IDS="", PROWLARR_SLOW_INDEXER_IDS="")
-    assert settings.prowlarr_fast_indexer_ids == ()
-    assert settings.prowlarr_slow_indexer_ids == ()
+    assert settings.prowlarr_fast_ids == ()
+    assert settings.prowlarr_slow_ids == ()
 
 
 @pytest.mark.parametrize(

@@ -1000,8 +1000,8 @@ def create_app(
                 pansou_max_concurrency=settings.pansou_max_concurrency,
                 prowlarr_max_concurrency=settings.prowlarr_max_concurrency,
                 event_logger=application.state.settings_service,
-                prowlarr_fast_indexer_ids=settings.prowlarr_fast_indexer_ids,
-                prowlarr_slow_indexer_ids=settings.prowlarr_slow_indexer_ids,
+                prowlarr_fast_indexer_ids=settings.prowlarr_fast_ids,
+                prowlarr_slow_indexer_ids=settings.prowlarr_slow_ids,
             )
             application.state.manual_import_service = ManualImportService(
                 runtime_database.session_factory,
