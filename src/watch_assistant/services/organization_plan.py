@@ -795,6 +795,12 @@ class OrganizationPlanService:
                 normalized_target_directories,
                 str(PurePosixPath(naming_plan.target_path).parent),
             )
+            # The target directory may not contain the category sub-directories
+            # yet (fresh/empty target).  Fall back to the target root: the
+            # directory provisioner creates each missing sub-directory at
+            # execution time.
+            if target_parent_id is None and isinstance(target_directory_id, str):
+                target_parent_id = target_directory_id
             if target_parent_id is None:
                 raise OrganizationPlanError("candidate_target_unavailable")
             item = OrganizationPlanItem(
@@ -1511,6 +1517,11 @@ def _target_directory_matches(
     mapped = target_directories.get(_index_path(str(parent_path)))
     if mapped is not None:
         return mapped == target_parent_id
+    # The category sub-directory may not exist yet (fresh/empty target).  When
+    # the plan pinned the target root as the immediate parent, the directory
+    # provisioner creates the sub-directories at execution time.
+    if target_parent_id == target_directory_id:
+        return True
     directories = directory_rows.get(target_parent_id, ())
     if len(directories) != 1:
         return False
