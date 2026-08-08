@@ -1032,6 +1032,9 @@ def _paths(entry: LibraryScanEntry) -> tuple[str, str] | None:
     return value, local
 
 
+# -- managed file mutation primitives (write/remove/undo) ---------------------------
+
+
 def _write(root: Path, relative_path: str, content: bytes) -> bool:
     written, _mutation = _write_with_undo(root, relative_path, content)
     return written

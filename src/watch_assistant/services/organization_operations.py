@@ -25,6 +25,7 @@ from watch_assistant.models import (
 )
 from watch_assistant.schemas import WorkflowStageName, WorkflowStageStatus
 from watch_assistant.services.library_index import ScanRunState
+from watch_assistant.services.observability import audit_event
 from watch_assistant.services.organization_outbox import (
     DirectoryDirtyOutboxService,
     OrganizationOutboxError,
@@ -1412,14 +1413,7 @@ class OrganizationOperationService:
         raise OrganizationOperationPrerequisiteError("plan_prerequisites_changed")
 
     async def _audit(self, event: str, status: str) -> None:
-        logger = self._event_logger
-        log_event = getattr(logger, "log_event", None)
-        if not callable(log_event):
-            return
-        try:
-            await log_event(event, fields={"status": status})
-        except Exception:  # noqa: BLE001 - audit failure cannot alter local state
-            return
+        await audit_event(self._event_logger, event, status)
 
 
 def _summary(operation: OrganizationOperation) -> OrganizationOperationSummary:

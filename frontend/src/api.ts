@@ -110,6 +110,12 @@ export function focusFirstFieldError(exception: unknown): void {
   byName?.focus();
 }
 
+export function isConflict(exception: unknown): boolean {
+  return exception instanceof ApiError && exception.status === 409;
+}
+
+export const CONFLICT_MESSAGE_ZH = "设置已被其他请求修改，请重新加载后再保存。";
+
 export class ApiClient {
   private csrfToken: string | null = null;
 

@@ -20,7 +20,7 @@ import {
   XCircle,
 } from "@lucide/vue";
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { ApiClient, ApiError, focusFirstFieldError } from "../api";
+import { ApiClient, ApiError, focusFirstFieldError, isConflict, CONFLICT_MESSAGE_ZH } from "../api";
 import OrganizationResultPanel from "../components/OrganizationResultPanel.vue";
 import { p115DeviceOptions } from "../p115DeviceTypes";
 import { diagnosticCode, diagnosticReference, safeLocalizedCopy } from "../uiSafety";
@@ -370,7 +370,7 @@ async function saveProwlarr() {
     prowlarrSaveMessage.value = "Prowlarr 配置已保存";
   } catch (exception) {
     if (!settingsMounted) return;
-    prowlarrConflict.value = exception instanceof ApiError && exception.status === 409;
+    prowlarrConflict.value = isConflict(exception);
     prowlarrSaveError.value = prowlarrMutationError(exception, "Prowlarr 配置保存失败，请稍后重试");
   } finally {
     if (settingsMounted) prowlarrSaving.value = false;
@@ -391,7 +391,7 @@ async function resetProwlarr() {
     prowlarrSaveMessage.value = "已恢复环境配置";
   } catch (exception) {
     if (!settingsMounted) return;
-    prowlarrConflict.value = exception instanceof ApiError && exception.status === 409;
+    prowlarrConflict.value = isConflict(exception);
     prowlarrSaveError.value = prowlarrMutationError(exception, "Prowlarr 配置恢复失败，请稍后重试");
   } finally {
     if (settingsMounted) prowlarrResetting.value = false;
@@ -640,9 +640,9 @@ async function saveInspection() {
     emit("auto-start-enabled", response.auto_start_enabled);
   } catch (exception) {
     focusFirstFieldError(exception);
-    if (exception instanceof ApiError && exception.status === 409) {
+    if (isConflict(exception)) {
       inspectionConflict.value = true;
-      inspectionSaveError.value = "设置已被其他请求修改，请重新加载后再保存。";
+      inspectionSaveError.value = CONFLICT_MESSAGE_ZH;
     } else {
       inspectionSaveError.value = exception instanceof ApiError ? exception.message : "保存失败，请稍后重试";
     }
@@ -913,9 +913,9 @@ async function saveLogging() {
     syncSharedRevision(response.revision);
   } catch (exception) {
     focusFirstFieldError(exception);
-    if (exception instanceof ApiError && exception.status === 409) {
+    if (isConflict(exception)) {
       conflict.value = true;
-      saveError.value = "设置已被其他请求修改，请重新加载后再保存。";
+      saveError.value = CONFLICT_MESSAGE_ZH;
     } else {
       saveError.value = exception instanceof ApiError ? exception.message : "保存失败，请稍后重试";
     }
@@ -970,9 +970,9 @@ async function saveContentPolicy() {
     syncSharedRevision(response.revision);
   } catch (exception) {
     focusFirstFieldError(exception);
-    if (exception instanceof ApiError && exception.status === 409) {
+    if (isConflict(exception)) {
       contentConflict.value = true;
-      contentSaveError.value = "设置已被其他请求修改，请重新加载后再保存。";
+      contentSaveError.value = CONFLICT_MESSAGE_ZH;
     } else {
       contentSaveError.value = exception instanceof ApiError ? exception.message : "保存失败，请稍后重试";
     }

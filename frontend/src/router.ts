@@ -1,12 +1,3 @@
-export function extractMovieId(path: string): number | null {
-  const match = path.match(/^\/movie\/(\d+)(?:-|\/|$)/);
-  return match ? Number(match[1]) : null;
-}
-
-export function navigateToMovie(tmdbId: number): void {
-  window.history.pushState({}, "", `/movie/${tmdbId}`);
-}
-
 export interface MediaRoute {
   mediaType: "movie" | "tv";
   tmdbId: number;
@@ -88,10 +79,6 @@ export function navigateToMedia(mediaType: "movie" | "tv", tmdbId: number, seaso
   }, "", path);
 }
 
-export function navigateHome(): void {
-  window.history.pushState({}, "", "/");
-}
-
 export type BrowseView = "home" | "movies" | "tv" | "popular" | "favorites" | "history" | "search" | "settings" | "organization" | "library" | "workflows" | "notifications";
 export type CatalogView = "movies" | "tv" | "popular" | "search";
 export type CatalogSort = "popular" | "rating" | "release";
@@ -168,10 +155,6 @@ export function navigateToCatalog(route: CatalogRoute, replace = false, state: R
   const historyState = { ...state, catalog: route };
   if (replace) window.history.replaceState(historyState, "", catalogRoutePath(route));
   else window.history.pushState(historyState, "", catalogRoutePath(route));
-}
-
-export function navigateToSearch(query: string, page = 1): void {
-  navigateToCatalog({ view: "search", query, page: clampCatalogPage(page), sort: "popular" });
 }
 
 export function extractBrowseView(path: string): BrowseView {

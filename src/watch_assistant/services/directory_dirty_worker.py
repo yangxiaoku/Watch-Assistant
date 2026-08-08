@@ -29,7 +29,7 @@ from watch_assistant.services.library_index import (
     LibraryIndexError,
     LibraryIndexService,
 )
-from watch_assistant.services.observability import emit_event
+from watch_assistant.services.observability import audit_event, emit_event
 from watch_assistant.services.organization_outbox import (
     DIRTY_RUNNING,
     GENERATION_RUNNING,
@@ -716,14 +716,7 @@ class DirectoryDirtyWorker:
         )
 
     async def _audit(self, event: str, status: str) -> None:
-        logger = self._event_logger
-        log_event = getattr(logger, "log_event", None)
-        if not callable(log_event):
-            return
-        try:
-            await log_event(event, fields={"status": status})
-        except Exception:  # noqa: BLE001 - audit failure cannot block reconciliation
-            return
+        await audit_event(self._event_logger, event, status)
 
 
 def _directory_in_plan_scope(directory_id: str, root_directory_id: str, actions_json: str) -> bool:

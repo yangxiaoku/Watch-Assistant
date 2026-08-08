@@ -45,6 +45,7 @@ from watch_assistant.services.media_matcher import (
     build_match_input,
 )
 from watch_assistant.services.media_parser import parse_media_filename
+from watch_assistant.services.observability import audit_event
 from watch_assistant.services.organization_policy import (
     OrganizationConflictPolicy,
     VersionDecision,
@@ -1032,14 +1033,7 @@ class OrganizationPlanService:
         return view
 
     async def _audit(self, event: str, status: str) -> None:
-        logger = self._event_logger
-        log_event = getattr(logger, "log_event", None)
-        if not callable(log_event):
-            return
-        try:
-            await log_event(event, fields={"status": status})
-        except Exception:  # noqa: BLE001 - audit failure cannot alter plan state
-            return
+        await audit_event(self._event_logger, event, status)
 
     async def _transition_plan(
         self,

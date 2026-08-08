@@ -1823,6 +1823,11 @@ class SearchService:
         )
 
 
+# ---------------------------------------------------------------------------
+# Module-level helpers (pure functions used by SearchService and by callers).
+# ---------------------------------------------------------------------------
+
+
 def _resource_search_task_from_row(row: ResourceSearchJob) -> _ResourceSearchTask:
     try:
         sources = json.loads(row.sources_json)
@@ -1852,6 +1857,9 @@ def _resource_search_task_from_row(row: ResourceSearchJob) -> _ResourceSearchTas
         else [],
         error_code=row.error_code,
     )
+
+
+# -- normalized-resource merging --------------------------------------------------
 
 
 def _merge_normalized(
@@ -2106,6 +2114,9 @@ def _fallback_queries(
         if len(queries) == 2:
             break
     return queries
+
+
+# -- facet / quality / ranking helpers ---------------------------------------------
 
 
 def _limit_magnet_resources(

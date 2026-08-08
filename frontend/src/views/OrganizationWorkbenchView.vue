@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { Ban, Check, ChevronRight, Eye, ListChecks, LoaderCircle, Play, RefreshCw, Search, Tag } from "@lucide/vue";
 import { computed, onMounted, ref } from "vue";
-import { ApiClient, ApiError, focusFirstFieldError } from "../api";
+import { ApiClient, ApiError, focusFirstFieldError, isConflict } from "../api";
 import ConfirmDialog from "../components/ConfirmDialog.vue";
 import { describeUiError } from "../errorCatalog";
 import { organizationOperationStatusLabel } from "../statusCatalog";
@@ -254,7 +254,7 @@ async function confirmAndQueueOperation(plan = selected.value) {
     await handleQueuedOperation(queuedOperation, plan.plan_id);
   } catch (exception) {
     focusFirstFieldError(exception);
-    if (exception instanceof ApiError && exception.status === 409) {
+    if (isConflict(exception)) {
       await refreshAfterConflict();
     } else {
       error.value = exception instanceof ApiError ? exception.message : "确认并整理失败，请稍后重试";
@@ -422,7 +422,7 @@ async function mutate(action: "confirm" | "ignore" | "alias", operation: () => P
     notice.value = action === "confirm" ? "已确认本地计划，未执行远端写操作" : action === "ignore" ? "已忽略本地计划" : "本地别名已保存";
   } catch (exception) {
     focusFirstFieldError(exception);
-    if (exception instanceof ApiError && exception.status === 409) {
+    if (isConflict(exception)) {
       await refreshAfterConflict();
     } else {
       error.value = exception instanceof ApiError ? exception.message : "操作失败，请稍后重试";

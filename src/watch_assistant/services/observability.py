@@ -55,3 +55,18 @@ async def emit_event(
         )
     except Exception:  # noqa: BLE001 - logs must never affect business work
         return
+
+
+async def audit_event(
+    event_logger: EventLogger | None,
+    event: str,
+    status: str,
+) -> None:
+    """Emit a status-only audit event, never allowing the audit to fail."""
+    log_event = getattr(event_logger, "log_event", None)
+    if not callable(log_event):
+        return
+    try:
+        await log_event(event, fields={"status": status})
+    except Exception:  # noqa: BLE001 - audit failure cannot alter business state
+        return
