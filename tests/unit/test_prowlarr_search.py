@@ -33,8 +33,10 @@ class _Prowlarr:
         self.response = response or ProwlarrSearchResult(())
         self.error = error
         self.started: asyncio.Event | None = None
+        self.kwargs: list[dict] = []
 
-    async def search(self, _query: str):
+    async def search(self, _query: str, **kwargs):
+        self.kwargs.append(kwargs)
         if self.started is not None:
             self.started.set()
         if self.error is not None:
@@ -49,7 +51,8 @@ class _ClosableProwlarr(_Prowlarr):
         self.release = asyncio.Event()
         self.closed = False
 
-    async def search(self, _query: str):
+    async def search(self, _query: str, **kwargs):
+        self.kwargs.append(kwargs)
         self.started.set()
         await self.release.wait()
         return self.response
@@ -451,3 +454,141 @@ async def test_download_url_release_is_dropped_when_no_magnet():
         await transport_client.aclose()
 
     assert result.releases == ()
+
+
+@pytest.mark.asyncio
+async def test_query_prowlarr_forwards_indexer_ids():
+    prowlarr = _Prowlarr(
+        ProwlarrSearchResult(
+            (
+                ProwlarrRelease(
+                    title="Movie",
+                    magnet_url="magnet:?xt=urn:btih:abcdef0123456789abcdef0123456789abcdef01",
+                    info_hash="abcdef0123456789abcdef0123456789abcdef01",
+                    size_bytes=None,
+                    seeders=None,
+                    indexer=None,
+                    indexer_id=None,
+                    guid=None,
+                    publish_date=None,
+                    protocol="torrent",
+                ),
+            )
+        )
+    )
+    service = _service(_Pansou(), prowlarr)
+    result = await service._query_prowlarr(
+        "Movie", indexer_ids=(11, 16, 17)
+    )
+    assert len(result.releases) == 1
+    assert prowlarr.kwargs[-1]["indexer_ids"] == (11, 16, 17)
+    assert prowlarr.kwargs[-1]["limit"] == 50
+
+
+@pytest.mark.asyncio
+async def test_query_prowlarr_defaults_to_all_indexers():
+    prowlarr = _Prowlarr()
+    service = _service(_Pansou(), prowlarr)
+    await service._query_prowlarr("Movie")
+    kwargs = prowlarr.kwargs[-1]
+    assert kwargs["indexer_ids"] is None
+    assert kwargs["limit"] == 50
+
+
+@pytest.mark.asyncio
+async def test_query_sources_threads_indexer_ids():
+    prowlarr = _Prowlarr()
+    service = _service(_Pansou(), prowlarr)
+    await service._query_sources(("Movie",), indexer_ids=(11,))
+    assert prowlarr.kwargs[-1]["indexer_ids"] == (11,)
+
+
+@pytest.mark.asyncio
+async def test_query_prowlarr_only_collects_failures():
+    prowlarr = _Prowlarr()
+    success = ProwlarrSearchResult(
+        (
+            ProwlarrRelease(
+                title="Movie",
+                magnet_url="magnet:?xt=urn:btih:abcdef0123456789abcdef0123456789abcdef01",
+                info_hash="abcdef0123456789abcdef0123456789abcdef01",
+                size_bytes=None,
+                seeders=None,
+                indexer=None,
+                indexer_id=None,
+                guid=None,
+                publish_date=None,
+                protocol="torrent",
+            ),
+        )
+    )
+    prowlarr.response = success
+
+    async def failing_search(_query: str, **kwargs):
+        prowlarr.kwargs.append(kwargs)
+        raise RuntimeError("unavailable")
+
+    async def ok_search(_query: str, **kwargs):
+        prowlarr.kwargs.append(kwargs)
+        return success
+
+    prowlarr.search = failing_search
+    service = _service(_Pansou(), prowlarr)
+    successful, warnings, complete = await service._query_prowlarr_only(
+        ("Movie",), indexer_ids=(10, 18)
+    )
+    assert successful == []
+    assert warnings == ["prowlarr_query_failed:1"]
+    assert complete is False
+
+    prowlarr.search = ok_search
+    successful, warnings, complete = await service._query_prowlarr_only(
+        ("Movie",), indexer_ids=(10, 18)
+    )
+    assert len(successful) == 1
+    assert warnings == []
+    assert complete is True
+
+
+@pytest.mark.asyncio
+async def test_schedule_slow_merge_is_idempotent_per_cache_key():
+    prowlarr = _Prowlarr()
+    service = _service(_Pansou(), prowlarr)
+    service._prowlarr_slow_ids = (10, 18)
+    service._slow_merge_pending = set()
+    created = []
+
+    def fake_create_task(coro, *, name):
+        created.append((coro, name))
+        coro.close()
+        return object()
+
+    original_create_task = asyncio.create_task
+    asyncio.create_task = fake_create_task
+    try:
+        service._schedule_slow_merge(
+            _movie(), None, "movie:123", ["Movie"]
+        )
+        service._schedule_slow_merge(
+            _movie(), None, "movie:123", ["Movie"]
+        )
+        service._schedule_slow_merge(
+            _movie(), None, "movie:456", ["Movie"]
+        )
+    finally:
+        asyncio.create_task = original_create_task
+    assert len(created) == 2
+    assert "movie:123" in service._slow_merge_pending
+    assert "movie:456" in service._slow_merge_pending
+
+
+def _movie():
+    from watch_assistant.schemas import MediaType, MovieMetadata
+
+    return MovieMetadata(
+        tmdb_id=123,
+        media_type=MediaType.MOVIE,
+        title="Movie",
+        original_title="Movie",
+        release_year=2021,
+    )

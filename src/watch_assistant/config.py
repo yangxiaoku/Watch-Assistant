@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from pydantic import Field, SecretStr, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from watch_assistant.services.prowlarr_endpoint import (
@@ -85,6 +85,17 @@ class Settings(BaseSettings):
     )
     prowlarr_max_concurrency: int = Field(
         default=4, ge=1, le=16, validation_alias="PROWLARR_MAX_CONCURRENCY"
+    )
+    # Fast indexers are queried in real-time during a resource search; slow
+    # indexers (e.g. those behind FlareSolverr) are queried in the background
+    # and merged into the cache.  Both must be set together (see the model
+    # validator) and must be disjoint.  Empty defaults preserve the legacy
+    # behaviour of querying every enabled indexer in real-time.
+    prowlarr_fast_indexer_ids: tuple[int, ...] = Field(
+        default=(), validation_alias="PROWLARR_FAST_INDEXER_IDS"
+    )
+    prowlarr_slow_indexer_ids: tuple[int, ...] = Field(
+        default=(), validation_alias="PROWLARR_SLOW_INDEXER_IDS"
     )
     cache_warm_concurrency: int = Field(
         default=3, ge=1, le=16, validation_alias="CACHE_WARM_CONCURRENCY"
@@ -217,6 +228,44 @@ class Settings(BaseSettings):
             and self.prowlarr_api_key.get_secret_value()
         )
 
+    @field_validator(
+        "prowlarr_fast_indexer_ids", "prowlarr_slow_indexer_ids", mode="before"
+    )
+    @classmethod
+    def _parse_indexer_ids(
+        cls, value: object
+    ) -> tuple[int, ...]:
+        if value is None:
+            return ()
+        if isinstance(value, str):
+            tokens = [token for token in value.split(",") if token.strip()]
+        elif isinstance(value, (list, tuple)):
+            tokens = list(value)
+        else:
+            raise TypeError(
+                "expected a comma-separated string, list, or tuple of indexer IDs"
+            )
+        parsed: list[int] = []
+        for token in tokens:
+            if isinstance(token, int) and not isinstance(token, bool):
+                item = token
+            elif isinstance(token, str) and token.strip().isdigit():
+                item = int(token)
+            else:
+                raise ValueError(
+                    "PROWLARR_*_INDEXER_IDS must contain non-negative integers"
+                )
+            if item < 0:
+                raise ValueError(
+                    "PROWLARR_*_INDEXER_IDS must contain non-negative integers"
+                )
+            if item in parsed:
+                raise ValueError(
+                    "PROWLARR_*_INDEXER_IDS must not contain duplicates"
+                )
+            parsed.append(item)
+        return tuple(parsed)
+
     @model_validator(mode="after")
     def validate_web_auth_configuration(self) -> "Settings":
         if (
@@ -265,4 +314,18 @@ class Settings(BaseSettings):
             raise ValueError("PROWLARR_ENABLED requires PROWLARR_BASE_URL")
         if self.prowlarr_enabled and not self.prowlarr_api_key.get_secret_value():
             raise ValueError("PROWLARR_ENABLED requires PROWLARR_API_KEY")
+        if bool(self.prowlarr_fast_indexer_ids) != bool(
+            self.prowlarr_slow_indexer_ids
+        ):
+            raise ValueError(
+                "PROWLARR_FAST_INDEXER_IDS and PROWLARR_SLOW_INDEXER_IDS "
+                "must be set together"
+            )
+        if set(self.prowlarr_fast_indexer_ids) & set(
+            self.prowlarr_slow_indexer_ids
+        ):
+            raise ValueError(
+                "PROWLARR_FAST_INDEXER_IDS and PROWLARR_SLOW_INDEXER_IDS "
+                "must be disjoint"
+            )
         return self

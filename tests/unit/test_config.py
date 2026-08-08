@@ -1,4 +1,5 @@
 import secrets
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -142,15 +143,10 @@ def test_write_and_delete_contract_flags_are_independent():
 
 
 def test_organization_contract_evidence_path_is_non_secret_configuration():
-    settings = make_settings(
-        P115_ORGANIZATION_CONTRACT_EVIDENCE_PATH=(
-            "/var/lib/watch-assistant/p115-organization-contract.json"
-        )
-    )
+    expected = "/var/lib/watch-assistant/p115-organization-contract.json"
+    settings = make_settings(P115_ORGANIZATION_CONTRACT_EVIDENCE_PATH=expected)
 
-    assert str(settings.p115_organization_contract_evidence_path) == (
-        "/var/lib/watch-assistant/p115-organization-contract.json"
-    )
+    assert settings.p115_organization_contract_evidence_path == Path(expected)
 
 
 @pytest.mark.parametrize("value", [1, 720])
@@ -232,3 +228,71 @@ def test_prowlarr_accepts_an_explicit_private_endpoint_allowlist():
 def test_prowlarr_rejects_non_exact_private_endpoint_allowlist(value: str):
     with pytest.raises(ValidationError, match="PROWLARR_ALLOWED_PRIVATE_ADDRESSES"):
         make_settings(PROWLARR_ALLOWED_PRIVATE_ADDRESSES=value)
+
+
+def test_prowlarr_indexer_ids_default_to_empty():
+    settings = make_settings()
+    assert settings.prowlarr_fast_indexer_ids == ()
+    assert settings.prowlarr_slow_indexer_ids == ()
+
+
+def test_prowlarr_indexer_ids_parse_comma_string():
+    settings = make_settings(
+        PROWLARR_FAST_INDEXER_IDS="11,16,17",
+        PROWLARR_SLOW_INDEXER_IDS="10,18",
+    )
+    assert settings.prowlarr_fast_indexer_ids == (11, 16, 17)
+    assert settings.prowlarr_slow_indexer_ids == (10, 18)
+
+
+def test_prowlarr_indexer_ids_accept_tuple_and_empty():
+    settings = make_settings(
+        PROWLARR_FAST_INDEXER_IDS=(11,),
+        PROWLARR_SLOW_INDEXER_IDS=(10,),
+    )
+    assert settings.prowlarr_fast_indexer_ids == (11,)
+    assert settings.prowlarr_slow_indexer_ids == (10,)
+    settings = make_settings(PROWLARR_FAST_INDEXER_IDS="", PROWLARR_SLOW_INDEXER_IDS="")
+    assert settings.prowlarr_fast_indexer_ids == ()
+    assert settings.prowlarr_slow_indexer_ids == ()
+
+
+@pytest.mark.parametrize(
+    "fast,slow",
+    [
+        ("11,16,17", ""),
+        ("", "10,18"),
+    ],
+)
+def test_prowlarr_indexer_ids_must_be_set_together(fast: str, slow: str):
+    with pytest.raises(
+        ValidationError, match="must be set together"
+    ):
+        make_settings(
+            PROWLARR_FAST_INDEXER_IDS=fast,
+            PROWLARR_SLOW_INDEXER_IDS=slow,
+        )
+
+
+def test_prowlarr_indexer_ids_must_be_disjoint():
+    with pytest.raises(ValidationError, match="must be disjoint"):
+        make_settings(
+            PROWLARR_FAST_INDEXER_IDS="11,16",
+            PROWLARR_SLOW_INDEXER_IDS="16,18",
+        )
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "11,abc",
+        "11,-1",
+        "11,11",
+    ],
+)
+def test_prowlarr_indexer_ids_reject_bad_tokens(value: str):
+    with pytest.raises(ValidationError):
+        make_settings(
+            PROWLARR_FAST_INDEXER_IDS=value,
+            PROWLARR_SLOW_INDEXER_IDS="10,18",
+        )

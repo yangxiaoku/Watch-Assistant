@@ -3,7 +3,7 @@
 import asyncio
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
@@ -159,6 +159,8 @@ class SearchService:
         prowlarr_max_concurrency: int = 4,
         pansou_request_timeout: float = 12.0,
         event_logger: EventLogger | None = None,
+        prowlarr_fast_indexer_ids: Iterable[int] = (),
+        prowlarr_slow_indexer_ids: Iterable[int] = (),
     ) -> None:
         self._session_factory = session_factory
         self._tmdb = tmdb_client
@@ -181,6 +183,15 @@ class SearchService:
             tuple[MediaType, int, int | None], asyncio.Lock
         ] = {}
         self._resource_search_finalize_locks: dict[str, asyncio.Lock] = {}
+        self._prowlarr_fast_ids = tuple(
+            dict.fromkeys(int(item) for item in prowlarr_fast_indexer_ids)
+        )
+        self._prowlarr_slow_ids = tuple(
+            dict.fromkeys(int(item) for item in prowlarr_slow_indexer_ids)
+        )
+        # Cache keys with an in-flight background slow-indexer merge, to avoid
+        # scheduling duplicate merges for the same media while one runs.
+        self._slow_merge_pending: set[str] = set()
 
     async def get_movie(self, tmdb_id: int) -> MovieMetadata:
         return await self._tmdb.get_movie(tmdb_id)
@@ -726,8 +737,11 @@ class SearchService:
                 )
 
         queries = build_search_queries(media, season_number)
+        queries_used = list(queries)
         successful_pansou, successful_prowlarr, warnings, complete = (
-            await self._query_sources(queries)
+            await self._query_sources(
+                queries, indexer_ids=self._prowlarr_fast_ids or None
+            )
         )
         if not successful_pansou and not successful_prowlarr:
             if cache_usable and cache is not None:
@@ -771,6 +785,7 @@ class SearchService:
                 fallback_queries = _fallback_queries(
                     media, resolved_titles, season_number
                 )
+                queries_used.extend(fallback_queries)
                 alternative_titles = tuple(fallback_queries)
                 if fallback_queries:
                     (
@@ -779,7 +794,9 @@ class SearchService:
                         fallback_warnings,
                         fallback_complete,
                     ) = await self._query_sources(
-                        fallback_queries, warning_offset=len(queries)
+                        fallback_queries,
+                        warning_offset=len(queries),
+                        indexer_ids=self._prowlarr_fast_ids or None,
                     )
                     warnings = _merge_warnings(warnings, fallback_warnings)
                     complete = complete and fallback_complete
@@ -866,6 +883,9 @@ class SearchService:
                     )
                     await session.commit()
                     cache = await session.get(SearchCache, cache_key)
+                self._schedule_slow_merge(
+                    media, season_number, cache_key, queries_used
+                )
                 return self._response(
                     media,
                     resources,
@@ -898,6 +918,9 @@ class SearchService:
                     cache_kind="partial",
                 )
                 await session.commit()
+            self._schedule_slow_merge(
+                media, season_number, cache_key, queries_used
+            )
             return self._response(
                 media,
                 resources,
@@ -971,6 +994,9 @@ class SearchService:
             )
             await session.commit()
             cache = await session.get(SearchCache, cache_key)
+            self._schedule_slow_merge(
+                media, season_number, cache_key, queries_used
+            )
             return self._response(
                 media,
                 resources,
@@ -989,7 +1015,12 @@ class SearchService:
                 self._pansou.search(query), timeout=self._pansou_timeout
             )
 
-    async def _query_prowlarr(self, query: str) -> ProwlarrSearchResult:
+    async def _query_prowlarr(
+        self,
+        query: str,
+        *,
+        indexer_ids: Iterable[int] | None = None,
+    ) -> ProwlarrSearchResult:
         async with self._prowlarr_state_lock:
             client = self._prowlarr
             if client is None:
@@ -1006,7 +1037,9 @@ class SearchService:
                 # does not round-trip once per release (page_size defaults to 1
                 # for conservative indexers, which is very slow for a source
                 # like 1337x that returns dozens of hits per query).
-                return await client.search(query, limit=50)
+                return await client.search(
+                    query, limit=50, indexer_ids=indexer_ids or None
+                )
         finally:
             async with self._prowlarr_state_lock:
                 usage = self._prowlarr_usage[client_key] - 1
@@ -1058,7 +1091,11 @@ class SearchService:
                 raise asyncio.CancelledError
 
     async def _query_sources(
-        self, queries: tuple[str, ...], *, warning_offset: int = 0
+        self,
+        queries: tuple[str, ...],
+        *,
+        warning_offset: int = 0,
+        indexer_ids: Iterable[int] | None = None,
     ) -> tuple[
         list[tuple[str, dict]],
         list[tuple[str, ProwlarrSearchResult]],
@@ -1102,7 +1139,9 @@ class SearchService:
 
         async def safe_prowlarr(query: str) -> ProwlarrSearchResult | BaseException:
             try:
-                return await self._query_prowlarr(query)
+                return await self._query_prowlarr(
+                    query, indexer_ids=indexer_ids
+                )
             except Exception as exc:  # noqa: BLE001 - source failure is degraded
                 return exc
 
@@ -1163,6 +1202,195 @@ class SearchService:
             not any("_query_failed:" in warning for warning in warnings)
             and not upstream_partial,
         )
+
+    async def _query_prowlarr_only(
+        self,
+        queries: tuple[str, ...],
+        *,
+        indexer_ids: Iterable[int],
+    ) -> tuple[list[tuple[str, ProwlarrSearchResult]], list[str], bool]:
+        """Query only Prowlarr (no PanSou) for the slow background merge.
+
+        Runs outside any per-media lock so a slow FlareSolverr-backed indexer
+        never blocks a real-time search.  Failures degrade to warnings.
+        """
+
+        async def safe_prowlarr(
+            query: str,
+        ) -> ProwlarrSearchResult | BaseException:
+            try:
+                return await self._query_prowlarr(
+                    query, indexer_ids=indexer_ids
+                )
+            except Exception as exc:  # noqa: BLE001 - degraded, not fatal
+                return exc
+
+        results = await asyncio.gather(*(safe_prowlarr(q) for q in queries))
+        successful: list[tuple[str, ProwlarrSearchResult]] = []
+        warnings: list[str] = []
+        upstream_partial = False
+        failed = 0
+        for index, result in enumerate(results, start=1):
+            if isinstance(result, ProwlarrSearchResult):
+                successful.append((queries[index - 1], result))
+                if result.unsupported_count:
+                    warnings.append("prowlarr_unsupported_results")
+                if result.truncated:
+                    upstream_partial = True
+                    warnings.append("prowlarr_results_truncated")
+                    warnings.append("partial_upstream")
+            else:
+                failed += 1
+                warnings.append(f"prowlarr_query_failed:{index}")
+        if failed:
+            await emit_event(
+                getattr(self, "_event_logger", None),
+                "search.source_degraded",
+                level=LoggingLevel.WARNING,
+                fields={
+                    "source": "Prowlarr-Slow",
+                    "status": "degraded",
+                    "count": failed,
+                    "total": len(queries),
+                },
+            )
+        return (
+            successful,
+            _merge_warnings(warnings, []),
+            not any("_query_failed:" in warning for warning in warnings)
+            and not upstream_partial,
+        )
+
+    def _schedule_slow_merge(
+        self,
+        media: MovieMetadata,
+        season_number: int | None,
+        cache_key: str,
+        queries: list[str],
+    ) -> None:
+        """Queue a background slow-indexer query that enriches the cache.
+
+        Idempotent per cache_key: only one merge runs at a time for the same
+        media.  No-ops when there are no slow indexers configured or no
+        Prowlarr client (preserves the legacy all-in-real-time behaviour).
+        """
+        if self._prowlarr is None or not self._prowlarr_slow_ids:
+            return
+        if cache_key in self._slow_merge_pending:
+            return
+        self._slow_merge_pending.add(cache_key)
+        asyncio.create_task(
+            self._run_slow_merge(media, season_number, cache_key, tuple(queries)),
+            name=f"slow-merge-{cache_key}",
+        )
+
+    async def _run_slow_merge(
+        self,
+        media: MovieMetadata,
+        season_number: int | None,
+        cache_key: str,
+        queries: tuple[str, ...],
+    ) -> None:
+        """Query slow indexers in the background and merge results into cache.
+
+        Every failure is swallowed: a timeout or downed slow indexer degrades
+        to an observability event and leaves the fast-only cache untouched.
+        """
+        try:
+            now = datetime.now(UTC)
+            successful, slow_warnings, _complete = await self._query_prowlarr_only(
+                queries, indexer_ids=self._prowlarr_slow_ids
+            )
+            if not successful:
+                await emit_event(
+                    getattr(self, "_event_logger", None),
+                    "search.slow_merge_completed",
+                    fields={
+                        "source": "Prowlarr-Slow",
+                        "count": 0,
+                        "status": "empty",
+                    },
+                )
+                return
+            normalized = self._normalize_prowlarr_results(successful, now)
+            lock = self._search_locks.setdefault(
+                (media.media_type, media.tmdb_id), asyncio.Lock()
+            )
+            async with lock, self._session_factory() as session:
+                cache = await session.get(SearchCache, cache_key)
+                if cache is None:
+                    cached_resources: list[Resource] = []
+                    cached_scores: dict[str, dict[str, int]] = {}
+                else:
+                    cached_resources, cached_scores = (
+                        await self._load_cached_resources(session, cache)
+                    )
+                penalties = await self._load_source_penalties(session)
+                candidates, _rejected = validate_and_rank_resources(
+                    media,
+                    normalized,
+                    source_penalties=penalties,
+                    season_number=season_number,
+                )
+                await self._record_validation_outcomes(
+                    session,
+                    media,
+                    normalized,
+                    (),
+                    now,
+                    season_number,
+                )
+                fresh_resources = await self._persist_resources(
+                    session, candidates, now
+                )
+                for cached in cached_resources:
+                    cached.expires_at = now + STALE_CACHE_AGE
+                merged_resources = _dedupe_resources(
+                    [*fresh_resources, *cached_resources]
+                )
+                resources = _limit_magnet_resources(
+                    merged_resources, MAX_SNAPSHOT_MAGNETS
+                )
+                score_snapshot = _resource_score_snapshot(resources)
+                for resource_id, scores in cached_scores.items():
+                    score_snapshot.setdefault(resource_id, dict(scores))
+                merge_warnings = _merge_warnings(
+                    _stored_warnings(cache) if cache is not None else [],
+                    slow_warnings,
+                )
+                await self._persist_cache(
+                    session,
+                    cache_key,
+                    resources,
+                    score_snapshot,
+                    merge_warnings,
+                    now,
+                    cache_kind="positive",
+                )
+                await session.commit()
+            await emit_event(
+                getattr(self, "_event_logger", None),
+                "search.slow_merge_completed",
+                fields={
+                    "source": "Prowlarr-Slow",
+                    "count": len(candidates),
+                    "status": "ok",
+                },
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - background merge must never surface
+            await emit_event(
+                getattr(self, "_event_logger", None),
+                "search.slow_merge_completed",
+                fields={
+                    "source": "Prowlarr-Slow",
+                    "count": 0,
+                    "status": "failed",
+                },
+            )
+        finally:
+            self._slow_merge_pending.discard(cache_key)
 
     def _normalize_results(
         self,

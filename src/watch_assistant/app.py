@@ -425,6 +425,8 @@ def create_app(
     strm_playback_allowed_networks: tuple[str, ...] | None = None,
     strm_playback_gateway: P115PlaybackGateway | None = None,
     system_created_directory_ids: Collection[str] | None = None,
+    prowlarr_fast_indexer_ids: tuple[int, ...] = (),
+    prowlarr_slow_indexer_ids: tuple[int, ...] = (),
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
@@ -998,6 +1000,8 @@ def create_app(
                 pansou_max_concurrency=settings.pansou_max_concurrency,
                 prowlarr_max_concurrency=settings.prowlarr_max_concurrency,
                 event_logger=application.state.settings_service,
+                prowlarr_fast_indexer_ids=settings.prowlarr_fast_indexer_ids,
+                prowlarr_slow_indexer_ids=settings.prowlarr_slow_indexer_ids,
             )
             application.state.manual_import_service = ManualImportService(
                 runtime_database.session_factory,
@@ -1667,6 +1671,8 @@ def create_app(
             crypto=crypto,
             share_domains=share_domains,
             event_logger=application.state.settings_service,
+            prowlarr_fast_indexer_ids=prowlarr_fast_indexer_ids,
+            prowlarr_slow_indexer_ids=prowlarr_slow_indexer_ids,
         )
         application.state.manual_import_service = ManualImportService(
             database.session_factory,

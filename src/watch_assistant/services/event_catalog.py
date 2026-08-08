@@ -113,6 +113,13 @@ EVENT_CATALOG: dict[str, EventDefinition] = {
         suggestion="请检查搜索来源状态后重试",
         fields=frozenset({"source"}),
     ),
+    "search.slow_merge_completed": _event(
+        "search.slow_merge_completed",
+        LogCategory.SEARCH,
+        "慢索引器后台合并完成",
+        "慢索引器（{source}）后台搜索完成，合并结果 {count} 条，状态：{status}",
+        fields=frozenset({"source", "count", "status"}),
+    ),
     "search.cache_hit": _event(
         "search.cache_hit", LogCategory.CACHE, "命中搜索缓存", "已使用缓存中的{media_type}资源结果，共 {count} 条"
     ),
