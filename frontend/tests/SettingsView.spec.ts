@@ -245,7 +245,7 @@ describe("SettingsView", () => {
     expect(wrapper.find(".p115-device-list .settings-state-error").exists()).toBe(false);
   });
 
-  it("keeps manual organization independent from the schedule switch", async () => {
+  it("keeps organization settings independent from the schedule switch and deduplicated from the workbench", async () => {
     const api = makeApi();
     const wrapper = mount(SettingsView, { props: { api } });
     await flushPromises();
@@ -253,6 +253,9 @@ describe("SettingsView", () => {
     await flushPromises();
 
     expect(wrapper.findAll("details.settings-subsection")).toHaveLength(3);
+    expect(wrapper.findAll("button").some((button) => button.text().includes("开始整理"))).toBe(false);
+    expect(wrapper.find(".organization-result-panel").exists()).toBe(false);
+    expect(wrapper.findAll("button").some((button) => button.text().includes("前往整理页"))).toBe(true);
     const scheduleToggle = wrapper.get(".settings-subsection input[type=checkbox]");
     await scheduleToggle.setValue(false);
     await wrapper.get(".settings-subsection input[type=number]").setValue("10");
@@ -265,232 +268,6 @@ describe("SettingsView", () => {
       push_directory_id: "3500",
       revision: 4,
     }));
-    await wrapper.findAll("button").find((button) => button.text().includes("开始整理"))?.trigger("click");
-    expect(api.runOrganizationNow).toHaveBeenCalledTimes(1);
-  });
-
-  it("shows a readable organization result conclusion", async () => {
-    const api = makeApi();
-    const wrapper = mount(SettingsView, { props: { api } });
-    await flushPromises();
-    await wrapper.findAll("button").find((button) => button.text().includes("115 整理"))?.trigger("click");
-    await flushPromises();
-
-    expect(wrapper.get(".organization-result-state").text()).toContain("尚未整理");
-    expect(wrapper.find(".organization-result-statuses").exists()).toBe(false);
-  });
-
-  it("explains that review items were not moved", async () => {
-    const api = makeApi({
-      organizationResult: vi.fn().mockResolvedValue({
-        status: "skipped",
-        available_statuses: ["unknown", "success", "skipped", "deleted", "replace", "failed"],
-        source_count: 1,
-        scanned_count: 1,
-        plan_count: 1,
-        queued_count: 0,
-        blocked_count: 0,
-        blocked_details: [],
-        items: [{ title: "未识别影片", tmdb_id: null, target: null, status: "needs_review", error_code: null }],
-        finished_at: "2026-07-31T12:33:25Z",
-        run_id: "org-review",
-      }),
-    });
-    const wrapper = mount(SettingsView, { props: { api } });
-    await flushPromises();
-    await wrapper.findAll("button").find((button) => button.text().includes("115 整理"))?.trigger("click");
-    await flushPromises();
-
-    expect(wrapper.get(".organization-result-state").text()).toContain("待确认，尚未移动文件");
-    expect(wrapper.get(".organization-result-summary").text()).toContain("需要确认后才能移动");
-    expect(wrapper.get(".organization-result-statuses").text()).toContain("待确认 1");
-    expect(wrapper.get(".organization-result-item-target").text()).toContain("未生成归档路径，未移动文件");
-  });
-
-  it("shows reasons for blocked organization sources", async () => {
-    const api = makeApi({
-      organizationResult: vi.fn().mockResolvedValue({
-        status: "failed",
-        available_statuses: ["unknown", "success", "skipped", "deleted", "replace", "failed"],
-        source_count: 1,
-        scanned_count: 0,
-        plan_count: 0,
-        queued_count: 0,
-        blocked_count: 1,
-        blocked_details: [{
-          source_directory_id: "source-1",
-          phase: "scan",
-          error_code: "scan_incomplete",
-          message_zh: "源目录扫描未完成，已阻止生成整理预览。",
-          next_step_zh: "请重新执行一次完整扫描。",
-        }],
-        run_id: null,
-        finished_at: null,
-      }),
-    });
-    const wrapper = mount(SettingsView, { props: { api } });
-    await flushPromises();
-    await wrapper.findAll("button").find((button) => button.text().includes("115 整理"))?.trigger("click");
-    await flushPromises();
-
-    expect(wrapper.get(".organization-blocked-details").text()).toContain("源目录扫描未完成");
-    expect(wrapper.get(".organization-blocked-details").text()).toContain("scan_incomplete");
-  });
-
-  it("reports the final phase and next step after a manual organization run", async () => {
-    vi.useFakeTimers();
-    try {
-      const finalResult = {
-        status: "failed" as const,
-        available_statuses: ["unknown", "success", "skipped", "deleted", "replace", "failed"],
-        source_count: 1,
-        scanned_count: 0,
-        plan_count: 0,
-        queued_count: 0,
-        blocked_count: 1,
-        blocked_details: [{
-          source_directory_id: null,
-          phase: "credentials" as const,
-          error_code: "credentials_missing",
-          message_zh: "115 登录凭据未配置，已阻止整理。",
-          next_step_zh: "请到设置检查 115 登录状态和凭据，再重新发起整理。",
-        }],
-        items: [],
-        finished_at: "2026-07-31T12:33:25Z",
-        run_id: "org-test-run",
-      };
-      const resultMock = vi.fn()
-        .mockResolvedValueOnce({
-          status: "unknown",
-          available_statuses: ["unknown", "success", "skipped", "deleted", "replace", "failed"],
-          source_count: 0,
-          scanned_count: 0,
-          plan_count: 0,
-          queued_count: 0,
-          blocked_count: 0,
-          blocked_details: [],
-          items: [],
-          finished_at: null,
-          run_id: null,
-        })
-        .mockResolvedValueOnce(finalResult);
-      const api = makeApi({ organizationResult: resultMock });
-      const wrapper = mount(SettingsView, { props: { api } });
-      await flushPromises();
-      await wrapper.findAll("button").find((button) => button.text().includes("115 整理"))?.trigger("click");
-      await flushPromises();
-      await wrapper.findAll("button").find((button) => button.text().includes("开始整理"))?.trigger("click");
-      await flushPromises();
-
-      expect(wrapper.get(".settings-action-message").text()).toContain("整理已排队");
-      expect(wrapper.get(".organization-blocked-details").text()).toContain("credentials_missing");
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("keeps structured organization result polling errors visible with retry", async () => {
-    vi.useFakeTimers();
-    try {
-      const initial = {
-        status: "unknown" as const,
-        available_statuses: ["unknown", "success", "skipped", "deleted", "replace", "failed"],
-        source_count: 0,
-        scanned_count: 0,
-        plan_count: 0,
-        queued_count: 0,
-        blocked_count: 0,
-        blocked_details: [],
-        items: [],
-        finished_at: null,
-        run_id: null,
-      };
-      const resultMock = vi.fn()
-        .mockResolvedValueOnce(initial)
-        .mockRejectedValueOnce(new ApiError("整理结果服务暂时不可用，请稍后重试", 503, "organization_reconciliation_unavailable"))
-        .mockResolvedValueOnce(initial);
-      const api = makeApi({ organizationResult: resultMock });
-      const wrapper = mount(SettingsView, { props: { api } });
-      await flushPromises();
-      await wrapper.findAll("button").find((button) => button.text().includes("115 整理"))?.trigger("click");
-      await flushPromises();
-      await wrapper.findAll("button").find((button) => button.text().includes("开始整理"))?.trigger("click");
-      await flushPromises();
-      await vi.advanceTimersByTimeAsync(500);
-      await flushPromises();
-
-      expect(wrapper.get(".organization-result-panel .settings-state-error").text()).toContain("整理结果服务暂时不可用，请稍后重试");
-      await wrapper.get(".organization-result-panel .settings-state-error .text-button").trigger("click");
-      await flushPromises();
-      expect(resultMock).toHaveBeenCalledTimes(3);
-      expect(wrapper.find(".organization-result-panel .settings-state-error").exists()).toBe(false);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("settles a matching run when finished_at is unchanged", async () => {
-    vi.useFakeTimers();
-    try {
-      const finishedAt = "2026-07-31T12:33:25Z";
-      const previous = {
-        status: "success" as const,
-        available_statuses: ["unknown", "success", "skipped", "deleted", "replace", "failed"],
-        source_count: 1,
-        scanned_count: 1,
-        plan_count: 1,
-        queued_count: 0,
-        blocked_count: 0,
-        blocked_details: [],
-        items: [],
-        finished_at: finishedAt,
-        run_id: "org-old-run",
-      };
-      const current = { ...previous, run_id: "org-new-run" };
-      const resultMock = vi.fn().mockResolvedValueOnce(previous).mockResolvedValueOnce(current);
-      const api = makeApi({
-        organizationResult: resultMock,
-        runOrganizationNow: vi.fn().mockResolvedValue({
-          action: "run_now",
-          queued: true,
-          schedule_enabled: false,
-          message_zh: "整理已排队",
-          run_id: "org-new-run",
-        }),
-      });
-      const wrapper = mount(SettingsView, { props: { api } });
-      await flushPromises();
-      await wrapper.findAll("button").find((button) => button.text().includes("115 整理"))?.trigger("click");
-      await flushPromises();
-      await wrapper.findAll("button").find((button) => button.text().includes("开始整理"))?.trigger("click");
-      await flushPromises();
-
-      expect(wrapper.get(".settings-action-message").text()).toContain("整理已排队");
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("explains when the organization scheduler is unavailable", async () => {
-    const api = makeApi({
-      runOrganizationNow: vi.fn().mockRejectedValue(
-        new ApiError(
-          "当前环境没有启动自动整理调度服务，整理任务尚未执行。",
-          503,
-          "organization_schedule_unavailable",
-          { suggestion: "请在部署配置中启用整理计划服务后再试。", retryable: true, action: "inspect_configuration" },
-        ),
-      ),
-    });
-    const wrapper = mount(SettingsView, { props: { api } });
-    await flushPromises();
-    await wrapper.findAll("button").find((button) => button.text().includes("115 整理"))?.trigger("click");
-    await flushPromises();
-    await wrapper.findAll("button").find((button) => button.text().includes("开始整理"))?.trigger("click");
-    await flushPromises();
-
-    expect(wrapper.get(".settings-action-message").text()).toContain("当前环境没有启动自动整理调度服务");
-    expect(wrapper.get(".settings-action-message").text()).toContain("启用整理计划服务");
   });
 
   it("selects and persists a separate push directory from the managed scope", async () => {
@@ -638,9 +415,9 @@ describe("SettingsView", () => {
     await wrapper.findAll("button").find((button) => button.text().includes("115 整理"))?.trigger("click");
     await flushPromises();
     expect(wrapper.text()).not.toContain(fullCid);
-    const diagnostics = wrapper.get(".organization-blocked-details details");
+    expect(wrapper.text()).not.toContain(errorCode);
+    const diagnostics = wrapper.get(".directory-diagnostic");
     expect(diagnostics.element.hasAttribute("open")).toBe(false);
-    expect(diagnostics.text()).toContain(errorCode);
   });
 
   it("loads content policy controls and handles a revision conflict", async () => {

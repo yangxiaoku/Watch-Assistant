@@ -516,7 +516,7 @@ async def test_organization_settings_persist_and_validate_cid_scope(tmp_path):
         current = await client.get("/api/v1/settings/organization")
         assert current.status_code == 200
         assert current.json()["schedule_enabled"] is False
-        assert current.json()["auto_execute_enabled"] is False
+        assert current.json()["auto_execute_enabled"] is True
         assert current.json()["scan_interval_minutes"] == 30
 
         updated = await client.patch(

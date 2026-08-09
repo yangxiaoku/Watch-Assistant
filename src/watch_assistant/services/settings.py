@@ -127,7 +127,8 @@ DEFAULT_ORGANIZATION_VIDEO_EXTENSIONS = (
 
 _ORGANIZATION_DEFAULTS: dict[str, object] = {
     "schedule_enabled": False,
-    "auto_execute_enabled": False,
+    # 自动整理默认开启：高置信度影片扫描后自动确认并归档，识别不确定的保留待人工确认。
+    "auto_execute_enabled": True,
     "scan_interval_minutes": 30,
     "source_directory_ids": [],
     "source_directory_labels": [],

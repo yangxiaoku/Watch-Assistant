@@ -19,7 +19,6 @@ import {
 } from "@lucide/vue";
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { ApiClient, ApiError, focusFirstFieldError, isConflict, CONFLICT_MESSAGE_ZH } from "../api";
-import OrganizationResultPanel from "../components/OrganizationResultPanel.vue";
 import { p115DeviceOptions } from "../p115DeviceTypes";
 import { logLevelOptions } from "../statusCatalog";
 import { diagnosticCode, diagnosticReference, safeLocalizedCopy } from "../uiSafety";
@@ -135,9 +134,6 @@ const organizationLoading = ref(true);
 const organizationError = ref("");
 const organizationSaveError = ref("");
 const organizationSaving = ref(false);
-const organizationActionBusy = ref(false);
-const organizationActionMessage = ref("");
-const organizationResultReloadToken = ref(0);
 const organizationSourceDraft = ref("");
 const organizationSourceLabelsDraft = ref<string[]>([]);
 const organizationTargetDraft = ref("");
@@ -768,27 +764,6 @@ async function saveOrganization() {
   }
 }
 
-async function runOrganizationNow() {
-  if (organizationActionBusy.value) return;
-  organizationActionBusy.value = true;
-  organizationActionMessage.value = "";
-  try {
-    if (organizationDirty.value) {
-      await saveOrganization();
-      if (organizationDirty.value || organizationSaveError.value) return;
-    }
-    const response = await props.api.runOrganizationNow();
-    organizationActionMessage.value = response.message_zh;
-    organizationResultReloadToken.value += 1;
-  } catch (exception) {
-    organizationActionMessage.value = exception instanceof ApiError
-      ? `${exception.message}${exception.suggestion ? ` ${exception.suggestion}` : ""}`
-      : "开始整理失败，请稍后重试";
-  } finally {
-    organizationActionBusy.value = false;
-  }
-}
-
 function applyLogging(value: LoggingSettingsResponse) {
   logging.value = value;
   draftLevel.value = value.level;
@@ -1249,17 +1224,16 @@ onBeforeUnmount(() => {
         </section>
 
         <section v-else-if="activeSection === 'organization'" class="settings-section" aria-labelledby="organization-title">
-          <header class="settings-section-heading"><div><p class="eyebrow">115 网盘</p><h2 id="organization-title">自动整理</h2><p>点击“开始整理”立即扫描已配置来源；定时开关只控制自动触发。</p></div><div class="settings-section-actions"><button class="primary-button" type="button" :disabled="organizationActionBusy" @click="runOrganizationNow"><LoaderCircle v-if="organizationActionBusy" class="spin" :size="15" /><Zap v-else :size="15" />开始整理</button><button class="secondary-button" type="button" @click="openOrganizationPage"><Settings2 :size="15" />前往整理页</button></div></header>
+          <header class="settings-section-heading"><div><p class="eyebrow">115 网盘</p><h2 id="organization-title">自动整理</h2><p>定时开关只控制自动触发；手动运行请在整理页发起。</p></div><div class="settings-section-actions"><button class="secondary-button" type="button" @click="openOrganizationPage"><Settings2 :size="15" />前往整理页</button></div></header>
           <div v-if="organizationLoading" class="settings-loading"><LoaderCircle class="spin" :size="20" />正在加载整理设置</div>
           <div v-else-if="organizationError" class="settings-state settings-state-error" role="alert"><AlertTriangle :size="18" /><span>{{ organizationError }}</span><button class="text-button" type="button" @click="loadOrganization">重试</button></div>
           <template v-else-if="organizationSettings">
             <details class="settings-subsection" open>
               <summary><h3>整理执行</h3><span class="settings-section-disclosure" aria-hidden="true">⌄</span></summary>
-              <label class="settings-toggle"><input v-model="organizationDraft.schedule_enabled" type="checkbox" />定时整理：启用后按扫描间隔自动整理；关闭后不自动整理，但“开始整理”仍可手动触发</label>
+              <label class="settings-toggle"><input v-model="organizationDraft.schedule_enabled" type="checkbox" />定时整理：启用后按扫描间隔自动整理；关闭后不自动整理，可到整理页手动触发</label>
               <label class="settings-toggle"><input v-model="organizationDraft.auto_execute_enabled" type="checkbox" />自动整理：识别高置信度的影片自动确认并排队，识别不确定的保留在来源目录，可在“整理”页待处理列表中人工处理</label>
               <div class="settings-form-grid"><label>扫描频率（分钟）<input v-model.number="organizationDraft.scan_interval_minutes" type="number" min="5" max="1440" /></label></div>
               <p class="settings-note">当前状态：{{ organizationDraft.schedule_enabled ? '定时整理已启用' : '定时整理已关闭' }}。停止定时会自动关闭开关并保存，正在执行的远端操作不会被强行中断。</p>
-              <OrganizationResultPanel :api="props.api" :reload-token="organizationResultReloadToken" />
             </details>
              <details class="settings-subsection" open><summary><h3>扫描来源、归档与推送目录</h3><span class="settings-section-disclosure" aria-hidden="true">⌄</span></summary><p class="settings-note">目录选择器从 115 网盘根目录开始浏览。扫描来源可多选，整理归档目录和资源推送目录各选一个；三者保存后分别生效。页面主显示使用可复核的目录名称/相对路径，CID 仅在折叠诊断信息中脱敏显示。</p><div class="directory-selection-grid"><div class="directory-selection-field"><span>整理扫描来源</span><div class="directory-chips"><span v-for="(id, index) in organizationList(organizationSourceDraft)" :key="id" class="directory-chip"><span>{{ sourceDirectoryDisplayLabel(index) }}</span><button type="button" aria-label="移除扫描来源" @click="removeOrganizationSource(index)">×</button></span><span v-if="!organizationList(organizationSourceDraft).length" class="settings-note">尚未选择</span></div><button class="secondary-button" type="button" @click="openDirectoryPicker('source')">📂 选择扫描来源</button></div><div class="directory-selection-field"><span>整理归档目录</span><span v-if="organizationTargetDraft" class="directory-chip"><span>{{ organizationTargetLabelDraft || '目录名称待确认' }}</span></span><span v-else class="settings-note">尚未选择</span><button class="secondary-button" type="button" @click="openDirectoryPicker('target')">📂 选择归档目录</button></div><div class="directory-selection-field"><span>资源推送目录</span><span v-if="organizationPushDraft" class="directory-chip"><span>{{ organizationPushLabelDraft || '目录名称待确认' }}</span></span><span v-else class="settings-note">尚未选择</span><button class="secondary-button" type="button" @click="openDirectoryPicker('push')">📂 选择推送目录</button><p class="settings-note">资源页面点击“推送”时直接使用这里保存的目录，不再临时选择。</p></div></div><details class="directory-diagnostic"><summary>诊断信息</summary><small>扫描来源 CID（脱敏）：{{ redactedDirectoryIds(organizationSourceDraft) }}</small><small>归档目录 CID（脱敏）：{{ redactDirectoryId(organizationTargetDraft) }}</small><small>推送目录 CID（脱敏）：{{ redactDirectoryId(organizationPushDraft) }}</small></details></details>
             <details class="settings-subsection"><summary><h3>高级设置</h3><span class="settings-section-disclosure" aria-hidden="true">⌄</span></summary>
@@ -1270,7 +1244,6 @@ onBeforeUnmount(() => {
             </details>
             <div v-if="organizationDirty" class="settings-save-bar"><span>有未保存的整理设置</span><div><button class="secondary-button" type="button" :disabled="organizationSaving" @click="loadOrganization">取消</button><button class="primary-button" type="button" :disabled="organizationSaving" @click="saveOrganization"><LoaderCircle v-if="organizationSaving" class="spin" :size="15" /><Save v-else :size="15" />保存</button></div></div>
             <div v-if="organizationSaveError" class="settings-state settings-state-error settings-save-error" role="alert"><AlertTriangle :size="17" /><span>{{ organizationSaveError }}</span><button class="text-button" type="button" @click="loadOrganization">重新加载</button></div>
-            <p v-if="organizationActionMessage" class="settings-action-message" role="status">{{ organizationActionMessage }}</p>
           </template>
         </section>
 
