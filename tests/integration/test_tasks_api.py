@@ -173,6 +173,45 @@ async def test_task_creation_links_push_stage_to_workflow(tmp_path):
 
 
 @pytest.mark.integration
+async def test_direct_push_skips_pending_prerequisite_stages(tmp_path):
+    """A workflow created from a direct push must let the push stage start.
+
+    Regression: creating a task against a fresh workflow previously failed
+    with ``workflow_prerequisite_not_met`` because inspection/approval stayed
+    PENDING. A direct push skips those stages instead of blocking.
+    """
+    client, database, tmdb, pansou, _app = await _make_task_client(tmp_path)
+
+    workflow_response = await client.post(
+        "/api/v1/workflows",
+        json={"media_type": "movie", "tmdb_id": 27205, "resource_id": "res_task_api"},
+    )
+    assert workflow_response.status_code == 201
+    workflow_id = workflow_response.json()["id"]
+
+    task_response = await client.post(
+        "/api/v1/tasks",
+        json={"resource_id": "res_task_api", "workflow_id": workflow_id},
+    )
+    assert task_response.status_code == 202
+    assert task_response.json()["workflow_id"] == workflow_id
+
+    workflow = await client.get(f"/api/v1/workflows/{workflow_id}")
+    stage_status = {
+        item["stage"]: item["status"] for item in workflow.json()["stages"]
+    }
+    assert stage_status["discovery"] == "succeeded"
+    assert stage_status["inspection"] == "skipped"
+    assert stage_status["approval"] == "skipped"
+    assert stage_status["push"] == "running"
+
+    await client.aclose()
+    await tmdb.aclose()
+    await pansou.aclose()
+    await database.engine.dispose()
+
+
+@pytest.mark.integration
 async def test_workflow_stage_patch_cannot_forge_discovery_or_availability(tmp_path):
     client, database, tmdb, pansou, _app = await _make_task_client(tmp_path)
     workflow = await client.post(
