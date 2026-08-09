@@ -23,6 +23,7 @@ from watch_assistant.schemas import (
 from watch_assistant.services.observability import EventLogger, emit_event
 from watch_assistant.services.workflows import (
     WorkflowConflict,
+    _skip_pending_prerequisites_before_push,
     advance_availability_from_evidence,
     link_child,
     record_evidence,
@@ -512,6 +513,7 @@ class TaskService:
                                 evidence.workflow_id = workflow_id
                             elif evidence.workflow_id != workflow_id:
                                 raise WorkflowConflict("workflow_conflict")
+                        await _skip_pending_prerequisites_before_push(session, workflow_id)
                         await link_child(
                             session,
                             workflow_id,
@@ -545,6 +547,9 @@ class TaskService:
             )
             session.add(task)
             if workflow_id is not None:
+                # 直接推送：跳过仍处于 PENDING 的前置阶段（检测/人工确认），
+                # 让推送阶段可以直接开始。
+                await _skip_pending_prerequisites_before_push(session, workflow_id)
                 await link_child(
                     session,
                     workflow_id,

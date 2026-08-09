@@ -942,6 +942,39 @@ async def record_discovery_evidence(
     )
 
 
+async def _skip_pending_prerequisites_before_push(
+    session: AsyncSession, workflow_id: str
+) -> None:
+    """Mark PENDING stages before PUSH as SKIPPED for a direct push.
+
+    A workflow created from a direct resource push has no review pipeline:
+    the user's push click is the approval, and inspection is skipped by
+    choice. Skipping the pending earlier stages lets the PUSH stage start
+    instead of failing with ``workflow_prerequisite_not_met``.
+    """
+    stages = list(
+        await session.scalars(
+            select(WorkflowStage)
+            .where(WorkflowStage.workflow_id == workflow_id)
+            .order_by(WorkflowStage.sequence)
+        )
+    )
+    push_sequence = next(
+        stage.sequence for stage in stages if stage.stage is WorkflowStageName.PUSH
+    )
+    now = datetime.now(UTC)
+    for stage in stages:
+        if stage.sequence >= push_sequence:
+            break
+        if stage.status is not WorkflowStageStatus.PENDING:
+            continue
+        stage.status = WorkflowStageStatus.SKIPPED
+        stage.reason = "direct_push_skipped"
+        stage.updated_at = now
+        if stage.completed_at is None:
+            stage.completed_at = now
+
+
 async def advance_availability_from_evidence(
     session: AsyncSession,
     workflow_id: str,
