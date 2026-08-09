@@ -6,6 +6,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from watch_assistant.schemas import (
     TaskAction,
+    TaskBatchRetryRequest,
+    TaskBatchRetryResponse,
     TaskCreateRequest,
     TaskReconciliationResponse,
     TaskResponse,
@@ -98,6 +100,19 @@ async def get_task(task_id: str, service: TaskServiceDependency) -> TaskResponse
 @router.get("/tasks", response_model=list[TaskResponse])
 async def list_tasks(service: TaskServiceDependency) -> list[TaskResponse]:
     return await service.list_recent()
+
+
+@router.post("/tasks/retry-batch", response_model=TaskBatchRetryResponse)
+async def retry_tasks_batch(
+    payload: TaskBatchRetryRequest,
+    raw_request: Request,
+    service: TaskServiceDependency,
+) -> TaskBatchRetryResponse:
+    result = await service.retry_failed_batch(
+        limit=payload.limit,
+        allowed_actions=allowed_push_actions(raw_request),
+    )
+    return TaskBatchRetryResponse(**result)
 
 
 @router.post("/tasks/{task_id}/retry", response_model=TaskResponse)

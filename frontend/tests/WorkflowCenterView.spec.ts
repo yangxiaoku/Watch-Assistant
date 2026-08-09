@@ -116,3 +116,43 @@ describe("WorkflowCenterView request ordering", () => {
     expect(wrapper.text()).toContain("处理中");
   });
 });
+
+describe("WorkflowCenterView batch actions", () => {
+  it("retries failed tasks in one click and shows the outcome", async () => {
+    const api = makeApi({
+      retryTasksBatch: vi.fn().mockResolvedValue({ requested: 2, retried: 2, failed: [] }),
+    });
+    const wrapper = mount(WorkflowCenterView, { props: { api } });
+    await flushPromises();
+
+    await wrapper.get("button").findAll("button")[0]; // ensure buttons rendered
+    const buttons = wrapper.findAll("button");
+    const retryButton = buttons.find((b) => b.text().includes("重试失败任务"));
+    expect(retryButton).toBeDefined();
+    await retryButton!.trigger("click");
+    await flushPromises();
+
+    expect(api.retryTasksBatch).toHaveBeenCalledTimes(1);
+    expect(wrapper.text()).toContain("已重试 2 个失败任务");
+  });
+
+  it("cancels stale workflows through a confirm dialog", async () => {
+    const api = makeApi({
+      cancelWorkflowsBatch: vi.fn().mockResolvedValue({ requested: 3, cancelled: 2, failed: [{ workflow_id: "x", code: "workflow_not_cancellable" }] }),
+    });
+    const wrapper = mount(WorkflowCenterView, { props: { api } });
+    await flushPromises();
+
+    const buttons = wrapper.findAll("button");
+    const cancelButton = buttons.find((b) => b.text().includes("清理卡住工作流"));
+    await cancelButton!.trigger("click");
+    await flushPromises();
+    expect(wrapper.get(".confirm-dialog").text()).toContain("批量取消工作流");
+
+    await wrapper.get(".confirm-dialog-actions button:last-child").trigger("click");
+    await flushPromises();
+
+    expect(api.cancelWorkflowsBatch).toHaveBeenCalledTimes(1);
+    expect(wrapper.text()).toContain("已取消 2 个工作流");
+  });
+});

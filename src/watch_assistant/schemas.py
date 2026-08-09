@@ -1912,6 +1912,40 @@ class TaskReconciliationResponse(BaseModel):
     evidence: WorkflowEvidenceResponse
 
 
+class TaskBatchRetryRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    limit: int = Field(default=50, ge=1, le=200)
+
+
+class TaskBatchFailure(BaseModel):
+    task_id: str
+    code: str
+
+
+class TaskBatchRetryResponse(BaseModel):
+    requested: int
+    retried: int
+    failed: list[TaskBatchFailure]
+
+
+class WorkflowBatchCancelRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    limit: int = Field(default=50, ge=1, le=200)
+
+
+class WorkflowBatchFailure(BaseModel):
+    workflow_id: str
+    code: str
+
+
+class WorkflowBatchCancelResponse(BaseModel):
+    requested: int
+    cancelled: int
+    failed: list[WorkflowBatchFailure]
+
+
 class AuthLoginRequest(BaseModel):
     model_config = {"extra": "forbid"}
 
