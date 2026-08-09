@@ -4,6 +4,7 @@ import pytest
 
 from watch_assistant.adapters.p115_library import ScanState, scan_directory
 from watch_assistant.adapters.p115_library_gateway import (
+    VERIFIED_BATCH_PAGE_SIZE,
     VERIFIED_PAGE_SIZE,
     VIRTUAL_ROOT_PAGE_SIZE,
     P115ReadOnlyDirectoryGateway,
@@ -144,6 +145,51 @@ async def test_verified_fs_files_page_maps_pickcode_without_path_or_repr_leaks()
     assert "SYNTHETIC_PICKCODE_SECRET" not in rendered
     assert "secret-file-name.mkv" not in rendered
     assert "101" not in rendered
+
+
+@pytest.mark.asyncio
+async def test_batch_page_size_reads_full_page_in_one_call():
+    records = [_file(fid=str(101 + i), name=f"file-{i}.mkv") for i in range(3)]
+    client = _FsFilesClient(
+        (_page(records, offset=0, count=3, limit=VERIFIED_BATCH_PAGE_SIZE),)
+    )
+    gateway, _, _ = _gateway(client)
+
+    result = await gateway.list_directory("7", page_size=VERIFIED_BATCH_PAGE_SIZE)
+
+    assert client.calls == [
+        {
+            "cid": "7",
+            "limit": VERIFIED_BATCH_PAGE_SIZE,
+            "offset": 0,
+            "record_open_time": 0,
+            "show_dir": 1,
+        }
+    ]
+    assert len(result.items) == 3
+    assert result.terminal is True
+    assert result.has_more is False
+    assert result.next_page is None
+
+
+@pytest.mark.asyncio
+async def test_batch_page_size_paginates_with_batch_offsets():
+    client = _FsFilesClient(
+        (
+            _page([_file(fid="201")], offset=0, count=51, limit=VERIFIED_BATCH_PAGE_SIZE),
+            _page([_file(fid="202")], offset=50, count=51, limit=VERIFIED_BATCH_PAGE_SIZE),
+        )
+    )
+    gateway, _, _ = _gateway(client)
+
+    page1 = await gateway.list_directory("7", page=1, page_size=VERIFIED_BATCH_PAGE_SIZE)
+    page2 = await gateway.list_directory("7", page=2, page_size=VERIFIED_BATCH_PAGE_SIZE)
+
+    assert page1.has_more is True
+    assert page1.next_page == 2
+    assert page2.terminal is True
+    assert page2.has_more is False
+    assert [call["offset"] for call in client.calls] == [0, 50]
 
 
 @pytest.mark.asyncio
