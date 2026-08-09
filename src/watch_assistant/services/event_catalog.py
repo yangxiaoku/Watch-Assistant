@@ -190,6 +190,21 @@ EVENT_CATALOG: dict[str, EventDefinition] = {
         "媒体库库存自动刷新失败，失败范围：{hidden_count}，错误码：{error_code}",
         suggestion="请检查 115 登录状态和媒体库范围配置后重试",
     ),
+    "library.scan_schedule.completed": _event(
+        "library.scan_schedule.completed",
+        LogCategory.LIBRARY,
+        "媒体库自动扫描检查完成",
+        "媒体库自动扫描检查完成：库 {libraries} 个，新入队 {scanned}，跳过 {skipped}，失败 {failed}",
+        fields=frozenset({"libraries", "scanned", "skipped", "failed"}),
+    ),
+    "library.scan_schedule.failed": _event(
+        "library.scan_schedule.failed",
+        LogCategory.LIBRARY,
+        "媒体库自动扫描入队失败",
+        "媒体库自动扫描入队失败，库：{library_id}",
+        suggestion="请检查 115 登录状态和媒体库范围配置后重试",
+        fields=frozenset({"library_id"}),
+    ),
     "settings.changed": _event(
         "settings.changed", LogCategory.SETTINGS, "设置已修改", "已修改设置分组“{status}”，变更字段：{changed_fields}"
     ),
