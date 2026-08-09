@@ -122,9 +122,9 @@ Web 登录账号默认为 `admin`。生产环境应继续使用 `WEB_PASSWORD_HA
 `ORGANIZATION_EXECUTION_ENABLED`、`ORGANIZATION_WRITE_ENABLED`、
 `PERMANENT_DELETE_ENABLED`、`STRM_FULL_ENABLED`、`STRM_INCREMENTAL_ENABLED`、
 `STRM_CLEANUP_ENABLED` 和 `STRM_PLAYBACK_ENABLED` 控制；所有开关默认关闭。
-真实移动/重命名还必须有 `ORGANIZATION_WRITE_CONTRACT_VERIFIED=true`，删除还必须有
-`PERMANENT_DELETE_CONTRACT_VERIFIED=true`。契约未验收时，即使功能开关被误设为 true，
-应用也不会启动真实 worker 或删除入口。发布时构建参数 `WATCH_ASSISTANT_RELEASE` 注入镜像
+真实移动/重命名以契约证据文件（`P115_ORGANIZATION_CONTRACT_EVIDENCE_PATH`）的验收结果
+为准，不通过环境变量开启；删除还必须有 `PERMANENT_DELETE_CONTRACT_VERIFIED=true`。
+契约未验收时，即使功能开关被误设为 true，应用也不会启动真实 worker 或删除入口。发布时构建参数 `WATCH_ASSISTANT_RELEASE` 注入镜像
 环境；健康接口和设置页使用同一版本值。缺少构建注入时安全回退为 `unknown`，不能据此判断
 生产版本；Compose/Docker 发布不会接受缺少或非 full SHA 的构建参数。
 

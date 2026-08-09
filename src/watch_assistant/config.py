@@ -173,9 +173,8 @@ class Settings(BaseSettings):
     organization_write_enabled: bool = Field(
         default=False, validation_alias="ORGANIZATION_WRITE_ENABLED"
     )
-    organization_write_contract_verified: bool = Field(
-        default=False, validation_alias="ORGANIZATION_WRITE_CONTRACT_VERIFIED"
-    )
+    # 写契约证据只由证据文件推导（app.py），历史上可设置的
+    # ORGANIZATION_WRITE_CONTRACT_VERIFIED 开关已被故意忽略，不再作为配置项暴露。
     permanent_delete_enabled: bool = Field(
         default=False, validation_alias="PERMANENT_DELETE_ENABLED"
     )
