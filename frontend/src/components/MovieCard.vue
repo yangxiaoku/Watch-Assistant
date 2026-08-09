@@ -1,13 +1,11 @@
 <script setup lang="ts">
 import { Film, Heart, Star } from "@lucide/vue";
+import { posterUrl } from "../format";
 import type { MovieMetadata } from "../types";
 
 defineProps<{ movie: MovieMetadata; favorite?: boolean }>();
 defineEmits<{ open: [movie: MovieMetadata]; favorite: [movie: MovieMetadata] }>();
 
-function posterUrl(path: string | null): string | null {
-  return path ? `https://image.tmdb.org/t/p/w500${path}` : null;
-}
 </script>
 
 <template>

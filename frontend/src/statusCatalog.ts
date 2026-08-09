@@ -39,6 +39,7 @@ export function capabilityStatusPresentation(
   };
 }
 
+
 const TASK_STATUS: Record<TaskState, StatusPresentation> = {
   queued: { label: "排队中", tone: "info", nextStep: "等待任务开始处理。" },
   submitting: { label: "处理中", tone: "info", nextStep: "正在向受控服务提交，请稍候。" },

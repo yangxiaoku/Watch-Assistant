@@ -2,6 +2,7 @@
 import { CheckCircle2, Clock3, LoaderCircle, RefreshCw } from "@lucide/vue";
 import { onMounted, ref } from "vue";
 import { ApiClient, ApiError } from "../api";
+import { formatTimestamp } from "../format";
 import type { OrganizationHistoryItem } from "../types";
 
 const props = withDefaults(defineProps<{ api: ApiClient; embedded?: boolean }>(), {
@@ -12,9 +13,6 @@ const nextCursor = ref<number | null>(null);
 const loading = ref(false);
 const error = ref("");
 
-function formatTime(value: string): string {
-  return new Date(value).toLocaleString("zh-CN", { hour12: false });
-}
 
 async function load(cursor?: number) {
   loading.value = true;
@@ -55,7 +53,7 @@ onMounted(() => void load());
         </div>
         <dl class="organization-history-facts">
           <div><dt>归档位置</dt><dd>{{ item.target_path }}</dd></div>
-          <div><dt>完成时间</dt><dd>{{ formatTime(item.completed_at) }}</dd></div>
+          <div><dt>完成时间</dt><dd>{{ formatTimestamp(item.completed_at) }}</dd></div>
           <div v-if="item.tmdb_id"><dt>TMDB</dt><dd>{{ item.tmdb_id }}</dd></div>
         </dl>
       </article>

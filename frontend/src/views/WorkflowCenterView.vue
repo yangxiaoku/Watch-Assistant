@@ -3,6 +3,7 @@ import { AlertTriangle, Ban, CheckCircle2, Clock3, LoaderCircle, PanelRight, Ref
 import { computed, onMounted, ref } from "vue";
 import { ApiClient, ApiError } from "../api";
 import ConfirmDialog from "../components/ConfirmDialog.vue";
+import { formatTimestamp } from "../format";
 import { workflowStageStatusLabel, workflowStageStatusOptions, workflowStatusOptions, workflowStatusPresentation } from "../statusCatalog";
 import { diagnosticCode, diagnosticReference } from "../uiSafety";
 import type { WorkflowResponse, WorkflowStageResponse, WorkflowStatus } from "../types";
@@ -78,10 +79,6 @@ const cancellableStageStatuses: WorkflowStageResponse["status"][] = ["pending", 
 
 function statusLabel(status: WorkflowStatus): string { return workflowStatusPresentation(status).label; }
 function stageLabel(stage: WorkflowStageResponse["stage"]): string { return stageLabels[stage] ?? "未命名阶段"; }
-function formatTimestamp(value: string): string {
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? "时间未知" : date.toLocaleString("zh-CN", { dateStyle: "short", timeStyle: "short" });
-}
 function statusIcon(status: WorkflowStageResponse["status"]) {
   if (status === "succeeded") return CheckCircle2;
   if (status === "failed" || status === "uncertain") return XCircle;

@@ -2,6 +2,7 @@
 import { AlertTriangle, ChevronDown, FileText, LoaderCircle, RefreshCw } from "@lucide/vue";
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { ApiClient, ApiError } from "../api";
+import { formatTimestamp } from "../format";
 import { logCategoryLabel, logCategoryOptions, logLevelLabel, logLevelOptions } from "../statusCatalog";
 import type { LogCategory, LogEntry, LogLevel, LogsResponse } from "../types";
 import { diagnosticCode, diagnosticReference, safeLocalizedCopy } from "../uiSafety";
@@ -165,11 +166,6 @@ function loadMoreLogs() {
 
 function logLevelClass(level: LogLevel) {
   return `log-${level.toLowerCase()}`;
-}
-
-function formatTimestamp(value: string) {
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? "未知时间" : date.toLocaleString("zh-CN", { hour12: false });
 }
 
 onMounted(() => {

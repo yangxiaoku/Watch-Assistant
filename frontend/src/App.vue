@@ -9,7 +9,6 @@ import {
   clampCatalogPage,
   navigateToCatalog,
   navigateToMedia,
-  mediaRoutePath,
   navigateToView,
   parseCatalogRoute,
   type CatalogRoute,
@@ -1580,6 +1579,7 @@ onBeforeUnmount(() => {
         <CollectionView v-else-if="activeView === 'favorites' || activeView === 'history'" :mode="activeView" :movies="activeView === 'favorites' ? favorites : history" :favorite-ids="favoriteIds" @open="openMovie" @favorite="toggleFavorite" />
         <SettingsView v-else-if="activeView === 'settings'" :api="api" :initial-section="settingsInitialSection" @auto-start-enabled="inspectionAutoStartEnabled = $event" @navigate="selectView" />
         <OrganizationView v-else-if="activeView === 'organization' && organizationPlanEnabled" :api="api" :execution-supported="organizationExecutionSupported" @open-settings="openOrganizationSettings" />
+        <!-- 导航「媒体库」指向 LibraryWorkbenchView（115 媒体库工作台）；LibraryView.vue 是 TMDB 目录浏览，仅用于 movies/tv 路由。 -->
         <LibraryWorkbenchView v-else-if="activeView === 'library'" :api="api" :organization-plan-capability="organizationPlanCapability" :strm-full-capability="strmFullCapability" :strm-incremental-capability="strmIncrementalCapability" :strm-cleanup-capability="strmCleanupCapability" :empty-directory-cleanup-capability="emptyDirectoryCleanupCapability" @open-settings="openOrganizationSettings" />
         <WorkflowCenterView v-else-if="activeView === 'workflows'" :api="api" @open-push-tasks="openTaskDrawer" />
         <NotificationCenterView v-else-if="activeView === 'notifications'" :api="api" @navigate="selectView" />

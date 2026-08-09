@@ -21,6 +21,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { ApiClient, ApiError, focusFirstFieldError, isConflict, CONFLICT_MESSAGE_ZH } from "../api";
 import { p115DeviceOptions } from "../p115DeviceTypes";
 import { logLevelOptions } from "../statusCatalog";
+import { formatBytes, formatTimestamp } from "../format";
 import { diagnosticCode, diagnosticReference, safeLocalizedCopy } from "../uiSafety";
 import type {
   CapabilityState,
@@ -910,24 +911,12 @@ async function validateProwlarr() {
   }
 }
 
-function formatBytes(value: number) {
-  if (!Number.isFinite(value)) return "未知";
-  if (value < 1024 * 1024) return `${Math.round(value / 1024)} KB`;
-  if (value < 1024 * 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)} MB`;
-  return `${(value / 1024 / 1024 / 1024).toFixed(1)} GB`;
-}
-
 function formatUptime(value: number) {
   if (!Number.isFinite(value)) return "未知";
   const days = Math.floor(value / 86400);
   const hours = Math.floor((value % 86400) / 3600);
   const minutes = Math.floor((value % 3600) / 60);
   return days ? `${days} 天 ${hours} 小时` : `${hours} 小时 ${minutes} 分钟`;
-}
-
-function formatTimestamp(value: string) {
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? "未知时间" : date.toLocaleString("zh-CN", { hour12: false });
 }
 
 function shortRelease(value: string | null | undefined) {
