@@ -3,6 +3,7 @@ import { AlertTriangle, LoaderCircle } from "@lucide/vue";
 import { computed, onMounted, ref, watch } from "vue";
 import { ApiClient, ApiError } from "../api";
 import { pollUntil } from "../polling";
+import { formatTimestamp } from "../format";
 import { organizationResultItemStatusLabel, organizationResultStatusLabel } from "../statusCatalog";
 import { diagnosticCode } from "../uiSafety";
 import type { OrganizationAutomationResultResponse } from "../types";
@@ -54,10 +55,6 @@ const organizationResultStatusBreakdown = computed(() => {
     label: organizationResultItemStatusLabel(status as OrganizationAutomationResultResponse["items"][number]["status"]),
   }));
 });
-
-function formatTimestamp(value: string): string {
-  return new Date(value).toLocaleString("zh-CN", { hour12: false });
-}
 
 function redactDirectoryId(value: string | null | undefined): string {
   if (!value) return "未指定";

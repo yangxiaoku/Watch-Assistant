@@ -5,6 +5,7 @@ import { ApiClient, ApiError, createIdempotencyKey, focusFirstFieldError } from 
 import ConfirmDialog from "../components/ConfirmDialog.vue";
 import PaginationBar from "../components/PaginationBar.vue";
 import { describeUiError } from "../errorCatalog";
+import { formatBytes } from "../format";
 import { libraryScanStatusLabel, manifestStatusLabel, strmOperationNextStep, strmOperationStatusLabel } from "../statusCatalog";
 import { diagnosticReference } from "../uiSafety";
 import type {
@@ -852,14 +853,6 @@ async function createOrganizationPreview() {
   } finally {
     busy.value = false;
   }
-}
-
-function formatBytes(value: number | null) {
-  if (value === null) return "未知大小";
-  if (value < 1024) return `${value} B`;
-  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
-  if (value < 1024 * 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)} MB`;
-  return `${(value / 1024 / 1024 / 1024).toFixed(2)} GB`;
 }
 
 onMounted(() => { void loadLibraries(); });

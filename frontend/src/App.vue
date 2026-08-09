@@ -9,7 +9,6 @@ import {
   clampCatalogPage,
   navigateToCatalog,
   navigateToMedia,
-  mediaRoutePath,
   navigateToView,
   parseCatalogRoute,
   type CatalogRoute,

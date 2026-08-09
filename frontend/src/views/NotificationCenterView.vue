@@ -2,6 +2,7 @@
 import { AlertTriangle, Bell, Check, CheckCheck, CircleAlert, LoaderCircle, RefreshCw, ShieldAlert } from "@lucide/vue";
 import { computed, onMounted, ref } from "vue";
 import { ApiClient, ApiError } from "../api";
+import { formatTimestamp } from "../format";
 import type { NotificationResponse, NotificationSeverity } from "../types";
 
 const props = defineProps<{ api: ApiClient }>();
@@ -39,10 +40,6 @@ const filterOptions = [
 const severityLabels: Record<NotificationSeverity, string> = { info: "提示", warning: "警告", error: "错误", security: "安全" };
 function severityLabel(value: NotificationSeverity): string { return severityLabels[value]; }
 function severityIcon(value: NotificationSeverity) { return value === "security" ? ShieldAlert : value === "error" ? CircleAlert : Bell; }
-function formatTimestamp(value: string): string {
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? "时间未知" : date.toLocaleString("zh-CN", { dateStyle: "short", timeStyle: "short" });
-}
 function actionLabel(item: NotificationResponse): string {
   if (item.action_type === "workflow" || item.action_type === "task") return "查看任务";
   if (item.action_type === "settings") return "查看设置";

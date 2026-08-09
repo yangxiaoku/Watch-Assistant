@@ -3,6 +3,7 @@ import { computed } from "vue";
 import { ArrowLeft, Film, Heart, RefreshCw, Star } from "@lucide/vue";
 import ResourceTable from "../components/ResourceTable.vue";
 import SourceDiagnostics from "../components/SourceDiagnostics.vue";
+import { posterUrl } from "../format";
 import type { PushCapabilities } from "../push";
 import type { ResourceFacets, ResourceQuality, ResourceSort, ResourceSummary, SearchResponse, SeasonDetailResponse } from "../types";
 
@@ -109,9 +110,6 @@ function onSeasonChange(event: Event): void {
   if (target instanceof HTMLSelectElement) emit("season", seasonFromValue(target.value));
 }
 
-function posterUrl(path: string | null): string | null {
-  return path ? `https://image.tmdb.org/t/p/w500${path}` : null;
-}
 
 function warningLabel(value: string): string {
   if (value.startsWith("pansou_query_failed:")) return "部分搜索请求失败，已保留其他来源结果";
