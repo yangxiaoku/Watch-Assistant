@@ -106,6 +106,7 @@ from watch_assistant.services.library_scan_operations import (
     LibraryScanOperationService,
     LibraryScanWorker,
 )
+from watch_assistant.services.library_scan_scheduler import LibraryScanScheduler
 from watch_assistant.services.maintenance import MaintenanceService
 from watch_assistant.services.managed_directory_ownership import (
     ManagedDirectoryOwnershipService,
@@ -464,6 +465,8 @@ def create_app(
         strm_recovery_task: asyncio.Task[None] | None = None
         library_scan_stop: asyncio.Event | None = None
         library_scan_task: asyncio.Task[None] | None = None
+        library_scan_scheduler_stop: asyncio.Event | None = None
+        library_scan_scheduler_task: asyncio.Task[None] | None = None
 
         async def apply_dirty_runtime(ready: bool) -> None:
             nonlocal dirty_stop, dirty_task
@@ -1011,6 +1014,11 @@ def create_app(
                 application.state.search_service,
                 event_logger=application.state.settings_service,
             )
+            application.state.library_scan_scheduler = LibraryScanScheduler(
+                runtime_database.session_factory,
+                application.state.library_scan_operation_service,
+                event_logger=application.state.settings_service,
+            )
             application.state.subscription_scheduler = SubscriptionScheduler(
                 runtime_database.session_factory,
                 application.state.subscription_service,
@@ -1241,6 +1249,15 @@ def create_app(
                     ),
                     name="watch-assistant-subscription-scheduler",
                 )
+            if settings.library_scan_scheduler_enabled:
+                library_scan_scheduler_stop = asyncio.Event()
+                library_scan_scheduler_task = asyncio.create_task(
+                    application.state.library_scan_scheduler.run_forever(
+                        library_scan_scheduler_stop,
+                        interval_seconds=settings.library_scan_interval_minutes * 60,
+                    ),
+                    name="watch-assistant-library-scan-scheduler",
+                )
         operation_database = getattr(application.state, "database", None)
         if operation_database is not None:
             operation_service = getattr(
@@ -1393,6 +1410,9 @@ def create_app(
             await _stop_worker(inspection_stop, inspection_task)
             await _stop_worker(warm_stop, warm_task)
             await _stop_worker(subscription_stop, subscription_task)
+            await _stop_worker(
+                library_scan_scheduler_stop, library_scan_scheduler_task
+            )
             await _stop_worker(webhook_stop, webhook_task)
             inspection_client = getattr(application.state, "inspection_client", None)
             if (

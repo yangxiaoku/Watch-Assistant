@@ -111,6 +111,8 @@ Web 登录账号默认为 `admin`。生产环境应继续使用 `WEB_PASSWORD_HA
 
 缓存预热默认启用，时区为 `Asia/Hong_Kong`。可通过 `CACHE_WARM_ENABLED=false` 临时关闭，或用 `CACHE_WARM_TIMEZONE` 调整零点所在时区。PanSou 请求并发默认 6、媒体预热并发默认 3，可分别通过 `PANSOU_MAX_CONCURRENCY` 和 `CACHE_WARM_CONCURRENCY` 调整。
 
+已启用媒体库每天自动执行一次全量扫描（只读，按 UTC 日期幂等去重，失败次日重试），避免推送前置的库存索引过期；可通过 `LIBRARY_SCAN_SCHEDULER_ENABLED=false` 关闭，或用 `LIBRARY_SCAN_INTERVAL_MINUTES` 调整调度检查间隔（默认 360 分钟，实际频率受日期幂等限制为每天一次）。
+
 磁力内容检测默认使用 8 路并发、单条 30 秒超时、0.75 秒 qB 轮询和 10 秒单次 API 请求超时。可通过 `INSPECTION_CONCURRENCY`（1-16）、`INSPECTION_ITEM_TIMEOUT_SECONDS`（5-120）、`INSPECTION_POLL_INTERVAL_SECONDS`（0.25-5）和 `INSPECTION_REQUEST_TIMEOUT_SECONDS`（1-30）调整；qB 客户端仍只使用隔离 sidecar 的元数据停止策略。
 
 认证后的维护接口包括 `GET /api/v1/cache/status`、`POST /api/v1/cache/retry`、`GET /api/v1/watchlist` 和 `GET /api/v1/sources/reliability`。它们用于查看预热状态、重试失败媒体、检查无资源观察列表和来源可靠性，不返回资源链接或密码。

@@ -133,6 +133,18 @@ class Settings(BaseSettings):
         le=86_400,
         validation_alias="SUBSCRIPTION_SCHEDULER_INTERVAL_SECONDS",
     )
+    library_scan_scheduler_enabled: bool = Field(
+        default=True, validation_alias="LIBRARY_SCAN_SCHEDULER_ENABLED"
+    )
+    # Date-bucketed idempotency caps the actual frequency at one full-tree scan
+    # per library per UTC day; this interval only controls how often the
+    # scheduler checks for a pending scan.
+    library_scan_interval_minutes: int = Field(
+        default=360,
+        ge=60,
+        le=1440,
+        validation_alias="LIBRARY_SCAN_INTERVAL_MINUTES",
+    )
     inspection_enabled: bool = Field(
         default=False, validation_alias="INSPECTION_ENABLED"
     )
