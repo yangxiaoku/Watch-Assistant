@@ -385,9 +385,6 @@ test("keeps release, directory IDs, and machine codes out of settings main promp
   await expect(page.getByRole("heading", { name: "自动整理" })).toBeVisible();
   await expect(page.getByText(fullDirectoryId)).toHaveCount(0);
   await expect(page.getByText("待整理/来源")).toBeVisible();
-  await expect(page.getByText("扫描未完成。", { exact: false })).toBeVisible();
-  await expect(page.getByText(errorCode, { exact: true })).toBeHidden();
-  const diagnostics = page.locator(".organization-blocked-details details");
-  await expect(diagnostics).not.toHaveAttribute("open", "");
-  await expect(diagnostics).toContainText(errorCode);
+  await expect(page.getByText(errorCode, { exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "开始整理", exact: true })).toHaveCount(0);
 });

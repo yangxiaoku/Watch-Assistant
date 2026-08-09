@@ -125,3 +125,56 @@ test("unmatched review plan searches, selects, previews a move, then confirms on
   await expect(page.getByText("整理已完成")).toBeVisible();
   expect(confirmationCalls).toBe(1);
 });
+
+test("shows distinct tab headings for review and history", async ({ page }) => {
+  await page.route("**/api/v1/settings/organization", (route) => route.fulfill({ json: {
+    revision: 0,
+    schedule_enabled: false,
+    auto_execute_enabled: true,
+    scan_interval_minutes: 60,
+    source_directory_ids: [],
+    source_directory_labels: [],
+    target_directory_id: null,
+    target_directory_label: null,
+    push_directory_id: null,
+    push_directory_label: null,
+    video_extensions: [],
+    metadata_extensions: [],
+    rename_enabled: false,
+    media_probe_enabled: false,
+    ai_identification_enabled: false,
+    small_file_threshold_mb: 0,
+    cleanup_empty_directories: false,
+    strm_linkage_enabled: false,
+    operation_delay_seconds: 0,
+    include_children_category: false,
+    include_concert_category: false,
+    region_grouping_enabled: false,
+    year_grouping_enabled: false,
+    prefer_remux: false,
+    prefer_resolution: false,
+    prefer_dolby: false,
+    conflict_mode: 2,
+    multi_version_enabled: false,
+  } }));
+  await page.route("**/api/v1/settings/organization/result", (route) => route.fulfill({ json: {
+    status: "unknown",
+    available_statuses: ["unknown", "success", "skipped", "deleted", "replace", "failed"],
+    source_count: 0,
+    scanned_count: 0,
+    plan_count: 0,
+    queued_count: 0,
+    blocked_count: 0,
+    blocked_details: [],
+    items: [],
+    finished_at: null,
+    run_id: null,
+  } }));
+  await page.route("**/api/v1/organization-history**", (route) => route.fulfill({ json: { items: [], next_cursor: null } }));
+
+  await page.goto("/organization");
+  await page.getByRole("button", { name: "待处理" }).click();
+  await expect(page.getByRole("heading", { name: "待处理计划" })).toBeVisible();
+  await page.getByRole("button", { name: "历史" }).click();
+  await expect(page.getByRole("heading", { name: "整理历史" })).toBeVisible();
+});
