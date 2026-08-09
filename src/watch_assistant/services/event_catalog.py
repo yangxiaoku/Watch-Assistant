@@ -142,7 +142,7 @@ EVENT_CATALOG: dict[str, EventDefinition] = {
         "p115.credentials_expired", LogCategory.P115, "115 登录状态已失效", "当前 115 Cookie 无法继续使用", suggestion="请前往设置重新验证 115 Cookie"
     ),
     "task.submitted": _event(
-        "task.submitted", LogCategory.TASK, "推送任务已提交", "推送任务已提交，当前状态：{status}"
+        "task.submitted", LogCategory.TASK, "推送任务已提交", "推送任务已提交，等待 115 受理"
     ),
     "task.accepted": _event(
         "task.accepted", LogCategory.TASK, "推送请求已受理", "115 已受理推送请求，等待文件可用证据"
@@ -233,31 +233,31 @@ EVENT_CATALOG: dict[str, EventDefinition] = {
         "organize.preview.created",
         LogCategory.ORGANIZE,
         "整理预览已生成",
-        "整理预览已生成，当前状态：{status}，涉及 {count} 个文件",
+        "整理预览已生成，涉及 {count} 个文件",
     ),
     "organize.plan.awaiting_confirmation": _event(
         "organize.plan.awaiting_confirmation",
         LogCategory.ORGANIZE,
         "整理计划等待确认",
-        "整理计划已保存，等待人工确认，当前状态：{status}，涉及 {count} 个文件",
+        "整理计划已保存，等待人工确认，涉及 {count} 个文件",
     ),
     "organize.plan.confirmed": _event(
         "organize.plan.confirmed",
         LogCategory.ORGANIZE,
         "整理计划已确认",
-        "整理计划已确认，当前状态：{status}",
+        "整理计划已确认",
     ),
     "organize.plan.ignored": _event(
         "organize.plan.ignored",
         LogCategory.ORGANIZE,
         "整理计划已忽略",
-        "整理计划已忽略，当前状态：{status}",
+        "整理计划已忽略",
     ),
     "organize.plan.alias_changed": _event(
         "organize.plan.alias_changed",
         LogCategory.ORGANIZE,
         "整理计划别名已更新",
-        "整理计划别名已更新，当前状态：{status}",
+        "整理计划别名已更新",
     ),
     "organize.directory.provisioned": _event(
         "organize.directory.provisioned",
@@ -274,16 +274,16 @@ EVENT_CATALOG: dict[str, EventDefinition] = {
         fields=frozenset({"source_directory_id", "message_zh"}),
     ),
     "organize.operation.queued": _event(
-        "organize.operation.queued", LogCategory.ORGANIZE, "整理操作已排队", "整理操作已排队，结果：{status}"
+        "organize.operation.queued", LogCategory.ORGANIZE, "整理操作已排队", "整理操作已排队"
     ),
     "organize.operation.updated": _event(
-        "organize.operation.updated", LogCategory.ORGANIZE, "整理操作状态已更新", "整理操作状态已更新，结果：{status}"
+        "organize.operation.updated", LogCategory.ORGANIZE, "整理操作状态已更新", "整理操作状态已更新"
     ),
     "organize.operation.failed": _event(
-        "organize.operation.failed", LogCategory.ORGANIZE, "整理操作已失败", "整理操作已失败，结果：{status}"
+        "organize.operation.failed", LogCategory.ORGANIZE, "整理操作已失败", "整理操作已失败"
     ),
     "organize.operation.uncertain": _event(
-        "organize.operation.uncertain", LogCategory.ORGANIZE, "整理结果待确认", "整理操作已标记为结果不确定，结果：{status}", suggestion="请先核对远端目录，不要直接重复提交"
+        "organize.operation.uncertain", LogCategory.ORGANIZE, "整理结果待确认", "整理操作结果待确认，请先核对远端目录", suggestion="请先核对远端目录，不要直接重复提交"
     ),
     "organize.operation.completed": _event(
         "organize.operation.completed", LogCategory.ORGANIZE, "整理操作已完成", "整理操作已完成，结果：{status}"
@@ -469,7 +469,8 @@ EVENT_CATALOG: dict[str, EventDefinition] = {
         "workflow.cancelled",
         LogCategory.TASK,
         "工作流已取消",
-        "工作流已取消，当前状态：{status}",
+        "已停止待处理阶段，工作流状态：{status_zh}",
+        fields=frozenset({"status_zh"}),
     ),
     "notification.created": _event(
         "notification.created", LogCategory.TASK, "站内通知已创建", "已创建站内通知，当前严重度：{status}"
