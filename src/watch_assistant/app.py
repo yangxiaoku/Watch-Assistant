@@ -1831,7 +1831,7 @@ def create_app(
             strm_cleanup_capability = {
                 "enabled": False,
                 "reason_code": "strm_cleanup_disabled",
-                "reason_zh": "STRM 失效清理未启用，请检查部署功能开关。",
+                "reason_zh": "STRM 失效清理当前未启用。",
                 "settings_section": "overview",
             }
         empty_cleanup_setting = False
@@ -1870,7 +1870,7 @@ def create_app(
                 "enabled": False,
                 "reason_code": "empty_directory_cleanup_disabled",
                 "reason_zh": (
-                    "空目录回收未就绪，请前往自动整理设置检查开关和写入契约。"
+                    "空目录回收当前未就绪。"
                 ),
                 "settings_section": "organization",
             }

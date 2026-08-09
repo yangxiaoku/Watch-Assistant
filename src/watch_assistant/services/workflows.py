@@ -85,6 +85,8 @@ _REASON_ZH = {
     "waiting_external": "工作流等待外部服务返回结果。",
     "all_stages_terminal": "所有阶段均已结束。",
     "workflow_cancelled": "工作流已取消。",
+    "workflow_batch_cancel": "已停止待处理阶段。",
+    "resource_discovery_completed": "资源发现已完成。",
     "child_started": "关联任务已开始。",
     "organization_queued": "整理操作已排队，等待后台执行。",
     "organization_started": "整理操作正在执行。",
@@ -584,7 +586,10 @@ class WorkflowService:
         await emit_event(
             self._event_logger,
             "workflow.cancelled",
-            fields={"status": response.status.value},
+            fields={
+                "status": response.status.value,
+                "status_zh": response.status_zh,
+            },
             correlation_id=response.correlation_id,
             task_id=response.id,
             actor_id=actor_id,
@@ -1436,4 +1441,4 @@ def _evidence_response(evidence: WorkflowEvidence) -> WorkflowEvidenceResponse:
 def _reason_zh(reason: str | None) -> str | None:
     if reason is None:
         return None
-    return _REASON_ZH.get(reason, _ERROR_ZH.get(reason, "工作流状态已更新，请查看诊断信息。"))
+    return _REASON_ZH.get(reason, _ERROR_ZH.get(reason, "阶段状态已更新。"))

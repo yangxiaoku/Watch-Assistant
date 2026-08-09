@@ -831,7 +831,7 @@ async def test_lifespan_runs_the_single_worker_and_closes_the_qb_client(tmp_path
                 "cleanup_capability": {
                     "enabled": False,
                     "reason_code": "strm_cleanup_disabled",
-                    "reason_zh": "STRM 失效清理未启用，请检查部署功能开关。",
+                    "reason_zh": "STRM 失效清理当前未启用。",
                     "settings_section": "overview",
                 },
                 "playback": False,
@@ -841,7 +841,7 @@ async def test_lifespan_runs_the_single_worker_and_closes_the_qb_client(tmp_path
                 "empty_directory_cleanup": {
                     "enabled": False,
                     "reason_code": "empty_directory_cleanup_disabled",
-                    "reason_zh": "空目录回收未就绪，请前往自动整理设置检查开关和写入契约。",
+                    "reason_zh": "空目录回收当前未就绪。",
                     "settings_section": "organization",
                 },
             },

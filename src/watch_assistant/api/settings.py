@@ -167,7 +167,7 @@ async def settings_overview(request: Request) -> SettingsOverviewResponse:
                 reason_zh=(
                     "可用"
                     if strm_cleanup_enabled
-                    else "STRM 失效清理未启用，请检查部署功能开关。"
+                    else "STRM 失效清理当前未启用。"
                 ),
                 settings_section="overview",
             ),
@@ -181,7 +181,7 @@ async def settings_overview(request: Request) -> SettingsOverviewResponse:
                 reason_zh=(
                     "可用"
                     if empty_cleanup_enabled
-                    else "空目录回收未就绪，请前往自动整理设置检查开关和写入契约。"
+                    else "空目录回收当前未就绪。"
                 ),
                 settings_section="organization",
             ),
