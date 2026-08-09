@@ -440,6 +440,17 @@ class SecurityManager:
     def _session_digest(session_id: str) -> str:
         return hashlib.sha256(session_id.encode("utf-8")).hexdigest()
 
+    def check_login_rate_limit(self, request: Request) -> None:
+        """Rate-limit web login attempts by client address.
+
+        Login runs before any authenticated dependency, so the shared
+        post-auth rate limiter never sees it without this explicit entry.
+        """
+        identity = (
+            f"login:{request.client.host}" if request.client is not None else "login:unknown"
+        )
+        self._check_rate_limit(request, identity)
+
     def _check_rate_limit(self, request: Request, identity: str) -> None:
         path = request.url.path
         if request.method != "POST":
