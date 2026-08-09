@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Protocol
 from uuid import uuid4
 
-from sqlalchemy import select, update
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from watch_assistant.models import Resource, Task, TaskState, WorkflowEvidence
@@ -217,19 +217,27 @@ async def apply_remote_status(
                 session, task.workflow_id, task.id, evidence
             )
         else:
-            await sync_child_stage(
-                session,
-                task.workflow_id,
-                WorkflowStageName.PUSH,
-                child_type="task",
-                child_id=task.id,
-                status=workflow_stage_status_for_task_state(state),
-                reason=f"task_{state.value}",
-                error_code=task.error_code,
-                allow_uncertain_resume=(
-                    source is EvidenceSource.READONLY_RECONCILIATION
-                ),
-            )
+            try:
+                await sync_child_stage(
+                    session,
+                    task.workflow_id,
+                    WorkflowStageName.PUSH,
+                    child_type="task",
+                    child_id=task.id,
+                    status=workflow_stage_status_for_task_state(state),
+                    reason=f"task_{state.value}",
+                    error_code=task.error_code,
+                    allow_uncertain_resume=(
+                        source is EvidenceSource.READONLY_RECONCILIATION
+                    ),
+                )
+            except WorkflowConflict as exc:
+                # The workflow was cancelled while the remote operation was in
+                # flight, so its stage is already terminal. The task's own
+                # terminal outcome and evidence are still recorded; the stage
+                # must not be replayed.
+                if str(exc) != "workflow_stage_terminal":
+                    raise
     return evidence
 
 
@@ -1010,7 +1018,16 @@ class TaskService:
                 update(Task)
                 .where(
                     Task.id == task_id,
-                    Task.state == TaskState.QUEUED,
+                    or_(
+                        Task.state == TaskState.QUEUED,
+                        # An uncertain task with no remote identity cannot be
+                        # reconciled; allow abandoning it explicitly instead of
+                        # leaving it stuck forever.
+                        and_(
+                            Task.state == TaskState.UNCERTAIN,
+                            Task.remote_ref.is_(None),
+                        ),
+                    ),
                     Task.lease_owner.is_(None),
                     Task.lease_token.is_(None),
                 )

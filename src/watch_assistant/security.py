@@ -447,6 +447,8 @@ class SecurityManager:
                 bucket, limit = "inspection_settings", 10
             else:
                 return
+        elif path == "/api/v1/auth/login":
+            bucket, limit = "login", 5
         elif path == "/api/v1/search":
             bucket, limit = "search", 30
         elif path == "/api/v1/cache/retry":

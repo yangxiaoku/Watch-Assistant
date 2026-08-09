@@ -365,7 +365,7 @@ async function startP115QrLogin() {
 }
 
 async function pollP115QrLogin() {
-  if (!p115QrSessionId.value) return;
+  if (!settingsMounted || !p115QrSessionId.value) return;
   try {
     const response = await props.api.pollP115Qrcode(p115QrSessionId.value);
     p115QrStatus.value = response.status;
