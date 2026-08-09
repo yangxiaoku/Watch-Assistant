@@ -127,59 +127,9 @@ async def settings_overview(request: Request) -> SettingsOverviewResponse:
         except Exception:  # noqa: BLE001 - capability diagnostics stay conservative
             empty_cleanup_setting = False
     execution_supported = organization_execution_supported(request.app)
-    capabilities = {
-        "inspection": bool(getattr(request.app.state, "inspection_supported", False)),
-        "magnet": bool(
-            getattr(request.app.state, "push_capabilities", {}).get("magnet", False)
-        ),
-        "share": bool(
-            getattr(request.app.state, "push_capabilities", {}).get("share", False)
-        ),
-        "organization_plan": bool(
-            getattr(request.app.state, "organization_plan_enabled", False)
-        ),
-        "organization_execution": bool(
-            execution_supported
-        ),
-        "organization_write": bool(
-            execution_supported
-            and getattr(request.app.state, "organization_write_enabled", False)
-            and getattr(
-                request.app.state, "organization_write_contract_verified", False
-            )
-        ),
-        "permanent_delete": bool(
-            execution_supported
-            and getattr(request.app.state, "organization_write_enabled", False)
-            and getattr(
-                request.app.state, "organization_write_contract_verified", False
-            )
-            and getattr(request.app.state, "permanent_delete_enabled", False)
-            and getattr(
-                request.app.state, "permanent_delete_contract_verified", False
-            )
-        ),
-        "strm_full": bool(getattr(request.app.state, "strm_full_enabled", False)),
-        "strm_incremental": bool(
-            getattr(request.app.state, "strm_incremental_enabled", False)
-        ),
-        "strm_cleanup": bool(
-            getattr(request.app.state, "strm_cleanup_enabled", False)
-        ),
-        "strm_playback": bool(
-            getattr(request.app.state, "strm_playback_enabled", False)
-            and getattr(request.app.state, "strm_playback_supported", False)
-            and getattr(
-                request.app.state, "strm_playback_contract_verified", False
-            )
-        ),
-        "organization_empty_directory_cleanup": bool(
-            empty_cleanup_setting
-            and callable(
-                getattr(request.app.state, "empty_directory_cleanup_executor", None)
-            )
-        ),
-    }
+    capabilities = _collect_capabilities(
+        request.app.state, execution_supported, empty_cleanup_setting
+    )
     strm_cleanup_enabled = capabilities["strm_cleanup"]
     empty_cleanup_enabled = capabilities["organization_empty_directory_cleanup"]
     automation = getattr(request.app.state, "organization_automation_service", None)
@@ -201,65 +151,15 @@ async def settings_overview(request: Request) -> SettingsOverviewResponse:
         uptime_seconds=max(0, int(time.monotonic() - request.app.state.started_at)),
         database_size_bytes=_database_size(database),
         capabilities=capabilities,
-        capability_statuses={
-            "inspection": _capability_status(
-                configured=capabilities["inspection"],
-                runtime_healthy=capabilities["inspection"],
-            ),
-            "magnet": _capability_status(
-                configured=capabilities["magnet"],
-                runtime_healthy=capabilities["magnet"],
-            ),
-            "share": _capability_status(configured=capabilities["share"]),
-            "organization_plan": _capability_status(
-                configured=capabilities["organization_plan"],
-                last_success_at=plan_success_at,
-            ),
-            "organization_execution": _capability_status(
-                configured=capabilities["organization_execution"],
-                runtime_healthy=worker_running,
-                last_success_at=execution_success_at,
-            ),
-            "organization_write": _capability_status(
-                configured=(
-                    bool(getattr(request.app.state, "organization_write_enabled", False))
-                    or write_contract_verified
-                ),
-                contract_verified=write_contract_verified,
-                runtime_healthy=worker_running and capabilities["organization_write"],
-                last_success_at=execution_success_at,
-            ),
-            "permanent_delete": _capability_status(
-                configured=bool(
-                    getattr(request.app.state, "permanent_delete_enabled", False)
-                ),
-                contract_verified=bool(
-                    getattr(
-                        request.app.state, "permanent_delete_contract_verified", False
-                    )
-                ),
-            ),
-            "strm_full": _capability_status(configured=capabilities["strm_full"]),
-            "strm_incremental": _capability_status(
-                configured=capabilities["strm_incremental"]
-            ),
-            "strm_cleanup": _capability_status(
-                configured=capabilities["strm_cleanup"]
-            ),
-            "strm_playback": _capability_status(
-                configured=bool(getattr(request.app.state, "strm_playback_enabled", False)),
-                contract_verified=bool(
-                    getattr(
-                        request.app.state, "strm_playback_contract_verified", False
-                    )
-                ),
-                runtime_healthy=capabilities["strm_playback"],
-            ),
-            "organization_empty_directory_cleanup": _capability_status(
-                configured=empty_cleanup_setting,
-                runtime_healthy=empty_cleanup_enabled,
-            ),
-        },
+        capability_statuses=_collect_capability_statuses(
+            app_state=request.app.state,
+            capabilities=capabilities,
+            write_contract_verified=write_contract_verified,
+            empty_cleanup_setting=empty_cleanup_setting,
+            worker_running=worker_running,
+            plan_success_at=plan_success_at,
+            execution_success_at=execution_success_at,
+        ),
         capability_details={
             "strm_cleanup": CapabilityAvailabilityResponse(
                 enabled=strm_cleanup_enabled,
@@ -287,6 +187,126 @@ async def settings_overview(request: Request) -> SettingsOverviewResponse:
             ),
         },
     )
+
+
+def _collect_capabilities(
+    app_state, execution_supported: bool, empty_cleanup_setting: bool
+) -> dict[str, bool]:
+    """Collect the 14 capability booleans from application state.
+
+    This is the single place that reads app state for capability readiness; the
+    status presentation in ``_collect_capability_statuses`` derives from these
+    booleans plus a few deliberately looser "configured" preconditions.
+    """
+    write_contract_verified = bool(
+        getattr(app_state, "organization_write_contract_verified", False)
+    )
+    return {
+        "inspection": bool(getattr(app_state, "inspection_supported", False)),
+        "magnet": bool(getattr(app_state, "push_capabilities", {}).get("magnet", False)),
+        "share": bool(getattr(app_state, "push_capabilities", {}).get("share", False)),
+        "organization_plan": bool(
+            getattr(app_state, "organization_plan_enabled", False)
+        ),
+        "organization_execution": bool(execution_supported),
+        "organization_write": bool(
+            execution_supported
+            and getattr(app_state, "organization_write_enabled", False)
+            and write_contract_verified
+        ),
+        "permanent_delete": bool(
+            execution_supported
+            and getattr(app_state, "organization_write_enabled", False)
+            and write_contract_verified
+            and getattr(app_state, "permanent_delete_enabled", False)
+            and getattr(app_state, "permanent_delete_contract_verified", False)
+        ),
+        "strm_full": bool(getattr(app_state, "strm_full_enabled", False)),
+        "strm_incremental": bool(
+            getattr(app_state, "strm_incremental_enabled", False)
+        ),
+        "strm_cleanup": bool(getattr(app_state, "strm_cleanup_enabled", False)),
+        "strm_playback": bool(
+            getattr(app_state, "strm_playback_enabled", False)
+            and getattr(app_state, "strm_playback_supported", False)
+            and getattr(app_state, "strm_playback_contract_verified", False)
+        ),
+        "organization_empty_directory_cleanup": bool(
+            empty_cleanup_setting
+            and callable(
+                getattr(app_state, "empty_directory_cleanup_executor", None)
+            )
+        ),
+    }
+
+
+def _collect_capability_statuses(
+    *,
+    app_state,
+    capabilities: dict[str, bool],
+    write_contract_verified: bool,
+    empty_cleanup_setting: bool,
+    worker_running: bool,
+    plan_success_at,
+    execution_success_at,
+) -> dict[str, CapabilityStatusResponse]:
+    """Derive capability statuses from the collected booleans.
+
+    ``configured`` intentionally uses looser preconditions than the capability
+    boolean for write/delete/playback: a prerequisite present but not yet fully
+    ready renders as "已配置但关闭" instead of "未配置".
+    """
+    return {
+        "inspection": _capability_status(
+            configured=capabilities["inspection"],
+            runtime_healthy=capabilities["inspection"],
+        ),
+        "magnet": _capability_status(
+            configured=capabilities["magnet"],
+            runtime_healthy=capabilities["magnet"],
+        ),
+        "share": _capability_status(configured=capabilities["share"]),
+        "organization_plan": _capability_status(
+            configured=capabilities["organization_plan"],
+            last_success_at=plan_success_at,
+        ),
+        "organization_execution": _capability_status(
+            configured=capabilities["organization_execution"],
+            runtime_healthy=worker_running,
+            last_success_at=execution_success_at,
+        ),
+        "organization_write": _capability_status(
+            configured=(
+                bool(getattr(app_state, "organization_write_enabled", False))
+                or write_contract_verified
+            ),
+            contract_verified=write_contract_verified,
+            runtime_healthy=worker_running and capabilities["organization_write"],
+            last_success_at=execution_success_at,
+        ),
+        "permanent_delete": _capability_status(
+            configured=bool(getattr(app_state, "permanent_delete_enabled", False)),
+            contract_verified=bool(
+                getattr(app_state, "permanent_delete_contract_verified", False)
+            ),
+        ),
+        "strm_full": _capability_status(configured=capabilities["strm_full"]),
+        "strm_incremental": _capability_status(
+            configured=capabilities["strm_incremental"]
+        ),
+        "strm_cleanup": _capability_status(configured=capabilities["strm_cleanup"]),
+        "strm_playback": _capability_status(
+            configured=bool(getattr(app_state, "strm_playback_enabled", False)),
+            contract_verified=bool(
+                getattr(app_state, "strm_playback_contract_verified", False)
+            ),
+            runtime_healthy=capabilities["strm_playback"],
+        ),
+        "organization_empty_directory_cleanup": _capability_status(
+            configured=empty_cleanup_setting,
+            runtime_healthy=capabilities["organization_empty_directory_cleanup"],
+        ),
+    }
 
 
 _CAPABILITY_STATE_ZH = {
