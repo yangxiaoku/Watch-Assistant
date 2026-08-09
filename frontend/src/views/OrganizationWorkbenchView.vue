@@ -5,7 +5,7 @@ import { ApiClient, ApiError, focusFirstFieldError, isConflict } from "../api";
 import ConfirmDialog from "../components/ConfirmDialog.vue";
 import { describeUiError } from "../errorCatalog";
 import { pollUntil } from "../polling";
-import { organizationOperationStatusLabel } from "../statusCatalog";
+import { organizationOperationStatusLabel, organizationPlanStatusLabel } from "../statusCatalog";
 import { diagnosticCode, diagnosticReference } from "../uiSafety";
 import type { OrganizationExecutionBlocker, OrganizationOperationResponse, OrganizationPlanStatus, OrganizationPlanSummary } from "../types";
 
@@ -75,13 +75,6 @@ const executionDialogDetails = computed(() => {
   ];
 });
 const executionDialogConfirmLabel = computed(() => pendingExecution.value?.kind === "batch" ? "确认并提交" : "确认并排队");
-
-const statusLabel: Record<OrganizationPlanStatus, string> = {
-  needs_review: "待确认",
-  planned: "已确认（本地预览）",
-  invalidated: "已失效",
-  ignored: "已忽略",
-};
 
 let planRequestGeneration = 0;
 let operationRequestGeneration = 0;
@@ -482,14 +475,14 @@ onMounted(() => {
         <p v-if="loading" class="organization-list-loading" role="status"><LoaderCircle class="spin" :size="16" />正在加载下一页</p>
         <button v-if="executionSupported && activeStatus === 'needs_review'" class="primary-button organization-batch-action" type="button" :disabled="loading || busy" @click="requestBatchExecution"><ListChecks :size="16" />确认并整理当前页（{{ executableItems.length }}）</button>
         <button v-for="plan in items" :key="plan.plan_id" type="button" class="organization-plan-row" :class="{ active: selected?.plan_id === plan.plan_id }" @click="selectPlan(plan)">
-          <span class="organization-plan-row-main"><strong>{{ planLabel(plan) }}</strong><small>{{ statusLabel[plan.status] }}</small></span>
+          <span class="organization-plan-row-main"><strong>{{ planLabel(plan) }}</strong><small>{{ organizationPlanStatusLabel(plan.status) }}</small></span>
           <span class="organization-plan-row-meta"><span>版本 {{ plan.revision }}</span><ChevronRight :size="16" /></span>
         </button>
         <button v-if="nextCursor !== null" class="secondary-button organization-more" type="button" :disabled="loading || busy" @click="loadPlans(nextCursor!)">加载下一页</button>
       </div>
 
       <article v-if="selected" class="organization-preview">
-        <div class="organization-preview-heading"><div><p class="eyebrow">整理计划预览</p><h2>{{ planLabel(selected) }}</h2></div><span class="organization-status">{{ statusLabel[selected.status] }}</span></div>
+        <div class="organization-preview-heading"><div><p class="eyebrow">整理计划预览</p><h2>{{ planLabel(selected) }}</h2></div><span class="organization-status">{{ organizationPlanStatusLabel(selected.status) }}</span></div>
         <dl class="organization-facts">
           <div><dt>计划状态</dt><dd>当前计划已选中</dd></div>
           <div><dt>版本</dt><dd>{{ selected.revision }}</dd></div>

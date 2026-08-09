@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Bell, ClipboardCheck, Clock3, Database, Film, Flame, Heart, Home, ListTodo, LoaderCircle, LogIn, PanelRight, Search, Settings, Tv, X } from "@lucide/vue";
+import { Bell, ClipboardCheck, Clock3, Database, FileText, Film, Flame, Heart, Home, ListTodo, LoaderCircle, LogIn, PanelRight, Search, Settings, Tv, X } from "@lucide/vue";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 import { ApiClient, ApiError, browserIsOnline, focusFirstFieldError } from "./api";
 import TaskDrawer from "./components/TaskDrawer.vue";
@@ -33,6 +33,7 @@ import SettingsView from "./views/SettingsView.vue";
 import LibraryWorkbenchView from "./views/LibraryWorkbenchView.vue";
 import WorkflowCenterView from "./views/WorkflowCenterView.vue";
 import NotificationCenterView from "./views/NotificationCenterView.vue";
+import LogsView from "./views/LogsView.vue";
 import OrganizationView from "./views/OrganizationView.vue";
 
 const FAVORITES_KEY = "watch-assistant:favorites";
@@ -1560,6 +1561,7 @@ onBeforeUnmount(() => {
           <button class="icon-button topbar-quick-action" type="button" title="推送任务" aria-label="推送任务" @click="openTaskDrawer"><PanelRight :size="18" /><span>推送任务</span></button>
           <button class="icon-button topbar-quick-action" type="button" :class="{ active: activeView === 'workflows' && !result }" title="任务中心" aria-label="任务中心" @click="selectView('workflows')"><ListTodo :size="18" /><span>任务中心</span></button>
           <button class="icon-button topbar-quick-action" type="button" :class="{ active: activeView === 'notifications' && !result }" title="通知" aria-label="通知" @click="selectView('notifications')"><Bell :size="18" /><span>通知</span></button>
+          <button class="icon-button topbar-quick-action" type="button" :class="{ active: activeView === 'logs' && !result }" title="日志" aria-label="日志" @click="selectView('logs')"><FileText :size="18" /><span>日志</span></button>
           <button class="icon-button topbar-quick-action" type="button" :class="{ active: activeView === 'settings' && !result }" title="设置" aria-label="设置" @click="selectView('settings')"><Settings :size="18" /><span>设置</span></button>
         </div>
       </template>
@@ -1576,11 +1578,12 @@ onBeforeUnmount(() => {
         <HomeView v-if="activeView === 'home'" :catalog="homeCatalog" :loading="catalogLoading" :error="homeError" :favorite-ids="favoriteIds" @open="openMovie" @favorite="toggleFavorite" @navigate="selectView" @retry="retryHome" />
         <LibraryView v-else-if="activeView === 'movies' || activeView === 'tv'" :movies="catalogMovies" :loading="catalogLoading" :error="catalogError" :favorite-ids="favoriteIds" :genre-id="genreId" :year="year" :sort="sort" :media-type="activeView" :page="currentPage" :total-pages="totalPages" :total-results="totalResults" @open="openMovie" @favorite="toggleFavorite" @filters="loadDiscover" @page="loadPage" @retry="retryCatalog" />
         <CollectionView v-else-if="activeView === 'favorites' || activeView === 'history'" :mode="activeView" :movies="activeView === 'favorites' ? favorites : history" :favorite-ids="favoriteIds" @open="openMovie" @favorite="toggleFavorite" />
-        <SettingsView v-else-if="activeView === 'settings'" :api="api" :initial-section="settingsInitialSection" @auto-start-enabled="inspectionAutoStartEnabled = $event" />
-        <OrganizationView v-else-if="activeView === 'organization' && organizationPlanEnabled" :api="api" :execution-supported="organizationExecutionSupported" />
+        <SettingsView v-else-if="activeView === 'settings'" :api="api" :initial-section="settingsInitialSection" @auto-start-enabled="inspectionAutoStartEnabled = $event" @navigate="selectView" />
+        <OrganizationView v-else-if="activeView === 'organization' && organizationPlanEnabled" :api="api" :execution-supported="organizationExecutionSupported" @open-settings="openOrganizationSettings" />
         <LibraryWorkbenchView v-else-if="activeView === 'library'" :api="api" :organization-plan-capability="organizationPlanCapability" :strm-full-capability="strmFullCapability" :strm-incremental-capability="strmIncrementalCapability" :strm-cleanup-capability="strmCleanupCapability" :empty-directory-cleanup-capability="emptyDirectoryCleanupCapability" @open-settings="openOrganizationSettings" />
         <WorkflowCenterView v-else-if="activeView === 'workflows'" :api="api" @open-push-tasks="openTaskDrawer" />
         <NotificationCenterView v-else-if="activeView === 'notifications'" :api="api" @navigate="selectView" />
+        <LogsView v-else-if="activeView === 'logs'" :api="api" />
         <SearchView v-else-if="activeView === 'search' || activeView === 'popular'" v-model="searchInput" :loading="catalogLoading" :error="catalogError" :movies="catalogMovies" :heading="catalogHeading" :favorite-ids="favoriteIds" :page="currentPage" :total-pages="totalPages" :total-results="totalResults" @search="searchMovies" @reset="selectView('home')" @open="openMovie" @favorite="toggleFavorite" @page="loadPage" @retry="retryCatalog" />
       </template>
       <section v-else-if="loading && !result" class="detail-loading" aria-busy="true"><LoaderCircle class="spin" :size="24" /><strong>正在加载影视资料</strong><span>资源将在资料下方独立加载</span></section>

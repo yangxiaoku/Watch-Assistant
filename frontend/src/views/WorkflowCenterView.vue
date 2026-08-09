@@ -3,7 +3,7 @@ import { AlertTriangle, Ban, CheckCircle2, Clock3, LoaderCircle, PanelRight, Ref
 import { computed, onMounted, ref } from "vue";
 import { ApiClient, ApiError } from "../api";
 import ConfirmDialog from "../components/ConfirmDialog.vue";
-import { workflowStageStatusLabel, workflowStatusPresentation } from "../statusCatalog";
+import { workflowStageStatusLabel, workflowStageStatusOptions, workflowStatusOptions, workflowStatusPresentation } from "../statusCatalog";
 import { diagnosticCode, diagnosticReference } from "../uiSafety";
 import type { WorkflowResponse, WorkflowStageResponse, WorkflowStatus } from "../types";
 
@@ -29,17 +29,6 @@ const pendingAction = ref<"approve" | "reject" | "cancel" | null>(null);
 let workflowListRequestId = 0;
 let workflowDetailRequestId = 0;
 
-const statusLabels: Record<WorkflowStatus, string> = {
-  in_progress: "处理中",
-  waiting_user_confirmation: "等待确认",
-  waiting_external: "等待外部服务",
-  partial: "部分完成",
-  completed: "成功",
-  cancelled: "已取消",
-  failed: "失败",
-  result_pending_confirmation: "结果待确认",
-};
-
 const stageLabels: Record<WorkflowStageResponse["stage"], string> = {
   discovery: "发现资源",
   inspection: "内容检测",
@@ -52,7 +41,7 @@ const stageLabels: Record<WorkflowStageResponse["stage"], string> = {
 
 const statusOptions = computed(() => [
   { value: "", label: "全部状态" },
-  ...Object.entries(statusLabels).map(([value, label]) => ({ value, label })),
+  ...workflowStatusOptions(),
 ]);
 const stageOptions = computed(() => [
   { value: "", label: "全部阶段" },
@@ -60,15 +49,7 @@ const stageOptions = computed(() => [
 ]);
 const stageStatusOptions = computed(() => [
   { value: "", label: "全部阶段状态" },
-  { value: "pending", label: "待开始" },
-  { value: "running", label: "进行中" },
-  { value: "waiting_confirmation", label: "等待确认" },
-  { value: "waiting_external", label: "等待外部服务" },
-  { value: "succeeded", label: "已完成" },
-  { value: "skipped", label: "已跳过" },
-  { value: "failed", label: "已失败" },
-  { value: "uncertain", label: "结果待确认" },
-  { value: "cancelled", label: "已取消" },
+  ...workflowStageStatusOptions(),
 ]);
 
 const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize)));
