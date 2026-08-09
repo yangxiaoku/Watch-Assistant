@@ -11,12 +11,15 @@ const props = withDefaults(defineProps<{
   cancelLabel?: string;
   busy?: boolean;
   tone?: "primary" | "danger";
+  /** 非破坏性操作可关闭勾选门禁，只保留单次确认。默认开启。 */
+  requireAcknowledgment?: boolean;
 }>(), {
   details: () => [],
   confirmLabel: "确认执行",
   cancelLabel: "取消",
   busy: false,
   tone: "primary",
+  requireAcknowledgment: true,
 });
 
 const emit = defineEmits<{
@@ -58,10 +61,10 @@ onBeforeUnmount(() => window.removeEventListener("keydown", handleKeydown));
       <ul v-if="details.length" class="confirm-dialog-details">
         <li v-for="detail in details" :key="detail">{{ detail }}</li>
       </ul>
-      <label class="confirm-dialog-acknowledgement"><input v-model="acknowledged" type="checkbox" :disabled="busy" />我已核对上述摘要，确认继续此操作</label>
+      <label v-if="requireAcknowledgment" class="confirm-dialog-acknowledgement"><input v-model="acknowledged" type="checkbox" :disabled="busy" />我已核对上述摘要，确认继续此操作</label>
       <footer class="confirm-dialog-actions">
         <button class="secondary-button" type="button" :disabled="busy" @click="close">{{ cancelLabel }}</button>
-        <button ref="confirmButton" :class="tone === 'danger' ? 'danger-button' : 'primary-button'" type="button" :disabled="busy || !acknowledged" @click="emit('confirm')"><Check :size="16" />{{ busy ? "正在提交" : confirmLabel }}</button>
+        <button ref="confirmButton" :class="tone === 'danger' ? 'danger-button' : 'primary-button'" type="button" :disabled="busy || (requireAcknowledgment && !acknowledged)" @click="emit('confirm')"><Check :size="16" />{{ busy ? "正在提交" : confirmLabel }}</button>
       </footer>
     </section>
   </div>

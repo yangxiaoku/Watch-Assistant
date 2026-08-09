@@ -193,6 +193,7 @@ async function reconcile(task: TaskResponse): Promise<void> {
       :details="['取消后不会向远端提交本任务。', '如果状态已经变化，服务端会拒绝本次取消并保留原状态。']"
       confirm-label="确认取消"
       tone="danger"
+      :require-acknowledgment="false"
       :busy="actionTaskId !== null"
       @cancel="closeCancelDialog"
       @confirm="confirmCancel"

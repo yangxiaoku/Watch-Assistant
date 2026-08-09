@@ -250,6 +250,6 @@ onMounted(() => { void loadWorkflows(); });
       </article>
     </div>
     <nav v-if="!loading && totalPages > 1" class="workflow-pagination" aria-label="任务中心分页"><span>第 {{ page }} / {{ totalPages }} 页，共 {{ total }} 个工作流</span><div><button class="icon-button" type="button" aria-label="上一页" :disabled="page <= 1" @click="goToPage(page - 1)">上一页</button><button class="icon-button" type="button" aria-label="下一页" :disabled="page >= totalPages" @click="goToPage(page + 1)">下一页</button></div></nav>
-    <ConfirmDialog :open="pendingAction !== null" :title="confirmationTitle" :summary="confirmationSummary" :details="confirmationDetails" :confirm-label="confirmationLabel" :tone="pendingAction === 'reject' || pendingAction === 'cancel' ? 'danger' : 'primary'" :busy="actionLoading" @cancel="closeConfirmation" @confirm="confirmPendingAction" />
+    <ConfirmDialog :open="pendingAction !== null" :title="confirmationTitle" :summary="confirmationSummary" :details="confirmationDetails" :confirm-label="confirmationLabel" :tone="pendingAction === 'reject' || pendingAction === 'cancel' ? 'danger' : 'primary'" :require-acknowledgment="false" :busy="actionLoading" @cancel="closeConfirmation" @confirm="confirmPendingAction" />
   </section>
 </template>

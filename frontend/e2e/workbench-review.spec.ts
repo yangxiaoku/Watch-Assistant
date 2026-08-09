@@ -159,7 +159,7 @@ test("shows cancellation for pending stages without hiding running work", async 
   await expect(page.getByRole("button", { name: "取消工作流" })).toBeVisible();
   await page.getByRole("button", { name: "取消工作流" }).click();
   await expect(page.getByRole("dialog")).toContainText("运行中或结果待确认的远端操作不会被伪造撤回");
-  await page.getByRole("dialog").getByRole("checkbox", { name: "我已核对上述摘要，确认继续此操作" }).check();
+  await expect(page.getByRole("dialog").getByRole("checkbox")).toHaveCount(0);
   await page.getByRole("dialog").getByRole("button", { name: "确认取消" }).click();
   await expect.poll(() => cancelCalls).toBe(1);
 });

@@ -17,6 +17,17 @@ describe("ConfirmDialog", () => {
     expect(wrapper.emitted("confirm")).toHaveLength(1);
   });
 
+  it("skips the acknowledgment checkbox for non-destructive operations", async () => {
+    const wrapper = mount(ConfirmDialog, {
+      props: { open: true, title: "确认取消", summary: "只取消尚未开始的任务。", requireAcknowledgment: false },
+    });
+    expect(wrapper.find(".confirm-dialog-acknowledgement").exists()).toBe(false);
+    const confirm = wrapper.get(".confirm-dialog-actions button:last-child");
+    expect(confirm.attributes("disabled")).toBeUndefined();
+    await confirm.trigger("click");
+    expect(wrapper.emitted("confirm")).toHaveLength(1);
+  });
+
   it("closes on Escape without confirming", async () => {
     const wrapper = mount(ConfirmDialog, {
       props: { open: true, title: "确认清理", summary: "将提交可恢复操作。" },
