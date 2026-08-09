@@ -5,7 +5,7 @@
 // @grant        GM.xmlHttpRequest
 // @grant        GM.getValue
 // @grant        GM.setValue
-// @connect      192.168.6.236
+// @connect      *
 // ==/UserScript==
 
 import panelStyles from "./userscript.css?raw";
@@ -45,7 +45,20 @@ export function shouldSearchMovie(
   return lastSearch === undefined || now - lastSearch >= SEARCH_TTL;
 }
 
-export function formatUserscriptError(_error: unknown): string {
+/** Map a known failure to an actionable message without echoing arbitrary error
+ * text (which may contain URLs, tokens, or paths). Unknown errors fall back to
+ * the generic redacted message. */
+export function formatUserscriptError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  if (message === "network error" || message === "timeout") {
+    return "无法连接 Watch Assistant 服务，请检查 API 地址是否可达、服务是否已启动。";
+  }
+  if (message === "request failed") {
+    return "服务拒绝了请求，请检查脚本设置中的 Token 与 API 地址。";
+  }
+  if (message === "GM API unavailable") {
+    return "缺少 GM API 权限，请确认已安装 Tampermonkey 且未阻止本脚本。";
+  }
   return "观影资源暂时不可用，请稍后重试。";
 }
 
@@ -71,7 +84,12 @@ function gmRequest<T>(url: string, token: string, init: { method: string; body?:
 
 function renderPanel(shadow: ShadowRoot, state: { title: string; result?: SearchResponse; error?: string; busy?: string }) {
   const resources = state.result?.results ?? [];
-  shadow.innerHTML = `<style>${panelStyles}</style><section class="panel"><header><div><p class="eyebrow">WATCH ASSISTANT</p><h2>${escapeHtml(state.title)}</h2></div><button class="close" aria-label="关闭">×</button></header><div class="panel-body">${state.error ? `<p class="error">${escapeHtml(state.error)}</p>` : resources.length ? resources.map((resource) => resourceRow(resource, state.busy)).join("") : `<p class="empty">没有找到可用资源</p>`}</div></section>`;
+  const body = state.error
+    ? `<p class="error">${escapeHtml(state.error)}</p>`
+    : state.result
+      ? (resources.length ? resources.map((resource) => resourceRow(resource, state.busy)).join("") : `<p class="empty">没有找到可用资源</p>`)
+      : `<p class="loading">正在搜索可用资源…</p>`;
+  shadow.innerHTML = `<style>${panelStyles}</style><section class="panel"><header><div><p class="eyebrow">WATCH ASSISTANT</p><h2>${escapeHtml(state.title)}</h2></div><button class="close" aria-label="关闭">×</button></header><div class="panel-body">${body}</div></section>`;
   shadow.querySelector(".close")?.addEventListener("click", () => shadow.host.remove());
   shadow.querySelectorAll<HTMLButtonElement>("button[data-resource-id]").forEach((button) => {
     button.addEventListener("click", () => void pushResource(button, button.dataset.resourceId ?? ""));

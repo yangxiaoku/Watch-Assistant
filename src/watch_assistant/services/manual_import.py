@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -121,6 +121,13 @@ class ManualImportService:
         if request.password is not None:
             item["password"] = request.password.get_secret_value()
         category = "magnet" if parsed.scheme.casefold() == "magnet" else "115"
+        # A magnet's real display name lives in its dn parameter. The
+        # placeholder note must never shadow it, otherwise every name-less
+        # import is rejected as media_mismatch.
+        if request.name is None and category == "magnet":
+            dn = parse_qs(parsed.query).get("dn", [""])[0].strip()
+            if dn:
+                item["name"] = dn
         normalized = normalize_pansou(
             {"merged_by_type": {category: [item]}},
             share_domains=self._share_domains,

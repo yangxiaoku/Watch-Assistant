@@ -40,7 +40,8 @@ function deferred<T>() {
 }
 
 async function confirmRiskyAction(wrapper: ReturnType<typeof mount>) {
-  await wrapper.get(".confirm-dialog-acknowledgement input").setValue(true);
+  // Execution confirmations are a single confirm (details shown, no extra
+  // acknowledgment checkbox gate).
   await wrapper.get(".confirm-dialog-actions button:last-child").trigger("click");
   await flushPromises();
 }

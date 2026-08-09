@@ -2,8 +2,10 @@ services:
   watch-assistant:
     build:
       context: .
+      # Set to a 7- or 40-character git SHA when building from a checkout.
+      # Defaults to "local" so non-git downloads can still start the stack.
       args:
-        WATCH_ASSISTANT_RELEASE: ${WATCH_ASSISTANT_RELEASE:?WATCH_ASSISTANT_RELEASE must be set to a full git SHA}
+        WATCH_ASSISTANT_RELEASE: ${WATCH_ASSISTANT_RELEASE:-local}
     image: watch-assistant:local
     container_name: watch-assistant
     restart: unless-stopped
@@ -12,7 +14,9 @@ services:
       - no-new-privileges:true
     environment:
       DATABASE_URL: sqlite+aiosqlite:////data/watch-assistant.db
-      PANSOU_BASE_URL: http://pansou-app:80
+      # PanSou search endpoint. Defaults to the pansou-app host on the shared
+      # pansou_default network; point this at any reachable PanSou instance.
+      PANSOU_BASE_URL: ${PANSOU_BASE_URL:-http://pansou-app:80}
       TMDB_BASE_URL: ${TMDB_BASE_URL:-https://api.themoviedb.org/3}
       WEB_USERNAME: ${WEB_USERNAME:-admin}
       WEB_AUTH_BOOTSTRAP_ENABLED: ${WEB_AUTH_BOOTSTRAP_ENABLED:-false}

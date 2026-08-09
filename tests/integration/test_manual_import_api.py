@@ -97,6 +97,30 @@ async def test_manual_import_is_preview_first_encrypted_and_deduplicated(tmp_pat
 
 @pytest.mark.integration
 @respx.mock
+async def test_manual_import_without_name_uses_magnet_dn_as_display_name(tmp_path):
+    """A name-less magnet import must use its dn as the display name, not the
+    placeholder note, or every such import is rejected as media_mismatch."""
+    respx.get("https://api.themoviedb.org/3/movie/12345").mock(
+        return_value=httpx.Response(200, json=TMDB_RESPONSE)
+    )
+    client, database, tmdb, pansou, crypto = await _make_client(tmp_path)
+    try:
+        preview = await client.post(
+            "/api/v1/imports/preview",
+            json={"url": MAGNET, "tmdb_id": 12345},
+        )
+        assert preview.status_code == 200
+        assert preview.json()["status"] == "ready"
+        assert preview.json()["name"] == "Inception 2010 1080p"
+    finally:
+        await client.aclose()
+        await tmdb.aclose()
+        await pansou.aclose()
+        await database.engine.dispose()
+
+
+@pytest.mark.integration
+@respx.mock
 async def test_manual_import_rejects_arbitrary_url_and_media_mismatch(tmp_path):
     respx.get("https://api.themoviedb.org/3/movie/12345").mock(
         return_value=httpx.Response(200, json=TMDB_RESPONSE)
