@@ -1,7 +1,12 @@
 import type {
   CapabilityAvailability,
   LibraryScanSummary,
+  LogCategory,
+  LogLevel,
   OrganizationOperationStatus,
+  OrganizationPlanStatus,
+  OrganizationResultItem,
+  OrganizationResultStatus,
   StrmManifestItemResponse,
   StrmOperationResponse,
   TaskState,
@@ -147,4 +152,94 @@ export function libraryScanStatusLabel(scan: Pick<LibraryScanSummary, "state" | 
   if (!scan) return "未扫描";
   if (scan.state === "completed" && !scan.complete) return "未完成";
   return SCAN_STATUS[scan.state] ?? "状态待确认";
+}
+
+export interface LogLevelOption {
+  value: LogLevel;
+  label: string;
+}
+
+export interface LogCategoryOption {
+  value: LogCategory;
+  label: string;
+}
+
+export const logLevelOptions: LogLevelOption[] = [
+  { value: "DEBUG", label: "调试" },
+  { value: "ERROR", label: "错误" },
+  { value: "WARNING", label: "警告" },
+  { value: "INFO", label: "信息" },
+];
+
+export const logCategoryOptions: LogCategoryOption[] = [
+  { value: "system", label: "系统" },
+  { value: "security", label: "安全" },
+  { value: "search", label: "搜索" },
+  { value: "pansou", label: "PanSou" },
+  { value: "cache", label: "缓存" },
+  { value: "inspection", label: "检测" },
+  { value: "p115", label: "115" },
+  { value: "task", label: "任务" },
+  { value: "organize", label: "整理" },
+  { value: "strm", label: "STRM" },
+  { value: "library", label: "媒体库" },
+  { value: "agent", label: "Agent" },
+  { value: "settings", label: "设置" },
+  { value: "subscription", label: "订阅" },
+  { value: "quality", label: "质量策略" },
+  { value: "notification", label: "通知" },
+];
+
+export function logLevelLabel(level: LogLevel): string {
+  return logLevelOptions.find((option) => option.value === level)?.label ?? level;
+}
+
+export function logCategoryLabel(category: LogCategory): string {
+  return logCategoryOptions.find((option) => option.value === category)?.label ?? category;
+}
+
+export function workflowStatusOptions(): Array<{ value: WorkflowStatus; label: string }> {
+  return (Object.entries(WORKFLOW_STATUS) as Array<[WorkflowStatus, StatusPresentation]>).map(([value, presentation]) => ({ value, label: presentation.label }));
+}
+
+export function workflowStageStatusOptions(): Array<{ value: WorkflowStageStatus; label: string }> {
+  return (Object.entries(STAGE_STATUS) as Array<[WorkflowStageStatus, string]>).map(([value, label]) => ({ value, label }));
+}
+
+export const ORGANIZATION_PLAN_STATUS: Record<OrganizationPlanStatus, string> = {
+  needs_review: "待确认",
+  planned: "已确认（本地预览）",
+  invalidated: "已失效",
+  ignored: "已忽略",
+};
+
+export function organizationPlanStatusLabel(status: OrganizationPlanStatus): string {
+  return ORGANIZATION_PLAN_STATUS[status] ?? "状态待确认";
+}
+
+export const ORGANIZATION_RESULT_STATUS: Record<OrganizationResultStatus, string> = {
+  unknown: "尚未整理",
+  success: "整理完成",
+  skipped: "未执行",
+  deleted: "已删除",
+  replace: "已替换",
+  failed: "存在失败",
+};
+
+export const ORGANIZATION_RESULT_ITEM_STATUS: Record<OrganizationResultItem["status"], string> = {
+  queued: "排队中",
+  organizing: "整理中",
+  success: "已入库",
+  failed: "失败",
+  uncertain: "待确认",
+  needs_review: "待确认",
+  skipped: "未执行",
+};
+
+export function organizationResultStatusLabel(status: OrganizationResultStatus): string {
+  return ORGANIZATION_RESULT_STATUS[status] ?? "状态待确认";
+}
+
+export function organizationResultItemStatusLabel(status: OrganizationResultItem["status"]): string {
+  return ORGANIZATION_RESULT_ITEM_STATUS[status] ?? status;
 }

@@ -11,6 +11,7 @@ const sourceFiles = [
   "../src/views/LibraryWorkbenchView.vue",
   "../src/views/SettingsView.vue",
   "../src/views/OrganizationView.vue",
+  "../src/views/LogsView.vue",
 ].map((path) => readFileSync(new URL(path, import.meta.url), "utf8"));
 
 const forbiddenVisibleCopy = [

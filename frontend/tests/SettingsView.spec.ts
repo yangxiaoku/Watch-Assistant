@@ -267,8 +267,6 @@ describe("SettingsView", () => {
     }));
     await wrapper.findAll("button").find((button) => button.text().includes("开始整理"))?.trigger("click");
     expect(api.runOrganizationNow).toHaveBeenCalledTimes(1);
-    await wrapper.findAll("button").find((button) => button.text().includes("停止定时"))?.trigger("click");
-    expect(api.stopOrganization).toHaveBeenCalledTimes(1);
   });
 
   it("shows a readable organization result conclusion", async () => {
@@ -536,7 +534,7 @@ describe("SettingsView", () => {
     expect(wrapper.get(".directory-picker-toolbar .primary-button").attributes("disabled")).toBeDefined();
   });
 
-  it("renders the real overview fields and p115 settings without a cookie input", async () => {
+  it("renders the real overview fields and p115 connection status inside credentials", async () => {
     const api = makeApi();
     const wrapper = mount(SettingsView, { props: { api } });
     await flushPromises();
@@ -553,11 +551,12 @@ describe("SettingsView", () => {
     expect(wrapper.text()).not.toContain("配置版本");
     expect(wrapper.find("input[type=password]").exists()).toBe(false);
 
-    const p115Button = wrapper.findAll("button").find((button) => button.text().includes("115 推送"));
-    await p115Button?.trigger("click");
-    expect(wrapper.text()).toContain("Cookie 来源");
+    const credentialsButton = wrapper.findAll("button").find((button) => button.text().includes("连接配置"));
+    await credentialsButton?.trigger("click");
+    expect(wrapper.text()).toContain("来源");
     expect(wrapper.text()).toContain("文件");
     expect(wrapper.text()).toContain("结构正常");
+    expect(wrapper.text()).toContain("已就绪");
     expect(wrapper.text()).toContain("页面不会回显已保存的 Cookie 原文");
   });
 
@@ -642,135 +641,6 @@ describe("SettingsView", () => {
     const diagnostics = wrapper.get(".organization-blocked-details details");
     expect(diagnostics.element.hasAttribute("open")).toBe(false);
     expect(diagnostics.text()).toContain(errorCode);
-  });
-
-  it("loads the first cursor page and appends later pages with id de-duplication", async () => {
-    const api = makeApi({
-      logs: vi.fn()
-        .mockResolvedValueOnce(firstLogs)
-        .mockResolvedValueOnce({
-          items: [
-            { id: 2, timestamp: "2026-07-25T02:01:00Z", level: "WARNING" as const, category: "cache" as const, message: "cache.refreshed", message_zh: "缓存已刷新（重复）" },
-            { id: 3, timestamp: "2026-07-25T02:02:00Z", level: "ERROR" as const, category: "security" as const, message: "auth.relogin_required", message_zh: "需要重新登录" },
-          ],
-          next_cursor: null,
-        }),
-    });
-    const wrapper = mount(SettingsView, { props: { api } });
-    await flushPromises();
-    await openLogs(wrapper);
-
-    expect(api.logs).toHaveBeenCalledWith({ limit: 20, cursor: undefined, category: undefined });
-    expect(wrapper.find(".settings-pagination").text()).toContain("已加载 2 条");
-    await wrapper.get(".settings-pagination button").trigger("click");
-    await flushPromises();
-
-    expect(api.logs).toHaveBeenLastCalledWith({ limit: 20, cursor: 20, category: undefined });
-    expect(wrapper.findAll(".settings-log-item")).toHaveLength(3);
-    expect(wrapper.text()).toContain("需要重新登录");
-    expect(wrapper.find(".settings-pagination button").exists()).toBe(false);
-  });
-
-  it("passes structured log filters to the API", async () => {
-    const logsMock = vi.fn().mockResolvedValue({ ...firstLogs, next_cursor: null });
-    const wrapper = mount(SettingsView, { props: { api: makeApi({ logs: logsMock }) } });
-    await flushPromises();
-    await openLogs(wrapper);
-
-    const selects = wrapper.findAll(".settings-filter-row select");
-    await selects[1].setValue("ERROR");
-    await selects[2].setValue("failed");
-    const inputs = wrapper.findAll(".settings-filter-row input");
-    await inputs[0].setValue("task.failed");
-    await inputs[0].trigger("keyup", { key: "Enter" });
-    await flushPromises();
-
-    expect(logsMock).toHaveBeenLastCalledWith({
-      limit: 20,
-      cursor: undefined,
-      category: undefined,
-      level: "ERROR",
-      status: "failed",
-      eventCode: "task.failed",
-    });
-  });
-
-  it("invalidates an older category request before applying its response", async () => {
-    let resolveFirst: ((value: LogsResponse) => void) | undefined;
-    let resolveSecond: ((value: LogsResponse) => void) | undefined;
-    const api = makeApi({
-      logs: vi.fn()
-        .mockImplementationOnce(() => new Promise((resolve) => { resolveFirst = resolve; }))
-        .mockImplementationOnce(() => new Promise((resolve) => { resolveSecond = resolve; })),
-    });
-    const wrapper = mount(SettingsView, { props: { api } });
-    await flushPromises();
-    const logsButton = wrapper.findAll("button").find((button) => button.text().includes("日志"));
-    await logsButton?.trigger("click");
-    const category = wrapper.get(".settings-filter-row select");
-    await category.setValue("search");
-    resolveSecond?.({ ...firstLogs, items: [{ ...firstLogs.items[0], id: 9, category: "search", message: "search.new_category", message_zh: "新分类响应" }], next_cursor: null });
-    await flushPromises();
-    resolveFirst?.({ ...firstLogs, items: [{ ...firstLogs.items[0], id: 1, message: "search.old_category", message_zh: "旧分类响应" }], next_cursor: null });
-    await flushPromises();
-
-    expect(wrapper.text()).toContain("新分类响应");
-    expect(wrapper.text()).not.toContain("旧分类响应");
-  });
-
-  it("auto refreshes the first page without dropping loaded cursor pages", async () => {
-    vi.useFakeTimers();
-    const api = makeApi({
-      logs: vi.fn()
-        .mockResolvedValueOnce(firstLogs)
-        .mockResolvedValueOnce({
-          items: [{ id: 3, timestamp: "2026-07-25T02:02:00Z", level: "INFO" as const, category: "system" as const, message: "system.old_page", message_zh: "旧页" }],
-          next_cursor: null,
-        })
-        .mockResolvedValueOnce({
-          items: [{ id: 4, timestamp: "2026-07-25T02:03:00Z", level: "INFO" as const, category: "system" as const, message: "system.auto_refresh", message_zh: "自动刷新" }],
-          next_cursor: 20,
-        }),
-    });
-    const wrapper = mount(SettingsView, { props: { api } });
-    await flushPromises();
-    await openLogs(wrapper);
-    await wrapper.get(".settings-pagination button").trigger("click");
-    await flushPromises();
-
-    vi.advanceTimersByTime(5000);
-    await flushPromises();
-
-    expect(api.logs).toHaveBeenLastCalledWith({ limit: 20, cursor: undefined, category: undefined });
-    expect(wrapper.findAll(".settings-log-item")).toHaveLength(4);
-    expect(wrapper.text()).toContain("旧页");
-    expect(wrapper.text()).toContain("自动刷新");
-    wrapper.unmount();
-    vi.useRealTimers();
-  });
-
-  it("pauses auto refresh while hidden or outside the log section", async () => {
-    vi.useFakeTimers();
-    const logsMock = vi.fn().mockResolvedValue(firstLogs);
-    const api = makeApi({ logs: logsMock });
-    const wrapper = mount(SettingsView, { props: { api } });
-    await flushPromises();
-    await openLogs(wrapper);
-    const callsAfterLoad = logsMock.mock.calls.length;
-
-    Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
-    vi.advanceTimersByTime(10000);
-    await flushPromises();
-    expect(logsMock.mock.calls.length).toBe(callsAfterLoad);
-
-    Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
-    const overviewButton = wrapper.findAll("button").find((button) => button.text().includes("概览"));
-    await overviewButton?.trigger("click");
-    vi.advanceTimersByTime(10000);
-    await flushPromises();
-    expect(logsMock.mock.calls.length).toBe(callsAfterLoad);
-    wrapper.unmount();
-    vi.useRealTimers();
   });
 
   it("loads content policy controls and handles a revision conflict", async () => {
@@ -887,35 +757,6 @@ describe("SettingsView", () => {
     expect(wrapper.text()).toContain("当前版本 4");
   });
 
-  it("starts and stops the log timer with section, visibility, and toggle state", async () => {
-    vi.useFakeTimers();
-    Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
-    const logsMock = vi.fn().mockResolvedValue(firstLogs);
-    const wrapper = mount(SettingsView, { props: { api: makeApi({ logs: logsMock }) } });
-    await flushPromises();
-    await openLogs(wrapper);
-    const callsAfterLoad = logsMock.mock.calls.length;
-
-    const autoRefresh = wrapper.get(".settings-section-actions input[type=checkbox]");
-    await autoRefresh.setValue(false);
-    vi.advanceTimersByTime(10000);
-    await flushPromises();
-    expect(logsMock).toHaveBeenCalledTimes(callsAfterLoad);
-
-    await autoRefresh.setValue(true);
-    vi.advanceTimersByTime(5000);
-    await flushPromises();
-    expect(logsMock).toHaveBeenCalledTimes(callsAfterLoad + 1);
-
-    const overviewButton = wrapper.findAll("button").find((button) => button.text().includes("概览"));
-    await overviewButton?.trigger("click");
-    vi.advanceTimersByTime(10000);
-    await flushPromises();
-    expect(logsMock).toHaveBeenCalledTimes(callsAfterLoad + 1);
-    wrapper.unmount();
-    vi.useRealTimers();
-  });
-
   it.each([
     ["ready", "Cookie 已就绪"],
     ["needs_auth", "Cookie 需要重新授权"],
@@ -926,9 +767,10 @@ describe("SettingsView", () => {
     });
     const wrapper = mount(SettingsView, { props: { api } });
     await flushPromises();
-    const p115Button = wrapper.findAll("button").find((button) => button.text().includes("115 推送"));
-    await p115Button?.trigger("click");
-    await wrapper.get("button.secondary-button").trigger("click");
+    await wrapper.findAll("button").find((button) => button.text().includes("连接配置"))?.trigger("click");
+    await flushPromises();
+    const panel = wrapper.findAll(".credential-panel")[1];
+    await panel.get(".credential-actions .secondary-button:last-child").trigger("click");
     await flushPromises();
 
     expect(wrapper.text()).toContain(message);

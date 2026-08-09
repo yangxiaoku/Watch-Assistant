@@ -76,7 +76,7 @@ test("keeps task and workflow workbench usable at 360px", async ({ page }) => {
   await page.getByRole("button", { name: "重新排队" }).click();
   await expect(page.getByRole("button", { name: "取消排队" })).toBeVisible();
   await page.getByRole("button", { name: "取消排队" }).click();
-  await page.getByRole("dialog").getByRole("checkbox", { name: "我已核对上述摘要，确认继续此操作" }).check();
+  await expect(page.getByRole("dialog").getByRole("checkbox")).toHaveCount(0);
   await page.getByRole("dialog").getByRole("button", { name: "确认取消" }).click();
   await expect(page.locator(".task-drawer").getByText("已取消").first()).toBeVisible();
 

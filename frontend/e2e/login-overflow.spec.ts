@@ -96,11 +96,11 @@ test("keeps authenticated workbench navigation visible at compact width", async 
     },
   }));
   await page.route("**/api/v1/auth/me", (route) => route.fulfill({ json: { authenticated: true, via_bearer: false, csrf_token: null } }));
+  await page.route("**/api/v1/movies/home", (route) => route.fulfill({ json: { popular: [], now_playing: [], upcoming: [], top_rated: [], tv_popular: [], tv_on_the_air: [], tv_top_rated: [] } }));
 
-  await page.goto("/workbench");
-  await expect(page.getByRole("heading", { name: "观影工作台" })).toBeVisible();
+  await page.goto("/");
   const nav = page.getByRole("navigation", { name: "主导航" });
-  for (const label of ["工作台", "首页", "电影", "剧集", "热门", "收藏", "记录", "整理", "整理历史", "媒体库"]) {
+  for (const label of ["首页", "电影", "剧集", "热门", "收藏", "记录", "整理", "媒体库"]) {
     await expect(nav.getByRole("button", { name: label, exact: true })).toBeVisible();
   }
 

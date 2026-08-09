@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { LoaderCircle, RefreshCw, StopCircle, Zap } from "@lucide/vue";
+import { LoaderCircle, StopCircle, Zap } from "@lucide/vue";
 import { onMounted, ref } from "vue";
 import { ApiClient, ApiError } from "../api";
 import OrganizationResultPanel from "../components/OrganizationResultPanel.vue";
@@ -10,6 +10,7 @@ import OrganizationWorkbenchView from "./OrganizationWorkbenchView.vue";
 const props = withDefaults(defineProps<{ api: ApiClient; executionSupported?: boolean }>(), {
   executionSupported: false,
 });
+const emit = defineEmits<{ "open-settings": [] }>();
 
 type Tab = "auto" | "review" | "history";
 const activeTab = ref<Tab>("auto");
@@ -22,13 +23,6 @@ const tabs: Array<{ value: Tab; label: string }> = [
 const orgSettings = ref<OrganizationSettingsResponse | null>(null);
 const orgLoading = ref(false);
 const orgError = ref("");
-const orgSaving = ref(false);
-const orgSaveError = ref("");
-const orgDraft = ref({
-  schedule_enabled: false,
-  auto_execute_enabled: false,
-  scan_interval_minutes: 30,
-});
 const actionBusy = ref(false);
 const actionMessage = ref("");
 const resultReloadToken = ref(0);
@@ -38,40 +32,11 @@ async function loadSettings() {
   orgLoading.value = true;
   orgError.value = "";
   try {
-    const response = await props.api.organizationSettings();
-    orgSettings.value = response;
-    orgDraft.value = {
-      schedule_enabled: response.schedule_enabled,
-      auto_execute_enabled: response.auto_execute_enabled,
-      scan_interval_minutes: response.scan_interval_minutes,
-    };
+    orgSettings.value = await props.api.organizationSettings();
   } catch (exception) {
     orgError.value = exception instanceof ApiError ? exception.message : "整理设置加载失败，请稍后重试";
   } finally {
     orgLoading.value = false;
-  }
-}
-
-async function saveSettings() {
-  if (!orgSettings.value || orgSaving.value) return;
-  orgSaving.value = true;
-  orgSaveError.value = "";
-  try {
-    const response = await props.api.updateOrganizationSettings({
-      ...orgDraft.value,
-      revision: orgSettings.value.revision,
-    });
-    orgSettings.value = response;
-    orgDraft.value = {
-      schedule_enabled: response.schedule_enabled,
-      auto_execute_enabled: response.auto_execute_enabled,
-      scan_interval_minutes: response.scan_interval_minutes,
-    };
-  } catch (exception) {
-    orgSaveError.value = exception instanceof ApiError ? exception.message : "整理设置保存失败，请稍后重试";
-    await loadSettings();
-  } finally {
-    orgSaving.value = false;
   }
 }
 
@@ -123,7 +88,6 @@ onMounted(() => void loadSettings());
     </div>
 
     <p v-if="actionMessage" class="settings-action-message" role="status">{{ actionMessage }}</p>
-    <p v-if="orgSaveError" class="settings-state settings-state-error" role="alert">{{ orgSaveError }}</p>
 
     <div class="organization-tabs" role="tablist" aria-label="整理视图">
       <button v-for="tab in tabs" :key="tab.value" type="button" :class="{ active: activeTab === tab.value }" @click="activeTab = tab.value">{{ tab.label }}</button>
@@ -134,10 +98,14 @@ onMounted(() => void loadSettings());
       <div v-else-if="orgError" class="organization-empty" role="alert">{{ orgError }}<button class="text-button" type="button" @click="loadSettings">重试</button></div>
       <template v-else>
         <div class="organization-auto-settings">
-          <label class="settings-toggle"><input v-model="orgDraft.schedule_enabled" type="checkbox" @change="saveSettings" />定时整理：启用后按扫描间隔自动触发扫描</label>
-          <label class="settings-toggle"><input v-model="orgDraft.auto_execute_enabled" type="checkbox" @change="saveSettings" />自动整理：识别高置信度的影片自动确认并排队，识别不确定的保留在来源目录，在「待处理」中人工处理</label>
-          <div class="settings-form-grid"><label>扫描频率（分钟）<input v-model.number="orgDraft.scan_interval_minutes" type="number" min="5" max="1440" @change="saveSettings" /></label></div>
-          <p class="settings-note">自动整理需要 115 写契约已验证；未满足时仅生成待处理计划，不会执行移动。更多目录与命名规则请到「设置 → 115整理」配置。</p>
+          <p class="settings-note">自动整理规则在「设置 → 115整理」统一配置，这里只展示当前生效的调度状态。</p>
+          <div class="organization-summary-list">
+            <span>定时整理<strong :class="orgSettings?.schedule_enabled ? 'status-ok' : 'status-degraded'">{{ orgSettings?.schedule_enabled ? '已开启' : '已关闭' }}</strong></span>
+            <span>自动整理<strong :class="orgSettings?.auto_execute_enabled ? 'status-ok' : 'status-degraded'">{{ orgSettings?.auto_execute_enabled ? '已开启' : '已关闭' }}</strong></span>
+            <span>扫描频率<strong>{{ orgSettings?.scan_interval_minutes ?? '—' }} 分钟</strong></span>
+          </div>
+          <button class="secondary-button" type="button" @click="emit('open-settings')">前往设置配置整理规则</button>
+          <p class="settings-note">自动整理需要 115 写契约已验证；未满足时仅生成待处理计划，不会执行移动。</p>
         </div>
         <OrganizationResultPanel :api="props.api" :reload-token="resultReloadToken" />
       </template>
@@ -147,3 +115,23 @@ onMounted(() => void loadSettings());
     <OrganizationHistoryView v-else :key="'history'" :api="props.api" embedded />
   </section>
 </template>
+
+<style scoped>
+.organization-summary-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 24px;
+  padding: 12px 0;
+}
+.organization-summary-list span {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-2);
+}
+.organization-summary-list strong {
+  font-size: 14px;
+  color: var(--text);
+}
+</style>

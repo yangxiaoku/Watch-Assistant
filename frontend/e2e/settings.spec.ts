@@ -218,20 +218,7 @@ test("settings contract, cursor logs, validation states, and responsive layout",
   await expect(page.getByLabel("服务地址")).toHaveValue("");
 
   if (mobileLayout) await mobileSectionSelect.selectOption("logs");
-  else await page.getByRole("button", { name: "日志" }).click();
-  const logMessage = mobileLayout ? page.locator(".settings-log-item p").filter({ hasText: "服务已启动" }) : page.locator(".settings-log-table td").filter({ hasText: "服务已启动" });
-  await expect(logMessage).toBeVisible();
-  await expect.poll(() => logsCount).toBe(1);
-  await page.getByRole("button", { name: "加载更多" }).click();
-  const laterMessage = mobileLayout ? page.locator(".settings-log-item p").filter({ hasText: "需要重新登录" }) : page.locator(".settings-log-table td").filter({ hasText: "需要重新登录" });
-  await expect(laterMessage).toBeVisible();
-  await expect(page.getByText("已加载 3 条")).toBeVisible();
-  await page.locator(".settings-filter-row select").first().selectOption("search");
-  const categoryMessage = mobileLayout ? page.locator(".settings-log-item p").filter({ hasText: "新分类响应" }) : page.locator(".settings-log-table td").filter({ hasText: "新分类响应" });
-  await expect(categoryMessage).toBeVisible();
-  await expect(page.getByText("服务已启动")).toHaveCount(0);
-  await expect.poll(() => logsCount).toBe(3);
-
+  else await page.locator(".settings-nav").getByRole("button", { name: "日志" }).click();
   await page.getByLabel("最低级别").selectOption("WARNING");
   await page.getByLabel("保留天数（1-90）").fill("45");
   await page.getByLabel("文件上限（MB，1-50）").fill("20");
@@ -246,25 +233,18 @@ test("settings contract, cursor logs, validation states, and responsive layout",
   await expect.poll(() => saveCount).toBe(2);
   expect(patchBodies[0]).toEqual({ revision: 2, level: "WARNING", retention_days: 45, max_file_mb: 20 });
 
-  if (mobileLayout) await mobileSectionSelect.selectOption("p115");
-  else await page.getByRole("button", { name: "115 推送" }).click();
-  await expect(page.getByText("已就绪")).toBeVisible();
-  await expect(page.getByText("文件")).toBeVisible();
-  await expect(page.getByText("结构正常")).toBeVisible();
-  await expect(page.getByText("115 分享转存")).toBeVisible();
-  await page.getByRole("button", { name: "验证 Cookie" }).click();
-  await expect(page.getByText("Cookie 已就绪")).toBeVisible();
-  await page.getByRole("button", { name: "验证 Cookie" }).click();
-  await expect(page.getByText("Cookie 需要重新授权")).toBeVisible();
-  await page.getByRole("button", { name: "验证 Cookie" }).click();
-  await expect(page.getByText("115 当前不可用")).toBeVisible();
-  await expect(page.getByText("结构正常")).toBeVisible();
-  await expect(page.locator('input[type="password"]')).toHaveCount(0);
-
   if (mobileLayout) await mobileSectionSelect.selectOption("credentials");
   else await page.getByRole("button", { name: "连接配置" }).click();
   await expect(page.getByRole("heading", { name: "连接配置" })).toBeVisible();
   const credentialPanels = page.locator(".credential-panel");
+  await expect(page.getByText("已就绪")).toBeVisible();
+  await expect(page.getByText("文件", { exact: true })).toBeVisible();
+  await expect(page.getByText("结构正常")).toBeVisible();
+  await expect(page.getByText("115 分享转存")).toBeVisible();
+  for (const expected of ["Cookie 已就绪", "Cookie 需要重新授权", "115 当前不可用"]) {
+    await credentialPanels.nth(1).getByRole("button", { name: "验证当前 Cookie" }).click();
+    await expect(page.getByText(expected)).toBeVisible();
+  }
   const tmdbSecret = "test-tmdb-key-123";
   const cookieSecret = "UID=test-cookie; CID=fake";
   await credentialPanels.nth(0).getByLabel("TMDB API Key").fill(tmdbSecret);

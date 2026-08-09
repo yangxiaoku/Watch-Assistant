@@ -3,31 +3,15 @@ import { AlertTriangle, LoaderCircle } from "@lucide/vue";
 import { computed, onMounted, ref, watch } from "vue";
 import { ApiClient, ApiError } from "../api";
 import { pollUntil } from "../polling";
+import { organizationResultItemStatusLabel, organizationResultStatusLabel } from "../statusCatalog";
 import { diagnosticCode } from "../uiSafety";
-import type { OrganizationAutomationResultResponse, OrganizationResultStatus } from "../types";
+import type { OrganizationAutomationResultResponse } from "../types";
 
 const props = defineProps<{ api: ApiClient; reloadToken?: number }>();
 
 const organizationResult = ref<OrganizationAutomationResultResponse | null>(null);
 const organizationResultLoading = ref(false);
 const organizationResultError = ref("");
-const organizationStatusLabels: Record<OrganizationResultStatus, string> = {
-  unknown: "尚未整理",
-  success: "整理完成",
-  skipped: "未执行",
-  deleted: "已删除",
-  replace: "已替换",
-  failed: "存在失败",
-};
-const organizationItemStatusLabels = {
-  queued: "排队中",
-  organizing: "整理中",
-  success: "已入库",
-  failed: "失败",
-  uncertain: "待确认",
-  needs_review: "待确认",
-  skipped: "未执行",
-} as const;
 const organizationResultHeadline = computed(() => {
   const result = organizationResult.value;
   if (!result || result.status === "unknown") return "尚未整理";
@@ -37,7 +21,7 @@ const organizationResultHeadline = computed(() => {
   if (result.blocked_count > 0 || statuses.some((status) => status === "failed")) return "存在失败或阻断";
   if (result.queued_count > 0 && statuses.every((status) => status === "success" || status === "skipped")) return "整理完成";
   if (result.plan_count > 0 && result.queued_count === 0) return "扫描完成，未执行移动";
-  return organizationStatusLabels[result.status];
+  return organizationResultStatusLabel(result.status);
 });
 const organizationResultStateClass = computed(() => {
   const headline = organizationResultHeadline.value;
@@ -67,7 +51,7 @@ const organizationResultStatusBreakdown = computed(() => {
   return [...counts.entries()].map(([status, count]) => ({
     status,
     count,
-    label: organizationItemStatusLabels[status as keyof typeof organizationItemStatusLabels] ?? status,
+    label: organizationResultItemStatusLabel(status as OrganizationAutomationResultResponse["items"][number]["status"]),
   }));
 });
 
@@ -148,7 +132,7 @@ onMounted(() => {
       <strong>影片处理结果</strong>
       <div v-for="item in organizationResult.items" :key="`${item.tmdb_id ?? item.title}-${item.target ?? ''}`" class="organization-result-item">
         <span><b>{{ item.title }}</b><small v-if="item.tmdb_id">TMDB {{ item.tmdb_id }}</small></span>
-        <span :class="['organization-result-item-status', `is-${item.status}`]">{{ organizationItemStatusLabels[item.status as keyof typeof organizationItemStatusLabels] ?? item.status }}</span>
+        <span :class="['organization-result-item-status', `is-${item.status}`]">{{ organizationResultItemStatusLabel(item.status) }}</span>
         <small v-if="item.target" class="organization-result-item-target">归档：{{ item.target }}</small><small v-else-if="item.status === 'needs_review' || item.status === 'uncertain'" class="organization-result-item-target">未生成归档路径，未移动文件</small>
         <details v-if="item.error_code"><summary>诊断信息</summary><small>错误码：{{ diagnosticCode(item.error_code) }}</small></details>
       </div>

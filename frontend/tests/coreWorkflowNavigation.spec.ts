@@ -90,7 +90,6 @@ describe("core workflow navigation", () => {
     await wrapper.get(".workflow-actions").get("button:last-child").trigger("click");
     expect(wrapper.text()).toContain("运行中或结果待确认的远端操作不会被伪造撤回");
 
-    await wrapper.get(".confirm-dialog-acknowledgement input").setValue(true);
     await wrapper.get(".confirm-dialog-actions button:last-child").trigger("click");
     await flushPromises();
     expect(cancelWorkflow).toHaveBeenCalledWith("workflow-mixed");
@@ -183,7 +182,6 @@ describe("core workflow navigation", () => {
     const cancelButtons = wrapper.findAll("button").filter((button) => button.text().includes("取消排队"));
     await cancelButtons.at(-1)!.trigger("click");
     expect(cancelTask).not.toHaveBeenCalled();
-    await wrapper.get(".confirm-dialog-acknowledgement input").setValue(true);
     await wrapper.get(".confirm-dialog-actions button:last-child").trigger("click");
     await flushPromises();
     expect(cancelTask).toHaveBeenCalledWith("task-queued");

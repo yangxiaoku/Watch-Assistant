@@ -713,7 +713,8 @@ describe("LibraryWorkbenchView", () => {
     await wrapper.findAll("button").find((button) => button.text().includes("取消操作"))!.trigger("click");
     expect(api.cancelStrmOperation).not.toHaveBeenCalled();
     expect(wrapper.get(".confirm-dialog").text()).toContain("确认取消 STRM 操作");
-    await confirmRiskyAction(wrapper);
+    expect(wrapper.find(".confirm-dialog-acknowledgement").exists()).toBe(false);
+    await wrapper.get(".confirm-dialog-actions button:last-child").trigger("click");
     await flushPromises();
 
     expect(api.cancelStrmOperation).toHaveBeenCalledWith("strm_op_running");

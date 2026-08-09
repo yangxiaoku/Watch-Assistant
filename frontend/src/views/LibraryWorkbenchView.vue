@@ -961,6 +961,6 @@ onBeforeUnmount(() => {
       </main>
       <div v-else class="library-empty"><Database :size="24" /><strong>尚未配置库存媒体库</strong><span>下一步：读取服务器配置的 115 根目录，保存配置、验证范围，再完成首次扫描。</span><button class="primary-button" type="button" :disabled="busy" @click="initializeLibrary"><Database :size="16" />初始化并扫描媒体库</button><button class="text-button" type="button" @click="openCapabilitySettings(undefined, 'organization')"><SlidersHorizontal :size="14" />先检查 115 整理设置</button></div>
     </div>
-    <ConfirmDialog :open="cleanupDialogOpen" :title="cleanupDialogTitle" :summary="cleanupDialogSummary" :details="cleanupDialogDetails" :confirm-label="pendingCleanup === 'operation' ? '确认取消' : '确认并提交'" tone="danger" :busy="busy" @cancel="closeCleanupDialog" @confirm="confirmPendingCleanup" />
+    <ConfirmDialog :open="cleanupDialogOpen" :title="cleanupDialogTitle" :summary="cleanupDialogSummary" :details="cleanupDialogDetails" :confirm-label="pendingCleanup === 'operation' ? '确认取消' : '确认并提交'" tone="danger" :require-acknowledgment="pendingCleanup !== 'operation'" :busy="busy" @cancel="closeCleanupDialog" @confirm="confirmPendingCleanup" />
   </section>
 </template>

@@ -11,32 +11,28 @@ import {
   RefreshCw,
   Save,
   Radio,
-  Server,
   Settings2,
   ScanSearch,
   ShieldCheck,
-  StopCircle,
   Zap,
   XCircle,
 } from "@lucide/vue";
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { ApiClient, ApiError, focusFirstFieldError, isConflict, CONFLICT_MESSAGE_ZH } from "../api";
 import OrganizationResultPanel from "../components/OrganizationResultPanel.vue";
 import { p115DeviceOptions } from "../p115DeviceTypes";
+import { logLevelOptions } from "../statusCatalog";
 import { diagnosticCode, diagnosticReference, safeLocalizedCopy } from "../uiSafety";
 import type {
   CapabilityState,
   CapabilityAvailability,
   CapabilityStatusResponse,
-  LogCategory,
-  LogEntry,
   LogLevel,
   ContentPolicyResponse,
   CredentialSettingsResponse,
   LoggingSettingsResponse,
   InspectionSettingsResponse,
   OrganizationSettingsResponse,
-  LogsResponse,
   P115SettingsResponse,
   P115ValidationResponse,
   P115DirectoryItem,
@@ -50,9 +46,9 @@ import type {
 const props = withDefaults(defineProps<{ api: ApiClient; initialSection?: SettingsSection }>(), {
   initialSection: "overview" as SettingsSection,
 });
-const emit = defineEmits<{ "auto-start-enabled": [enabled: boolean] }>();
+const emit = defineEmits<{ "auto-start-enabled": [enabled: boolean]; navigate: [view: "logs" | "organization"] }>();
 
-type SettingsSection = "overview" | "credentials" | "prowlarr" | "logs" | "content" | "inspection" | "p115" | "organization";
+type SettingsSection = "overview" | "credentials" | "prowlarr" | "logs" | "content" | "inspection" | "organization";
 type ValidationState = "idle" | "running" | "error" | P115ValidationResponse["status"];
 
 const sectionGroups = [
@@ -75,53 +71,11 @@ const sectionGroups = [
   {
     label: "入库与输出",
     items: [
-      { id: "p115" as const, label: "115 推送", icon: ShieldCheck },
       { id: "organization" as const, label: "115 整理", icon: Zap },
     ],
   },
 ];
 const sections = sectionGroups.flatMap((group) => group.items);
-const levelOptions: Array<{ value: LogLevel; label: string }> = [
-  { value: "DEBUG", label: "调试" },
-  { value: "ERROR", label: "错误" },
-  { value: "WARNING", label: "警告" },
-  { value: "INFO", label: "信息" },
-];
-const categoryOptions: Array<{ value: LogCategory; label: string }> = [
-  { value: "system", label: "系统" },
-  { value: "security", label: "安全" },
-  { value: "search", label: "搜索" },
-  { value: "pansou", label: "PanSou" },
-  { value: "cache", label: "缓存" },
-  { value: "inspection", label: "检测" },
-  { value: "p115", label: "115" },
-  { value: "task", label: "任务" },
-  { value: "organize", label: "整理" },
-  { value: "strm", label: "STRM" },
-  { value: "library", label: "媒体库" },
-  { value: "agent", label: "Agent" },
-  { value: "settings", label: "设置" },
-  { value: "subscription", label: "订阅" },
-  { value: "quality", label: "质量策略" },
-  { value: "notification", label: "通知" },
-];
-const statusOptions = [
-  { value: "success", label: "成功" },
-  { value: "warning", label: "警告" },
-  { value: "partial", label: "部分完成" },
-  { value: "failed", label: "失败" },
-  { value: "uncertain", label: "待确认" },
-  { value: "queued", label: "排队中" },
-  { value: "cancelled", label: "已取消" },
-  { value: "unregistered", label: "未登记" },
-];
-const actorTypeOptions = [
-  { value: "web", label: "Web" },
-  { value: "system", label: "系统" },
-  { value: "worker", label: "Worker" },
-  { value: "agent", label: "Agent" },
-  { value: "userscript", label: "用户脚本" },
-];
 const activeSection = ref<SettingsSection>(props.initialSection);
 const overview = ref<SettingsOverviewResponse | null>(null);
 const overviewLoading = ref(true);
@@ -232,30 +186,7 @@ const draftMaxFileMb = ref(10);
 const savingLogging = ref(false);
 const saveError = ref("");
 const conflict = ref(false);
-
-const logs = ref<LogsResponse | null>(null);
-const logItems = ref<LogEntry[]>([]);
-const logsLoading = ref(false);
-const logsLoaded = ref(false);
-const logsError = ref("");
-const logCategory = ref<LogCategory | "">("");
-const logLevel = ref<LogLevel | "">("");
-const logStatus = ref("");
-const logEventCode = ref("");
-const logRequestId = ref("");
-const logCorrelationId = ref("");
-const logTaskId = ref("");
-const logActorType = ref("");
-const logActorId = ref("");
-const logResourceType = ref("");
-const logResourceId = ref("");
-const nextLogCursor = ref<number | null>(null);
-const autoRefreshLogs = ref(true);
-const logsUpdatedAt = ref<string | null>(null);
-let logsRequestId = 0;
-let logsRefreshTimer: number | null = null;
 let settingsMounted = false;
-const logLimit = 20;
 
 const contentPolicy = ref<ContentPolicyResponse | null>(null);
 const contentLoading = ref(false);
@@ -275,21 +206,18 @@ const loggingDirty = computed(() => {
     || logging.value.max_file_mb !== draftMaxFileMb.value;
 });
 const currentSection = computed(() => sections.find((section) => section.id === activeSection.value));
-const hasMoreLogs = computed(() => logsLoaded.value && nextLogCursor.value !== null);
 
 function selectSection(section: SettingsSection) {
   activeSection.value = section;
   if (section === "credentials" && !credentials.value && !credentialsLoading.value) void loadCredentials();
   if (section === "prowlarr" && !prowlarr.value && !prowlarrLoading.value) void loadProwlarr();
-  if (section === "logs" && !logsLoaded.value) void loadLogs();
   if (section === "content" && !contentPolicy.value) void loadContentPolicy();
   if (section === "organization" && !organizationSettings.value && !organizationLoading.value) void loadOrganization();
-  syncLogsRefreshTimer();
 }
 
 function selectMobileSection(event: Event) {
   const value = (event.target as HTMLSelectElement).value;
-  if (value === "overview" || value === "credentials" || value === "prowlarr" || value === "logs" || value === "content" || value === "inspection" || value === "p115" || value === "organization") selectSection(value);
+  if (value === "overview" || value === "credentials" || value === "prowlarr" || value === "logs" || value === "content" || value === "inspection" || value === "organization") selectSection(value);
 }
 
 async function loadOverview() {
@@ -861,21 +789,6 @@ async function runOrganizationNow() {
   }
 }
 
-async function stopOrganization() {
-  if (organizationActionBusy.value) return;
-  organizationActionBusy.value = true;
-  organizationActionMessage.value = "";
-  try {
-    const response = await props.api.stopOrganization();
-    organizationActionMessage.value = response.message_zh;
-    await loadOrganization();
-  } catch (exception) {
-    organizationActionMessage.value = exception instanceof ApiError ? exception.message : "停止整理失败，请稍后重试";
-  } finally {
-    organizationActionBusy.value = false;
-  }
-}
-
 function applyLogging(value: LoggingSettingsResponse) {
   logging.value = value;
   draftLevel.value = value.level;
@@ -944,6 +857,14 @@ function applyContentPolicy(value: ContentPolicyResponse) {
   blockedKeywordsDraft.value = value.blocked_keywords.join("\n");
 }
 
+function openLogsPage(): void {
+  emit("navigate", "logs");
+}
+
+function openOrganizationPage(): void {
+  emit("navigate", "organization");
+}
+
 function syncSharedRevision(revision: number) {
   if (logging.value) logging.value = { ...logging.value, revision };
   if (inspectionSettings.value) inspectionSettings.value = { ...inspectionSettings.value, revision };
@@ -979,116 +900,6 @@ async function saveContentPolicy() {
   } finally {
     contentSaving.value = false;
   }
-}
-
-async function loadLogs(append = false, preserve = false) {
-  const requestId = ++logsRequestId;
-  const cursor = append ? nextLogCursor.value : undefined;
-  const previousCursor = nextLogCursor.value;
-  if (!append && !preserve) {
-    logItems.value = [];
-    logs.value = null;
-    nextLogCursor.value = null;
-    logsLoaded.value = false;
-  }
-  logsLoading.value = true;
-  syncLogsRefreshTimer();
-  logsError.value = "";
-  try {
-    const response = await props.api.logs(currentLogFilters(cursor));
-    if (requestId !== logsRequestId) return;
-    const byId = new Map<number, LogEntry>(
-      (append || preserve) ? logItems.value.map((item) => [item.id, item]) : [],
-    );
-    response.items.forEach((item) => byId.set(item.id, item));
-    logItems.value = [...byId.values()].sort((a, b) => b.id - a.id);
-    logs.value = response;
-    nextLogCursor.value = append
-      ? response.next_cursor
-      : preserve
-        ? previousCursor ?? response.next_cursor
-        : response.next_cursor;
-    logsLoaded.value = true;
-    logsUpdatedAt.value = new Date().toISOString();
-  } catch (exception) {
-    if (requestId === logsRequestId) logsError.value = exception instanceof ApiError ? exception.message : "日志加载失败，请稍后重试";
-  } finally {
-    if (requestId === logsRequestId) {
-      logsLoading.value = false;
-      syncLogsRefreshTimer();
-    }
-  }
-}
-
-function currentLogFilters(cursor: number | null = null): Parameters<ApiClient["logs"]>[0] {
-  const filters: Parameters<ApiClient["logs"]>[0] = {
-    limit: logLimit,
-    cursor: cursor ?? undefined,
-    category: logCategory.value || undefined,
-  };
-  if (logLevel.value) filters.level = logLevel.value;
-  if (logStatus.value) filters.status = logStatus.value;
-  if (logEventCode.value.trim()) filters.eventCode = logEventCode.value.trim();
-  if (logRequestId.value.trim()) filters.requestId = logRequestId.value.trim();
-  if (logCorrelationId.value.trim()) filters.correlationId = logCorrelationId.value.trim();
-  if (logTaskId.value.trim()) filters.taskId = logTaskId.value.trim();
-  if (logActorType.value) filters.actorType = logActorType.value;
-  if (logActorId.value.trim()) filters.actorId = logActorId.value.trim();
-  if (logResourceType.value.trim()) filters.resourceType = logResourceType.value.trim();
-  if (logResourceId.value.trim()) filters.resourceId = logResourceId.value.trim();
-  return filters;
-}
-
-function logMessage(item: LogEntry): string {
-  return safeLocalizedCopy(item.message_zh, "日志详情不可用。");
-}
-
-function refreshLogs() {
-  void loadLogs();
-}
-
-function autoRefreshLogsIfVisible() {
-  if (!autoRefreshLogs.value || activeSection.value !== "logs" || document.visibilityState !== "visible" || logsLoading.value) return;
-  void loadLogs(false, true);
-}
-
-function onVisibilityChange() {
-  syncLogsRefreshTimer();
-}
-
-function syncLogsRefreshTimer() {
-  const shouldRun = settingsMounted && autoRefreshLogs.value && activeSection.value === "logs" && document.visibilityState === "visible" && !logsLoading.value;
-  if (!shouldRun) {
-    if (logsRefreshTimer !== null) {
-      window.clearInterval(logsRefreshTimer);
-      logsRefreshTimer = null;
-    }
-    return;
-  }
-  if (logsRefreshTimer === null) logsRefreshTimer = window.setInterval(autoRefreshLogsIfVisible, 5000);
-}
-
-function changeLogFilter() {
-  void loadLogs();
-}
-
-function clearLogFilters() {
-  logCategory.value = "";
-  logLevel.value = "";
-  logStatus.value = "";
-  logEventCode.value = "";
-  logRequestId.value = "";
-  logCorrelationId.value = "";
-  logTaskId.value = "";
-  logActorType.value = "";
-  logActorId.value = "";
-  logResourceType.value = "";
-  logResourceId.value = "";
-  void loadLogs();
-}
-
-function loadMoreLogs() {
-  if (nextLogCursor.value !== null && !logsLoading.value) void loadLogs(true);
 }
 
 async function validateP115() {
@@ -1258,7 +1069,7 @@ function overviewCapabilityNextStep(key: OverviewCapabilityKey, fallback: boolea
 
 function overviewCapabilityAction(key: OverviewCapabilityKey): { label: string; section: SettingsSection } | null {
   if (key === "inspection") return { label: "打开检测设置", section: "inspection" };
-  if (key === "magnet" || key === "share") return { label: "打开 115 推送", section: "p115" };
+  if (key === "magnet" || key === "share") return { label: "打开 115 连接配置", section: "credentials" };
   if (key === "organization_plan" || key === "organization_execution" || key === "organization_write" || key === "organization_empty_directory_cleanup") {
     return { label: "打开整理设置", section: "organization" };
   }
@@ -1272,18 +1083,6 @@ function overviewCapabilityActionLabel(key: OverviewCapabilityKey) {
 function openOverviewCapabilityAction(key: OverviewCapabilityKey) {
   const action = overviewCapabilityAction(key);
   if (action) selectSection(action.section);
-}
-
-function levelLabel(level: LogLevel) {
-  return levelOptions.find((option) => option.value === level)?.label ?? level;
-}
-
-function logLevelClass(level: LogLevel) {
-  return `log-${level.toLowerCase()}`;
-}
-
-function categoryLabel(category: LogCategory) {
-  return categoryOptions.find((option) => option.value === category)?.label ?? category;
 }
 
 function credentialSourceLabel(value: CredentialSettingsResponse["tmdb"]["source"] | CredentialSettingsResponse["p115_cookie"]["source"]) {
@@ -1370,26 +1169,17 @@ onMounted(() => {
   void loadProwlarr();
   void loadP115Devices();
   void loadOrganization();
-  document.addEventListener("visibilitychange", onVisibilityChange);
-  syncLogsRefreshTimer();
 });
 
 onBeforeUnmount(() => {
   settingsMounted = false;
-  document.removeEventListener("visibilitychange", onVisibilityChange);
-  if (logsRefreshTimer !== null) {
-    window.clearInterval(logsRefreshTimer);
-    logsRefreshTimer = null;
-  }
   stopP115QrPolling();
 });
-
-watch(autoRefreshLogs, syncLogsRefreshTimer);
 </script>
 
 <template>
   <section class="settings-view">
-    <header class="settings-heading"><div><p class="eyebrow">工作区设置</p><h1>设置</h1><p>查看运行状态、日志策略和 115 推送准备情况。</p></div><Settings2 :size="28" /></header>
+    <header class="settings-heading"><div><p class="eyebrow">工作区设置</p><h1>设置</h1><p>查看运行状态、日志策略和 115 连接配置。</p></div><Settings2 :size="28" /></header>
     <div class="settings-layout">
       <aside class="settings-nav" aria-label="设置分区"><div v-for="group in sectionGroups" :key="group.label" class="settings-nav-group"><p class="settings-nav-group-label">{{ group.label }}</p><button v-for="item in group.items" :key="item.id" type="button" :class="{ active: activeSection === item.id }" @click="selectSection(item.id)"><component :is="item.icon" :size="16" />{{ item.label }}</button></div></aside>
       <div class="settings-content">
@@ -1439,6 +1229,7 @@ watch(autoRefreshLogs, syncLogsRefreshTimer);
                 <p v-if="p115QrError" class="settings-action-message" role="status">{{ p115QrError }}</p>
               </div>
               <div class="p115-device-list"><div class="p115-device-list-heading"><h4>已保存的登录设备</h4><button class="text-button" type="button" :disabled="p115DevicesLoading" @click="loadP115Devices"><LoaderCircle v-if="p115DevicesLoading" class="spin" :size="14" /><RefreshCw v-else :size="14" />{{ p115DevicesLoading ? '刷新中' : '刷新' }}</button></div><div v-if="p115DevicesLoading" class="settings-loading" role="status"><LoaderCircle class="spin" :size="18" />正在加载扫码设备</div><div v-else-if="p115DevicesError" class="settings-state settings-state-error" role="alert"><AlertTriangle :size="18" /><span>{{ p115DevicesError }}</span><button class="text-button" type="button" @click="loadP115Devices">重试</button></div><p v-else-if="!p115Devices.length" class="settings-note">暂无扫码设备。手动 Cookie 不会显示在这里。</p><div v-else><div v-for="device in p115Devices" :key="device.id" class="p115-device-row"><div><strong>{{ device.name }}</strong><small>{{ device.device_code }} · {{ device.last_used_at ? formatTimestamp(device.last_used_at) : '未使用' }}</small></div><div><strong v-if="device.active" class="status-ok">当前使用</strong><button v-else class="text-button" type="button" @click="activateP115Device(device)">切换</button><button v-if="!device.active" class="text-button danger-text" type="button" @click="revokeP115Device(device)">移除</button></div></div></div></div>
+              <p class="settings-note"><Cookie :size="15" />Cookie 仅使用服务端已配置的来源，页面不会回显已保存的 Cookie 原文。</p>
             </section>
           </div>
         </section>
@@ -1458,7 +1249,7 @@ watch(autoRefreshLogs, syncLogsRefreshTimer);
         </section>
 
         <section v-else-if="activeSection === 'organization'" class="settings-section" aria-labelledby="organization-title">
-          <header class="settings-section-heading"><div><p class="eyebrow">115 网盘</p><h2 id="organization-title">自动整理</h2><p>点击“开始整理”立即扫描已配置来源；定时开关只控制自动触发。</p></div><div class="settings-section-actions"><button class="primary-button" type="button" :disabled="organizationActionBusy" @click="runOrganizationNow"><LoaderCircle v-if="organizationActionBusy" class="spin" :size="15" /><Zap v-else :size="15" />开始整理</button><button class="secondary-button" type="button" :disabled="organizationActionBusy" @click="stopOrganization"><StopCircle :size="15" />停止定时</button></div></header>
+          <header class="settings-section-heading"><div><p class="eyebrow">115 网盘</p><h2 id="organization-title">自动整理</h2><p>点击“开始整理”立即扫描已配置来源；定时开关只控制自动触发。</p></div><div class="settings-section-actions"><button class="primary-button" type="button" :disabled="organizationActionBusy" @click="runOrganizationNow"><LoaderCircle v-if="organizationActionBusy" class="spin" :size="15" /><Zap v-else :size="15" />开始整理</button><button class="secondary-button" type="button" @click="openOrganizationPage"><Settings2 :size="15" />前往整理页</button></div></header>
           <div v-if="organizationLoading" class="settings-loading"><LoaderCircle class="spin" :size="20" />正在加载整理设置</div>
           <div v-else-if="organizationError" class="settings-state settings-state-error" role="alert"><AlertTriangle :size="18" /><span>{{ organizationError }}</span><button class="text-button" type="button" @click="loadOrganization">重试</button></div>
           <template v-else-if="organizationSettings">
@@ -1493,31 +1284,8 @@ watch(autoRefreshLogs, syncLogsRefreshTimer);
         </div>
 
         <section v-else-if="activeSection === 'logs'" class="settings-section" aria-labelledby="logs-title">
-          <header class="settings-section-heading"><div><p class="eyebrow">事件流</p><h2 id="logs-title">日志</h2></div><div class="settings-section-actions"><label class="settings-toggle"><input v-model="autoRefreshLogs" type="checkbox" />自动刷新</label><button class="icon-button" type="button" title="刷新日志" aria-label="刷新日志" :disabled="logsLoading" @click="refreshLogs"><RefreshCw :size="16" :class="{ spin: logsLoading }" /></button></div></header>
-          <div class="settings-filter-row">
-            <label>分类<select v-model="logCategory" @change="changeLogFilter"><option value="">全部分类</option><option v-for="option in categoryOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select></label>
-            <label>等级<select v-model="logLevel" @change="changeLogFilter"><option value="">全部等级</option><option v-for="option in levelOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select></label>
-            <label>状态<select v-model="logStatus" @change="changeLogFilter"><option value="">全部状态</option><option v-for="option in statusOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select></label>
-            <label>操作者<select v-model="logActorType" @change="changeLogFilter"><option value="">全部操作者</option><option v-for="option in actorTypeOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select></label>
-            <label>事件码<input v-model="logEventCode" type="search" maxlength="128" placeholder="例如 task.failed" @keyup.enter="changeLogFilter" /></label>
-            <label>请求 ID<input v-model="logRequestId" type="search" maxlength="128" placeholder="筛选请求" @keyup.enter="changeLogFilter" /></label>
-            <label>关联 ID<input v-model="logCorrelationId" type="search" maxlength="128" placeholder="筛选关联" @keyup.enter="changeLogFilter" /></label>
-            <label>任务 ID<input v-model="logTaskId" type="search" maxlength="128" placeholder="筛选任务" @keyup.enter="changeLogFilter" /></label>
-            <label>操作者 ID<input v-model="logActorId" type="search" maxlength="128" placeholder="筛选操作者" @keyup.enter="changeLogFilter" /></label>
-            <label>资源类型<input v-model="logResourceType" type="search" maxlength="64" placeholder="例如 library" @keyup.enter="changeLogFilter" /></label>
-            <label>资源 ID<input v-model="logResourceId" type="search" maxlength="128" placeholder="筛选资源" @keyup.enter="changeLogFilter" /></label>
-            <button class="text-button" type="button" @click="clearLogFilters">清除筛选</button>
-          </div>
-          <div v-if="logsLoading && !logsLoaded" class="settings-loading"><LoaderCircle class="spin" :size="20" />正在加载日志</div>
-          <div v-else-if="logsError" class="settings-state settings-state-error" role="alert"><AlertTriangle :size="18" /><span>{{ logsError }}</span><button class="text-button" type="button" @click="refreshLogs">重试</button></div>
-          <div v-else-if="logsLoaded && !logItems.length" class="settings-empty-block"><FileText :size="24" /><strong>暂无日志</strong><span>调整分类或稍后刷新。</span></div>
-          <template v-else-if="logsLoaded">
-            <div class="settings-log-table-wrap"><table class="settings-log-table"><thead><tr><th>时间</th><th>级别</th><th>分类</th><th>内容</th></tr></thead><tbody><tr v-for="item in logItems" :key="item.id"><td>{{ formatTimestamp(item.timestamp) }}</td><td><span :class="['log-level', logLevelClass(item.level)]">{{ levelLabel(item.level) }}</span></td><td>{{ categoryLabel(item.category) }}</td><td><strong>{{ item.title_zh || '应用日志' }}</strong><br />{{ logMessage(item) }}<details v-if="item.request_id || item.task_id || item.event_code" class="settings-log-diagnostics"><summary>诊断信息</summary><small v-if="item.event_code">事件码：{{ diagnosticCode(item.event_code) }}</small><small v-if="item.request_id">请求标识：{{ diagnosticReference(item.request_id) }}</small><small v-if="item.task_id">任务标识：{{ diagnosticReference(item.task_id) }}</small></details></td></tr></tbody></table></div>
-            <div class="settings-log-list"><article v-for="item in logItems" :key="item.id" class="settings-log-item"><div><span :class="['log-level', logLevelClass(item.level)]">{{ levelLabel(item.level) }}</span><time>{{ formatTimestamp(item.timestamp) }}</time></div><strong>{{ categoryLabel(item.category) }} · {{ item.title_zh || '应用日志' }}</strong><p>{{ logMessage(item) }}<details v-if="item.request_id || item.task_id || item.event_code" class="settings-log-diagnostics"><summary>诊断信息</summary><small v-if="item.event_code">事件码：{{ diagnosticCode(item.event_code) }}</small><small v-if="item.request_id">请求标识：{{ diagnosticReference(item.request_id) }}</small><small v-if="item.task_id">任务标识：{{ diagnosticReference(item.task_id) }}</small></details></p></article></div>
-            <div class="settings-pagination"><span>已加载 {{ logItems.length }} 条</span><button v-if="hasMoreLogs" class="secondary-button" type="button" :disabled="logsLoading" @click="loadMoreLogs"><LoaderCircle v-if="logsLoading" class="spin" :size="15" />加载更多</button></div>
-            <p v-if="logsUpdatedAt" class="settings-updated-at">最后更新 {{ formatTimestamp(logsUpdatedAt) }}</p>
-          </template>
-          <div class="settings-subsection logging-settings"><h3>日志保留</h3><div v-if="loggingLoading" class="settings-loading"><LoaderCircle class="spin" :size="18" />正在加载日志设置</div><div v-else-if="loggingError" class="settings-state settings-state-error" role="alert"><AlertTriangle :size="18" /><span>{{ loggingError }}</span><button class="text-button" type="button" @click="loadLogging">重试</button></div><template v-else-if="logging"><div class="settings-form-grid"><label>最低级别<select v-model="draftLevel"><option v-for="option in levelOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select></label><label>保留天数（1-90）<input v-model.number="draftRetentionDays" type="number" min="1" max="90" /></label><label>文件上限（MB，1-50）<input v-model.number="draftMaxFileMb" type="number" min="1" max="50" /></label></div><div v-if="loggingDirty" class="settings-save-bar"><span>有未保存的日志设置</span><div><button class="secondary-button" type="button" :disabled="savingLogging" @click="loadLogging">取消</button><button class="primary-button" type="button" :disabled="savingLogging" @click="saveLogging"><LoaderCircle v-if="savingLogging" class="spin" :size="15" /><Save v-else :size="15" />保存</button></div></div><div v-if="saveError" class="settings-state settings-state-error settings-save-error" role="alert"><AlertTriangle :size="17" /><span>{{ saveError }}</span><button v-if="conflict" class="text-button" type="button" @click="loadLogging">重新加载</button></div></template></div>
+          <header class="settings-section-heading"><div><p class="eyebrow">事件流</p><h2 id="logs-title">日志</h2><p>日志事件流已独立展示，这里只配置保留策略。</p></div><button class="secondary-button" type="button" @click="openLogsPage"><FileText :size="15" />打开日志查看器</button></header>
+          <div class="settings-subsection logging-settings"><h3>日志保留</h3><div v-if="loggingLoading" class="settings-loading"><LoaderCircle class="spin" :size="18" />正在加载日志设置</div><div v-else-if="loggingError" class="settings-state settings-state-error" role="alert"><AlertTriangle :size="18" /><span>{{ loggingError }}</span><button class="text-button" type="button" @click="loadLogging">重试</button></div><template v-else-if="logging"><div class="settings-form-grid"><label>最低级别<select v-model="draftLevel"><option v-for="option in logLevelOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select></label><label>保留天数（1-90）<input v-model.number="draftRetentionDays" type="number" min="1" max="90" /></label><label>文件上限（MB，1-50）<input v-model.number="draftMaxFileMb" type="number" min="1" max="50" /></label></div><div v-if="loggingDirty" class="settings-save-bar"><span>有未保存的日志设置</span><div><button class="secondary-button" type="button" :disabled="savingLogging" @click="loadLogging">取消</button><button class="primary-button" type="button" :disabled="savingLogging" @click="saveLogging"><LoaderCircle v-if="savingLogging" class="spin" :size="15" /><Save v-else :size="15" />保存</button></div></div><div v-if="saveError" class="settings-state settings-state-error settings-save-error" role="alert"><AlertTriangle :size="17" /><span>{{ saveError }}</span><button v-if="conflict" class="text-button" type="button" @click="loadLogging">重新加载</button></div></template></div>
         </section>
 
         <section v-else-if="activeSection === 'content'" class="settings-section" aria-labelledby="content-policy-title">
@@ -1547,18 +1315,6 @@ watch(autoRefreshLogs, syncLogsRefreshTimer);
           </template>
         </section>
 
-        <section v-else-if="activeSection === 'p115'" class="settings-section" aria-labelledby="p115-title">
-          <header class="settings-section-heading"><div><p class="eyebrow">P115 连接器</p><h2 id="p115-title">115 推送</h2></div><button class="icon-button" type="button" title="刷新 115 状态" aria-label="刷新 115 状态" :disabled="p115Loading" @click="loadP115"><RefreshCw :size="16" :class="{ spin: p115Loading }" /></button></header>
-          <div v-if="p115Loading" class="settings-loading"><LoaderCircle class="spin" :size="20" />正在加载 115 状态</div>
-          <div v-else-if="p115Error" class="settings-state settings-state-error" role="alert"><AlertTriangle :size="18" /><span>{{ p115Error }}</span><button class="text-button" type="button" @click="loadP115">重试</button></div>
-          <template v-else-if="p115">
-            <div class="p115-status-line"><span class="settings-status-name"><Server :size="17" />服务状态</span><span :class="p115.ready ? 'status-ok' : 'status-degraded'">{{ p115.ready ? '已就绪' : '未就绪' }}</span><span :class="p115.enabled ? 'status-ok' : 'status-degraded'">{{ p115.enabled ? '已启用' : '未启用' }}</span></div>
-            <div class="settings-metrics p115-metrics"><div class="settings-metric"><span>Cookie 来源</span><strong>{{ p115.cookie.source === 'managed' ? '托管' : '文件' }}</strong></div><div class="settings-metric"><span>Cookie 已配置</span><strong :class="p115.cookie.configured ? 'status-ok' : 'status-degraded'">{{ p115.cookie.configured ? '是' : '否' }}</strong></div><div class="settings-metric"><span>Cookie 结构</span><strong :class="p115.cookie.structure_valid ? 'status-ok' : 'status-degraded'">{{ p115.cookie.structure_valid ? '结构正常' : '结构异常' }}</strong></div></div>
-            <div class="settings-subsection"><h3>推送能力</h3><div class="settings-capability-list"><div><span>磁力云下载</span><strong :class="capabilityClass(p115.capabilities.magnet)">{{ capabilityLabel(p115.capabilities.magnet) }}</strong></div><div><span>115 分享转存</span><strong :class="capabilityClass(p115.capabilities.share)">{{ p115.capabilities.share ? '可用' : '未启用' }}</strong></div></div></div>
-            <div class="settings-action-row"><button class="secondary-button" type="button" :disabled="validationState === 'running'" @click="validateP115"><LoaderCircle v-if="validationState === 'running'" class="spin" :size="16" /><Cookie v-else :size="16" />验证 Cookie</button><span v-if="validationMessage" :class="['settings-action-message', validationClass(validationState)]">{{ validationMessage }}</span></div>
-            <p class="settings-note"><Cookie :size="15" />Cookie 仅使用服务端已配置的来源，页面不会回显已保存的 Cookie 原文。</p>
-          </template>
-        </section>
       </div>
     </div>
   </section>
