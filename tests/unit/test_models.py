@@ -7,6 +7,8 @@ from sqlalchemy import select, text
 from watch_assistant.config import Settings
 from watch_assistant.db import cleanup_expired, create_database, initialize_database
 from watch_assistant.models import (
+    InspectionBatch,
+    InspectionItem,
     MagnetMetadataCache,
     Resource,
     SearchCache,
@@ -18,6 +20,7 @@ from watch_assistant.models import (
     WorkflowStage,
 )
 from watch_assistant.schemas import (
+    InspectionBatchStatus,
     InspectionItemStatus,
     ResourceKind,
     WorkflowStageName,
@@ -306,3 +309,66 @@ async def test_cleanup_keeps_resource_referenced_by_uncertain_task(tmp_path):
     assert result.resources_deleted == 2
     assert result.tasks_deleted == 1
     assert result.cache_entries_deleted == 2
+
+
+@pytest.mark.asyncio
+async def test_cleanup_expired_removes_resource_referenced_by_finished_inspection(tmp_path):
+    """An expired resource still referenced by a finished inspection item must
+    be cleaned (batch first, then resource), not deadlock the whole cleanup."""
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'watch.db'}")
+    await initialize_database(database.engine)
+    now = datetime.now(UTC)
+    old = now - timedelta(days=31)
+
+    async with database.session_factory() as session:
+        resource = Resource(
+            id="res_inspected",
+            kind=ResourceKind.MAGNET,
+            canonical_key="magnet:inspected",
+            encrypted_url="encrypted",
+            name="Inspected",
+            source="PanSou",
+            captured_at=old,
+            expires_at=old,
+            created_at=old,
+        )
+        batch = InspectionBatch(
+            id="batch_expired",
+            status=InspectionBatchStatus.COMPLETED,
+            created_at=old,
+            expires_at=old,
+        )
+        session.add_all([resource, batch])
+        await session.flush()
+        session.add(
+            InspectionItem(
+                batch_id=batch.id,
+                resource_id=resource.id,
+                position=0,
+                status=InspectionItemStatus.VERIFIED,
+            )
+        )
+        await session.commit()
+
+    async with database.session_factory() as session:
+        result = await cleanup_expired(session)
+        await session.commit()
+    assert result.resources_deleted == 1
+
+    async with database.session_factory() as session:
+        remaining = (
+            await session.scalars(
+                select(Resource).where(Resource.id == "res_inspected")
+            )
+        ).all()
+        batches = (
+            await session.scalars(
+                select(InspectionBatch).where(InspectionBatch.id == "batch_expired")
+            )
+        ).all()
+        items = (
+            await session.scalars(select(InspectionItem))
+        ).all()
+    assert remaining == []
+    assert batches == []
+    assert items == []

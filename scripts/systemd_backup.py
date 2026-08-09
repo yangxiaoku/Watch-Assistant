@@ -27,7 +27,7 @@ from watch_assistant.release_metadata import normalize_full_release, read_releas
 _MANIFEST_SCHEMA_VERSION = 1
 _MANIFEST_RESTORE_POLICY = "preview_or_explicit_manual_command_only"
 _BACKUP_ID_PATTERN = re.compile(
-    r"^watch-assistant-[0-9]{8}-[0-9]{6}-[0-9a-f]{8}$"
+    r"^backup_[0-9a-f]{32}$"
 )
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
@@ -175,7 +175,7 @@ def create_backup(
         raise SystemdBackupError("retention_invalid")
     output_dir.mkdir(parents=True, exist_ok=True)
     timestamp = (created_at or datetime.now(UTC)).astimezone(UTC)
-    backup_id = "watch-assistant-" + timestamp.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:8]
+    backup_id = "backup_" + uuid.uuid4().hex
     database_name = f"{backup_id}.db"
     manifest_name = f"{backup_id}.json"
     target = output_dir / database_name

@@ -322,6 +322,7 @@ _HTTP_STATUSES: dict[str, int] = {
     "invalid_directory_limit": 422,
     "invalid_idempotency_key": 422,
     "invalid_library_id": 422,
+    "invalid_credentials": ApiErrorDescriptor("invalid_credentials", "登录信息不正确", "本次登录未成功。", "请检查用户名和密码后重新登录。", True, "retry"),
     "invalid_lease_duration": 500,
     "invalid_operation_id": 422,
     "invalid_pagination": 422,

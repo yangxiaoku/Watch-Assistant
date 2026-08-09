@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { AlertTriangle, LoaderCircle } from "@lucide/vue";
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { ApiClient, ApiError } from "../api";
 import { pollUntil } from "../polling";
 import { formatTimestamp } from "../format";
@@ -67,6 +67,9 @@ async function loadOrganizationResult() {
   organizationResultError.value = "";
   try {
     organizationResult.value = await props.api.organizationResult();
+    const runId = organizationResult.value?.run_id ?? null;
+    const finished = organizationResult.value?.finished_at ?? null;
+    if (runId && !finished) pollOrganizationResult(runId);
   } catch (exception) {
     organizationResultError.value = exception instanceof ApiError ? exception.message : "整理结果加载失败，请稍后重试";
   } finally {
@@ -74,13 +77,16 @@ async function loadOrganizationResult() {
   }
 }
 
+let pollActive = false;
 let pollTask: ReturnType<typeof pollUntil> | undefined;
 function stopPolling(): void {
+  pollActive = false;
   pollTask = undefined;
 }
 
 function pollOrganizationResult(runId: string | null): void {
-  if (pollTask !== undefined) return;
+  if (pollTask !== undefined || !runId) return;
+  pollActive = true;
   pollTask = pollUntil(
     async () => {
       try {
@@ -93,6 +99,7 @@ function pollOrganizationResult(runId: string | null): void {
     {
       intervalMs: 2000,
       maxAttempts: 60,
+      isCurrent: () => pollActive,
       onResponse: (response) => {
         organizationResult.value = response;
       },
@@ -109,6 +116,8 @@ watch(() => props.reloadToken, () => {
 onMounted(() => {
   void loadOrganizationResult();
 });
+
+onBeforeUnmount(stopPolling);
 </script>
 
 <template>

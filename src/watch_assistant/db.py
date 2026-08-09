@@ -120,6 +120,13 @@ async def cleanup_expired(
         WorkflowStage.child_type == "resource",
         WorkflowStage.child_id.is_not(None),
     )
+    # Expired inspection batches must be removed (cascading their items) BEFORE
+    # expired resources: InspectionItem.resource_id is a RESTRICT foreign key,
+    # so deleting a resource still referenced by a finished item would fail and
+    # roll back the entire cleanup (and the batch delete below it never ran).
+    inspection_result = await session.execute(
+        delete(InspectionBatch).where(InspectionBatch.expires_at <= current_time)
+    )
     resource_result = await session.execute(
         delete(Resource).where(
             Resource.created_at < resource_cutoff,
@@ -138,9 +145,6 @@ async def cleanup_expired(
             MagnetMetadataCache.expires_at.is_not(None),
             MagnetMetadataCache.expires_at <= current_time,
         )
-    )
-    inspection_result = await session.execute(
-        delete(InspectionBatch).where(InspectionBatch.expires_at <= current_time)
     )
 
     return CleanupResult(

@@ -52,7 +52,9 @@ function canRetry(task: TaskResponse): boolean {
 }
 
 function canCancel(task: TaskResponse): boolean {
-  return task.state === "queued";
+  // Uncertain tasks without a remote identity cannot be reconciled; allow
+  // abandoning them explicitly instead of leaving them stuck forever.
+  return task.state === "queued" || (task.state === "uncertain" && !task.remote_ref);
 }
 
 function canReconcile(task: TaskResponse): boolean {

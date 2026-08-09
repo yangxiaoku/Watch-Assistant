@@ -4,7 +4,7 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
-from watch_assistant.adapters.tmdb import TmdbError
+from watch_assistant.adapters.tmdb import TmdbError, TmdbNotFoundError
 from watch_assistant.schemas import (
     HomeCatalogResponse,
     MediaType,
@@ -32,6 +32,14 @@ def get_search_service(request: Request) -> SearchService:
     return request.app.state.search_service
 
 
+def _tmdb_http_error(exc: TmdbError) -> HTTPException:
+    if isinstance(exc, TmdbNotFoundError):
+        # A missing TMDB id is a client-side lookup miss, not an upstream
+        # outage; returning 502 here made every typo look like a server fault.
+        return HTTPException(status_code=404, detail="media_not_found")
+    return HTTPException(status_code=502, detail="tmdb_unavailable")
+
+
 SearchServiceDependency = Annotated[SearchService, Depends(get_search_service)]
 
 
@@ -42,7 +50,7 @@ async def get_home_catalog(
     try:
         return await service.get_home_catalog()
     except TmdbError as exc:
-        raise HTTPException(status_code=502, detail="tmdb_unavailable") from exc
+        raise _tmdb_http_error(exc) from exc
 
 
 @router.get("/movies/discover", response_model=MovieCollectionResponse)
@@ -62,7 +70,7 @@ async def discover_movies(
             page=page,
         )
     except TmdbError as exc:
-        raise HTTPException(status_code=502, detail="tmdb_unavailable") from exc
+        raise _tmdb_http_error(exc) from exc
 
 
 @router.get("/movies/popular", response_model=MovieCollectionResponse)
@@ -73,7 +81,7 @@ async def get_popular_movies(
     try:
         return await service.get_popular_page(page)
     except TmdbError as exc:
-        raise HTTPException(status_code=502, detail="tmdb_unavailable") from exc
+        raise _tmdb_http_error(exc) from exc
 
 
 @router.get("/movies/search", response_model=MovieCollectionResponse)
@@ -84,7 +92,7 @@ async def search_movies(
     try:
         return MovieCollectionResponse(results=await service.search_movies(query))
     except TmdbError as exc:
-        raise HTTPException(status_code=502, detail="tmdb_unavailable") from exc
+        raise _tmdb_http_error(exc) from exc
 
 
 @router.get("/media/search", response_model=MovieCollectionResponse)
@@ -96,7 +104,7 @@ async def search_media(
     try:
         return await service.search_media(query, page)
     except TmdbError as exc:
-        raise HTTPException(status_code=502, detail="tmdb_unavailable") from exc
+        raise _tmdb_http_error(exc) from exc
 
 
 @router.get("/media/discover", response_model=MovieCollectionResponse)
@@ -117,7 +125,7 @@ async def discover_media(
             page=page,
         )
     except TmdbError as exc:
-        raise HTTPException(status_code=502, detail="tmdb_unavailable") from exc
+        raise _tmdb_http_error(exc) from exc
 
 
 @router.get("/media/{media_type}/{tmdb_id}", response_model=MovieMetadata)
@@ -129,7 +137,7 @@ async def get_media(
     try:
         return await service.get_media(tmdb_id, media_type)
     except TmdbError as exc:
-        raise HTTPException(status_code=502, detail="tmdb_unavailable") from exc
+        raise _tmdb_http_error(exc) from exc
 
 
 @router.post(
@@ -212,7 +220,7 @@ async def get_movie(tmdb_id: int, service: SearchServiceDependency) -> MovieMeta
     try:
         return await service.get_movie(tmdb_id)
     except TmdbError as exc:
-        raise HTTPException(status_code=502, detail="tmdb_unavailable") from exc
+        raise _tmdb_http_error(exc) from exc
 
 
 @router.post("/search", response_model=SearchResponse)
@@ -228,7 +236,7 @@ async def search(
             season_number=request.season_number,
         )
     except TmdbError as exc:
-        raise HTTPException(status_code=502, detail="tmdb_unavailable") from exc
+        raise _tmdb_http_error(exc) from exc
     except SearchUnavailable as exc:
         code = str(exc)
         if code not in {"pansou_unavailable", "resource_search_unavailable"}:

@@ -560,7 +560,7 @@ class WorkflowService:
                 WorkflowStatus.FAILED,
             }:
                 raise WorkflowConflict("workflow_not_cancellable")
-            cancellable = [
+            candidates = [
                 stage
                 for stage in stages
                 if stage.status
@@ -569,6 +569,38 @@ class WorkflowService:
                     WorkflowStageStatus.WAITING_CONFIRMATION,
                     WorkflowStageStatus.WAITING_EXTERNAL,
                 }
+            ]
+            if not candidates:
+                raise WorkflowConflict("workflow_not_cancellable")
+            # A WAITING_EXTERNAL stage whose child task is still in flight must
+            # not be cancelled: the remote operation keeps running and its
+            # terminal observation would then fight the terminal stage. Only
+            # stop stages with no running child.
+            running_child_ids = set()
+            bound_child_ids = {
+                stage.child_id for stage in candidates if stage.child_id
+            }
+            if bound_child_ids:
+                running_child_ids = set(
+                    (
+                        await session.scalars(
+                            select(Task.id).where(
+                                Task.id.in_(bound_child_ids),
+                                Task.state.in_(
+                                    (
+                                        TaskState.SUBMITTING,
+                                        TaskState.SUBMITTED,
+                                        TaskState.DOWNLOADING,
+                                    )
+                                ),
+                            )
+                        )
+                    ).all()
+                )
+            cancellable = [
+                stage
+                for stage in candidates
+                if stage.child_id not in running_child_ids
             ]
             if not cancellable:
                 raise WorkflowConflict("workflow_not_cancellable")

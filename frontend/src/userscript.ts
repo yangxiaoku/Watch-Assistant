@@ -156,10 +156,12 @@ function installUserscript() {
       renderConfigPanel(shadow, () => void load());
       return;
     }
-    searchCache.set(movieId, Date.now());
     renderPanel(shadow, { title: "搜索中" });
     try {
       const result = await gmRequest<SearchResponse>(`${base.replace(/\/$/, "")}/api/v1/search`, token, { method: "POST", body: { tmdb_id: movieId } });
+      // Only remember the search once it succeeded; a failed attempt must not
+      // suppress the panel for the whole ten-minute TTL.
+      searchCache.set(movieId, Date.now());
       renderPanel(shadow, { title: result.movie.title, result });
     } catch (error) {
       renderPanel(shadow, { title: "资源面板", error: formatUserscriptError(error) });
