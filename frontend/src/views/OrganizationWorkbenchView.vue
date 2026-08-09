@@ -533,6 +533,6 @@ onMounted(() => {
         </form>
       </article>
     </div>
-    <ConfirmDialog :open="executionDialogOpen" :title="executionDialogTitle" :summary="executionDialogSummary" :details="executionDialogDetails" :confirm-label="executionDialogConfirmLabel" :busy="busy" @cancel="closeExecutionDialog" @confirm="confirmPendingExecution" />
+    <ConfirmDialog :open="executionDialogOpen" :title="executionDialogTitle" :summary="executionDialogSummary" :details="executionDialogDetails" :confirm-label="executionDialogConfirmLabel" :require-acknowledgment="false" :busy="busy" @cancel="closeExecutionDialog" @confirm="confirmPendingExecution" />
   </section>
 </template>

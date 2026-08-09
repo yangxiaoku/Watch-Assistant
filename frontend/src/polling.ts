@@ -33,7 +33,14 @@ export async function pollUntil<T>(
     if (!isCurrent()) return null;
     await new Promise((resolve) => window.setTimeout(resolve, intervalMs));
     if (!isCurrent()) return null;
-    current = await fetchValue();
+    try {
+      current = await fetchValue();
+    } catch {
+      // The caller's fetch callback already surfaced the error in its own
+      // catch block; stop polling without letting the rejection escape as an
+      // unhandled promise rejection (which Vitest treats as a fatal error).
+      return null;
+    }
     if (!isCurrent()) return null;
     options.onResponse?.(current);
     if (isDone(current)) return current;

@@ -737,14 +737,16 @@ def test_verify_release_rejects_tampered_package_helper_or_manifest(tmp_path: Pa
         assert "release artifact refused" in result.stderr
 
 
-def test_compose_and_docker_reject_unknown_release():
+def test_compose_and_docker_accept_local_or_git_sha_release():
     compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
 
-    assert "WATCH_ASSISTANT_RELEASE:?" in compose
-    assert "WATCH_ASSISTANT_RELEASE=unknown" not in compose
+    # Compose defaults to "local" so non-git downloads can still start.
+    assert "WATCH_ASSISTANT_RELEASE:-local" in compose
+    # The Dockerfile still refuses arbitrary strings: only "local" or git SHAs.
+    assert "^(local|[0-9a-fA-F]{7}|[0-9a-fA-F]{40})$" in dockerfile
     assert "ARG WATCH_ASSISTANT_RELEASE" in dockerfile
-    assert "^[0-9a-fA-F]{40}$" in dockerfile
+    assert "WATCH_ASSISTANT_RELEASE=unknown" not in compose
 
 
 def test_systemd_release_update_rejects_invalid_version_without_mutation(tmp_path: Path):

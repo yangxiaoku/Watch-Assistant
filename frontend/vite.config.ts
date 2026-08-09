@@ -2,6 +2,9 @@ import vue from "@vitejs/plugin-vue";
 import { defineConfig } from "vitest/config";
 import { fileURLToPath } from "node:url";
 
+// The panel lets users configure any self-hosted API base, so the userscript
+// must be allowed to reach any host. @connect * is a build-time directive for
+// the userscript manager; the server itself still requires a Bearer token.
 const userscriptMetadata = `// ==UserScript==
 // @name         Watch Assistant TMDB Panel
 // @namespace    local.watch-assistant
@@ -9,7 +12,7 @@ const userscriptMetadata = `// ==UserScript==
 // @grant        GM.xmlHttpRequest
 // @grant        GM.getValue
 // @grant        GM.setValue
-// @connect      192.168.6.236
+// @connect      *
 // ==/UserScript==`;
 
 export default defineConfig({

@@ -21,4 +21,11 @@ describe("TMDB userscript helpers", () => {
       "观影资源暂时不可用，请稍后重试。",
     );
   });
+
+  it("maps known transport failures to actionable guidance", () => {
+    expect(formatUserscriptError(new Error("network error"))).toContain("API 地址");
+    expect(formatUserscriptError(new Error("timeout"))).toContain("API 地址");
+    expect(formatUserscriptError(new Error("request failed"))).toContain("Token");
+    expect(formatUserscriptError(new Error("GM API unavailable"))).toContain("Tampermonkey");
+  });
 });

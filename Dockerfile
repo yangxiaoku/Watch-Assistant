@@ -6,10 +6,12 @@ COPY frontend/ ./
 RUN npm run build
 
 FROM python:3.12-slim AS runtime
+# Release provenance baked into the image. Accept a 7- or 40-character git SHA,
+# or the explicit "local" marker for builds outside a git checkout (health and
+# settings then report "unknown", never a fabricated SHA).
 ARG WATCH_ASSISTANT_RELEASE
-RUN test -n "$WATCH_ASSISTANT_RELEASE" \
-    && printf '%s\n' "$WATCH_ASSISTANT_RELEASE" \
-    | grep -Eq '^[0-9a-fA-F]{40}$'
+RUN printf '%s\n' "${WATCH_ASSISTANT_RELEASE:-local}" \
+    | grep -Eq '^(local|[0-9a-fA-F]{7}|[0-9a-fA-F]{40})$'
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     FRONTEND_DIST_DIR=/app/frontend/dist \

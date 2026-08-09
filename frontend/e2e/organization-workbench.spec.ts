@@ -94,7 +94,6 @@ test("reviews a local plan on desktop and mobile without exposing remote data", 
   await expect(page.getByText("pickcode", { exact: false })).toHaveCount(0);
 
   await page.getByRole("button", { name: "确认并开始整理" }).click();
-  await page.getByRole("dialog").getByRole("checkbox", { name: "我已核对上述摘要，确认继续此操作" }).check();
   await page.getByRole("dialog").getByRole("button", { name: /确认并/ }).click();
   await expect(page.getByText("整理已完成")).toBeVisible();
   expect(confirmationCalls).toBe(1);
@@ -120,7 +119,6 @@ test("unmatched review plan searches, selects, previews a move, then confirms on
   await expect(page.getByText("可执行移动").locator(".." )).toContainText("1");
   await expect(page.getByText("待复核动作").locator(".." )).toContainText("0");
   await page.getByRole("button", { name: "立即整理" }).click();
-  await page.getByRole("dialog").getByRole("checkbox", { name: "我已核对上述摘要，确认继续此操作" }).check();
   await page.getByRole("dialog").getByRole("button", { name: /确认并/ }).click();
   await expect(page.getByText("整理已完成")).toBeVisible();
   expect(confirmationCalls).toBe(1);
