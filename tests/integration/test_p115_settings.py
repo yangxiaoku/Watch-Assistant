@@ -159,7 +159,7 @@ async def test_directory_picker_starts_at_the_115_account_root(monkeypatch, tmp_
         async def list_directory(self, directory_id, *, page, page_size):
             assert directory_id == "0"
             assert page == 1
-            assert page_size == 1
+            assert page_size == p115_library_gateway.VERIFIED_BATCH_PAGE_SIZE
             return DirectoryPage(
                 items=(
                     LibraryEntry(

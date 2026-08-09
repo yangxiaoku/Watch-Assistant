@@ -29,6 +29,10 @@ from watch_assistant.adapters.p115_library_transport import (
 )
 
 VERIFIED_PAGE_SIZE = 1
+# 目录选择器批量读取的已验证页大小：2026-08-09 在真实 115 上对非虚拟根目录
+# 实证 fs_files limit=50 返回结构/分页与 limit=1 一致（见 probe 证据），
+# 作为与 VERIFIED_PAGE_SIZE 并列的另一条已验证路径。
+VERIFIED_BATCH_PAGE_SIZE = 50
 VIRTUAL_ROOT_PAGE_SIZE = 50
 VIRTUAL_ROOT_RESPONSE_LIMIT_DELTA = 2
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 30.0
@@ -115,14 +119,19 @@ class P115ReadOnlyDirectoryGateway:
             raise P115ReadOnlyGatewayError("scope_unverified")
         if page < 1 or isinstance(page, bool):
             raise P115ReadOnlyGatewayError("page_invalid")
-        if page_size != VERIFIED_PAGE_SIZE or isinstance(page_size, bool):
+        if (
+            page_size not in (VERIFIED_PAGE_SIZE, VERIFIED_BATCH_PAGE_SIZE)
+            or isinstance(page_size, bool)
+        ):
             raise P115ReadOnlyGatewayError("page_size_unverified")
 
         is_virtual_root = (
             self._allow_virtual_root and normalized_directory_id == "0"
         )
         request_page_size = VIRTUAL_ROOT_PAGE_SIZE if is_virtual_root else page_size
-        offset = (page - 1) * request_page_size if is_virtual_root else page - 1
+        # page_size=1 时 offset = page-1（每页 1 条，向后兼容）；批量页
+        # page_size=50 时 offset = (page-1)*50（每页 50 条）。
+        offset = (page - 1) * request_page_size
         deadline = self._deadline()
         response = await self._call(
             "fs_files",

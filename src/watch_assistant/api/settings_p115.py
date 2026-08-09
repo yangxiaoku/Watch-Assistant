@@ -205,6 +205,7 @@ async def list_p115_directories(
     if provider is None:
         raise HTTPException(status_code=503, detail="p115_directory_unavailable")
     from watch_assistant.adapters.p115_library_gateway import (
+        VERIFIED_BATCH_PAGE_SIZE,
         P115ReadOnlyDirectoryGateway,
         P115ReadOnlyGatewayError,
     )
@@ -216,20 +217,16 @@ async def list_p115_directories(
         allow_virtual_root=True,
     )
     try:
-        # The verified transport contract intentionally uses one record per request.
-        # Aggregate a bounded page for the browser without exposing files or secrets.
-        first_offset = (page - 1) * 50
+        # 批量页（VERIFIED_BATCH_PAGE_SIZE=50）已通过真实 115 契约验收：
+        # 一次请求取一页记录，目录选择器从 50 次逐条请求降到 1 次。
+        result = await gateway.list_directory(
+            parent_id, page=page, page_size=VERIFIED_BATCH_PAGE_SIZE
+        )
         directories = []
-        current_page = first_offset + 1
-        for _ in range(50):
-            result = await gateway.list_directory(parent_id, page=current_page, page_size=1)
-            for item in result.items:
-                if item.is_directory and item.directory_id is not None:
-                    directories.append(P115DirectoryResponse(id=item.directory_id, name=item.name))
-                    allowed_ids.add(item.directory_id)
-            if result.terminal:
-                break
-            current_page += 1
+        for item in result.items:
+            if item.is_directory and item.directory_id is not None:
+                directories.append(P115DirectoryResponse(id=item.directory_id, name=item.name))
+                allowed_ids.add(item.directory_id)
         return P115DirectoryListResponse(
             root_id=root_id,
             parent_id=parent_id,
