@@ -103,7 +103,7 @@ async def test_manual_import_without_name_uses_magnet_dn_as_display_name(tmp_pat
     respx.get("https://api.themoviedb.org/3/movie/12345").mock(
         return_value=httpx.Response(200, json=TMDB_RESPONSE)
     )
-    client, database, tmdb, pansou, crypto = await _make_client(tmp_path)
+    client, database, tmdb, pansou, _crypto = await _make_client(tmp_path)
     try:
         preview = await client.post(
             "/api/v1/imports/preview",
