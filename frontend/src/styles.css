@@ -329,6 +329,7 @@ input { outline: none; }
 .workflow-diagnostics summary, .organization-diagnostics summary { width: fit-content; color: #aab8cf; cursor: pointer; }
 .workflow-diagnostics small, .organization-diagnostics small { overflow-wrap: anywhere; font-family: ui-monospace, SFMono-Regular, Consolas, "JetBrains Mono", monospace; }
 .workflow-empty { display: grid; min-height: 280px; place-items: center; align-content: center; gap: 9px; margin-top: 22px; color: var(--text-3); text-align: center; border: 1px dashed var(--border-strong); border-radius: var(--radius); }
+.workflow-batch-notice { margin: 10px 0 0; color: var(--text-2); font-size: 13px; }
 .notification-center { max-width: 1180px; margin: 0 auto; }
 .offline-strip, .offline-data-strip { margin: 0; padding: 9px 18px; color: #3a2f12; background: linear-gradient(100deg, #f5c76a, #f5b04c); font-size: 12px; text-align: center; }
 .offline-data-strip { color: #12301c; background: linear-gradient(100deg, #d3f5a8, #b9ec8f); }

@@ -591,6 +591,56 @@ class WorkflowService:
         )
         return response
 
+    async def cancel_cancellable_batch(
+        self, *, limit: int = 50, actor_id: str
+    ) -> dict[str, object]:
+        """Cancel workflows that still have cancellable (pending) stages.
+
+        Only stages in pending / waiting states are stopped; running or
+        uncertain child operations are never fabricated as cancelled.
+        """
+        terminal = {
+            WorkflowStatus.COMPLETED,
+            WorkflowStatus.CANCELLED,
+            WorkflowStatus.FAILED,
+        }
+        async with self._session_factory() as session:
+            candidates = list(
+                (
+                    await session.scalars(
+                        select(Workflow)
+                        .where(Workflow.status.not_in(terminal))
+                        .order_by(Workflow.updated_at.asc())
+                        .limit(limit * 4)
+                    )
+                ).all()
+            )
+        cancelled = 0
+        failures: list[dict[str, str]] = []
+        for workflow in candidates:
+            if cancelled >= limit:
+                break
+            try:
+                await self.cancel(
+                    workflow.id,
+                    WorkflowCancelRequest(reason="workflow_batch_cancel"),
+                    actor_id=actor_id,
+                )
+                cancelled += 1
+            except WorkflowConflict:
+                failures.append(
+                    {"workflow_id": workflow.id, "code": "workflow_not_cancellable"}
+                )
+            except WorkflowNotFound:
+                failures.append(
+                    {"workflow_id": workflow.id, "code": "workflow_not_found"}
+                )
+        return {
+            "requested": len(candidates),
+            "cancelled": cancelled,
+            "failed": failures,
+        }
+
     async def recover_stale(self, *, now: datetime | None = None) -> int:
         """Stop orphaned stages after restart without inventing a remote result."""
 

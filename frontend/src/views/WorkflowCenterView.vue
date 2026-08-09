@@ -27,6 +27,10 @@ const page = ref(1);
 const pageSize = 20;
 const total = ref(0);
 const pendingAction = ref<"approve" | "reject" | "cancel" | null>(null);
+const batchBusy = ref(false);
+const batchNotice = ref("");
+const batchError = ref("");
+const pendingBatchCancel = ref(false);
 let workflowListRequestId = 0;
 let workflowDetailRequestId = 0;
 
@@ -214,6 +218,43 @@ async function confirmPendingAction(): Promise<void> {
   if (action === "cancel") await cancelSelectedWorkflow();
 }
 
+async function runBatchRetry(): Promise<void> {
+  if (batchBusy.value) return;
+  batchBusy.value = true;
+  batchError.value = "";
+  batchNotice.value = "";
+  try {
+    const result = await props.api.retryTasksBatch();
+    batchNotice.value = result.failed.length
+      ? `已重试 ${result.retried} 个失败任务，${result.failed.length} 个暂不可重试。`
+      : `已重试 ${result.retried} 个失败任务。`;
+    await loadWorkflows();
+  } catch (exception) {
+    batchError.value = exception instanceof ApiError ? exception.message : "批量重试暂时无法提交";
+  } finally {
+    batchBusy.value = false;
+  }
+}
+
+async function confirmBatchCancel(): Promise<void> {
+  if (batchBusy.value) return;
+  pendingBatchCancel.value = false;
+  batchBusy.value = true;
+  batchError.value = "";
+  batchNotice.value = "";
+  try {
+    const result = await props.api.cancelWorkflowsBatch();
+    batchNotice.value = result.failed.length
+      ? `已取消 ${result.cancelled} 个工作流，${result.failed.length} 个无待停止阶段。`
+      : `已取消 ${result.cancelled} 个工作流。`;
+    await loadWorkflows();
+  } catch (exception) {
+    batchError.value = exception instanceof ApiError ? exception.message : "批量取消暂时无法提交";
+  } finally {
+    batchBusy.value = false;
+  }
+}
+
 onMounted(() => { void loadWorkflows(); });
 </script>
 
@@ -222,6 +263,8 @@ onMounted(() => { void loadWorkflows(); });
     <header class="library-heading workflow-heading">
       <div><p class="eyebrow">任务状态与阶段</p><h1 id="workflow-title">任务中心</h1><p>统一查看搜索、检测、推送、整理和 STRM 的关联进度。</p></div>
       <button class="secondary-button workflow-push-link" type="button" @click="$emit('open-push-tasks')"><PanelRight :size="16" />查看推送任务</button>
+      <button class="secondary-button" type="button" :disabled="batchBusy" @click="runBatchRetry"><RefreshCw :size="15" :class="{ spin: batchBusy }" />重试失败任务</button>
+      <button class="secondary-button" type="button" :disabled="batchBusy" @click="pendingBatchCancel = true"><Ban :size="15" />清理卡住工作流</button>
       <div class="workflow-toolbar"><label for="workflow-status">状态</label><select id="workflow-status" v-model="statusFilter" @change="changeFilter"><option v-for="option in statusOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select><label for="workflow-stage">阶段</label><select id="workflow-stage" v-model="stageFilter" @change="changeFilter"><option v-for="option in stageOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select><label for="workflow-stage-status">阶段状态</label><select id="workflow-stage-status" v-model="stageStatusFilter" @change="changeFilter"><option v-for="option in stageStatusOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select><label for="workflow-subscription">订阅</label><input id="workflow-subscription" v-model="subscriptionFilter" type="search" placeholder="输入订阅筛选" @change="changeFilter" /><button class="icon-button" type="button" title="刷新任务中心" aria-label="刷新任务中心" :disabled="loading" @click="loadWorkflows(page)"><RefreshCw :size="17" :class="{ spin: loading }" /></button></div>
     </header>
     <div v-if="error" class="settings-state settings-state-error" role="alert"><AlertTriangle :size="18" /><span>{{ error }}</span><button class="text-button" type="button" @click="loadWorkflows">重试</button></div>
@@ -247,6 +290,9 @@ onMounted(() => { void loadWorkflows(); });
       </article>
     </div>
     <nav v-if="!loading && totalPages > 1" class="workflow-pagination" aria-label="任务中心分页"><span>第 {{ page }} / {{ totalPages }} 页，共 {{ total }} 个工作流</span><div><button class="icon-button" type="button" aria-label="上一页" :disabled="page <= 1" @click="goToPage(page - 1)">上一页</button><button class="icon-button" type="button" aria-label="下一页" :disabled="page >= totalPages" @click="goToPage(page + 1)">下一页</button></div></nav>
+    <p v-if="batchNotice" class="workflow-batch-notice" role="status">{{ batchNotice }}</p>
+    <p v-if="batchError" class="error-text" role="alert">{{ batchError }}</p>
     <ConfirmDialog :open="pendingAction !== null" :title="confirmationTitle" :summary="confirmationSummary" :details="confirmationDetails" :confirm-label="confirmationLabel" :tone="pendingAction === 'reject' || pendingAction === 'cancel' ? 'danger' : 'primary'" :require-acknowledgment="false" :busy="actionLoading" @cancel="closeConfirmation" @confirm="confirmPendingAction" />
+    <ConfirmDialog :open="pendingBatchCancel" title="批量取消工作流" summary="只会停止尚未开始或等待中的阶段；运行中或结果待确认的远端操作不会被伪造撤回。" confirm-label="确认批量取消" tone="danger" :require-acknowledgment="false" :busy="batchBusy" @cancel="pendingBatchCancel = false" @confirm="confirmBatchCancel" />
   </section>
 </template>

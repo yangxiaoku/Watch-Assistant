@@ -919,6 +919,41 @@ class TaskService:
                 )
             )
 
+    async def retry_failed_batch(
+        self,
+        *,
+        limit: int = 50,
+        allowed_actions: frozenset[TaskAction] | None = None,
+    ) -> dict[str, object]:
+        """Retry recently failed tasks without touching uncertain ones."""
+        async with self._session_factory() as session:
+            rows = list(
+                (
+                    await session.scalars(
+                        select(Task)
+                        .where(Task.state == TaskState.FAILED)
+                        .order_by(Task.created_at.desc())
+                        .limit(limit)
+                    )
+                ).all()
+            )
+        retried = 0
+        failures: list[dict[str, str]] = []
+        for task in rows:
+            try:
+                await self.retry(task.id, allowed_actions=allowed_actions)
+                retried += 1
+            except Exception as exc:  # noqa: BLE001 - one task must not stop the batch
+                code = str(exc)
+                if code not in {"uncertain_requires_verification"}:
+                    code = "task_not_retryable"
+                failures.append({"task_id": task.id, "code": code})
+        return {
+            "requested": len(rows),
+            "retried": retried,
+            "failed": failures,
+        }
+
     async def list_recent(self, limit: int = 50, offset: int = 0) -> list[Task]:
         # MCP asks for one look-ahead row to produce a stable next cursor.
         limit = max(1, min(limit, 101))

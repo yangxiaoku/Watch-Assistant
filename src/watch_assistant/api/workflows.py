@@ -7,6 +7,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from watch_assistant.schemas import (
     MediaType,
     WorkflowApprovalRequest,
+    WorkflowBatchCancelRequest,
+    WorkflowBatchCancelResponse,
     WorkflowCancelRequest,
     WorkflowCreateRequest,
     WorkflowDiscoveryRequest,
@@ -166,6 +168,18 @@ async def decide_workflow_approval(
         if code not in {"workflow_not_awaiting_confirmation", "workflow_not_cancellable"}:
             code = "workflow_conflict"
         raise HTTPException(status_code=409, detail=code) from None
+
+
+@router.post("/workflows/cancel-batch", response_model=WorkflowBatchCancelResponse)
+async def cancel_workflows_batch(
+    payload: WorkflowBatchCancelRequest,
+    service: WorkflowServiceDependency,
+    auth: Annotated[AuthContext, Depends(require_api_auth)],
+) -> WorkflowBatchCancelResponse:
+    result = await service.cancel_cancellable_batch(
+        limit=payload.limit, actor_id=auth.identity
+    )
+    return WorkflowBatchCancelResponse(**result)
 
 
 @router.post("/workflows/{workflow_id}/cancel", response_model=WorkflowResponse)

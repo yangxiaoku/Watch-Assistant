@@ -516,6 +516,13 @@ export class ApiClient {
     });
   }
 
+  async retryTasksBatch(limit = 50): Promise<{ requested: number; retried: number; failed: { task_id: string; code: string }[] }> {
+    return this.request("/api/v1/tasks/retry-batch", {
+      method: "POST",
+      body: JSON.stringify({ limit }),
+    });
+  }
+
   async cancelTask(taskId: string): Promise<TaskResponse> {
     return this.request<TaskResponse>(`/api/v1/tasks/${encodeURIComponent(taskId)}/cancel`, {
       method: "POST",
@@ -588,6 +595,13 @@ export class ApiClient {
     return this.request<WorkflowResponse>(`/api/v1/workflows/${encodeURIComponent(workflowId)}/approval`, {
       method: "POST",
       body: JSON.stringify({ decision, ...(reason ? { reason } : {}) }),
+    });
+  }
+
+  async cancelWorkflowsBatch(limit = 50): Promise<{ requested: number; cancelled: number; failed: { workflow_id: string; code: string }[] }> {
+    return this.request("/api/v1/workflows/cancel-batch", {
+      method: "POST",
+      body: JSON.stringify({ limit }),
     });
   }
 
