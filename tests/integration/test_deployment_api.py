@@ -74,3 +74,49 @@ async def test_deployment_diagnostics_is_authenticated_and_conservative(tmp_path
 
 async def _noop():
     return None
+
+
+@pytest.mark.integration
+async def test_frontend_spa_fallback_serves_index_for_all_browse_routes(tmp_path: Path):
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'spa.db'}")
+    await initialize_database(database.engine)
+    password_hash = PasswordHash.recommended()
+    frontend_dir = tmp_path / "dist"
+    frontend_dir.mkdir()
+    index_path = frontend_dir / "index.html"
+    index_path.write_text("<!doctype html><title>watch-assistant</title>", encoding="utf-8")
+    app = create_app(
+        database=database,
+        crypto=SecretCrypto(Fernet.generate_key().decode("ascii")),
+        tmdb_client=type("Tmdb", (), {"aclose": lambda self: _noop()})(),
+        pansou_client=type("PanSou", (), {"aclose": lambda self: _noop()})(),
+        security_manager=SecurityManager(
+            web_password_hash=password_hash.hash("diagnostics-password"),
+            script_token_hash=password_hash.hash("diagnostics-token"),
+            diagnostics_token="deployment-diagnostics-token",
+            cookie_secure=False,
+        ),
+        frontend_dir=frontend_dir,
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://app.test"
+    ) as client:
+        for route in [
+            "/",
+            "/movies",
+            "/tv",
+            "/popular",
+            "/favorites",
+            "/history",
+            "/search",
+            "/settings",
+            "/organization",
+            "/organization-plans",
+            "/library",
+            "/workflows",
+            "/notifications",
+            "/logs",
+        ]:
+            response = await client.get(route)
+            assert response.status_code == 200, f"{route} returned {response.status_code}"
+            assert "watch-assistant" in response.text

@@ -1963,10 +1963,12 @@ def create_app(
         @application.get("/history", include_in_schema=False)
         @application.get("/search", include_in_schema=False)
         @application.get("/settings", include_in_schema=False)
+        @application.get("/organization", include_in_schema=False)
         @application.get("/organization-plans", include_in_schema=False)
         @application.get("/library", include_in_schema=False)
         @application.get("/workflows", include_in_schema=False)
         @application.get("/notifications", include_in_schema=False)
+        @application.get("/logs", include_in_schema=False)
         async def frontend_browse_route() -> FileResponse:
             return FileResponse(index_path)
 
