@@ -759,10 +759,52 @@ async function saveOrganization() {
     syncSharedRevision(response.revision);
   } catch (exception) {
     focusFirstFieldError(exception);
-    organizationSaveError.value = exception instanceof ApiError ? exception.message : "整理设置保存失败，请稍后重试";
+    if (isConflict(exception)) {
+      // 版本冲突：自动加载最新设置并把用户的草稿改回，避免用户改动丢失。
+      await reloadOrganizationKeepingDrafts();
+      organizationSaveError.value = "设置已在其他位置更新，已加载最新版本；你的改动已保留，请检查后再次保存。";
+    } else {
+      organizationSaveError.value = exception instanceof ApiError ? exception.message : "整理设置保存失败，请稍后重试";
+    }
   } finally {
     organizationSaving.value = false;
   }
+}
+
+function organizationDraftSnapshot() {
+  return {
+    draft: { ...organizationDraft.value },
+    source: organizationSourceDraft.value,
+    sourceLabels: [...organizationSourceLabelsDraft.value],
+    target: organizationTargetDraft.value,
+    targetLabel: organizationTargetLabelDraft.value,
+    push: organizationPushDraft.value,
+    pushLabel: organizationPushLabelDraft.value,
+    video: organizationVideoExtensionsDraft.value,
+    metadata: organizationMetadataExtensionsDraft.value,
+  };
+}
+
+function restoreOrganizationDraft(snapshot: ReturnType<typeof organizationDraftSnapshot>) {
+  organizationDraft.value = { ...snapshot.draft };
+  organizationSourceDraft.value = snapshot.source;
+  organizationSourceLabelsDraft.value = snapshot.sourceLabels;
+  organizationTargetDraft.value = snapshot.target;
+  organizationTargetLabelDraft.value = snapshot.targetLabel;
+  organizationPushDraft.value = snapshot.push;
+  organizationPushLabelDraft.value = snapshot.pushLabel;
+  organizationVideoExtensionsDraft.value = snapshot.video;
+  organizationMetadataExtensionsDraft.value = snapshot.metadata;
+}
+
+async function reloadOrganizationKeepingDrafts() {
+  const snapshot = organizationDraftSnapshot();
+  try {
+    await loadOrganization();
+  } catch {
+    // 即使刷新失败也保留用户的草稿，避免改动丢失。
+  }
+  restoreOrganizationDraft(snapshot);
 }
 
 function applyLogging(value: LoggingSettingsResponse) {

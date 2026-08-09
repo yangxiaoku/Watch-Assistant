@@ -270,6 +270,29 @@ describe("SettingsView", () => {
     }));
   });
 
+  it("preserves the organization draft and reloads latest settings on a version conflict", async () => {
+    const latest = { ...organization, revision: 9 };
+    const api = makeApi({
+      updateOrganizationSettings: vi.fn().mockRejectedValue(new ApiError("设置已在其他位置更新", 409, "settings_conflict")),
+      organizationSettings: vi.fn()
+        .mockResolvedValueOnce(organization)
+        .mockResolvedValueOnce(latest),
+    });
+    const wrapper = mount(SettingsView, { props: { api } });
+    await flushPromises();
+    await wrapper.findAll("button").find((button) => button.text().includes("115 整理"))?.trigger("click");
+    await flushPromises();
+
+    const scheduleToggle = wrapper.get(".settings-subsection input[type=checkbox]");
+    await scheduleToggle.setValue(false);
+    await wrapper.get(".settings-save-bar .primary-button").trigger("click");
+    await flushPromises();
+
+    expect(api.organizationSettings).toHaveBeenCalledTimes(2);
+    expect(wrapper.get(".settings-save-error").text()).toContain("已加载最新版本");
+    expect((scheduleToggle.element as HTMLInputElement).checked).toBe(false);
+  });
+
   it("selects and persists a separate push directory from the managed scope", async () => {
     const api = makeApi();
     const wrapper = mount(SettingsView, { props: { api } });
