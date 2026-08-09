@@ -26,25 +26,14 @@ test("connects Chinese workbench entries without horizontal overflow", async ({ 
     },
   }));
   await page.route("**/api/v1/auth/me", (route) => route.fulfill({ json: { authenticated: true, via_bearer: false, csrf_token: null } }));
+  await page.route("**/api/v1/movies/home", (route) => route.fulfill({ json: { popular: [], now_playing: [], upcoming: [], top_rated: [], tv_popular: [], tv_on_the_air: [], tv_top_rated: [] } }));
   await page.route("**/api/v1/media/search?**", (route) => route.fulfill({
     json: { results: [movie], page: 1, total_pages: 1, total_results: 1 },
   }));
-  await page.route("**/api/v1/workflows?**", (route) => route.fulfill({ json: { items: [], page: 1, page_size: 20, total: 0 } }));
-  await page.route("**/api/v1/organization-plans?**", (route) => route.fulfill({ json: { items: [], next_cursor: null } }));
-  await page.route("**/api/v1/libraries?**", (route) => route.fulfill({ json: { items: [], next_cursor: null } }));
 
-  await page.goto("/workbench");
-  await expect(page.getByRole("heading", { name: "观影工作台" })).toBeVisible();
-  await expect(page.locator(".search-view")).toHaveCount(0);
-  for (const label of ["搜索影视资源", "任务中心", "整理计划", "媒体库与 STRM", "设置"]) {
-    await expect(page.getByRole("heading", { name: label, exact: true })).toBeVisible();
-  }
-  await expect(page.getByRole("button", { name: "打开任务中心", exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "打开整理计划", exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "打开媒体库", exact: true })).toBeVisible();
-
+  await page.goto("/");
   const primaryNav = page.getByRole("navigation", { name: "主导航" });
-  for (const label of ["工作台", "首页", "电影", "剧集", "热门", "收藏", "记录", "整理", "整理历史", "媒体库"]) {
+  for (const label of ["首页", "电影", "剧集", "热门", "收藏", "记录", "整理", "媒体库"]) {
     await expect(primaryNav.getByRole("button", { name: label, exact: true })).toBeVisible();
   }
   const navLayout = await page.evaluate(() => {
@@ -71,10 +60,10 @@ test("connects Chinese workbench entries without horizontal overflow", async ({ 
     expect(navRows.size).toBe(1);
   }
 
-  await page.getByLabel("快速搜索").fill("沙丘");
-  await page.getByRole("button", { name: "搜索", exact: true }).click();
+  await page.getByLabel("搜索电影或电视剧").fill("沙丘");
+  await page.getByLabel("搜索电影或电视剧").press("Enter");
   await expect(page.getByRole("heading", { name: "“沙丘”的搜索结果" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "工作台", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "首页", exact: true })).toBeVisible();
 
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
   if (testInfo.project.name === "desktop" || testInfo.project.name === "mobile") {

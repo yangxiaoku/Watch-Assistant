@@ -87,8 +87,8 @@ test.beforeEach(async ({ page }) => {
 });
 
 test("reviews a local plan on desktop and mobile without exposing remote data", async ({ page }) => {
-  await page.goto("/organization-plans");
-  await expect(page.getByRole("heading", { name: "整理计划工作台" })).toBeVisible();
+  await page.goto("/organization");
+  await page.getByRole("button", { name: "待处理" }).click();
   await expect(page.getByText("计划 plan-loc", { exact: false }).first()).toBeVisible();
   await expect(page.getByText("remote-private", { exact: false })).toHaveCount(0);
   await expect(page.getByText("pickcode", { exact: false })).toHaveCount(0);
@@ -105,7 +105,8 @@ test("reviews a local plan on desktop and mobile without exposing remote data", 
 
 test("unmatched review plan searches, selects, previews a move, then confirms once", async ({ page }) => {
   activePlan = reviewOnly;
-  await page.goto("/organization-plans");
+  await page.goto("/organization");
+  await page.getByRole("button", { name: "待处理" }).click();
 
   await expect(page.getByText("可执行移动").locator(".." )).toContainText("0");
   await expect(page.getByText("计划中仍有不能自动执行的动作。")).toBeVisible();
