@@ -293,6 +293,14 @@ _CATALOG: dict[str, ApiErrorDescriptor] = {
     "agent_token_conflict": ApiErrorDescriptor("agent_token_conflict", "Agent Token 状态已变化", "本次操作未完成。", "请刷新 Agent 管理列表后重试。", False),
     "invalid_agent_token_request": ApiErrorDescriptor("invalid_agent_token_request", "Agent Token 请求有误", "本次操作未执行。", "请检查名称、权限和有效期后重试。", False),
     "not_found": ApiErrorDescriptor("not_found", "内容不存在", "本次请求未完成，目标内容可能已被移除。", "请刷新页面后再试。", False, "retry"),
+    "invalid_credentials": ApiErrorDescriptor(
+        "invalid_credentials",
+        "登录信息不正确",
+        "本次登录未成功。",
+        "请检查用户名和密码后重新登录。",
+        True,
+        "retry",
+    ),
     "internal_error": ApiErrorDescriptor("internal_error", "服务暂时无法完成操作", "本次操作未完成，当前页面没有更新。", "请稍后重试；如果问题持续，请提供请求 ID。", True, "retry"),
 }
 
@@ -322,7 +330,6 @@ _HTTP_STATUSES: dict[str, int] = {
     "invalid_directory_limit": 422,
     "invalid_idempotency_key": 422,
     "invalid_library_id": 422,
-    "invalid_credentials": ApiErrorDescriptor("invalid_credentials", "登录信息不正确", "本次登录未成功。", "请检查用户名和密码后重新登录。", True, "retry"),
     "invalid_lease_duration": 500,
     "invalid_operation_id": 422,
     "invalid_pagination": 422,

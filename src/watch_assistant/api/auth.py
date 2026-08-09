@@ -29,9 +29,11 @@ SecurityManagerDependency = Annotated[SecurityManager, Depends(get_security_mana
 @router.post("/login", response_model=AuthLoginResponse)
 async def login(
     payload: AuthLoginRequest,
+    request: Request,
     response: Response,
     manager: SecurityManagerDependency,
 ) -> AuthLoginResponse:
+    manager.check_login_rate_limit(request)
     session_id, csrf_token = await manager.login_async(
         payload.password, username=payload.username
     )
