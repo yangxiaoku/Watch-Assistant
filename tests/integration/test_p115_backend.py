@@ -394,7 +394,8 @@ async def test_readiness_failure_disables_magnet_and_worker(tmp_path):
             "magnet": False,
             "share": False,
         }
-        assert response.status_code == 503
+        # PushKindUnsupported 是能力冲突而非服务不可用:409 而非 503。
+        assert response.status_code == 409
         assert response.json()["detail"] == "push_kind_unsupported"
         assert getattr(app.state, "task_worker", None) is None
 

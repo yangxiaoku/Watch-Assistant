@@ -121,7 +121,8 @@ async def test_retry_is_blocked_when_push_is_unsupported(tmp_path):
 
     response = await client.post(f"/api/v1/tasks/{task_id}/retry")
 
-    assert response.status_code == 503
+    # PushKindUnsupported 是能力冲突而非服务不可用:409 而非 503。
+    assert response.status_code == 409
     assert response.json()["detail"] == "push_kind_unsupported"
     async with database.session_factory() as session:
         task = await session.get(Task, task_id)

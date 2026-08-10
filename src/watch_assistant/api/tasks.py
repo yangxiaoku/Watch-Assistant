@@ -73,7 +73,9 @@ async def create_task(
     except ResourceNotFound as exc:
         raise HTTPException(status_code=404, detail="resource_not_found") from exc
     except PushKindUnsupported as exc:
-        raise HTTPException(status_code=503, detail="push_kind_unsupported") from exc
+        # 资源类型与当前推送能力冲突:409 而非 503,避免客户端误判为
+        # 服务暂时不可用而反复重试。
+        raise HTTPException(status_code=409, detail="push_kind_unsupported") from exc
     except WorkflowNotFound as exc:
         raise HTTPException(status_code=404, detail="workflow_not_found") from exc
     except WorkflowConflict as exc:
@@ -131,7 +133,8 @@ async def retry_task(
             code = "task_not_retryable"
         raise HTTPException(status_code=409, detail=code) from exc
     except PushKindUnsupported as exc:
-        raise HTTPException(status_code=503, detail="push_kind_unsupported") from exc
+        # 资源类型与当前推送能力冲突,见 create_task 的同类映射。
+        raise HTTPException(status_code=409, detail="push_kind_unsupported") from exc
 
 
 @router.post(
@@ -198,4 +201,5 @@ async def cancel_task(
     except InvalidCancelState as exc:
         raise HTTPException(status_code=409, detail="task_not_cancellable") from exc
     except PushKindUnsupported as exc:
-        raise HTTPException(status_code=503, detail="push_kind_unsupported") from exc
+        # 资源类型与当前推送能力冲突,见 create_task 的同类映射。
+        raise HTTPException(status_code=409, detail="push_kind_unsupported") from exc
