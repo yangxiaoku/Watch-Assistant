@@ -8,12 +8,19 @@ import { organizationResultItemStatusLabel, organizationResultStatusLabel } from
 import { diagnosticCode } from "../uiSafety";
 import type { OrganizationAutomationResultResponse } from "../types";
 
-const props = defineProps<{ api: ApiClient; reloadToken?: number }>();
+const props = withDefaults(
+  defineProps<{ api: ApiClient; reloadToken?: number; targetRunId?: string | null }>(),
+  { reloadToken: 0, targetRunId: null },
+);
 
 const organizationResult = ref<OrganizationAutomationResultResponse | null>(null);
 const organizationResultLoading = ref(false);
 const organizationResultError = ref("");
+const organizationResultPolling = ref(false);
+const organizationResultPollTimeout = ref(false);
 const organizationResultHeadline = computed(() => {
+  // 目标运行尚未出现终态时,上一次的结果是旧数据,优先展示"进行中"而不是误导性的旧结论
+  if (organizationResultPolling.value) return "整理进行中";
   const result = organizationResult.value;
   if (!result || result.status === "unknown") return "尚未整理";
   const statuses = (result.items ?? []).map((item) => item.status);
@@ -34,6 +41,7 @@ const organizationResultStateClass = computed(() => {
 });
 const organizationResultSummary = computed(() => {
   const result = organizationResult.value;
+  if (organizationResultPolling.value) return "本次整理仍在执行中，完成时间取决于来源数量和网络状况。";
   if (!result || result.status === "unknown") return "点击“开始整理”后，这里会显示扫描、识别和入库结果。";
   const items = result.items ?? [];
   const reviewCount = items.filter((item) => item.status === "needs_review" || item.status === "uncertain").length;
@@ -67,14 +75,13 @@ let mounted = false;
 async function loadOrganizationResult() {
   organizationResultLoading.value = true;
   organizationResultError.value = "";
+  organizationResultPollTimeout.value = false;
   try {
     const response = await props.api.organizationResult();
     // 请求在途时组件已卸载(如切走 tab):丢弃响应,避免对已卸载面板启动轮询
     if (!mounted) return;
     organizationResult.value = response;
-    const runId = response.run_id ?? null;
-    const finished = response.finished_at ?? null;
-    if (runId && !finished) pollOrganizationResult(runId);
+    startPollingIfNeeded();
   } catch (exception) {
     if (mounted) organizationResultError.value = exception instanceof ApiError ? exception.message : "整理结果加载失败，请稍后重试";
   } finally {
@@ -83,37 +90,73 @@ async function loadOrganizationResult() {
 }
 
 let pollActive = false;
-let pollTask: ReturnType<typeof pollUntil> | undefined;
+let pollTask: Promise<void> | undefined;
 function stopPolling(): void {
   pollActive = false;
   pollTask = undefined;
+  organizationResultPolling.value = false;
 }
 
-function pollOrganizationResult(runId: string | null): void {
-  if (pollTask !== undefined || !runId) return;
+/**
+ * 后端 last_result 只在运行结束(finished_at=now)时写入,运行中返回的是上一次结果或 unknown,
+ * 因此不能靠响应里的 run_id 判断"正在运行",必须以 run-now 返回的 run_id 为轮询目标:
+ * 直到结果中出现同一 run_id 且 finished_at 非空,才算本次运行进入终态。
+ */
+function startPollingIfNeeded(): void {
+  const targetRunId = props.targetRunId;
+  const result = organizationResult.value;
+  if (!targetRunId) return;
+  if (result && result.run_id === targetRunId && result.finished_at !== null) return;
+  startPolling();
+}
+
+function startPolling(): void {
+  if (pollTask !== undefined || !mounted) return;
+  const targetRunId = props.targetRunId;
+  if (!targetRunId) return;
   pollActive = true;
+  organizationResultPolling.value = true;
+  organizationResultPollTimeout.value = false;
   pollTask = pollUntil(
     async () => {
       try {
         return await props.api.organizationResult();
       } catch (exception) {
-        organizationResultError.value = exception instanceof ApiError ? exception.message : "整理结果暂时无法更新，请稍后重试";
+        if (mounted && pollActive) {
+          organizationResultError.value = exception instanceof ApiError ? exception.message : "整理结果暂时无法更新，请稍后重试";
+        }
         throw exception;
       }
     },
     {
       intervalMs: 2000,
-      maxAttempts: 60,
-      isCurrent: () => pollActive,
+      maxAttempts: 90,
+      isCurrent: () => pollActive && mounted,
       onResponse: (response) => {
         organizationResult.value = response;
       },
-      isDone: (response) => response.finished_at !== null || response.run_id === null,
+      isDone: (response) => response.run_id === targetRunId && response.finished_at !== null,
     },
-  );
+  ).then((terminal) => {
+    // pollUntil 返回 null 表示超时(或请求失败,失败已在上面 catch 提示过);
+    // 只有"仍在轮询但超时"时才提示手动刷新,避免与报错提示互相覆盖。
+    const wasActive = pollActive;
+    pollTask = undefined;
+    pollActive = false;
+    organizationResultPolling.value = false;
+    if (terminal === null && wasActive && mounted && !organizationResultError.value) {
+      organizationResultPollTimeout.value = true;
+    }
+  });
 }
 
 watch(() => props.reloadToken, () => {
+  stopPolling();
+  void loadOrganizationResult();
+});
+
+watch(() => props.targetRunId, () => {
+  // 新的 run-now 返回了新的 run_id:停止旧轮询,重新加载并针对新 run_id 轮询
   stopPolling();
   void loadOrganizationResult();
 });
@@ -133,9 +176,10 @@ onBeforeUnmount(() => {
   <div class="organization-result-panel" aria-live="polite">
     <div class="organization-result-heading">
       <div><strong>最近一次整理结果</strong><p class="organization-result-summary">{{ organizationResultSummary }}</p></div>
-      <div class="organization-result-meta"><span v-if="organizationResultLoading">正在更新</span><span v-else>{{ organizationResult?.finished_at ? formatTimestamp(organizationResult.finished_at) : '尚未执行' }}</span></div>
+      <div class="organization-result-meta"><span v-if="organizationResultLoading">正在更新</span><span v-else-if="organizationResultPolling">整理执行中</span><span v-else>{{ organizationResult?.finished_at ? formatTimestamp(organizationResult.finished_at) : '尚未执行' }}</span></div>
     </div>
     <div v-if="organizationResultError" class="settings-state settings-state-error" role="alert"><AlertTriangle :size="18" /><span>{{ organizationResultError }}</span><button class="text-button" type="button" @click="loadOrganizationResult">重试</button></div>
+    <p v-if="organizationResultPollTimeout" class="organization-result-timeout" role="status">等待整理完成超时，后台可能仍在执行，请手动刷新查看。<button class="text-button" type="button" @click="loadOrganizationResult">刷新</button></p>
     <div :class="['organization-result-state', organizationResultStateClass]">{{ organizationResultHeadline }}</div>
     <div v-if="organizationResultStatusBreakdown.length" class="organization-result-statuses" aria-label="影片处理状态">
       <span v-for="entry in organizationResultStatusBreakdown" :key="entry.status" :class="['organization-result-status', `is-${entry.status}`]">{{ entry.label }} <strong>{{ entry.count }}</strong></span>
