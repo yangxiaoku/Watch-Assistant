@@ -108,6 +108,7 @@ def test_multiple_generic_special_tokens_choose_only_a_clear_post_episode_candid
         ("Show.1x02.mkv", 1, 2, None),
         ("Show.Season 1 Episode 2.mkv", 1, 2, None),
         ("Show.第01季第02-04集.mkv", 1, 2, 4),
+        ("Show.第1季.第2集.mkv", 1, 2, None),
     ),
 )
 def test_season_and_episode_forms(name, season, episode_start, episode_end):
@@ -116,6 +117,37 @@ def test_season_and_episode_forms(name, season, episode_start, episode_end):
     assert parsed.season == season
     assert parsed.episode_start == episode_start
     assert parsed.episode_end == episode_end
+    assert parsed.media_type_hint == "tv"
+
+
+@pytest.mark.parametrize(
+    ("name", "title", "episode_start", "episode_end"),
+    (
+        ("Show.第2集.mkv", "Show", 2, None),
+        ("Show.第02集.mkv", "Show", 2, None),
+        ("Show.第2-4集.mkv", "Show", 2, 4),
+        ("Show.第2至5集.mkv", "Show", 2, 5),
+        ("狂飙.第01集.1080p.mkv", "狂飙", 1, None),
+    ),
+)
+def test_unseasoned_chinese_episode_numbers(
+    name, title, episode_start, episode_end
+):
+    parsed = parse_media_filename(name)
+
+    assert parsed.title == title
+    assert parsed.episode_start == episode_start
+    assert parsed.episode_end == episode_end
+    assert parsed.media_type_hint == "tv"
+
+
+def test_chinese_multi_season_markers_do_not_claim_a_fake_episode():
+    # "第1季第2季" 是两个季节标记,不是 第1季第2集
+    parsed = parse_media_filename("权力的游戏.第1季.第2季.mkv")
+
+    assert parsed.season == 1
+    assert parsed.episode_start is None
+    assert parsed.episode_end is None
     assert parsed.media_type_hint == "tv"
 
 
@@ -145,6 +177,90 @@ def test_year_after_episode_marker_is_not_eaten_as_episode_end(
     assert parsed.episode_end == episode_end
     assert parsed.year == year
     assert parsed.media_type_hint == "tv"
+
+
+@pytest.mark.parametrize(
+    ("name", "season", "episode_start", "episode_end", "year"),
+    (
+        # 年份夹在第一个与第二个季集标记之间:应恢复完整范围,
+        # 而不是解析成单集并丢失后面的标记
+        ("Show.S01E01.2020.E02.mkv", 1, 1, 2, 2020),
+        ("Show.S01E05.2021.EP06.mkv", 1, 5, 6, 2021),
+        ("Show.S01E01.2019.S01E05.mkv", 1, 1, 5, 2019),
+        ("Show.S01E01.2020.1080p.E02.mkv", 1, 1, 2, 2020),
+        ("Show.E05.2021.EP06.mkv", None, 5, 6, 2021),
+        # 年份之后没有第二个标记时保持原行为:年份不被 end 吞掉
+        ("Show.S01E01.2019.mkv", 1, 1, None, 2019),
+    ),
+)
+def test_year_between_episode_markers_recovers_full_range(
+    name, season, episode_start, episode_end, year
+):
+    parsed = parse_media_filename(name)
+
+    assert parsed.title == "Show"
+    assert parsed.season == season
+    assert parsed.episode_start == episode_start
+    assert parsed.episode_end == episode_end
+    assert parsed.year == year
+    assert parsed.media_type_hint == "tv"
+
+
+@pytest.mark.parametrize(
+    ("name", "season", "title"),
+    (
+        ("Show.S01E00.mkv", 1, "Show"),
+        ("Show.S01E00.2020.1080p.mkv", 1, "Show"),
+        ("Show.S00E00.mkv", 0, "Show"),
+        ("Show.E00.mkv", None, "Show"),
+    ),
+)
+def test_zero_episode_is_a_special_placeholder_not_an_episode_claim(
+    name, season, title
+):
+    parsed = parse_media_filename(name)
+
+    assert parsed.title == title
+    assert parsed.season == season
+    assert parsed.episode_start is None
+    assert parsed.episode_end is None
+    assert parsed.special_hints == ("special",)
+    assert parsed.media_type_hint == "tv"
+    assert "special" in parsed.evidence
+    assert "episode" not in parsed.evidence
+
+
+def test_season_zero_episodes_remain_real_episode_claims():
+    # S00E01 是 TMDB 特辑季 (season 0) 的真实集号,保持集数主张
+    parsed = parse_media_filename("Show.S00E01.mkv")
+
+    assert parsed.season == 0
+    assert parsed.episode_start == 1
+    assert parsed.episode_end is None
+    assert parsed.special_hints == ()
+
+
+@pytest.mark.parametrize(
+    ("name", "title", "special_hints", "media_type"),
+    (
+        ("Show.SP01.mkv", "Show", ("SP",), "tv"),
+        ("Show.SP1.1080p.mkv", "Show", ("SP",), "tv"),
+        ("Show.SP.01.mkv", "Show", ("SP",), "tv"),
+        ("One.Piece.SP1.1080p.mkv", "One Piece", ("SP",), "tv"),
+        # 3 位编号不是特辑编号:SP500 可能属于 S&P500 之类标题
+        ("Show.SP500.mkv", "Show SP500", (), "unknown"),
+        ("S&P500.2020.1080p.mkv", "S&P500", (), "movie"),
+        ("Anime - SP OVA 1080p WEB-DL.mkv", "Anime", ("SP", "OVA"), "tv"),
+    ),
+)
+def test_numbered_sp_specials_are_detected_without_swallowing_titles(
+    name, title, special_hints, media_type
+):
+    parsed = parse_media_filename(name)
+
+    assert parsed.title == title
+    assert parsed.special_hints == special_hints
+    assert parsed.media_type_hint == media_type
 
 
 def test_special_episode_hints_are_not_final_media_classification():
@@ -267,6 +383,31 @@ def test_audio_codec_followed_by_channel_count_keeps_title_clean():
     assert parsed.media_type_hint == "movie"
 
 
+@pytest.mark.parametrize(
+    "name",
+    (
+        # 尾缀 "-DL" 属于 WEB-DL 源标记内部,不是发布组
+        "Show.S01E01.2020.1080p.WEB-DL.mkv",
+        "Show.S01E01-S01E05.2019.1080p.WEB-DL.mkv",
+        "더 글로리.S01E01.1080p.NF.WEB-DL.mkv",
+        "Show.S01E01.2020.E02.1080p.WEB-DL.mkv",
+        # 编码标记自身的连字符 (H-265) 也不应被当作发布组
+        "Show.S01E01.H-265.mkv",
+    ),
+)
+def test_hyphen_inside_technical_token_is_not_a_release_group(name):
+    parsed = parse_media_filename(name)
+
+    assert parsed.release_group is None
+
+
+def test_release_group_after_webdl_hyphen_is_still_detected():
+    # 常见的 "WEB-DL-NTb" 命名中,连字符位于标记之后,仍是合法发布组
+    parsed = parse_media_filename("Show.S01E01.1080p.WEB-DL-NTb.mkv")
+
+    assert parsed.release_group == "NTb"
+
+
 def test_channel_count_and_hyphen_group_are_stripped_from_title():
     parsed = parse_media_filename(
         "Dune.2021.2160p.BluRay.REMUX.HEVC.DTS-HD.MA.TrueHD.7.1.Atmos-FGT.mkv"
@@ -313,6 +454,17 @@ def test_dolby_audio_with_channel_count_stays_out_of_title(name, title):
     assert parsed.dolby_audio is True
     assert "DD" not in parsed.title
     assert "5.1" not in parsed.title
+
+
+def test_chinese_season_only_marker_never_leaves_the_leading_character():
+    # "第1季" 的整体掩码必须包含 "第",否则标题会残留 "狂飙 第"
+    parsed = parse_media_filename("狂飙.第1季.2023.1080p.mkv")
+
+    assert parsed.title == "狂飙"
+    assert parsed.season == 1
+    assert parsed.episode_start is None
+    assert parsed.year == 2023
+    assert parsed.media_type_hint == "tv"
 
 
 def test_plain_series_title_without_technical_tokens_is_unchanged():
