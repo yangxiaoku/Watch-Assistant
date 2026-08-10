@@ -16,7 +16,7 @@ from watch_assistant.schemas import (
     EpisodeCompletenessResponse,
     SeasonDetailResponse,
 )
-from watch_assistant.security import require_api_auth
+from watch_assistant.security import AuthContext, require_api_auth, require_scope
 from watch_assistant.services.episode_completeness import (
     EpisodeBaseline,
     EpisodeFileReference,
@@ -34,6 +34,10 @@ from watch_assistant.services.season_metadata import (
 )
 
 router = APIRouter(prefix="/api/v1", dependencies=[Depends(require_api_auth)])
+LibraryReadDependency = Annotated[AuthContext, Depends(require_scope("library:read"))]
+
+def _allowed(context: AuthContext, library_id: str) -> bool:
+    return not context.via_bearer or not context.library_ids or library_id in context.library_ids
 
 
 def get_season_service(request: Request) -> SeasonMetadataService:
@@ -86,11 +90,14 @@ async def get_episode_completeness(
     tmdb_id: int,
     season_number: int,
     request: Request,
+    context: LibraryReadDependency,
     service: SeasonServiceDependency,
     language: str = Query(default="zh-CN", min_length=2, max_length=32),
     fallback_language: str = Query(default="en-US", min_length=2, max_length=32),
     refresh: bool = Query(default=False),
 ) -> EpisodeCompletenessResponse:
+    if not _allowed(context, library_id):
+        raise HTTPException(status_code=404, detail="library_not_found")
     library, run, entries, identities = await _load_library_scope(request, library_id)
     try:
         season = await service.get(
