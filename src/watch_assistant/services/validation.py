@@ -297,7 +297,12 @@ def _completeness_score(
         seeders = 22
     else:
         seeders = 25
-    size = 15 if resource.size_bytes is not None and resource.size_bytes > 0 else 0
+    if resource.size_bytes is not None and resource.size_bytes > 0:
+        # 115 实测确认过的大小(size_source=inspection)比未经验证的
+        # 抓取值更可信:同条件下让已知可用的资源排在前面。
+        size = 20 if resource.metadata.get("size_source") == "inspection" else 10
+    else:
+        size = 0
     return max(0, min(100, resolution + source + seeders + size))
 
 
