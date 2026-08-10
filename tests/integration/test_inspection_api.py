@@ -29,6 +29,7 @@ from watch_assistant.schemas import (
 )
 from watch_assistant.security import SecurityManager
 from watch_assistant.services.inspection import InspectionService, InspectionWorker
+from tests.unit.factories import make_security_manager
 
 WEB_PASSWORD = "inspection-web-password"
 SCRIPT_TOKEN = "inspection-script-token"
@@ -160,6 +161,10 @@ async def _make_app(
             web_password_hash=password_hash.hash(WEB_PASSWORD),
             script_token_hash=password_hash.hash(SCRIPT_TOKEN),
         )
+    else:
+        # 鉴权依赖已 fail-closed:非认证模式注入宽松测试 manager,否则
+        # 所有请求都会 503。认证行为由 authenticated=True 的用例覆盖。
+        security = make_security_manager()
     tmdb = TmdbClient("unused")
     pansou = PanSouClient("http://pansou.test")
     app = create_app(
