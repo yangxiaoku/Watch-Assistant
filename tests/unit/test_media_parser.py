@@ -367,6 +367,17 @@ def test_dolby_audio_with_channel_count_stays_out_of_title(name, title):
     assert "5.1" not in parsed.title
 
 
+def test_chinese_season_only_marker_never_leaves_the_leading_character():
+    # "第1季" 的整体掩码必须包含 "第",否则标题会残留 "狂飙 第"
+    parsed = parse_media_filename("狂飙.第1季.2023.1080p.mkv")
+
+    assert parsed.title == "狂飙"
+    assert parsed.season == 1
+    assert parsed.episode_start is None
+    assert parsed.year == 2023
+    assert parsed.media_type_hint == "tv"
+
+
 def test_plain_series_title_without_technical_tokens_is_unchanged():
     parsed = parse_media_filename("Show.S01E01.mkv")
 

@@ -48,8 +48,9 @@ _CHINESE_EPISODE_RE = re.compile(
     r"(?:[ ._-]*(?:-|至|到)[ ._-]*(?P<end>[0-9]{1,4}))?集?",
 )
 _SEASON_ONLY_RE = re.compile(
+    # 中文分支把 "第" 纳入匹配,掩码时一并遮掉,避免标题残留 "第"。
     r"(?<![A-Za-z0-9])(?:Season[ ._-]*(?P<season>[0-9]{1,3})"
-    r"|S(?P<s_season>[0-9]{1,3})|(?P<season_cn>[0-9]{1,3})季)(?![A-Za-z0-9])",
+    r"|S(?P<s_season>[0-9]{1,3})|第?(?P<season_cn>[0-9]{1,3})季)(?![A-Za-z0-9])",
     re.IGNORECASE,
 )
 _EPISODE_LABEL_RE = re.compile(
