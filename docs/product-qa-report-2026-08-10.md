@@ -291,3 +291,11 @@
 - **P2** snapshot revision 完成点串行化(进程内 per-library 锁)+ 迁移 072 唯一索引兜底(先清重再建索引)
 - **P1** strm_manifest 同名替换先 retire 后生成(两趟 diff):修复前 failed=1 且永久卡,修复后 failed=0;回归测试锁定
 - 迁移 071(订阅索引排除已取消)与 072(scan revision 唯一)随本部署上线
+
+---
+
+## 11. 第六轮部署确认 — 2026-08-11
+
+- 部署 `f448597`(POSTDEPLOY ok,Playwright 验收 18/18)
+- 含:seasons 越权修复、资源搜索超时保留快照、snapshot revision 串行化+唯一索引(迁移 072)、strm 同名替换两趟 diff、订阅索引 071
+- 测试适配:7 处"构造重复 revision"的歧义测试改为断言唯一索引拒绝(迁移 072 语义),全量 1821/1822(唯一失败为预先存在的 openssl 环境断言)
