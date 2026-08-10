@@ -161,7 +161,15 @@ _CHANNEL_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ),
 )
 _EXPLICIT_SPECIAL_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
-    ("SP", re.compile(r"(?<![A-Za-z0-9])SP(?![A-Za-z0-9])", re.IGNORECASE)),
+    # 允许 SP 后跟 1-2 位编号 ("SP01"/"SP1"/"SP.01" 等动漫特辑命名);
+    # 3 位及以上 ("SP500") 拒绝,避免误吞 S&P500 之类的标题词。
+    (
+        "SP",
+        re.compile(
+            r"(?<![A-Za-z0-9])SP(?:[ ._-]*[0-9]{1,2})?(?![A-Za-z0-9])",
+            re.IGNORECASE,
+        ),
+    ),
     ("OVA", re.compile(r"(?<![A-Za-z0-9])OVA(?![A-Za-z0-9])", re.IGNORECASE)),
     ("OAD", re.compile(r"(?<![A-Za-z0-9])OAD(?![A-Za-z0-9])", re.IGNORECASE)),
     ("ONA", re.compile(r"(?<![A-Za-z0-9])ONA(?![A-Za-z0-9])", re.IGNORECASE)),

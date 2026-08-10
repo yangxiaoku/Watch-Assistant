@@ -240,6 +240,29 @@ def test_season_zero_episodes_remain_real_episode_claims():
     assert parsed.special_hints == ()
 
 
+@pytest.mark.parametrize(
+    ("name", "title", "special_hints", "media_type"),
+    (
+        ("Show.SP01.mkv", "Show", ("SP",), "tv"),
+        ("Show.SP1.1080p.mkv", "Show", ("SP",), "tv"),
+        ("Show.SP.01.mkv", "Show", ("SP",), "tv"),
+        ("One.Piece.SP1.1080p.mkv", "One Piece", ("SP",), "tv"),
+        # 3 位编号不是特辑编号:SP500 可能属于 S&P500 之类标题
+        ("Show.SP500.mkv", "Show SP500", (), "unknown"),
+        ("S&P500.2020.1080p.mkv", "S&P500", (), "movie"),
+        ("Anime - SP OVA 1080p WEB-DL.mkv", "Anime", ("SP", "OVA"), "tv"),
+    ),
+)
+def test_numbered_sp_specials_are_detected_without_swallowing_titles(
+    name, title, special_hints, media_type
+):
+    parsed = parse_media_filename(name)
+
+    assert parsed.title == title
+    assert parsed.special_hints == special_hints
+    assert parsed.media_type_hint == media_type
+
+
 def test_special_episode_hints_are_not_final_media_classification():
     parsed = parse_media_filename("Anime - SP OVA 1080p WEB-DL.mkv")
 
