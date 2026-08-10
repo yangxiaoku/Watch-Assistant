@@ -128,3 +128,48 @@ def test_organization_plan_routes_require_plan_or_execute_scope(
         }
     )
     assert _required_scope(request) == expected_scope
+
+
+def test_library_write_routes_require_library_write_scope():
+    """H1:只读 agent token 不得触发全库扫描/取消/计划等写操作。"""
+    for path in (
+        "/api/v1/libraries/library/scan",
+        "/api/v1/libraries/library/scans/scan-1/cancel",
+        "/api/v1/libraries/library/empty-directory-cleanup-plan",
+        "/api/v1/libraries/library/organization-preview",
+    ):
+        request = Request(
+            {
+                "type": "http",
+                "method": "POST",
+                "path": path,
+                "headers": [],
+                "scheme": "http",
+                "server": ("app.test", 80),
+                "client": ("127.0.0.1", 1234),
+                "root_path": "",
+            }
+        )
+        assert _required_scope(request) == "library:write", path
+
+
+def test_library_read_routes_keep_library_read_scope():
+    for path in (
+        "/api/v1/libraries",
+        "/api/v1/libraries/library",
+        "/api/v1/libraries/library/inventory",
+        "/api/v1/media",
+    ):
+        request = Request(
+            {
+                "type": "http",
+                "method": "GET",
+                "path": path,
+                "headers": [],
+                "scheme": "http",
+                "server": ("app.test", 80),
+                "client": ("127.0.0.1", 1234),
+                "root_path": "",
+            }
+        )
+        assert _required_scope(request) == "library:read", path

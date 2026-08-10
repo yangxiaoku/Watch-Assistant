@@ -101,6 +101,7 @@ AuthDependency = Annotated[AuthContext, Depends(require_api_auth)]
 ReviewWriteDependency = Annotated[AuthContext, Depends(require_scope("review:write"))]
 SettingsWriteDependency = Annotated[AuthContext, Depends(require_scope("settings:write"))]
 LibraryReadDependency = Annotated[AuthContext, Depends(require_scope("library:read"))]
+LibraryWriteDependency = Annotated[AuthContext, Depends(require_scope("library:write"))]
 OrganizeWriteDependency = Annotated[AuthContext, Depends(require_scope("organize:execute"))]
 _LIBRARY_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
 
@@ -419,7 +420,7 @@ async def scan_library(
     library_id: str,
     payload: LibraryScanRequest,
     request: Request,
-    context: LibraryReadDependency,
+    context: LibraryWriteDependency,
 ) -> LibraryScanSummary:
     if not _stable_library_id(library_id) or not _allowed(context, library_id):
         raise HTTPException(status_code=404, detail="library_not_found")
@@ -496,7 +497,7 @@ async def cancel_library_scan(
     library_id: str,
     scan_run_id: str,
     request: Request,
-    context: LibraryReadDependency,
+    context: LibraryWriteDependency,
 ) -> LibraryScanSummary:
     if not _stable_library_id(library_id) or not _allowed(context, library_id):
         raise HTTPException(status_code=404, detail="library_not_found")
@@ -682,7 +683,7 @@ async def create_empty_directory_cleanup_plan(
     library_id: str,
     payload: EmptyDirectoryCleanupPlanRequest,
     request: Request,
-    context: LibraryReadDependency,
+    context: LibraryWriteDependency,
 ) -> EmptyDirectoryCleanupPlanResponse:
     if not _stable_library_id(library_id) or not _allowed(context, library_id):
         raise HTTPException(status_code=404, detail="library_not_found")
@@ -938,7 +939,7 @@ async def create_organization_preview(
     library_id: str,
     payload: OrganizationPreviewRequest,
     request: Request,
-    context: LibraryReadDependency,
+    context: LibraryWriteDependency,
 ) -> OrganizationPlanResponse:
     if not getattr(request.app.state, "organization_plan_enabled", False):
         raise HTTPException(status_code=503, detail="organization_plan_disabled")

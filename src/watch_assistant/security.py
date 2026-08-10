@@ -24,6 +24,7 @@ AGENT_SCOPES = frozenset(
     {
         "system:read",
         "library:read",
+        "library:write",
         "task:read",
         "task:write",
         "organize:plan",
@@ -611,7 +612,9 @@ def _required_scope(request: Request) -> str:
     if path.startswith(("/api/v1/search", "/api/v1/movie")):
         return "library:read"
     if path.startswith(("/api/v1/libraries", "/api/v1/media")):
-        return "library:read"
+        # 写方法(扫描/取消/计划/配置/身份绑定)必须要求 library:write,
+        # 不得与只读共用 library:read,否则只读 agent token 可触发全库扫描。
+        return "library:read" if method in {"GET", "HEAD"} else "library:write"
     if path.startswith("/api/v1/audit"):
         return "audit:read"
     if path.startswith(("/api/v1/resources", "/api/v1/seasons")):
