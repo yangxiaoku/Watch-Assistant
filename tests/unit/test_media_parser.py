@@ -95,7 +95,8 @@ def test_multiple_generic_special_tokens_choose_only_a_clear_post_episode_candid
 
     assert before_and_after.title == "Special Special Show"
     assert before_and_after.special_hints == ("special",)
-    assert ambiguous_suffix.title == "Show Special Specials"
+    # 剧集标记之后的 token 一律视为技术信息,不进标题。
+    assert ambiguous_suffix.title == "Show"
     assert ambiguous_suffix.special_hints == ()
 
 
@@ -275,3 +276,58 @@ def test_channel_count_and_hyphen_group_are_stripped_from_title():
     assert parsed.year == 2021
     assert parsed.audio_codec == "TrueHD"
     assert parsed.release_group == "FGT"
+
+
+def test_tv_title_is_truncated_before_the_episode_marker():
+    parsed = parse_media_filename(
+        "末日地堡.Silo.S02E01.2024.2160p.ATVP.WEB-DL.DDP5.1.Atmos.H265.DV-ZeroTV.mkv"
+    )
+
+    assert parsed.title == "末日地堡 Silo"
+    assert "ATVP" not in parsed.title
+    assert "DDP" not in parsed.title
+    assert "5.1" not in parsed.title
+    assert parsed.season == 2
+    assert parsed.episode_start == 1
+    assert parsed.media_type_hint == "tv"
+    assert parsed.dolby_audio is True
+    assert parsed.release_group == "ZeroTV"
+
+
+@pytest.mark.parametrize(
+    ("name", "title"),
+    (
+        ("Show.S01E01.1080p.WEB-DL.DDP5.1.H265.mkv", "Show"),
+        ("Show.S01E02.1080p.WEB-DL.DD+5.1.H265.mkv", "Show"),
+        ("Show.S01E03.1080p.WEB-DL.DD5.1.H265.mkv", "Show"),
+        # 电影路径无剧集标记:靠遮罩保证 title 干净
+        ("Movie.2024.1080p.WEB-DL.DDP5.1.Atmos.mkv", "Movie"),
+        ("Movie.2024.1080p.WEB-DL.DD+5.1.Atmos.mkv", "Movie"),
+        ("Movie.2024.1080p.WEB-DL.DD5.1.Atmos.mkv", "Movie"),
+    ),
+)
+def test_dolby_audio_with_channel_count_stays_out_of_title(name, title):
+    parsed = parse_media_filename(name)
+
+    assert parsed.title == title
+    assert parsed.dolby_audio is True
+    assert "DD" not in parsed.title
+    assert "5.1" not in parsed.title
+
+
+def test_plain_series_title_without_technical_tokens_is_unchanged():
+    parsed = parse_media_filename("Show.S01E01.mkv")
+
+    assert parsed.title == "Show"
+    assert parsed.media_type_hint == "tv"
+
+
+def test_movie_title_path_is_not_affected_by_tv_truncation():
+    parsed = parse_media_filename(
+        "Demon.Slayer.Kimetsu.No.Yaiba.2021.1080p.BluRay.Remux.mkv"
+    )
+
+    assert parsed.title == "Demon Slayer Kimetsu No Yaiba"
+    assert parsed.year == 2021
+    assert parsed.source == "BluRay"
+    assert parsed.media_type_hint == "movie"
