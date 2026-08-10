@@ -191,6 +191,11 @@ class P115Adapter:
                 )
             except asyncio.CancelledError:
                 raise
+            except TimeoutError as error:
+                # 底层连接状态未知:丢弃该 client,避免复用挂死连接
+                # 持续泄漏执行器线程。
+                await self._discard_client(client)
+                return _exception_result(error)
             except Exception as error:  # noqa: BLE001 - remote outcome is opaque
                 return _exception_result(error)
             return _submission_result(
@@ -239,6 +244,9 @@ class P115Adapter:
                 )
             except asyncio.CancelledError:
                 raise
+            except TimeoutError as error:
+                await self._discard_client(client)
+                return _exception_result(error)
             except Exception as error:  # noqa: BLE001 - remote outcome is opaque
                 return _exception_result(error)
             return _submission_result(response, allow_missing_ref=True)
@@ -485,7 +493,14 @@ class P115Adapter:
             if self._client is not None and self._cookie == cookie:
                 return self._client, False
             try:
-                client = await asyncio.to_thread(self._client_factory, cookie)
+                # 工厂(登录/建连接)同样可能有超时上限:挂起的工厂线程不再
+                # 等待,由调用方按不可用处理,后续操作会重建。
+                client = await asyncio.wait_for(
+                    asyncio.to_thread(self._client_factory, cookie),
+                    timeout=self._request_timeout_seconds,
+                )
+            except TimeoutError:
+                return None, False
             except Exception:  # noqa: BLE001 - client setup is intentionally opaque
                 return None, False
             old_client = self._client
@@ -493,6 +508,14 @@ class P115Adapter:
             self._cookie = cookie
         await self._close_client(old_client)
         return client, False
+
+    async def _discard_client(self, client: Any) -> None:
+        """丢弃可能挂死的 client:超时后底层连接状态未知,复用会继续泄漏线程。"""
+        async with self._client_lock:
+            if self._client is client:
+                self._client = None
+                self._cookie = None
+        await self._close_client(client)
 
     @staticmethod
     async def _close_client(client: Any) -> None:
@@ -504,9 +527,11 @@ class P115Adapter:
         if close is None:
             return
         try:
-            result = await asyncio.to_thread(close)
+            result = await asyncio.wait_for(
+                asyncio.to_thread(close), timeout=10.0
+            )
             if inspect.isawaitable(result):
-                await result
+                await asyncio.wait_for(result, timeout=10.0)
         except Exception:  # noqa: BLE001 - cleanup must not expose credentials
             return
 
@@ -524,12 +549,30 @@ class P115Adapter:
         worker 的续租会持续续租、lease 永不过期,任务永久卡 SUBMITTING 且整个
         流水线停摆。990009 表示服务端仍在处理上次提交,重试一次即可拿到
         确定性结果(服务端按 infohash 去重,幂等安全)。
+
+        双保险:request hook 给底层 HTTP 请求 socket 级超时(线程不会挂死,
+        不会泄漏到默认执行器池);``asyncio.wait_for`` 作为第二道防线。
         """
         method = getattr(client, method_name)
+        timeout = max(1.0, float(timeout_seconds))
+        try:
+            from urllib3_future_request import request as urllib3_request
+        except ImportError:
+            urllib3_request = None
+
+        def request_with_timeout(*, async_: bool = False, **request_kwargs: Any) -> Any:
+            if async_ or urllib3_request is None:
+                raise P115UnavailableError
+            request_kwargs["timeout"] = timeout
+            request_kwargs["retries"] = False
+            return urllib3_request(async_=False, **request_kwargs)
+
         for attempt in range(2):
             try:
                 return await asyncio.wait_for(
-                    asyncio.to_thread(method, payload),
+                    asyncio.to_thread(
+                        method, payload, async_=False, request=request_with_timeout
+                    ),
                     timeout=timeout_seconds,
                 )
             except TimeoutError:

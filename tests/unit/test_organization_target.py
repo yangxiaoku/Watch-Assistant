@@ -112,10 +112,10 @@ async def test_reads_complete_recursive_catalog_and_ignores_files():
     assert catalog.directory_id_for("Movies/4K") == "400"
     assert catalog.directory_id_for("../outside") is None
     assert gateway.calls == [
-        ("100", 1, 1),
-        ("100", 2, 1),
-        ("200", 1, 1),
-        ("400", 1, 1),
+        ("100", 1, 50),
+        ("100", 2, 50),
+        ("200", 1, 50),
+        ("400", 1, 50),
     ]
 
 
@@ -126,7 +126,7 @@ async def test_retries_transient_target_directory_read_once():
     catalog = await read_target_catalog(gateway, "100")
 
     assert catalog.root_directory_id == "100"
-    assert gateway.calls == [("100", 1, 1), ("100", 1, 1)]
+    assert gateway.calls == [("100", 1, 50), ("100", 1, 50)]
 
 
 @pytest.mark.asyncio
@@ -142,7 +142,7 @@ async def test_exposes_target_read_failure_without_remote_details():
 
     assert error.value.code == "target_directory_read_failed"
     assert error.value.cause_code == "fs_files_failed"
-    assert gateway.calls == [("100", 1, 1), ("100", 1, 1)]
+    assert gateway.calls == [("100", 1, 50), ("100", 1, 50), ("100", 1, 50)]
 
 
 @pytest.mark.asyncio

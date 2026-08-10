@@ -489,12 +489,16 @@ class Subscription(Base):
             name="uq_subscription_scope",
         ),
         # SQLite 唯一约束对 NULL 互不冲突,电影订阅(季节字段全 NULL)
-        # 并发创建可重复;部分唯一索引补上该语义(迁移 070)。
+        # 并发创建可重复;部分唯一索引补上该语义(迁移 070/071)。
+        # 排除已取消行:create() 允许"取消后重新订阅",索引连同 CANCELLED
+        # 一起唯一会让重订恒 409。
         Index(
             "uq_subscription_scope_movie",
             "tmdb_id",
             "media_type",
-            sqlite_where=text("season_number IS NULL"),
+            sqlite_where=text(
+                "season_number IS NULL AND status != 'cancelled'"
+            ),
         ),
         Index(
             "uq_subscription_scope_tv",
@@ -503,7 +507,9 @@ class Subscription(Base):
             "season_number",
             "episode_start",
             "episode_end",
-            sqlite_where=text("season_number IS NOT NULL"),
+            sqlite_where=text(
+                "season_number IS NOT NULL AND status != 'cancelled'"
+            ),
         ),
     )
 

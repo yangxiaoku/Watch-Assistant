@@ -192,3 +192,30 @@ async def test_concurrent_movie_subscription_create_keeps_single_row(tmp_path):
 
 async def _create_maybe_conflict(service, request):
     await service.create(request)
+
+
+@pytest.mark.asyncio
+async def test_cancelled_subscription_can_be_recreated(tmp_path):
+    """迁移 071:部分唯一索引必须排除已取消行,否则"取消后重新订阅"
+    会因索引连同 CANCELLED 行一起唯一而恒 409(电影订阅回归)。"""
+    from watch_assistant.services.subscriptions import SubscriptionStatus
+
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'subs-071.db'}")
+    await initialize_database(database.engine)
+    service = SubscriptionService(database.session_factory, FakeSearch())
+    request = SubscriptionCreateRequest(tmdb_id=789)
+    first = await service.create(request)
+
+    async with database.session_factory() as session:
+        from watch_assistant.models import Subscription
+
+        stored = await session.get(Subscription, first.id)
+        stored.status = SubscriptionStatus.CANCELLED
+        stored.next_check_at = None
+        await session.commit()
+
+    # 修复前(070):唯一索引含 CANCELLED 行 → 重订恒 IntegrityError → 409
+    recreated = await service.create(request)
+    assert recreated.id != first.id
+    assert recreated.status is SubscriptionStatus.ACTIVE
+    await database.engine.dispose()

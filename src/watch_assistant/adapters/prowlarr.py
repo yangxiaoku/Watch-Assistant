@@ -458,7 +458,7 @@ class ProwlarrClient:
             response = await self._client.get(
                 download_url,
                 timeout=self._timeout,
-                follow_redirects=True,
+                follow_redirects=False,
             )
             return _infohash_from_magnet(response.text) or None
         except Exception:  # noqa: BLE001 - download resolution stays optional
