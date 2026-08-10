@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from watch_assistant.models import Resource, SourceReliability
+from watch_assistant.models import Resource, SearchCache, SourceReliability
 from watch_assistant.schemas import (
     MediaType,
     MovieMetadata,
@@ -195,6 +195,38 @@ def test_cache_key_is_versioned_by_movie_id():
     assert make_cache_key(12345, MediaType.TV, 2) == (
         "tmdb:tv:12345:season:2:queries:v5"
     )
+
+
+def test_cache_ttl_is_configurable_and_drives_freshness():
+    service = SearchService.__new__(SearchService)
+    service._fresh_cache_ttl = timedelta(hours=1)
+    service._negative_cache_ttl = timedelta(minutes=5)
+    service._partial_cache_ttl = timedelta(minutes=2)
+
+    assert service._cache_ttl("positive") == timedelta(hours=1)
+    assert service._cache_ttl("negative") == timedelta(minutes=5)
+    assert service._cache_ttl("partial") == timedelta(minutes=2)
+
+    now = datetime.now(UTC)
+    fresh_cache = SearchCache(
+        cache_key="k",
+        resource_ids_json="[]",
+        warnings_json="[]",
+        cache_kind="positive",
+        fetched_at=now - timedelta(minutes=30),
+        expires_at=now,
+    )
+    stale_cache = SearchCache(
+        cache_key="k2",
+        resource_ids_json="[]",
+        warnings_json="[]",
+        cache_kind="positive",
+        fetched_at=now - timedelta(hours=2),
+        expires_at=now,
+    )
+    # TTL 调成 1 小时后,30 分钟前的快照仍新鲜,2 小时前的不再新鲜。
+    assert service._cache_is_fresh(fresh_cache, timedelta(minutes=30))
+    assert not service._cache_is_fresh(stale_cache, timedelta(hours=2))
 
 
 def test_source_penalty_requires_ten_observations():
