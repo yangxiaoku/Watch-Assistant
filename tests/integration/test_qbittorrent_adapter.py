@@ -777,7 +777,9 @@ async def test_qbittorrent_has_metadata_is_authoritative_when_state_is_transient
 
 
 @respx.mock
-async def test_cleanup_failure_discards_untrusted_metadata():
+async def test_cleanup_failure_preserves_verified_result():
+    # 回归(L8):清理失败不得覆盖已 VERIFIED 的检测结论——验证结果是
+    # 对磁力元数据的真实观察,与事后清理是否成功无关。
     fake = FakeQbittorrent(delete_status=500)
     fake.install()
     client = QbittorrentClient(BASE_URL, "user", "password", poll_interval=0)
@@ -785,9 +787,10 @@ async def test_cleanup_failure_discards_untrusted_metadata():
     result = (await client.inspect([_magnet("f" * 40)]))[0]
     await client.aclose()
 
-    assert result.status == InspectionStatus.FAILED
-    assert result.error_code == "cleanup_failed"
-    assert result.file_count == 0
+    assert result.status == InspectionStatus.VERIFIED
+    assert result.error_code is None
+    assert result.result_source == "new_torrent"
+    assert result.file_count == 1
     assert fake.delete_calls == 1
     assert fake.delete_tag_calls == 0
     assert fake.remove_category_calls == 0

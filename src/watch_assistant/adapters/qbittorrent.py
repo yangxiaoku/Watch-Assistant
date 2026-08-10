@@ -43,6 +43,10 @@ class InspectionStatus(StrEnum):
     UNSUPPORTED = "unsupported"
 
 
+# 本适配器产生的任何状态都是终态:清理失败不得覆盖已得出的结论。
+_TERMINAL_INSPECTION_STATUSES = frozenset(InspectionStatus)
+
+
 @dataclass(frozen=True)
 class QbittorrentInspectionResult:
     infohash: str | None
@@ -192,8 +196,12 @@ class QbittorrentClient:
             try:
                 await self._shielded_marker_cleanup(batch_marker)
             except _ApiError:
+                # 批次标记清理失败同样不得改写已得出的终态结论
+                # (见 _inspect_one 的同类守卫):只覆盖非终态结果。
                 inspected = [
-                    QbittorrentInspectionResult(
+                    result
+                    if result.status in _TERMINAL_INSPECTION_STATUSES
+                    else QbittorrentInspectionResult(
                         infohash=result.infohash,
                         status=InspectionStatus.FAILED,
                         error_code="cleanup_failed",
@@ -361,15 +369,21 @@ class QbittorrentClient:
                     try:
                         await self._shielded_cleanup(item.infohash, batch_marker)
                     except _ApiError:
-                        result = replace(
-                            result
-                            or QbittorrentInspectionResult(
-                                infohash=item.infohash,
+                        # 清理失败只覆盖"还没有结论"的结果:已 VERIFIED 等
+                        # 终态结论不能被清理错误改写,否则真实检测结果被吞。
+                        if (
+                            result is None
+                            or result.status not in _TERMINAL_INSPECTION_STATUSES
+                        ):
+                            result = replace(
+                                result
+                                or QbittorrentInspectionResult(
+                                    infohash=item.infohash,
+                                    status=InspectionStatus.FAILED,
+                                ),
                                 status=InspectionStatus.FAILED,
-                            ),
-                            status=InspectionStatus.FAILED,
-                            error_code="cleanup_failed",
-                        )
+                                error_code="cleanup_failed",
+                            )
                 current_task = asyncio.current_task()
                 if current_task is not None and current_task.cancelling():
                     cancelled = True
