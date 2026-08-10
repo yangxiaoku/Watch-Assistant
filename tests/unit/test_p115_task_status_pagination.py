@@ -26,7 +26,8 @@ class _FakeTaskClient:
         self.pages = pages
         self.requested_pages: list[int] = []
 
-    def clouddownload_task_list(self, payload: dict) -> dict:
+    def clouddownload_task_list(self, payload: dict, *, async_=False, request=None) -> dict:
+        del async_, request
         page = int(payload["page"])
         self.requested_pages.append(page)
         return self.pages[page - 1]

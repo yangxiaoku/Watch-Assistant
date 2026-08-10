@@ -49,7 +49,8 @@ class FakeP115Client:
         self.delay = delay
         self.validation_async_flags = []
 
-    def clouddownload_task_add_url(self, payload):
+    def clouddownload_task_add_url(self, payload, *, async_=False, request=None):
+        del async_, request
         self.add_payloads.append(payload)
         self.active += 1
         self.max_active = max(self.max_active, self.active)
@@ -60,13 +61,15 @@ class FakeP115Client:
         self.active -= 1
         return self.response
 
-    def share_receive(self, payload):
+    def share_receive(self, payload, *, async_=False, request=None):
+        del async_, request
         self.share_payloads.append(payload)
         if self.receive_error is not None:
             raise self.receive_error
         return self.response
 
-    def share_snap(self, payload):
+    def share_snap(self, payload, *, async_=False, request=None):
+        del async_, request
         if self.share_error is not None:
             raise self.share_error
         self.list_payloads.append({"share_snap": payload})
@@ -76,7 +79,8 @@ class FakeP115Client:
             return {"state": True, "data": {"list": []}}
         return self.share_pages[index]
 
-    def clouddownload_task_list(self, payload, *, async_=False):
+    def clouddownload_task_list(self, payload, *, async_=False, request=None):
+        del request
         self.validation_async_flags.append(async_)
         self.list_payloads.append(payload)
         if self.task_pages is not None:
@@ -926,7 +930,8 @@ class _BusyOnceClient(FakeP115Client):
         super().__init__()
         self.busy_calls = 0
 
-    def clouddownload_task_add_url(self, payload):
+    def clouddownload_task_add_url(self, payload, *, async_=False, request=None):
+        del async_, request
         self.add_payloads.append(payload)
         self.busy_calls += 1
         if self.busy_calls == 1:
@@ -941,7 +946,8 @@ class _AlwaysBusyClient(FakeP115Client):
         super().__init__()
         self.busy_calls = 0
 
-    def clouddownload_task_add_url(self, payload):
+    def clouddownload_task_add_url(self, payload, *, async_=False, request=None):
+        del async_, request
         self.add_payloads.append(payload)
         self.busy_calls += 1
         error = RuntimeError("busy")
