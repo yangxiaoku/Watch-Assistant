@@ -238,12 +238,14 @@ class TmdbClient:
             candidate_payload = dict(item)
             candidate_payload.update(detail)
             # Keep the localized search-result title for display; use the
-            # English detail title only for matching.
-            candidate_payload["title"] = item.get("title") or candidate_payload.get("title")
-            if isinstance(english_detail, dict) and isinstance(
-                english_detail.get("title"), str
-            ):
-                candidate_payload["english_title"] = english_detail["title"]
+            # English detail title only for matching. TV responses use "name".
+            localized_title = item.get("title") or item.get("name")
+            if localized_title:
+                candidate_payload["title"] = localized_title
+            if isinstance(english_detail, dict):
+                english_title = english_detail.get("title") or english_detail.get("name")
+                if isinstance(english_title, str):
+                    candidate_payload["english_title"] = english_title
             candidate_payload["id"] = item["id"]
             candidate_payload["media_type"] = media_type
             candidate_payload["kind"] = (
