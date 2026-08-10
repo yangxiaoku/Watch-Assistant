@@ -212,10 +212,10 @@ async def test_automation_scans_source_and_freezes_target_catalog(tmp_path: Path
     assert service.last_result.blocked_count == 0
     assert service.last_result.run_id is not None
     assert gateway.calls[:4] == [
-        ("9000", 1, 1),
-        ("8000", 1, 1),
-        ("8001", 1, 1),
-        ("8002", 1, 1),
+        ("9000", 1, 50),
+        ("8000", 1, 50),
+        ("8001", 1, 50),
+        ("8002", 1, 50),
     ]
     async with database.session_factory() as session:
         plan = await session.scalar(select(OrganizationPlan))

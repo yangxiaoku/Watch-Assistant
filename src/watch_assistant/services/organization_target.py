@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 
 from watch_assistant.adapters.p115_library_gateway import (
+    VERIFIED_BATCH_PAGE_SIZE,
     P115ReadOnlyDirectoryGateway,
     P115ReadOnlyGatewayError,
 )
@@ -172,21 +173,25 @@ async def _read_directory_page_with_retry(
     directory_id: str,
     page: int,
 ):
-    """Retry one bounded read once when the provider fails transiently."""
+    """Retry one bounded read with the verified batch size on transient failure."""
 
-    for attempt in range(2):
+    for attempt in range(3):
         try:
-            return await gateway.list_directory(directory_id, page=page, page_size=1)
+            return await gateway.list_directory(
+                directory_id,
+                page=page,
+                page_size=VERIFIED_BATCH_PAGE_SIZE,
+            )
         except asyncio.CancelledError:
             raise
         except P115ReadOnlyGatewayError as error:
-            if attempt == 1:
+            if attempt == 2:
                 raise OrganizationTargetError(
                     "target_directory_read_failed", cause_code=error.code
                 ) from None
             await asyncio.sleep(0.5)
         except Exception:  # noqa: BLE001 - remote details stay opaque
-            if attempt == 1:
+            if attempt == 2:
                 raise OrganizationTargetError("target_directory_read_failed") from None
             await asyncio.sleep(0.5)
 
