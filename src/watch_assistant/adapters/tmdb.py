@@ -63,6 +63,10 @@ class TmdbRateLimitedError(TmdbError):
 # 429/5xx 的有界重试次数与指数退避基数(1s → 2s)。
 _TMDB_RETRY_ATTEMPTS = 3
 _TMDB_BACKOFF_BASE = 1.0
+# 候选详情富化的并发上限:每个候选 2 个详情请求(zh + en),
+# 并发 4 个候选 ≈ 8 个在途请求,配合 _get 内的 429 退避重试
+# 既能显著缩短串行富化的耗时,又不至于打满免费配额(约 40 req/10s)。
+_TMDB_DETAIL_CONCURRENCY = 4
 
 
 class TmdbClient:
@@ -220,7 +224,8 @@ class TmdbClient:
         results = payload.get("results")
         if not isinstance(results, list):
             raise TmdbError("Unexpected TMDB response shape")
-        candidates: list[TmdbCandidate] = []
+        # 先过滤媒体类型命中项:与旧串行实现一致,非命中项不发起任何请求。
+        matching: list[dict] = []
         for item in results:
             if not isinstance(item, dict) or not isinstance(item.get("id"), int):
                 continue
@@ -232,55 +237,81 @@ class TmdbClient:
                 and media_type != query.media_type_hint
             ):
                 continue
-            detail = item
-            english_detail: dict | None = None
+            matching.append(item)
+
+        # 详情富化原先逐个串行(最多 2*limit+1 个请求),改为按 limit
+        # 分片并发:每片内部用信号量限制并发候选数,保持"按结果顺序取
+        # 前 limit 个有效候选"的既有语义;429 限流仍由 _get 的退避重试兜底。
+        semaphore = asyncio.Semaphore(_TMDB_DETAIL_CONCURRENCY)
+        candidates: list[TmdbCandidate] = []
+        offset = 0
+        while len(candidates) < limit and offset < len(matching):
+            batch = matching[offset : offset + limit]
+            offset += limit
+            enriched = await asyncio.gather(
+                *(self._enrich_candidate(item, semaphore) for item in batch)
+            )
+            for candidate_payload in enriched:
+                if candidate_payload is None:
+                    continue
+                try:
+                    candidates.append(TmdbCandidate.from_payload(candidate_payload))
+                except (TypeError, ValueError):
+                    continue
+                if len(candidates) >= limit:
+                    break
+        return candidates
+
+    async def _enrich_candidate(
+        self, item: dict, semaphore: asyncio.Semaphore
+    ) -> dict | None:
+        """抓取一个候选的详情并按匹配器契约组装负载。
+
+        本地化详情失败时降级为搜索摘要(缺失详情的证据由 TmdbMatcher
+        按保守策略处理);本地化成功后才请求英文详情(种子文件名常为
+        英文,无法匹配本地化标题)。返回 None 表示负载无效,由调用方跳过。
+        """
+        async with semaphore:
+            media_type = item.get("media_type")
             try:
                 detail = await self._get(f"/{media_type}/{item['id']}")
             except TmdbError:
-                # The search result remains useful, but missing detail must
-                # leave the candidate incomplete so the matcher can review it.
+                # 搜索摘要同样可用,但缺失详情必须让候选证据不完整。
                 detail = item
+                english_detail: dict | None = None
             else:
                 try:
-                    # English filenames (common in torrents) cannot match the
-                    # localized title, so capture the English title separately.
                     english_detail = await self._get(
                         f"/{media_type}/{item['id']}", params={"language": "en-US"}
                     )
                 except TmdbError:
                     english_detail = None
-            candidate_payload = dict(item)
-            candidate_payload.update(detail)
-            # Keep the localized search-result title for display; use the
-            # English detail title only for matching. TV responses use "name".
-            localized_title = item.get("title") or item.get("name")
-            if localized_title:
-                candidate_payload["title"] = localized_title
-            if isinstance(english_detail, dict):
-                english_title = english_detail.get("title") or english_detail.get("name")
-                if isinstance(english_title, str):
-                    candidate_payload["english_title"] = english_title
-            candidate_payload["id"] = item["id"]
-            candidate_payload["media_type"] = media_type
-            candidate_payload["kind"] = (
-                MediaKind.MOVIE.value
-                if media_type == MediaType.MOVIE.value
-                else MediaKind.TV.value
-            )
-            countries = _candidate_countries(detail)
-            if countries:
-                candidate_payload["origin_country"] = countries
-            if media_type == MediaType.TV.value:
-                seasons = detail.get("seasons")
-                if isinstance(seasons, list):
-                    candidate_payload["seasons"] = seasons
-            try:
-                candidates.append(TmdbCandidate.from_payload(candidate_payload))
-            except (TypeError, ValueError):
-                continue
-            if len(candidates) >= limit:
-                break
-        return candidates
+        candidate_payload = dict(item)
+        candidate_payload.update(detail)
+        # 保留本地化搜索结果的标题用于展示;英文详情标题只用于匹配。
+        # TV 响应用 "name" 字段。
+        localized_title = item.get("title") or item.get("name")
+        if localized_title:
+            candidate_payload["title"] = localized_title
+        if isinstance(english_detail, dict):
+            english_title = english_detail.get("title") or english_detail.get("name")
+            if isinstance(english_title, str):
+                candidate_payload["english_title"] = english_title
+        candidate_payload["id"] = item["id"]
+        candidate_payload["media_type"] = media_type
+        candidate_payload["kind"] = (
+            MediaKind.MOVIE.value
+            if media_type == MediaType.MOVIE.value
+            else MediaKind.TV.value
+        )
+        countries = _candidate_countries(detail)
+        if countries:
+            candidate_payload["origin_country"] = countries
+        if media_type == MediaType.TV.value:
+            seasons = detail.get("seasons")
+            if isinstance(seasons, list):
+                candidate_payload["seasons"] = seasons
+        return candidate_payload
 
     async def get_alternative_titles(
         self,
