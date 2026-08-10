@@ -2,7 +2,9 @@
 
 import asyncio
 import re
-from datetime import UTC, datetime
+from collections import OrderedDict
+from datetime import UTC, datetime, timedelta
+from time import monotonic
 
 import httpx
 
@@ -67,6 +69,12 @@ _TMDB_BACKOFF_BASE = 1.0
 # 并发 4 个候选 ≈ 8 个在途请求,配合 _get 内的 429 退避重试
 # 既能显著缩短串行富化的耗时,又不至于打满免费配额(约 40 req/10s)。
 _TMDB_DETAIL_CONCURRENCY = 4
+# 文本搜索(热门词)内存缓存:前端搜索框每次输入都会命中
+# /media/search、/movies/search,同一热词反复查询会重复消耗
+# TMDB 配额。结果按 (api_key, 路径, 规范化查询, 页) 缓存,
+# TTL 1 小时,LRU 上限 256 条,超额自动淘汰最旧条目。
+_TEXT_SEARCH_CACHE_TTL = timedelta(hours=1)
+_TEXT_SEARCH_CACHE_MAX_ENTRIES = 256
 
 
 class TmdbClient:
@@ -77,11 +85,21 @@ class TmdbClient:
         base_url: str = TMDB_BASE_URL,
         timeout: float = 12.0,
         client: httpx.AsyncClient | None = None,
+        text_cache_ttl: timedelta | None = None,
+        text_cache_max_entries: int = _TEXT_SEARCH_CACHE_MAX_ENTRIES,
     ) -> None:
         self._api_key = api_key
         self._timeout = timeout
         self._owns_client = client is None
         self._client = client or httpx.AsyncClient(base_url=base_url.rstrip("/"))
+        # 热门词文本搜索的进程内 TTL 缓存(可选关闭:TTL 传 None 表示禁用)。
+        self._text_cache_ttl = (
+            _TEXT_SEARCH_CACHE_TTL if text_cache_ttl is None else text_cache_ttl
+        )
+        self._text_cache_max_entries = max(1, text_cache_max_entries)
+        self._text_cache: OrderedDict[
+            tuple[str, str, str, int], tuple[float, dict]
+        ] = OrderedDict()
 
     def set_api_key(self, api_key: str) -> None:
         self._api_key = api_key
@@ -192,16 +210,46 @@ class TmdbClient:
         ).results
 
     async def search_movies(self, query: str) -> list[MovieMetadata]:
-        payload = await self._get("/search/movie", params={"query": query, "page": 1})
+        payload = await self._cached_text_search("/search/movie", query, page=1)
         return _parse_media_collection(payload, media_type=MediaType.MOVIE).results
 
     async def search_media(
         self, query: str, *, page: int = 1
     ) -> MovieCollectionResponse:
-        payload = await self._get(
-            "/search/multi", params={"query": query, "page": page}
-        )
+        payload = await self._cached_text_search("/search/multi", query, page=page)
         return _parse_multi_collection(payload)
+
+    async def _cached_text_search(
+        self, path: str, query: str, *, page: int
+    ) -> dict:
+        """带内存 TTL 缓存的文本搜索,规范化查询词以提升热词命中率。
+
+        缓存键包含 api_key,运行时切换密钥不会串用旧结果;查询词做
+        casefold + 空白规整,如 "  Interstellar  " 与 "interstellar"
+        视为同一热词。TTL 内重复查询直接返回缓存,不再消耗 TMDB 配额。
+        """
+        if self._text_cache_ttl is None:
+            return await self._get(path, params={"query": query, "page": page})
+        key = (
+            self._api_key,
+            path,
+            _normalize_search_query(query),
+            page,
+        )
+        now = monotonic()
+        cached = self._text_cache.get(key)
+        if cached is not None:
+            stored_at, payload = cached
+            if now - stored_at <= self._text_cache_ttl.total_seconds():
+                # LRU 语义:命中条目移到队尾,淘汰时从队头删最旧。
+                self._text_cache.move_to_end(key)
+                return payload
+            self._text_cache.pop(key, None)
+        payload = await self._get(path, params={"query": query, "page": page})
+        self._text_cache[key] = (now, payload)
+        while len(self._text_cache) > self._text_cache_max_entries:
+            self._text_cache.popitem(last=False)
+        return payload
 
     async def search_candidates(
         self, query: MediaMatchInput, *, limit: int = 8
@@ -410,6 +458,11 @@ class TmdbClient:
     async def aclose(self) -> None:
         if self._owns_client:
             await self._client.aclose()
+
+
+def _normalize_search_query(query: str) -> str:
+    """规范化文本搜索词:大小写折叠 + 空白规整,提升热词缓存命中率。"""
+    return " ".join(query.strip().casefold().split())
 
 
 def _parse_media_collection(
