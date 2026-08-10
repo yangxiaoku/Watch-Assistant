@@ -60,6 +60,18 @@ VALID_OPERATION_ERROR_CODES = frozenset(
     }
 )
 
+# Statuses that keep a plan locked: a new operation may only be created once
+# every previous operation reached a terminal state (organized / failed /
+# cancelled). An uncertain operation still blocks creation because its outcome
+# must be resolved via reconciliation before the plan can be re-run.
+_ACTIVE_OPERATION_STATUSES = frozenset(
+    {
+        OrganizationOperationStatus.PLANNED,
+        OrganizationOperationStatus.ORGANIZING,
+        OrganizationOperationStatus.UNCERTAIN,
+    }
+)
+
 
 class OrganizationOperationNotFound(LookupError):
     pass
@@ -175,12 +187,7 @@ class OrganizationOperationService:
             ):
                 raise OrganizationOperationPrerequisiteError("plan_not_executable")
 
-            existing = await session.scalar(
-                select(OrganizationOperation).where(
-                    OrganizationOperation.plan_id == plan_id
-                )
-            )
-            if existing is not None:
+            if await _plan_has_active_operation(session, plan_id):
                 raise OrganizationOperationConflict("operation_plan_conflict")
             operation = OrganizationOperation(
                 id="op_" + uuid.uuid4().hex,
@@ -214,12 +221,7 @@ class OrganizationOperationService:
                     if workflow_id is not None and existing.workflow_id != workflow_id:
                         raise OrganizationOperationConflict("workflow_id_conflict")
                     return _summary(existing)
-                existing = await session.scalar(
-                    select(OrganizationOperation).where(
-                        OrganizationOperation.plan_id == plan_id
-                    )
-                )
-                if existing is not None:
+                if await _plan_has_active_operation(session, plan_id):
                     raise OrganizationOperationConflict(
                         "operation_plan_conflict"
                     ) from None
@@ -268,13 +270,22 @@ class OrganizationOperationService:
     async def get_for_plan(
         self, plan_id: str
     ) -> OrganizationOperationSummary | None:
-        """Return the single durable operation associated with a plan, if any."""
+        """Return the newest operation associated with a plan, if any.
+
+        Terminal operations no longer block the plan, so a plan may carry
+        several operations (a failed attempt plus its retry). Return the most
+        recent one, which represents the current attempt.
+        """
 
         _validate_identifier(plan_id, "invalid_plan_id", maximum=64)
         async with self._session_factory() as session:
             operation = await session.scalar(
                 select(OrganizationOperation)
                 .where(OrganizationOperation.plan_id == plan_id)
+                .order_by(
+                    OrganizationOperation.created_at.desc(),
+                    OrganizationOperation.id.desc(),
+                )
                 .limit(1)
             )
             return _summary(operation) if operation is not None else None
@@ -1440,6 +1451,34 @@ def _existing_operation_summary(
     if workflow_id is not None and operation.workflow_id != workflow_id:
         raise OrganizationOperationConflict("workflow_id_conflict")
     return _summary(operation)
+
+
+async def _plan_has_active_operation(
+    session: AsyncSession, plan_id: str
+) -> bool:
+    """Return whether the plan still carries an unresolved operation.
+
+    A terminal operation (organized / failed / cancelled) releases the plan
+    so a fresh operation can be created after a retry; an active one
+    (planned / organizing / uncertain) keeps it locked. The status filter
+    lives in the query itself so an older terminal row cannot mask a newer
+    active one.
+    """
+
+    return bool(
+        await session.scalar(
+            select(
+                select(OrganizationOperation.id)
+                .where(
+                    OrganizationOperation.plan_id == plan_id,
+                    OrganizationOperation.status.in_(
+                        tuple(_ACTIVE_OPERATION_STATUSES)
+                    ),
+                )
+                .exists()
+            )
+        )
+    )
 
 
 async def _sync_workflow_stage(

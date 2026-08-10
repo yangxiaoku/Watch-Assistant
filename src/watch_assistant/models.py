@@ -850,11 +850,23 @@ class OrganizationOperation(Base):
     """Durable local state for a future organization execution."""
 
     __tablename__ = "organization_operations"
+    __table_args__ = (
+        # At most one *active* operation per plan: a terminal operation
+        # (organized / failed / cancelled) must not lock the plan, so the
+        # plan can be retried with a fresh operation after a failure.
+        # Keep the status list in sync with
+        # services.organization_operations._ACTIVE_OPERATION_STATUSES.
+        Index(
+            "uq_organization_operations_active_plan",
+            "plan_id",
+            unique=True,
+            sqlite_where=text("status IN ('planned', 'organizing', 'uncertain')"),
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(40), primary_key=True)
     plan_id: Mapped[str] = mapped_column(
         ForeignKey("organization_plans.id", ondelete="RESTRICT"),
-        unique=True,
         index=True,
     )
     workflow_id: Mapped[str | None] = mapped_column(
