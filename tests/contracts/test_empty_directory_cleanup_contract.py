@@ -29,12 +29,14 @@ class _FakeClient:
         return {"state": True, "data": {"fc": 0, "pid": payload["cid"]}}
 
 
+# 生产清理路径使用 P115C03ProductionTransport（50 条/页），
+# 页响应必须回显 limit=50 才能通过逐页严格校验。
 def _page(records, *, count):
     return {
         "state": True,
         "data": records,
         "offset": 0,
-        "limit": 1,
+        "limit": 50,
         "count": count,
     }
 

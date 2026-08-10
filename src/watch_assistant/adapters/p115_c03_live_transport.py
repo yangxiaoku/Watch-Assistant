@@ -36,6 +36,16 @@ EXPECTED_P115CLIENT_VERSION = "0.0.9.6.5.1"
 MAX_FS_FILES_PAGE_CALLS = 8
 MAX_RECOVERY_FS_FILES_PAGE_CALLS = MAX_RECOVERY_LIST_PAGE_CALLS
 VERIFIED_FS_FILES_PAGE_SIZE = 1
+# 生产执行路径（组织整理、空目录清理等）的完整分页配置。C03 live runner 验证
+# 路径必须保持类级默认（VERIFIED_FS_FILES_PAGE_SIZE=1、MAX_FS_FILES_PAGE_CALLS=8，
+# 见 AGENTS.md），生产路径不受该验证约束：任何真实媒体目录（>8 条）若仍按
+# 8 页 × 1 条/页读取，都会在组织写入前得到 complete=False → observation_unverified
+# → 首次写入前即永久 UNCERTAIN。生产路径因此显式放大分页：
+#  - 页上限 256，与 fixture probe 恢复路径 MAX_RECOVERY_LIST_PAGE_CALLS 同量级；
+#  - 页大小 50，与 p115_library_gateway.VERIFIED_BATCH_PAGE_SIZE 相同——该值已在
+#    真实 115 上实证 fs_files 分页结构与 limit=1 一致（见 gateway 模块注释）。
+PRODUCTION_FS_FILES_PAGE_CALLS = 256
+PRODUCTION_FS_FILES_PAGE_SIZE = 50
 
 
 class P115ClientLike(Protocol):
@@ -69,15 +79,26 @@ class P115C03LiveTransport(P115C03Transport):
     """Translate only fixed C03 calls through a caller-created client."""
 
     _max_page_calls = MAX_FS_FILES_PAGE_CALLS
+    _page_size = VERIFIED_FS_FILES_PAGE_SIZE
 
     def __init__(
         self,
         client: P115ClientLike,
         *,
         call_executor: P115C03CallExecutor | None = None,
+        max_page_calls: int | None = None,
+        page_size: int | None = None,
     ) -> None:
+        # 分页参数可逐实例覆盖：C03 live runner 验证路径保持类级默认
+        # （8 页 × 1 条/页，AGENTS.md 约束）；生产执行路径通过
+        # P115C03ProductionTransport 放大为完整分页，避免 >8 条的真实
+        # 媒体目录在首次写入前即 observation_unverified。
         self._client = client
         self._call_executor = call_executor
+        self._max_page_calls = _validated_page_count(
+            max_page_calls, self._max_page_calls
+        )
+        self._page_size = _validated_page_size(page_size, self._page_size)
 
     def __repr__(self) -> str:
         return "P115C03LiveTransport(mode='c03', client='injected')"
@@ -141,7 +162,7 @@ class P115C03LiveTransport(P115C03Transport):
                     getattr(self._client, "fs_files_app", None),
                     {
                         "cid": parent_id,
-                        "limit": VERIFIED_FS_FILES_PAGE_SIZE,
+                        "limit": self._page_size,
                         "offset": offset,
                         "record_open_time": 0,
                         "show_dir": 1,
@@ -154,7 +175,7 @@ class P115C03LiveTransport(P115C03Transport):
                 return C03DirectoryListing(
                     tuple(entries), complete=False, page_calls=page_calls
                 )
-            page = _normalize_files_page(response, parent_id, offset)
+            page = _normalize_files_page(response, parent_id, offset, self._page_size)
             if page is None:
                 return C03DirectoryListing(
                     tuple(entries), complete=False, page_calls=page_calls
@@ -190,6 +211,20 @@ class P115C03RecoveryTransport(P115C03LiveTransport):
     """Use the separately bounded read cap required by fixture recovery."""
 
     _max_page_calls = MAX_RECOVERY_FS_FILES_PAGE_CALLS
+
+
+class P115C03ProductionTransport(P115C03LiveTransport):
+    """生产执行路径专用：完整分页读取，不受 C03 live 验证的 8 页上限约束。
+
+    组织整理、空目录清理等生产路径在写入前必须完整读取源/目标目录；真实媒体
+    目录通常远超 8 条，按验证路径的 8 页 × 1 条/页读取必然 complete=False →
+    observation_unverified → 首次写入前即永久 UNCERTAIN。本类把分页放大到
+    256 页 × 50 条/页（50 条/页已在真实 115 上实证，见 PRODUCTION_FS_FILES_PAGE_SIZE
+    注释），同时保留逐页严格校验与 deadline，验证强度不降。
+    """
+
+    _max_page_calls = PRODUCTION_FS_FILES_PAGE_CALLS
+    _page_size = PRODUCTION_FS_FILES_PAGE_SIZE
 
 
 async def _call(
@@ -375,7 +410,7 @@ def _normalize_info_response(requested_id: str, response: Any) -> C03RemoteEntry
 
 
 def _normalize_files_page(
-    response: Any, parent_id: str, expected_offset: int
+    response: Any, parent_id: str, expected_offset: int, page_size: int
 ) -> tuple[tuple[C03RemoteEntry, ...], int] | None:
     if not isinstance(response, Mapping) or not _response_success(response):
         return None
@@ -385,14 +420,14 @@ def _normalize_files_page(
     records = _records(response)
     if (
         offset != expected_offset
-        or limit != VERIFIED_FS_FILES_PAGE_SIZE
+        or limit != page_size
         or total is None
         or total < 0
         or records is None
-        or len(records) > VERIFIED_FS_FILES_PAGE_SIZE
+        or len(records) > page_size
         or expected_offset > total
         or expected_offset + len(records) > total
-        or len(records) != min(VERIFIED_FS_FILES_PAGE_SIZE, total - expected_offset)
+        or len(records) != min(page_size, total - expected_offset)
         or (not records and total > expected_offset)
     ):
         return None
@@ -523,14 +558,35 @@ def _integer(value: Any) -> int | None:
     return None
 
 
+def _validated_page_count(value: int | None, default: int) -> int:
+    """逐实例分页上限必须为正整数，否则保持类级默认。"""
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError("invalid_max_page_calls")
+    return value
+
+
+def _validated_page_size(value: int | None, default: int) -> int:
+    """逐实例页大小必须为正整数，否则保持类级默认。"""
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError("invalid_page_size")
+    return value
+
+
 __all__ = [
     "EXPECTED_P115CLIENT_VERSION",
     "MAX_FS_FILES_PAGE_CALLS",
     "MAX_RECOVERY_FS_FILES_PAGE_CALLS",
+    "PRODUCTION_FS_FILES_PAGE_CALLS",
+    "PRODUCTION_FS_FILES_PAGE_SIZE",
     "VERIFIED_FS_FILES_PAGE_SIZE",
     "P115C03CallExecutor",
     "P115C03CallTimeoutUnavailable",
     "P115C03LiveTransport",
+    "P115C03ProductionTransport",
     "P115C03RecoveryTransport",
     "P115ClientLike",
     "p115_c03_timeout_executor",

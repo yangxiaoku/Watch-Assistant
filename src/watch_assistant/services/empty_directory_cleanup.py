@@ -7,7 +7,7 @@ from enum import StrEnum
 
 from watch_assistant.adapters.p115_c03_live_transport import (
     P115C03CallExecutor,
-    P115C03LiveTransport,
+    P115C03ProductionTransport,
 )
 from watch_assistant.adapters.p115_library_write_contract import (
     WriteStatus,
@@ -58,7 +58,11 @@ class LiveP115EmptyDirectoryCleaner:
         self._scope = scope
         self._system_created = system_created
         self._timeout_seconds = float(timeout_seconds)
-        self._c03 = P115C03LiveTransport(client, call_executor=call_executor)
+        # 生产清理路径必须完整读取父目录（含整理后成百上千条记录的真实媒体目录），
+        # 默认 C03 验证路径的 8 页 × 1 条/页会恒定为 cleanup_observation_unverified。
+        self._c03 = P115C03ProductionTransport(
+            client, call_executor=call_executor
+        )
 
     async def cleanup(
         self,

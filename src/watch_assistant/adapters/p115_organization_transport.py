@@ -11,7 +11,7 @@ from typing import Any
 from watch_assistant.adapters.p115_c03_fixture_probe import P115C03Transport
 from watch_assistant.adapters.p115_c03_live_transport import (
     P115C03CallExecutor,
-    P115C03LiveTransport,
+    P115C03ProductionTransport,
 )
 from watch_assistant.adapters.p115_library_write_contract import (
     OrganizationWriteGate,
@@ -390,7 +390,9 @@ class LiveP115OrganizationTransport:
         intents: Collection[OrganizationObjectIntent],
         managed_directory_ids: Collection[str],
         scope_confirmed: bool,
-        timeout_seconds: float = 30.0,
+        # 生产路径按需完整分页读取（最多 256 页 × 50 条/页），30 秒 deadline 对
+        # 含上千条记录的媒体目录不足；放宽到 120 秒，仍为有界的 fail-closed 上限。
+        timeout_seconds: float = 120.0,
         live_enabled: bool = False,
         write_enabled: bool = False,
         plan_confirmed: bool = False,
@@ -425,7 +427,11 @@ class LiveP115OrganizationTransport:
         if not isinstance(read_only, bool):
             raise TypeError("invalid_transport_mode")
         self._read_only = read_only
-        self._c03 = c03_transport or P115C03LiveTransport(
+        # 生产执行路径必须用完整分页的 P115C03ProductionTransport：C03 live 验证
+        # 路径的默认 8 页 × 1 条/页（见 p115_c03_live_transport 注释）会让任何
+        # >8 条的真实媒体目录在写入前 complete=False → observation_unverified
+        # → 首次写入前即永久 UNCERTAIN。测试或探针可显式注入自定义 c03_transport。
+        self._c03 = c03_transport or P115C03ProductionTransport(
             client, call_executor=call_executor
         )
         self._client = client
@@ -658,7 +664,7 @@ def create_live_p115_organization_transport(
     intents: Collection[OrganizationObjectIntent],
     managed_directory_ids: Collection[str],
     scope_confirmed: bool,
-    timeout_seconds: float = 30.0,
+    timeout_seconds: float = 120.0,
     live_enabled: bool = False,
     write_enabled: bool = False,
     plan_confirmed: bool = False,

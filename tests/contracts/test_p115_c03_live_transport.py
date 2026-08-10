@@ -20,8 +20,11 @@ from watch_assistant.adapters.p115_c03_fixture_probe import (
 )
 from watch_assistant.adapters.p115_c03_live_transport import (
     MAX_FS_FILES_PAGE_CALLS,
+    PRODUCTION_FS_FILES_PAGE_CALLS,
+    PRODUCTION_FS_FILES_PAGE_SIZE,
     P115C03CallTimeoutUnavailable,
     P115C03LiveTransport,
+    P115C03ProductionTransport,
 )
 from watch_assistant.adapters.p115_library_write_contract import (
     WriteStatus,
@@ -76,12 +79,12 @@ def _success():
     return {"state": True}
 
 
-def _page(records, *, offset, count):
+def _page(records, *, offset, count, limit=1):
     return {
         "state": True,
         "data": records,
         "offset": offset,
-        "limit": 1,
+        "limit": limit,
         "count": count,
     }
 
@@ -400,6 +403,74 @@ async def test_live_transport_fails_closed_on_unknown_write_or_pagination():
     assert incomplete.complete is False
     assert incomplete.page_calls == MAX_FS_FILES_PAGE_CALLS
     assert len(client.calls) == 1 + 1 + MAX_FS_FILES_PAGE_CALLS
+
+
+@pytest.mark.asyncio
+async def test_production_transport_reads_more_than_eight_entries_completely():
+    # 回归：生产执行路径（P115C03ProductionTransport）必须能完整读取 >8 条的
+    # 真实媒体目录；旧实现 8 页 × 1 条/页会让此类目录在首次写入前即
+    # complete=False → observation_unverified → 永久 UNCERTAIN。
+    records = [_file(f"30{index}", "7", f"movie-{index}.mkv") for index in range(12)]
+    client = _FakeP115Client(
+        {
+            "fs_mkdir": [],
+            "fs_move": [],
+            "fs_rename": [],
+            "fs_delete": [],
+            "fs_info": [],
+            "fs_files": [_page(records, offset=0, count=12, limit=50)],
+        }
+    )
+    transport = P115C03ProductionTransport(client, call_executor=_call_executor)
+
+    listing = await transport.list_children("7", timeout_seconds=10)
+
+    assert listing.complete is True
+    assert [entry.file_id for entry in listing.entries] == [
+        f"30{index}" for index in range(12)
+    ]
+    assert len(client.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_live_transport_page_parameters_are_configurable_and_validated():
+    # 逐实例分页参数：显式覆盖生效；非法值拒绝；不传则保持 C03 验证默认。
+    assert P115C03LiveTransport(
+        client=object(), call_executor=_call_executor  # type: ignore[arg-type]
+    )._max_page_calls == MAX_FS_FILES_PAGE_CALLS
+    assert P115C03LiveTransport(
+        client=object(),  # type: ignore[arg-type]
+        call_executor=_call_executor,
+        max_page_calls=3,
+        page_size=2,
+    )._max_page_calls == 3
+    assert (
+        P115C03LiveTransport(
+            client=object(),  # type: ignore[arg-type]
+            call_executor=_call_executor,
+            max_page_calls=3,
+            page_size=2,
+        )._page_size
+        == 2
+    )
+    production = P115C03ProductionTransport(
+        client=object(), call_executor=_call_executor  # type: ignore[arg-type]
+    )
+    assert production._max_page_calls == PRODUCTION_FS_FILES_PAGE_CALLS
+    assert production._page_size == PRODUCTION_FS_FILES_PAGE_SIZE
+    for bad in (0, -1, True, 2.5):
+        with pytest.raises(ValueError):
+            P115C03LiveTransport(
+                client=object(),  # type: ignore[arg-type]
+                call_executor=_call_executor,
+                max_page_calls=bad,
+            )
+        with pytest.raises(ValueError):
+            P115C03LiveTransport(
+                client=object(),  # type: ignore[arg-type]
+                call_executor=_call_executor,
+                page_size=bad,
+            )
 
 
 @pytest.mark.asyncio
