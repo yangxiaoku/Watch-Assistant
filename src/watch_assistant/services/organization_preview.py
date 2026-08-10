@@ -303,6 +303,12 @@ class OrganizationPreviewService:
                 target = PurePosixPath(naming_plan.target_path)
                 target_name = target.name
                 target_parent_id = target_parents.get(_normalize_path(str(target.parent)))
+                if target_parent_id is None and isinstance(target_directory_id, str):
+                    # The target may not contain the category sub-directory yet
+                    # (fresh/empty target). Fall back to the target root; the
+                    # directory provisioner creates missing sub-directories at
+                    # execution time, matching the manual-confirmation path.
+                    target_parent_id = target_directory_id
             path = entry.path
             if (
                 not isinstance(entry.parent_id, str)
