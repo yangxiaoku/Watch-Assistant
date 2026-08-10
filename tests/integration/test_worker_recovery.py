@@ -1813,11 +1813,11 @@ async def test_expired_share_recovery_reads_status_through_adapter(tmp_path):
 @pytest.mark.integration
 async def test_reconcile_rejects_cancelled_task_and_does_not_revive_it(tmp_path):
     """已取消(或取消竞态下)的任务不接受远端核对,不得被复活。"""
+    from watch_assistant.schemas import EvidenceSource
     from watch_assistant.services.tasks import (
         TaskNotReconcilable,
         apply_remote_status,
     )
-    from watch_assistant.schemas import EvidenceSource, EvidenceStatus
     from watch_assistant.services.workflows import (
         WorkflowCreateRequest,
         WorkflowService,
@@ -1874,7 +1874,6 @@ async def test_reconcile_rejects_cancelled_task_and_does_not_revive_it(tmp_path)
     assert still.error_code == "cancelled"
 
     # apply_remote_status 的终态守卫:即便绕过入口直接写入也不得复活
-    from sqlalchemy.ext.asyncio import async_sessionmaker
 
     async with database.session_factory() as session:
         stored = await session.get(Task, task.id)

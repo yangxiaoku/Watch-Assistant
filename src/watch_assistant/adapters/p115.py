@@ -513,7 +513,7 @@ class P115Adapter:
                 # 超时 = 服务端状态未知(可能已处理)。不重试提交,避免重复
                 # 副作用;由调用方标记不确定,交给只读核对兜底。
                 raise
-            except Exception as error:  # noqa: BLE001 - remote outcome is opaque
+            except Exception as error:
                 if attempt or not _has_busy_errno(error):
                     raise
                 await asyncio.sleep(_P115_BUSY_RETRY_DELAY_SECONDS)
