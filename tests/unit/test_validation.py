@@ -308,6 +308,32 @@ def test_validation_uses_selected_season_air_year_for_ranking():
     assert rejected == 0
 
 
+def test_validation_ranks_inspected_size_above_unverified_size():
+    movie = MovieMetadata(tmdb_id=9, title="Verified Movie", release_year=2026)
+    unverified = _resource("Verified Movie 2026 1080p", seeders=10, size_bytes=2 * 1024**3)
+    inspected = _resource(
+        "Verified Movie 2026 1080p", seeders=10, size_bytes=2 * 1024**3
+    ).model_copy(
+        update={
+            "canonical_key": "magnet:inspected",
+            "metadata": {"size_source": "inspection"},
+        }
+    )
+
+    resources, rejected = validate_and_rank_resources(movie, [unverified, inspected])
+
+    # 同名称同种子数同大小时,115 实测确认的资源排在前面。
+    assert [item.canonical_key for item in resources] == [
+        "magnet:inspected",
+        "magnet:Verified Movie 2026 1080p",
+    ]
+    assert (
+        resources[0].metadata["completeness_score"]
+        > resources[1].metadata["completeness_score"]
+    )
+    assert rejected == 0
+
+
 def test_validation_scores_zero_seeders_and_size_below_valid_data():
     movie = MovieMetadata(tmdb_id=2, title="A Long Movie", release_year=2026)
     resources, rejected = validate_and_rank_resources(

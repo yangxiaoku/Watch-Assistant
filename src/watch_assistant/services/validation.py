@@ -57,9 +57,15 @@ def validate_and_rank_resources(
     rejected = 0
     penalties = source_penalties or {}
     for resource in resources:
+        # 每个资源只做一次 NFKC/小写/空白规整,三个打分函数共享,
+        # 大结果集(数千条)下避免对同一字符串重复扫描。
+        normalized_name = _normalize(resource.name)
+        nfkc_name = unicodedata.normalize("NFKC", resource.name)
         score = _match_score(
             media,
             resource.name,
+            normalized_name=normalized_name,
+            nfkc_name=nfkc_name,
             alternative_titles=alternative_titles,
             season_number=season_number,
         )
@@ -69,10 +75,14 @@ def validate_and_rank_resources(
         relevance_score = _relevance_score(
             media,
             resource.name,
+            normalized_name=normalized_name,
+            nfkc_name=nfkc_name,
             alternative_titles=alternative_titles,
             season_number=season_number,
         )
-        completeness_score = _completeness_score(resource.name, resource)
+        completeness_score = _completeness_score(
+            resource.name, resource, normalized_name=normalized_name
+        )
         rank_score = max(
             0,
             min(
@@ -118,6 +128,8 @@ def resource_matches_media(
         _match_score(
             media,
             resource_name,
+            normalized_name=_normalize(resource_name),
+            nfkc_name=unicodedata.normalize("NFKC", resource_name),
             alternative_titles=alternative_titles,
             season_number=season_number,
         )
@@ -129,21 +141,27 @@ def _match_score(
     media: MovieMetadata,
     resource_name: str,
     *,
+    normalized_name: str | None = None,
+    nfkc_name: str | None = None,
     alternative_titles: tuple[str, ...] = (),
     season_number: int | None = None,
 ) -> int | None:
-    normalized_name = _normalize(resource_name)
+    # 归一化结果可由调用方预计算后传入,避免大结果集重复扫描。
+    if normalized_name is None:
+        normalized_name = _normalize(resource_name)
+    if nfkc_name is None:
+        nfkc_name = unicodedata.normalize("NFKC", resource_name)
     compact_name = normalized_name.replace(" ", "")
-    has_episode_marker = (
-        EPISODE_PATTERN.search(unicodedata.normalize("NFKC", resource_name)) is not None
-    )
+    has_episode_marker = EPISODE_PATTERN.search(nfkc_name) is not None
     if media.media_type == MediaType.MOVIE and has_episode_marker:
         return None
 
     if (
         media.media_type == MediaType.TV
         and season_number is not None
-        and not _season_matches_requested(resource_name, season_number)
+        and not _season_matches_requested(
+            resource_name, season_number, nfkc_value=nfkc_name
+        )
     ):
         return None
 
@@ -205,10 +223,15 @@ def _relevance_score(
     media: MovieMetadata,
     resource_name: str,
     *,
+    normalized_name: str | None = None,
+    nfkc_name: str | None = None,
     alternative_titles: tuple[str, ...],
     season_number: int | None,
 ) -> int:
-    normalized_name = _normalize(resource_name)
+    if normalized_name is None:
+        normalized_name = _normalize(resource_name)
+    if nfkc_name is None:
+        nfkc_name = unicodedata.normalize("NFKC", resource_name)
     compact_name = normalized_name.replace(" ", "")
     title_match = _alias_matches(media.title, normalized_name, compact_name)
     original_match = bool(media.original_title) and _alias_matches(
@@ -231,18 +254,23 @@ def _relevance_score(
         20
         if media.media_type == MediaType.TV
         and season_number is not None
-        and _season_numbers(resource_name) == {season_number}
+        and _season_numbers(resource_name, nfkc_value=nfkc_name) == {season_number}
         else 10
         if media.media_type == MediaType.TV
         and season_number is not None
-        and _season_matches_requested(resource_name, season_number)
+        and _season_matches_requested(
+            resource_name, season_number, nfkc_value=nfkc_name
+        )
         else 0
     )
     return max(0, min(100, title_score + year_score + season_score))
 
 
-def _completeness_score(name: str, resource: NormalizedResource) -> int:
-    normalized_name = _normalize(name)
+def _completeness_score(
+    name: str, resource: NormalizedResource, *, normalized_name: str | None = None
+) -> int:
+    if normalized_name is None:
+        normalized_name = _normalize(name)
     if re.search(r"\b(?:2160p|4k)\b", normalized_name):
         resolution = 35
     elif re.search(r"\b1080p\b", normalized_name):
@@ -269,7 +297,12 @@ def _completeness_score(name: str, resource: NormalizedResource) -> int:
         seeders = 22
     else:
         seeders = 25
-    size = 15 if resource.size_bytes is not None and resource.size_bytes > 0 else 0
+    if resource.size_bytes is not None and resource.size_bytes > 0:
+        # 115 实测确认过的大小(size_source=inspection)比未经验证的
+        # 抓取值更可信:同条件下让已知可用的资源排在前面。
+        size = 20 if resource.metadata.get("size_source") == "inspection" else 10
+    else:
+        size = 0
     return max(0, min(100, resolution + source + seeders + size))
 
 
@@ -322,8 +355,12 @@ def _contains_cjk(value: str) -> bool:
     return any("\u3400" <= character <= "\u9fff" for character in value)
 
 
-def _season_numbers(value: str) -> set[int]:
-    normalized = unicodedata.normalize("NFKC", value).casefold()
+def _season_numbers(value: str, *, nfkc_value: str | None = None) -> set[int]:
+    # nfkc_value 为调用方预计算的 NFKC 结果,省去重复归一化扫描。
+    if nfkc_value is None:
+        normalized = unicodedata.normalize("NFKC", value).casefold()
+    else:
+        normalized = nfkc_value.casefold()
     numbers: set[int] = set()
     for match in re.finditer(
         r"(?<![a-z0-9])s(?:eason)?s?\s*0*(\d{1,3})(?!\d)|"
@@ -347,11 +384,16 @@ def _season_numbers(value: str) -> set[int]:
     return numbers
 
 
-def _season_matches_requested(value: str, season_number: int) -> bool:
-    numbers = _season_numbers(value)
+def _season_matches_requested(
+    value: str, season_number: int, *, nfkc_value: str | None = None
+) -> bool:
+    numbers = _season_numbers(value, nfkc_value=nfkc_value)
     if season_number in numbers:
         return True
-    normalized = unicodedata.normalize("NFKC", value).casefold()
+    if nfkc_value is None:
+        normalized = unicodedata.normalize("NFKC", value).casefold()
+    else:
+        normalized = nfkc_value.casefold()
     for match in SEASON_RANGE_PATTERN.finditer(normalized):
         if match.group(1) is not None:
             start, end = int(match.group(1)), int(match.group(2))

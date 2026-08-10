@@ -1002,6 +1002,13 @@ def create_app(
                 event_logger=application.state.settings_service,
                 prowlarr_fast_indexer_ids=settings.prowlarr_fast_ids,
                 prowlarr_slow_indexer_ids=settings.prowlarr_slow_ids,
+                fresh_cache_ttl=timedelta(hours=settings.search_cache_ttl_hours),
+                negative_cache_ttl=timedelta(
+                    minutes=settings.search_negative_cache_minutes
+                ),
+                partial_cache_ttl=timedelta(
+                    minutes=settings.search_partial_cache_minutes
+                ),
             )
             application.state.manual_import_service = ManualImportService(
                 runtime_database.session_factory,

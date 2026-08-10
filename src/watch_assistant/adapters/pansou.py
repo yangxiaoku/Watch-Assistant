@@ -1,5 +1,6 @@
 """PanSou search and share-link validation adapter."""
 
+import asyncio
 import base64
 import binascii
 import json
@@ -121,50 +122,76 @@ class PanSouClient:
         items: list[LinkCheckItem],
         *,
         batch_size: int = 10,
+        batch_concurrency: int = 3,
     ) -> list[LinkCheckState]:
-        states: list[LinkCheckState] = []
-        for offset in range(0, len(items), batch_size):
-            batch = items[offset : offset + batch_size]
-            payload = {
-                "items": [
-                    {
-                        "disk_type": "115",
-                        "url": item.url,
-                        **(
-                            {"password": item.password}
-                            if item.password is not None
-                            else {}
-                        ),
-                    }
-                    for item in batch
-                ]
-            }
-            try:
-                response = await self._client.post(
-                    "/api/check/links",
-                    json=payload,
-                    timeout=max(self._timeout, len(batch) * 12.0),
-                    follow_redirects=False,
-                )
-                response.raise_for_status()
-            except httpx.HTTPError:
-                raise PanSouError("PanSou link check failed") from None
-            body = _parse_json_response(
-                response, "Unexpected PanSou link check response shape"
+        """分批校验 115 分享链接;批次间并发以缩短校验总耗时。
+
+        每批 10 条(服务端批量上限),并发上限默认 3(约 30 个在途
+        校验,兼顾服务端负载)。任一批失败整体失败并抛出 PanSouError,
+        与旧串行实现的错误语义一致;结果严格按输入顺序返回。
+        """
+        batches = [
+            items[offset : offset + batch_size]
+            for offset in range(0, len(items), batch_size)
+        ]
+        if not batches:
+            return []
+        semaphore = asyncio.Semaphore(
+            max(1, min(batch_concurrency, len(batches)))
+        )
+
+        async def check_batch(batch: list[LinkCheckItem]) -> list[LinkCheckState]:
+            async with semaphore:
+                return await self._check_links_batch(batch)
+
+        batch_states = await asyncio.gather(
+            *(check_batch(batch) for batch in batches)
+        )
+        return [state for states in batch_states for state in states]
+
+    async def _check_links_batch(
+        self, batch: list[LinkCheckItem]
+    ) -> list[LinkCheckState]:
+        payload = {
+            "items": [
+                {
+                    "disk_type": "115",
+                    "url": item.url,
+                    **(
+                        {"password": item.password}
+                        if item.password is not None
+                        else {}
+                    ),
+                }
+                for item in batch
+            ]
+        }
+        try:
+            response = await self._client.post(
+                "/api/check/links",
+                json=payload,
+                timeout=max(self._timeout, len(batch) * 12.0),
+                follow_redirects=False,
             )
-            results = body.get("results") if isinstance(body, dict) else None
-            if not isinstance(results, list) or len(results) != len(batch):
-                raise PanSouError("Unexpected PanSou link check response shape")
-            if not all(isinstance(result, dict) for result in results):
-                raise PanSouError("Unexpected PanSou link check response shape")
-            try:
-                states.extend(LinkCheckState(result["state"]) for result in results)
-            except (KeyError, ValueError):
-                raise PanSouError(
-                    "Unexpected PanSou link check response shape"
-                ) from None
-            if len(states) != offset + len(batch):
-                raise PanSouError("Unexpected PanSou link check response shape")
+            response.raise_for_status()
+        except httpx.HTTPError:
+            raise PanSouError("PanSou link check failed") from None
+        body = _parse_json_response(
+            response, "Unexpected PanSou link check response shape"
+        )
+        results = body.get("results") if isinstance(body, dict) else None
+        if not isinstance(results, list) or len(results) != len(batch):
+            raise PanSouError("Unexpected PanSou link check response shape")
+        if not all(isinstance(result, dict) for result in results):
+            raise PanSouError("Unexpected PanSou link check response shape")
+        try:
+            states = [LinkCheckState(result["state"]) for result in results]
+        except (KeyError, ValueError):
+            raise PanSouError(
+                "Unexpected PanSou link check response shape"
+            ) from None
+        if len(states) != len(batch):
+            raise PanSouError("Unexpected PanSou link check response shape")
         return states
 
     async def aclose(self) -> None:

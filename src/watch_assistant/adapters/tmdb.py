@@ -2,7 +2,9 @@
 
 import asyncio
 import re
-from datetime import UTC, datetime
+from collections import OrderedDict
+from datetime import UTC, datetime, timedelta
+from time import monotonic
 
 import httpx
 
@@ -63,6 +65,21 @@ class TmdbRateLimitedError(TmdbError):
 # 429/5xx 的有界重试次数与指数退避基数(1s → 2s)。
 _TMDB_RETRY_ATTEMPTS = 3
 _TMDB_BACKOFF_BASE = 1.0
+# 候选详情富化的并发上限:每个候选 2 个详情请求(zh + en),
+# 并发 4 个候选 ≈ 8 个在途请求,配合 _get 内的 429 退避重试
+# 既能显著缩短串行富化的耗时,又不至于打满免费配额(约 40 req/10s)。
+_TMDB_DETAIL_CONCURRENCY = 4
+# 文本搜索(热门词)内存缓存:前端搜索框每次输入都会命中
+# /media/search、/movies/search,同一热词反复查询会重复消耗
+# TMDB 配额。结果按 (api_key, 路径, 规范化查询, 页) 缓存,
+# TTL 1 小时,LRU 上限 256 条,超额自动淘汰最旧条目。
+_TEXT_SEARCH_CACHE_TTL = timedelta(hours=1)
+_TEXT_SEARCH_CACHE_MAX_ENTRIES = 256
+# 媒体元数据(详情)内存缓存:资源搜索命中快照缓存时仍会重复请求
+# /movie/{id} 或 /tv/{id} 详情,元数据变化缓慢,24h TTL + LRU
+# 上限 256 条即可消除缓存命中路径上的这 1 个多余请求。
+_MEDIA_CACHE_TTL = timedelta(hours=24)
+_MEDIA_CACHE_MAX_ENTRIES = 256
 
 
 class TmdbClient:
@@ -73,11 +90,31 @@ class TmdbClient:
         base_url: str = TMDB_BASE_URL,
         timeout: float = 12.0,
         client: httpx.AsyncClient | None = None,
+        text_cache_ttl: timedelta | None = None,
+        text_cache_max_entries: int = _TEXT_SEARCH_CACHE_MAX_ENTRIES,
+        media_cache_ttl: timedelta | None = None,
+        media_cache_max_entries: int = _MEDIA_CACHE_MAX_ENTRIES,
     ) -> None:
         self._api_key = api_key
         self._timeout = timeout
         self._owns_client = client is None
         self._client = client or httpx.AsyncClient(base_url=base_url.rstrip("/"))
+        # 热门词文本搜索的进程内 TTL 缓存(可选关闭:TTL 传 None 表示禁用)。
+        self._text_cache_ttl = (
+            _TEXT_SEARCH_CACHE_TTL if text_cache_ttl is None else text_cache_ttl
+        )
+        self._text_cache_max_entries = max(1, text_cache_max_entries)
+        self._text_cache: OrderedDict[
+            tuple[str, str, str, int], tuple[float, dict]
+        ] = OrderedDict()
+        # 媒体详情元数据的进程内 TTL 缓存。
+        self._media_cache_ttl = (
+            _MEDIA_CACHE_TTL if media_cache_ttl is None else media_cache_ttl
+        )
+        self._media_cache_max_entries = max(1, media_cache_max_entries)
+        self._media_cache: OrderedDict[
+            tuple[str, str, int], tuple[float, MovieMetadata]
+        ] = OrderedDict()
 
     def set_api_key(self, api_key: str) -> None:
         self._api_key = api_key
@@ -96,8 +133,35 @@ class TmdbClient:
         return await self.get_media(tmdb_id, MediaType.MOVIE)
 
     async def get_media(self, tmdb_id: int, media_type: MediaType) -> MovieMetadata:
+        return await self._cached_media(tmdb_id, media_type)
+
+    async def _cached_media(
+        self, tmdb_id: int, media_type: MediaType
+    ) -> MovieMetadata:
+        """带内存 TTL 缓存的详情查询,消除缓存命中路径的重复请求。
+
+        元数据(标题/年份/季列表)变化极慢,24h 内直接复用;
+        缓存键含 api_key,运行期切换密钥不会串用旧结果。
+        """
+        if self._media_cache_ttl is None:
+            payload = await self._get(f"/{media_type.value}/{tmdb_id}")
+            return _parse_media(payload, tmdb_id=tmdb_id, media_type=media_type)
+        key = (self._api_key, media_type.value, tmdb_id)
+        now = monotonic()
+        cached = self._media_cache.get(key)
+        if cached is not None:
+            stored_at, media = cached
+            if now - stored_at <= self._media_cache_ttl.total_seconds():
+                # LRU 语义:命中条目移到队尾,淘汰时从队头删最旧。
+                self._media_cache.move_to_end(key)
+                return media
+            self._media_cache.pop(key, None)
         payload = await self._get(f"/{media_type.value}/{tmdb_id}")
-        return _parse_media(payload, tmdb_id=tmdb_id, media_type=media_type)
+        media = _parse_media(payload, tmdb_id=tmdb_id, media_type=media_type)
+        self._media_cache[key] = (now, media)
+        while len(self._media_cache) > self._media_cache_max_entries:
+            self._media_cache.popitem(last=False)
+        return media
 
     async def get_season(
         self,
@@ -188,16 +252,46 @@ class TmdbClient:
         ).results
 
     async def search_movies(self, query: str) -> list[MovieMetadata]:
-        payload = await self._get("/search/movie", params={"query": query, "page": 1})
+        payload = await self._cached_text_search("/search/movie", query, page=1)
         return _parse_media_collection(payload, media_type=MediaType.MOVIE).results
 
     async def search_media(
         self, query: str, *, page: int = 1
     ) -> MovieCollectionResponse:
-        payload = await self._get(
-            "/search/multi", params={"query": query, "page": page}
-        )
+        payload = await self._cached_text_search("/search/multi", query, page=page)
         return _parse_multi_collection(payload)
+
+    async def _cached_text_search(
+        self, path: str, query: str, *, page: int
+    ) -> dict:
+        """带内存 TTL 缓存的文本搜索,规范化查询词以提升热词命中率。
+
+        缓存键包含 api_key,运行时切换密钥不会串用旧结果;查询词做
+        casefold + 空白规整,如 "  Interstellar  " 与 "interstellar"
+        视为同一热词。TTL 内重复查询直接返回缓存,不再消耗 TMDB 配额。
+        """
+        if self._text_cache_ttl is None:
+            return await self._get(path, params={"query": query, "page": page})
+        key = (
+            self._api_key,
+            path,
+            _normalize_search_query(query),
+            page,
+        )
+        now = monotonic()
+        cached = self._text_cache.get(key)
+        if cached is not None:
+            stored_at, payload = cached
+            if now - stored_at <= self._text_cache_ttl.total_seconds():
+                # LRU 语义:命中条目移到队尾,淘汰时从队头删最旧。
+                self._text_cache.move_to_end(key)
+                return payload
+            self._text_cache.pop(key, None)
+        payload = await self._get(path, params={"query": query, "page": page})
+        self._text_cache[key] = (now, payload)
+        while len(self._text_cache) > self._text_cache_max_entries:
+            self._text_cache.popitem(last=False)
+        return payload
 
     async def search_candidates(
         self, query: MediaMatchInput, *, limit: int = 8
@@ -220,7 +314,8 @@ class TmdbClient:
         results = payload.get("results")
         if not isinstance(results, list):
             raise TmdbError("Unexpected TMDB response shape")
-        candidates: list[TmdbCandidate] = []
+        # 先过滤媒体类型命中项:与旧串行实现一致,非命中项不发起任何请求。
+        matching: list[dict] = []
         for item in results:
             if not isinstance(item, dict) or not isinstance(item.get("id"), int):
                 continue
@@ -232,55 +327,81 @@ class TmdbClient:
                 and media_type != query.media_type_hint
             ):
                 continue
-            detail = item
-            english_detail: dict | None = None
+            matching.append(item)
+
+        # 详情富化原先逐个串行(最多 2*limit+1 个请求),改为按 limit
+        # 分片并发:每片内部用信号量限制并发候选数,保持"按结果顺序取
+        # 前 limit 个有效候选"的既有语义;429 限流仍由 _get 的退避重试兜底。
+        semaphore = asyncio.Semaphore(_TMDB_DETAIL_CONCURRENCY)
+        candidates: list[TmdbCandidate] = []
+        offset = 0
+        while len(candidates) < limit and offset < len(matching):
+            batch = matching[offset : offset + limit]
+            offset += limit
+            enriched = await asyncio.gather(
+                *(self._enrich_candidate(item, semaphore) for item in batch)
+            )
+            for candidate_payload in enriched:
+                if candidate_payload is None:
+                    continue
+                try:
+                    candidates.append(TmdbCandidate.from_payload(candidate_payload))
+                except (TypeError, ValueError):
+                    continue
+                if len(candidates) >= limit:
+                    break
+        return candidates
+
+    async def _enrich_candidate(
+        self, item: dict, semaphore: asyncio.Semaphore
+    ) -> dict | None:
+        """抓取一个候选的详情并按匹配器契约组装负载。
+
+        本地化详情失败时降级为搜索摘要(缺失详情的证据由 TmdbMatcher
+        按保守策略处理);本地化成功后才请求英文详情(种子文件名常为
+        英文,无法匹配本地化标题)。返回 None 表示负载无效,由调用方跳过。
+        """
+        async with semaphore:
+            media_type = item.get("media_type")
             try:
                 detail = await self._get(f"/{media_type}/{item['id']}")
             except TmdbError:
-                # The search result remains useful, but missing detail must
-                # leave the candidate incomplete so the matcher can review it.
+                # 搜索摘要同样可用,但缺失详情必须让候选证据不完整。
                 detail = item
+                english_detail: dict | None = None
             else:
                 try:
-                    # English filenames (common in torrents) cannot match the
-                    # localized title, so capture the English title separately.
                     english_detail = await self._get(
                         f"/{media_type}/{item['id']}", params={"language": "en-US"}
                     )
                 except TmdbError:
                     english_detail = None
-            candidate_payload = dict(item)
-            candidate_payload.update(detail)
-            # Keep the localized search-result title for display; use the
-            # English detail title only for matching. TV responses use "name".
-            localized_title = item.get("title") or item.get("name")
-            if localized_title:
-                candidate_payload["title"] = localized_title
-            if isinstance(english_detail, dict):
-                english_title = english_detail.get("title") or english_detail.get("name")
-                if isinstance(english_title, str):
-                    candidate_payload["english_title"] = english_title
-            candidate_payload["id"] = item["id"]
-            candidate_payload["media_type"] = media_type
-            candidate_payload["kind"] = (
-                MediaKind.MOVIE.value
-                if media_type == MediaType.MOVIE.value
-                else MediaKind.TV.value
-            )
-            countries = _candidate_countries(detail)
-            if countries:
-                candidate_payload["origin_country"] = countries
-            if media_type == MediaType.TV.value:
-                seasons = detail.get("seasons")
-                if isinstance(seasons, list):
-                    candidate_payload["seasons"] = seasons
-            try:
-                candidates.append(TmdbCandidate.from_payload(candidate_payload))
-            except (TypeError, ValueError):
-                continue
-            if len(candidates) >= limit:
-                break
-        return candidates
+        candidate_payload = dict(item)
+        candidate_payload.update(detail)
+        # 保留本地化搜索结果的标题用于展示;英文详情标题只用于匹配。
+        # TV 响应用 "name" 字段。
+        localized_title = item.get("title") or item.get("name")
+        if localized_title:
+            candidate_payload["title"] = localized_title
+        if isinstance(english_detail, dict):
+            english_title = english_detail.get("title") or english_detail.get("name")
+            if isinstance(english_title, str):
+                candidate_payload["english_title"] = english_title
+        candidate_payload["id"] = item["id"]
+        candidate_payload["media_type"] = media_type
+        candidate_payload["kind"] = (
+            MediaKind.MOVIE.value
+            if media_type == MediaType.MOVIE.value
+            else MediaKind.TV.value
+        )
+        countries = _candidate_countries(detail)
+        if countries:
+            candidate_payload["origin_country"] = countries
+        if media_type == MediaType.TV.value:
+            seasons = detail.get("seasons")
+            if isinstance(seasons, list):
+                candidate_payload["seasons"] = seasons
+        return candidate_payload
 
     async def get_alternative_titles(
         self,
@@ -379,6 +500,11 @@ class TmdbClient:
     async def aclose(self) -> None:
         if self._owns_client:
             await self._client.aclose()
+
+
+def _normalize_search_query(query: str) -> str:
+    """规范化文本搜索词:大小写折叠 + 空白规整,提升热词缓存命中率。"""
+    return " ".join(query.strip().casefold().split())
 
 
 def _parse_media_collection(
