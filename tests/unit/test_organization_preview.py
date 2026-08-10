@@ -368,3 +368,27 @@ async def test_preview_moves_configured_metadata_companion_with_primary(tmp_path
         "nfo-preview",
     ]
     await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_preview_falls_back_to_target_root_when_category_directory_missing(tmp_path: Path):
+    database = await _database(tmp_path, target_exists=False)
+    service = OrganizationPreviewService(
+        database.session_factory, _TmdbClient(), OrganizationPlanService(database.session_factory)
+    )
+
+    result = await service.create_preview(
+        library_id="library-preview",
+        scan_run_id="scan-preview",
+        target_directory_id="target-root",
+        target_directories={"": "target-root"},
+        video_extensions=["mkv"],
+    )
+
+    # The category sub-directory is absent from the scan, so the item must
+    # fall back to the target root and stay auto-executable; the provisioner
+    # creates the missing sub-directory at execution time.
+    assert result.status is OrganizationPlanStatus.PLANNED
+    assert result.executable_action_count == 1
+    assert result.review_action_count == 0
+    await database.engine.dispose()
