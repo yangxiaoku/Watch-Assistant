@@ -49,6 +49,11 @@ _CHINESE_EPISODE_RE = re.compile(
     r"第(?P<season>[0-9]{1,3})季[ ._-]*第(?P<start>[0-9]{1,4})(?!\s*季)"
     r"(?:[ ._-]*(?:-|至|到)[ ._-]*(?P<end>[0-9]{1,4}))?集?",
 )
+# 无季标记的纯中文集数:"第2集" / "第2-4集" / "第2至5集"。
+_CHINESE_EPISODE_ONLY_RE = re.compile(
+    r"(?<![0-9])第(?P<start>[0-9]{1,4})(?:[ ._-]*(?:-|~|至|到)[ ._-]*"
+    r"(?P<end>[0-9]{1,4}))?集",
+)
 _SEASON_ONLY_RE = re.compile(
     # 中文分支把 "第" 纳入匹配,掩码时一并遮掉,避免标题残留 "第"。
     r"(?<![A-Za-z0-9])(?:Season[ ._-]*(?P<season>[0-9]{1,3})"
@@ -566,7 +571,7 @@ def _episode_fields(
                 else:
                     end, span_end = recovered
             return season, start, end, ((match.start(), span_end),)
-    match = _EPISODE_LABEL_RE.search(stem)
+    match = _EPISODE_LABEL_RE.search(stem) or _CHINESE_EPISODE_ONLY_RE.search(stem)
     if match:
         season_match = _SEASON_ONLY_RE.search(stem)
         start = _group_int(match, "start")

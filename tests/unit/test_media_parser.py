@@ -120,6 +120,27 @@ def test_season_and_episode_forms(name, season, episode_start, episode_end):
     assert parsed.media_type_hint == "tv"
 
 
+@pytest.mark.parametrize(
+    ("name", "title", "episode_start", "episode_end"),
+    (
+        ("Show.第2集.mkv", "Show", 2, None),
+        ("Show.第02集.mkv", "Show", 2, None),
+        ("Show.第2-4集.mkv", "Show", 2, 4),
+        ("Show.第2至5集.mkv", "Show", 2, 5),
+        ("狂飙.第01集.1080p.mkv", "狂飙", 1, None),
+    ),
+)
+def test_unseasoned_chinese_episode_numbers(
+    name, title, episode_start, episode_end
+):
+    parsed = parse_media_filename(name)
+
+    assert parsed.title == title
+    assert parsed.episode_start == episode_start
+    assert parsed.episode_end == episode_end
+    assert parsed.media_type_hint == "tv"
+
+
 def test_chinese_multi_season_markers_do_not_claim_a_fake_episode():
     # "第1季第2季" 是两个季节标记,不是 第1季第2集
     parsed = parse_media_filename("权力的游戏.第1季.第2季.mkv")
