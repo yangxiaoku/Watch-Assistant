@@ -79,17 +79,17 @@
 针对**真实部署实例**编写 `frontend/e2e/live/**`(凭据仅经环境变量注入,不落仓库),配置
 `frontend/playwright.deploy.config.ts`(setup 项目真实 UI 登录 → storageState 复用)。
 
-### 3.1 结果总览:**19 / 19 通过**(桌面 14 + 移动 2 + 未登录 2 + 登录 setup 1)
+### 3.1 结果总览:**18 / 18 通过**(桌面 13 + 移动 2 + 未登录 2 + 登录 setup 1)
 
 | 项目 | 用例 | 结果 |
 |---|---|---|
 | no-auth | 未登录访问被登录门拦截 | ✅ |
 | no-auth | 错误密码显示中文错误提示(凭据错误/限流/锁定三选一,不泄露细节) | ✅ |
 | setup | 真实 UI 登录并保存会话 | ✅ |
-| desktop ×14 | 首页发现板块、电影目录+翻页(URL=2 且内容变化)、剧集目录、热门、顶栏搜索→详情、详情资源区+质量筛选、整理工作台(状态/待处理/历史)、媒体库工作台、任务中心+推送抽屉开合、通知中心、日志页、设置全 7 分区、收藏与记录 | ✅ |
+| desktop ×13 | 首页发现板块、电影目录+翻页(URL=2 且内容变化)、剧集目录、热门、顶栏搜索→详情、详情资源区+质量筛选、整理工作台(状态/待处理/历史)、媒体库工作台、任务中心+推送抽屉开合、通知中心、日志页、设置全 7 分区、收藏与记录 | ✅ |
 | mobile ×2 | 首页/目录→详情无横向溢出(桌面与移动项目双跑) | ✅ |
 
-三次完整重跑全部稳定通过(14/14、14/14),无 flake。
+部署前后多次完整重跑全部稳定通过,无 flake。
 
 ### 3.2 截图(15 张,位于 `frontend/test-results/deploy/screenshots/`,测试报告页面内嵌)
 
@@ -125,7 +125,7 @@
 | 后端单元+集成 | `.venv/bin/python -m pytest tests/unit tests/integration` | 全部通过(见提交说明) |
 | 前端单元 | `npm --prefix frontend test -- --run` | 29 文件 / 226 用例 ✅ |
 | 前端构建 | `npm --prefix frontend run build` | ✅ |
-| 真实部署 e2e | `npx playwright test -c playwright.deploy.config.ts` | 19/19 ✅(3 轮稳定) |
+| 真实部署 e2e | `npx playwright test -c playwright.deploy.config.ts` | 18/18 ✅(部署前后多轮稳定) |
 | 新增回归测试 | `test_media_parser.py`(+7 参数化)、`test_library_scan_scheduler.py`(+1) | ✅ |
 
 ---
