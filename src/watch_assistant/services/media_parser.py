@@ -294,7 +294,9 @@ def parse_media_filename(filename: str) -> MediaParseResult:
     year_match = _select_year_match(stem, year_matches)
     year = int(year_match.group()) if year_match else None
     year_candidates = tuple(int(match.group()) for match in year_matches)
-    season, episode_start, episode_end, episode_spans = _episode_fields(stem)
+    season, episode_start, episode_end, episode_spans, zero_episode = _episode_fields(
+        stem
+    )
     explicit_special_hints, explicit_special_spans = _matches(
         _EXPLICIT_SPECIAL_PATTERNS, stem
     )
@@ -312,6 +314,10 @@ def parse_media_filename(filename: str) -> MediaParseResult:
     if explicit_special_hints:
         special_hints = explicit_special_hints
         special_spans = explicit_special_spans
+    elif zero_episode:
+        # E00 (第 0 集) 是特辑占位符:转为特辑提示,不产生集数主张。
+        special_hints = ("special",)
+        special_spans = ()
     elif contextual_special:
         special_hints = ("special",)
         special_spans = ((generic_special_match.start(), generic_special_match.end()),)
@@ -551,7 +557,14 @@ def _recover_range_after_year(
 
 def _episode_fields(
     stem: str,
-) -> tuple[int | None, int | None, int | None, tuple[tuple[int, int], ...]]:
+) -> tuple[
+    int | None, int | None, int | None, tuple[tuple[int, int], ...], bool
+]:
+    """提取季集字段。
+
+    返回值末尾的布尔值表示是否命中 E00 (第 0 集) 特辑占位符——
+    此时集号不是有效主张,由调用方转为特辑提示。
+    """
     patterns = (_SEASON_EPISODE_RE, _MULTI_SEASON_EPISODE_RE, _CHINESE_EPISODE_RE)
     for pattern in patterns:
         match = pattern.search(stem)
@@ -560,6 +573,12 @@ def _episode_fields(
             start = _group_int(match, "start")
             end = _group_int(match, "end")
             span_end = match.end()
+            if start == 0:
+                # E00 是特辑占位符:下游契约 (库存/完整性矩阵) 要求集数
+                # >= 1,且 TMDB 集号从 1 开始,因此不产生集数主张。
+                if end is not None and not _plausible_episode_end(start, end):
+                    span_end = match.start("end")
+                return season, None, None, ((match.start(), span_end),), True
             if end is not None and not _plausible_episode_end(start, end):
                 # end 是年份等误匹配:若年份之后还有第二个季集标记
                 # (如 "S01E01.2020.E02"),则恢复完整范围;否则丢弃 end,
@@ -570,13 +589,18 @@ def _episode_fields(
                     span_end = match.start("end")
                 else:
                     end, span_end = recovered
-            return season, start, end, ((match.start(), span_end),)
+            return season, start, end, ((match.start(), span_end),), False
     match = _EPISODE_LABEL_RE.search(stem) or _CHINESE_EPISODE_ONLY_RE.search(stem)
     if match:
         season_match = _SEASON_ONLY_RE.search(stem)
         start = _group_int(match, "start")
         end = _group_int(match, "end")
         span_end = match.end()
+        if start == 0:
+            # 无季形态的 E00 (如 "Show.E00.mkv") 同样视为特辑占位符。
+            if end is not None and not _plausible_episode_end(start, end):
+                span_end = match.start("end")
+            return None, None, None, ((match.start(), span_end),), True
         if end is not None and not _plausible_episode_end(start, end):
             recovered = _recover_range_after_year(stem, match, start)
             if recovered is None:
@@ -598,6 +622,7 @@ def _episode_fields(
             start,
             end,
             tuple(spans),
+            False,
         )
     season_match = _SEASON_ONLY_RE.search(stem)
     if season_match:
@@ -606,8 +631,8 @@ def _episode_fields(
             or _group_int(season_match, "s_season")
             or _group_int(season_match, "season_cn")
         )
-        return season, None, None, ((season_match.start(), season_match.end()),)
-    return None, None, None, ()
+        return season, None, None, ((season_match.start(), season_match.end()),), False
+    return None, None, None, (), False
 
 
 def _group_int(match: re.Match[str], name: str) -> int | None:

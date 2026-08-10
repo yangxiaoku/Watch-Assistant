@@ -206,6 +206,40 @@ def test_year_between_episode_markers_recovers_full_range(
     assert parsed.media_type_hint == "tv"
 
 
+@pytest.mark.parametrize(
+    ("name", "season", "title"),
+    (
+        ("Show.S01E00.mkv", 1, "Show"),
+        ("Show.S01E00.2020.1080p.mkv", 1, "Show"),
+        ("Show.S00E00.mkv", 0, "Show"),
+        ("Show.E00.mkv", None, "Show"),
+    ),
+)
+def test_zero_episode_is_a_special_placeholder_not_an_episode_claim(
+    name, season, title
+):
+    parsed = parse_media_filename(name)
+
+    assert parsed.title == title
+    assert parsed.season == season
+    assert parsed.episode_start is None
+    assert parsed.episode_end is None
+    assert parsed.special_hints == ("special",)
+    assert parsed.media_type_hint == "tv"
+    assert "special" in parsed.evidence
+    assert "episode" not in parsed.evidence
+
+
+def test_season_zero_episodes_remain_real_episode_claims():
+    # S00E01 是 TMDB 特辑季 (season 0) 的真实集号,保持集数主张
+    parsed = parse_media_filename("Show.S00E01.mkv")
+
+    assert parsed.season == 0
+    assert parsed.episode_start == 1
+    assert parsed.episode_end is None
+    assert parsed.special_hints == ()
+
+
 def test_special_episode_hints_are_not_final_media_classification():
     parsed = parse_media_filename("Anime - SP OVA 1080p WEB-DL.mkv")
 
