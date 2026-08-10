@@ -72,30 +72,42 @@ class P115PermanentDeleteTransport:
         )
 
     async def list_entries(self, *, timeout_seconds: float) -> tuple[RecycleBinEntry, ...] | None:
-        response = await _call(
-            self._call_executor,
-            self._client.recyclebin_list,
-            {"aid": 7, "cid": 0, "limit": 100, "offset": 0},
-            timeout_seconds=timeout_seconds,
-        )
-        if not isinstance(response, Mapping) or not _response_success(response):
-            return None
-        data = response.get("data")
-        if data is None and response.get("count") in {0, "0"}:
-            return ()
-        if not isinstance(data, list):
-            return None
+        # 只读前 100 条会导致:新回收记录超出窗口 → find_new_entries 永远找不到、
+        # wait_until_absent 永远"未消失" → 永久删除恒定 UNCERTAIN(fail-closed
+        # 但不误删,只是功能不可用)。必须分页遍历全部条目。
+        page_limit = 100
+        max_pages = 100  # 上限保护:异常上游不得让本方法无限循环
         entries: list[RecycleBinEntry] = []
-        for record in data:
-            entry = _normalize_entry(record)
-            if entry is None:
-                # The recycle-bin root can contain a synthetic ``cid=0``
-                # record. It cannot identify a deleted file and must not
-                # make an otherwise complete listing unusable.
-                if isinstance(record, Mapping) and record.get("cid") in {0, "0"}:
-                    continue
+        offset = 0
+        while len(entries) // page_limit < max_pages:
+            response = await _call(
+                self._call_executor,
+                self._client.recyclebin_list,
+                {"aid": 7, "cid": 0, "limit": page_limit, "offset": offset},
+                timeout_seconds=timeout_seconds,
+            )
+            if not isinstance(response, Mapping) or not _response_success(response):
                 return None
-            entries.append(entry)
+            data = response.get("data")
+            if data is None and response.get("count") in {0, "0"}:
+                break
+            if not isinstance(data, list):
+                return None
+            page_entries: list[RecycleBinEntry] = []
+            for record in data:
+                entry = _normalize_entry(record)
+                if entry is None:
+                    # The recycle-bin root can contain a synthetic ``cid=0``
+                    # record. It cannot identify a deleted file and must not
+                    # make an otherwise complete listing unusable.
+                    if isinstance(record, Mapping) and record.get("cid") in {0, "0"}:
+                        continue
+                    return None
+                page_entries.append(entry)
+            entries.extend(page_entries)
+            if len(page_entries) < page_limit:
+                break
+            offset += len(page_entries)
         return tuple(entries)
 
     async def find_new_entries(

@@ -187,6 +187,9 @@ async def apply_remote_status(
         not availability_verified
     ):
         raise WorkflowConflict("workflow_stage_terminal")
+    if task.state is TaskState.CANCELLED:
+        # 用户取消是最终意图:迟到的远端观察(提交回执/恢复核对)不得把任务复活。
+        raise WorkflowConflict("workflow_stage_terminal")
     task.state = state
     if state not in {TaskState.FAILED, TaskState.UNCERTAIN}:
         task.error_code = None
@@ -884,6 +887,9 @@ class TaskService:
                 task.lease_owner is not None or task.lease_token is not None
             ):
                 raise TaskNotReconcilable("task_lease_active")
+            if task.state is TaskState.CANCELLED:
+                # 已取消任务不接受远端核对:用户意图不可被复活。
+                raise TaskNotReconcilable("task_not_reconcilable")
             remote_ref = task.remote_ref
             target_directory_id = task.target_directory_id
             lease_owner = task.lease_owner

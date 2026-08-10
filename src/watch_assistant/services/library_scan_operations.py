@@ -31,6 +31,10 @@ from watch_assistant.services.library_index import (
 )
 from watch_assistant.services.observability import EventLogger, emit_event
 
+# 网关取消(快照分页被活跃目录并发修改打断)时的自动重排队上限。
+# 超过后转为 FAILED,避免无限热循环;由调度器冷却重试或用户手动重扫。
+MAX_SCAN_REQUEUE_ATTEMPTS = 5
+
 SCAN_STATE_LABELS_ZH = {
     "queued": "等待扫描",
     "running": "扫描中",
@@ -54,6 +58,7 @@ SCAN_ERROR_MESSAGES_ZH = {
     "repeated_entry": "115 返回了重复目录条目，扫描未生成完整快照。",
     "scan_worker_failed": "扫描 worker 异常退出，已保留断点，请稍后重试。",
     "scan_worker_recovered": "扫描已从上次中断位置重新排队。",
+    "scan_requeue_limit": "扫描被远端多次取消，已超过自动重试上限，请检查目录活跃状态后手动重扫。",
     "lease_claim_lost": "扫描执行权已变化，已停止继续读取，请查看状态后再决定是否重试。",
     "library_scope_unverified": "媒体库范围尚未完成只读验证。",
     "checkpoint_invalid": "扫描断点无法完成校验，已停止继续读取。",
@@ -426,8 +431,15 @@ class LibraryScanOperationService:
                 next_state = ScanRunState.CANCELLED.value
                 next_error = "cancelled"
             elif requeue and not run.complete:
-                next_state = ScanRunState.QUEUED.value
-                next_error = "scan_worker_recovered"
+                if run.attempts >= MAX_SCAN_REQUEUE_ATTEMPTS:
+                    # 网关反复取消(如活跃目录并发修改)时,无限 requeue 会以
+                    # 满速热循环(每秒全量重读该 run 条目)且扫描永不完成。
+                    # 达到上限转为 FAILED,由调度器冷却后重试或用户手动重扫。
+                    next_state = ScanRunState.FAILED.value
+                    next_error = "scan_requeue_limit"
+                else:
+                    next_state = ScanRunState.QUEUED.value
+                    next_error = "scan_worker_recovered"
             if error_code is not None and not run.complete:
                 if run.cancel_requested:
                     next_state = ScanRunState.CANCELLED.value

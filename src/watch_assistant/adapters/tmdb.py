@@ -1,5 +1,6 @@
 """TMDB movie and television metadata adapter."""
 
+import asyncio
 import re
 from datetime import UTC, datetime
 
@@ -49,6 +50,19 @@ class TmdbAuthError(TmdbError):
 
 class TmdbNotFoundError(TmdbError):
     pass
+
+
+class TmdbRateLimitedError(TmdbError):
+    """429 限流:与普通失败区分,携带服务端建议的等待秒数。"""
+
+    def __init__(self, retry_after_seconds: float | None) -> None:
+        super().__init__("TMDB rate limited")
+        self.retry_after_seconds = retry_after_seconds
+
+
+# 429/5xx 的有界重试次数与指数退避基数(1s → 2s)。
+_TMDB_RETRY_ATTEMPTS = 3
+_TMDB_BACKOFF_BASE = 1.0
 
 
 class TmdbClient:
@@ -307,33 +321,60 @@ class TmdbClient:
         api_key: str | None = None,
         language: str = "zh-CN",
     ) -> dict:
-        try:
-            response = await self._client.get(
-                path,
-                params={
-                    "api_key": self._api_key if api_key is None else api_key,
-                    "language": language,
-                    **(params or {}),
-                },
-                timeout=self._timeout,
-            )
-            response.raise_for_status()
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code in {401, 403}:
-                raise TmdbAuthError("TMDB credential rejected") from None
-            if exc.response.status_code == 404:
-                raise TmdbNotFoundError("TMDB resource not found") from None
-            raise TmdbError("TMDB request failed") from None
-        except httpx.HTTPError as exc:
-            raise TmdbError("TMDB request failed") from exc
+        # 429/5xx 有界退避重试:免费配额约 40 req/10s,富化批量请求极易触顶。
+        # 尊重 Retry-After,超限后按 TmdbRateLimitedError 交给调用方降级。
+        last_error: Exception | None = None
+        for attempt in range(_TMDB_RETRY_ATTEMPTS):
+            try:
+                response = await self._client.get(
+                    path,
+                    params={
+                        "api_key": self._api_key if api_key is None else api_key,
+                        "language": language,
+                        **(params or {}),
+                    },
+                    timeout=self._timeout,
+                )
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                status = exc.response.status_code
+                if status in {401, 403}:
+                    raise TmdbAuthError("TMDB credential rejected") from None
+                if status == 404:
+                    raise TmdbNotFoundError("TMDB resource not found") from None
+                if status == 429:
+                    retry_after = exc.response.headers.get("Retry-After")
+                    seconds: float | None = None
+                    if retry_after is not None:
+                        try:
+                            seconds = max(0.0, float(retry_after))
+                        except ValueError:
+                            seconds = None
+                    if attempt + 1 < _TMDB_RETRY_ATTEMPTS:
+                        last_error = TmdbRateLimitedError(seconds)
+                        await asyncio.sleep(seconds if seconds is not None else _TMDB_BACKOFF_BASE * 2**attempt)
+                        continue
+                    raise TmdbRateLimitedError(seconds) from None
+                if attempt + 1 < _TMDB_RETRY_ATTEMPTS:
+                    last_error = exc
+                    await asyncio.sleep(_TMDB_BACKOFF_BASE * 2**attempt)
+                    continue
+                raise TmdbError("TMDB request failed") from None
+            except httpx.HTTPError as exc:
+                if attempt + 1 < _TMDB_RETRY_ATTEMPTS:
+                    last_error = exc
+                    await asyncio.sleep(_TMDB_BACKOFF_BASE * 2**attempt)
+                    continue
+                raise TmdbError("TMDB request failed") from exc
 
-        try:
-            payload = response.json()
-        except ValueError as exc:
-            raise TmdbError("Unexpected TMDB response shape") from exc
-        if not isinstance(payload, dict):
-            raise TmdbError("Unexpected TMDB response shape")
-        return payload
+            try:
+                payload = response.json()
+            except ValueError as exc:
+                raise TmdbError("Unexpected TMDB response shape") from exc
+            if not isinstance(payload, dict):
+                raise TmdbError("Unexpected TMDB response shape")
+            return payload
+        raise TmdbError("TMDB request failed") from last_error
 
     async def aclose(self) -> None:
         if self._owns_client:

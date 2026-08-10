@@ -660,3 +660,56 @@ async def test_concurrent_direct_scans_share_one_execution_lease(tmp_path):
             == 1
         )
     await database.engine.dispose()
+
+
+class _CancelGateway:
+    """快照分页被 115 服务端取消(活跃目录并发修改的典型表现)。"""
+
+    def __init__(self) -> None:
+        self.calls: list[int] = []
+
+    async def list_directory(self, directory_id: str, *, page: int = 1, page_size=100):
+        self.calls.append(page)
+        return DirectoryPage(
+            items=(),
+            page=page,
+            page_count=2,
+            total=0,
+            scan_complete=False,
+            state=ScanState.CANCELLED,
+            has_more=True,
+            terminal=False,
+        )
+
+
+@pytest.mark.asyncio
+async def test_repeated_gateway_cancel_hits_requeue_limit_instead_of_hot_loop(tmp_path):
+    """修复前:网关 CANCELLED 无限 requeue,扫描永不完成且满速热循环。"""
+    from watch_assistant.services.library_scan_operations import (
+        MAX_SCAN_REQUEUE_ATTEMPTS,
+    )
+
+    database = await _database(tmp_path)
+    service = LibraryScanOperationService(database.session_factory)
+    gateway = _CancelGateway()
+    worker = LibraryScanWorker(
+        database.session_factory,
+        service,
+        lambda _root_id, _scope: gateway,
+        owner="cancel-loop-worker",
+        poll_interval_seconds=0.01,
+    )
+    queued = await service.enqueue(LIBRARY_ID, idempotency_key="cancel-loop")
+
+    worked = 0
+    while worked < MAX_SCAN_REQUEUE_ATTEMPTS + 2:
+        if not await worker.run_once():
+            break
+        worked += 1
+
+    final = await service.get(LIBRARY_ID, queued.run_id)
+    assert final.state == "failed"
+    assert final.error_code == "scan_requeue_limit"
+    assert final.attempts == MAX_SCAN_REQUEUE_ATTEMPTS
+    assert worked == MAX_SCAN_REQUEUE_ATTEMPTS  # 之后 claim 不到任务,不再空转
+    await database.engine.dispose()

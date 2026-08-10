@@ -1,6 +1,6 @@
 # 产品级改进与测试报告
 
-- **日期**:2026-08-10
+- **日期**:2026-08-10(两轮修复:第一轮 14 项 + 第二轮 7 项)
 - **基线**:`5068e8f`(部署实例与本地仓库一致)
 - **测试环境**:部署实例 `http://192.168.6.236:8115`(Docker),桌面 1440×900 与移动 390×844
 - **方法**:全量只读代码审查(5 个子系统并行)→ 按严重等级修复 → 单元/集成回归 → 真实用户路径 Playwright 浏览器验收
@@ -18,6 +18,9 @@
 | P1 | 13 | 核心流程故障/安全边界削弱/确定性失败 |
 | P2 | 26 | 次要功能故障/恢复路径缺失/一致性破坏 |
 | P3 | 22 | 边缘瑕疵/防御纵深 |
+
+> 第二轮修复(见第 2.2 节)新增 7 项修复,报告统计随之更新:
+> **已修复合计 21 项(P1×8 / P2×5 / P3×8)**。
 
 按子系统分布:Services 15 条、Adapters 13 条、Core 12 条、Frontend 12 条、API 9 条。
 
@@ -58,6 +61,18 @@
 > 注:#7 之前(前端)与 #12 之外,另有 `db.py`/`worker.py` 等改动属于可靠性增强,见变更清单。
 
 ---
+
+### 2.2 第二轮修复(7 项,2026-08-10 追加)
+
+| # | 位置 | 问题 | 修复方式 |
+|---|---|---|---|
+| 14 | `services/webhooks.py` | 密钥轮换/损坏时解密异常中断整批投递,该行永久队头阻塞,所有端点饿死 | 解密包 try/except 转 `_record_delivery_failure("secret_unavailable")`(退避重试,超限转 dead);`publish_due` 单行异常不中断整批;新增回归测试 |
+| 15 | `services/tasks.py` | 对已取消任务 reconcile 会把状态改回 SUBMITTED/FAILED 复活 | reconcile 入口对 CANCELLED 拒绝(`task_not_reconcilable`);`apply_remote_status` 增加 CANCELLED 终态守卫(覆盖 worker 竞态);新增集成回归测试 |
+| 16 | `services/mcp.py` | library 受限 token 可越权读取全部任务/通知/工作流(非库维度实体,无法按库过滤) | `_require_unscoped`:受限 token 读取这些全局实体 fail-closed(`resource_forbidden`);resources URI 与 tools 双路径覆盖;新增回归测试 |
+| 17 | `services/p115_login_devices.py` | 并发激活设备可致零活跃(凭据丢失)或双活跃(active_cookie 不确定) | `mark_active` 改单条原子 UPDATE(置位+清扫一体);`active_cookie` 加确定性排序;新增并发回归测试 |
+| 18 | `adapters/p115_permanent_delete_transport.py` | 回收站列表只读前 100 条,超窗新记录永远找不到 → 永久删除恒 UNCERTAIN | `list_entries` 分页遍历(100 条/页,100 页上限保护);新增跨页回归测试 |
+| 19 | `services/library_scan_operations.py` | 网关 CANCELLED 无限 requeue 热循环(每秒全量重读),扫描永不完成 | 重排队次数上限 `MAX_SCAN_REQUEUE_ATTEMPTS=5`,超限转 FAILED(`scan_requeue_limit`,含中文文案);与调度器冷却重试协同;新增回归测试 |
+| 20 | `adapters/tmdb.py` | 429/5xx 无分类无退避,批量富化必触限流且静默降级 | 新增 `TmdbRateLimitedError`(携带 Retry-After);`_get` 有界重试 3 次、指数退避、尊重 Retry-After;401/403/404 不重试;新增 3 个回归测试 |
 
 ## 3. 真实用户路径浏览器测试(Playwright)
 
@@ -124,41 +139,43 @@
 | P1 | `adapters/p115.py` | 写/状态路径无超时与 990009 重试,单次挂起可拖死 worker;get_status 网络错误与"任务不存在"不可区分 | 写调用统一带 `asyncio.wait_for`;990009 幂等重试一次;RemoteObservation 区分 error_code |
 | P1 | `services/organization_preview.py` + `executor` | 目标分类子目录不存在时预览显示子目录路径、实际落到根目录(首轮整理) | 执行前把冻结路径重新解析为真实子目录 ID,或回退场景降级为 review 并明示根目录 |
 | P1 | `services/strm_manifest.py` | 同目录"删除旧+同名新增"一次扫描窗口内 `path_collision`,全量模式永久失败 | diff 分两趟:先 retire removed,再生成 added/modified |
-| P1 | `services/webhooks.py` | 解密异常使整批投递队头阻塞,所有端点饿死 | 解密包 try/except 转 `_record_delivery_failure`;`publish_due` 单行失败 continue |
-| P1 | `services/library_scan_operations.py` | 网关 CANCELLED 无限 requeue 热循环,扫描永不完成 | requeue 前检查 attempts 上限,可重试 CANCELLED 加 `available_at` 退避 |
-| P1 | `services/media_parser.py`(剩余) | 多集打包跨季范围与季数边界仍有近似语义 | 后续按 matcher 需求细化范围语义 |
+| P1 | `services/webhooks.py` | ✅ 已修复(2.2 #14) |
+| P1 | `services/library_scan_operations.py` | ✅ 已修复(2.2 #19) |
 | P2 | `api/settings_p115.py` | 目录浏览原地改写全局白名单,可绕过推送目标限制;白名单不持久 | 浏览集合按会话隔离,推送/整理目标显式"确认选定"并持久化 |
-| P2 | `services/library_index.py` | snapshot revision 非原子分配,并发完成出现双同 revision,全部消费者 fail-closed | 完成点单条原子 UPDATE 分配 revision,或按 library 串行化 |
-| P2 | `services/p115_login_devices.py` | 并发激活可致"零活跃设备"(凭据丢失)或双活跃 | 单条原子 UPDATE 置位 + service 级锁 |
-| P2 | `frontend/.../resourceSearchPolling.ts` | 资源搜索 30s 硬超时伪造 failed 并清空已加载快照;服务端任务其实仍在跑 | 超时上限显著提高或由服务端状态驱动;超时保留旧快照 |
+| P2 | `services/library_index.py` | 快照 revision 并发重复分配 → 消费者 fail-closed | 完成点单条原子 UPDATE 分配 revision,或按 library 串行化 |
+| P2 | `services/p115_login_devices.py` | ✅ 已修复(2.2 #17) |
+| P2 | `frontend/.../resourceSearchPolling.ts` | 资源搜索 30s 硬超时伪造 failed 并清空已加载快照;服务端任务其实仍在跑 | 超时上限显著提高或由服务端状态驱动;超时保留旧快照并提供继续等待 |
 | P2 | `frontend/.../OrganizationResultPanel.vue` | 整理轮询 120s 静默停止,状态卡"整理进行中" | 超时提示"仍在后台执行"并允许手动续轮询 |
 | P2 | `api/library.py` 分页/`library_snapshot.py` | 列表分页全量加载 + N+1,万级文件库内存尖峰 | COUNT/聚合 + join 批量取最新 run + 短时缓存 |
 | P2 | `security.py` 限流/STRM 白名单 | 基于 `request.client.host`,反代部署下退化为全局共享桶(可被 5 次失败登录锁全实例) | 可信代理解析 X-Forwarded-For 或按会话维度限流 |
 | P2 | `config.py` cookie | `cookie_secure` 默认 False,HTTPS/Tailscale 暴露时会话明文传输 | 默认 True 或启动时对 HTTPS 暴露 + secure=False 告警 |
 | P2 | `api/settings.py` 日志导出 | 无上限全量累积内存 | 流式写响应或导出上限 |
-| P3 | `services/mcp.py` | library 受限 token 可越权读全部任务/通知/工作流 | task/workflow/notification 查询按 `_scoped_library_ids` 过滤 |
-| P3 | `services/tasks.py` reconcile | 对 CANCELLED 任务 reconcile 会将其复活 | 终态入口拒绝 + `apply_remote_status` 终态守卫 |
-| P3 | `adapters/p115_permanent_delete_transport.py` | 回收站列表只读前 100 条,条目超窗后永久删除恒 UNCERTAIN | list_entries 分页遍历 |
-| P3 | `adapters/tmdb.py` | 429 无分类无退避;search_candidates N+1 富化必触限流 | 429/5xx 分类 + 有界退避;富化并发上限 |
+| P3 | `mcp.py` / `tasks.py` / `p115_permanent_delete_transport.py` / `tmdb.py` | ✅ 已修复(2.2 #16/#15/#18/#20) |
 
 ### 部署与治理建议
 
 1. **发布**:本报告附带的修复在功能分支 `fix/product-hardening-2026-08-10`,经 `scripts/verify.sh`
    与全量测试后合入 `codex/publish-main`,再构建发布包 `watch-assistant-<hash7>-<date>.tar.gz` 部署。
-2. **部署实例需重启才能生效**后端修复(busy_timeout、调度重试、解析器、权限校验等);
+2. **部署实例需重启才能生效**后端修复(busy_timeout、调度重试、解析器、权限校验、webhook/MCP/扫描等);
    前端修复需重新构建 dist(当前部署实例运行的是旧前端)。
 3. 建议将 `e2e/live` 套件纳入发布门禁(单独计划运行,不与离线单测混跑)。
-4. 待办优先级:下个迭代建议按 5 中 P1 表格自上而下实施,重点是 115 写路径超时/重试
+4. 待办优先级:下个迭代建议按本表自上而下实施,重点是 115 写路径超时/重试
    与整理"计划-执行"一致性——这是自动整理首轮必现的两类问题。
 
 ---
 
 ## 6. 变更清单
 
-- 后端:`db.py`、`worker.py`、`media_parser.py`、`validation.py`、`subscriptions.py`、
+- 后端(第一轮):`db.py`、`worker.py`、`media_parser.py`、`validation.py`、`subscriptions.py`、
   `library_scan_scheduler.py`、`api/library.py`、`adapters/prowlarr.py`、
   `adapters/qbittorrent.py`、`adapters/p115_playback_gateway.py`
-- 前端:`App.vue`、`views/LibraryWorkbenchView.vue`(busy 死锁修复 + 根目录 CID 脱敏)、`views/SettingsView.vue`、
+- 后端(第二轮):`services/webhooks.py`、`services/tasks.py`、`services/mcp.py`、
+  `services/p115_login_devices.py`、`services/library_scan_operations.py`、
+  `adapters/p115_permanent_delete_transport.py`、`adapters/tmdb.py`
+- 前端:`App.vue`、`views/LibraryWorkbenchView.vue`(含 busy 死锁修复与 CID 脱敏)、`views/SettingsView.vue`、
   `playwright.config.ts`(testIgnore 增加 `**/live/**`)
 - 新增:`frontend/playwright.deploy.config.ts`、`frontend/e2e/live/**`(4 个 spec/setup 文件)
-- 测试:`tests/unit/test_media_parser.py`(+7 回归用例)、`tests/unit/test_library_scan_scheduler.py`(+1)
+- 测试:第一轮 `test_media_parser.py`(+7)、`test_library_scan_scheduler.py`(+1);
+  第二轮 `test_webhooks.py`(+1)、`test_worker_recovery.py`(+1)、`test_mcp_pwa.py`(+1)、
+  `test_p115_login_devices.py`(+1)、`test_p115_delete.py`(+1)、`test_library_scan_operations.py`(+1)、
+  `test_tmdb_retry.py`(新增文件,+3)

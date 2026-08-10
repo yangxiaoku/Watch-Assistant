@@ -360,3 +360,47 @@ async def test_pwa_device_is_encrypted_scoped_and_revocable(tmp_path):
     revoked = await service.revoke("session:owner", registered.id)
     assert revoked.status == "revoked"
     await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_mcp_library_scoped_token_cannot_read_unscopable_global_entities():
+    """library 受限 token 读取任务/通知/工作流(非库维度实体)必须 fail-closed。"""
+    service = McpService(task_service=_Tasks(), notification_service=_Notifications())
+    context = _context("task:read", library_ids={"library_one"})
+
+    for name, args in (
+        ("tasks.list", {}),
+        ("task.get", {"task_id": "task_one"}),
+        ("notifications.unread", {}),
+    ):
+        response = await service.handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": name, "arguments": args},
+            },
+            context=context,
+        )
+        assert response["error"]["data"]["error_code"] == "resource_forbidden", name
+        assert response["error"]["data"]["title_zh"] == "资源范围不允许", name
+
+    # 资源 URI 路径同样拒绝
+    for uri in ("watch://tasks", "watch://notifications/unread", "watch://workflows"):
+        response = await service.handle(
+            {"jsonrpc": "2.0", "id": 2, "method": "resources/read", "params": {"uri": uri}},
+            context=context,
+        )
+        assert response["error"]["data"]["error_code"] == "resource_forbidden", uri
+
+    # 未受限 token 不受影响
+    ok = await service.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {"name": "tasks.list", "arguments": {}},
+        },
+        context=_context("task:read"),
+    )
+    assert "task_one" in ok["result"]["data"]["content"][0]["text"]

@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from watch_assistant.crypto import SecretCrypto
@@ -39,6 +39,7 @@ class P115LoginDeviceService:
             result = await session.execute(
                 select(P115LoginDevice)
                 .where(P115LoginDevice.active.is_(True), P115LoginDevice.revoked_at.is_(None))
+                .order_by(P115LoginDevice.created_at.desc())
                 .limit(1)
             )
             device = result.scalar_one_or_none()
@@ -90,13 +91,21 @@ class P115LoginDeviceService:
             device = await session.get(P115LoginDevice, device_id)
             if device is None or device.revoked_at is not None:
                 raise P115LoginDeviceError("device_not_found")
-            device.active = True
-            device.last_used_at = datetime.now(UTC)
+            # 单条原子 UPDATE 完成"置位 + 全表清扫":并发激活交错会
+            # 出现零活跃设备(凭据丢失)或双活跃(active_cookie 不确定)。
+            # 此前是读-改-写 + 独立清扫两条语句,窗口内可交错。
             await session.execute(
                 P115LoginDevice.__table__.update()
-                .where(P115LoginDevice.id != device_id, P115LoginDevice.revoked_at.is_(None))
-                .values(active=False)
+                .where(
+                    or_(
+                        P115LoginDevice.id == device_id,
+                        P115LoginDevice.active.is_(True),
+                    ),
+                    P115LoginDevice.revoked_at.is_(None),
+                )
+                .values(active=P115LoginDevice.id == device_id)
             )
+            device.last_used_at = datetime.now(UTC)
             await session.commit()
 
     async def revoke(self, device_id: str) -> None:

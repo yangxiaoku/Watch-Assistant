@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
+import respx
 
 from watch_assistant.api.webhooks import list_deliveries
 from watch_assistant.services import webhooks
@@ -75,3 +76,82 @@ def test_webhook_endpoint_health_status_is_derived_from_delivery_history():
     assert webhooks._endpoint_health_status(
         endpoint(last_success_at=now, last_failure_at=now.replace(second=0))
     ) == "healthy"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_publish_due_survives_secret_decrypt_failure_and_does_not_block_batch(tmp_path, monkeypatch):
+    """密钥轮换/损坏导致某行解密失败时,该行必须走失败记录,
+    而不是把异常抛到 publish_due 中断整批(队头阻塞会饿死所有端点)。"""
+    import httpx
+
+    from watch_assistant.db import create_database, initialize_database
+    from watch_assistant.models import WebhookDelivery, WebhookEndpoint
+    from watch_assistant.services.webhooks import WebhookService
+
+    class _FlakyCrypto:
+        def encrypt(self, value: str) -> str:
+            return value
+
+        def decrypt(self, value: str) -> str:
+            if value == "broken-secret":
+                raise ValueError("InvalidToken: key rotation")
+            return value
+
+    monkeypatch.setattr(
+        webhooks.socket, "getaddrinfo",
+        lambda *args, **kwargs: _addr("8.8.8.8"),
+    )
+
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'webhook.db'}")
+    await initialize_database(database.engine)
+    now = datetime(2026, 8, 10, tzinfo=UTC)
+    try:
+        async with database.session_factory() as session:
+            session.add(WebhookEndpoint(
+                id="ep-broken", name="broken", url="https://hooks.example.test/broken",
+                secret_encrypted="broken-secret", secret_prefix="whsec_", enabled=True,
+            ))
+            session.add(WebhookEndpoint(
+                id="ep-ok", name="ok", url="https://hooks.example.test/ok",
+                secret_encrypted="ok-secret", secret_prefix="whsec_", enabled=True,
+            ))
+            # 显式 flush:纯 FK 列(无 relationship)时 UOW 不保证插入顺序
+            await session.flush()
+            session.add(WebhookDelivery(
+                id="delivery-broken", endpoint_id="ep-broken", event_id="evt-1",
+                event_code="task.failed", payload_json='{"a":1}', status="pending",
+                attempts=0, next_attempt_at=now, created_at=now,
+            ))
+            session.add(WebhookDelivery(
+                id="delivery-ok", endpoint_id="ep-ok", event_id="evt-2",
+                event_code="task.completed", payload_json='{"b":2}', status="pending",
+                attempts=0, next_attempt_at=now, created_at=now,
+            ))
+            await session.commit()
+
+        service = WebhookService(
+            database.session_factory, _FlakyCrypto(),
+            http_client=httpx.AsyncClient(follow_redirects=False),
+        )
+        route = respx.post("https://hooks.example.test/ok").mock(
+            return_value=httpx.Response(200, text="ok")
+        )
+        try:
+            # 修复前:_deliver 解密抛异常 → publish_due 中断 → 返回 0,健康行永远得不到投递
+            delivered = await service.publish_due(limit=20)
+        finally:
+            await service.aclose()
+
+        assert delivered == 1  # 健康行仍被投递
+        assert route.called
+        async with database.session_factory() as session:
+            broken = await session.get(WebhookDelivery, "delivery-broken")
+            ok = await session.get(WebhookDelivery, "delivery-ok")
+        assert broken.last_error_code == "secret_unavailable"
+        assert broken.attempts == 1
+        assert broken.status == "pending"  # 退避重试,而非队头永久阻塞
+        assert ok.status == "delivered"  # 健康行不受队头阻塞影响,投递成功
+        assert ok.attempts == 1
+    finally:
+        await database.engine.dispose()

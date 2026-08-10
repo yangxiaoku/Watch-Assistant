@@ -274,8 +274,13 @@ class WebhookService:
             )
         delivered = 0
         for row in rows:
-            if await self._deliver(row.id):
-                delivered += 1
+            try:
+                if await self._deliver(row.id):
+                    delivered += 1
+            except Exception:  # noqa: BLE001 - 单行投递异常不得中断整批
+                await self._record_delivery_failure(
+                    row.id, row.attempts + 1, None, "delivery_unavailable", "delivery_unavailable"
+                )
         return delivered
 
     async def retry_dead(self, delivery_id: str) -> WebhookDeliveryResponse:
@@ -306,10 +311,17 @@ class WebhookService:
                 await session.commit()
                 return False
             url = endpoint.url
-            secret = self._crypto.decrypt(endpoint.secret_encrypted)
             payload = delivery.payload_json
             event_id = delivery.event_id
             attempt = delivery.attempts + 1
+        try:
+            secret = self._crypto.decrypt(endpoint.secret_encrypted)
+        except Exception:  # noqa: BLE001 - 密钥轮换/损坏时该行必须走失败记录,
+            # 而不是把异常抛到 publish_due 中断整批,导致队头阻塞饿死其他端点。
+            await self._record_delivery_failure(
+                delivery_id, attempt, None, "secret_unavailable", "secret_unavailable"
+            )
+            return False
         try:
             await _assert_public_destination(url)
         except WebhookError as exc:

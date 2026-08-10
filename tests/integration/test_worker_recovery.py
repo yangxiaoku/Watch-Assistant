@@ -1808,3 +1808,89 @@ async def test_expired_share_recovery_reads_status_through_adapter(tmp_path):
     assert adapter.submissions == 0
     assert adapter.status_lookups == 1
     await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_reconcile_rejects_cancelled_task_and_does_not_revive_it(tmp_path):
+    """已取消(或取消竞态下)的任务不接受远端核对,不得被复活。"""
+    from watch_assistant.services.tasks import (
+        TaskNotReconcilable,
+        apply_remote_status,
+    )
+    from watch_assistant.schemas import EvidenceSource, EvidenceStatus
+    from watch_assistant.services.workflows import (
+        WorkflowCreateRequest,
+        WorkflowService,
+        WorkflowStageName,
+        WorkflowStagePatch,
+        WorkflowStageStatus,
+    )
+
+    database = await _database(tmp_path)
+    crypto = SecretCrypto(Fernet.generate_key().decode("ascii"))
+    await _add_resource(database, crypto)
+    task_service = TaskService(database.session_factory)
+    workflow_service = WorkflowService(database.session_factory)
+    workflow = await workflow_service.create(
+        WorkflowCreateRequest(
+            media_type="movie", tmdb_id=27205, resource_id="res_magnet"
+        )
+    )
+    for stage in (
+        WorkflowStageName.INSPECTION,
+        WorkflowStageName.APPROVAL,
+    ):
+        await workflow_service.patch_stage(
+            workflow.id,
+            stage,
+            WorkflowStagePatch(status=WorkflowStageStatus.SUCCEEDED),
+        )
+    task, _ = await task_service.create("res_magnet", workflow_id=workflow.id)
+    adapter = UncertainReceiptAdapter()
+    worker = TaskWorker(
+        database.session_factory,
+        crypto,
+        adapter,
+        owner="cancel-race-worker",
+    )
+    assert await worker.run_once() is True
+    task = await task_service.get(task.id)
+    assert task is not None and task.remote_ref is not None
+
+    # 模拟用户取消与迟到观察的竞态:任务已被标记 CANCELLED(带 remote_ref)
+    async with database.session_factory() as session:
+        stored = await session.get(Task, task.id)
+        stored.state = TaskState.CANCELLED
+        stored.error_code = "cancelled"
+        stored.updated_at = datetime.now(UTC)
+        await session.commit()
+
+    # reconcile 入口直接拒绝
+    with pytest.raises(TaskNotReconcilable):
+        await task_service.reconcile(task.id, adapter)
+    async with database.session_factory() as session:
+        still = await session.get(Task, task.id)
+    assert still.state is TaskState.CANCELLED
+    assert still.error_code == "cancelled"
+
+    # apply_remote_status 的终态守卫:即便绕过入口直接写入也不得复活
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    async with database.session_factory() as session:
+        stored = await session.get(Task, task.id)
+        from watch_assistant.services.tasks import (
+            WorkflowConflict,
+        )
+        with pytest.raises(WorkflowConflict) as conflict:
+            await apply_remote_status(
+                session,
+                stored,
+                RemoteStatus.ACCEPTED,
+                source=EvidenceSource.READONLY_RECONCILIATION,
+            )
+        assert str(conflict.value) == "workflow_stage_terminal"
+        await session.rollback()
+    async with database.session_factory() as session:
+        still = await session.get(Task, task.id)
+    assert still.state is TaskState.CANCELLED
+    await database.engine.dispose()

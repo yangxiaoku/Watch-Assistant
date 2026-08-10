@@ -136,16 +136,25 @@ class McpService:
             return await self._paged_libraries(uri, context)
         if base_uri == "watch://notifications/unread":
             self._require(context, "task:read")
-            return await self._paged_notifications(uri)
+            return await self._paged_notifications(uri, context)
         if base_uri == "watch://workflows":
             self._require(context, "task:read")
-            return await self._paged_workflows(uri)
+            return await self._paged_workflows(uri, context)
         if base_uri == "watch://organization-plans":
             self._require(context, "organize:plan")
             return await self._paged_organization_plans(uri, context)
         raise McpError("resource_not_found")
 
+    def _require_unscoped(self, context: AuthContext) -> None:
+        """任务/通知/工作流不是媒体库维度的实体,无法按库范围过滤。
+
+        library 受限 token 读取这些全局实体即越权,归属不明时 fail-closed。
+        """
+        if _scoped_library_ids(context) is not None:
+            raise McpError("resource_forbidden")
+
     async def _paged_tasks(self, uri: str, context: AuthContext) -> dict[str, Any]:
+        self._require_unscoped(context)
         limit, cursor = _page_from_uri(uri)
         try:
             items = await self._tasks.list_recent(limit=limit + 1, offset=cursor)
@@ -211,7 +220,8 @@ class McpService:
             },
         }
 
-    async def _paged_notifications(self, uri: str) -> dict[str, Any]:
+    async def _paged_notifications(self, uri: str, context: AuthContext) -> dict[str, Any]:
+        self._require_unscoped(context)
         limit, cursor = _page_from_uri(uri)
         response = await self._notifications.list(
             unread_only=True, limit=limit + 1, offset=cursor
@@ -227,7 +237,8 @@ class McpService:
             "page": {"limit": limit, "cursor": cursor, "next_cursor": cursor + limit if has_more else None},
         }
 
-    async def _paged_workflows(self, uri: str) -> dict[str, Any]:
+    async def _paged_workflows(self, uri: str, context: AuthContext) -> dict[str, Any]:
+        self._require_unscoped(context)
         if self._workflows is None:
             raise McpError("mcp_unavailable")
         limit, cursor = _page_from_uri(uri)
@@ -285,13 +296,16 @@ class McpService:
         if name == "notifications.unread":
             self._require(context, "task:read")
             return await self._paged_notifications(
-                _paged_uri("watch://notifications/unread", arguments)
+                _paged_uri("watch://notifications/unread", arguments), context
             )
         if name == "workflow.list":
             self._require(context, "task:read")
-            return await self._paged_workflows(_paged_uri("watch://workflows", arguments))
+            return await self._paged_workflows(
+                _paged_uri("watch://workflows", arguments), context
+            )
         if name == "workflow.get":
             self._require(context, "task:read")
+            self._require_unscoped(context)
             if self._workflows is None:
                 raise McpError("mcp_unavailable")
             workflow_id = _required_identifier(arguments, "workflow_id")
@@ -328,6 +342,7 @@ class McpService:
             }
         if name == "task.get":
             self._require(context, "task:read")
+            self._require_unscoped(context)
             task_id = arguments.get("task_id") if isinstance(arguments, dict) else None
             if not isinstance(task_id, str) or len(task_id) > 64:
                 raise McpError("invalid_request")
