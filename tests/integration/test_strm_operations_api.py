@@ -327,6 +327,14 @@ async def test_strm_operations_are_visible_and_legacy_cleanup_is_preview_only(
         await StrmOperationService(database.session_factory).start(
             resumable.operation_id
         )
+        # M4:活跃租约(RUNNING 且未过期)不能被无 owner 取消,绕过围栏
+        # 会把执行器的终态写入吞成 rowcount=0;陈旧租约才允许清理。
+        from watch_assistant.models import StrmOperation as StrmOperationModel
+
+        async with database.session_factory() as session:
+            stored = await session.get(StrmOperationModel, resumable.operation_id)
+            stored.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+            await session.commit()
         cancelled = await client.post(
             f"/api/v1/strm-operations/{resumable.operation_id}/cancel",
             headers=headers,

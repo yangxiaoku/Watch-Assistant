@@ -425,6 +425,15 @@ class StrmOperationService:
                     )
                 elif current.lease_owner is None:
                     raise StrmOperationError("strm_operation_lease_lost")
+                elif (
+                    current.lease_expires_at is not None
+                    and _as_utc(current.lease_expires_at) > now
+                ):
+                    # RUNNING 且持有活跃租约:未提供 owner 时不得无条件取消。
+                    # 绕过围栏会把执行器还在跑的终态写入变成 rowcount=0 被吞,
+                    # 操作状态与远端实际不一致。由执行器完成/超时或持 owner 取消。
+                    raise StrmOperationError("strm_operation_lease_lost")
+                # 陈旧租约(执行器已死/超时未续):允许清理遗留 RUNNING 状态。
             result = await session.execute(
                 update(StrmOperation)
                 .where(*predicates)
