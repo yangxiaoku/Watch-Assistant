@@ -677,16 +677,41 @@ def _release_group(stem: str) -> tuple[str | None, tuple[tuple[int, int], ...]]:
     # considered when the file already carries a technical marker so a plain
     # hyphenated title is not misread.  The candidate must not look like a
     # technical/audio/language marker, otherwise tokens such as "-Atmos" or
-    # "-CHS" would be swallowed by the group.
+    # "-CHS" would be swallowed by the group.  A hyphen that belongs inside a
+    # technical token itself (e.g. the "-DL" of "WEB-DL") never yields a group.
     if _has_technical_marker(stem):
         hyphen = _RELEASE_GROUP_HYPHEN.search(stem)
         if hyphen is not None:
             candidate = hyphen.group(1)
-            if not _looks_like_technical(candidate) and not _looks_like_media_marker(
-                candidate
+            if (
+                not _looks_like_technical(candidate)
+                and not _looks_like_media_marker(candidate)
+                and not _hyphen_inside_technical_token(stem, hyphen.start())
             ):
                 return candidate, ((hyphen.start(), hyphen.end()),)
     return None, ()
+
+
+def _hyphen_inside_technical_token(stem: str, position: int) -> bool:
+    """连字符是否位于某个技术标记内部 (如 "WEB-DL" 的 "-DL")。
+
+    "Show.S01E01.2020.WEB-DL.mkv" 的 "-DL" 是 WEB-DL 源标记的一部分,
+    不应被尾缀连字符组规则误判为发布组 "DL";而 "WEB-DL-NTb" 中
+    "-NTb" 的连字符位于标记之后,仍应识别为发布组。
+    """
+    for patterns in (
+        _RESOLUTION_PATTERNS,
+        _SOURCE_PATTERNS,
+        _VIDEO_CODEC_PATTERNS,
+        _HDR_PATTERNS,
+        _AUDIO_PATTERNS,
+        _CHANNEL_PATTERNS,
+    ):
+        for _, pattern in patterns:
+            match = pattern.search(stem)
+            if match and match.start() <= position < match.end():
+                return True
+    return False
 
 
 def _has_technical_marker(stem: str) -> bool:

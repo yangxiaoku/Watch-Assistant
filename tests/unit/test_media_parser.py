@@ -294,6 +294,31 @@ def test_audio_codec_followed_by_channel_count_keeps_title_clean():
     assert parsed.media_type_hint == "movie"
 
 
+@pytest.mark.parametrize(
+    "name",
+    (
+        # 尾缀 "-DL" 属于 WEB-DL 源标记内部,不是发布组
+        "Show.S01E01.2020.1080p.WEB-DL.mkv",
+        "Show.S01E01-S01E05.2019.1080p.WEB-DL.mkv",
+        "더 글로리.S01E01.1080p.NF.WEB-DL.mkv",
+        "Show.S01E01.2020.E02.1080p.WEB-DL.mkv",
+        # 编码标记自身的连字符 (H-265) 也不应被当作发布组
+        "Show.S01E01.H-265.mkv",
+    ),
+)
+def test_hyphen_inside_technical_token_is_not_a_release_group(name):
+    parsed = parse_media_filename(name)
+
+    assert parsed.release_group is None
+
+
+def test_release_group_after_webdl_hyphen_is_still_detected():
+    # 常见的 "WEB-DL-NTb" 命名中,连字符位于标记之后,仍是合法发布组
+    parsed = parse_media_filename("Show.S01E01.1080p.WEB-DL-NTb.mkv")
+
+    assert parsed.release_group == "NTb"
+
+
 def test_channel_count_and_hyphen_group_are_stripped_from_title():
     parsed = parse_media_filename(
         "Dune.2021.2160p.BluRay.REMUX.HEVC.DTS-HD.MA.TrueHD.7.1.Atmos-FGT.mkv"
