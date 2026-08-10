@@ -21,7 +21,12 @@ from watch_assistant.adapters.pansou import (
     PanSouError,
 )
 from watch_assistant.adapters.prowlarr import ProwlarrClient, ProwlarrSearchResult
-from watch_assistant.adapters.tmdb import TmdbClient, TmdbError, build_search_queries
+from watch_assistant.adapters.tmdb import (
+    TmdbClient,
+    TmdbError,
+    TmdbNotFoundError,
+    build_search_queries,
+)
 from watch_assistant.crypto import SecretCrypto
 from watch_assistant.models import (
     ApplicationSettings,
@@ -82,6 +87,9 @@ class InvalidSeasonRequest(ValueError):
 
 def _search_error_code_for_log(exc: BaseException) -> str:
     """Map exceptions to allowlisted log codes without rendering their text."""
+    if isinstance(exc, TmdbNotFoundError):
+        # TMDB 404 是内容不存在而非服务不可用,与任务状态的 media_not_found 对齐。
+        return "media_not_found"
     if isinstance(exc, TmdbError):
         return "tmdb_unavailable"
     if isinstance(exc, InvalidSeasonRequest):
@@ -440,6 +448,11 @@ class SearchService:
             task.error_code = str(exc) if str(exc) in {
                 "season_requires_tv", "season_not_found"
             } else "invalid_season_request"
+        except TmdbNotFoundError:
+            # TMDB 404 表示影视条目不存在,不是服务不可用:
+            # 与同步路径的 media_not_found 一致,避免误报"暂时不可用"。
+            task.status = "failed"
+            task.error_code = "media_not_found"
         except TmdbError:
             task.status = "failed"
             task.error_code = "tmdb_unavailable"

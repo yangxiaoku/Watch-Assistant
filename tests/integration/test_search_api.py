@@ -241,6 +241,38 @@ async def test_resource_search_rejects_movie_season_without_starting_task(tmp_pa
 
 @pytest.mark.integration
 @respx.mock
+async def test_resource_search_task_maps_tmdb_404_to_media_not_found(tmp_path):
+    # TMDB 404 是内容不存在而非服务不可用:异步搜索任务应记为 media_not_found,
+    # 而不是误报 tmdb_unavailable(否则用户会反复重试一个不存在的条目)。
+    respx.get("https://api.themoviedb.org/3/movie/12345").mock(
+        return_value=httpx.Response(404, json={"status_code": 404})
+    )
+    client, database, tmdb, pansou = await _make_client(tmp_path)
+
+    accepted = await client.post(
+        "/api/v1/media/movie/12345/resource-search",
+        json={"refresh": True},
+    )
+    assert accepted.status_code == 202
+    task = accepted.json()
+
+    final = task
+    for _ in range(50):
+        if final["status"] in {"ready", "failed"}:
+            break
+        await asyncio.sleep(0.01)
+        final = (await client.get(f"/api/v1/resource-search/{task['task_id']}")).json()
+    assert final["status"] == "failed"
+    assert final["error_code"] == "media_not_found"
+    async with database.session_factory() as session:
+        job = await session.get(ResourceSearchJob, task["task_id"])
+    assert job is not None
+    assert job.error_code == "media_not_found"
+    await _close(client, database, tmdb, pansou)
+
+
+@pytest.mark.integration
+@respx.mock
 async def test_search_returns_only_top_30_magnets_and_keeps_shares(tmp_path):
     _mock_tmdb()
     magnets = [
