@@ -894,7 +894,12 @@ async function loadResourcePage(route: ResourceRouteState, historyMode: "push" |
     query: route.query.trim(),
   };
   const isCurrent = () => requestId === resourceRequestId && searchId === searchRequestId && !controller.signal.aborted && !!result.value;
-  const cached = resourceCache.get(resourceCacheKey(safeRoute, resourceResponse.value?.snapshot_revision ?? null));
+  // 读取键与写入键(:932)保持一致:均以"请求路由 + 快照版本"定位。当前无快照时缓存必然已被
+  // 清空(见 beginResourceSnapshot/clearResourcePagination),直接跳过查询,避免生成写入键
+  // 不存在的"snapshot"占位键形
+  const cached = resourceResponse.value
+    ? resourceCache.get(resourceCacheKey(safeRoute, resourceResponse.value.snapshot_revision))
+    : undefined;
   resourceLoading.value = true;
   resourceError.value = "";
   if (cached) {
@@ -933,6 +938,8 @@ async function loadResourcePage(route: ResourceRouteState, historyMode: "push" |
       return;
     }
     const actualPage = response.total === 0 ? 1 : Math.max(1, Math.min(actualTotalPages, Math.trunc(response.page) || safeRoute.page));
+    // 写入键与读取键(:893)保持一致:页面以响应实际页为准,快照版本取响应的版本;应用后
+    // resourcePage 与 resourceResponse.snapshot_revision 即与此键对齐,后续读取可直接命中
     resourceCache.set(resourceCacheKey({ ...safeRoute, page: actualPage }, response.snapshot_revision), response);
     while (resourceCache.size > 20) resourceCache.delete(resourceCache.keys().next().value as string);
     applyResourceResponse(response, actualPage);
