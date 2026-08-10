@@ -18,6 +18,7 @@ from watch_assistant.schemas import RemoteStatus
 from watch_assistant.security import SecurityManager
 from watch_assistant.services.p115_credentials import CookieProvider
 from watch_assistant.services.tasks import TaskService
+from tests.unit.factories import make_security_manager
 
 MAGNET = "magnet:?xt=urn:btih:" + ("a" * 40)
 
@@ -100,6 +101,7 @@ async def _app_client(tmp_path: Path, adapter=None):
         tmdb_client=tmdb,
         pansou_client=pansou,
         task_adapter=adapter,
+    security_manager=make_security_manager(),
     )
     client = httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://app.test"
@@ -109,7 +111,7 @@ async def _app_client(tmp_path: Path, adapter=None):
 
 @pytest.mark.integration
 async def test_health_capabilities_default_off_and_fake_magnet_on(tmp_path):
-    app = create_app(frontend_dir=tmp_path / "missing")
+    app = create_app(frontend_dir=tmp_path / "missing", security_manager=make_security_manager())
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://app.test"
     ) as client:
@@ -146,7 +148,7 @@ async def test_p115_enabled_without_target_cid_fails_startup(tmp_path, monkeypat
         monkeypatch.setenv(key, value)
     monkeypatch.delenv("P115_TARGET_CID", raising=False)
 
-    app = create_app(frontend_dir=tmp_path / "missing")
+    app = create_app(frontend_dir=tmp_path / "missing", security_manager=make_security_manager())
     with pytest.raises(RuntimeError, match="P115_ENABLED requires P115_TARGET_CID"):
         async with app.router.lifespan_context(app):
             pass
@@ -174,7 +176,7 @@ async def test_p115_disabled_does_not_construct_adapter_or_worker(
         raise AssertionError("P115Adapter must remain disabled")
 
     monkeypatch.setattr("watch_assistant.app.P115Adapter", fail_if_constructed)
-    app = create_app(frontend_dir=tmp_path / "missing")
+    app = create_app(frontend_dir=tmp_path / "missing", security_manager=make_security_manager())
 
     async with app.router.lifespan_context(app):
         assert not hasattr(app.state, "task_adapter")

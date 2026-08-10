@@ -12,6 +12,7 @@ from watch_assistant.app import create_app
 from watch_assistant.crypto import SecretCrypto
 from watch_assistant.db import create_database, initialize_database
 from watch_assistant.models import QualityProfile, Resource
+from tests.unit.factories import make_security_manager
 
 
 async def _make_client(tmp_path: Path):
@@ -40,6 +41,7 @@ async def _make_client(tmp_path: Path):
         crypto=crypto,
         tmdb_client=tmdb,
         pansou_client=pansou,
+    security_manager=make_security_manager(),
     )
     client = httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://app.test"
