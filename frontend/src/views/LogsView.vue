@@ -69,7 +69,8 @@ async function loadLogs(append = false, preserve = false) {
   logsError.value = "";
   try {
     const response = await props.api.logs(currentLogFilters(cursor));
-    if (requestId !== logsRequestId) return;
+    // 组件卸载后返回的响应不再写入状态
+    if (!mounted || requestId !== logsRequestId) return;
     const byId = new Map<number, LogEntry>(
       (append || preserve) ? logItems.value.map((item) => [item.id, item]) : [],
     );
@@ -84,9 +85,9 @@ async function loadLogs(append = false, preserve = false) {
     logsLoaded.value = true;
     logsUpdatedAt.value = new Date().toISOString();
   } catch (exception) {
-    if (requestId === logsRequestId) logsError.value = exception instanceof ApiError ? exception.message : "日志加载失败，请稍后重试";
+    if (mounted && requestId === logsRequestId) logsError.value = exception instanceof ApiError ? exception.message : "日志加载失败，请稍后重试";
   } finally {
-    if (requestId === logsRequestId) {
+    if (mounted && requestId === logsRequestId) {
       logsLoading.value = false;
       syncLogsRefreshTimer();
     }
