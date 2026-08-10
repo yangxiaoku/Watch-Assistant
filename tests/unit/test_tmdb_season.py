@@ -84,9 +84,11 @@ async def test_search_candidates_enriches_bounded_detail_without_sensitive_field
     assert candidates[0].tmdb_id == 1399
     assert candidates[0].seasons[0].episode_count == 8
     assert candidates[0].origin_countries == ("US",)
+    assert candidates[0].english_title == "示例剧"
     assert "cookie" not in repr(candidates[0])
     assert [request.url.path for request in requests] == [
         "/search/multi",
+        "/tv/1399",
         "/tv/1399",
     ]
     await async_client.aclose()
