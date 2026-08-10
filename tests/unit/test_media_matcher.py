@@ -428,3 +428,28 @@ def test_payload_and_parser_projection_are_safe_and_bounded():
     assert "secret" not in repr(parsed)
     assert "secret" not in repr(candidate_from_payload)
     assert "api-key" not in repr(candidate_from_payload)
+
+
+def test_english_title_matches_an_english_filename():
+    """English filenames (common in torrents) must match the English title."""
+    candidate = TmdbCandidate(
+        tmdb_id=1311031,
+        media_type=MediaType.MOVIE,
+        title="鬼灭之刃：无限城篇 第一章 猗窝座再袭",
+        original_title="劇場版「鬼滅の刃」無限城編 第一章 猗窩座再来",
+        english_title="Demon Slayer: Kimetsu no Yaiba Infinity Castle",
+        release_year=2025,
+        origin_countries=("JP",),
+        kind=MediaKind.MOVIE,
+    )
+    match_input = build_match_input(
+        MediaParseResult(
+            original_filename="Demon Slayer Kimetsu No Yaiba Infinity Castle (2025).mkv",
+            title="Demon Slayer Kimetsu No Yaiba Infinity Castle",
+            year=2025,
+            media_type_hint="movie",
+        )
+    )
+    decision = asyncio.run(TmdbMatcher(FakeClient([candidate])).match(match_input))
+    assert decision.status is MatchStatus.ACCEPTED
+    assert decision.confidence is MatchConfidence.HIGH

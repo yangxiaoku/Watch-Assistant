@@ -184,6 +184,9 @@ class TmdbCandidate:
     media_type: MediaType
     title: str
     original_title: str | None = None
+    # English-language title used to match English filenames (common in
+    # torrents) against media that is stored under a localized title.
+    english_title: str | None = None
     aliases: tuple[str, ...] = ()
     release_year: int | None = None
     origin_countries: tuple[str, ...] = ()
@@ -206,6 +209,10 @@ class TmdbCandidate:
         if self.original_title is not None:
             object.__setattr__(
                 self, "original_title", _clean_public_text(self.original_title) or None
+            )
+        if self.english_title is not None:
+            object.__setattr__(
+                self, "english_title", _clean_public_text(self.english_title) or None
             )
         aliases: list[str] = []
         seen: set[str] = set()
@@ -283,6 +290,9 @@ class TmdbCandidate:
             if isinstance(
                 payload.get("original_title", payload.get("original_name")), str
             )
+            else None,
+            english_title=payload.get("english_title")
+            if isinstance(payload.get("english_title"), str)
             else None,
             aliases=tuple(alias_values),
             release_year=_parse_year(
@@ -607,7 +617,7 @@ def _score_candidate(
     if title_match is None:
         reasons.append(MatchReason.TITLE_MISMATCH)
     else:
-        score += {"title": 55, "original_title": 50, "alias": 50}[title_match]
+        score += {"title": 55, "original_title": 50, "english_title": 50, "alias": 50}[title_match]
 
     year_match: str | None = None
     expected_years = (
@@ -761,7 +771,11 @@ def _score_special(
 
 def _title_match(title: str, candidate: TmdbCandidate) -> str | None:
     normalized = _normalize(title)
-    options = ((candidate.title, "title"), (candidate.original_title, "original_title"))
+    options = (
+        (candidate.title, "title"),
+        (candidate.original_title, "original_title"),
+        (candidate.english_title, "english_title"),
+    )
     options += tuple((alias, "alias") for alias in candidate.aliases)
     for value, kind in options:
         if value and _normalize(value) == normalized:

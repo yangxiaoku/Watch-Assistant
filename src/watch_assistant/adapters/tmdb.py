@@ -219,14 +219,31 @@ class TmdbClient:
             ):
                 continue
             detail = item
+            english_detail: dict | None = None
             try:
                 detail = await self._get(f"/{media_type}/{item['id']}")
             except TmdbError:
                 # The search result remains useful, but missing detail must
                 # leave the candidate incomplete so the matcher can review it.
                 detail = item
+            else:
+                try:
+                    # English filenames (common in torrents) cannot match the
+                    # localized title, so capture the English title separately.
+                    english_detail = await self._get(
+                        f"/{media_type}/{item['id']}", params={"language": "en-US"}
+                    )
+                except TmdbError:
+                    english_detail = None
             candidate_payload = dict(item)
             candidate_payload.update(detail)
+            # Keep the localized search-result title for display; use the
+            # English detail title only for matching.
+            candidate_payload["title"] = item.get("title") or candidate_payload.get("title")
+            if isinstance(english_detail, dict) and isinstance(
+                english_detail.get("title"), str
+            ):
+                candidate_payload["english_title"] = english_detail["title"]
             candidate_payload["id"] = item["id"]
             candidate_payload["media_type"] = media_type
             candidate_payload["kind"] = (
