@@ -1386,3 +1386,30 @@ def _subscription_indexes_exclude_cancelled(connection: Connection) -> None:
             "WHERE season_number IS NOT NULL AND status != 'cancelled'"
         )
     )
+
+
+def _unique_scan_run_revision(connection: Connection) -> None:
+    """(library_id, snapshot_revision) 唯一:并发完成分配重复 revision 时
+    显式失败而非静默重复(消费者 fail-closed 到下一次扫描)。
+
+    先清历史重复:修复前并发场景可能已产生同 revision 的两行,保留最新
+    run 的 revision,其余置 NULL(视为未分配,下次扫描重新分配,不丢数据)。
+    """
+
+    connection.execute(
+        text(
+            "UPDATE library_scan_runs SET snapshot_revision = NULL "
+            "WHERE id NOT IN ("
+            "  SELECT MAX(id) FROM library_scan_runs "
+            "  WHERE snapshot_revision IS NOT NULL "
+            "  GROUP BY library_id, snapshot_revision"
+            ")"
+        )
+    )
+    connection.execute(
+        text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_library_scan_run_revision "
+            "ON library_scan_runs (library_id, snapshot_revision) "
+            "WHERE snapshot_revision IS NOT NULL"
+        )
+    )

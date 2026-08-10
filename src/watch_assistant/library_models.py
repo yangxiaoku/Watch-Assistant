@@ -52,6 +52,15 @@ class LibraryScanRun(Base):
             "idempotency_key",
             name="uq_library_scan_run_idempotency",
         ),
+        # revision 唯一兜底:并发完成分配重复 revision 时显式失败
+        # (迁移 072,进程内完成锁为主防线)。
+        Index(
+            "uq_library_scan_run_revision",
+            "library_id",
+            "snapshot_revision",
+            sqlite_where=text("snapshot_revision IS NOT NULL"),
+            unique=True,
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)

@@ -155,6 +155,10 @@ class LibraryIndexService:
         self._lease_owner = lease_owner
         self._lease_token = lease_token
         self._external_lease = lease_token is not None
+        # snapshot revision 分配串行化:两个 run 并发完成时读改写 max+1
+        # 会拿到相同 revision(WAL 读快照),全部快照消费者 fail-closed;
+        # 进程内按库互斥保证单 worker 进程下唯一分配。
+        self._complete_lock = asyncio.Lock()
         self._execution_active = False
         self._direct_lease_duration = timedelta(hours=1)
         # A service instance is scoped to one worker operation.  Keeping the
@@ -799,6 +803,12 @@ class LibraryIndexService:
             self._execution_active = False
 
     async def _complete_run(self, run_id: str) -> LibraryScanResult:
+        # 同一库并发完成事务会读到相同 max(revision) 并分配重复 revision;
+        # 完成点串行化,保证唯一分配(见 __init__ 注释)。
+        async with self._complete_lock:
+            return await self._complete_run_locked(run_id)
+
+    async def _complete_run_locked(self, run_id: str) -> LibraryScanResult:
         async with self._session_factory() as session:
             async with session.begin():
                 run = await session.get(LibraryScanRun, run_id)
