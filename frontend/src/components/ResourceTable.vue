@@ -55,7 +55,8 @@ const emit = defineEmits<{
 
 const queryDraft = ref(props.resourceQuery ?? "");
 watch(() => props.resourceQuery, (value) => { queryDraft.value = value ?? ""; });
-watch(() => props.resourceError, (value) => { if (value) queryDraft.value = props.resourceQuery ?? ""; });
+// 注意:不在 resourceError 时重置 queryDraft——失败时 props.resourceQuery 仍是上次成功提交的
+// 查询,重置会把用户正在编辑的新查询抹掉(M9);已提交查询的变化已由上面的 resourceQuery watch 同步。
 
 function updateQuery(event: Event): void {
   const target = event.target;
