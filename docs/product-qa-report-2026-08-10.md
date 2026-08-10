@@ -210,3 +210,41 @@
 ### 跳过(原因)
 - **L6** security fail-open 改 fail-closed:与注入式测试基建强耦合(大量集成测试依赖无 manager 的注入式 app),需单独排期:注入式 `create_app` 强制要求显式 `security_manager`。生产路径不受影响(生产 create_app 永远创建 manager)。
 - **S6** release 目录保留无自动化:建议后续加 retention 策略(如保留最近 5 个 release + 手动归档),文档化待办。
+
+---
+
+## 8. 第四轮复查报告(2026-08-10 晚,3 路并行)
+
+**基线**:HEAD `14491c1`(含前三轮 23 项 + 交接单 28 项 + 其他会话 10 提交:115 组织路径完整分页解除 8 页上限、订阅并发锁、org 前端反馈链等,均已部署)。
+**方法**:3 个并行只读代理——已修复项复查(修复引入的新问题/修复不完整)、遗留风险现状核查、新代码与部署配置审查;另有部署实例运行状态检查(健康、无错误日志、磁盘 38G 空闲)。
+
+### 8.1 新发现汇总(29 条)
+
+| 等级 | 数量 | 关键项 |
+|---|---|---|
+| P1 | 2 | ① prowlarr H2 白名单被 follow_redirects 兜底路径绕过(安全修复失效);② strm_manifest 同名替换 path_collision 仍存在 |
+| P2 | 8 | ① p115 超时后线程泄漏→执行器池耗尽(修复不完整);② 订阅"取消后重新订阅"被部分唯一索引挡住(新回归);③ settings_p115 白名单;④ revision 并发重复;⑤ 30s 超时清快照;⑥ cookie_secure;⑦ 分页 N+1;⑧ seasons 越权读取 |
+| P3 | 19 | 订阅 check TOCTOU、迁移 070 MIN(id) 随机删 ACTIVE、qbittorrent L8 恒真集死代码、XFF 首项条件性、media_parser 中间年份残余、auth_unavailable 错误码未注册、冒烟门禁盲区、回滚状态文件绕过、release_retention.sh 无入参校验、M9 输入框不一致等 |
+
+### 8.2 需优先处理的"修复引入回归"(按严重度)
+
+1. **[P1] prowlarr H2 兜底路径绕过白名单**(`prowlarr.py:457-463`):`_follow_redirect_magnet` 无果后,兜底对同一 URL 执行 `follow_redirects=True`,httpx 自动跟随整条重定向链,后续跳转不受 host/port/scheme 白名单约束;httpx 保留 `X-Api-Key`、pinned transport 端口取自重定向 URL → H2 声称堵住的"内部端口探测 + API Key 泄漏"仍可达。→ 兜底分支禁止 follow_redirects(或对每跳校验)。
+2. **[P2] p115 超时后线程泄漏 + 池耗尽**(`p115.py:531-534`):`wait_for` 超时只放行协程,底层线程仍阻塞;且超时后复用同一挂死 client,每次重试再泄一个线程;默认执行器池 12-16 线程,6-16 分钟耗尽后所有 `to_thread` 永久阻塞。→ 超时后重建 client;`_client_for_operation`/`_close_client` 同样加超时。
+3. **[P2] 订阅"取消后重新订阅"永久失败**(`models.py:493-498`/`migrations.py:776-779`):部分唯一索引无 status 过滤,而 create() 明确允许 CANCELLED 复活 → 取消电影订阅后再订阅恒 409。→ 索引加 `WHERE status != 'cancelled'` 或 create 前先删 CANCELLED 行。
+
+### 8.3 遗留未修项(确认仍存在,建议下轮)
+
+- [P1] strm_manifest 同名替换 path_collision:先 retire removed 再生成 added/modified 两趟方案
+- [P2] seasons 越权读取(补 `_allowed`)、revision 原子分配、settings_p115 白名单会话隔离、30s 超时保留快照、cookie_secure、分页 N+1
+
+### 8.4 新代码与部署配置(其他会话 10 提交)
+
+- 36ed713 组织路径完整分页:类级默认保持验证契约(8 页×1 条),生产路径 P115C03ProductionTransport 放大 256 页×50 条,设计正确
+- L6 fail-closed + make_security_manager:生产不可达,正确;**但** `auth_unavailable` 错误码未注册目录(前端落通用文案),且发布冒烟 `release_startup_smoke.py` 不注入 manager 只看 health → 无法发现 L6 类回归
+- 文档流程绕过 rollback 状态文件;release_retention.sh 无入参校验(非 `--dry-run` 参数即真删)
+
+### 8.5 建议优先级
+
+1. 立即:8.2 的 3 项(安全修复失效 + 池耗尽停摆 + 订阅回归)
+2. 下轮:8.3 的 P1 path_collision 与 P2 seasons 越权、revision 原子分配
+3. 运维:8.4 的错误码注册、冒烟门禁增强、retention 脚本入参校验
