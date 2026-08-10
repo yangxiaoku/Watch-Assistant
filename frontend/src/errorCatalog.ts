@@ -227,6 +227,14 @@ const ADDITIONAL_CODES = [
   "webhook_conflict", "webhook_delivery_conflict", "webhook_delivery_not_found",
   "webhook_dns_failed", "webhook_event_not_allowed", "webhook_not_found",
   "webhook_url_not_allowed", "webhook_url_unresolvable", "webhooks_unavailable",
+  // 后端 api_errors._CATALOG 补充注册的既有错误码(见后端 L3 修复),
+  // 与后端保持一致并满足前后端目录契约测试。
+  "candidate_search_unavailable", "candidate_source_required", "invalid_candidate_limit",
+  "invalid_candidate_query", "invalid_lease_duration", "invalid_source_index",
+  "invalid_workflow_id", "no_video_files", "plan_expired", "scan_cancel_failed",
+  "scan_entry_invalid", "scan_in_progress", "scan_not_current", "scan_not_found",
+  "source_directory_not_found", "source_scope_unverified", "source_target_overlap",
+  "workflow_id_conflict", "workflow_stage_missing",
 ] as const;
 
 function additionalDescriptor(code: string): Omit<UiErrorDescriptor, "code"> {
