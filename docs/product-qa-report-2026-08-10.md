@@ -27,7 +27,7 @@
 
 ---
 
-## 2. 已修复 Bug 清单(12 项)
+## 2. 已修复 Bug 清单(13 项)
 
 按严重等级从高到低。全部修复均通过现有/新增单元测试与前端构建验证。
 
@@ -52,6 +52,7 @@
 | 10 | `services/validation.py` | seeders/size 未知的资源排序取反后排最前,默认推荐/推送取错资源 | None 映射为负无穷,降序垫底 |
 | 11 | `frontend/.../App.vue` | 登录按钮无禁用态,弱网双击并发提交触发限流误报 | 增加 `loggingIn` 状态:按钮禁用 + spinner + "登录中…" |
 | 12 | `frontend/.../SettingsView.vue` | P115 设备「移除」无确认框,误点即注销设备 | 复用 ConfirmDialog(danger 风格,双确认门禁) |
+| 13 | `frontend/.../LibraryWorkbenchView.vue` | 媒体库工作台明文展示 `root_directory_id`,与设置页脱敏策略不一致 | 与 SettingsView 一致的 `redactDirectoryId` 脱敏展示 |
 | + | `adapters/p115_playback_gateway.py` | `from error` 链起底层异常,可能把凭据细节带进 traceback/日志 | 改 `from None`,与全库脱敏约定一致 |
 
 > 注:#7 之前(前端)与 #12 之外,另有 `db.py`/`worker.py` 等改动属于可靠性增强,见变更清单。
@@ -157,7 +158,7 @@
 - 后端:`db.py`、`worker.py`、`media_parser.py`、`validation.py`、`subscriptions.py`、
   `library_scan_scheduler.py`、`api/library.py`、`adapters/prowlarr.py`、
   `adapters/qbittorrent.py`、`adapters/p115_playback_gateway.py`
-- 前端:`App.vue`、`views/LibraryWorkbenchView.vue`、`views/SettingsView.vue`、
+- 前端:`App.vue`、`views/LibraryWorkbenchView.vue`(busy 死锁修复 + 根目录 CID 脱敏)、`views/SettingsView.vue`、
   `playwright.config.ts`(testIgnore 增加 `**/live/**`)
 - 新增:`frontend/playwright.deploy.config.ts`、`frontend/e2e/live/**`(4 个 spec/setup 文件)
 - 测试:`tests/unit/test_media_parser.py`(+7 回归用例)、`tests/unit/test_library_scan_scheduler.py`(+1)
