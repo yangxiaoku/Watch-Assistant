@@ -39,36 +39,82 @@ SQLAlchemy/SQLite，前端为 Vue 3/TypeScript/Vite。
 
 - 部署主机：`192.168.6.236`。不得把密码、Cookie、Token、API Key 或 Secret 写入代码、
   文档、日志、命令输出或测试 fixture。
-- 主要部署定义：`docker-compose.yml`。外部 Docker 网络为 `pansou_default`
-  （可由 `EXTERNAL_NETWORK` 覆盖）；PanSou、qBittorrent 和 115 均是外部依赖或适配器，
-  不随普通应用操作重启。
-- Compose 容器内部监听 `8000`，健康检查为
-  `http://127.0.0.1:8000/api/v1/health`；宿主机端口由 `WATCH_ASSISTANT_PORT` 控制，
-  `.env.example` 为 `8115`。数据卷为 `${DATA_DIR:-./data}` 挂载到容器 `/data`。
-- systemd 备用部署见 `deploy/watch-assistant.service`：工作目录
-  `/opt/watch-assistant/current`，监听 `8115`，状态目录 `/var/lib/watch-assistant`，
-  环境文件 `/etc/watch-assistant.env`。服务器实际 Docker/Compose 是否在运行、实际
-  `DATA_DIR` 和反向代理/Tailscale 暴露方式均须在发布前核对；不能猜测。
+- **实测运行模式（2026-08 核对）**：服务器以 **systemd** 运行（非 Compose）；
+  `/etc/systemd/system/watch-assistant.service` 关键配置：
+  - `ExecStart=/opt/watch-assistant/venv/bin/uvicorn watch_assistant.app:app --host 0.0.0.0 --port 8115 --workers 1`
+  - `WorkingDirectory=/opt/watch-assistant/current`
+  - `Environment=PYTHONPATH=/opt/watch-assistant/current/src`（代码总从 current/src 加载）
+  - `Environment=FRONTEND_DIST_DIR=/opt/watch-assistant/current/frontend/dist`
+  - `EnvironmentFile=/etc/watch-assistant.env` 与 `-/var/lib/watch-assistant/release.env`
+- 发布目录布局：`/opt/watch-assistant/current` → 符号链接 →
+  `releases/watch-assistant-<hash7>`（发布包名 `watch-assistant-<hash7>-<date>.tar.gz`，
+  包内顶层目录同名，解压到 `releases/` 即可）；上传包先放 `incoming/`。
+  `release.env` 记录 `WATCH_ASSISTANT_RELEASE=<full-sha>`，与包内 `VERSION` 的
+  `commit=` 必须一致，否则 `postdeploy_release_check` 报 `release_env_mismatch`。
+- 部署后校验：
+  `ssh root@192.168.6.236 '/opt/watch-assistant/venv/bin/python /opt/watch-assistant/current/scripts/postdeploy_release_check.py --version-file /opt/watch-assistant/current/VERSION --health-url http://127.0.0.1:8115/api/v1/health'`
+  输出 `POSTDEPLOY_RELEASE_CHECK=ok` 才算通过。
+- 其他实测事实：健康检查 `http://127.0.0.1:8115/api/v1/health` 返回 `release` 字段；
+  `PROWLARR_SLOW_INDEXER_IDS=10`（18 已禁用，勿加回）；服务器 venv 内已卸载
+  `watch-assistant` 安装副本（依赖 PYTHONPATH，勿再 `pip install -e .` 进 venv）；
+  macOS 打包的 tar 在服务器解压会报 `LIBARCHIVE.xattr.com.apple.provenance`
+  警告，用 `tar --warning=no-unknown-keyword -xzf` 忽略。
+- Compose 定义（`docker-compose.yml`）仍保留供容器化部署：内部监听 `8000`，
+  外部网络 `pansou_default`，数据卷 `${DATA_DIR:-./data}` 挂载 `/data`；
+  仅当服务器实际切回 Compose 时才适用。
 - `P115_ENABLED`、目标目录和能力开关均需显式配置；p115 写入契约未验证时禁止真实写入。
+
+## 本地开发环境（macOS 开发机）
+
+- Python 虚拟环境在项目根 `.venv/`（`/Users/apple/Watch-Assistant/.venv/bin/python`）；
+  测试/ruff 一律用它，不用系统 Python。
+- 常用命令：
+  ```bash
+  .venv/bin/python -m pytest tests/unit tests/integration -q          # 单测+集成
+  .venv/bin/python -m pytest tests/contracts -q                       # 契约测试
+  .venv/bin/python -m ruff check src tests                            # lint
+  npm --prefix frontend test -- --run                                  # vitest
+  npm --prefix frontend run build                                      # 前端构建
+  ```
+- 真实部署验收（Playwright，直连 192.168.6.236:8115，不启本地服务）：
+  ```bash
+  WA_E2E_USER=<账号> WA_E2E_PASSWORD=<密码> npx playwright test -c playwright.deploy.config.ts
+  ```
+  凭据只从环境变量注入，严禁写入源码/报告/截图；`e2e/live/**` 用例默认配置不运行。
+- 测试凭据可放 `$CLAUDE_JOB_DIR/tmp/wa-test.env`（`export WA_E2E_USER=...` 等，
+  运行时 `source` 注入），该目录随任务清理、不入库。
 
 常用命令（不包含凭据）：
 
 ```bash
-# Docker Compose：检查、启动、停止、日志、健康和备份
-docker compose config
-docker compose up -d --build
-docker compose stop watch-assistant
-docker compose logs -f --tail=200 watch-assistant
-# `.env.example` 使用 8115；实际端口以部署 `.env` 为准
-curl -fsS http://127.0.0.1:8115/api/v1/health
-pwsh ./scripts/backup_db.ps1
-
-# 服务器 systemd：检查、启动、停止、日志和健康
+# 服务器 systemd：检查、启动、停止、日志和健康（当前实际运行模式）
 ssh root@192.168.6.236 'systemctl status watch-assistant.service --no-pager'
 ssh root@192.168.6.236 'systemctl start watch-assistant.service'
 ssh root@192.168.6.236 'systemctl stop watch-assistant.service'
 ssh root@192.168.6.236 'journalctl -u watch-assistant.service -n 200 --no-pager'
 ssh root@192.168.6.236 'curl -fsS http://127.0.0.1:8115/api/v1/health'
+
+# 发布流程（构建 → 上传 → 切换 → 重启 → 校验）
+# 1) 在 codex/publish-main 上、工作树干净、远程已同步,以完整 SHA 构建
+bash scripts/build_release.sh "$(git rev-parse HEAD)"
+# 2) 上传并解压（包内顶层目录名与包名同名）:
+scp -q release-archive/<date>/watch-assistant-<hash7>-<date>.tar.gz \
+  root@192.168.6.236:/opt/watch-assistant/incoming/
+ssh root@192.168.6.236 'tar --warning=no-unknown-keyword -xzf \
+  /opt/watch-assistant/incoming/watch-assistant-<hash7>-<date>.tar.gz \
+  -C /opt/watch-assistant/releases/'
+# 3) 切换符号链接、更新 release.env、重启、校验:
+ssh root@192.168.6.236 'ln -sfn /opt/watch-assistant/releases/watch-assistant-<hash7> \
+  /opt/watch-assistant/current && \
+  printf "WATCH_ASSISTANT_RELEASE=<full-sha>\n" > /var/lib/watch-assistant/release.env && \
+  systemctl restart watch-assistant.service'
+# 4) postdeploy 校验见上文命令,输出 POSTDEPLOY_RELEASE_CHECK=ok
+# 5) 部署后验收:cd frontend && npx playwright test -c playwright.deploy.config.ts
+
+# Compose（备用部署定义,当前服务器未使用）
+docker compose config
+docker compose up -d --build
+pwsh ./scripts/backup_db.ps1
 ```
 
 备份前确认实际运行模式：Compose 使用 `scripts/backup_db.ps1`（容器 `/data/backups`，
