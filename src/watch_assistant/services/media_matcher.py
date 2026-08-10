@@ -626,13 +626,13 @@ def _score_candidate(
     if expected_years:
         if candidate.release_year is None:
             reasons.append(MatchReason.YEAR_UNKNOWN)
-        elif candidate.release_year not in expected_years:
-            reasons.append(MatchReason.YEAR_CONFLICT)
-        else:
+        elif _year_in_expected(candidate.release_year, expected_years, query, candidate):
             score += 20
             year_match = (
                 "exact" if query.year == candidate.release_year else "candidate"
             )
+        else:
+            reasons.append(MatchReason.YEAR_CONFLICT)
 
     media_type_match: bool | None = None
     if query.media_type_hint in {"movie", "tv"}:
@@ -777,10 +777,39 @@ def _title_match(title: str, candidate: TmdbCandidate) -> str | None:
         (candidate.english_title, "english_title"),
     )
     options += tuple((alias, "alias") for alias in candidate.aliases)
+    # A multi-token query (e.g. "末日地堡 Silo" from a localized+original
+    # title pair) that fails whole-query equality also matches when any
+    # single token is a full, exact equal of a title field. Tokens are
+    # compared whole against whole fields, never as substrings, so "the"
+    # can never match "The Boys".
+    tokens = normalized.split()
+    use_tokens = len(tokens) >= 2 and all(len(token) >= 2 for token in tokens)
     for value, kind in options:
-        if value and _normalize(value) == normalized:
+        if not value:
+            continue
+        field = _normalize(value)
+        if field == normalized or (
+            use_tokens and any(token == field for token in tokens)
+        ):
             return kind
     return None
+
+
+def _year_in_expected(
+    release_year: int,
+    expected_years: set[int],
+    query: MediaMatchInput,
+    candidate: TmdbCandidate,
+) -> bool:
+    if release_year in expected_years:
+        return True
+    # A TV file's year is the season airing year and may differ from the
+    # series premiere year by a year or so. Movies must match strictly.
+    return (
+        query.media_type_hint == "tv"
+        and candidate.media_type is MediaType.TV
+        and any(abs(release_year - year) <= 1 for year in expected_years)
+    )
 
 
 def _rank_key(item: RankedCandidate) -> tuple[object, ...]:
