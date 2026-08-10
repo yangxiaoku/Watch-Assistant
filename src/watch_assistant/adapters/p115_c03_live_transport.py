@@ -118,12 +118,31 @@ class P115C03LiveTransport(P115C03Transport):
         payload = _client_payload(request)
         if method_name is None or payload is None:
             return C03WriteReceipt(WriteStatus.UNCERTAIN)
-        response = await _call(
-            self._call_executor,
-            getattr(self._client, method_name),
-            payload,
-            timeout_seconds=timeout_seconds,
-        )
+        try:
+            response = await _call(
+                self._call_executor,
+                getattr(self._client, method_name),
+                payload,
+                timeout_seconds=timeout_seconds,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            # The provider retired the web write endpoints (HTTP 405); retry
+            # through the app endpoint with its payload shape when available.
+            app_name = _APP_WRITE_METHODS.get(request.operation)
+            app_method = (
+                getattr(self._client, app_name, None) if app_name else None
+            )
+            app_payload = _client_payload_app(request)
+            if not _is_method_not_allowed(error) or not callable(app_method) or app_payload is None:
+                raise
+            response = await _call(
+                self._call_executor,
+                app_method,
+                app_payload,
+                timeout_seconds=timeout_seconds,
+            )
         return _normalize_write_response(request.operation, response)
 
     async def read(
@@ -373,6 +392,44 @@ def _client_payload(request: PreparedWrite) -> dict[str, str] | None:
     return None
 
 
+_APP_WRITE_METHODS = {
+    WriteOperation.MKDIR: "fs_mkdir_app",
+    WriteOperation.MOVE: "fs_move_app",
+    WriteOperation.RENAME: "fs_rename_app",
+    WriteOperation.RECYCLE: "fs_delete_app",
+    WriteOperation.DELETE: "fs_delete_app",
+}
+
+
+def _client_payload_app(request: PreparedWrite) -> dict[str, str] | None:
+    """Map the generic write DTO to the new provider app-endpoint payloads.
+
+    The web endpoints (fs_mkdir / fs_move / fs_delete) return HTTP 405 since
+    the provider migrated to the proapi endpoints; the app endpoints use a
+    different payload shape (name/ids/to_cid/file_ids) while rename keeps
+    the same files_new_name form.
+    """
+
+    payload = request.payload
+    if request.operation is WriteOperation.MKDIR:
+        if set(payload) != {"pid", "file_name"}:
+            return None
+        return {"pid": payload["pid"], "name": payload["file_name"]}
+    if request.operation is WriteOperation.MOVE:
+        if set(payload) != {"file_ids", "to_cid"}:
+            return None
+        return {"ids": payload["file_ids"], "to_cid": payload["to_cid"]}
+    if request.operation is WriteOperation.RENAME:
+        if set(payload) != {"file_id", "file_name"}:
+            return None
+        return {f"files_new_name[{payload['file_id']}]": payload["file_name"]}
+    if request.operation in {WriteOperation.RECYCLE, WriteOperation.DELETE}:
+        if set(payload) != {"file_id"}:
+            return None
+        return {"file_ids": payload["file_id"]}
+    return None
+
+
 def _normalize_write_response(
     operation: WriteOperation, response: Any
 ) -> C03WriteReceipt:
@@ -383,7 +440,9 @@ def _normalize_write_response(
     detail = response.get("data")
     if not isinstance(detail, Mapping):
         detail = response
-    file_id = _single_id(detail, ("cid", "directory_id", "fid", "file_id"))
+    file_id = _single_id(
+        detail, ("cid", "directory_id", "fid", "file_id", "category_id")
+    )
     if file_id is None:
         return C03WriteReceipt(WriteStatus.UNCERTAIN)
     return C03WriteReceipt(WriteStatus.SUCCESS, file_id)
