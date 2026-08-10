@@ -396,3 +396,42 @@ async def test_prowlarr_accepts_bounded_upstream_overfetch(respx_mock):
     assert result.truncated is False
     assert len(result.releases) == 50
     assert result.releases[0].info_hash == f"{1:040x}"
+
+
+@pytest.mark.integration
+async def test_download_resolution_rejects_cross_host_and_internal_ports(respx_mock):
+    """H2:downloadUrl/重定向 Location 只能指向 Prowlarr 端点自身的 host:port。
+
+    恶意索引器返回 http://127.0.0.1:6379 等地址时,请求会携带 X-Api-Key
+    打到 Prowlarr 主机内部端口(受限 SSRF + API Key 泄漏),必须直接跳过。
+    """
+    client = _mocked_client(
+        respx_mock, "https://prowlarr.test:9696", secrets.token_urlsafe(24)
+    )
+    assert client._allowed_download_target("https://prowlarr.test:9696/dl/1") is True
+    # 端点端口 9696:无端口 URL(默认 443)同样拒绝
+    assert client._allowed_download_target("https://prowlarr.test/dl/1") is False
+    # 跨 host / 内部端口 / 任意端口一律拒绝
+    assert client._allowed_download_target("http://127.0.0.1:9696/dl/1") is False
+    assert client._allowed_download_target("https://prowlarr.test:6379/dl/1") is False
+    assert client._allowed_download_target("http://evil.test/dl/1") is False
+    assert client._allowed_download_target("http://prowlarr.test:80/dl/1") is False
+    assert client._allowed_download_target("not a url") is False
+
+    # 解析路径同样拒绝恶意目标,不发起任何请求
+    assert await client._resolve_download_url("http://127.0.0.1:6379/keys") is None
+    assert await client._follow_redirect_magnet("http://prowlarr.test:6379/keys") is None
+    await client.aclose()
+
+
+@pytest.mark.integration
+async def test_download_redirect_to_cross_host_is_rejected(respx_mock):
+    """第一跳合法、Location 指向他处时不得跟随。"""
+    client = _mocked_client(
+        respx_mock, "http://prowlarr.test:9696", secrets.token_urlsafe(24)
+    )
+    assert client._allowed_download_target("http://prowlarr.test:9696/dl/1") is True
+    # 重定向 Location 跨 host/端口 → 拒绝
+    assert client._allowed_download_target("http://evil.test/magnet") is False
+    assert client._allowed_download_target("http://prowlarr.test:6379/x") is False
+    await client.aclose()

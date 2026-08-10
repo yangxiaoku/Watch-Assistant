@@ -205,6 +205,13 @@ class ProwlarrClient:
             allowed_private_addresses
         )
         self._owns_client = client is None
+        base_parsed = urlsplit(normalized_base_url)
+        self._base_scheme = (base_parsed.scheme or "http").casefold()
+        self._base_host = (base_parsed.hostname or "").casefold().rstrip(".")
+        try:
+            self._base_port = base_parsed.port
+        except ValueError:
+            self._base_port = None
         if client is None:
             transport = (
                 _PinnedAsyncHTTPTransport(resolved_address)
@@ -406,8 +413,32 @@ class ProwlarrClient:
                 output.append(replacement)
         return output
 
+    def _allowed_download_target(self, url: str) -> bool:
+        """下载解析只允许访问 Prowlarr 端点本身的 host:port。
+
+        索引器返回的 downloadUrl/重定向 Location 不可信:恶意值可指向
+        Prowlarr 主机内部端口(redis 等)或任意 host——客户端请求会携带
+        X-Api-Key,构成受限 SSRF + API Key 泄漏。校验失败直接跳过该条结果。
+        """
+        try:
+            parsed = urlsplit(url)
+            host = (parsed.hostname or "").casefold().rstrip(".")
+            port = parsed.port
+        except ValueError:
+            return False
+        if not host or host != self._base_host:
+            return False
+        default_port = 443 if (parsed.scheme or "http").casefold() == "https" else 80
+        url_port = port if port is not None else default_port
+        base_port = self._base_port
+        if base_port is None:
+            base_port = 443 if self._base_scheme == "https" else 80
+        return url_port == base_port
+
     async def _resolve_download_url(self, download_url: str) -> str | None:
         """Resolve a release to a real magnet via the Prowlarr download proxy."""
+        if not self._allowed_download_target(download_url):
+            return None
         # Some indexers (e.g. 1337x mirrors) serve the magnet only from the full
         # detail URL including the title slug; the bare /torrent/{id}/ page is a
         # thin shell without the magnet.  The Prowlarr download endpoint always
@@ -442,6 +473,8 @@ class ProwlarrClient:
         if _infohash_from_magnet(location) is not None:
             return location
         if response.status_code in {301, 302, 303, 307, 308}:
+            if not location or not self._allowed_download_target(location):
+                return None
             try:
                 response = await self._client.get(
                     location,
