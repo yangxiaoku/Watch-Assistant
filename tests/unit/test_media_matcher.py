@@ -89,7 +89,9 @@ async def test_aliases_are_supported_for_multiple_scripts(title, aliases):
 
 
 async def test_high_confidence_acceptance_and_stable_tie_breaking():
-    client = FakeClient([candidate(2, year=2004), candidate(1, title="The Office")])
+    # Year 2003 is a 2-year gap from the query (2005) so the duplicate stays
+    # in year conflict under the TV +/-1 tolerance instead of tying.
+    client = FakeClient([candidate(2, year=2003), candidate(1, title="The Office")])
     first = await TmdbMatcher(client).match(query())
     second = await TmdbMatcher(FakeClient(list(reversed(client.response)))).match(
         query()
@@ -102,7 +104,8 @@ async def test_high_confidence_acceptance_and_stable_tie_breaking():
 
 
 async def test_same_title_different_year_is_review_only():
-    decision = await TmdbMatcher(FakeClient([candidate(year=2006)])).match(query())
+    # A 2-year gap still conflicts: TV tolerates only +/-1 airing-year drift.
+    decision = await TmdbMatcher(FakeClient([candidate(year=2007)])).match(query())
 
     assert decision.status is MatchStatus.NEEDS_REVIEW
     assert MatchReason.YEAR_CONFLICT in decision.reasons
@@ -453,3 +456,73 @@ def test_english_title_matches_an_english_filename():
     decision = asyncio.run(TmdbMatcher(FakeClient([candidate])).match(match_input))
     assert decision.status is MatchStatus.ACCEPTED
     assert decision.confidence is MatchConfidence.HIGH
+
+
+async def test_multi_token_query_matches_localized_and_original_title_pair():
+    """A localized+original title pair query matches either token exactly."""
+    silo = TmdbCandidate(
+        tmdb_id=125988,
+        media_type=MediaType.TV,
+        title="末日地堡",
+        original_title="Silo",
+        release_year=2023,
+        seasons=(
+            TmdbSeason(
+                2,
+                episode_count=8,
+                episode_numbers=(1, 2, 3, 4, 5, 6, 7, 8),
+            ),
+        ),
+    )
+    decision = await TmdbMatcher(FakeClient([silo])).match(
+        query(title="末日地堡 Silo", year=2024, season=2, episode_start=1)
+    )
+
+    assert decision.status is MatchStatus.ACCEPTED
+    assert decision.confidence is MatchConfidence.HIGH
+    assert decision.selected is not None and decision.selected.tmdb_id == 125988
+    assert decision.score == 100
+    evidence = decision.ranked_candidates[0].evidence
+    assert evidence.title_match == "title"
+    assert evidence.year_match == "candidate"
+
+
+@pytest.mark.parametrize("query_title", ("The Boys Diabolical", "Boys"))
+async def test_title_tokens_are_never_partial_matches(query_title):
+    """No single token may match a multi-word field (exact equality only)."""
+    decision = await TmdbMatcher(FakeClient([candidate(title="The Boys")])).match(
+        query(title=query_title)
+    )
+
+    assert decision.status is MatchStatus.NEEDS_REVIEW
+    assert MatchReason.TITLE_MISMATCH in decision.reasons
+
+
+async def test_tv_year_one_year_off_is_tolerated():
+    """A TV file's year is the season airing year, not the premiere year."""
+    decision = await TmdbMatcher(FakeClient([candidate(title="Silo", year=2023)])).match(
+        query(title="Silo", year=2024)
+    )
+
+    assert decision.status is MatchStatus.ACCEPTED
+    assert decision.confidence is MatchConfidence.HIGH
+    assert MatchReason.YEAR_CONFLICT not in decision.reasons
+    assert decision.ranked_candidates[0].evidence.year_match == "candidate"
+
+
+async def test_movie_year_still_matches_strictly():
+    """Movies keep strict year matching; the TV tolerance never applies."""
+    decision = await TmdbMatcher(
+        FakeClient(
+            [
+                candidate(
+                    title="Once Upon a Time in Hollywood",
+                    media_type=MediaType.MOVIE,
+                    year=2018,
+                )
+            ]
+        )
+    ).match(query(title="Once Upon a Time in Hollywood", year=2019, media_type_hint="movie"))
+
+    assert decision.status is MatchStatus.NEEDS_REVIEW
+    assert MatchReason.YEAR_CONFLICT in decision.reasons
