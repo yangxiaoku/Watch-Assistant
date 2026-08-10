@@ -201,7 +201,10 @@ _SUBTITLE_HINT_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 )
 _ATMOS_RE = re.compile(r"(?<![A-Za-z0-9])Atmos(?![A-Za-z0-9])", re.IGNORECASE)
 _DOLBY_AUDIO_RE = re.compile(
-    r"(?<![A-Za-z0-9])(?:Dolby[ ._-]*(?:Audio|Digital)|DD\+?|DDP)(?![A-Za-z0-9])",
+    # The trailing lookahead only blocks letters so channel counts may follow
+    # directly (e.g. "DD5.1", "DD+5.1", "DDP5.1"); the remaining "5.1" is
+    # masked by _CHANNEL_PATTERNS.
+    r"(?<![A-Za-z0-9])(?:Dolby[ ._-]*(?:Audio|Digital)|DD\+?|DDP)(?![A-Za-z])",
     re.IGNORECASE,
 )
 
@@ -324,8 +327,13 @@ def parse_media_filename(filename: str) -> MediaParseResult:
     )
     release_group, group_spans = _release_group(stem)
     companion_spans = _companion_spans(stem, extension)
+    title_stem = stem
+    if episode_spans:
+        # TV: everything from the episode/season marker onward is quality,
+        # encoding, or release-group metadata — never part of the title.
+        title_stem = stem[: min(start for start, _ in episode_spans)]
     title = _title_candidate(
-        stem,
+        title_stem,
         year_match,
         episode_spans,
         special_spans,
