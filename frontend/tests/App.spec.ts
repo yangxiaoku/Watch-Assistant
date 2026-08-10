@@ -422,3 +422,51 @@ describe("App capability wiring", () => {
     wrapper.unmount();
   });
 });
+
+describe("App login error copy", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    window.history.replaceState({}, "", "/");
+  });
+
+  function mountAuthGate() {
+    vi.spyOn(ApiClient.prototype, "me").mockRejectedValue(new ApiError("unauthorized", 401, "unauthorized"));
+    vi.spyOn(ApiClient.prototype, "health").mockResolvedValue({
+      status: "ok",
+      release: "test",
+      push_supported: false,
+      organization_plan_enabled: false,
+      organization_execution_enabled: false,
+      organization_execution_supported: false,
+    });
+    return mount(App);
+  }
+
+  it("shows a rate-limit message instead of wrong-credentials on 429", async () => {
+    vi.spyOn(ApiClient.prototype, "login").mockRejectedValue(new ApiError("rate_limited", 429, "rate_limited"));
+    const wrapper = mountAuthGate();
+    await flushPromises();
+
+    await wrapper.get("#username").setValue("admin");
+    await wrapper.get("#password").setValue("admin");
+    await wrapper.get("form").trigger("submit");
+    await flushPromises();
+
+    expect(wrapper.get(".error-text").text()).toContain("尝试次数过多");
+    wrapper.unmount();
+  });
+
+  it("shows wrong-credentials message on a 401", async () => {
+    vi.spyOn(ApiClient.prototype, "login").mockRejectedValue(new ApiError("登录信息不正确", 401, "invalid_credentials"));
+    const wrapper = mountAuthGate();
+    await flushPromises();
+
+    await wrapper.get("#username").setValue("admin");
+    await wrapper.get("#password").setValue("wrong");
+    await wrapper.get("form").trigger("submit");
+    await flushPromises();
+
+    expect(wrapper.get(".error-text").text()).toContain("账号或密码不正确");
+    wrapper.unmount();
+  });
+});
