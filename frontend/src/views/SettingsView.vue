@@ -714,6 +714,12 @@ const organizationDirty = computed(() => {
 });
 
 function organizationList(value: string) {
+  // 目录 ID(115 CID)区分大小写,必须保持原值参与比较与保存,小写化会导致 ID 不匹配
+  return value.split(/[,，\s]+/).map((item) => item.trim()).filter(Boolean);
+}
+
+function extensionList(value: string) {
+  // 扩展名不区分大小写,统一小写便于与后端存储比较
   return value.split(/[,，\s]+/).map((item) => item.trim().toLowerCase()).filter(Boolean);
 }
 
@@ -744,8 +750,8 @@ function organizationDraftChanged() {
     || (organizationSettings.value.push_directory_label ?? "") !== (organizationPushLabelDraft.value.trim() || "")
     || organizationSettings.value.source_directory_ids.join(",") !== organizationList(organizationSourceDraft.value).join(",")
     || (organizationSettings.value.source_directory_labels ?? []).join(",") !== organizationSourceLabelsDraft.value.join(",")
-    || organizationSettings.value.video_extensions.join(",") !== organizationList(organizationVideoExtensionsDraft.value).join(",")
-    || organizationSettings.value.metadata_extensions.join(",") !== organizationList(organizationMetadataExtensionsDraft.value).join(",");
+    || organizationSettings.value.video_extensions.join(",") !== extensionList(organizationVideoExtensionsDraft.value).join(",")
+    || organizationSettings.value.metadata_extensions.join(",") !== extensionList(organizationMetadataExtensionsDraft.value).join(",");
 }
 
 async function saveOrganization() {
@@ -762,8 +768,8 @@ async function saveOrganization() {
       target_directory_label: organizationTargetDraft.value.trim() ? organizationTargetLabelDraft.value.trim() || null : null,
       push_directory_id: organizationPushDraft.value.trim() || null,
       push_directory_label: organizationPushDraft.value.trim() ? organizationPushLabelDraft.value.trim() || null : null,
-      video_extensions: organizationList(organizationVideoExtensionsDraft.value),
-      metadata_extensions: organizationList(organizationMetadataExtensionsDraft.value),
+      video_extensions: extensionList(organizationVideoExtensionsDraft.value),
+      metadata_extensions: extensionList(organizationMetadataExtensionsDraft.value),
       revision: organizationSettings.value.revision,
     });
     applyOrganization(response);
