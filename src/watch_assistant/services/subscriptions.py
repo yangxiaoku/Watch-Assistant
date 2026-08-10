@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
@@ -55,8 +56,20 @@ class SubscriptionService:
         self._session_factory = session_factory
         self._search = search_service
         self._event_logger = event_logger
+        # 并发创建同一订阅时,先查后插的窗口需要进程内互斥:SQLite 的
+        # 部分唯一索引(迁移 070)是跨进程兜底,但同一事件循环里两个任务
+        # 同时通过 _find_scope 再各自 commit 时,写串行化下的交错可能
+        # 让两个插入都“成功”。加锁把创建串行化,让第二个创建必然命中
+        # 已存在检查(与 M2 回归测试的确定性一致)。
+        self._create_lock = asyncio.Lock()
 
     async def create(self, request: SubscriptionCreateRequest) -> SubscriptionResponse:
+        async with self._create_lock:
+            return await self._create_locked(request)
+
+    async def _create_locked(
+        self, request: SubscriptionCreateRequest
+    ) -> SubscriptionResponse:
         async with self._session_factory() as session:
             existing = await self._find_scope(session, request)
             if existing is not None and existing.status != SubscriptionStatus.CANCELLED:
