@@ -558,18 +558,22 @@ async def test_empty_directory_plan_rejects_ambiguous_current_snapshot_revision(
                     updated_at=now + timedelta(seconds=1),
                 )
             )
-            await session.commit()
+            # 迁移 072:重复 revision 在写入层被唯一索引拒绝
+            from sqlalchemy.exc import IntegrityError
 
-        with pytest.raises(
-            EmptyDirectoryCleanupPlanError, match="source_snapshot_not_current"
-        ):
-            await EmptyDirectoryCleanupPlanService(
-                database.session_factory
-            ).create_plan(
-                library_id="library-1",
-                source_scan_run_id="run-1",
-                protected_directory_ids=("200",),
-            )
+            with pytest.raises(IntegrityError):
+                await session.commit()
+            await session.rollback()
+
+        # 重复 revision 未写入:单一 revision 库快照正常,计划可创建
+        plan = await EmptyDirectoryCleanupPlanService(
+            database.session_factory
+        ).create_plan(
+            library_id="library-1",
+            source_scan_run_id="run-1",
+            protected_directory_ids=("200",),
+        )
+        assert plan.plan_id.startswith("empty_cleanup_")
     finally:
         await database.engine.dispose()
 

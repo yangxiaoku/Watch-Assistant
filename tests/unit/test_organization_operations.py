@@ -526,7 +526,8 @@ async def test_incomplete_scan_rejects_create_without_operation(tmp_path):
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("state", "complete", "snapshot_revision"),
-    (("completed", True, 1), ("queued", False, None)),
+    # completed 用例用 revision=2 构造"非当前快照"(歧义已由迁移 072 杜绝)
+    (("completed", True, 2), ("queued", False, None)),
 )
 async def test_claim_rejects_ambiguous_or_unsettled_source_scan(
     tmp_path, state: str, complete: bool, snapshot_revision: int | None
