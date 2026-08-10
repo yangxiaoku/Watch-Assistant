@@ -185,3 +185,27 @@
   第二轮 `test_webhooks.py`(+1)、`test_worker_recovery.py`(+1)、`test_mcp_pwa.py`(+1)、
   `test_p115_login_devices.py`(+1)、`test_p115_delete.py`(+1)、`test_library_scan_operations.py`(+1)、
   `test_tmdb_retry.py`(新增文件,+3)
+
+
+---
+
+## 7. 审查交接单(28 项)处理记录 — 2026-08-10
+
+独立分支 `fix/audit-handoff-20260810`,逐项独立提交,PR 描述按编号标注。
+
+### 已修复(独立提交)
+- **H1** 媒体库写路由要求 `library:write` scope(新增 scope + 4 个路由依赖升级 + 回归测试)
+- **H2** prowlarr downloadUrl/重定向 host+port 白名单校验(防受限 SSRF + API Key 泄漏 + 回归测试)
+- **M1** 提交成功但无远端标识的任务允许显式取消(SUBMITTED + remote_ref IS NULL 豁免 + 回归测试)
+- **M2** 订阅部分唯一索引(迁移 070,先清重再建索引;模型同步;并发回归测试)
+- **M3** backups 路由补 scope(backup:read/backup:write + 回归测试;集成测试改真实登录)
+- **M4** strm cancel 对活跃租约拒绝无条件取消(陈旧租约允许清理 + 测试调整)
+- **M5-M9 / L10(前端)/ S4** 前端子代理修复(独立 worktree 提交)
+- **L1/L2/L3/S2/S3/L7/L8/L9** 后端状态机与错误码子代理修复(独立 worktree 提交)
+- **L4/L5/L11** 低危安全与性能子代理修复(独立 worktree 提交)
+- **S1** 服务器 `PROWLARR_SLOW_INDEXER_IDS=10,18` → `10`(已应用,服务重启健康)
+- **S5** 服务器 venv 旧安装副本已 `pip uninstall`(PYTHONPATH 指向 current/src,已重启验证)
+
+### 跳过(原因)
+- **L6** security fail-open 改 fail-closed:与注入式测试基建强耦合(大量集成测试依赖无 manager 的注入式 app),需单独排期:注入式 `create_app` 强制要求显式 `security_manager`。生产路径不受影响(生产 create_app 永远创建 manager)。
+- **S6** release 目录保留无自动化:建议后续加 retention 策略(如保留最近 5 个 release + 手动归档),文档化待办。
