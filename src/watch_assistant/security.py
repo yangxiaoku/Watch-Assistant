@@ -3,6 +3,7 @@
 import hashlib
 import inspect
 import json
+import os
 import secrets
 from collections import deque
 from dataclasses import dataclass
@@ -449,9 +450,8 @@ class SecurityManager:
         Login runs before any authenticated dependency, so the shared
         post-auth rate limiter never sees it without this explicit entry.
         """
-        identity = (
-            f"login:{request.client.host}" if request.client is not None else "login:unknown"
-        )
+        host = _client_host(request)
+        identity = f"login:{host}" if host is not None else "login:unknown"
         self._check_rate_limit(request, identity)
 
     def _check_rate_limit(self, request: Request, identity: str) -> None:
@@ -640,7 +640,25 @@ def _decode_json_strings(value: str) -> list[str]:
     return [item for item in decoded if isinstance(item, str)]
 
 
+def _xff_trusted() -> bool:
+    """判断是否信任 X-Forwarded-For 头(部署在可信反代之后)。
+
+    只有明确配置 X_FORWARDED_FOR_TRUSTED=1 才启用;未配置时一律忽略该头,
+    防止客户端直连或未配置反代时伪造 IP 绕过按地址的限流。
+    """
+    return os.environ.get("X_FORWARDED_FOR_TRUSTED", "") == "1"
+
+
 def _client_host(request: Request) -> str | None:
+    # 反代部署下所有请求的 client.host 都是代理 IP,按 IP 限流会退化为
+    # 全局共享桶(一次 5 次失败登录即可锁全实例)。仅在显式信任反代时
+    # 取 X-Forwarded-For 首项作为真实客户端地址,其余情况仍用直连地址。
+    if _xff_trusted():
+        forwarded = request.headers.get("X-Forwarded-For")
+        if forwarded:
+            host = forwarded.split(",", 1)[0].strip()
+            if host and len(host) <= 64:
+                return host
     host = request.client.host if request.client is not None else None
     return host if host and len(host) <= 64 else None
 

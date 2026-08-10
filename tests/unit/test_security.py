@@ -5,6 +5,7 @@ from starlette.requests import Request
 from watch_assistant.security import (
     AuthError,
     SecurityManager,
+    _client_host,
     _required_scope,
     redact_mapping,
 )
@@ -204,3 +205,92 @@ def test_backup_routes_require_backup_scopes():
         }
     )
     assert _required_scope(request) == "backup:write"
+
+
+def _login_request(
+    *, client_host: str = "127.0.0.1", xff: str | None = None
+) -> Request:
+    headers: list[tuple[bytes, bytes]] = []
+    if xff is not None:
+        headers.append((b"x-forwarded-for", xff.encode("ascii")))
+    return Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/api/v1/auth/login",
+            "headers": headers,
+            "scheme": "http",
+            "server": ("app.test", 80),
+            "client": (client_host, 1234),
+            "root_path": "",
+        }
+    )
+
+
+def _rate_limit_manager() -> SecurityManager:
+    password_hash = PasswordHash.recommended()
+    return SecurityManager(
+        web_password_hash=password_hash.hash("fixture-password"),
+        script_token_hash=password_hash.hash("fixture-token"),
+    )
+
+
+def test_login_rate_limit_bucket_blocks_sixth_attempt():
+    """L4:同一客户端地址 1 分钟内最多 5 次登录尝试,第 6 次返回 429。"""
+    manager = _rate_limit_manager()
+    request = _login_request()
+    for _ in range(5):
+        manager.check_login_rate_limit(request)
+    with pytest.raises(AuthError) as error:
+        manager.check_login_rate_limit(request)
+    assert error.value.status_code == 429
+
+
+def test_login_rate_limit_bucket_is_per_client_address():
+    """L4:限流桶按客户端地址隔离,不同地址互不牵连。"""
+    manager = _rate_limit_manager()
+    for _ in range(5):
+        manager.check_login_rate_limit(_login_request(client_host="10.0.0.1"))
+    # 另一个地址的客户端不受影响
+    manager.check_login_rate_limit(_login_request(client_host="10.0.0.2"))
+    with pytest.raises(AuthError) as error:
+        manager.check_login_rate_limit(_login_request(client_host="10.0.0.1"))
+    assert error.value.status_code == 429
+
+
+def test_client_host_ignores_xff_unless_explicitly_trusted(monkeypatch):
+    """L4:未配置 X_FORWARDED_FOR_TRUSTED 时忽略 XFF,伪造头无法绕过限流。"""
+    monkeypatch.delenv("X_FORWARDED_FOR_TRUSTED", raising=False)
+    request = _login_request(client_host="10.0.0.9", xff="203.0.113.7")
+    assert _client_host(request) == "10.0.0.9"
+    manager = _rate_limit_manager()
+    for _ in range(5):
+        manager.check_login_rate_limit(request)
+    with pytest.raises(AuthError) as error:
+        manager.check_login_rate_limit(request)
+    assert error.value.status_code == 429
+
+
+def test_client_host_prefers_trusted_xff_first_entry(monkeypatch):
+    """L4:配置可信反代后,_client_host 取 XFF 首项作为真实客户端地址。"""
+    monkeypatch.setenv("X_FORWARDED_FOR_TRUSTED", "1")
+    request = _login_request(client_host="10.0.0.9", xff="203.0.113.7, 10.0.0.9")
+    assert _client_host(request) == "203.0.113.7"
+
+
+def test_trusted_xff_splits_rate_buckets_per_real_client(monkeypatch):
+    """L4:可信反代下不同真实客户端(不同 XFF 首项)各自独立限流桶。"""
+    monkeypatch.setenv("X_FORWARDED_FOR_TRUSTED", "1")
+    manager = _rate_limit_manager()
+    for _ in range(5):
+        manager.check_login_rate_limit(
+            _login_request(client_host="10.0.0.9", xff="203.0.113.7")
+        )
+    manager.check_login_rate_limit(
+        _login_request(client_host="10.0.0.9", xff="203.0.113.8")
+    )
+    with pytest.raises(AuthError) as error:
+        manager.check_login_rate_limit(
+            _login_request(client_host="10.0.0.9", xff="203.0.113.7")
+        )
+    assert error.value.status_code == 429
