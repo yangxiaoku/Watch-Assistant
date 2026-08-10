@@ -1,6 +1,7 @@
 import json
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from cryptography.fernet import Fernet
 
 from watch_assistant.crypto import SecretCrypto
@@ -171,15 +172,19 @@ async def test_root_only_scan_cannot_prove_inventory_is_complete(tmp_path):
 
 
 async def test_ambiguous_complete_snapshot_revision_blocks_inventory_push(tmp_path):
+    """迁移 072:重复 snapshot revision 在写入层被唯一索引拒绝,歧义快照不可达。"""
+    from sqlalchemy.exc import IntegrityError
+
     database = await _database(tmp_path)
     crypto = SecretCrypto(Fernet.generate_key().decode("ascii"))
     await _resource(database, crypto)
     await _library(database)
-    async with database.session_factory() as session:
-        now = datetime.now(UTC)
-        session.add(
-            LibraryScanRun(
-                id="scan-guard-duplicate",
+    try:
+        async with database.session_factory() as session:
+            now = datetime.now(UTC)
+            session.add(
+                LibraryScanRun(
+                    id="scan-guard-duplicate",
                 library_id="library-guard",
                 root_directory_id="root-guard",
                 idempotency_key="scan-guard-duplicate-key",
@@ -194,34 +199,17 @@ async def test_ambiguous_complete_snapshot_revision_blocks_inventory_push(tmp_pa
                 updated_at=now + timedelta(seconds=1),
             )
         )
-        await session.flush()
-        session.add(
-            LibraryScanCheckpoint(
-                scan_run_id="scan-guard-duplicate",
-                page=1,
-                items_seen=0,
-                cursor_json=json.dumps(
-                    {
-                        "version": 2,
-                        "directory_totals": {"root-guard": 0},
-                        "expected_total": 0,
-                        "pending": [],
-                        "visited": ["root-guard"],
-                    }
-                ),
-            )
-        )
-        await session.commit()
+            with pytest.raises(IntegrityError):
+                await session.flush()
+            await session.rollback()
 
-    try:
-        result = await InventoryPushGuard(database.session_factory).check(
-            "resource-guard"
-        )
-        assert result.allowed is False
-        assert result.code == "inventory_index_incomplete"
+            # 单一 revision 的库不受影响,库存推送正常放行
+            result = await InventoryPushGuard(database.session_factory).check(
+                "resource-guard"
+            )
+            assert result.allowed is True
     finally:
         await database.engine.dispose()
-
 
 async def test_newer_requeued_scan_blocks_inventory_push(tmp_path):
     database = await _database(tmp_path)

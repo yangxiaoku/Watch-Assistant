@@ -839,7 +839,9 @@ async def test_unrelated_new_scan_invalidates_bound_plan(tmp_path):
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("state", "complete", "snapshot_revision"),
-    (("completed", True, 1), ("queued", False, None)),
+    # completed 用例用 revision=2 构造"非当前快照"(歧义场景已由
+    # 迁移 072 唯一索引在写入层杜绝);queued 用例无 revision 不冲突
+    (("completed", True, 2), ("queued", False, None)),
 )
 async def test_plan_and_executable_loader_reject_ambiguous_or_unsettled_scan(
     tmp_path, state: str, complete: bool, snapshot_revision: int | None

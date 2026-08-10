@@ -436,6 +436,10 @@ async def test_inventory_fails_closed_for_unsettled_and_duplicate_revisions(tmp_
     assert inventory.status_code == 200
     assert inventory.json()["freshness"]["complete"] is False
 
+    # 重复 revision 在写入层被唯一索引拒绝(迁移 072),歧义快照不可达:
+    # 与 fixture 的 scan-key(revision=7)重复的 UPDATE 必须失败。
+    from sqlalchemy.exc import IntegrityError
+
     async with database.session_factory() as session:
         pending = await session.get(LibraryScanRun, "scan-pending")
         assert pending is not None
@@ -445,10 +449,13 @@ async def test_inventory_fails_closed_for_unsettled_and_duplicate_revisions(tmp_
         pending.expected_total = 0
         pending.pages_read = 0
         pending.items_seen = 0
-        await session.commit()
+        with pytest.raises(IntegrityError):
+            await session.commit()
+        await session.rollback()
 
     duplicate = await client.get("/api/v1/libraries/library-one/inventory")
     assert duplicate.status_code == 200
+    # 重复 revision 未写入;scan-pending 仍为 running → 快照仍未就绪
     assert duplicate.json()["freshness"]["complete"] is False
 
     await client.aclose()
