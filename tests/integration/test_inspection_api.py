@@ -800,6 +800,84 @@ async def test_dependency_failure_is_a_batch_failure_without_results(tmp_path):
     await _close(client, database, tmdb, pansou)
 
 
+class _RecordingEventLogger:
+    """记录 emit_event 的事件名与字段,便于断言事件内容。"""
+
+    def __init__(self) -> None:
+        self.events: list[tuple[str, dict[str, object]]] = []
+
+    async def log_event(
+        self,
+        event: str,
+        *,
+        level: object = None,
+        fields: dict[str, object] | None = None,
+        **_kwargs: object,
+    ) -> None:
+        self.events.append((event, fields or {}))
+
+
+@pytest.mark.integration
+async def test_batch_failed_event_carries_failed_item_error_code(tmp_path):
+    # 回归(S3):inspection.batch_failed 模板声明了 {error_code},
+    # 此前 emit 从不填充;现在随事件携带首个失败条目的 error_code。
+    magnet = _magnet("a")
+    fake = FakeInspectionClient(
+        {magnet: _result("a" * 40, InspectionStatus.FAILED, error_code="add_failed")}
+    )
+    _app, client, database, tmdb, pansou, crypto, _magnets = await _make_app(
+        tmp_path, client=fake
+    )
+    logger = _RecordingEventLogger()
+    service = InspectionService(database.session_factory, event_logger=logger)
+    worker = InspectionWorker(
+        database.session_factory, crypto, fake, event_logger=logger
+    )
+    try:
+        await service.create(["res_a"])
+        assert await worker.run_once()
+        failed = [
+            fields
+            for event, fields in logger.events
+            if event == "inspection.batch_failed"
+        ]
+        assert failed
+        assert failed[-1]["error_code"] == "add_failed"
+        assert failed[-1]["hidden_count"] == 1
+        assert failed[-1]["status"] == "failed"
+    finally:
+        await _close(client, database, tmdb, pansou)
+
+
+@pytest.mark.integration
+async def test_dependency_failed_event_carries_fallback_error_code(tmp_path):
+    fake = FakeInspectionClient({}, dependency_error=True)
+    _app, client, database, tmdb, pansou, crypto, _magnets = await _make_app(
+        tmp_path, client=fake
+    )
+    logger = _RecordingEventLogger()
+    service = InspectionService(database.session_factory, event_logger=logger)
+    worker = InspectionWorker(
+        database.session_factory, crypto, fake, event_logger=logger
+    )
+    try:
+        await service.create(["res_a"])
+        assert await worker.run_once()
+        failed = [
+            fields
+            for event, fields in logger.events
+            if event == "inspection.batch_failed"
+        ]
+        assert failed
+        # 依赖(qBittorrent)不可达:异常无业务错误码时回退 api_unavailable。
+        assert failed[-1] == {
+            "status": "dependency_failed",
+            "error_code": "api_unavailable",
+        }
+    finally:
+        await _close(client, database, tmdb, pansou)
+
+
 @pytest.mark.integration
 async def test_lifespan_runs_the_single_worker_and_closes_the_qb_client(tmp_path):
     fake = FakeInspectionClient({})

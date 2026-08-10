@@ -182,17 +182,23 @@ class InspectionService:
                 InspectionBatchStatus.PARTIAL,
                 InspectionBatchStatus.FAILED,
             }:
+                failed = batch.status == InspectionBatchStatus.FAILED
+                fields: dict[str, object] = {
+                    "status": batch.status.value,
+                    "count": len(resource_ids),
+                    "hidden_count": _failed_item_count(items),
+                }
+                if failed:
+                    # 批次失败事件携带失败原因(首个失败条目的 error_code),
+                    # 让模板中的 {error_code} 不再永远缺省。
+                    fields["error_code"] = _batch_failure_error_code(items)
                 await emit_event(
                     self._event_logger,
                     "inspection.batch_completed"
-                    if batch.status != InspectionBatchStatus.FAILED
+                    if not failed
                     else "inspection.batch_failed",
-                    level=(
-                        LoggingLevel.ERROR
-                        if batch.status == InspectionBatchStatus.FAILED
-                        else LoggingLevel.INFO
-                    ),
-                    fields={"status": batch.status.value, "count": len(resource_ids)},
+                    level=LoggingLevel.ERROR if failed else LoggingLevel.INFO,
+                    fields=fields,
                 )
             return InspectionBatchResponse(
                 batch_id=batch.id,
@@ -337,7 +343,10 @@ class InspectionWorker:
         try:
             await ensure_available()
             return True
-        except Exception:  # noqa: BLE001 - dependency error is intentionally opaque
+        except Exception as error:  # noqa: BLE001 - dependency error is intentionally opaque
+            error_code = getattr(error, "code", None)
+            if not isinstance(error_code, str) or error_code not in KNOWN_ERROR_CODES:
+                error_code = "api_unavailable"
             async with self._session_factory() as session:
                 completed_count = await session.scalar(
                     select(InspectionItem)
@@ -357,7 +366,12 @@ class InspectionWorker:
                             self._event_logger,
                             "inspection.batch_failed",
                             level=LoggingLevel.ERROR,
-                            fields={"status": "dependency_failed"},
+                            # 依赖(qBittorrent)不可达也是失败原因:附带
+                            # error_code,避免通知里"失败数量/错误码"缺省。
+                            fields={
+                                "status": "dependency_failed",
+                                "error_code": error_code,
+                            },
                         )
                         return False
             return True
@@ -477,22 +491,24 @@ class InspectionWorker:
             )
             batch.updated_at = datetime.now(UTC)
             await session.commit()
+            failed = batch.status == InspectionBatchStatus.FAILED
+            fields: dict[str, object] = {
+                "status": batch.status.value,
+                "count": len(items),
+                "hidden_count": _failed_item_count(items),
+            }
+            if failed:
+                # 批次失败事件携带失败原因(首个失败条目的 error_code)。
+                fields["error_code"] = _batch_failure_error_code(items)
             await emit_event(
                 self._event_logger,
                 "inspection.batch_completed"
                 if batch.status == InspectionBatchStatus.COMPLETED
                 else "inspection.batch_failed"
-                if batch.status == InspectionBatchStatus.FAILED
+                if failed
                 else "inspection.batch_completed",
-                level=(
-                    LoggingLevel.ERROR
-                    if batch.status == InspectionBatchStatus.FAILED
-                    else LoggingLevel.INFO
-                ),
-                fields={
-                    "status": batch.status.value,
-                    "count": len(items),
-                },
+                level=LoggingLevel.ERROR if failed else LoggingLevel.INFO,
+                fields=fields,
             )
 
 
@@ -512,6 +528,22 @@ def _result_response(item: InspectionItem) -> InspectionResultResponse:
         error_code=item.error_code,
         result_source=item.result_source,
     )
+
+
+def _batch_failure_error_code(items: Iterable[InspectionItem]) -> str:
+    """以首个失败条目的 error_code 作为批次失败原因,缺省 internal_error。
+
+    inspection.batch_failed 事件模板声明了 {error_code},此前 emit 从不
+    填充,日志/通知里失败原因永远缺失;这里统一从失败条目提取。
+    """
+    for item in items:
+        if item.status not in SUCCESSFUL_ITEM_STATUSES and item.error_code:
+            return item.error_code
+    return "internal_error"
+
+
+def _failed_item_count(items: Iterable[InspectionItem]) -> int:
+    return sum(item.status not in SUCCESSFUL_ITEM_STATUSES for item in items)
 
 
 def _batch_status(statuses: Iterable[InspectionItemStatus]) -> InspectionBatchStatus:
