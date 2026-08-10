@@ -28,6 +28,11 @@ from watch_assistant.services.p115_settings import (
 P115CLIENT_VERSION = "0.0.9.6.5.1"
 INFOHASH_REMOTE_REF_PREFIX = "infohash:"
 MAX_SHARE_ITEMS = 1000
+# 服务端"仍在处理上次提交"的 busy 错误码(与只读路径约定一致,
+# 见 AGENTS.md「_p115client_timeout_executor 对 errno=990009 使用 3 秒重试」)。
+_P115_BUSY_OPERATION_ERRNO = 990009
+_P115_BUSY_RETRY_DELAY_SECONDS = 3.0
+_DEFAULT_REQUEST_TIMEOUT_SECONDS = 30.0
 _BTIH_PATTERN = re.compile(r"^(?:[0-9a-f]{40}|[a-z2-7]{32})$", re.IGNORECASE)
 _SHARE_CODE_PATTERN = re.compile(r"^/(?:s|share)/([A-Za-z0-9_-]+)/?$", re.IGNORECASE)
 _INFOHASH_PATTERN = re.compile(r"^[0-9a-f]{40}$", re.IGNORECASE)
@@ -42,6 +47,17 @@ _AUTH_MARKERS = (
     "认证",
     "授权",
 )
+
+
+def _has_busy_errno(error: BaseException) -> bool:
+    """服务端仍在处理上次提交(errno=990009),幂等重试一次是安全的。"""
+    if getattr(error, "errno", None) == _P115_BUSY_OPERATION_ERRNO:
+        return True
+    return any(
+        isinstance(argument, Mapping)
+        and argument.get("errno") == _P115_BUSY_OPERATION_ERRNO
+        for argument in getattr(error, "args", ())
+    )
 _IDEMPOTENT_MARKERS = (
     "already received",
     "already exist",
@@ -104,6 +120,7 @@ class P115Adapter:
             [str], P115ReadOnlyDirectoryGateway
         ] | None = None,
         file_id_resolver: Callable[[Mapping[str, Any]], object] | None = None,
+        request_timeout_seconds: float = _DEFAULT_REQUEST_TIMEOUT_SECONDS,
     ) -> None:
         if isinstance(target_cid, bool):
             raise TypeError("target_cid must be a non-negative integer")
@@ -114,6 +131,9 @@ class P115Adapter:
             raise ValueError("target_cid must be a non-negative integer")
         if max_concurrency < 1:
             raise ValueError("max_concurrency must be positive")
+        if request_timeout_seconds <= 0:
+            raise ValueError("request_timeout_seconds must be positive")
+        self._request_timeout_seconds = request_timeout_seconds
         self._cookie_provider = cookie_provider
         self._target_cid = target_cid
         self._client_factory = client_factory or _default_client_factory
@@ -144,6 +164,7 @@ class P115Adapter:
                     client,
                     "clouddownload_task_add_url",
                     {"url": url, "wp_path_id": self._resolve_target_cid(target_cid)},
+                    timeout_seconds=self._request_timeout_seconds,
                 )
             except asyncio.CancelledError:
                 raise
@@ -191,6 +212,7 @@ class P115Adapter:
                         "file_id": ",".join(file_ids),
                         "cid": self._resolve_target_cid(target_cid),
                     },
+                    timeout_seconds=self._request_timeout_seconds,
                 )
             except asyncio.CancelledError:
                 raise
@@ -229,7 +251,10 @@ class P115Adapter:
             for page in range(1, 101):
                 try:
                     response = await self._call(
-                        client, "clouddownload_task_list", {"page": page}
+                        client,
+                        "clouddownload_task_list",
+                        {"page": page},
+                        timeout_seconds=self._request_timeout_seconds,
                     )
                 except asyncio.CancelledError:
                     raise
@@ -353,7 +378,9 @@ class P115Adapter:
                 response = method({"page": 1}, async_=True)
                 if not inspect.isawaitable(response):
                     raise P115UnavailableError
-                response = await self._await_native_probe(response)
+                response = await self._await_native_probe(
+                    response, timeout_seconds=self._request_timeout_seconds
+                )
             except asyncio.CancelledError:
                 raise
             except P115UnavailableError:
@@ -370,11 +397,12 @@ class P115Adapter:
                 raise P115UnavailableError
 
     @staticmethod
-    async def _await_native_probe(response: Any) -> Any:
+    async def _await_native_probe(response: Any, *, timeout_seconds: float) -> Any:
         """Drain a cancelled native probe before releasing the operation slot."""
         probe_task = asyncio.ensure_future(response)
         try:
-            return await probe_task
+            # 只读探针同样要有超时上限:原生客户端连接挂起时不得拖住调用方
+            return await asyncio.wait_for(probe_task, timeout=timeout_seconds)
         except asyncio.CancelledError:
             probe_task.cancel()
             await asyncio.gather(probe_task, return_exceptions=True)
@@ -401,7 +429,9 @@ class P115Adapter:
                 response = method({"page": 1}, async_=True)
                 if not inspect.isawaitable(response):
                     raise P115UnavailableError
-                response = await response
+                response = await asyncio.wait_for(
+                    response, timeout=self._request_timeout_seconds
+                )
                 if not isinstance(response, Mapping):
                     raise P115UnavailableError
                 if _response_auth(response):
@@ -458,9 +488,36 @@ class P115Adapter:
             return
 
     @staticmethod
-    async def _call(client: Any, method_name: str, payload: Mapping[str, Any]) -> Any:
+    async def _call(
+        client: Any,
+        method_name: str,
+        payload: Mapping[str, Any],
+        *,
+        timeout_seconds: float,
+    ) -> Any:
+        """带超时与 990009 幂等重试的写/状态调用。
+
+        修复前是裸 ``asyncio.to_thread``:115 侧连接挂起(无 RST)时线程永不返回,
+        worker 的续租会持续续租、lease 永不过期,任务永久卡 SUBMITTING 且整个
+        流水线停摆。990009 表示服务端仍在处理上次提交,重试一次即可拿到
+        确定性结果(服务端按 infohash 去重,幂等安全)。
+        """
         method = getattr(client, method_name)
-        return await asyncio.to_thread(method, payload)
+        for attempt in range(2):
+            try:
+                return await asyncio.wait_for(
+                    asyncio.to_thread(method, payload),
+                    timeout=timeout_seconds,
+                )
+            except TimeoutError:
+                # 超时 = 服务端状态未知(可能已处理)。不重试提交,避免重复
+                # 副作用;由调用方标记不确定,交给只读核对兜底。
+                raise
+            except Exception as error:  # noqa: BLE001 - remote outcome is opaque
+                if attempt or not _has_busy_errno(error):
+                    raise
+                await asyncio.sleep(_P115_BUSY_RETRY_DELAY_SECONDS)
+        raise RuntimeError("unreachable")
 
     async def _share_file_ids(
         self, client: Any, share_code: str, receive_code: str
@@ -481,6 +538,7 @@ class P115Adapter:
                         "limit": limit,
                         "offset": offset,
                     },
+                    timeout_seconds=self._request_timeout_seconds,
                 )
             except asyncio.CancelledError:
                 raise
@@ -962,6 +1020,10 @@ def _field_has_markers(
 def _exception_result(error: Exception) -> SubmissionResult:
     if _auth_exception(error):
         return _needs_auth()
+    if isinstance(error, TimeoutError):
+        # 写调用挂起超过上限:远端可能已处理。与 submit_ambiguous 区分,
+        # 便于只读核对路径优先对超时任务做确定性确认。
+        return _uncertain("timeout")
     return _uncertain("submit_ambiguous")
 
 

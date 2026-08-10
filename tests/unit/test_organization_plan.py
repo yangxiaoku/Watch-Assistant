@@ -1208,3 +1208,46 @@ async def test_public_and_error_outputs_are_redacted_and_migration_is_idempotent
         )
     assert "organization_plans" in tables
     await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_missing_parent_fallback_target_matches_actual_root_destination(tmp_path):
+    """目标分类子目录缺失时,计划目标必须按实际落点(目标根)展示,
+    不得显示完整分类路径误导用户(执行实际落在根目录)。"""
+    from watch_assistant.services.organization_plan import _build_payload
+
+    database = await _database(tmp_path)
+    item = _item(target_parent_id="target-root", target_name="safe-title.mkv")
+    row = LibraryScanEntry(
+        scan_run_id=SCAN_ID,
+        object_type="file",
+        object_id="100",
+        parent_id=ROOT_ID,
+        name=SECRET_NAME,
+        path=SECRET_PATH,
+        is_directory=False,
+    )
+    _, _, actions, _, status = _build_payload(
+        (item,),
+        {("file", "100"): row},
+        root_directory_id=ROOT_ID,
+        target_root="library",
+        target_directory_id="target-root",
+        target_directories={"": "target-root"},  # 无分类子目录
+        target_conflicts=(),
+        organization_policy={},
+        source_snapshot_revision=1,
+        parser_version="p1",
+        matcher_version="m1",
+    )
+    assert status is OrganizationPlanStatus.PLANNED
+    action = actions[0]
+    assert action["execution"]["kind"] == "move"
+    # 修复前:target 为 "library/movie/safe-title.mkv"(完整分类路径),
+    # 但执行只 move 到 target_parent_id(= 目标根),用户按路径找不到文件。
+    assert action["target"] == "library/safe-title.mkv"
+    assert action["target_parent_id"] == "target-root"
+    assert (
+        action["execution"]["members"][0]["target_parent_id"] == "target-root"
+    )  # 执行与展示一致
+    await database.engine.dispose()

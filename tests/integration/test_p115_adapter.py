@@ -23,6 +23,7 @@ class FakeP115Client:
         share_pages=None,
         share_error=None,
         receive_error=None,
+        delay: float = 0,
     ):
         self.response = response or {"state": True, "data": {"task_id": "task-1"}}
         self.task_response = task_response or {"state": True, "data": []}
@@ -45,7 +46,7 @@ class FakeP115Client:
         self.share_snap_calls = 0
         self.active = 0
         self.max_active = 0
-        self.delay = 0
+        self.delay = delay
         self.validation_async_flags = []
 
     def clouddownload_task_add_url(self, payload):
@@ -857,3 +858,85 @@ async def test_available_status_allows_root_target_cid_zero(tmp_path):
     assert observation.availability_verified is True
     assert observation.parent_id == "0"
     assert gateway.directory_ids == ["0"]
+
+
+class _BusyOnceClient(FakeP115Client):
+    """第一次写调用抛 errno=990009(服务端仍在处理上次提交),第二次成功。"""
+
+    def __init__(self):
+        super().__init__()
+        self.busy_calls = 0
+
+    def clouddownload_task_add_url(self, payload):
+        self.add_payloads.append(payload)
+        self.busy_calls += 1
+        if self.busy_calls == 1:
+            error = RuntimeError("busy: previous request still processing")
+            error.errno = 990009
+            raise error
+        return self.response
+
+
+class _AlwaysBusyClient(FakeP115Client):
+    def __init__(self):
+        super().__init__()
+        self.busy_calls = 0
+
+    def clouddownload_task_add_url(self, payload):
+        self.add_payloads.append(payload)
+        self.busy_calls += 1
+        error = RuntimeError("busy")
+        error.errno = 990009
+        raise error
+
+
+@pytest.mark.asyncio
+async def test_submit_magnet_hangs_are_bounded_by_timeout_and_marked_uncertain(tmp_path):
+    """修复前:写调用裸 to_thread 无超时,挂起会拖死 worker 且任务永久卡 SUBMITTING。"""
+    import time as time_module
+
+    provider, _path = _provider(tmp_path)
+    fake = FakeP115Client(delay=3)
+    adapter = P115Adapter(
+        provider, 42,
+        client_factory=lambda _cookie: fake,
+        request_timeout_seconds=0.2,
+    )
+
+    started = time_module.monotonic()
+    result = await adapter.submit_magnet(MAGNET)
+    elapsed = time_module.monotonic() - started
+
+    assert result.status == RemoteStatus.UNCERTAIN
+    assert result.error_code == "timeout"  # 与 submit_ambiguous 区分,优先走只读核对
+    assert elapsed < 2.0  # 未等待挂起线程返回
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
+async def test_submit_magnet_retries_busy_990009_once_and_returns_deterministic(tmp_path):
+    """990009 = 服务端仍在处理上次提交;幂等重试一次拿到确定性结果。"""
+    provider, _path = _provider(tmp_path)
+    fake = _BusyOnceClient()
+    adapter = P115Adapter(provider, 42, client_factory=lambda _cookie: fake)
+
+    result = await adapter.submit_magnet(MAGNET)
+
+    assert fake.busy_calls == 2
+    assert result.status == RemoteStatus.ACCEPTED
+    assert result.remote_ref == "task-1"
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
+async def test_submit_magnet_busy_after_retry_stays_ambiguous(tmp_path):
+    provider, _path = _provider(tmp_path)
+    fake = _AlwaysBusyClient()
+    adapter = P115Adapter(provider, 42, client_factory=lambda _cookie: fake)
+
+    result = await adapter.submit_magnet(MAGNET)
+
+    assert fake.busy_calls == 2  # 只重试一次,不无限重试
+    assert result.status == RemoteStatus.UNCERTAIN
+    assert result.error_code == "submit_ambiguous"
+    await adapter.aclose()

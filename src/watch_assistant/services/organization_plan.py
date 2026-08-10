@@ -1201,6 +1201,23 @@ def _build_payload(
         if key not in rows:
             raise OrganizationPlanError("source_snapshot_mismatch")
         target = _target_path(target_root, item.naming_plan.target_path)
+        if (
+            target is not None
+            and item.target_parent_id == target_directory_id
+            and _directory_id_for_path(
+                target_directories,
+                str(PurePosixPath(item.naming_plan.target_path).parent),
+            )
+            is None
+        ):
+            # 目标分类子目录尚不存在,执行会回退到目标根目录
+            # (provisioner 仅创建缺失子目录供后续归档)。预览、确认、
+            # 历史必须按实际落点展示,否则用户按完整路径找不到文件。
+            target = _validate_relative_path(
+                f"{target_root}/{item.target_name}"
+                if target_root
+                else item.target_name
+            )
         source_snapshot.append(
             {
                 "object_type": source.object_type,
