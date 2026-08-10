@@ -44,7 +44,9 @@ _MULTI_SEASON_EPISODE_RE = re.compile(
     re.IGNORECASE,
 )
 _CHINESE_EPISODE_RE = re.compile(
-    r"第(?P<season>[0-9]{1,3})季[ ._-]*第(?P<start>[0-9]{1,4})"
+    # 集号后紧跟 "季" (如 "第1季第2季") 是另一季标记,不是季内集数,
+    # 用前瞻排除,避免把多季合集误判为 第1季第2集。
+    r"第(?P<season>[0-9]{1,3})季[ ._-]*第(?P<start>[0-9]{1,4})(?!\s*季)"
     r"(?:[ ._-]*(?:-|至|到)[ ._-]*(?P<end>[0-9]{1,4}))?集?",
 )
 _SEASON_ONLY_RE = re.compile(

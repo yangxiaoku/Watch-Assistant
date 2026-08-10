@@ -108,6 +108,7 @@ def test_multiple_generic_special_tokens_choose_only_a_clear_post_episode_candid
         ("Show.1x02.mkv", 1, 2, None),
         ("Show.Season 1 Episode 2.mkv", 1, 2, None),
         ("Show.第01季第02-04集.mkv", 1, 2, 4),
+        ("Show.第1季.第2集.mkv", 1, 2, None),
     ),
 )
 def test_season_and_episode_forms(name, season, episode_start, episode_end):
@@ -116,6 +117,16 @@ def test_season_and_episode_forms(name, season, episode_start, episode_end):
     assert parsed.season == season
     assert parsed.episode_start == episode_start
     assert parsed.episode_end == episode_end
+    assert parsed.media_type_hint == "tv"
+
+
+def test_chinese_multi_season_markers_do_not_claim_a_fake_episode():
+    # "第1季第2季" 是两个季节标记,不是 第1季第2集
+    parsed = parse_media_filename("权力的游戏.第1季.第2季.mkv")
+
+    assert parsed.season == 1
+    assert parsed.episode_start is None
+    assert parsed.episode_end is None
     assert parsed.media_type_hint == "tv"
 
 
