@@ -44,3 +44,4 @@ release-archive/
 .run/
 .tmp_*.sh
 .tmp_*.py
+.claude/worktrees/
