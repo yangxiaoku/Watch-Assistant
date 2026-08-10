@@ -1,6 +1,7 @@
 import pytest
 
 from watch_assistant.adapters.p115_c03_fixture_probe import (
+    C03DirectoryListing,
     C03RemoteEntry,
     C03WriteReceipt,
 )
@@ -84,18 +85,18 @@ async def test_directory_provisioner_defaults_write_gate_closed():
 async def test_directory_provisioner_forwards_confirmed_write_gate():
     provisioner = _provisioner()
     remote_calls = []
-    read_calls = []
+    list_calls = []
 
     async def execute(request, *, timeout_seconds):
         remote_calls.append((request.operation, timeout_seconds))
         return C03WriteReceipt(WriteStatus.SUCCESS, "8000")
 
-    async def read(file_id, *, timeout_seconds):
-        read_calls.append((file_id, timeout_seconds))
-        return C03RemoteEntry(file_id, "9000", "Movies")
+    async def list_children(parent_id, *, timeout_seconds):
+        list_calls.append((parent_id, timeout_seconds))
+        return C03DirectoryListing(tuple(), complete=True, page_calls=1)
 
     provisioner._transport.execute = execute
-    provisioner._transport.read = read
+    provisioner._transport.list_children = list_children
 
     await provisioner.ensure(
         target_root_id="9000",
@@ -110,7 +111,45 @@ async def test_directory_provisioner_forwards_confirmed_write_gate():
     )
 
     assert remote_calls == [(WriteOperation.MKDIR, 30.0)]
-    assert read_calls == [("8000", 30.0)]
+    assert list_calls == [("8000", 30.0)]
+
+
+@pytest.mark.asyncio
+async def test_directory_provisioner_accepts_already_existing_directory():
+    """A provider mkdir rejection for an existing name is idempotent."""
+    provisioner = _provisioner()
+    remote_calls = []
+    list_calls = []
+
+    async def execute(request, *, timeout_seconds):
+        remote_calls.append((request.operation, timeout_seconds))
+        return C03WriteReceipt(WriteStatus.UNCERTAIN, None)
+
+    async def list_children(parent_id, *, timeout_seconds):
+        list_calls.append(parent_id)
+        return C03DirectoryListing(
+            (C03RemoteEntry("8100", parent_id, "Movies", True),),
+            complete=True,
+            page_calls=1,
+        )
+
+    provisioner._transport.execute = execute
+    provisioner._transport.list_children = list_children
+
+    await provisioner.ensure(
+        target_root_id="9000",
+        library_id="library-1",
+        operation_id="op-directory-test",
+        existing_directories={"": "9000"},
+        paths=("Movies",),
+        write_enabled=True,
+        plan_confirmed=True,
+        scope_confirmed=True,
+        lease_active=True,
+    )
+
+    assert remote_calls == [(WriteOperation.MKDIR, 30.0)]
+    assert list_calls == ["9000", "8100"]
 
 
 @pytest.mark.asyncio

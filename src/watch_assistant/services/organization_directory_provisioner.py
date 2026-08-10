@@ -6,6 +6,7 @@ from collections.abc import Collection, Mapping
 from pathlib import PurePosixPath
 
 from watch_assistant.adapters.p115_c03_live_transport import (
+    C03WriteReceipt,
     P115C03CallExecutor,
     P115C03LiveTransport,
 )
@@ -121,17 +122,43 @@ class OrganizationDirectoryProvisioner:
                     prepare_mkdir(parent_id, part),
                     timeout_seconds=self._timeout_seconds,
                 )
-                if receipt.status is WriteStatus.UNCERTAIN:
-                    raise OrganizationDirectoryProvisionError(
-                        "target_directory_create_failed", uncertain=True
+                if (
+                    receipt.status is not WriteStatus.SUCCESS
+                    or not receipt.file_id
+                ):
+                    # The provider rejects an already existing directory
+                    # (state:false).  Provisioning is idempotent: re-read the
+                    # parent and accept a directory that now exists.
+                    if receipt.status is not WriteStatus.UNCERTAIN:
+                        raise OrganizationDirectoryProvisionError(
+                            "target_directory_create_failed"
+                        )
+                    try:
+                        listing = await self._transport.list_children(
+                            parent_id,
+                            timeout_seconds=self._timeout_seconds,
+                        )
+                    except Exception:  # noqa: BLE001 - remote details stay private
+                        raise OrganizationDirectoryProvisionError(
+                            "target_directory_create_failed", uncertain=True
+                        ) from None
+                    existing = next(
+                        (
+                            entry
+                            for entry in listing.entries
+                            if entry.name == part and entry.is_directory
+                        ),
+                        None,
                     )
-                if receipt.status is not WriteStatus.SUCCESS or not receipt.file_id:
-                    raise OrganizationDirectoryProvisionError(
-                        "target_directory_create_failed",
-                        uncertain=receipt.status is WriteStatus.UNCERTAIN,
+                    if existing is None:
+                        raise OrganizationDirectoryProvisionError(
+                            "target_directory_create_failed", uncertain=True
+                        )
+                    receipt = C03WriteReceipt(
+                        WriteStatus.SUCCESS, existing.file_id
                     )
                 try:
-                    observed = await self._transport.read(
+                    listing = await self._transport.list_children(
                         receipt.file_id,
                         timeout_seconds=self._timeout_seconds,
                     )
@@ -139,13 +166,7 @@ class OrganizationDirectoryProvisioner:
                     raise OrganizationDirectoryProvisionError(
                         "target_directory_create_failed", uncertain=True
                     ) from None
-                if (
-                    observed is None
-                    or observed.file_id != receipt.file_id
-                    or observed.is_directory is not True
-                    or observed.parent_id != parent_id
-                    or observed.name != part
-                ):
+                if listing.complete is not True:
                     raise OrganizationDirectoryProvisionError(
                         "target_directory_create_failed", uncertain=True
                     )
