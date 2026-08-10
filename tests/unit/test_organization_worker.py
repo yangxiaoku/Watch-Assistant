@@ -111,6 +111,7 @@ def _steps():
         source_name="source.mkv",
         target_parent_id="9000",
         target_name="target.mkv",
+        target_directory_path="library/movie",
     )
     return (SimpleNamespace(members=(member,), replacement_object_id=None),)
 
@@ -214,10 +215,60 @@ async def test_confirmed_runtime_forwards_all_live_gate_values(monkeypatch):
     assert transport_calls[0]["plan_confirmed"] is True
     assert transport_calls[0]["scope_confirmed"] is True
     assert transport_calls[0]["organization_contract"] == _contract()
+    assert transport_calls[0]["target_root_id"] == "9000"
+    assert transport_calls[0]["intents"][0].target_directory_path == "library/movie"
     assert len(executor_calls) == 1
     assert client.closed is True
     assert operations.scope_revisions == [1]
     assert operations.step_revisions == [1]
+
+
+@pytest.mark.asyncio
+async def test_member_without_target_directory_path_defaults_to_none(monkeypatch):
+    """旧计划成员没有 target_directory_path 字段时,intent 保持 None。"""
+    member = SimpleNamespace(
+        object_id="100",
+        source_parent_id="7000",
+        source_name="source.mkv",
+        target_parent_id="9000",
+        target_name="target.mkv",
+    )
+    operations = _Operations(
+        scope=frozenset({"7000", "9000"}),
+        steps=(SimpleNamespace(members=(member,), replacement_object_id=None),),
+    )
+    client = _Client()
+    transport_calls = []
+
+    class _Executor:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def execute(self, *_args, **_kwargs):
+            return None
+
+    def create_transport(**kwargs):
+        transport_calls.append(kwargs)
+        return object()
+
+    monkeypatch.setattr(
+        "watch_assistant.services.organization_worker.create_live_p115_organization_transport",
+        create_transport,
+    )
+    monkeypatch.setattr(
+        "watch_assistant.services.organization_worker.OrganizationExecutor",
+        _Executor,
+    )
+    worker = _worker(
+        operations,
+        write_enabled=True,
+        client_factory=lambda _credential: client,
+    )
+
+    assert await worker.run_once() is True
+    assert len(transport_calls) == 1
+    assert transport_calls[0]["target_root_id"] == "9000"
+    assert transport_calls[0]["intents"][0].target_directory_path is None
 
 
 @pytest.mark.asyncio
@@ -285,6 +336,8 @@ async def test_reconcile_uses_read_only_transport_when_writes_are_disabled(monke
     assert transport_calls[0]["write_enabled"] is False
     assert transport_calls[0]["plan_confirmed"] is True
     assert transport_calls[0]["scope_confirmed"] is True
+    assert transport_calls[0]["target_root_id"] == "9000"
+    assert transport_calls[0]["intents"][0].target_directory_path == "library/movie"
     assert client.closed is True
     assert operations.scope_revisions == [1]
     assert operations.step_revisions == [1]

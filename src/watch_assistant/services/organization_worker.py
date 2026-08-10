@@ -112,6 +112,7 @@ class OrganizationWorker:
                 member.source_name,
                 member.target_parent_id,
                 member.target_name,
+                target_directory_path=getattr(member, "target_directory_path", None),
             )
             for step in steps
             for member in step.members
@@ -180,6 +181,7 @@ class OrganizationWorker:
                 write_enabled=self._write_enabled,
                 plan_confirmed=plan_confirmed,
                 organization_contract=self._organization_contract,
+                target_root_id=self._production_root_id,
             )
             executor = OrganizationExecutor(
                 self._operations,
@@ -286,6 +288,7 @@ class OrganizationWorker:
                 member.source_name,
                 member.target_parent_id,
                 member.target_name,
+                target_directory_path=getattr(member, "target_directory_path", None),
             )
             for step in steps
             for member in step.members
@@ -336,6 +339,7 @@ class OrganizationWorker:
                 plan_confirmed=plan_confirmed,
                 read_only=True,
                 organization_contract=self._organization_contract,
+                target_root_id=self._production_root_id,
             )
             executor = OrganizationExecutor(
                 self._operations,

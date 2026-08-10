@@ -123,6 +123,7 @@ def _item(
     target_parent_id: str | None = "8000",
     target_name: str = "safe-title.mkv",
     target_path: str = "movie/safe-title.mkv",
+    target_directory_path: str | None = None,
     companions: tuple[OrganizationPlanCompanion, ...] = (),
 ) -> OrganizationPlanItem:
     source_name = SECRET_NAME if object_id == "100" else "second-title.mkv"
@@ -149,6 +150,7 @@ def _item(
         target_parent_id=target_parent_id,
         target_name=target_name,
         companions=companions,
+        target_directory_path=target_directory_path,
     )
 
 
@@ -376,7 +378,180 @@ async def test_complete_execution_payload_is_persisted_and_parsed(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_review_actions_do_not_block_move_execution(tmp_path):
+async def test_target_directory_path_is_persisted_and_parsed(tmp_path):
+    """多级目标目录路径(action + 所有成员)持久化并可解析回 member。"""
+    database = await _database(tmp_path)
+    service = OrganizationPlanService(database.session_factory)
+    plan_view = await service.create_plan(
+        library_id=LIBRARY_ID,
+        scan_run_id=SCAN_ID,
+        items=(
+            _item(
+                target_path="movie/Season 02/safe-title.mkv",
+                target_name="safe-title.mkv",
+                target_directory_path="movie/Season 02",
+            ),
+        ),
+        target_directory_id="8000",
+        target_directories={"movie": "8000"},
+    )
+    assert plan_view.status is OrganizationPlanStatus.PLANNED
+    async with database.session_factory() as session:
+        plan = await session.get(OrganizationPlan, plan_view.plan_id)
+        assert plan is not None
+        action = json.loads(plan.actions_json)[0]
+        assert action["target_directory_path"] == "movie/Season 02"
+        assert action["execution"]["members"][0]["target_directory_path"] == (
+            "movie/Season 02"
+        )
+        steps = await load_executable_steps(database.session_factory, plan)
+        assert steps is not None
+        member = steps[0].members[0]
+        assert member.target_directory_path == "movie/Season 02"
+        assert await service.plan_target_directory_paths(plan_view.plan_id) == (
+            "movie/Season 02",
+        )
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_companion_members_share_the_step_target_directory_path(tmp_path):
+    """伴生文件与主文件落在同一目标目录:成员都带同一 target_directory_path。"""
+    database = await _database(tmp_path)
+    async with database.session_factory() as session:
+        session.add(
+            LibraryScanEntry(
+                scan_run_id=SCAN_ID,
+                object_type="file",
+                object_id="102",
+                parent_id=ROOT_ID,
+                name="private-title.srt",
+                path="/private/cloud/private-title.srt",
+                is_directory=False,
+            )
+        )
+        await session.commit()
+    await _refresh_completed_tree_evidence(database)
+    companion = OrganizationPlanCompanion(
+        source=PlanSource(
+            object_type="file",
+            object_id="102",
+            parent_id=ROOT_ID,
+            path="/private/cloud/private-title.srt",
+            remote_version=_source_version(
+                "102", path="/private/cloud/private-title.srt", name="private-title.srt"
+            ),
+        ),
+        target_parent_id="8000",
+        target_name="safe-title.srt",
+    )
+    service = OrganizationPlanService(database.session_factory)
+    plan = await service.create_plan(
+        library_id=LIBRARY_ID,
+        scan_run_id=SCAN_ID,
+        items=(
+            _item(
+                target_path="movie/Season 02/safe-title.mkv",
+                target_name="safe-title.mkv",
+                target_directory_path="movie/Season 02",
+                companions=(companion,),
+            ),
+        ),
+        target_directory_id="8000",
+        target_directories={"movie": "8000"},
+    )
+    assert plan.status is OrganizationPlanStatus.PLANNED
+    async with database.session_factory() as session:
+        stored = await session.get(OrganizationPlan, plan.plan_id)
+        assert stored is not None
+        members = json.loads(stored.actions_json)[0]["execution"]["members"]
+        assert len(members) == 2
+        assert all(
+            member["target_directory_path"] == "movie/Season 02" for member in members
+        )
+        steps = await load_executable_steps(database.session_factory, stored)
+        assert steps is not None
+        assert all(
+            member.target_directory_path == "movie/Season 02"
+            for member in steps[0].members
+        )
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_plan_target_directory_paths_falls_back_to_target_parent(tmp_path):
+    """没有持久化路径字段时,plan_target_directory_paths 回退到 target 的父路径。"""
+    database = await _database(tmp_path)
+    service = OrganizationPlanService(database.session_factory)
+    plan_view = await service.create_plan(
+        library_id=LIBRARY_ID, scan_run_id=SCAN_ID, items=(_item(),)
+    )
+    async with database.session_factory() as session:
+        plan = await session.get(OrganizationPlan, plan_view.plan_id)
+        assert plan is not None
+        action = json.loads(plan.actions_json)[0]
+        assert action["target_directory_path"] is None
+        assert await service.plan_target_directory_paths(plan_view.plan_id) == (
+            "movie",
+        )
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_executable_loader_rejects_target_directory_path_tampering(tmp_path):
+    """篡改 member 的 target_directory_path 使计划不可执行(非法路径或与 action 不一致)。"""
+    changes = ("invalid_path", "mismatched_path")
+    for change in changes:
+        case_dir = tmp_path / change
+        case_dir.mkdir()
+        database = await _database(case_dir)
+        service = OrganizationPlanService(database.session_factory)
+        plan_view = await service.create_plan(
+            library_id=LIBRARY_ID,
+            scan_run_id=SCAN_ID,
+            items=(
+                _item(
+                    target_path="movie/Season 02/safe-title.mkv",
+                    target_name="safe-title.mkv",
+                    target_directory_path="movie/Season 02",
+                ),
+            ),
+            target_directory_id="8000",
+            target_directories={"movie": "8000"},
+        )
+        async with database.session_factory() as session:
+            plan = await session.get(OrganizationPlan, plan_view.plan_id)
+            assert plan is not None
+            actions = json.loads(plan.actions_json)
+            preconditions = json.loads(plan.preconditions_json)
+            actions[0]["execution"]["members"][0]["target_directory_path"] = (
+                "../evil" if change == "invalid_path" else "other/Season"
+            )
+            preconditions["items"][0]["execution"]["members"][0][
+                "target_directory_path"
+            ] = actions[0]["execution"]["members"][0]["target_directory_path"]
+            plan.actions_json = json.dumps(actions)
+            plan.preconditions_json = json.dumps(preconditions)
+            plan.plan_hash = _canonical_hash(
+                {
+                    "library_id": plan.library_id,
+                    "library_snapshot": preconditions["library"],
+                    "source_snapshot": json.loads(plan.source_snapshot_json),
+                    "target_root": plan.target_root,
+                    "actions": actions,
+                    "preconditions": preconditions,
+                    "rule_version": plan.rule_version,
+                    "parser_version": plan.parser_version,
+                    "matcher_version": plan.matcher_version,
+                }
+            )
+            await session.commit()
+            stored = await session.get(OrganizationPlan, plan.id)
+            assert stored is not None
+            assert (
+                await load_executable_steps(database.session_factory, stored) is None
+            )
+        await database.engine.dispose()
     """计划含 1 个 move + 1 个 review:只返回 move step,review 不阻塞执行。"""
     database = await _database(tmp_path)
     service = OrganizationPlanService(database.session_factory)

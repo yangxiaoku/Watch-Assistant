@@ -360,6 +360,11 @@ class OrganizationPreviewService:
                 replacement_object_id=replacement_object_id,
                 replacement_parent_id=replacement_parent_id,
                 replacement_name=replacement_name,
+                target_directory_path=(
+                    naming_plan.target_directory
+                    if naming_plan.target_path is not None
+                    else None
+                ),
             )
 
         items = await asyncio.gather(*(build_item(entry) for entry in files))

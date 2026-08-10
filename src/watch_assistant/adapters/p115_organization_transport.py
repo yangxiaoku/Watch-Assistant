@@ -59,6 +59,7 @@ class OrganizationObjectIntent:
     source_name: str
     target_parent_id: str
     target_name: str
+    target_directory_path: str | None = None
 
     def __post_init__(self) -> None:
         if any(
@@ -70,6 +71,10 @@ class OrganizationObjectIntent:
             )
         ) or any(
             not _safe_name(value) for value in (self.source_name, self.target_name)
+        ):
+            raise ValueError("invalid_organization_intent")
+        if self.target_directory_path is not None and not _safe_target_path(
+            self.target_directory_path
         ):
             raise ValueError("invalid_organization_intent")
 
@@ -121,10 +126,10 @@ class OfflineP115OrganizationTransport:
             for intent in intent_items
         ):
             raise ValueError("invalid_organization_scope")
-        targets = {
-            (intent.target_parent_id, intent.target_name) for intent in intent_items
-        }
-        if len(targets) != len(intent_items):
+        targets = {_intent_target_key(intent) for intent in intent_items}
+        if len(targets) != len(intent_items) or len(
+            {(item.target_parent_id, item.target_name) for item in intent_items}
+        ) != len(intent_items):
             raise ValueError("invalid_organization_scope")
         if not isinstance(scope_confirmed, bool):
             raise TypeError("invalid_organization_scope")
@@ -142,6 +147,9 @@ class OfflineP115OrganizationTransport:
 
         self._intents = {item.object_id: item for item in intent_items}
         self._targets = targets
+        self._target_intents = {
+            (item.target_parent_id, item.target_name): item for item in intent_items
+        }
         self._managed_directory_ids = managed_ids
         self._scope_confirmed = scope_confirmed
         self._states = initial_states
@@ -206,7 +214,8 @@ class OfflineP115OrganizationTransport:
 
     async def read_target(self, parent_id: str, name: str) -> RemoteObjectState | None:
         self._require_scope()
-        if (parent_id, name) not in self._targets:
+        intent = self._target_intents.get((parent_id, name))
+        if intent is None or _intent_target_key(intent) not in self._targets:
             raise P115OrganizationTransportError("scope_unverified")
         self._calls.append(
             OrganizationTransportCall(P115OrganizationMethod.READ_TARGET)
@@ -285,10 +294,12 @@ class OfflineP115OrganizationTransport:
         self, object_id: str, parent_id: str, name: str
     ) -> OrganizationTransportResult:
         self._require_scope()
+        intent = self._target_intents.get((parent_id, name))
         if (
-            _stable_id(object_id) is None
+            intent is None
+            or _stable_id(object_id) is None
             or parent_id not in self._managed_directory_ids
-            or (parent_id, name) not in self._targets
+            or _intent_target_key(intent) not in self._targets
         ):
             raise P115OrganizationTransportError("scope_unverified")
         self._calls.append(OrganizationTransportCall(P115OrganizationMethod.RECYCLE))
@@ -399,6 +410,7 @@ class LiveP115OrganizationTransport:
         read_only: bool = False,
         organization_contract: P115OrganizationContract | None = None,
         c03_transport: P115C03Transport | None = None,
+        target_root_id: str | None = None,
     ) -> None:
         if live_enabled is not True:
             raise P115OrganizationTransportError("live_transport_disabled")
@@ -415,10 +427,16 @@ class LiveP115OrganizationTransport:
         _validate_live_scope(intent_items, managed_ids, scope_confirmed)
         if not isinstance(organization_contract, P115OrganizationContract):
             raise P115OrganizationTransportError("organization_contract_required")
+        if any(
+            intent.target_directory_path is not None for intent in intent_items
+        ) and (not isinstance(target_root_id, str) or not target_root_id):
+            raise P115OrganizationTransportError("target_root_missing")
         self._intents = {item.object_id: item for item in intent_items}
-        self._targets = {
-            (intent.target_parent_id, intent.target_name) for intent in intent_items
+        self._targets = {_intent_target_key(intent) for intent in intent_items}
+        self._target_intents = {
+            (item.target_parent_id, item.target_name): item for item in intent_items
         }
+        self._target_root_id = target_root_id
         self._managed_directory_ids = managed_ids
         self._scope_confirmed = scope_confirmed
         self._timeout_seconds = float(timeout_seconds)
@@ -457,12 +475,27 @@ class LiveP115OrganizationTransport:
 
     async def read_object(self, object_id: str) -> RemoteObjectState | None:
         intent = self._intent(object_id)
+        # 多级目标:文件写入后被移到路径解析出的真实目录(如 Season 02),
+        # 该目录不在计划的 managed 目录集合里;观察时按计划空间语义返回
+        # target_parent_id,保证 executor 的 expectation 校验一致。
+        resolved_target_id: str | None = None
+        if intent.target_directory_path is not None:
+            resolved_target_id = await self._resolve_target_directory_id(
+                intent.target_directory_path
+            )
         observations: list[RemoteObjectState] = []
-        for parent_id in (
-            intent.source_parent_id,
+        for parent_id, is_resolved_target in (
+            (intent.source_parent_id, False),
             *(
-                (intent.target_parent_id,)
+                ((intent.target_parent_id, False),)
                 if intent.target_parent_id != intent.source_parent_id
+                else ()
+            ),
+            *(
+                ((resolved_target_id, True),)
+                if resolved_target_id is not None
+                and resolved_target_id
+                not in {intent.source_parent_id, intent.target_parent_id}
                 else ()
             ),
         ):
@@ -473,7 +506,14 @@ class LiveP115OrganizationTransport:
                 raise P115OrganizationTransportError("observation_unverified")
             observations.extend(
                 RemoteObjectState(
-                    entry.file_id, entry.parent_id, entry.name, entry.is_directory
+                    entry.file_id,
+                    (
+                        intent.target_parent_id
+                        if is_resolved_target
+                        else entry.parent_id
+                    ),
+                    entry.name,
+                    entry.is_directory,
                 )
                 for entry in listing.entries
                 if entry.file_id == object_id
@@ -525,16 +565,30 @@ class LiveP115OrganizationTransport:
 
     async def read_target(self, parent_id: str, name: str) -> RemoteObjectState | None:
         self._require_scope()
-        if (parent_id, name) not in self._targets:
+        intent = self._target_intents.get((parent_id, name))
+        if intent is None or _intent_target_key(intent) not in self._targets:
             raise P115OrganizationTransportError("scope_unverified")
+        listing_parent = parent_id
+        if intent.target_directory_path is not None:
+            resolved = await self._resolve_target_directory_id(
+                intent.target_directory_path
+            )
+            if resolved is None:
+                raise P115OrganizationTransportError("scope_unverified")
+            listing_parent = resolved
         listing = await self._c03.list_children(
-            parent_id, timeout_seconds=self._timeout_seconds
+            listing_parent, timeout_seconds=self._timeout_seconds
         )
         if listing.complete is not True:
             raise P115OrganizationTransportError("observation_unverified")
         matches = [
             RemoteObjectState(
-                entry.file_id, entry.parent_id, entry.name, entry.is_directory
+                entry.file_id,
+                # 计划空间语义:与 executor 的 expectation.target_parent_id
+                # (计划固定的目标父目录)对齐,而不是解析出的物理目录 ID。
+                parent_id,
+                entry.name,
+                entry.is_directory,
             )
             for entry in listing.entries
             if entry.name == name
@@ -550,8 +604,16 @@ class LiveP115OrganizationTransport:
         intent = self._intent(object_id)
         if target_parent_id != intent.target_parent_id:
             raise P115OrganizationTransportError("scope_unverified")
+        effective_parent_id = target_parent_id
+        if intent.target_directory_path is not None:
+            resolved = await self._resolve_target_directory_id(
+                intent.target_directory_path
+            )
+            if resolved is None:
+                raise P115OrganizationTransportError("scope_unverified")
+            effective_parent_id = resolved
         receipt = await self._c03.execute(
-            prepare_move(object_id, target_parent_id),
+            prepare_move(object_id, effective_parent_id),
             timeout_seconds=self._timeout_seconds,
         )
         result = _organization_result(OrganizationTransportOperation.MOVE, receipt.status)
@@ -563,10 +625,12 @@ class LiveP115OrganizationTransport:
     ) -> OrganizationTransportResult:
         self._require_write(WriteOperation.RECYCLE)
         self._require_scope()
+        intent = self._target_intents.get((parent_id, name))
         if (
-            _stable_id(object_id) is None
+            intent is None
+            or _stable_id(object_id) is None
             or parent_id not in self._managed_directory_ids
-            or (parent_id, name) not in self._targets
+            or _intent_target_key(intent) not in self._targets
             or not _safe_name(name)
         ):
             raise P115OrganizationTransportError("scope_unverified")
@@ -601,6 +665,31 @@ class LiveP115OrganizationTransport:
         if _stable_id(object_id) is None or object_id not in self._intents:
             raise P115OrganizationTransportError("scope_unverified")
         return self._intents[object_id]
+
+    async def _resolve_target_directory_id(self, path: str) -> str | None:
+        """Resolve a relative directory path to its remote directory ID.
+
+        Starts from the configured target root and walks one segment per
+        directory listing.  Returns ``None`` when any segment is missing or
+        ambiguous; an incomplete listing is an observation failure.
+        """
+
+        current_id = self._target_root_id
+        for segment in path.split("/"):
+            listing = await self._c03.list_children(
+                current_id, timeout_seconds=self._timeout_seconds
+            )
+            if listing.complete is not True:
+                raise P115OrganizationTransportError("observation_unverified")
+            matches = [
+                entry
+                for entry in listing.entries
+                if entry.is_directory is True and entry.name == segment
+            ]
+            if len(matches) != 1:
+                return None
+            current_id = matches[0].file_id
+        return current_id
 
     def _require_scope(self) -> None:
         if self._scope_confirmed is not True:
@@ -671,6 +760,7 @@ def create_live_p115_organization_transport(
     read_only: bool = False,
     organization_contract: P115OrganizationContract | None = None,
     c03_transport: P115C03Transport | None = None,
+    target_root_id: str | None = None,
 ) -> LiveP115OrganizationTransport:
     """Build a live transport with either a write gate or an explicit read-only mode."""
 
@@ -687,6 +777,7 @@ def create_live_p115_organization_transport(
         read_only=read_only,
         organization_contract=organization_contract,
         c03_transport=c03_transport,
+        target_root_id=target_root_id,
     )
 
 
@@ -704,6 +795,27 @@ def _safe_name(value: Any) -> bool:
         and not any(char in value for char in ("\x00", "/", "\\"))
         and value not in {".", ".."}
     )
+
+
+def _safe_target_path(value: Any) -> bool:
+    """Validate a "/"-separated target directory path, segment by segment."""
+
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value) > 4096
+        or "\x00" in value
+        or "\\" in value
+    ):
+        return False
+    return all(_safe_name(part) for part in value.split("/"))
+
+
+def _intent_target_key(intent: OrganizationObjectIntent) -> tuple[str, str]:
+    """Scope key for a target: the recorded directory path when present."""
+    if intent.target_directory_path is not None:
+        return (intent.target_directory_path, intent.target_name)
+    return (intent.target_parent_id, intent.target_name)
 
 
 def _validate_live_scope(

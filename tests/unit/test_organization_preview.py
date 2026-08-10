@@ -304,6 +304,31 @@ async def test_preview_can_limit_sources_to_a_verified_directory(tmp_path: Path)
 
 
 @pytest.mark.asyncio
+async def test_preview_persists_full_target_directory_path(tmp_path: Path):
+    """持久化的 action/成员必须携带完整多级目标目录路径(供目录 provisioner 与执行)。"""
+    database = await _database(tmp_path, target_exists=True)
+    plan_service = OrganizationPlanService(database.session_factory)
+    service = OrganizationPreviewService(
+        database.session_factory, _TmdbClient(), plan_service
+    )
+
+    result = await service.create_preview(
+        library_id="library-preview", scan_run_id="scan-preview"
+    )
+
+    assert result.status is OrganizationPlanStatus.PLANNED
+    async with database.session_factory() as session:
+        plan = await session.scalar(select(OrganizationPlan))
+    assert plan is not None
+    action = json.loads(plan.actions_json)[0]
+    expected = "library/movie/western/The Office (2005) {tmdb-42}"
+    assert action["target_directory_path"] == expected
+    assert action["execution"]["members"][0]["target_directory_path"] == expected
+    assert await plan_service.plan_target_directory_paths(plan.id) == (expected,)
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_preview_preserves_original_name_when_rename_is_disabled(tmp_path: Path):
     database = await _database(tmp_path, target_exists=True)
     service = OrganizationPreviewService(
