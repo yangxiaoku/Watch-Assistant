@@ -124,6 +124,18 @@ class Settings(BaseSettings):
     cache_warm_concurrency: int = Field(
         default=3, ge=1, le=16, validation_alias="CACHE_WARM_CONCURRENCY"
     )
+    # 资源搜索快照缓存 TTL(小时):命中率敏感的环境可调大新鲜期,
+    # 对时效敏感的环境可调小;默认 24h 与代码内常量一致。
+    search_cache_ttl_hours: int = Field(
+        default=24, ge=1, le=168, validation_alias="SEARCH_CACHE_TTL_HOURS"
+    )
+    # 空结果(negative)与部分结果(partial)缓存的 TTL(分钟)。
+    search_negative_cache_minutes: int = Field(
+        default=30, ge=5, le=240, validation_alias="SEARCH_CACHE_NEGATIVE_MINUTES"
+    )
+    search_partial_cache_minutes: int = Field(
+        default=10, ge=1, le=120, validation_alias="SEARCH_CACHE_PARTIAL_MINUTES"
+    )
     subscription_scheduler_enabled: bool = Field(
         default=False, validation_alias="SUBSCRIPTION_SCHEDULER_ENABLED"
     )

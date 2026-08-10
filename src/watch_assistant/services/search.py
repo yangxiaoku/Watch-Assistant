@@ -169,6 +169,11 @@ class SearchService:
         event_logger: EventLogger | None = None,
         prowlarr_fast_indexer_ids: Iterable[int] = (),
         prowlarr_slow_indexer_ids: Iterable[int] = (),
+        # 快照缓存的 TTL 可配置:命中率敏感的环境可调大新鲜期,
+        # 对时效敏感的环境可调小;默认与模块常量一致,不传即保持现状。
+        fresh_cache_ttl: timedelta = FRESH_CACHE_AGE,
+        negative_cache_ttl: timedelta = NEGATIVE_CACHE_AGE,
+        partial_cache_ttl: timedelta = PARTIAL_CACHE_AGE,
     ) -> None:
         self._session_factory = session_factory
         self._tmdb = tmdb_client
@@ -197,6 +202,9 @@ class SearchService:
         self._prowlarr_slow_ids = tuple(
             dict.fromkeys(int(item) for item in prowlarr_slow_indexer_ids)
         )
+        self._fresh_cache_ttl = fresh_cache_ttl
+        self._negative_cache_ttl = negative_cache_ttl
+        self._partial_cache_ttl = partial_cache_ttl
         # Cache keys with an in-flight background slow-indexer merge, to avoid
         # scheduling duplicate merges for the same media while one runs.
         self._slow_merge_pending: set[str] = set()
@@ -319,6 +327,9 @@ class SearchService:
                 "count": len(response.results),
                 "hidden_count": response.hidden_total,
                 "duration_ms": int((monotonic() - started) * 1000),
+                # 缓存命中标记与缓存年龄:便于从事件日志统计缓存命中率。
+                "cached": response.cached,
+                "cache_age_seconds": response.cache_age_seconds,
             },
         )
         return response
@@ -531,7 +542,7 @@ class SearchService:
         if cache is None:
             return None, None
         age = max(0, int((datetime.now(UTC) - _as_utc(cache.fetched_at)).total_seconds()))
-        if not _cache_is_fresh(cache, timedelta(seconds=age)):
+        if not self._cache_is_fresh(cache, timedelta(seconds=age)):
             return None, None
         # A negative/partial snapshot carries no real resource list, so it must
         # never short-circuit a fresh resource search: the user would otherwise
@@ -725,7 +736,7 @@ class SearchService:
                 cache is not None
                 and cache_usable
                 and not refresh
-                and _cache_is_fresh(cache, cache_age)
+                and self._cache_is_fresh(cache, cache_age)
             ):
                 await emit_event(
                     self._event_logger,
@@ -1744,6 +1755,18 @@ class SearchService:
         by_key = {resource.canonical_key: resource for resource in rows}
         return [by_key[key] for key in canonical_keys]
 
+    def _cache_ttl(self, cache_kind: str) -> timedelta:
+        """按缓存类型返回可配置 TTL(默认与模块常量一致)。"""
+        if cache_kind == "negative":
+            return self._negative_cache_ttl
+        if cache_kind == "partial":
+            return self._partial_cache_ttl
+        return self._fresh_cache_ttl
+
+    def _cache_is_fresh(self, cache: SearchCache, age: timedelta) -> bool:
+        # 年龄规则兼容历史行;expires_at 仅作为清理提示。
+        return age <= self._cache_ttl(getattr(cache, "cache_kind", "positive"))
+
     async def _persist_cache(
         self,
         session,
@@ -1771,7 +1794,7 @@ class SearchService:
             "warnings_json": json.dumps(warnings),
             "cache_kind": cache_kind,
             "fetched_at": now,
-            "expires_at": now + _cache_ttl(cache_kind),
+            "expires_at": now + self._cache_ttl(cache_kind),
         }
         stmt = insert(SearchCache).values(values)
         await session.execute(
@@ -1943,19 +1966,6 @@ def _stored_warnings(cache: SearchCache) -> list[str]:
     if not isinstance(warnings, list):
         return []
     return [item for item in warnings if isinstance(item, str)]
-
-
-def _cache_ttl(cache_kind: str) -> timedelta:
-    if cache_kind == "negative":
-        return NEGATIVE_CACHE_AGE
-    if cache_kind == "partial":
-        return PARTIAL_CACHE_AGE
-    return FRESH_CACHE_AGE
-
-
-def _cache_is_fresh(cache: SearchCache, age: timedelta) -> bool:
-    # The age rule keeps legacy rows compatible; expires_at remains a cleanup hint.
-    return age <= _cache_ttl(getattr(cache, "cache_kind", "positive"))
 
 
 def _resource_summary(
