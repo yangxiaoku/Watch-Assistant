@@ -5,6 +5,7 @@ import httpx
 import pytest
 from cryptography.fernet import Fernet
 
+from tests.unit.factories import make_security_manager
 from watch_assistant.adapters.pansou import PanSouClient
 from watch_assistant.adapters.tmdb import TmdbClient
 from watch_assistant.app import create_app
@@ -58,6 +59,7 @@ async def _make_task_client(tmp_path: Path):
         tmdb_client=tmdb,
         pansou_client=pansou,
         task_adapter=FakeTaskAdapter(),
+    security_manager=make_security_manager(),
     )
     client = httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://app.test"

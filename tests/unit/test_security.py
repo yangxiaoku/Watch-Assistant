@@ -294,3 +294,25 @@ def test_trusted_xff_splits_rate_buckets_per_real_client(monkeypatch):
             _login_request(client_host="10.0.0.9", xff="203.0.113.7")
         )
     assert error.value.status_code == 429
+
+
+@pytest.mark.asyncio
+async def test_require_api_auth_fails_closed_without_manager(tmp_path):
+    """L6: a missing security manager must reject every request (fail-closed)."""
+    from typing import Annotated
+
+    from fastapi import Depends, FastAPI
+    from fastapi.testclient import TestClient
+
+    from watch_assistant.security import require_api_auth
+
+    app = FastAPI()
+
+    @app.get("/probe")
+    async def probe(_: Annotated[object, Depends(require_api_auth)]):
+        return {"ok": True}
+
+    client = TestClient(app)
+    response = client.get("/probe")
+    assert response.status_code == 503
+    assert response.json()["detail"] == "auth_unavailable"

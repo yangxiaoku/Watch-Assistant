@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.unit.factories import make_security_manager
 from watch_assistant.app import create_app
 
 
@@ -9,7 +10,7 @@ from watch_assistant.app import create_app
 async def test_http_errors_include_structured_safe_payload_and_legacy_detail(tmp_path: Path):
     import httpx
 
-    app = create_app(frontend_dir=tmp_path / "missing-frontend")
+    app = create_app(frontend_dir=tmp_path / "missing-frontend", security_manager=make_security_manager())
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://app.test"
     ) as client:
@@ -30,7 +31,7 @@ async def test_validation_errors_are_structured_without_raw_framework_message(tm
     import httpx
     from fastapi import Query
 
-    app = create_app(frontend_dir=tmp_path / "missing-frontend")
+    app = create_app(frontend_dir=tmp_path / "missing-frontend", security_manager=make_security_manager())
 
     @app.get("/_test-validation")
     async def test_validation(page: int = Query(ge=1)):

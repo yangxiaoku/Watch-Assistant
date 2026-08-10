@@ -5,6 +5,7 @@ import httpx
 import pytest
 from cryptography.fernet import Fernet
 
+from tests.unit.factories import make_security_manager
 from watch_assistant.adapters.pansou import PanSouClient
 from watch_assistant.adapters.tmdb import TmdbClient
 from watch_assistant.api.subscriptions import get_subscription_service
@@ -42,6 +43,7 @@ async def test_subscription_observations_api_handles_paging_and_missing_subscrip
         crypto=SecretCrypto(Fernet.generate_key().decode("ascii")),
         tmdb_client=tmdb,
         pansou_client=pansou,
+    security_manager=make_security_manager(),
     )
     app.dependency_overrides[get_subscription_service] = lambda: _ObservationService()
     client = httpx.AsyncClient(

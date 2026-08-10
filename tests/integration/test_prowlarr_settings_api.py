@@ -6,6 +6,7 @@ import pytest
 import respx
 from cryptography.fernet import Fernet
 
+from tests.unit.factories import make_security_manager
 from watch_assistant.adapters.pansou import PanSouClient
 from watch_assistant.adapters.prowlarr import ProwlarrClient
 from watch_assistant.adapters.tmdb import TmdbClient
@@ -32,6 +33,7 @@ async def _make_client(tmp_path: Path):
         pansou_client=pansou,
         prowlarr_client=prowlarr,
         prowlarr_hostname_resolver=_fixture_hostname_resolver,
+    security_manager=make_security_manager(),
     )
     client = httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://app.test"

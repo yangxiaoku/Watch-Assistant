@@ -490,7 +490,9 @@ async def require_api_auth(request: Request) -> AuthContext:
         request.app.state, "security_manager", None
     )
     if manager is None:
-        return AuthContext(identity="internal", via_bearer=True)
+        # Fail closed: a missing security manager must reject every request,
+        # never open access (the lite create_app path is test-only).
+        raise AuthError(503, "auth_unavailable")
     return await _require_authenticated_context(
         request, manager, manager.authenticate_async
     )
@@ -501,7 +503,7 @@ async def require_diagnostics_auth(request: Request) -> AuthContext:
         request.app.state, "security_manager", None
     )
     if manager is None:
-        return AuthContext(identity="internal", via_bearer=True)
+        raise AuthError(503, "auth_unavailable")
     return await _require_authenticated_context(
         request, manager, manager.authenticate_diagnostics_async
     )

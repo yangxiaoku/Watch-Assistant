@@ -5,6 +5,7 @@ import pytest
 from cryptography.fernet import Fernet
 from sqlalchemy import text
 
+from tests.unit.factories import make_security_manager
 from watch_assistant.app import create_app
 from watch_assistant.db import create_database
 from watch_assistant.migrations import MIGRATIONS
@@ -19,7 +20,7 @@ async def test_movie_deep_link_serves_spa_without_masking_missing_assets(
     (frontend_dir / "index.html").write_text(
         "<h1>Watch Assistant</h1>", encoding="utf-8"
     )
-    app = create_app(frontend_dir=frontend_dir)
+    app = create_app(frontend_dir=frontend_dir, security_manager=make_security_manager())
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://app.test"
@@ -113,7 +114,7 @@ async def test_app_startup_upgrades_legacy_prowlarr_settings_schema(
     for name, value in settings.items():
         monkeypatch.setenv(name, value)
 
-    app = create_app(frontend_dir=tmp_path / "missing")
+    app = create_app(frontend_dir=tmp_path / "missing", security_manager=make_security_manager())
     async with app.router.lifespan_context(app), httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://app.test"
     ) as client:
@@ -158,7 +159,7 @@ async def test_app_passes_inspection_settings_to_qbittorrent_client(
             return None
 
     monkeypatch.setattr("watch_assistant.app.QbittorrentClient", CapturingQbittorrent)
-    app = create_app(frontend_dir=tmp_path / "missing")
+    app = create_app(frontend_dir=tmp_path / "missing", security_manager=make_security_manager())
 
     async with app.router.lifespan_context(app):
         assert captured["args"] == ("http://qbittorrent.test", "user", "password")

@@ -12,6 +12,7 @@ import httpx
 import pytest
 from cryptography.fernet import Fernet
 
+from tests.unit.factories import make_security_manager
 from watch_assistant.adapters.pansou import PanSouClient
 from watch_assistant.adapters.prowlarr import ProwlarrClient
 from watch_assistant.adapters.tmdb import TmdbClient
@@ -142,6 +143,7 @@ async def _make_client(tmp_path: Path, orchestrator: _SlowOrchestrator):
         share_domains=("115.com",),
         prowlarr_fast_indexer_ids=FAST_IDS,
         prowlarr_slow_indexer_ids=SLOW_IDS,
+    security_manager=make_security_manager(),
     )
     client = httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://app.test"
