@@ -786,6 +786,38 @@ def _add_subscription_partial_unique_indexes(connection: Connection) -> None:
     )
 
 
+def _add_organization_operation_partial_unique_index(connection: Connection) -> None:
+    """允许终态操作不再锁死计划,失败后可对同一计划重试。
+
+    旧约束 ``uq_organization_operations_plan_id`` 是整列唯一,任何已存在的
+    操作(哪怕是 failed / cancelled / organized 终态)都会让新建操作报
+    ``operation_plan_conflict``。改为部分唯一索引:仅当计划已有活跃操作
+    (planned / organizing / uncertain)时阻塞,终态行可与新操作共存。
+    状态列表须与
+    ``services.organization_operations._ACTIVE_OPERATION_STATUSES`` 保持一致。
+    """
+
+    if not inspect(connection).has_table("organization_operations"):
+        return
+    for index in inspect(connection).get_indexes("organization_operations"):
+        if (
+            index["unique"]
+            and index["column_names"] == ["plan_id"]
+            and index["name"] != "uq_organization_operations_active_plan"
+        ):
+            connection.execute(
+                text(f'DROP INDEX "{index["name"]}"')
+            )
+    connection.execute(
+        text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS "
+            "uq_organization_operations_active_plan "
+            "ON organization_operations (plan_id) "
+            "WHERE status IN ('planned', 'organizing', 'uncertain')"
+        )
+    )
+
+
 def _repair_subscription_null_match_count(connection: Connection) -> None:
     """Replace NULL match counts left by legacy rows with the integer default.
 
@@ -1287,6 +1319,10 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(
         "070_subscription_partial_unique_indexes",
         _add_subscription_partial_unique_indexes,
+    ),
+    Migration(
+        "071_organization_operation_partial_unique_plan",
+        _add_organization_operation_partial_unique_index,
     ),
 )
 

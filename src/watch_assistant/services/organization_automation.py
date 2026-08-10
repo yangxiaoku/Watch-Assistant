@@ -438,12 +438,19 @@ class OrganizationAutomationService:
             operations = list(
                 (
                     await session.scalars(
-                        select(OrganizationOperation).where(
+                        select(OrganizationOperation)
+                        .where(
                             OrganizationOperation.plan_id.in_(result.plan_ids)
+                        )
+                        .order_by(
+                            OrganizationOperation.created_at.asc(),
+                            OrganizationOperation.id.asc(),
                         )
                     )
                 ).all()
             )
+        # A plan may carry several operations (a failed attempt plus its
+        # retry); the last row per plan is the newest and most relevant one.
         operation_by_plan = {item.plan_id: item for item in operations}
         items: list[OrganizationResultItem] = []
         for plan in sorted(plans, key=lambda item: item.created_at):

@@ -717,6 +717,125 @@ async def test_concurrent_different_keys_create_one_operation(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_create_allows_new_operation_after_failed_operation(tmp_path):
+    database = await _database(tmp_path)
+    service = OrganizationOperationService(database.session_factory)
+    operation = await _operation(database, key="first-failed-attempt")
+    lease = await service.claim(operation.operation_id, expected_revision=1)
+    failed = await service.finish(
+        operation.operation_id,
+        expected_revision=lease.revision,
+        lease_token=lease.lease_token,
+        status=OrganizationOperationStatus.FAILED,
+        error_code="local_failure",
+    )
+    assert failed.status is OrganizationOperationStatus.FAILED
+
+    retry = await service.create(
+        operation.plan_id, idempotency_key="retry-after-failure"
+    )
+    assert retry.operation_id != operation.operation_id
+    assert retry.plan_id == operation.plan_id
+    assert retry.status is OrganizationOperationStatus.PLANNED
+    assert (await service.get_for_plan(operation.plan_id)).operation_id == retry.operation_id
+    async with database.session_factory() as session:
+        rows = list(
+            (
+                await session.scalars(
+                    select(OrganizationOperation).where(
+                        OrganizationOperation.plan_id == operation.plan_id
+                    )
+                )
+            ).all()
+        )
+        assert len(rows) == 2
+        assert {row.status for row in rows} == {
+            OrganizationOperationStatus.FAILED,
+            OrganizationOperationStatus.PLANNED,
+        }
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_create_allows_new_operation_after_cancelled_operation(tmp_path):
+    database = await _database(tmp_path)
+    service = OrganizationOperationService(database.session_factory)
+    operation = await _operation(database, key="first-cancelled-attempt")
+    cancelled = await service.cancel(operation.operation_id, expected_revision=1)
+    assert cancelled.status is OrganizationOperationStatus.CANCELLED
+
+    retry = await service.create(
+        operation.plan_id, idempotency_key="retry-after-cancel"
+    )
+    assert retry.operation_id != operation.operation_id
+    assert retry.plan_id == operation.plan_id
+    assert retry.status is OrganizationOperationStatus.PLANNED
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_create_conflicts_while_planned_operation_queued(tmp_path):
+    database = await _database(tmp_path)
+    operation = await _operation(database, key="queued-attempt")
+    with pytest.raises(OrganizationOperationConflict, match="operation_plan_conflict"):
+        await OrganizationOperationService(database.session_factory).create(
+            operation.plan_id, idempotency_key="different-key"
+        )
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_create_conflicts_while_operation_organizing(tmp_path):
+    database = await _database(tmp_path)
+    service = OrganizationOperationService(database.session_factory)
+    operation = await _operation(database, key="running-attempt")
+    await service.claim(operation.operation_id, expected_revision=1)
+    with pytest.raises(OrganizationOperationConflict, match="operation_plan_conflict"):
+        await service.create(
+            operation.plan_id, idempotency_key="different-key"
+        )
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_create_conflicts_while_operation_uncertain(tmp_path):
+    database = await _database(tmp_path)
+    service = OrganizationOperationService(database.session_factory)
+    operation = await _operation(database, key="uncertain-attempt")
+    lease = await service.claim(operation.operation_id, expected_revision=1)
+    uncertain = await service.finish(
+        operation.operation_id,
+        expected_revision=lease.revision,
+        lease_token=lease.lease_token,
+        status=OrganizationOperationStatus.UNCERTAIN,
+        error_code="outcome_unknown",
+    )
+    assert uncertain.status is OrganizationOperationStatus.UNCERTAIN
+    with pytest.raises(OrganizationOperationConflict, match="operation_plan_conflict"):
+        await service.create(
+            operation.plan_id, idempotency_key="different-key"
+        )
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_create_idempotency_replay_returns_existing_summary(tmp_path):
+    database = await _database(tmp_path)
+    service = OrganizationOperationService(database.session_factory)
+    operation = await _operation(database, key="idempotent-create")
+    repeated = await service.create(
+        operation.plan_id, idempotency_key="idempotent-create"
+    )
+    assert repeated.operation_id == operation.operation_id
+    assert repeated.plan_id == operation.plan_id
+    assert repeated.status is OrganizationOperationStatus.PLANNED
+    assert repeated.revision == operation.revision
+    async with database.session_factory() as session:
+        assert len(list(await session.scalars(select(OrganizationOperation)))) == 1
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_old_lease_token_cannot_finish_after_reclaim(tmp_path):
     database = await _database(tmp_path)
     service = OrganizationOperationService(database.session_factory)
@@ -832,6 +951,13 @@ async def test_operation_schema_defaults_and_unique_keys(tmp_path):
     assert any(
         index["unique"] and index["column_names"] == ["plan_id"] for index in indexes
     )
+    active_plan_index = next(
+        index
+        for index in indexes
+        if index["name"] == "uq_organization_operations_active_plan"
+    )
+    assert active_plan_index["unique"]
+    assert active_plan_index["column_names"] == ["plan_id"]
     operation = await _operation(database)
     assert operation.status is OrganizationOperationStatus.PLANNED
     assert operation.revision == 1
