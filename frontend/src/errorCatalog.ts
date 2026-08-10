@@ -156,7 +156,7 @@ const ACTION_BY_CODE: Record<string, UiErrorAction> = {
 };
 
 const ADDITIONAL_CODES = [
-  "auth_not_configured", "internal_error", "not_found", "backup_requires_file_database", "backup_failed", "backup_not_found",
+  "auth_not_configured", "auth_unavailable", "internal_error", "not_found", "backup_requires_file_database", "backup_failed", "backup_not_found",
   "backup_manifest_invalid", "backup_database_missing", "invalid_backup_id", "database_not_found",
   "backups_unavailable", "credential_unavailable", "credentials_unavailable", "invalid_credential_request",
   "deployment_diagnostics_unavailable", "manual_import_unavailable", "confirmation_required",

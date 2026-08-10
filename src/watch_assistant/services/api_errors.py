@@ -35,6 +35,7 @@ _CATALOG: dict[str, ApiErrorDescriptor] = {
     "credential_validation_unavailable": ApiErrorDescriptor("credential_validation_unavailable", "暂时无法验证凭据", "本次验证未完成，原配置保持不变。", "请稍后重新验证。", True, "retry"),
     "needs_auth": ApiErrorDescriptor("needs_auth", "登录状态已失效", "任务尚未继续提交到远端。", "请前往凭据设置重新登录。", False, "reauthenticate"),
     "auth_not_configured": ApiErrorDescriptor("auth_not_configured", "登录服务暂时不可用", "本次登录未执行。", "请稍后重试或联系管理员。", True, "retry"),
+    "auth_unavailable": ApiErrorDescriptor("auth_unavailable", "认证服务暂时不可用", "本次请求未执行。", "请稍后重试或联系管理员。", True, "retry"),
     "uncertain": ApiErrorDescriptor("uncertain", "结果待确认", "远端可能已经接受，本次结果尚未确认。", "请先查看任务状态，不要重复提交。", False, "view_task"),
     "task_not_retryable": ApiErrorDescriptor("task_not_retryable", "当前任务不能直接重试", "原任务状态未改变。", "请查看任务状态后再决定下一步。", False, "view_task"),
     "uncertain_requires_verification": ApiErrorDescriptor("uncertain_requires_verification", "结果待确认，不能直接重试", "原任务状态未改变，系统没有重复提交。", "请先执行只读远端核对，确认失败后再重试。", False, "view_task"),
