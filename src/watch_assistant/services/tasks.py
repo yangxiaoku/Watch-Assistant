@@ -1038,6 +1038,13 @@ class TaskService:
                             Task.state == TaskState.UNCERTAIN,
                             Task.remote_ref.is_(None),
                         ),
+                        # 提交成功但远端未返回任务标识(如 share_receive 无
+                        # task id)的任务同样无法核对/确认:允许显式放弃,
+                        # 否则永久卡 SUBMITTED。
+                        and_(
+                            Task.state == TaskState.SUBMITTED,
+                            Task.remote_ref.is_(None),
+                        ),
                     ),
                     Task.lease_owner.is_(None),
                     Task.lease_token.is_(None),

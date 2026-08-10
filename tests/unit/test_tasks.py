@@ -237,3 +237,61 @@ async def test_task_service_cancels_only_queued_tasks(tmp_path):
             await service.cancel(running.id)
     finally:
         await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_submitted_task_without_remote_ref_can_be_cancelled(tmp_path):
+    """M1:save_share 成功但 115 未返回 task id → SUBMITTED 且 remote_ref 为空,
+    此类任务无法核对/确认,必须允许显式取消,否则永久卡 SUBMITTED。"""
+    from watch_assistant.db import create_database, initialize_database
+    from watch_assistant.services.tasks import InvalidCancelState, TaskService
+
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'tasks-m1.db'}")
+    await initialize_database(database.engine)
+    try:
+        async with database.session_factory() as session:
+            resource = Resource(
+                id="res_m1",
+                kind="magnet",
+                canonical_key="magnet:m1",
+                encrypted_url="encrypted",
+                name="M1",
+                source="test",
+                captured_at=datetime.now(UTC),
+                expires_at=datetime.now(UTC) + timedelta(days=1),
+            )
+            session.add(resource)
+            await session.flush()
+            submitted_no_ref = make_task(
+                resource_id=resource.id, state=TaskState.SUBMITTED
+            )
+            session.add(submitted_no_ref)
+            await session.commit()
+        service = TaskService(database.session_factory)
+        cancelled = await service.cancel(submitted_no_ref.id)
+        assert cancelled.state == TaskState.CANCELLED
+
+        # 有 remote_ref 的 SUBMITTED 任务仍不允许取消(可核对路径)
+        async with database.session_factory() as session:
+            resource2 = Resource(
+                id="res_m1b",
+                kind="magnet",
+                canonical_key="magnet:m1b",
+                encrypted_url="encrypted",
+                name="M1b",
+                source="test",
+                captured_at=datetime.now(UTC),
+                expires_at=datetime.now(UTC) + timedelta(days=1),
+            )
+            session.add(resource2)
+            await session.flush()
+            with_ref = make_task(
+                resource_id=resource2.id, state=TaskState.SUBMITTED, age_hours=1
+            )
+            with_ref.remote_ref = "task-remote-1"
+            session.add(with_ref)
+            await session.commit()
+        with pytest.raises(InvalidCancelState):
+            await service.cancel(with_ref.id)
+    finally:
+        await database.engine.dispose()
