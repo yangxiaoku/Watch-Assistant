@@ -7,6 +7,7 @@ from cryptography.fernet import Fernet
 from pwdlib import PasswordHash
 from sqlalchemy import select, text
 
+from tests.unit.factories import make_security_manager
 from watch_assistant.adapters.pansou import PanSouClient
 from watch_assistant.adapters.qbittorrent import (
     InspectionStatus,
@@ -160,6 +161,10 @@ async def _make_app(
             web_password_hash=password_hash.hash(WEB_PASSWORD),
             script_token_hash=password_hash.hash(SCRIPT_TOKEN),
         )
+    else:
+        # 鉴权依赖已 fail-closed:非认证模式注入宽松测试 manager,否则
+        # 所有请求都会 503。认证行为由 authenticated=True 的用例覆盖。
+        security = make_security_manager()
     tmdb = TmdbClient("unused")
     pansou = PanSouClient("http://pansou.test")
     app = create_app(

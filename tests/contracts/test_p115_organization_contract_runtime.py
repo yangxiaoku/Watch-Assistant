@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.unit.factories import make_security_manager
 from watch_assistant.adapters.p115_library_write_contract import (
     ORGANIZATION_CONTRACT_VERSION,
     OrganizationContractEvidenceError,
@@ -135,6 +136,7 @@ def test_create_app_loads_runtime_evidence_but_legacy_flag_cannot_do_so(
         frontend_dir=tmp_path / "missing-frontend",
         organization_write_enabled=True,
         organization_write_contract_verified=True,
+    security_manager=make_security_manager(),
     )
 
     assert application.state.organization_contract.verified is True
@@ -146,6 +148,7 @@ def test_create_app_loads_runtime_evidence_but_legacy_flag_cannot_do_so(
         frontend_dir=tmp_path / "missing-frontend",
         organization_write_enabled=True,
         organization_write_contract_verified=True,
+    security_manager=make_security_manager(),
     )
     assert closed_application.state.organization_contract.verified is False
     assert closed_application.state.organization_write_contract_verified is False

@@ -7,6 +7,7 @@ import pytest
 from fastapi import FastAPI
 from pwdlib import PasswordHash
 
+from tests.unit.factories import make_security_manager
 from watch_assistant.adapters import p115_library_gateway
 from watch_assistant.adapters.p115 import P115Adapter
 from watch_assistant.adapters.p115_library import DirectoryPage, LibraryEntry, ScanState
@@ -58,6 +59,10 @@ def _settings_app(
         app.state.push_capabilities = push_capabilities
     if security is not None:
         app.state.security_manager = security
+    else:
+        # 鉴权依赖已 fail-closed:未显式传入 manager 的测试夹具默认注入
+        # 宽松测试 manager,否则所有请求都会 503 auth_unavailable。
+        app.state.security_manager = make_security_manager()
     app.include_router(router)
     return app
 
