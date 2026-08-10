@@ -75,6 +75,11 @@ _TMDB_DETAIL_CONCURRENCY = 4
 # TTL 1 小时,LRU 上限 256 条,超额自动淘汰最旧条目。
 _TEXT_SEARCH_CACHE_TTL = timedelta(hours=1)
 _TEXT_SEARCH_CACHE_MAX_ENTRIES = 256
+# 媒体元数据(详情)内存缓存:资源搜索命中快照缓存时仍会重复请求
+# /movie/{id} 或 /tv/{id} 详情,元数据变化缓慢,24h TTL + LRU
+# 上限 256 条即可消除缓存命中路径上的这 1 个多余请求。
+_MEDIA_CACHE_TTL = timedelta(hours=24)
+_MEDIA_CACHE_MAX_ENTRIES = 256
 
 
 class TmdbClient:
@@ -87,6 +92,8 @@ class TmdbClient:
         client: httpx.AsyncClient | None = None,
         text_cache_ttl: timedelta | None = None,
         text_cache_max_entries: int = _TEXT_SEARCH_CACHE_MAX_ENTRIES,
+        media_cache_ttl: timedelta | None = None,
+        media_cache_max_entries: int = _MEDIA_CACHE_MAX_ENTRIES,
     ) -> None:
         self._api_key = api_key
         self._timeout = timeout
@@ -99,6 +106,14 @@ class TmdbClient:
         self._text_cache_max_entries = max(1, text_cache_max_entries)
         self._text_cache: OrderedDict[
             tuple[str, str, str, int], tuple[float, dict]
+        ] = OrderedDict()
+        # 媒体详情元数据的进程内 TTL 缓存。
+        self._media_cache_ttl = (
+            _MEDIA_CACHE_TTL if media_cache_ttl is None else media_cache_ttl
+        )
+        self._media_cache_max_entries = max(1, media_cache_max_entries)
+        self._media_cache: OrderedDict[
+            tuple[str, str, int], tuple[float, MovieMetadata]
         ] = OrderedDict()
 
     def set_api_key(self, api_key: str) -> None:
@@ -118,8 +133,35 @@ class TmdbClient:
         return await self.get_media(tmdb_id, MediaType.MOVIE)
 
     async def get_media(self, tmdb_id: int, media_type: MediaType) -> MovieMetadata:
+        return await self._cached_media(tmdb_id, media_type)
+
+    async def _cached_media(
+        self, tmdb_id: int, media_type: MediaType
+    ) -> MovieMetadata:
+        """带内存 TTL 缓存的详情查询,消除缓存命中路径的重复请求。
+
+        元数据(标题/年份/季列表)变化极慢,24h 内直接复用;
+        缓存键含 api_key,运行期切换密钥不会串用旧结果。
+        """
+        if self._media_cache_ttl is None:
+            payload = await self._get(f"/{media_type.value}/{tmdb_id}")
+            return _parse_media(payload, tmdb_id=tmdb_id, media_type=media_type)
+        key = (self._api_key, media_type.value, tmdb_id)
+        now = monotonic()
+        cached = self._media_cache.get(key)
+        if cached is not None:
+            stored_at, media = cached
+            if now - stored_at <= self._media_cache_ttl.total_seconds():
+                # LRU 语义:命中条目移到队尾,淘汰时从队头删最旧。
+                self._media_cache.move_to_end(key)
+                return media
+            self._media_cache.pop(key, None)
         payload = await self._get(f"/{media_type.value}/{tmdb_id}")
-        return _parse_media(payload, tmdb_id=tmdb_id, media_type=media_type)
+        media = _parse_media(payload, tmdb_id=tmdb_id, media_type=media_type)
+        self._media_cache[key] = (now, media)
+        while len(self._media_cache) > self._media_cache_max_entries:
+            self._media_cache.popitem(last=False)
+        return media
 
     async def get_season(
         self,
