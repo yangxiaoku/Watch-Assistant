@@ -66,8 +66,10 @@ def _live_file(file_id, parent_id, name):
     return {"state": True, "data": {"fc": 1, "fid": file_id, "cid": parent_id, "n": name}}
 
 
+# 生产组织路径默认使用 P115C03ProductionTransport（50 条/页），
+# 页响应必须回显 limit=50 才能通过逐页严格校验。
 def _empty_page():
-    return {"state": True, "data": [], "offset": 0, "limit": 1, "count": 0}
+    return {"state": True, "data": [], "offset": 0, "limit": 50, "count": 0}
 
 
 def _file_page(file_id, parent_id, name):
@@ -75,7 +77,7 @@ def _file_page(file_id, parent_id, name):
         "state": True,
         "data": [{"fc": 1, "fid": file_id, "cid": parent_id, "n": name}],
         "offset": 0,
-        "limit": 1,
+        "limit": 50,
         "count": 1,
     }
 
@@ -85,7 +87,7 @@ def _directory_page(file_id, parent_id, name):
         "state": True,
         "data": [{"fc": 0, "fid": file_id, "cid": parent_id, "n": name}],
         "offset": 0,
-        "limit": 1,
+        "limit": 50,
         "count": 1,
     }
 
@@ -343,6 +345,51 @@ async def test_live_transport_returns_missing_for_absent_object_in_complete_scop
     )
 
     assert await transport.read_object_in_scope("100", ("7000", "8000")) is None
+
+
+@pytest.mark.asyncio
+async def test_live_transport_reads_object_in_directory_with_more_than_eight_entries():
+    # 回归：生产组织路径默认使用完整分页（50 条/页），真实媒体目录（>8 条）
+    # 必须在首次写入前可完整读取；旧实现 8 页 × 1 条/页会让本场景在写入前即
+    # observation_unverified → 永久 UNCERTAIN。
+    others = [
+        {"fc": 1, "fid": f"9{index}", "cid": "7000", "n": f"filler-{index}.mkv"}
+        for index in range(9)
+    ]
+    page = {
+        "state": True,
+        "data": [
+            {"fc": 1, "fid": "100", "cid": "7000", "n": "before.mkv"},
+            *others,
+        ],
+        "offset": 0,
+        "limit": 50,
+        "count": 10,
+    }
+    client = _LiveFakeP115Client(
+        {
+            "fs_info": [],
+            "fs_files": [page, _empty_page()],
+            "fs_move": [],
+            "fs_rename": [],
+            "fs_delete": [],
+        }
+    )
+    transport = create_live_p115_organization_transport(
+        client=client,
+        call_executor=_live_call_executor,
+        intents=(_intent(),),
+        managed_directory_ids=("7000", "8000"),
+        scope_confirmed=True,
+        live_enabled=True,
+        write_enabled=True,
+        plan_confirmed=True,
+        organization_contract=_organization_contract(),
+    )
+
+    assert await transport.read_object("100") == RemoteObjectState(
+        "100", "7000", "before.mkv"
+    )
 
 
 @pytest.mark.asyncio
