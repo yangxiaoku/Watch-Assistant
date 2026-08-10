@@ -221,7 +221,7 @@ export interface ResourceSearchResponse {
   tmdb_id: number;
   media_type: "movie" | "tv";
   season_number: number | null;
-  status: "queued" | "running" | "ready" | "failed";
+  status: "queued" | "running" | "ready" | "failed" | "timeout";
   snapshot_revision: string | null;
   query_plan_version: string;
   selected_season: number | null;

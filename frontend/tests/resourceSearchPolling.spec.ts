@@ -45,7 +45,8 @@ describe("resource search polling", () => {
       maxAttempts: 2,
     });
 
-    expect(response).toMatchObject({ status: "failed", error_code: "resource_search_timeout" });
+    // timeout 不是 failed:failed 会让前端清空已加载快照
+    expect(response).toMatchObject({ status: "timeout", error_code: "resource_search_timeout" });
     expect(resourceSearch).toHaveBeenCalledTimes(2);
   });
 });

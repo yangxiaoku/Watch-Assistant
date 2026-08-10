@@ -34,7 +34,9 @@ export async function waitForResourceSearch(
   options: ResourceSearchPollOptions,
 ): Promise<ResourceSearchResponse | null> {
   const intervalMs = options.intervalMs ?? 250;
-  const maxAttempts = options.maxAttempts ?? 120;
+  // 服务端多来源搜索可达分钟级:上限放宽到 120s,超时返回 timeout 状态
+  // 而非伪造 failed——failed 会让前端清空已加载快照。
+  const maxAttempts = options.maxAttempts ?? 480;
   let current = task;
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     if (options.currentRequestId() !== options.requestId || options.signal.aborted) return null;
@@ -45,7 +47,7 @@ export async function waitForResourceSearch(
   }
   return {
     ...current,
-    status: "failed",
+    status: "timeout",
     error_code: "resource_search_timeout",
   };
 }

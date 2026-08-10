@@ -1058,6 +1058,14 @@ async function loadResources(
       if (requestId !== searchRequestId) reportDetailMetric(requestId, "late_response", "discarded");
       return;
     }
+    if (response.status === "timeout") {
+      // 服务端任务仍在后台执行:保留已加载快照,明示停止自动等待,
+      // 用户可手动刷新继续查看(与整理轮询的明示模式一致)。
+      resourceLoading.value = false;
+      resourceError.value = "资源搜索仍在后台执行，已停止自动等待；点击刷新可查看最新结果。";
+      reportDetailMetric(requestId, "resource_timeout", "timeout", { errorCode: "resource_search_timeout", once: true });
+      return;
+    }
     if (response.status === "failed") {
       resourceLoading.value = false;
       // Do not keep serving the previous snapshot: the user asked to refresh
