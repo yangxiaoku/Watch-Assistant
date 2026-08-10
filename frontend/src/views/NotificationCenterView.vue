@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { AlertTriangle, Bell, Check, CheckCheck, CircleAlert, LoaderCircle, RefreshCw, ShieldAlert } from "@lucide/vue";
-import { computed, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { ApiClient, ApiError } from "../api";
 import { formatTimestamp } from "../format";
 import type { NotificationResponse, NotificationSeverity } from "../types";
@@ -22,6 +22,7 @@ const quietHoursStart = ref("23:00");
 const quietHoursEnd = ref("08:00");
 const quietHoursTimezone = ref("Asia/Shanghai");
 const errorBypassQuietHours = ref(true);
+let mounted = false;
 
 const visibleItems = computed(() => items.value.filter((item) => {
   if (filter.value === "unread") return !item.read_at;
@@ -51,18 +52,21 @@ async function loadNotifications() {
   error.value = "";
   try {
     const response = await props.api.notifications(false, 100);
+    // 组件卸载后返回的响应不再写入状态
+    if (!mounted) return;
     items.value = response.items;
     unreadCount.value = response.unread_count;
   } catch (exception) {
-    error.value = exception instanceof ApiError ? exception.message : "通知中心暂时无法加载";
+    if (mounted) error.value = exception instanceof ApiError ? exception.message : "通知中心暂时无法加载";
   } finally {
-    loading.value = false;
+    if (mounted) loading.value = false;
   }
 }
 
 async function loadPreferences() {
   try {
     const response = await props.api.notificationPreferences();
+    if (!mounted) return;
     preferencesEnabled.value = response.enabled;
     preferenceRevision.value = response.revision;
     quietHoursEnabled.value = response.quiet_hours_enabled ?? true;
@@ -87,6 +91,7 @@ async function saveQuietHours() {
       error_bypass_quiet_hours: errorBypassQuietHours.value,
       revision: preferenceRevision.value,
     });
+    if (!mounted) return;
     preferenceRevision.value = response.revision;
     quietHoursEnabled.value = response.quiet_hours_enabled ?? quietHoursEnabled.value;
     quietHoursStart.value = response.quiet_hours_start ?? quietHoursStart.value;
@@ -94,9 +99,9 @@ async function saveQuietHours() {
     quietHoursTimezone.value = response.quiet_hours_timezone ?? quietHoursTimezone.value;
     errorBypassQuietHours.value = response.error_bypass_quiet_hours ?? errorBypassQuietHours.value;
   } catch (exception) {
-    error.value = exception instanceof ApiError ? exception.message : "静默时段暂时无法保存";
+    if (mounted) error.value = exception instanceof ApiError ? exception.message : "静默时段暂时无法保存";
   } finally {
-    preferenceBusy.value = false;
+    if (mounted) preferenceBusy.value = false;
   }
 }
 
@@ -105,13 +110,14 @@ async function markRead(item: NotificationResponse) {
   busy.value = true;
   try {
     const response = await props.api.markNotificationRead(item.id);
+    if (!mounted) return;
     const index = items.value.findIndex((candidate) => candidate.id === item.id);
     if (index >= 0) items.value[index] = response;
     unreadCount.value = Math.max(0, unreadCount.value - 1);
   } catch (exception) {
-    error.value = exception instanceof ApiError ? exception.message : "通知状态暂时无法更新";
+    if (mounted) error.value = exception instanceof ApiError ? exception.message : "通知状态暂时无法更新";
   } finally {
-    busy.value = false;
+    if (mounted) busy.value = false;
   }
 }
 
@@ -120,12 +126,13 @@ async function markAllRead() {
   busy.value = true;
   try {
     await props.api.markAllNotificationsRead();
+    if (!mounted) return;
     items.value = items.value.map((item) => item.read_at ? item : { ...item, read_at: new Date().toISOString() });
     unreadCount.value = 0;
   } catch (exception) {
-    error.value = exception instanceof ApiError ? exception.message : "通知状态暂时无法更新";
+    if (mounted) error.value = exception instanceof ApiError ? exception.message : "通知状态暂时无法更新";
   } finally {
-    busy.value = false;
+    if (mounted) busy.value = false;
   }
 }
 
@@ -136,13 +143,16 @@ async function togglePreferences() {
   preferenceBusy.value = true;
   try {
     const response = await props.api.updateNotificationPreferences({ enabled: preferencesEnabled.value, revision: preferenceRevision.value });
+    if (!mounted) return;
     preferencesEnabled.value = response.enabled;
     preferenceRevision.value = response.revision;
   } catch (exception) {
-    preferencesEnabled.value = previous;
-    error.value = exception instanceof ApiError ? exception.message : "通知偏好暂时无法保存";
+    if (mounted) {
+      preferencesEnabled.value = previous;
+      error.value = exception instanceof ApiError ? exception.message : "通知偏好暂时无法保存";
+    }
   } finally {
-    preferenceBusy.value = false;
+    if (mounted) preferenceBusy.value = false;
   }
 }
 
@@ -152,7 +162,15 @@ function openAction(item: NotificationResponse) {
   else if (item.action_type === "settings") emit("navigate", "settings");
 }
 
-onMounted(() => { void loadNotifications(); void loadPreferences(); });
+onMounted(() => {
+  mounted = true;
+  void loadNotifications();
+  void loadPreferences();
+});
+
+onBeforeUnmount(() => {
+  mounted = false;
+});
 </script>
 
 <template>

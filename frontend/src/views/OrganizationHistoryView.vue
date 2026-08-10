@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { CheckCircle2, Clock3, LoaderCircle, RefreshCw } from "@lucide/vue";
-import { onMounted, ref } from "vue";
+import { onBeforeUnmount, onMounted, ref } from "vue";
 import { ApiClient, ApiError } from "../api";
 import { formatTimestamp } from "../format";
 import type { OrganizationHistoryItem } from "../types";
@@ -12,6 +12,7 @@ const items = ref<OrganizationHistoryItem[]>([]);
 const nextCursor = ref<number | null>(null);
 const loading = ref(false);
 const error = ref("");
+let mounted = false;
 
 
 async function load(cursor?: number) {
@@ -19,16 +20,25 @@ async function load(cursor?: number) {
   error.value = "";
   try {
     const response = await props.api.organizationHistory(cursor, 20);
+    // 组件卸载后返回的响应不再写入状态
+    if (!mounted) return;
     items.value = cursor === undefined ? response.items : [...items.value, ...response.items];
     nextCursor.value = response.next_cursor;
   } catch (exception) {
-    error.value = exception instanceof ApiError ? exception.message : "整理历史加载失败，请稍后重试";
+    if (mounted) error.value = exception instanceof ApiError ? exception.message : "整理历史加载失败，请稍后重试";
   } finally {
-    loading.value = false;
+    if (mounted) loading.value = false;
   }
 }
 
-onMounted(() => void load());
+onMounted(() => {
+  mounted = true;
+  void load();
+});
+
+onBeforeUnmount(() => {
+  mounted = false;
+});
 </script>
 
 <template>

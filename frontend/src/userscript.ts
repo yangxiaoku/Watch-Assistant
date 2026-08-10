@@ -152,6 +152,8 @@ function installUserscript() {
     document.body.appendChild(panelHost);
     const base = await GM.getValue(API_BASE_KEY, "");
     const token = await GM.getValue(TOKEN_KEY, "");
+    // 读取配置期间已导航到其他影片:不再为旧影片渲染面板
+    if (extractMovieId(window.location.pathname) !== movieId) return;
     if (!base || !token) {
       renderConfigPanel(shadow, () => void load());
       return;
@@ -162,8 +164,11 @@ function installUserscript() {
       // Only remember the search once it succeeded; a failed attempt must not
       // suppress the panel for the whole ten-minute TTL.
       searchCache.set(movieId, Date.now());
+      // 搜索在途时已导航到其他影片:丢弃过期响应,避免渲染进当前影片的面板
+      if (extractMovieId(window.location.pathname) !== movieId) return;
       renderPanel(shadow, { title: result.movie.title, result });
     } catch (error) {
+      if (extractMovieId(window.location.pathname) !== movieId) return;
       renderPanel(shadow, { title: "资源面板", error: formatUserscriptError(error) });
     }
   };

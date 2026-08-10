@@ -62,18 +62,23 @@ function redactDirectoryId(value: string | null | undefined): string {
   return `${value.slice(0, 3)}***${value.slice(-3)}`;
 }
 
+let mounted = false;
+
 async function loadOrganizationResult() {
   organizationResultLoading.value = true;
   organizationResultError.value = "";
   try {
-    organizationResult.value = await props.api.organizationResult();
-    const runId = organizationResult.value?.run_id ?? null;
-    const finished = organizationResult.value?.finished_at ?? null;
+    const response = await props.api.organizationResult();
+    // 请求在途时组件已卸载(如切走 tab):丢弃响应,避免对已卸载面板启动轮询
+    if (!mounted) return;
+    organizationResult.value = response;
+    const runId = response.run_id ?? null;
+    const finished = response.finished_at ?? null;
     if (runId && !finished) pollOrganizationResult(runId);
   } catch (exception) {
-    organizationResultError.value = exception instanceof ApiError ? exception.message : "整理结果加载失败，请稍后重试";
+    if (mounted) organizationResultError.value = exception instanceof ApiError ? exception.message : "整理结果加载失败，请稍后重试";
   } finally {
-    organizationResultLoading.value = false;
+    if (mounted) organizationResultLoading.value = false;
   }
 }
 
@@ -114,10 +119,14 @@ watch(() => props.reloadToken, () => {
 });
 
 onMounted(() => {
+  mounted = true;
   void loadOrganizationResult();
 });
 
-onBeforeUnmount(stopPolling);
+onBeforeUnmount(() => {
+  mounted = false;
+  stopPolling();
+});
 </script>
 
 <template>

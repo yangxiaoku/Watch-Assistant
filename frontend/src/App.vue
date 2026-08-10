@@ -46,6 +46,9 @@ const authenticated = ref(false);
 const loggingIn = ref(false);
 const isOnline = ref(browserIsOnline());
 const offlineDataAt = ref<string | null>(null);
+// 注意:loading 为历史遗留状态,当前没有任何路径将其置为 true(result 在导航时同步赋值,
+// 见 detailResult/detailPlaceholder),下方 :1604 的 detail-loading 分支因此不可达。
+// 保留字段与 :703 的写入点以便后续接入时复用,勿在现有流转中依赖其值。
 const loading = ref(false);
 const catalogLoading = ref(false);
 const error = ref("");
@@ -700,6 +703,7 @@ function invalidateDetailRequest() {
   catalogRequestId += 1;
   pendingCatalogRoute = null;
   catalogLoading.value = false;
+  // loading 的唯一写入点,恒为 false(见 :49 注释),与 :1604 的 detail-loading 死分支配套保留
   loading.value = false;
   clearResourcePagination();
   resetInspection();
@@ -890,7 +894,12 @@ async function loadResourcePage(route: ResourceRouteState, historyMode: "push" |
     query: route.query.trim(),
   };
   const isCurrent = () => requestId === resourceRequestId && searchId === searchRequestId && !controller.signal.aborted && !!result.value;
-  const cached = resourceCache.get(resourceCacheKey(safeRoute, resourceResponse.value?.snapshot_revision ?? null));
+  // 读取键与写入键(:932)保持一致:均以"请求路由 + 快照版本"定位。当前无快照时缓存必然已被
+  // 清空(见 beginResourceSnapshot/clearResourcePagination),直接跳过查询,避免生成写入键
+  // 不存在的"snapshot"占位键形
+  const cached = resourceResponse.value
+    ? resourceCache.get(resourceCacheKey(safeRoute, resourceResponse.value.snapshot_revision))
+    : undefined;
   resourceLoading.value = true;
   resourceError.value = "";
   if (cached) {
@@ -929,6 +938,8 @@ async function loadResourcePage(route: ResourceRouteState, historyMode: "push" |
       return;
     }
     const actualPage = response.total === 0 ? 1 : Math.max(1, Math.min(actualTotalPages, Math.trunc(response.page) || safeRoute.page));
+    // 写入键与读取键(:893)保持一致:页面以响应实际页为准,快照版本取响应的版本;应用后
+    // resourcePage 与 resourceResponse.snapshot_revision 即与此键对齐,后续读取可直接命中
     resourceCache.set(resourceCacheKey({ ...safeRoute, page: actualPage }, response.snapshot_revision), response);
     while (resourceCache.size > 20) resourceCache.delete(resourceCache.keys().next().value as string);
     applyResourceResponse(response, actualPage);
@@ -1092,7 +1103,9 @@ async function loadResources(
         selectedSeason.value = mediaType === "tv" ? legacy.selected_season ?? seasonNumber : null;
         resourceSearchCached = legacy.cached;
         applyResourceRoute(initialResourceRoute);
-        beginResourceSnapshot(legacy.results, legacy.hidden_total ?? 0, preserveResourceSnapshot);
+        // legacy 回退已拿到新结果:必须清空旧 resourceResponse 快照,否则 resourceItems 计算属性
+        // 仍优先读取旧快照,掩盖回退结果(与搜索失败路径 :1049-1056 的清空语义一致)
+        beginResourceSnapshot(legacy.results, legacy.hidden_total ?? 0, false);
         await loadResourcePage(initialResourceRoute, "none");
         return;
       } catch (legacyException) {
@@ -1601,6 +1614,7 @@ onBeforeUnmount(() => {
         <LogsView v-else-if="activeView === 'logs'" :api="api" />
         <SearchView v-else-if="activeView === 'search' || activeView === 'popular'" v-model="searchInput" :loading="catalogLoading" :error="catalogError" :movies="catalogMovies" :heading="catalogHeading" :favorite-ids="favoriteIds" :page="currentPage" :total-pages="totalPages" :total-results="totalResults" @search="searchMovies" @reset="selectView('home')" @open="openMovie" @favorite="toggleFavorite" @page="loadPage" @retry="retryCatalog" />
       </template>
+      <!-- 注意:loading 恒为 false(见脚本 :49 注释),此分支不可达;保留以免大改视图结构 -->
       <section v-else-if="loading && !result" class="detail-loading" aria-busy="true"><LoaderCircle class="spin" :size="24" /><strong>正在加载影视资料</strong><span>资源将在资料下方独立加载</span></section>
        <p v-if="result && !pushCapabilities.magnet && !pushCapabilities.share" class="warning-strip">115 推送当前不可用，推送按钮已禁用。</p>
        <p v-else-if="result && pushCapabilities.magnet && !pushCapabilities.share" class="warning-strip">磁力云下载可用，115 分享转存尚未验证</p>
