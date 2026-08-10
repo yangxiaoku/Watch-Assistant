@@ -37,6 +37,8 @@ AGENT_SCOPES = frozenset(
         "settings:read",
         "settings:write",
         "audit:read",
+        "backup:read",
+        "backup:write",
     }
 )
 
@@ -617,6 +619,10 @@ def _required_scope(request: Request) -> str:
         return "library:read" if method in {"GET", "HEAD"} else "library:write"
     if path.startswith("/api/v1/audit"):
         return "audit:read"
+    if path.startswith("/api/v1/backups"):
+        # 备份清单/恢复预览包含目录结构与文件清单,创建备份是写操作;
+        # 默认 token 不得读取备份内容,更不得触发全库备份。
+        return "backup:read" if method in {"GET", "HEAD"} else "backup:write"
     if path.startswith(("/api/v1/resources", "/api/v1/seasons")):
         return "library:read" if method in {"GET", "HEAD"} else "task:write"
     if path.startswith(("/api/v1/subscriptions", "/api/v1/quality-profiles")):

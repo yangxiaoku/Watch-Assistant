@@ -173,3 +173,34 @@ def test_library_read_routes_keep_library_read_scope():
             }
         )
         assert _required_scope(request) == "library:read", path
+
+
+def test_backup_routes_require_backup_scopes():
+    """M3:默认 token 不得读取备份内容,更不得触发全库备份。"""
+    for path in ("/api/v1/backups", "/api/v1/backups/backup_1/restore-preview"):
+        request = Request(
+            {
+                "type": "http",
+                "method": "GET",
+                "path": path,
+                "headers": [],
+                "scheme": "http",
+                "server": ("app.test", 80),
+                "client": ("127.0.0.1", 1234),
+                "root_path": "",
+            }
+        )
+        assert _required_scope(request) == "backup:read", path
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/api/v1/backups",
+            "headers": [],
+            "scheme": "http",
+            "server": ("app.test", 80),
+            "client": ("127.0.0.1", 1234),
+            "root_path": "",
+        }
+    )
+    assert _required_scope(request) == "backup:write"

@@ -9,7 +9,7 @@ from watch_assistant.schemas import (
     BackupResponse,
     BackupRestorePreviewResponse,
 )
-from watch_assistant.security import require_api_auth
+from watch_assistant.security import AuthContext, require_api_auth, require_scope
 from watch_assistant.services.backups import BackupService, BackupServiceError
 
 router = APIRouter(prefix="/api/v1", dependencies=[Depends(require_api_auth)])
@@ -23,12 +23,16 @@ def get_backup_service(request: Request) -> BackupService:
 
 
 ServiceDependency = Annotated[BackupService, Depends(get_backup_service)]
+BackupReadDependency = Annotated[AuthContext, Depends(require_scope("backup:read"))]
+BackupWriteDependency = Annotated[AuthContext, Depends(require_scope("backup:write"))]
 
 
 @router.post(
     "/backups", response_model=BackupResponse, status_code=status.HTTP_201_CREATED
 )
-async def create_backup(service: ServiceDependency) -> BackupResponse:
+async def create_backup(
+    service: ServiceDependency, _context: BackupWriteDependency
+) -> BackupResponse:
     try:
         return await service.create()
     except BackupServiceError as exc:
@@ -38,13 +42,17 @@ async def create_backup(service: ServiceDependency) -> BackupResponse:
 
 
 @router.get("/backups", response_model=BackupListResponse)
-async def list_backups(service: ServiceDependency) -> BackupListResponse:
+async def list_backups(
+    service: ServiceDependency, _context: BackupReadDependency
+) -> BackupListResponse:
     return await service.list()
 
 
 @router.get("/backups/{backup_id}/restore-preview", response_model=BackupRestorePreviewResponse)
 async def preview_restore(
-    backup_id: str, service: ServiceDependency
+    backup_id: str,
+    service: ServiceDependency,
+    _context: BackupReadDependency,
 ) -> BackupRestorePreviewResponse:
     try:
         return await service.preview_restore(backup_id)
