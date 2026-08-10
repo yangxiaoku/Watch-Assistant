@@ -147,6 +147,33 @@ def test_year_after_episode_marker_is_not_eaten_as_episode_end(
     assert parsed.media_type_hint == "tv"
 
 
+@pytest.mark.parametrize(
+    ("name", "season", "episode_start", "episode_end", "year"),
+    (
+        # 年份夹在第一个与第二个季集标记之间:应恢复完整范围,
+        # 而不是解析成单集并丢失后面的标记
+        ("Show.S01E01.2020.E02.mkv", 1, 1, 2, 2020),
+        ("Show.S01E05.2021.EP06.mkv", 1, 5, 6, 2021),
+        ("Show.S01E01.2019.S01E05.mkv", 1, 1, 5, 2019),
+        ("Show.S01E01.2020.1080p.E02.mkv", 1, 1, 2, 2020),
+        ("Show.E05.2021.EP06.mkv", None, 5, 6, 2021),
+        # 年份之后没有第二个标记时保持原行为:年份不被 end 吞掉
+        ("Show.S01E01.2019.mkv", 1, 1, None, 2019),
+    ),
+)
+def test_year_between_episode_markers_recovers_full_range(
+    name, season, episode_start, episode_end, year
+):
+    parsed = parse_media_filename(name)
+
+    assert parsed.title == "Show"
+    assert parsed.season == season
+    assert parsed.episode_start == episode_start
+    assert parsed.episode_end == episode_end
+    assert parsed.year == year
+    assert parsed.media_type_hint == "tv"
+
+
 def test_special_episode_hints_are_not_final_media_classification():
     parsed = parse_media_filename("Anime - SP OVA 1080p WEB-DL.mkv")
 

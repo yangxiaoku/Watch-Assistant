@@ -57,6 +57,13 @@ _EPISODE_LABEL_RE = re.compile(
     r"(?:[ ._-]*(?:E|EP)?(?P<end>[0-9]{1,4}))?(?![A-Za-z0-9])",
     re.IGNORECASE,
 )
+# 年份之后可能出现的第二个季集标记,用于恢复被年份截断的多集范围,
+# 例如 "Show.S01E01.2020.E02.mkv" 中的 "E02"。
+_SECOND_EPISODE_MARKER_RE = re.compile(
+    r"(?<![A-Za-z0-9])(?:(?:S[0-9]{1,3}[ ._-]*)?(?:E|EP))[ ._-]*"
+    r"(?P<number>[0-9]{1,4})(?![A-Za-z0-9])",
+    re.IGNORECASE,
+)
 
 _RESOLUTION_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("2160p", re.compile(r"(?<![A-Za-z0-9])2160[Pp](?![A-Za-z0-9])")),
@@ -511,6 +518,29 @@ def _plausible_episode_end(start: int | None, end: int | None) -> bool:
     return start is not None and end is not None and start < end <= start + 200
 
 
+def _recover_range_after_year(
+    stem: str, match: re.Match[str], start: int | None
+) -> tuple[int, int] | None:
+    """恢复年份夹中间的多集形态:end 组误吞年份后,在年份之后找第二个季集标记。
+
+    例如 "Show.S01E01.2020.E02.mkv" 中 end 组先吞下 2020,这里在其后
+    识别 "E02" 并把范围恢复为 E01-E02,同时把掩码跨度扩展到第二个标记
+    结束,避免其残留。只有被吞的数字是合理年份 (19xx/20xx) 时才恢复,
+    防止任意数字意外触发范围合并。
+    """
+    dropped = _group_int(match, "end")
+    if dropped is None or not 1900 <= dropped <= 2099:
+        return None
+    trailing = stem[match.start("end"):]
+    second = _SECOND_EPISODE_MARKER_RE.search(trailing)
+    if second is None:
+        return None
+    recovered = int(second.group("number"))
+    if not _plausible_episode_end(start, recovered):
+        return None
+    return recovered, match.start("end") + second.end()
+
+
 def _episode_fields(
     stem: str,
 ) -> tuple[int | None, int | None, int | None, tuple[tuple[int, int], ...]]:
@@ -523,19 +553,29 @@ def _episode_fields(
             end = _group_int(match, "end")
             span_end = match.end()
             if end is not None and not _plausible_episode_end(start, end):
-                # end 是年份等误匹配:丢弃 end,掩码收缩到 end 组之前,
-                # 让年份仍可被 _YEAR_RE 提取。
-                end = None
-                span_end = match.start("end")
+                # end 是年份等误匹配:若年份之后还有第二个季集标记
+                # (如 "S01E01.2020.E02"),则恢复完整范围;否则丢弃 end,
+                # 掩码收缩到 end 组之前,让年份仍可被 _YEAR_RE 提取。
+                recovered = _recover_range_after_year(stem, match, start)
+                if recovered is None:
+                    end = None
+                    span_end = match.start("end")
+                else:
+                    end, span_end = recovered
             return season, start, end, ((match.start(), span_end),)
     match = _EPISODE_LABEL_RE.search(stem)
     if match:
         season_match = _SEASON_ONLY_RE.search(stem)
+        start = _group_int(match, "start")
         end = _group_int(match, "end")
         span_end = match.end()
-        if end is not None and not _plausible_episode_end(_group_int(match, "start"), end):
-            end = None
-            span_end = match.start("end")
+        if end is not None and not _plausible_episode_end(start, end):
+            recovered = _recover_range_after_year(stem, match, start)
+            if recovered is None:
+                end = None
+                span_end = match.start("end")
+            else:
+                end, span_end = recovered
         spans = [(match.start(), span_end)]
         season = None
         if season_match:
@@ -547,7 +587,7 @@ def _episode_fields(
             spans.append((season_match.start(), season_match.end()))
         return (
             season,
-            _group_int(match, "start"),
+            start,
             end,
             tuple(spans),
         )
