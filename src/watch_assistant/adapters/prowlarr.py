@@ -324,7 +324,10 @@ class ProwlarrClient:
                         releases.append(release)
                 if len(payload) < request_limit:
                     break
-                next_offset = current_offset + len(payload)
+                # 偏移只能按实际消费条数推进:响应会跨索引器 overfetch
+                # (1337x ~80 条),按 len(payload) 推进会把本页未消费的
+                # 结果永久跳过,每页都丢一批。
+                next_offset = current_offset + len(page_items)
                 if next_offset <= current_offset:
                     raise ProwlarrInvalidResponseError(
                         "Unexpected Prowlarr response shape"

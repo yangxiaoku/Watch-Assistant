@@ -229,14 +229,26 @@ class TaskWorker:
     async def run_forever(self, stop_event: asyncio.Event, *, interval: float = 1.0):
         recovery_interval = max(15.0, interval * 30)
         next_recovery = time.monotonic() + recovery_interval
+        # 连续失败时指数退避,避免 DB 锁定等故障下以满速热循环
+        # 进一步加剧写锁竞争并刷爆日志。
+        backoff = 0.0
         while not stop_event.is_set():
+            if backoff > 0:
+                try:
+                    await asyncio.wait_for(stop_event.wait(), timeout=backoff)
+                except TimeoutError:
+                    pass
+                if stop_event.is_set():
+                    break
+                backoff = 0.0
             try:
                 await self.run_once()
+                backoff = 0.0
             except asyncio.CancelledError:
                 raise
             except Exception:  # noqa: BLE001
                 # A transient claim/database error must not kill the worker loop.
-                await asyncio.sleep(0)
+                backoff = min(30.0, (backoff or 1.0) * 2)
             # Reclaim leases whose owner died mid-write (e.g. a submission that
             # crossed its lease expiry under SQLite lock contention). Without a
             # periodic sweep these tasks stay SUBMITTING until a restart.

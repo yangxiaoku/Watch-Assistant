@@ -71,3 +71,46 @@ async def test_scheduler_skips_disabled_or_unverified_libraries(tmp_path):
         assert result.scanned == 0
     finally:
         await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_scheduler_retries_failed_scan_after_cooldown_but_skips_running(tmp_path):
+    database, scheduler = await _make_env(tmp_path)
+    try:
+        stamp = datetime(2026, 8, 9, tzinfo=UTC)
+        await scheduler.run_due_once(now=stamp)
+        async with database.session_factory() as session:
+            run = (await session.scalars(select(LibraryScanRun))).one()
+            run.state = "failed"
+            run.error_code = "gateway_error"
+            run.updated_at = datetime(2026, 8, 9, 0, 5, tzinfo=UTC)
+            await session.commit()
+
+        # 冷却期内不重试
+        result = await scheduler.run_due_once(now=stamp)
+        assert result.scanned == 0
+        assert result.skipped == 1
+
+        # 冷却期后重入队,FAILED 重置回 QUEUED
+        async with database.session_factory() as session:
+            run = (await session.scalars(select(LibraryScanRun))).one()
+            run.updated_at = datetime(2026, 8, 9, 0, 10, tzinfo=UTC)
+            await session.commit()
+        result = await scheduler.run_due_once(now=datetime(2026, 8, 9, 1, 0, tzinfo=UTC))
+        assert result.scanned == 1
+        async with database.session_factory() as session:
+            runs = list(await session.scalars(select(LibraryScanRun)))
+        assert len(runs) == 1
+        assert runs[0].state == "queued"
+
+        # RUNNING 状态不重复入队
+        async with database.session_factory() as session:
+            run = (await session.scalars(select(LibraryScanRun))).one()
+            run.state = "running"
+            run.updated_at = datetime(2026, 8, 9, 1, 1, tzinfo=UTC)
+            await session.commit()
+        result = await scheduler.run_due_once(now=datetime(2026, 8, 9, 1, 30, tzinfo=UTC))
+        assert result.scanned == 0
+        assert result.skipped == 1
+    finally:
+        await database.engine.dispose()

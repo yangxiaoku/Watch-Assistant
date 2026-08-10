@@ -19,6 +19,7 @@ import {
 } from "@lucide/vue";
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { ApiClient, ApiError, focusFirstFieldError, isConflict, CONFLICT_MESSAGE_ZH } from "../api";
+import ConfirmDialog from "../components/ConfirmDialog.vue";
 import { p115DeviceOptions } from "../p115DeviceTypes";
 import { logLevelOptions } from "../statusCatalog";
 import { formatBytes, formatTimestamp } from "../format";
@@ -407,14 +408,24 @@ async function activateP115Device(device: P115LoginDevice) {
   }
 }
 
-async function revokeP115Device(device: P115LoginDevice) {
+const pendingRevokeDevice = ref<P115LoginDevice | null>(null);
+
+function requestRevokeP115Device(device: P115LoginDevice) {
   if (device.active || p115QrBusy.value) return;
+  pendingRevokeDevice.value = device;
+}
+
+async function confirmRevokeP115Device() {
+  const device = pendingRevokeDevice.value;
+  if (!device) return;
   p115DevicesError.value = "";
   try {
     await props.api.revokeP115Device(device.id);
     await loadP115Devices();
   } catch (exception) {
     p115QrError.value = exception instanceof ApiError ? exception.message : "设备移除失败，请稍后重试";
+  } finally {
+    pendingRevokeDevice.value = null;
   }
 }
 
@@ -1234,7 +1245,7 @@ onBeforeUnmount(() => {
                 <div v-if="p115QrImage" class="p115-qr-content"><img :src="p115QrImage" alt="115 登录二维码" /><div><p class="settings-note">请使用上方选择的设备类型扫码确认。</p><strong v-if="p115QrStatus === 'scanned'" class="status-ok">已扫码，等待确认</strong><strong v-else-if="p115QrStatus === 'waiting'" class="status-unknown">等待扫码</strong></div></div>
                 <p v-if="p115QrError" class="settings-action-message" role="status">{{ p115QrError }}</p>
               </div>
-              <div class="p115-device-list"><div class="p115-device-list-heading"><h4>已保存的登录设备</h4><button class="text-button" type="button" :disabled="p115DevicesLoading" @click="loadP115Devices"><LoaderCircle v-if="p115DevicesLoading" class="spin" :size="14" /><RefreshCw v-else :size="14" />{{ p115DevicesLoading ? '刷新中' : '刷新' }}</button></div><div v-if="p115DevicesLoading" class="settings-loading" role="status"><LoaderCircle class="spin" :size="18" />正在加载扫码设备</div><div v-else-if="p115DevicesError" class="settings-state settings-state-error" role="alert"><AlertTriangle :size="18" /><span>{{ p115DevicesError }}</span><button class="text-button" type="button" @click="loadP115Devices">重试</button></div><p v-else-if="!p115Devices.length" class="settings-note">暂无扫码设备。手动 Cookie 不会显示在这里。</p><div v-else><div v-for="device in p115Devices" :key="device.id" class="p115-device-row"><div><strong>{{ device.name }}</strong><small>{{ device.device_code }} · {{ device.last_used_at ? formatTimestamp(device.last_used_at) : '未使用' }}</small></div><div><strong v-if="device.active" class="status-ok">当前使用</strong><button v-else class="text-button" type="button" @click="activateP115Device(device)">切换</button><button v-if="!device.active" class="text-button danger-text" type="button" @click="revokeP115Device(device)">移除</button></div></div></div></div>
+              <div class="p115-device-list"><div class="p115-device-list-heading"><h4>已保存的登录设备</h4><button class="text-button" type="button" :disabled="p115DevicesLoading" @click="loadP115Devices"><LoaderCircle v-if="p115DevicesLoading" class="spin" :size="14" /><RefreshCw v-else :size="14" />{{ p115DevicesLoading ? '刷新中' : '刷新' }}</button></div><div v-if="p115DevicesLoading" class="settings-loading" role="status"><LoaderCircle class="spin" :size="18" />正在加载扫码设备</div><div v-else-if="p115DevicesError" class="settings-state settings-state-error" role="alert"><AlertTriangle :size="18" /><span>{{ p115DevicesError }}</span><button class="text-button" type="button" @click="loadP115Devices">重试</button></div><p v-else-if="!p115Devices.length" class="settings-note">暂无扫码设备。手动 Cookie 不会显示在这里。</p><div v-else><div v-for="device in p115Devices" :key="device.id" class="p115-device-row"><div><strong>{{ device.name }}</strong><small>{{ device.device_code }} · {{ device.last_used_at ? formatTimestamp(device.last_used_at) : '未使用' }}</small></div><div><strong v-if="device.active" class="status-ok">当前使用</strong><button v-else class="text-button" type="button" @click="activateP115Device(device)">切换</button><button v-if="!device.active" class="text-button danger-text" type="button" @click="requestRevokeP115Device(device)">移除</button></div></div></div></div>
               <p class="settings-note"><Cookie :size="15" />Cookie 仅使用服务端已配置的来源，页面不会回显已保存的 Cookie 原文。</p>
             </section>
           </div>
@@ -1322,4 +1333,13 @@ onBeforeUnmount(() => {
       </div>
     </div>
   </section>
+  <ConfirmDialog
+    :open="pendingRevokeDevice !== null"
+    title="移除 115 登录设备"
+    :summary="`确定移除设备“${pendingRevokeDevice?.name ?? ''}”吗？该设备上的登录态将被注销，如需继续使用需重新扫码登录。`"
+    confirm-label="确认移除"
+    tone="danger"
+    @cancel="pendingRevokeDevice = null"
+    @confirm="confirmRevokeP115Device"
+  />
 </template>

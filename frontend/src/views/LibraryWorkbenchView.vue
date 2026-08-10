@@ -411,15 +411,11 @@ async function initializeLibrary() {
 
 function selectLibrary(library: MediaLibraryResponse) {
   scanPollGeneration += 1;
-  operationPollGeneration += 1;
+  bumpOperationPollGeneration();
   operationDetailRequestGeneration += 1;
   mediaRequestGeneration += 1;
   manifestRequestGeneration += 1;
   operationsRequestGeneration += 1;
-  if (operationPollTimer !== null) {
-    window.clearTimeout(operationPollTimer);
-    operationPollTimer = null;
-  }
   selectedId.value = library.library_id;
   form.value = { libraryId: library.library_id, name: library.name, rootDirectoryId: library.root_directory_id };
   latestResult.value = null;
@@ -540,11 +536,32 @@ async function syncStrm(action: "full" | "incremental") {
   }
 }
 
+/** 取消在途轮询等待:递增 generation 并让挂起的 waitForOperationPoll 立即 settle。
+ *  否则切换媒体库/卸载组件时,挂起的 await 永不返回,finally 不执行,busy 永久为 true。 */
+function bumpOperationPollGeneration() {
+  operationPollGeneration += 1;
+  if (operationPollTimer !== null) {
+    window.clearTimeout(operationPollTimer);
+    operationPollTimer = null;
+  }
+  const pending = operationPollWaiters;
+  operationPollWaiters = [];
+  for (const resolve of pending) resolve();
+}
+
+let operationPollWaiters: Array<() => void> = [];
+
 function waitForOperationPoll() {
   return new Promise<void>((resolve) => {
+    const waiter = () => {
+      const index = operationPollWaiters.indexOf(waiter);
+      if (index >= 0) operationPollWaiters.splice(index, 1);
+      resolve();
+    };
+    operationPollWaiters.push(waiter);
     operationPollTimer = window.setTimeout(() => {
       operationPollTimer = null;
-      resolve();
+      waiter();
     }, 500);
   });
 }
@@ -628,11 +645,7 @@ function requestCancelLatestOperation() {
 async function cancelLatestOperation() {
   const operation = latestOperation.value;
   if (!operation || (operation.status !== "queued" && operation.status !== "running")) return;
-  operationPollGeneration += 1;
-  if (operationPollTimer !== null) {
-    window.clearTimeout(operationPollTimer);
-    operationPollTimer = null;
-  }
+  bumpOperationPollGeneration();
   busy.value = true;
   error.value = "";
   notice.value = "";
@@ -858,8 +871,7 @@ async function createOrganizationPreview() {
 onMounted(() => { void loadLibraries(); });
 onBeforeUnmount(() => {
   scanPollGeneration += 1;
-  operationPollGeneration += 1;
-  if (operationPollTimer !== null) window.clearTimeout(operationPollTimer);
+  bumpOperationPollGeneration();
 });
 </script>
 

@@ -34,6 +34,16 @@ class SubscriptionConflict(ValueError):
     pass
 
 
+# 搜索期间不得被旧任务改写的状态:取消/暂停/完成都是用户的最终意图。
+_TERMINAL_SUBSCRIPTION_STATES = frozenset(
+    {
+        SubscriptionStatus.PAUSED,
+        SubscriptionStatus.CANCELLED,
+        SubscriptionStatus.COMPLETED,
+    }
+)
+
+
 class SubscriptionService:
     def __init__(
         self,
@@ -160,6 +170,9 @@ class SubscriptionService:
                 item = await session.get(Subscription, subscription_id)
                 if item is None:
                     raise SubscriptionNotFound(subscription_id)
+                if item.status in _TERMINAL_SUBSCRIPTION_STATES:
+                    # 搜索期间被取消/暂停/完成:保留用户意图,不写错误状态也不重新排程
+                    raise SubscriptionConflict("subscription_not_active") from None
                 item.last_checked_at = datetime.now(UTC)
                 item.last_error_code = "search_unavailable"
                 item.next_check_at = datetime.now(UTC) + timedelta(hours=6)
@@ -175,6 +188,9 @@ class SubscriptionService:
             item = await session.get(Subscription, subscription_id)
             if item is None:
                 raise SubscriptionNotFound(subscription_id)
+            if item.status in _TERMINAL_SUBSCRIPTION_STATES:
+                # 搜索期间被取消/暂停/完成:不允许旧任务把订阅改回 MATCHED 复活
+                raise SubscriptionConflict("subscription_not_active") from None
             item.last_checked_at = datetime.now(UTC)
             item.last_match_count = len(resource_ids)
             item.last_error_code = None

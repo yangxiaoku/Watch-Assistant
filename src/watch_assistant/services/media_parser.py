@@ -34,7 +34,8 @@ _KNOWN_MEDIA_EXTENSIONS = frozenset(
 _YEAR_RE = re.compile(r"(?<![0-9])(?:19|20)[0-9]{2}(?![0-9])")
 _SEASON_EPISODE_RE = re.compile(
     r"(?<![A-Za-z0-9])S(?P<season>[0-9]{1,3})[ ._-]*E(?P<start>[0-9]{1,4})"
-    r"(?:[ ._-]*(?:E|EP)?(?P<end>[0-9]{1,4}))?(?![A-Za-z0-9])",
+    r"(?:[ ._-]*(?:(?:S[0-9]{1,3}[ ._-]*E)|(?:E|EP))?[ ._-]*(?P<end>[0-9]{1,4}))?"
+    r"(?![A-Za-z0-9])",
     re.IGNORECASE,
 )
 _MULTI_SEASON_EPISODE_RE = re.compile(
@@ -493,6 +494,15 @@ def _companion_type(stem: str, extension: str | None) -> CompanionType:
     return "unknown"
 
 
+def _plausible_episode_end(start: int | None, end: int | None) -> bool:
+    """一个发布文件不可能跨越超过 200 集;超出即视为 end 组误吞了年份。
+
+    例如 "Show.S01E01.2019.mkv" 中 2019 会被 end 组匹配,若不拒绝,
+    自动匹配将永久失败 (EPISODE_OUT_OF_RANGE)。
+    """
+    return start is not None and end is not None and start < end <= start + 200
+
+
 def _episode_fields(
     stem: str,
 ) -> tuple[int | None, int | None, int | None, tuple[tuple[int, int], ...]]:
@@ -503,11 +513,22 @@ def _episode_fields(
             season = _group_int(match, "season")
             start = _group_int(match, "start")
             end = _group_int(match, "end")
-            return season, start, end, ((match.start(), match.end()),)
+            span_end = match.end()
+            if end is not None and not _plausible_episode_end(start, end):
+                # end 是年份等误匹配:丢弃 end,掩码收缩到 end 组之前,
+                # 让年份仍可被 _YEAR_RE 提取。
+                end = None
+                span_end = match.start("end")
+            return season, start, end, ((match.start(), span_end),)
     match = _EPISODE_LABEL_RE.search(stem)
     if match:
         season_match = _SEASON_ONLY_RE.search(stem)
-        spans = [(match.start(), match.end())]
+        end = _group_int(match, "end")
+        span_end = match.end()
+        if end is not None and not _plausible_episode_end(_group_int(match, "start"), end):
+            end = None
+            span_end = match.start("end")
+        spans = [(match.start(), span_end)]
         season = None
         if season_match:
             season = (
@@ -519,7 +540,7 @@ def _episode_fields(
         return (
             season,
             _group_int(match, "start"),
-            _group_int(match, "end"),
+            end,
             tuple(spans),
         )
     season_match = _SEASON_ONLY_RE.search(stem)

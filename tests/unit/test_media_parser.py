@@ -118,6 +118,34 @@ def test_season_and_episode_forms(name, season, episode_start, episode_end):
     assert parsed.media_type_hint == "tv"
 
 
+@pytest.mark.parametrize(
+    ("name", "title", "season", "episode_start", "episode_end", "year"),
+    (
+        # 年份紧跟季集标记时,不得被 end 组吞成集数范围
+        ("Show.S01E01.2019.mkv", "Show", 1, 1, None, 2019),
+        ("Show.S01E01.2020.1080p.WEB-DL.x264-GROUP.mkv", "Show", 1, 1, None, 2020),
+        ("Show.E05.2019.1080p.mkv", "Show", None, 5, None, 2019),
+        ("Show.1X05.2019.mkv", "Show", 1, 5, None, 2019),
+        # 跨季/多段季集标记整体掩码,标题不再残留后半段标记
+        ("Show.S01E01-S01E05.2019.1080p.WEB-DL.mkv", "Show", 1, 1, 5, 2019),
+        ("Show.S01E01.S02E03.2019.mkv", "Show", 1, 1, 3, 2019),
+        # 无年份的常规格式不回归
+        ("Show.S01E01-E04.mkv", "Show", 1, 1, 4, None),
+    ),
+)
+def test_year_after_episode_marker_is_not_eaten_as_episode_end(
+    name, title, season, episode_start, episode_end, year
+):
+    parsed = parse_media_filename(name)
+
+    assert parsed.title == title
+    assert parsed.season == season
+    assert parsed.episode_start == episode_start
+    assert parsed.episode_end == episode_end
+    assert parsed.year == year
+    assert parsed.media_type_hint == "tv"
+
+
 def test_special_episode_hints_are_not_final_media_classification():
     parsed = parse_media_filename("Anime - SP OVA 1080p WEB-DL.mkv")
 

@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from watch_assistant.library_models import LibraryScanRun, MediaLibrary
 from watch_assistant.schemas import LoggingLevel
+from watch_assistant.services.library_index import ScanRunState
 from watch_assistant.services.library_scan_operations import (
     LibraryScanOperationService,
 )
@@ -32,6 +33,9 @@ class LibraryScanScheduler:
     scan for the same day is never duplicated. A failed scan is re-queued on
     the next tick, so transient upstream failures self-heal.
     """
+
+    # 当日失败扫描的自动重试冷却期:避免瞬时故障在每次 tick 都热循环重试。
+    retry_cooldown = timedelta(minutes=30)
 
     def __init__(
         self,
@@ -75,10 +79,24 @@ class LibraryScanScheduler:
                         )
                     )
                 if existing is not None:
-                    # One scan per library per UTC day, whatever the outcome;
-                    # a failed scan is retried on the next UTC day.
-                    skipped += 1
-                    continue
+                    if existing.complete or existing.state == ScanRunState.RUNNING.value:
+                        # One scan per library per UTC day; a completed scan is
+                        # never duplicated, a running scan is not re-queued.
+                        skipped += 1
+                        continue
+                    if existing.state == ScanRunState.CANCELLED.value:
+                        # 用户显式取消不自动重试。
+                        skipped += 1
+                        continue
+                    # FAILED:冷却期后重入队自愈(瞬时上游故障,如 115 登录态失效);
+                    # enqueue 会把 FAILED 重置回 QUEUED。避免每次 tick 热循环重试。
+                    updated = existing.updated_at
+                    if updated is not None:
+                        if updated.tzinfo is None:
+                            updated = updated.replace(tzinfo=UTC)
+                        if stamp - updated < self.retry_cooldown:
+                            skipped += 1
+                            continue
                 await self._operations.enqueue(
                     library.id,
                     idempotency_key=f"scheduled-{key_date}",

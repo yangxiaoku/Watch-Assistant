@@ -63,6 +63,9 @@ def create_database(url: str) -> Database:
             cursor = dbapi_connection.cursor()
             cursor.execute("PRAGMA foreign_keys=ON")
             cursor.execute("PRAGMA journal_mode=WAL")
+            # 默认 busy_timeout=0:写锁竞争时立即抛 "database is locked"。
+            # worker/agent 心跳/任务推进是并发写者,必须等待而非直接失败。
+            cursor.execute("PRAGMA busy_timeout=10000")
             cursor.close()
 
     return Database(engine, async_sessionmaker(engine, expire_on_commit=False))

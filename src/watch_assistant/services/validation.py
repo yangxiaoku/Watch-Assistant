@@ -90,13 +90,16 @@ def validate_and_rank_resources(
         )
         matches.append(_Match(resource, rank_score))
 
+    def _desc_int(value: int | None) -> int | float:
+        # 未知值映射为负无穷,降序排序时垫底;此前映射为 -1 会让
+        # 未知种子数/大小的资源排在已知值之前,默认推荐取错资源。
+        return -value if value is not None else -float("inf")
+
     matches.sort(
         key=lambda item: (
             -item.rank_score,
-            -int(item.resource.seeders if item.resource.seeders is not None else -1),
-            -int(
-                item.resource.size_bytes if item.resource.size_bytes is not None else -1
-            ),
+            _desc_int(item.resource.seeders),
+            _desc_int(item.resource.size_bytes),
             -item.resource.captured_at.timestamp(),
             item.resource.canonical_key,
         )

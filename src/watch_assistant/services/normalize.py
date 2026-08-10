@@ -323,6 +323,9 @@ def _merge_optional_field(
         return base_value, base
     base_source = base.metadata.get(source_key)
     other_source = other.metadata.get(source_key)
+    # 结构化字段(非插件标记)胜出:插件带来的 pansou 标记值可能过期,
+    # 同 infohash 去重时不能覆盖条目的原生结构化取值;
+    # 来源标记只随胜出的条目保留(test_duplicate_infohash_* 锁定此语义)。
     if base_source == "pansou" and other_source != "pansou":
         return other_value, other
     if other_source == "pansou" and base_source != "pansou":

@@ -139,8 +139,10 @@ class P115LivePlaybackGateway(P115PlaybackGateway):
                 credential = await asyncio.to_thread(self._credential_source.load)
             except asyncio.CancelledError:
                 raise
-            except Exception as error:
-                raise P115PlaybackTransportUnavailable("credentials_unavailable") from error
+            except Exception:
+                # 不链起底层异常:第三方错误文本可能包含凭据/pickcode/带参链接,
+                # 一旦被调用方 logging.exception 记录即违反凭据不进日志规则。
+                raise P115PlaybackTransportUnavailable("credentials_unavailable") from None
             if not credential:
                 raise P115PlaybackTransportUnavailable("credentials_missing")
             try:
@@ -151,8 +153,8 @@ class P115LivePlaybackGateway(P115PlaybackGateway):
                 raise
             except (TimeoutError, P115PlaybackTransportUnavailable):
                 raise
-            except Exception as error:
-                raise P115PlaybackTransportUnavailable("client_unavailable") from error
+            except Exception:
+                raise P115PlaybackTransportUnavailable("client_unavailable") from None
             self._transport = transport
             return transport
 

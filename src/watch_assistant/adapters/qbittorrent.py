@@ -307,6 +307,16 @@ class QbittorrentClient:
                                     )
                             elif normalized_state in {"pauseddl", "stoppeddl"}:
                                 files = await self._torrent_files(item.infohash)
+                                if not files:
+                                    # 从未取得元数据时 qB 返回空文件列表:
+                                    # 把空清单当 VERIFIED 证据会让内容检测误判为空资源。
+                                    result = QbittorrentInspectionResult(
+                                        infohash=item.infohash,
+                                        status=InspectionStatus.FAILED,
+                                        error_code="metadata_stop_failed",
+                                        result_source="new_torrent",
+                                    )
+                                    break
                                 result = replace(
                                     _summarize(item.infohash, files),
                                     result_source="new_torrent",
@@ -417,6 +427,16 @@ class QbittorrentClient:
                         infohash=infohash,
                         status=InspectionStatus.FAILED,
                         error_code="existing_torrent_unreadable",
+                    )
+                if not files:
+                    # 他人添加的既有 torrent 可能停在 stoppedDL/error/missingFiles
+                    # 且从未取得元数据:qB 返回空文件列表。不得把空清单当已验证
+                    # 证据(内容检测会误判为空资源),按元数据获取失败处理。
+                    return QbittorrentInspectionResult(
+                        infohash=infohash,
+                        status=InspectionStatus.FAILED,
+                        error_code="metadata_stop_failed",
+                        result_source="existing_torrent",
                     )
                 return replace(
                     _summarize(infohash, files), result_source="existing_torrent"

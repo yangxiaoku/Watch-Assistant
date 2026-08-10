@@ -275,6 +275,8 @@ async def configure_library(
     """
     if not _stable_library_id(library_id):
         raise HTTPException(status_code=422, detail="invalid_request")
+    if not _allowed(context, library_id):
+        raise HTTPException(status_code=404, detail="library_not_found")
     target_root = getattr(request.app.state, "organization_target_root_id", None)
     if not target_root:
         raise HTTPException(status_code=503, detail="library_scope_unavailable")
@@ -339,6 +341,8 @@ async def verify_library_scope(
 ) -> MediaLibraryVerificationResponse:
     """Verify one page through the read-only gateway before enabling a scope."""
     if not _stable_library_id(library_id):
+        raise HTTPException(status_code=404, detail="library_not_found")
+    if not _allowed(context, library_id):
         raise HTTPException(status_code=404, detail="library_not_found")
     provider = getattr(request.app.state, "organization_cookie_provider", None)
     target_root = getattr(request.app.state, "organization_target_root_id", None)
