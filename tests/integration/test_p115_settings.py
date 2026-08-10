@@ -18,6 +18,7 @@ from watch_assistant.services.p115_settings import (
     P115SettingsService,
     P115UnavailableError,
 )
+from tests.unit.factories import make_security_manager
 
 COOKIE = "UID=uid_A1_456; CID=cid; KID=kid; SEID=seid"
 _DEFAULT_CAPABILITIES = {"magnet": True, "share": False}
@@ -58,6 +59,10 @@ def _settings_app(
         app.state.push_capabilities = push_capabilities
     if security is not None:
         app.state.security_manager = security
+    else:
+        # 鉴权依赖已 fail-closed:未显式传入 manager 的测试夹具默认注入
+        # 宽松测试 manager,否则所有请求都会 503 auth_unavailable。
+        app.state.security_manager = make_security_manager()
     app.include_router(router)
     return app
 
