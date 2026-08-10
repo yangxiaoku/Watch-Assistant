@@ -7,6 +7,7 @@ import pytest
 from fastapi import FastAPI
 from pwdlib import PasswordHash
 
+from tests.unit.factories import make_security_manager
 from watch_assistant.adapters import p115_library_gateway
 from watch_assistant.adapters.p115 import P115Adapter
 from watch_assistant.adapters.p115_library import DirectoryPage, LibraryEntry, ScanState
@@ -18,7 +19,6 @@ from watch_assistant.services.p115_settings import (
     P115SettingsService,
     P115UnavailableError,
 )
-from tests.unit.factories import make_security_manager
 
 COOKIE = "UID=uid_A1_456; CID=cid; KID=kid; SEID=seid"
 _DEFAULT_CAPABILITIES = {"magnet": True, "share": False}

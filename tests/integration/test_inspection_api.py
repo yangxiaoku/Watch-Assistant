@@ -7,6 +7,7 @@ from cryptography.fernet import Fernet
 from pwdlib import PasswordHash
 from sqlalchemy import select, text
 
+from tests.unit.factories import make_security_manager
 from watch_assistant.adapters.pansou import PanSouClient
 from watch_assistant.adapters.qbittorrent import (
     InspectionStatus,
@@ -29,7 +30,6 @@ from watch_assistant.schemas import (
 )
 from watch_assistant.security import SecurityManager
 from watch_assistant.services.inspection import InspectionService, InspectionWorker
-from tests.unit.factories import make_security_manager
 
 WEB_PASSWORD = "inspection-web-password"
 SCRIPT_TOKEN = "inspection-script-token"

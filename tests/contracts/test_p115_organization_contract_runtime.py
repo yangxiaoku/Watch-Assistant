@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.unit.factories import make_security_manager
 from watch_assistant.adapters.p115_library_write_contract import (
     ORGANIZATION_CONTRACT_VERSION,
     OrganizationContractEvidenceError,
@@ -13,7 +14,6 @@ from watch_assistant.adapters.p115_library_write_contract import (
     load_p115_organization_contract,
 )
 from watch_assistant.app import create_app
-from tests.unit.factories import make_security_manager
 
 CAPABILITIES = [
     OrganizationWriteCapability.READ_SCOPE.value,

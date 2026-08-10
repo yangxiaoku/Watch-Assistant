@@ -9,6 +9,7 @@ from cryptography.fernet import Fernet
 from pwdlib import PasswordHash
 from sqlalchemy import select
 
+from tests.unit.factories import make_security_manager
 from watch_assistant.adapters.p115 import P115Adapter
 from watch_assistant.app import create_app
 from watch_assistant.crypto import SecretCrypto
@@ -18,7 +19,6 @@ from watch_assistant.schemas import RemoteStatus
 from watch_assistant.security import SecurityManager
 from watch_assistant.services.p115_credentials import CookieProvider
 from watch_assistant.services.tasks import TaskService
-from tests.unit.factories import make_security_manager
 
 MAGNET = "magnet:?xt=urn:btih:" + ("a" * 40)
 

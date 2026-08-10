@@ -6,13 +6,13 @@ import pytest
 from cryptography.fernet import Fernet
 from sqlalchemy import select
 
+from tests.unit.factories import make_security_manager
 from watch_assistant.adapters.pansou import PanSouClient
 from watch_assistant.adapters.tmdb import TmdbClient
 from watch_assistant.app import create_app
 from watch_assistant.crypto import SecretCrypto
 from watch_assistant.db import create_database, initialize_database
 from watch_assistant.models import QualityProfile, Resource
-from tests.unit.factories import make_security_manager
 
 
 async def _make_client(tmp_path: Path):
