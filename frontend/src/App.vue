@@ -1092,7 +1092,9 @@ async function loadResources(
         selectedSeason.value = mediaType === "tv" ? legacy.selected_season ?? seasonNumber : null;
         resourceSearchCached = legacy.cached;
         applyResourceRoute(initialResourceRoute);
-        beginResourceSnapshot(legacy.results, legacy.hidden_total ?? 0, preserveResourceSnapshot);
+        // legacy 回退已拿到新结果:必须清空旧 resourceResponse 快照,否则 resourceItems 计算属性
+        // 仍优先读取旧快照,掩盖回退结果(与搜索失败路径 :1049-1056 的清空语义一致)
+        beginResourceSnapshot(legacy.results, legacy.hidden_total ?? 0, false);
         await loadResourcePage(initialResourceRoute, "none");
         return;
       } catch (legacyException) {
