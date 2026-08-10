@@ -56,6 +56,15 @@ class _LiveFakeP115Client:
     def fs_files(self, payload, **kwargs):
         return self._response("fs_files", payload, **kwargs)
 
+    def fs_mkdir_app(self, payload, **kwargs):
+        return self._response("fs_mkdir_app", payload, **kwargs)
+
+    def fs_move_app(self, payload, **kwargs):
+        return self._response("fs_move_app", payload, **kwargs)
+
+    def fs_delete_app(self, payload, **kwargs):
+        return self._response("fs_delete_app", payload, **kwargs)
+
 
 async def _live_call_executor(method, payload, *, timeout_seconds):
     assert timeout_seconds > 0
@@ -1041,3 +1050,90 @@ async def test_offline_transport_path_target_reads_and_moves_in_plan_space():
         "rename",
         "read_object",
     ]
+
+
+@pytest.mark.asyncio
+async def test_write_execute_falls_back_to_app_endpoint_on_provider_405():
+    """The retired web write endpoints (HTTP 405) fall back to the app endpoints."""
+    from urllib.error import HTTPError
+
+    from watch_assistant.adapters.p115_c03_live_transport import (
+        P115C03LiveTransport,
+    )
+    from watch_assistant.adapters.p115_library_write_contract import (
+        WriteStatus,
+        prepare_mkdir,
+        prepare_move,
+        prepare_recycle,
+    )
+
+    class _FallingBackClient(_LiveFakeP115Client):
+        def __init__(self, responses):
+            super().__init__(responses)
+            self.app_calls = []
+
+        def _app_response(self, name, payload, **kwargs):
+            self.app_calls.append((name, dict(payload), dict(kwargs)))
+            value = self.responses[name].pop(0)
+            if isinstance(value, BaseException):
+                raise value
+            return value
+
+        def fs_mkdir(self, payload, **kwargs):
+            raise HTTPError(
+                "https://webapi.115.com/files/add", 405, "Method Not Allowed", None, None
+            )
+
+        def fs_move(self, payload, **kwargs):
+            raise HTTPError(
+                "https://webapi.115.com/files/move", 405, "Method Not Allowed", None, None
+            )
+
+        def fs_delete(self, payload, **kwargs):
+            raise HTTPError(
+                "https://webapi.115.com/rb/delete", 405, "Method Not Allowed", None, None
+            )
+
+        def fs_mkdir_app(self, payload, **kwargs):
+            return self._app_response("fs_mkdir_app", payload, **kwargs)
+
+        def fs_move_app(self, payload, **kwargs):
+            return self._app_response("fs_move_app", payload, **kwargs)
+
+        def fs_delete_app(self, payload, **kwargs):
+            return self._app_response("fs_delete_app", payload, **kwargs)
+
+    def make_transport(client):
+        return P115C03LiveTransport(client, call_executor=_live_call_executor)
+
+    # mkdir: name param on the app endpoint
+    client = _FallingBackClient(
+        {"fs_mkdir_app": [{"state": True, "data": {"category_id": "42"}}]}
+    )
+    transport = make_transport(client)
+    receipt = await transport.execute(
+        prepare_mkdir("7000", "Season 02"), timeout_seconds=30.0
+    )
+    assert receipt.status is WriteStatus.SUCCESS
+    assert client.app_calls[0][0] == "fs_mkdir_app"
+    assert client.app_calls[0][1] == {"pid": "7000", "name": "Season 02"}
+
+    # move: ids/to_cid on the app endpoint
+    client = _FallingBackClient({"fs_move_app": [{"state": True}]})
+    transport = make_transport(client)
+    receipt = await transport.execute(
+        prepare_move("100", "9000"), timeout_seconds=30.0
+    )
+    assert receipt.status is WriteStatus.SUCCESS
+    assert client.app_calls[0][0] == "fs_move_app"
+    assert client.app_calls[0][1] == {"ids": "100", "to_cid": "9000"}
+
+    # recycle: file_ids on the app endpoint
+    client = _FallingBackClient({"fs_delete_app": [{"state": True}]})
+    transport = make_transport(client)
+    receipt = await transport.execute(
+        prepare_recycle("100"), timeout_seconds=30.0
+    )
+    assert receipt.status is WriteStatus.SUCCESS
+    assert client.app_calls[0][0] == "fs_delete_app"
+    assert client.app_calls[0][1] == {"file_ids": "100"}
