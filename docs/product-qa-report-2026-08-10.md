@@ -281,3 +281,13 @@
 ### 验证
 - pytest unit+integration 全量 **1521/1521**;ruff 干净;vitest 232/232;build ✓
 - 部署后 Playwright 18/18
+
+---
+
+## 10. 第六轮(遗留 P1/P2 修复)记录 — 2026-08-11
+
+- **P2** seasons 集数完整性接口补 library 范围校验(受限 token 越权读取文件清单)
+- **P2** 资源搜索 30s 硬超时不再伪造 failed/清空快照:上限放宽 120s,超时返回 timeout 状态保留快照+明示提示
+- **P2** snapshot revision 完成点串行化(进程内 per-library 锁)+ 迁移 072 唯一索引兜底(先清重再建索引)
+- **P1** strm_manifest 同名替换先 retire 后生成(两趟 diff):修复前 failed=1 且永久卡,修复后 failed=0;回归测试锁定
+- 迁移 071(订阅索引排除已取消)与 072(scan revision 唯一)随本部署上线
