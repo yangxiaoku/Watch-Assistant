@@ -85,7 +85,7 @@ def _file_page(file_id, parent_id, name):
 def _directory_page(file_id, parent_id, name):
     return {
         "state": True,
-        "data": [{"fc": 0, "fid": file_id, "cid": parent_id, "n": name}],
+        "data": [{"fc": 0, "fid": file_id, "pid": parent_id, "n": name}],
         "offset": 0,
         "limit": 50,
         "count": 1,
@@ -99,6 +99,7 @@ def _intent(
     source_name: str = "before.mkv",
     target_parent_id: str = "8000",
     target_name: str = "after.mkv",
+    target_directory_path: str | None = None,
 ) -> OrganizationObjectIntent:
     return OrganizationObjectIntent(
         object_id,
@@ -106,6 +107,7 @@ def _intent(
         source_name,
         target_parent_id,
         target_name,
+        target_directory_path=target_directory_path,
     )
 
 
@@ -417,7 +419,8 @@ async def test_live_transport_rejects_directory_with_planned_file_identity():
     with pytest.raises(P115OrganizationTransportError, match="observation_unverified"):
         await transport.read_object("100")
 
-    assert [call[0] for call in client.calls] == ["fs_files"]
+    # 目录页现在能正常解析:观察在目录/文件身份校验处被拒绝(仍是 fail-closed)。
+    assert [call[0] for call in client.calls] == ["fs_files", "fs_files"]
 
 
 @pytest.mark.asyncio
@@ -865,4 +868,176 @@ async def test_unknown_read_result_fails_closed_without_provider_detail():
         await transport.read_object("100")
 
     assert error.value.code == "observation_unverified"
-    assert [call.operation for call in transport.calls] == ["read_object"]
+
+
+@pytest.mark.parametrize(
+    "path",
+    ("", "bad\\path", "bad//path", "bad/../path", "../evil", "/leading/slash"),
+)
+def test_intent_rejects_invalid_target_directory_path(path):
+    with pytest.raises(ValueError, match="invalid_organization_intent"):
+        _intent(target_parent_id="9000", target_directory_path=path)
+
+
+def test_live_transport_path_target_requires_target_root():
+    with pytest.raises(P115OrganizationTransportError) as error:
+        create_live_p115_organization_transport(
+            client=_LiveFakeP115Client({}),
+            call_executor=_live_call_executor,
+            intents=(
+                _intent(
+                    target_parent_id="9000",
+                    target_directory_path="library/movie",
+                ),
+            ),
+            managed_directory_ids=("7000", "9000"),
+            scope_confirmed=True,
+            live_enabled=True,
+            read_only=True,
+            organization_contract=_organization_contract(),
+        )
+    assert error.value.code == "target_root_missing"
+
+
+@pytest.mark.asyncio
+async def test_live_transport_resolves_target_directory_path_and_moves_into_it():
+    """多级目标:read_target/move 按路径解析真实目录,观察按计划空间根目录返回。"""
+    client = _LiveFakeP115Client(
+        {
+            "fs_info": [],
+            "fs_files": [
+                # read_object(执行前):先解析路径再列目录
+                _directory_page("8100", "9000", "library"),  # resolve library
+                _directory_page("8200", "8100", "movie"),  # resolve movie
+                _directory_page("8300", "8200", "Season 02"),  # resolve season
+                _file_page("100", "7000", "before.mkv"),  # source
+                _empty_page(),  # plan target root
+                _empty_page(),  # resolved dir
+                # read_target:解析路径
+                _directory_page("8100", "9000", "library"),
+                _directory_page("8200", "8100", "movie"),
+                _directory_page("8300", "8200", "Season 02"),
+                _empty_page(),  # resolved dir -> target absent
+                # move:解析路径
+                _directory_page("8100", "9000", "library"),
+                _directory_page("8200", "8100", "movie"),
+                _directory_page("8300", "8200", "Season 02"),
+                # read_object(执行后):先解析路径再列目录
+                _directory_page("8100", "9000", "library"),
+                _directory_page("8200", "8100", "movie"),
+                _directory_page("8300", "8200", "Season 02"),
+                _empty_page(),  # source
+                _empty_page(),  # plan target root
+                _file_page("100", "8300", "after.mkv"),  # resolved dir
+            ],
+            "fs_move": [{"state": True}],
+            "fs_rename": [],
+            "fs_delete": [],
+        }
+    )
+    transport = create_live_p115_organization_transport(
+        client=client,
+        call_executor=_live_call_executor,
+        intents=(
+            _intent(
+                target_parent_id="9000",
+                target_directory_path="library/movie/Season 02",
+            ),
+        ),
+        managed_directory_ids=("7000", "9000"),
+        scope_confirmed=True,
+        live_enabled=True,
+        write_enabled=True,
+        plan_confirmed=True,
+        organization_contract=_organization_contract(),
+        target_root_id="9000",
+    )
+
+    assert await transport.read_object("100") == RemoteObjectState(
+        "100", "7000", "before.mkv"
+    )
+    assert await transport.read_target("9000", "after.mkv") is None
+    move = await transport.move("100", "9000")
+    assert move.status is OrganizationTransportStatus.SUCCESS
+    # 观察按计划空间语义返回 target_parent_id(根),而不是解析出的 Season 02。
+    assert await transport.read_object("100") == RemoteObjectState(
+        "100", "9000", "after.mkv"
+    )
+    assert client.calls[13][1] == {"fid": "100", "pid": "8300"}
+    assert [call[0] for call in client.calls] == (
+        ["fs_files"] * 13 + ["fs_move"] + ["fs_files"] * 6
+    )
+
+
+@pytest.mark.asyncio
+async def test_live_transport_path_resolution_failure_fails_closed():
+    """路径任一目录缺失:read_target/move 解析失败按 scope_unverified 关闭。"""
+    client = _LiveFakeP115Client(
+        {
+            "fs_info": [],
+            "fs_files": [
+                _directory_page("8100", "9000", "library"),  # read_target: resolve
+                _empty_page(),  # movie 缺失 -> None
+                _directory_page("8100", "9000", "library"),  # move: resolve
+                _empty_page(),  # movie 缺失 -> None
+            ],
+            "fs_move": [],
+            "fs_rename": [],
+            "fs_delete": [],
+        }
+    )
+    transport = create_live_p115_organization_transport(
+        client=client,
+        call_executor=_live_call_executor,
+        intents=(
+            _intent(
+                target_parent_id="9000",
+                target_directory_path="library/movie",
+            ),
+        ),
+        managed_directory_ids=("7000", "9000"),
+        scope_confirmed=True,
+        live_enabled=True,
+        write_enabled=True,
+        plan_confirmed=True,
+        organization_contract=_organization_contract(),
+        target_root_id="9000",
+    )
+
+    with pytest.raises(P115OrganizationTransportError) as error:
+        await transport.read_target("9000", "after.mkv")
+    assert error.value.code == "scope_unverified"
+    with pytest.raises(P115OrganizationTransportError) as error:
+        await transport.move("100", "9000")
+    assert error.value.code == "scope_unverified"
+    # 解析失败发生在写调用之前:不得发出 fs_move。
+    assert [call[0] for call in client.calls] == ["fs_files", "fs_files", "fs_files", "fs_files"]
+
+
+@pytest.mark.asyncio
+async def test_offline_transport_path_target_reads_and_moves_in_plan_space():
+    transport = _transport(
+        intents=(
+            _intent(
+                target_parent_id="9000",
+                target_directory_path="library/movie",
+            ),
+        ),
+        managed_directory_ids=("7000", "9000"),
+        states={"100": RemoteObjectState("100", "7000", "before.mkv")},
+    )
+
+    assert await transport.read_target("9000", "after.mkv") is None
+    move = await transport.move("100", "9000")
+    rename = await transport.rename("100", "after.mkv")
+    assert move.status is OrganizationTransportStatus.SUCCESS
+    assert rename.status is OrganizationTransportStatus.SUCCESS
+    assert await transport.read_object("100") == RemoteObjectState(
+        "100", "9000", "after.mkv"
+    )
+    assert [call.operation for call in transport.calls] == [
+        "read_target",
+        "move",
+        "rename",
+        "read_object",
+    ]

@@ -110,6 +110,7 @@ class OrganizationPlanItem:
     replacement_object_id: str | None = None
     replacement_parent_id: str | None = None
     replacement_name: str | None = None
+    target_directory_path: str | None = None
 
     def __repr__(self) -> str:
         return "OrganizationPlanItem(source=<redacted>, naming_plan=<redacted>)"
@@ -205,6 +206,7 @@ class OrganizationPlanExecutionMember:
     source_version: str
     target_parent_id: str
     target_name: str
+    target_directory_path: str | None = None
 
     def __repr__(self) -> str:
         return "OrganizationPlanExecutionMember(<redacted>)"
@@ -932,7 +934,15 @@ class OrganizationPlanService:
             actions = _load_json_list(plan.actions_json)
         paths: set[str] = set()
         for action in actions:
-            if not isinstance(action, dict) or not isinstance(action.get("target"), str):
+            if not isinstance(action, dict):
+                continue
+            # 持久化的完整目标目录路径(如 movie/Season 02)优先;旧计划
+            # 没有该字段时回退到从文件名推导的父路径。
+            directory_path = action.get("target_directory_path")
+            if isinstance(directory_path, str) and directory_path:
+                paths.add(directory_path)
+                continue
+            if not isinstance(action.get("target"), str):
                 continue
             parent = str(PurePosixPath(action["target"]).parent)
             if parent != ".":
@@ -1272,6 +1282,7 @@ def _build_payload(
                 "target_parent_id": item.target_parent_id,
                 "target_name": item.target_name,
                 "target": target,
+                "target_directory_path": item.target_directory_path,
                 "execution": execution,
             }
         )
@@ -1479,6 +1490,8 @@ def _execution_payload(
                 "source_version": source.remote_version,
                 "target_parent_id": member_target_parent,
                 "target_name": member_target_name,
+                # 同一步骤的所有成员(主文件与伴生文件)落在同一目标目录。
+                "target_directory_path": item.target_directory_path,
             }
         )
     scope_directory_ids = {
@@ -1570,6 +1583,25 @@ def _valid_target_name(value: object) -> bool:
         and "/" not in value
         and "\\" not in value
     )
+
+
+def _valid_target_path(value: object) -> bool:
+    """Validate a multi-segment target directory path (e.g. ``movie/Season 02``).
+
+    ``_valid_target_name`` only validates a single segment; this validates a
+    "/"-separated relative path where every segment is a safe file name.
+    """
+
+    if (
+        not isinstance(value, str)
+        or not value
+        or len(value) > 4096
+        or "\x00" in value
+        or "\\" in value
+    ):
+        return False
+    segments = value.split("/")
+    return bool(segments) and all(_valid_target_name(segment) for segment in segments)
 
 
 def _replacement_from_execution(
@@ -1797,6 +1829,7 @@ def _parse_executable_steps(
                 member.get("source_version"),
                 member.get("target_parent_id"),
                 member.get("target_name"),
+                member.get("target_directory_path"),
             )
             (
                 object_type,
@@ -1807,6 +1840,7 @@ def _parse_executable_steps(
                 version,
                 target_parent,
                 target_name,
+                target_directory_path,
             ) = values
             if (
                 not _safe_identity(object_type)
@@ -1817,6 +1851,10 @@ def _parse_executable_steps(
                 or not _valid_source_version(version)
                 or not _safe_identity(target_parent)
                 or not _valid_target_name(target_name)
+                or (
+                    target_directory_path is not None
+                    and not _valid_target_path(target_directory_path)
+                )
             ):
                 return None
             key = (object_type, object_id)
@@ -1833,6 +1871,7 @@ def _parse_executable_steps(
                     source_version=version,
                     target_parent_id=target_parent,
                     target_name=target_name,
+                    target_directory_path=target_directory_path,
                 )
             )
         if (
@@ -2019,6 +2058,7 @@ def _validate_persisted_step(
         or primary.target_parent_id != action.get("target_parent_id")
         or primary.target_name != action.get("target_name")
         or primary.target_name != PurePosixPath(target).name
+        or primary.target_directory_path != action.get("target_directory_path")
         or not _target_directory_matches(
             target,
             target_parent_id=primary.target_parent_id,
@@ -2072,6 +2112,7 @@ def _validate_persisted_step(
                 member.source_parent_id, directory_rows, library.root_directory_id
             )
             or member.target_parent_id != primary.target_parent_id
+            or member.target_directory_path != primary.target_directory_path
             or not _valid_target_name(member.target_name)
         ):
             return False
@@ -2437,6 +2478,10 @@ def _validate_items(
             raise OrganizationPlanError("invalid_plan_input")
         if item.existing_evidence is not None and not isinstance(
             item.existing_evidence, VersionEvidence
+        ):
+            raise OrganizationPlanError("invalid_plan_input")
+        if item.target_directory_path is not None and not _valid_target_path(
+            item.target_directory_path
         ):
             raise OrganizationPlanError("invalid_plan_input")
         replacement_values = (
