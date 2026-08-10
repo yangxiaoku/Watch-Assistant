@@ -1,19 +1,21 @@
 <script setup lang="ts">
-import { Ban, Check, ChevronRight, Eye, ListChecks, LoaderCircle, Play, RefreshCw, Search, Tag } from "@lucide/vue";
-import { computed, onMounted, ref } from "vue";
+import { AlertTriangle, Ban, Check, ChevronRight, Eye, ListChecks, LoaderCircle, Play, RefreshCw, Search, Tag } from "@lucide/vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { ApiClient, ApiError, focusFirstFieldError, isConflict } from "../api";
 import ConfirmDialog from "../components/ConfirmDialog.vue";
 import { describeUiError } from "../errorCatalog";
 import { pollUntil } from "../polling";
 import { organizationOperationStatusLabel, organizationPlanStatusLabel } from "../statusCatalog";
 import { diagnosticCode, diagnosticReference } from "../uiSafety";
-import type { OrganizationExecutionBlocker, OrganizationOperationResponse, OrganizationPlanStatus, OrganizationPlanSummary } from "../types";
+import type { OrganizationExecutionBlocker, OrganizationOperationBatchResult, OrganizationOperationResponse, OrganizationPlanStatus, OrganizationPlanSummary } from "../types";
 
 const props = withDefaults(defineProps<{ api: ApiClient; enabled?: boolean; executionSupported?: boolean; embedded?: boolean }>(), {
   enabled: true,
   executionSupported: false,
   embedded: false,
 });
+// 打开设置页对应分区:organization 为「设置 → 115整理」,credentials 为「设置 → 连接配置(TMDB API Key)」
+const emit = defineEmits<{ "open-settings": [section?: "organization" | "credentials"] }>();
 
 const activeStatus = ref<OrganizationPlanStatus>("needs_review");
 const items = ref<OrganizationPlanSummary[]>([]);
@@ -27,6 +29,7 @@ const loading = ref(false);
 const busy = ref(false);
 const error = ref("");
 const notice = ref("");
+const candidateSearchGuidance = ref(false);
 const lastPlanCursor = ref<number | undefined>(undefined);
 const pendingExecution = ref<
   | { kind: "single"; plan: OrganizationPlanSummary }
@@ -79,6 +82,15 @@ const executionDialogConfirmLabel = computed(() => pendingExecution.value?.kind 
 let planRequestGeneration = 0;
 let operationRequestGeneration = 0;
 let operationPollGeneration = 0;
+let batchPollGeneration = 0;
+let unmounted = false;
+
+/** 统一拼接 ApiError 的建议(suggestion),避免只展示 message 而丢失下一步指引 */
+function describeError(exception: unknown, fallback: string): string {
+  return exception instanceof ApiError
+    ? `${exception.message}${exception.suggestion ? ` ${exception.suggestion}` : ""}`
+    : fallback;
+}
 
 function normalizePlan(plan: OrganizationPlanSummary): OrganizationPlanSummary {
   return {
@@ -103,6 +115,7 @@ function operationFailureMessage(code: string | null): string {
 function invalidateOperationRequests(): void {
   operationRequestGeneration += 1;
   operationPollGeneration += 1;
+  batchPollGeneration += 1; // 列表/选择变化时停止批量操作的轮询,避免结果贴到错误页面
 }
 
 function shouldPollOperation(status: OrganizationOperationResponse["status"]): boolean {
@@ -123,7 +136,7 @@ async function loadPlanOperation(plan: OrganizationPlanSummary | null) {
     if (requestGeneration === operationRequestGeneration && selected.value?.plan_id === plan.plan_id) {
       if (!(exception instanceof ApiError) || exception.code !== "operation_not_found") {
         operation.value = null;
-        error.value = exception instanceof ApiError ? exception.message : "整理操作状态加载失败，请重试";
+        error.value = describeError(exception, "整理操作状态加载失败，请重试");
       }
     }
   }
@@ -159,7 +172,7 @@ async function loadPlans(cursor?: number) {
     }
   } catch (exception) {
     if (requestGeneration === planRequestGeneration) {
-      error.value = exception instanceof ApiError ? exception.message : "计划列表加载失败，请稍后重试";
+      error.value = describeError(exception, "计划列表加载失败，请稍后重试");
     }
   } finally {
     if (requestGeneration === planRequestGeneration) loading.value = false;
@@ -173,6 +186,7 @@ function selectPlan(plan: OrganizationPlanSummary) {
   searchQuery.value = "";
   searchSourceIndex.value = 0;
   notice.value = "";
+  candidateSearchGuidance.value = false;
   void loadPlanOperation(plan);
 }
 
@@ -229,7 +243,7 @@ async function queueOperation(plan = selected.value) {
     if (exception instanceof ApiError && exception.code === "plan_prerequisites_changed") {
       await loadPlanOperation(plan);
     }
-    error.value = exception instanceof ApiError ? exception.message : "整理操作排队失败，请稍后重试";
+    error.value = describeError(exception, "整理操作排队失败，请稍后重试");
   } finally {
     busy.value = false;
   }
@@ -242,7 +256,10 @@ async function confirmAndQueueOperation(plan = selected.value) {
   notice.value = "";
   try {
     const queuedOperation = await props.api.confirmAndQueueOrganizationOperation(plan.plan_id, plan.revision);
-    selected.value = { ...plan, status: "planned", revision: plan.revision + 1 };
+    const updated = { ...plan, status: "planned" as const, revision: plan.revision + 1 };
+    selected.value = updated;
+    // 同步刷新列表行数据,避免本地仍持有旧版本,再次点击时后端报 stale_revision
+    items.value = items.value.map((item) => item.plan_id === plan.plan_id ? updated : item);
     await loadPlanOperation(selected.value);
     if (!operation.value) operation.value = queuedOperation;
     await handleQueuedOperation(queuedOperation, plan.plan_id);
@@ -251,7 +268,7 @@ async function confirmAndQueueOperation(plan = selected.value) {
     if (isConflict(exception)) {
       await refreshAfterConflict();
     } else {
-      error.value = exception instanceof ApiError ? exception.message : "确认并整理失败，请稍后重试";
+      error.value = describeError(exception, "确认并整理失败，请稍后重试");
     }
   } finally {
     busy.value = false;
@@ -277,7 +294,7 @@ async function selectCandidate(candidate: OrganizationPlanSummary["candidates"][
       ? "已生成可执行计划，请确认后开始整理"
       : "已选择影片，但分类或归档路径仍需检查";
   } catch (exception) {
-    error.value = exception instanceof ApiError ? exception.message : "选择影片失败，请稍后重试";
+    error.value = describeError(exception, "选择影片失败，请稍后重试");
   } finally {
     busy.value = false;
   }
@@ -296,6 +313,7 @@ async function searchCandidates() {
   busy.value = true;
   error.value = "";
   notice.value = "";
+  candidateSearchGuidance.value = false;
   try {
     const updated = await search.call(
       props.api,
@@ -311,7 +329,13 @@ async function searchCandidates() {
       : "未找到候选，请尝试更具体的片名或年份";
   } catch (exception) {
     focusFirstFieldError(exception);
-    error.value = exception instanceof ApiError ? exception.message : "候选搜索失败，请稍后重试";
+    if (exception instanceof ApiError && exception.code === "candidate_search_unavailable") {
+      // 候选搜索不可用通常是 TMDB API Key 未配置或已失效:给出具体引导而不是只报错
+      candidateSearchGuidance.value = true;
+      error.value = "候选搜索暂不可用：通常是因为 TMDB API Key 未配置或已失效，本次搜索没有完成。";
+    } else {
+      error.value = describeError(exception, "候选搜索失败，请稍后重试");
+    }
   } finally {
     busy.value = false;
   }
@@ -343,20 +367,74 @@ async function confirmAndQueueCurrentPage() {
     const response = await props.api.confirmAndQueueOrganizationOperations(
       executable.map((item) => ({ planId: item.plan_id, expectedRevision: item.revision })),
     );
-    const accepted = response.items.filter((item) => item.status !== "rejected").length;
+    const accepted = response.items.filter((item) => item.status !== "rejected");
     const rejected = response.items.filter((item) => item.status === "rejected");
     await loadPlans();
-    if (accepted) notice.value = `已确认并提交 ${accepted} 个整理计划，后台正在执行${skipped ? `，跳过 ${skipped} 个待搜索或复核计划` : ""}`;
-    else if (skipped) notice.value = `当前页没有新的整理操作，已跳过 ${skipped} 个待搜索或复核计划`;
+    // 被拒绝的计划先给出失败提示,再进行已接受计划的轮询
     if (rejected.length) {
       const rejectedCode = rejected[0].error_code;
       error.value = `${rejected.length} 个计划未提交：${rejectedCode ? describeUiError(rejectedCode, 409).message : "当前计划状态已变化，请刷新后重试。"}`;
     }
+    if (accepted.length) {
+      notice.value = `已确认并提交 ${accepted.length} 个整理计划，后台正在执行${skipped ? `，跳过 ${skipped} 个待搜索或复核计划` : ""}`;
+      // 批量提交后轮询各操作直到终态,避免"提交后无反馈"
+      await pollBatchOperations(accepted);
+    } else if (skipped) {
+      notice.value = `当前页没有新的整理操作，已跳过 ${skipped} 个待搜索或复核计划`;
+    }
   } catch (exception) {
     focusFirstFieldError(exception);
-    error.value = exception instanceof ApiError ? exception.message : "批量确认并整理失败，请稍后重试";
+    error.value = describeError(exception, "批量确认并整理失败，请稍后重试");
   } finally {
     busy.value = false;
+  }
+}
+
+/**
+ * 批量整理提交后没有独立进度接口,逐个轮询已接受操作的 /organization-operations/{id}
+ * 直到终态,并持续更新提示;任一操作在轮询窗口内未到终态时提示手动刷新。
+ */
+async function pollBatchOperations(accepted: OrganizationOperationBatchResult[]) {
+  const pollable = accepted.filter((item) => item.operation_id);
+  if (typeof props.api.organizationOperation !== "function" || !pollable.length) return;
+  const batchGeneration = ++batchPollGeneration;
+  const total = pollable.length;
+  let finished = 0;
+  let failed = 0;
+  const isCurrent = () => !unmounted && batchGeneration === batchPollGeneration;
+  const terminalResults = await Promise.all(
+    pollable.map((item) => {
+      const operationId = item.operation_id!;
+      return pollUntil(
+        async () => props.api.organizationOperation(operationId),
+        {
+          intervalMs: 1000,
+          maxAttempts: 60,
+          isCurrent,
+          onResponse: (current) => {
+            if (!isCurrent()) return;
+            if (current.status === "organized" || current.status === "failed" || current.status === "uncertain") {
+              finished += 1;
+              if (current.status !== "organized") failed += 1;
+              notice.value = finished >= total
+                ? failed > 0
+                  ? `批量整理已结束：${total - failed} 个完成，${failed} 个未完成，请查看对应计划的操作状态`
+                  : `批量整理已完成，共 ${total} 个计划全部完成`
+                : `已确认并提交 ${accepted.length} 个整理计划，后台正在执行（已完成 ${finished}/${total}）`;
+            }
+          },
+          isDone: (current) =>
+            current.status === "organized"
+            || current.status === "failed"
+            || current.status === "uncertain",
+        },
+      );
+    }),
+  );
+  if (!isCurrent()) return;
+  // pollUntil 对每个操作最多等 60 秒,超时或请求失败返回 null
+  if (terminalResults.some((result) => result === null)) {
+    notice.value = "等待超时，后台可能仍在执行，请手动刷新查看";
   }
 }
 
@@ -375,15 +453,17 @@ async function confirmPendingExecution(): Promise<void> {
 async function pollOperation(operationId: string, planId: string) {
   if (typeof props.api.organizationOperation !== "function") return;
   const pollGeneration = ++operationPollGeneration;
+  let fetchFailed = false;
   const isCurrent = () =>
-    pollGeneration === operationPollGeneration && selected.value?.plan_id === planId;
-  await pollUntil(
+    !unmounted && pollGeneration === operationPollGeneration && selected.value?.plan_id === planId;
+  const terminal = await pollUntil(
     async () => {
       try {
         return await props.api.organizationOperation(operationId);
       } catch (exception) {
+        fetchFailed = true;
         if (isCurrent()) {
-          error.value = exception instanceof ApiError ? exception.message : "整理操作状态暂时无法更新，请重试";
+          error.value = describeError(exception, "整理操作状态暂时无法更新，请重试");
           notice.value = "";
         }
         throw exception;
@@ -410,6 +490,10 @@ async function pollOperation(operationId: string, planId: string) {
         || current.status === "uncertain",
     },
   );
+  // pollUntil 超时返回 null 且无请求报错时给出提示,而不是静默结束
+  if (terminal === null && isCurrent() && !fetchFailed) {
+    notice.value = "等待超时，后台可能仍在执行，请手动刷新查看";
+  }
 }
 
 async function mutate(action: "confirm" | "ignore" | "alias", operation: () => Promise<OrganizationPlanSummary>) {
@@ -428,7 +512,7 @@ async function mutate(action: "confirm" | "ignore" | "alias", operation: () => P
     if (isConflict(exception)) {
       await refreshAfterConflict();
     } else {
-      error.value = exception instanceof ApiError ? exception.message : "操作失败，请稍后重试";
+      error.value = describeError(exception, "操作失败，请稍后重试");
     }
   } finally {
     busy.value = false;
@@ -443,6 +527,12 @@ async function changeStatus(status: OrganizationPlanStatus) {
 
 onMounted(() => {
   if (props.enabled) void loadPlans();
+});
+
+onBeforeUnmount(() => {
+  // 组件卸载后停止仍在进行的操作轮询,避免继续更新已卸载视图的状态
+  unmounted = true;
+  batchPollGeneration += 1;
 });
 </script>
 
@@ -466,6 +556,13 @@ onMounted(() => {
       <button type="button" :class="{ active: activeStatus === 'ignored' }" @click="changeStatus('ignored')">已忽略</button>
       <button type="button" :class="{ active: activeStatus === 'invalidated' }" @click="changeStatus('invalidated')">已失效</button>
     </div>
+
+    <!-- 执行能力未开启但有可执行计划时给出引导,而不是让按钮静默消失 -->
+    <p v-if="!executionSupported && executableItems.length" class="organization-execution-guidance" role="note">
+      <AlertTriangle :size="16" />
+      <span>整理执行能力未开启（需要 115 写契约验证），当前只能确认本地计划，不会执行远端移动。可前往设置查看。</span>
+      <button class="text-button" type="button" @click="emit('open-settings', 'organization')">前往设置</button>
+    </p>
 
     <div v-if="loading && !items.length" class="organization-empty"><LoaderCircle class="spin" :size="22" /><span>正在加载计划</span></div>
     <div v-else-if="error && !items.length" class="organization-empty" role="alert"><Ban :size="22" /><strong>计划加载失败</strong><span>请重试，当前没有可展示的计划。</span></div>
@@ -512,6 +609,11 @@ onMounted(() => {
           </label>
           <div class="organization-candidate-search-controls"><input id="organization-candidate-query" v-model="searchQuery" type="search" maxlength="200" placeholder="输入片名或年份" autocomplete="off" /><button class="secondary-button" type="submit" :disabled="busy || !searchQuery.trim()"><LoaderCircle v-if="busy" class="spin" :size="15" /><Search v-else :size="15" />搜索候选</button></div>
         </form>
+        <p v-if="candidateSearchGuidance" class="organization-candidate-search-guidance" role="alert">
+          <AlertTriangle :size="16" />
+          <span>候选搜索需要 TMDB API Key，请前往「设置 → 连接配置」检查 TMDB API Key 配置。</span>
+          <button class="text-button" type="button" @click="emit('open-settings', 'credentials')">前往连接配置</button>
+        </p>
         <p class="organization-safe-note">预览只显示本地摘要。</p>
         <div v-if="operation" class="organization-operation-status" :class="{ failed: operation.status === 'failed', uncertain: operation.status === 'uncertain' }">
           <strong>整理操作：{{ organizationOperationStatusLabel(operation.status, executionSupported) }}</strong>

@@ -106,6 +106,46 @@ describe("OrganizationView", () => {
     expect(wrapper.get(".settings-action-message").text()).toContain("整理已排队");
   });
 
+  it("polls the result panel until the run-now run reaches a terminal state", async () => {
+    vi.useFakeTimers();
+    try {
+      const finishedResult = {
+        status: "success" as const,
+        available_statuses: ["unknown", "success", "skipped", "deleted", "replace", "failed"],
+        source_count: 2,
+        scanned_count: 2,
+        plan_count: 1,
+        queued_count: 1,
+        blocked_count: 0,
+        blocked_details: [],
+        items: [{ title: "测试影片", tmdb_id: 1, target: "归档/测试", status: "success" as const, error_code: null }],
+        finished_at: "2026-08-10T00:00:00Z",
+        run_id: "org-run",
+      };
+      const organizationResult = vi.fn().mockResolvedValue(emptyResult);
+      const api = makeApi({ organizationResult });
+      const wrapper = mount(OrganizationView, { props: { api } });
+      await flushPromises();
+
+      await wrapper.findAll("button").find((button) => button.text().includes("开始整理"))?.trigger("click");
+      await flushPromises();
+
+      // run-now 后 last_result 仍是旧数据(运行中后端不写入新结果):面板进入"整理进行中"轮询态
+      expect(wrapper.get(".organization-result-state").text()).toContain("整理进行中");
+      expect(wrapper.get(".organization-result-meta").text()).toContain("整理执行中");
+
+      // 轮询到目标 run_id 的终态后回到正常展示
+      organizationResult.mockResolvedValue(finishedResult);
+      await vi.advanceTimersByTimeAsync(2_000);
+      await flushPromises();
+
+      expect(wrapper.get(".organization-result-state").text()).toContain("整理完成");
+      expect(wrapper.get(".organization-result-meta").text()).not.toContain("整理执行中");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("shows scheduler-unavailable errors when run organization fails", async () => {
     const api = makeApi({
       runOrganizationNow: vi.fn().mockRejectedValue(

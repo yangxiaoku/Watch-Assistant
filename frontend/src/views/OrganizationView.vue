@@ -10,7 +10,7 @@ import OrganizationWorkbenchView from "./OrganizationWorkbenchView.vue";
 const props = withDefaults(defineProps<{ api: ApiClient; executionSupported?: boolean }>(), {
   executionSupported: false,
 });
-const emit = defineEmits<{ "open-settings": [] }>();
+const emit = defineEmits<{ "open-settings": [section?: "organization" | "credentials"] }>();
 
 type Tab = "auto" | "review" | "history";
 const activeTab = ref<Tab>("auto");
@@ -28,6 +28,7 @@ const autoExecuteError = ref("");
 const actionBusy = ref(false);
 const actionMessage = ref("");
 const resultReloadToken = ref(0);
+const lastRunId = ref<string | null>(null);
 const reviewKey = ref(0);
 
 async function loadSettings() {
@@ -67,6 +68,8 @@ async function runNow() {
   try {
     const response = await props.api.runOrganizationNow();
     actionMessage.value = response.message_zh;
+    // 把本次 run_id 传给结果面板,面板据此轮询 settings/organization/result 直到该 run 进入终态
+    lastRunId.value = response.run_id ?? null;
     resultReloadToken.value += 1;
   } catch (exception) {
     actionMessage.value = exception instanceof ApiError
@@ -132,7 +135,7 @@ onMounted(() => void loadSettings());
           <p class="settings-note">自动整理需要 115 写契约已验证；未满足时仅生成待处理计划，不会执行移动。目录与命名规则在「设置 → 115整理」配置。</p>
           <button class="secondary-button" type="button" @click="emit('open-settings')">前往设置配置整理规则</button>
         </div>
-        <OrganizationResultPanel :api="props.api" :reload-token="resultReloadToken" />
+        <OrganizationResultPanel :api="props.api" :reload-token="resultReloadToken" :target-run-id="lastRunId" />
       </template>
     </template>
 
@@ -141,7 +144,7 @@ onMounted(() => void loadSettings());
         <h2>待处理计划</h2>
         <p>下方按计划状态筛选：待确认为识别不确定的影片，已确认 / 已忽略 / 已失效查看对应状态。</p>
       </header>
-      <OrganizationWorkbenchView :key="`review-${reviewKey}`" :api="props.api" :execution-supported="executionSupported" embedded />
+      <OrganizationWorkbenchView :key="`review-${reviewKey}`" :api="props.api" :execution-supported="executionSupported" embedded @open-settings="(section) => emit('open-settings', section)" />
     </section>
 
     <section v-else class="organization-tab-panel">

@@ -81,7 +81,8 @@ const inspectionSupported = ref(false);
 const inspectionAutoStartEnabled = ref<boolean | "unknown">("unknown");
 const organizationPlanEnabled = ref(false);
 const organizationExecutionSupported = ref(false);
-const settingsInitialSection = ref<"overview" | "organization">("overview");
+// 可直达的连接配置页还包括 credentials(设置 → 连接配置 → TMDB API Key)
+const settingsInitialSection = ref<"overview" | "organization" | "credentials">("overview");
 const unavailableCapability = (settingsSection: CapabilityAvailability["settings_section"] = "overview"): CapabilityAvailability => ({
   enabled: false,
   reason_code: "capability_unknown",
@@ -1519,7 +1520,7 @@ function updateOnline(): void {
   isOnline.value = browserIsOnline();
 }
 
-function openOrganizationSettings(section: "overview" | "organization" = "organization"): void {
+function openOrganizationSettings(section: "overview" | "organization" | "credentials" = "organization"): void {
   settingsInitialSection.value = section;
   void selectView("settings");
 }

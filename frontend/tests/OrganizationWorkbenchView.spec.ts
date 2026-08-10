@@ -454,6 +454,121 @@ describe("OrganizationWorkbenchView", () => {
     expect(wrapper.text()).not.toContain("本次操作未完成，当前页面没有更新");
   });
 
+  it("shows a timeout notice when the operation poll exceeds the attempt window", async () => {
+    vi.useFakeTimers();
+    try {
+      const organizing = {
+        operation_id: "op-slow",
+        plan_id: plan.plan_id,
+        status: "organizing" as const,
+        revision: 1,
+        attempts: 1,
+        error_code: null,
+        cancel_requested: false,
+      };
+      const api = makeApi({
+        organizationPlanOperation: vi.fn().mockResolvedValue(organizing),
+        organizationOperation: vi.fn().mockResolvedValue(organizing), // 一直不进入终态
+      });
+      const wrapper = mount(OrganizationWorkbenchView, { props: { api, executionSupported: true } });
+      await flushPromises();
+
+      expect(wrapper.text()).toContain("整理操作：执行中");
+      // 60 次尝试 × 1s 后仍无终态,给出超时提示而不是静默结束
+      await vi.advanceTimersByTimeAsync(60_000);
+      await flushPromises();
+
+      expect(wrapper.text()).toContain("等待超时，后台可能仍在执行，请手动刷新查看");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("polls accepted batch operations until they reach a terminal state", async () => {
+    vi.useFakeTimers();
+    try {
+      const planned = {
+        operation_id: "op-1",
+        plan_id: plan.plan_id,
+        status: "planned" as const,
+        revision: 1,
+        attempts: 0,
+        error_code: null,
+        cancel_requested: false,
+      };
+      const organized = { ...planned, status: "organized" as const, attempts: 1 };
+      const api = makeApi({
+        confirmAndQueueOrganizationOperations: vi.fn().mockResolvedValue({ items: [planned] }),
+        organizationOperation: vi.fn().mockResolvedValue(organized),
+      });
+      const wrapper = mount(OrganizationWorkbenchView, { props: { api, executionSupported: true } });
+      await flushPromises();
+
+      await wrapper.get(".organization-batch-action").trigger("click");
+      await confirmRiskyAction(wrapper);
+      expect(wrapper.text()).toContain("已确认并提交 1 个整理计划");
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      await flushPromises();
+
+      expect(api.organizationOperation).toHaveBeenCalledWith("op-1");
+      expect(wrapper.text()).toContain("批量整理已完成，共 1 个计划全部完成");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("refreshes the plan row after confirm-and-queue so a second action uses the new revision", async () => {
+    const api = makeApi({
+      queueOrganizationOperation: vi.fn().mockResolvedValue({ operation_id: "op-queued", plan_id: plan.plan_id, status: "organized", revision: 1, attempts: 1, error_code: null, cancel_requested: false }),
+    });
+    const wrapper = mount(OrganizationWorkbenchView, { props: { api, executionSupported: true } });
+    await flushPromises();
+
+    await wrapper.findAll(".primary-button").find((button) => button.text().includes("确认并开始整理"))!.trigger("click");
+    await confirmRiskyAction(wrapper);
+
+    // 确认后行内数据同步为 planned + 新版本,随后可直接执行,不会再用旧版本
+    expect(api.confirmAndQueueOrganizationOperation).toHaveBeenCalledWith("plan-local-1", 4);
+    const executeButton = wrapper.findAll("button").find((button) => button.text().includes("立即整理"));
+    expect(executeButton).toBeDefined();
+    await executeButton!.trigger("click");
+    await confirmRiskyAction(wrapper);
+    expect(api.queueOrganizationOperation).toHaveBeenCalledWith("plan-local-1", 5);
+  });
+
+  it("guides the user to connection settings when candidate search is unavailable", async () => {
+    const api = makeApi({
+      searchOrganizationCandidates: vi.fn().mockRejectedValue(
+        new ApiError("候选搜索暂不可用", 503, "candidate_search_unavailable"),
+      ),
+    });
+    const wrapper = mount(OrganizationWorkbenchView, { props: { api } });
+    await flushPromises();
+
+    await wrapper.get("#organization-candidate-query").setValue("The Office");
+    await wrapper.get(".organization-candidate-search").trigger("submit");
+    await flushPromises();
+
+    expect(wrapper.get(".organization-candidate-search-guidance").text()).toContain("TMDB API Key");
+    await wrapper.get(".organization-candidate-search-guidance .text-button").trigger("click");
+    expect(wrapper.emitted("open-settings")).toEqual([["credentials"]]);
+  });
+
+  it("explains the missing execution capability instead of silently hiding actions", async () => {
+    const api = makeApi(); // 计划 can_execute,但不传 executionSupported
+    const wrapper = mount(OrganizationWorkbenchView, { props: { api } });
+    await flushPromises();
+
+    const guidance = wrapper.get(".organization-execution-guidance");
+    expect(guidance.text()).toContain("115 写契约验证");
+    await wrapper.get(".organization-execution-guidance .text-button").trigger("click");
+    expect(wrapper.emitted("open-settings")).toEqual([["organization"]]);
+    // 可执行计划仍可做本地确认,只是不提供远端执行按钮
+    expect(wrapper.findAll("button").some((button) => button.text().includes("确认并开始整理"))).toBe(false);
+    expect(wrapper.findAll("button").some((button) => button.text().includes("确认本地计划"))).toBe(true);
+  });
+
   it("renders structured execution blockers with a Chinese next step", async () => {
     const blockedPlan = {
       ...plan,

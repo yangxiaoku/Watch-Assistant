@@ -799,6 +799,8 @@ input { outline: none; }
 .organization-result-heading strong { color: var(--text); font-size: 15px; }
 .organization-result-summary { max-width: 680px; margin: 6px 0 0; color: var(--text-2); font-size: 12px; line-height: 1.6; }
 .organization-result-meta { flex: 0 0 auto; color: var(--text-3); font-size: 11px; text-align: right; }
+.organization-result-timeout { display: flex; align-items: center; gap: 8px; margin: 10px 0 0; padding: 9px 12px; color: var(--text-2); background: var(--amber-soft); border-left: 2px solid var(--amber); border-radius: 0 8px 8px 0; font-size: 12px; }
+.organization-result-timeout .text-button { margin-left: auto; }
 .organization-result-state { display: inline-flex; margin-top: 14px; padding: 7px 12px; color: #0b1a0d; background: linear-gradient(100deg, #4ade80, #34d399); border-radius: 999px; font-size: 13px; font-weight: 800; box-shadow: 0 4px 14px rgb(74 222 128 / 28%); }
 .organization-result-state.is-needs-review { color: #241a0d; background: linear-gradient(100deg, #f5a64c, #f5b04c); }
 .organization-result-state.is-failed { color: #fff0f0; background: var(--danger-deep); }
@@ -910,6 +912,10 @@ input { outline: none; }
 .organization-candidate-search select { min-height: 36px; padding: 0 10px; color: var(--text); background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: 9px; }
 .organization-candidate-search-controls { display: flex; gap: 8px; }
 .organization-candidate-search-controls input { min-width: 0; min-height: 38px; flex: 1; padding: 0 12px; color: var(--text); background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: 9px; }
+.organization-candidate-search-guidance { display: flex; align-items: center; gap: 8px; margin: 0 0 10px; padding: 10px 12px; color: #ffc9cd; background: var(--danger-soft); border-left: 2px solid var(--danger); border-radius: 0 8px 8px 0; font-size: 13px; }
+.organization-candidate-search-guidance .text-button { margin-left: auto; }
+.organization-execution-guidance { display: flex; align-items: center; gap: 8px; margin: 14px 0 4px; padding: 10px 12px; color: var(--text-2); background: var(--amber-soft); border-left: 2px solid var(--amber); border-radius: 0 8px 8px 0; font-size: 13px; }
+.organization-execution-guidance .text-button { margin-left: auto; }
 
 @media (max-width: 760px) {
   .settings-view { padding-top: 24px; }
