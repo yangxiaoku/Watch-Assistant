@@ -21,7 +21,7 @@ from watch_assistant.services.media_matcher import (
     TmdbTimeoutError,
     build_match_input,
 )
-from watch_assistant.services.media_parser import MediaParseResult
+from watch_assistant.services.media_parser import MediaParseResult, parse_media_filename
 
 
 def candidate(
@@ -199,6 +199,83 @@ async def test_episode_range_and_special_boundary_must_match():
     assert accepted.accepted
     assert conflict.status is MatchStatus.NEEDS_REVIEW
     assert MatchReason.SPECIAL_CONFLICT in conflict.reasons
+
+
+async def test_season_zero_specials_require_candidate_season_zero():
+    # S00E01 是 TMDB 特辑季 (season 0) 的真实集号:候选含第 0 季时接受,
+    # 不含时按季越界处理,与 episode_coverage 的 season 0 语义一致。
+    good = candidate(
+        seasons=(
+            TmdbSeason(0, episode_count=2, episode_numbers=(1, 2)),
+            TmdbSeason(1, episode_count=10, episode_numbers=tuple(range(1, 11))),
+        )
+    )
+    accepted = await TmdbMatcher(FakeClient([good])).match(
+        query(season=0, episode_start=1, episode_end=2)
+    )
+    out_of_range = await TmdbMatcher(
+        FakeClient([candidate(seasons=(TmdbSeason(1, episode_count=10),))])
+    ).match(query(season=0, episode_start=1))
+
+    assert accepted.accepted
+    assert out_of_range.status is MatchStatus.NEEDS_REVIEW
+    assert MatchReason.SEASON_OUT_OF_RANGE in out_of_range.reasons
+
+
+async def test_e00_special_parse_never_claims_an_episode_number():
+    # SxxE00 是特辑占位符:解析结果不得产生集数主张 (下游契约要求
+    # 集数 >= 1),并携带特辑提示要求人工确认,与 SP/OVA 处理一致。
+    parsed = parse_media_filename("Show.S01E00.mkv")
+    match_input = build_match_input(parsed)
+    decision = await TmdbMatcher(
+        FakeClient([candidate(seasons=(TmdbSeason(1, episode_count=10),))])
+    ).match(match_input)
+
+    assert match_input.episode_start is None
+    assert match_input.episode_end is None
+    assert match_input.special_hints == ("special",)
+    assert decision.status is MatchStatus.NEEDS_REVIEW
+    assert MatchReason.SPECIAL_CONFLICT in decision.reasons
+
+
+async def test_year_between_markers_feeds_full_range_into_matching():
+    # 年份夹中间的多集命名 (S01E01.2020.E02) 恢复为 E01-E02 范围后,
+    # matcher 按完整范围校验候选季的覆盖情况。
+    parsed = parse_media_filename("Show.S01E01.2020.E02.mkv")
+    match_input = build_match_input(parsed)
+    covered = await TmdbMatcher(
+        FakeClient(
+            [
+                candidate(
+                    title="Show",
+                    year=2020,
+                    seasons=(
+                        TmdbSeason(1, episode_count=2, episode_numbers=(1, 2)),
+                    ),
+                )
+            ]
+        )
+    ).match(match_input)
+    uncovered = await TmdbMatcher(
+        FakeClient(
+            [
+                candidate(
+                    title="Show",
+                    year=2020,
+                    seasons=(
+                        TmdbSeason(1, episode_count=1, episode_numbers=(1,)),
+                    ),
+                )
+            ]
+        )
+    ).match(match_input)
+
+    assert match_input.season == 1
+    assert match_input.episode_start == 1
+    assert match_input.episode_end == 2
+    assert covered.accepted
+    assert uncovered.status is MatchStatus.NEEDS_REVIEW
+    assert MatchReason.EPISODE_OUT_OF_RANGE in uncovered.reasons
 
 
 async def test_low_margin_is_needs_review():
