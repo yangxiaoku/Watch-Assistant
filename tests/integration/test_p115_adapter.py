@@ -564,6 +564,65 @@ async def test_auth_and_idempotent_responses_are_mapped(
 
 
 @pytest.mark.asyncio
+async def test_business_auth_words_do_not_trigger_credentials_reauth(tmp_path):
+    # 回归(L7):业务错误里带"授权"等字样(如文件/分享权限提示)不得被
+    # 子串匹配误判为登录失效;否则用户会被反复要求重新登录而问题依旧。
+    provider, _path = _provider(tmp_path)
+    fake = FakeP115Client(
+        response={"state": False, "error": "该文件未获得授权下载", "errno": 0}
+    )
+    adapter = P115Adapter(provider, 1, client_factory=lambda _cookie: fake)
+
+    result = await adapter.submit_magnet(MAGNET)
+
+    assert result.status == RemoteStatus.FAILED
+    assert result.error_code == "submit_rejected"
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
+async def test_explicit_login_expiry_message_still_maps_to_needs_auth(tmp_path):
+    provider, _path = _provider(tmp_path)
+    fake = FakeP115Client(response={"state": False, "error": "请重新登录"})
+    adapter = P115Adapter(provider, 1, client_factory=lambda _cookie: fake)
+
+    result = await adapter.submit_magnet(MAGNET)
+
+    assert result.status == RemoteStatus.NEEDS_AUTH
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
+async def test_authentication_exception_class_still_maps_to_needs_auth(tmp_path):
+    provider, _path = _provider(tmp_path)
+    # 与 p115client 的真实异常类名一致:P115AuthenticationError。
+    auth_error = type("P115AuthenticationError", (Exception,), {})
+    fake = FakeP115Client(share_error=auth_error())
+    adapter = P115Adapter(provider, 1, client_factory=lambda _cookie: fake)
+
+    result = await adapter.save_share("https://115.com/s/code", None)
+
+    assert result.status == RemoteStatus.NEEDS_AUTH
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
+async def test_app_auth_limit_exception_is_not_credentials_reauth(tmp_path):
+    # 回归(L7):类名里嵌入 "Auth" 的授权限制异常(P115OpenAppAuthLimitExceeded,
+    # 授权应用数达上限)不是登录失效,不应触发 NEEDS_AUTH。
+    provider, _path = _provider(tmp_path)
+    limit_error = type("P115OpenAppAuthLimitExceeded", (Exception,), {})
+    fake = FakeP115Client(share_error=limit_error())
+    adapter = P115Adapter(provider, 1, client_factory=lambda _cookie: fake)
+
+    result = await adapter.save_share("https://115.com/s/code", None)
+
+    assert result.status == RemoteStatus.FAILED
+    assert result.error_code == "share_listing_failed"
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
 async def test_adapter_serializes_calls_by_default(tmp_path):
     provider, _path = _provider(tmp_path)
     fake = FakeP115Client()

@@ -38,14 +38,37 @@ _SHARE_CODE_PATTERN = re.compile(r"^/(?:s|share)/([A-Za-z0-9_-]+)/?$", re.IGNORE
 _INFOHASH_PATTERN = re.compile(r"^[0-9a-f]{40}$", re.IGNORECASE)
 _SHARE_HOSTS = frozenset(("115.com", "115cdn.com", "anxia.com"))
 _AUTH_ERRNOS = frozenset((99, 911, 990001, 40101004, 40101017, 40101032))
-_AUTH_MARKERS = (
-    "auth",
-    "login",
-    "unauthor",
-    "cookie",
-    "登录",
-    "认证",
-    "授权",
+# 认证失败文本判定:不再用短子串("授权"/"认证"/"cookie" 等字样出现在
+# 业务错误里也会命中,把文件/分享权限提示误判成登录失效)。英文按整词
+# 匹配,中文只匹配明确的认证短语;结构化 errno 判定见 _response_auth。
+_AUTH_TOKEN_PATTERN = re.compile(
+    r"(?<![a-z0-9])"
+    r"(?:"
+    r"authentication|unauthori[sz]ed|not\s+logged\s+in|logged\s+out|"
+    r"log\s*in|logout|cookie|session\s+expired|session\s+invalid|"
+    r"sign\s+in|token"
+    r")"
+    r"(?![a-z0-9])",
+    re.IGNORECASE,
+)
+_AUTH_PHRASES = (
+    "登录已过期",
+    "登录失效",
+    "登录状态无效",
+    "登录状态已失效",
+    "未登录",
+    "请重新登录",
+    "请先登录",
+    "请登录",
+    "登录异常",
+    "认证失败",
+    "认证已过期",
+    "认证已失效",
+    "凭证已过期",
+    "登录凭证无效",
+    "授权已失效",
+    "授权已过期",
+    "已解除授权",
 )
 
 
@@ -719,7 +742,7 @@ def _response_ok(response: Mapping[str, Any]) -> bool:
 def _response_auth(response: Mapping[str, Any]) -> bool:
     if not isinstance(response, Mapping):
         return False
-    if _known_message_has_markers(response, _AUTH_MARKERS):
+    if _known_message_has_auth_markers(response):
         return True
     return any(
         response.get(key) in _AUTH_ERRNOS
@@ -760,6 +783,44 @@ def _known_message_has_markers(
                 lowered = value.casefold()
                 if any(marker in lowered for marker in markers):
                     return True
+    return False
+
+
+def _text_has_auth_markers(text: str) -> bool:
+    """精确的认证文本判定:英文整词 + 中文明确认证短语。"""
+    lowered = text.casefold()
+    if _AUTH_TOKEN_PATTERN.search(lowered):
+        return True
+    return any(phrase in lowered for phrase in _AUTH_PHRASES)
+
+
+def _known_message_has_auth_markers(response: Mapping[str, Any]) -> bool:
+    keys = (
+        "error",
+        "message",
+        "msg",
+        "error_msg",
+        "error_message",
+    )
+    candidates: list[Mapping[str, Any]] = [response]
+    data = response.get("data")
+    if isinstance(data, Mapping):
+        candidates.append(data)
+    for candidate in candidates:
+        for key in keys:
+            value = candidate.get(key)
+            if isinstance(value, str) and _text_has_auth_markers(value):
+                return True
+    return False
+
+
+def _field_has_auth_markers(
+    mapping: Mapping[str, Any], keys: tuple[str, ...]
+) -> bool:
+    for key in keys:
+        value = mapping.get(key)
+        if isinstance(value, str) and _text_has_auth_markers(value):
+            return True
     return False
 
 
@@ -1029,8 +1090,8 @@ def _availability_observer_error_code(error_code: object) -> str:
 
 
 def _task_status(task: Mapping[str, Any]) -> RemoteStatus:
-    if _known_message_has_markers(task, _AUTH_MARKERS) or _field_has_markers(
-        task, ("status", "state"), _AUTH_MARKERS
+    if _known_message_has_auth_markers(task) or _field_has_auth_markers(
+        task, ("status", "state")
     ):
         return RemoteStatus.NEEDS_AUTH
     if task.get("status") in (-1, "-1") or task.get("move") in (-1, "-1"):
@@ -1072,7 +1133,12 @@ def _exception_result(error: Exception) -> SubmissionResult:
 
 
 def _auth_exception(error: Exception) -> bool:
-    return any(marker in type(error).__name__.casefold() for marker in _AUTH_MARKERS)
+    # 异常类名按 CamelCase 分词后整词匹配:裸 "auth" 子串会把
+    # P115OpenAppAuthLimitExceeded(授权应用数上限,非登录失效)误判为
+    # 认证失败;分词后 "Authentication"/"Login"/"Token" 仍能命中
+    # p115client 的真实认证异常类。
+    name = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", type(error).__name__)
+    return _text_has_auth_markers(name)
 
 
 def _needs_auth() -> SubmissionResult:
