@@ -122,6 +122,7 @@ def _item(
     reasons: tuple[str, ...] = ("tmdb_match_accepted",),
     target_parent_id: str | None = "8000",
     target_name: str = "safe-title.mkv",
+    target_path: str = "movie/safe-title.mkv",
     companions: tuple[OrganizationPlanCompanion, ...] = (),
 ) -> OrganizationPlanItem:
     source_name = SECRET_NAME if object_id == "100" else "second-title.mkv"
@@ -135,7 +136,7 @@ def _item(
         ),
         naming_plan=NamingPlan(
             status=naming_status,
-            target_path="movie/safe-title.mkv",
+            target_path=target_path,
             display_name=display_name,
             reasons=reasons,
             rule_version="i06-v1",
@@ -370,6 +371,131 @@ async def test_complete_execution_payload_is_persisted_and_parsed(tmp_path):
         assert (member.target_parent_id, member.target_name) == (
             "8000",
             "safe-title.mkv",
+        )
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_review_actions_do_not_block_move_execution(tmp_path):
+    """计划含 1 个 move + 1 个 review:只返回 move step,review 不阻塞执行。"""
+    database = await _database(tmp_path)
+    service = OrganizationPlanService(database.session_factory)
+    plan_view = await service.create_plan(
+        library_id=LIBRARY_ID,
+        scan_run_id=SCAN_ID,
+        items=(
+            _item(),  # move:100 -> movie/safe-title.mkv
+            _item(  # review:低置信度需人工复核
+                object_id="101",
+                target_path="movie/second-safe.mkv",
+                target_name="second-safe.mkv",
+                confidence=MatchConfidence.LOW,
+            ),
+        ),
+    )
+    assert plan_view.status is OrganizationPlanStatus.NEEDS_REVIEW
+    assert plan_view.review_action_count == 1
+    async with database.session_factory() as session:
+        stored = await session.get(OrganizationPlan, plan_view.plan_id)
+        assert stored is not None
+        steps = await load_executable_steps(
+            database.session_factory, stored, allow_unconfirmed=True
+        )
+        assert steps is not None
+        assert len(steps) == 1
+        assert steps[0].order == 0
+        member = steps[0].members[0]
+        assert member.object_id == "100"
+        assert (member.target_parent_id, member.target_name) == (
+            "8000",
+            "safe-title.mkv",
+        )
+        # 未确认状态仍要求 PLANNED(allow_unconfirmed=False 时不可执行)。
+        assert await load_executable_steps(database.session_factory, stored) is None
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_interleaved_review_actions_keep_original_move_order(tmp_path):
+    """move/review 交错:跳过 review 后 move steps 的 order 保持全局序号。"""
+    database = await _database(tmp_path)
+    async with database.session_factory() as session:
+        # create_plan 按 (object_type, object_id) 排序 items,用带小数点的
+        # object_id 让 move/review 真正交错:100 < 100.5 < 101 < 101.5。
+        for object_id in ("100.5", "101.5"):
+            session.add(
+                LibraryScanEntry(
+                    scan_run_id=SCAN_ID,
+                    object_type="file",
+                    object_id=object_id,
+                    parent_id=ROOT_ID,
+                    name="second-title.mkv",
+                    path=SECRET_PATH,
+                    is_directory=False,
+                )
+            )
+        await session.commit()
+    await _refresh_completed_tree_evidence(database)
+    service = OrganizationPlanService(database.session_factory)
+    plan_view = await service.create_plan(
+        library_id=LIBRARY_ID,
+        scan_run_id=SCAN_ID,
+        items=(
+            _item(),  # move   order 0 -> movie/safe-title.mkv
+            _item(  # review order 1
+                object_id="100.5",
+                target_path="movie/second-safe.mkv",
+                target_name="second-safe.mkv",
+                confidence=MatchConfidence.LOW,
+            ),
+            _item(  # move order 2 -> movie/third-safe.mkv
+                object_id="101",
+                target_path="movie/third-safe.mkv",
+                target_name="third-safe.mkv",
+            ),
+            _item(  # review order 3
+                object_id="101.5",
+                target_path="movie/fourth-safe.mkv",
+                target_name="fourth-safe.mkv",
+                confidence=MatchConfidence.LOW,
+            ),
+        ),
+    )
+    assert plan_view.status is OrganizationPlanStatus.NEEDS_REVIEW
+    async with database.session_factory() as session:
+        stored = await session.get(OrganizationPlan, plan_view.plan_id)
+        assert stored is not None
+        steps = await load_executable_steps(
+            database.session_factory, stored, allow_unconfirmed=True
+        )
+        assert steps is not None
+        assert [(step.order, step.members[0].object_id) for step in steps] == [
+            (0, "100"),
+            (2, "101"),
+        ]
+        assert all(step.kind == "move" for step in steps)
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_review_only_plan_loads_as_empty_steps(tmp_path):
+    """全部动作都是 review:返回空 tuple,不可执行但不表示损坏。"""
+    database = await _database(tmp_path)
+    service = OrganizationPlanService(database.session_factory)
+    plan_view = await service.create_plan(
+        library_id=LIBRARY_ID,
+        scan_run_id=SCAN_ID,
+        items=(_item(confidence=MatchConfidence.LOW),),
+    )
+    assert plan_view.status is OrganizationPlanStatus.NEEDS_REVIEW
+    async with database.session_factory() as session:
+        stored = await session.get(OrganizationPlan, plan_view.plan_id)
+        assert stored is not None
+        assert (
+            await load_executable_steps(
+                database.session_factory, stored, allow_unconfirmed=True
+            )
+            == ()
         )
     await database.engine.dispose()
 
@@ -780,11 +906,13 @@ async def test_missing_target_mapping_or_companion_identity_needs_review(tmp_pat
     async with database.session_factory() as session:
         stored = await session.get(OrganizationPlan, missing_target.plan_id)
         assert stored is not None
+        # 全部动作都是 review:没有可执行步骤,返回空而不是 None
+        # (调用方统一按 falsy 处理,confirm/worker 仍会拒绝)。
         assert (
             await load_executable_steps(
                 database.session_factory, stored, allow_unconfirmed=True
             )
-            is None
+            == ()
         )
     companion = OrganizationPlanCompanion(
         source=PlanSource(

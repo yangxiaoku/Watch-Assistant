@@ -1720,10 +1720,19 @@ def _parse_executable_steps(
     *,
     allow_unconfirmed: bool = False,
 ) -> tuple[OrganizationPlanExecutionStep, ...] | None:
-    """Parse only the complete execution payload used by a future executor.
+    """Parse only the complete ``move`` payload used by a future executor.
 
-    Old previews remain readable, but their actions intentionally return ``None``
-    here because they do not carry the stable directory and member identities.
+    Review actions (``kind != "move"``, e.g. unrecognized junk files or
+    low-confidence matches still waiting for human attention) are skipped
+    instead of making the whole plan un-executable: execution covers the move
+    actions only, while review actions remain in the plan for the user to
+    handle.  ``execution.order`` is the global action index (0..N-1), so a
+    step's order matches its action's position in ``actions`` even when
+    review actions are skipped in between.
+
+    Old previews remain readable, but their actions intentionally return
+    ``None`` here because they do not carry the stable directory and member
+    identities.
     """
 
     if not allow_unconfirmed and plan.status != OrganizationPlanStatus.PLANNED.value:
@@ -1733,9 +1742,11 @@ def _parse_executable_steps(
         return None
     steps: list[OrganizationPlanExecutionStep] = []
     seen_members: set[tuple[str, str]] = set()
-    for expected_order, action in enumerate(actions):
-        if not isinstance(action, dict) or action.get("kind") != "move":
+    for index, action in enumerate(actions):
+        if not isinstance(action, dict):
             return None
+        if action.get("kind") != "move":
+            continue
         execution = action.get("execution")
         if not isinstance(execution, dict):
             return None
@@ -1746,7 +1757,7 @@ def _parse_executable_steps(
         if (
             isinstance(order, bool)
             or not isinstance(order, int)
-            or order != expected_order
+            or order != index
             or kind != "move"
             or not isinstance(scope, list)
             or not scope
@@ -1825,7 +1836,7 @@ def _parse_executable_steps(
                 )
             )
         if (
-            action.get("order") != expected_order
+            action.get("order") != index
             or action.get("object_type") != parsed_members[0].object_type
             or action.get("object_id") != parsed_members[0].object_id
             or not set(scope).issuperset(
@@ -1861,13 +1872,23 @@ def _validate_persisted_execution(
     target_directory_id: str | None,
     target_directories: Mapping[str, str],
 ) -> bool:
-    if len(source_snapshot) != len(actions) or len(steps) != len(actions):
+    if len(source_snapshot) != len(actions) or len(steps) > len(actions):
         return False
     source_by_key = {
         (item["object_type"], item["object_id"]): item for item in source_snapshot
     }
     if len(source_by_key) != len(source_snapshot):
         return False
+    move_orders = {
+        index
+        for index, action in enumerate(actions)
+        if isinstance(action, dict) and action.get("kind") == "move"
+    }
+    # Every move action yields exactly one step (review actions are skipped),
+    # and ``execution.order`` is the action's position in ``actions``.
+    if len(steps) != len(move_orders) or {step.order for step in steps} != move_orders:
+        return False
+    steps_by_order = {step.order: step for step in steps}
     directory_rows: dict[str, list[LibraryScanEntry]] = {}
     for row in rows.values():
         if row.is_directory:
@@ -1888,8 +1909,8 @@ def _validate_persisted_execution(
         return False
     except ValueError:
         return False
-    for index, (action, precondition, step) in enumerate(
-        zip(actions, preconditions, steps, strict=True)
+    for index, (action, precondition) in enumerate(
+        zip(actions, preconditions, strict=True)
     ):
         if not isinstance(action, dict) or not isinstance(precondition, dict):
             return False
@@ -1923,24 +1944,32 @@ def _validate_persisted_execution(
             or precondition.get("parser_version") != plan.parser_version
             or precondition.get("matcher_version") != plan.matcher_version
             or precondition.get("organization_policy") != stored_policy
-            or precondition.get("target_conflict") is not False
             or precondition.get("execution") != execution
-            or _replacement_from_execution(replacement)
-            != (
-                step.replacement_object_id,
-                step.replacement_parent_id,
-                step.replacement_name,
-            )
-            or not isinstance(execution, dict)
-            or action.get("kind") != "move"
             or action.get("order") != index
-            or step.order != index
             or current_row is None
             or snapshot.get("name") != current_row.name
             or current_row.parent_id != snapshot.get("parent_id")
             or current_row.path != snapshot.get("path")
             or not _source_version_matches(snapshot.get("remote_version"), current_row)
             or current_row.is_directory is not False
+        ):
+            return False
+        step = steps_by_order.get(index)
+        if step is None:
+            # Review action: nothing is executed for it, so it does not block
+            # the remaining move actions (it stays in the plan for the user).
+            continue
+        if (
+            precondition.get("target_conflict") is not False
+            or action.get("kind") != "move"
+            or not isinstance(execution, dict)
+            or step.order != index
+            or _replacement_from_execution(replacement)
+            != (
+                step.replacement_object_id,
+                step.replacement_parent_id,
+                step.replacement_name,
+            )
         ):
             return False
         if not _validate_persisted_step(
