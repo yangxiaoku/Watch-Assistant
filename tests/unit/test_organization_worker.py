@@ -1,3 +1,4 @@
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -287,3 +288,71 @@ async def test_reconcile_uses_read_only_transport_when_writes_are_disabled(monke
     assert client.closed is True
     assert operations.scope_revisions == [1]
     assert operations.step_revisions == [1]
+
+
+@pytest.mark.asyncio
+async def test_run_forever_backs_off_when_run_once_keeps_failing(monkeypatch):
+    # 回归(L9):run_once 持续抛异常时必须指数退避,不得热循环。
+    operations = _Operations(scope=frozenset({"7000", "9000"}), steps=_steps())
+    worker = _worker(operations, write_enabled=False)
+    calls = 0
+
+    async def exploding_run_once():
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("transient database lock")
+
+    monkeypatch.setattr(worker, "run_once", exploding_run_once)
+    stop = asyncio.Event()
+    loop = asyncio.create_task(worker.run_forever(stop))
+    try:
+        # 首次异常后进入退避窗口(≥1s):窗口内不得再调用 run_once。
+        await asyncio.sleep(0.25)
+        assert calls == 1
+        # 退避窗口结束才允许下一次调用。
+        await asyncio.sleep(2.1)
+        assert calls >= 2
+    finally:
+        stop.set()
+        await asyncio.wait_for(loop, timeout=2)
+
+
+@pytest.mark.asyncio
+async def test_run_forever_success_resets_backoff(monkeypatch):
+    # 回归(L9):成功执行后退避复位,恢复轮询节奏而不是继续拉长间隔。
+    operations = _Operations(scope=frozenset({"7000", "9000"}), steps=_steps())
+    worker = OrganizationWorker(
+        session_factory=object(),
+        operation_service=operations,
+        cookie_provider=_CookieProvider(),
+        production_root_id="9000",
+        live_enabled=True,
+        write_enabled=False,
+        organization_contract=_contract(),
+        poll_interval_seconds=0.05,
+    )
+    calls = 0
+    state = {"fail": True}
+
+    async def flaky_run_once():
+        nonlocal calls
+        calls += 1
+        if state["fail"]:
+            state["fail"] = False
+            raise RuntimeError("transient database lock")
+        return False
+
+    monkeypatch.setattr(worker, "run_once", flaky_run_once)
+    stop = asyncio.Event()
+    loop = asyncio.create_task(worker.run_forever(stop))
+    try:
+        await asyncio.sleep(0.25)
+        # 首次异常:进入退避,尚未复位。
+        assert calls == 1
+        # 退避窗口过后:失败→成功复位→恢复 0.05s 轮询节奏,
+        # 若退避未复位,此时最多只有 2 次调用。
+        await asyncio.sleep(2.15)
+        assert calls >= 5
+    finally:
+        stop.set()
+        await asyncio.wait_for(loop, timeout=2)

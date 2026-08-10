@@ -216,14 +216,27 @@ class OrganizationWorker:
 
     async def run_forever(self, stop_event: asyncio.Event | None = None) -> None:
         stop = stop_event or self._stop
+        # 连续异常时指数退避(上限 30s,成功复位),避免 DB 锁定等故障下
+        # 以满速热循环刷爆日志并加剧写锁竞争(与 worker.py 主循环一致)。
+        backoff = 0.0
         while not stop.is_set():
+            if backoff > 0:
+                try:
+                    await asyncio.wait_for(stop.wait(), timeout=backoff)
+                except TimeoutError:
+                    pass
+                if stop.is_set():
+                    break
+                backoff = 0.0
             try:
                 claimed = await self.run_once()
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - worker loop must stay alive
                 del exc
-                claimed = True
+                backoff = min(30.0, (backoff or 1.0) * 2)
+                continue
+            backoff = 0.0
             if claimed:
                 continue
             try:
