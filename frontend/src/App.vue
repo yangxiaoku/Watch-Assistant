@@ -1229,7 +1229,17 @@ async function login() {
     await initializeWorkspace();
   } catch (exception) {
     focusFirstFieldError(exception);
-    error.value = exception instanceof ApiError ? "账号或密码不正确" : "登录失败";
+    if (exception instanceof ApiError) {
+      if (exception.status === 429 || exception.code === "rate_limited") {
+        error.value = "尝试次数过多，请一分钟后再试。";
+      } else if (exception.status === 401 || exception.code === "invalid_credentials" || exception.code === "unauthorized") {
+        error.value = "账号或密码不正确";
+      } else {
+        error.value = "登录失败，请稍后重试";
+      }
+    } else {
+      error.value = "登录失败";
+    }
   }
 }
 
