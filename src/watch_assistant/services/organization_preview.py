@@ -192,7 +192,7 @@ class OrganizationPreviewService:
             else _target_parent_ids(entries)
         )
         rules = NamingRuleConfig(
-            library_root=target_root or "library",
+            library_root=target_root or "",
             region_enabled=region_grouping_enabled,
             year_grouping_enabled=year_grouping_enabled,
             include_children_category=include_children_category,
