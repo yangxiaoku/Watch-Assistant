@@ -120,30 +120,33 @@ def _mocked_client(respx_mock, base_url: str, api_key: str, **kwargs):
 async def test_prowlarr_search_uses_read_only_contract_and_filters_nzb(respx_mock):
     api_key = secrets.token_urlsafe(24)
     info_hash = "abcdef0123456789abcdef0123456789abcdef01"
+    # L5:默认每页 25 条;首页必须是满页(25 条)才会继续翻页,
+    # 短页(不足页大小)即视为最后一页,直接结束。
+    first_page = [
+        {
+            "guid": f"release-{index}",
+            "title": f"Inception 2010 1080p release {index}",
+            "protocol": "Torrent",
+            "magnetUrl": f"magnet:?xt=urn:btih:{info_hash}",
+            "infoHash": info_hash,
+            "size": 1234,
+            "seeders": 8,
+            "indexer": "Indexer A",
+            "indexerId": 7,
+            "publishDate": "2026-08-01T00:00:00Z",
+        }
+        for index in range(1, 25)
+    ]
+    first_page.append(
+        {
+            "title": "Inception NZB",
+            "protocol": "Usenet",
+            "downloadUrl": "https://example.test/inception.nzb",
+        }
+    )
     route = respx_mock.get(path="/api/v1/search").mock(
         side_effect=[
-            httpx.Response(
-                200,
-                json=[
-                    {
-                        "guid": "release-1",
-                        "title": "Inception 2010 1080p",
-                        "protocol": "Torrent",
-                        "magnetUrl": f"magnet:?xt=urn:btih:{info_hash}",
-                        "infoHash": info_hash,
-                        "size": 1234,
-                        "seeders": 8,
-                        "indexer": "Indexer A",
-                        "indexerId": 7,
-                        "publishDate": "2026-08-01T00:00:00Z",
-                    },
-                    {
-                        "title": "Inception NZB",
-                        "protocol": "Usenet",
-                        "downloadUrl": "https://example.test/inception.nzb",
-                    },
-                ],
-            ),
+            httpx.Response(200, json=first_page),
             httpx.Response(200, json=[]),
         ]
     )
@@ -154,14 +157,14 @@ async def test_prowlarr_search_uses_read_only_contract_and_filters_nzb(respx_moc
 
     assert route.called
     assert route.call_count == 2
-    assert route.calls[0].request.url.params["limit"] == "1"
+    assert route.calls[0].request.url.params["limit"] == "25"
     assert route.calls[0].request.url.params["offset"] == "0"
-    assert route.calls[1].request.url.params["limit"] == "1"
-    assert route.calls[1].request.url.params["offset"] == "2"
+    assert route.calls[1].request.url.params["limit"] == "25"
+    assert route.calls[1].request.url.params["offset"] == "25"
     assert route.calls[0].request.headers["X-Api-Key"] == api_key
     assert api_key not in str(route.calls[0].request.url)
     assert result.unsupported_count == 1
-    assert len(result.releases) == 1
+    assert len(result.releases) == 24
     assert result.releases[0].info_hash == info_hash
     assert result.releases[0].indexer_id == 7
 

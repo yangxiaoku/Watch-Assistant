@@ -352,7 +352,10 @@ async def test_target_adapter_uses_header_only_and_passes_official_search_query(
     assert len(mock.requests) == 1
 
 
-async def test_target_adapter_defaults_to_one_item_page_for_bare_array_overfetch():
+async def test_target_adapter_defaults_to_25_item_pages_and_consumes_bare_array_overfetch():
+    # L5:默认每页 25 条(旧值 1 条/页会让 CLI 等调用方最多只能拿 20 条)。
+    # 裸数组响应仍会跨索引器 overfetch(30 条 > 每页上限),首页多出的
+    # 结果继续按页消费,不因超过页面上限而报错。
     first_page = [
         {
             "title": f"Release {index}",
@@ -378,8 +381,8 @@ async def test_target_adapter_defaults_to_one_item_page_for_bare_array_overfetch
         ("search",),
     ]
     assert [request.values("limit") for request in mock.requests] == [
-        ("1",),
-        ("1",),
+        ("25",),
+        ("25",),
     ]
     assert [request.values("offset") for request in mock.requests] == [
         ("0",),

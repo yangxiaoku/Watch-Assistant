@@ -76,7 +76,9 @@ def _service(pansou, prowlarr):
 
 
 @pytest.mark.asyncio
-async def test_prowlarr_client_uses_conservative_default_page_size():
+async def test_prowlarr_client_default_page_size_yields_expected_total_cap():
+    # L5:默认每页 25 条 × 最多 20 页 = 500 条 = _MAX_RESULTS 总上限,
+    # 而不是旧默认 1 条/页导致 CLI 等调用方最多只能拿到 20 条。
     requests: list[httpx.Request] = []
 
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -100,8 +102,50 @@ async def test_prowlarr_client_uses_conservative_default_page_size():
 
     assert result.releases == ()
     assert len(requests) == 1
-    assert requests[0].url.params["limit"] == "1"
+    assert requests[0].url.params["limit"] == "25"
     assert requests[0].url.params["offset"] == "0"
+
+
+@pytest.mark.asyncio
+async def test_prowlarr_client_default_pagination_total_cap_stays_at_max_results():
+    # L5:默认分页下总条数上限仍是 _MAX_RESULTS(500):25 条/页 × 20 页
+    # 恰好等于上限,分页循环不会越过剩余量继续请求。
+    served = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal served
+        served += 1
+        page = int(request.url.params.get("offset", "0"))
+        items = [
+            {
+                "title": f"Movie {page + index:04d}",
+                "protocol": "torrent",
+                "magnetUrl": (
+                    f"magnet:?xt=urn:btih:{page * 25 + index + 1:040x}&dn=Movie"
+                ),
+            }
+            for index in range(25)
+        ]
+        return httpx.Response(200, json=items, request=request)
+
+    transport_client = httpx.AsyncClient(
+        base_url="https://prowlarr.fixture.invalid",
+        transport=httpx.MockTransport(handler),
+    )
+    client = ProwlarrClient(
+        "https://prowlarr.fixture.invalid",
+        "fixture-only",
+        client=transport_client,
+    )
+    try:
+        result = await client.search("Movie")
+    finally:
+        await client.aclose()
+        await transport_client.aclose()
+
+    # 20 页 × 25 条 = 500 条,即 _MAX_RESULTS 上限,不再继续请求
+    assert len(result.releases) == 500
+    assert served == 20
 
 
 @pytest.mark.asyncio

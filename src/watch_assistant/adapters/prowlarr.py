@@ -114,8 +114,10 @@ _BASE32_INFOHASH = re.compile(r"[A-Z2-7a-z2-7]{32}")
 _MAX_RESULTS = 500
 _MAX_PAGES = 20
 _MAX_PAGE_SIZE = 100
-# Some indexers overfetch a one-item request but time out on larger limits.
-_DEFAULT_PAGE_SIZE = 1
+# 默认每页条数:调用方不传 limit/page_size 时(CLI 等),页面大小直接决定
+# 总结果上限——旧值 1 × _MAX_PAGES(20)= 最多 20 条。25 × 20 = 500 =
+# _MAX_RESULTS,总条数上限保持不变;个别索引器对超大 limit 会超时,25 为折中。
+_DEFAULT_PAGE_SIZE = 25
 # Download endpoints hit the indexer behind a proxy; resolve only this many
 # to keep a large result set from stalling the search.
 _MAX_RESOLVED_DOWNLOADS = 20
