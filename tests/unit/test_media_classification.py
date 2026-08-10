@@ -85,6 +85,41 @@ def test_five_class_mapping(kind, media_type, expected):
     assert plan.classification is expected
 
 
+@pytest.mark.parametrize(
+    ("kind", "media_type", "expected_dir"),
+    (
+        (MediaKind.MOVIE, MediaType.MOVIE, "电影"),
+        (MediaKind.TV, MediaType.TV, "剧集"),
+        (MediaKind.ANIME, MediaType.MOVIE, "动画"),
+        (MediaKind.DOCUMENTARY, MediaType.TV, "纪录片"),
+        (MediaKind.VARIETY, MediaType.TV, "综艺"),
+    ),
+)
+def test_chinese_category_directories(kind, media_type, expected_dir):
+    name = (
+        "Media 2024 S01E01 1080p.mkv"
+        if media_type is MediaType.TV
+        else "Media 2024 1080p.mkv"
+    )
+    plan = plan_media(
+        parsed(name), accepted(candidate(kind=kind, media_type=media_type))
+    )
+
+    assert plan.status is ClassificationStatus.PLANNED
+    assert plan.target_path.startswith(f"{expected_dir}/")
+
+
+def test_default_library_root_is_empty():
+    plan = plan_media(
+        parsed("Root 2024 1080p.mkv"),
+        accepted(candidate(countries=("US",))),
+    )
+
+    assert NamingRuleConfig().library_root == ""
+    assert plan.target_path.startswith("电影/美国/")
+    assert not plan.target_path.startswith("library/")
+
+
 def test_animation_movie_defaults_to_anime_and_can_be_disabled():
     media = candidate(kind=MediaKind.ANIME, media_type=MediaType.MOVIE)
     parsed_media = parsed("Animated Movie 2024 1080p.mkv")
@@ -108,7 +143,7 @@ def test_optional_categories_and_year_grouping_are_applied_only_when_enabled():
         rules=NamingRuleConfig(include_children_category=True),
     )
     assert children.classification is ClassificationKind.CHILDREN
-    assert "/children/" in children.target_path
+    assert children.target_path.startswith("少儿/")
 
     concert = plan_media(
         parsed("Summer Concert 2024 1080p.mkv"),
@@ -116,20 +151,22 @@ def test_optional_categories_and_year_grouping_are_applied_only_when_enabled():
         rules=NamingRuleConfig(include_concert_category=True, year_grouping_enabled=True),
     )
     assert concert.classification is ClassificationKind.CONCERT
-    assert "/concert/western/2024/" in concert.target_path
+    assert "演唱会/美国/2024/" in concert.target_path
 
 
 @pytest.mark.parametrize(
     ("country", "expected"),
     (
-        ("CN", RegionClass.DOMESTIC),
-        ("HK", RegionClass.DOMESTIC),
-        ("MO", RegionClass.DOMESTIC),
-        ("TW", RegionClass.DOMESTIC),
-        ("US", RegionClass.WESTERN),
-        ("JP", RegionClass.JAPANESE_KOREAN),
-        ("KR", RegionClass.JAPANESE_KOREAN),
-        ("IN", RegionClass.OTHER),
+        ("CN", "中国"),
+        ("HK", "香港"),
+        ("MO", "澳门"),
+        ("TW", "台湾"),
+        ("US", "美国"),
+        ("JP", "日本"),
+        ("KR", "韩国"),
+        ("GB", "英国"),
+        ("UK", "英国"),
+        ("IN", "印度"),
     ),
 )
 def test_region_mapping(country, expected):
@@ -138,7 +175,7 @@ def test_region_mapping(country, expected):
         accepted(candidate(countries=(country,))),
     )
 
-    assert plan.region is expected
+    assert plan.region == expected
     assert plan.status is ClassificationStatus.PLANNED
 
 
@@ -153,7 +190,18 @@ def test_multiple_countries_use_stable_first_valid_country():
     )
 
     assert first == reversed_countries
-    assert first.region is RegionClass.DOMESTIC
+    assert first.region == "中国"
+
+
+def test_unmapped_country_falls_back_to_other():
+    plan = plan_media(
+        parsed("Odd Country 2024 1080p.mkv"),
+        accepted(candidate(countries=("ZW",))),
+    )
+
+    assert plan.status is ClassificationStatus.PLANNED
+    assert plan.region == "其他"
+    assert "/其他/" in plan.target_path
 
 
 def test_missing_or_unknown_country_requires_review_and_manual_region_wins():
@@ -166,15 +214,16 @@ def test_missing_or_unknown_country_requires_review_and_manual_region_wins():
 
     assert missing.status is ClassificationStatus.REVIEW_REQUIRED
     assert "origin_country_unknown" in missing.reasons
+    assert missing.region == "其他"
     assert unknown.status is ClassificationStatus.REVIEW_REQUIRED
-    assert unknown.region is RegionClass.OTHER
+    assert unknown.region == "其他"
     locked = plan_media(
         parsed("Unknown Region 2024 1080p.mkv"),
         accepted(candidate(countries=())),
         override=ClassificationOverride(region=RegionClass.DOMESTIC),
     )
     assert locked.status is ClassificationStatus.PLANNED
-    assert locked.region is RegionClass.DOMESTIC
+    assert locked.region == "国产"
 
 
 def test_low_confidence_match_requires_review():
@@ -259,15 +308,13 @@ def test_movie_and_series_target_templates_keep_year_episode_range_and_technical
     )
 
     assert movie.status is ClassificationStatus.PLANNED
-    assert "movie/domestic/电影 (2024) {tmdb-42}" in movie.target_path
+    assert "电影/中国/电影 (2024) {tmdb-42}" in movie.target_path
     assert "2160p" in movie.target_path
     assert "WEB-DL" in movie.target_path
     assert "HDR10+" in movie.target_path
     assert "Atmos" in movie.target_path
     assert series.status is ClassificationStatus.PLANNED
-    assert (
-        "tv/japanese_korean/シリーズ (2024) {tmdb-43}/Season 01" in series.target_path
-    )
+    assert "剧集/日本/シリーズ (2024) {tmdb-43}/Season 01" in series.target_path
     assert "S01E02-E04" in series.target_path
     assert series.technical_tags == ("1080p", "BluRay", "H.265")
 
@@ -281,8 +328,8 @@ def test_region_directories_can_be_disabled_and_rule_version_is_carried():
 
     assert plan.status is ClassificationStatus.PLANNED
     assert plan.rule_version == "i06-test-2"
-    assert "/western/" not in plan.target_path
-    assert plan.target_path.startswith("library/movie/")
+    assert "/美国/" not in plan.target_path
+    assert plan.target_path.startswith("电影/")
 
 
 def test_custom_naming_templates_are_rendered_without_io():
@@ -299,7 +346,7 @@ def test_custom_naming_templates_are_rendered_without_io():
     assert plan.status is ClassificationStatus.PLANNED
     assert (
         plan.target_path
-        == "library/movie/western/Example Title [{tmdb-9}]/Example Title.mkv"
+        == "电影/美国/Example Title [{tmdb-9}]/Example Title.mkv"
     )
 
 
@@ -383,7 +430,7 @@ def test_manual_lock_and_override_are_preserved():
 
     assert plan.status is ClassificationStatus.PLANNED
     assert plan.classification is ClassificationKind.ANIME
-    assert plan.region is RegionClass.DOMESTIC
+    assert plan.region == "国产"
     assert "manual_lock" in plan.reasons
     assert "manual_classification" in plan.reasons
 

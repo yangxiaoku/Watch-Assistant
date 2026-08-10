@@ -44,57 +44,77 @@ class ClassificationStatus(StrEnum):
 
 
 _CATEGORY_DIRS = {
-    ClassificationKind.MOVIE: "movie",
-    ClassificationKind.TV: "tv",
-    ClassificationKind.ANIME: "anime",
-    ClassificationKind.DOCUMENTARY: "documentary",
-    ClassificationKind.VARIETY: "variety",
-    ClassificationKind.CHILDREN: "children",
-    ClassificationKind.CONCERT: "concert",
+    ClassificationKind.MOVIE: "电影",
+    ClassificationKind.TV: "剧集",
+    ClassificationKind.ANIME: "动画",
+    ClassificationKind.DOCUMENTARY: "纪录片",
+    ClassificationKind.VARIETY: "综艺",
+    ClassificationKind.CHILDREN: "少儿",
+    ClassificationKind.CONCERT: "演唱会",
 }
-_REGION_DIRS = {
-    RegionClass.DOMESTIC: "domestic",
-    RegionClass.WESTERN: "western",
-    RegionClass.JAPANESE_KOREAN: "japanese_korean",
-    RegionClass.OTHER: "other",
+_COUNTRY_NAMES = {
+    "US": "美国",
+    "JP": "日本",
+    "CN": "中国",
+    "KR": "韩国",
+    "GB": "英国",
+    "UK": "英国",
+    "FR": "法国",
+    "DE": "德国",
+    "IT": "意大利",
+    "ES": "西班牙",
+    "RU": "俄罗斯",
+    "IN": "印度",
+    "TH": "泰国",
+    "TW": "台湾",
+    "HK": "香港",
+    "MO": "澳门",
+    "CA": "加拿大",
+    "AU": "澳大利亚",
+    "NZ": "新西兰",
+    "MX": "墨西哥",
+    "BR": "巴西",
+    "TR": "土耳其",
+    "AE": "阿联酋",
+    "ID": "印尼",
+    "MY": "马来西亚",
+    "SG": "新加坡",
+    "PH": "菲律宾",
+    "VN": "越南",
+    "AR": "阿根廷",
+    "CL": "智利",
+    "SE": "瑞典",
+    "NO": "挪威",
+    "DK": "丹麦",
+    "FI": "芬兰",
+    "NL": "荷兰",
+    "BE": "比利时",
+    "CH": "瑞士",
+    "AT": "奥地利",
+    "PL": "波兰",
+    "CZ": "捷克",
+    "GR": "希腊",
+    "IL": "以色列",
+    "SA": "沙特",
+    "EG": "埃及",
+    "ZA": "南非",
+    "IE": "爱尔兰",
+    "IS": "冰岛",
+    "LU": "卢森堡",
+    "PT": "葡萄牙",
+    "UA": "乌克兰",
+}
+_REGION_CLASS_NAMES = {
+    RegionClass.DOMESTIC: "国产",
+    RegionClass.WESTERN: "欧美",
+    RegionClass.JAPANESE_KOREAN: "日韩",
+    RegionClass.OTHER: "其他",
 }
 _VIDEO_EXTENSIONS = frozenset(
     {"mkv", "mp4", "avi", "mov", "ts", "m2ts", "wmv", "flv", "webm"}
 )
 _COMPANION_TYPES = frozenset(
     {"subtitle", "nfo", "poster", "sample", "trailer", "extra", "featurette"}
-)
-_DOMESTIC_COUNTRIES = frozenset({"CN", "CHN", "HK", "HKG", "MO", "MAC", "TW", "TWN"})
-_JAPANESE_KOREAN_COUNTRIES = frozenset({"JP", "JPN", "KR", "KOR"})
-_WESTERN_COUNTRIES = frozenset(
-    {
-        "AT",
-        "AU",
-        "BE",
-        "CA",
-        "CH",
-        "CZ",
-        "DE",
-        "DK",
-        "ES",
-        "FI",
-        "FR",
-        "GB",
-        "GR",
-        "IE",
-        "IL",
-        "IS",
-        "IT",
-        "LU",
-        "NL",
-        "NO",
-        "NZ",
-        "PL",
-        "PT",
-        "SE",
-        "UA",
-        "US",
-    }
 )
 _WINDOWS_RESERVED = frozenset(
     {
@@ -115,7 +135,7 @@ class NamingRuleConfig:
     """Versioned, deterministic defaults for a naming preview."""
 
     rule_version: str = "i06-v1"
-    library_root: str = "library"
+    library_root: str = ""
     region_enabled: bool = True
     year_grouping_enabled: bool = False
     include_children_category: bool = False
@@ -223,7 +243,7 @@ class CompanionMapping:
 class NamingPlan:
     status: ClassificationStatus
     classification: ClassificationKind | None = None
-    region: RegionClass | None = None
+    region: str | None = None
     target_path: str | None = None
     target_directory: str | None = None
     display_name: str | None = None
@@ -310,7 +330,7 @@ def plan_media(
                 classification_source, region_source, selected_country, tuple(reasons)
             ),
         )
-    if region is None or "origin_country_unknown" in region_reasons:
+    if "origin_country_unknown" in region_reasons:
         return _review_plan(
             config,
             *reasons,
@@ -527,32 +547,39 @@ def _classify(
 
 def _region(
     countries: Sequence[str], override: ClassificationOverride | None
-) -> tuple[RegionClass | None, str, str | None, list[str]]:
+) -> tuple[str, str, str | None, list[str]]:
+    """Resolve the region directory as a Chinese country name.
+
+    Takes the first mappable country in canonical (sorted, deduplicated)
+    order; unmapped or missing countries fall back to "其他". Manual
+    overrides keep the legacy RegionClass semantics and render as the
+    Chinese label of the region class.
+    """
     if override is not None and override.region is not None:
-        return override.region, "manual_override", None, ["manual_region"]
+        return (
+            _REGION_CLASS_NAMES[override.region],
+            "manual_override",
+            None,
+            ["manual_region"],
+        )
     normalized = _canonical_countries(countries)
     for country in normalized:
-        if country in _DOMESTIC_COUNTRIES:
-            return RegionClass.DOMESTIC, "tmdb_origin_country", country, []
-        if country in _JAPANESE_KOREAN_COUNTRIES:
-            return RegionClass.JAPANESE_KOREAN, "tmdb_origin_country", country, []
-        if country in _WESTERN_COUNTRIES:
-            return RegionClass.WESTERN, "tmdb_origin_country", country, []
-    if normalized:
-        if normalized[0] in {"UNKNOWN", "XXX", "ZZ"}:
-            return (
-                RegionClass.OTHER,
-                "tmdb_origin_country",
-                normalized[0],
-                ["origin_country_unknown"],
-            )
+        name = _COUNTRY_NAMES.get(country)
+        if name is not None:
+            return name, "tmdb_origin_country", country, []
+    if normalized and normalized[0] not in {"UNKNOWN", "XXX", "ZZ"}:
         return (
-            RegionClass.OTHER,
+            "其他",
             "tmdb_origin_country",
             normalized[0],
             ["origin_country_other"],
         )
-    return None, "tmdb_origin_country", None, ["origin_country_unknown"]
+    return (
+        "其他",
+        "tmdb_origin_country",
+        normalized[0] if normalized else None,
+        ["origin_country_unknown"],
+    )
 
 
 def _requires_episode(parsed: MediaParseResult, media_type: MediaType) -> bool:
@@ -567,7 +594,7 @@ def _render_target(
     parsed: MediaParseResult,
     candidate: Any,
     classification: ClassificationKind,
-    region: RegionClass,
+    region: str,
     title: str,
     config: NamingRuleConfig,
 ) -> tuple[str, str, tuple[str, ...]] | None:
@@ -616,7 +643,7 @@ def _render_target(
     if not directory_name or not file_name:
         return None
     category = _CATEGORY_DIRS[classification]
-    region_part = _REGION_DIRS[region] if config.region_enabled else None
+    region_part = region if config.region_enabled else None
     segments = [
         config.library_root,
         category,
@@ -703,7 +730,7 @@ def _review_plan(
     *reasons: str,
     evidence: ClassificationEvidence | None = None,
     classification: ClassificationKind | None = None,
-    region: RegionClass | None = None,
+    region: str | None = None,
 ) -> NamingPlan:
     return NamingPlan(
         status=ClassificationStatus.REVIEW_REQUIRED,
