@@ -104,3 +104,34 @@
 3. 高危（H1/H2）加回归测试（security scope 映射测试、prowlarr URL 校验测试）
 4. 中文注释/错误文案
 5. 工作树冲突：发布分支工作树请勿与其他会话并发编辑；建议在独立分支 worktree 修复
+
+---
+
+## 补充（第二轮审查，2026-08-10 追加）
+
+### S1（配置/运维）PROWLARR_SLOW_INDEXER_IDS 仍含已禁用索引器
+- 位置：服务器 `/etc/watch-assistant.env`：`PROWLARR_SLOW_INDEXER_IDS=10,18`，但 18（TPB）已在 Prowlarr 禁用
+- 影响：慢组查询每次带一个死索引器；降级告警（search.source_degraded Prowlarr-Slow）持续刷
+- 修复：env 改为 `10`，重启 watch-assistant.service（注意与部署流程协调）
+
+### S2（低）source_health.py circuit breaker 可被参数异常卡死
+- 位置：`src/watch_assistant/adapters/prowlarr.py:287-295`——`allow_request()` 放行（`_probe_in_flight=True`）后、`try:` 块之前执行 `_array_params`/`_MAX_PAGES` 等参数构建；若抛 ValueError（非 int 索引器 id），既无 record_failure 也无 release_request → `_probe_in_flight` 永真 → 来源永久冻结在 BACKOFF
+- 修复：把参数构建移入 try 块，或给整段加 finally `release_request()`（仅在未记录结果时）
+
+### S3（低-可观测性）inspection.batch_failed 事件缺失败原因
+- 位置：`src/watch_assistant/services/inspection.py:184-200`——emit 只传 `{"status", "count"}`，模板声明的 `{error_code}` 从不填充
+- 影响：检测批次失败时（如 qB 不可达）日志/通知无任何原因，排障无依据
+- 修复：emit 时带上批次的 error_code（或首个失败 item 的 error_code）
+
+### S4（低）sw.js notificationclick 未处理 navigate rejection
+- 位置：`frontend/public/sw.js:92-98`——`existing.navigate(target).then(...)` 无 catch；页面导航失败时产生未处理 rejection
+- 影响：极小（不影响用户可见行为），可选修复
+
+### S5（运维）服务器 venv 旧版安装副本未清理
+- 位置：`/opt/watch-assistant/venv/lib/python3.13/site-packages/watch_assistant`（validation.py 哈希与 current/src 不一致）
+- 影响：当前靠 PYTHONPATH 压住无影响；任何不带 PYTHONPATH 的进程会跑到旧代码
+- 修复：`pip uninstall watch-assistant`（venv 内），需停服窗口或与部署协调
+
+### S6（运维）release 目录保留无自动化
+- 位置：`/opt/watch-assistant/releases`（已手工清理一次 1.7G→696M，但无保留策略）
+- 修复：cron 脚本保留当前+最近 3 个 release，删除更旧（可参照 handoff 前文 S6 手工步骤自动化）

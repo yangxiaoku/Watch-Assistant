@@ -9,6 +9,7 @@ from sqlalchemy import (
     DateTime,
     Enum,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -486,6 +487,23 @@ class Subscription(Base):
             "episode_start",
             "episode_end",
             name="uq_subscription_scope",
+        ),
+        # SQLite 唯一约束对 NULL 互不冲突,电影订阅(季节字段全 NULL)
+        # 并发创建可重复;部分唯一索引补上该语义(迁移 070)。
+        Index(
+            "uq_subscription_scope_movie",
+            "tmdb_id",
+            "media_type",
+            sqlite_where=text("season_number IS NULL"),
+        ),
+        Index(
+            "uq_subscription_scope_tv",
+            "tmdb_id",
+            "media_type",
+            "season_number",
+            "episode_start",
+            "episode_end",
+            sqlite_where=text("season_number IS NOT NULL"),
         ),
     )
 

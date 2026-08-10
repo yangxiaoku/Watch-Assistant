@@ -151,3 +151,44 @@ async def test_subscription_scope_is_idempotently_unique(tmp_path):
     with pytest.raises(SubscriptionConflict, match="subscription_exists"):
         await service.create(request)
     await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_movie_subscription_create_keeps_single_row(tmp_path):
+    """M2:SQLite 唯一约束对 NULL 季节字段互不冲突,并发创建同一电影
+    订阅可插入重复行;部分唯一索引(迁移 070)保证只成功一个。"""
+    import asyncio
+
+    from watch_assistant.services.subscriptions import SubscriptionConflict
+
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'subs-m2.db'}")
+    await initialize_database(database.engine)
+    service = SubscriptionService(database.session_factory, FakeSearch())
+    request = SubscriptionCreateRequest(tmdb_id=456)
+
+    results = await asyncio.gather(
+        *(
+            _create_maybe_conflict(service, request)
+            for _ in range(4)
+        ),
+        return_exceptions=True,
+    )
+    succeeded = sum(1 for item in results if not isinstance(item, Exception))
+    conflicts = sum(
+        1 for item in results if isinstance(item, SubscriptionConflict)
+    )
+    assert succeeded == 1
+    assert conflicts == 3
+
+    from sqlalchemy import func, select
+
+    from watch_assistant.models import Subscription
+
+    async with database.session_factory() as session:
+        count = await session.scalar(select(func.count()).select_from(Subscription))
+    assert count == 1
+    await database.engine.dispose()
+
+
+async def _create_maybe_conflict(service, request):
+    await service.create(request)

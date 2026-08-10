@@ -754,6 +754,38 @@ def _repair_subscription_legacy_mode(connection: Connection) -> None:
     )
 
 
+def _add_subscription_partial_unique_indexes(connection: Connection) -> None:
+    """并发创建同一电影订阅时可插入重复行。
+
+    ``uq_subscription_scope`` 唯一约束含可空列,SQLite 中 NULL 互不冲突,
+    IntegrityError 兜底对电影场景(季节字段全 NULL)不触发。用部分唯一
+    索引补上语义:电影按 (tmdb_id, media_type),剧集按完整五列。
+    建索引前先清理既有重复,避免建索引失败。
+    """
+
+    connection.execute(
+        text(
+            "DELETE FROM subscriptions WHERE id NOT IN ("
+            "  SELECT MIN(id) FROM subscriptions "
+            "  GROUP BY tmdb_id, media_type, season_number, episode_start, episode_end"
+            ")"
+        )
+    )
+    connection.execute(
+        text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_subscription_scope_movie "
+            "ON subscriptions (tmdb_id, media_type) WHERE season_number IS NULL"
+        )
+    )
+    connection.execute(
+        text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_subscription_scope_tv "
+            "ON subscriptions (tmdb_id, media_type, season_number, episode_start, episode_end) "
+            "WHERE season_number IS NOT NULL"
+        )
+    )
+
+
 def _repair_subscription_null_match_count(connection: Connection) -> None:
     """Replace NULL match counts left by legacy rows with the integer default.
 
@@ -1251,6 +1283,10 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(
         "069_repair_subscription_null_match_count",
         _repair_subscription_null_match_count,
+    ),
+    Migration(
+        "070_subscription_partial_unique_indexes",
+        _add_subscription_partial_unique_indexes,
     ),
 )
 
