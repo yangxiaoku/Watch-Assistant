@@ -868,6 +868,13 @@ async function createOrganizationPreview() {
   }
 }
 
+function redactDirectoryId(value: string | null | undefined) {
+  const normalized = value?.trim() ?? "";
+  if (!normalized) return "未配置";
+  if (normalized.length < 6) return `已配置（${normalized.length}位）`;
+  return `${normalized.slice(0, 3)}…${normalized.slice(-2)}`;
+}
+
 onMounted(() => { void loadLibraries(); });
 onBeforeUnmount(() => {
   scanPollGeneration += 1;
@@ -908,7 +915,7 @@ onBeforeUnmount(() => {
       </aside>
 
       <main v-if="selected" class="library-detail-panel">
-        <div class="library-detail-heading"><div><p class="eyebrow">当前范围</p><h2>{{ selected.name }}</h2><small>根目录 {{ selected.root_directory_id }}</small></div><button class="secondary-button" type="button" :disabled="busy || selected.scope_verified" @click="verifyScope"><Check :size="16" />验证范围</button></div>
+        <div class="library-detail-heading"><div><p class="eyebrow">当前范围</p><h2>{{ selected.name }}</h2><small>根目录 {{ redactDirectoryId(selected.root_directory_id) }}</small></div><button class="secondary-button" type="button" :disabled="busy || selected.scope_verified" @click="verifyScope"><Check :size="16" />验证范围</button></div>
         <div class="library-stat-grid">
           <div><span>范围状态</span><strong>{{ selected.scope_verified ? "已验证" : "待验证" }}</strong></div>
           <div><span>扫描状态</span><strong>{{ libraryScanStatusLabel(scan) }}</strong></div>
