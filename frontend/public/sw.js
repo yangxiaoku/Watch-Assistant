@@ -85,7 +85,8 @@ self.addEventListener("notificationclick", (event) => {
     self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clients) => {
       const existing = clients.find((client) => "focus" in client);
       if (existing) {
-        return existing.navigate(target).then((client) => client?.focus());
+        // 导航失败(如页面不可导航)时静默忽略,避免未处理的 Promise rejection
+        return existing.navigate(target).then((client) => client?.focus()).catch(() => {});
       }
       return self.clients.openWindow(target);
     }),
