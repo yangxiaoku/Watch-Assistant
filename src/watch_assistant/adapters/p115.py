@@ -797,6 +797,44 @@ def _remote_infohash(remote_ref: str) -> str | None:
     return value.casefold() if _INFOHASH_PATTERN.fullmatch(value) else None
 
 
+# 115 云下载任务列表接口未返回分页信息时的默认每页条数。
+_TASK_LIST_PAGE_SIZE = 30
+
+
+def _task_total_count(response: Mapping[str, Any]) -> int | None:
+    """从响应 total/count 字段取任务总数;缺省时返回 None。"""
+    candidates: list[Mapping[str, Any]] = [response]
+    data = response.get("data")
+    if isinstance(data, Mapping):
+        candidates.append(data)
+    for candidate in candidates:
+        for key in ("total", "count", "total_count", "totalCount"):
+            value = candidate.get(key)
+            if isinstance(value, bool):
+                continue
+            if isinstance(value, int) and value >= 0:
+                return value
+            if isinstance(value, str) and value.isdigit():
+                return int(value)
+    return None
+
+
+def _task_page_size(response: Mapping[str, Any]) -> int | None:
+    """取响应里的每页条数;缺省时返回 None(由调用方用默认值兜底)。"""
+    candidates: list[Mapping[str, Any]] = [response]
+    data = response.get("data")
+    if isinstance(data, Mapping):
+        candidates.append(data)
+    for candidate in candidates:
+        for key in ("page_size", "pageSize", "limit"):
+            value = candidate.get(key)
+            if isinstance(value, int) and value > 0:
+                return value
+            if isinstance(value, str) and value.isdigit() and int(value) > 0:
+                return int(value)
+    return None
+
+
 def _task_page_count(response: Mapping[str, Any]) -> int:
     candidates: list[Mapping[str, Any]] = [response]
     data = response.get("data")
@@ -809,6 +847,12 @@ def _task_page_count(response: Mapping[str, Any]) -> int:
                 return value
             if isinstance(value, str) and value.isdigit() and int(value) > 0:
                 return int(value)
+    # 接口未返回页数字段时,按 total/count 推断总页数并及早截断,
+    # 避免 get_status 逐页串行请求一直打到 101 页硬上限。
+    total = _task_total_count(response)
+    if total is not None:
+        page_size = _task_page_size(response) or _TASK_LIST_PAGE_SIZE
+        return max(1, (total + page_size - 1) // page_size)
     return 101
 
 
