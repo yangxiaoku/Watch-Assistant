@@ -1364,3 +1364,25 @@ def _validate_migrations(migrations: Sequence[Migration]) -> None:
         raise ValueError("Migration IDs must be unique")
     if migration_ids != sorted(migration_ids):
         raise ValueError("Migrations must be ordered by ID")
+
+
+def _subscription_indexes_exclude_cancelled(connection: Connection) -> None:
+    """部分唯一索引排除已取消行:create() 明确允许"取消后重新订阅",
+    索引若连同 CANCELLED 行一起唯一,重订会恒 409(电影订阅回归)。"""
+
+    connection.execute(text("DROP INDEX IF EXISTS uq_subscription_scope_movie"))
+    connection.execute(text("DROP INDEX IF EXISTS uq_subscription_scope_tv"))
+    connection.execute(
+        text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_subscription_scope_movie "
+            "ON subscriptions (tmdb_id, media_type) "
+            "WHERE season_number IS NULL AND status != 'cancelled'"
+        )
+    )
+    connection.execute(
+        text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_subscription_scope_tv "
+            "ON subscriptions (tmdb_id, media_type, season_number, episode_start, episode_end) "
+            "WHERE season_number IS NOT NULL AND status != 'cancelled'"
+        )
+    )
