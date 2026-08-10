@@ -46,6 +46,9 @@ const authenticated = ref(false);
 const loggingIn = ref(false);
 const isOnline = ref(browserIsOnline());
 const offlineDataAt = ref<string | null>(null);
+// 注意:loading 为历史遗留状态,当前没有任何路径将其置为 true(result 在导航时同步赋值,
+// 见 detailResult/detailPlaceholder),下方 :1604 的 detail-loading 分支因此不可达。
+// 保留字段与 :703 的写入点以便后续接入时复用,勿在现有流转中依赖其值。
 const loading = ref(false);
 const catalogLoading = ref(false);
 const error = ref("");
@@ -700,6 +703,7 @@ function invalidateDetailRequest() {
   catalogRequestId += 1;
   pendingCatalogRoute = null;
   catalogLoading.value = false;
+  // loading 的唯一写入点,恒为 false(见 :49 注释),与 :1604 的 detail-loading 死分支配套保留
   loading.value = false;
   clearResourcePagination();
   resetInspection();
@@ -1603,6 +1607,7 @@ onBeforeUnmount(() => {
         <LogsView v-else-if="activeView === 'logs'" :api="api" />
         <SearchView v-else-if="activeView === 'search' || activeView === 'popular'" v-model="searchInput" :loading="catalogLoading" :error="catalogError" :movies="catalogMovies" :heading="catalogHeading" :favorite-ids="favoriteIds" :page="currentPage" :total-pages="totalPages" :total-results="totalResults" @search="searchMovies" @reset="selectView('home')" @open="openMovie" @favorite="toggleFavorite" @page="loadPage" @retry="retryCatalog" />
       </template>
+      <!-- 注意:loading 恒为 false(见脚本 :49 注释),此分支不可达;保留以免大改视图结构 -->
       <section v-else-if="loading && !result" class="detail-loading" aria-busy="true"><LoaderCircle class="spin" :size="24" /><strong>正在加载影视资料</strong><span>资源将在资料下方独立加载</span></section>
        <p v-if="result && !pushCapabilities.magnet && !pushCapabilities.share" class="warning-strip">115 推送当前不可用，推送按钮已禁用。</p>
        <p v-else-if="result && pushCapabilities.magnet && !pushCapabilities.share" class="warning-strip">磁力云下载可用，115 分享转存尚未验证</p>
