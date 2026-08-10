@@ -676,29 +676,35 @@ class StrmManifestService:
             run_pk = run.id
             source_version = run.snapshot_revision
             last_object_id: str | None = None
-            while True:
-                await _raise_if_cancelled(cancel_check, lease_check)
-                query = (
-                    select(LibraryScanDiff)
-                    .where(
-                        LibraryScanDiff.scan_run_id == run_pk,
-                        LibraryScanDiff.object_type == "file",
-                    )
-                    .order_by(LibraryScanDiff.object_id)
-                    .limit(_RECONCILE_BATCH_SIZE)
-                    .execution_options(populate_existing=True)
-                )
-                if last_object_id is not None:
-                    query = query.where(LibraryScanDiff.object_id > last_object_id)
-                changes = list((await session.scalars(query)).all())
-                if not changes:
-                    break
-                for change in changes:
+            # 第一趟:先 retire 全部 removed。同名替换"删除旧+同名新增"场景下,
+            # added 的 collision 检查要求旧 manifest 先退出;单趟按 object_id
+            # 顺序处理时,新 id 字典序更小会让 added 先到 → 必 path_collision。
+            if retire_removed:
+                last_removed_id: str | None = None
+                while True:
                     await _raise_if_cancelled(cancel_check, lease_check)
-                    last_object_id = change.object_id
-                    if change.change_kind == "removed":
-                        if not retire_removed:
-                            continue
+                    removed_query = (
+                        select(LibraryScanDiff)
+                        .where(
+                            LibraryScanDiff.scan_run_id == run_pk,
+                            LibraryScanDiff.object_type == "file",
+                            LibraryScanDiff.change_kind == "removed",
+                        )
+                        .order_by(LibraryScanDiff.object_id)
+                        .limit(_RECONCILE_BATCH_SIZE)
+                    )
+                    if last_removed_id is not None:
+                        removed_query = removed_query.where(
+                            LibraryScanDiff.object_id > last_removed_id
+                        )
+                    removed_changes = list(
+                        (await session.scalars(removed_query)).all()
+                    )
+                    if not removed_changes:
+                        break
+                    for change in removed_changes:
+                        await _raise_if_cancelled(cancel_check, lease_check)
+                        last_removed_id = change.object_id
                         try:
                             mutations = []
                             retire_result = await self._retire_removed(
@@ -744,6 +750,29 @@ class StrmManifestService:
                             failed,
                             retired,
                         )
+            while True:
+                await _raise_if_cancelled(cancel_check, lease_check)
+                query = (
+                    select(LibraryScanDiff)
+                    .where(
+                        LibraryScanDiff.scan_run_id == run_pk,
+                        LibraryScanDiff.object_type == "file",
+                    )
+                    .order_by(LibraryScanDiff.object_id)
+                    .limit(_RECONCILE_BATCH_SIZE)
+                    .execution_options(populate_existing=True)
+                )
+                if last_object_id is not None:
+                    query = query.where(LibraryScanDiff.object_id > last_object_id)
+                changes = list((await session.scalars(query)).all())
+                if not changes:
+                    break
+                for change in changes:
+                    await _raise_if_cancelled(cancel_check, lease_check)
+                    last_object_id = change.object_id
+                    if change.change_kind == "removed":
+                        # 第一趟已 retire 全部 removed(见上);此处仅防御
+                        # 极端顺序残留,不再重复处理。
                         continue
                     if not include_generation:
                         continue

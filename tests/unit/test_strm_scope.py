@@ -118,6 +118,9 @@ def test_playback_prefix_is_the_stable_route_without_sensitive_url_parts():
 
 @pytest.mark.asyncio
 async def test_duplicate_complete_snapshot_revision_fails_closed(tmp_path: Path):
+    """重复 revision 在写入层被唯一索引拒绝(迁移 072),歧义快照不可达。"""
+    from sqlalchemy.exc import IntegrityError
+
     database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'ambiguous.db'}")
     await initialize_database(database.engine)
     try:
@@ -132,41 +135,31 @@ async def test_duplicate_complete_snapshot_revision_fails_closed(tmp_path: Path)
                 )
             )
             await session.flush()
-            session.add_all(
-                [
-                    LibraryScanRun(
-                        id="scan-a",
-                        library_id="library-ambiguous",
-                        root_directory_id="1000",
-                        idempotency_key="scan-a-key",
-                        state="completed",
-                        complete=True,
-                        snapshot_revision=1,
-                    ),
-                    LibraryScanRun(
-                        id="scan-b",
-                        library_id="library-ambiguous",
-                        root_directory_id="1000",
-                        idempotency_key="scan-b-key",
-                        state="completed",
-                        complete=True,
-                        snapshot_revision=1,
-                    ),
-                ]
+            session.add(
+                LibraryScanRun(
+                    id="scan-a",
+                    library_id="library-ambiguous",
+                    root_directory_id="1000",
+                    idempotency_key="scan-a-key",
+                    state="completed",
+                    complete=True,
+                    snapshot_revision=1,
+                )
             )
-            await session.commit()
-
-            assert not await source_snapshot_is_current(
-                session,
-                library_id="library-ambiguous",
-                source_scan_run_id="scan-a",
-                source_snapshot_revision=1,
+            await session.flush()
+            session.add(
+                LibraryScanRun(
+                    id="scan-b",
+                    library_id="library-ambiguous",
+                    root_directory_id="1000",
+                    idempotency_key="scan-b-key",
+                    state="completed",
+                    complete=True,
+                    snapshot_revision=1,
+                )
             )
-            assert not await source_snapshot_is_current(
-                session,
-                library_id="library-ambiguous",
-                source_scan_run_id="scan-b",
-                source_snapshot_revision=1,
-            )
+            with pytest.raises(IntegrityError):
+                await session.flush()
+            await session.rollback()
     finally:
         await database.engine.dispose()

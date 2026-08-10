@@ -308,7 +308,8 @@ async def test_generation_requires_complete_current_scan(tmp_path: Path):
                     idempotency_key="scan-incomplete-key",
                     state="completed",
                     complete=False,
-                    snapshot_revision=2,
+                    # complete=False 的行不参与快照:无有效 revision
+                    snapshot_revision=None,
                 )
             )
             session.add(
@@ -346,24 +347,12 @@ async def test_generation_requires_complete_current_scan(tmp_path: Path):
 async def test_strm_consumers_reject_ambiguous_current_snapshot_revision(
     tmp_path: Path,
 ):
+    """重复 revision 被唯一索引拒绝(迁移 072):歧义快照在写入层即被杜绝。"""
     database = await _database(tmp_path)
-    output_root = tmp_path / "output"
-    output_root.mkdir()
     try:
         async with database.session_factory() as session:
             source = await session.get(LibraryScanRun, "scan-strm")
-            checkpoint = await session.get(LibraryScanCheckpoint, "scan-strm")
-            entries = list(
-                (
-                    await session.scalars(
-                        select(LibraryScanEntry).where(
-                            LibraryScanEntry.scan_run_id == "scan-strm"
-                        )
-                    )
-                ).all()
-            )
             assert source is not None
-            assert checkpoint is not None
             duplicate = LibraryScanRun(
                 id="scan-strm-duplicate",
                 library_id=source.library_id,
@@ -374,72 +363,13 @@ async def test_strm_consumers_reject_ambiguous_current_snapshot_revision(
                 state=source.state,
                 complete=source.complete,
                 snapshot_revision=source.snapshot_revision,
-                expected_page_count=source.expected_page_count,
-                expected_total=source.expected_total,
-                pages_read=source.pages_read,
-                items_seen=source.items_seen,
             )
             session.add(duplicate)
-            await session.flush()
-            session.add(
-                LibraryScanCheckpoint(
-                    scan_run_id=duplicate.id,
-                    page=checkpoint.page,
-                    items_seen=checkpoint.items_seen,
-                    cursor_json=checkpoint.cursor_json,
-                )
-            )
-            session.add_all(
-                [
-                    LibraryScanEntry(
-                        scan_run_id=duplicate.id,
-                        object_type=entry.object_type,
-                        object_id=entry.object_id,
-                        parent_id=entry.parent_id,
-                        name=entry.name,
-                        path=entry.path,
-                        pickcode=entry.pickcode,
-                        is_directory=entry.is_directory,
-                        size_bytes=entry.size_bytes,
-                        modified_at=entry.modified_at,
-                    )
-                    for entry in entries
-                ]
-            )
-            await session.commit()
-
-        manifest = StrmManifestService(database.session_factory)
-        with pytest.raises(StrmManifestError, match="source_snapshot_not_current"):
-            await manifest.generate(
-                "library-strm",
-                source_scan_run_id="scan-strm",
-                output_root=output_root,
-                playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
-            )
-        with pytest.raises(StrmManifestError, match="source_snapshot_not_current"):
-            await manifest.incremental(
-                "library-strm",
-                source_scan_run_id="scan-strm",
-                output_root=output_root,
-                playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
-            )
-        with pytest.raises(StrmCleanupPlanError, match="source_snapshot_not_current"):
-            await StrmCleanupPlanService(database.session_factory).create_plan(
-                library_id="library-strm",
-                source_scan_run_id="scan-strm",
-                output_root=output_root,
-                playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
-            )
-        with pytest.raises(StrmVerificationError, match="source_snapshot_not_current"):
-            await StrmVerificationService(database.session_factory).verify(
-                library_id="library-strm",
-                source_scan_run_id="scan-strm",
-                output_root=output_root,
-                playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
-            )
+            with pytest.raises(IntegrityError):
+                await session.flush()
+            await session.rollback()
     finally:
         await database.engine.dispose()
-
 
 async def test_generation_rejects_complete_snapshot_with_broken_tree_evidence(
     tmp_path: Path,
@@ -2132,5 +2062,122 @@ async def test_cleanup_and_verification_are_bound_to_managed_output_root(
                 output_root=outside,
                 playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
             )
+    finally:
+        await database.engine.dispose()
+
+
+async def _add_same_name_replacement_scan(database) -> None:
+    """同名替换:旧文件(高 id)删除 + 新文件(低 id)同名新增。
+
+    object_id 字符串序 "099" < "100":单趟处理时 added 先到 → collision;
+    两趟 diff(先 retire removed)后应成功。
+    """
+    async with database.session_factory() as session:
+        session.add(
+            LibraryScanRun(
+                id="scan-strm-2",
+                library_id="library-strm",
+                root_directory_id="root-strm",
+                idempotency_key="scan-key-2",
+                state="completed",
+                complete=True,
+                snapshot_revision=2,
+                scan_mode="tree",
+                pages_read=1,
+                items_seen=1,
+                expected_total=1,
+            )
+        )
+        await session.flush()
+        session.add(
+            LibraryScanEntry(
+                scan_run_id="scan-strm-2",
+                object_type="file",
+                object_id="099",
+                parent_id="root-strm",
+                name="Episode.mkv",
+                path="Show/Episode.mkv",
+                is_directory=False,
+                size_bytes=200,
+                pickcode="replacement-pickcode",
+            )
+        )
+        session.add(
+            LibraryScanDiff(
+                scan_run_id="scan-strm-2",
+                object_type="file",
+                object_id="100",
+                change_kind="removed",
+                path_changed=False,
+            )
+        )
+        session.add(
+            LibraryScanDiff(
+                scan_run_id="scan-strm-2",
+                object_type="file",
+                object_id="099",
+                change_kind="added",
+                path_changed=False,
+            )
+        )
+        session.add(
+            LibraryScanCheckpoint(
+                scan_run_id="scan-strm-2",
+                page=1,
+                items_seen=1,
+                cursor_json=json.dumps(
+                    {
+                        "version": 2,
+                        "directory_totals": {"root-strm": 1},
+                        "expected_total": 1,
+                        "pending": [],
+                        "visited": ["root-strm"],
+                    }
+                ),
+            )
+        )
+        await session.commit()
+
+
+async def test_incremental_same_name_replacement_retires_before_generating(tmp_path: Path):
+    """同名替换(added 字典序先于 removed)不再 path_collision:
+    第一趟先 retire 旧 manifest,第二趟生成新文件。修复前必失败且永久卡。"""
+    database = await _database(tmp_path)
+    try:
+        service = StrmManifestService(database.session_factory)
+        await service.generate(
+            "library-strm",
+            source_scan_run_id="scan-strm",
+            output_root=tmp_path / "output",
+            playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+        )
+        await _add_same_name_replacement_scan(database)
+        summary = await service.incremental(
+            "library-strm",
+            source_scan_run_id="scan-strm-2",
+            output_root=tmp_path / "output",
+            playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+        )
+
+        assert summary.failed == 0
+        assert summary.generated == 1
+        assert summary.retired == 1
+        # 同名路径最终归属新文件
+        assert (tmp_path / "output/Show/Episode.strm").exists()
+        async with database.session_factory() as session:
+            old_entry = await session.scalar(
+                select(StrmManifestEntry).where(
+                    StrmManifestEntry.cloud_file_id == "100"
+                )
+            )
+            new_entry = await session.scalar(
+                select(StrmManifestEntry).where(
+                    StrmManifestEntry.cloud_file_id == "099",
+                    StrmManifestEntry.is_current.is_(True),
+                )
+            )
+            assert old_entry is not None and old_entry.is_current is False
+            assert old_entry.status == "retired"
+            assert new_entry is not None
     finally:
         await database.engine.dispose()
