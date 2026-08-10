@@ -13,6 +13,17 @@ RELEASES_ROOT="${RELEASES_ROOT:-/opt/watch-assistant/releases}"
 KEEP="${KEEP:-4}"
 DRY_RUN="${1:-}"
 
+# 入参校验:任何非 --dry-run 参数都视为笔误,拒绝执行真实删除;
+# KEEP 必须是正整数,避免 KEEP=abc 时算术求值为 0 误删全部。
+if [[ -n "$DRY_RUN" && "$DRY_RUN" != "--dry-run" ]]; then
+  echo "release retention refused: unknown argument '$DRY_RUN' (use --dry-run for preview)" >&2
+  exit 2
+fi
+if [[ ! "$KEEP" =~ ^[0-9]+$ || "$KEEP" -lt 1 ]]; then
+  echo "release retention refused: KEEP must be a positive integer (got '$KEEP')" >&2
+  exit 2
+fi
+
 if [[ ! -d "$RELEASES_ROOT" ]]; then
   echo "release retention refused: $RELEASES_ROOT does not exist" >&2
   exit 2
