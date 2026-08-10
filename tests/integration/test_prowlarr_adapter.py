@@ -299,6 +299,36 @@ async def test_prowlarr_rejects_non_array_response_without_returning_body(respx_
 
 @pytest.mark.integration
 @respx.mock(using="httpx")
+async def test_invalid_indexer_ids_never_freeze_the_circuit_probe(respx_mock):
+    # 回归(S2):参数构建必须发生在 allow_request() 之前。若在探针放行
+    # (_probe_in_flight=True)后抛 ValueError(非 int 索引器 id),
+    # 既无 record_failure 也无 release_request,探针永真会把来源
+    # 永久冻结在 BACKOFF;参数校验必须先于熔断器放行。
+    api_key = secrets.token_urlsafe(24)
+    route = respx_mock.get(path="/api/v1/search").mock(
+        return_value=httpx.Response(200, json=[])
+    )
+    client = _mocked_client(
+        respx_mock,
+        "http://prowlarr.test",
+        api_key,
+        health_tracker=SourceHealthTracker(failure_threshold=10),
+    )
+    try:
+        with pytest.raises(ValueError):
+            await client.search("Movie", indexer_ids=(11, "not-an-int"))
+
+        # 参数错误被拒绝后,探针从未放行,熔断器仍可正常放行后续请求。
+        assert client._health.allow_request() is True
+        result = await client.search("Movie")
+        assert result is not None
+    finally:
+        await client.aclose()
+    assert route.call_count == 1
+
+
+@pytest.mark.integration
+@respx.mock(using="httpx")
 async def test_prowlarr_rejects_unbounded_or_non_json_success_response(respx_mock):
     route = respx_mock.get(path="/api/v1/search").mock(
         side_effect=[
