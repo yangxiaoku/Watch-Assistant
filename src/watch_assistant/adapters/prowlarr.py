@@ -428,11 +428,13 @@ class ProwlarrClient:
             return False
         if not host or host != self._base_host:
             return False
-        default_port = 443 if (parsed.scheme or "http").casefold() == "https" else 80
+        if (parsed.scheme or "http").casefold() != self._base_scheme:
+            return False
+        default_port = 443 if self._base_scheme == "https" else 80
         url_port = port if port is not None else default_port
         base_port = self._base_port
         if base_port is None:
-            base_port = 443 if self._base_scheme == "https" else 80
+            base_port = default_port
         return url_port == base_port
 
     async def _resolve_download_url(self, download_url: str) -> str | None:
