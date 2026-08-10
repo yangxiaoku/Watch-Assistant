@@ -147,6 +147,7 @@
 | P1 | `services/strm_manifest.py` | 同目录"删除旧+同名新增"一次扫描窗口内 `path_collision`,全量模式永久失败 | diff 分两趟:先 retire removed,再生成 added/modified |
 | P1 | `services/webhooks.py` | ✅ 已修复(2.2 #14) |
 | P1 | `services/library_scan_operations.py` | ✅ 已修复(2.2 #19) |
+| P1 | `security.py` `require_api_auth`/`require_diagnostics_auth` | security_manager 缺失时 fail-open 返回 internal 全量身份;与注入式测试基建强耦合(注入式 `create_app` 大多未显式传 security_manager,直接改 fail-closed 会大面积破坏现有测试) | 单独排期改为 fail-closed(缺失即拒绝),并要求注入式 `create_app` 必须显式传 security_manager 后再收紧上线 |
 | P2 | `api/settings_p115.py` | 目录浏览原地改写全局白名单,可绕过推送目标限制;白名单不持久 | 浏览集合按会话隔离,推送/整理目标显式"确认选定"并持久化 |
 | P2 | `services/library_index.py` | 快照 revision 并发重复分配 → 消费者 fail-closed | 完成点单条原子 UPDATE 分配 revision,或按 library 串行化 |
 | P2 | `services/p115_login_devices.py` | ✅ 已修复(2.2 #17) |
