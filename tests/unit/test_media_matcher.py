@@ -603,3 +603,48 @@ async def test_movie_year_still_matches_strictly():
 
     assert decision.status is MatchStatus.NEEDS_REVIEW
     assert MatchReason.YEAR_CONFLICT in decision.reasons
+
+
+def test_no_year_tv_with_full_structure_match_is_accepted():
+    """无年份的剧集(标题/季集全匹配+唯一候选)自动接受,不再停留待办。"""
+    candidate = TmdbCandidate(
+        tmdb_id=259837,
+        media_type=MediaType.TV,
+        title="超能路人甲",
+        kind=MediaKind.TV,
+        release_year=2026,
+        origin_countries=("KR",),
+    )
+    evidence = MatchEvidence(
+        score=75,
+        title_match="original_title",
+        year_match=None,
+        media_type_match=True,
+        season_match=True,
+        episode_match=True,
+    )
+    decision = _decision_from_ranked((RankedCandidate(candidate, 75, evidence, True),), 85, 8)
+    assert decision.status is MatchStatus.ACCEPTED
+    assert decision.selected is candidate
+
+
+def test_no_year_tv_without_episode_match_stays_review():
+    """结构不完整(集数不匹配)时保持待办,不因豁免误接受。"""
+    candidate = TmdbCandidate(
+        tmdb_id=999,
+        media_type=MediaType.TV,
+        title="Some Show",
+        kind=MediaKind.TV,
+        release_year=2024,
+        origin_countries=("US",),
+    )
+    evidence = MatchEvidence(
+        score=75,
+        title_match="title",
+        year_match=None,
+        media_type_match=True,
+        season_match=True,
+        episode_match=False,
+    )
+    decision = _decision_from_ranked((RankedCandidate(candidate, 75, evidence, True),), 85, 8)
+    assert decision.status is MatchStatus.NEEDS_REVIEW

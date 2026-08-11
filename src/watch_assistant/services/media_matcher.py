@@ -556,6 +556,27 @@ def _decision_from_ranked(
     if not top.eligible:
         confidence = MatchConfidence.LOW
     elif top.score < auto_score:
+        evidence = top.evidence
+        # 结构完整豁免:无年份的剧集文件名(年份常见缺失,如官方剧集命名
+        # 不带发布年)在标题/媒体类型/季集全部吻合且候选唯一时自动接受,
+        # 否则这类文件永远停在待办需要人工选择。
+        if (
+            top.score >= 70
+            and evidence.year_match is None
+            and evidence.title_match is not None
+            and evidence.season_match is True
+            and evidence.episode_match is True
+            and (len(ranked) == 1 or margin >= minimum_margin)
+        ):
+            return MatchDecision(
+                status=MatchStatus.ACCEPTED,
+                selected=top.candidate,
+                confidence=MatchConfidence.HIGH,
+                score=top.score,
+                margin=margin,
+                ranked_candidates=ranked,
+                source=MatchSource.AUTOMATIC,
+            )
         confidence = MatchConfidence.MEDIUM
         reasons.append(MatchReason.LOW_SCORE)
     elif margin < minimum_margin:
