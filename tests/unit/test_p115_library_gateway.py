@@ -97,6 +97,54 @@ async def test_gateway_does_not_notify_on_business_failure():
     assert provider.failures == 0
 
 
+class _Structured405Transport:
+    """app 接口返回含 status_code=405 的 Mapping(不抛异常),旧接口正常。"""
+
+    def __init__(self, response):
+        self._response = response
+        self.fs_files_calls = 0
+        self.fs_files_app_calls = 0
+
+    async def fs_files_app(self, payload, *, timeout_seconds):
+        del payload, timeout_seconds
+        self.fs_files_app_calls += 1
+        return {"state": True, "status_code": 405, "data": None}
+
+    async def fs_files(self, payload, *, timeout_seconds):
+        del timeout_seconds
+        self.fs_files_calls += 1
+        return self._response
+
+    async def fs_info_app(self, payload, *, timeout_seconds):
+        del payload, timeout_seconds
+        return {"state": True, "status_code": 405, "data": None}
+
+    async def fs_info(self, payload, *, timeout_seconds):
+        del timeout_seconds
+        return self._response
+
+
+@pytest.mark.asyncio
+async def test_gateway_falls_back_to_legacy_on_structured_405():
+    """app 接口返回结构化 405(不抛异常)时同样回退旧接口,而不是被
+    _response_success 误判为成功再在 _parse_page 报 pagination 错误。"""
+    transport = _Structured405Transport(
+        {"state": True, "data": [], "offset": 0, "limit": 1, "count": 0}
+    )
+    gateway = P115ReadOnlyDirectoryGateway(
+        _PlainProvider(),
+        transport_factory=lambda credential: transport,
+        authorized_directory_ids=("7000",),
+    )
+
+    page = await gateway.list_directory("7000", page=1, page_size=1)
+
+    assert page is not None
+    assert page.items == ()
+    assert transport.fs_files_app_calls == 1
+    assert transport.fs_files_calls == 1
+
+
 @pytest.mark.asyncio
 async def test_gateway_tolerates_provider_without_notify_failure():
     provider = _PlainProvider()

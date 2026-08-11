@@ -627,6 +627,21 @@ async def test_app_auth_limit_exception_is_not_credentials_reauth(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_share_receive_busy_is_not_retried_duplicate(tmp_path):
+    """990009 busy 重试只对幂等提交(磁力按 infohash 去重)启用;share_receive
+    非幂等,收到 busy 不得盲目重发,否则会重复接收分享落库。"""
+    provider, _path = _provider(tmp_path)
+    fake = _ShareReceiveBusyClient()
+    adapter = P115Adapter(provider, "1", client_factory=lambda _cookie: fake)
+
+    result = await adapter.save_share("https://115.com/s/code", None)
+
+    assert fake.receive_busy_calls == 1  # 不重试
+    assert result.status == RemoteStatus.UNCERTAIN
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
 async def test_adapter_serializes_calls_by_default(tmp_path):
     provider, _path = _provider(tmp_path)
     fake = FakeP115Client()
@@ -955,6 +970,22 @@ class _AlwaysBusyClient(FakeP115Client):
         raise error
 
 
+class _ShareReceiveBusyClient(FakeP115Client):
+    """share_receive 首次调用抛 errno=990009:非幂等操作不得盲目重发。"""
+
+    def __init__(self):
+        super().__init__()
+        self.receive_busy_calls = 0
+
+    def share_receive(self, payload, *, async_=False, request=None):
+        del async_, request
+        self.receive_busy_calls += 1
+        self.share_payloads.append(payload)
+        error = RuntimeError("busy: previous request still processing")
+        error.errno = 990009
+        raise error
+
+
 @pytest.mark.asyncio
 async def test_submit_magnet_hangs_are_bounded_by_timeout_and_marked_uncertain(tmp_path):
     """修复前:写调用裸 to_thread 无超时,挂起会拖死 worker 且任务永久卡 SUBMITTING。"""
@@ -1005,3 +1036,49 @@ async def test_submit_magnet_busy_after_retry_stays_ambiguous(tmp_path):
     assert result.status == RemoteStatus.UNCERTAIN
     assert result.error_code == "submit_ambiguous"
     await adapter.aclose()
+
+
+class _TrackedCloseClient:
+    """记录 close 调用的假 client,用于验证超时后迟到 client 被关闭。"""
+
+    def __init__(self):
+        self.closed = False
+
+    def close(self):
+        self.closed = True
+
+
+@pytest.mark.asyncio
+async def test_client_factory_timeout_closes_late_client(tmp_path):
+    """工厂线程超时后仍会完成并创建 client:该 client 不得泄漏,必须被
+    关闭(否则每次超时累积一个未关闭的 client/连接)。"""
+    import time as time_module
+
+    provider, _path = _provider(tmp_path)
+    late_clients: list[_TrackedCloseClient] = []
+
+    def slow_factory(_cookie):
+        time_module.sleep(0.15)  # 超过 request_timeout_seconds,模拟挂起工厂
+        client = _TrackedCloseClient()
+        late_clients.append(client)
+        return client
+
+    adapter = P115Adapter(
+        provider,
+        42,
+        client_factory=slow_factory,
+        request_timeout_seconds=0.02,
+    )
+    try:
+        client, missing = await adapter._client_for_operation()
+        assert client is None
+        assert missing is False
+        # 让超时后的工厂线程完成并创建迟到 client,再由 done-callback 关闭。
+        for _ in range(20):
+            await asyncio.sleep(0.02)
+            if late_clients:
+                break
+        assert late_clients, "超时后的工厂线程应完成并创建 client"
+        assert late_clients[0].closed, "迟到完成的 client 必须被关闭,不得泄漏"
+    finally:
+        await adapter.aclose()

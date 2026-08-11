@@ -93,8 +93,10 @@ class P115FixedPlaybackTransport:
             raise
         except TimeoutError:
             raise
-        except Exception as error:
-            raise P115PlaybackTransportUnavailable("remote_failed") from error
+        except Exception:  # noqa: BLE001 - 不得链起 p115client 原始异常,
+            # 否则 logging.exception 的 traceback 会带出完整动态链接/签名参数
+            # (违反凭据不进日志)。
+            raise P115PlaybackTransportUnavailable("remote_failed") from None
         url = str(value)
         raw_headers = getattr(value, "headers", {})
         headers: list[tuple[str, str]] = []

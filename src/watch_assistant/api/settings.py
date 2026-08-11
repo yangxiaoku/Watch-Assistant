@@ -446,17 +446,30 @@ async def patch_organization(
 ) -> OrganizationSettingsResponse:
     configured_root_id = getattr(request.app.state, "organization_target_root_id", None)
     browsed_directory_ids = getattr(request.app.state, "p115_browsed_directory_ids", set())
-    if isinstance(configured_root_id, str) and configured_root_id:
-        requested_directory_ids: set[str] = set()
-        patch_values = patch.model_dump(exclude_unset=True)
-        for key in ("source_directory_ids", "target_directory_id", "push_directory_id"):
-            value = patch_values.get(key)
-            if isinstance(value, list):
-                requested_directory_ids.update(item for item in value if isinstance(item, str))
-            elif isinstance(value, str):
-                requested_directory_ids.add(value)
-        if not requested_directory_ids.issubset({configured_root_id, *browsed_directory_ids}):
-            raise HTTPException(status_code=403, detail="p115_directory_out_of_scope")
+    requested_directory_ids: set[str] = set()
+    patch_values = patch.model_dump(exclude_unset=True)
+    for key in ("source_directory_ids", "target_directory_id", "push_directory_id"):
+        value = patch_values.get(key)
+        if isinstance(value, list):
+            requested_directory_ids.update(item for item in value if isinstance(item, str))
+        elif isinstance(value, str):
+            requested_directory_ids.add(value)
+    if requested_directory_ids:
+        if isinstance(configured_root_id, str) and configured_root_id:
+            # 已配置 root:所有目录必须落在 root/已浏览集合内,防止越权目录。
+            allowed = {configured_root_id, *browsed_directory_ids}
+            if not requested_directory_ids.issubset(allowed):
+                raise HTTPException(status_code=403, detail="p115_directory_out_of_scope")
+        else:
+            # 目标根未配置:target_directory_id 是根配置的来源,允许首次设置;
+            # 但 source/push 没有 root 可核对,必须 fail-closed 拒绝,不得
+            # 静默放行(唯一兜底只剩运行期写契约)。
+            requested_target = patch_values.get("target_directory_id")
+            non_target = requested_directory_ids - (
+                {requested_target} if isinstance(requested_target, str) else set()
+            )
+            if non_target:
+                raise HTTPException(status_code=403, detail="p115_directory_out_of_scope")
         patch_values = patch.model_dump(exclude_unset=True)
         sources = patch_values.get("source_directory_ids")
         target = patch_values.get("target_directory_id")
@@ -636,6 +649,7 @@ async def get_logs(
 async def export_logs(
     settings: SettingsDependency,
     format: str = Query(default="jsonl", pattern="^(jsonl|csv)$"),
+    limit: int = Query(default=50000, ge=1, le=200000),
     category: LogCategory | None = None,
     level: LoggingLevel | None = None,
     event_code: str | None = Query(default=None, max_length=128),
@@ -650,12 +664,14 @@ async def export_logs(
     start_time: datetime | None = None,
     end_time: datetime | None = None,
 ) -> PlainTextResponse:
+    """导出日志,带上限保护:全量累积进内存会构成已认证 DoS。"""
     records: list[dict[str, object]] = []
     cursor: int | None = None
-    while True:
+    while len(records) < limit:
+        page_size = min(100, limit - len(records))
         page, cursor = await settings.log_store.list(
             cursor=cursor,
-            limit=100,
+            limit=page_size,
             category=category,
             level=level,
             event_code=event_code,

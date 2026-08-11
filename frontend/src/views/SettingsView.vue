@@ -375,6 +375,15 @@ async function pollP115QrLogin() {
     if (!settingsMounted) return;
     p115QrStatus.value = response.status;
     if (response.status === "ready") {
+      // GET 轮询只读,扫码成功后凭据入库必须经 CSRF 校验的 POST 确认。
+      try {
+        await props.api.saveP115Qrcode(p115QrSessionId.value);
+      } catch (exception) {
+        p115QrBusy.value = false;
+        p115QrError.value = exception instanceof ApiError ? exception.message : "扫码设备保存失败，请稍后重试";
+        return;
+      }
+      if (!settingsMounted) return;
       p115QrBusy.value = false;
       p115QrError.value = "扫码设备已保存，并已切换为当前设备。";
       await Promise.all([loadCredentials(), loadP115(), loadP115Devices()]);

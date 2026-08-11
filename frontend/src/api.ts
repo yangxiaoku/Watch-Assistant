@@ -337,6 +337,13 @@ export class ApiClient {
     return this.request<P115QrcodeStatusResponse>(`/api/v1/settings/p115/qrcode/${encodeURIComponent(sessionId)}`);
   }
 
+  async saveP115Qrcode(sessionId: string): Promise<P115QrcodeStatusResponse> {
+    // POST 确认入库:GET 轮询只读,凭据持久化必须经 CSRF 校验的 POST。
+    return this.request<P115QrcodeStatusResponse>(`/api/v1/settings/p115/qrcode/${encodeURIComponent(sessionId)}/save`, {
+      method: "POST",
+    });
+  }
+
   async activateP115Device(deviceId: string, revision: number): Promise<P115LoginDeviceListResponse> {
     return this.request<P115LoginDeviceListResponse>(`/api/v1/settings/p115/devices/${encodeURIComponent(deviceId)}/activate`, {
       method: "POST",

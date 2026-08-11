@@ -82,6 +82,9 @@ class P115LoginDeviceService:
                 .values(active=P115LoginDevice.id == device.id)
             )
             await session.commit()
+            # 上述批量 UPDATE 直接改库不同步 ORM 对象(expire_on_commit=False),
+            # refresh 让响应反映原子置位后的真实 active,而非构造时的 False。
+            await session.refresh(device)
         return self._summary(device)
 
     async def get_cookie(self, device_id: str) -> str:

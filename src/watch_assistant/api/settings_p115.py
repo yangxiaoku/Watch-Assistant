@@ -259,8 +259,38 @@ async def create_p115_qrcode(
     "/settings/p115/qrcode/{session_id}", response_model=P115QrcodeStatusResponse
 )
 async def poll_p115_qrcode(session_id: str, request: Request) -> P115QrcodeStatusResponse:
+    """只读轮询:GET 豁免 CSRF,不得在轮询响应里执行任何凭据写操作。
+
+    扫码成功后返回 ``ready`` 但不持久化;前端随后调 POST
+    ``/settings/p115/qrcode/{session_id}/save`` 完成凭据入库(POST 走 CSRF)。
+    这修复了此前"用 GET 改写最高价值凭据(115 Cookie)且无 CSRF/限流"的
+    结构性缺口。
+    """
     try:
-        status_value, cookie = await _qrcode_service(request).poll(session_id)
+        status_value, _cookie = await _qrcode_service(request).poll(session_id)
+    except P115QrcodeError as exc:
+        error_code = str(exc)
+        status_code = 404 if error_code == "qrcode_session_not_found" else 503
+        raise HTTPException(status_code=status_code, detail=error_code) from None
+    return P115QrcodeStatusResponse(
+        session_id=session_id,
+        status=status_value,
+        device=None,
+    )
+
+
+@router.post(
+    "/settings/p115/qrcode/{session_id}/save", response_model=P115QrcodeStatusResponse
+)
+async def save_p115_qrcode(session_id: str, request: Request) -> P115QrcodeStatusResponse:
+    """POST 确认入库:扫码成功后由前端显式调用,纳入 CSRF 校验。
+
+    从 session 取回服务端缓存的 cookie(不再在轮询响应里回传),持久化后
+    添加设备并消费 session。
+    """
+    qrcode = _qrcode_service(request)
+    try:
+        status_value, cookie = await qrcode.poll(session_id)
     except P115QrcodeError as exc:
         error_code = str(exc)
         status_code = 404 if error_code == "qrcode_session_not_found" else 503
@@ -275,11 +305,10 @@ async def poll_p115_qrcode(session_id: str, request: Request) -> P115QrcodeStatu
             await credentials.update_p115_cookie(
                 cookie, int(snapshot["revision"])
             )
-            device_code, device_name = await _qrcode_service(request).device_info(session_id)
+            device_code, device_name = await qrcode.device_info(session_id)
             device = await _device_service(request).add_device(device_name, device_code, cookie)
-            await _qrcode_service(request).consume(session_id)
-        except Exception as exc:  # noqa: BLE001 - stable public error only
-            del exc
+            await qrcode.consume(session_id)
+        except Exception:  # noqa: BLE001 - stable public error only
             raise HTTPException(status_code=503, detail="p115_qrcode_save_failed") from None
     return P115QrcodeStatusResponse(
         session_id=session_id,

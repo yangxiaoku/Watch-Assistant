@@ -571,3 +571,114 @@ async def test_p115_adapter_validation_uses_only_task_list(tmp_path):
 
     assert fake.task_list_calls == 1
     assert fake.mutating_calls == 0
+
+
+class _FakeCredentialService:
+    def __init__(self):
+        self.cookie = None
+        self.revision = 0
+
+    async def snapshot(self):
+        return {"revision": self.revision}
+
+    async def update_p115_cookie(self, cookie, revision):
+        self.cookie = cookie
+        self.revision = revision
+
+
+class _FakeQrcodeService:
+    def __init__(self, session_id="session-1", cookie=None):
+        self.session_id = session_id
+        self._cookie = cookie
+        self.poll_calls = 0
+        self.consumed = False
+
+    async def poll(self, session_id):
+        self.poll_calls += 1
+        if session_id != self.session_id:
+            from watch_assistant.services.p115_qrcode import P115QrcodeError
+
+            raise P115QrcodeError("qrcode_session_not_found")
+        if self._cookie is not None:
+            return "ready", self._cookie
+        return "waiting", None
+
+    async def device_info(self, session_id):
+        del session_id
+        return "web", "这台电脑"
+
+    async def consume(self, session_id):
+        del session_id
+        self.consumed = True
+
+
+class _FakeDeviceService:
+    def __init__(self):
+        self.devices = []
+
+    async def add_device(self, name, device_code, cookie):
+        device = {
+            "id": "device-1",
+            "name": name,
+            "device_code": device_code,
+            "active": True,
+            "created_at": datetime.now(UTC),
+            "last_used_at": datetime.now(UTC),
+        }
+        self.devices.append(device)
+        return device
+
+
+@pytest.mark.integration
+async def test_qrcode_poll_is_read_only_and_save_persists_via_post(tmp_path):
+    """M3 加固:GET 轮询不得改写凭据;扫码成功后必须经 POST save 确认入库。"""
+    app = FastAPI()
+    app.state.security_manager = make_security_manager()
+    qrcode = _FakeQrcodeService(cookie=COOKIE)
+    credentials = _FakeCredentialService()
+    devices = _FakeDeviceService()
+    app.state.p115_qrcode_service = qrcode
+    app.state.credential_service = credentials
+    app.state.p115_login_device_service = devices
+    app.include_router(router)
+
+    async with await _client(app) as client:
+        # GET 轮询返回 ready,但不得写入任何凭据
+        poll = await client.get("/api/v1/settings/p115/qrcode/session-1")
+        assert poll.status_code == 200
+        body = poll.json()
+        assert body["status"] == "ready"
+        assert body["device"] is None
+        assert credentials.cookie is None, "GET 轮询不得写凭据"
+        assert credentials.revision == 0
+        assert devices.devices == []
+        assert qrcode.consumed is False
+
+        # POST save 才执行凭据持久化
+        save = await client.post("/api/v1/settings/p115/qrcode/session-1/save")
+        assert save.status_code == 200
+        saved = save.json()
+        assert saved["status"] == "ready"
+        assert saved["device"]["active"] is True
+        assert credentials.cookie == COOKIE
+        assert len(devices.devices) == 1
+        assert devices.devices[0]["active"] is True
+        assert qrcode.consumed is True
+
+
+@pytest.mark.integration
+async def test_qrcode_poll_does_not_consume_session(tmp_path):
+    """GET 轮询不应消耗 session,否则重复轮询会误报 session_not_found。"""
+    app = FastAPI()
+    app.state.security_manager = make_security_manager()
+    qrcode = _FakeQrcodeService(cookie=COOKIE)
+    app.state.p115_qrcode_service = qrcode
+    app.state.credential_service = _FakeCredentialService()
+    app.state.p115_login_device_service = _FakeDeviceService()
+    app.include_router(router)
+
+    async with await _client(app) as client:
+        first = await client.get("/api/v1/settings/p115/qrcode/session-1")
+        second = await client.get("/api/v1/settings/p115/qrcode/session-1")
+        assert first.status_code == 200
+        assert second.status_code == 200

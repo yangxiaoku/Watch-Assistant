@@ -581,8 +581,16 @@ def _required_scope(request: Request) -> str:
     method = request.method.upper()
     if path in {"/api/v1/health", "/api/v1/mcp"} or path.startswith("/api/v1/agent/"):
         return "system:read"
-    if path.startswith(("/api/v1/tasks", "/api/v1/workflows")):
+    if path.startswith("/api/v1/auth/"):
+        # 登录/登出/会话查询走 web session(via_bearer=False 时 scope 不校验);
+        # agent token 调用 auth 路由要求最小系统读权限即可。
+        return "system:read"
+    if path.startswith("/api/v1/tasks"):
         return "task:read" if method in {"GET", "HEAD"} else "task:write"
+    if path.startswith("/api/v1/workflows"):
+        # workflow 审批/取消/发现/阶段推进都是组织写操作,不得与任务写共用
+        # task:write,否则低权限 token 可推进 workflow 终态。
+        return "task:read" if method in {"GET", "HEAD"} else "organize:execute"
     if path.startswith("/api/v1/notifications"):
         return "task:read" if method in {"GET", "HEAD"} else "task:write"
     if path.startswith("/api/v1/organization-operations"):
@@ -593,6 +601,13 @@ def _required_scope(request: Request) -> str:
         return "organize:execute"
     if path.startswith("/api/v1/organization-plans"):
         return "organize:plan"
+    if path.startswith("/api/v1/organization-history"):
+        # 组织历史含目标路径等敏感详情,读权限收敛到 organize:plan,
+        # 不得落回默认 system:read。
+        return "organize:plan"
+    if path.startswith("/api/v1/imports"):
+        # 手动导入是组织写操作,不得落回默认 task:write。
+        return "organize:execute"
     if path.startswith("/api/v1/strm/play"):
         return "strm:read"
     if path.startswith(("/api/v1/strm-operations", "/api/v1/strm-cleanup-plans")):
@@ -627,11 +642,35 @@ def _required_scope(request: Request) -> str:
         # 备份清单/恢复预览包含目录结构与文件清单,创建备份是写操作;
         # 默认 token 不得读取备份内容,更不得触发全库备份。
         return "backup:read" if method in {"GET", "HEAD"} else "backup:write"
+    if path.startswith("/api/v1/resources") and (
+        path.endswith("/inspect") or "/inspect/" in path
+    ):
+        # 资源审查/批次读取是受控操作,读写都要求 review:write。
+        return "review:write"
+    if path.startswith("/api/v1/resource-search"):
+        return "task:read"
     if path.startswith(("/api/v1/resources", "/api/v1/seasons")):
         return "library:read" if method in {"GET", "HEAD"} else "task:write"
+    if path.startswith("/api/v1/sources/reliability"):
+        return "library:read"
+    if path.startswith("/api/v1/watchlist"):
+        return "library:read"
+    if path.startswith("/api/v1/webhooks"):
+        # webhook 端点管理含密钥轮换/重试,写操作要求 settings:write。
+        return "settings:read" if method in {"GET", "HEAD"} else "settings:write"
+    if path.startswith("/api/v1/pwa"):
+        return "task:read" if method in {"GET", "HEAD"} else "task:write"
+    if path.startswith("/api/v1/cache"):
+        return "system:read" if method in {"GET", "HEAD"} else "settings:write"
+    if path.startswith("/api/v1/logs"):
+        return "audit:read"
+    if path.startswith("/api/v1/subtitles"):
+        return "task:read" if method in {"GET", "HEAD"} else "task:write"
     if path.startswith(("/api/v1/subscriptions", "/api/v1/quality-profiles")):
         return "library:read" if method in {"GET", "HEAD"} else "task:write"
-    return "system:read" if method in {"GET", "HEAD"} else "task:write"
+    # fail-closed:未知路径不静默降级到默认 scope。任何未来新增写端点
+    # 漏配本清单都会在此拒绝,而不是悄悄获得 task:write 权限。
+    raise AuthError(403, {"code": "scope_unmapped", "path": path})
 
 
 def _decode_json_strings(value: str) -> list[str]:

@@ -278,3 +278,47 @@ async def test_agent_library_scope_hides_plans_from_other_libraries(tmp_path):
     assert mutation.json()["detail"]["code"] == "plan_not_found"
     await client.aclose()
     await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_bearer_agent_confirm_requires_plan_hash(tmp_path):
+    """M 加固:bearer agent 调 confirm 必须提供 plan_hash(证明审阅过确切
+    载荷),与 operation 排队(via_bearer 强制 digest)一致;web session 仍可
+    交互式确认省略。"""
+    client, database = await _client(tmp_path, enabled=True)
+    raw_token = "wa_at_plan_hash_required"
+    async with database.session_factory() as session:
+        session.add(
+            AgentToken(
+                id="agent-plan-hash",
+                name="plan-hash-test",
+                token_digest=hashlib.sha256(raw_token.encode()).hexdigest(),
+                token_prefix=raw_token[:16],
+                scopes_json=json.dumps(["organize:plan"]),
+                library_ids_json=json.dumps(["library-review"]),
+                expires_at=datetime.now(UTC) + timedelta(hours=1),
+                created_at=datetime.now(UTC),
+            )
+        )
+        await session.commit()
+    headers = {"Authorization": f"Bearer {raw_token}"}
+
+    # 无 plan_hash → 422 plan_hash_required
+    missing = await client.post(
+        "/api/v1/organization-plans/plan-review/confirm",
+        json={"expected_revision": 1},
+        headers=headers,
+    )
+    assert missing.status_code == 422
+    assert missing.json()["detail"]["code"] == "plan_hash_required"
+
+    # 提供错误 plan_hash → 409 plan_hash_mismatch
+    wrong = await client.post(
+        "/api/v1/organization-plans/plan-review/confirm",
+        json={"expected_revision": 1, "plan_hash": "b" * 64},
+        headers=headers,
+    )
+    assert wrong.status_code == 409
+    assert wrong.json()["detail"]["code"] == "plan_hash_mismatch"
+    await client.aclose()
+    await database.engine.dispose()

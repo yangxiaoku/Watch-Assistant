@@ -16,6 +16,7 @@ from watch_assistant.library_models import (
     OrganizationPlan,
 )
 from watch_assistant.models import OrganizationOperation
+from watch_assistant.schemas import TaskResponse
 from watch_assistant.security import AuthContext
 from watch_assistant.services.api_errors import build_error_payload
 from watch_assistant.services.observability import EventLogger, emit_event
@@ -85,6 +86,19 @@ class McpService:
                 actor_id=context.agent_token_id,
             )
             return _error(request_number, -32003, exc.code, request_id, correlation_id, exc.missing_scopes)
+        except Exception:  # noqa: BLE001 - any unexpected error becomes an MCP error, never a raw 500
+            await emit_event(
+                self._event_logger,
+                "mcp.call",
+                fields={"method": method, "status": "failed"},
+                request_id=request_id,
+                correlation_id=correlation_id,
+                actor_type="agent",
+                actor_id=context.agent_token_id,
+            )
+            return _error(
+                request_number, -32603, "internal_error", request_id, correlation_id
+            )
 
     async def _dispatch(self, method: str, params: Any, context: AuthContext) -> dict[str, Any]:
         params = params if isinstance(params, dict) else {}
@@ -166,7 +180,7 @@ class McpService:
             "schema_version": "v1",
             "generated_at": _now(),
             "freshness": "live",
-            "items": [_model_dump(item) for item in items[:limit]],
+            "items": [_task_view(item) for item in items[:limit]],
             "page": {"limit": limit, "cursor": cursor, "next_cursor": cursor + limit if has_more else None},
         }
 
@@ -349,7 +363,7 @@ class McpService:
             task = await self._tasks.get(task_id)
             if task is None:
                 raise McpError("task_not_found")
-            return {"schema_version": "v1", "generated_at": _now(), "freshness": "live", "item": _model_dump(task)}
+            return {"schema_version": "v1", "generated_at": _now(), "freshness": "live", "item": _task_view(task)}
         if name == "organization.plan.get":
             self._require(context, "organize:plan")
             plan_id = _required_identifier(arguments, "plan_id")
@@ -526,6 +540,18 @@ def _model_dump(value: Any) -> Any:
     if hasattr(value, "model_dump"):
         return value.model_dump(mode="json")
     return value
+
+
+def _task_view(task: Any) -> dict[str, Any]:
+    """把 ORM Task(或带公开字段的对象)转成稳定的 MCP 任务视图。
+
+    修复前直接用 ``_model_dump`` 序列化 ORM 对象:无 ``model_dump`` 的
+    SQLAlchemy 实例被原样返回,``json.dumps`` 抛 ``TypeError`` 且 ``handle``
+    只捕获 ``McpError``,导致 ``task.get``/``tasks.list`` 裸 500。
+    """
+    if hasattr(task, "model_dump"):
+        return task.model_dump(mode="json")
+    return TaskResponse.model_validate(task, from_attributes=True).model_dump(mode="json")
 
 
 def _json_text(value: Any) -> str:

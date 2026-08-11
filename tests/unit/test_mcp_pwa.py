@@ -404,3 +404,54 @@ async def test_mcp_library_scoped_token_cannot_read_unscopable_global_entities()
         context=_context("task:read"),
     )
     assert "task_one" in ok["result"]["data"]["content"][0]["text"]
+
+
+class _OrmLikeTask:
+    """模拟 SQLAlchemy ORM 对象:无 model_dump,不可直接 json.dumps。"""
+
+    def __init__(self, task_id: str, state: str = "downloading"):
+        from datetime import UTC, datetime
+
+        self.id = task_id
+        self.state = state
+        self.action = "offline_download"
+        self.attempts = 0
+        self.remote_ref = None
+        self.error_code = None
+        self.error_message = None
+        self.created_at = datetime.now(UTC)
+        self.updated_at = datetime.now(UTC)
+        self.submitted_at = None
+        self.workflow_id = None
+        self.resource_id = None
+        self.target_directory_id = None
+
+
+class _OrmTasks:
+    async def list_recent(self, *, limit=50, offset=0):
+        return [_OrmLikeTask("task_orm")][offset : offset + limit]
+
+    async def get(self, task_id: str):
+        del task_id
+        return _OrmLikeTask("task_orm")
+
+
+@pytest.mark.asyncio
+async def test_mcp_tasks_never_serialize_raw_orm_objects():
+    """修复前:TaskService.list_recent()/get() 返回 SQLAlchemy ORM 对象,
+    _model_dump 原样返回 → json.dumps 抛 TypeError → 裸 500。修复后:
+    MCP 层返回稳定的公开任务视图。"""
+    service = McpService(task_service=_OrmTasks(), notification_service=_Notifications())
+    response = await service.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": 7,
+            "method": "tools/call",
+            "params": {"name": "task.get", "arguments": {"task_id": "task_orm"}},
+        },
+        context=_context("task:read"),
+    )
+    assert "error" not in response, response
+    text = response["result"]["data"]["content"][0]["text"]
+    assert "task_orm" in text
+    json.loads(text)  # 必须是可解析的 JSON,而非 ORM 对象

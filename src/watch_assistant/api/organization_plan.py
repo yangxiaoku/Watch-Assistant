@@ -106,7 +106,13 @@ async def confirm_organization_plan(
 ) -> OrganizationPlanResponse:
     try:
         await require_plan_library_scope(request, context, plan_id)
-        if payload.plan_hash is not None:
+        if payload.plan_hash is None:
+            # bearer agent 必须提供 plan_hash 证明审阅过确切计划载荷,与
+            # operation 排队(via_bearer 强制 digest)保持一致;web session
+            # 交互式确认仍允许省略。
+            if context.via_bearer:
+                raise OrganizationPlanError("plan_hash_required")
+        else:
             current = await service.get_plan(plan_id)
             if not hmac.compare_digest(current.plan_hash, payload.plan_hash):
                 raise OrganizationPlanError("plan_hash_mismatch")
@@ -218,6 +224,7 @@ def _http_error(error: OrganizationPlanError) -> HTTPException:
         "invalid_alias": "别名格式不受支持",
         "stale_revision": "计划版本已变化，请刷新后重试",
         "plan_hash_mismatch": "计划摘要已变化，请刷新计划后重新确认",
+        "plan_hash_required": "请提供当前计划摘要后再试",
         "plan_not_reviewable": "计划当前状态不可修改",
         "plan_expired": "整理计划已过期，请重新生成预览",
         "plan_prerequisites_changed": "计划前置证据已变化，请重新扫描并生成计划",

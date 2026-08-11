@@ -74,7 +74,11 @@ class PanSouClient:
     ) -> None:
         self._timeout = timeout
         self._owns_client = client is None
-        self._client = client or httpx.AsyncClient(base_url=base_url.rstrip("/"))
+        # trust_env=False:自托管机常设 HTTP(S)_PROXY,请求不得经环境代理
+        # 转发(与 qbittorrent/prowlarr 一致,对应 bug-audit H10)。
+        self._client = client or httpx.AsyncClient(
+            base_url=base_url.rstrip("/"), trust_env=False
+        )
 
     async def search(self, keyword: str) -> dict[str, Any]:
         try:

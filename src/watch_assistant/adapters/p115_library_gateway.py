@@ -225,6 +225,13 @@ class P115ReadOnlyDirectoryGateway:
                     response = await transport.fs_files_app(
                         payload, timeout_seconds=remaining
                     )
+                    if _is_structured_method_not_allowed(response):
+                        # app 端点返回结构化 405(不抛异常)时同样回退旧接口;
+                        # 否则该 405 会被 _response_success 误判为成功,再在
+                        # _parse_page 退化为含义不明的 pagination_unverified。
+                        response = await transport.fs_files(
+                            payload, timeout_seconds=remaining
+                        )
                 except Exception as error:
                     if not _is_method_not_allowed(error):
                         raise
@@ -236,6 +243,10 @@ class P115ReadOnlyDirectoryGateway:
                     response = await transport.fs_info_app(
                         payload, timeout_seconds=remaining
                     )
+                    if _is_structured_method_not_allowed(response):
+                        response = await transport.fs_info(
+                            payload, timeout_seconds=remaining
+                        )
                 except Exception as error:
                     if not _is_method_not_allowed(error):
                         raise
@@ -693,6 +704,24 @@ def _is_method_not_allowed(error: BaseException) -> bool:
             return True
     response = getattr(error, "response", None)
     return getattr(response, "status_code", None) in {405, "405"}
+
+
+def _is_structured_method_not_allowed(response: object) -> bool:
+    """Detect a provider-level 405 returned as a structured mapping.
+
+    Mirrors ``p115_library_transport._is_structured_method_not_allowed``: the
+    app endpoint can signal ``Method Not Allowed`` inside the JSON body rather
+    than raising. Treating it as success would let ``_response_success`` pass
+    and degrade into an opaque ``pagination_unverified`` failure, so the legacy
+    interface fallback must also cover this shape.
+    """
+
+    if not isinstance(response, Mapping):
+        return False
+    return any(
+        response.get(name) in {405, "405"}
+        for name in ("status_code", "http_status")
+    )
 
 
 __all__ = [

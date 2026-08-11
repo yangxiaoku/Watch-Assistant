@@ -42,6 +42,30 @@ async def test_devices_are_encrypted_independent_sessions(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_add_device_response_reflects_atomic_activation(tmp_path: Path):
+    """add_device 的响应必须反映原子置位后的真实 active 状态(首个设备为
+    True、后续设备会把旧设备置 False 且自身为 True),不得返回 stale False。"""
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'devices-active.db'}")
+    await initialize_database(database.engine)
+    service = P115LoginDeviceService(
+        database.session_factory,
+        SecretCrypto(Fernet.generate_key().decode("ascii")),
+    )
+
+    first = await service.add_device("电脑", "web", COOKIE_ONE)
+    assert first["active"] is True  # 首个设备原子置位为活跃
+
+    second = await service.add_device("平板", "ipad", COOKIE_TWO)
+    assert second["active"] is True  # 新设备置位,旧设备被清扫
+
+    devices = await service.list_devices()
+    by_id = {item["id"]: item for item in devices}
+    assert by_id[first["id"]]["active"] is False
+    assert by_id[second["id"]]["active"] is True
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_active_device_cannot_be_removed(tmp_path: Path):
     database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'devices.db'}")
     await initialize_database(database.engine)

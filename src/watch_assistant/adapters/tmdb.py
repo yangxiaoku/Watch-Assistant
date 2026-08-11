@@ -98,7 +98,11 @@ class TmdbClient:
         self._api_key = api_key
         self._timeout = timeout
         self._owns_client = client is None
-        self._client = client or httpx.AsyncClient(base_url=base_url.rstrip("/"))
+        # trust_env=False:自托管机常设 HTTP(S)_PROXY,API Key 不得经环境代理
+        # 转发(与 qbittorrent/prowlarr 一致,对应 bug-audit H10)。
+        self._client = client or httpx.AsyncClient(
+            base_url=base_url.rstrip("/"), trust_env=False
+        )
         # 热门词文本搜索的进程内 TTL 缓存(可选关闭:TTL 传 None 表示禁用)。
         self._text_cache_ttl = (
             _TEXT_SEARCH_CACHE_TTL if text_cache_ttl is None else text_cache_ttl

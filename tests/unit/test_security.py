@@ -320,3 +320,58 @@ async def test_require_api_auth_fails_closed_without_manager(tmp_path):
     response = client.get("/probe")
     assert response.status_code == 503
     assert response.json()["detail"] == "auth_unavailable"
+
+
+def _scope_request(method: str, path: str) -> Request:
+    return Request(
+        {
+            "type": "http",
+            "method": method,
+            "path": path,
+            "headers": [],
+            "scheme": "http",
+            "server": ("app.test", 80),
+            "client": ("127.0.0.1", 1234),
+            "root_path": "",
+        }
+    )
+
+
+def test_unknown_api_path_is_fail_closed_not_default_scope():
+    """M3 加固:未显式映射的 API 路径必须 fail-closed(拒绝),不得静默
+    回退到默认 scope。否则任何未来新增写端点漏配清单都会降级为
+    task:write,低权限 agent token 的实际边界取决于容易失配的前缀表。"""
+    for method, path in (
+        ("POST", "/api/v1/not-yet-registered"),
+        ("POST", "/api/v1/future-endpoint/write"),
+        ("GET", "/api/v1/future-endpoint"),
+        ("DELETE", "/api/v1/unknown-resource/one"),
+    ):
+        with pytest.raises(AuthError) as error:
+            _required_scope(_scope_request(method, path))
+        assert error.value.status_code == 403, (method, path)
+
+
+def test_organization_history_reads_require_organize_plan_scope():
+    """organization-history 含目标路径等敏感详情,读权限必须收敛到
+    organize:plan,不得落回默认 system:read。"""
+    request = _scope_request("GET", "/api/v1/organization-history")
+    assert _required_scope(request) == "organize:plan"
+
+
+def test_workflow_write_routes_require_organize_execute_scope():
+    """workflow 审批/取消/发现是组织写操作,不得落回默认 task:write。"""
+    for path in (
+        "/api/v1/workflows/workflow-1/approval",
+        "/api/v1/workflows/workflow-1/cancel",
+        "/api/v1/workflows/workflow-1/discovery",
+        "/api/v1/workflows/cancel-batch",
+    ):
+        assert _required_scope(_scope_request("POST", path)) == "organize:execute"
+
+
+def test_imports_and_webhook_writes_require_explicit_write_scope():
+    """imports(手动导入)与 webhook 管理是写操作,不得落回默认 task:write。"""
+    assert _required_scope(_scope_request("POST", "/api/v1/imports")) == "organize:execute"
+    assert _required_scope(_scope_request("POST", "/api/v1/webhooks/webhook-1/test")) == "settings:write"
+    assert _required_scope(_scope_request("DELETE", "/api/v1/webhooks/webhook-1")) == "settings:write"

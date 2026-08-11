@@ -32,6 +32,9 @@ MAX_SHARE_ITEMS = 1000
 # 见 AGENTS.md「_p115client_timeout_executor 对 errno=990009 使用 3 秒重试」)。
 _P115_BUSY_OPERATION_ERRNO = 990009
 _P115_BUSY_RETRY_DELAY_SECONDS = 3.0
+# 990009 busy 重试仅适用于幂等提交:磁力按 infohash 去重,重试不会重复
+# 落库。share_receive/share_snap 等非幂等或只读调用不得盲目重发。
+_IDEMPOTENT_BUSY_RETRY_METHODS = frozenset({"clouddownload_task_add_url"})
 _DEFAULT_REQUEST_TIMEOUT_SECONDS = 30.0
 _BTIH_PATTERN = re.compile(r"^(?:[0-9a-f]{40}|[a-z2-7]{32})$", re.IGNORECASE)
 _SHARE_CODE_PATTERN = re.compile(r"^/(?:s|share)/([A-Za-z0-9_-]+)/?$", re.IGNORECASE)
@@ -376,6 +379,11 @@ class P115Adapter:
             self._cookie_provider,
             authorized_directory_ids=(parent_id,),
             authorized_file_ids=(file_id,),
+            # 115 根目录 cid=0 是合法目标(_stable_directory_id 已放行);
+            # 不传 allow_virtual_root 时 gateway 会拒绝 cid=0 授权,导致根目录
+            # 目标的下载永远停在 availability_observer_unavailable。目录选择器
+            # (api/settings_p115.py)已传该参数,此处核对路径同样必须传。
+            allow_virtual_root=(parent_id == "0"),
         )
 
     async def aclose(self) -> None:
@@ -492,14 +500,22 @@ class P115Adapter:
         async with self._client_lock:
             if self._client is not None and self._cookie == cookie:
                 return self._client, False
+            loop = asyncio.get_running_loop()
+            factory_future = loop.run_in_executor(
+                None, self._client_factory, cookie
+            )
             try:
                 # 工厂(登录/建连接)同样可能有超时上限:挂起的工厂线程不再
                 # 等待,由调用方按不可用处理,后续操作会重建。
                 client = await asyncio.wait_for(
-                    asyncio.to_thread(self._client_factory, cookie),
+                    asyncio.shield(factory_future),
                     timeout=self._request_timeout_seconds,
                 )
             except TimeoutError:
+                # to_thread/run_in_executor 的线程不可取消:超时后线程仍会
+                # 完成并创建 client。注册 done-callback 关闭迟到 client,
+                # 避免每次超时累积一个未关闭的 client/连接(泄漏)。
+                factory_future.add_done_callback(_close_late_factory_client)
                 return None, False
             except Exception:  # noqa: BLE001 - client setup is intentionally opaque
                 return None, False
@@ -550,10 +566,15 @@ class P115Adapter:
         流水线停摆。990009 表示服务端仍在处理上次提交,重试一次即可拿到
         确定性结果(服务端按 infohash 去重,幂等安全)。
 
+        busy 重试只对真正幂等的操作启用:磁力提交按 infohash 去重,重试安全;
+        ``share_receive`` 等非幂等接收在 busy 时不得盲目重发,否则会重复
+        接收分享落库,必须交给调用方按 UNCERTAIN 只读核对。
+
         双保险:request hook 给底层 HTTP 请求 socket 级超时(线程不会挂死,
         不会泄漏到默认执行器池);``asyncio.wait_for`` 作为第二道防线。
         """
         method = getattr(client, method_name)
+        idempotent = method_name in _IDEMPOTENT_BUSY_RETRY_METHODS
         timeout = max(1.0, float(timeout_seconds))
         try:
             from urllib3_future_request import request as urllib3_request
@@ -580,7 +601,7 @@ class P115Adapter:
                 # 副作用;由调用方标记不确定,交给只读核对兜底。
                 raise
             except Exception as error:
-                if attempt or not _has_busy_errno(error):
+                if attempt or not idempotent or not _has_busy_errno(error):
                     raise
                 await asyncio.sleep(_P115_BUSY_RETRY_DELAY_SECONDS)
         raise RuntimeError("unreachable")
@@ -678,6 +699,26 @@ class P115Adapter:
 
 
 P115ClientAdapter = P115Adapter
+
+
+def _close_late_factory_client(
+    future: asyncio.Future[Any],
+) -> None:
+    """关闭超时后才由工厂线程完成的 client。
+
+    ``run_in_executor`` 的线程不可取消:``_client_for_operation`` 超时后
+    线程仍会完成并创建 client,若不回收会累积未关闭的 client/连接。
+    done-callback 在 future 完成时取出 client 并安排关闭。
+    """
+    try:
+        late_client = future.result()
+    except BaseException:  # noqa: BLE001 - factory failed/cancelled: nothing to close
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    loop.create_task(P115Adapter._close_client(late_client))
 
 
 def _default_client_factory(cookie: str) -> Any:

@@ -511,6 +511,13 @@ async def test_playback_flag_cannot_claim_capability_without_transport(tmp_path)
 async def test_organization_settings_persist_and_validate_cid_scope(tmp_path):
     _app_instance, client, database, tmdb, pansou = await _app(tmp_path)
     try:
+        # 模拟已配置的整理目标根:source/target/push 目录必须在已浏览集合内。
+        _app_instance.state.organization_target_root_id = "2988794667098701570"
+        _app_instance.state.p115_browsed_directory_ids = {
+            "2988794667098701570",
+            "3482085898508567892",
+            "3988794667098701570",
+        }
         login = await client.post("/api/v1/auth/login", json={"password": WEB_PASSWORD})
         headers = {"X-CSRF-Token": login.json()["csrf_token"]}
         current = await client.get("/api/v1/settings/organization")
@@ -671,6 +678,99 @@ async def test_organization_manual_run_is_independent_from_schedule_and_stop_cle
         assert stopped.json()["schedule_enabled"] is False
         assert stopped.json()["run_id"] is None
         assert scheduler.stopped == 1
+    finally:
+        await client.aclose()
+        await tmdb.aclose()
+        await pansou.aclose()
+        await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_log_export_respects_limit(tmp_path):
+    """日志导出带上限保护:避免全量累积进内存(已认证 DoS)。"""
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'export-limit.db'}")
+    await initialize_database(database.engine)
+    crypto = SecretCrypto(Fernet.generate_key().decode("ascii"))
+    password_hash = PasswordHash.recommended()
+    security = SecurityManager(
+        web_password_hash=password_hash.hash(WEB_PASSWORD),
+        script_token_hash=password_hash.hash(SCRIPT_TOKEN),
+        cookie_secure=False,
+    )
+    tmdb = type("Tmdb", (), {"aclose": lambda self: _noop()})()
+    pansou = type("PanSou", (), {"aclose": lambda self: _noop()})()
+    app = create_app(
+        database=database,
+        crypto=crypto,
+        security_manager=security,
+        tmdb_client=tmdb,
+        pansou_client=pansou,
+    )
+    log_store = app.state.settings_service.log_store
+    for index in range(150):
+        await log_store.append(
+            level=LoggingLevel.INFO,
+            category=LogCategory.SECURITY,
+            message=f"bulk-log-{index}",
+            retention_days=7,
+            max_file_mb=5,
+            event_code="bulk.export",
+        )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://settings.test"
+    ) as client:
+        login = await client.post("/api/v1/auth/login", json={"password": WEB_PASSWORD})
+        headers = {"X-CSRF-Token": login.json()["csrf_token"]}
+        response = await client.get(
+            "/api/v1/logs/export",
+            params={"format": "jsonl", "limit": 10, "event_code": "bulk.export"},
+            headers=headers,
+        )
+        assert response.status_code == 200
+        lines = [line for line in response.text.splitlines() if line.strip()]
+        assert len(lines) == 10  # 上限生效,不导出全部 150 条
+    await client.aclose()
+    await tmdb.aclose()
+    await pansou.aclose()
+    await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_organization_directory_ids_fail_closed_without_configured_root(tmp_path):
+    """M 加固:目标根未配置时,source/push 目录 ID 必须 fail-closed 拒绝;
+    target_directory_id 是根配置的来源,允许首次设置(否则永远无法配置)。"""
+    app, client, database, tmdb, pansou = await _app(tmp_path)
+    try:
+        # 未配置 organization_target_root_id
+        app.state.organization_target_root_id = None
+        login = await client.post("/api/v1/auth/login", json={"password": WEB_PASSWORD})
+        headers = {"X-CSRF-Token": login.json()["csrf_token"]}
+        current = await client.get("/api/v1/settings/organization")
+
+        # source/push 无 root 可核对 → 拒绝
+        for field, value in (
+            ("source_directory_ids", ["200"]),
+            ("push_directory_id", "300"),
+        ):
+            rejected = await client.patch(
+                "/api/v1/settings/organization",
+                json={"revision": current.json()["revision"], field: value},
+                headers=headers,
+            )
+            assert rejected.status_code == 403, (field, rejected.text)
+            assert rejected.json()["detail"] == "p115_directory_out_of_scope", field
+
+        # target_directory_id 是根配置来源,root 未配置时允许首次设置
+        accepted = await client.patch(
+            "/api/v1/settings/organization",
+            json={
+                "revision": current.json()["revision"],
+                "target_directory_id": "100",
+            },
+            headers=headers,
+        )
+        assert accepted.status_code == 200
+        assert accepted.json()["target_directory_id"] == "100"
     finally:
         await client.aclose()
         await tmdb.aclose()
