@@ -1131,12 +1131,20 @@ def create_app(
             )
             application.state.organization_cookie_provider = composite_cookie_provider
             application.state.p115_directory_picker_root_id = "0"
-            application.state.organization_target_root_id = (
-                str(settings.p115_target_cid)
-                if settings.p115_target_cid is not None and settings.p115_target_cid > 0
-                else None
-            )
             organization_settings = await application.state.settings_service.get_organization()
+            # 用户配置的 target_directory_id 是权威:115 整理的目标目录以设置为准,
+            # 环境变量 P115_TARGET_CID 仅作为未配置时的回退。
+            configured_target = organization_settings.target_directory_id
+            application.state.organization_target_root_id = (
+                str(configured_target)
+                if isinstance(configured_target, str) and configured_target.isdigit()
+                else (
+                    str(settings.p115_target_cid)
+                    if settings.p115_target_cid is not None
+                    and settings.p115_target_cid > 0
+                    else None
+                )
+            )
             configured_directory_ids = {
                 directory_id
                 for directory_id in (
