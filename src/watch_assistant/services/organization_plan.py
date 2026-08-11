@@ -178,24 +178,6 @@ class OrganizationPlanView:
         }
 
 
-@dataclass(frozen=True, slots=True)
-class OrganizationPlanCandidate:
-    source_object_id: str
-    tmdb_id: int
-    title: str
-    media_type: str
-    release_year: int | None = None
-
-    def to_public_dict(self) -> dict[str, object]:
-        return {
-            "source_object_id": self.source_object_id,
-            "tmdb_id": self.tmdb_id,
-            "title": self.title,
-            "media_type": self.media_type,
-            "release_year": self.release_year,
-        }
-
-
 @dataclass(frozen=True, slots=True, repr=False)
 class OrganizationPlanExecutionMember:
     object_type: str
