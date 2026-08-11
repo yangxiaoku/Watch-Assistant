@@ -292,7 +292,109 @@ async def test_candidate_replacement_recycles_existing_target_before_write(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_uncertain_recycle_with_missing_replacement_stays_uncertain(
+async def test_missing_replacement_skips_recycle_and_continues(tmp_path: Path):
+    # 垃圾文件已不在目标位置(回收已满足,例如回收后崩溃再重放):
+    # 跳过 recycle 直接移动,而不是把整个计划 invalidate。
+    database = await _database(tmp_path)
+    operation_service, operation, lease = await _replacement_operation(
+        database, key="replacement-already-removed"
+    )
+    transport = FakeOrganizationTransport(states={"100": ("7000", "movie.mkv")})
+    result = await OrganizationExecutor(
+        operation_service, database.session_factory, transport, sleep=_noop_sleep
+    ).execute(
+        operation.operation_id,
+        expected_revision=lease.revision,
+        lease_token=lease.lease_token,
+    )
+
+    assert result.status is OrganizationExecutionStatus.ORGANIZED
+    assert [call[0] for call in transport.calls] == [
+        "read_object",
+        "read_target",
+        "move",
+        "rename",
+        "read_object",
+    ]
+    current = await operation_service.get(operation.operation_id)
+    assert current.status is OrganizationOperationStatus.ORGANIZED
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_replacement_position_holds_other_object_fails_closed(tmp_path: Path):
+    # 回收前提不满足:垃圾位置存在的是其他对象(且不在受管范围),
+    # 必须 fail-closed,不得当作"回收已满足"跳过。
+    database = await _database(tmp_path)
+    operation_service, operation, lease = await _replacement_operation(
+        database, key="replacement-position-conflict"
+    )
+    transport = FakeOrganizationTransport(
+        states={"100": ("7000", "movie.mkv"), "300": ("8000", "movie.mkv")}
+    )
+    result = await OrganizationExecutor(
+        operation_service, database.session_factory, transport, sleep=_noop_sleep
+    ).execute(
+        operation.operation_id,
+        expected_revision=lease.revision,
+        lease_token=lease.lease_token,
+    )
+
+    assert (result.status, result.error_code) == (
+        OrganizationExecutionStatus.FAILED,
+        "plan_prerequisites_changed",
+    )
+    assert all(call[0] not in {"recycle", "move", "rename"} for call in transport.calls)
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_cleanup_postcondition_mismatch_finishes_uncertain(tmp_path: Path):
+    # 回收成功后目标位置仍被占用:必须以 cleanup_postcondition_mismatch
+    # 持久化为 UNCERTAIN,不能因错误码不在白名单而抛 ValueError。
+    database = await _database(tmp_path)
+    operation_service, operation, lease = await _replacement_operation(
+        database, key="cleanup-postcondition-mismatch"
+    )
+    transport = FakeOrganizationTransport(
+        states={
+            "100": ("7000", "movie.mkv"),
+            "200": ("8000", "movie.mkv"),
+            "201": ("8000", "movie.mkv"),
+        }
+    )
+    result = await OrganizationExecutor(
+        operation_service, database.session_factory, transport, sleep=_noop_sleep
+    ).execute(
+        operation.operation_id,
+        expected_revision=lease.revision,
+        lease_token=lease.lease_token,
+    )
+
+    assert (result.status, result.error_code) == (
+        OrganizationExecutionStatus.UNCERTAIN,
+        "cleanup_postcondition_mismatch",
+    )
+    assert ("recycle", "200", "8000", "movie.mkv") in transport.calls
+    current = await operation_service.get(operation.operation_id)
+    assert current.status is OrganizationOperationStatus.UNCERTAIN
+    assert current.error_code == "cleanup_postcondition_mismatch"
+    await database.engine.dispose()
+
+
+def test_safe_error_code_maps_unknown_codes_to_outcome_unknown():
+    from watch_assistant.services.organization_executor import _safe_error_code
+
+    assert _safe_error_code(None) is None
+    assert _safe_error_code("cleanup_postcondition_mismatch") == (
+        "cleanup_postcondition_mismatch"
+    )
+    assert _safe_error_code("target_root_changed") == "target_root_changed"
+    assert _safe_error_code("not_a_real_code") == "outcome_unknown"
+
+
+@pytest.mark.asyncio
+async def test_uncertain_recycle_with_removed_replacement_is_retryable(
     tmp_path: Path,
 ):
     database = await _database(tmp_path)
@@ -332,9 +434,9 @@ async def test_uncertain_recycle_with_missing_replacement_stays_uncertain(
     )
     assert initial.status is OrganizationExecutionStatus.UNCERTAIN
 
-    # The recycle may have taken effect even though its response was
-    # uncertain. The primary source is still unchanged, so replacement
-    # evidence is required before exposing a retryable failure.
+    # 回收可能已生效(垃圾已离开受管范围)而成员仍在源:这是回收成功但
+    # 移动未发生的中间态,必须判定为可重试的 NOT_APPLIED,而不是让计划
+    # 永久停留在 UNCERTAIN 卡死。
     transport.states.pop("200")
     summary = await operation_service.get(operation.operation_id)
     call_count = len(transport.calls)
@@ -343,13 +445,20 @@ async def test_uncertain_recycle_with_missing_replacement_stays_uncertain(
         expected_revision=summary.revision,
     )
 
-    assert reconciled.status is OrganizationExecutionStatus.UNCERTAIN
+    assert (reconciled.status, reconciled.error_code) == (
+        OrganizationExecutionStatus.FAILED,
+        "replacement_already_removed",
+    )
     assert [call[0] for call in transport.calls[call_count:]] == [
         "read_object",
         "read_object_in_scope",
     ]
+    assert all(
+        call[0] not in {"move", "rename", "recycle"}
+        for call in transport.calls[call_count:]
+    )
     current = await operation_service.get(operation.operation_id)
-    assert current.status is OrganizationOperationStatus.UNCERTAIN
+    assert current.status is OrganizationOperationStatus.FAILED
     await database.engine.dispose()
 
 

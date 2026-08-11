@@ -38,6 +38,7 @@ VALID_OPERATION_ERROR_CODES = frozenset(
     {
         "cancelled",
         "capability_unverified",
+        "cleanup_postcondition_mismatch",
         "contract_unverified",
         "lease_lost",
         "local_failure",
@@ -50,13 +51,26 @@ VALID_OPERATION_ERROR_CODES = frozenset(
         "plan_prerequisites_changed",
         "rate_limited",
         "remote_write_failed",
+        "replacement_already_removed",
         "scope_unverified",
         "target_directory_create_failed",
         "directory_ownership_unavailable",
         "directory_ownership_unrecorded",
         "target_directory_parent_missing",
+        "target_root_changed",
         "timeout",
         "write_disabled",
+    }
+)
+
+# Failure codes that mean the plan itself is no longer trustworthy. Any other
+# failure keeps the plan planned so the operation can be retried against the
+# same frozen plan (e.g. target_root_changed is a configuration mismatch, not
+# evidence that the plan is stale).
+_PLAN_INVALIDATING_ERROR_CODES = frozenset(
+    {
+        "plan_prerequisites_changed",
+        "source_snapshot_changed",
     }
 )
 
@@ -786,7 +800,7 @@ class OrganizationOperationService:
                 raise OrganizationOperationNotFound
             if (
                 status is OrganizationOperationStatus.FAILED
-                and error_code == "plan_prerequisites_changed"
+                and error_code in _PLAN_INVALIDATING_ERROR_CODES
             ):
                 plan = await session.get(OrganizationPlan, operation.plan_id)
                 if plan is not None and plan.status == OrganizationPlanStatus.PLANNED.value:

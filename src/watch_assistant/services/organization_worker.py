@@ -94,8 +94,13 @@ class OrganizationWorker:
             lease.operation_id,
             expected_operation_revision=lease.revision,
         )
-        if plan_scope is None or self._production_root_id not in plan_scope:
+        if plan_scope is None:
             await self._finish_failed(lease, "plan_prerequisites_changed")
+            return True
+        if self._production_root_id not in plan_scope:
+            # 目标根不一致是配置变更而非计划失效:操作失败但计划保留,
+            # finish 不会对 target_root_changed 执行 invalidate。
+            await self._finish_failed(lease, "target_root_changed")
             return True
 
         steps = await self._operations.load_execution_steps(
