@@ -367,3 +367,67 @@ async def test_delete_gate_is_optional_and_success_path_unchanged(tmp_path: Path
     assert result.status is DeleteStatus.SUCCESS
     assert client2.deleted is True
     await database.engine.dispose()
+
+
+class _SizeMissingRecycleClient:
+    """回收站恒返回一条同目录+同名记录,可配置是否携带 size。"""
+
+    def __init__(self, *, with_size: bool):
+        record = {"id": "1", "cid": "7000", "file_name": "same.mkv"}
+        if with_size:
+            record["file_size"] = "100"
+        self.records = [record]
+
+    def recyclebin_list(self, payload, **kwargs):
+        return {"state": True, "data": self.records}
+
+
+async def test_find_new_entries_target_size_missing_fails_closed():
+    """目标 size_bytes 缺失时,不得退化为按 (parent_id, name) 匹配:否则
+    并发动作删除的同目录同名文件会被误判为目标,对不可逆清理造成身份碰撞。"""
+    from watch_assistant.adapters.p115_permanent_delete_transport import (
+        P115PermanentDeleteTransport,
+    )
+
+    client = _SizeMissingRecycleClient(with_size=True)
+
+    async def call_executor(method, payload, *, timeout_seconds):
+        return method(payload, async_=False)
+
+    transport = P115PermanentDeleteTransport(
+        client=client,
+        call_executor=call_executor,
+    )
+    found = await transport.find_new_entries(
+        set(),
+        parent_id="7000",
+        name="same.mkv",
+        size_bytes=None,
+        timeout_seconds=5.0,
+    )
+    assert found is None
+
+
+async def test_find_new_entries_skips_entry_without_size_fails_closed():
+    """回收站条目 size 缺失时,不得匹配:身份未确认的条目不应被清理。"""
+    from watch_assistant.adapters.p115_permanent_delete_transport import (
+        P115PermanentDeleteTransport,
+    )
+
+    client = _SizeMissingRecycleClient(with_size=False)
+
+    async def call_executor(method, payload, *, timeout_seconds):
+        return method(payload, async_=False)
+
+    transport = P115PermanentDeleteTransport(
+        client=client,
+        call_executor=call_executor,
+    )
+    found = await transport.find_new_entries(
+        set(),
+        parent_id="7000",
+        name="same.mkv",
+        size_bytes=100,
+        timeout_seconds=5.0,
+    )
+    assert found is None

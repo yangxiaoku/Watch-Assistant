@@ -154,6 +154,57 @@ async def test_subscription_scope_is_idempotently_unique(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_check_does_not_revive_subscription_cancelled_during_writeback(
+    tmp_path, monkeypatch
+):
+    """check() 的写回窗口:重读终态之后、commit 之前若订阅被并发取消,
+    不得把 CANCELLED 盖回 MATCHED(复活用户意图)。"""
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from watch_assistant.models import Subscription
+
+    database = create_database(
+        f"sqlite+aiosqlite:///{tmp_path / 'subscriptions-revive.db'}"
+    )
+    await initialize_database(database.engine)
+    search = FakeSearch()
+    service = SubscriptionService(database.session_factory, search)
+    created = await service.create(SubscriptionCreateRequest(tmdb_id=123))
+
+    original_get = AsyncSession.get
+    subscription_gets = 0
+    injected = False
+
+    async def getting(self, entity, ident, *args, **kwargs):
+        nonlocal subscription_gets, injected
+        result = await original_get(self, entity, ident, *args, **kwargs)
+        if entity is Subscription and not injected:
+            subscription_gets += 1
+            if subscription_gets == 2:
+                # 第二次读取即 check() 搜索完成后的重读(写回前):用另一
+                # session 把订阅置为 CANCELLED,模拟读-改-写窗口内的并发取消。
+                injected = True
+                async with database.session_factory() as other:
+                    other_item = await other.get(Subscription, created.id)
+                    other_item.status = SubscriptionStatus.CANCELLED
+                    other_item.revision += 1
+                    await other.commit()
+        return result
+
+    monkeypatch.setattr(AsyncSession, "get", getting)
+
+    with pytest.raises(SubscriptionConflict, match="subscription_not_active"):
+        await service.check(created.id)
+
+    # 订阅必须保持 CANCELLED,不得被 check 写回覆盖为 MATCHED。
+    async with database.session_factory() as session:
+        item = await session.get(Subscription, created.id)
+        assert item is not None
+        assert item.status == SubscriptionStatus.CANCELLED
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_concurrent_movie_subscription_create_keeps_single_row(tmp_path):
     """M2:SQLite 唯一约束对 NULL 季节字段互不冲突,并发创建同一电影
     订阅可插入重复行;部分唯一索引(迁移 070)保证只成功一个。"""

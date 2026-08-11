@@ -35,17 +35,29 @@ class _Transport:
         self._responses = list(responses)
         self.calls = []
 
-    async def fs_files(self, payload, *, timeout_seconds):
-        del timeout_seconds
+    async def _run_fs_files(self, payload):
         self.calls.append(dict(payload))
         response = self._responses.pop(0)
         if isinstance(response, BaseException):
             raise response
         return response
 
+    async def fs_files(self, payload, *, timeout_seconds):
+        del timeout_seconds
+        return await self._run_fs_files(payload)
+
+    async def fs_files_app(self, payload, *, timeout_seconds):
+        # 与 legacy fs_files 行为一致:gateway 优先调用 app 端点。
+        del timeout_seconds
+        return await self._run_fs_files(payload)
+
     async def fs_info(self, payload, *, timeout_seconds):
         del payload, timeout_seconds
         raise AssertionError("unexpected fs_info call")
+
+    async def fs_info_app(self, payload, *, timeout_seconds):
+        del payload, timeout_seconds
+        raise AssertionError("unexpected fs_info_app call")
 
 
 def _page(records):

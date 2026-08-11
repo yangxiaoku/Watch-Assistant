@@ -7,7 +7,7 @@ import hashlib
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -209,18 +209,43 @@ class SubscriptionService:
             if item.status in _TERMINAL_SUBSCRIPTION_STATES:
                 # 搜索期间被取消/暂停/完成:不允许旧任务把订阅改回 MATCHED 复活
                 raise SubscriptionConflict("subscription_not_active") from None
-            item.last_checked_at = datetime.now(UTC)
-            item.last_match_count = len(resource_ids)
-            item.last_error_code = None
-            item.status = (
+            # 用条件 UPDATE 覆盖写回:在“重读终态 → commit”的窗口内若被
+            # pause/resume/cancel 并发修改,本事务的过期快照不得覆盖用户意图。
+            # WHERE 同时要求 status 仍活跃且 revision 未变(乐观锁);rowcount
+            # 非 1 即表示订阅已离开活跃状态或被并发修改,直接抛
+            # subscription_not_active 保持终态。
+            now = datetime.now(UTC)
+            status = (
                 SubscriptionStatus.MATCHED
                 if resource_ids
                 else SubscriptionStatus.NO_MATCH
             )
-            item.next_check_at = datetime.now(UTC) + timedelta(hours=6)
-            item.revision += 1
-            item.updated_at = datetime.now(UTC)
+            result = await session.execute(
+                update(Subscription)
+                .where(
+                    Subscription.id == subscription_id,
+                    Subscription.status.not_in(
+                        [state.value for state in _TERMINAL_SUBSCRIPTION_STATES]
+                    ),
+                    Subscription.revision == item.revision,
+                )
+                .values(
+                    last_checked_at=now,
+                    last_match_count=len(resource_ids),
+                    last_error_code=None,
+                    status=status,
+                    next_check_at=now + timedelta(hours=6),
+                    revision=item.revision + 1,
+                    updated_at=now,
+                )
+            )
+            if result.rowcount != 1:
+                await session.rollback()
+                raise SubscriptionConflict("subscription_not_active") from None
             await session.commit()
+            # ORM-enabled UPDATE 会把新值同步进 identity map,但仍以 DB 为准
+            # 刷新一次,避免响应里的 revision 与已提交数据脱节。
+            await session.refresh(item)
             response = _response(item)
         await emit_event(
             self._event_logger,

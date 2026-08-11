@@ -124,11 +124,18 @@ class P115PermanentDeleteTransport:
         身份碰撞防护:目标身份只按 (parent_id, name, size_bytes) 匹配,并发动作
         可能把同目录+同名+同大小的其他文件删进回收站。为避免对碰撞条目执行
         不可逆清理,要求:
+        - size 任一侧缺失时即判为身份未确认,不得退化为 (parent_id, name)
+          匹配——否则并发删除的同目录同名文件会被误判为目标,对不可逆清理
+          构成碰撞风险,因此此时 fail-closed 返回 None(UNCERTAIN);
         - 出现 ≥2 个不同候选时返回 None(UNCERTAIN,禁止任选一个);
         - 同一 recycle_id 连续两帧稳定出现才返回(给真实条目时间出现);
         - 超时返回最后见过的稳定单候选,否则 None。
         """
 
+        if size_bytes is None:
+            # 目标身份缺少 size,无法与回收站条目做严格身份比对;禁止按
+            # (parent_id, name) 兜底匹配,避免不可逆误删。
+            return None
         deadline = time.monotonic() + min(timeout_seconds, 8.0)
         stable_id: str | None = None
         stable_observations = 0
@@ -143,11 +150,8 @@ class P115PermanentDeleteTransport:
                 if item.recycle_id not in before_recycle_ids
                 and item.parent_id == parent_id
                 and item.name == name
-                and (
-                    size_bytes is None
-                    or item.size_bytes is None
-                    or item.size_bytes == size_bytes
-                )
+                and item.size_bytes is not None
+                and item.size_bytes == size_bytes
             )
             if len(matches) >= 2:
                 # 多个同身份候选:无法区分本次目标,禁止任选一个(防误删)。

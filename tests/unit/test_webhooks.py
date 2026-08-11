@@ -155,3 +155,86 @@ async def test_publish_due_survives_secret_decrypt_failure_and_does_not_block_ba
         assert ok.attempts == 1
     finally:
         await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_publish_does_not_duplicate_http_post(tmp_path, monkeypatch):
+    """并发 publish_due 不得对同一行重复 POST:投递必须先原子认领。"""
+    import asyncio
+
+    from watch_assistant.db import create_database, initialize_database
+    from watch_assistant.models import WebhookDelivery, WebhookEndpoint
+    from watch_assistant.services.webhooks import WebhookService
+
+    class _IdentityCrypto:
+        def encrypt(self, value: str) -> str:
+            return value
+
+        def decrypt(self, value: str) -> str:
+            return value
+
+    class _SlowHttp:
+        def __init__(self):
+            self.posts: list[str] = []
+            self._block = asyncio.Event()
+
+        async def post(self, url, *, content, headers, timeout):
+            self.posts.append(url)
+            await self._block.wait()
+            return SimpleNamespace(status_code=200)
+
+        async def aclose(self):
+            pass
+
+    monkeypatch.setattr(
+        webhooks.socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: _addr("8.8.8.8"),
+    )
+
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'webhook-dup.db'}")
+    await initialize_database(database.engine)
+    now = datetime(2026, 8, 10, tzinfo=UTC)
+    async with database.session_factory() as session:
+        session.add(
+            WebhookEndpoint(
+                id="ep-dup",
+                name="dup",
+                url="https://hooks.example.test/dup",
+                secret_encrypted="dup-secret",
+                secret_prefix="whsec_",
+                enabled=True,
+            )
+        )
+        await session.flush()
+        session.add(
+            WebhookDelivery(
+                id="delivery-dup",
+                endpoint_id="ep-dup",
+                event_id="evt-dup",
+                event_code="task.failed",
+                payload_json='{"a":1}',
+                status="pending",
+                attempts=0,
+                next_attempt_at=now,
+                created_at=now,
+            )
+        )
+        await session.commit()
+
+    slow = _SlowHttp()
+    service = WebhookService(
+        database.session_factory, _IdentityCrypto(), http_client=slow
+    )
+    try:
+        first = asyncio.create_task(service.publish_due())
+        await asyncio.sleep(0)  # 让第一个进入 _deliver 并阻塞在 http.post
+        second = asyncio.create_task(service.publish_due())
+        await asyncio.sleep(0.1)  # 让第二个也尝试认领同一行
+        slow._block.set()
+        results = await asyncio.gather(first, second)
+        assert len(slow.posts) == 1, f"重复 POST: {slow.posts}"
+        assert results == [1, 0]
+    finally:
+        await service.aclose()
+    await database.engine.dispose()

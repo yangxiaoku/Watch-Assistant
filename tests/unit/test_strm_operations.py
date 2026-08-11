@@ -387,13 +387,42 @@ async def test_strm_operation_recovery_terminalizes_stale_and_orphaned_rows(
         assert (await service.get(stale.operation_id)).error_code == "strm_operation_timeout"
         assert (await service.get(queued.operation_id)).status == "queued"
 
+        # 启动恢复不得把尚未认领的 QUEUED 操作误杀:它可能刚由另一进程
+        # create、即将 claim。recover_incomplete 只终态化 RUNNING 且租约
+        # 过期的孤儿,QUEUED 一律保留。
         recovered_orphan = await service.recover_incomplete(
             now=now, error_code="strm_operation_recovered"
         )
-        assert recovered_orphan == 1
-        orphan = await service.get(queued.operation_id)
-        assert orphan.status == "failed"
-        assert orphan.error_code == "strm_operation_recovered"
+        assert recovered_orphan == 0
+        assert (await service.get(queued.operation_id)).status == "queued"
+    finally:
+        await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_startup_recovery_never_kills_fresh_queued_operation(
+    tmp_path: Path,
+):
+    """多进程场景:一个 worker 启动时调用 recover_incomplete,不得把另一
+    worker 刚 create 出来、即将 claim 的 QUEUED 操作终态化为 FAILED。"""
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'operations.db'}")
+    await initialize_database(database.engine)
+    try:
+        service = StrmOperationService(database.session_factory)
+        fresh = await service.create(
+            library_id="library-one",
+            source_scan_run_id="scan-fresh",
+            kind=StrmOperationKind.FULL,
+        )
+        assert fresh.status == "queued"
+
+        recovered = await service.recover_incomplete(
+            now=datetime.now(UTC), error_code="strm_operation_recovered"
+        )
+
+        assert recovered == 0
+        current = await service.get(fresh.operation_id)
+        assert current.status == "queued"
     finally:
         await database.engine.dispose()
 
@@ -526,6 +555,47 @@ async def test_expired_recovery_fences_old_executor_before_new_claim(tmp_path: P
         assert acquired is True
         assert claimed.status == "running"
     finally:
+        await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_startup_recovery_still_terminalizes_expired_running_orphan(
+    tmp_path: Path,
+):
+    """recover_incomplete 保留 QUEUED,但仍须终态化 RUNNING 且租约过期的
+    孤儿,否则崩溃遗留的进行中操作永远不会被回收。"""
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'operations.db'}")
+    await initialize_database(database.engine)
+    try:
+        service = StrmOperationService(database.session_factory)
+        now = datetime(2026, 8, 2, 13, 0, tzinfo=UTC)
+        orphan = await service.create(
+            library_id="library-one",
+            source_scan_run_id="scan-orphan",
+            kind=StrmOperationKind.FULL,
+        )
+        await service.start(
+            orphan.operation_id,
+            now=now - timedelta(hours=2),
+            lease_duration=timedelta(minutes=1),
+        )
+        async with database.session_factory() as session:
+            row = await session.get(StrmOperation, orphan.operation_id)
+            assert row is not None
+            # 租约早已过期:这是崩溃后遗留的孤儿运行中操作。
+            row.lease_expires_at = now - timedelta(minutes=30)
+            await session.commit()
+
+        recovered = await service.recover_incomplete(
+            now=now, error_code="strm_operation_recovered"
+        )
+        assert recovered == 1
+        current = await service.get(orphan.operation_id)
+        assert current.status == "failed"
+        assert current.error_code == "strm_operation_recovered"
+    finally:
+        await database.engine.dispose()
+
         await database.engine.dispose()
 
 

@@ -441,7 +441,9 @@ class OrganizationAutomationService:
                     scan_run_id=scan.run_id,
                     preview_plans=preview_plans,
                     small_file_threshold_mb=settings.small_file_threshold_mb,
+                    cleanup_empty_directories=settings.cleanup_empty_directories,
                     operation_delay_seconds=settings.operation_delay_seconds,
+                    manual_confirmation=manual_confirmation,
                 )
                 cleaned_small += cleaned_files
                 cleaned_empty += cleaned_dirs
@@ -784,14 +786,22 @@ class OrganizationAutomationService:
         scan_run_id: str,
         preview_plans: Sequence[OrganizationPlanView],
         small_file_threshold_mb: float,
+        cleanup_empty_directories: bool,
         operation_delay_seconds: float,
+        manual_confirmation: bool,
     ) -> tuple[int, int]:
         """Delete unrecognized small files and prune empty source directories.
 
         Runs after preview generation, per source, strictly best-effort: any
         failure leaves the pass result intact (the blocked-detail bookkeeping
         stays untouched) and cleanup simply does not count that pass.
+
+        删除必须与移动/重命名共享同一人工确认门禁:人工确认模式下所有
+        远端删除一并挂起;空目录清理还额外受 ``cleanup_empty_directories``
+        配置开关控制(默认关闭),不得仅凭写开关注入就执行。
         """
+        if manual_confirmation:
+            return 0, 0
         if self._cleanup_transport_factory is None:
             return 0, 0
         try:
@@ -821,11 +831,12 @@ class OrganizationAutomationService:
                         await self._invalidate_plans_for_deleted(
                             library_id, deleted_ids
                         )
-            cleaned_dirs = await self._cleanup_empty_directories(
-                transport,
-                source_id,
-                operation_delay_seconds=operation_delay_seconds,
-            )
+            if cleanup_empty_directories:
+                cleaned_dirs = await self._cleanup_empty_directories(
+                    transport,
+                    source_id,
+                    operation_delay_seconds=operation_delay_seconds,
+                )
         except asyncio.CancelledError:
             raise
         except Exception:

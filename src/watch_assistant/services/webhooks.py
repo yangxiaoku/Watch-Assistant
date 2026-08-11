@@ -18,7 +18,7 @@ from urllib.parse import urlsplit
 from uuid import uuid4
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from watch_assistant.crypto import SecretCrypto
@@ -37,6 +37,10 @@ from watch_assistant.services.observability import EventLogger
 
 MAX_ATTEMPTS = 8
 DELIVERY_TIMEOUT = 10.0
+# 投递认领租约:进入 in_flight 后保留该时长,期间其他投递者不得重复 POST。
+# 若投递进程崩溃/超时,行停留在 in_flight,由 publish_due 在租约过期后
+# 收回重试(见 _reclaim_stale_in_flight)。
+DELIVERY_LEASE_SECONDS = 60.0
 RETRY_DELAYS = (5, 15, 60, 300, 900, 1800, 3600, 7200)
 
 
@@ -260,6 +264,9 @@ class WebhookService:
 
     async def publish_due(self, *, limit: int = 20) -> int:
         now = datetime.now(UTC)
+        # 先收回租约已过期的 in_flight 行:投递进程崩溃/超时时该行不会
+        # 自行离开 in_flight,租约到期后恢复为 pending 以便重新投递。
+        await self._reclaim_stale_in_flight(now)
         async with self._session_factory() as session:
             rows = list(
                 await session.scalars(
@@ -298,10 +305,51 @@ class WebhookService:
             await session.commit()
             return _delivery_response(delivery)
 
+    async def _reclaim_stale_in_flight(self, now: datetime) -> None:
+        """把租约已过期的 in_flight 投递恢复为 pending。
+
+        原子条件更新:只有 next_attempt_at(认领时写入的租约到期点)已过的
+        in_flight 行才被收回;仍在有效租约内的行(正常投递中)不受影响。
+        """
+        async with self._session_factory() as session:
+            await session.execute(
+                update(WebhookDelivery)
+                .where(
+                    WebhookDelivery.status == "in_flight",
+                    WebhookDelivery.next_attempt_at <= now,
+                )
+                .values(
+                    status="pending",
+                    next_attempt_at=now,
+                    updated_at=now,
+                )
+            )
+            await session.commit()
+
     async def _deliver(self, delivery_id: str) -> bool:
+        # 原子认领:仅当行仍为 pending 时置为 in_flight 并写租约到期点。
+        # rowcount != 1 表示该行已被并发投递者认领或已非 pending,直接返回
+        # False,避免并发 publish_due 对同一行重复 POST。
+        now = datetime.now(UTC)
+        async with self._session_factory() as session:
+            claim = await session.execute(
+                update(WebhookDelivery)
+                .where(
+                    WebhookDelivery.id == delivery_id,
+                    WebhookDelivery.status == "pending",
+                )
+                .values(
+                    status="in_flight",
+                    next_attempt_at=now + timedelta(seconds=DELIVERY_LEASE_SECONDS),
+                    updated_at=now,
+                )
+            )
+            if claim.rowcount != 1:
+                return False
+            await session.commit()
         async with self._session_factory() as session:
             delivery = await session.get(WebhookDelivery, delivery_id)
-            if delivery is None or delivery.status != "pending":
+            if delivery is None or delivery.status != "in_flight":
                 return False
             endpoint = await session.get(WebhookEndpoint, delivery.endpoint_id)
             if endpoint is None or not endpoint.enabled:
@@ -375,6 +423,9 @@ class WebhookService:
             if attempt >= MAX_ATTEMPTS:
                 delivery.status = "dead"
             else:
+                # 认领后行处于 in_flight,失败重试必须回到 pending 才会被
+                # publish_due 按退避窗口重新选中(否则只能等租约过期回收)。
+                delivery.status = "pending"
                 delivery.next_attempt_at = now + timedelta(seconds=RETRY_DELAYS[attempt - 1])
             await session.commit()
         return False
@@ -403,6 +454,8 @@ class WebhookService:
             if attempt >= MAX_ATTEMPTS:
                 delivery.status = "dead"
             else:
+                # 同上:认领后失败重试需回到 pending 以按退避窗口重新投递。
+                delivery.status = "pending"
                 delivery.next_attempt_at = now + timedelta(seconds=RETRY_DELAYS[attempt - 1])
             await session.commit()
 

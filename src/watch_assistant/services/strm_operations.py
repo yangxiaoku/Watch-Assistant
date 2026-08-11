@@ -911,11 +911,17 @@ class StrmOperationService:
                 )
             )
         elif respect_lease:
+            # 启动恢复(recover_incomplete):只终态化 RUNNING 且租约已过期
+            # 的孤儿操作。QUEUED 操作尚未被认领(lease 恒为 NULL),可能刚由
+            # 另一 worker create、即将 claim;若在此处被终态化为 FAILED 会
+            # 误杀在途作业,因此必须保留。真正的过期孤儿由 recover_stale
+            # 的 max_age cutoff 兜底。
             query = query.where(
+                StrmOperation.status == StrmOperationStatus.RUNNING,
                 or_(
                     StrmOperation.lease_expires_at.is_(None),
                     StrmOperation.lease_expires_at <= current_time,
-                )
+                ),
             )
         async with self._session_factory() as session:
             operations = list((await session.scalars(query)).all())

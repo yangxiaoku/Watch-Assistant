@@ -24,7 +24,6 @@ RUN pip install --no-cache-dir . \
     && mkdir -p /data /app/frontend/dist \
     && chown -R watch-assistant:watch-assistant /data /app
 COPY --from=frontend-build --chown=watch-assistant:watch-assistant /build/frontend/dist/ /app/frontend/dist/
-COPY --chown=watch-assistant:watch-assistant config/ /app/config/
 USER watch-assistant
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \

@@ -176,11 +176,14 @@ class _Operations:
 class _CleanupSettings(_Settings):
     """Cleanup-enabled settings with a zero cadence so tests stay fast."""
 
-    def __init__(self, *, threshold_mb: float = 100.0):
+    def __init__(
+        self, *, threshold_mb: float = 100.0, cleanup_empty_directories: bool = True
+    ):
         super().__init__(configured=True)
         self.value = self.value.model_copy(
             update={
                 "small_file_threshold_mb": threshold_mb,
+                "cleanup_empty_directories": cleanup_empty_directories,
                 "operation_delay_seconds": 0,
             }
         )
@@ -1073,4 +1076,78 @@ async def test_automation_zero_threshold_skips_small_files_but_cleans_dirs(
         plans = list((await session.scalars(select(OrganizationPlan))).all())
         # 没有删除任何文件 → 相关计划保持 needs_review,不失效
         assert sorted(plan.status for plan in plans) == ["needs_review", "planned"]
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_automation_cleanup_empty_directories_disabled_skips_dir_prune(
+    tmp_path: Path,
+):
+    # 运维显式关闭 cleanup_empty_directories 时,空目录清理必须跳过,
+    # 即使已注入清理 transport;小文件清理仍按阈值执行。
+    database = create_database(
+        f"sqlite+aiosqlite:///{tmp_path / 'automation-clean-no-dir.db'}"
+    )
+    await initialize_database(database.engine)
+    plan_service = OrganizationPlanService(database.session_factory)
+    preview = OrganizationPreviewService(
+        database.session_factory,
+        _SelectiveTmdbClient(accepted={"The Office"}),
+        plan_service,
+    )
+    transport = _FakeCleanupTransport(_cleanup_pages())
+    service = OrganizationAutomationService(
+        database.session_factory,
+        _CleanupSettings(
+            threshold_mb=100, cleanup_empty_directories=False
+        ),
+        preview,
+        plan_service,
+        lambda _authorized: _CleanupGateway(),
+        cleanup_transport_factory=lambda: transport,
+    )
+
+    assert await service.run_once() is True
+    result = service.last_result
+    assert result is not None
+    assert result.cleaned_small_files == 1
+    assert result.cleaned_empty_dirs == 0
+    assert [(operation, file_id) for operation, file_id in transport.executed] == [
+        (WriteOperation.DELETE, "7101"),
+    ]
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_automation_manual_confirmation_skips_all_auto_cleanup(
+    tmp_path: Path,
+):
+    # 人工确认模式下,小文件回收与空目录清理都必须挂起,与移动/重命名
+    # 一致,不得在未确认时执行任何远端删除。
+    database = create_database(
+        f"sqlite+aiosqlite:///{tmp_path / 'automation-clean-manual.db'}"
+    )
+    await initialize_database(database.engine)
+    plan_service = OrganizationPlanService(database.session_factory)
+    preview = OrganizationPreviewService(
+        database.session_factory,
+        _SelectiveTmdbClient(accepted={"The Office"}),
+        plan_service,
+    )
+    transport = _FakeCleanupTransport(_cleanup_pages())
+    service = OrganizationAutomationService(
+        database.session_factory,
+        _CleanupSettings(threshold_mb=100),
+        preview,
+        plan_service,
+        lambda _authorized: _CleanupGateway(),
+        cleanup_transport_factory=lambda: transport,
+    )
+
+    assert await service.run_once(manual_confirmation=True) is True
+    result = service.last_result
+    assert result is not None
+    assert result.cleaned_small_files == 0
+    assert result.cleaned_empty_dirs == 0
+    assert transport.executed == []
     await database.engine.dispose()
