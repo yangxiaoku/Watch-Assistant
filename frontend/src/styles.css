@@ -147,11 +147,7 @@ input { outline: none; }
 .movie-card:hover .poster-frame::after { opacity: 1; }
 .movie-card:focus-visible, .favorite-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 .rating { position: absolute; z-index: 1; right: 8px; bottom: 8px; display: inline-flex; align-items: center; gap: 4px; padding: 5px 8px; color: #14120F; background: var(--gold); border-radius: var(--radius-sm); font-size: 10px; font-weight: 850; box-shadow: 0 3px 10px rgb(0 0 0 / 35%); }
-.rating-circle { position: absolute; z-index: 1; right: 8px; bottom: 8px; display: grid; width: 34px; height: 34px; place-items: center; border-radius: 50%; background: conic-gradient(var(--mint) 0deg, rgb(45 55 80 / 55%) 0deg); box-shadow: 0 3px 10px rgb(0 0 0 / 45%); backdrop-filter: blur(2px); }
-.rating-circle.rating-mid { background: conic-gradient(var(--gold) 0deg, rgb(45 55 80 / 55%) 0deg); }
-.rating-circle.rating-low { background: conic-gradient(var(--danger) 0deg, rgb(45 55 80 / 55%) 0deg); }
-.rating-circle-inner { display: grid; width: 28px; height: 28px; place-items: center; border-radius: 50%; background: rgb(11 15 24 / 96%); font-size: 10px; font-weight: 850; font-variant-numeric: tabular-nums; }
-.rating-none { position: absolute; z-index: 1; right: 8px; bottom: 8px; display: grid; width: 30px; height: 30px; place-items: center; color: var(--text-3); background: rgb(13 16 23 / 80%); border: 1px solid var(--border-strong); border-radius: 50%; font-size: 11px; font-weight: 700; backdrop-filter: blur(4px); }
+.rating-chip { position: absolute; z-index: 1; right: 8px; bottom: 8px; padding: 3px 7px; color: #14120F; background: var(--rating); border-radius: var(--radius-sm); font-size: 11px; font-weight: 800; font-variant-numeric: tabular-nums; box-shadow: 0 2px 8px rgb(0 0 0 / 30%); }
 .media-badge { position: absolute; z-index: 1; left: 8px; bottom: 8px; padding: 5px 8px; color: #dbe8ff; background: rgb(60 96 176 / 85%); border: 1px solid rgb(110 150 224 / 40%); border-radius: 999px; font-size: 10px; font-weight: 800; backdrop-filter: blur(6px); }
 .favorite-button { position: absolute; z-index: 2; top: 8px; right: 8px; width: 30px; height: 30px; padding: 0; opacity: 0; transform: translateY(-3px); transition: opacity .18s ease, transform .18s ease, color .15s ease, border-color .15s ease; }
 .movie-tile:hover .favorite-button, .favorite-button.active, .favorite-button:focus-visible { opacity: 1; transform: translateY(0); }

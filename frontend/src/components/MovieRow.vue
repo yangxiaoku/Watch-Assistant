@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ChevronLeft, ChevronRight } from "@lucide/vue";
 import { ref } from "vue";
-import MovieCard from "./MovieCard.vue";
+import PosterCard from "./PosterCard.vue";
 import { mediaKey } from "../media";
 import type { MovieMetadata } from "../types";
 
@@ -40,7 +40,7 @@ function scrollRow(direction: 1 | -1) {
       </div>
     </header>
     <div ref="row" class="movie-row">
-      <MovieCard v-for="movie in movies.slice(0, 12)" :key="mediaKey(movie)" :movie="movie" :favorite="favoriteIds.has(mediaKey(movie))" @open="$emit('open', $event)" @favorite="$emit('favorite', $event)" />
+      <PosterCard v-for="movie in movies.slice(0, 12)" :key="mediaKey(movie)" :movie="movie" :favorite="favoriteIds.has(mediaKey(movie))" @open="$emit('open', $event)" @favorite="$emit('favorite', $event)" />
     </div>
   </section>
 </template>
