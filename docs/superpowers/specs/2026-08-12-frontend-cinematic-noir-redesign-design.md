@@ -141,6 +141,7 @@ src/composables/
 | `SegmentedControl.vue` | 渐变胶囊按钮 | 资源 kind/quality/sort 筛选 |
 | `EmptyState.vue` / `ErrorState.vue` | 各 view 手写 | 统一语调与排版 |
 | `MarqueeNavItem.vue` | — | 侧栏导航项，激活态带过道灯条 |
+| `TaskDrawer.vue`（重设计） | `TaskDrawer.vue` | 任务抽屉，Noir 风格重做 |
 
 样式组织：`tokens.css`（CSS 变量）+ `base.css`（reset/排版）+ `primitives.css`
 （共享原语），视图细节用 SFC scoped 样式。替代现有 1241 行单文件。
@@ -150,6 +151,7 @@ src/composables/
 - 浏览区（首页/电影/剧集/搜索/详情）：衬线大标题、大留白海报墙、最小 chrome。
 - 管理区（设置/媒体库/整理/任务/通知/日志）：统一 PageHeader + 卡片分区；
   设置页从 1360 行墙拆成清晰分组。
+- 登录门（auth gate）同样采用 Noir 风格：居中衬线标题 + 琥珀按钮，不再是独立旧样式。
 
 ## 6. 数据流与状态
 
