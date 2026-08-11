@@ -84,7 +84,8 @@ describe("OrganizationWorkbenchView", () => {
     const wrapper = mount(OrganizationWorkbenchView, { props: { api, executionSupported: true } });
     await flushPromises();
 
-    expect(api.organizationPlans).toHaveBeenCalledWith({ status: "needs_review", cursor: undefined, limit: 20 });
+    // 默认视图(null)不传 status,由后端返回活跃计划(待确认 + 已确认)
+    expect(api.organizationPlans).toHaveBeenCalledWith({ cursor: undefined, limit: 20 });
     expect(wrapper.text()).toContain("整理计划工作台");
     expect(wrapper.text()).toContain("版本 4");
     expect(wrapper.text()).not.toContain("pickcode");
@@ -119,7 +120,7 @@ describe("OrganizationWorkbenchView", () => {
 
     await wrapper.get(".organization-more").trigger("click");
     await flushPromises();
-    expect(api.organizationPlans).toHaveBeenNthCalledWith(2, { status: "needs_review", cursor: 12, limit: 20 });
+    expect(api.organizationPlans).toHaveBeenNthCalledWith(2, { cursor: 12, limit: 20 });
     expect(wrapper.findAll(".organization-plan-row")).toHaveLength(2);
     expect(wrapper.get(".organization-preview h2").text()).toBe("计划 plan-local-1");
 
@@ -161,6 +162,26 @@ describe("OrganizationWorkbenchView", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("disables execution buttons while an operation is active", async () => {
+    const api = makeApi({
+      organizationPlanOperation: vi.fn().mockResolvedValue({
+        operation_id: "op-running",
+        plan_id: plan.plan_id,
+        status: "organizing" as const,
+        revision: 1,
+        attempts: 1,
+        error_code: null,
+        cancel_requested: false,
+      }),
+    });
+    const wrapper = mount(OrganizationWorkbenchView, { props: { api, executionSupported: true } });
+    await flushPromises();
+
+    const executeButton = wrapper.findAll(".primary-button").find((button) => button.text().includes("确认并开始整理"));
+    expect(executeButton).toBeDefined();
+    expect(executeButton!.attributes("disabled")).toBeDefined();
   });
 
   it("shows a structured error when a persisted operation cannot be loaded", async () => {
@@ -277,7 +298,7 @@ describe("OrganizationWorkbenchView", () => {
       { planId: plan.plan_id, expectedRevision: plan.revision },
     ]);
     expect(wrapper.text()).toContain("已确认并提交 1 个整理计划");
-    expect(wrapper.text()).toContain("跳过 1 个待搜索或复核计划");
+    expect(wrapper.text()).toContain("跳过 1 个未参与批量提交的计划");
   });
 
   it("passes the selected revision when saving a local alias", async () => {
@@ -520,6 +541,8 @@ describe("OrganizationWorkbenchView", () => {
 
   it("refreshes the plan row after confirm-and-queue so a second action uses the new revision", async () => {
     const api = makeApi({
+      // 首次确认并整理后操作到达终态(organized),执行按钮恢复可用,随后可用新版本再次执行
+      confirmAndQueueOrganizationOperation: vi.fn().mockResolvedValue({ operation_id: "op-confirm", plan_id: plan.plan_id, status: "organized", revision: 1, attempts: 1, error_code: null, cancel_requested: false }),
       queueOrganizationOperation: vi.fn().mockResolvedValue({ operation_id: "op-queued", plan_id: plan.plan_id, status: "organized", revision: 1, attempts: 1, error_code: null, cancel_requested: false }),
     });
     const wrapper = mount(OrganizationWorkbenchView, { props: { api, executionSupported: true } });

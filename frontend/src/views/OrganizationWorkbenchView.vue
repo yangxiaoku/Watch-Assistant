@@ -44,7 +44,14 @@ const isNeedsReviewView = computed(() => activeStatus.value === "needs_review" |
 const selectedFileNames = computed<string[]>(() => selected.value?.source_names ?? []);
 const selectedCanEdit = computed(() => selected.value?.status === "needs_review" || selected.value?.status === "planned");
 const selectedCanExecute = computed(() => selected.value?.can_execute === true);
-const executableItems = computed(() => items.value.filter((item) => item.can_execute));
+// 批量整理只提交待确认(needs_review)计划:已确认(planned)计划已有活跃操作,
+// 混入批量提交会触发 operation_plan_conflict;与 needs_review tab 行为保持一致。
+const executableItems = computed(() => items.value.filter((item) => item.status === "needs_review" && item.can_execute));
+// 当前选中计划是否存在活跃整理操作(排队中/执行中),存在时禁止重复发起执行
+const operationActive = computed(() => {
+  const status = operation.value?.status;
+  return status === "planned" || status === "organizing";
+});
 const selectedExecutionBlockers = computed<OrganizationExecutionBlocker[]>(() => {
   const blockers = selected.value?.execution_blockers;
   if (blockers?.length) return blockers;
@@ -114,6 +121,8 @@ function operationFailureMessage(code: string | null): string {
   if (code === "plan_prerequisites_changed") return "扫描快照已更新，原计划已失效。请重新扫描并生成新的整理计划后再确认。";
   if (code === "postcondition_mismatch") return "远端结果未满足计划预期，系统已停止后续写入，请先核对 115 当前状态。";
   if (code === "uncertain" || code === "outcome_unknown") return "远端结果暂时无法确认，请先核对 115 当前状态，不要重复提交。";
+  if (code === "remote_write_failed") return "远端写入失败，请核对 115 目录状态后再决定是否重试。";
+  if (code === "target_root_changed") return "整理目标目录已变更，当前计划需要重新确认。";
   return "整理操作未完成，请查看当前状态后再决定下一步。";
 }
 
@@ -212,7 +221,7 @@ async function confirmPlan() {
 }
 
 function requestExecution(plan: OrganizationPlanSummary): void {
-  if (busy.value || !props.executionSupported || !plan.can_execute) return;
+  if (busy.value || !props.executionSupported || !plan.can_execute || operationActive.value) return;
   pendingExecution.value = { kind: "single", plan: normalizePlan(plan) };
 }
 
@@ -250,8 +259,10 @@ async function queueOperation(plan = selected.value) {
     await handleQueuedOperation(queuedOperation, plan.plan_id);
   } catch (exception) {
     focusFirstFieldError(exception);
-    if (exception instanceof ApiError && exception.code === "plan_prerequisites_changed") {
-      await loadPlanOperation(plan);
+    if (isConflict(exception)) {
+      // 计划前置条件已变化等冲突(如 plan_prerequisites_changed):后端已将原计划标记失效,
+      // 刷新列表使其显示"已失效",同时保留本次失败提示
+      await loadPlans();
     }
     error.value = describeError(exception, "整理操作排队失败，请稍后重试");
   } finally {
@@ -304,7 +315,12 @@ async function selectCandidate(candidate: OrganizationPlanSummary["candidates"][
       ? "已生成可执行计划，请确认后开始整理"
       : "已选择影片，但分类或归档路径仍需检查";
   } catch (exception) {
-    error.value = describeError(exception, "选择影片失败，请稍后重试");
+    focusFirstFieldError(exception);
+    if (isConflict(exception)) {
+      await refreshAfterConflict();
+    } else {
+      error.value = describeError(exception, "选择影片失败，请稍后重试");
+    }
   } finally {
     busy.value = false;
   }
@@ -339,7 +355,10 @@ async function searchCandidates() {
       : "未找到候选，请尝试更具体的片名或年份";
   } catch (exception) {
     focusFirstFieldError(exception);
-    if (exception instanceof ApiError && exception.code === "candidate_search_unavailable") {
+    if (isConflict(exception)) {
+      // 计划版本/状态冲突:刷新列表避免停留在过期快照上
+      await refreshAfterConflict();
+    } else if (exception instanceof ApiError && exception.code === "candidate_search_unavailable") {
       // 候选搜索不可用通常是 TMDB API Key 未配置或已失效:给出具体引导而不是只报错
       candidateSearchGuidance.value = true;
       error.value = "候选搜索暂不可用：通常是因为 TMDB API Key 未配置或已失效，本次搜索没有完成。";
@@ -386,11 +405,11 @@ async function confirmAndQueueCurrentPage() {
       error.value = `${rejected.length} 个计划未提交：${rejectedCode ? describeUiError(rejectedCode, 409).message : "当前计划状态已变化，请刷新后重试。"}`;
     }
     if (accepted.length) {
-      notice.value = `已确认并提交 ${accepted.length} 个整理计划，后台正在执行${skipped ? `，跳过 ${skipped} 个待搜索或复核计划` : ""}`;
+      notice.value = `已确认并提交 ${accepted.length} 个整理计划，后台正在执行${skipped ? `，跳过 ${skipped} 个未参与批量提交的计划` : ""}`;
       // 批量提交后轮询各操作直到终态,避免"提交后无反馈"
       await pollBatchOperations(accepted);
     } else if (skipped) {
-      notice.value = `当前页没有新的整理操作，已跳过 ${skipped} 个待搜索或复核计划`;
+      notice.value = `当前页没有新的整理操作，已跳过 ${skipped} 个未参与批量提交的计划`;
     }
   } catch (exception) {
     focusFirstFieldError(exception);
@@ -423,7 +442,7 @@ async function pollBatchOperations(accepted: OrganizationOperationBatchResult[])
           isCurrent,
           onResponse: (current) => {
             if (!isCurrent()) return;
-            if (current.status === "organized" || current.status === "failed" || current.status === "uncertain") {
+            if (current.status === "organized" || current.status === "failed" || current.status === "uncertain" || current.status === "cancelled") {
               finished += 1;
               if (current.status !== "organized") failed += 1;
               notice.value = finished >= total
@@ -436,7 +455,8 @@ async function pollBatchOperations(accepted: OrganizationOperationBatchResult[])
           isDone: (current) =>
             current.status === "organized"
             || current.status === "failed"
-            || current.status === "uncertain",
+            || current.status === "uncertain"
+            || current.status === "cancelled",
         },
       );
     }),
@@ -492,12 +512,15 @@ async function pollOperation(operationId: string, planId: string) {
             ? describeUiError(current.error_code, 409).message
             : "后台整理未完成，请查看操作状态";
           notice.value = "";
+        } else if (current.status === "cancelled") {
+          notice.value = "整理操作已取消";
         }
       },
       isDone: (current) =>
         current.status === "organized"
         || current.status === "failed"
-        || current.status === "uncertain",
+        || current.status === "uncertain"
+        || current.status === "cancelled",
     },
   );
   // pollUntil 超时返回 null 且无请求报错时给出提示,而不是静默结束
@@ -529,7 +552,7 @@ async function mutate(action: "confirm" | "ignore" | "alias", operation: () => P
   }
 }
 
-async function changeStatus(status: OrganizationPlanStatus) {
+async function changeStatus(status: OrganizationPlanStatus | null) {
   if (busy.value || activeStatus.value === status) return;
   activeStatus.value = status;
   await loadPlans();
@@ -561,7 +584,8 @@ onBeforeUnmount(() => {
     <p v-if="notice" class="success-strip"><Check :size="16" />{{ notice }}</p>
 
     <div class="organization-tabs" role="tablist" aria-label="计划状态">
-      <button type="button" :class="{ active: activeStatus === 'needs_review' || activeStatus === null }" @click="changeStatus('needs_review')">待确认</button>
+      <button type="button" :class="{ active: activeStatus === null }" @click="changeStatus(null)">全部</button>
+      <button type="button" :class="{ active: activeStatus === 'needs_review' }" @click="changeStatus('needs_review')">待确认</button>
       <button type="button" :class="{ active: activeStatus === 'planned' }" @click="changeStatus('planned')">已确认</button>
       <button type="button" :class="{ active: activeStatus === 'ignored' }" @click="changeStatus('ignored')">已忽略</button>
       <button type="button" :class="{ active: activeStatus === 'invalidated' }" @click="changeStatus('invalidated')">已失效</button>
@@ -641,9 +665,9 @@ onBeforeUnmount(() => {
           <details v-if="operation.error_code" class="diagnostic-details"><summary>诊断信息</summary><small>错误码：{{ diagnosticCode(operation.error_code) }}</small><small>操作标识：{{ diagnosticReference(operation.operation_id) }}</small></details>
         </div>
         <div v-if="selectedCanEdit || (selected.status === 'planned' && executionSupported)" class="organization-actions">
-          <button v-if="selectedIsReviewable && executionSupported && selectedCanExecute" class="primary-button" type="button" :disabled="busy" @click="requestExecution(selected)"><Play :size="16" />确认并开始整理</button>
+          <button v-if="selectedIsReviewable && executionSupported && selectedCanExecute" class="primary-button" type="button" :disabled="busy || operationActive" @click="requestExecution(selected)"><Play :size="16" />确认并开始整理</button>
           <button v-else-if="selectedIsReviewable && selectedCanExecute" class="primary-button" type="button" :disabled="busy" @click="confirmPlan"><Check :size="16" />确认本地计划</button>
-          <button v-if="selected.status === 'planned' && executionSupported && selectedCanExecute" class="primary-button" type="button" :disabled="busy" @click="requestExecution(selected)"><Play :size="16" />立即整理</button>
+          <button v-if="selected.status === 'planned' && executionSupported && selectedCanExecute" class="primary-button" type="button" :disabled="busy || operationActive" @click="requestExecution(selected)"><Play :size="16" />立即整理</button>
           <button class="secondary-button" type="button" :disabled="busy" @click="ignorePlan"><Ban :size="16" />忽略</button>
         </div>
         <form v-if="selectedCanEdit" class="organization-alias" @submit.prevent="saveAlias">
