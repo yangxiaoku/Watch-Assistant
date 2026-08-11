@@ -842,7 +842,7 @@ class OrganizationPlanService:
             naming_plan = plan_media(
                 parsed,
                 decision,
-                rules=NamingRuleConfig(library_root=stored.target_root or "library"),
+                rules=NamingRuleConfig(library_root=stored.target_root or ""),
             )
             if not naming_plan.executable or not naming_plan.target_path:
                 raise OrganizationPlanError("candidate_target_unavailable")
@@ -876,6 +876,11 @@ class OrganizationPlanService:
                 decision=decision,
                 target_parent_id=target_parent_id,
                 target_name=PurePosixPath(naming_plan.target_path).name,
+                target_directory_path=(
+                    naming_plan.target_directory
+                    if naming_plan.target_path
+                    else None
+                ),
             )
             selected_source, selected_action, selected_precondition, selected_basis, _ = (
                 _build_payload(
