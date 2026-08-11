@@ -490,6 +490,9 @@ input { outline: none; }
   .topbar { grid-template-columns: auto 1fr auto; gap: 12px; }
   .primary-nav { order: 4; grid-column: 1 / -1; justify-content: center; border-top: 1px solid var(--border); }
   .top-search { min-width: 0; }
+  /* 平板宽度(761-1050px):1080px 宽的表格在此区间横滚,改为卡片形态。 */
+  .resource-cards { display: grid; }
+  .resource-table-wrap { display: none; }
   .topbar-actions > button:not(.icon-button) { width: 34px; padding: 0; font-size: 0; justify-content: center; }
   .topbar-quick-action { padding: 0; }
   .topbar-quick-action span { display: none; }
@@ -1033,6 +1036,20 @@ html, body { overflow-x: hidden; }
 .primary-nav-group-label { padding: 0 3px; color: var(--text-3); font-size: 10px; font-weight: 800; white-space: nowrap; }
 .task-status-line { display: flex; min-width: 0; align-items: center; flex-wrap: wrap; gap: 7px; }
 .task-status-line strong { min-width: 0; }
+/* 通用 tooltip:元素加 data-tooltip="文案",hover 显示 CSS-only 提示。 */
+[data-tooltip] { position: relative; }
+[data-tooltip]::after { content: attr(data-tooltip); position: absolute; z-index: 12; left: 50%; bottom: calc(100% + 7px); transform: translateX(-50%) translateY(3px); max-width: 220px; padding: 5px 8px; color: #e8ecf5; background: rgb(8 10 15 / 96%); border: 1px solid var(--border-strong); border-radius: 7px; font-size: 11px; font-weight: 600; line-height: 1.4; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: 0; pointer-events: none; transition: opacity .14s ease, transform .14s ease; }
+[data-tooltip]:hover::after, [data-tooltip]:focus-visible::after { opacity: 1; transform: translateX(-50%) translateY(0); }
+/* 通用徽章:状态/来源标签统一色板。 */
+.badge { display: inline-flex; align-items: center; gap: 4px; min-height: 20px; padding: 0 8px; border: 1px solid var(--border-strong); border-radius: 999px; font-size: 10px; font-weight: 750; line-height: 1; white-space: nowrap; color: var(--text-2); background: var(--surface-3); }
+.badge.badge-accent { color: #b9d5ff; background: var(--sky-soft); border-color: rgb(99 179 237 / 35%); }
+.badge.badge-success { color: #d7f5ad; background: var(--mint-soft); border-color: rgb(74 222 128 / 30%); }
+.badge.badge-warning { color: #ffe1a5; background: var(--amber-soft); border-color: rgb(245 166 76 / 35%); }
+.badge.badge-danger { color: #ffc6cc; background: var(--danger-soft); border-color: rgb(248 113 113 / 35%); }
+/* 通用文字行骨架:内容加载中显示。 */
+.skeleton-line { display: block; height: 13px; margin-bottom: 9px; border-radius: 6px; background: linear-gradient(110deg, var(--surface-2) 8%, var(--surface-3) 22%, var(--surface-2) 36%); background-size: 200% 100%; animation: shimmer 1.3s ease-in-out infinite; }
+.skeleton-line.skeleton-line-sm { width: 60%; height: 11px; }
+.skeleton-line.skeleton-line-lg { width: 88%; height: 16px; }
 .status-chip { display: inline-flex; min-height: 20px; align-items: center; padding: 0 7px; border: 1px solid transparent; border-radius: 999px; font-size: 10px; font-weight: 800; line-height: 1; white-space: nowrap; }
 .status-chip-neutral, .status-text-neutral { color: #c8ccd3; background: var(--surface-3); border-color: var(--border-strong); }
 .status-chip-info, .status-text-info { color: #b9d5ff; background: var(--sky-soft); border-color: rgb(99 179 237 / 35%); }

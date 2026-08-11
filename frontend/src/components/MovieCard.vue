@@ -41,7 +41,7 @@ const scoreStyle = computed(() => {
       </span>
       <span class="movie-card-copy"><strong>{{ movie.title }}</strong><small>{{ movie.release_year ?? '年份未知' }}<template v-if="movie.original_title"> · {{ movie.original_title }}</template></small></span>
     </button>
-    <button class="favorite-button" type="button" :class="{ active: favorite }" :aria-label="favorite ? `取消收藏 ${movie.title}` : `收藏 ${movie.title}`" :title="favorite ? '取消收藏' : '收藏'" @click="$emit('favorite', movie)">
+    <button class="favorite-button" type="button" :class="{ active: favorite }" :aria-label="favorite ? `取消收藏 ${movie.title}` : `收藏 ${movie.title}`" :data-tooltip="favorite ? '取消收藏' : '收藏'" @click="$emit('favorite', movie)">
       <Heart :size="15" :fill="favorite ? 'currentColor' : 'none'" />
     </button>
   </article>
