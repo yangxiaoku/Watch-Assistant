@@ -35,6 +35,10 @@ Cookie 文件或应用内托管设备。分享推送、影视库整理、删除�
 
 ## 当前发布与验收边界
 
+> **SHA 时效说明（2026-08-11）**：本节的 `5df17fb` / `249aa582` 是 **2026-08-05 的历史发布线/
+> 部署快照**，仅作当时状态记录。当前发布线一律以 `git rev-parse origin/codex/publish-main`
+> 动态解析为准，勿按本文硬编码值断言当前版本。
+
 - 唯一发布分支是 `codex/publish-main`。发布前先执行 `git fetch --all --prune`，再以
   `git rev-parse origin/codex/publish-main` 的实际输出作为 commit 身份；README 不使用未注明日期的固定 SHA。
   最近合入的 PR #50-#61 只作为 first-parent 历史记录；发布前仍须重新解析实际 ref，不能沿用旧报告中的 commit。
@@ -72,6 +76,14 @@ Cookie 文件或应用内托管设备。分享推送、影视库整理、删除�
   STRM/空目录清理和整理写入继续关闭；接口开关或契约状态必须与完整生产验收分开记录。
 
 ## 部署
+
+> **实测运行模式（2026-08 核对）**：生产服务器（`192.168.6.236`）以 **systemd** 运行，非 Compose。
+> 服务单元 `deploy/watch-assistant.service` 使用 `/opt/watch-assistant/venv/bin/uvicorn` 监听 `8115`；
+> 发布目录、切换顺序和 postdeploy 校验见下文「systemd 发布目录与切换顺序」，环境变量模板见
+> `deploy/watch-assistant.env.example`。以下 Compose 步骤是**容器化备用部署**（当前服务器未使用），
+> 仅在切回 Compose 时适用。
+
+### Compose 备用部署（当前服务器未使用）
 
 要求：Docker Engine、Docker Compose，以及已存在的外部网络 `pansou_default`。应用只通过
 该网络访问 PanSou；qBittorrent 和 115 按各自适配器配置，不随应用容器重启。
@@ -117,7 +129,7 @@ Web 登录账号默认为 `admin`。生产环境应继续使用 `WEB_PASSWORD_HA
 
 认证后的维护接口包括 `GET /api/v1/cache/status`、`POST /api/v1/cache/retry`、`GET /api/v1/watchlist` 和 `GET /api/v1/sources/reliability`。它们用于查看预热状态、重试失败媒体、检查无资源观察列表和来源可靠性，不返回资源链接或密码。
 
-服务器的 `8000` 端口已被占用时，可按 `.env.example` 使用 `8115`。若 Docker Hub 不可达，可以使用 `deploy/watch-assistant.service` 以 Python venv 运行；对应环境变量模板是 `deploy/watch-assistant.env.example`。
+服务器的 `8000` 端口已被占用时，可按 `.env.example` 使用 `8115`。systemd 部署使用 `deploy/watch-assistant.service` 以 Python venv 运行并监听 `8115`，对应环境变量模板是 `deploy/watch-assistant.env.example`。
 
 115 真实操作采用独立的 fail-closed 开关。整理计划、移动/重命名写入、永久删除和 STRM
 生成/增量/清理/播放分别受 `ORGANIZATION_PLAN_ENABLED`、
@@ -135,8 +147,7 @@ Web 登录账号默认为 `admin`。生产环境应继续使用 `WEB_PASSWORD_HA
 ### systemd 发布目录与切换顺序
 
 使用发布包前，Linux/Git Bash 环境必须具备 `git`、`tar`、`sha256sum`、`stat`、`awk`、`grep`、`cmp`
-和 `npm`，并在 worktree 创建 `.venv/bin/python`；Windows worktree 使用
-`.venv/Scripts/python.exe`。发布脚本会拒绝缺少该 worktree Python 的环境，不会回退系统 Python。
+和 `npm`，并在 worktree 创建 `.venv/bin/python`。发布脚本会拒绝缺少该 worktree Python 的环境，不会回退系统 Python。
 发布 manifest 的 JSON 创建、读取和字段校验由 Python 标准库 helper 完成，因此不需要安装 `jq`。
 
 systemd 发布必须使用 `/opt/watch-assistant/releases` 作为 release 根目录。可以先将压缩包
