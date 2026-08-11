@@ -154,9 +154,10 @@ pwsh ./scripts/backup_db.ps1
    `watch-assistant-<hash7>-<date>.tar.gz`。
 4. **发布基线唯一**：唯一发布分支是 `codex/publish-main`。发布前必须核对该分支的
    实际最新提交和部署状态，不在本文件硬编码可能过期的提交号。
-5. **凭据不进仓**：Secret 只放在 `C:\Users\98275\.115ts-secrets\`；不得进入代码、
+5. **凭据不进仓**：Secret 只放在受保护的位置（服务器 `/etc/watch-assistant/` 环境文件与
+   `p115-cookie`；测试凭据 `$CLAUDE_JOB_DIR/tmp/wa-test.env`）；不得进入代码、
    文档、日志、测试 fixture、截图或发布包。
-6. **Python 环境**：worktree 内使用 `.venv/Scripts/python.exe`，禁止使用系统 Python、
+6. **Python 环境**：worktree 内使用 `.venv/bin/python`，禁止使用系统 Python、
    `uv sync` 或 PowerShell 修改环境；全量测试分 unit/integration/contracts 三批运行，
    单条全量超过 120 秒按超时处理。
 7. **验收脚本化**：合并前 `scripts/verify.sh` 必须通过，不以截图代替验收；离线测试是
@@ -176,8 +177,8 @@ pwsh ./scripts/backup_db.ps1
 ## 验证
 
 ```bash
-.venv/Scripts/python.exe -m pytest -q
-.venv/Scripts/python.exe -m ruff check src tests scripts
+.venv/bin/python -m pytest -q
+.venv/bin/python -m ruff check src tests scripts
 npm --prefix frontend test -- --run
 npm --prefix frontend run build
 npm --prefix frontend run test:e2e
@@ -190,7 +191,7 @@ docker compose config
 ## 本地验收环境事实
 
 - 部署主机：`192.168.6.236`。
-- 持久 iPad Cookie：`C:\Users\98275\.115ts-secrets\.p115-cookie`。
+- 持久 iPad Cookie：服务器 `/etc/watch-assistant/p115-cookie`（config.py 默认值）。
 - 测试目录 CID：`3482085898508567892`，干净且只有一个 wav 文件。
 - 固定 `p115client` 版本：`0.0.9.6.5.1`。
 - `_p115client_timeout_executor` 对 `errno=990009` 使用 3 秒重试。
