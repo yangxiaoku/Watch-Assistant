@@ -1606,8 +1606,8 @@ def test_view_source_names_extracts_unique_names_from_actions():
         {"kind": "review", "source_name": "zeta.mkv"},
         {"kind": "move", "source_name": "eta.mkv"},
         {"kind": "review", "source_name": "theta.mkv"},
-        {"kind": "move", "source_name": "iota.mkv"},  # 第 9 个,被截断
-        {"kind": "move", "source_name": "kappa.mkv"},  # 第 10 个,被截断
+        {"kind": "move", "source_name": "iota.mkv"},
+        {"kind": "move", "source_name": "kappa.mkv"},
     ]
     view = _view(_view_plan(actions))
     assert view.source_names == (
@@ -1619,6 +1619,8 @@ def test_view_source_names_extracts_unique_names_from_actions():
         "zeta.mkv",
         "eta.mkv",
         "theta.mkv",
+        "iota.mkv",
+        "kappa.mkv",
     )
     assert view.to_public_dict()["source_names"] == list(view.source_names)
 

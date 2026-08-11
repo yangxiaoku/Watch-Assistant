@@ -283,6 +283,23 @@ class OrganizationPlanService:
             library, run = await self._verified_scan(
                 session, library_id=library_id, scan_run_id=scan_run_id
             )
+            # 新计划取代同库旧扫描的活跃计划:列表只保留最新一次扫描的
+            # 计划,避免历史计划堆叠(用户无法分辨哪份是当前待办)。
+            await session.execute(
+                update(OrganizationPlan)
+                .where(
+                    OrganizationPlan.library_id == library_id,
+                    OrganizationPlan.source_scan_run_id != run.id,
+                    OrganizationPlan.status.in_(
+                        (
+                            OrganizationPlanStatus.NEEDS_REVIEW.value,
+                            OrganizationPlanStatus.PLANNED.value,
+                        )
+                    ),
+                )
+                .values(status=OrganizationPlanStatus.INVALIDATED.value)
+                .execution_options(synchronize_session=False)
+            )
             rows = await self._load_source_rows(
                 session, scan_run_id=run.id, items=normalized_items
             )
@@ -3005,8 +3022,6 @@ def _view(
         if isinstance(name, str) and name and name not in seen_source_names:
             seen_source_names.add(name)
             source_names.append(name)
-            if len(source_names) == 8:
-                break
     move_preconditions = [
         (item, precondition)
         for item, precondition in zip(actions, precondition_items or ())
