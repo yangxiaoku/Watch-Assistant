@@ -700,6 +700,14 @@ def create_app(
                     if not cookie:
                         raise RuntimeError("credentials_unavailable")
                     client = await asyncio.to_thread(_default_client_factory, cookie)
+                    provision_interval = 1.5
+                    try:
+                        organization_settings = (
+                            await application.state.settings_service.get_organization()
+                        )
+                        provision_interval = organization_settings.operation_delay_seconds
+                    except Exception:  # noqa: BLE001 - conservative fallback
+                        provision_interval = 1.5
                     try:
                         provisioner = OrganizationDirectoryProvisioner(
                             client,
@@ -707,6 +715,7 @@ def create_app(
                             organization_contract=organization_contract,
                             ownership_service=application.state.managed_directory_ownership_service,
                             event_logger=application.state.settings_service,
+                            interval_seconds=provision_interval,
                         )
                         await provisioner.ensure(
                             target_root_id=application.state.organization_target_root_id,

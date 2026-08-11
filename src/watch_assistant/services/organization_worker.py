@@ -171,6 +171,8 @@ class OrganizationWorker:
                     operation_delay = organization_settings.operation_delay_seconds
                 except Exception:  # noqa: BLE001 - retain the conservative fallback
                     operation_delay = 0.25
+            # 写操作(移动/重命名/回收)间隔长于普通调用,缓解 115 风控。
+            write_interval = max(3.0, operation_delay * 2)
             transport = create_live_p115_organization_transport(
                 client=client,
                 call_executor=self._call_executor,
@@ -189,6 +191,7 @@ class OrganizationWorker:
                 transport,
                 max_transport_calls=128,
                 min_call_interval=operation_delay,
+                write_interval_seconds=write_interval,
             )
             await executor.execute(
                 lease.operation_id,

@@ -161,6 +161,7 @@ class OrganizationExecutor:
         *,
         max_transport_calls: int = 128,
         min_call_interval: float = 0.0,
+        write_interval_seconds: float | None = None,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         if (
@@ -170,6 +171,14 @@ class OrganizationExecutor:
             or not isinstance(min_call_interval, (int, float))
             or isinstance(min_call_interval, bool)
             or min_call_interval < 0
+            or (
+                write_interval_seconds is not None
+                and (
+                    not isinstance(write_interval_seconds, (int, float))
+                    or isinstance(write_interval_seconds, bool)
+                    or write_interval_seconds < 0
+                )
+            )
         ):
             raise OrganizationExecutorError("invalid_execution_budget")
         self._operation_service = operation_service
@@ -177,6 +186,12 @@ class OrganizationExecutor:
         self._transport = transport
         self._max_transport_calls = max_transport_calls
         self._min_call_interval = float(min_call_interval)
+        if write_interval_seconds is None:
+            # 写操作专属间隔:未显式配置时退避到 min_call_interval*3,
+            # 且至少固定 3.0s(缓解 115 高频写操作风控)。
+            self._write_interval = max(self._min_call_interval * 3, 3.0)
+        else:
+            self._write_interval = float(write_interval_seconds)
         self._sleep = sleep
 
     async def execute(
@@ -843,10 +858,11 @@ class OrganizationExecutor:
     ):
         if context.transport_calls >= self._max_transport_calls:
             raise _RateLimitReached
-        if context.last_call_at is not None and self._min_call_interval:
+        interval = self._write_interval if is_write else self._min_call_interval
+        if context.last_call_at is not None and interval:
             elapsed = time.monotonic() - context.last_call_at
-            if elapsed < self._min_call_interval:
-                await self._sleep(self._min_call_interval - elapsed)
+            if elapsed < interval:
+                await self._sleep(interval - elapsed)
         self._check_cancel(cancel_event)
         if await self._operation_service.cancel_requested(context.lease.operation_id):
             raise _ExecutionCancelled
