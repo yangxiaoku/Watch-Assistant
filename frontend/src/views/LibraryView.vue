@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { SlidersHorizontal } from "@lucide/vue";
+import PageHeader from "../components/PageHeader.vue";
 import PosterCard from "../components/PosterCard.vue";
 import PaginationBar from "../components/PaginationBar.vue";
+import SegmentedControl from "../components/SegmentedControl.vue";
 import { mediaKey } from "../media";
 import type { MovieMetadata } from "../types";
 
@@ -44,11 +46,13 @@ const years = [undefined, ...Array.from({ length: 8 }, (_, index) => currentYear
 
 <template>
   <section class="library-view">
-    <header class="library-heading"><div><p class="eyebrow">浏览 TMDB</p><h1 id="catalog-title">{{ mediaType === 'tv' ? '剧集库' : '电影库' }}</h1><p>按类型、年份和排序方式发现{{ mediaType === 'tv' ? '电视剧' : '电影' }}，打开后直接聚合 PanSou 资源。</p></div><SlidersHorizontal :size="28" /></header>
+    <PageHeader eyebrow="浏览 TMDB" :title="mediaType === 'tv' ? '剧集库' : '电影库'" title-id="catalog-title">
+      <template #description><p>按类型、年份和排序方式发现{{ mediaType === 'tv' ? '电视剧' : '电影' }}，打开后直接聚合 PanSou 资源。</p></template>
+    </PageHeader>
     <div class="filter-panel">
       <div class="filter-row"><strong>类型</strong><div class="filter-options"><button v-for="genre in (mediaType === 'tv' ? tvGenres : movieGenres)" :key="genre[1]" type="button" :class="{ active: genreId === genre[0] }" @click="$emit('filters', { genreId: genre[0], year, sort })">{{ genre[1] }}</button></div></div>
       <div class="filter-row"><strong>年份</strong><div class="filter-options"><button v-for="item in years" :key="item ?? 'all'" type="button" :class="{ active: year === item }" @click="$emit('filters', { genreId, year: item, sort })">{{ item ?? '全部' }}</button></div></div>
-      <div class="filter-row"><strong>排序</strong><div class="filter-options"><button type="button" :class="{ active: sort === 'popular' }" @click="$emit('filters', { genreId, year, sort: 'popular' })">热度优先</button><button type="button" :class="{ active: sort === 'rating' }" @click="$emit('filters', { genreId, year, sort: 'rating' })">评分优先</button><button type="button" :class="{ active: sort === 'release' }" @click="$emit('filters', { genreId, year, sort: 'release' })">最新上映</button></div></div>
+      <div class="filter-row"><strong>排序</strong><div class="filter-options-sort"><SegmentedControl :model-value="sort" :options="[{ value: 'popular', label: '热度优先' }, { value: 'rating', label: '评分优先' }, { value: 'release', label: '最新上映' }]" @update:model-value="(value) => $emit('filters', { genreId, year, sort: value as 'popular' | 'rating' | 'release' })" /></div></div>
     </div>
     <div v-if="loading && !movies.length" class="movie-grid catalog-grid" :aria-label="`正在加载${mediaType === 'tv' ? '电视剧' : '电影'}`"><div v-for="index in 12" :key="index" class="movie-skeleton"><span /></div></div>
     <div v-else-if="movies.length" class="catalog-results" :aria-busy="loading ? 'true' : 'false'"><div class="movie-grid catalog-grid"><PosterCard v-for="movie in movies" :key="mediaKey(movie)" :movie="movie" :favorite="favoriteIds.has(mediaKey(movie))" @open="$emit('open', $event)" @favorite="$emit('favorite', $event)" /></div><p v-if="loading" class="catalog-loading" role="status">正在加载第 {{ page }} 页</p><p v-if="error" class="catalog-inline-error" role="alert"><SlidersHorizontal :size="18" /><span>{{ error }}</span><button class="text-button" type="button" @click="$emit('retry')">重新加载目录</button></p></div>
