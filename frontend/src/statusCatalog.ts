@@ -122,7 +122,12 @@ export function workflowStageStatusLabel(status: WorkflowStageStatus): string {
 export function strmOperationStatusLabel(
   operation: Pick<StrmOperationResponse, "status" | "failed" | "skipped">,
 ): string {
-  if (operation.status === "succeeded" && operation.failed > 0) return "部分完成";
+  if (
+    operation.status === "succeeded" &&
+    (operation.failed > 0 || operation.skipped > 0)
+  ) {
+    return "部分完成";
+  }
   return STRM_OPERATION_STATUS[operation.status] ?? "状态待确认";
 }
 
@@ -140,7 +145,12 @@ export function strmOperationNextStep(
   if (operation.status === "timeout") return "先刷新并核对操作结果，确认前不要恢复执行。";
   if (operation.status === "failed") return "查看失败原因，确认快照仍有效后再恢复执行。";
   if (operation.status === "cancelled") return "确认没有遗留处理中操作后，再决定是否恢复执行。";
-  if (operation.status === "succeeded" && operation.failed > 0) return "部分条目未完成，请查看失败统计并按需重试。";
+  if (
+    operation.status === "succeeded" &&
+    (operation.failed > 0 || operation.skipped > 0)
+  ) {
+    return "部分条目未完成，请查看失败统计与跳过情况并按需重试。";
+  }
   if (operation.status === "queued" || operation.status === "running") return "等待当前操作完成，页面会持续更新状态。";
   return "操作已完成。";
 }

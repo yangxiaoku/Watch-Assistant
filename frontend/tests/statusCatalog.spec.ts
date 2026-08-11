@@ -30,6 +30,10 @@ describe("statusCatalog", () => {
     expect(strmOperationStatusLabel(partial)).toBe("部分完成");
     expect(strmOperationNextStep(partial)).toContain("失败统计");
     expect(strmOperationNextStep(timeout)).toContain("不要恢复执行");
+
+    const skippedOnly = { status: "succeeded" as const, failed: 0, skipped: 2 };
+    expect(strmOperationStatusLabel(skippedOnly)).toBe("部分完成");
+    expect(strmOperationNextStep(skippedOnly)).toContain("跳过");
   });
 
   it("does not describe an incomplete scan as complete", () => {
