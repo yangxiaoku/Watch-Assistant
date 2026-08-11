@@ -779,8 +779,21 @@ def create_app(
                 return await automation.run_once()
 
             async def run_organization_manual(run_id: str) -> bool:
+                # 手动触发跟随 auto_execute_enabled:自动整理开启时直接排队执行,
+                # 关闭时保留人工确认(计划落入待办)。用户期望"自动整理"=放文件后
+                # 点整理即完成,不需要二次确认。
+                auto_execute = False
+                try:
+                    organization_settings = (
+                        await application.state.settings_service.get_organization()
+                    )
+                    auto_execute = bool(
+                        organization_settings.auto_execute_enabled
+                    )
+                except Exception:  # noqa: BLE001 - keep the conservative fallback
+                    auto_execute = False
                 return await automation.run_once(
-                    manual_confirmation=True, run_id=run_id
+                    manual_confirmation=not auto_execute, run_id=run_id
                 )
 
             scheduler = OrganizationScheduler(
