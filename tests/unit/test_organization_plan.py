@@ -12,8 +12,10 @@ from watch_assistant.library_models import (
     LibraryScanEntry,
     LibraryScanRun,
     MediaLibrary,
+    OrganizationHistoryEntry,
     OrganizationPlan,
 )
+from watch_assistant.models import OrganizationOperation
 from watch_assistant.schemas import MediaType
 from watch_assistant.services.media_classification import (
     ClassificationStatus,
@@ -36,6 +38,7 @@ from watch_assistant.services.organization_plan import (
     _canonical_hash,
     _entry_remote_version,
     _execution_blockers,
+    _view,
     load_executable_steps,
 )
 
@@ -1490,7 +1493,9 @@ async def test_public_and_error_outputs_are_redacted_and_migration_is_idempotent
         library_id=LIBRARY_ID, scan_run_id=SCAN_ID, items=(_item(),)
     )
     public = repr(plan) + repr(plan.to_public_dict())
-    assert SECRET_NAME not in public
+    # 文件名经 source_names 展示是刻意为之(列表行显示待处理文件);
+    # 路径/凭证/对象标识仍必须脱敏。
+    assert plan.to_public_dict()["source_names"] == [SECRET_NAME]
     assert SECRET_PATH not in public
     assert SECRET_PICKCODE not in public
     assert "object_id" not in public
@@ -1555,4 +1560,322 @@ async def test_missing_parent_fallback_target_matches_actual_root_destination(tm
     assert (
         action["execution"]["members"][0]["target_parent_id"] == "target-root"
     )  # 执行与展示一致
+    await database.engine.dispose()
+
+
+def _view_plan(
+    actions: list[dict[str, object]],
+    *,
+    status: str = "planned",
+) -> OrganizationPlan:
+    return OrganizationPlan(
+        id="plan-view-1",
+        library_id=LIBRARY_ID,
+        source_scan_run_id=SCAN_ID,
+        source_snapshot_revision=1,
+        source_snapshot_json="[]",
+        target_root="",
+        actions_json=json.dumps(actions),
+        basis_json="[]",
+        preconditions_json="{}",
+        rule_version="i06-v1",
+        parser_version="i04-v1",
+        matcher_version="i05-v1",
+        status=status,
+        revision=1,
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+        plan_hash="a" * 64,
+    )
+
+
+def test_view_source_names_extracts_unique_names_from_actions():
+    """source_names 从 actions 提取:去重、保留顺序、最多 8 个,review/move 都算。"""
+    actions = [
+        {"kind": "move", "source_name": "alpha.mkv"},
+        {"kind": "review", "source_name": "beta.mkv"},
+        {"kind": "move", "source_name": "alpha.mkv"},  # 重复,去重
+        {"kind": "review", "source_name": "gamma.mkv"},
+        {"kind": "move", "source_name": "delta.mkv"},
+        {"kind": "move", "source_name": "epsilon.mkv"},
+        {"kind": "review", "source_name": "zeta.mkv"},
+        {"kind": "move", "source_name": "eta.mkv"},
+        {"kind": "review", "source_name": "theta.mkv"},
+        {"kind": "move", "source_name": "iota.mkv"},  # 第 9 个,被截断
+        {"kind": "move", "source_name": "kappa.mkv"},  # 第 10 个,被截断
+    ]
+    view = _view(_view_plan(actions))
+    assert view.source_names == (
+        "alpha.mkv",
+        "beta.mkv",
+        "gamma.mkv",
+        "delta.mkv",
+        "epsilon.mkv",
+        "zeta.mkv",
+        "eta.mkv",
+        "theta.mkv",
+    )
+    assert view.to_public_dict()["source_names"] == list(view.source_names)
+
+    empty = _view(_view_plan([]))
+    assert empty.source_names == ()
+    assert empty.to_public_dict()["source_names"] == []
+
+
+@pytest.mark.asyncio
+async def test_list_and_get_expose_source_names(tmp_path):
+    """列表与详情都带上去重后的待处理文件名(move + review 都含)。"""
+    database = await _database(tmp_path)
+    service = OrganizationPlanService(database.session_factory)
+    plan_view = await service.create_plan(
+        library_id=LIBRARY_ID,
+        scan_run_id=SCAN_ID,
+        items=(
+            _item(),  # move
+            _item(  # review
+                object_id="101",
+                target_path="movie/other-safe.mkv",
+                target_name="other-safe.mkv",
+                confidence=MatchConfidence.LOW,
+            ),
+        ),
+    )
+    assert plan_view.status is OrganizationPlanStatus.NEEDS_REVIEW
+    assert plan_view.source_names == (SECRET_NAME, "second-title.mkv")
+
+    views, _ = await service.list_plans()
+    assert [view.plan_id for view in views] == [plan_view.plan_id]
+    assert views[0].source_names == (SECRET_NAME, "second-title.mkv")
+    assert views[0].to_public_dict()["source_names"] == [
+        SECRET_NAME,
+        "second-title.mkv",
+    ]
+
+    detail = await service.get_plan(plan_view.plan_id)
+    assert detail.source_names == (SECRET_NAME, "second-title.mkv")
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_list_migrates_expired_active_plans_to_invalidated(tmp_path):
+    """过期的 needs_review / planned 计划在列表查询后置为 invalidated。"""
+    database = await _database(tmp_path)
+    service = OrganizationPlanService(database.session_factory)
+    expired_review = await service.create_plan(
+        library_id=LIBRARY_ID,
+        scan_run_id=SCAN_ID,
+        items=(_item(confidence=MatchConfidence.LOW),),
+    )
+    expired_planned = await service.create_plan(
+        library_id=LIBRARY_ID,
+        scan_run_id=SCAN_ID,
+        items=(
+            _item(
+                object_id="101",
+                target_path="movie/third-safe.mkv",
+                target_name="third-safe.mkv",
+            ),
+        ),
+    )
+    assert expired_review.status is OrganizationPlanStatus.NEEDS_REVIEW
+    assert expired_planned.status is OrganizationPlanStatus.PLANNED
+    async with database.session_factory() as session:
+        for plan_id in (expired_review.plan_id, expired_planned.plan_id):
+            plan = await session.get(OrganizationPlan, plan_id)
+            assert plan is not None
+            plan.expires_at = datetime.now(UTC) - timedelta(hours=1)
+        await session.commit()
+
+    views, _ = await service.list_plans()
+    assert views == []  # 过期计划迁移后不再出现在默认(活跃)列表
+
+    async with database.session_factory() as session:
+        for plan_id in (expired_review.plan_id, expired_planned.plan_id):
+            plan = await session.get(OrganizationPlan, plan_id)
+            assert plan is not None
+            assert plan.status == OrganizationPlanStatus.INVALIDATED.value
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_list_deletes_terminal_plans_older_than_7_days(tmp_path):
+    """终态计划(invalidated / ignored)创建超过 7 天被删除。"""
+    database = await _database(tmp_path)
+    service = OrganizationPlanService(database.session_factory)
+    ignored = await service.create_plan(
+        library_id=LIBRARY_ID,
+        scan_run_id=SCAN_ID,
+        items=(
+            _item(
+                object_id="101",
+                target_path="movie/third-safe.mkv",
+                target_name="third-safe.mkv",
+            ),
+        ),
+    )
+    await service.ignore_plan_at_revision(ignored.plan_id, expected_revision=1)
+    invalidated = await service.create_plan(
+        library_id=LIBRARY_ID,
+        scan_run_id=SCAN_ID,
+        items=(
+            _item(
+                object_id="101",
+                target_path="movie/fourth-safe.mkv",
+                target_name="fourth-safe.mkv",
+            ),
+        ),
+    )
+    referenced = await service.create_plan(
+        library_id=LIBRARY_ID,
+        scan_run_id=SCAN_ID,
+        items=(
+            _item(
+                object_id="101",
+                target_path="movie/fifth-safe.mkv",
+                target_name="fifth-safe.mkv",
+            ),
+        ),
+    )
+    await service.ignore_plan_at_revision(referenced.plan_id, expected_revision=1)
+    async with database.session_factory() as session:
+        old_ignored = await session.get(OrganizationPlan, ignored.plan_id)
+        assert old_ignored is not None
+        old_ignored.created_at = datetime.now(UTC) - timedelta(days=8)
+        old_invalidated = await session.get(OrganizationPlan, invalidated.plan_id)
+        assert old_invalidated is not None
+        old_invalidated.status = OrganizationPlanStatus.INVALIDATED.value
+        old_invalidated.created_at = datetime.now(UTC) - timedelta(days=9)
+        old_referenced = await session.get(OrganizationPlan, referenced.plan_id)
+        assert old_referenced is not None
+        old_referenced.created_at = datetime.now(UTC) - timedelta(days=10)
+        session.add(
+            OrganizationOperation(
+                id="op-referenced",
+                plan_id=referenced.plan_id,
+                plan_revision=2,
+                idempotency_key="op-referenced-key",
+            )
+        )
+        await session.flush()
+        session.add(
+            OrganizationHistoryEntry(
+                id="history-referenced",
+                operation_id="op-referenced",
+                plan_id=referenced.plan_id,
+                source_object_id="100",
+                source_directory_id=ROOT_ID,
+                target_directory_id="8000",
+                title="Safe title",
+                media_type="movie",
+                source_name=SECRET_NAME,
+                target_path="movie/fifth-safe.mkv",
+            )
+        )
+        await session.commit()
+
+    await service.list_plans()
+
+    async with database.session_factory() as session:
+        assert await session.get(OrganizationPlan, ignored.plan_id) is None
+        assert await session.get(OrganizationPlan, invalidated.plan_id) is None
+        # 被操作/历史引用的终态计划保留(FK 约束 + 审计轨迹)
+        assert await session.get(OrganizationPlan, referenced.plan_id) is not None
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_list_keeps_active_and_recent_terminal_plans(tmp_path):
+    """未过期活跃计划不受影响,近 7 天内的终态计划不删除。"""
+    database = await _database(tmp_path)
+    service = OrganizationPlanService(database.session_factory)
+    planned = await service.create_plan(
+        library_id=LIBRARY_ID, scan_run_id=SCAN_ID, items=(_item(),)
+    )
+    review = await service.create_plan(
+        library_id=LIBRARY_ID,
+        scan_run_id=SCAN_ID,
+        items=(_item(confidence=MatchConfidence.LOW),),
+    )
+    recent_ignored = await service.create_plan(
+        library_id=LIBRARY_ID,
+        scan_run_id=SCAN_ID,
+        items=(
+            _item(
+                object_id="101",
+                target_path="movie/third-safe.mkv",
+                target_name="third-safe.mkv",
+            ),
+        ),
+    )
+    await service.ignore_plan_at_revision(recent_ignored.plan_id, expected_revision=1)
+
+    views, _ = await service.list_plans()
+    assert {view.plan_id for view in views} == {planned.plan_id, review.plan_id}
+
+    async with database.session_factory() as session:
+        stored_planned = await session.get(OrganizationPlan, planned.plan_id)
+        assert stored_planned is not None
+        assert stored_planned.status == OrganizationPlanStatus.PLANNED.value
+        stored_review = await session.get(OrganizationPlan, review.plan_id)
+        assert stored_review is not None
+        assert stored_review.status == OrganizationPlanStatus.NEEDS_REVIEW.value
+        stored_ignored = await session.get(OrganizationPlan, recent_ignored.plan_id)
+        assert stored_ignored is not None
+        assert stored_ignored.status == OrganizationPlanStatus.IGNORED.value
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_list_defaults_to_active_plans_only(tmp_path):
+    """默认只返回活跃计划(needs_review + planned),显式 status 过滤仍可用。"""
+    database = await _database(tmp_path)
+    service = OrganizationPlanService(database.session_factory)
+    review = await service.create_plan(
+        library_id=LIBRARY_ID,
+        scan_run_id=SCAN_ID,
+        items=(_item(confidence=MatchConfidence.LOW),),
+    )
+    planned = await service.create_plan(
+        library_id=LIBRARY_ID, scan_run_id=SCAN_ID, items=(_item(),)
+    )
+    ignored = await service.create_plan(
+        library_id=LIBRARY_ID,
+        scan_run_id=SCAN_ID,
+        items=(
+            _item(
+                object_id="101",
+                target_path="movie/third-safe.mkv",
+                target_name="third-safe.mkv",
+            ),
+        ),
+    )
+    await service.ignore_plan_at_revision(ignored.plan_id, expected_revision=1)
+    invalidated = await service.create_plan(
+        library_id=LIBRARY_ID,
+        scan_run_id=SCAN_ID,
+        items=(
+            _item(
+                object_id="101",
+                target_path="movie/fourth-safe.mkv",
+                target_name="fourth-safe.mkv",
+            ),
+        ),
+    )
+    async with database.session_factory() as session:
+        stored = await session.get(OrganizationPlan, invalidated.plan_id)
+        assert stored is not None
+        stored.status = OrganizationPlanStatus.INVALIDATED.value
+        await session.commit()
+
+    active_views, _ = await service.list_plans()
+    assert {view.plan_id for view in active_views} == {
+        review.plan_id,
+        planned.plan_id,
+    }
+
+    ignored_views, _ = await service.list_plans(status=OrganizationPlanStatus.IGNORED)
+    assert {view.plan_id for view in ignored_views} == {ignored.plan_id}
+    invalidated_views, _ = await service.list_plans(
+        status=OrganizationPlanStatus.INVALIDATED
+    )
+    assert {view.plan_id for view in invalidated_views} == {invalidated.plan_id}
     await database.engine.dispose()
