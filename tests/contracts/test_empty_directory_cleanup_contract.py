@@ -14,7 +14,12 @@ class _FakeClient:
 
     def _response(self, name, payload, **kwargs):
         self.calls.append((name, dict(payload), dict(kwargs)))
-        return self.responses[name].pop(0)
+        values = self.responses.get(name)
+        if values is None and name == "fs_files_app":
+            # app-first 语义下 transport 优先调用 proapi 读接口;未显式
+            # 提供 app 响应时复用旧接口响应(数据同源)。
+            values = self.responses.get("fs_files")
+        return values.pop(0)
 
     def fs_delete(self, payload, **kwargs):
         return self._response("fs_delete", payload, **kwargs)
@@ -79,10 +84,10 @@ async def test_empty_directory_cleanup_requires_full_verified_scope_and_postcond
 
     assert result is EmptyDirectoryCleanupStatus.SUCCESS
     assert [call[0] for call in client.calls] == [
-        "fs_files",
-        "fs_files",
+        "fs_files_app",
+        "fs_files_app",
         "fs_delete",
-        "fs_files",
+        "fs_files_app",
     ]
     assert client.calls[2][1] == {"fid": "7000"}
 
@@ -150,7 +155,7 @@ async def test_empty_directory_cleanup_fences_remote_write_and_postcondition():
         )
 
     assert [call[0] for call in client.calls] == [
-        "fs_files",
-        "fs_files",
+        "fs_files_app",
+        "fs_files_app",
         "fs_delete",
     ]

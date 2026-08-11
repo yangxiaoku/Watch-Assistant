@@ -36,13 +36,21 @@ class P115ReadOnlyTransportProtocol(Protocol):
         self, payload: Mapping[str, str], *, timeout_seconds: float
     ) -> object: ...
 
+    async def fs_files_app(
+        self, payload: Mapping[str, int | str], *, timeout_seconds: float
+    ) -> object: ...
+
+    async def fs_info_app(
+        self, payload: Mapping[str, str], *, timeout_seconds: float
+    ) -> object: ...
+
 
 class P115ReadOnlyTransportUnavailable(RuntimeError):
     """The fixed client cannot enforce the required read-only boundary."""
 
 
 class P115FixedReadOnlyTransport:
-    """Expose only bounded ``fs_files`` and ``fs_info`` calls."""
+    """Expose only bounded ``fs_files``/``fs_info`` and their app variants."""
 
     def __init__(
         self,
@@ -54,7 +62,10 @@ class P115FixedReadOnlyTransport:
         self._call_executor = call_executor
 
     def __repr__(self) -> str:
-        return "P115FixedReadOnlyTransport(methods='fs_files,fs_info')"
+        return (
+            "P115FixedReadOnlyTransport("
+            "methods='fs_files,fs_info,fs_files_app,fs_info_app')"
+        )
 
     async def fs_files(
         self, payload: Mapping[str, int | str], *, timeout_seconds: float
@@ -89,6 +100,24 @@ class P115FixedReadOnlyTransport:
         if not callable(fallback):
             raise P115ReadOnlyTransportUnavailable("app_read_endpoint_unavailable")
         return await self._call(fallback, payload, timeout_seconds=timeout_seconds)
+
+    async def fs_files_app(
+        self, payload: Mapping[str, int | str], *, timeout_seconds: float
+    ) -> object:
+        """Forward to the proapi app listing endpoint without fallback."""
+
+        return await self._call(
+            self._client.fs_files_app, payload, timeout_seconds=timeout_seconds
+        )
+
+    async def fs_info_app(
+        self, payload: Mapping[str, str], *, timeout_seconds: float
+    ) -> object:
+        """Forward to the proapi app detail endpoint without fallback."""
+
+        return await self._call(
+            self._client.fs_info_app, payload, timeout_seconds=timeout_seconds
+        )
 
     async def _call(
         self,

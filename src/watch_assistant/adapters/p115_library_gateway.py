@@ -215,12 +215,16 @@ class P115ReadOnlyDirectoryGateway:
         try:
             if method_name == "fs_files":
                 # proapi 接口优先:115 迁移后旧接口索引过期(如移入的文件
-                # 在 fs_files 中不可见);app 接口异常时回退旧接口兜底。
+                # 在 fs_files 中不可见)。app 接口仅对 provider HTTP 405 回退
+                # 旧接口;其余异常(网络/502/超时)fail-closed,避免静默使用
+                # 过期索引数据。
                 try:
                     response = await transport.fs_files_app(
                         payload, timeout_seconds=remaining
                     )
-                except Exception:
+                except Exception as error:
+                    if not _is_method_not_allowed(error):
+                        raise
                     response = await transport.fs_files(
                         payload, timeout_seconds=remaining
                     )
@@ -229,7 +233,9 @@ class P115ReadOnlyDirectoryGateway:
                     response = await transport.fs_info_app(
                         payload, timeout_seconds=remaining
                     )
-                except Exception:
+                except Exception as error:
+                    if not _is_method_not_allowed(error):
+                        raise
                     response = await transport.fs_info(
                         payload, timeout_seconds=remaining
                     )
@@ -650,6 +656,22 @@ def _positive_timeout(value: object) -> float | None:
     ):
         return None
     return float(value)
+
+
+def _is_method_not_allowed(error: BaseException) -> bool:
+    """Use the old interface only for a provider-level HTTP 405.
+
+    Mirrors ``p115_c03_live_transport._is_method_not_allowed``: every other
+    failure of the proapi app endpoint must fail closed instead of silently
+    serving the potentially stale legacy index.
+    """
+
+    for name in ("status", "status_code", "code"):
+        value = getattr(error, name, None)
+        if value == 405 or value == "405":
+            return True
+    response = getattr(error, "response", None)
+    return getattr(response, "status_code", None) in {405, "405"}
 
 
 __all__ = [

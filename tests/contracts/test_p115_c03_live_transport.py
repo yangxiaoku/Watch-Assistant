@@ -42,7 +42,12 @@ class _FakeP115Client:
 
     def _response(self, name, payload, **kwargs):
         self.calls.append((name, dict(payload), dict(kwargs)))
-        value = self.responses[name].pop(0)
+        values = self.responses.get(name)
+        if values is None and name in {"fs_files_app", "fs_info_app"}:
+            # app-first 语义下 transport 优先调用 proapi 读接口;未显式
+            # 提供 app 响应时复用旧接口响应(数据同源)。
+            values = self.responses.get(name.removesuffix("_app"))
+        value = values.pop(0)
         if isinstance(value, BaseException):
             raise value
         return value
@@ -275,16 +280,18 @@ async def test_live_transport_requires_listing_for_exact_directory_identity():
 
 
 @pytest.mark.asyncio
-async def test_live_transport_falls_back_to_app_reads_only_for_http_405():
+async def test_live_transport_falls_back_to_legacy_reads_only_for_http_405():
+    # app-first 语义:读接口优先调用 proapi app 端点;app 端点 405 时回退
+    # 旧接口;非 405 异常必须 fail-closed(不得静默回退过期索引)。
     client = _FakeP115Client(
         {
             "fs_mkdir": [],
             "fs_move": [],
             "fs_rename": [],
             "fs_delete": [],
-            "fs_info": [_MethodNotAllowed()],
-            "fs_files": [{"status_code": 405}],
-            "fs_info_app": [
+            "fs_info_app": [_MethodNotAllowed()],
+            "fs_files_app": [_MethodNotAllowed()],
+            "fs_info": [
                 {
                     "state": True,
                     "data": {
@@ -295,9 +302,7 @@ async def test_live_transport_falls_back_to_app_reads_only_for_http_405():
                     },
                 }
             ],
-            "fs_files_app": [
-                _page([_directory("101", "7", "source")], offset=0, count=1)
-            ],
+            "fs_files": [_page([_directory("101", "7", "source")], offset=0, count=1)],
         }
     )
     transport = P115C03LiveTransport(client, call_executor=_call_executor)
@@ -309,11 +314,43 @@ async def test_live_transport_falls_back_to_app_reads_only_for_http_405():
 
     assert listing.complete is True
     assert [call[0] for call in client.calls] == [
-        "fs_info",
         "fs_info_app",
-        "fs_files",
+        "fs_info",
         "fs_files_app",
+        "fs_files",
     ]
+
+
+@pytest.mark.asyncio
+async def test_live_transport_fails_closed_when_app_read_fails_without_405():
+    observed = []
+
+    async def failing_app(method, payload, *, timeout_seconds):
+        observed.append(method.__name__)
+        if method.__name__ in {"fs_info_app", "fs_files_app"}:
+            raise OSError("network broken")
+        return method(payload, async_=False)
+
+    client = _FakeP115Client(
+        {
+            "fs_mkdir": [],
+            "fs_move": [],
+            "fs_rename": [],
+            "fs_delete": [],
+            "fs_info": [],
+            "fs_files": [],
+        }
+    )
+    transport = P115C03LiveTransport(client, call_executor=failing_app)
+
+    with pytest.raises(OSError, match="network broken"):
+        await transport.read("101", timeout_seconds=10)
+    listing = await transport.list_children("7", timeout_seconds=10)
+
+    assert listing.complete is False
+    assert listing.page_calls == 1
+    assert observed == ["fs_info_app", "fs_files_app"]
+    assert client.calls == []
 
 
 @pytest.mark.asyncio
@@ -760,3 +797,26 @@ def test_live_runner_authorization_is_atomic_and_one_shot(tmp_path, monkeypatch)
     assert (tmp_path / "authorization.json.consumed").read_bytes() == b"consumed\n"
     rendered = repr(first) + repr(second)
     assert "SENSITIVE_COOKIE" not in rendered
+
+
+@pytest.mark.asyncio
+async def test_sync_call_executor_runs_in_a_worker_thread():
+    """同步 executor(生产 p115_c03_timeout_executor,含 busy 重试 time.sleep)
+    必须在线程池执行:executor 线程不能是事件循环线程,否则 sleep 会冻结
+    整个 loop。"""
+    import threading
+
+    loop_thread_id = threading.get_ident()
+    executor_thread_ids = []
+    client = _FakeP115Client({"fs_move": [_success()]})
+
+    def executor(method, payload, *, timeout_seconds):
+        executor_thread_ids.append(threading.get_ident())
+        return method(payload, async_=False)
+
+    transport = P115C03LiveTransport(client, call_executor=executor)
+
+    receipt = await transport.execute(prepare_move("100", "9000"), timeout_seconds=30)
+
+    assert receipt.status is WriteStatus.SUCCESS
+    assert executor_thread_ids and executor_thread_ids[0] != loop_thread_id

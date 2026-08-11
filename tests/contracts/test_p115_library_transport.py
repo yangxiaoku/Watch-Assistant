@@ -105,6 +105,29 @@ async def test_non_405_failure_is_not_hidden_by_app_fallback():
     assert [call[0] for call in client.calls] == []
 
 
+@pytest.mark.asyncio
+async def test_app_read_methods_forward_to_the_client_app_endpoints():
+    client = _Client()
+    executor_calls = []
+
+    def executor(method, payload, *, timeout_seconds):
+        executor_calls.append((method.__name__, dict(payload), timeout_seconds))
+        return method(payload)
+
+    transport = P115FixedReadOnlyTransport(client, call_executor=executor)
+
+    await transport.fs_files_app(
+        {"cid": "7", "limit": 1, "offset": 0}, timeout_seconds=4
+    )
+    await transport.fs_info_app({"fid": "8"}, timeout_seconds=3)
+
+    assert executor_calls == [
+        ("fs_files_app", {"cid": "7", "limit": 1, "offset": 0}, 4.0),
+        ("fs_info_app", {"fid": "8"}, 3.0),
+    ]
+    assert [call[0] for call in client.calls] == ["fs_files_app", "fs_info_app"]
+
+
 def test_native_executor_forces_timeout_and_disables_retries(monkeypatch):
     received = {}
 

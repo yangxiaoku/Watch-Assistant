@@ -25,6 +25,10 @@ class _Transport:
         self.responses = list(responses)
         self.calls = []
 
+    async def fs_files_app(self, payload, *, timeout_seconds):
+        self.calls.append(("fs_files_app", dict(payload), timeout_seconds))
+        return self.responses.pop(0)
+
     async def fs_files(self, payload, *, timeout_seconds):
         self.calls.append(("fs_files", dict(payload), timeout_seconds))
         return self.responses.pop(0)
@@ -131,7 +135,12 @@ def test_success_path_outputs_complete_scans_and_zero_remote_writes(monkeypatch)
     assert report["full_output"]["generated"] == 1
     assert report["incremental_output"]["generated"] == 1
     assert report["incremental_output"]["retire_removed"] is False
-    assert report["remote"]["allowed_methods"] == ["fs_files", "fs_info"]
+    assert report["remote"]["allowed_methods"] == [
+        "fs_files",
+        "fs_info",
+        "fs_files_app",
+        "fs_info_app",
+    ]
     assert report["remote_write_calls"] == 0
     assert report["write_started"] is False
     assert report["write_calls"] == 0
@@ -143,10 +152,10 @@ def test_success_path_outputs_complete_scans_and_zero_remote_writes(monkeypatch)
     assert report["remote_playback"] is False
     assert _stage_success("strm_readonly", report)
     assert [call[0] for call in transport.calls] == [
-        "fs_files",
-        "fs_files",
-        "fs_files",
-        "fs_files",
+        "fs_files_app",
+        "fs_files_app",
+        "fs_files_app",
+        "fs_files_app",
     ]
     assert source.calls == 1
 

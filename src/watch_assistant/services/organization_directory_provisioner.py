@@ -9,7 +9,7 @@ from pathlib import PurePosixPath
 from watch_assistant.adapters.p115_c03_live_transport import (
     C03WriteReceipt,
     P115C03CallExecutor,
-    P115C03LiveTransport,
+    P115C03ProductionTransport,
 )
 from watch_assistant.adapters.p115_library_write_contract import (
     OrganizationWriteGate,
@@ -50,7 +50,10 @@ class OrganizationDirectoryProvisioner:
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         self._client = client
-        self._transport = P115C03LiveTransport(
+        # 生产执行路径:完整分页(256 页 × 50 条/页)。C03 live 验证路径的
+        # 8 页 × 1 条/页会让真实媒体目录(>8 条)在首次 mkdir 后
+        # list_children complete=False → target_directory_create_failed。
+        self._transport = P115C03ProductionTransport(
             client,
             call_executor=call_executor,
         )

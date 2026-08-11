@@ -47,7 +47,14 @@ DEFAULT_REQUEST_TIMEOUT_SECONDS = 30.0
 DEFAULT_RUN_TIMEOUT_SECONDS = 2 * 60 * 60
 DEFAULT_MAX_DIRECTORIES = 100_000
 PLAYBACK_URL_PREFIX = "http://127.0.0.1:8115/api/v1/strm/play"
-ALLOWED_REMOTE_METHODS = ("fs_files", "fs_info")
+# 只读验收路径使用 app-first 读接口(fs_files_app/fs_info_app);旧接口
+# 仅在 app 端点返回 405 时回退。两种接口都纳入已核验的读方法集合。
+ALLOWED_REMOTE_METHODS = (
+    "fs_files",
+    "fs_info",
+    "fs_files_app",
+    "fs_info_app",
+)
 
 _ERROR_MESSAGES = {
     "live_gate_closed": "只读 STRM 实时验收开关未开启。",
@@ -99,7 +106,7 @@ class _ReadCallLedger:
 
 
 class _CountingReadOnlyTransport:
-    """Expose no method other than the two verified read operations."""
+    """Expose no method other than the verified read operations."""
 
     def __init__(
         self, transport: P115ReadOnlyTransportProtocol, ledger: _ReadCallLedger
@@ -108,11 +115,26 @@ class _CountingReadOnlyTransport:
         self._ledger = ledger
 
     def __repr__(self) -> str:
-        return "<CountingReadOnlyTransport methods='fs_files,fs_info'>"
+        return (
+            "<CountingReadOnlyTransport "
+            "methods='fs_files,fs_info,fs_files_app,fs_info_app'>"
+        )
+
+    async def fs_files_app(self, payload, *, timeout_seconds: float) -> object:
+        self._ledger.record("fs_files_app")
+        return await self._transport.fs_files_app(
+            payload, timeout_seconds=timeout_seconds
+        )
 
     async def fs_files(self, payload, *, timeout_seconds: float) -> object:
         self._ledger.record("fs_files")
         return await self._transport.fs_files(
+            payload, timeout_seconds=timeout_seconds
+        )
+
+    async def fs_info_app(self, payload, *, timeout_seconds: float) -> object:
+        self._ledger.record("fs_info_app")
+        return await self._transport.fs_info_app(
             payload, timeout_seconds=timeout_seconds
         )
 

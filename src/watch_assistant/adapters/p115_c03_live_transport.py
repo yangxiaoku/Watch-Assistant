@@ -253,15 +253,28 @@ async def _call(
     *,
     timeout_seconds: float,
 ) -> Any:
-    """Run one call only through a seam that owns call-level timeout."""
+    """Run one call only through a seam that owns call-level timeout.
+
+    同步 executor(生产 ``p115_c03_timeout_executor``,含 busy 重试的
+    ``time.sleep(3)``)统一在 ``asyncio.to_thread`` 线程池执行,避免阻塞
+    事件循环;async executor(测试/runner 注入)保持直接 await。
+    """
 
     if call_executor is None:
         raise P115C03CallTimeoutUnavailable
-    result = call_executor(
-        method,
-        dict(payload),
-        timeout_seconds=timeout_seconds,
-    )
+    if inspect.iscoroutinefunction(call_executor):
+        result = call_executor(
+            method,
+            dict(payload),
+            timeout_seconds=timeout_seconds,
+        )
+    else:
+        result = await asyncio.to_thread(
+            call_executor,
+            method,
+            dict(payload),
+            timeout_seconds=timeout_seconds,
+        )
     if inspect.isawaitable(result):
         return await result
     return result

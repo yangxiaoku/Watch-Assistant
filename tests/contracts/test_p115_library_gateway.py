@@ -87,9 +87,24 @@ def _gateway(
         def __init__(self):
             self.timeouts = []
 
+        async def fs_files_app(self, payload, *, timeout_seconds):
+            self.timeouts.append(timeout_seconds)
+            method = getattr(client, "fs_files_app", None)
+            return method(payload) if callable(method) else client.fs_files(payload)
+
         async def fs_files(self, payload, *, timeout_seconds):
             self.timeouts.append(timeout_seconds)
             return client.fs_files(payload)
+
+        async def fs_info_app(self, payload, *, timeout_seconds):
+            self.timeouts.append(timeout_seconds)
+            method = getattr(client, "fs_info_app", None)
+            if callable(method):
+                return method(payload)
+            method = getattr(client, "fs_info", None)
+            if method is None:
+                raise AssertionError("unexpected fs_info_app call")
+            return method(payload)
 
         async def fs_info(self, payload, *, timeout_seconds):
             self.timeouts.append(timeout_seconds)
@@ -448,9 +463,16 @@ async def test_gateway_passes_only_the_shared_deadline_remainder_to_transport():
         def __init__(self):
             self.timeouts = []
 
+        async def fs_files_app(self, payload, *, timeout_seconds):
+            self.timeouts.append(timeout_seconds)
+            return client.fs_files(payload)
+
         async def fs_files(self, payload, *, timeout_seconds):
             self.timeouts.append(timeout_seconds)
             return client.fs_files(payload)
+
+        async def fs_info_app(self, payload, *, timeout_seconds):
+            raise AssertionError("unexpected fs_info_app call")
 
         async def fs_info(self, payload, *, timeout_seconds):
             raise AssertionError("unexpected fs_info call")
@@ -563,3 +585,110 @@ async def test_cancellation_propagates_without_a_second_request():
 
     with pytest.raises(asyncio.CancelledError):
         await gateway.list_directory("7")
+
+
+class _MethodNotAllowed(RuntimeError):
+    status = 405
+
+
+class _AppFirstTransport:
+    """Transport whose app read methods fail or succeed under test control."""
+
+    def __init__(self, *, app_files_error=None, app_info_error=None):
+        self.calls = []
+        self._app_files_error = app_files_error
+        self._app_info_error = app_info_error
+        self._files_page = _page([_file()])
+        self._detail = {
+            "state": True,
+            "file_category": "1",
+            "fid": "101",
+            "cid": "7",
+            "file_name": "secret-file-name.mkv",
+            "size": "123",
+        }
+
+    async def fs_files_app(self, payload, *, timeout_seconds):
+        self.calls.append("fs_files_app")
+        if self._app_files_error is not None:
+            raise self._app_files_error
+        return self._files_page
+
+    async def fs_files(self, payload, *, timeout_seconds):
+        self.calls.append("fs_files")
+        return self._files_page
+
+    async def fs_info_app(self, payload, *, timeout_seconds):
+        self.calls.append("fs_info_app")
+        if self._app_info_error is not None:
+            raise self._app_info_error
+        return self._detail
+
+    async def fs_info(self, payload, *, timeout_seconds):
+        self.calls.append("fs_info")
+        return self._detail
+
+
+@pytest.mark.asyncio
+async def test_gateway_prefers_app_read_methods_when_available():
+    transport = _AppFirstTransport()
+    gateway = P115ReadOnlyDirectoryGateway(
+        _CredentialSource(),
+        lambda _credential: transport,
+        authorized_directory_ids=("7",),
+        authorized_file_ids=("101",),
+    )
+
+    result = await gateway.list_directory("7")
+    detail = await gateway.get_file_detail("101")
+
+    assert result.items[0].file_id == "101"
+    assert detail.file_id == "101"
+    assert transport.calls == ["fs_files_app", "fs_info_app"]
+
+
+@pytest.mark.asyncio
+async def test_gateway_falls_back_to_legacy_read_method_only_on_405():
+    transport = _AppFirstTransport(
+        app_files_error=_MethodNotAllowed("provider response"),
+        app_info_error=_MethodNotAllowed("provider response"),
+    )
+    gateway = P115ReadOnlyDirectoryGateway(
+        _CredentialSource(),
+        lambda _credential: transport,
+        authorized_directory_ids=("7",),
+        authorized_file_ids=("101",),
+    )
+
+    result = await gateway.list_directory("7")
+    detail = await gateway.get_file_detail("101")
+
+    assert result.items[0].file_id == "101"
+    assert detail.file_id == "101"
+    assert transport.calls == [
+        "fs_files_app",
+        "fs_files",
+        "fs_info_app",
+        "fs_info",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_gateway_fails_closed_when_app_read_method_fails_without_405():
+    transport = _AppFirstTransport(
+        app_files_error=OSError("network broken"),
+        app_info_error=TimeoutError("slow provider"),
+    )
+    gateway = P115ReadOnlyDirectoryGateway(
+        _CredentialSource(),
+        lambda _credential: transport,
+        authorized_directory_ids=("7",),
+        authorized_file_ids=("101",),
+    )
+
+    with pytest.raises(P115ReadOnlyGatewayError, match="fs_files_failed"):
+        await gateway.list_directory("7")
+    with pytest.raises(P115ReadOnlyGatewayError, match="fs_info_timeout"):
+        await gateway.get_file_detail("101")
+
+    assert transport.calls == ["fs_files_app", "fs_info_app"]
