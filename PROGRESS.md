@@ -1,5 +1,9 @@
 # 项目进度
 
+> **SHA 时效说明（2026-08-11）**：本文下方的 `5df17fb` / `249aa582` 是 **2026-08-05 的历史
+> 发布线/部署快照**，仅作当时状态记录；当前发布线一律以
+> `git rev-parse origin/codex/publish-main` 动态解析为准，勿按本文硬编码值断言当前版本。
+
 本文档是项目进度的唯一可信来源。需求状态以
 `docs/requirements/README.md` 和 `docs/requirements/BLOCKERS.md` 为准；历史计划文档只保留
 设计背景，不用未更新的 checkbox 判断发布状态。
@@ -146,7 +150,7 @@ PR #31-#49 已合入本次核对的发布基线，不列入本节；后续分支
 - p115 远程可用性 PR #31 已合入当前基线，但本轮未执行 live 或真实写入；在 live、生产部署和回归证据完成前，相关能力保持未验收。
 - 代码与文档 PR #31-#49 均已合入本次核对的发布基线；这些合入记录和 CI 成功不改变生产版本或验收状态。
 - Prowlarr 离线 readiness 已具备；2026-08-04 的公开 Linux ISO 搜索属于历史/受限证据，2026-08-05 当前搜索超时 HTTP `000`，因此不等于电影/电视剧召回、95% 基线、广泛来源质量或生产 HTTP 鉴权路由已验收。
-- iPad Cookie：只允许从 `C:\Users\98275\.115ts-secrets\.p115-cookie` 读取，过期会阻断 live。
+- iPad Cookie：只允许从服务器 `/etc/watch-assistant/p115-cookie` 读取，过期会阻断 live。
 - `192.168.6.236`：本轮只读核对了 systemd 当前 release、健康接口、生产库存/整理预览和 Prowlarr 受限来源配置/搜索尝试；未核对
   生产应用 HTTP 鉴权路由、反向代理暴露方式，也未执行真实写入。
 - 任何真实 P115 写操作仍需显式 gate、确认、receipt-before-verify 和回滚证据。

@@ -16,7 +16,7 @@ Compose 配置校验同时成功。`Systemd Release Package` 使用同一 Python
 门禁，并另外校验 Compose 配置、发布包内容、manifest、摘要和启动 smoke。
 
 115 API live 验证不属于离线门禁。使用 `scripts/verify-live.sh` 单独运行；它依赖
-`C:\Users\98275\.115ts-secrets\.p115-cookie` 和内网主机 `192.168.6.236`，建议每日运行一次。
+服务器 `/etc/watch-assistant/p115-cookie` 和内网主机 `192.168.6.236`，建议每日运行一次。
 
 固定约束仍然适用：C03 live 文件分页大小保持为 1，fixture probe 必须先取得 receipt 再
 verify，990009 由既有 runner 的 3 秒重试处理。
