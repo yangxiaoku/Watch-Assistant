@@ -606,6 +606,13 @@ class LiveP115OrganizationTransport:
         intent = self._intent(object_id)
         if target_parent_id != intent.target_parent_id:
             raise P115OrganizationTransportError("scope_unverified")
+        # 目标目录与来源目录相同会让 115 把移动视为删除(文件直接进回收站),
+        # 必须 fail-closed 拒绝。
+        if (
+            target_parent_id == intent.source_parent_id
+            or effective_target_equals_source(target_parent_id, intent)
+        ):
+            raise P115OrganizationTransportError("scope_unverified")
         effective_parent_id = target_parent_id
         if intent.target_directory_path is not None:
             resolved = await self._resolve_target_directory_id(
@@ -614,6 +621,8 @@ class LiveP115OrganizationTransport:
             if resolved is None:
                 raise P115OrganizationTransportError("scope_unverified")
             effective_parent_id = resolved
+            if effective_parent_id == intent.source_parent_id:
+                raise P115OrganizationTransportError("scope_unverified")
         receipt = await self._c03.execute(
             prepare_move(object_id, effective_parent_id),
             timeout_seconds=self._timeout_seconds,
@@ -936,6 +945,13 @@ def _valid_live_observation(
         and state.name in {intent.source_name, intent.target_name}
         and state.is_directory is False
     )
+
+
+def effective_target_equals_source(
+    target_parent_id: str, intent: OrganizationObjectIntent
+) -> bool:
+    """Target identity equal to the source parent is a delete in disguise."""
+    return target_parent_id == intent.source_parent_id
 
 
 def _organization_result(
