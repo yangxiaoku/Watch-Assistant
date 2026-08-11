@@ -25,7 +25,6 @@ from watch_assistant.models import (
     WorkflowEvidence,
     WorkflowStage,
 )
-from watch_assistant.schemas import InspectionBatchStatus, InspectionItemStatus
 
 
 @dataclass(frozen=True)
@@ -107,14 +106,7 @@ async def cleanup_expired(
     protected_inspection_resource_ids = (
         select(InspectionItem.resource_id)
         .join(InspectionBatch)
-        .where(
-            InspectionBatch.status.in_(
-                (InspectionBatchStatus.QUEUED, InspectionBatchStatus.RUNNING)
-            ),
-            InspectionItem.status.in_(
-                (InspectionItemStatus.QUEUED, InspectionItemStatus.RUNNING)
-            ),
-        )
+        .where(InspectionBatch.expires_at > current_time)
     )
     protected_workflow_resource_ids = select(Task.resource_id).where(
         Task.resource_id.is_not(None), Task.workflow_id.is_not(None)
