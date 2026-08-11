@@ -20,9 +20,11 @@
   },
   "devDependencies": {
     "@playwright/test": "1.61.1",
+    "@testing-library/vue": "^8.1.0",
     "@vitejs/plugin-vue": "6.0.8",
     "@vue/test-utils": "2.4.11",
     "jsdom": "29.1.1",
+    "msw": "^2.15.0",
     "typescript": "7.0.2",
     "vite": "8.1.5",
     "vitest": "4.1.10"
