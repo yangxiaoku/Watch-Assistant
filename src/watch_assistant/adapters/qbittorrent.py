@@ -606,12 +606,19 @@ class QbittorrentClient:
         return payload
 
     async def _cleanup(self, infohash: str, marker: str) -> None:
-        # 按 infohash 查询而非按当前批次 marker 过滤:旧批次清理失败遗留的
-        # 孤儿 torrent 带的是旧 marker,按当前 marker 查会找不到、永不清理。
-        torrents = await self._torrent_info(hashes=infohash)
+        # 优先按当前批次 marker 过滤:本批次添加的 torrent 正常路径走 tag 查询。
+        torrents = await self._torrent_info(tag=marker)
         torrent = _matching_torrent(torrents, infohash)
         if torrent is None or not _has_inspection_marker(torrent):
-            return
+            # 当前批次未命中:可能命中旧批次清理失败遗留的孤儿(带旧 marker),
+            # 改按 infohash 兜底查询并清理,避免 ownership_conflict 永久卡死。
+            try:
+                torrents = await self._torrent_info(hashes=infohash)
+            except _ApiError:
+                return
+            torrent = _matching_torrent(torrents, infohash)
+            if torrent is None or not _has_inspection_marker(torrent):
+                return
         try:
             response = await self._client.post(
                 "/api/v2/torrents/delete",
