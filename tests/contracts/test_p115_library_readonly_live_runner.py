@@ -23,9 +23,17 @@ class _Transport:
         self.details = dict(details)
         self.calls = []
 
+    async def fs_files_app(self, payload, *, timeout_seconds):
+        self.calls.append(("fs_files_app", dict(payload), timeout_seconds))
+        return self.pages.pop(0)
+
     async def fs_files(self, payload, *, timeout_seconds):
         self.calls.append(("fs_files", dict(payload), timeout_seconds))
         return self.pages.pop(0)
+
+    async def fs_info_app(self, payload, *, timeout_seconds):
+        self.calls.append(("fs_info_app", dict(payload), timeout_seconds))
+        return self.details[payload.get("fid") or payload["cid"]]
 
     async def fs_info(self, payload, *, timeout_seconds):
         self.calls.append(("fs_info", dict(payload), timeout_seconds))
@@ -113,7 +121,7 @@ def test_success_path_has_one_list_one_detail_and_redacted_public_report():
     assert report.entries_seen == 1
     assert report.file_details == 1
     assert report.directory_details == 0
-    assert [call[0] for call in transport.calls] == ["fs_files", "fs_info"]
+    assert [call[0] for call in transport.calls] == ["fs_files_app", "fs_info_app"]
     assert transport.calls[0][1]["cid"] == "7"
     assert transport.calls[1][1] == {"fid": "101"}
     assert source.calls == 1
@@ -146,7 +154,7 @@ def test_incomplete_directory_stops_at_page_budget_without_detail_calls():
     assert report.error_code == "page_budget_exhausted"
     assert report.pages_read == 2
     assert report.entries_seen == 2
-    assert [call[0] for call in transport.calls] == ["fs_files", "fs_files"]
+    assert [call[0] for call in transport.calls] == ["fs_files_app", "fs_files_app"]
 
 
 def test_cli_without_live_flag_has_no_external_calls(capsys):

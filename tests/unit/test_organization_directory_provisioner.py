@@ -62,6 +62,20 @@ def _provisioner(**kwargs) -> OrganizationDirectoryProvisioner:
     )
 
 
+def test_directory_provisioner_uses_production_pagination():
+    """生产执行路径必须用完整分页(256 页 × 50 条/页);C03 live 验证路径的
+    8 页 × 1 条/页会让真实媒体目录在首次 mkdir 后 postcondition 失败。"""
+    from watch_assistant.adapters.p115_c03_live_transport import (
+        PRODUCTION_FS_FILES_PAGE_SIZE,
+        P115C03ProductionTransport,
+    )
+
+    provisioner = _provisioner()
+
+    assert isinstance(provisioner._transport, P115C03ProductionTransport)
+    assert provisioner._transport._page_size == PRODUCTION_FS_FILES_PAGE_SIZE
+
+
 @pytest.mark.asyncio
 async def test_directory_provisioner_defaults_write_gate_closed():
     provisioner = _provisioner()
