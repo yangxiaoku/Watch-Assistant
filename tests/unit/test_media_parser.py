@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import pytest
 
-from watch_assistant.services.media_parser import parse_media_filename
+from watch_assistant.services.media_parser import (
+    _is_junk_filename,
+    parse_media_filename,
+)
 
 
 def test_movie_title_year_and_technical_evidence_are_extracted():
@@ -483,3 +486,29 @@ def test_movie_title_path_is_not_affected_by_tv_truncation():
     assert parsed.year == 2021
     assert parsed.source == "BluRay"
     assert parsed.media_type_hint == "movie"
+
+
+@pytest.mark.parametrize(
+    "name",
+    (
+        "【更多电视剧集下载请访问 www.BPHDTV.com】....MKV",
+        "【更多高清剧集下载请访问 www.BPHDTV.com】....mkv",
+    ),
+)
+def test_advertisement_filenames_are_junk(name):
+    assert _is_junk_filename(name) is True
+
+
+@pytest.mark.parametrize(
+    "name",
+    (
+        "Demon Slayer Kimetsu No Yaiba Infinity Castle (2025).mkv",
+        "末日地堡.Silo.S02E01.2024.2160p.ATVP.WEB-DL.DDP5.1.Atmos.H265.DV-ZeroTV.mkv",
+        "The.Office.2005.1080p.mkv",
+        "www.1TamilMV.city - Dune Part Two (2024) English HQ HDRip - 720p - x264 - (AAC 2.0) - 1.2GB - ESub.mkv",
+    ),
+)
+def test_real_media_filenames_are_never_junk(name):
+    # 正常影视文件名绝不能因广告判定被误杀;带广告域名但含年份/分辨率等
+    # 媒体特征的真实资源同样按正常文件处理。
+    assert _is_junk_filename(name) is False

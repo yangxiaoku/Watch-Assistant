@@ -124,7 +124,7 @@ def test_preview_scope_uses_selected_source_subtree_and_rejects_nested_target():
         )
 
 
-async def _database(tmp_path: Path, *, target_exists: bool):
+async def _database(tmp_path: Path, *, target_exists: bool, include_junk: bool = False):
     database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'preview.db'}")
     await initialize_database(database.engine)
     async with database.session_factory() as session:
@@ -174,6 +174,18 @@ async def _database(tmp_path: Path, *, target_exists: bool):
                 is_directory=False,
             )
         )
+        if include_junk:
+            session.add(
+                LibraryScanEntry(
+                    scan_run_id="scan-preview",
+                    object_type="file",
+                    object_id="file-junk",
+                    parent_id="root-preview",
+                    name="【更多电视剧集下载请访问 www.BPHDTV.com】....MKV",
+                    path="incoming/【更多电视剧集下载请访问 www.BPHDTV.com】....MKV",
+                    is_directory=False,
+                )
+            )
         await session.commit()
     await _refresh_tree_evidence(database)
     return database
@@ -194,6 +206,25 @@ async def test_preview_uses_scan_snapshot_and_requires_verified_target(
     )
 
     assert result.status is expected
+    assert result.source_count == 1
+    assert client.calls == 1
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_preview_skips_junk_advertisement_files(tmp_path: Path):
+    # 广告垃圾文件 (无法被 TMDB 匹配的站内宣传文件) 必须在计划生成阶段
+    # 被跳过:不进计划、不触发匹配,不阻塞正常文件的自动执行。
+    database = await _database(tmp_path, target_exists=True, include_junk=True)
+    client = _TmdbClient()
+    plan_service = OrganizationPlanService(database.session_factory)
+    service = OrganizationPreviewService(database.session_factory, client, plan_service)
+
+    result = await service.create_preview(
+        library_id="library-preview", scan_run_id="scan-preview"
+    )
+
+    assert result.status is OrganizationPlanStatus.PLANNED
     assert result.source_count == 1
     assert client.calls == 1
     await database.engine.dispose()

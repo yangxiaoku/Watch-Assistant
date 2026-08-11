@@ -457,6 +457,75 @@ def parse_media_filename(filename: str) -> MediaParseResult:
 parse_filename = parse_media_filename
 
 
+# ---------------------------------------------------------------------------
+# 广告/宣传垃圾文件识别
+# ---------------------------------------------------------------------------
+# 源目录里常有广告文件 (如 "【更多电视剧集下载请访问 www.BPHDTV.com】.MKV"):
+# 没有任何年份/季集/分辨率等技术标记,TMDB 永远匹配失败,只能停在 review
+# 阻塞整个计划自动执行。预览/计划生成阶段直接跳过,不进计划。
+# 判定保守:只有"含广告特征"且"无任何媒体特征"同时成立才跳过——
+# 宁可漏判也不误杀真实资源 (如 "www.1TamilMV.city - Dune Part Two (2024) ... 720p ...")。
+
+_AD_PATTERNS: tuple[re.Pattern[str], ...] = (
+    # 广告站点域名
+    re.compile(r"www\."),
+    re.compile(r"https?://"),
+    # 宣传语:【更多剧集下载…】【更多高清…】…请访问…
+    re.compile(r"【更多"),
+    re.compile(r"更多剧集下载"),
+    re.compile(r"更多高清"),
+    re.compile(r"下载请访问"),
+    re.compile(r"打包下载"),
+    re.compile(r"请访问"),
+    # "发布" 紧跟站点域名 (域名本身已命中 www,此处仅作组合佐证)
+    re.compile(r"发布.{0,32}www\.", re.IGNORECASE),
+    # 站名标记,如 "@BPHDTV"(前置字母隔离避免误伤邮箱)
+    re.compile(r"(?<![A-Za-z0-9])@[A-Za-z0-9]{2,}"),
+)
+# 任一媒体特征即视为真实媒体资源,广告特征不再生效。
+# 不含 _CHANNEL_PATTERNS:纯声道标记 ("5.1") 不足以证明是真实资源。
+_MEDIA_FEATURE_PATTERNS: tuple[re.Pattern[str], ...] = (
+    _YEAR_RE,
+    _SEASON_EPISODE_RE,
+    _MULTI_SEASON_EPISODE_RE,
+    _CHINESE_EPISODE_RE,
+    _CHINESE_EPISODE_ONLY_RE,
+    _SEASON_ONLY_RE,
+    _EPISODE_LABEL_RE,
+    _GENERIC_SPECIAL_PATTERN,
+    *(pattern for _, pattern in _EXPLICIT_SPECIAL_PATTERNS),
+    *(pattern for _, pattern in _RESOLUTION_PATTERNS),
+    *(pattern for _, pattern in _SOURCE_PATTERNS),
+    *(pattern for _, pattern in _VIDEO_CODEC_PATTERNS),
+    *(pattern for _, pattern in _HDR_PATTERNS),
+    *(pattern for _, pattern in _AUDIO_PATTERNS),
+    *(pattern for _, pattern in _LANGUAGE_PATTERNS),
+    *(pattern for _, pattern in _SUBTITLE_HINT_PATTERNS),
+    _ATMOS_RE,
+    _DOLBY_AUDIO_RE,
+    re.compile(r"(?<![A-Za-z0-9])HDRip(?![A-Za-z0-9])", re.IGNORECASE),
+    re.compile(r"(?<![A-Za-z0-9])DVDRip(?![A-Za-z0-9])", re.IGNORECASE),
+)
+
+
+def _is_junk_filename(name: str) -> bool:
+    """广告/宣传垃圾文件判定:含广告特征且无任何媒体特征才判为垃圾。
+
+    文件名主体 (去掉扩展名后) 含年份/季集/分辨率/来源/编码/语言等媒体
+    特征时一律放行——即使带广告域名 (如 "www.xxx - Dune Part Two (2024) ...
+    720p ...") 也是真实资源,绝不误杀。
+    """
+    if not isinstance(name, str) or not name:
+        return False
+    basename = re.split(r"[\\/]", name)[-1]
+    stem, _ = _split_extension(basename)
+    if not stem:
+        return False
+    if any(pattern.search(stem) for pattern in _MEDIA_FEATURE_PATTERNS):
+        return False
+    return any(pattern.search(stem) for pattern in _AD_PATTERNS)
+
+
 def _split_extension(basename: str) -> tuple[str, str | None]:
     """Split a known media extension from a basename.
 

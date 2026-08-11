@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -36,7 +37,10 @@ from watch_assistant.services.media_matcher import (
     TmdbMatcher,
     build_match_input,
 )
-from watch_assistant.services.media_parser import parse_media_filename
+from watch_assistant.services.media_parser import (
+    _is_junk_filename,
+    parse_media_filename,
+)
 from watch_assistant.services.organization_plan import (
     OrganizationPlanCompanion,
     OrganizationPlanItem,
@@ -53,6 +57,8 @@ from watch_assistant.services.organization_policy import (
 )
 from watch_assistant.services.organization_target import OrganizationTargetFile
 from watch_assistant.services.strm_scope import source_snapshot_is_current
+
+logger = logging.getLogger(__name__)
 
 
 class OrganizationPreviewError(ValueError):
@@ -161,6 +167,12 @@ class OrganizationPreviewService:
                 small_file_threshold_mb=small_file_threshold_mb,
             )
         ]
+        # 广告/宣传垃圾文件 (如 "【更多电视剧集下载请访问 www.BPHDTV.com】.MKV")
+        # 无法被 TMDB 匹配,只会停在 review 阻塞计划自动执行;预览阶段直接跳过。
+        junk_count = sum(1 for entry in files if _is_junk_filename(entry.name))
+        if junk_count:
+            logger.debug("skipped %d junk/advertisement file(s)", junk_count)
+        files = [entry for entry in files if not _is_junk_filename(entry.name)]
         if not files:
             raise OrganizationPreviewError("no_video_files")
 
