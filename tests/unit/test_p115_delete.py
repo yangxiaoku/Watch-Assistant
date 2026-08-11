@@ -179,6 +179,57 @@ async def test_recycle_bin_listing_paginates_beyond_first_page(tmp_path: Path):
     assert found and found[0].recycle_id == "1249"
 
 
+class _CollisionRecycleClient:
+    """第 1 帧只有碰撞条目,第 2 帧起真实条目也出现(同目录+同名+同大小)。"""
+
+    def __init__(self):
+        self.poll_count = 0
+        self._collision = [
+            {"id": "collision", "cid": "7000", "file_name": "same.mkv", "file_size": "100"}
+        ]
+        self._real = [
+            {"id": "real", "cid": "7000", "file_name": "same.mkv", "file_size": "100"}
+        ]
+
+    def recyclebin_list(self, payload, **kwargs):
+        self.poll_count += 1
+        records = self._collision + (self._real if self.poll_count >= 2 else [])
+        offset = int(payload.get("offset", 0))
+        limit = int(payload.get("limit", 100))
+        return {
+            "state": True,
+            "data": records[offset : offset + limit],
+            "offset": offset,
+            "limit": limit,
+            "count": len(records),
+        }
+
+
+async def test_find_new_entries_rejects_ambiguous_collision():
+    """H1 身份碰撞:并发动作使回收站出现同身份候选时,不得任选一个执行
+    不可逆清理;出现 ≥2 候选即返回 None(UNCERTAIN,fail-closed)。"""
+    from watch_assistant.adapters.p115_permanent_delete_transport import (
+        P115PermanentDeleteTransport,
+    )
+
+    client = _CollisionRecycleClient()
+
+    async def call_executor(method, payload, *, timeout_seconds):
+        return method(payload, async_=False)
+
+    transport = P115PermanentDeleteTransport(
+        client=client,
+        call_executor=call_executor,
+    )
+    found = await transport.find_new_entries(
+        set(),
+        parent_id="7000",
+        name="same.mkv",
+        size_bytes=100,
+        timeout_seconds=5.0,
+    )
+    assert found is None
+
 
 async def _delete_service_factory(database, client):
     async def call_executor(method, payload, *, timeout_seconds):
