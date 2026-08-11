@@ -369,6 +369,8 @@ async function pollP115QrLogin() {
   if (!settingsMounted || !p115QrSessionId.value) return;
   try {
     const response = await props.api.pollP115Qrcode(p115QrSessionId.value);
+    // await 期间可能已卸载(onBeforeUnmount 清了定时器):不得再写状态或续排定时器。
+    if (!settingsMounted) return;
     p115QrStatus.value = response.status;
     if (response.status === "ready") {
       p115QrBusy.value = false;
@@ -384,6 +386,7 @@ async function pollP115QrLogin() {
     p115QrPollTimer = window.setTimeout(() => void pollP115QrLogin(), 2000);
   } catch (exception) {
     if (exception instanceof ApiError && exception.retryable && p115QrSessionId.value) {
+      if (!settingsMounted) return;
       p115QrStatus.value = "waiting";
       p115QrError.value = "二维码状态暂时未返回，正在重试。";
       p115QrPollTimer = window.setTimeout(() => void pollP115QrLogin(), 2000);
@@ -571,6 +574,7 @@ async function saveInspection() {
       auto_start_enabled: inspectionDraft.value,
       revision: inspectionSettings.value.revision,
     });
+    if (!settingsMounted) return;
     applyInspection(response);
     syncSharedRevision(response.revision);
     emit("auto-start-enabled", response.auto_start_enabled);
@@ -772,6 +776,7 @@ async function saveOrganization() {
       metadata_extensions: extensionList(organizationMetadataExtensionsDraft.value),
       revision: organizationSettings.value.revision,
     });
+    if (!settingsMounted) return;
     applyOrganization(response);
     syncSharedRevision(response.revision);
   } catch (exception) {
@@ -857,6 +862,7 @@ async function saveLogging() {
       retention_days: draftRetentionDays.value,
       max_file_mb: draftMaxFileMb.value,
     });
+    if (!settingsMounted) return;
     applyLogging(response);
     syncSharedRevision(response.revision);
   } catch (exception) {
@@ -922,6 +928,7 @@ async function saveContentPolicy() {
       hide_low_quality_resources: contentDraftHideLowQualityResources.value,
       blocked_keywords: blockedKeywordsDraft.value.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean),
     });
+    if (!settingsMounted) return;
     applyContentPolicy(response);
     syncSharedRevision(response.revision);
   } catch (exception) {
