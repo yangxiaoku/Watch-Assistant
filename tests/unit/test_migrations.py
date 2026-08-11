@@ -2,6 +2,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import inspect, text
+from sqlalchemy.exc import IntegrityError
 
 import watch_assistant.db as database_module
 from watch_assistant.db import create_database, initialize_database
@@ -14,6 +15,8 @@ from watch_assistant.migrations import (
     MIGRATIONS,
     Migration,
     _create_workflow_evidence_table,
+    _subscription_indexes_exclude_cancelled,
+    _unique_scan_run_revision,
     run_migrations,
 )
 from watch_assistant.models import (
@@ -1081,4 +1084,149 @@ async def test_subscription_null_match_count_is_repaired(tmp_path):
             await connection.scalars(text("SELECT last_match_count FROM subscriptions"))
         )
     assert counts == [0]
+    await database.engine.dispose()
+
+
+async def test_migration_072_subscription_index_excludes_cancelled(tmp_path):
+    """迁移 072 函数:重建订阅部分唯一索引时排除已取消行,
+    "取消后重新订阅"不再被 CANCELLED 行占用而 409。"""
+    from watch_assistant.schemas import SubscriptionCreateRequest
+    from watch_assistant.services.subscriptions import (
+        SubscriptionConflict,
+        SubscriptionService,
+        SubscriptionStatus,
+    )
+
+    class _FakeSearch:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        async def search(self, tmdb_id, *, media_type, refresh, season_number):
+            self.calls.append(
+                {
+                    "tmdb_id": tmdb_id,
+                    "media_type": media_type,
+                    "refresh": refresh,
+                    "season_number": season_number,
+                }
+            )
+            from types import SimpleNamespace
+
+            return SimpleNamespace(results=[])
+
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'mig072.db'}")
+    await initialize_database(database.engine)
+    service = SubscriptionService(database.session_factory, _FakeSearch())
+
+    first = await service.create(SubscriptionCreateRequest(tmdb_id=555))
+    async with database.session_factory() as session:
+        from watch_assistant.models import Subscription
+
+        stored = await session.get(Subscription, first.id)
+        stored.status = SubscriptionStatus.CANCELLED
+        await session.commit()
+
+    # 模拟 070 时代的索引:部分唯一索引不含 status != 'cancelled'
+    async with database.engine.begin() as connection:
+        await connection.execute(text("DROP INDEX IF EXISTS uq_subscription_scope_movie"))
+        await connection.execute(text("DROP INDEX IF EXISTS uq_subscription_scope_tv"))
+        await connection.execute(
+            text(
+                "CREATE UNIQUE INDEX uq_subscription_scope_movie "
+                "ON subscriptions (tmdb_id, media_type) WHERE season_number IS NULL"
+            )
+        )
+        await connection.execute(
+            text(
+                "CREATE UNIQUE INDEX uq_subscription_scope_tv "
+                "ON subscriptions (tmdb_id, media_type, season_number, episode_start, "
+                "episode_end) WHERE season_number IS NOT NULL"
+            )
+        )
+    # 070 时代:重订会因索引连同 CANCELLED 行一起唯一而恒 409
+    with pytest.raises(SubscriptionConflict):
+        await service.create(SubscriptionCreateRequest(tmdb_id=555))
+    # 直接执行迁移 072 函数重建索引(排除已取消行)
+    async with database.engine.begin() as connection:
+        await connection.run_sync(_subscription_indexes_exclude_cancelled)
+    # 修复后:重订成功
+    recreated = await service.create(SubscriptionCreateRequest(tmdb_id=555))
+    assert recreated.id != first.id
+    assert recreated.status is SubscriptionStatus.ACTIVE
+    await database.engine.dispose()
+
+
+async def test_migration_073_scan_run_revision_unique(tmp_path):
+    """迁移 073 函数:重建 uq_library_scan_run_revision 部分唯一索引,
+    重复 snapshot_revision 写入被拒;历史重复只保留最新行。"""
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'mig073.db'}")
+    await initialize_database(database.engine)
+
+    async with database.engine.begin() as connection:
+        # 模拟 073 前状态:无唯一索引
+        await connection.execute(
+            text("DROP INDEX IF EXISTS uq_library_scan_run_revision")
+        )
+        await connection.execute(
+            text(
+                "INSERT INTO media_libraries (id, name, root_directory_id, created_at) "
+                "VALUES ('lib1', 'test', 'dir1', '2026-08-11 00:00:00')"
+            )
+        )
+        await connection.execute(
+            text(
+                "INSERT INTO library_scan_runs (id, library_id, root_directory_id, "
+                "idempotency_key, scan_mode, max_directories, state, complete, "
+                "snapshot_revision, expected_page_count, expected_total, pages_read, "
+                "created_at, updated_at) VALUES ('run1', 'lib1', 'dir1', 'k1', 'full', "
+                "100, 'complete', 1, 1, 1, 1, 1, '2026-08-11 00:00:00', "
+                "'2026-08-11 00:00:00')"
+            )
+        )
+        # 无索引时可插入历史重复行(同 revision)
+        await connection.execute(
+            text(
+                "INSERT INTO library_scan_runs (id, library_id, root_directory_id, "
+                "idempotency_key, scan_mode, max_directories, state, complete, "
+                "snapshot_revision, expected_page_count, expected_total, pages_read, "
+                "created_at, updated_at) VALUES ('run_old', 'lib1', 'dir1', 'k0', 'full', "
+                "100, 'complete', 1, 1, 1, 1, 1, '2026-08-10 00:00:00', "
+                "'2026-08-10 00:00:00')"
+            )
+        )
+        # 执行迁移 073:清历史重复(保留最新 run1)+ 建唯一索引
+        await connection.run_sync(_unique_scan_run_revision)
+    # 同 revision 再次写入被唯一索引拒绝
+    with pytest.raises(IntegrityError):
+        async with database.engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "INSERT INTO library_scan_runs (id, library_id, root_directory_id, "
+                    "idempotency_key, scan_mode, max_directories, state, complete, "
+                    "snapshot_revision, expected_page_count, expected_total, pages_read, "
+                    "created_at, updated_at) VALUES ('run2', 'lib1', 'dir1', 'k2', 'full', "
+                    "100, 'complete', 1, 1, 1, 1, 1, '2026-08-11 00:00:00', "
+                    "'2026-08-11 00:00:00')"
+                )
+            )
+    # 历史重复行已被迁移清理:同 revision 只保留 MAX(id) 一行(run_old > run1)
+    async with database.engine.connect() as connection:
+        revisions = list(
+            await connection.scalars(
+                text(
+                    "SELECT id FROM library_scan_runs "
+                    "WHERE library_id = 'lib1' AND snapshot_revision = 1"
+                )
+            )
+        )
+        run_old_revision = (
+            await connection.scalars(
+                text(
+                    "SELECT snapshot_revision FROM library_scan_runs "
+                    "WHERE id = 'run1'"
+                )
+            )
+        ).first()
+    assert revisions == ["run_old"]
+    assert run_old_revision is None
     await database.engine.dispose()

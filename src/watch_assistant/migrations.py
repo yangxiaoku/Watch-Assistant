@@ -1243,6 +1243,55 @@ def _create_workflow_evidence_table(connection: Connection) -> None:
     WorkflowEvidence.__table__.create(connection, checkfirst=True)
 
 
+def _subscription_indexes_exclude_cancelled(connection: Connection) -> None:
+    """部分唯一索引排除已取消行:create() 明确允许"取消后重新订阅",
+    索引若连同 CANCELLED 行一起唯一,重订会恒 409(电影订阅回归)。"""
+
+    connection.execute(text("DROP INDEX IF EXISTS uq_subscription_scope_movie"))
+    connection.execute(text("DROP INDEX IF EXISTS uq_subscription_scope_tv"))
+    connection.execute(
+        text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_subscription_scope_movie "
+            "ON subscriptions (tmdb_id, media_type) "
+            "WHERE season_number IS NULL AND status != 'cancelled'"
+        )
+    )
+    connection.execute(
+        text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_subscription_scope_tv "
+            "ON subscriptions (tmdb_id, media_type, season_number, episode_start, episode_end) "
+            "WHERE season_number IS NOT NULL AND status != 'cancelled'"
+        )
+    )
+
+
+def _unique_scan_run_revision(connection: Connection) -> None:
+    """(library_id, snapshot_revision) 唯一:并发完成分配重复 revision 时
+    显式失败而非静默重复(消费者 fail-closed 到下一次扫描)。
+
+    先清历史重复:修复前并发场景可能已产生同 revision 的两行,保留最新
+    run 的 revision,其余置 NULL(视为未分配,下次扫描重新分配,不丢数据)。
+    """
+
+    connection.execute(
+        text(
+            "UPDATE library_scan_runs SET snapshot_revision = NULL "
+            "WHERE id NOT IN ("
+            "  SELECT MAX(id) FROM library_scan_runs "
+            "  WHERE snapshot_revision IS NOT NULL "
+            "  GROUP BY library_id, snapshot_revision"
+            ")"
+        )
+    )
+    connection.execute(
+        text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_library_scan_run_revision "
+            "ON library_scan_runs (library_id, snapshot_revision) "
+            "WHERE snapshot_revision IS NOT NULL"
+        )
+    )
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration("001_application_settings_columns", _add_application_settings_columns),
     Migration("002_library_index_tables", _create_library_index_tables),
@@ -1324,6 +1373,11 @@ MIGRATIONS: tuple[Migration, ...] = (
         "071_organization_operation_partial_unique_plan",
         _add_organization_operation_partial_unique_index,
     ),
+    Migration(
+        "072_subscription_indexes_exclude_cancelled",
+        _subscription_indexes_exclude_cancelled,
+    ),
+    Migration("073_unique_scan_run_revision", _unique_scan_run_revision),
 )
 
 
@@ -1364,52 +1418,3 @@ def _validate_migrations(migrations: Sequence[Migration]) -> None:
         raise ValueError("Migration IDs must be unique")
     if migration_ids != sorted(migration_ids):
         raise ValueError("Migrations must be ordered by ID")
-
-
-def _subscription_indexes_exclude_cancelled(connection: Connection) -> None:
-    """部分唯一索引排除已取消行:create() 明确允许"取消后重新订阅",
-    索引若连同 CANCELLED 行一起唯一,重订会恒 409(电影订阅回归)。"""
-
-    connection.execute(text("DROP INDEX IF EXISTS uq_subscription_scope_movie"))
-    connection.execute(text("DROP INDEX IF EXISTS uq_subscription_scope_tv"))
-    connection.execute(
-        text(
-            "CREATE UNIQUE INDEX IF NOT EXISTS uq_subscription_scope_movie "
-            "ON subscriptions (tmdb_id, media_type) "
-            "WHERE season_number IS NULL AND status != 'cancelled'"
-        )
-    )
-    connection.execute(
-        text(
-            "CREATE UNIQUE INDEX IF NOT EXISTS uq_subscription_scope_tv "
-            "ON subscriptions (tmdb_id, media_type, season_number, episode_start, episode_end) "
-            "WHERE season_number IS NOT NULL AND status != 'cancelled'"
-        )
-    )
-
-
-def _unique_scan_run_revision(connection: Connection) -> None:
-    """(library_id, snapshot_revision) 唯一:并发完成分配重复 revision 时
-    显式失败而非静默重复(消费者 fail-closed 到下一次扫描)。
-
-    先清历史重复:修复前并发场景可能已产生同 revision 的两行,保留最新
-    run 的 revision,其余置 NULL(视为未分配,下次扫描重新分配,不丢数据)。
-    """
-
-    connection.execute(
-        text(
-            "UPDATE library_scan_runs SET snapshot_revision = NULL "
-            "WHERE id NOT IN ("
-            "  SELECT MAX(id) FROM library_scan_runs "
-            "  WHERE snapshot_revision IS NOT NULL "
-            "  GROUP BY library_id, snapshot_revision"
-            ")"
-        )
-    )
-    connection.execute(
-        text(
-            "CREATE UNIQUE INDEX IF NOT EXISTS uq_library_scan_run_revision "
-            "ON library_scan_runs (library_id, snapshot_revision) "
-            "WHERE snapshot_revision IS NOT NULL"
-        )
-    )
