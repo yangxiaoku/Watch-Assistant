@@ -6,7 +6,7 @@ import ConfirmDialog from "../components/ConfirmDialog.vue";
 import { describeUiError } from "../errorCatalog";
 import { pollUntil } from "../polling";
 import { organizationOperationStatusLabel, organizationPlanStatusLabel } from "../statusCatalog";
-import { diagnosticCode, diagnosticReference } from "../uiSafety";
+import { diagnosticCode, diagnosticReference, safeLocalizedCopy } from "../uiSafety";
 import type { OrganizationExecutionBlocker, OrganizationOperationBatchResult, OrganizationOperationResponse, OrganizationPlanStatus, OrganizationPlanSummary } from "../types";
 
 const props = withDefaults(defineProps<{ api: ApiClient; enabled?: boolean; executionSupported?: boolean; embedded?: boolean }>(), {
@@ -17,7 +17,8 @@ const props = withDefaults(defineProps<{ api: ApiClient; enabled?: boolean; exec
 // 打开设置页对应分区:organization 为「设置 → 115整理」,credentials 为「设置 → 连接配置(TMDB API Key)」
 const emit = defineEmits<{ "open-settings": [section?: "organization" | "credentials"] }>();
 
-const activeStatus = ref<OrganizationPlanStatus>("needs_review");
+// null = 默认视图:不传 status,由后端返回活跃计划(待确认 + 已确认);点击 tab 时才按状态过滤
+const activeStatus = ref<OrganizationPlanStatus | null>(null);
 const items = ref<OrganizationPlanSummary[]>([]);
 const nextCursor = ref<number | null>(null);
 const selected = ref<OrganizationPlanSummary | null>(null);
@@ -38,6 +39,9 @@ const pendingExecution = ref<
 >(null);
 
 const selectedIsReviewable = computed(() => selected.value?.status === "needs_review");
+// 待确认 tab 与默认视图(活跃=待确认+已确认)都允许"确认并整理当前页"批量操作
+const isNeedsReviewView = computed(() => activeStatus.value === "needs_review" || activeStatus.value === null);
+const selectedFileNames = computed<string[]>(() => selected.value?.source_names ?? []);
 const selectedCanEdit = computed(() => selected.value?.status === "needs_review" || selected.value?.status === "planned");
 const selectedCanExecute = computed(() => selected.value?.can_execute === true);
 const executableItems = computed(() => items.value.filter((item) => item.can_execute));
@@ -97,6 +101,7 @@ function normalizePlan(plan: OrganizationPlanSummary): OrganizationPlanSummary {
     ...plan,
     candidates: Array.isArray(plan.candidates) ? plan.candidates : [],
     execution_blockers: Array.isArray(plan.execution_blockers) ? plan.execution_blockers : [],
+    source_names: Array.isArray(plan.source_names) ? plan.source_names : [],
   };
 }
 
@@ -152,7 +157,12 @@ async function loadPlans(cursor?: number) {
   loading.value = true;
   error.value = "";
   try {
-    const response = await props.api.organizationPlans({ status: activeStatus.value, cursor, limit: 20 });
+    // 默认视图(null)不传 status,由后端返回活跃计划(待确认 + 已确认);tab 过滤时显式传 status
+    const response = await props.api.organizationPlans(
+      activeStatus.value === null
+        ? { cursor, limit: 20 }
+        : { status: activeStatus.value, cursor, limit: 20 },
+    );
     if (requestGeneration !== planRequestGeneration) return;
     const pageItems = response.items.map(normalizePlan);
     const previousSelectedId = selected.value?.plan_id;
@@ -208,7 +218,7 @@ function requestExecution(plan: OrganizationPlanSummary): void {
 
 function requestBatchExecution(): void {
   const executable = executableItems.value;
-  if (busy.value || !props.executionSupported || activeStatus.value !== "needs_review" || !executable.length) return;
+  if (busy.value || !props.executionSupported || !isNeedsReviewView.value || !executable.length) return;
   pendingExecution.value = { kind: "batch", plans: executable.map(normalizePlan) };
 }
 
@@ -358,7 +368,7 @@ async function handleQueuedOperation(queuedOperation: OrganizationOperationRespo
 
 async function confirmAndQueueCurrentPage() {
   const executable = executableItems.value;
-  if (!props.executionSupported || activeStatus.value !== "needs_review" || !executable.length || busy.value) return;
+  if (!props.executionSupported || !isNeedsReviewView.value || !executable.length || busy.value) return;
   busy.value = true;
   error.value = "";
   notice.value = "";
@@ -551,7 +561,7 @@ onBeforeUnmount(() => {
     <p v-if="notice" class="success-strip"><Check :size="16" />{{ notice }}</p>
 
     <div class="organization-tabs" role="tablist" aria-label="计划状态">
-      <button type="button" :class="{ active: activeStatus === 'needs_review' }" @click="changeStatus('needs_review')">待确认</button>
+      <button type="button" :class="{ active: activeStatus === 'needs_review' || activeStatus === null }" @click="changeStatus('needs_review')">待确认</button>
       <button type="button" :class="{ active: activeStatus === 'planned' }" @click="changeStatus('planned')">已确认</button>
       <button type="button" :class="{ active: activeStatus === 'ignored' }" @click="changeStatus('ignored')">已忽略</button>
       <button type="button" :class="{ active: activeStatus === 'invalidated' }" @click="changeStatus('invalidated')">已失效</button>
@@ -570,9 +580,9 @@ onBeforeUnmount(() => {
     <div v-else class="organization-layout">
       <div class="organization-list" aria-label="计划列表">
         <p v-if="loading" class="organization-list-loading" role="status"><LoaderCircle class="spin" :size="16" />正在加载下一页</p>
-        <button v-if="executionSupported && activeStatus === 'needs_review'" class="primary-button organization-batch-action" type="button" :disabled="loading || busy" @click="requestBatchExecution"><ListChecks :size="16" />确认并整理当前页（{{ executableItems.length }}）</button>
+        <button v-if="executionSupported && isNeedsReviewView" class="primary-button organization-batch-action" type="button" :disabled="loading || busy" @click="requestBatchExecution"><ListChecks :size="16" />确认并整理当前页（{{ executableItems.length }}）</button>
         <button v-for="plan in items" :key="plan.plan_id" type="button" class="organization-plan-row" :class="{ active: selected?.plan_id === plan.plan_id }" @click="selectPlan(plan)">
-          <span class="organization-plan-row-main"><strong>{{ planLabel(plan) }}</strong><small>{{ organizationPlanStatusLabel(plan.status) }}</small></span>
+          <span class="organization-plan-row-main"><strong>{{ planLabel(plan) }}</strong><small>{{ organizationPlanStatusLabel(plan.status) }}</small><span class="organization-plan-row-files"><span class="organization-plan-row-files-name">{{ plan.source_names?.length ? safeLocalizedCopy(plan.source_names[0], "") : "（无待处理文件）" }}</span><span v-if="plan.source_names && plan.source_names.length > 1" class="organization-plan-row-files-more">+{{ plan.source_names.length - 1 }}</span></span></span>
           <span class="organization-plan-row-meta"><span>版本 {{ plan.revision }}</span><ChevronRight :size="16" /></span>
         </button>
         <button v-if="nextCursor !== null" class="secondary-button organization-more" type="button" :disabled="loading || busy" @click="loadPlans(nextCursor!)">加载下一页</button>
@@ -589,6 +599,13 @@ onBeforeUnmount(() => {
           <div><dt>待复核动作</dt><dd>{{ selected.review_action_count }}</dd></div>
           <div><dt>前置条件</dt><dd>{{ selected.precondition_count }}</dd></div>
         </dl>
+        <section class="organization-file-list">
+          <strong>待处理文件</strong>
+          <ul v-if="selectedFileNames.length">
+            <li v-for="(name, index) in selectedFileNames" :key="index" :title="safeLocalizedCopy(name, '（名称未提供）')">{{ safeLocalizedCopy(name, "（名称未提供）") }}</li>
+          </ul>
+          <p v-else class="organization-file-list-empty">暂无文件名单（来源条目 {{ selected.source_count }} 项）</p>
+        </section>
         <details class="organization-diagnostics"><summary>查看诊断标识</summary><small>计划标识：{{ diagnosticReference(selected.plan_id) }}</small><small>计划摘要：{{ diagnosticReference(selected.plan_hash) }}</small></details>
         <section v-if="!selected.can_execute" class="organization-execution-blockers" aria-live="polite">
           <strong>当前不能执行</strong>

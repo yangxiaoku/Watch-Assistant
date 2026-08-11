@@ -198,6 +198,9 @@ input { outline: none; }
 .organization-plan-row-main strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
 .organization-plan-row-main small, .organization-plan-row-meta { color: var(--text-3); font-size: 11px; }
 .organization-plan-row-meta { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; }
+.organization-plan-row-files { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.organization-plan-row-files-name { min-width: 0; overflow: hidden; color: var(--text-3); text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+.organization-plan-row-files-more { flex: none; padding: 1px 7px; color: var(--accent); background: var(--accent-soft); border-radius: 999px; font-size: 10px; font-weight: 750; }
 .organization-more { width: 100%; margin-top: 4px; }
 .organization-preview { min-width: 0; padding: 22px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); }
 .organization-preview-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding-bottom: 17px; border-bottom: 1px solid var(--border); }
@@ -207,6 +210,11 @@ input { outline: none; }
 .organization-facts div { min-width: 0; }
 .organization-facts dt { color: var(--text-3); font-size: 11px; }
 .organization-facts dd { margin: 4px 0 0; overflow: hidden; color: var(--text); text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.organization-file-list { margin: 0 0 20px; padding: 12px 13px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px; }
+.organization-file-list strong { display: block; margin-bottom: 8px; color: var(--text-2); font-size: 12px; font-weight: 750; }
+.organization-file-list ul { display: grid; gap: 5px; margin: 0; padding: 0; list-style: none; }
+.organization-file-list li { overflow: hidden; color: var(--text-2); text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.organization-file-list-empty { margin: 0; color: var(--text-3); font-size: 12px; }
 .organization-safe-note { margin: 0; padding: 12px 13px; color: #f8dfa0; background: var(--amber-soft); border-left: 2px solid var(--amber); border-radius: 0 8px 8px 0; font-size: 12px; line-height: 1.55; }
 .organization-operation-status { display: grid; gap: 5px; margin-top: 12px; padding: 12px 13px; color: #d7e6ff; background: var(--sky-soft); border-left: 2px solid var(--sky); border-radius: 0 8px 8px 0; font-size: 12px; line-height: 1.55; }
 .organization-operation-status.failed, .organization-operation-status.uncertain { color: #ffd7db; background: var(--danger-soft); border-left-color: var(--danger); }

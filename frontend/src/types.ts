@@ -767,6 +767,8 @@ export interface OrganizationPlanSummary {
   execution_blockers?: OrganizationExecutionBlocker[];
   alias: string | null;
   candidates: OrganizationPlanCandidate[];
+  /** 计划涉及的文件名(后端最多返回 8 个);旧后端可能不返回该字段 */
+  source_names?: string[];
 }
 
 export type OrganizationExecutionBlockerKind =
