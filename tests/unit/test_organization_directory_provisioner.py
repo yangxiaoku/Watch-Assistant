@@ -93,7 +93,7 @@ async def test_directory_provisioner_forwards_confirmed_write_gate():
 
     async def list_children(parent_id, *, timeout_seconds):
         list_calls.append((parent_id, timeout_seconds))
-        return C03DirectoryListing(tuple(), complete=True, page_calls=1)
+        return C03DirectoryListing((), complete=True, page_calls=1)
 
     provisioner._transport.execute = execute
     provisioner._transport.list_children = list_children

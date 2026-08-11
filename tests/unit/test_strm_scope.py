@@ -11,7 +11,6 @@ from watch_assistant.library_models import (
 )
 from watch_assistant.services.strm_scope import (
     normalize_playback_url_prefix,
-    source_snapshot_is_current,
 )
 
 
