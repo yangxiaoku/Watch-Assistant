@@ -129,7 +129,7 @@ def _http_error(error: WebhookError) -> HTTPException:
         "webhook_delivery_not_found": 404,
         "webhook_delivery_conflict": 409,
         "webhook_endpoint_disabled": 409,
-        "webhook_dns_failed": 422,
+        "webhook_dns_failed": 502,
     }.get(error.code, 422)
     return HTTPException(status_code=status_code, detail={"code": error.code})
 
