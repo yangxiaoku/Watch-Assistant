@@ -1,7 +1,9 @@
 import json
 import re
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import inspect, select
@@ -24,8 +26,10 @@ from watch_assistant.services.media_classification import (
 from watch_assistant.services.media_matcher import (
     MatchConfidence,
     MatchDecision,
+    MatchEvidence,
     MatchStatus,
     MediaKind,
+    RankedCandidate,
     TmdbCandidate,
 )
 from watch_assistant.services.organization_plan import (
@@ -1880,4 +1884,178 @@ async def test_list_defaults_to_active_plans_only(tmp_path):
         status=OrganizationPlanStatus.INVALIDATED
     )
     assert {view.plan_id for view in invalidated_views} == {invalidated.plan_id}
+    await database.engine.dispose()
+
+
+
+def _ranked_item(object_id: str = "100") -> OrganizationPlanItem:
+    """_item 携带 ranked_candidates,使 basis 中保留可选候选(tmdb_id=1)。"""
+    item = _item(object_id=object_id)
+    candidate = item.decision.selected
+    ranked = (
+        RankedCandidate(
+            candidate=candidate,
+            score=100,
+            evidence=MatchEvidence(score=100, title_match="exact"),
+            eligible=True,
+        ),
+    )
+    return replace(
+        item, decision=replace(item.decision, ranked_candidates=ranked)
+    )
+
+
+async def _selectable_plan(database, service, *, item):
+    plan_view = await service.create_plan(
+        library_id=LIBRARY_ID,
+        scan_run_id=SCAN_ID,
+        items=(item,),
+        target_directory_id="8000",
+        target_directories={"movie": "8000"},
+        manual_confirmation=True,
+    )
+    assert plan_view.status is OrganizationPlanStatus.NEEDS_REVIEW
+    return plan_view
+
+
+@pytest.mark.asyncio
+async def test_select_candidate_persists_promoted_choice(tmp_path):
+    database = await _database(tmp_path)
+    service = OrganizationPlanService(database.session_factory)
+    plan_view = await _selectable_plan(
+        database, service, item=_ranked_item()
+    )
+
+    promoted = await service.select_candidate(
+        plan_view.plan_id,
+        source_object_id="100",
+        tmdb_id=1,
+        expected_revision=plan_view.revision,
+    )
+    assert promoted.status is OrganizationPlanStatus.PLANNED
+    assert promoted.revision == plan_view.revision + 1
+    assert promoted.source_count == 1
+    async with database.session_factory() as session:
+        stored = await session.get(OrganizationPlan, plan_view.plan_id)
+        assert stored is not None
+        assert stored.revision == plan_view.revision + 1
+        assert stored.status == OrganizationPlanStatus.PLANNED.value
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_select_candidate_rejects_stale_revision(tmp_path):
+    database = await _database(tmp_path)
+    service = OrganizationPlanService(database.session_factory)
+    plan_view = await _selectable_plan(
+        database, service, item=_ranked_item()
+    )
+    async with database.session_factory() as session:
+        plan = await session.get(OrganizationPlan, plan_view.plan_id)
+        assert plan is not None
+        plan.revision += 1
+        await session.commit()
+
+    with pytest.raises(OrganizationPlanError, match="stale_revision"):
+        await service.select_candidate(
+            plan_view.plan_id,
+            source_object_id="100",
+            tmdb_id=1,
+            expected_revision=plan_view.revision,
+        )
+    await database.engine.dispose()
+
+
+class _RacingSession:
+    """模拟并发 select_candidate 已抢先提交:服务会话读到旧 revision,
+    条件更新 WHERE revision=expected 命中 0 行 → CAS 分支拒绝。"""
+
+    def __init__(self, session, database, plan_id, expected_revision):
+        self._session = session
+        self._database = database
+        self._plan_id = plan_id
+        self._expected_revision = expected_revision
+
+    async def __aenter__(self):
+        await self._session.__aenter__()
+        return self
+
+    async def __aexit__(self, *args):
+        return await self._session.__aexit__(*args)
+
+    async def get(self, entity, ident):
+        if entity is OrganizationPlan and ident == self._plan_id:
+            async with self._database.session_factory() as side:
+                plan = await side.get(OrganizationPlan, self._plan_id)
+                assert plan is not None
+                plan.revision += 1
+                await side.commit()
+                snapshot = dict(plan.__dict__)
+            stale = SimpleNamespace(
+                **{
+                    key: value
+                    for key, value in snapshot.items()
+                    if not key.startswith("_sa_")
+                }
+            )
+            stale.revision = self._expected_revision
+            return stale
+        return await self._session.get(entity, ident)
+
+    def scalars(self, *args, **kwargs):
+        return self._session.scalars(*args, **kwargs)
+
+    def scalar(self, *args, **kwargs):
+        return self._session.scalar(*args, **kwargs)
+
+    def execute(self, *args, **kwargs):
+        return self._session.execute(*args, **kwargs)
+
+    async def commit(self):
+        await self._session.commit()
+
+    async def rollback(self):
+        await self._session.rollback()
+
+
+class _RacingSessionFactory:
+    def __init__(self, database, plan_id, expected_revision):
+        self._database = database
+        self._plan_id = plan_id
+        self._expected_revision = expected_revision
+
+    def __call__(self):
+        return _RacingSession(
+            self._database.session_factory(),
+            self._database,
+            self._plan_id,
+            self._expected_revision,
+        )
+
+
+@pytest.mark.asyncio
+async def test_select_candidate_cas_aborts_concurrent_promotion(tmp_path):
+    """读检查通过但提交前被并发方抢先时,条件更新 0 行 → stale_revision。"""
+    database = await _database(tmp_path)
+    service = OrganizationPlanService(database.session_factory)
+    plan_view = await _selectable_plan(
+        database, service, item=_ranked_item()
+    )
+    racing_service = OrganizationPlanService(
+        _RacingSessionFactory(
+            database, plan_view.plan_id, plan_view.revision
+        )
+    )
+
+    with pytest.raises(OrganizationPlanError, match="stale_revision"):
+        await racing_service.select_candidate(
+            plan_view.plan_id,
+            source_object_id="100",
+            tmdb_id=1,
+            expected_revision=plan_view.revision,
+        )
+    async with database.session_factory() as session:
+        plan = await session.get(OrganizationPlan, plan_view.plan_id)
+        assert plan is not None
+        assert plan.revision == plan_view.revision + 1
     await database.engine.dispose()

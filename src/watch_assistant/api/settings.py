@@ -463,9 +463,10 @@ async def patch_organization(
             and isinstance(sources, list)
             and target in sources
         ):
+            # 与设置服务校验保持同一错误码(source_target_same)。
             raise HTTPException(
                 status_code=422,
-                detail="target_directory_equals_source",
+                detail="source_target_same",
             )
     try:
         response = await settings.update_organization(
@@ -478,6 +479,30 @@ async def patch_organization(
         notify = getattr(controller, "notify_settings_changed", None)
         if callable(notify):
             notify()
+        # 同步运行时 state(与启动时 apply_p115_runtime 的推导一致):
+        # target root 由 worker 每次执行通过 provider 读取,避免沿用启动
+        # 快照导致目标目录变更后整理错位/反复失败;browsed 目录集保持与
+        # 最新设置一致,后续 PATCH 的目录范围校验才不会误拒。
+        configured_target = response.target_directory_id
+        request.app.state.organization_target_root_id = (
+            str(configured_target)
+            if isinstance(configured_target, str) and configured_target.isdigit()
+            else None
+        )
+        configured_directory_ids = {
+            directory_id
+            for directory_id in (
+                *response.source_directory_ids,
+                response.target_directory_id,
+                response.push_directory_id,
+            )
+            if isinstance(directory_id, str) and directory_id.isdigit()
+        }
+        if request.app.state.organization_target_root_id:
+            configured_directory_ids.add(
+                request.app.state.organization_target_root_id
+            )
+        request.app.state.p115_browsed_directory_ids = configured_directory_ids
         return response
     except SettingsConflict as exc:
         raise HTTPException(status_code=409, detail="settings_conflict") from exc

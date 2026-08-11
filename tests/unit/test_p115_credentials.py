@@ -88,3 +88,96 @@ def test_composite_provider_returns_to_file_after_managed_reset(tmp_path):
 
     assert provider.source == "file"
     assert provider.load() == COOKIE
+
+
+
+class _FakeClock:
+    def __init__(self):
+        self.now = 0.0
+
+    def __call__(self):
+        return self.now
+
+
+def test_composite_provider_degrades_to_fallback_after_repeated_failures(
+    tmp_path,
+):
+    path = tmp_path / "p115-cookie"
+    _write_cookie(path)
+    clock = _FakeClock()
+    provider = CompositeCookieProvider(
+        CookieProvider(path), failure_threshold=3, degrade_seconds=60.0, clock=clock
+    )
+    provider.set_managed("UID=managed; CID=cid; KID=kid; SEID=seid")
+    assert provider.source == "managed"
+
+    provider.notify_failure()
+    provider.notify_failure()
+    assert provider.source == "managed"
+    assert provider.load() == "UID=managed; CID=cid; KID=kid; SEID=seid"
+
+    # 达到阈值 → 降级窗口内 load 返回 fallback 文件 cookie。
+    provider.notify_failure()
+    assert provider.source == "file(degraded)"
+    assert provider.load() == COOKIE
+
+
+def test_composite_provider_recovers_managed_after_degrade_window(tmp_path):
+    path = tmp_path / "p115-cookie"
+    _write_cookie(path)
+    clock = _FakeClock()
+    provider = CompositeCookieProvider(
+        CookieProvider(path), failure_threshold=1, degrade_seconds=60.0, clock=clock
+    )
+    provider.set_managed("UID=managed; CID=cid; KID=kid; SEID=seid")
+    provider.notify_failure()
+    assert provider.source == "file(degraded)"
+    assert provider.load() == COOKIE
+
+    # 降级窗口结束 → 自动重置并重新优先 managed。
+    clock.now = 61.0
+    assert provider.source == "managed"
+    assert provider.load() == "UID=managed; CID=cid; KID=kid; SEID=seid"
+
+
+def test_composite_provider_failures_accumulate_across_loads(tmp_path):
+    path = tmp_path / "p115-cookie"
+    _write_cookie(path)
+    clock = _FakeClock()
+    provider = CompositeCookieProvider(
+        CookieProvider(path), failure_threshold=3, degrade_seconds=60.0, clock=clock
+    )
+    provider.set_managed("UID=managed; CID=cid; KID=kid; SEID=seid")
+    # 每次请求:load 拿到 managed → 远端认证失败 → notify_failure。
+    for _ in range(2):
+        assert provider.load() == "UID=managed; CID=cid; KID=kid; SEID=seid"
+        provider.notify_failure()
+    assert provider.source == "managed"
+
+    provider.load()
+    provider.notify_failure()
+    assert provider.source == "file(degraded)"
+    assert provider.load() == COOKIE
+
+
+def test_composite_provider_set_managed_and_retry_managed_reset_degradation(
+    tmp_path,
+):
+    path = tmp_path / "p115-cookie"
+    _write_cookie(path)
+    clock = _FakeClock()
+    provider = CompositeCookieProvider(
+        CookieProvider(path), failure_threshold=1, degrade_seconds=60.0, clock=clock
+    )
+    provider.set_managed("UID=managed; CID=cid; KID=kid; SEID=seid")
+    provider.notify_failure()
+    assert provider.load() == COOKIE
+
+    provider.retry_managed()
+    assert provider.source == "managed"
+    assert provider.load() == "UID=managed; CID=cid; KID=kid; SEID=seid"
+
+    provider.notify_failure()
+    provider.set_managed("UID=fresh; CID=cid; KID=kid; SEID=seid")
+    assert provider.source == "managed"
+    assert provider.load() == "UID=fresh; CID=cid; KID=kid; SEID=seid"

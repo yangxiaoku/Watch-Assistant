@@ -29,6 +29,9 @@ from watch_assistant.adapters.p115_library_transport import (
 )
 
 VERIFIED_PAGE_SIZE = 1
+# 登录失效类 errno（与 p115 适配器 _AUTH_ERRNOS 保持一致）：
+# 命中时通知 credential provider 记录一次认证失败。
+_AUTH_FAILURE_ERRNOS = frozenset((99, 911, 990001, 40101004, 40101017, 40101032))
 # 目录选择器批量读取的已验证页大小：2026-08-09 在真实 115 上对非虚拟根目录
 # 实证 fs_files limit=50 返回结构/分页与 limit=1 一致（见 probe 证据），
 # 作为与 VERIFIED_PAGE_SIZE 并列的另一条已验证路径。
@@ -252,6 +255,12 @@ class P115ReadOnlyDirectoryGateway:
         if not isinstance(response, Mapping):
             raise P115ReadOnlyGatewayError("malformed_response")
         if not _response_success(response):
+            if _response_auth_failure(response):
+                # 登录失效:通知 credential provider 降级回退,
+                # 避免失效的 managed cookie 持续阻塞读接口。
+                notify = getattr(self._credential_source, "notify_failure", None)
+                if callable(notify):
+                    notify()
             raise P115ReadOnlyGatewayError("remote_failed")
         return response
 
@@ -604,6 +613,18 @@ def _nonnegative_int(value: Any) -> int | None:
 
 def _integer(value: Any) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _response_auth_failure(response: Mapping[str, Any]) -> bool:
+    for name in ("errno", "errNo", "errcode", "errCode", "code", "msg_code"):
+        value = response.get(name)
+        if value is None:
+            continue
+        if value in _AUTH_FAILURE_ERRNOS or str(value) in {
+            str(item) for item in _AUTH_FAILURE_ERRNOS
+        }:
+            return True
+    return False
 
 
 def _response_success(response: Mapping[str, Any]) -> bool:

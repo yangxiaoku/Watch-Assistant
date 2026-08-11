@@ -123,6 +123,7 @@ def _worker(
     client_factory=None,
     directory_provisioner=None,
     settings_service=None,
+    target_root_provider=None,
 ):
     return OrganizationWorker(
         session_factory=object(),
@@ -135,6 +136,7 @@ def _worker(
         client_factory=client_factory,
         directory_provisioner=directory_provisioner,
         settings_service=settings_service,
+        target_root_provider=target_root_provider,
     )
 
 
@@ -245,6 +247,77 @@ async def test_confirmed_runtime_forwards_all_live_gate_values(monkeypatch):
     assert client.closed is True
     assert operations.scope_revisions == [1]
     assert operations.step_revisions == [1]
+
+
+@pytest.mark.asyncio
+async def test_target_root_provider_is_reconsulted_each_run(monkeypatch):
+    """settings PATCH 后 target root 变化,下一次执行必须使用新值。"""
+    operations = _Operations(scope=frozenset({"7000", "9000"}), steps=_steps())
+    client = _Client()
+    transport_calls = []
+    executor_calls = []
+
+    class _Executor:
+        def __init__(self, _operations, _session_factory, transport, **_kwargs):
+            executor_calls.append((transport, _kwargs))
+
+        async def execute(self, *_args, **_kwargs):
+            return None
+
+    def create_transport(**kwargs):
+        transport_calls.append(kwargs)
+        return object()
+
+    monkeypatch.setattr(
+        "watch_assistant.services.organization_worker.create_live_p115_organization_transport",
+        create_transport,
+    )
+    monkeypatch.setattr(
+        "watch_assistant.services.organization_worker.OrganizationExecutor",
+        _Executor,
+    )
+    holder = {"root": "9000"}
+    worker = _worker(
+        operations,
+        write_enabled=True,
+        client_factory=lambda _credential: client,
+        target_root_provider=lambda: holder["root"],
+    )
+
+    assert await worker.run_once() is True
+    assert len(transport_calls) == 1
+    assert transport_calls[0]["target_root_id"] == "9000"
+    assert operations.finished == []
+
+    # 运行中 target 变更(settings PATCH 同步 state 后) → 下次执行用新值,
+    # 而不是沿用启动快照。
+    holder["root"] = "9001"
+    operations.scope = frozenset({"7000", "9001"})
+    assert await worker.run_once() is True
+    assert len(transport_calls) == 2
+    assert transport_calls[1]["target_root_id"] == "9001"
+    assert operations.finished == []
+
+
+@pytest.mark.asyncio
+async def test_target_root_provider_unset_target_fails_before_transport(monkeypatch):
+    """provider 返回 None(target 未配置)时按范围不确认失败,不构建 transport。"""
+    operations = _Operations(scope=frozenset({"7000", "9000"}), steps=_steps())
+    transport_calls = []
+    monkeypatch.setattr(
+        "watch_assistant.services.organization_worker.create_live_p115_organization_transport",
+        lambda **kwargs: transport_calls.append(kwargs),
+    )
+    worker = _worker(
+        operations,
+        write_enabled=True,
+        client_factory=lambda _credential: _Client(),
+        target_root_provider=lambda: None,
+    )
+
+    assert await worker.run_once() is True
+    assert transport_calls == []
+    assert operations.finished[0]["error_code"] == "plan_prerequisites_changed"
 
 
 @pytest.mark.asyncio

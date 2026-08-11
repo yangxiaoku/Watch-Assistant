@@ -62,6 +62,7 @@ class OrganizationWorker:
         settings_service=None,
         organization_contract: P115OrganizationContract | None = None,
         directory_provisioner: OrganizationDirectoryProvisioner | None = None,
+        target_root_provider: Callable[[], str | None] | None = None,
     ) -> None:
         if not production_root_id.isdigit() or production_root_id.startswith("0"):
             raise ValueError("invalid_production_root_id")
@@ -84,20 +85,29 @@ class OrganizationWorker:
         self._settings_service = settings_service
         self._organization_contract = organization_contract
         self._directory_provisioner = directory_provisioner
+        # 运行期 target root 提供器:settings PATCH 后由 app 同步,
+        # worker 每次执行都读取最新值;缺省时回退到构造时固化值。
+        self._target_root_provider = target_root_provider
         self._stop = asyncio.Event()
+
+    def _current_target_root(self) -> str | None:
+        if self._target_root_provider is not None:
+            return self._target_root_provider()
+        return self._production_root_id
 
     async def run_once(self) -> bool:
         lease = await self._operations.claim_next()
         if lease is None:
             return False
+        target_root = self._current_target_root()
         plan_scope = await self._operations.plan_execution_scope(
             lease.operation_id,
             expected_operation_revision=lease.revision,
         )
-        if plan_scope is None:
+        if plan_scope is None or target_root is None:
             await self._finish_failed(lease, "plan_prerequisites_changed")
             return True
-        if self._production_root_id not in plan_scope:
+        if target_root not in plan_scope:
             # 目标根不一致是配置变更而非计划失效:操作失败但计划保留,
             # finish 不会对 target_root_changed 执行 invalidate。
             await self._finish_failed(lease, "target_root_changed")
@@ -126,7 +136,7 @@ class OrganizationWorker:
             await self._finish_failed(lease, "plan_prerequisites_changed")
             return True
 
-        scope_confirmed = self._production_root_id in plan_scope
+        scope_confirmed = target_root in plan_scope
         # ``load_execution_steps`` only returns durable plans in the confirmed
         # ``planned`` state, so its result is the worker's confirmation evidence.
         plan_confirmed = bool(steps)
@@ -188,7 +198,7 @@ class OrganizationWorker:
                 write_enabled=self._write_enabled,
                 plan_confirmed=plan_confirmed,
                 organization_contract=self._organization_contract,
-                target_root_id=self._production_root_id,
+                target_root_id=target_root,
             )
             executor = OrganizationExecutor(
                 self._operations,
@@ -269,6 +279,7 @@ class OrganizationWorker:
             or summary.revision != expected_revision
         ):
             raise OrganizationOperationStateError("uncertain_requires_verification")
+        target_root = self._current_target_root()
         plan_scope = await self._operations.plan_execution_scope(
             operation_id,
             expected_operation_revision=expected_revision,
@@ -279,7 +290,7 @@ class OrganizationWorker:
         )
         if (
             not plan_scope
-            or self._production_root_id not in plan_scope
+            or target_root not in plan_scope
             or not steps
         ):
             return OrganizationExecutionResult(
@@ -309,7 +320,7 @@ class OrganizationWorker:
                 0,
                 0,
             )
-        scope_confirmed = self._production_root_id in plan_scope
+        scope_confirmed = target_root in plan_scope
         plan_confirmed = bool(steps)
         gate = OrganizationWriteGate(
             write_enabled=self._write_enabled,
@@ -347,7 +358,7 @@ class OrganizationWorker:
                 plan_confirmed=plan_confirmed,
                 read_only=True,
                 organization_contract=self._organization_contract,
-                target_root_id=self._production_root_id,
+                target_root_id=target_root,
             )
             executor = OrganizationExecutor(
                 self._operations,

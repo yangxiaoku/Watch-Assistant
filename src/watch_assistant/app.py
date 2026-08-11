@@ -744,6 +744,9 @@ def create_app(
                     application.state.organization_cookie_provider,
                     production_root_id=application.state.organization_target_root_id,
                     live_enabled=True,
+                    target_root_provider=(
+                        lambda: application.state.organization_target_root_id
+                    ),
                     write_enabled=write_enabled,
                     event_logger=application.state.settings_service,
                     settings_service=application.state.settings_service,

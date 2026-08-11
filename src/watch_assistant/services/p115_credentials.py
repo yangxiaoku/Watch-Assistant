@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import os
 import stat
+import time
+from collections.abc import Callable
 from http.cookies import CookieError, SimpleCookie
 from pathlib import Path
 
@@ -119,13 +121,42 @@ def normalize_cookie_text(text: str) -> str | None:
 
 
 class CompositeCookieProvider:
-    """Prefer an in-memory managed cookie, then use the configured P115 file."""
+    """Prefer an in-memory managed cookie, then use the configured P115 file.
 
-    __slots__ = ("_fallback", "_managed")
+    连续认证失败超过阈值后临时降级到文件 cookie,降级窗口结束后
+    自动重试 managed cookie,避免失效的 managed cookie 让所有
+    读接口持续失败且无回退。
+    """
 
-    def __init__(self, fallback: CookieProvider) -> None:
+    __slots__ = (
+        "_clock",
+        "_degrade_seconds",
+        "_degraded_until",
+        "_failure_count",
+        "_failure_threshold",
+        "_fallback",
+        "_managed",
+    )
+
+    def __init__(
+        self,
+        fallback: CookieProvider,
+        *,
+        failure_threshold: int = 3,
+        degrade_seconds: float = 60.0,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        if failure_threshold < 1:
+            raise ValueError("invalid_failure_threshold")
+        if degrade_seconds < 0:
+            raise ValueError("invalid_degrade_seconds")
         self._fallback = fallback
         self._managed: str | None = None
+        self._failure_count = 0
+        self._degraded_until: float | None = None
+        self._failure_threshold = int(failure_threshold)
+        self._degrade_seconds = float(degrade_seconds)
+        self._clock = clock
 
     def __repr__(self) -> str:
         return "<CompositeCookieProvider>"
@@ -136,13 +167,44 @@ class CompositeCookieProvider:
 
     @property
     def source(self) -> str:
-        return "managed" if self._managed is not None else "file"
+        if self._managed is None:
+            return "file"
+        if self._degraded():
+            return "file(degraded)"
+        return "managed"
 
     def set_managed(self, cookie: str | None) -> None:
         self._managed = normalize_cookie_text(cookie) if cookie else None
+        if self._managed is not None:
+            # 新凭证通常意味着用户重新登录,重置失败计数与降级状态。
+            self._failure_count = 0
+            self._degraded_until = None
+
+    def notify_failure(self) -> None:
+        """Record an authentication failure; degrade to fallback at threshold."""
+        self._failure_count += 1
+        if self._failure_count >= self._failure_threshold:
+            self._degraded_until = self._clock() + self._degrade_seconds
+
+    def retry_managed(self) -> None:
+        """Reset degradation and prefer the managed cookie again immediately."""
+        self._degraded_until = None
+        self._failure_count = 0
+
+    def _degraded(self) -> bool:
+        if self._degraded_until is None:
+            return False
+        if self._clock() >= self._degraded_until:
+            # 降级窗口结束:重置后重新优先 managed。
+            self._degraded_until = None
+            self._failure_count = 0
+            return False
+        return True
 
     def load(self) -> str | None:
-        if self._managed is not None:
+        # 注意:成功读取不清零失败计数——managed cookie 失效时每次
+        # load 都"成功"返回同一串,清零会让降级永远无法触发。
+        if self._managed is not None and not self._degraded():
             return self._managed
         return self._fallback.load()
 

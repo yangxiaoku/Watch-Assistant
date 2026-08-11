@@ -962,15 +962,31 @@ class OrganizationPlanService:
                 "parser_version": stored.parser_version,
                 "matcher_version": stored.matcher_version,
             }
-            stored.source_scan_run_id = original_run.id
-            stored.source_snapshot_revision = original_run.snapshot_revision
-            stored.source_snapshot_json = _json(old_source_snapshot)
-            stored.actions_json = _json(old_actions)
-            stored.basis_json = _json(old_basis)
-            stored.preconditions_json = _json(preconditions_payload)
-            stored.status = status.value
-            stored.plan_hash = _canonical_hash(canonical)
-            stored.revision += 1
+            # 条件更新 CAS:并发 select_candidate 完成后另一个调用
+            # 的 WHERE revision=expected 命中 0 行,防止静默覆盖。
+            result = await session.execute(
+                update(OrganizationPlan)
+                .where(
+                    OrganizationPlan.id == plan_id,
+                    OrganizationPlan.revision == expected_revision,
+                    OrganizationPlan.status
+                    == OrganizationPlanStatus.NEEDS_REVIEW.value,
+                )
+                .values(
+                    source_scan_run_id=original_run.id,
+                    source_snapshot_revision=original_run.snapshot_revision,
+                    source_snapshot_json=_json(old_source_snapshot),
+                    actions_json=_json(old_actions),
+                    basis_json=_json(old_basis),
+                    preconditions_json=_json(preconditions_payload),
+                    status=status.value,
+                    plan_hash=_canonical_hash(canonical),
+                    revision=expected_revision + 1,
+                )
+            )
+            if result.rowcount != 1:
+                await session.rollback()
+                raise OrganizationPlanError("stale_revision")
             await session.commit()
             refreshed = await session.get(OrganizationPlan, plan_id)
             if refreshed is None:
