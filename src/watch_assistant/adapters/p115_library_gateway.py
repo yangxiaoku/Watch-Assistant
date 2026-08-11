@@ -214,9 +214,25 @@ class P115ReadOnlyDirectoryGateway:
         remaining = self._remaining(deadline)
         try:
             if method_name == "fs_files":
-                response = await transport.fs_files(payload, timeout_seconds=remaining)
+                # proapi 接口优先:115 迁移后旧接口索引过期(如移入的文件
+                # 在 fs_files 中不可见);app 接口异常时回退旧接口兜底。
+                try:
+                    response = await transport.fs_files_app(
+                        payload, timeout_seconds=remaining
+                    )
+                except Exception:
+                    response = await transport.fs_files(
+                        payload, timeout_seconds=remaining
+                    )
             elif method_name == "fs_info":
-                response = await transport.fs_info(payload, timeout_seconds=remaining)
+                try:
+                    response = await transport.fs_info_app(
+                        payload, timeout_seconds=remaining
+                    )
+                except Exception:
+                    response = await transport.fs_info(
+                        payload, timeout_seconds=remaining
+                    )
             else:
                 raise P115ReadOnlyTransportUnavailable("blocked_environment")
         except asyncio.CancelledError:

@@ -280,28 +280,21 @@ async def _call_read_with_405_fallback(
     try:
         response = await _call(
             call_executor,
-            primary_method,
+            fallback_method if callable(fallback_method) else primary_method,
             payload,
             timeout_seconds=timeout_seconds,
         )
-        if not _is_structured_method_not_allowed(response):
-            return response
-        if not callable(fallback_method):
-            return response
-        return await _call(
-            call_executor,
-            fallback_method,
-            payload,
-            timeout_seconds=timeout_seconds,
-        )
+        return response
     except asyncio.CancelledError:
         raise
     except Exception as error:
-        if not _is_method_not_allowed(error) or not callable(fallback_method):
+        # 优先使用 proapi(app) 接口:旧接口在迁移后索引过期且已 405;
+        # app 接口异常时回退旧接口兜底。
+        if not _is_method_not_allowed(error):
             raise
         return await _call(
             call_executor,
-            fallback_method,
+            primary_method,
             payload,
             timeout_seconds=timeout_seconds,
         )
