@@ -8,7 +8,7 @@ from pathlib import PurePosixPath
 from typing import Protocol
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from watch_assistant.adapters.qbittorrent import QbittorrentInspectionResult
@@ -32,6 +32,10 @@ from watch_assistant.services.observability import EventLogger, emit_event
 from watch_assistant.services.workflows import link_child
 
 INSPECTION_RETENTION = timedelta(days=7)
+# 超过该时长的 RUNNING 批次视为残留(进程内异常/崩溃路径未复位),回收重排。
+# 活跃批次在每条条目完成时刷新 updated_at(见 _store_result),不会被误回收。
+_STALE_RUNNING_BATCH_SECONDS = 1800
+
 TERMINAL_ITEM_STATUSES = (
     InspectionItemStatus.VERIFIED,
     InspectionItemStatus.TIMEOUT,
@@ -322,10 +326,22 @@ class InspectionWorker:
         return True
 
     async def _claim_batch(self) -> str | None:
+        stale_cutoff = datetime.now(UTC) - timedelta(
+            seconds=_STALE_RUNNING_BATCH_SECONDS
+        )
         async with self._session_factory() as session:
             batch = await session.scalar(
                 select(InspectionBatch)
-                .where(InspectionBatch.status == InspectionBatchStatus.QUEUED)
+                .where(
+                    or_(
+                        InspectionBatch.status == InspectionBatchStatus.QUEUED,
+                        and_(
+                            InspectionBatch.status
+                            == InspectionBatchStatus.RUNNING,
+                            InspectionBatch.updated_at < stale_cutoff,
+                        ),
+                    )
+                )
                 .order_by(InspectionBatch.created_at)
                 .limit(1)
             )
@@ -467,6 +483,14 @@ class InspectionWorker:
             _apply_result_to_item(item, result, status)
             if cache_infohash is not None and status in CACHEABLE_ITEM_STATUSES:
                 await _store_cache(session, cache_infohash, result, status)
+            await session.commit()
+            # 刷新批次活跃时间:长批次处理期间 updated_at 前进,防止被
+            # _claim_batch 的"超时 RUNNING 回收"误当成残留批次。
+            await session.execute(
+                update(InspectionBatch)
+                .where(InspectionBatch.id == batch_id)
+                .values(updated_at=datetime.now(UTC))
+            )
             await session.commit()
 
     async def _finalize_batch(self, batch_id: str) -> None:
