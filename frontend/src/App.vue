@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { LoaderCircle, LogIn, Menu, PanelRight, X } from "@lucide/vue";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
-import { ApiClient, ApiError, browserIsOnline, focusFirstFieldError } from "./api";
+import { ApiClient, ApiError } from "./api";
+import { useAuth } from "./composables/useAuth";
+import { useConnectivity } from "./composables/useConnectivity";
 import AppShell from "./layout/AppShell.vue";
 import AppSidebar from "./layout/AppSidebar.vue";
 import AppTopbar from "./layout/AppTopbar.vue";
@@ -41,16 +43,13 @@ import OrganizationView from "./views/OrganizationView.vue";
 const FAVORITES_KEY = "watch-assistant:favorites";
 const HISTORY_KEY = "watch-assistant:history";
 const api = new ApiClient();
-const username = ref("admin");
-const password = ref("");
+const auth = useAuth(api, initializeWorkspace);
+const { username, password, authenticated, loggingIn, error, login } = auth;
+const connectivity = useConnectivity();
+const { isOnline, offlineDataAt, updateOnline, recordOfflineData } = connectivity;
 const query = ref("");
 const searchInput = ref("");
-const authenticated = ref(false);
-const loggingIn = ref(false);
-const isOnline = ref(browserIsOnline());
-const offlineDataAt = ref<string | null>(null);
 const catalogLoading = ref(false);
-const error = ref("");
 const result = ref<SearchResponse | null>(null);
 const searchSourceNames = ref<string[]>([]);
 const metadataLoading = ref(false);
@@ -1258,33 +1257,6 @@ async function initializeWorkspace() {
   await loadView(activeView.value);
 }
 
-async function login() {
-  if (loggingIn.value) return;
-  error.value = "";
-  loggingIn.value = true;
-  try {
-    await api.login(username.value, password.value);
-    authenticated.value = true;
-    password.value = "";
-    await initializeWorkspace();
-  } catch (exception) {
-    focusFirstFieldError(exception);
-    if (exception instanceof ApiError) {
-      if (exception.status === 429 || exception.code === "rate_limited") {
-        error.value = "尝试次数过多，请一分钟后再试。";
-      } else if (exception.status === 401 || exception.code === "invalid_credentials" || exception.code === "unauthorized") {
-        error.value = "账号或密码不正确";
-      } else {
-        error.value = "登录失败，请稍后重试";
-      }
-    } else {
-      error.value = "登录失败";
-    }
-  } finally {
-    loggingIn.value = false;
-  }
-}
-
 async function startPush(resource: ResourceSummary) {
   if (!canPushResource(resource, pushCapabilities.value)) {
     error.value = resource.kind === "115_share" ? "115 分享转存尚未验证" : "磁力云下载不可用";
@@ -1539,24 +1511,16 @@ async function syncRoute() {
   await initializeWorkspace();
 }
 
-function updateOnline(): void {
-  isOnline.value = browserIsOnline();
-}
-
 function openOrganizationSettings(section: "overview" | "organization" | "credentials" = "organization"): void {
   settingsInitialSection.value = section;
   void selectView("settings");
-}
-
-function recordOfflineData(event: Event): void {
-  const cachedAt = (event as CustomEvent<{ cachedAt?: string }>).detail?.cachedAt;
-  if (cachedAt) offlineDataAt.value = cachedAt;
 }
 
 onMounted(async () => {
   window.addEventListener("online", updateOnline);
   window.addEventListener("offline", updateOnline);
   window.addEventListener("watch-assistant:offline-data", recordOfflineData);
+  let sessionOk = false;
   try {
     const health = await api.health();
     pushCapabilities.value = resolvePushCapabilities(health);
@@ -1578,9 +1542,11 @@ onMounted(async () => {
     };
     emptyDirectoryCleanupCapability.value = health.organization_capabilities?.empty_directory_cleanup
       ?? unavailableCapability();
-    await api.me();
-    authenticated.value = true;
+    sessionOk = await auth.checkSession();
   } catch {
+    sessionOk = false;
+  }
+  if (!sessionOk) {
     authenticated.value = false;
     window.addEventListener("popstate", syncRoute);
     return;
