@@ -40,7 +40,19 @@ const pendingExecution = ref<
 
 const selectedIsReviewable = computed(() => selected.value?.status === "needs_review");
 // 待确认 tab 与默认视图(活跃=待确认+已确认)都允许"确认并整理当前页"批量操作
-const isNeedsReviewView = computed(() => activeStatus.value === "needs_review" || activeStatus.value === null);
+const isNeedsReviewView = computed(() => activeStatus.value === null || activeStatus.value === "needs_review");
+
+function planBadgeLabel(plan: OrganizationPlanSummary): string {
+  if (plan.status === "ignored") return "已忽略";
+  if (plan.status === "invalidated") return "已失效";
+  if (plan.status === "planned") return "已确认";
+  return plan.executable_action_count ? "可整理" : "待识别";
+}
+
+function planBadgeClass(plan: OrganizationPlanSummary): string {
+  if (plan.status === "ignored" || plan.status === "invalidated") return "organization-plan-badge-muted";
+  return plan.executable_action_count ? "organization-plan-badge-ok" : "organization-plan-badge-warn";
+}
 const selectedFileNames = computed<string[]>(() => selected.value?.source_names ?? []);
 const selectedCanEdit = computed(() => selected.value?.status === "needs_review" || selected.value?.status === "planned");
 const selectedCanExecute = computed(() => selected.value?.can_execute === true);
@@ -573,107 +585,91 @@ onBeforeUnmount(() => {
   <section v-if="enabled" class="organization-workbench">
     <div v-if="!embedded" class="organization-heading">
       <div>
-        <p class="eyebrow">本地审核</p>
-        <h1>整理计划工作台</h1>
-        <p>{{ executionSupported ? "可执行计划可一次确认并进入后台整理。" : "这里只改变本地计划状态，不会执行远端操作。" }}</p>
+        <h1>整理</h1>
+        <p>{{ executionSupported ? "放入源目录的影片会自动识别并整理到归档目录。" : "当前未开启整理执行能力，只能确认本地计划。" }}</p>
       </div>
-      <button class="icon-button" type="button" title="刷新计划" aria-label="刷新计划" :disabled="loading || busy" @click="loadPlans()"><RefreshCw :size="17" :class="{ spin: loading }" /></button>
+      <button class="icon-button" type="button" title="刷新" aria-label="刷新" :disabled="loading || busy" @click="loadPlans()"><RefreshCw :size="17" :class="{ spin: loading }" /></button>
     </div>
 
     <p v-if="error" class="error-strip" role="alert"><Ban :size="16" /><span>{{ error }}</span><button class="text-button" type="button" @click="loadPlans(lastPlanCursor)">重试</button></p>
     <p v-if="notice" class="success-strip"><Check :size="16" />{{ notice }}</p>
 
-    <div class="organization-tabs" role="tablist" aria-label="计划状态">
-      <button type="button" :class="{ active: activeStatus === null }" @click="changeStatus(null)">全部</button>
-      <button type="button" :class="{ active: activeStatus === 'needs_review' }" @click="changeStatus('needs_review')">待确认</button>
-      <button type="button" :class="{ active: activeStatus === 'planned' }" @click="changeStatus('planned')">已确认</button>
+    <div class="organization-tabs" role="tablist" aria-label="计划列表">
+      <button type="button" :class="{ active: activeStatus === null }" @click="changeStatus(null)">待处理</button>
       <button type="button" :class="{ active: activeStatus === 'ignored' }" @click="changeStatus('ignored')">已忽略</button>
-      <button type="button" :class="{ active: activeStatus === 'invalidated' }" @click="changeStatus('invalidated')">已失效</button>
     </div>
 
-    <!-- 执行能力未开启但有可执行计划时给出引导,而不是让按钮静默消失 -->
     <p v-if="!executionSupported && executableItems.length" class="organization-execution-guidance" role="note">
       <AlertTriangle :size="16" />
       <span>整理执行能力未开启（需要 115 写契约验证），当前只能确认本地计划，不会执行远端移动。可前往设置查看。</span>
       <button class="text-button" type="button" @click="emit('open-settings', 'organization')">前往设置</button>
     </p>
 
-    <div v-if="loading && !items.length" class="organization-empty"><LoaderCircle class="spin" :size="22" /><span>正在加载计划</span></div>
-    <div v-else-if="error && !items.length" class="organization-empty" role="alert"><Ban :size="22" /><strong>计划加载失败</strong><span>请重试，当前没有可展示的计划。</span></div>
-    <div v-else-if="!items.length" class="organization-empty"><Eye :size="22" /><strong>暂无计划</strong><span>当前状态没有可展示的本地计划。</span></div>
+    <div v-if="loading && !items.length" class="organization-empty"><LoaderCircle class="spin" :size="22" /><span>正在加载</span></div>
+    <div v-else-if="error && !items.length" class="organization-empty" role="alert"><Ban :size="22" /><strong>加载失败</strong><span>请重试。</span></div>
+    <div v-else-if="!items.length" class="organization-empty"><Eye :size="22" /><strong>暂无待处理</strong><span>源目录没有新的影片。</span></div>
     <div v-else class="organization-layout">
       <div class="organization-list" aria-label="计划列表">
         <p v-if="loading" class="organization-list-loading" role="status"><LoaderCircle class="spin" :size="16" />正在加载下一页</p>
-        <button v-if="executionSupported && isNeedsReviewView" class="primary-button organization-batch-action" type="button" :disabled="loading || busy" @click="requestBatchExecution"><ListChecks :size="16" />确认并整理当前页（{{ executableItems.length }}）</button>
+        <button v-if="executionSupported && isNeedsReviewView && executableItems.length" class="primary-button organization-batch-action" type="button" :disabled="loading || busy" @click="requestBatchExecution"><ListChecks :size="16" />整理全部（{{ executableItems.length }}）</button>
         <button v-for="plan in items" :key="plan.plan_id" type="button" class="organization-plan-row" :class="{ active: selected?.plan_id === plan.plan_id }" @click="selectPlan(plan)">
-          <span class="organization-plan-row-main"><strong>{{ planLabel(plan) }}</strong><small>{{ organizationPlanStatusLabel(plan.status) }}</small><span class="organization-plan-row-files"><span class="organization-plan-row-files-name">{{ plan.source_names?.length ? safeLocalizedCopy(plan.source_names[0], "") : "（无待处理文件）" }}</span><span v-if="plan.source_names && plan.source_names.length > 1" class="organization-plan-row-files-more">+{{ plan.source_names.length - 1 }}</span></span></span>
-          <span class="organization-plan-row-meta"><span>版本 {{ plan.revision }}</span><ChevronRight :size="16" /></span>
+          <span class="organization-plan-row-main">
+            <span class="organization-plan-row-files-name">{{ plan.source_names?.length ? safeLocalizedCopy(plan.source_names[0], "") : "（无文件）" }}</span>
+            <span class="organization-plan-row-sub">
+              <span class="organization-plan-badge" :class="planBadgeClass(plan)">{{ planBadgeLabel(plan) }}</span>
+              <small v-if="plan.source_names && plan.source_names.length > 1">{{ plan.source_names.length }} 个文件</small>
+            </span>
+          </span>
+          <ChevronRight :size="16" />
         </button>
-        <button v-if="nextCursor !== null" class="secondary-button organization-more" type="button" :disabled="loading || busy" @click="loadPlans(nextCursor!)">加载下一页</button>
+        <button v-if="nextCursor !== null" class="secondary-button organization-more" type="button" :disabled="loading || busy" @click="loadPlans(nextCursor!)">加载更多</button>
       </div>
 
       <article v-if="selected" class="organization-preview">
-        <div class="organization-preview-heading"><div><p class="eyebrow">整理计划预览</p><h2>{{ planLabel(selected) }}</h2></div><span class="organization-status">{{ organizationPlanStatusLabel(selected.status) }}</span></div>
-        <dl class="organization-facts">
-          <div><dt>计划状态</dt><dd>当前计划已选中</dd></div>
-          <div><dt>版本</dt><dd>{{ selected.revision }}</dd></div>
-          <div><dt>来源条目</dt><dd>{{ selected.source_count }}</dd></div>
-          <div><dt>预览动作</dt><dd>{{ selected.action_count }}</dd></div>
-          <div><dt>可执行移动</dt><dd>{{ selected.executable_action_count }}</dd></div>
-          <div><dt>待复核动作</dt><dd>{{ selected.review_action_count }}</dd></div>
-          <div><dt>前置条件</dt><dd>{{ selected.precondition_count }}</dd></div>
-        </dl>
-        <section class="organization-file-list">
-          <strong>待处理文件</strong>
-          <ul v-if="selectedFileNames.length">
+        <div class="organization-preview-heading">
+          <div><h2>{{ selected.source_names?.length ? safeLocalizedCopy(selected.source_names[0], "") : "整理计划" }}</h2><small v-if="selected.source_names && selected.source_names.length > 1">共 {{ selected.source_names.length }} 个文件</small></div>
+        </div>
+
+        <section v-if="selected.executable_action_count" class="organization-file-group organization-file-group-ready">
+          <strong>可自动整理（{{ selected.executable_action_count }}）</strong>
+          <p class="organization-file-group-hint">将移动到归档目录并规范命名。</p>
+        </section>
+        <section v-if="selected.review_action_count || selected.candidates.length" class="organization-file-group organization-file-group-review">
+          <strong>待识别（{{ selected.review_action_count }}）</strong>
+          <p class="organization-file-group-hint">无法自动识别片名，请为每个文件选择影片。</p>
+          <ul class="organization-file-list">
             <li v-for="(name, index) in selectedFileNames" :key="index" :title="safeLocalizedCopy(name, '（名称未提供）')">{{ safeLocalizedCopy(name, "（名称未提供）") }}</li>
           </ul>
-          <p v-else class="organization-file-list-empty">暂无文件名单（来源条目 {{ selected.source_count }} 项）</p>
-        </section>
-        <details class="organization-diagnostics"><summary>查看诊断标识</summary><small>计划标识：{{ diagnosticReference(selected.plan_id) }}</small><small>计划摘要：{{ diagnosticReference(selected.plan_hash) }}</small></details>
-        <section v-if="!selected.can_execute" class="organization-execution-blockers" aria-live="polite">
-          <strong>当前不能执行</strong>
-          <ul><li v-for="blocker in selectedExecutionBlockers" :key="`${blocker.kind}-${blocker.code}`"><span>{{ blocker.message_zh }}</span><small>下一步：{{ blocker.next_step_zh }}</small></li></ul>
-        </section>
-        <div v-if="selected.status === 'needs_review' && selected.candidates.length" class="organization-candidate-list">
-          <strong>请选择识别结果</strong>
           <button v-for="candidate in selected.candidates" :key="`${candidate.source_object_id}-${candidate.tmdb_id}`" type="button" class="organization-candidate" :disabled="busy" @click="selectCandidate(candidate)">
             <span>{{ candidate.title }}</span><small>{{ candidate.media_type === 'tv' ? '剧集' : '电影' }}<template v-if="candidate.release_year"> · {{ candidate.release_year }}</template></small>
           </button>
-        </div>
+        </section>
         <form v-if="selected.status === 'needs_review'" class="organization-candidate-search" @submit.prevent="searchCandidates">
-          <div class="organization-candidate-search-heading"><strong>没有合适结果？手动搜索 TMDB</strong><small>搜索结果只用于本地预览，选择后再确认整理</small></div>
-          <label v-if="selected.source_count > 1" for="organization-source-index">来源条目
-            <select id="organization-source-index" v-model.number="searchSourceIndex" :disabled="busy">
-              <option v-for="index in selected.source_count" :key="index - 1" :value="index - 1">来源条目 {{ index }}</option>
-            </select>
-          </label>
-          <div class="organization-candidate-search-controls"><input id="organization-candidate-query" v-model="searchQuery" type="search" maxlength="200" placeholder="输入片名或年份" autocomplete="off" /><button class="secondary-button" type="submit" :disabled="busy || !searchQuery.trim()"><LoaderCircle v-if="busy" class="spin" :size="15" /><Search v-else :size="15" />搜索候选</button></div>
+          <div class="organization-candidate-search-controls"><input id="organization-candidate-query" v-model="searchQuery" type="search" maxlength="200" placeholder="搜索片名…" autocomplete="off" /><button class="secondary-button" type="submit" :disabled="busy || !searchQuery.trim()"><LoaderCircle v-if="busy" class="spin" :size="15" /><Search v-else :size="15" />搜索</button></div>
         </form>
         <p v-if="candidateSearchGuidance" class="organization-candidate-search-guidance" role="alert">
           <AlertTriangle :size="16" />
-          <span>候选搜索需要 TMDB API Key，请前往「设置 → 连接配置」检查 TMDB API Key 配置。</span>
-          <button class="text-button" type="button" @click="emit('open-settings', 'credentials')">前往连接配置</button>
+          <span>候选搜索需要 TMDB API Key，请前往「设置 → 连接配置」检查。</span>
+          <button class="text-button" type="button" @click="emit('open-settings', 'credentials')">前往设置</button>
         </p>
-        <p class="organization-safe-note">预览只显示本地摘要。</p>
+
         <div v-if="operation" class="organization-operation-status" :class="{ failed: operation.status === 'failed', uncertain: operation.status === 'uncertain' }">
           <strong>整理操作：{{ organizationOperationStatusLabel(operation.status, executionSupported) }}</strong>
           <span v-if="operation.status === 'planned' && !executionSupported">当前没有可用整理 worker，本次操作尚未执行；恢复执行能力后请重新确认。</span>
           <span v-if="operation.status === 'failed'">{{ operationFailureMessage(operation.error_code) }}</span>
           <span v-else-if="operation.status === 'uncertain'">{{ operationFailureMessage(operation.error_code) }}</span>
-          <span v-else-if="operation.status === 'organizing'">后台正在执行，页面刷新后仍会保留当前状态。</span>
-          <details v-if="operation.error_code" class="diagnostic-details"><summary>诊断信息</summary><small>错误码：{{ diagnosticCode(operation.error_code) }}</small><small>操作标识：{{ diagnosticReference(operation.operation_id) }}</small></details>
+          <span v-else-if="operation.status === 'organizing'">后台正在执行。</span>
         </div>
+
         <div v-if="selectedCanEdit || (selected.status === 'planned' && executionSupported)" class="organization-actions">
-          <button v-if="selectedIsReviewable && executionSupported && selectedCanExecute" class="primary-button" type="button" :disabled="busy || operationActive" @click="requestExecution(selected)"><Play :size="16" />确认并开始整理</button>
-          <button v-else-if="selectedIsReviewable && selectedCanExecute" class="primary-button" type="button" :disabled="busy" @click="confirmPlan"><Check :size="16" />确认本地计划</button>
-          <button v-if="selected.status === 'planned' && executionSupported && selectedCanExecute" class="primary-button" type="button" :disabled="busy || operationActive" @click="requestExecution(selected)"><Play :size="16" />立即整理</button>
-          <button class="secondary-button" type="button" :disabled="busy" @click="ignorePlan"><Ban :size="16" />忽略</button>
+          <button v-if="selectedCanExecute && executionSupported" class="primary-button" type="button" :disabled="busy || operationActive" @click="requestExecution(selected)"><Play :size="16" />开始整理</button>
+          <button v-else-if="selectedCanExecute" class="primary-button" type="button" :disabled="busy" @click="confirmPlan"><Check :size="16" />确认计划</button>
         </div>
-        <form v-if="selectedCanEdit" class="organization-alias" @submit.prevent="saveAlias">
-          <label for="organization-alias-input"><Tag :size="16" />本地别名</label>
-          <div><input id="organization-alias-input" name="alias" v-model="aliasInput" maxlength="64" autocomplete="off" placeholder="仅用于本地标记" /><button class="secondary-button" type="submit" :disabled="busy || !aliasInput.trim()">保存</button></div>
-        </form>
+        <details class="organization-diagnostics">
+          <summary>更多操作</summary>
+          <button class="text-button" type="button" :disabled="busy" @click="ignorePlan"><Ban :size="14" />忽略这批文件</button>
+          <small>版本 {{ selected.revision }} · 计划 {{ diagnosticReference(selected.plan_id) }}</small>
+        </details>
       </article>
     </div>
     <ConfirmDialog :open="executionDialogOpen" :title="executionDialogTitle" :summary="executionDialogSummary" :details="executionDialogDetails" :confirm-label="executionDialogConfirmLabel" :require-acknowledgment="false" :busy="busy" @cancel="closeExecutionDialog" @confirm="confirmPendingExecution" />

@@ -175,7 +175,7 @@ describe("OrganizationView", () => {
     await openOrganizationTab(wrapper, "待处理");
 
     expect(wrapper.get("h2").text()).toContain("待处理计划");
-    for (const label of ["待确认", "已确认", "已忽略", "已失效"]) {
+    for (const label of ["待处理", "已忽略"]) {
       expect(wrapper.findAll("button").some((button) => button.text().includes(label))).toBe(true);
     }
   });

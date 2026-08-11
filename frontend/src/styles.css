@@ -1135,3 +1135,70 @@ html, body { overflow-x: hidden; }
     border-top: 1px solid var(--border);
   }
 }
+
+/* 整理工作台产品化样式 */
+.organization-plan-row-files-name {
+  display: block;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.organization-plan-row-sub {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+}
+.organization-plan-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.organization-plan-badge-ok {
+  color: var(--accent, #2f855a);
+  background: var(--accent-soft, rgba(47, 133, 90, 0.12));
+}
+.organization-plan-badge-warn {
+  color: var(--warning, #b7791f);
+  background: rgba(183, 121, 31, 0.12);
+}
+.organization-plan-badge-muted {
+  color: var(--text-3, #8a8a8a);
+  background: rgba(138, 138, 138, 0.12);
+}
+.organization-file-group {
+  margin: 14px 0;
+  padding: 12px;
+  border-radius: 10px;
+  background: var(--surface-2, rgba(127, 127, 127, 0.06));
+}
+.organization-file-group-ready strong,
+.organization-file-group-review strong {
+  display: block;
+  margin-bottom: 4px;
+}
+.organization-file-group-hint {
+  margin: 0 0 8px;
+  font-size: 13px;
+  opacity: 0.75;
+}
+.organization-file-list li {
+  padding: 4px 0;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.organization-diagnostics {
+  margin-top: 12px;
+  font-size: 12px;
+  opacity: 0.7;
+}
+.organization-diagnostics button {
+  display: block;
+  margin: 6px 0;
+}
