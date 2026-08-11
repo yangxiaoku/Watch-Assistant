@@ -134,10 +134,13 @@ def _native_library_path(environment: Mapping[str, str] | None = None) -> str | 
     if not base_executable.is_absolute():
         base_executable = Path.cwd() / base_executable
     runtime_root = (base_executable.parent / "../..").resolve()
+    # 打包运行时的内置原生库必须优先于系统 Homebrew 库:内置包自带特定版本
+    # OpenSSL,若被 Homebrew 遮蔽会链接到错误的系统版本。普通开发 venv 下
+    # 内置路径不存在,会自然回落到系统库,行为不变。
     candidates = (
+        runtime_root / "native/poppler/poppler/lib",
         Path("/opt/homebrew/opt/openssl@3/lib"),
         Path("/usr/local/opt/openssl@3/lib"),
-        runtime_root / "native/poppler/poppler/lib",
     )
     for candidate in candidates:
         if (candidate / "libssl.3.dylib").is_file() and (
