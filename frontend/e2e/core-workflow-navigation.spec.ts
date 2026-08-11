@@ -10,9 +10,26 @@ async function installCoreRoutes(page: import("@playwright/test").Page) {
 
 test("keeps core workflow destinations visible and inside the viewport", async ({ page }, testInfo) => {
   await installCoreRoutes(page);
+  const isMobile = testInfo.project.name.startsWith("mobile");
+  const sidebarNav = () => page.getByRole("navigation", { name: "主导航" });
+  const ensureNav = async (open: boolean) => {
+    if (!isMobile) return;
+    const sidebar = page.locator(".app-sidebar");
+    const isOpen = ((await sidebar.getAttribute("class")) ?? "").includes("mobile-open");
+    if (isOpen === open) return;
+    await page.getByRole("button", { name: "菜单", exact: true }).click();
+    if (open) {
+      await expect(sidebar).toHaveClass(/mobile-open/);
+      await expect(sidebarNav().getByRole("button", { name: "任务中心", exact: true })).toBeInViewport();
+    } else {
+      await expect(sidebar).not.toHaveClass(/mobile-open/);
+    }
+  };
+
   await page.goto("/workflows");
   await expect(page.getByRole("heading", { name: "任务中心" })).toBeVisible();
 
+  await ensureNav(true);
   for (const name of ["推送任务", "任务中心", "通知", "设置"]) {
     const button = page.getByRole("button", { name, exact: true });
     await expect(button).toBeVisible();
@@ -23,6 +40,7 @@ test("keeps core workflow destinations visible and inside the viewport", async (
   }
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
 
+  await ensureNav(false); // 关闭抽屉以便与内容交互
   await page.getByRole("button", { name: "推送任务", exact: true }).click();
   await expect(page.getByRole("heading", { name: "推送任务" })).toBeVisible();
   await page.getByRole("button", { name: "任务中心", exact: true }).last().click();
@@ -31,8 +49,10 @@ test("keeps core workflow destinations visible and inside the viewport", async (
   await expect(page.getByRole("heading", { name: "推送任务" })).toBeVisible();
   await page.getByRole("button", { name: "关闭推送任务", exact: true }).click();
 
+  await ensureNav(true);
   await page.getByRole("button", { name: "通知", exact: true }).click();
   await expect(page.getByRole("heading", { name: /通知中心/ })).toBeVisible();
+  await ensureNav(true);
   await page.getByRole("button", { name: "设置", exact: true }).click();
   await expect(page.getByRole("heading", { name: "设置" })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);

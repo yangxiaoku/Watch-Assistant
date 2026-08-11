@@ -639,6 +639,28 @@ function navigateFromTaskDrawer(view: "library" | "settings" | "workflows") {
   void selectView(view);
 }
 
+/** 侧栏导航：进入搜索视图或委托 selectView，并在移动端关闭抽屉。 */
+function handleSidebarNavigate(view: BrowseView) {
+  mobileNavOpen.value = false;
+  if (view === "search") {
+    invalidateDetailRequest();
+    result.value = null;
+    error.value = "";
+    previousView.value = "search";
+    activeView.value = "search";
+    committedCatalogRoute.value = null;
+    catalogReturnRoute = null;
+    catalogReturnScrollY = null;
+    catalogMovies.value = [];
+    catalogHeading.value = "";
+    catalogLoading.value = false;
+    catalogError.value = "";
+    navigateToCatalog({ view: "search", query: "", page: 1, sort: "popular" });
+    return;
+  }
+  void selectView(view);
+}
+
 function openTaskDrawer(): void {
   drawerOpen.value = true;
 }
@@ -1581,7 +1603,7 @@ onBeforeUnmount(() => {
   <main class="app-shell">
     <AppShell>
       <template #sidebar>
-        <AppSidebar v-if="authenticated" :active-view="activeView" :organization-plan-enabled="organizationPlanEnabled" :mobile-open="mobileNavOpen" @navigate="selectView">
+        <AppSidebar v-if="authenticated" :active-view="activeView" :organization-plan-enabled="organizationPlanEnabled" :mobile-open="mobileNavOpen" @navigate="handleSidebarNavigate">
           <template #footer>
             <span class="sidebar-status"><span class="status-dot" :class="{ offline: !isOnline }" />{{ isOnline ? '局域网在线' : '离线' }}</span>
           </template>

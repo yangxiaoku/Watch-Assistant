@@ -14,9 +14,9 @@ const emit = defineEmits<{
 </script>
 
 <template>
-  <aside class="app-sidebar" :class="{ 'mobile-open': mobileOpen }" aria-label="主导航">
+  <nav class="app-sidebar" :class="{ 'mobile-open': mobileOpen }" aria-label="主导航">
     <a class="sidebar-brand" href="/"><span class="brand">WATCH<span>/</span>ASSISTANT</span></a>
-    <nav class="sidebar-nav">
+    <div class="sidebar-nav">
       <div v-for="group in NAV_GROUPS" :key="group.label" class="sidebar-group" :aria-label="group.label">
         <p class="sidebar-group-label">{{ group.label }}</p>
         <template v-for="item in group.items" :key="item.view">
@@ -33,7 +33,7 @@ const emit = defineEmits<{
           </button>
         </template>
       </div>
-    </nav>
+    </div>
     <div class="sidebar-footer"><slot name="footer" /></div>
-  </aside>
+  </nav>
 </template>

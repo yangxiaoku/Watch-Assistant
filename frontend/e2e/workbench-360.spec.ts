@@ -87,7 +87,7 @@ test("keeps task and workflow workbench usable at 360px", async ({ page }) => {
       return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
     });
     const overflow = visible.filter((element) => {
-      if (element.closest(".primary-nav")) return false;
+      if (element.closest(".app-sidebar")) return false;
       const rect = element.getBoundingClientRect();
       return rect.left < -1 || rect.right > window.innerWidth + 1;
     }).slice(0, 5).map((element) => element.className || element.tagName);
@@ -155,6 +155,9 @@ test("keeps the 115 settings heading readable at 360px", async ({ page }, testIn
   } }));
 
   await page.goto("/workbench");
+  await page.getByRole("button", { name: "菜单", exact: true }).click();
+  await expect(page.locator(".app-sidebar")).toHaveClass(/mobile-open/);
+  await expect(page.getByRole("navigation", { name: "主导航" }).getByRole("button", { name: "设置", exact: true })).toBeInViewport();
   await page.getByRole("button", { name: "设置", exact: true }).click();
   await expect(page.getByRole("heading", { name: "设置" })).toBeVisible();
   await page.locator(".settings-mobile-select select").selectOption("organization");
