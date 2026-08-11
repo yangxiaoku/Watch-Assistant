@@ -14,6 +14,10 @@ from pathlib import PurePosixPath
 from typing import Any
 from urllib.parse import parse_qsl, quote, urlsplit
 
+# 检查批次的 category/tag 固定前缀:清理失败遗留的孤儿 torrent 仍带此前缀,
+# 可据此识别为"本适配器的检查残留",避免误判 ownership_conflict 永久失败。
+_INSPECTION_MARKER_PREFIX = "wa-inspect-"
+
 import httpx
 
 # Public HTTP trackers that are commonly reachable even when UDP/DHT egress is
@@ -111,7 +115,11 @@ class QbittorrentClient:
         self._poll_interval = poll_interval
         self._request_timeout = request_timeout
         self._owns_client = client is None
-        self._client = client or httpx.AsyncClient(base_url=base_url.rstrip("/"))
+        # 本机服务且登录 POST 携带用户名/密码:禁用环境代理,防止部署环境的
+        # HTTP(S)_PROXY 截获凭据或代理故障时误伤直连 localhost。
+        self._client = client or httpx.AsyncClient(
+            base_url=base_url.rstrip("/"), trust_env=False
+        )
         self._logged_in = False
         self._login_lock = asyncio.Lock()
         self._semaphore = asyncio.Semaphore(concurrency)
@@ -276,7 +284,11 @@ class QbittorrentClient:
                         torrents = await self._torrent_info(hashes=item.infohash)
                         torrent = _matching_torrent(torrents, item.infohash)
                         if torrent is not None:
-                            if not _has_tag(torrent, batch_marker):
+                            if not _has_inspection_marker(torrent):
+                                # 无 wa-inspect-* 标记:用户自己的 torrent,不得接管。
+                                # 带旧批次标记的孤儿(清理失败遗留)仍视为本适配器
+                                # 的残留,继续检查并在结束时清理,避免 ownership_conflict
+                                # 永久卡死该 infohash。
                                 result = QbittorrentInspectionResult(
                                     infohash=item.infohash,
                                     status=InspectionStatus.FAILED,
@@ -594,9 +606,11 @@ class QbittorrentClient:
         return payload
 
     async def _cleanup(self, infohash: str, marker: str) -> None:
-        torrents = await self._torrent_info(tag=marker)
+        # 按 infohash 查询而非按当前批次 marker 过滤:旧批次清理失败遗留的
+        # 孤儿 torrent 带的是旧 marker,按当前 marker 查会找不到、永不清理。
+        torrents = await self._torrent_info(hashes=infohash)
         torrent = _matching_torrent(torrents, infohash)
-        if torrent is None or not _has_tag(torrent, marker):
+        if torrent is None or not _has_inspection_marker(torrent):
             return
         try:
             response = await self._client.post(
@@ -717,6 +731,25 @@ def _has_tag(torrent: dict[str, Any], marker: str) -> bool:
     return isinstance(tags, str) and marker in {
         tag.strip() for tag in tags.split(",") if tag.strip()
     }
+
+
+def _has_inspection_marker(torrent: dict[str, Any]) -> bool:
+    """torrent 是否带 wa-inspect-* 标记(本适配器的检查残留)。
+
+    包含旧批次遗留的孤儿(清理失败未删),用于把它们当"我们的 torrent"继续
+    检查并在结束时清理,而不是误判 ownership_conflict 永久失败。
+    """
+    category = torrent.get("category")
+    if isinstance(category, str) and category.startswith(_INSPECTION_MARKER_PREFIX):
+        return True
+    tags = torrent.get("tags")
+    if isinstance(tags, str):
+        return any(
+            tag.strip().startswith(_INSPECTION_MARKER_PREFIX)
+            for tag in tags.split(",")
+            if tag.strip()
+        )
+    return False
 
 
 def _has_metadata(torrent: dict[str, Any]) -> bool:
