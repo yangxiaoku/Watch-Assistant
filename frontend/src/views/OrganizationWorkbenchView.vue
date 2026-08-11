@@ -614,11 +614,14 @@ onBeforeUnmount(() => {
         <button v-if="executionSupported && isNeedsReviewView && executableItems.length" class="primary-button organization-batch-action" type="button" :disabled="loading || busy" @click="requestBatchExecution"><ListChecks :size="16" />整理全部（{{ executableItems.length }}）</button>
         <button v-for="plan in items" :key="plan.plan_id" type="button" class="organization-plan-row" :class="{ active: selected?.plan_id === plan.plan_id }" @click="selectPlan(plan)">
           <span class="organization-plan-row-main">
-            <span class="organization-plan-row-files-name">{{ plan.source_names?.length ? safeLocalizedCopy(plan.source_names[0], "") : "（无文件）" }}</span>
             <span class="organization-plan-row-sub">
               <span class="organization-plan-badge" :class="planBadgeClass(plan)">{{ planBadgeLabel(plan) }}</span>
               <small v-if="plan.source_names && plan.source_names.length > 1">{{ plan.source_names.length }} 个文件</small>
             </span>
+            <span v-if="plan.source_names && plan.source_names.length" class="organization-plan-row-files">
+              <span v-for="(name, index) in plan.source_names" :key="index" class="organization-plan-row-files-name" :title="safeLocalizedCopy(name, '')">{{ safeLocalizedCopy(name, "（无文件）") }}</span>
+            </span>
+            <span v-else class="organization-plan-row-files-name">（无文件）</span>
           </span>
           <ChevronRight :size="16" />
         </button>
