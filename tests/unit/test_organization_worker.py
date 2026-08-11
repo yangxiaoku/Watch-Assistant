@@ -122,6 +122,7 @@ def _worker(
     write_enabled,
     client_factory=None,
     directory_provisioner=None,
+    settings_service=None,
 ):
     return OrganizationWorker(
         session_factory=object(),
@@ -133,6 +134,7 @@ def _worker(
         organization_contract=_contract(),
         client_factory=client_factory,
         directory_provisioner=directory_provisioner,
+        settings_service=settings_service,
     )
 
 
@@ -185,7 +187,7 @@ async def test_confirmed_runtime_forwards_all_live_gate_values(monkeypatch):
 
     class _Executor:
         def __init__(self, _operations, _session_factory, transport, **_kwargs):
-            executor_calls.append(transport)
+            executor_calls.append((transport, _kwargs))
 
         async def execute(self, *_args, **_kwargs):
             return None
@@ -218,6 +220,10 @@ async def test_confirmed_runtime_forwards_all_live_gate_values(monkeypatch):
     assert transport_calls[0]["target_root_id"] == "9000"
     assert transport_calls[0]["intents"][0].target_directory_path == "library/movie"
     assert len(executor_calls) == 1
+    # 无 settings_service 时回退 operation_delay=0.25,
+    # 写间隔 = max(3.0, 0.25 * 2) = 3.0。
+    assert executor_calls[0][1]["min_call_interval"] == 0.25
+    assert executor_calls[0][1]["write_interval_seconds"] == 3.0
     assert client.closed is True
     assert operations.scope_revisions == [1]
     assert operations.step_revisions == [1]
@@ -269,6 +275,47 @@ async def test_member_without_target_directory_path_defaults_to_none(monkeypatch
     assert len(transport_calls) == 1
     assert transport_calls[0]["target_root_id"] == "9000"
     assert transport_calls[0]["intents"][0].target_directory_path is None
+
+
+class _SettingsService:
+    def __init__(self, operation_delay_seconds):
+        self._operation_delay_seconds = operation_delay_seconds
+
+    async def get_organization(self):
+        return SimpleNamespace(operation_delay_seconds=self._operation_delay_seconds)
+
+
+@pytest.mark.asyncio
+async def test_write_interval_is_derived_from_operation_delay_settings(monkeypatch):
+    operations = _Operations(scope=frozenset({"7000", "9000"}), steps=_steps())
+    client = _Client()
+    executor_kwargs = []
+
+    class _Executor:
+        def __init__(self, _operations, _session_factory, transport, **kwargs):
+            executor_kwargs.append(kwargs)
+
+        async def execute(self, *_args, **_kwargs):
+            return None
+
+    monkeypatch.setattr(
+        "watch_assistant.services.organization_worker.create_live_p115_organization_transport",
+        lambda **kwargs: object(),
+    )
+    monkeypatch.setattr(
+        "watch_assistant.services.organization_worker.OrganizationExecutor",
+        _Executor,
+    )
+    worker = _worker(
+        operations,
+        write_enabled=True,
+        client_factory=lambda _credential: client,
+        settings_service=_SettingsService(2.0),
+    )
+
+    assert await worker.run_once() is True
+    assert executor_kwargs[0]["min_call_interval"] == 2.0
+    assert executor_kwargs[0]["write_interval_seconds"] == 4.0
 
 
 @pytest.mark.asyncio

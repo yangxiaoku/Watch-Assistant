@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Collection, Mapping
+import asyncio
+from collections.abc import Awaitable, Callable, Collection, Mapping
 from pathlib import PurePosixPath
 
 from watch_assistant.adapters.p115_c03_live_transport import (
@@ -45,6 +46,8 @@ class OrganizationDirectoryProvisioner:
         ownership_service: ManagedDirectoryOwnershipService | None = None,
         event_logger: object | None = None,
         timeout_seconds: float = 30.0,
+        interval_seconds: float = 1.5,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         self._client = client
         self._transport = P115C03LiveTransport(
@@ -52,6 +55,8 @@ class OrganizationDirectoryProvisioner:
             call_executor=call_executor,
         )
         self._timeout_seconds = timeout_seconds
+        self._interval_seconds = interval_seconds
+        self._sleep = sleep
         self._organization_contract = organization_contract or P115OrganizationContract()
         self._ownership_service = ownership_service
         self._event_logger = event_logger
@@ -105,6 +110,7 @@ class OrganizationDirectoryProvisioner:
             key=lambda value: (value.count("/"), value),
         )
         created_count = 0
+        first_mkdir = True
         for path in normalized_paths:
             parts = path.split("/")
             parent_path = ""
@@ -118,6 +124,11 @@ class OrganizationDirectoryProvisioner:
                     raise OrganizationDirectoryProvisionError(
                         "target_directory_parent_missing"
                     )
+                if first_mkdir:
+                    first_mkdir = False
+                else:
+                    # 连续 mkdir 之间留出间隔,缓解 115 高频写操作风控。
+                    await self._sleep(self._interval_seconds)
                 receipt = await self._transport.execute(
                     prepare_mkdir(parent_id, part),
                     timeout_seconds=self._timeout_seconds,

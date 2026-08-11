@@ -26,6 +26,7 @@ from watch_assistant.models import (
 from watch_assistant.services.organization_executor import (
     OrganizationExecutionStatus,
     OrganizationExecutor,
+    OrganizationExecutorError,
     OrganizationTransportOperation,
     OrganizationTransportResult,
     OrganizationTransportStatus,
@@ -155,10 +156,16 @@ class FakeOrganizationTransport:
         )
 
 
+async def _noop_sleep(_delay: float) -> None:
+    return None
+
+
 async def _claimed_executor(database, transport, **kwargs):
     operation_service = OrganizationOperationService(database.session_factory)
     operation = await _operation(database)
     lease = await operation_service.claim(operation.operation_id, expected_revision=1)
+    # 默认注入 no-op sleep:间隔逻辑由专门的注入测试覆盖,避免测试变慢。
+    kwargs.setdefault("sleep", _noop_sleep)
     executor = OrganizationExecutor(
         operation_service,
         database.session_factory,
@@ -264,7 +271,7 @@ async def test_candidate_replacement_recycles_existing_target_before_write(tmp_p
         states={"100": ("7000", "movie.mkv"), "200": ("8000", "movie.mkv")}
     )
     result = await OrganizationExecutor(
-        operation_service, database.session_factory, transport
+        operation_service, database.session_factory, transport, sleep=_noop_sleep
     ).execute(
         operation.operation_id,
         expected_revision=lease.revision,
@@ -315,7 +322,9 @@ async def test_uncertain_recycle_with_missing_replacement_stays_uncertain(
             )
         },
     )
-    executor = OrganizationExecutor(operation_service, database.session_factory, transport)
+    executor = OrganizationExecutor(
+        operation_service, database.session_factory, transport, sleep=_noop_sleep
+    )
     initial = await executor.execute(
         operation.operation_id,
         expected_revision=lease.revision,
@@ -362,7 +371,7 @@ async def test_target_reconciliation_confirms_missing_replacement_in_frozen_scop
         },
     )
     executor = OrganizationExecutor(
-        operation_service, database.session_factory, transport
+        operation_service, database.session_factory, transport, sleep=_noop_sleep
     )
 
     initial = await executor.execute(
@@ -428,7 +437,7 @@ async def test_reconciliation_keeps_non_removed_replacement_observations_uncerta
         },
     )
     executor = OrganizationExecutor(
-        operation_service, database.session_factory, transport
+        operation_service, database.session_factory, transport, sleep=_noop_sleep
     )
 
     await executor.execute(
@@ -521,7 +530,7 @@ async def test_mixed_steps_complete_when_replacement_leaves_frozen_scope(
         },
     )
     executor = OrganizationExecutor(
-        operation_service, database.session_factory, transport
+        operation_service, database.session_factory, transport, sleep=_noop_sleep
     )
 
     initial = await executor.execute(
@@ -933,6 +942,55 @@ async def test_call_rechecks_lease_after_rate_limit_sleep(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_write_calls_use_write_interval_and_reads_use_min_interval(tmp_path: Path):
+    database = await _database(tmp_path)
+    transport = FakeOrganizationTransport()
+    sleep_delays = []
+
+    async def recording_sleep(delay: float) -> None:
+        sleep_delays.append(delay)
+
+    executor, operation, lease = await _claimed_executor(
+        database,
+        transport,
+        min_call_interval=0.5,
+        write_interval_seconds=4.0,
+        sleep=recording_sleep,
+    )
+
+    result = await executor.execute(
+        operation.operation_id,
+        expected_revision=lease.revision,
+        lease_token=lease.lease_token,
+    )
+
+    assert result.status is OrganizationExecutionStatus.ORGANIZED
+    # 调用序列:read_object → read_target → move → rename → read_object,
+    # 共 4 次间隔等待;读写之间的等待值分别为 min_call_interval 与 write_interval。
+    assert len(sleep_delays) == 4
+    assert sleep_delays[0] == pytest.approx(0.5, abs=0.02)
+    assert sleep_delays[1] == pytest.approx(4.0, abs=0.02)
+    assert sleep_delays[2] == pytest.approx(4.0, abs=0.02)
+    assert sleep_delays[3] == pytest.approx(0.5, abs=0.02)
+    await database.engine.dispose()
+
+
+def test_write_interval_defaults_and_validation():
+    executor = OrganizationExecutor(object(), object(), object(), min_call_interval=2.0)
+    assert executor._write_interval == pytest.approx(6.0)
+    executor = OrganizationExecutor(object(), object(), object())
+    assert executor._write_interval == pytest.approx(3.0)
+    executor = OrganizationExecutor(
+        object(), object(), object(), write_interval_seconds=5.0
+    )
+    assert executor._write_interval == pytest.approx(5.0)
+    with pytest.raises(OrganizationExecutorError, match="invalid_execution_budget"):
+        OrganizationExecutor(object(), object(), object(), write_interval_seconds=-1)
+    with pytest.raises(OrganizationExecutorError, match="invalid_execution_budget"):
+        OrganizationExecutor(object(), object(), object(), write_interval_seconds=True)
+
+
+@pytest.mark.asyncio
 async def test_lease_loss_after_write_persists_uncertain(tmp_path: Path):
     database = await _database(tmp_path)
     transport = FakeOrganizationTransport()
@@ -1040,7 +1098,7 @@ async def test_companion_partial_failure_does_not_continue_group(tmp_path: Path)
         },
     )
     result = await OrganizationExecutor(
-        operation_service, database.session_factory, transport
+        operation_service, database.session_factory, transport, sleep=_noop_sleep
     ).execute(
         operation.operation_id,
         expected_revision=lease.revision,
@@ -1097,7 +1155,7 @@ async def test_companion_partial_replay_is_uncertain_without_writes(tmp_path: Pa
         states={"100": ("8000", "movie.mkv"), "102": ("7000", "movie.srt")}
     )
     result = await OrganizationExecutor(
-        operation_service, database.session_factory, transport
+        operation_service, database.session_factory, transport, sleep=_noop_sleep
     ).execute(
         operation.operation_id,
         expected_revision=lease.revision,
