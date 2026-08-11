@@ -159,7 +159,7 @@ async def _database(tmp_path: Path, *, target_exists: bool):
                     object_id="target-preview",
                     parent_id="root-preview",
                     name="The Office",
-                    path="电影/美国/The Office (2005) {tmdb-42}",
+                    path="电影/欧美电影/The Office (2005) {tmdb-42}",
                     is_directory=True,
                 )
             )
@@ -323,7 +323,7 @@ async def test_preview_persists_full_target_directory_path(tmp_path: Path):
         plan = await session.scalar(select(OrganizationPlan))
     assert plan is not None
     action = json.loads(plan.actions_json)[0]
-    expected = "电影/美国/The Office (2005) {tmdb-42}"
+    expected = "电影/欧美电影/The Office (2005) {tmdb-42}"
     assert action["target_directory_path"] == expected
     assert action["execution"]["members"][0]["target_directory_path"] == expected
     assert await plan_service.plan_target_directory_paths(plan.id) == (expected,)
@@ -342,7 +342,7 @@ async def test_preview_preserves_original_name_when_rename_is_disabled(tmp_path:
         scan_run_id="scan-preview",
         target_directory_id="target-root",
         target_directories={
-            "电影/美国/The Office (2005) {tmdb-42}": "target-preview"
+            "电影/欧美电影/The Office (2005) {tmdb-42}": "target-preview"
         },
         video_extensions=["mkv"],
         rename_enabled=False,
@@ -353,7 +353,7 @@ async def test_preview_preserves_original_name_when_rename_is_disabled(tmp_path:
         plan = await session.scalar(select(OrganizationPlan))
     assert plan is not None
     action = json.loads(plan.actions_json)[0]
-    assert action["target"] == "电影/美国/The Office (2005) {tmdb-42}/The.Office.2005.1080p.mkv"
+    assert action["target"] == "电影/欧美电影/The Office (2005) {tmdb-42}/The.Office.2005.1080p.mkv"
     assert json.loads(plan.preconditions_json)["target_directory_id"] == "target-root"
     await database.engine.dispose()
 

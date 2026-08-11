@@ -116,7 +116,7 @@ def test_default_library_root_is_empty():
     )
 
     assert NamingRuleConfig().library_root == ""
-    assert plan.target_path.startswith("电影/美国/")
+    assert plan.target_path.startswith("电影/欧美电影/")
     assert not plan.target_path.startswith("library/")
 
 
@@ -151,22 +151,22 @@ def test_optional_categories_and_year_grouping_are_applied_only_when_enabled():
         rules=NamingRuleConfig(include_concert_category=True, year_grouping_enabled=True),
     )
     assert concert.classification is ClassificationKind.CONCERT
-    assert "演唱会/美国/2024/" in concert.target_path
+    assert "演唱会/欧美演唱会/2024/" in concert.target_path
 
 
 @pytest.mark.parametrize(
     ("country", "expected"),
     (
-        ("CN", "中国"),
-        ("HK", "香港"),
-        ("MO", "澳门"),
-        ("TW", "台湾"),
-        ("US", "美国"),
-        ("JP", "日本"),
-        ("KR", "韩国"),
-        ("GB", "英国"),
-        ("UK", "英国"),
-        ("IN", "印度"),
+        ("CN", "华语"),
+        ("HK", "华语"),
+        ("MO", "华语"),
+        ("TW", "华语"),
+        ("US", "欧美"),
+        ("JP", "日韩"),
+        ("KR", "日韩"),
+        ("GB", "欧美"),
+        ("UK", "欧美"),
+        ("IN", "其他"),
     ),
 )
 def test_region_mapping(country, expected):
@@ -190,7 +190,7 @@ def test_multiple_countries_use_stable_first_valid_country():
     )
 
     assert first == reversed_countries
-    assert first.region == "中国"
+    assert first.region == "华语"
 
 
 def test_unmapped_country_falls_back_to_other():
@@ -201,7 +201,7 @@ def test_unmapped_country_falls_back_to_other():
 
     assert plan.status is ClassificationStatus.PLANNED
     assert plan.region == "其他"
-    assert "/其他/" in plan.target_path
+    assert "/其他电影/" in plan.target_path
 
 
 def test_missing_or_unknown_country_requires_review_and_manual_region_wins():
@@ -223,7 +223,7 @@ def test_missing_or_unknown_country_requires_review_and_manual_region_wins():
         override=ClassificationOverride(region=RegionClass.DOMESTIC),
     )
     assert locked.status is ClassificationStatus.PLANNED
-    assert locked.region == "国产"
+    assert locked.region == "华语"
 
 
 def test_low_confidence_match_requires_review():
@@ -308,13 +308,13 @@ def test_movie_and_series_target_templates_keep_year_episode_range_and_technical
     )
 
     assert movie.status is ClassificationStatus.PLANNED
-    assert "电影/中国/电影 (2024) {tmdb-42}" in movie.target_path
+    assert "电影/华语电影/电影 (2024) {tmdb-42}" in movie.target_path
     assert "2160p" in movie.target_path
     assert "WEB-DL" in movie.target_path
     assert "HDR10+" in movie.target_path
     assert "Atmos" in movie.target_path
     assert series.status is ClassificationStatus.PLANNED
-    assert "剧集/日本/シリーズ (2024) {tmdb-43}/Season 01" in series.target_path
+    assert "剧集/日韩剧集/シリーズ (2024) {tmdb-43}/Season 1" in series.target_path
     assert "S01E02-E04" in series.target_path
     assert series.technical_tags == ("1080p", "BluRay", "H.265")
 
@@ -346,7 +346,7 @@ def test_custom_naming_templates_are_rendered_without_io():
     assert plan.status is ClassificationStatus.PLANNED
     assert (
         plan.target_path
-        == "电影/美国/Example Title [{tmdb-9}]/Example Title.mkv"
+        == "电影/欧美电影/Example Title [{tmdb-9}]/Example Title.mkv"
     )
 
 
@@ -430,7 +430,7 @@ def test_manual_lock_and_override_are_preserved():
 
     assert plan.status is ClassificationStatus.PLANNED
     assert plan.classification is ClassificationKind.ANIME
-    assert plan.region == "国产"
+    assert plan.region == "华语"
     assert "manual_lock" in plan.reasons
     assert "manual_classification" in plan.reasons
 

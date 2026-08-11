@@ -105,10 +105,25 @@ _COUNTRY_NAMES = {
     "UA": "乌克兰",
 }
 _REGION_CLASS_NAMES = {
-    RegionClass.DOMESTIC: "国产",
+    RegionClass.DOMESTIC: "华语",
     RegionClass.WESTERN: "欧美",
     RegionClass.JAPANESE_KOREAN: "日韩",
     RegionClass.OTHER: "其他",
+}
+
+# 区域判定用国家集合(与手动整理目录"欧美剧集/华语电影/日韩动画"风格一致)
+_REGION_COUNTRY_SETS: dict[RegionClass, frozenset[str]] = {
+    RegionClass.DOMESTIC: frozenset(
+        {"CN", "CHN", "HK", "HKG", "MO", "MAC", "TW", "TWN", "SG", "SGP"}
+    ),
+    RegionClass.WESTERN: frozenset(
+        {
+            "US", "USA", "GB", "UK", "FR", "DE", "IT", "ES", "PT", "IE", "IS",
+            "NL", "BE", "CH", "AT", "SE", "NO", "DK", "FI", "PL", "CZ", "GR",
+            "CA", "AU", "NZ", "MX", "BR", "AR", "CL", "RU", "UA", "LU", "TR",
+        }
+    ),
+    RegionClass.JAPANESE_KOREAN: frozenset({"JP", "JPN", "KR", "KOR"}),
 }
 _VIDEO_EXTENSIONS = frozenset(
     {"mkv", "mp4", "avi", "mov", "ts", "m2ts", "wmv", "flv", "webm"}
@@ -144,7 +159,7 @@ class NamingRuleConfig:
     preserve_technical_tags: bool = True
     movie_directory_template: str = "{title}{year_label} {tmdb_tag}"
     series_directory_template: str = "{title}{year_label} {tmdb_tag}"
-    season_directory_template: str = "Season {season:02d}"
+    season_directory_template: str = "Season {season}"
     movie_file_template: str = (
         "{title}{year_label} {tmdb_tag}{technical_tags}.{extension}"
     )
@@ -548,12 +563,11 @@ def _classify(
 def _region(
     countries: Sequence[str], override: ClassificationOverride | None
 ) -> tuple[str, str, str | None, list[str]]:
-    """Resolve the region directory as a Chinese country name.
+    """Resolve the region directory as a Chinese region-class name.
 
-    Takes the first mappable country in canonical (sorted, deduplicated)
-    order; unmapped or missing countries fall back to "其他". Manual
-    overrides keep the legacy RegionClass semantics and render as the
-    Chinese label of the region class.
+    The region layer groups countries into 华语/欧美/日韩/其他 (matching the
+    hand-organized layout 剧集/欧美剧集/...); the first canonical country
+    that classifies wins, unmapped or missing countries fall back to "其他".
     """
     if override is not None and override.region is not None:
         return (
@@ -563,21 +577,24 @@ def _region(
             ["manual_region"],
         )
     normalized = _canonical_countries(countries)
+    selected: str | None = None
     for country in normalized:
-        name = _COUNTRY_NAMES.get(country)
-        if name is not None:
-            return name, "tmdb_origin_country", country, []
-    if normalized and normalized[0] not in {"UNKNOWN", "XXX", "ZZ"}:
+        if country in {"UNKNOWN", "XXX", "ZZ"}:
+            continue
+        selected = country
+        for region, country_set in _REGION_COUNTRY_SETS.items():
+            if country in country_set:
+                return _REGION_CLASS_NAMES[region], "tmdb_origin_country", country, []
         return (
-            "其他",
+            _REGION_CLASS_NAMES[RegionClass.OTHER],
             "tmdb_origin_country",
-            normalized[0],
+            country,
             ["origin_country_other"],
         )
     return (
-        "其他",
+        _REGION_CLASS_NAMES[RegionClass.OTHER],
         "tmdb_origin_country",
-        normalized[0] if normalized else None,
+        selected,
         ["origin_country_unknown"],
     )
 
@@ -643,7 +660,11 @@ def _render_target(
     if not directory_name or not file_name:
         return None
     category = _CATEGORY_DIRS[classification]
-    region_part = region if config.region_enabled else None
+    # 国家层与类别联动命名:欧美剧集/华语电影/日韩动画...
+    # (与手动整理目录 剧集/欧美剧集/... 一致)
+    region_part = (
+        f"{region}{category}" if config.region_enabled else None
+    )
     segments = [
         config.library_root,
         category,
