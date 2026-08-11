@@ -595,8 +595,8 @@ def _required_scope(request: Request) -> str:
         return "organize:plan"
     if path.startswith("/api/v1/strm/play"):
         return "strm:read"
-    if path.startswith("/api/v1/strm-operations"):
-        return "strm:read"
+    if path.startswith(("/api/v1/strm-operations", "/api/v1/strm-cleanup-plans")):
+        return "strm:read" if method in {"GET", "HEAD"} else "strm:write"
     if path.startswith("/api/v1/empty-directory-cleanup-plans"):
         return "library:read" if method in {"GET", "HEAD"} else "organize:execute"
     if path.startswith("/api/v1/libraries/") and any(
@@ -605,6 +605,8 @@ def _required_scope(request: Request) -> str:
             "/strm-generation",
             "/strm-incremental",
             "/strm-cleanup",
+            "/strm-cleanup-plan",
+            "/strm-manifest",
             "/strm-operations",
         )
     ):
