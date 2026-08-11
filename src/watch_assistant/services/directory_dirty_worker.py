@@ -350,6 +350,15 @@ class DirectoryDirtyWorker:
             raise
         except (LibraryIndexError, StrmManifestError, StrmOperationError) as error:
             if dirty_lease_lost.is_set():
+                # 脏事件租约丢失:本 worker 不再持有该库的变更处理权,但已 claim
+                # 的 STRM 操作若不释放会残留 RUNNING 并持旧 lease_owner,阻塞该库
+                # 最长到 STRM_STALE。先终态化释放,再返回。
+                await self._fail_operation(
+                    operation,
+                    operation_lease_owner,
+                    error_code="dirty_lease_lost",
+                    durable_fence=terminal_fence,
+                )
                 return True
             await self._fail_operation(
                 operation,
@@ -371,6 +380,13 @@ class DirectoryDirtyWorker:
             )
         except Exception:  # noqa: BLE001 - details never cross the worker boundary
             if dirty_lease_lost.is_set():
+                # 同上:租约丢失时释放已 claim 的 STRM 操作,避免残留 RUNNING。
+                await self._fail_operation(
+                    operation,
+                    operation_lease_owner,
+                    error_code="dirty_lease_lost",
+                    durable_fence=terminal_fence,
+                )
                 return True
             await self._fail_operation(
                 operation,
