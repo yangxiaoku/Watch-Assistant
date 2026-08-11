@@ -57,7 +57,7 @@ SECRET_PICKCODE = "private-pickcode"
         (OrganizationPlanStatus.IGNORED, datetime.now(UTC) + timedelta(hours=1), True, True, False, "plan_status_ignored"),
         (OrganizationPlanStatus.PLANNED, datetime.now(UTC) + timedelta(hours=1), False, True, False, "plan_prerequisites_incomplete"),
         (OrganizationPlanStatus.PLANNED, datetime.now(UTC) + timedelta(hours=1), True, False, False, "source_snapshot_changed"),
-        (OrganizationPlanStatus.NEEDS_REVIEW, datetime.now(UTC) + timedelta(hours=1), True, True, False, "plan_needs_review"),
+        (OrganizationPlanStatus.NEEDS_REVIEW, datetime.now(UTC) + timedelta(hours=1), True, True, False, None),
     ),
 )
 def test_execution_blocker_matrix_exposes_a_specific_reason(
@@ -80,8 +80,11 @@ def test_execution_blocker_matrix_exposes_a_specific_reason(
         source_snapshot_changed=snapshot_changed,
     )
 
-    assert expected in {blocker.code for blocker in blockers}
-    assert all(blocker.message_zh and blocker.next_step_zh for blocker in blockers)
+    if expected is None:
+        assert blockers == ()
+    else:
+        assert expected in {blocker.code for blocker in blockers}
+        assert all(blocker.message_zh and blocker.next_step_zh for blocker in blockers)
 
 
 def _source_version(
@@ -335,10 +338,9 @@ async def test_plan_can_execute_requires_planned_and_unexpired_state(tmp_path):
         plan.status = OrganizationPlanStatus.NEEDS_REVIEW.value
         await session.commit()
     review_view = await service.get_plan(plan_view.plan_id)
-    assert review_view.can_execute is False
-    assert {blocker.code for blocker in review_view.execution_blockers} == {
-        "plan_needs_review",
-    }
+    # needs_review 计划(有 move 动作)可确认执行:review 动作在确认后跳过
+    assert review_view.can_execute is True
+    assert review_view.execution_blockers == ()
 
     async with database.session_factory() as session:
         plan = await session.get(OrganizationPlan, plan_view.plan_id)

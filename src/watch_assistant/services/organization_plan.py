@@ -2794,16 +2794,10 @@ def _execution_blockers(
                 next_step_zh="重新扫描并生成新的整理计划。",
             )
         )
-    if status is OrganizationPlanStatus.NEEDS_REVIEW:
-        blockers.append(
-            OrganizationExecutionBlocker(
-                kind="review_only",
-                code="plan_needs_review",
-                message_zh="整理计划仍有待复核内容，不能直接执行。",
-                next_step_zh="逐项复核识别结果或选择正确候选后再确认计划。",
-            )
-        )
-    elif status is not OrganizationPlanStatus.PLANNED:
+    if status not in {
+        OrganizationPlanStatus.NEEDS_REVIEW,
+        OrganizationPlanStatus.PLANNED,
+    }:
         blockers.append(
             OrganizationExecutionBlocker(
                 kind="status",
@@ -2830,12 +2824,12 @@ def _execution_blockers(
                 next_step_zh="完成范围验证、目标目录检查和最新扫描后重新生成计划。",
             )
         )
-    if action_count == 0 or executable_action_count != action_count or review_action_count:
+    if action_count == 0 or executable_action_count == 0:
         blockers.append(
             OrganizationExecutionBlocker(
                 kind="review_only",
                 code="plan_has_review_actions",
-                message_zh="计划中仍有不能自动执行的动作。",
+                message_zh="计划中没有可自动执行的动作。",
                 next_step_zh="逐项复核计划内容，处理待确认动作后再执行。",
             )
         )
@@ -2949,16 +2943,22 @@ def _view(
             source_names.append(name)
             if len(source_names) == 8:
                 break
+    move_preconditions = [
+        (item, precondition)
+        for item, precondition in zip(actions, precondition_items or ())
+        if isinstance(item, dict) and item.get("kind") == "move"
+    ]
     complete_preconditions = (
         bool(actions)
         and precondition_count == len(actions)
-            and isinstance(precondition_items, list)
-            and all(
-                isinstance(item, dict)
-                and item.get("target_conflict") is False
-                and isinstance(item.get("execution"), dict)
-                for item in precondition_items
-            )
+        and isinstance(precondition_items, list)
+        and all(
+            isinstance(item, dict)
+            and isinstance(precondition, dict)
+            and precondition.get("target_conflict") is False
+            and isinstance(precondition.get("execution"), dict)
+            for item, precondition in move_preconditions
+        )
     )
     strict_source_versions = (
         source_snapshot_payload is not None
