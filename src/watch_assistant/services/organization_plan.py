@@ -12,7 +12,7 @@ from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import PurePosixPath
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, exists, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -21,8 +21,10 @@ from watch_assistant.library_models import (
     LibraryScanEntry,
     LibraryScanRun,
     MediaLibrary,
+    OrganizationHistoryEntry,
     OrganizationPlan,
 )
+from watch_assistant.models import OrganizationOperation
 from watch_assistant.services.library_index import (
     LibraryIndexError,
     ScanRunState,
@@ -146,6 +148,7 @@ class OrganizationPlanView:
     review_action_count: int
     can_execute: bool
     execution_blockers: tuple[OrganizationExecutionBlocker, ...] = ()
+    source_names: tuple[str, ...] = ()
     alias: str | None = None
     candidates: tuple[dict[str, object], ...] = ()
 
@@ -173,6 +176,7 @@ class OrganizationPlanView:
             "execution_blockers": [
                 blocker.to_public_dict() for blocker in self.execution_blockers
             ],
+            "source_names": list(self.source_names),
             "alias": self.alias,
             "candidates": list(self.candidates),
         }
@@ -539,10 +543,22 @@ class OrganizationPlanService:
         if cursor < 0 or limit < 1 or limit > 100:
             raise OrganizationPlanError("invalid_pagination")
         async with self._session_factory() as session:
+            await self._cleanup_stale_plans(session)
             statement = select(OrganizationPlan).order_by(
                 OrganizationPlan.created_at.desc(), OrganizationPlan.id.desc()
             )
-            if status is not None:
+            if status is None:
+                # 默认只展示活跃计划(待处理 + 已规划);显式传 status
+                # 时仍可按任意状态过滤。
+                statement = statement.where(
+                    OrganizationPlan.status.in_(
+                        (
+                            OrganizationPlanStatus.NEEDS_REVIEW.value,
+                            OrganizationPlanStatus.PLANNED.value,
+                        )
+                    )
+                )
+            else:
                 statement = statement.where(OrganizationPlan.status == status.value)
             if library_ids:
                 statement = statement.where(OrganizationPlan.library_id.in_(library_ids))
@@ -557,6 +573,67 @@ class OrganizationPlanService:
                 for row in rows
             ]
             return views, next_cursor
+
+    async def _cleanup_stale_plans(
+        self, session: AsyncSession, *, now: datetime | None = None
+    ) -> None:
+        """Lazily clean up expired and long-dead plans before listing.
+
+        Idempotent and cheap: expired active plans (``needs_review`` /
+        ``planned``) are migrated to ``invalidated`` so the pending list
+        drains itself, while terminal plans (``invalidated`` / ``ignored``)
+        older than 7 days are deleted so history does not pile up.  Active,
+        unexpired plans are never touched.
+        """
+
+        current = _utc(now)
+        await session.execute(
+            update(OrganizationPlan)
+            .where(
+                OrganizationPlan.status.in_(
+                    (
+                        OrganizationPlanStatus.NEEDS_REVIEW.value,
+                        OrganizationPlanStatus.PLANNED.value,
+                    )
+                ),
+                OrganizationPlan.expires_at <= current,
+            )
+            .values(status=OrganizationPlanStatus.INVALIDATED.value)
+        )
+        cutoff = current - timedelta(days=7)
+        # 仍被历史/操作记录引用的计划不能删除(FK 约束),保留审计轨迹。
+        stale_ids = list(
+            (
+                await session.scalars(
+                    select(OrganizationPlan.id)
+                    .where(
+                        OrganizationPlan.status.in_(
+                            (
+                                OrganizationPlanStatus.INVALIDATED.value,
+                                OrganizationPlanStatus.IGNORED.value,
+                            )
+                        ),
+                        OrganizationPlan.created_at < cutoff,
+                        ~exists(
+                            select(OrganizationHistoryEntry.plan_id).where(
+                                OrganizationHistoryEntry.plan_id == OrganizationPlan.id
+                            )
+                        ),
+                        ~exists(
+                            select(OrganizationOperation.plan_id).where(
+                                OrganizationOperation.plan_id == OrganizationPlan.id
+                            )
+                        ),
+                    )
+                    .limit(500)
+                )
+            ).all()
+        )
+        if stale_ids:
+            await session.execute(
+                delete(OrganizationPlan).where(OrganizationPlan.id.in_(stale_ids))
+            )
+        await session.commit()
 
     async def get_plan(self, plan_id: str) -> OrganizationPlanView:
         _validate_identity(plan_id, "invalid_plan")
@@ -2877,6 +2954,19 @@ def _view(
         and isinstance(action.get("execution"), dict)
     )
     review_action_count = max(0, len(actions) - executable_action_count)
+    # 待处理文件名:每个 action(含 review 与 move)的 source_name,
+    # 去重、保留顺序、最多 8 个,列表行直接展示。
+    source_names: list[str] = []
+    seen_source_names: set[str] = set()
+    for action in actions:
+        if not isinstance(action, dict):
+            continue
+        name = action.get("source_name")
+        if isinstance(name, str) and name and name not in seen_source_names:
+            seen_source_names.add(name)
+            source_names.append(name)
+            if len(source_names) == 8:
+                break
     complete_preconditions = (
         bool(actions)
         and precondition_count == len(actions)
@@ -2917,6 +3007,7 @@ def _view(
         review_action_count=review_action_count,
         can_execute=not blockers,
         execution_blockers=blockers,
+        source_names=tuple(source_names),
         alias=plan.alias,
         candidates=tuple(candidates),
     )

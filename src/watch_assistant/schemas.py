@@ -878,6 +878,7 @@ class OrganizationPlanResponse(BaseModel):
     precondition_count: int = Field(ge=0)
     executable_action_count: int = Field(ge=0)
     review_action_count: int = Field(ge=0)
+    source_names: list[str] = Field(default_factory=list)
     can_execute: bool
     execution_blockers: list[OrganizationExecutionBlockerResponse] = Field(
         default_factory=list

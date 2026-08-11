@@ -196,6 +196,7 @@ async def test_plan_review_cursor_is_bounded_and_confirm_is_local_only(tmp_path)
         "precondition_count",
         "executable_action_count",
         "review_action_count",
+        "source_names",
         "can_execute",
         "execution_blockers",
         "alias",
