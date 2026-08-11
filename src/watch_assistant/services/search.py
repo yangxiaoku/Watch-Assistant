@@ -439,11 +439,17 @@ class SearchService:
         task.updated_at = datetime.now(UTC)
         await self._save_resource_search_task(task)
         try:
-            response = await self.search(
-                task.tmdb_id,
-                media_type=task.media_type,
-                refresh=task.refresh,
-                season_number=task.season_number,
+            # 搜索总预算:多源(panSou 插件/prowlarr/备用标题回退)串行轮次
+            # 可能叠加到数分钟;超过 90s 即放弃本轮,返回已缓存结果或失败,
+            # 避免用户长时间等待。
+            response = await asyncio.wait_for(
+                self.search(
+                    task.tmdb_id,
+                    media_type=task.media_type,
+                    refresh=task.refresh,
+                    season_number=task.season_number,
+                ),
+                timeout=90.0,
             )
             task.selected_season = response.selected_season or task.season_number
             task.warnings = list(response.warnings)
