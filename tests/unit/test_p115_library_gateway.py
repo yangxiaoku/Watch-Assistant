@@ -11,13 +11,29 @@ class _FakeTransport:
         self._response = response
 
     async def fs_files_app(self, payload, *, timeout_seconds):
-        raise RuntimeError("app endpoint unavailable")
+        from urllib.error import HTTPError
+
+        raise HTTPError(
+            "https://proapi.115.com/android/ufile/files",
+            405,
+            "Method Not Allowed",
+            None,
+            None,
+        )
 
     async def fs_files(self, payload, *, timeout_seconds):
         return self._response
 
     async def fs_info_app(self, payload, *, timeout_seconds):
-        raise RuntimeError("app endpoint unavailable")
+        from urllib.error import HTTPError
+
+        raise HTTPError(
+            "https://proapi.115.com/android/ufile/info",
+            405,
+            "Method Not Allowed",
+            None,
+            None,
+        )
 
     async def fs_info(self, payload, *, timeout_seconds):
         return self._response
