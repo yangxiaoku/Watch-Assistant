@@ -179,6 +179,24 @@ async def test_unconfirmed_plan_fails_before_constructing_live_transport(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_mismatched_target_root_finishes_with_target_root_changed(monkeypatch):
+    # 目标根不在计划范围内是配置变更:操作 failed(不 invalidate 计划),
+    # 错误码必须区分于 plan_prerequisites_changed。
+    operations = _Operations(scope=frozenset({"7000"}), steps=_steps())
+    transport_calls = []
+    monkeypatch.setattr(
+        "watch_assistant.services.organization_worker.create_live_p115_organization_transport",
+        lambda **kwargs: transport_calls.append(kwargs),
+    )
+    worker = _worker(operations, write_enabled=True)
+
+    assert await worker.run_once() is True
+    assert transport_calls == []
+    assert operations.finished[0]["status"] is OrganizationOperationStatus.FAILED
+    assert operations.finished[0]["error_code"] == "target_root_changed"
+
+
+@pytest.mark.asyncio
 async def test_confirmed_runtime_forwards_all_live_gate_values(monkeypatch):
     operations = _Operations(scope=frozenset({"7000", "9000"}), steps=_steps())
     client = _Client()

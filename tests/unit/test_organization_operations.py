@@ -361,6 +361,52 @@ async def test_prerequisite_failure_invalidates_plan_and_can_be_queried_by_plan(
 
 
 @pytest.mark.asyncio
+async def test_finish_target_root_changed_keeps_plan_planned(tmp_path):
+    # 目标根不一致是配置变更而非计划失效:操作 failed 但计划保持 planned。
+    database = await _database(tmp_path)
+    service = OrganizationOperationService(database.session_factory)
+    operation = await _operation(database, key="target-root-changed")
+    lease = await service.claim(operation.operation_id, expected_revision=1)
+
+    finished = await service.finish(
+        operation.operation_id,
+        expected_revision=lease.revision,
+        lease_token=lease.lease_token,
+        status=OrganizationOperationStatus.FAILED,
+        error_code="target_root_changed",
+    )
+
+    assert finished.status is OrganizationOperationStatus.FAILED
+    assert finished.error_code == "target_root_changed"
+    async with database.session_factory() as session:
+        plan = await session.get(OrganizationPlan, operation.plan_id)
+        assert plan is not None
+        assert plan.status == OrganizationPlanStatus.PLANNED.value
+        assert plan.revision == 1
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_finish_accepts_cleanup_postcondition_mismatch(tmp_path):
+    database = await _database(tmp_path)
+    service = OrganizationOperationService(database.session_factory)
+    operation = await _operation(database, key="cleanup-postcondition")
+    lease = await service.claim(operation.operation_id, expected_revision=1)
+
+    finished = await service.finish(
+        operation.operation_id,
+        expected_revision=lease.revision,
+        lease_token=lease.lease_token,
+        status=OrganizationOperationStatus.UNCERTAIN,
+        error_code="cleanup_postcondition_mismatch",
+    )
+
+    assert finished.status is OrganizationOperationStatus.UNCERTAIN
+    assert finished.error_code == "cleanup_postcondition_mismatch"
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_create_rejects_needs_review_without_creating_operation(tmp_path):
     database = await _database(tmp_path)
     plan = await _plan(database, confidence=MatchConfidence.LOW)

@@ -29,6 +29,7 @@ from watch_assistant.services.organization_execution_contract import (
     reconcile_uncertain,
 )
 from watch_assistant.services.organization_operations import (
+    VALID_OPERATION_ERROR_CODES,
     OrganizationOperationConflict,
     OrganizationOperationLease,
     OrganizationOperationLeaseUnavailable,
@@ -447,7 +448,7 @@ class OrganizationExecutor:
 
         if (
             all(status is OrganizationStepCheck.NOT_APPLIED for status in observations)
-            and all(status == "present" for status in replacement_observations)
+            and all(status in {"present", "removed"} for status in replacement_observations)
         ):
             if not await self._operation_service.plan_revision_is_current(
                 operation_id, expected_operation_revision=expected_revision
@@ -481,10 +482,19 @@ class OrganizationExecutor:
                     0,
                     transport_calls,
                 )
+            if replacement_observations and all(
+                status == "removed" for status in replacement_observations
+            ):
+                # 成员仍在源(执行未发生)且垃圾文件已离开受管范围:回收已完成,
+                # 剩余移动可安全重试。没有 replacement 的计划保持原有
+                # remote_write_failed 语义(all([]) 为真但不产生该错误码)。
+                retry_error_code = "replacement_already_removed"
+            else:
+                retry_error_code = "remote_write_failed"
             return OrganizationExecutionResult(
                 operation_id,
                 OrganizationExecutionStatus.FAILED,
-                "remote_write_failed",
+                retry_error_code,
                 0,
                 transport_calls,
             )
@@ -584,19 +594,30 @@ class OrganizationExecutor:
                 replacement_target = targets.get(
                     (step.replacement_parent_id, step.replacement_name)
                 )
-                if (
-                    replacement_target is None
-                    or replacement_target.object_id != step.replacement_object_id
-                    or replacement_target.is_directory is not False
-                    or any(
-                        target is not None
-                        and (
-                            target.object_id != step.replacement_object_id
-                            or target.is_directory is not False
+                if replacement_target is None:
+                    # 垃圾文件已不在目标位置:回收前提已满足(可能已被回收,
+                    # 例如回收后崩溃再重放),跳过回收直接继续移动。
+                    recycle_needed = False
+                else:
+                    recycle_needed = True
+                    if (
+                        replacement_target.object_id != step.replacement_object_id
+                        or replacement_target.is_directory is not False
+                    ):
+                        return await self._finish(
+                            context,
+                            OrganizationExecutionStatus.FAILED,
+                            "plan_prerequisites_changed",
+                            now=now,
                         )
-                        for key, target in targets.items()
-                        if key != (step.replacement_parent_id, step.replacement_name)
+                if any(
+                    target is not None
+                    and (
+                        target.object_id != step.replacement_object_id
+                        or target.is_directory is not False
                     )
+                    for key, target in targets.items()
+                    if key != (step.replacement_parent_id, step.replacement_name)
                 ):
                     return await self._finish(
                         context,
@@ -616,61 +637,62 @@ class OrganizationExecutor:
                         "plan_prerequisites_changed",
                         now=now,
                     )
-                try:
-                    recycled = await self._call(
-                        context,
-                        self._transport.recycle,
-                        step.replacement_object_id,
-                        step.replacement_parent_id,
-                        step.replacement_name,
-                        cancel_event=cancel_event,
-                        now=now,
-                        is_write=True,
-                    )
-                    self._check_write_result(
-                        recycled, OrganizationTransportOperation.RECYCLE
-                    )
-                    context.write_confirmed = True
-                    target_after_recycle = await self._call(
-                        context,
-                        self._transport.read_target,
-                        step.replacement_parent_id,
-                        step.replacement_name,
-                        cancel_event=cancel_event,
-                        now=now,
-                    )
-                    if target_after_recycle is not None:
+                if recycle_needed:
+                    try:
+                        recycled = await self._call(
+                            context,
+                            self._transport.recycle,
+                            step.replacement_object_id,
+                            step.replacement_parent_id,
+                            step.replacement_name,
+                            cancel_event=cancel_event,
+                            now=now,
+                            is_write=True,
+                        )
+                        self._check_write_result(
+                            recycled, OrganizationTransportOperation.RECYCLE
+                        )
+                        context.write_confirmed = True
+                        target_after_recycle = await self._call(
+                            context,
+                            self._transport.read_target,
+                            step.replacement_parent_id,
+                            step.replacement_name,
+                            cancel_event=cancel_event,
+                            now=now,
+                        )
+                        if target_after_recycle is not None:
+                            return await self._finish(
+                                context,
+                                OrganizationExecutionStatus.UNCERTAIN,
+                                "cleanup_postcondition_mismatch",
+                                now=now,
+                            )
+                    except _RateLimitReached:
                         return await self._finish(
                             context,
                             OrganizationExecutionStatus.UNCERTAIN,
-                            "cleanup_postcondition_mismatch",
+                            "rate_limited",
                             now=now,
                         )
-                except _RateLimitReached:
-                    return await self._finish(
-                        context,
-                        OrganizationExecutionStatus.UNCERTAIN,
-                        "rate_limited",
-                        now=now,
-                    )
-                except _ExecutionCancelled:
-                    return await self._finish(
-                        context,
-                        OrganizationExecutionStatus.CANCELLED,
-                        "cancelled",
-                        now=now,
-                    )
-                except _LeaseLost:
-                    return await self._handle_lease_loss(context, now=now)
-                except _TransportFailure as failure:
-                    return await self._finish(
-                        context,
-                        OrganizationExecutionStatus.UNCERTAIN
-                        if failure.uncertain or context.write_confirmed
-                        else OrganizationExecutionStatus.FAILED,
-                        failure.error_code,
-                        now=now,
-                    )
+                    except _ExecutionCancelled:
+                        return await self._finish(
+                            context,
+                            OrganizationExecutionStatus.CANCELLED,
+                            "cancelled",
+                            now=now,
+                        )
+                    except _LeaseLost:
+                        return await self._handle_lease_loss(context, now=now)
+                    except _TransportFailure as failure:
+                        return await self._finish(
+                            context,
+                            OrganizationExecutionStatus.UNCERTAIN
+                            if failure.uncertain or context.write_confirmed
+                            else OrganizationExecutionStatus.FAILED,
+                            failure.error_code,
+                            now=now,
+                        )
             if result.status is OrganizationStepCheck.ALREADY_APPLIED and any(
                 isinstance(target, RemoteObjectState)
                 and target.object_id != member.object_id
@@ -956,6 +978,9 @@ class OrganizationExecutor:
         directory_ids: set[str] | None = None,
         now,
     ) -> OrganizationExecutionResult:
+        # 兜底:任何不在合法集合的 error_code 都映射为 outcome_unknown,
+        # 避免 finish 的 _validate_error_code 抛 ValueError 冒泡成 lease_lost。
+        error_code = _safe_error_code(error_code)
         try:
             if status is OrganizationExecutionStatus.ORGANIZED:
                 await self._operation_service.complete_organized_with_dirty_events(
@@ -1059,6 +1084,12 @@ def _safe_transport_code(value: object) -> str | None:
     if value in {"timeout", "outcome_unknown", "remote_write_failed"}:
         return value
     return None
+
+
+def _safe_error_code(value: str | None) -> str | None:
+    if value is None or value in VALID_OPERATION_ERROR_CODES:
+        return value
+    return "outcome_unknown"
 
 
 __all__ = [
