@@ -164,7 +164,6 @@ class OrganizationPreviewService:
             and _is_video_entry(
                 entry,
                 video_extensions=normalized_extensions,
-                small_file_threshold_mb=small_file_threshold_mb,
             )
         ]
         # 广告/宣传垃圾文件 (如 "【更多电视剧集下载请访问 www.BPHDTV.com】.MKV")
@@ -551,17 +550,14 @@ def _is_video_entry(
     entry: LibraryScanEntry,
     *,
     video_extensions: Collection[str] | None,
-    small_file_threshold_mb: float,
 ) -> bool:
     parsed = parse_media_filename(entry.name)
     if parsed.companion_type != "video":
         return False
-    if video_extensions is not None and parsed.container not in video_extensions:
-        return False
-    return not (
-        entry.size_bytes is not None
-        and entry.size_bytes < small_file_threshold_mb * 1024 * 1024
-    )
+    # 小文件不再在此处过滤:无法识别的低于阈值小文件由自动清理逻辑
+    # (OrganizationAutomationService 自动删除到 115 回收站)处理,而不是
+    # 在预览阶段静默跳过。
+    return video_extensions is None or parsed.container in video_extensions
 
 
 def _find_companion_entries(

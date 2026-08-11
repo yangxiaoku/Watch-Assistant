@@ -91,6 +91,8 @@ def _organization_result_response(result) -> OrganizationAutomationResultRespons
         ],
         finished_at=result.finished_at,
         run_id=result.run_id,
+        cleaned_small_files=result.cleaned_small_files,
+        cleaned_empty_dirs=result.cleaned_empty_dirs,
     )
 
 

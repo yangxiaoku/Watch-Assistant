@@ -185,7 +185,7 @@ onBeforeUnmount(() => {
       <span v-for="entry in organizationResultStatusBreakdown" :key="entry.status" :class="['organization-result-status', `is-${entry.status}`]">{{ entry.label }} <strong>{{ entry.count }}</strong></span>
     </div>
     <div v-if="organizationResult && organizationResult.status !== 'unknown'" class="organization-result-metrics">
-      <span>来源目录 <strong>{{ organizationResult.source_count }}</strong></span><span>扫描成功 <strong>{{ organizationResult.scanned_count }}</strong></span><span>识别计划 <strong>{{ organizationResult.plan_count }}</strong></span><span>已开始整理 <strong>{{ organizationResult.queued_count }}</strong></span><span>未执行/阻断 <strong>{{ organizationResult.blocked_count }}</strong></span>
+      <span>来源目录 <strong>{{ organizationResult.source_count }}</strong></span><span>扫描成功 <strong>{{ organizationResult.scanned_count }}</strong></span><span>识别计划 <strong>{{ organizationResult.plan_count }}</strong></span><span>已开始整理 <strong>{{ organizationResult.queued_count }}</strong></span><span>未执行/阻断 <strong>{{ organizationResult.blocked_count }}</strong></span><span v-if="(organizationResult.cleaned_small_files ?? 0) + (organizationResult.cleaned_empty_dirs ?? 0) > 0">自动清理 小文件 <strong>{{ organizationResult.cleaned_small_files }}</strong> · 空目录 <strong>{{ organizationResult.cleaned_empty_dirs }}</strong></span>
     </div>
     <div v-if="organizationResult?.items?.length" class="organization-result-items">
       <strong>影片处理结果</strong>

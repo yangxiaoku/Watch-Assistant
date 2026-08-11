@@ -141,7 +141,8 @@ _ORGANIZATION_DEFAULTS: dict[str, object] = {
     "rename_enabled": True,
     "media_probe_enabled": True,
     "ai_identification_enabled": False,
-    "small_file_threshold_mb": 0.0,
+    # 低于该阈值的未识别(需要人工确认)小文件在整理后自动删除到 115 回收站。
+    "small_file_threshold_mb": 100.0,
     "cleanup_empty_directories": False,
     "strm_linkage_enabled": False,
     "operation_delay_seconds": 1.5,
