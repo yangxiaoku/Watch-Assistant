@@ -215,7 +215,7 @@ class OfflineP115OrganizationTransport:
     async def read_target(self, parent_id: str, name: str) -> RemoteObjectState | None:
         self._require_scope()
         intent = self._target_intents.get((parent_id, name))
-        if intent is None or _intent_target_key(intent) not in self._targets:
+        if intent is None:
             raise P115OrganizationTransportError("scope_unverified")
         self._calls.append(
             OrganizationTransportCall(P115OrganizationMethod.READ_TARGET)
@@ -299,7 +299,6 @@ class OfflineP115OrganizationTransport:
             intent is None
             or _stable_id(object_id) is None
             or parent_id not in self._managed_directory_ids
-            or _intent_target_key(intent) not in self._targets
         ):
             raise P115OrganizationTransportError("scope_unverified")
         self._calls.append(OrganizationTransportCall(P115OrganizationMethod.RECYCLE))
@@ -565,8 +564,11 @@ class LiveP115OrganizationTransport:
 
     async def read_target(self, parent_id: str, name: str) -> RemoteObjectState | None:
         self._require_scope()
+        # 调用方以计划空间键 (target_parent_id, target_name) 查询;带
+        # target_directory_path 的 intent 其目标键是 (path, name),因此
+        # 这里只校验 intent 存在(精确映射),不再校验 _targets 集合。
         intent = self._target_intents.get((parent_id, name))
-        if intent is None or _intent_target_key(intent) not in self._targets:
+        if intent is None:
             raise P115OrganizationTransportError("scope_unverified")
         listing_parent = parent_id
         if intent.target_directory_path is not None:
