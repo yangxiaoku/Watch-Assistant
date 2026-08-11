@@ -369,13 +369,14 @@ async def test_manual_organization_flow_fails_closed_unready_p115_and_restart(
 
             plans = await client.get(
                 "/api/v1/organization-plans",
-                params={"status": "needs_review", "limit": 20},
+                params={"status": "planned", "limit": 20},
                 headers=headers,
             )
             assert plans.status_code == 200
             assert len(plans.json()["items"]) == 1
             plan = plans.json()["items"][0]
-            assert plan["status"] == "needs_review"
+            # run-now 跟随 auto_execute_enabled:默认开启时计划直接为 planned
+            assert plan["status"] == "planned"
             await _add_target_tree_evidence(database, plan["plan_id"])
 
             confirmed = await client.post(
