@@ -49,6 +49,17 @@ const props = defineProps<{
 const emit = defineEmits<{ push: [resource: ResourceSummary]; refresh: []; retryMetadata: []; back: []; favorite: []; season: [seasonNumber: number | null]; inspectMore: []; retryFailed: []; retryPage: []; page: [page: number]; kind: [kind: "all" | "magnet" | "115_share"]; quality: [quality: ResourceQuality]; query: [query: string]; sort: [sort: ResourceSort]; pageSize: [pageSize: 25 | 50 | 100] }>();
 
 const isTv = computed(() => props.mediaType === "tv" || props.result.movie.media_type === "tv");
+// 豆瓣风格星级:vote_average 0-10 → 5 星,支持半星(向上取整显示填满数)。
+const ratingStars = computed(() => {
+  const vote = props.result.movie.vote_average;
+  if (vote == null) return 0;
+  return Math.round((vote / 10) * 5);
+});
+const backdrop = computed(() =>
+  props.result.movie.backdrop_path
+    ? posterUrl(props.result.movie.backdrop_path, "w1280")
+    : null,
+);
 const seasons = computed(() => props.result.movie.seasons ?? []);
 const selectedSeasonNumber = computed(() => props.seasonNumber ?? null);
 const selectedSeasonSummary = computed(() => selectedSeasonNumber.value === null
@@ -130,12 +141,14 @@ function warningLabel(value: string): string {
 <template>
   <section class="movie-view">
     <div class="detail-actions"><button class="back-button" type="button" @click="$emit('back')"><ArrowLeft :size="17" />返回浏览</button><button class="secondary-button refresh-button" type="button" @click="$emit('refresh')"><RefreshCw :size="16" />刷新资源</button></div>
-    <header class="movie-profile" :aria-busy="metadataLoading ? 'true' : 'false'">
+    <header class="movie-profile" :class="{ 'has-backdrop': backdrop }" :aria-busy="metadataLoading ? 'true' : 'false'">
+      <div v-if="backdrop" class="movie-backdrop" aria-hidden="true"><img :src="backdrop" :alt="`${result.movie.title} 背景`" loading="lazy" /></div>
+      <div class="movie-backdrop-scrim" aria-hidden="true"></div>
       <div class="detail-poster">
         <img v-if="posterUrl(displayedPosterPath)" :src="posterUrl(displayedPosterPath)!" :alt="selectedSeasonNumber !== null && seasonDetail && !seasonDetail.poster_path && !selectedSeasonSummary?.poster_path ? `${result.movie.title} 海报（本季暂无独立海报）` : `${result.movie.title} 海报`" />
         <span v-else class="poster-fallback"><Film :size="34" /></span>
       </div>
-      <div class="movie-copy"><p class="eyebrow">{{ isTv ? '电视剧' : '电影' }}<span v-if="result.movie.release_year !== null"> · {{ result.movie.release_year }}</span> · TMDB {{ result.movie.tmdb_id }}</p><h1>{{ result.movie.title }}</h1><p v-if="result.movie.original_title" class="original-title">{{ result.movie.original_title }}</p><p v-if="result.movie.vote_average !== null" class="detail-rating"><Star :size="14" fill="currentColor" />{{ result.movie.vote_average.toFixed(1) }} / 10</p><div v-if="isTv && seasons.length" class="season-bar"><label for="season-select">季度</label><select id="season-select" :value="selectedSeasonNumber ?? ''" @change="onSeasonChange"><option value="">全部季度</option><option v-for="season in seasons" :key="season.season_number" :value="season.season_number">{{ displaySeasonName(season.season_number, season.name) }} · {{ season.episode_count }} 集</option></select></div><button class="secondary-button favorite-inline" :class="{ active: favorite }" type="button" @click="$emit('favorite')"><Heart :size="16" :fill="favorite ? 'currentColor' : 'none'" />{{ favorite ? '已收藏' : '收藏' }}</button></div>
+      <div class="movie-copy"><p class="eyebrow">{{ isTv ? '电视剧' : '电影' }}<span v-if="result.movie.release_year !== null"> · {{ result.movie.release_year }}</span> · TMDB {{ result.movie.tmdb_id }}</p><h1>{{ result.movie.title }}</h1><p v-if="result.movie.original_title" class="original-title">{{ result.movie.original_title }}</p><p v-if="result.movie.vote_average !== null" class="detail-rating"><span class="star-rating" :title="`${result.movie.vote_average.toFixed(1)} / 10`" role="img" :aria-label="`评分 ${result.movie.vote_average.toFixed(1)} / 10`"><Star v-for="n in 5" :key="n" :size="15" :class="{ filled: n <= ratingStars }" :fill="n <= ratingStars ? 'currentColor' : 'none'" /></span><strong>{{ result.movie.vote_average.toFixed(1) }}</strong> / 10</p><div v-if="isTv && seasons.length" class="season-bar"><label for="season-select">季度</label><select id="season-select" :value="selectedSeasonNumber ?? ''" @change="onSeasonChange"><option value="">全部季度</option><option v-for="season in seasons" :key="season.season_number" :value="season.season_number">{{ displaySeasonName(season.season_number, season.name) }} · {{ season.episode_count }} 集</option></select></div><button class="secondary-button favorite-inline" :class="{ active: favorite }" type="button" @click="$emit('favorite')"><Heart :size="16" :fill="favorite ? 'currentColor' : 'none'" />{{ favorite ? '已收藏' : '收藏' }}</button></div>
       <aside class="detail-stats" aria-label="影片数据">
         <div class="detail-stat score-stat" v-if="result.movie.vote_average !== null"><span>TMDB 评分</span><strong>{{ result.movie.vote_average.toFixed(1) }} / 10</strong></div>
         <div class="detail-stat"><span>磁力</span><strong>{{ resourceCounts.magnets }}</strong></div>
@@ -150,6 +163,7 @@ function warningLabel(value: string): string {
     </section>
     <section v-if="selectedSeasonNumber !== null" class="overview-section season-detail-section" aria-live="polite"><h2>{{ selectedSeasonName }}</h2><p class="season-detail-meta">{{ selectedSeasonAirDate || '播出日期待定' }} · {{ selectedSeasonEpisodeCount ?? '集数待定' }} 集</p><p v-if="seasonDetail?.overview">{{ seasonDetail.overview }}<span v-if="seasonDetail.overview_language" class="season-detail-source">（{{ seasonDetail.overview_language }}）</span></p><p v-else-if="seasonDetailLoading">正在加载本季资料</p><p v-else-if="seasonDetailError" class="error-text">{{ seasonDetailError }}</p><p v-else>本季暂无独立简介</p><p v-if="seasonDetail?.stale" class="season-detail-source">当前显示最近成功缓存的季度资料</p><p v-if="seasonDetail && !seasonDetail.poster_path && !selectedSeasonSummary?.poster_path" class="season-detail-source">本季暂无独立海报，当前使用剧集海报</p></section>
     <section v-else-if="result.movie.overview" class="overview-section"><h2>简介</h2><p>{{ result.movie.overview }}</p></section>
+    <section v-else class="overview-section overview-empty"><h2>简介</h2><p class="empty-copy">暂无简介</p></section>
     <div v-if="summaryWarnings.length" class="warning-strip">{{ summaryWarnings.map(warningLabel).join(' · ') }}</div>
     <div class="resource-search-summary" aria-live="polite"><span><strong>搜索状态</strong>{{ cacheSummary }}</span><span><strong>来源</strong>{{ sourceNames?.length ? sourceNames.join('、') : '来源信息待确认' }}</span><span :class="sourceIntegrity === '来源完整' ? 'is-complete' : 'is-incomplete'"><strong>完整性</strong>{{ sourceIntegrity }}</span></div>
     <SourceDiagnostics :warnings="result.warnings" />
