@@ -36,8 +36,6 @@ import type {
   WorkflowEvidenceListResponse,
   WorkflowListResponse,
   WorkflowResponse,
-  WorkflowStageName,
-  WorkflowStageStatus,
   NotificationListResponse,
   NotificationResponse,
   NotificationPreferenceResponse,
@@ -56,7 +54,6 @@ import type {
   StrmCleanupPlanResponse,
   StrmOperationListResponse,
   StrmOperationResponse,
-  PwaDevice,
   LogLevel,
   OrganizationAutomationResultResponse,
   OrganizationOperationBatchResponse,
@@ -574,23 +571,6 @@ export class ApiClient {
     });
   }
 
-  async patchWorkflowStage(
-    workflowId: string,
-    stage: WorkflowStageName,
-    patch: { status: WorkflowStageStatus; reason?: string; errorCode?: string; childType?: string; childId?: string },
-  ): Promise<WorkflowResponse> {
-    return this.request<WorkflowResponse>(`/api/v1/workflows/${encodeURIComponent(workflowId)}/stages/${stage}`, {
-      method: "PATCH",
-      body: JSON.stringify({
-        status: patch.status,
-        ...(patch.reason ? { reason: patch.reason } : {}),
-        ...(patch.errorCode ? { error_code: patch.errorCode } : {}),
-        ...(patch.childType ? { child_type: patch.childType } : {}),
-        ...(patch.childId ? { child_id: patch.childId } : {}),
-      }),
-    });
-  }
-
   async decideWorkflowApproval(workflowId: string, decision: "approve" | "reject", reason?: string): Promise<WorkflowResponse> {
     return this.request<WorkflowResponse>(`/api/v1/workflows/${encodeURIComponent(workflowId)}/approval`, {
       method: "POST",
@@ -633,24 +613,6 @@ export class ApiClient {
     return this.request<NotificationPreferenceResponse>("/api/v1/notification-preferences", { method: "PATCH", body: JSON.stringify(patch) });
   }
 
-  async pwaDevices(): Promise<{ items: PwaDevice[] }> {
-    return this.request<{ items: PwaDevice[] }>("/api/v1/pwa/devices");
-  }
-
-  async registerPwaDevice(name: string, subscription: PushSubscriptionJSON): Promise<PwaDevice> {
-    return this.request<PwaDevice>("/api/v1/pwa/devices", {
-      method: "POST",
-      body: JSON.stringify({ name, subscription }),
-    });
-  }
-
-  async revokePwaDevice(deviceId: string): Promise<PwaDevice> {
-    return this.request<PwaDevice>(`/api/v1/pwa/devices/${encodeURIComponent(deviceId)}/revoke`, {
-      method: "POST",
-      body: "{}",
-    });
-  }
-
   async organizationPlans(filters: {
     status?: "needs_review" | "planned" | "invalidated" | "ignored";
     cursor?: number;
@@ -666,10 +628,6 @@ export class ApiClient {
     const params = new URLSearchParams({ limit: String(limit) });
     if (cursor !== undefined) params.set("cursor", String(cursor));
     return this.request<OrganizationHistoryListResponse>(`/api/v1/organization-history?${params}`);
-  }
-
-  async organizationPlan(planId: string): Promise<OrganizationPlanSummary> {
-    return this.request<OrganizationPlanSummary>(`/api/v1/organization-plans/${encodeURIComponent(planId)}`);
   }
 
   async confirmOrganizationPlan(planId: string, expectedRevision: number): Promise<OrganizationPlanSummary> {
@@ -935,14 +893,6 @@ export class ApiClient {
         method: "POST",
         body: JSON.stringify({ source_scan_run_id: scanRunId }),
       },
-    );
-  }
-
-  async emptyDirectoryCleanupPlan(
-    planId: string,
-  ): Promise<EmptyDirectoryCleanupPlanResponse> {
-    return this.request<EmptyDirectoryCleanupPlanResponse>(
-      `/api/v1/empty-directory-cleanup-plans/${encodeURIComponent(planId)}`,
     );
   }
 
