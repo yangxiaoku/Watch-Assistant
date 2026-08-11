@@ -455,6 +455,18 @@ async def patch_organization(
                 requested_directory_ids.add(value)
         if not requested_directory_ids.issubset({configured_root_id, *browsed_directory_ids}):
             raise HTTPException(status_code=403, detail="p115_directory_out_of_scope")
+        patch_values = patch.model_dump(exclude_unset=True)
+        sources = patch_values.get("source_directory_ids")
+        target = patch_values.get("target_directory_id")
+        if (
+            isinstance(target, str)
+            and isinstance(sources, list)
+            and target in sources
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="target_directory_equals_source",
+            )
     try:
         response = await settings.update_organization(
             patch,
