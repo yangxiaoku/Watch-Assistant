@@ -77,6 +77,13 @@ input { outline: none; }
 .top-search:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); background: var(--surface-2); }
 .top-search input { min-width: 0; height: 38px; padding: 0; color: var(--text); background: transparent; border: 0; }
 .top-search button { display: grid; width: 34px; height: 34px; padding: 0; place-items: center; color: var(--accent); background: transparent; border: 0; }
+.topbar-quick-action { display: inline-flex; align-items: center; gap: 5px; min-height: 34px; padding: 0 10px; color: var(--text-2); background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--radius); font-size: 12px; font-weight: 700; white-space: nowrap; transition: color .15s ease, border-color .15s ease, background .15s ease; }
+.topbar-quick-action:hover { color: var(--text); border-color: var(--accent); }
+.topbar-quick-action span { font-size: 11px; font-weight: 700; }
+.topbar-menu { display: none; }
+.sidebar-status { display: inline-flex; align-items: center; gap: 8px; color: var(--text-3); font-size: 11px; }
+.status-dot.offline { background: var(--amber); box-shadow: 0 0 0 4px var(--amber-soft); }
+.sidebar-scrim { display: none; }
 .brand { display: inline-flex; align-items: baseline; gap: 4px; color: var(--accent-strong); text-decoration: none; font-size: 15px; font-weight: 850; letter-spacing: .12em; white-space: nowrap; }
 .brand span { color: var(--text-3); margin: 0 2px; }
 .topbar-meta { display: flex; align-items: center; gap: 10px; color: var(--text-3); font-size: 12px; }
@@ -1244,4 +1251,16 @@ html, body { overflow-x: hidden; }
 .organization-diagnostics button {
   display: block;
   margin: 6px 0;
+}
+
+/* ===== 侧栏剧院响应式 ===== */
+@media (max-width: 767px) {
+  .app-layout { display: block; }
+  .app-sidebar { position: fixed; top: 0; left: 0; z-index: 30; width: 264px; height: 100vh; transform: translateX(-105%); transition: transform .22s ease; box-shadow: var(--shadow-lg); }
+  .app-sidebar.mobile-open { transform: translateX(0); }
+  .sidebar-scrim { position: fixed; inset: 0; z-index: 20; display: block; background: rgb(10 9 7 / 62%); backdrop-filter: blur(2px); }
+  .app-main { padding: 0 16px 80px; }
+  .topbar-menu { display: inline-grid; }
+  .top-search { grid-template-columns: 18px minmax(0, 1fr); }
+  .top-search button { display: none; }
 }

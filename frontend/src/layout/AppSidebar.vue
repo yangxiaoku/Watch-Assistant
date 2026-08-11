@@ -5,6 +5,7 @@ import type { BrowseView } from "../router";
 defineProps<{
   activeView: BrowseView;
   organizationPlanEnabled: boolean;
+  mobileOpen?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -13,7 +14,7 @@ const emit = defineEmits<{
 </script>
 
 <template>
-  <aside class="app-sidebar" aria-label="主导航">
+  <aside class="app-sidebar" :class="{ 'mobile-open': mobileOpen }" aria-label="主导航">
     <a class="sidebar-brand" href="/"><span class="brand">WATCH<span>/</span>ASSISTANT</span></a>
     <nav class="sidebar-nav">
       <div v-for="group in NAV_GROUPS" :key="group.label" class="sidebar-group" :aria-label="group.label">

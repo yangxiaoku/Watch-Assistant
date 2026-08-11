@@ -1,7 +1,10 @@
 <script setup lang="ts">
-import { Bell, ClipboardCheck, Clock3, Database, FileText, Film, Flame, Heart, Home, ListTodo, LoaderCircle, LogIn, PanelRight, Search, Settings, Tv, X } from "@lucide/vue";
+import { LoaderCircle, LogIn, Menu, PanelRight, X } from "@lucide/vue";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 import { ApiClient, ApiError, browserIsOnline, focusFirstFieldError } from "./api";
+import AppShell from "./layout/AppShell.vue";
+import AppSidebar from "./layout/AppSidebar.vue";
+import AppTopbar from "./layout/AppTopbar.vue";
 import TaskDrawer from "./components/TaskDrawer.vue";
 import {
   extractBrowseView,
@@ -72,6 +75,7 @@ const tasks = ref<TaskResponse[]>([]);
 const activeWorkflowId = ref<string | null>(null);
 const pushingId = ref<string | null>(null);
 const drawerOpen = ref(false);
+const mobileNavOpen = ref(false);
 const pushCapabilities = ref<PushCapabilities>({ ...NO_PUSH_CAPABILITIES });
 const inspectionSupported = ref(false);
 const inspectionAutoStartEnabled = ref<boolean | "unknown">("unknown");
@@ -501,22 +505,6 @@ const inspectionMoreAvailable = computed(() => {
   if (inspectionAutoRequestId.value !== searchRequestId) return false;
   return inspectionBatchIds(1).length > 0;
 });
-
-const navItems = [
-  { view: "home" as const, label: "首页", icon: Home },
-  { view: "movies" as const, label: "电影", icon: Film },
-  { view: "tv" as const, label: "剧集", icon: Tv },
-  { view: "popular" as const, label: "热门", icon: Flame },
-  { view: "favorites" as const, label: "收藏", icon: Heart },
-  { view: "history" as const, label: "记录", icon: Clock3 },
-  { view: "organization" as const, label: "整理", icon: ClipboardCheck },
-  { view: "library" as const, label: "媒体库", icon: Database },
-];
-
-const navGroups = [
-  { label: "发现", items: navItems.slice(0, 6) },
-  { label: "入库", items: navItems.slice(6) },
-];
 
 function healthCapability(
   enabled: boolean | undefined,
@@ -1591,27 +1579,27 @@ onBeforeUnmount(() => {
 
 <template>
   <main class="app-shell">
-    <header class="topbar" :class="{ authenticated }">
-      <a class="brand" href="/">WATCH<span>/</span>ASSISTANT</a>
-      <template v-if="authenticated">
-        <nav class="primary-nav" aria-label="主导航">
-          <div v-for="group in navGroups" :key="group.label" class="primary-nav-group" :aria-label="group.label"><span class="primary-nav-group-label">{{ group.label }}</span><template v-for="item in group.items" :key="item.view"><button v-if="item.view !== 'organization' || organizationPlanEnabled" type="button" :class="{ active: activeView === item.view && !result }" @click="selectView(item.view)"><component :is="item.icon" :size="16" />{{ item.label }}</button></template></div>
-        </nav>
-        <form class="top-search" role="search" @submit.prevent="searchMovies"><Search :size="17" /><input v-model="searchInput" type="search" aria-label="搜索电影或电视剧" placeholder="搜索电影或电视剧" /><button type="submit" aria-label="提交搜索" title="搜索"><Search :size="17" /></button></form>
-        <div class="topbar-actions" aria-label="工作流入口">
-          <button class="icon-button topbar-quick-action" type="button" title="推送任务" aria-label="推送任务" @click="openTaskDrawer"><PanelRight :size="18" /><span>推送任务</span></button>
-          <button class="icon-button topbar-quick-action" type="button" :class="{ active: activeView === 'workflows' && !result }" title="任务中心" aria-label="任务中心" @click="selectView('workflows')"><ListTodo :size="18" /><span>任务中心</span></button>
-          <button class="icon-button topbar-quick-action" type="button" :class="{ active: activeView === 'notifications' && !result }" title="通知" aria-label="通知" @click="selectView('notifications')"><Bell :size="18" /><span>通知</span></button>
-          <button class="icon-button topbar-quick-action" type="button" :class="{ active: activeView === 'logs' && !result }" title="日志" aria-label="日志" @click="selectView('logs')"><FileText :size="18" /><span>日志</span></button>
-          <button class="icon-button topbar-quick-action" type="button" :class="{ active: activeView === 'settings' && !result }" title="设置" aria-label="设置" @click="selectView('settings')"><Settings :size="18" /><span>设置</span></button>
-        </div>
+    <AppShell>
+      <template #sidebar>
+        <AppSidebar v-if="authenticated" :active-view="activeView" :organization-plan-enabled="organizationPlanEnabled" :mobile-open="mobileNavOpen" @navigate="selectView">
+          <template #footer>
+            <span class="sidebar-status"><span class="status-dot" :class="{ offline: !isOnline }" />{{ isOnline ? '局域网在线' : '离线' }}</span>
+          </template>
+        </AppSidebar>
+        <div v-if="authenticated && mobileNavOpen" class="sidebar-scrim" aria-hidden="true" @click="mobileNavOpen = false" />
       </template>
-      <div v-else class="topbar-meta"><span class="status-dot" />局域网工作台</div>
-    </header>
-    <p v-if="!isOnline" class="offline-strip" role="status">当前处于离线状态，仅显示最近一次只读摘要；写操作已暂停。</p>
-    <p v-else-if="offlineDataAt" class="offline-data-strip" role="status">网络已恢复，之前显示过离线缓存（{{ new Date(offlineDataAt).toLocaleString('zh-CN') }}）。</p>
+      <template #topbar>
+        <AppTopbar v-if="authenticated" v-model:search-input="searchInput" @search="searchMovies">
+          <button class="icon-button topbar-menu" type="button" title="菜单" aria-label="菜单" @click="mobileNavOpen = !mobileNavOpen"><Menu :size="18" /></button>
+          <button class="topbar-quick-action" type="button" title="推送任务" aria-label="推送任务" @click="openTaskDrawer"><PanelRight :size="18" /><span>推送任务</span></button>
+          <span v-if="isOnline" class="status-dot" title="在线" />
+          <span v-else class="status-dot offline" title="离线" />
+        </AppTopbar>
+      </template>
+      <p v-if="!isOnline" class="offline-strip" role="status">当前处于离线状态，仅显示最近一次只读摘要；写操作已暂停。</p>
+      <p v-else-if="offlineDataAt" class="offline-data-strip" role="status">网络已恢复，之前显示过离线缓存（{{ new Date(offlineDataAt).toLocaleString('zh-CN') }}）。</p>
 
-    <section v-if="!authenticated" class="auth-gate"><div class="auth-mark"><LogIn :size="20" /></div><p class="eyebrow">私有工作区</p><h1>进入观影工作台</h1><p>你的 PanSou 聚合和 115 推送只在本地网络可见。</p><form @submit.prevent="login"><label for="username">账号</label><input id="username" name="username" v-model="username" type="text" autocomplete="username" placeholder="输入账号" /><label for="password">Web 密码</label><input id="password" name="password" v-model="password" type="password" autocomplete="current-password" placeholder="输入访问密码" /><button class="primary-button" type="submit" :disabled="loggingIn"><LoaderCircle v-if="loggingIn" class="spin" :size="17" /><LogIn v-else :size="17" />{{ loggingIn ? '登录中…' : '登录' }}</button></form><p v-if="error" class="error-text" role="alert">{{ error }}</p></section>
+      <section v-if="!authenticated" class="auth-gate"><div class="auth-mark"><LogIn :size="20" /></div><p class="eyebrow">私有工作区</p><h1>进入观影工作台</h1><p>你的 PanSou 聚合和 115 推送只在本地网络可见。</p><form @submit.prevent="login"><label for="username">账号</label><input id="username" name="username" v-model="username" type="text" autocomplete="username" placeholder="输入账号" /><label for="password">Web 密码</label><input id="password" name="password" v-model="password" type="password" autocomplete="current-password" placeholder="输入访问密码" /><button class="primary-button" type="submit" :disabled="loggingIn"><LoaderCircle v-if="loggingIn" class="spin" :size="17" /><LogIn v-else :size="17" />{{ loggingIn ? '登录中…' : '登录' }}</button></form><p v-if="error" class="error-text" role="alert">{{ error }}</p></section>
 
     <template v-else>
       <p v-if="error" class="error-strip" role="alert"><X :size="16" />{{ error }}</p>
@@ -1687,6 +1675,7 @@ onBeforeUnmount(() => {
          />
        </section>
     </template>
-    <TaskDrawer :api="api" :tasks="tasks" :open="drawerOpen" @close="drawerOpen = false" @navigate="navigateFromTaskDrawer" @updated="updateTask" @loaded="replaceTasks" />
+      <TaskDrawer :api="api" :tasks="tasks" :open="drawerOpen" @close="drawerOpen = false" @navigate="navigateFromTaskDrawer" @updated="updateTask" @loaded="replaceTasks" />
+    </AppShell>
   </main>
 </template>
