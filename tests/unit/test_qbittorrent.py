@@ -4,8 +4,16 @@ from urllib.parse import quote
 
 from watch_assistant.adapters.qbittorrent import (
     _FALLBACK_HTTP_TRACKERS,
+    _has_inspection_marker,
     _with_fallback_http_trackers,
 )
+
+
+def test_inspection_marker_detects_own_category_and_tags():
+    assert _has_inspection_marker({"category": "wa-inspect-abc"}) is True
+    assert _has_inspection_marker({"tags": "x,wa-inspect-def,y"}) is True
+    assert _has_inspection_marker({"category": "movies", "tags": "tv"}) is False
+    assert _has_inspection_marker({}) is False
 
 
 def _encoded(tracker: str) -> str:

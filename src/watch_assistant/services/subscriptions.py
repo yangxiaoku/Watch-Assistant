@@ -136,7 +136,12 @@ class SubscriptionService:
                     raise SubscriptionConflict("subscription_not_pauseable")
                 item.status = SubscriptionStatus.PAUSED
             elif action == "resume":
-                if item.status == SubscriptionStatus.CANCELLED:
+                if item.status in {
+                    SubscriptionStatus.CANCELLED,
+                    SubscriptionStatus.COMPLETED,
+                }:
+                    # COMPLETED 与 CANCELLED 一样是终态,不得复活(与 check()
+                    # 的非活跃判定一致)。复用已注册的 subscription_cancelled 码。
                     raise SubscriptionConflict("subscription_cancelled")
                 item.status = SubscriptionStatus.ACTIVE
                 item.next_check_at = datetime.now(UTC)

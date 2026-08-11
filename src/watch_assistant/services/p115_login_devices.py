@@ -61,17 +61,26 @@ class P115LoginDeviceService:
             name=name,
             device_code=device_code,
             cookie_encrypted=self._crypto.encrypt(normalized),
-            active=True,
+            active=False,
             created_at=now,
             last_used_at=now,
         )
         async with self._session_factory() as session:
+            # 单条原子 UPDATE 完成"新设备置位 + 全表清扫"(与 mark_active 同款):
+            # 此前"清活跃 + 插入"两条语句,并发 add_device 交错会双活跃。
+            session.add(device)
+            await session.flush()
             await session.execute(
                 P115LoginDevice.__table__.update()
-                .where(P115LoginDevice.revoked_at.is_(None))
-                .values(active=False)
+                .where(
+                    or_(
+                        P115LoginDevice.id == device.id,
+                        P115LoginDevice.active.is_(True),
+                    ),
+                    P115LoginDevice.revoked_at.is_(None),
+                )
+                .values(active=P115LoginDevice.id == device.id)
             )
-            session.add(device)
             await session.commit()
         return self._summary(device)
 

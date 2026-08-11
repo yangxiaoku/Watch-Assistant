@@ -45,7 +45,16 @@ self.addEventListener("fetch", (event) => {
           return response;
         });
       }).catch(() => caches.open(READ_CACHE_NAME).then((cache) => cache.match(request).then((cached) => {
-        if (!cached) return caches.match("/index.html");
+        if (!cached) {
+          // 离线且无 API 缓存:返回 503 JSON 错误,而不是 index.html。
+          // 此前返回 HTML 会被 ApiClient 解析成 {} 当作成功空响应,
+          // 页面呈现"已登录但全空",掩盖真实离线/后端不可用。
+          return new Response(JSON.stringify({ error: "offline" }), {
+            status: 503,
+            statusText: "Offline",
+            headers: { "Content-Type": "application/json" },
+          });
+        }
         const headers = new Headers(cached.headers);
         headers.set("X-WA-Offline", "true");
         return cached.clone().arrayBuffer().then((body) => new Response(body, { status: cached.status, statusText: cached.statusText, headers }));

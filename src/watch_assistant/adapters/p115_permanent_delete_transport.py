@@ -119,9 +119,19 @@ class P115PermanentDeleteTransport:
         size_bytes: int | None,
         timeout_seconds: float,
     ) -> tuple[RecycleBinEntry, ...] | None:
-        """Poll briefly for the provider's eventually-consistent new record."""
+        """Poll briefly for the provider's eventually-consistent new record.
+
+        身份碰撞防护:目标身份只按 (parent_id, name, size_bytes) 匹配,并发动作
+        可能把同目录+同名+同大小的其他文件删进回收站。为避免对碰撞条目执行
+        不可逆清理,要求:
+        - 出现 ≥2 个不同候选时返回 None(UNCERTAIN,禁止任选一个);
+        - 同一 recycle_id 连续两帧稳定出现才返回(给真实条目时间出现);
+        - 超时返回最后见过的稳定单候选,否则 None。
+        """
 
         deadline = time.monotonic() + min(timeout_seconds, 8.0)
+        stable_id: str | None = None
+        stable_observations = 0
         while True:
             remaining = max(0.1, deadline - time.monotonic())
             entries = await self.list_entries(timeout_seconds=remaining)
@@ -139,8 +149,25 @@ class P115PermanentDeleteTransport:
                     or item.size_bytes == size_bytes
                 )
             )
-            if matches or time.monotonic() >= deadline:
-                return matches
+            if len(matches) >= 2:
+                # 多个同身份候选:无法区分本次目标,禁止任选一个(防误删)。
+                return None
+            if matches:
+                candidate = matches[0].recycle_id
+                if stable_id == candidate:
+                    stable_observations += 1
+                    if stable_observations >= 2:
+                        return matches
+                else:
+                    stable_id = candidate
+                    stable_observations = 1
+            else:
+                stable_id = None
+                stable_observations = 0
+            if time.monotonic() >= deadline:
+                # 未能在超时内确认稳定单候选:返回 UNCERTAIN(fail-closed),
+                # 不冒碰撞误删风险。
+                return None
             await asyncio.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
 
     async def wait_until_absent(

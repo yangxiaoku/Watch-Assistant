@@ -60,6 +60,8 @@ def test_strm_write_routes_require_strm_write_scope():
         "/api/v1/libraries/library/strm-generation",
         "/api/v1/libraries/library/strm-incremental",
         "/api/v1/libraries/library/strm-cleanup",
+        "/api/v1/libraries/library/strm-cleanup-plan",
+        "/api/v1/strm-cleanup-plans/plan/apply",
     ):
         request = Request(
             {
@@ -80,6 +82,8 @@ def test_strm_operation_read_routes_require_strm_read_scope():
     for path in (
         "/api/v1/strm-operations/strm_op_1",
         "/api/v1/libraries/library/strm-operations",
+        "/api/v1/libraries/library/strm-manifest",
+        "/api/v1/strm-cleanup-plans/plan",
     ):
         request = Request(
             {

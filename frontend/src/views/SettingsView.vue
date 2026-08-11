@@ -6,6 +6,8 @@ import {
   Cookie,
   ShieldAlert,
   FileText,
+  Folder,
+  FolderOpen,
   KeyRound,
   LoaderCircle,
   RefreshCw,
@@ -369,6 +371,8 @@ async function pollP115QrLogin() {
   if (!settingsMounted || !p115QrSessionId.value) return;
   try {
     const response = await props.api.pollP115Qrcode(p115QrSessionId.value);
+    // await 期间可能已卸载(onBeforeUnmount 清了定时器):不得再写状态或续排定时器。
+    if (!settingsMounted) return;
     p115QrStatus.value = response.status;
     if (response.status === "ready") {
       p115QrBusy.value = false;
@@ -384,6 +388,7 @@ async function pollP115QrLogin() {
     p115QrPollTimer = window.setTimeout(() => void pollP115QrLogin(), 2000);
   } catch (exception) {
     if (exception instanceof ApiError && exception.retryable && p115QrSessionId.value) {
+      if (!settingsMounted) return;
       p115QrStatus.value = "waiting";
       p115QrError.value = "二维码状态暂时未返回，正在重试。";
       p115QrPollTimer = window.setTimeout(() => void pollP115QrLogin(), 2000);
@@ -571,6 +576,7 @@ async function saveInspection() {
       auto_start_enabled: inspectionDraft.value,
       revision: inspectionSettings.value.revision,
     });
+    if (!settingsMounted) return;
     applyInspection(response);
     syncSharedRevision(response.revision);
     emit("auto-start-enabled", response.auto_start_enabled);
@@ -772,6 +778,7 @@ async function saveOrganization() {
       metadata_extensions: extensionList(organizationMetadataExtensionsDraft.value),
       revision: organizationSettings.value.revision,
     });
+    if (!settingsMounted) return;
     applyOrganization(response);
     syncSharedRevision(response.revision);
   } catch (exception) {
@@ -857,6 +864,7 @@ async function saveLogging() {
       retention_days: draftRetentionDays.value,
       max_file_mb: draftMaxFileMb.value,
     });
+    if (!settingsMounted) return;
     applyLogging(response);
     syncSharedRevision(response.revision);
   } catch (exception) {
@@ -922,6 +930,7 @@ async function saveContentPolicy() {
       hide_low_quality_resources: contentDraftHideLowQualityResources.value,
       blocked_keywords: blockedKeywordsDraft.value.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean),
     });
+    if (!settingsMounted) return;
     applyContentPolicy(response);
     syncSharedRevision(response.revision);
   } catch (exception) {
@@ -1283,7 +1292,7 @@ onBeforeUnmount(() => {
               <div class="settings-form-grid"><label>扫描频率（分钟）<input v-model.number="organizationDraft.scan_interval_minutes" type="number" min="5" max="1440" /></label></div>
               <p class="settings-note">当前状态：{{ organizationDraft.schedule_enabled ? '定时整理已启用' : '定时整理已关闭' }}。停止定时会自动关闭开关并保存，正在执行的远端操作不会被强行中断。</p>
             </details>
-             <details class="settings-subsection" open><summary><h3>扫描来源、归档与推送目录</h3><span class="settings-section-disclosure" aria-hidden="true">⌄</span></summary><p class="settings-note">目录选择器从 115 网盘根目录开始浏览。扫描来源可多选，整理归档目录和资源推送目录各选一个；三者保存后分别生效。页面主显示使用可复核的目录名称/相对路径，CID 仅在折叠诊断信息中脱敏显示。</p><div class="directory-selection-grid"><div class="directory-selection-field"><span>整理扫描来源</span><div class="directory-chips"><span v-for="(id, index) in organizationList(organizationSourceDraft)" :key="id" class="directory-chip"><span>{{ sourceDirectoryDisplayLabel(index) }}</span><button type="button" aria-label="移除扫描来源" @click="removeOrganizationSource(index)">×</button></span><span v-if="!organizationList(organizationSourceDraft).length" class="settings-note">尚未选择</span></div><button class="secondary-button" type="button" @click="openDirectoryPicker('source')">📂 选择扫描来源</button></div><div class="directory-selection-field"><span>整理归档目录</span><span v-if="organizationTargetDraft" class="directory-chip"><span>{{ organizationTargetLabelDraft || '目录名称待确认' }}</span></span><span v-else class="settings-note">尚未选择</span><button class="secondary-button" type="button" @click="openDirectoryPicker('target')">📂 选择归档目录</button></div><div class="directory-selection-field"><span>资源推送目录</span><span v-if="organizationPushDraft" class="directory-chip"><span>{{ organizationPushLabelDraft || '目录名称待确认' }}</span></span><span v-else class="settings-note">尚未选择</span><button class="secondary-button" type="button" @click="openDirectoryPicker('push')">📂 选择推送目录</button><p class="settings-note">资源页面点击“推送”时直接使用这里保存的目录，不再临时选择。</p></div></div><details class="directory-diagnostic"><summary>诊断信息</summary><small>扫描来源 CID（脱敏）：{{ redactedDirectoryIds(organizationSourceDraft) }}</small><small>归档目录 CID（脱敏）：{{ redactDirectoryId(organizationTargetDraft) }}</small><small>推送目录 CID（脱敏）：{{ redactDirectoryId(organizationPushDraft) }}</small></details></details>
+             <details class="settings-subsection" open><summary><h3>扫描来源、归档与推送目录</h3><span class="settings-section-disclosure" aria-hidden="true">⌄</span></summary><p class="settings-note">目录选择器从 115 网盘根目录开始浏览。扫描来源可多选，整理归档目录和资源推送目录各选一个；三者保存后分别生效。页面主显示使用可复核的目录名称/相对路径，CID 仅在折叠诊断信息中脱敏显示。</p><div class="directory-selection-grid"><div class="directory-selection-field"><span>整理扫描来源</span><div class="directory-chips"><span v-for="(id, index) in organizationList(organizationSourceDraft)" :key="id" class="directory-chip"><span>{{ sourceDirectoryDisplayLabel(index) }}</span><button type="button" aria-label="移除扫描来源" @click="removeOrganizationSource(index)">×</button></span><span v-if="!organizationList(organizationSourceDraft).length" class="settings-note">尚未选择</span></div><button class="secondary-button" type="button" @click="openDirectoryPicker('source')"><FolderOpen :size="15" /> 选择扫描来源</button></div><div class="directory-selection-field"><span>整理归档目录</span><span v-if="organizationTargetDraft" class="directory-chip"><span>{{ organizationTargetLabelDraft || '目录名称待确认' }}</span></span><span v-else class="settings-note">尚未选择</span><button class="secondary-button" type="button" @click="openDirectoryPicker('target')"><FolderOpen :size="15" /> 选择归档目录</button></div><div class="directory-selection-field"><span>资源推送目录</span><span v-if="organizationPushDraft" class="directory-chip"><span>{{ organizationPushLabelDraft || '目录名称待确认' }}</span></span><span v-else class="settings-note">尚未选择</span><button class="secondary-button" type="button" @click="openDirectoryPicker('push')"><FolderOpen :size="15" /> 选择推送目录</button><p class="settings-note">资源页面点击“推送”时直接使用这里保存的目录，不再临时选择。</p></div></div><details class="directory-diagnostic"><summary>诊断信息</summary><small>扫描来源 CID（脱敏）：{{ redactedDirectoryIds(organizationSourceDraft) }}</small><small>归档目录 CID（脱敏）：{{ redactDirectoryId(organizationTargetDraft) }}</small><small>推送目录 CID（脱敏）：{{ redactDirectoryId(organizationPushDraft) }}</small></details></details>
             <details class="settings-subsection"><summary><h3>高级设置</h3><span class="settings-section-disclosure" aria-hidden="true">⌄</span></summary>
             <div class="settings-subsection"><h3>识别与命名</h3><div class="settings-form-grid"><label>视频文件类型（逗号分隔）<input v-model="organizationVideoExtensionsDraft" placeholder="mkv, mp4, avi" /></label><label>字幕/元数据类型（逗号分隔）<input v-model="organizationMetadataExtensionsDraft" placeholder="srt, ass, nfo" /></label></div><div class="settings-capability-list"><label class="settings-toggle"><input v-model="organizationDraft.rename_enabled" type="checkbox" />标准化重命名</label><label class="settings-toggle"><input v-model="organizationDraft.media_probe_enabled" type="checkbox" />媒体信息提取完善命名</label><label class="settings-toggle"><input v-model="organizationDraft.ai_identification_enabled" type="checkbox" />AI 辅助识别</label></div><p class="settings-note">AI 辅助识别需要先在实用工具完成 API 配置；未配置时不会调用 AI。</p></div>
             <div class="settings-subsection"><h3>整理规则</h3><div class="settings-form-grid"><label>未识别小文件自动删除（MB）<input v-model.number="organizationDraft.small_file_threshold_mb" type="number" min="0" step="0.1" /></label><label>操作延时（秒）<input v-model.number="organizationDraft.operation_delay_seconds" type="number" min="0" max="60" step="0.1" /></label></div><p class="settings-note">低于该大小且无法识别（需要人工确认）的源目录小文件，在每次整理后自动删除到 115 回收站；0 表示不自动删除。</p><div class="settings-capability-list"><label class="settings-toggle"><input v-model="organizationDraft.cleanup_empty_directories" type="checkbox" />整理后清理空文件夹</label><label class="settings-toggle"><input v-model="organizationDraft.strm_linkage_enabled" type="checkbox" />联动生成 STRM</label></div></div>
@@ -1300,7 +1309,7 @@ onBeforeUnmount(() => {
              <header class="directory-picker-heading"><div><p class="eyebrow">115 网盘</p><h2 id="directory-picker-title">选择{{ directoryPickerMode === 'source' ? '扫描来源' : directoryPickerMode === 'target' ? '归档目标' : '资源推送' }}目录</h2><p>相对路径：{{ directoryPickerCurrentPath || '根目录' }}</p><details class="directory-diagnostic"><summary>诊断信息</summary><small>CID（脱敏）：{{ redactDirectoryId(directoryPickerCurrentId) }}</small></details></div><button class="icon-button" type="button" aria-label="关闭目录选择器" title="关闭" @click="directoryPickerOpen = false">×</button></header>
             <div v-if="directoryPickerLoading" class="settings-loading"><LoaderCircle class="spin" :size="20" />正在读取目录</div>
             <div v-else-if="directoryPickerError" class="settings-state settings-state-error" role="alert"><AlertTriangle :size="18" /><span>{{ directoryPickerError }}</span><button class="text-button" type="button" @click="loadDirectoryPicker">重试</button></div>
-           <template v-else><div class="directory-picker-toolbar"><button class="secondary-button" type="button" :disabled="!directoryPickerTrail.length" @click="leaveDirectory">返回上级</button><button class="primary-button" type="button" :disabled="!directoryPickerCurrentId || directoryPickerCurrentId === '0'" @click="chooseDirectory">{{ directoryPickerCurrentId === '0' ? '根目录不可直接选择' : '选择当前目录' }}</button></div><div v-if="!directoryPickerItems.length" class="settings-empty-block">当前目录没有可浏览的子目录。</div><div class="directory-picker-list"><button v-for="item in directoryPickerItems" :key="item.id" type="button" class="directory-picker-item" @click="enterDirectory(item)"><span>📁</span><span>{{ item.name }}</span><span>进入</span></button></div></template>
+           <template v-else><div class="directory-picker-toolbar"><button class="secondary-button" type="button" :disabled="!directoryPickerTrail.length" @click="leaveDirectory">返回上级</button><button class="primary-button" type="button" :disabled="!directoryPickerCurrentId || directoryPickerCurrentId === '0'" @click="chooseDirectory">{{ directoryPickerCurrentId === '0' ? '根目录不可直接选择' : '选择当前目录' }}</button></div><div v-if="!directoryPickerItems.length" class="settings-empty-block">当前目录没有可浏览的子目录。</div><div class="directory-picker-list"><button v-for="item in directoryPickerItems" :key="item.id" type="button" class="directory-picker-item" @click="enterDirectory(item)"><Folder :size="16" /><span>{{ item.name }}</span><span>进入</span></button></div></template>
           </section>
         </div>
 

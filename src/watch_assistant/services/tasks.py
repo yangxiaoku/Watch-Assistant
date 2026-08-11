@@ -9,7 +9,13 @@ from uuid import uuid4
 from sqlalchemy import and_, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from watch_assistant.models import Resource, Task, TaskState, WorkflowEvidence
+from watch_assistant.models import (
+    Resource,
+    Task,
+    TaskState,
+    WorkflowEvidence,
+    WorkflowStage,
+)
 from watch_assistant.schemas import (
     EvidenceSource,
     EvidenceStatus,
@@ -37,6 +43,46 @@ REUSABLE_STATES = (
     TaskState.DOWNLOADING,
     TaskState.AVAILABLE,
 )
+
+# PUSH 阶段"在途"子任务状态:此时再向同一 workflow 推送第二个任务会覆盖
+# child 绑定,导致第一个任务终态静默丢失(见 _assert_push_stage_available)。
+_PUSH_ACTIVE_TASK_STATES = frozenset(
+    {
+        TaskState.QUEUED,
+        TaskState.SUBMITTING,
+        TaskState.SUBMITTED,
+        TaskState.DOWNLOADING,
+        TaskState.NEEDS_AUTH,
+    }
+)
+
+
+async def _assert_push_stage_available(
+    session: AsyncSession,
+    workflow_id: str,
+    *,
+    exclude_task_id: str | None,
+) -> None:
+    """同一 workflow 的 PUSH 阶段同时只允许一个在途子任务。
+
+    并发向同一 workflow 推送第二个任务时,link_child(allow_same_type_rebind=True)
+    会直接改写 PUSH 阶段的 child_id;第一个任务完成时 sync_child_stage 的
+    _ensure_child_binding(allow_same_type_rebind=False) 抛 workflow_conflict,
+    worker 标记租约丢失,第一个任务变 UNCERTAIN 且 remote_ref 未持久化。
+    创建前检查:若 PUSH 阶段已绑定其他在途任务,拒绝本次推送。
+    """
+    stage = await session.scalar(
+        select(WorkflowStage).where(
+            WorkflowStage.workflow_id == workflow_id,
+            WorkflowStage.stage == WorkflowStageName.PUSH,
+        )
+    )
+    if stage is None or not stage.child_id or stage.child_id == exclude_task_id:
+        return
+    child = await session.get(Task, stage.child_id)
+    if child is None or child.state not in _PUSH_ACTIVE_TASK_STATES:
+        return
+    raise WorkflowConflict("workflow_conflict")
 
 
 class TaskStatusAdapter(Protocol):
@@ -517,6 +563,11 @@ class TaskService:
                             elif evidence.workflow_id != workflow_id:
                                 raise WorkflowConflict("workflow_conflict")
                         await _skip_pending_prerequisites_before_push(session, workflow_id)
+                        await _assert_push_stage_available(
+                            session,
+                            workflow_id,
+                            exclude_task_id=existing.id,
+                        )
                         await link_child(
                             session,
                             workflow_id,
@@ -553,6 +604,11 @@ class TaskService:
                 # 直接推送：跳过仍处于 PENDING 的前置阶段（检测/人工确认），
                 # 让推送阶段可以直接开始。
                 await _skip_pending_prerequisites_before_push(session, workflow_id)
+                await _assert_push_stage_available(
+                    session,
+                    workflow_id,
+                    exclude_task_id=task.id,
+                )
                 await link_child(
                     session,
                     workflow_id,

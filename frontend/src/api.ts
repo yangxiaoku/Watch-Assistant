@@ -691,6 +691,17 @@ export class ApiClient {
       const requestInit: RequestInit = { ...init, headers, credentials: "same-origin" };
       if (init.method) requestInit.method = method;
       const response = await fetch(path, requestInit);
+      const contentType = response.headers.get("Content-Type") ?? "";
+      if (response.ok && contentType.includes("text/html")) {
+        // SPA shell 泄漏进 API 响应(如离线回退误返回 index.html):200 但
+        // 非 JSON,解析会得 {} 被当作成功空响应,掩盖真实故障。
+        throw new ApiError("服务返回了非预期的页面响应。", response.status, "invalid_response", {
+          title: "响应异常",
+          suggestion: "请刷新页面重试。",
+          retryable: true,
+          action: "retry",
+        });
+      }
       const body = await response.json().catch(() => ({}));
       if (!response.ok) {
         const detail = body.error ?? body.detail;

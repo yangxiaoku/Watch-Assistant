@@ -312,4 +312,6 @@ async def revoke_p115_device(device_id: str, request: Request) -> None:
     try:
         await _device_service(request).revoke(device_id)
     except P115LoginDeviceError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from None
+        # 设备已不存在是客户端资源定位问题(404),非冲突(409)。
+        status = 404 if str(exc) == "device_not_found" else 409
+        raise HTTPException(status_code=status, detail=str(exc)) from None
