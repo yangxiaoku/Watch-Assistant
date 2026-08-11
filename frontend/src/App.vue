@@ -3,7 +3,9 @@ import { LoaderCircle, LogIn, Menu, PanelRight, X } from "@lucide/vue";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 import { ApiClient, ApiError } from "./api";
 import { useAuth } from "./composables/useAuth";
+import { useCapabilities } from "./composables/useCapabilities";
 import { useConnectivity } from "./composables/useConnectivity";
+import { useFavoritesHistory } from "./composables/useFavoritesHistory";
 import AppShell from "./layout/AppShell.vue";
 import AppSidebar from "./layout/AppSidebar.vue";
 import AppTopbar from "./layout/AppTopbar.vue";
@@ -21,13 +23,13 @@ import {
   type MediaResourceRouteState,
 } from "./router";
 import { mediaKey, mediaTypeOf } from "./media";
-import { canPushResource, NO_PUSH_CAPABILITIES, resolvePushCapabilities, submitPushResource, type PushCapabilities } from "./push";
+import { canPushResource, submitPushResource } from "./push";
 import { finalizeInspectionResources, inspectionProgress as getInspectionProgress, inspectionResultEnded, inspectionState as getInspectionBatchState, MAX_INSPECTABLE_MAGNETS, mergeInspectionResult, nextInspectionResourceIds, pollInspectionBatch } from "./inspection";
 import { describeUiError } from "./errorCatalog";
 import { waitForResourceSearch as pollResourceSearch } from "./resourceSearchPolling";
 import { sourceNameList } from "./resourceSources";
 import { createTaskRefreshGuard, isActiveTask } from "./taskPolling";
-import type { CapabilityAvailability, HomeCatalogResponse, MovieMetadata, ResourceFacets, ResourcePageResponse, ResourceQuality, ResourceSearchResponse, ResourceSort, ResourceSummary, SearchResponse, SeasonDetailResponse, TaskResponse } from "./types";
+import type { HomeCatalogResponse, MovieMetadata, ResourceFacets, ResourcePageResponse, ResourceQuality, ResourceSearchResponse, ResourceSort, ResourceSummary, SearchResponse, SeasonDetailResponse, TaskResponse } from "./types";
 import CollectionView from "./views/CollectionView.vue";
 import HomeView from "./views/HomeView.vue";
 import LibraryView from "./views/LibraryView.vue";
@@ -40,13 +42,26 @@ import NotificationCenterView from "./views/NotificationCenterView.vue";
 import LogsView from "./views/LogsView.vue";
 import OrganizationView from "./views/OrganizationView.vue";
 
-const FAVORITES_KEY = "watch-assistant:favorites";
-const HISTORY_KEY = "watch-assistant:history";
 const api = new ApiClient();
 const auth = useAuth(api, initializeWorkspace);
 const { username, password, authenticated, loggingIn, error, login } = auth;
 const connectivity = useConnectivity();
 const { isOnline, offlineDataAt, updateOnline, recordOfflineData } = connectivity;
+const favoritesStore = useFavoritesHistory();
+const { favorites, history, favoriteIds, toggleFavorite, recordHistory } = favoritesStore;
+const capabilities = useCapabilities();
+const {
+  pushCapabilities,
+  inspectionSupported,
+  inspectionAutoStartEnabled,
+  organizationPlanCapability,
+  organizationPlanEnabled,
+  organizationExecutionSupported,
+  strmFullCapability,
+  strmIncrementalCapability,
+  strmCleanupCapability,
+  emptyDirectoryCleanupCapability,
+} = capabilities;
 const query = ref("");
 const searchInput = ref("");
 const catalogLoading = ref(false);
@@ -68,31 +83,13 @@ const sort = ref<"popular" | "rating" | "release">("popular");
 const currentPage = ref(1);
 const totalPages = ref(1);
 const totalResults = ref(0);
-const favorites = ref<MovieMetadata[]>(readStoredMovies(FAVORITES_KEY));
-const history = ref<MovieMetadata[]>(readStoredMovies(HISTORY_KEY));
 const tasks = ref<TaskResponse[]>([]);
 const activeWorkflowId = ref<string | null>(null);
 const pushingId = ref<string | null>(null);
 const drawerOpen = ref(false);
 const mobileNavOpen = ref(false);
-const pushCapabilities = ref<PushCapabilities>({ ...NO_PUSH_CAPABILITIES });
-const inspectionSupported = ref(false);
-const inspectionAutoStartEnabled = ref<boolean | "unknown">("unknown");
-const organizationPlanEnabled = ref(false);
-const organizationExecutionSupported = ref(false);
 // 可直达的连接配置页还包括 credentials(设置 → 连接配置 → TMDB API Key)
 const settingsInitialSection = ref<"overview" | "organization" | "credentials">("overview");
-const unavailableCapability = (settingsSection: CapabilityAvailability["settings_section"] = "overview"): CapabilityAvailability => ({
-  enabled: false,
-  reason_code: "capability_unknown",
-  reason_zh: "当前未读取能力状态，请刷新页面后重试。",
-  settings_section: settingsSection,
-});
-const strmFullCapability = ref<CapabilityAvailability>(unavailableCapability());
-const strmIncrementalCapability = ref<CapabilityAvailability>(unavailableCapability());
-const strmCleanupCapability = ref<CapabilityAvailability>(unavailableCapability());
-const emptyDirectoryCleanupCapability = ref<CapabilityAvailability>(unavailableCapability());
-const organizationPlanCapability = ref<CapabilityAvailability>(unavailableCapability());
 const selectedSeason = ref<number | null>(null);
 const seasonDetail = ref<SeasonDetailResponse | null>(null);
 const seasonDetailLoading = ref(false);
@@ -196,7 +193,6 @@ let pendingCatalogRoute: CatalogRoute | null = null;
 let catalogReturnRoute: CatalogRoute | null = null;
 let catalogReturnScrollY: number | null = null;
 
-const favoriteIds = computed(() => new Set(favorites.value.map(mediaKey)));
 const detailFavorite = computed(() => result.value ? favoriteIds.value.has(mediaKey(result.value.movie)) : false);
 const hasActiveTasks = computed(() => tasks.value.some(isActiveTask));
 const resourceItems = computed(() => {
@@ -504,49 +500,6 @@ const inspectionMoreAvailable = computed(() => {
   if (inspectionAutoRequestId.value !== searchRequestId) return false;
   return inspectionBatchIds(1).length > 0;
 });
-
-function healthCapability(
-  enabled: boolean | undefined,
-  reasonCode: string,
-  label: string,
-  settingsSection: CapabilityAvailability["settings_section"] = "overview",
-): CapabilityAvailability {
-  if (enabled === undefined) return unavailableCapability(settingsSection);
-  return {
-    enabled,
-    reason_code: enabled ? null : reasonCode,
-    reason_zh: enabled ? "可执行" : `${label}未启用，请在${settingsSection === "organization" ? "自动整理设置" : "设置概览"}查看功能状态。`,
-    settings_section: settingsSection,
-  };
-}
-
-function readStoredMovies(key: string): MovieMetadata[] {
-  try {
-    const value = JSON.parse(localStorage.getItem(key) ?? "[]");
-    return Array.isArray(value)
-      ? value.filter((movie) => Number.isInteger(movie?.tmdb_id) && typeof movie?.title === "string")
-      : [];
-  } catch {
-    return [];
-  }
-}
-
-function storeMovies(key: string, movies: MovieMetadata[]) {
-  localStorage.setItem(key, JSON.stringify(movies));
-}
-
-function toggleFavorite(movie: MovieMetadata) {
-  const key = mediaKey(movie);
-  favorites.value = favoriteIds.value.has(key)
-    ? favorites.value.filter((item) => mediaKey(item) !== key)
-    : [movie, ...favorites.value].slice(0, 100);
-  storeMovies(FAVORITES_KEY, favorites.value);
-}
-
-function recordHistory(movie: MovieMetadata) {
-  history.value = [movie, ...history.value.filter((item) => mediaKey(item) !== mediaKey(movie))].slice(0, 50);
-  storeMovies(HISTORY_KEY, history.value);
-}
 
 async function loadHome() {
   if (homeCatalog.value) return;
@@ -1523,25 +1476,7 @@ onMounted(async () => {
   let sessionOk = false;
   try {
     const health = await api.health();
-    pushCapabilities.value = resolvePushCapabilities(health);
-    inspectionSupported.value = health.inspection_supported === true;
-    inspectionAutoStartEnabled.value = health.inspection_auto_start_enabled === true;
-    organizationPlanCapability.value = healthCapability(health.organization_plan_enabled, "organization_plan_disabled", "自动整理计划", "organization");
-    organizationPlanEnabled.value = organizationPlanCapability.value.enabled;
-    organizationExecutionSupported.value = health.organization_execution_supported === true;
-    strmFullCapability.value = healthCapability(health.strm_capabilities?.full, "strm_full_disabled", "STRM 全量生成");
-    strmIncrementalCapability.value = healthCapability(health.strm_capabilities?.incremental, "strm_incremental_disabled", "STRM 增量同步");
-    const strmCleanup = health.strm_capabilities?.cleanup_capability;
-    strmCleanupCapability.value = strmCleanup ?? {
-      enabled: health.strm_capabilities?.cleanup === true,
-      reason_code: health.strm_capabilities?.cleanup === true ? null : "strm_cleanup_disabled",
-      reason_zh: health.strm_capabilities?.cleanup === true
-        ? "可用"
-        : "STRM 失效清理未启用，请检查部署功能开关。",
-      settings_section: "overview",
-    };
-    emptyDirectoryCleanupCapability.value = health.organization_capabilities?.empty_directory_cleanup
-      ?? unavailableCapability();
+    capabilities.applyHealth(health);
     sessionOk = await auth.checkSession();
   } catch {
     sessionOk = false;
