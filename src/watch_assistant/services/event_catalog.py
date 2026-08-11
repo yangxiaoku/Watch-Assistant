@@ -359,6 +359,12 @@ EVENT_CATALOG: dict[str, EventDefinition] = {
         "空目录清理计划已执行",
         "空目录清理计划已执行，处理 {count} 个受管目录",
     ),
+    "library.object.permanently_deleted": _event(
+        "library.object.permanently_deleted",
+        LogCategory.LIBRARY,
+        "文件已永久删除",
+        "文件已永久删除，结果状态：{status}",
+    ),
     "library.identity.bound": _event(
         "library.identity.bound",
         LogCategory.LIBRARY,

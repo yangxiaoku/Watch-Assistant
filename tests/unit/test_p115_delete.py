@@ -177,3 +177,142 @@ async def test_recycle_bin_listing_paginates_beyond_first_page(tmp_path: Path):
         timeout_seconds=5.0,
     )
     assert found and found[0].recycle_id == "1249"
+
+
+
+async def _delete_service_factory(database, client):
+    async def call_executor(method, payload, *, timeout_seconds):
+        return method(payload, async_=False)
+
+    return P115DeleteService(
+        database.session_factory,
+        _CookieProvider(),
+        client_factory=lambda _cookie: client,
+        call_executor=call_executor,
+    )
+
+
+async def test_delete_gate_denies_when_gate_raises(tmp_path: Path):
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'delete-gate.db'}")
+    await initialize_database(database.engine)
+    async with database.session_factory() as session:
+        session.add(
+            MediaLibrary(
+                id="library-gate",
+                name="GATE",
+                root_directory_id="7000",
+                scope_verified=True,
+                enabled=True,
+                revision=1,
+            )
+        )
+        await session.flush()
+        session.add(
+            LibraryScanRun(
+                id="scan-gate",
+                library_id="library-gate",
+                root_directory_id="7000",
+                idempotency_key="gate-key",
+                state="completed",
+                complete=True,
+                snapshot_revision=1,
+            )
+        )
+        await session.flush()
+        session.add(
+            LibraryScanEntry(
+                scan_run_id="scan-gate",
+                object_type="file",
+                object_id="100",
+                parent_id="7000",
+                name="gone.mkv",
+                path="gone.mkv",
+                is_directory=False,
+                size_bytes=100,
+            )
+        )
+        await session.commit()
+    client = _Client()
+    service = await _delete_service_factory(database, client)
+
+    def denying_gate():
+        raise RuntimeError("permanent_delete_disabled")
+
+    result = await service.delete(
+        "library-gate",
+        "100",
+        expected_name="gone.mkv",
+        confirmed=True,
+        gate=denying_gate,
+    )
+    assert result.status is DeleteStatus.FAILED
+    assert result.error_code == "delete_gate_denied"
+    assert client.deleted is False
+    await database.engine.dispose()
+
+
+async def test_delete_gate_is_optional_and_success_path_unchanged(tmp_path: Path):
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'delete-optional.db'}")
+    await initialize_database(database.engine)
+    async with database.session_factory() as session:
+        session.add(
+            MediaLibrary(
+                id="library-optional",
+                name="OPTIONAL",
+                root_directory_id="7000",
+                scope_verified=True,
+                enabled=True,
+                revision=1,
+            )
+        )
+        await session.flush()
+        session.add(
+            LibraryScanRun(
+                id="scan-optional",
+                library_id="library-optional",
+                root_directory_id="7000",
+                idempotency_key="optional-key",
+                state="completed",
+                complete=True,
+                snapshot_revision=1,
+            )
+        )
+        await session.flush()
+        session.add(
+            LibraryScanEntry(
+                scan_run_id="scan-optional",
+                object_type="file",
+                object_id="100",
+                parent_id="7000",
+                name="gone.mkv",
+                path="gone.mkv",
+                is_directory=False,
+                size_bytes=100,
+            )
+        )
+        await session.commit()
+    client = _Client()
+    service = await _delete_service_factory(database, client)
+
+    # 未传 gate(旧调用方式)行为不变;传通过的门禁也不拦截。
+    result = await service.delete(
+        "library-optional",
+        "100",
+        expected_name="gone.mkv",
+        confirmed=True,
+    )
+    assert result.status is DeleteStatus.SUCCESS
+    assert client.deleted is True
+
+    client2 = _Client()
+    service2 = await _delete_service_factory(database, client2)
+    result = await service2.delete(
+        "library-optional",
+        "100",
+        expected_name="gone.mkv",
+        confirmed=True,
+        gate=lambda: None,
+    )
+    assert result.status is DeleteStatus.SUCCESS
+    assert client2.deleted is True
+    await database.engine.dispose()

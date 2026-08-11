@@ -68,9 +68,15 @@ class P115DeleteService:
         *,
         expected_name: str,
         confirmed: bool,
+        gate: Callable[[], None] | None = None,
     ) -> DeleteResult:
         if not confirmed:
             return DeleteResult(DeleteStatus.FAILED, "confirmation_required")
+        if gate is not None:
+            try:
+                gate()
+            except Exception:  # noqa: BLE001 - gate details stay private
+                return DeleteResult(DeleteStatus.FAILED, "delete_gate_denied")
         async with self._session_factory() as session:
             library = await session.get(MediaLibrary, library_id)
             run = await session.scalar(

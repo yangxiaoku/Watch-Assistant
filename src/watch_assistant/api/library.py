@@ -89,7 +89,7 @@ from watch_assistant.services.organization_target import (
     OrganizationTargetError,
     read_target_catalog,
 )
-from watch_assistant.services.p115_delete import P115DeleteService
+from watch_assistant.services.p115_delete import DeleteStatus, P115DeleteService
 from watch_assistant.services.strm_operations import (
     StrmOperationError,
     StrmOperationKind,
@@ -106,7 +106,7 @@ OrganizeWriteDependency = Annotated[AuthContext, Depends(require_scope("organize
 _LIBRARY_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
 
 
-async def require_permanent_delete_enabled(request: Request) -> None:
+def _require_permanent_delete_enabled_state(request: Request) -> None:
     if not getattr(request.app.state, "organization_write_enabled", False):
         raise HTTPException(status_code=503, detail="organization_write_disabled")
     if not getattr(
@@ -117,6 +117,10 @@ async def require_permanent_delete_enabled(request: Request) -> None:
         raise HTTPException(status_code=503, detail="permanent_delete_disabled")
     if not getattr(request.app.state, "permanent_delete_contract_verified", False):
         raise HTTPException(status_code=503, detail="permanent_delete_unverified")
+
+
+async def require_permanent_delete_enabled(request: Request) -> None:
+    _require_permanent_delete_enabled_state(request)
 
 
 def _stable_library_id(value: str) -> bool:
@@ -1085,7 +1089,22 @@ async def delete_library_object(
         object_id,
         expected_name=payload.expected_name,
         confirmed=payload.confirm,
+        # 服务层门禁兜底:即使绕过路由依赖直接调用,删除前仍校验写开关。
+        gate=lambda: _require_permanent_delete_enabled_state(request),
     )
+    if result.status is not DeleteStatus.FAILED:
+        settings_service = getattr(request.app.state, "settings_service", None)
+        if settings_service is not None:
+            await settings_service.log_event(
+                "library.object.permanently_deleted",
+                fields={"status": result.status.value},
+                counts={"count": 1},
+                actor_type="agent" if context.via_bearer else "web",
+                actor_id=context.identity,
+                resource_type="library",
+                resource_id=library_id,
+                error_code=result.error_code,
+            )
     return LibraryDeleteResponse(status=result.status.value, error_code=result.error_code)
 
 
