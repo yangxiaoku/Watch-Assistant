@@ -940,6 +940,22 @@ class OrganizationOperationService:
                     target_directory_id=target_directory_id,
                     completed_at=current_time,
                 )
+                # 整理完成即结束计划生命周期:organized 后计划置为
+                # invalidated,不再停留在"待处理/已确认"列表。
+                await session.execute(
+                    update(OrganizationPlan)
+                    .where(
+                        OrganizationPlan.id == operation.plan_id,
+                        OrganizationPlan.status.in_(
+                            (
+                                OrganizationPlanStatus.NEEDS_REVIEW.value,
+                                OrganizationPlanStatus.PLANNED.value,
+                            )
+                        ),
+                    )
+                    .values(status=OrganizationPlanStatus.INVALIDATED.value)
+                    .execution_options(synchronize_session=False)
+                )
                 await _sync_workflow_stage(
                     session,
                     operation.workflow_id,
@@ -1102,6 +1118,22 @@ class OrganizationOperationService:
                     source_directory_id=source_directory_id,
                     target_directory_id=target_directory_id,
                     completed_at=current_time,
+                )
+                # 整理完成即结束计划生命周期:organized 后计划置为
+                # invalidated,不再停留在"待处理/已确认"列表。
+                await session.execute(
+                    update(OrganizationPlan)
+                    .where(
+                        OrganizationPlan.id == operation.plan_id,
+                        OrganizationPlan.status.in_(
+                            (
+                                OrganizationPlanStatus.NEEDS_REVIEW.value,
+                                OrganizationPlanStatus.PLANNED.value,
+                            )
+                        ),
+                    )
+                    .values(status=OrganizationPlanStatus.INVALIDATED.value)
+                    .execution_options(synchronize_session=False)
                 )
                 await _sync_workflow_stage(
                     session,
