@@ -152,7 +152,9 @@ _ORGANIZATION_DEFAULTS: dict[str, object] = {
     "prefer_remux": True,
     "prefer_resolution": True,
     "prefer_dolby": False,
-    "conflict_mode": 2,
+    "conflict_mode": 0,
+    # 版本冲突默认用更高分辨率/码率的版本替换目标已有低版本
+    # (替换时旧版本移入回收站,可恢复)。
     "multi_version_enabled": False,
 }
 
