@@ -126,6 +126,15 @@ _HDR_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 )
 _AUDIO_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
+        "track-count",
+        # 音轨数标记(4Audio/2Audio/DualAudio 等)不是标题的一部分,
+        # 混入标题会导致 TMDB 搜索空结果。
+        re.compile(
+            r"(?<![A-Za-z0-9])(?:[0-9]+|Dual)[ ._-]*Audio(?![A-Za-z0-9])",
+            re.IGNORECASE,
+        ),
+    ),
+    (
         "TrueHD",
         # The trailing lookahead allows a channel count to follow the codec
         # (e.g. "TrueHD 5.1"), because releases often write it with no separator.
