@@ -25,6 +25,7 @@ const emit = defineEmits<{
             type="button"
             class="sidebar-item"
             :class="{ active: activeView === item.view }"
+            :title="item.label"
             @click="emit('navigate', item.view)"
           >
             <span class="sidebar-item-light" aria-hidden="true" />
