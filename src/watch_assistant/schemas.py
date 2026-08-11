@@ -816,6 +816,8 @@ class OrganizationAutomationResultResponse(BaseModel):
     items: list[OrganizationResultItemResponse] = Field(default_factory=list)
     finished_at: datetime | None = None
     run_id: str | None = None
+    cleaned_small_files: int = Field(ge=0, default=0)
+    cleaned_empty_dirs: int = Field(ge=0, default=0)
 
 
 class OrganizationHistoryResponse(BaseModel):

@@ -403,6 +403,24 @@ async def test_settings_patch_persists_and_rejects_stale_revision(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_organization_settings_default_small_file_threshold_is_100mb(tmp_path: Path):
+    from watch_assistant.db import create_database, initialize_database
+    from watch_assistant.services.settings import SettingsService
+
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'org-defaults.db'}")
+    await initialize_database(database.engine)
+    service = SettingsService(
+        database.session_factory,
+        state_directory=tmp_path / "state",
+    )
+
+    organization = await service.get_organization()
+
+    assert organization.small_file_threshold_mb == 100.0
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_concurrent_initial_logging_settings_create_one_row(tmp_path: Path):
     from watch_assistant.db import create_database, initialize_database
     from watch_assistant.services.settings import SettingsService

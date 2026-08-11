@@ -1,14 +1,16 @@
-"""Scheduled, read-first organization planning with no remote write path."""
+"""Scheduled, read-first organization planning with bounded auto cleanup."""
 
 from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import json
+import logging
 import re
 import uuid
-from collections.abc import Awaitable, Callable, Collection, Mapping
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
 from typing import Literal
@@ -16,6 +18,7 @@ from typing import Literal
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from watch_assistant.adapters.p115_c03_live_transport import P115C03LiveTransport
 from watch_assistant.adapters.p115_library import (
     P115LibraryGateway,
     ScanState,
@@ -24,6 +27,10 @@ from watch_assistant.adapters.p115_library import (
 from watch_assistant.adapters.p115_library_gateway import (
     MAX_SCOPE_VERIFICATION_PAGES,
     P115ReadOnlyGatewayError,
+)
+from watch_assistant.adapters.p115_library_write_contract import (
+    WriteStatus,
+    prepare_delete,
 )
 from watch_assistant.library_models import (
     LibraryScanCheckpoint,
@@ -51,6 +58,7 @@ from watch_assistant.services.organization_plan import (
     OrganizationPlanError,
     OrganizationPlanService,
     OrganizationPlanStatus,
+    OrganizationPlanView,
 )
 from watch_assistant.services.organization_preview import (
     OrganizationPreviewError,
@@ -62,6 +70,8 @@ from watch_assistant.services.organization_target import (
     read_target_catalog,
 )
 from watch_assistant.services.settings import SettingsService
+
+logger = logging.getLogger(__name__)
 
 
 class OrganizationAutomationError(ValueError):
@@ -129,6 +139,8 @@ class OrganizationAutomationResult:
     plan_ids: tuple[str, ...] = ()
     finished_at: datetime | None = None
     run_id: str | None = None
+    cleaned_small_files: int = 0
+    cleaned_empty_dirs: int = 0
 
     def __repr__(self) -> str:
         return (
@@ -138,9 +150,33 @@ class OrganizationAutomationResult:
             f"blocked_count={self.blocked_count}, "
             f"blocked_detail_count={len(self.blocked_details)}, "
             f"plan_count={len(self.plan_ids)}, "
+            f"cleaned_small_files={self.cleaned_small_files}, "
+            f"cleaned_empty_dirs={self.cleaned_empty_dirs}, "
             f"finished_at={self.finished_at!r}, "
             f"run_id_present={self.run_id is not None})"
         )
+
+
+@dataclass(frozen=True, slots=True)
+class _SmallFileCandidate:
+    object_id: str
+    parent_id: str
+    name: str
+
+
+@dataclass(slots=True)
+class _SourceDirectoryTree:
+    """Live children of one source root, keyed by directory id."""
+
+    files: dict[str, set[str]] = field(default_factory=dict)
+    children: dict[str, set[str]] = field(default_factory=dict)
+    parents: dict[str, str] = field(default_factory=dict)
+
+
+CleanupTransportFactory = Callable[
+    [], Awaitable[P115C03LiveTransport] | P115C03LiveTransport
+]
+_CLEANUP_CALL_TIMEOUT_SECONDS = 30.0
 
 
 GatewayFactory = Callable[[Collection[str]], P115LibraryGateway]
@@ -163,6 +199,7 @@ class OrganizationAutomationService:
         directory_provisioner: DirectoryProvisioner | None = None,
         hydrate_file_details: bool = False,
         event_logger: object | None = None,
+        cleanup_transport_factory: CleanupTransportFactory | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._settings = settings_service
@@ -176,6 +213,10 @@ class OrganizationAutomationService:
         # directories and never holds write credentials.
         self._auto_execute = bool(auto_execute)
         del directory_provisioner
+        # 自动清理的远端写入口:由运行时注入生产 transport
+        # (P115C03ProductionTransport + p115_c03_timeout_executor)。未注入时
+        # 自动清理整体跳过(读取型自动化保持可用)。
+        self._cleanup_transport_factory = cleanup_transport_factory
         self._event_logger = event_logger or settings_service
         self._lock = asyncio.Lock()
         self.last_result: OrganizationAutomationResult | None = None
@@ -234,6 +275,8 @@ class OrganizationAutomationService:
                 plan_ids=result.plan_ids,
                 finished_at=datetime.now(UTC),
                 run_id=run_id,
+                cleaned_small_files=result.cleaned_small_files,
+                cleaned_empty_dirs=result.cleaned_empty_dirs,
             )
             return True
 
@@ -269,6 +312,7 @@ class OrganizationAutomationService:
             raise OrganizationAutomationError("source_target_overlap")
 
         scanned = plans = queued = blocked = 0
+        cleaned_small = cleaned_empty = 0
         plan_ids: list[str] = []
         blocked_details: list[OrganizationBlockedDetail] = []
         for source_id in settings.source_directory_ids:
@@ -391,6 +435,16 @@ class OrganizationAutomationService:
                             )
                     else:
                         await self._log_preview(plan.status.value, plan.source_count)
+                cleaned_files, cleaned_dirs = await self._auto_clean_source(
+                    source_id,
+                    library_id=library_id,
+                    scan_run_id=scan.run_id,
+                    preview_plans=preview_plans,
+                    small_file_threshold_mb=settings.small_file_threshold_mb,
+                    operation_delay_seconds=settings.operation_delay_seconds,
+                )
+                cleaned_small += cleaned_files
+                cleaned_empty += cleaned_dirs
             except asyncio.CancelledError:
                 raise
             except (
@@ -417,6 +471,8 @@ class OrganizationAutomationService:
             blocked_count=blocked,
             blocked_details=tuple(blocked_details),
             plan_ids=tuple(plan_ids),
+            cleaned_small_files=cleaned_small,
+            cleaned_empty_dirs=cleaned_empty,
         )
 
     async def result_items(self) -> tuple[OrganizationResultItem, ...]:
@@ -720,6 +776,338 @@ class OrganizationAutomationService:
             return "auto_queue_failed"
         return None
 
+    async def _auto_clean_source(
+        self,
+        source_id: str,
+        *,
+        library_id: str,
+        scan_run_id: str,
+        preview_plans: Sequence[OrganizationPlanView],
+        small_file_threshold_mb: float,
+        operation_delay_seconds: float,
+    ) -> tuple[int, int]:
+        """Delete unrecognized small files and prune empty source directories.
+
+        Runs after preview generation, per source, strictly best-effort: any
+        failure leaves the pass result intact (the blocked-detail bookkeeping
+        stays untouched) and cleanup simply does not count that pass.
+        """
+        if self._cleanup_transport_factory is None:
+            return 0, 0
+        try:
+            transport = await _resolve_transport(self._cleanup_transport_factory())
+        except Exception:  # noqa: BLE001 - cleanup stays best-effort
+            logger.warning(
+                "auto-clean transport unavailable; skipping cleanup for source"
+            )
+            return 0, 0
+        cleaned_files = cleaned_dirs = 0
+        deleted_ids: set[str] = set()
+        try:
+            if small_file_threshold_mb > 0:
+                candidates = await self._small_review_file_candidates(
+                    scan_run_id,
+                    preview_plans,
+                    small_file_threshold_mb=small_file_threshold_mb,
+                )
+                if candidates:
+                    deleted_ids = await self._delete_small_files(
+                        transport,
+                        candidates,
+                        operation_delay_seconds=operation_delay_seconds,
+                    )
+                    cleaned_files = len(deleted_ids)
+                    if deleted_ids:
+                        await self._invalidate_plans_for_deleted(
+                            library_id, deleted_ids
+                        )
+            cleaned_dirs = await self._cleanup_empty_directories(
+                transport,
+                source_id,
+                operation_delay_seconds=operation_delay_seconds,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("auto-clean failed; the pass continues without cleanup")
+        finally:
+            try:
+                await _close_transport(transport)
+            except Exception:  # client teardown never fails the pass
+                logger.warning("auto-clean transport close failed", exc_info=True)
+        if cleaned_files or cleaned_dirs:
+            await self._log_cleaned(cleaned_files, cleaned_dirs)
+        return cleaned_files, cleaned_dirs
+
+    async def _small_review_file_candidates(
+        self,
+        scan_run_id: str,
+        preview_plans: Sequence[OrganizationPlanView],
+        *,
+        small_file_threshold_mb: float,
+    ) -> tuple[_SmallFileCandidate, ...]:
+        """Collect review-only sources from the just-created plans that are
+        smaller than the threshold.
+
+        Only ``review`` actions qualify (matched/move files are never touched).
+        The scan snapshot rows provide the authoritative size; the plan
+        snapshot carries the name/parent pair the plan committed to, and both
+        must agree before a file may be considered for cleanup.
+        """
+        threshold_bytes = small_file_threshold_mb * 1024 * 1024
+        plan_ids = tuple(plan.plan_id for plan in preview_plans)
+        if not plan_ids:
+            return ()
+        review_sources: dict[str, tuple[str, str]] = {}
+        move_sources: set[str] = set()
+        async with self._session_factory() as session:
+            plans = list(
+                (
+                    await session.scalars(
+                        select(OrganizationPlan).where(
+                            OrganizationPlan.id.in_(plan_ids)
+                        )
+                    )
+                ).all()
+            )
+            for plan in plans:
+                for action in _json_list(plan.actions_json):
+                    if not isinstance(action, dict):
+                        continue
+                    object_id = action.get("object_id")
+                    if not isinstance(object_id, str) or not object_id:
+                        continue
+                    if action.get("kind") == "move":
+                        move_sources.add(object_id)
+                        continue
+                    parent_id = action.get("source_parent_id")
+                    name = action.get("source_name")
+                    if (
+                        isinstance(parent_id, str)
+                        and isinstance(name, str)
+                        and name
+                    ):
+                        review_sources.setdefault(object_id, (parent_id, name))
+            if not review_sources:
+                return ()
+            rows = list(
+                (
+                    await session.scalars(
+                        select(LibraryScanEntry).where(
+                            LibraryScanEntry.scan_run_id == scan_run_id,
+                            LibraryScanEntry.object_id.in_(tuple(review_sources)),
+                            LibraryScanEntry.is_directory.is_(False),
+                        )
+                    )
+                ).all()
+            )
+        candidates: list[_SmallFileCandidate] = []
+        for row in rows:
+            if row.object_id in move_sources:
+                continue
+            if (
+                row.size_bytes is None
+                or row.size_bytes < 0
+                or row.size_bytes >= threshold_bytes
+                or not isinstance(row.parent_id, str)
+                or row.parent_id != review_sources[row.object_id][0]
+                or row.name != review_sources[row.object_id][1]
+            ):
+                continue
+            candidates.append(
+                _SmallFileCandidate(row.object_id, row.parent_id, row.name)
+            )
+        return tuple(candidates)
+
+    async def _delete_small_files(
+        self,
+        transport: P115C03LiveTransport,
+        candidates: Sequence[_SmallFileCandidate],
+        *,
+        operation_delay_seconds: float,
+    ) -> set[str]:
+        """Recycle (fs_delete, recoverable) one candidate at a time.
+
+        Each file is re-verified against a live parent listing (exactly one
+        non-directory entry with the same id and name) before the delete, so a
+        file that moved or vanished between scan and cleanup is left alone.
+        """
+        deleted_ids: set[str] = set()
+        for candidate in candidates:
+            await _pace(operation_delay_seconds)
+            listing = await transport.list_children(
+                candidate.parent_id,
+                timeout_seconds=_CLEANUP_CALL_TIMEOUT_SECONDS,
+            )
+            if not listing.complete:
+                continue
+            matches = [
+                entry
+                for entry in listing.entries
+                if entry.file_id == candidate.object_id
+                and not entry.is_directory
+                and entry.name == candidate.name
+            ]
+            if len(matches) != 1:
+                continue
+            await _pace(operation_delay_seconds)
+            receipt = await transport.execute(
+                prepare_delete(candidate.object_id),
+                timeout_seconds=_CLEANUP_CALL_TIMEOUT_SECONDS,
+            )
+            if receipt.status is WriteStatus.SUCCESS:
+                deleted_ids.add(candidate.object_id)
+        return deleted_ids
+
+    async def _invalidate_plans_for_deleted(
+        self, library_id: str, deleted_ids: Collection[str]
+    ) -> None:
+        """Invalidate every active plan whose source snapshot references a
+        deleted file, so the pending list never shows review items whose file
+        is already in the 115 recycle bin."""
+        if not deleted_ids:
+            return
+        deleted = set(deleted_ids)
+        async with self._session_factory() as session:
+            plans = list(
+                (
+                    await session.scalars(
+                        select(OrganizationPlan).where(
+                            OrganizationPlan.library_id == library_id,
+                            OrganizationPlan.status.in_(
+                                (
+                                    OrganizationPlanStatus.NEEDS_REVIEW.value,
+                                    OrganizationPlanStatus.PLANNED.value,
+                                )
+                            ),
+                        )
+                    )
+                ).all()
+            )
+        for plan in plans:
+            snapshot = _json_list(plan.source_snapshot_json)
+            if not any(
+                isinstance(item, dict) and item.get("object_id") in deleted
+                for item in snapshot
+            ):
+                continue
+            try:
+                await self._plans.invalidate_plan(plan.id)
+            except OrganizationPlanError:
+                continue
+
+    async def _cleanup_empty_directories(
+        self,
+        transport: P115C03LiveTransport,
+        source_id: str,
+        *,
+        operation_delay_seconds: float,
+    ) -> int:
+        """Read the live source tree once, then recycle empty directories
+        deepest-first.
+
+        Only directories that were empty in the full tree read AND are still
+        empty in a fresh listing right before deletion are recycled; the source
+        root itself is never deleted.  Removing a child directory re-opens its
+        parent for the same check (leaf-upward pruning).
+        """
+        tree = await self._read_directory_tree(transport, source_id, operation_delay_seconds)
+        if tree is None:
+            return 0
+        depths = _directory_depths(tree, source_id)
+        candidates = sorted(
+            (
+                directory_id
+                for directory_id in tree.files
+                if directory_id != source_id
+                and _directory_empty(tree, directory_id)
+            ),
+            key=lambda item: (-depths.get(item, 0), item),
+        )
+        cleaned = 0
+        deleted: set[str] = set()
+        processed = 0
+        while processed < len(candidates):
+            directory_id = candidates[processed]
+            processed += 1
+            if directory_id in deleted or not _directory_empty(tree, directory_id):
+                continue
+            await _pace(operation_delay_seconds)
+            listing = await transport.list_children(
+                directory_id, timeout_seconds=_CLEANUP_CALL_TIMEOUT_SECONDS
+            )
+            if not listing.complete or listing.entries:
+                # Repopulated (or unverifiable) since the tree read: leave it.
+                continue
+            await _pace(operation_delay_seconds)
+            receipt = await transport.execute(
+                prepare_delete(directory_id),
+                timeout_seconds=_CLEANUP_CALL_TIMEOUT_SECONDS,
+            )
+            if receipt.status is not WriteStatus.SUCCESS:
+                continue
+            cleaned += 1
+            deleted.add(directory_id)
+            tree.files.pop(directory_id, None)
+            tree.children.pop(directory_id, None)
+            parent_id = tree.parents.get(directory_id)
+            if parent_id is not None and parent_id in tree.files:
+                tree.children[parent_id].discard(directory_id)
+                if (
+                    parent_id != source_id
+                    and _directory_empty(tree, parent_id)
+                    and parent_id not in deleted
+                ):
+                    candidates.append(parent_id)
+        return cleaned
+
+    async def _read_directory_tree(
+        self,
+        transport: P115C03LiveTransport,
+        source_id: str,
+        operation_delay_seconds: float,
+    ) -> _SourceDirectoryTree | None:
+        """Read the full live subtree below one source root.
+
+        Returns ``None`` (and deletes nothing) when any listing is incomplete,
+        so cleanup only ever runs against a fully observed tree.
+        """
+        tree = _SourceDirectoryTree()
+        pending = [source_id]
+        while pending:
+            directory_id = pending.pop()
+            if directory_id in tree.files or directory_id in tree.children:
+                continue  # cycle guard: each directory is read once
+            await _pace(operation_delay_seconds)
+            listing = await transport.list_children(
+                directory_id, timeout_seconds=_CLEANUP_CALL_TIMEOUT_SECONDS
+            )
+            if not listing.complete:
+                return None
+            tree.files.setdefault(directory_id, set())
+            tree.children.setdefault(directory_id, set())
+            for entry in listing.entries:
+                if entry.is_directory:
+                    tree.children[directory_id].add(entry.file_id)
+                    tree.parents[entry.file_id] = directory_id
+                    if (
+                        entry.file_id not in tree.files
+                        and entry.file_id not in tree.children
+                    ):
+                        pending.append(entry.file_id)
+                else:
+                    tree.files[directory_id].add(entry.file_id)
+        return tree
+
+    async def _log_cleaned(self, cleaned_files: int, cleaned_dirs: int) -> None:
+        logger = self._event_logger
+        method = getattr(logger, "log_event", None)
+        if callable(method):
+            await method(
+                "organize.automation.cleaned",
+                counts={"small_files": cleaned_files, "empty_dirs": cleaned_dirs},
+            )
+
     async def _log_preview(
         self, status: str, count: int, *, auto_queued: bool = False
     ) -> None:
@@ -780,6 +1168,48 @@ def _json_list(value: str) -> list[object]:
     except (TypeError, ValueError):
         return []
     return parsed if isinstance(parsed, list) else []
+
+
+async def _resolve_transport(
+    value: P115C03LiveTransport | Awaitable[P115C03LiveTransport],
+) -> P115C03LiveTransport:
+    if inspect.isawaitable(value):
+        return await value
+    return value
+
+
+async def _close_transport(transport: P115C03LiveTransport) -> None:
+    """Release the p115 client owned by an injected cleanup transport."""
+    client = getattr(transport, "_client", None)
+    close = getattr(client, "aclose", None) or getattr(client, "close", None)
+    if not callable(close):
+        return
+    result = close()
+    if inspect.isawaitable(result):
+        await result
+
+
+async def _pace(seconds: float) -> None:
+    """Wind up the remote-call cadence (风控间隔) between cleanup calls."""
+    if seconds > 0:
+        await asyncio.sleep(seconds)
+
+
+def _directory_empty(tree: _SourceDirectoryTree, directory_id: str) -> bool:
+    return not tree.files.get(directory_id) and not tree.children.get(directory_id)
+
+
+def _directory_depths(tree: _SourceDirectoryTree, root_id: str) -> dict[str, int]:
+    depths = {root_id: 0}
+    pending = [root_id]
+    while pending:
+        parent_id = pending.pop()
+        for child_id in tree.children.get(parent_id, ()):
+            if child_id in depths:
+                continue
+            depths[child_id] = depths[parent_id] + 1
+            pending.append(child_id)
+    return depths
 
 
 def _scan_idempotency_key(source_id: str) -> str:
@@ -1048,6 +1478,7 @@ def _blocked_detail(
 
 
 __all__ = [
+    "CleanupTransportFactory",
     "OrganizationAutomationError",
     "OrganizationAutomationResult",
     "OrganizationAutomationService",

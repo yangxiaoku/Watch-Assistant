@@ -1071,6 +1071,49 @@ class OrganizationPlanService:
         await self._audit("organize.plan.confirmed", view.status.value)
         return view
 
+    async def invalidate_plan(self, plan_id: str) -> OrganizationPlanView | None:
+        """Invalidate an active plan whose source files were removed by cleanup.
+
+        Returns the refreshed view, or ``None`` when the plan is absent or
+        already terminal.  The automation pass does not track plan revisions,
+        so no revision precondition applies; the status predicate still makes
+        the transition race-safe.
+        """
+        _validate_identity(plan_id, "invalid_plan")
+        async with self._session_factory() as session:
+            plan = await session.get(OrganizationPlan, plan_id)
+            if plan is None:
+                return None
+            if plan.status not in {
+                OrganizationPlanStatus.NEEDS_REVIEW.value,
+                OrganizationPlanStatus.PLANNED.value,
+            }:
+                return None
+            result = await session.execute(
+                update(OrganizationPlan)
+                .where(
+                    OrganizationPlan.id == plan_id,
+                    OrganizationPlan.status.in_(
+                        (
+                            OrganizationPlanStatus.NEEDS_REVIEW.value,
+                            OrganizationPlanStatus.PLANNED.value,
+                        )
+                    ),
+                )
+                .values(
+                    status=OrganizationPlanStatus.INVALIDATED.value,
+                    revision=OrganizationPlan.revision + 1,
+                )
+            )
+            if result.rowcount != 1:
+                await session.rollback()
+                return None
+            await session.commit()
+            refreshed = await session.get(OrganizationPlan, plan_id)
+            if refreshed is None:
+                return None
+            return await self._view_for_session(session, refreshed)
+
     async def ignore_plan_at_revision(
         self, plan_id: str, *, expected_revision: int
     ) -> OrganizationPlanView:

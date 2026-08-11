@@ -629,6 +629,8 @@ export interface OrganizationAutomationResultResponse {
   items: OrganizationResultItem[];
   finished_at: string | null;
   run_id: string | null;
+  cleaned_small_files: number;
+  cleaned_empty_dirs: number;
 }
 
 export interface PatchInspectionSettingsRequest {

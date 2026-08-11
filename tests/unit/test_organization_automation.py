@@ -1,12 +1,22 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 from sqlalchemy import select
 
 import watch_assistant.services.organization_automation as automation_module
+from watch_assistant.adapters.p115_c03_fixture_probe import (
+    C03DirectoryListing,
+    C03RemoteEntry,
+    C03WriteReceipt,
+)
 from watch_assistant.adapters.p115_library import DirectoryPage, LibraryEntry, ScanState
+from watch_assistant.adapters.p115_library_write_contract import (
+    WriteOperation,
+    WriteStatus,
+)
 from watch_assistant.api.settings import _organization_result_response
 from watch_assistant.db import create_database, initialize_database
 from watch_assistant.library_models import MediaLibrary, OrganizationPlan
@@ -60,6 +70,19 @@ class _ReviewTmdbClient(_TmdbClient):
                 "kind": "movie",
             },
         ]
+
+
+class _SelectiveTmdbClient(_TmdbClient):
+    """Accept only known titles; everything else stays unrecognized (review)."""
+
+    def __init__(self, accepted: set[str] | None = None) -> None:
+        self.accepted = {value.casefold() for value in (accepted or ())}
+
+    async def search_candidates(self, _query):
+        title = getattr(_query, "title", None) or _query
+        if not title or str(title).casefold() not in self.accepted:
+            return []
+        return await super().search_candidates(_query)
 
 
 class _Gateway:
@@ -150,6 +173,117 @@ class _Operations:
         self.calls.append((plan_id, kwargs))
 
 
+class _CleanupSettings(_Settings):
+    """Cleanup-enabled settings with a zero cadence so tests stay fast."""
+
+    def __init__(self, *, threshold_mb: float = 100.0):
+        super().__init__(configured=True)
+        self.value = self.value.model_copy(
+            update={
+                "small_file_threshold_mb": threshold_mb,
+                "operation_delay_seconds": 0,
+            }
+        )
+
+
+class _FakeCleanupTransport:
+    """Recorded fs_delete/recycle transport; deletions mutate the live pages."""
+
+    def __init__(self, pages: dict[str, list[C03RemoteEntry]]):
+        self.pages = {
+            directory_id: list(entries) for directory_id, entries in pages.items()
+        }
+        self.executed: list[tuple[WriteOperation, str]] = []
+        self.closed = False
+        self._client = self  # _close_transport seam (aclose on the client)
+
+    async def execute(self, request, *, timeout_seconds):
+        file_id = request.payload["file_id"]
+        self.executed.append((request.operation, file_id))
+        for entries in self.pages.values():
+            entries[:] = [
+                entry for entry in entries if entry.file_id != file_id
+            ]
+        return C03WriteReceipt(WriteStatus.SUCCESS)
+
+    async def list_children(self, parent_id, *, timeout_seconds):
+        return C03DirectoryListing(tuple(self.pages.get(parent_id, ())))
+
+    async def aclose(self):
+        self.closed = True
+
+
+class _CleanupGateway(_Gateway):
+    """Source with unrecognized small/big files, a matched file and empty dirs."""
+
+    def __init__(self):
+        super().__init__()
+        self.pages = {
+            ("9000", 1): _page(
+                _entry(name="library", directory_id="8000", parent_id="9000")
+            ),
+            ("8000", 1): _page(
+                _entry(name="movie", directory_id="8001", parent_id="8000")
+            ),
+            ("8001", 1): _page(
+                _entry(name="western", directory_id="8002", parent_id="8001")
+            ),
+            ("8002", 1): _page(
+                _entry(
+                    name="The Office (2005) {tmdb-42}",
+                    directory_id="8003",
+                    parent_id="8002",
+                )
+            ),
+            ("8003", 1): _page(),
+            ("1000", 1): _page(
+                _entry(
+                    name="tiny.unknown.mkv",
+                    file_id="7101",
+                    parent_id="1000",
+                    path="tiny.unknown.mkv",
+                    size_bytes=10 * 1024 * 1024,
+                ),
+                _entry(
+                    name="big.unknown.mkv",
+                    file_id="7102",
+                    parent_id="1000",
+                    path="big.unknown.mkv",
+                    size_bytes=200 * 1024 * 1024,
+                ),
+                _entry(
+                    name="The.Office.2005.1080p.mkv",
+                    file_id="7103",
+                    parent_id="1000",
+                    path="The.Office.2005.1080p.mkv",
+                    size_bytes=5 * 1024 * 1024,
+                ),
+                _entry(name="empty-a", directory_id="7001", parent_id="1000"),
+                _entry(name="nest", directory_id="7002", parent_id="1000"),
+            ),
+            ("7001", 1): _page(),
+            ("7002", 1): _page(
+                _entry(name="deep", directory_id="7003", parent_id="7002")
+            ),
+            ("7003", 1): _page(),
+        }
+
+
+def _cleanup_pages() -> dict[str, list[C03RemoteEntry]]:
+    return {
+        "1000": [
+            C03RemoteEntry("7101", "1000", "tiny.unknown.mkv", False),
+            C03RemoteEntry("7102", "1000", "big.unknown.mkv", False),
+            C03RemoteEntry("7103", "1000", "The.Office.2005.1080p.mkv", False),
+            C03RemoteEntry("7001", "1000", "empty-a", True),
+            C03RemoteEntry("7002", "1000", "nest", True),
+        ],
+        "7001": [],
+        "7002": [C03RemoteEntry("7003", "7002", "deep", True)],
+        "7003": [],
+    }
+
+
 def _entry(
     *,
     name: str,
@@ -157,6 +291,7 @@ def _entry(
     directory_id: str | None = None,
     file_id: str | None = None,
     path: str | None = None,
+    size_bytes: int | None = None,
 ) -> LibraryEntry:
     return LibraryEntry(
         directory_id=directory_id,
@@ -164,7 +299,9 @@ def _entry(
         parent_id=parent_id,
         name=name,
         is_directory=directory_id is not None,
-        size_bytes=10_000_000 if file_id else None,
+        size_bytes=(
+            size_bytes if size_bytes is not None else (10_000_000 if file_id else None)
+        ),
         modified_at=None,
         pickcode=None,
         path=path,
@@ -796,4 +933,144 @@ async def test_automation_queue_is_idempotent_across_runs(
         plan = await session.scalar(select(OrganizationPlan))
         assert plan is not None
         assert plan.status == "planned"
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_automation_auto_cleans_unrecognized_small_files_and_empty_dirs(
+    tmp_path: Path,
+):
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'automation-clean.db'}")
+    await initialize_database(database.engine)
+    gateway = _CleanupGateway()
+    events = _Events()
+    plan_service = OrganizationPlanService(database.session_factory)
+    preview = OrganizationPreviewService(
+        database.session_factory,
+        _SelectiveTmdbClient(accepted={"The Office"}),
+        plan_service,
+    )
+    transport = _FakeCleanupTransport(_cleanup_pages())
+    service = OrganizationAutomationService(
+        database.session_factory,
+        _CleanupSettings(threshold_mb=100),
+        preview,
+        plan_service,
+        lambda _authorized: gateway,
+        event_logger=events,
+        cleanup_transport_factory=lambda: transport,
+    )
+
+    assert await service.run_once() is True
+    result = service.last_result
+    assert result is not None
+    assert result.scanned_count == 1
+    assert result.plan_count == 2
+    assert result.blocked_count == 0
+    assert result.cleaned_small_files == 1
+    # 叶子(7003)先删,其父(7002)随之变空再删,最后 7001
+    assert result.cleaned_empty_dirs == 3
+    assert transport.closed is True
+    assert [(operation, file_id) for operation, file_id in transport.executed] == [
+        (WriteOperation.DELETE, "7101"),
+        (WriteOperation.DELETE, "7003"),
+        (WriteOperation.DELETE, "7001"),
+        (WriteOperation.DELETE, "7002"),
+    ]
+    touched = {file_id for _, file_id in transport.executed}
+    assert "7102" not in touched  # 超过阈值的小文件删除线
+    assert "7103" not in touched  # 已识别(move)文件绝不删除
+    assert "1000" not in touched  # 源根目录自身保留
+    assert any(
+        event == "organize.automation.cleaned"
+        for event, _fields in events.events
+    )
+    async with database.session_factory() as session:
+        plans = list((await session.scalars(select(OrganizationPlan))).all())
+        assert len(plans) == 2
+        assert sorted(plan.status for plan in plans) == ["invalidated", "planned"]
+        review_plan = next(plan for plan in plans if plan.status == "invalidated")
+        move_plan = next(plan for plan in plans if plan.status == "planned")
+        assert {
+            action["object_id"] for action in json.loads(review_plan.actions_json)
+        } == {"7101", "7102"}
+        assert {
+            action["object_id"] for action in json.loads(move_plan.actions_json)
+        } == {"7103"}
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_automation_cleanup_requires_injected_transport(tmp_path: Path):
+    # 未注入清理 transport 时自动清理整体跳过:不删除、不失效计划。
+    database = create_database(
+        f"sqlite+aiosqlite:///{tmp_path / 'automation-clean-off.db'}"
+    )
+    await initialize_database(database.engine)
+    plan_service = OrganizationPlanService(database.session_factory)
+    preview = OrganizationPreviewService(
+        database.session_factory,
+        _SelectiveTmdbClient(accepted={"The Office"}),
+        plan_service,
+    )
+    service = OrganizationAutomationService(
+        database.session_factory,
+        _CleanupSettings(threshold_mb=100),
+        preview,
+        plan_service,
+        lambda _authorized: _CleanupGateway(),
+    )
+
+    assert await service.run_once() is True
+    result = service.last_result
+    assert result is not None
+    assert result.cleaned_small_files == 0
+    assert result.cleaned_empty_dirs == 0
+    async with database.session_factory() as session:
+        plans = list((await session.scalars(select(OrganizationPlan))).all())
+        assert sorted(plan.status for plan in plans) == ["needs_review", "planned"]
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_automation_zero_threshold_skips_small_files_but_cleans_dirs(
+    tmp_path: Path,
+):
+    # 阈值 0 表示“不自动删除小文件”,但空目录清理仍然执行。
+    database = create_database(
+        f"sqlite+aiosqlite:///{tmp_path / 'automation-clean-zero.db'}"
+    )
+    await initialize_database(database.engine)
+    plan_service = OrganizationPlanService(database.session_factory)
+    preview = OrganizationPreviewService(
+        database.session_factory,
+        _SelectiveTmdbClient(accepted={"The Office"}),
+        plan_service,
+    )
+    transport = _FakeCleanupTransport(_cleanup_pages())
+    service = OrganizationAutomationService(
+        database.session_factory,
+        _CleanupSettings(threshold_mb=0),
+        preview,
+        plan_service,
+        lambda _authorized: _CleanupGateway(),
+        cleanup_transport_factory=lambda: transport,
+    )
+
+    assert await service.run_once() is True
+    result = service.last_result
+    assert result is not None
+    assert result.cleaned_small_files == 0
+    assert result.cleaned_empty_dirs == 3
+    assert [
+        (operation, file_id) for operation, file_id in transport.executed
+    ] == [
+        (WriteOperation.DELETE, "7003"),
+        (WriteOperation.DELETE, "7001"),
+        (WriteOperation.DELETE, "7002"),
+    ]
+    async with database.session_factory() as session:
+        plans = list((await session.scalars(select(OrganizationPlan))).all())
+        # 没有删除任何文件 → 相关计划保持 needs_review,不失效
+        assert sorted(plan.status for plan in plans) == ["needs_review", "planned"]
     await database.engine.dispose()

@@ -21,7 +21,10 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.staticfiles import StaticFiles
 
 from watch_assistant.adapters.p115 import P115Adapter
-from watch_assistant.adapters.p115_c03_live_transport import p115_c03_timeout_executor
+from watch_assistant.adapters.p115_c03_live_transport import (
+    P115C03ProductionTransport,
+    p115_c03_timeout_executor,
+)
 from watch_assistant.adapters.p115_library_gateway import P115ReadOnlyDirectoryGateway
 from watch_assistant.adapters.p115_library_write_contract import (
     P115OrganizationContract,
@@ -764,6 +767,20 @@ def create_app(
                     request_timeout_seconds=30,
                 )
 
+            async def build_cleanup_transport():
+                # 自动清理(未识别小文件删除、空目录清理)是组织整理的生产写路径:
+                # 完整分页读取 + 生产 timeout executor,调用间隔由
+                # operation_delay_seconds 设置控制,删除统一走 fs_delete 回收站。
+                cookie = await asyncio.to_thread(
+                    application.state.organization_cookie_provider.load
+                )
+                if not cookie:
+                    raise RuntimeError("credentials_unavailable")
+                client = await asyncio.to_thread(_default_client_factory, cookie)
+                return P115C03ProductionTransport(
+                    client, call_executor=p115_c03_timeout_executor
+                )
+
             automation = OrganizationAutomationService(
                 application.state.database.session_factory,
                 application.state.settings_service,
@@ -774,6 +791,7 @@ def create_app(
                 auto_execute=write_enabled,
                 hydrate_file_details=True,
                 event_logger=application.state.settings_service,
+                cleanup_transport_factory=build_cleanup_transport,
             )
             application.state.organization_automation_service = automation
             application.state._organization_runtime_write_enabled = write_enabled

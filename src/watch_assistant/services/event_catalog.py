@@ -273,6 +273,14 @@ EVENT_CATALOG: dict[str, EventDefinition] = {
         suggestion="请先核对来源目录扫描状态和整理配置，再重新运行",
         fields=frozenset({"source_directory_id", "message_zh"}),
     ),
+    "organize.automation.cleaned": _event(
+        "organize.automation.cleaned",
+        LogCategory.ORGANIZE,
+        "自动清理完成",
+        "未识别小文件已删除 {small_files} 个，空目录已清理 {empty_dirs} 个",
+        suggestion="删除文件已进入 115 回收站，可在回收站中恢复",
+        fields=frozenset({"small_files", "empty_dirs"}),
+    ),
     "organize.operation.queued": _event(
         "organize.operation.queued", LogCategory.ORGANIZE, "整理操作已排队", "整理操作已排队"
     ),

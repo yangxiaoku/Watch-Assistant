@@ -124,7 +124,9 @@ def test_preview_scope_uses_selected_source_subtree_and_rejects_nested_target():
         )
 
 
-async def _database(tmp_path: Path, *, target_exists: bool, include_junk: bool = False):
+async def _database(
+    tmp_path: Path, *, target_exists: bool, include_junk: bool = False, small_file: bool = False
+):
     database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'preview.db'}")
     await initialize_database(database.engine)
     async with database.session_factory() as session:
@@ -172,6 +174,7 @@ async def _database(tmp_path: Path, *, target_exists: bool, include_junk: bool =
                 name="The.Office.2005.1080p.mkv",
                 path="incoming/The.Office.2005.1080p.mkv",
                 is_directory=False,
+                size_bytes=5 * 1024 * 1024 if small_file else None,
             )
         )
         if include_junk:
@@ -206,6 +209,27 @@ async def test_preview_uses_scan_snapshot_and_requires_verified_target(
     )
 
     assert result.status is expected
+    assert result.source_count == 1
+    assert client.calls == 1
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_preview_no_longer_skips_small_files(tmp_path: Path):
+    # 小文件过滤语义已从“预览跳过”改为“未识别则自动清理删除”:预览阶段
+    # 小文件必须正常进入识别与计划,否则清理逻辑永远拿不到 review 动作。
+    database = await _database(tmp_path, target_exists=True, small_file=True)
+    client = _TmdbClient()
+    plan_service = OrganizationPlanService(database.session_factory)
+    service = OrganizationPreviewService(database.session_factory, client, plan_service)
+
+    result = await service.create_preview(
+        library_id="library-preview",
+        scan_run_id="scan-preview",
+        small_file_threshold_mb=100,
+    )
+
+    assert result.status is OrganizationPlanStatus.PLANNED
     assert result.source_count == 1
     assert client.calls == 1
     await database.engine.dispose()
