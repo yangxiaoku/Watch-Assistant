@@ -8,6 +8,37 @@
 
 ## ✅ 已在本会话修复
 
+### 本轮（2026-08-11 晚，分支 `codex/fix-other-bugs-frontend-20260811`）
+
+| 编号 | 修复 | 验证 |
+|---|---|---|
+| H2/H3 | 注册迁移 072(订阅索引排除已取消行)+073(scan revision 唯一) | 迁移单测 22 过 + 新回归测试 |
+| H1 | 永久删除身份碰撞:find_new_entries 稳定观察窗+多候选 UNCERTAIN | test_p115_delete 5 过 + 新碰撞测试 |
+| H12 | retryable 服务不可用码 409→503 | 契约测试覆盖 |
+| M2 | strm-manifest/cleanup-plans 补 strm scope 标记 | test_security 20 过 + 新断言 |
+| H8 | qbittorrent 孤儿 torrent 按前缀识别清理 | test_qbittorrent 4 过 |
+| H10 | qbittorrent trust_env=False 防凭据经代理泄露 | — |
+| H4 | workflow 在途 PUSH 子任务时拒绝再推 | test_workflow_multi_child 3 过 |
+| M20/M9 | p115 add_device 原子置位;revoke 404 | p115 测试 23 过 |
+| M8/M11 | webhook_dns_failed 502;订阅 COMPLETED 不可复活 | 订阅测试 6 过 |
+| M10 | inspection 超时 RUNNING 批次回收重排 | test_inspection_api 23 过 |
+| M5 | db cleanup 保护未过期批次条目资源 | test_models 7 过 |
+| M22 | dirty 租约丢失释放 STRM 操作 | test_directory_dirty_worker 9 过 |
+| M24/B3/B4/B2/B5 | sw.js 离线 503、深链分页、搜索返回残留、loading 死码、skipped 标签 | vitest 233 过 |
+| M25/M26 | SettingsView 二维码轮询与 save 系列卸载守卫 | vitest 过 |
+| 前端优化 | MovieCard TMDB 圆形评分+hover 缩放、MovieRow 滚动按钮、详情 backdrop+星级+空简介、资源表平板卡片、设置页图标、tooltip/badge/skeleton 原语 | vitest 233 过 + build 过 |
+
+### 遗留/委托（因并发会话占用或范围，本轮未动）
+
+- **H7** p115 根目录目标任务可达性——audit-sec 会话在改 `p115_library_gateway.py`
+- **H9** ~27 个非 catalog 错误码注册——机械量大，需后端+前端镜像+契约测试联动
+- **H11** P115DeleteService 写门禁+审计——audit-sec 会话已在其分支实现
+- **M3** org-history 默认 scope——与 org 会话边界重叠
+- **M4** 后台 worker 监督——audit-sec 会话在改 app.py
+- **M7** export_logs 无界——wa-fix-auto-clean 会话在改 settings.py
+- **M21** 回收站分页 completeness 标记——与 H1 同文件，待 H1 合入后处理
+- 全部 organization_* 与空目录清理项——归另一会话
+
 ### H0（已修复，独立提交 `62ccc13`）
 - `scripts/acceptance_closure.py::_native_library_path`：打包内置原生库路径优先于 Homebrew。
   该测试此前失败导致 verify.sh 门禁恒挂。
