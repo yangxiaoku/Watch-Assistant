@@ -455,3 +455,42 @@ async def test_mcp_tasks_never_serialize_raw_orm_objects():
     text = response["result"]["data"]["content"][0]["text"]
     assert "task_orm" in text
     json.loads(text)  # 必须是可解析的 JSON,而非 ORM 对象
+
+
+@pytest.mark.asyncio
+async def test_mcp_organization_apply_rejects_non_ascii_digest():
+    """digest 非 ASCII 时 _organization_apply_arguments 必须拒绝为
+    invalid_request,而非让 hmac.compare_digest 抛 TypeError 崩溃。"""
+    plans = _OrganizationPlans()
+    operations = _OrganizationOperations()
+    service = McpService(
+        task_service=_Tasks(),
+        notification_service=_Notifications(),
+        organization_plan_service=plans,
+        organization_operation_service=operations,
+        workflow_service=_Workflows(),
+        library_session_factory=_ScopedSessionFactory("library_one"),
+    )
+    context = _context(
+        "organize:plan", "organize:execute", library_ids={"library_one"}
+    )
+    response = await service.handle(
+        {
+            "jsonrpc": "2.0",
+            "id": 99,
+            "method": "tools/call",
+            "params": {
+                "name": "organization.plan.apply",
+                "arguments": {
+                    "plan_id": "plan_one",
+                    "digest": "中文摘要-" + "a" * 10,  # 非 ASCII
+                    "confirm": True,
+                    "expected_revision": 1,
+                    "idempotency_key": "key-1",
+                },
+            },
+        },
+        context=context,
+    )
+    assert "error" in response
+    assert response["error"]["data"]["error_code"] == "invalid_request"

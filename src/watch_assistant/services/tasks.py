@@ -233,8 +233,10 @@ async def apply_remote_status(
         not availability_verified
     ):
         raise WorkflowConflict("workflow_stage_terminal")
-    if task.state is TaskState.CANCELLED:
-        # 用户取消是最终意图:迟到的远端观察(提交回执/恢复核对)不得把任务复活。
+    if task.state in {TaskState.CANCELLED, TaskState.FAILED}:
+        # 取消与失败都是最终意图:迟到的远端观察(提交回执/恢复核对/
+        # reconcile)不得把任务复活成下载中/可用。FAILED 独立任务(无
+        # workflow)原本会被这里改写状态,必须同样设防。
         raise WorkflowConflict("workflow_stage_terminal")
     task.state = state
     if state not in {TaskState.FAILED, TaskState.UNCERTAIN}:

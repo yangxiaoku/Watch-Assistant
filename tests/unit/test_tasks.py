@@ -295,3 +295,58 @@ async def test_submitted_task_without_remote_ref_can_be_cancelled(tmp_path):
             await service.cancel(with_ref.id)
     finally:
         await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_reconcile_does_not_revive_failed_task(tmp_path):
+    """reconcile 不得把终态 FAILED 任务复活为下载中/可用:失败与取消一样
+    是最终意图(独立任务无 workflow 时原本会被 apply_remote_status 复活)。"""
+    from watch_assistant.db import create_database, initialize_database
+    from watch_assistant.services.tasks import TaskService
+    from watch_assistant.services.workflows import WorkflowConflict
+
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'tasks-failed.db'}")
+    await initialize_database(database.engine)
+    try:
+        async with database.session_factory() as session:
+            resource = Resource(
+                id="res_failed",
+                kind="magnet",
+                canonical_key="magnet:failed",
+                encrypted_url="encrypted",
+                name="Failed",
+                source="test",
+                captured_at=datetime.now(UTC),
+                expires_at=datetime.now(UTC) + timedelta(days=1),
+            )
+            session.add(resource)
+            await session.flush()
+            task = make_task(
+                resource_id=resource.id, state=TaskState.FAILED
+            )
+            task.remote_ref = "failed-remote"
+            session.add(task)
+            await session.commit()
+
+        class AvailableAdapter:
+            async def get_status_for_task(
+                self, remote_ref: str, *, target_directory_id: str | None
+            ):
+                assert remote_ref == "failed-remote"
+                return RemoteObservation(
+                    status=RemoteStatus.AVAILABLE,
+                    file_id="101",
+                    parent_id="7",
+                    is_directory=False,
+                )
+
+        service = TaskService(database.session_factory)
+        with pytest.raises(WorkflowConflict, match="workflow_stage_terminal"):
+            await service.reconcile(task.id, AvailableAdapter())
+
+        async with database.session_factory() as session:
+            stored = await session.get(type(task), task.id)
+            assert stored is not None
+            assert stored.state == TaskState.FAILED  # 不得复活
+    finally:
+        await database.engine.dispose()

@@ -605,6 +605,9 @@ def _paged_uri(uri: str, arguments: Any) -> str:
 
 
 _IDENTIFIER = re.compile(r"[A-Za-z0-9_.:-]{1,255}\Z")
+# 计划摘要:仅允许 ASCII(hmac.compare_digest 对非 ASCII 输入抛 TypeError);
+# 匹配失败由调用方按 plan_digest_mismatch 处理,不被误判为参数错误。
+_DIGEST = re.compile(r"[A-Za-z0-9+/=_-]{1,128}\Z")
 
 
 def _required_identifier(arguments: Any, name: str) -> str:
@@ -624,6 +627,7 @@ def _organization_apply_arguments(arguments: Any) -> dict[str, Any]:
     if (
         not isinstance(digest, str)
         or not 1 <= len(digest) <= 128
+        or _DIGEST.fullmatch(digest) is None  # ASCII hex,避免 compare_digest TypeError
         or not isinstance(key, str)
         or not 1 <= len(key) <= 255
         or _IDENTIFIER.fullmatch(key) is None
