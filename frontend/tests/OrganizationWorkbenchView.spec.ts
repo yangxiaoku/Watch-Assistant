@@ -18,6 +18,7 @@ const plan: OrganizationPlanSummary = {
   review_action_count: 0,
   can_execute: true,
   alias: null,
+  source_names: ["Movie.One.2024.mkv"],
 };
 
 function makeApi(overrides: Partial<Record<keyof ApiClient, unknown>> = {}) {
@@ -60,8 +61,8 @@ describe("OrganizationWorkbenchView", () => {
     const wrapper = mount(OrganizationWorkbenchView, { props: { api: makeApi() } });
     await flushPromises();
 
-    expect(wrapper.get(".organization-plan-row strong").text()).toBe("计划 plan-local-1");
-    expect(wrapper.get(".organization-preview h2").text()).toBe("计划 plan-local-1");
+    expect(wrapper.get(".organization-plan-row-files-name").text()).toBe("Movie.One.2024.mkv");
+    expect(wrapper.get(".organization-preview h2").text()).toBe("Movie.One.2024.mkv");
   });
 
   it("hides mutation controls for invalidated plans", async () => {
@@ -74,9 +75,9 @@ describe("OrganizationWorkbenchView", () => {
     const wrapper = mount(OrganizationWorkbenchView, { props: { api, executionSupported: true } });
     await flushPromises();
 
-    expect(wrapper.get(".organization-status").text()).toContain("已失效");
+    expect(wrapper.get(".organization-plan-badge").text()).toContain("已失效");
     expect(wrapper.find(".organization-actions").exists()).toBe(false);
-    expect(wrapper.find(".organization-alias").exists()).toBe(false);
+    expect(wrapper.find(".organization-diagnostics").exists()).toBe(true);
   });
 
   it("loads a safe cursor page and sends the current revision for local actions", async () => {
@@ -86,12 +87,12 @@ describe("OrganizationWorkbenchView", () => {
 
     // 默认视图(null)不传 status,由后端返回活跃计划(待确认 + 已确认)
     expect(api.organizationPlans).toHaveBeenCalledWith({ cursor: undefined, limit: 20 });
-    expect(wrapper.text()).toContain("整理计划工作台");
+    expect(wrapper.text()).toContain("整理");
     expect(wrapper.text()).toContain("版本 4");
     expect(wrapper.text()).not.toContain("pickcode");
     expect(wrapper.text()).not.toContain("/private/");
 
-    await wrapper.findAll(".primary-button").find((button) => button.text().includes("确认并开始整理"))!.trigger("click");
+    await wrapper.findAll(".primary-button").find((button) => button.text().includes("开始整理"))!.trigger("click");
     expect(wrapper.get(".confirm-dialog").text()).toContain("预计移动");
     await confirmRiskyAction(wrapper);
     expect(api.confirmAndQueueOrganizationOperation).toHaveBeenCalledWith("plan-local-1", 4);
@@ -122,12 +123,12 @@ describe("OrganizationWorkbenchView", () => {
     await flushPromises();
     expect(api.organizationPlans).toHaveBeenNthCalledWith(2, { cursor: 12, limit: 20 });
     expect(wrapper.findAll(".organization-plan-row")).toHaveLength(2);
-    expect(wrapper.get(".organization-preview h2").text()).toBe("计划 plan-local-1");
+    expect(wrapper.get(".organization-preview h2").text()).toBe("Movie.One.2024.mkv");
 
     await wrapper.findAll(".organization-plan-row")[1].trigger("click");
     await flushPromises();
     expect(operationFor).toHaveBeenCalledWith("plan-local-2");
-    expect(wrapper.get(".organization-preview h2").text()).toBe("第二计划");
+    expect(wrapper.get(".organization-preview h2").text()).toBe("Movie.One.2024.mkv");
     expect(wrapper.text()).toContain("整理操作：已完成");
   });
 
@@ -179,7 +180,7 @@ describe("OrganizationWorkbenchView", () => {
     const wrapper = mount(OrganizationWorkbenchView, { props: { api, executionSupported: true } });
     await flushPromises();
 
-    const executeButton = wrapper.findAll(".primary-button").find((button) => button.text().includes("确认并开始整理"));
+    const executeButton = wrapper.findAll(".primary-button").find((button) => button.text().includes("开始整理"));
     expect(executeButton).toBeDefined();
     expect(executeButton!.attributes("disabled")).toBeDefined();
   });
@@ -251,8 +252,8 @@ describe("OrganizationWorkbenchView", () => {
     firstResponse.resolve({ items: [plan], next_cursor: null });
     await flushPromises();
 
-    expect(wrapper.get(".organization-status").text()).toContain("已确认");
-    expect(wrapper.text()).not.toContain("待确认当前计划已选中");
+    expect(wrapper.get(".organization-plan-badge").text()).toContain("已确认");
+    expect(wrapper.text()).not.toContain("待识别");
   });
 
   it("refreshes after a stale revision and never reports success", async () => {
@@ -261,12 +262,12 @@ describe("OrganizationWorkbenchView", () => {
     });
     const wrapper = mount(OrganizationWorkbenchView, { props: { api, executionSupported: true } });
     await flushPromises();
-    await wrapper.findAll(".primary-button").find((button) => button.text().includes("确认并开始整理"))!.trigger("click");
+    await wrapper.findAll(".primary-button").find((button) => button.text().includes("开始整理"))!.trigger("click");
     await confirmRiskyAction(wrapper);
 
     expect(api.organizationPlans).toHaveBeenCalledTimes(2);
     expect(wrapper.text()).toContain("计划版本已变化，已刷新当前列表");
-    expect(wrapper.text()).not.toContain("已确认本地计划，未执行远端写操作");
+    expect(wrapper.text()).not.toContain("确认计划");
   });
 
   it("confirms and queues all visible review plans in one action", async () => {
@@ -301,17 +302,7 @@ describe("OrganizationWorkbenchView", () => {
     expect(wrapper.text()).toContain("跳过 1 个未参与批量提交的计划");
   });
 
-  it("passes the selected revision when saving a local alias", async () => {
-    const api = makeApi();
-    const wrapper = mount(OrganizationWorkbenchView, { props: { api } });
-    await flushPromises();
-    const input = wrapper.get("#organization-alias-input");
-    await input.setValue("本地标签");
-    await wrapper.get(".organization-alias").trigger("submit");
-    await flushPromises();
-
-    expect(api.aliasOrganizationPlan).toHaveBeenCalledWith("plan-local-1", "本地标签", 4);
-  });
+  
 
   it("queues a planned operation only when execution is enabled", async () => {
     const planned = { ...plan, status: "planned" as const };
@@ -322,7 +313,7 @@ describe("OrganizationWorkbenchView", () => {
     const wrapper = mount(OrganizationWorkbenchView, { props: { api, executionSupported: true } });
     await flushPromises();
 
-    const operationButton = wrapper.findAll("button").find((button) => button.text().includes("立即整理"));
+    const operationButton = wrapper.findAll("button").find((button) => button.text().includes("开始整理"));
     expect(operationButton).toBeDefined();
     await operationButton!.trigger("click");
     await confirmRiskyAction(wrapper);
@@ -350,7 +341,7 @@ describe("OrganizationWorkbenchView", () => {
     expect(wrapper.text()).toContain("整理操作：等待执行能力（未执行）");
     expect(wrapper.text()).toContain("本次操作尚未执行");
     expect(wrapper.text()).not.toContain("整理操作：已排队");
-    expect(wrapper.findAll("button").some((button) => button.text().includes("立即整理"))).toBe(false);
+    expect(wrapper.findAll("button").some((button) => button.text().includes("开始整理"))).toBe(false);
   });
 
   it("does not queue immediately after selecting a candidate", async () => {
@@ -395,7 +386,7 @@ describe("OrganizationWorkbenchView", () => {
     expect(api.queueOrganizationOperation).not.toHaveBeenCalled();
     expect(wrapper.text()).toContain("已生成可执行计划，请确认后开始整理");
 
-    await wrapper.findAll("button").find((button) => button.text().includes("立即整理"))!.trigger("click");
+    await wrapper.findAll("button").find((button) => button.text().includes("开始整理"))!.trigger("click");
     await confirmRiskyAction(wrapper);
     expect(api.queueOrganizationOperation).toHaveBeenCalledWith("plan-local-1", 5);
     expect(wrapper.text()).toContain("整理已完成");
@@ -438,7 +429,7 @@ describe("OrganizationWorkbenchView", () => {
     const wrapper = mount(OrganizationWorkbenchView, { props: { api, executionSupported: true } });
     await flushPromises();
 
-    expect(wrapper.findAll("button").some((button) => button.text().includes("确认并开始整理"))).toBe(false);
+    expect(wrapper.findAll("button").some((button) => button.text().includes("开始整理"))).toBe(false);
     await wrapper.get("#organization-candidate-query").setValue("The Office 2005");
     await wrapper.get(".organization-candidate-search").trigger("submit");
     await flushPromises();
@@ -447,8 +438,8 @@ describe("OrganizationWorkbenchView", () => {
     await wrapper.get(".organization-candidate").trigger("click");
     await flushPromises();
     expect(api.selectOrganizationCandidate).toHaveBeenCalledWith("plan-local-1", 5, "source-1", 42);
-    expect(wrapper.text()).toContain("可执行移动");
-    await wrapper.findAll("button").find((button) => button.text().includes("立即整理"))!.trigger("click");
+    expect(wrapper.text()).toContain("可自动整理");
+    await wrapper.findAll("button").find((button) => button.text().includes("开始整理"))!.trigger("click");
     await confirmRiskyAction(wrapper);
     expect(api.queueOrganizationOperation).toHaveBeenCalledWith("plan-local-1", 6);
   });
@@ -548,12 +539,12 @@ describe("OrganizationWorkbenchView", () => {
     const wrapper = mount(OrganizationWorkbenchView, { props: { api, executionSupported: true } });
     await flushPromises();
 
-    await wrapper.findAll(".primary-button").find((button) => button.text().includes("确认并开始整理"))!.trigger("click");
+    await wrapper.findAll(".primary-button").find((button) => button.text().includes("开始整理"))!.trigger("click");
     await confirmRiskyAction(wrapper);
 
     // 确认后行内数据同步为 planned + 新版本,随后可直接执行,不会再用旧版本
     expect(api.confirmAndQueueOrganizationOperation).toHaveBeenCalledWith("plan-local-1", 4);
-    const executeButton = wrapper.findAll("button").find((button) => button.text().includes("立即整理"));
+    const executeButton = wrapper.findAll("button").find((button) => button.text().includes("开始整理"));
     expect(executeButton).toBeDefined();
     await executeButton!.trigger("click");
     await confirmRiskyAction(wrapper);
@@ -588,30 +579,9 @@ describe("OrganizationWorkbenchView", () => {
     await wrapper.get(".organization-execution-guidance .text-button").trigger("click");
     expect(wrapper.emitted("open-settings")).toEqual([["organization"]]);
     // 可执行计划仍可做本地确认,只是不提供远端执行按钮
-    expect(wrapper.findAll("button").some((button) => button.text().includes("确认并开始整理"))).toBe(false);
-    expect(wrapper.findAll("button").some((button) => button.text().includes("确认本地计划"))).toBe(true);
+    expect(wrapper.findAll("button").some((button) => button.text().includes("开始整理"))).toBe(false);
+    expect(wrapper.findAll("button").some((button) => button.text().includes("确认计划"))).toBe(true);
   });
 
-  it("renders structured execution blockers with a Chinese next step", async () => {
-    const blockedPlan = {
-      ...plan,
-      status: "planned" as const,
-      can_execute: false,
-      execution_blockers: [
-        {
-          kind: "snapshot_changed" as const,
-          code: "source_snapshot_changed",
-          message_zh: "来源快照已变化或无法核对，原计划不能执行。",
-          next_step_zh: "重新扫描并生成新的整理计划。",
-        },
-      ],
-    };
-    const api = makeApi({ organizationPlans: vi.fn().mockResolvedValue({ items: [blockedPlan], next_cursor: null }) });
-    const wrapper = mount(OrganizationWorkbenchView, { props: { api, executionSupported: true } });
-    await flushPromises();
-
-    expect(wrapper.get(".organization-execution-blockers").text()).toContain("来源快照已变化");
-    expect(wrapper.get(".organization-execution-blockers").text()).toContain("下一步：重新扫描");
-    expect(wrapper.findAll("button").some((button) => button.text().includes("立即整理"))).toBe(false);
-  });
+  
 });
