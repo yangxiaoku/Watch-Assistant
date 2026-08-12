@@ -1074,10 +1074,16 @@ async def test_client_factory_timeout_closes_late_client(tmp_path):
         assert client is None
         assert missing is False
         # 让超时后的工厂线程完成并创建迟到 client,再由 done-callback 关闭。
-        for _ in range(20):
-            await asyncio.sleep(0.02)
-            if late_clients:
-                break
+        # 用 wait_for + 轮询代替固定次数:并行测试负载下线程调度可能延迟,
+        # 固定 0.4s 轮询窗口会偶发 flaky。放宽到 5s 且以 closed 变 True 为准。
+        async def _wait_for_late_close():
+            for _ in range(250):
+                if late_clients and late_clients[0].closed:
+                    return
+                await asyncio.sleep(0.02)
+            raise AssertionError("迟到完成的 client 必须被关闭,不得泄漏")
+
+        await asyncio.wait_for(_wait_for_late_close(), timeout=5.0)
         assert late_clients, "超时后的工厂线程应完成并创建 client"
         assert late_clients[0].closed, "迟到完成的 client 必须被关闭,不得泄漏"
     finally:
