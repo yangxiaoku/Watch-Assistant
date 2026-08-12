@@ -190,6 +190,7 @@
 - 位置：`p115_login_devices.py:68-75`；修复方向：复用 mark_active 单条 UPDATE 模式
 ### M21. 回收站 10,000 条静默截断无完整性标记 → 永久删除恒 UNCERTAIN / SUCCESS 失真
 - 位置：`p115_permanent_delete_transport.py:74-111`；修复方向：list_entries 返回 completeness 标记，超窗判 UNCERTAIN
+- ✅ 已修复（`codex/m21-recycle-truncation`）：list_entries 达 max_pages 上限时返回 None（while...else 区分截断 vs 完整），调用方 fail-closed 判 UNCERTAIN；回归 `test_recycle_bin_listing_truncation_fails_closed`
 ### M22. dirty 租约丢失不释放已 claim 的 STRM 操作 → 阻塞最长 30 分钟
 - 位置：`directory_dirty_worker.py:300-301/351-353`；修复方向：dirty_lease_lost 分支先 _fail_operation
 ### M23. recycle 动作不入 history

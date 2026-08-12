@@ -584,3 +584,38 @@ async def test_delete_credential_unavailable_fails_closed(tmp_path: Path):
         assert result.error_code == "credential_unavailable"
     finally:
         await database.engine.dispose()
+
+
+class _OverflowRecycleClient:
+    """回收站返回 10,100 条,超出 max_pages(100 页×100)上限。"""
+
+    def __init__(self) -> None:
+        self.total = 10_100
+
+    def recyclebin_list(self, payload, **kwargs):
+        offset = int(payload.get("offset", 0))
+        limit = int(payload.get("limit", 100))
+        page = [
+            {"id": str(1000 + i), "cid": "7000", "file_name": f"gone-{i}.mkv", "file_size": str(100 + i)}
+            for i in range(offset, min(offset + limit, self.total))
+        ]
+        return {"state": True, "data": page, "offset": offset, "limit": limit, "count": self.total}
+
+
+async def test_recycle_bin_listing_truncation_fails_closed(tmp_path: Path):
+    """M21:回收站超过 10,000 条时,list_entries 不得静默截断被当完整清单,
+    应返回 None 让调用方 fail-closed 判 UNCERTAIN。"""
+    from watch_assistant.adapters.p115_permanent_delete_transport import (
+        P115PermanentDeleteTransport,
+    )
+
+    client = _OverflowRecycleClient()
+
+    async def call_executor(method, payload, *, timeout_seconds):
+        return method(payload, async_=False)
+
+    transport = P115PermanentDeleteTransport(
+        client=client,
+        call_executor=call_executor,
+    )
+    assert await transport.list_entries(timeout_seconds=5.0) is None

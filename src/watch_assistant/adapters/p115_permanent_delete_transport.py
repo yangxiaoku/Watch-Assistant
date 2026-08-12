@@ -108,6 +108,12 @@ class P115PermanentDeleteTransport:
             if len(page_entries) < page_limit:
                 break
             offset += len(page_entries)
+        else:
+            # M21: while 因达到 max_pages 上限而正常结束(而非 break)=
+            # 回收站条目可能超过 10,000 被静默截断。返回 None 让调用方
+            # fail-closed 判 UNCERTAIN,杜绝截断清单被当成完整清单,
+            # 导致 find_new_entries 漏判 / wait_until_absent 恒不消失。
+            return None
         return tuple(entries)
 
     async def find_new_entries(
