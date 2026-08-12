@@ -161,6 +161,21 @@
 - 既有 import 者（`strm_cleanup_plan`/`empty_directory_cleanup_plan` 等）从 `strm_manifest` 再导出私有助手，行为不变；后续可选迁移到 `strm_fs`/`strm_fencing` 直接导入
 - 88 个 STRM 测试 + `scripts/verify.sh` 全绿
 
+## 阶段 D 第二项：拆分 `search.py`（2461 → 1923 行）
+
+`SearchService` 是 1740 行巨型类（方法间通过 `self` 强耦合，不易拆类）。采用**提取类后模块级纯函数**策略：
+
+| 文件 | 内容 |
+|------|------|
+| `search_helpers.py` | 33 个纯函数 + `_ResourceSearchTask` + `LEGACY_MAGNET_LIMIT`/`_QUALITY_PATTERNS` 常量：资源归一合并（`_merge_normalized`/`_merge_source_observations`）、质量分类（`_quality_tags`/`_quality_matches`）、快照打分（`_resource_score_snapshot`/`_complete_score_snapshot`）、展示助手（`_resource_summary`/`_resource_facets`/`_filter_media_collection`） |
+| `search.py` | `SearchService` + 缓存/锁原语（`make_cache_key`/`_bounded_set*`）+ 异常类 |
+
+**要点**：
+- 被 search.py 内定义的名字（`_ResourceSearchTask`/`LEGACY_MAGNET_LIMIT`）随提取移入 helpers，search.py 单向 re-export，无循环依赖
+- 既有外部 import（`source_penalty`/`make_cache_key`/`_dedupe_resources` 等 8 个私有名）通过 re-export 保持兼容
+- ruff F401/F821 迭代校正 import；113 个 search 测试 + `scripts/verify.sh` 全绿
+- `_search_error_code_for_log`/`make_cache_key`/`_bounded_set*` 留在 search.py（服务实例直接依赖）
+
 ## 待评估（依赖 transport 能力）
 
 - **`_delete_small_files` 删除前复核 size**（`organization_automation.py`）：live listing 的 `C03RemoteEntry` 不含 size 字段，transport 层未解析 115 响应的文件大小。有效实现需要 (a) 验证 115 响应 size 字段名、(b) 扩展 `C03RemoteEntry` + `_normalize_list_entry`。在当前 transport 能力下无法低成本落地，依赖后续 transport 扩展，暂记录不做。
