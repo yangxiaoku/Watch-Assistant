@@ -119,6 +119,31 @@
 
 `scripts/verify.sh` 分 shard 并行偶发失败，已定位根因：`test_client_factory_timeout_closes_late_client`（固定 0.4s 轮询窗口在 4 进程负载下不足）。已改为 `wait_for(5s)` + 以结果为准的轮询，连续多次通过。
 
+## 阶段 A 决策：三个死代码候选全部保留（测试即行为规格）
+
+逐一核查后，三个候选**全部是有测试的纯函数**，测试覆盖真实领域语义，非"误导读者"的有害死代码：
+
+| 候选 | 生产引用 | 测试覆盖 | 语义价值 |
+|------|---------|---------|---------|
+| `tasks.py:recover_after_restart` | 无 | 7 个测试（确认远程状态/完整文件观察/live lease 保留/target 感知） | 恢复语义规格 |
+| `security.py:redact_mapping` | 无 | 1 个测试（递归脱敏） | 脱敏行为规格 |
+| `frontend:capabilityStatusPresentation` | 无 | 3 断言（label/tone/nextStep） | STRM 能力状态展示规格 |
+
+**决策**：保留全部三个。理由与 `_as_utc`/阶段 B 相同——删除会把行为规格一起删掉，而保留不产生任何运行时成本。真正有害的死代码（**无测试**且误导读者）已在早期 30 项审查批次中清理。后续若恢复功能接线，这些函数可被直接引用。**阶段 A 收敛为"已核查、保留"，从待办移除。**
+
+## 阶段 B 评估结论：统一状态机抽象不落地（语义漂移）
+
+按 `_as_utc` 教训（定义完全一致才统一），实测三个子系统的"租约 + 幂等 + 审计"**在谓词、values、错误契约、重试逻辑上全部不同**：
+
+| 维度 | `tasks.py` | `organization_operations.py` | `strm_operations.py` |
+|------|-----------|------------------------------|----------------------|
+| 并发原语 | `lease_token` fencing + live-lease 谓词 | revision 整数 CAS（无 token） | `claim_start` NOT EXISTS 子查询 |
+| 谓词 | id/state/owner/token/expires_at | id/revision | id/status/`~active_exists` |
+| values | 仅 `updated_at` | revision+1 + lease_token=None | status/started_at/heartbeat/lease_* |
+| 失败契约 | 返回 `None` | 抛 `OrganizationOperationConflict` | rollback + 返回 `(summary, False)`，含 OperationalError 重试 |
+
+**结论**：唯一的真公共成语是"原子条件 UPDATE + rowcount==1 校验"，但每处仅 ~2 行且错误处理完全不同。提取 `OperationLease` 需把全部差异参数化，抽象比两个具体调用点更难读，且会把 fail-closed fencing 语义参数化掉，风险与 `_as_utc` 统一同源。**阶段 B 终止，保持各自实现**。并发正确性已由既有原子 CAS 测试与契约测试锁定（error code 不变）。
+
 ## 待评估（依赖 transport 能力）
 
 - **`_delete_small_files` 删除前复核 size**（`organization_automation.py`）：live listing 的 `C03RemoteEntry` 不含 size 字段，transport 层未解析 115 响应的文件大小。有效实现需要 (a) 验证 115 响应 size 字段名、(b) 扩展 `C03RemoteEntry` + `_normalize_list_entry`。在当前 transport 能力下无法低成本落地，依赖后续 transport 扩展，暂记录不做。
