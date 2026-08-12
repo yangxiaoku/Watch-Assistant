@@ -31,18 +31,24 @@ test("connects Chinese workbench entries without horizontal overflow", async ({ 
     json: { results: [movie], page: 1, total_pages: 1, total_results: 1 },
   }));
 
+  const isMobile = testInfo.project.name.startsWith("mobile");
   await page.goto("/");
-  const primaryNav = page.getByRole("navigation", { name: "主导航" });
+  const nav = page.getByRole("navigation", { name: "主导航" });
+  if (isMobile) {
+    await page.getByRole("button", { name: "菜单", exact: true }).click();
+    await expect(page.locator(".app-sidebar")).toHaveClass(/mobile-open/);
+    await expect(nav.getByRole("button", { name: "首页", exact: true })).toBeInViewport();
+  }
   for (const label of ["首页", "电影", "剧集", "热门", "收藏", "记录", "整理", "媒体库"]) {
-    await expect(primaryNav.getByRole("button", { name: label, exact: true })).toBeVisible();
+    await expect(nav.getByRole("button", { name: label, exact: true })).toBeVisible();
   }
   const navLayout = await page.evaluate(() => {
-    const nav = document.querySelector<HTMLElement>(".primary-nav");
-    if (!nav) throw new Error("missing primary navigation");
+    const navEl = document.querySelector<HTMLElement>(".app-sidebar .sidebar-nav");
+    if (!navEl) throw new Error("missing sidebar navigation");
     return {
-      clientWidth: nav.clientWidth,
-      scrollWidth: nav.scrollWidth,
-      buttons: Array.from(nav.querySelectorAll<HTMLElement>("button")).map((button) => {
+      clientWidth: navEl.clientWidth,
+      scrollWidth: navEl.scrollWidth,
+      buttons: Array.from(navEl.querySelectorAll<HTMLElement>("button")).map((button) => {
         const box = button.getBoundingClientRect();
         return { left: box.left, right: box.right, top: box.top, bottom: box.bottom };
       }),
@@ -53,13 +59,13 @@ test("connects Chinese workbench entries without horizontal overflow", async ({ 
     expect(button.left).toBeGreaterThanOrEqual(-1);
     expect(button.right).toBeLessThanOrEqual((testInfo.project.use.viewport?.width ?? 0) + 1);
   }
+  // 侧栏为纵向布局：每个入口一行
   const navRows = new Set(navLayout.buttons.map((button) => Math.round(button.top)));
-  if (testInfo.project.name.startsWith("mobile")) {
-    expect(navRows.size).toBe(2);
-  } else {
-    expect(navRows.size).toBe(1);
-  }
+  expect(navRows.size).toBeGreaterThanOrEqual(6);
 
+  if (isMobile) {
+    await page.getByRole("button", { name: "菜单", exact: true }).click();
+  }
   await page.getByLabel("搜索电影或电视剧").fill("沙丘");
   await page.getByLabel("搜索电影或电视剧").press("Enter");
   await expect(page.getByRole("heading", { name: "“沙丘”的搜索结果" })).toBeVisible();
