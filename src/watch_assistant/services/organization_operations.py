@@ -1415,6 +1415,59 @@ class OrganizationOperationService:
         await self._audit("organize.operation.retried", "整理操作已重试")
         return summary
 
+    async def fail_stale_uncertain(
+        self,
+        operation_id: str,
+        *,
+        expected_revision: int,
+        now: datetime | None = None,
+    ) -> OrganizationOperationSummary:
+        """Terminalize a confirmed-UNCERTAIN operation whose frozen plan was
+        invalidated by a newer scan, then invalidate that plan.
+
+        ``reconcile_once`` reaches here when plan_execution_scope/load_execution_steps
+        come back empty for a revision that was changed under the operation: the
+        UNCERTAIN outcome can never be verified against the stale plan, so it must
+        end as FAILED(plan_prerequisites_changed) and invalidate the plan —
+        otherwise the operation stays UNCERTAIN forever and ``_plan_has_active_operation``
+        blocks every later operation on that plan until a manual invalidate.
+        """
+
+        _validate_identifier(operation_id, "invalid_operation_id", maximum=40)
+        current_time = _as_utc(now or datetime.now(UTC))
+        async with self._session_factory() as session:
+            operation = await self._load_operation(
+                session, operation_id, expected_revision
+            )
+            if operation.status is not OrganizationOperationStatus.UNCERTAIN:
+                raise OrganizationOperationStateError("operation_is_not_uncertain")
+            operation.status = OrganizationOperationStatus.FAILED
+            operation.revision = expected_revision + 1
+            operation.error_code = "plan_prerequisites_changed"
+            operation.finished_at = current_time
+            operation.updated_at = current_time
+            plan = await session.get(OrganizationPlan, operation.plan_id)
+            if (
+                plan is not None
+                and plan.status == OrganizationPlanStatus.PLANNED.value
+            ):
+                plan.status = OrganizationPlanStatus.INVALIDATED.value
+                plan.revision += 1
+            await _sync_workflow_stage(
+                session,
+                operation.workflow_id,
+                status=WorkflowStageStatus.FAILED,
+                child_id=operation.id,
+                reason="organization_failed",
+                error_code="plan_prerequisites_changed",
+            )
+            await session.commit()
+            summary = _summary(operation)
+        await self._audit(
+            "organize.operation.updated", "整理操作已终态化为计划失效"
+        )
+        return summary
+
     async def _load_operation(
         self, session: AsyncSession, operation_id: str, expected_revision: int
     ) -> OrganizationOperation:

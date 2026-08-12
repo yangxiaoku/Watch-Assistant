@@ -293,10 +293,22 @@ class OrganizationWorker:
             or target_root not in plan_scope
             or not steps
         ):
+            # 计划被新扫描/refresh 失效(plan.revision 递增)后,execution scope
+            # 与可执行步骤因版本失配为空:此 UNCERTAIN 操作永远无法核对远端。
+            # 终态化为 plan_prerequisites_changed 并 invalidate 计划,
+            # 否则操作永久卡在 UNCERTAIN 且 _plan_has_active_operation 阻塞
+            # 该计划后续所有操作,只能人工 invalidate 解套。
+            try:
+                await self._operations.fail_stale_uncertain(
+                    operation_id,
+                    expected_revision=expected_revision,
+                )
+            except Exception:  # noqa: BLE001, S110 - terminalization is best-effort
+                pass
             return OrganizationExecutionResult(
                 operation_id,
                 OrganizationExecutionStatus.UNCERTAIN,
-                "scope_unverified",
+                "plan_prerequisites_changed",
                 0,
                 0,
             )

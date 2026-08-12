@@ -68,6 +68,15 @@ class _Operations:
     async def finish_after_lease_loss(self, *_args, **_kwargs):
         self.finish_after_lease_loss_calls += 1
 
+    async def fail_stale_uncertain(self, operation_id, *, expected_revision):
+        self.finished.append(
+            {
+                "operation_id": operation_id,
+                "expected_revision": expected_revision,
+                "error_code": "plan_prerequisites_changed",
+            }
+        )
+
 
 class _CookieProvider:
     def load(self):
@@ -547,3 +556,24 @@ async def test_run_forever_success_resets_backoff(monkeypatch):
     finally:
         stop.set()
         await asyncio.wait_for(loop, timeout=2)
+
+
+@pytest.mark.asyncio
+async def test_reconcile_terminalizes_operation_when_plan_revision_changed():
+    """计划被新扫描失效(plan_execution_scope/load_execution_steps 因版本
+    失配返回空)时,reconcile 必须终态化 UNCERTAIN 操作并 invalidate 计划,
+    而不是永久停在 scope_unverified、阻塞计划后续操作。"""
+    operations = _Operations(scope=frozenset(), steps=())
+    worker = _worker(
+        operations,
+        write_enabled=False,
+        client_factory=lambda _credential: _Client(),
+    )
+
+    result = await worker.reconcile_once("operation-one", expected_revision=1)
+
+    assert result.status is OrganizationExecutionStatus.UNCERTAIN
+    assert result.error_code == "plan_prerequisites_changed"
+    # 必须调 finish 终态化(而非停在 scope_unverified)
+    assert operations.finished, "计划失配时必须终态化操作"
+    assert operations.finished[0]["error_code"] == "plan_prerequisites_changed"
