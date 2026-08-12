@@ -2,12 +2,15 @@ import hashlib
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pytest
 from cryptography.fernet import Fernet
+from fastapi import HTTPException
 from pwdlib import PasswordHash
 
+from watch_assistant.api.organization_plan import confirm_organization_plan
 from watch_assistant.app import create_app
 from watch_assistant.crypto import SecretCrypto
 from watch_assistant.db import create_database, initialize_database
@@ -17,6 +20,7 @@ from watch_assistant.library_models import (
     OrganizationPlan,
 )
 from watch_assistant.models import AgentToken
+from watch_assistant.schemas import OrganizationPlanMutationRequest
 from watch_assistant.security import SecurityManager
 
 WEB_PASSWORD = "organization-review-password"
@@ -322,3 +326,36 @@ async def test_bearer_agent_confirm_requires_plan_hash(tmp_path):
     assert wrong.json()["detail"]["code"] == "plan_hash_mismatch"
     await client.aclose()
     await database.engine.dispose()
+
+
+async def test_confirm_with_null_plan_hash_raises_mismatch_not_500(
+    tmp_path, monkeypatch
+):
+    """H9:历史/异常路径下 current.plan_hash 为 None 时,compare_digest 不得抛
+    TypeError -> 500,应返回稳定的 plan_hash_mismatch。"""
+    from watch_assistant.api import organization_plan as api_module
+
+    async def _noop_scope(request, context, plan_id):
+        return None
+
+    monkeypatch.setattr(api_module, "require_plan_library_scope", _noop_scope)
+
+    async def _get_plan(plan_id):
+        return SimpleNamespace(plan_hash=None)
+
+    service = SimpleNamespace(
+        get_plan=_get_plan,
+        confirm_plan=lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not confirm")),
+    )
+    context = SimpleNamespace(via_bearer=False)
+    request = SimpleNamespace()
+
+    payload = OrganizationPlanMutationRequest(
+        expected_revision=1, plan_hash="a" * 64
+    )
+    with pytest.raises(HTTPException) as error:
+        await confirm_organization_plan(
+            "plan-null-hash", payload, request, context, service
+        )
+    assert error.value.status_code == 409
+    assert error.value.detail["code"] == "plan_hash_mismatch"

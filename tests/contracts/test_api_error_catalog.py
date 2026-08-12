@@ -3,7 +3,11 @@ import json
 import re
 from pathlib import Path
 
-from watch_assistant.services.api_errors import build_error_payload, catalog_codes
+from watch_assistant.services.api_errors import (
+    build_error_payload,
+    catalog_codes,
+    error_status,
+)
 
 _SAFE_CODE = re.compile(r"^[a-z][a-z0-9_.-]{1,99}$")
 
@@ -135,6 +139,64 @@ def test_domain_codes_used_by_http_error_mappers_are_in_central_catalog():
         "strm_operation_lease_lost",
     }
     assert domain_codes <= catalog_codes()
+
+
+def test_h9_registered_error_codes_have_specific_chinese_copy():
+    """H9 审计:此前直接上抛的非 catalog 码现在都有特定中文文案,而非通用回退。"""
+    h9_codes = {
+        # STRM operations
+        "strm_operation_claim_conflict",
+        "strm_operation_creation_conflict",
+        "strm_operation_lease_required",
+        "strm_operation_not_reconcilable",
+        "strm_operation_not_running",
+        "strm_full_failed",
+        "strm_incremental_failed",
+        "strm_cleanup_failed",
+        "invalid_cursor",
+        "invalid_limit",
+        # task / webhook / device
+        "task_lease_active",
+        "webhook_endpoint_disabled",
+        "device_unavailable",
+        "invalid_device_code",
+        "invalid_device_name",
+        # organization preview / settings validation
+        "invalid_small_file_threshold",
+        "target_file_invalid",
+        "invalid_poll_interval",
+        "invalid_conflict_mode",
+        "invalid_scan_interval_minutes",
+        # target catalog
+        "target_directory_id_invalid",
+        "target_directory_limit_invalid",
+        "target_file_limit_invalid",
+        "target_directory_incomplete",
+        "target_file_limit_exceeded",
+        "target_file_name_invalid",
+        "target_file_identity_conflict",
+        "target_directory_name_invalid",
+        "target_directory_path_conflict",
+        "target_directory_identity_conflict",
+        "target_directory_limit_exceeded",
+        "target_directory_pagination_unverified",
+        "target_entry_type_unverified",
+        "target_entry_scope_unverified",
+        "target_entry_identity_unverified",
+        "target_directory_read_failed",
+    }
+    generic_title = "操作暂时无法完成"
+    for code in sorted(h9_codes):
+        payload = build_error_payload(
+            code,
+            error_status(code),
+            request_id="request-test",
+            correlation_id="correlation-test",
+        )
+        assert payload["code"] == code, code
+        assert payload["title_zh"] not in {generic_title, "输入内容有误"}, code
+        assert payload["message_zh"], code
+        assert payload["suggestion_zh"], code
 
 
 def test_every_catalog_entry_builds_a_safe_chinese_payload():

@@ -114,7 +114,11 @@ async def confirm_organization_plan(
                 raise OrganizationPlanError("plan_hash_required")
         else:
             current = await service.get_plan(plan_id)
-            if not hmac.compare_digest(current.plan_hash, payload.plan_hash):
+            # plan_hash 列虽为 NOT NULL,但历史/异常路径可能读到空值;
+            # compare_digest(None, ...) 会抛 TypeError -> 500,先判空再比较。
+            if not current.plan_hash or not hmac.compare_digest(
+                current.plan_hash, payload.plan_hash
+            ):
                 raise OrganizationPlanError("plan_hash_mismatch")
         item = await service.confirm_plan(
             plan_id, expected_revision=payload.expected_revision

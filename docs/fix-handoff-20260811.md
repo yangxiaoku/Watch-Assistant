@@ -100,6 +100,14 @@
 - 测试：崩溃后孤儿回收用例
 
 ### H9. 大量非 catalog 错误码直接上抛（前端无文案）
+
+> **已修复**（分支 `codex/h9-error-codes`，2026-08-12）：36 个缺失码注册进
+> `api_errors._CATALOG`（中文文案）+ `_HTTP_STATUSES`（状态映射），前端
+> `errorCatalog.ts` 镜像（ADDITIONAL_CODES + CATALOG 特定文案）；契约测试
+> `test_h9_registered_error_codes_have_specific_chinese_copy` 每码断言。
+> `confirm_organization_plan` 的 `plan_hash` NULL 场景判空后再
+> `compare_digest`（不再 TypeError 500），回归测试
+> `test_confirm_with_null_plan_hash_raises_mismatch_not_500`。
 - 位置：`strm.py:383/229/938/997/918-924/977-983/1088-1094/774-775/886-887`、`library.py:970-971/210`、`webhooks.py:131`、
   `settings_p115.py:251-255/303/315`、`organization_plan.py:109-112`（plan_hash NULL TypeError 500）
 - 涉及码：strm_operation_claim_conflict/lease_required/not_running/not_reconcilable/creation_conflict、
