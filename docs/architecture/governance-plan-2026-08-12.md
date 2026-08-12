@@ -144,6 +144,23 @@
 
 **结论**：唯一的真公共成语是"原子条件 UPDATE + rowcount==1 校验"，但每处仅 ~2 行且错误处理完全不同。提取 `OperationLease` 需把全部差异参数化，抽象比两个具体调用点更难读，且会把 fail-closed fencing 语义参数化掉，风险与 `_as_utc` 统一同源。**阶段 B 终止，保持各自实现**。并发正确性已由既有原子 CAS 测试与契约测试锁定（error code 不变）。
 
+## 阶段 D 试点已执行：拆分 `strm_manifest.py`（1432 → 934 行）
+
+按内部模块边界拆为 4 个文件，公开 API（`__all__`）与既有 import 者完全兼容：
+
+| 文件 | 内容 | 行数 |
+|------|------|------|
+| `strm_manifest.py` | models + `StrmManifestService` + `_paths`/`_item`/`_rollback_entry`/`_report_progress` | 934 |
+| `strm_fs.py` | 纯文件系统写/删/撤销助手 + 词法校验（`_FileMutation`/`_write*`/`_remove*`/`_restore*`/`_read_target`/`_is_managed_content`/`_safe_root`/`_within`/`_valid_relative_path` 等），无 DB 访问 | ~250 |
+| `strm_fencing.py` | `_LeaseFence` + 租约 fencing 助手 + `CancelCheck`/`LeaseCheck`/`SessionFence` 类型 | ~230 |
+| `strm_errors.py` | `StrmManifestError`（放在最底层避免 fs/fencing 与 main 成环） | 12 |
+
+**要点**：
+- 提取用 AST 按源顺序 + 含装饰器，避免丢 `@dataclass` 或乱序
+- `StrmManifestError` 移到共享模块后，三处 `is` 同一性断言通过（避免双异常类破坏 `except` 语义）
+- 既有 import 者（`strm_cleanup_plan`/`empty_directory_cleanup_plan` 等）从 `strm_manifest` 再导出私有助手，行为不变；后续可选迁移到 `strm_fs`/`strm_fencing` 直接导入
+- 88 个 STRM 测试 + `scripts/verify.sh` 全绿
+
 ## 待评估（依赖 transport 能力）
 
 - **`_delete_small_files` 删除前复核 size**（`organization_automation.py`）：live listing 的 `C03RemoteEntry` 不含 size 字段，transport 层未解析 115 响应的文件大小。有效实现需要 (a) 验证 115 响应 size 字段名、(b) 扩展 `C03RemoteEntry` + `_normalize_list_entry`。在当前 transport 能力下无法低成本落地，依赖后续 transport 扩展，暂记录不做。
