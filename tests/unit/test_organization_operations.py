@@ -1085,3 +1085,94 @@ async def test_concurrent_expired_claim_next_does_not_double_increment_revision(
     # 而非两个协程各执行一次 _sync_workflow_stage(重复发 workflow 事件)。
     assert sync_calls == 1, f"_sync_workflow_stage 被调 {sync_calls} 次"
     await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_record_history_batches_existence_queries(tmp_path: Path):
+    """_record_history 对多个 move action 必须一次批量查出已存在条目,
+    而非每个 action 单独 SELECT(N+1),避免拖长临界完成事务。"""
+    import json as _json
+
+    database = await _database(tmp_path)
+    service = OrganizationOperationService(database.session_factory)
+    plan = await _plan(database, confidence=MatchConfidence.HIGH)
+    operation = await service.create(plan.plan_id, idempotency_key="history-batch")
+
+    # 构造含 5 个 move action 的计划
+    actions = [
+        {
+            "kind": "move",
+            "object_id": f"object-{i}",
+            "target": f"Movies/movie-{i}",
+            "source_name": f"source-{i}.mkv",
+            "order": i,
+        }
+        for i in range(5)
+    ]
+    async with database.session_factory() as session:
+        stored_plan = await session.get(OrganizationPlan, plan.plan_id)
+        assert stored_plan is not None
+        stored_plan.actions_json = _json.dumps(actions)
+        stored_plan.basis_json = _json.dumps(
+            [
+                {
+                    "source_index": i,
+                    "title": f"Movie {i}",
+                    "tmdb_id": 100 + i,
+                    "media_type": "movie",
+                }
+                for i in range(5)
+            ]
+        )
+        await session.commit()
+
+    select_count = 0
+    original_execute = database.engine.sync_engine.dialect.do_execute
+
+    def counting_execute(cursor, statement, parameters, context):
+        nonlocal select_count
+        if "SELECT organization_history" in str(statement):
+            select_count += 1
+        return original_execute(cursor, statement, parameters, context)
+
+    # 通过事件监听统计,而非替换 dialect(保持简单)
+    from sqlalchemy import event
+
+    engine = database.engine.sync_engine
+
+    @event.listens_for(engine, "before_cursor_execute")
+    def _count_history_select(
+        _conn, _cursor, statement, _params, _context, _executemany
+    ):
+        nonlocal select_count
+        if "SELECT organization_history" in str(statement):
+            select_count += 1
+
+    async with database.session_factory() as session:
+        from watch_assistant.models import OrganizationOperation as _OrgOp
+        stored_operation = await session.get(_OrgOp, operation.operation_id)
+        assert stored_operation is not None
+        await service._record_history(
+            session,
+            stored_operation,
+            source_directory_id="7000",
+            target_directory_id="8000",
+            completed_at=datetime.now(UTC),
+        )
+        await session.commit()
+
+    event.remove(engine, "before_cursor_execute", _count_history_select)
+
+    # N+1 会执行 5 次 SELECT(每 action 一次);批量查出应为 1 次
+    assert select_count == 1, f"history SELECT 次数 {select_count}(应为 1,N+1 会到 5)"
+    async with database.session_factory() as session:
+        from watch_assistant.library_models import OrganizationHistoryEntry
+        rows = list(
+            (await session.scalars(
+                select(OrganizationHistoryEntry).where(
+                    OrganizationHistoryEntry.operation_id == operation.operation_id
+                )
+            )).all()
+        )
+        assert len(rows) == 5
+    await database.engine.dispose()

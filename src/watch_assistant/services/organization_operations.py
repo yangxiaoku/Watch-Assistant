@@ -1303,6 +1303,30 @@ class OrganizationOperationService:
             for item in basis
             if isinstance(item, dict) and isinstance(item.get("source_index"), int)
         }
+        move_sources = [
+            action.get("object_id")
+            for action in actions
+            if isinstance(action, dict)
+            and action.get("kind") == "move"
+            and isinstance(action.get("object_id"), str)
+            and action.get("object_id")
+        ]
+        # 一次性批量查出已存在条目,避免每 action 单独 SELECT(N+1)拖长
+        # 临界完成事务;已有 source_object_id 的去重集合供循环快速判断。
+        existing_sources: set[str] = set()
+        if move_sources:
+            existing_sources = set(
+                (
+                    await session.scalars(
+                        select(OrganizationHistoryEntry.source_object_id).where(
+                            OrganizationHistoryEntry.operation_id == operation.id,
+                            OrganizationHistoryEntry.source_object_id.in_(
+                                move_sources
+                            ),
+                        )
+                    )
+                ).all()
+            )
         for action in actions:
             if not isinstance(action, dict) or action.get("kind") != "move":
                 continue
@@ -1314,13 +1338,7 @@ class OrganizationOperationService:
                 for value in (source_object_id, target_path, source_name)
             ):
                 raise OrganizationOperationConflict("plan_history_invalid")
-            existing = await session.scalar(
-                select(OrganizationHistoryEntry).where(
-                    OrganizationHistoryEntry.operation_id == operation.id,
-                    OrganizationHistoryEntry.source_object_id == source_object_id,
-                )
-            )
-            if existing is not None:
+            if source_object_id in existing_sources:
                 continue
             evidence = basis_by_index.get(action.get("order"), {})
             title = evidence.get("title") if isinstance(evidence, dict) else None
