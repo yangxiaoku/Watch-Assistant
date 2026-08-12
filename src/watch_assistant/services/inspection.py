@@ -27,9 +27,14 @@ from watch_assistant.schemas import (
     LoggingLevel,
     ResourceKind,
     WorkflowStageName,
+    WorkflowStageStatus,
 )
 from watch_assistant.services.observability import EventLogger, emit_event
-from watch_assistant.services.workflows import link_child
+from watch_assistant.services.workflows import (
+    emit_workflow_stage_changed,
+    link_child,
+    sync_child_stage,
+)
 
 INSPECTION_RETENTION = timedelta(days=7)
 # 超过该时长的 RUNNING 批次视为残留(进程内异常/崩溃路径未复位),回收重排。
@@ -167,15 +172,52 @@ class InspectionService:
             batch.status = _batch_status(item.status for item in items)
             session.add(batch)
             session.add_all(items)
+            stage_workflow = None
+            stage_status = None
+            stage_error_code = None
             if workflow_id is not None:
-                await link_child(
-                    session,
-                    workflow_id,
-                    WorkflowStageName.INSPECTION,
-                    "inspection_batch",
-                    batch.id,
-                )
+                if batch.status in {
+                    InspectionBatchStatus.COMPLETED,
+                    InspectionBatchStatus.PARTIAL,
+                    InspectionBatchStatus.FAILED,
+                }:
+                    stage_status = _inspection_stage_status(batch.status)
+                    stage_error_code = (
+                        "inspection_partial"
+                        if batch.status == InspectionBatchStatus.PARTIAL
+                        else "inspection_failed"
+                        if batch.status == InspectionBatchStatus.FAILED
+                        else None
+                    )
+                    stage_workflow = await sync_child_stage(
+                        session,
+                        workflow_id,
+                        WorkflowStageName.INSPECTION,
+                        child_type="inspection_batch",
+                        child_id=batch.id,
+                        status=stage_status,
+                        reason=f"inspection_{batch.status.value}",
+                        error_code=stage_error_code,
+                    )
+                else:
+                    stage_status = WorkflowStageStatus.RUNNING
+                    stage_workflow = await link_child(
+                        session,
+                        workflow_id,
+                        WorkflowStageName.INSPECTION,
+                        "inspection_batch",
+                        batch.id,
+                    )
             await session.commit()
+            if stage_workflow is not None and stage_status is not None:
+                await emit_workflow_stage_changed(
+                    self._event_logger,
+                    workflow_id=stage_workflow.id,
+                    correlation_id=stage_workflow.correlation_id,
+                    stage_name=WorkflowStageName.INSPECTION,
+                    status=stage_status,
+                    error_code=stage_error_code,
+                )
             await emit_event(
                 self._event_logger,
                 "inspection.batch_started",
@@ -203,9 +245,16 @@ class InspectionService:
                     else "inspection.batch_failed",
                     level=LoggingLevel.ERROR if failed else LoggingLevel.INFO,
                     fields=fields,
+                    task_id=batch.id,
+                    correlation_id=(
+                        stage_workflow.correlation_id
+                        if stage_workflow is not None
+                        else None
+                    ),
                 )
             return InspectionBatchResponse(
                 batch_id=batch.id,
+                workflow_id=batch.workflow_id,
                 status=batch.status,
                 submitted_count=len(resource_ids),
                 completed_count=sum(
@@ -237,6 +286,7 @@ class InspectionService:
         ]
         return InspectionBatchResponse(
             batch_id=batch.id,
+            workflow_id=batch.workflow_id,
             status=batch.status,
             submitted_count=len(items),
             completed_count=len(results),
@@ -377,7 +427,28 @@ class InspectionWorker:
                     if batch is not None:
                         batch.status = InspectionBatchStatus.FAILED
                         batch.updated_at = datetime.now(UTC)
+                        stage_workflow = None
+                        if batch.workflow_id is not None:
+                            stage_workflow = await sync_child_stage(
+                                session,
+                                batch.workflow_id,
+                                WorkflowStageName.INSPECTION,
+                                child_type="inspection_batch",
+                                child_id=batch.id,
+                                status=WorkflowStageStatus.FAILED,
+                                reason="inspection_dependency_failed",
+                                error_code="inspection_dependency_failed",
+                            )
                         await session.commit()
+                        if stage_workflow is not None:
+                            await emit_workflow_stage_changed(
+                                self._event_logger,
+                                workflow_id=stage_workflow.id,
+                                correlation_id=stage_workflow.correlation_id,
+                                stage_name=WorkflowStageName.INSPECTION,
+                                status=WorkflowStageStatus.FAILED,
+                                error_code="inspection_dependency_failed",
+                            )
                         await emit_event(
                             self._event_logger,
                             "inspection.batch_failed",
@@ -388,6 +459,12 @@ class InspectionWorker:
                                 "status": "dependency_failed",
                                 "error_code": error_code,
                             },
+                            correlation_id=(
+                                stage_workflow.correlation_id
+                                if stage_workflow is not None
+                                else None
+                            ),
+                            task_id=batch.id,
                         )
                         return False
             return True
@@ -514,6 +591,28 @@ class InspectionWorker:
                 else InspectionBatchStatus.FAILED
             )
             batch.updated_at = datetime.now(UTC)
+            stage_workflow = None
+            stage_status = None
+            stage_error_code = None
+            if batch.workflow_id is not None:
+                stage_status = _inspection_stage_status(batch.status)
+                stage_error_code = (
+                    "inspection_partial"
+                    if batch.status == InspectionBatchStatus.PARTIAL
+                    else "inspection_failed"
+                    if batch.status == InspectionBatchStatus.FAILED
+                    else None
+                )
+                stage_workflow = await sync_child_stage(
+                    session,
+                    batch.workflow_id,
+                    WorkflowStageName.INSPECTION,
+                    child_type="inspection_batch",
+                    child_id=batch.id,
+                    status=stage_status,
+                    reason=f"inspection_{batch.status.value}",
+                    error_code=stage_error_code,
+                )
             await session.commit()
             failed = batch.status == InspectionBatchStatus.FAILED
             fields: dict[str, object] = {
@@ -524,6 +623,15 @@ class InspectionWorker:
             if failed:
                 # 批次失败事件携带失败原因(首个失败条目的 error_code)。
                 fields["error_code"] = _batch_failure_error_code(items)
+            if stage_workflow is not None and stage_status is not None:
+                await emit_workflow_stage_changed(
+                    self._event_logger,
+                    workflow_id=stage_workflow.id,
+                    correlation_id=stage_workflow.correlation_id,
+                    stage_name=WorkflowStageName.INSPECTION,
+                    status=stage_status,
+                    error_code=stage_error_code,
+                )
             await emit_event(
                 self._event_logger,
                 "inspection.batch_completed"
@@ -533,6 +641,12 @@ class InspectionWorker:
                 else "inspection.batch_completed",
                 level=LoggingLevel.ERROR if failed else LoggingLevel.INFO,
                 fields=fields,
+                correlation_id=(
+                    stage_workflow.correlation_id
+                    if stage_workflow is not None
+                    else None
+                ),
+                task_id=batch.id,
             )
 
 
@@ -568,6 +682,14 @@ def _batch_failure_error_code(items: Iterable[InspectionItem]) -> str:
 
 def _failed_item_count(items: Iterable[InspectionItem]) -> int:
     return sum(item.status not in SUCCESSFUL_ITEM_STATUSES for item in items)
+
+
+def _inspection_stage_status(status: InspectionBatchStatus) -> WorkflowStageStatus:
+    if status in {InspectionBatchStatus.QUEUED, InspectionBatchStatus.RUNNING}:
+        return WorkflowStageStatus.RUNNING
+    if status == InspectionBatchStatus.COMPLETED:
+        return WorkflowStageStatus.SUCCEEDED
+    return WorkflowStageStatus.FAILED
 
 
 def _batch_status(statuses: Iterable[InspectionItemStatus]) -> InspectionBatchStatus:

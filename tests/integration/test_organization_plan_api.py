@@ -203,6 +203,8 @@ async def test_plan_review_cursor_is_bounded_and_confirm_is_local_only(tmp_path)
         "source_names",
         "can_execute",
         "execution_blockers",
+        "requires_web_approval",
+        "high_risk_action_threshold",
         "alias",
         "candidates",
     }

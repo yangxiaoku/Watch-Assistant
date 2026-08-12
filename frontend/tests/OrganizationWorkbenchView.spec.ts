@@ -17,6 +17,8 @@ const plan: OrganizationPlanSummary = {
   executable_action_count: 1,
   review_action_count: 0,
   can_execute: true,
+  requires_web_approval: false,
+  high_risk_action_threshold: 10,
   alias: null,
   source_names: ["Movie.One.2024.mkv"],
 };
@@ -583,5 +585,23 @@ describe("OrganizationWorkbenchView", () => {
     expect(wrapper.findAll("button").some((button) => button.text().includes("确认计划"))).toBe(true);
   });
 
-  
+  it("passes the Web approval workflow when queuing a high-risk plan", async () => {
+    const planned = { ...plan, status: "planned" as const, action_count: 11, requires_web_approval: true };
+    const api = makeApi({
+      organizationPlans: vi.fn().mockResolvedValue({ items: [planned], next_cursor: null }),
+      createOrganizationApprovalWorkflow: vi.fn().mockResolvedValue({ id: "wf-high-risk" }),
+      queueOrganizationOperation: vi.fn().mockResolvedValue({ operation_id: "op-2", plan_id: planned.plan_id, status: "planned", revision: 1, attempts: 0, error_code: null }),
+    });
+    const wrapper = mount(OrganizationWorkbenchView, { props: { api, executionSupported: true } });
+    await flushPromises();
+
+    const approvalButton = wrapper.findAll("button").find((button) => button.text().includes("申请 Web 人工审批"));
+    expect(approvalButton).toBeDefined();
+    await approvalButton!.trigger("click");
+    await flushPromises();
+    await wrapper.findAll("button").find((button) => button.text().includes("开始整理"))!.trigger("click");
+    await confirmRiskyAction(wrapper);
+
+    expect(api.queueOrganizationOperation).toHaveBeenCalledWith("plan-local-1", 4, "wf-high-risk");
+  });
 });

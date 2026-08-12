@@ -227,7 +227,11 @@ EVENT_CATALOG: dict[str, EventDefinition] = {
         "pansou.partial_failure", LogCategory.SEARCH, "部分搜索来源失败", "部分搜索来源不可用，已返回可用结果，共 {count} 条"
     ),
     "organize.needs_review": _event(
-        "organize.needs_review", LogCategory.ORGANIZE, "资源需要人工确认", "找到多个相近条目，请确认后继续整理"
+        "organize.needs_review",
+        LogCategory.ORGANIZE,
+        "整理预览需要人工确认",
+        "整理预览涉及 {count} 个文件，需要人工确认后继续",
+        suggestion="请打开整理预览，核对匹配和目标冲突后再确认",
     ),
     "organize.preview.created": _event(
         "organize.preview.created",
@@ -288,7 +292,11 @@ EVENT_CATALOG: dict[str, EventDefinition] = {
         "organize.operation.updated", LogCategory.ORGANIZE, "整理操作状态已更新", "整理操作状态已更新"
     ),
     "organize.operation.failed": _event(
-        "organize.operation.failed", LogCategory.ORGANIZE, "整理操作已失败", "整理操作已失败"
+        "organize.operation.failed",
+        LogCategory.ORGANIZE,
+        "整理操作失败",
+        "整理操作失败，错误码：{error_code}",
+        suggestion="请打开整理工作台检查计划状态，确认失败原因后再重试",
     ),
     "organize.operation.uncertain": _event(
         "organize.operation.uncertain", LogCategory.ORGANIZE, "整理结果待确认", "整理操作结果待确认，请先核对远端目录", suggestion="请先核对远端目录，不要直接重复提交"
@@ -345,6 +353,13 @@ EVENT_CATALOG: dict[str, EventDefinition] = {
     ),
     "strm.dirty_consumed": _event(
         "strm.dirty_consumed", LogCategory.STRM, "目录变更已完成增量对账", "目录变更已完成增量对账，当前状态：{status}"
+    ),
+    "strm.dirty_failed": _event(
+        "strm.dirty_failed",
+        LogCategory.STRM,
+        "STRM 增量对账失败",
+        "STRM 增量对账失败，错误码：{error_code}",
+        suggestion="请检查媒体库扫描和 STRM 设置，确认失败原因后再重试",
     ),
     "strm.dirty_skipped": _event(
         "strm.dirty_skipped", LogCategory.STRM, "已跳过目录增量对账", "整理完成后未启用 STRM 联动"
@@ -448,6 +463,13 @@ EVENT_CATALOG: dict[str, EventDefinition] = {
         LogCategory.SUBSCRIPTION,
         "订阅资源观察完成",
         "订阅本次发现 {count} 条新资源，已去重 {hidden_count} 条",
+    ),
+    "subscription.check_failed": _event(
+        "subscription.check_failed",
+        LogCategory.SUBSCRIPTION,
+        "订阅检查失败",
+        "订阅检查失败，错误码：{error_code}",
+        suggestion="请检查搜索服务状态，系统将在下一次检查时间自动重试",
     ),
     "subscription.scheduler_started": _event(
         "subscription.scheduler_started", LogCategory.SUBSCRIPTION, "订阅调度开始", "订阅调度已开始，本次到期检查 {total} 项"

@@ -13,12 +13,13 @@ import ipaddress
 import json
 import secrets
 import socket
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from urllib.parse import urlsplit
 from uuid import uuid4
 
 import httpx
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from watch_assistant.crypto import SecretCrypto
@@ -43,6 +44,16 @@ DELIVERY_TIMEOUT = 10.0
 # 收回重试(见 _reclaim_stale_in_flight)。
 DELIVERY_LEASE_SECONDS = 60.0
 RETRY_DELAYS = (5, 15, 60, 300, 900, 1800, 3600, 7200)
+
+
+@dataclass(frozen=True)
+class _DeliveryStats:
+    total: int = 0
+    delivered: int = 0
+    pending: int = 0
+    dead: int = 0
+    failure_rate: float | None = None
+    next_retry_at: datetime | None = None
 
 
 class WebhookError(ValueError):
@@ -90,7 +101,8 @@ class WebhookService:
         async with self._session_factory() as session:
             session.add(item)
             await session.commit()
-        return WebhookEndpointCreateResponse(secret=secret, item=_endpoint_response(item))
+            response = await _endpoint_response_for(session, item)
+        return WebhookEndpointCreateResponse(secret=secret, item=response)
 
     async def list(self) -> WebhookEndpointListResponse:
         async with self._session_factory() as session:
@@ -99,7 +111,8 @@ class WebhookService:
                     select(WebhookEndpoint).order_by(WebhookEndpoint.created_at.desc())
                 )
             )
-        return WebhookEndpointListResponse(items=[_endpoint_response(item) for item in items])
+            responses = [await _endpoint_response_for(session, item) for item in items]
+        return WebhookEndpointListResponse(items=responses)
 
     async def patch(self, endpoint_id: str, patch: WebhookEndpointPatch) -> WebhookEndpointResponse:
         async with self._session_factory() as session:
@@ -120,7 +133,7 @@ class WebhookService:
             item.revision += 1
             item.updated_at = datetime.now(UTC)
             await session.commit()
-            return _endpoint_response(item)
+            return await _endpoint_response_for(session, item)
 
     async def rotate(self, endpoint_id: str) -> WebhookEndpointCreateResponse:
         secret = "whsec_" + secrets.token_urlsafe(32)
@@ -133,7 +146,8 @@ class WebhookService:
             item.revision += 1
             item.updated_at = datetime.now(UTC)
             await session.commit()
-            return WebhookEndpointCreateResponse(secret=secret, item=_endpoint_response(item))
+            response = await _endpoint_response_for(session, item)
+            return WebhookEndpointCreateResponse(secret=secret, item=response)
 
     async def delete(self, endpoint_id: str) -> None:
         async with self._session_factory() as session:
@@ -537,7 +551,43 @@ def _safe_value(value: object) -> object:
     return str(value)[:256]
 
 
-def _endpoint_response(item: WebhookEndpoint) -> WebhookEndpointResponse:
+async def _endpoint_response_for(
+    session: AsyncSession, item: WebhookEndpoint
+) -> WebhookEndpointResponse:
+    status_counts = {
+        status: int(count)
+        for status, count in await session.execute(
+            select(WebhookDelivery.status, func.count())
+            .where(WebhookDelivery.endpoint_id == item.id)
+            .group_by(WebhookDelivery.status)
+        )
+    }
+    next_retry_at = await session.scalar(
+        select(func.min(WebhookDelivery.next_attempt_at)).where(
+            WebhookDelivery.endpoint_id == item.id,
+            WebhookDelivery.status == "pending",
+        )
+    )
+    next_retry_at = _as_utc(next_retry_at)
+    delivered = status_counts.get("delivered", 0)
+    dead = status_counts.get("dead", 0)
+    pending = status_counts.get("pending", 0)
+    terminal = delivered + dead
+    stats = _DeliveryStats(
+        total=delivered + dead + pending,
+        delivered=delivered,
+        pending=pending,
+        dead=dead,
+        failure_rate=dead / terminal if terminal else None,
+        next_retry_at=next_retry_at,
+    )
+    return _endpoint_response(item, stats=stats)
+
+
+def _endpoint_response(
+    item: WebhookEndpoint, *, stats: _DeliveryStats | None = None
+) -> WebhookEndpointResponse:
+    stats = stats or _DeliveryStats()
     return WebhookEndpointResponse(
         id=item.id,
         name=item.name,
@@ -552,7 +602,21 @@ def _endpoint_response(item: WebhookEndpoint) -> WebhookEndpointResponse:
         last_success_at=item.last_success_at,
         last_failure_at=item.last_failure_at,
         failure_count=item.failure_count,
+        delivery_total=stats.total,
+        delivered_count=stats.delivered,
+        pending_count=stats.pending,
+        dead_letter_count=stats.dead,
+        failure_rate=stats.failure_rate,
+        next_retry_at=stats.next_retry_at,
     )
+
+
+def _as_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 def _endpoint_health_status(item: WebhookEndpoint) -> str:

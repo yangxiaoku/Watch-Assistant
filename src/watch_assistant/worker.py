@@ -11,13 +11,14 @@ from typing import Protocol, TypeVar
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from watch_assistant.crypto import SecretCrypto
-from watch_assistant.models import TaskState
+from watch_assistant.models import TaskState, Workflow
 from watch_assistant.schemas import (
     LoggingLevel,
     RemoteObservation,
     RemoteStatus,
     SubmissionResult,
     TaskAction,
+    WorkflowStageName,
 )
 from watch_assistant.services.inventory_push_guard import (
     InventoryPushCheck,
@@ -31,7 +32,9 @@ from watch_assistant.services.tasks import (
     TaskLease,
     TaskService,
     read_task_status,
+    workflow_stage_status_for_task_state,
 )
+from watch_assistant.services.workflows import emit_workflow_stage_changed
 
 _ExternalResult = TypeVar("_ExternalResult")
 
@@ -219,12 +222,28 @@ class TaskWorker:
                         error_code=RECONCILIATION_UNAVAILABLE,
                     )
             try:
-                await self._tasks.finish_recovery(lease, remote_status)
+                task = await self._tasks.finish_recovery(lease, remote_status)
             except asyncio.CancelledError:
                 await self._mark_lease_lost(lease)
                 raise
             except Exception:  # noqa: BLE001 - recovery retries after expiry
                 await self._mark_lease_lost(lease)
+                continue
+            if task is not None and task.workflow_id is not None:
+                try:
+                    async with self._session_factory() as session:
+                        workflow = await session.get(Workflow, task.workflow_id)
+                    if workflow is not None:
+                        await emit_workflow_stage_changed(
+                            self._event_logger,
+                            workflow_id=workflow.id,
+                            correlation_id=workflow.correlation_id,
+                            stage_name=WorkflowStageName.PUSH,
+                            status=workflow_stage_status_for_task_state(task.state),
+                            error_code=task.error_code,
+                        )
+                except Exception:  # noqa: BLE001,S110 - recovery notifications never break recovery
+                    pass
 
     async def run_forever(self, stop_event: asyncio.Event, *, interval: float = 1.0):
         recovery_interval = max(15.0, interval * 30)

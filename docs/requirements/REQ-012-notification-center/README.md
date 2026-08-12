@@ -110,6 +110,23 @@
   去重聚合；普通启动和读取日志不会生成通知。
 - workflow 阶段在事务提交后发出 `workflow.stage_changed`，可行动状态会生成站内通知，并与
   workflow ID 关联；同一事件仍通过现有 Webhook Outbox 投递，不阻塞业务事务。
+- 搜索 `discovery` 和内容检测 `inspection` 子任务现在在各自状态事务提交后发出同一事件，
+  通知只对完成、失败、跳过、不确定和取消等可行动状态生效，运行中状态不会生成用户通知。
+- 推送任务的 `push` 阶段也在创建、重试、取消、终态和恢复后发出同一事件；任务事件仍保留，
+  但 workflow 通知使用 workflow/correlation ID 作为跳转和去重主体。
+- 整理 operation 的状态事件和 `organization` 阶段事件现在带 operation/workflow/correlation ID，
+  取消请求仍只记录本地中止意图，不伪造远端撤回。
+- 无 workflow 关联的整理 operation 失败现在使用独立的 `organize.operation.failed` 事件生成
+  错误级站内通知，并跳转整理工作台；关联 workflow 的失败继续只由 `workflow.stage_changed`
+  通知，避免同一次失败重复提醒。错误详情仅使用白名单错误码。
+- STRM dirty worker 在重试耗尽或增量结果明确含失败项时，为无 workflow 的媒体库生成
+  `strm.dirty_failed` 错误通知并跳转设置；关联 workflow 时仍只保留 `workflow.stage_changed`
+  通知，错误详情同样只使用稳定错误码。
+- 订阅搜索失败在持久化退避时间和 `search_unavailable` 后生成 `subscription.check_failed` 错误
+  通知并跳转设置；正常无匹配检查不会进入错误通知链。
+- 无 workflow 关联的内容检测批次失败现在生成错误通知并跳转资源检测设置；已关联 workflow 的
+  批次失败只保留 workflow 阶段通知，避免同一失败重复提醒。
+- 整理预览进入 `needs_review` 时，API 预览和自动预览都会发出 `organize.needs_review`；同一计划的重复预览复用 30 分钟去重并累加次数，通知可跳转整理工作台。
 - 任务 worker 的远端 `uncertain` 现在发出 `task.uncertain`（不再误报为失败），并携带任务
   ID；任务失败、115 不可用、订阅发现新资源、备份失败和异常恢复预览已接入通知过滤。
 - Webhook 管理接口提供单端点测试通知；测试载荷只包含 `webhook.test`、版本和中文摘要，
@@ -117,5 +134,6 @@
 - `watchctl` 已接入通知列表、未读筛选、单条已读和全部已读命令；命令只调用正式通知 API，复用认证、权限、错误码和 JSON/JSONL envelope。
 - 通知偏好已支持默认 `23:00-08:00` 静默时段、IANA 时区、错误/安全事件突破静默，以及前端设置控件；配置通过版本号并发控制和 046 幂等迁移保存。
 - PR #53 新增内容检测批次失败、整理自动化阻断、整理操作失败和 STRM 校验完成事件的通知契约与集成覆盖；STRM 校验只有 `issues` 生成通知，`verified` 保持静默。
-- 当前仍未宣称 REQ-012 完成：完整业务事件矩阵、外部渠道真实接收端验收、渠道健康/重试/死信、Bark/Telegram
+- Webhook 端点列表已提供持久投递的运营统计：总数、成功数、待重试数、死信数、终态失败率和下一次重试时间；这只是可靠渠道运营 API 的第一阶段。
+- 当前仍未宣称 REQ-012 完成：完整业务事件矩阵、外部渠道真实接收端验收、渠道健康/重试/死信、通知渠道统一运营闭环、Bark/Telegram
   和 PWA Push 仍按需求状态保持待实现或待验收。

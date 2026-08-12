@@ -104,6 +104,8 @@ class OrganizationPlanView:
     executable_action_count: int
     review_action_count: int
     can_execute: bool
+    requires_web_approval: bool = False
+    high_risk_action_threshold: int = 10
     execution_blockers: tuple[OrganizationExecutionBlocker, ...] = ()
     source_names: tuple[str, ...] = ()
     alias: str | None = None
@@ -134,6 +136,8 @@ class OrganizationPlanView:
                 blocker.to_public_dict() for blocker in self.execution_blockers
             ],
             "source_names": list(self.source_names),
+            "requires_web_approval": self.requires_web_approval,
+            "high_risk_action_threshold": self.high_risk_action_threshold,
             "alias": self.alias,
             "candidates": list(self.candidates),
         }

@@ -488,6 +488,30 @@ async def test_running_operation_cancel_column_migrates_legacy_table(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_resource_search_workflow_column_migrates_legacy_table(tmp_path):
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'search-legacy.db'}")
+    async with database.engine.begin() as connection:
+        await connection.exec_driver_sql(
+            "CREATE TABLE resource_search_jobs (task_id VARCHAR(64) PRIMARY KEY)"
+        )
+        await connection.run_sync(run_migrations, MIGRATIONS[-1:])
+        columns = await connection.run_sync(
+            lambda sync: {
+                item["name"]
+                for item in inspect(sync).get_columns("resource_search_jobs")
+            }
+        )
+        indexes = await connection.run_sync(
+            lambda sync: inspect(sync).get_indexes("resource_search_jobs")
+        )
+    assert "workflow_id" in columns
+    assert any(
+        index["name"] == "ix_resource_search_jobs_workflow_id" for index in indexes
+    )
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_legacy_workflow_schema_is_upgraded_without_losing_rows(tmp_path):
     database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'watch.db'}")
     async with database.engine.begin() as connection:

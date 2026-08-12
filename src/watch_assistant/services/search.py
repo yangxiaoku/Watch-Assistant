@@ -33,6 +33,7 @@ from watch_assistant.models import (
     ResourceSearchJob,
     SearchCache,
     SourceReliability,
+    Workflow,
 )
 from watch_assistant.schemas import (
     HomeCatalogResponse,
@@ -45,6 +46,7 @@ from watch_assistant.schemas import (
     ResourcePageResponse,
     ResourceSearchResponse,
     SearchResponse,
+    WorkflowStageName,
 )
 from watch_assistant.services.content_policy import (
     ContentPolicy,
@@ -75,6 +77,7 @@ from watch_assistant.services.search_helpers import (
     _quality_matches,
     _resource_facets,
     _resource_score_snapshot,
+    _resource_search_stage_status,
     _resource_search_task_from_row,
     _resource_sort_key,
     _resource_summary,
@@ -88,6 +91,11 @@ from watch_assistant.services.search_helpers import (
 from watch_assistant.services.validation import (
     resource_matches_media,
     validate_and_rank_resources,
+)
+from watch_assistant.services.workflows import (
+    WorkflowNotFound,
+    emit_workflow_stage_changed,
+    sync_child_stage,
 )
 
 FRESH_CACHE_AGE = timedelta(hours=24)
@@ -128,6 +136,8 @@ def _search_error_code_for_log(exc: BaseException) -> str:
             if code in {"season_requires_tv", "season_not_found"}
             else "invalid_season_request"
         )
+    if isinstance(exc, ResourceSearchWorkflowConflict):
+        return "resource_search_workflow_conflict"
     if isinstance(exc, SearchUnavailable):
         code = str(exc)
         return (
@@ -136,6 +146,10 @@ def _search_error_code_for_log(exc: BaseException) -> str:
             else "resource_search_unavailable"
         )
     return "resource_search_failed"
+
+
+class ResourceSearchWorkflowConflict(ValueError):
+    """工作流绑定冲突:资源搜索已关联到另一 workflow 或被同步推进失败。"""
 
 
 def make_cache_key(
@@ -379,7 +393,10 @@ class SearchService:
         media_type: MediaType,
         season_number: int | None,
         refresh: bool = False,
+        workflow_id: str | None = None,
     ) -> ResourceSearchResponse:
+        if workflow_id is not None:
+            await self._ensure_workflow(workflow_id)
         key = (media_type, tmdb_id, season_number)
         lock = _bounded_setdefault(
             self._resource_search_start_locks, key, asyncio.Lock, _SEARCH_LOCK_CACHE_MAX
@@ -391,6 +408,7 @@ class SearchService:
                 season_number=season_number,
                 refresh=refresh,
                 key=key,
+                workflow_id=workflow_id,
             )
 
     async def _start_resource_search_locked(
@@ -401,6 +419,7 @@ class SearchService:
         season_number: int | None,
         refresh: bool,
         key: tuple[MediaType, int, int | None],
+        workflow_id: str | None = None,
     ) -> ResourceSearchResponse:
         existing = self._resource_search_tasks.get(key)
         restored = False
@@ -408,6 +427,7 @@ class SearchService:
             existing = await self._load_latest_resource_search_task(key)
             restored = existing is not None
         if existing is not None and existing.status in {"queued", "running"}:
+            attached = self._attach_workflow(existing, workflow_id)
             _bounded_set(
                 self._resource_search_tasks,
                 key,
@@ -415,6 +435,8 @@ class SearchService:
                 _RESOURCE_SEARCH_TASK_CACHE_MAX,
                 protect=lambda task: task.status in {"queued", "running"},
             )
+            if attached:
+                await self._save_resource_search_task(existing)
             if restored:
                 asyncio.create_task(
                     self._run_resource_search(existing), name=existing.task_id
@@ -427,8 +449,10 @@ class SearchService:
             if snapshot_revision is not None:
                 existing.snapshot_revision = snapshot_revision
                 existing.cache_age_seconds = cache_age_seconds
-                async with self._resource_search_lock(existing.task_id):
-                    return existing.response()
+            if self._attach_workflow(existing, workflow_id):
+                await self._save_resource_search_task(existing)
+            async with self._resource_search_lock(existing.task_id):
+                return existing.response()
 
         now = datetime.now(UTC)
         snapshot_revision = None
@@ -439,6 +463,7 @@ class SearchService:
             )
         task = _ResourceSearchTask(
             task_id="resource_search_" + uuid4().hex,
+            workflow_id=workflow_id,
             tmdb_id=tmdb_id,
             media_type=media_type,
             season_number=season_number,
@@ -580,12 +605,15 @@ class SearchService:
         return _resource_search_task_from_row(row) if row is not None else None
 
     async def _save_resource_search_task(self, task: _ResourceSearchTask) -> None:
+        stage_workflow = None
+        stage_status = None
         async with self._session_factory() as session:
             row = await session.get(ResourceSearchJob, task.task_id)
             if row is None:
                 row = ResourceSearchJob(task_id=task.task_id)
                 session.add(row)
             row.tmdb_id = task.tmdb_id
+            row.workflow_id = task.workflow_id
             row.media_type = task.media_type
             row.season_number = task.season_number
             row.refresh = task.refresh
@@ -599,7 +627,45 @@ class SearchService:
             row.error_code = task.error_code
             row.created_at = task.created_at
             row.updated_at = task.updated_at
+            if task.workflow_id is not None:
+                stage_status = _resource_search_stage_status(task.status)
+                stage_workflow = await sync_child_stage(
+                    session,
+                    task.workflow_id,
+                    WorkflowStageName.DISCOVERY,
+                    child_type="resource_search",
+                    child_id=task.task_id,
+                    status=stage_status,
+                    reason=f"resource_search_{task.status}",
+                    error_code=task.error_code,
+                )
             await session.commit()
+        if stage_workflow is not None and stage_status is not None:
+            await emit_workflow_stage_changed(
+                self._event_logger,
+                workflow_id=stage_workflow.id,
+                correlation_id=stage_workflow.correlation_id,
+                stage_name=WorkflowStageName.DISCOVERY,
+                status=stage_status,
+                error_code=task.error_code,
+            )
+
+    async def _ensure_workflow(self, workflow_id: str) -> None:
+        async with self._session_factory() as session:
+            if await session.get(Workflow, workflow_id) is None:
+                raise WorkflowNotFound(workflow_id)
+
+    @staticmethod
+    def _attach_workflow(
+        task: _ResourceSearchTask, workflow_id: str | None
+    ) -> bool:
+        if workflow_id is None:
+            return False
+        if task.workflow_id is not None and task.workflow_id != workflow_id:
+            raise ResourceSearchWorkflowConflict("workflow_id_conflict")
+        changed = task.workflow_id is None
+        task.workflow_id = workflow_id
+        return changed
 
     async def _snapshot_metadata(
         self, tmdb_id: int, media_type: MediaType, season_number: int | None

@@ -416,6 +416,7 @@ def _response(summary: OrganizationOperationSummary) -> OrganizationOperationRes
         attempts=summary.attempts,
         error_code=summary.error_code,
         cancel_requested=summary.cancel_requested,
+        workflow_id=summary.workflow_id,
     )
 
 
@@ -430,6 +431,7 @@ def _batch_result(
         attempts=summary.attempts,
         error_code=summary.error_code,
         message="整理操作已排队",
+        workflow_id=summary.workflow_id,
     )
 
 
@@ -482,6 +484,20 @@ async def _validate_operation_confirmation(
         raise ValueError("plan_digest_mismatch")
 
 
+_STATUSES = {
+    "invalid_plan_id": 422,
+    "invalid_idempotency_key": 422,
+    "invalid_operation_id": 422,
+    "invalid_workflow_id": 422,
+    "workflow_not_found": 404,
+    "workflow_stage_missing": 409,
+    "workflow_id_conflict": 409,
+    "operation_not_found": 404,
+    "confirmation_required": 409,
+    "plan_digest_required": 422,
+    "plan_digest_mismatch": 409,
+    "high_risk_approval_required": 409,
+}
 _MESSAGES = {
     "plan_not_found": "计划不存在",
     "plan_is_not_planned": "计划尚未确认或已不可用",
@@ -518,6 +534,7 @@ _MESSAGES = {
     "stale_revision": "计划版本已变化，请刷新后重试",
     "plan_not_reviewable": "计划当前状态不可确认",
     "invalid_revision": "计划版本无效",
+    "high_risk_approval_required": "影响数量超过阈值，请先完成 Web 人工批准",
     "operation_unavailable": "整理操作暂不可用",
 }
 

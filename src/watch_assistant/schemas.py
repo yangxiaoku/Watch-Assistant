@@ -885,8 +885,16 @@ class OrganizationPlanResponse(BaseModel):
     execution_blockers: list[OrganizationExecutionBlockerResponse] = Field(
         default_factory=list
     )
+    requires_web_approval: bool = False
+    high_risk_action_threshold: int = Field(ge=1)
     alias: str | None = None
     candidates: list[OrganizationPlanCandidateResponse] = Field(default_factory=list)
+
+
+class OrganizationApprovalWorkflowRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    expected_revision: int = Field(ge=1)
 
 
 class OrganizationPlanListResponse(BaseModel):
@@ -954,6 +962,7 @@ class OrganizationOperationResponse(BaseModel):
     attempts: int = Field(ge=0)
     error_code: str | None = None
     cancel_requested: bool = False
+    workflow_id: str | None = None
 
 
 class OrganizationOperationBatchResult(BaseModel):
@@ -974,6 +983,7 @@ class OrganizationOperationBatchResult(BaseModel):
     attempts: int | None = Field(default=None, ge=0)
     error_code: str | None = None
     message: str
+    workflow_id: str | None = None
 
 
 class OrganizationOperationBatchResponse(BaseModel):
@@ -1495,10 +1505,12 @@ class ResourceSearchRequest(BaseModel):
 
     season_number: int | None = Field(default=None, ge=0)
     refresh: bool = False
+    workflow_id: str | None = Field(default=None, min_length=1, max_length=40)
 
 
 class ResourceSearchResponse(BaseModel):
     task_id: str
+    workflow_id: str | None = None
     tmdb_id: int = Field(ge=1)
     media_type: MediaType
     season_number: int | None = Field(default=None, ge=0)
@@ -1766,6 +1778,7 @@ class InspectionResultResponse(BaseModel):
 
 class InspectionBatchResponse(BaseModel):
     batch_id: str
+    workflow_id: str | None = None
     status: InspectionBatchStatus
     submitted_count: int
     completed_count: int
@@ -2026,6 +2039,12 @@ class WebhookEndpointResponse(BaseModel):
     last_success_at: datetime | None
     last_failure_at: datetime | None
     failure_count: int
+    delivery_total: int = Field(ge=0)
+    delivered_count: int = Field(ge=0)
+    pending_count: int = Field(ge=0)
+    dead_letter_count: int = Field(ge=0)
+    failure_rate: float | None = Field(default=None, ge=0, le=1)
+    next_retry_at: datetime | None
 
 
 class WebhookEndpointCreateResponse(BaseModel):

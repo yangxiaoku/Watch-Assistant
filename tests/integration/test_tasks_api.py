@@ -149,12 +149,21 @@ async def test_task_creation_links_push_stage_to_workflow(tmp_path):
         json={"resource_id": "res_task_api"},
     )
     assert discovery.status_code == 200
-    for stage in ("inspection", "approval"):
-        advanced = await client.patch(
-            f"/api/v1/workflows/{workflow_id}/stages/{stage}",
-            json={"status": "succeeded"},
-        )
-        assert advanced.status_code == 200
+    inspection = await client.patch(
+        f"/api/v1/workflows/{workflow_id}/stages/inspection",
+        json={"status": "succeeded"},
+    )
+    assert inspection.status_code == 200
+    awaiting = await client.patch(
+        f"/api/v1/workflows/{workflow_id}/stages/approval",
+        json={"status": "waiting_confirmation"},
+    )
+    assert awaiting.status_code == 200
+    approved = await client.post(
+        f"/api/v1/workflows/{workflow_id}/approval",
+        json={"decision": "approve"},
+    )
+    assert approved.status_code == 200
 
     task_response = await client.post(
         "/api/v1/tasks",
@@ -279,12 +288,21 @@ async def test_readonly_reconciliation_promotes_availability_and_records_evidenc
         json={"media_type": "movie", "tmdb_id": 27205, "resource_id": "res_task_api"},
     )
     workflow_id = workflow.json()["id"]
-    for stage in ("inspection", "approval"):
-        response = await client.patch(
-            f"/api/v1/workflows/{workflow_id}/stages/{stage}",
-            json={"status": "succeeded"},
-        )
-        assert response.status_code == 200
+    inspection = await client.patch(
+        f"/api/v1/workflows/{workflow_id}/stages/inspection",
+        json={"status": "succeeded"},
+    )
+    assert inspection.status_code == 200
+    awaiting = await client.patch(
+        f"/api/v1/workflows/{workflow_id}/stages/approval",
+        json={"status": "waiting_confirmation"},
+    )
+    assert awaiting.status_code == 200
+    approved = await client.post(
+        f"/api/v1/workflows/{workflow_id}/approval",
+        json={"decision": "approve"},
+    )
+    assert approved.status_code == 200
     task_response = await client.post(
         "/api/v1/tasks",
         json={"resource_id": "res_task_api", "workflow_id": workflow_id},

@@ -485,6 +485,7 @@ export interface OrganizationOperationResponse {
   attempts: number;
   error_code: string | null;
   cancel_requested: boolean;
+  workflow_id: string | null;
 }
 
 export interface OrganizationOperationBatchResult {
@@ -767,6 +768,9 @@ export interface OrganizationPlanSummary {
   review_action_count: number;
   can_execute: boolean;
   execution_blockers?: OrganizationExecutionBlocker[];
+  /** REQ-012/REQ-003: 高风险整理计划需要 Web 人工批准 */
+  requires_web_approval: boolean;
+  high_risk_action_threshold: number;
   alias: string | null;
   candidates: OrganizationPlanCandidate[];
   /** 计划涉及的文件名(后端最多返回 8 个);旧后端可能不返回该字段 */

@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import select
-from test_organization_operations import _database, _operation
+from test_organization_operations import _database, _item, _operation
 
 from watch_assistant.db import create_database
 from watch_assistant.models import (
@@ -14,6 +14,7 @@ from watch_assistant.models import (
     OrganizationOperationStatus,
     Resource,
     StrmOperation,
+    StrmOperationKind,
     Task,
     WorkflowStage,
 )
@@ -39,72 +40,75 @@ from watch_assistant.services.organization_outbox import (
     DirectoryDirtyLease,
     DirectoryDirtyOutboxService,
 )
-from watch_assistant.services.strm_operations import (
-    StrmOperationKind,
-    StrmOperationService,
-)
+from watch_assistant.services.organization_plan import OrganizationPlanService
+from watch_assistant.services.strm_operations import StrmOperationService
 from watch_assistant.services.tasks import TaskService
 from watch_assistant.services.workflows import WorkflowService
 
 
-async def _claimed(database, *, workflow_id=None):
-    service = OrganizationOperationService(database.session_factory)
-    operation = await _operation(database)
-    if workflow_id is not None:
-        async with database.session_factory() as session:
-            session.add(
-                Resource(
-                    id="dirty-resource",
-                    kind="magnet",
-                    canonical_key="magnet:dirty-resource",
-                    encrypted_url="encrypted-dirty-resource",
-                    name="Dirty worker resource",
-                    source="test",
-                    captured_at=datetime.now(UTC),
-                    expires_at=datetime.now(UTC) + timedelta(days=1),
-                )
+async def _advance_workflow(database, workflow_id: str, resource_id: str) -> None:
+    """Advance a workflow through discovery/approval/push/availability/organization."""
+    async with database.session_factory() as session:
+        session.add(
+            Resource(
+                id=resource_id,
+                kind="magnet",
+                canonical_key=f"magnet:{resource_id}",
+                encrypted_url=f"encrypted-{resource_id}",
+                name="Dirty worker resource",
+                source="test",
+                captured_at=datetime.now(UTC),
+                expires_at=datetime.now(UTC) + timedelta(days=1),
             )
-            await session.commit()
-        workflow_service = WorkflowService(database.session_factory)
-        await workflow_service.record_discovery(
+        )
+        await session.commit()
+    workflow_service = WorkflowService(database.session_factory)
+    await workflow_service.record_discovery(
+        workflow_id,
+        WorkflowDiscoveryRequest(resource_id=resource_id),
+    )
+    for stage_name in (
+        WorkflowStageName.INSPECTION,
+        WorkflowStageName.APPROVAL,
+    ):
+        await workflow_service.patch_stage(
             workflow_id,
-            WorkflowDiscoveryRequest(resource_id="dirty-resource"),
+            stage_name,
+            WorkflowStagePatch(status=WorkflowStageStatus.SUCCEEDED),
         )
-        for stage_name in (
-            WorkflowStageName.INSPECTION,
-            WorkflowStageName.APPROVAL,
+    task, _ = await TaskService(database.session_factory).create(
+        resource_id, workflow_id=workflow_id
+    )
+    async with database.session_factory() as session:
+        stored_task = await session.get(Task, task.id)
+        assert stored_task is not None
+        stored_task.remote_ref = "dirty-available"
+        await session.commit()
+
+    class AvailableAdapter:
+        async def get_status_for_task(
+            self, remote_ref: str, *, target_directory_id: str | None
         ):
-            await workflow_service.patch_stage(
-                workflow_id,
-                stage_name,
-                WorkflowStagePatch(status=WorkflowStageStatus.SUCCEEDED),
+            assert remote_ref == "dirty-available"
+            return RemoteObservation(
+                status=RemoteStatus.AVAILABLE,
+                file_id="101",
+                parent_id="7",
+                is_directory=False,
             )
-        task, _ = await TaskService(database.session_factory).create(
-            "dirty-resource", workflow_id=workflow_id
-        )
+
+    await TaskService(database.session_factory).reconcile(task.id, AvailableAdapter())
+
+
+async def _claimed(database, *, workflow_id=None, key: str = "operation-1"):
+    service = OrganizationOperationService(database.session_factory)
+    operation = await _operation(database, key=key)
+    if workflow_id is not None:
+        await _advance_workflow(database, workflow_id, "dirty-resource")
         async with database.session_factory() as session:
             row = await session.get(OrganizationOperation, operation.operation_id)
             row.workflow_id = workflow_id
-            stored_task = await session.get(Task, task.id)
-            assert stored_task is not None
-            stored_task.remote_ref = "dirty-available"
             await session.commit()
-
-        class AvailableAdapter:
-            async def get_status_for_task(
-                self, remote_ref: str, *, target_directory_id: str | None
-            ):
-                assert remote_ref == "dirty-available"
-                return RemoteObservation(
-                    status=RemoteStatus.AVAILABLE,
-                    file_id="101",
-                    parent_id="7",
-                    is_directory=False,
-                )
-
-        await TaskService(database.session_factory).reconcile(
-            task.id, AvailableAdapter()
-        )
     lease = await service.claim(operation.operation_id, expected_revision=1)
     return service, operation, lease
 
@@ -197,6 +201,19 @@ class _OrganizationSettings:
 class _Settings:
     async def get_organization(self):
         return _OrganizationSettings()
+
+
+class _FailingSettings:
+    async def get_organization(self):
+        raise RuntimeError("settings unavailable")
+
+
+class _Events:
+    def __init__(self):
+        self.events = []
+
+    async def log_event(self, event, **kwargs):
+        self.events.append((event, kwargs))
 
 
 @pytest.mark.asyncio
@@ -311,6 +328,91 @@ async def test_dirty_worker_retries_when_strm_operation_is_not_successful(tmp_pa
         stage for stage in workflow_state.stages if stage.stage is WorkflowStageName.STRM
     )
     assert strm_stage.status is WorkflowStageStatus.WAITING_EXTERNAL
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_dirty_worker_fans_out_coalesced_generation_to_all_workflows(
+    tmp_path: Path,
+):
+    database = await _database(tmp_path)
+    workflow_one = await WorkflowService(database.session_factory).create(
+        WorkflowCreateRequest(media_type=MediaType.MOVIE, tmdb_id=1)
+    )
+    workflow_two = await WorkflowService(database.session_factory).create(
+        WorkflowCreateRequest(media_type=MediaType.MOVIE, tmdb_id=2)
+    )
+    await _advance_workflow(database, workflow_two.id, "dirty-resource-2")
+    service_one, operation_one, lease_one = await _claimed(
+        database, workflow_id=workflow_one.id
+    )
+    await service_one.finish(
+        operation_one.operation_id,
+        expected_revision=lease_one.revision,
+        lease_token=lease_one.lease_token,
+        status=OrganizationOperationStatus.ORGANIZED,
+        source_directory_id="7000",
+        target_directory_id="8000",
+    )
+    second_plan = await OrganizationPlanService(
+        database.session_factory
+    ).create_plan(
+        library_id="library-1",
+        scan_run_id="scan-1",
+        items=(_item(),),
+        parser_version="parser-plan-2",
+    )
+    service_two = OrganizationOperationService(database.session_factory)
+    operation_two = await service_two.create(
+        second_plan.plan_id,
+        idempotency_key="operation-2",
+        workflow_id=workflow_two.id,
+    )
+    lease_two = await service_two.claim(operation_two.operation_id, expected_revision=1)
+    await service_two.finish(
+        operation_two.operation_id,
+        expected_revision=lease_two.revision,
+        lease_token=lease_two.lease_token,
+        status=OrganizationOperationStatus.ORGANIZED,
+        source_directory_id="7000",
+        target_directory_id="8000",
+    )
+    worker = DirectoryDirtyWorker(
+        database.session_factory,
+        _FakeStrm(),
+        lambda _library_id, _root_id: _FakeIndex(),
+        output_root=tmp_path / "strm",
+        playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+    )
+    assert await worker.run_once()
+
+    workflow_service = WorkflowService(database.session_factory)
+    states = [
+        await workflow_service.get(workflow_one.id),
+        await workflow_service.get(workflow_two.id),
+    ]
+    strm_stages = [
+        next(stage for stage in state.stages if stage.stage is WorkflowStageName.STRM)
+        for state in states
+    ]
+    assert [stage.status for stage in strm_stages] == [
+        WorkflowStageStatus.SUCCEEDED,
+        WorkflowStageStatus.SUCCEEDED,
+    ]
+    assert strm_stages[0].child_type == "strm_dirty_generation"
+    assert strm_stages[0].child_id == strm_stages[1].child_id
+    async with database.session_factory() as session:
+        events = list(
+            (
+                await session.scalars(
+                    select(DirectoryDirtyEvent).where(
+                        DirectoryDirtyEvent.directory_id == "7000"
+                    )
+                )
+            ).all()
+        )
+    assert len(events) == 2
+    assert {event.status for event in events} == {"consumed", "superseded"}
     await database.engine.dispose()
 
 
@@ -625,6 +727,90 @@ async def test_dirty_worker_fences_strm_terminal_state_with_dirty_lease(
         assert dirty_event.lease_token == "replacement-before-terminal-fence"
         assert strm_operation is not None
         assert strm_operation.status.value == "running"
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_dirty_worker_notifies_unlinked_terminal_failure(tmp_path: Path):
+    database = await _database(tmp_path)
+    service, operation, lease = await _claimed(database)
+    await service.finish(
+        operation.operation_id,
+        expected_revision=lease.revision,
+        lease_token=lease.lease_token,
+        status=OrganizationOperationStatus.ORGANIZED,
+        source_directory_id="7000",
+        target_directory_id="8000",
+    )
+
+    class _IncompleteIndex:
+        async def scan_tree(self, _key):
+            return SimpleNamespace(complete=False, run_id="scan-incomplete")
+
+    events = _Events()
+    worker = DirectoryDirtyWorker(
+        database.session_factory,
+        _FakeStrm(),
+        lambda _library_id, _root_id: _IncompleteIndex(),
+        output_root=tmp_path / "strm",
+        playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+        max_attempts=1,
+        event_logger=events,
+    )
+
+    assert await worker.run_once()
+    assert events.events == [
+        (
+            "strm.dirty_failed",
+            {
+                "fields": {
+                    "status": "STRM 增量对账失败",
+                    "error_code": "scan_incomplete",
+                },
+                "resource_type": "library",
+                "resource_id": "library-1",
+            },
+        )
+    ]
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_dirty_worker_marks_linked_settings_failure_on_workflow(tmp_path: Path):
+    database = await _database(tmp_path)
+    workflow = await WorkflowService(database.session_factory).create(
+        WorkflowCreateRequest(media_type=MediaType.MOVIE, tmdb_id=1)
+    )
+    service, operation, lease = await _claimed(database, workflow_id=workflow.id)
+    await service.finish(
+        operation.operation_id,
+        expected_revision=lease.revision,
+        lease_token=lease.lease_token,
+        status=OrganizationOperationStatus.ORGANIZED,
+        source_directory_id="7000",
+        target_directory_id="8000",
+    )
+
+    events = _Events()
+    worker = DirectoryDirtyWorker(
+        database.session_factory,
+        _FakeStrm(),
+        lambda _library_id, _root_id: _FakeIndex(),
+        output_root=tmp_path / "strm",
+        playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+        settings_service=_FailingSettings(),
+        max_attempts=1,
+        event_logger=events,
+    )
+
+    assert await worker.run_once()
+    state = await WorkflowService(database.session_factory).get(workflow.id)
+    strm_stage = next(
+        stage for stage in state.stages if stage.stage is WorkflowStageName.STRM
+    )
+    assert strm_stage.status is WorkflowStageStatus.FAILED
+    assert strm_stage.error_code == "settings_unavailable"
+    assert not any(event == "strm.dirty_failed" for event, _fields in events.events)
     await database.engine.dispose()
 
 

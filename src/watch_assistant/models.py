@@ -406,6 +406,7 @@ class ResourceSearchJob(Base):
     __tablename__ = "resource_search_jobs"
 
     task_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    workflow_id: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
     tmdb_id: Mapped[int] = mapped_column(Integer, index=True)
     media_type: Mapped[MediaType] = mapped_column(
         Enum(MediaType, values_callable=enum_values, native_enum=False), index=True

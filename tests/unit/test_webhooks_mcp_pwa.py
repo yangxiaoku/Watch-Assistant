@@ -3,7 +3,7 @@ from cryptography.fernet import Fernet
 
 from watch_assistant.crypto import SecretCrypto
 from watch_assistant.db import create_database, initialize_database
-from watch_assistant.models import WebhookDelivery
+from watch_assistant.models import WebhookDelivery, WebhookEndpoint
 from watch_assistant.schemas import WebhookEndpointCreateRequest, WebhookEndpointPatch
 from watch_assistant.security import AuthContext
 from watch_assistant.services.mcp import McpService
@@ -70,6 +70,77 @@ async def test_webhook_test_delivery_is_scoped_and_contains_no_secret(monkeypatc
     )
     with pytest.raises(WebhookError, match="webhook_endpoint_disabled"):
         await service.enqueue_test(created.item.id)
+    await service.aclose()
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_webhook_endpoint_exposes_delivery_operations_summary(monkeypatch):
+    monkeypatch.setattr(
+        "socket.getaddrinfo",
+        lambda *_args, **_kwargs: [(2, 1, 6, "", ("93.184.216.34", 443))],
+    )
+    database = await _database()
+    service = WebhookService(
+        database.session_factory,
+        SecretCrypto(Fernet.generate_key().decode("ascii")),
+    )
+    created = await service.create(
+        WebhookEndpointCreateRequest(name="运营端点", url="https://example.com/hook")
+    )
+    now = created.item.created_at
+    async with database.session_factory() as session:
+        session.add_all(
+            [
+                WebhookDelivery(
+                    id="delivery_delivered",
+                    endpoint_id=created.item.id,
+                    event_id="event_delivered",
+                    event_code="application.startup",
+                    payload_json="{}",
+                    status="delivered",
+                    attempts=1,
+                    next_attempt_at=now,
+                    created_at=now,
+                    updated_at=now,
+                ),
+                WebhookDelivery(
+                    id="delivery_pending",
+                    endpoint_id=created.item.id,
+                    event_id="event_pending",
+                    event_code="application.startup",
+                    payload_json="{}",
+                    status="pending",
+                    attempts=2,
+                    next_attempt_at=now.replace(second=30),
+                    created_at=now,
+                    updated_at=now,
+                ),
+                WebhookDelivery(
+                    id="delivery_dead",
+                    endpoint_id=created.item.id,
+                    event_id="event_dead",
+                    event_code="application.startup",
+                    payload_json="{}",
+                    status="dead",
+                    attempts=8,
+                    next_attempt_at=now,
+                    created_at=now,
+                    updated_at=now,
+                ),
+            ]
+        )
+        endpoint = await session.get(WebhookEndpoint, created.item.id)
+        assert endpoint is not None
+        await session.commit()
+
+    response = (await service.list()).items[0]
+    assert response.delivery_total == 3
+    assert response.delivered_count == 1
+    assert response.pending_count == 1
+    assert response.dead_letter_count == 1
+    assert response.failure_rate == 0.5
+    assert response.next_retry_at == now.replace(second=30)
     await service.aclose()
     await database.engine.dispose()
 

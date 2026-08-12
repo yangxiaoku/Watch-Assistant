@@ -261,3 +261,133 @@ async def test_failure_notification_matrix_covers_inspection_organization_and_st
         await tmdb.aclose()
         await pansou.aclose()
         await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_unlinked_inspection_failure_notifies_settings_and_linked_failure_dedupes(
+    tmp_path,
+):
+    client, database, tmdb, pansou, app = await _make_client(tmp_path)
+    try:
+        await app.state.settings_service.log_event(
+            "inspection.batch_failed",
+            fields={
+                "status": "failed",
+                "count": 2,
+                "hidden_count": 2,
+                "error_code": "inspection_failed",
+            },
+            task_id="inspect_failed",
+        )
+        await app.state.settings_service.log_event(
+            "inspection.batch_failed",
+            fields={
+                "status": "failed",
+                "count": 1,
+                "hidden_count": 1,
+                "error_code": "inspection_failed",
+            },
+            correlation_id="corr_linked",
+            task_id="inspect_linked",
+        )
+        response = await client.get("/api/v1/notifications")
+        assert response.status_code == 200
+        items = response.json()["items"]
+        assert len(items) == 1
+        assert items[0]["event_code"] == "inspection.batch_failed"
+        assert items[0]["severity"] == "error"
+        assert items[0]["action_type"] == "settings"
+        assert items[0]["action_id"] == "inspection"
+    finally:
+        await client.aclose()
+        await tmdb.aclose()
+        await pansou.aclose()
+        await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_unlinked_organization_failure_notifies_organization_workbench(tmp_path):
+    client, database, tmdb, pansou, app = await _make_client(tmp_path)
+    try:
+        await app.state.settings_service.log_event(
+            "organize.operation.failed",
+            fields={"status": "failed", "error_code": "remote_write_failed"},
+            task_id="op_failed",
+            resource_type="organization_operation",
+            resource_id="op_failed",
+        )
+
+        response = await client.get("/api/v1/notifications")
+        assert response.status_code == 200
+        items = response.json()["items"]
+        assert len(items) == 1
+        assert items[0]["event_code"] == "organize.operation.failed"
+        assert items[0]["severity"] == "error"
+        assert items[0]["action_type"] == "organization_plan"
+        assert items[0]["action_id"] == "op_failed"
+        assert "remote_write_failed" in items[0]["message_zh"]
+    finally:
+        await client.aclose()
+        await tmdb.aclose()
+        await pansou.aclose()
+        await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_unlinked_strm_failure_notifies_settings(tmp_path):
+    client, database, tmdb, pansou, app = await _make_client(tmp_path)
+    try:
+        await app.state.settings_service.log_event(
+            "strm.dirty_failed",
+            fields={"status": "STRM 增量对账失败", "error_code": "scan_incomplete"},
+            resource_type="library",
+            resource_id="library_failed",
+        )
+
+        response = await client.get("/api/v1/notifications")
+        assert response.status_code == 200
+        items = response.json()["items"]
+        assert len(items) == 1
+        assert items[0]["event_code"] == "strm.dirty_failed"
+        assert items[0]["severity"] == "error"
+        assert items[0]["action_type"] == "settings"
+        assert items[0]["action_id"] == "library_failed"
+        assert "scan_incomplete" in items[0]["message_zh"]
+    finally:
+        await client.aclose()
+        await tmdb.aclose()
+        await pansou.aclose()
+        await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_subscription_check_failure_notifies_settings(tmp_path):
+    client, database, tmdb, pansou, app = await _make_client(tmp_path)
+    try:
+        await app.state.settings_service.log_event(
+            "subscription.checked",
+            fields={"status": "no_match", "count": 0, "media_type": "movie"},
+            resource_type="tmdb",
+            resource_id="movie:456",
+        )
+        await app.state.settings_service.log_event(
+            "subscription.check_failed",
+            fields={"status": "failed", "error_code": "search_unavailable"},
+            resource_type="subscription",
+            resource_id="subscription_failed",
+        )
+
+        response = await client.get("/api/v1/notifications")
+        assert response.status_code == 200
+        items = response.json()["items"]
+        assert len(items) == 1
+        assert items[0]["event_code"] == "subscription.check_failed"
+        assert items[0]["severity"] == "error"
+        assert items[0]["action_type"] == "settings"
+        assert items[0]["action_id"] == "subscription_failed"
+        assert "search_unavailable" in items[0]["message_zh"]
+    finally:
+        await client.aclose()
+        await tmdb.aclose()
+        await pansou.aclose()
+        await database.engine.dispose()

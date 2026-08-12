@@ -322,6 +322,13 @@ CLI 必须使用正式版本化 API，与 Web 共用校验和状态机。不得�
 
 当前 `strm verify` 已完成服务端只读 API、CLI 入口和离线契约测试；生产媒体库清单、稳定播放入口实际可用性、媒体服务器兼容性和跨平台端到端验收仍属于阻断项。
 
+开发分支已补充高风险整理计划门禁：`action_count` 超过可配置的
+`ORGANIZATION_HIGH_RISK_ACTION_THRESHOLD`（默认 10）时，必须由 Web 会话创建并批准关联
+workflow；服务端排队前会再次校验 approval 阶段和计划身份，Bearer Agent、CLI 和 MCP
+不能自行批准。证据见
+[`evidence/2026-07-31-high-risk-web-approval.md`](./evidence/2026-07-31-high-risk-web-approval.md)。
+该切片尚未合入发布基线，也不代表生产 115 写入已开启。
+
 ## 12. 分期建议
 
 1. Agent Token、Scope、审计和 API 版本契约。

@@ -23,8 +23,14 @@ from watch_assistant.models import (
     SearchCache,
     SourceReliability,
 )
-from watch_assistant.schemas import MediaType, MovieMetadata, ResourceKind
+from watch_assistant.schemas import (
+    MediaType,
+    MovieMetadata,
+    ResourceKind,
+    WorkflowCreateRequest,
+)
 from watch_assistant.services.search import make_cache_key
+from watch_assistant.services.workflows import WorkflowService
 
 TMDB_RESPONSE = {
     "id": 12345,
@@ -224,6 +230,66 @@ async def test_resource_search_task_is_independent_and_reuses_snapshot(tmp_path)
     assert restored.status_code == 200
     assert restored.json()["status"] == "ready"
     await _close(restored_client, restored_database, restored_tmdb, restored_pansou)
+
+
+@pytest.mark.integration
+@respx.mock
+async def test_resource_search_persists_workflow_discovery_link(tmp_path):
+    _mock_tmdb()
+    respx.get("http://pansou.test/api/search").mock(
+        return_value=httpx.Response(200, json=_pansou_response())
+    )
+    client, database, tmdb, pansou = await _make_client(tmp_path)
+    workflow = await WorkflowService(database.session_factory).create(
+        WorkflowCreateRequest(media_type=MediaType.MOVIE, tmdb_id=12345)
+    )
+
+    accepted = await client.post(
+        "/api/v1/media/movie/12345/resource-search",
+        json={"workflow_id": workflow.id},
+    )
+    assert accepted.status_code == 202
+    task = accepted.json()
+    assert task["workflow_id"] == workflow.id
+
+    final = task
+    for _ in range(50):
+        if final["status"] in {"ready", "failed"}:
+            break
+        await asyncio.sleep(0.01)
+        final = (
+            await client.get(f"/api/v1/resource-search/{task['task_id']}")
+        ).json()
+    assert final["status"] == "ready"
+
+    async with database.session_factory() as session:
+        job = await session.get(ResourceSearchJob, task["task_id"])
+    assert job is not None
+    assert job.workflow_id == workflow.id
+
+    detail = await WorkflowService(database.session_factory).get(workflow.id)
+    discovery = next(stage for stage in detail.stages if stage.stage.value == "discovery")
+    assert discovery.child_type == "resource_search"
+    assert discovery.child_id == task["task_id"]
+    assert discovery.status.value == "succeeded"
+
+    notices = await client.get("/api/v1/notifications")
+    assert any(
+        item["event_code"] == "workflow.stage_changed"
+        and item["action_id"] == workflow.id
+        for item in notices.json()["items"]
+    )
+
+    other_workflow = await WorkflowService(database.session_factory).create(
+        WorkflowCreateRequest(media_type=MediaType.MOVIE, tmdb_id=12345)
+    )
+    conflict = await client.post(
+        "/api/v1/media/movie/12345/resource-search",
+        json={"workflow_id": other_workflow.id},
+    )
+    assert conflict.status_code == 409
+    assert conflict.json()["detail"] == "workflow_id_conflict"
+    await _close(client, database, tmdb, pansou)
 
 
 @pytest.mark.integration

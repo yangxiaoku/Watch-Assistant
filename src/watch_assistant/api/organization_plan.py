@@ -10,12 +10,14 @@ from watch_assistant.api.resource_scope import (
     scoped_library_ids,
 )
 from watch_assistant.schemas import (
+    OrganizationApprovalWorkflowRequest,
     OrganizationPlanAliasRequest,
     OrganizationPlanCandidateRequest,
     OrganizationPlanCandidateSearchRequest,
     OrganizationPlanListResponse,
     OrganizationPlanMutationRequest,
     OrganizationPlanResponse,
+    WorkflowResponse,
 )
 from watch_assistant.security import AuthContext, require_api_auth
 from watch_assistant.services.api_errors import error_status
@@ -24,6 +26,7 @@ from watch_assistant.services.organization_plan import (
     OrganizationPlanService,
     OrganizationPlanStatus,
 )
+from watch_assistant.services.workflows import WorkflowConflict, WorkflowService
 
 
 async def require_organization_plan_enabled(request: Request) -> None:
@@ -51,6 +54,32 @@ ServiceDependency = Annotated[
     OrganizationPlanService, Depends(get_organization_plan_service)
 ]
 AuthDependency = Annotated[AuthContext, Depends(require_api_auth)]
+
+
+def get_workflow_service(request: Request) -> WorkflowService:
+    service = getattr(request.app.state, "workflow_service", None)
+    if service is None:
+        raise HTTPException(status_code=503, detail="workflows_unavailable")
+    return service
+
+
+WorkflowServiceDependency = Annotated[WorkflowService, Depends(get_workflow_service)]
+
+
+async def require_web_auth(request: Request) -> AuthContext:
+    context = await require_api_auth(request)
+    if context.via_bearer and context.identity != "internal":
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "web_approval_required",
+                "message": "高风险批准必须由 Web 会话完成",
+            },
+        )
+    return context
+
+
+WebAuthDependency = Annotated[AuthContext, Depends(require_web_auth)]
 
 
 @router.get("/organization-plans", response_model=OrganizationPlanListResponse)
@@ -92,6 +121,24 @@ async def get_organization_plan(
     except OrganizationPlanError as exc:
         raise _http_error(exc) from None
     return OrganizationPlanResponse.model_validate(item.to_public_dict())
+
+
+@router.post(
+    "/organization-plans/{plan_id}/approval-workflow",
+    response_model=WorkflowResponse,
+)
+async def create_organization_plan_approval_workflow(
+    plan_id: str,
+    payload: OrganizationApprovalWorkflowRequest,
+    _: WebAuthDependency,
+    service: WorkflowServiceDependency,
+) -> WorkflowResponse:
+    try:
+        return await service.create_organization_plan_approval(
+            plan_id, expected_revision=payload.expected_revision
+        )
+    except WorkflowConflict as exc:
+        raise _http_workflow_error(exc) from None
 
 
 @router.post(
@@ -248,6 +295,27 @@ def _http_error(error: OrganizationPlanError) -> HTTPException:
     status = error_status(code)
     message = messages.get(code, "计划暂不可用")
     return HTTPException(status_code=status, detail={"code": code, "message": message})
+
+
+def _http_workflow_error(error: WorkflowConflict) -> HTTPException:
+    statuses = {
+        "organization_plan_not_found": 404,
+        "organization_plan_revision_changed": 409,
+        "organization_plan_not_planned": 409,
+    }
+    messages = {
+        "organization_plan_not_found": "整理计划不存在",
+        "organization_plan_revision_changed": "计划版本已变化，请刷新后重试",
+        "organization_plan_not_planned": "计划尚未确认或已不可用",
+    }
+    code = str(error)
+    return HTTPException(
+        status_code=statuses.get(code, 409),
+        detail={
+            "code": code if code in messages else "workflow_unavailable",
+            "message": messages.get(code, "审批工作流暂不可用"),
+        },
+    )
 
 
 __all__ = ["router"]

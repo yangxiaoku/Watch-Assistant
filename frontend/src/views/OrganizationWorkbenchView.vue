@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { AlertTriangle, Ban, Check, ChevronRight, Eye, ListChecks, LoaderCircle, Play, RefreshCw, Search, Tag } from "@lucide/vue";
+import { AlertTriangle, Ban, Check, ChevronRight, Eye, ListChecks, LoaderCircle, Play, RefreshCw, Search, ShieldCheck, Tag } from "@lucide/vue";
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { ApiClient, ApiError, focusFirstFieldError, isConflict } from "../api";
 import ConfirmDialog from "../components/ConfirmDialog.vue";
@@ -23,6 +23,7 @@ const items = ref<OrganizationPlanSummary[]>([]);
 const nextCursor = ref<number | null>(null);
 const selected = ref<OrganizationPlanSummary | null>(null);
 const operation = ref<OrganizationOperationResponse | null>(null);
+const approvalWorkflowId = ref<string | null>(null);
 const aliasInput = ref("");
 const searchQuery = ref("");
 const searchSourceIndex = ref(0);
@@ -197,6 +198,7 @@ async function loadPlans(cursor?: number) {
     }
     nextCursor.value = response.next_cursor ?? null;
     aliasInput.value = selected.value?.alias ?? "";
+    approvalWorkflowId.value = null;
     if (cursor === undefined || selected.value?.plan_id !== previousSelectedId) {
       invalidateOperationRequests();
       await loadPlanOperation(selected.value);
@@ -213,6 +215,7 @@ async function loadPlans(cursor?: number) {
 function selectPlan(plan: OrganizationPlanSummary) {
   invalidateOperationRequests();
   selected.value = plan;
+  approvalWorkflowId.value = null;
   aliasInput.value = plan.alias ?? "";
   searchQuery.value = "";
   searchSourceIndex.value = 0;
@@ -265,7 +268,9 @@ async function queueOperation(plan = selected.value) {
   error.value = "";
   notice.value = "";
   try {
-    const queuedOperation = await props.api.queueOrganizationOperation(plan.plan_id, plan.revision);
+    const queuedOperation = approvalWorkflowId.value
+      ? await props.api.queueOrganizationOperation(plan.plan_id, plan.revision, approvalWorkflowId.value)
+      : await props.api.queueOrganizationOperation(plan.plan_id, plan.revision);
     await loadPlanOperation(plan);
     if (!operation.value) operation.value = queuedOperation;
     await handleQueuedOperation(queuedOperation, plan.plan_id);
@@ -333,6 +338,24 @@ async function selectCandidate(candidate: OrganizationPlanSummary["candidates"][
     } else {
       error.value = describeError(exception, "选择影片失败，请稍后重试");
     }
+  } finally {
+    busy.value = false;
+  }
+}
+
+async function requestApproval() {
+  const plan = selected.value;
+  if (!plan || busy.value || plan.status !== "planned" || !plan.requires_web_approval) return;
+  busy.value = true;
+  error.value = "";
+  notice.value = "";
+  try {
+    const workflow = await props.api.createOrganizationApprovalWorkflow(plan.plan_id, plan.revision);
+    approvalWorkflowId.value = workflow.id;
+    notice.value = `已创建 Web 人工审批，请前往任务中心确认（${workflow.id}）`;
+  } catch (exception) {
+    focusFirstFieldError(exception);
+    error.value = exception instanceof ApiError ? exception.message : "创建人工审批失败，请稍后重试";
   } finally {
     busy.value = false;
   }
@@ -632,6 +655,15 @@ onBeforeUnmount(() => {
         <div class="organization-preview-heading">
           <div><h2>{{ selected.source_names?.length ? safeLocalizedCopy(selected.source_names[0], "") : "整理计划" }}</h2><small v-if="selected.source_names && selected.source_names.length > 1">共 {{ selected.source_names.length }} 个文件</small></div>
         </div>
+        <dl class="organization-facts">
+          <div><dt>计划标识</dt><dd>{{ selected.plan_id }}</dd></div>
+          <div><dt>版本</dt><dd>{{ selected.revision }}</dd></div>
+          <div><dt>来源条目</dt><dd>{{ selected.source_count }}</dd></div>
+          <div><dt>预览动作</dt><dd>{{ selected.action_count }}</dd></div>
+          <div><dt>前置条件</dt><dd>{{ selected.precondition_count }}</dd></div>
+        </dl>
+        <p v-if="selected.requires_web_approval" class="organization-safe-note"><ShieldCheck :size="15" />影响动作超过 {{ selected.high_risk_action_threshold }} 条，提交远端整理前必须完成 Web 人工审批。</p>
+        <p class="organization-safe-note">预览只显示本地摘要。</p>
 
         <section v-if="selected.executable_action_count" class="organization-file-group organization-file-group-ready">
           <strong>可自动整理（{{ selected.executable_action_count }}）</strong>
@@ -667,6 +699,7 @@ onBeforeUnmount(() => {
         <div v-if="selectedCanEdit || (selected.status === 'planned' && executionSupported)" class="organization-actions">
           <button v-if="selectedCanExecute && executionSupported" class="primary-button" type="button" :disabled="busy || operationActive" @click="requestExecution(selected)"><Play :size="16" />开始整理</button>
           <button v-else-if="selectedCanExecute" class="primary-button" type="button" :disabled="busy" @click="confirmPlan"><Check :size="16" />确认计划</button>
+          <button v-if="selected.status === 'planned' && executionSupported && selected.requires_web_approval" class="secondary-button" type="button" :disabled="busy" @click="requestApproval"><ShieldCheck :size="16" />申请 Web 人工审批</button>
         </div>
         <details class="organization-diagnostics">
           <summary>更多操作</summary>

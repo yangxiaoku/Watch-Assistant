@@ -28,6 +28,7 @@ from watch_assistant.schemas import (
     ResourceKind,
     ResourceSearchResponse,
     ResourceSummary,
+    WorkflowStageStatus,
 )
 from watch_assistant.services.content_policy import ContentPolicy
 from watch_assistant.services.normalize import (
@@ -40,6 +41,7 @@ LEGACY_MAGNET_LIMIT = 30
 @dataclass(slots=True)
 class _ResourceSearchTask:
     task_id: str
+    workflow_id: str | None
     tmdb_id: int
     media_type: MediaType
     season_number: int | None
@@ -57,6 +59,7 @@ class _ResourceSearchTask:
     def response(self) -> ResourceSearchResponse:
         return ResourceSearchResponse(
             task_id=self.task_id,
+            workflow_id=self.workflow_id,
             tmdb_id=self.tmdb_id,
             media_type=self.media_type,
             season_number=self.season_number,
@@ -71,6 +74,15 @@ class _ResourceSearchTask:
             updated_at=self.updated_at,
         )
 
+
+def _resource_search_stage_status(status: str) -> WorkflowStageStatus:
+    if status in {"queued", "running"}:
+        return WorkflowStageStatus.RUNNING
+    if status == "ready":
+        return WorkflowStageStatus.SUCCEEDED
+    return WorkflowStageStatus.FAILED
+
+
 def _resource_search_task_from_row(row: ResourceSearchJob) -> _ResourceSearchTask:
     try:
         sources = json.loads(row.sources_json)
@@ -82,6 +94,7 @@ def _resource_search_task_from_row(row: ResourceSearchJob) -> _ResourceSearchTas
         warnings = []
     return _ResourceSearchTask(
         task_id=row.task_id,
+        workflow_id=row.workflow_id,
         tmdb_id=row.tmdb_id,
         media_type=MediaType(row.media_type),
         season_number=row.season_number,

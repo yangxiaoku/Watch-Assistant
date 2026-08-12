@@ -42,7 +42,7 @@ class _PermissiveTestManager(SecurityManager):
 
     async def authenticate_async(self, request):
         return AuthContext(
-            identity="test-internal", via_bearer=True, csrf_token="test-csrf"
+            identity="internal", via_bearer=True, csrf_token="test-csrf"
         )
 
 

@@ -9,11 +9,14 @@ from sqlalchemy import and_, func, select, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from watch_assistant.library_models import OrganizationPlan
 from watch_assistant.models import (
+    DirectoryDirtyEvent,
     DirectoryDirtyGeneration,
     InspectionBatch,
     OrganizationOperation,
     Resource,
+    ResourceSearchJob,
     StrmOperation,
     Task,
     TaskState,
@@ -237,6 +240,98 @@ class WorkflowService:
                 )
             )
         return WorkflowEvidenceListResponse(items=[_evidence_response(row) for row in rows])
+
+
+    async def create_organization_plan_approval(
+        self, plan_id: str, *, expected_revision: int
+    ) -> WorkflowResponse:
+        """Create or reuse the Web approval workflow for one high-risk plan."""
+        now = datetime.now(UTC)
+        async with self._session_factory() as session:
+            plan = await session.get(OrganizationPlan, plan_id)
+            if plan is None:
+                raise WorkflowConflict("organization_plan_not_found")
+            if plan.revision != expected_revision:
+                raise WorkflowConflict("organization_plan_revision_changed")
+            if plan.status != "planned":
+                raise WorkflowConflict("organization_plan_not_planned")
+
+            existing_stage = await session.scalar(
+                select(WorkflowStage)
+                .where(
+                    WorkflowStage.stage == WorkflowStageName.APPROVAL,
+                    WorkflowStage.child_type == "organization_plan",
+                    WorkflowStage.child_id == plan.id,
+                    WorkflowStage.status.in_(
+                        (
+                            WorkflowStageStatus.WAITING_CONFIRMATION,
+                            WorkflowStageStatus.SUCCEEDED,
+                        )
+                    ),
+                )
+                .order_by(WorkflowStage.updated_at.desc())
+            )
+            if existing_stage is not None:
+                workflow = await session.get(Workflow, existing_stage.workflow_id)
+                if workflow is not None:
+                    await session.refresh(workflow, ["stages"])
+                    return _response(workflow)
+
+            workflow = Workflow(
+                id="wf_" + uuid4().hex,
+                correlation_id="corr_" + uuid4().hex,
+                media_type=None,
+                tmdb_id=None,
+                subscription_id=None,
+                status=WorkflowStatus.WAITING_USER_CONFIRMATION,
+                state_reason="high_risk_approval_required",
+                created_at=now,
+                updated_at=now,
+            )
+            workflow.stages = [
+                WorkflowStage(
+                    id=f"{workflow.id}_{stage.value}",
+                    stage=stage,
+                    stage_key=(
+                        "search" if stage == WorkflowStageName.DISCOVERY else stage.value
+                    ),
+                    sequence=sequence,
+                    status=(
+                        WorkflowStageStatus.WAITING_CONFIRMATION
+                        if stage == WorkflowStageName.APPROVAL
+                        else WorkflowStageStatus.PENDING
+                    ),
+                    reason=(
+                        "high_risk_approval_required"
+                        if stage == WorkflowStageName.APPROVAL
+                        else None
+                    ),
+                    child_type=("organization_plan" if stage == WorkflowStageName.APPROVAL else None),
+                    child_id=(plan.id if stage == WorkflowStageName.APPROVAL else None),
+                    created_at=now,
+                    updated_at=now,
+                )
+                for sequence, stage in enumerate(_STAGE_ORDER)
+            ]
+            session.add(workflow)
+            await session.commit()
+            await session.refresh(workflow, ["stages"])
+            response = _response(workflow)
+        await emit_event(
+            self._event_logger,
+            "workflow.created",
+            fields={"status": response.status.value},
+            correlation_id=response.correlation_id,
+            task_id=response.id,
+        )
+        await emit_workflow_stage_changed(
+            self._event_logger,
+            workflow_id=response.id,
+            correlation_id=response.correlation_id,
+            stage_name=WorkflowStageName.APPROVAL,
+            status=WorkflowStageStatus.WAITING_CONFIRMATION,
+        )
+        return response
 
     async def get(self, workflow_id: str) -> WorkflowResponse:
         async with self._session_factory() as session:
@@ -1280,12 +1375,35 @@ async def sync_child_stage_in_transaction(
             allow_uncertain_resume=allow_uncertain_resume,
         )
         await session.commit()
+    await emit_workflow_stage_changed(
+        event_logger,
+        workflow_id=workflow.id,
+        correlation_id=workflow.correlation_id,
+        stage_name=stage_name,
+        status=status,
+        error_code=error_code,
+    )
+
+
+async def emit_workflow_stage_changed(
+    event_logger: EventLogger | None,
+    *,
+    workflow_id: str,
+    correlation_id: str,
+    stage_name: WorkflowStageName,
+    status: WorkflowStageStatus,
+    error_code: str | None = None,
+) -> None:
+    """Emit a stage event only after the child state transaction commits."""
+    fields: dict[str, object] = {"status": status.value, "stage": stage_name.value}
+    if error_code is not None:
+        fields["error_code"] = error_code
     await emit_event(
         event_logger,
         "workflow.stage_changed",
-        fields={"status": status.value, "stage": stage_name.value},
-        correlation_id=workflow.correlation_id,
-        task_id=workflow.id,
+        fields=fields,
+        correlation_id=correlation_id,
+        task_id=workflow_id,
     )
 
 
@@ -1360,6 +1478,11 @@ async def _validate_child_ownership(
         valid = stage_name is WorkflowStageName.DISCOVERY and (
             await session.get(Resource, child_id)
         ) is not None
+    elif child_type == "resource_search":
+        job = await session.get(ResourceSearchJob, child_id)
+        valid = stage_name is WorkflowStageName.DISCOVERY and (
+            job is not None and job.workflow_id == workflow_id
+        )
     elif child_type == "task":
         task = await session.get(Task, child_id)
         valid = stage_name is WorkflowStageName.PUSH and (
@@ -1397,6 +1520,26 @@ async def _validate_child_ownership(
         valid = stage_name is WorkflowStageName.STRM and (
             operation is not None and operation.workflow_id == workflow_id
         )
+        if not valid and generation is not None:
+            # Coalesced generation: the dirty directory was organized by one
+            # or more operations. Every workflow with an operation on this
+            # directory is an owner of the resulting STRM reconciliation.
+            valid = (
+                await session.scalar(
+                    select(OrganizationOperation.id)
+                    .join(
+                        DirectoryDirtyEvent,
+                        DirectoryDirtyEvent.operation_id
+                        == OrganizationOperation.id,
+                    )
+                    .where(
+                        DirectoryDirtyEvent.directory_id == generation.directory_id,
+                        DirectoryDirtyEvent.event_kind == "directory_dirty",
+                        OrganizationOperation.workflow_id == workflow_id,
+                    )
+                    .limit(1)
+                )
+            ) is not None
     else:
         valid = False
     if not valid:

@@ -128,11 +128,30 @@ API 返回顶层 workflow 和分页子任务，不返回敏感链接。REQ-003 �
   `cancelled`，写入已经开始时最终为 `uncertain`，不伪造远端撤回。
 - 本轮补充 FLOW-002：整理 operation 可通过受保护 API 关联 workflow；排队、claim、成功、失败、
   不确定、取消和重试会同步 `organization` 阶段，关联使用持久 `workflow_id` 和 operation ID。
+- 本轮补充 FLOW-007：整理 operation 的排队、开始、完成、失败、不确定、取消和重试事件在提交后
+  带 operation ID、workflow ID 和 correlation ID；`organization` 阶段事件与任务中心时间线共用关联。
+- 本轮补充 FLOW-002：资源搜索任务支持可选持久 `workflow_id`，在创建、恢复、运行和终态
+  保存时同步 workflow 的 `discovery` 阶段；已有搜索任务关联其他 workflow 时返回稳定冲突，
+  不覆盖原有关联。
+- 本轮补充 FLOW-002：内容检测批次响应返回持久 `workflow_id`；缓存命中、worker 正常完成、
+  部分结果和依赖失败都会在同一事务内同步 `inspection` 阶段及稳定原因码，服务重启后的批次
+  仍沿用原关联。
+- 本轮补充 FLOW-007：搜索和内容检测在子任务状态事务提交后发出带 workflow/correlation ID 的
+  `workflow.stage_changed` 事件；仅可行动终态进入站内通知，运行中事件仍保留结构化日志但不打扰用户。
+- 本轮补充 FLOW-007：推送任务创建、重试、取消、worker 终态和重启恢复也会在状态提交后发出
+  同一阶段事件，通知和 CLI/日志可使用同一个 workflow ID 追踪 push 阶段。
 - 本轮补充 FLOW-002：STRM 全量/增量/清理 API 支持可选 `workflow_id`，在开始、成功和失败时
   同步 `strm` 阶段；整理完成后的目录 dirty worker 会继承关联 workflow，并在成功、重试等待
   外部、最终失败和功能跳过时同步阶段状态。原有 STRM 开关、Scope、完整扫描和清理安全门禁
   保持不变。
+- 本轮补充 FLOW-002：同一目录的 coalesced dirty generation 会在领取时绑定所有领取前的
+  dirty 事件，并将同一个 STRM 子任务状态扇出到全部关联 workflow；新增事件留在下一代，
+  不会被当前 generation 错误消费。事件完成/重试也按 lease token 一起收敛，避免旧 workflow
+  或 dirty 事件永久悬挂。
 - 本轮补充 FLOW-007：提交后的可行动 workflow 阶段事件（等待确认、等待外部、成功、跳过、失败、
   不确定、取消）会通过统一事件目录生成站内通知，复用通知偏好、30 分钟去重和 Webhook Outbox；
   普通启动/读取日志不会自动生成通知。
+- 开发分支已补充高风险整理计划的 Web-only approval workflow：超过影响数量阈值的计划在
+  approval 阶段批准前不能进入整理 operation，批准后仍使用原有 digest、Scope、幂等和
+  `organization` 阶段状态机；Bearer Agent 不能替代 Web 批准。生产写入仍保持门控。
 - 剩余阻断：真实 115 写入、STRM 真实播放契约及 PanSou/qB 外部网络基线仍按 `docs/requirements/BLOCKERS.md` 保持门禁关闭。

@@ -16,12 +16,9 @@ from watch_assistant.models import Resource, Task, TaskState, WorkflowStage
 from watch_assistant.schemas import (
     EvidenceSource,
     EvidenceStatus,
-    RemoteObservation,
-    RemoteStatus,
     WorkflowStageName,
     WorkflowStageStatus,
 )
-from watch_assistant.services.tasks import TaskService
 from watch_assistant.services.workflows import WorkflowService, record_evidence
 
 
@@ -100,12 +97,21 @@ async def test_workflow_timeline_aggregates_stage_state_and_child_task(tmp_path)
         discovery = await _record_discovery(client, workflow_id)
         assert discovery.json()["status"] == "in_progress"
 
-        for stage in ("inspection", "approval"):
-            advanced = await client.patch(
-                f"/api/v1/workflows/{workflow_id}/stages/{stage}",
-                json={"status": "succeeded"},
-            )
-            assert advanced.status_code == 200
+        inspection = await client.patch(
+            f"/api/v1/workflows/{workflow_id}/stages/inspection",
+            json={"status": "succeeded"},
+        )
+        assert inspection.status_code == 200
+        awaiting = await client.patch(
+            f"/api/v1/workflows/{workflow_id}/stages/approval",
+            json={"status": "waiting_confirmation"},
+        )
+        assert awaiting.status_code == 200
+        approved = await client.post(
+            f"/api/v1/workflows/{workflow_id}/approval",
+            json={"decision": "approve"},
+        )
+        assert approved.status_code == 200
 
         task = await client.post(
             "/api/v1/tasks",
@@ -157,12 +163,21 @@ async def test_workflow_stage_order_and_uncertain_priority(tmp_path):
         created = await client.post("/api/v1/workflows", json={"media_type": "movie"})
         workflow_id = created.json()["id"]
         await _record_discovery(client, workflow_id)
-        for stage in ("inspection", "approval"):
-            response = await client.patch(
-                f"/api/v1/workflows/{workflow_id}/stages/{stage}",
-                json={"status": "succeeded"},
-            )
-            assert response.status_code == 200
+        inspection = await client.patch(
+            f"/api/v1/workflows/{workflow_id}/stages/inspection",
+            json={"status": "succeeded"},
+        )
+        assert inspection.status_code == 200
+        waiting = await client.patch(
+            f"/api/v1/workflows/{workflow_id}/stages/approval",
+            json={"status": "waiting_confirmation"},
+        )
+        assert waiting.status_code == 200
+        approved = await client.post(
+            f"/api/v1/workflows/{workflow_id}/approval",
+            json={"decision": "approve"},
+        )
+        assert approved.status_code == 200
 
         uncertain = await client.patch(
             f"/api/v1/workflows/{workflow_id}/stages/push",
@@ -194,12 +209,21 @@ async def test_terminal_stage_replay_preserves_reason_and_child_binding(tmp_path
         )
         workflow_id = created.json()["id"]
         await _record_discovery(client, workflow_id)
-        for stage in ("inspection", "approval"):
-            response = await client.patch(
-                f"/api/v1/workflows/{workflow_id}/stages/{stage}",
-                json={"status": "succeeded"},
-            )
-            assert response.status_code == 200
+        inspection = await client.patch(
+            f"/api/v1/workflows/{workflow_id}/stages/inspection",
+            json={"status": "succeeded"},
+        )
+        assert inspection.status_code == 200
+        awaiting = await client.patch(
+            f"/api/v1/workflows/{workflow_id}/stages/approval",
+            json={"status": "waiting_confirmation"},
+        )
+        assert awaiting.status_code == 200
+        approved = await client.post(
+            f"/api/v1/workflows/{workflow_id}/approval",
+            json={"decision": "approve"},
+        )
+        assert approved.status_code == 200
 
         task = await client.post(
             "/api/v1/tasks",
@@ -265,22 +289,40 @@ async def test_workflow_stage_rejects_children_from_another_workflow(tmp_path):
         target = await client.post("/api/v1/workflows", json={"media_type": "movie"})
         target_id = target.json()["id"]
         await _record_discovery(client, target_id)
-        for stage in ("inspection", "approval"):
-            advanced = await client.patch(
-                f"/api/v1/workflows/{target_id}/stages/{stage}",
-                json={"status": "succeeded"},
-            )
-            assert advanced.status_code == 200
+        inspection = await client.patch(
+            f"/api/v1/workflows/{target_id}/stages/inspection",
+            json={"status": "succeeded"},
+        )
+        assert inspection.status_code == 200
+        awaiting = await client.patch(
+            f"/api/v1/workflows/{target_id}/stages/approval",
+            json={"status": "waiting_confirmation"},
+        )
+        assert awaiting.status_code == 200
+        approved = await client.post(
+            f"/api/v1/workflows/{target_id}/approval",
+            json={"decision": "approve"},
+        )
+        assert approved.status_code == 200
 
         foreign = await client.post("/api/v1/workflows", json={"media_type": "movie"})
         foreign_id = foreign.json()["id"]
         await _record_discovery(client, foreign_id)
-        for stage in ("inspection", "approval"):
-            advanced = await client.patch(
-                f"/api/v1/workflows/{foreign_id}/stages/{stage}",
-                json={"status": "succeeded"},
-            )
-            assert advanced.status_code == 200
+        inspection = await client.patch(
+            f"/api/v1/workflows/{foreign_id}/stages/inspection",
+            json={"status": "succeeded"},
+        )
+        assert inspection.status_code == 200
+        awaiting = await client.patch(
+            f"/api/v1/workflows/{foreign_id}/stages/approval",
+            json={"status": "waiting_confirmation"},
+        )
+        assert awaiting.status_code == 200
+        approved = await client.post(
+            f"/api/v1/workflows/{foreign_id}/approval",
+            json={"decision": "approve"},
+        )
+        assert approved.status_code == 200
         foreign_task = await client.post(
             "/api/v1/tasks",
             json={"resource_id": "res_workflow_api", "workflow_id": foreign_id},
@@ -401,12 +443,26 @@ async def test_workflow_approval_and_cancel_are_guarded(tmp_path):
         running = await client.post("/api/v1/workflows", json={"media_type": "movie"})
         running_id = running.json()["id"]
         await _record_discovery(client, running_id)
-        for stage in ("inspection", "approval", "push"):
-            advanced = await client.patch(
-                f"/api/v1/workflows/{running_id}/stages/{stage}",
-                json={"status": "succeeded" if stage != "push" else "running"},
-            )
-            assert advanced.status_code == 200
+        inspection = await client.patch(
+            f"/api/v1/workflows/{running_id}/stages/inspection",
+            json={"status": "succeeded"},
+        )
+        assert inspection.status_code == 200
+        awaiting = await client.patch(
+            f"/api/v1/workflows/{running_id}/stages/approval",
+            json={"status": "waiting_confirmation"},
+        )
+        assert awaiting.status_code == 200
+        approved = await client.post(
+            f"/api/v1/workflows/{running_id}/approval",
+            json={"decision": "approve"},
+        )
+        assert approved.status_code == 200
+        push = await client.patch(
+            f"/api/v1/workflows/{running_id}/stages/push",
+            json={"status": "running"},
+        )
+        assert push.status_code == 200
         partially_cancelled = await client.post(
             f"/api/v1/workflows/{running_id}/cancel", json={}
         )
@@ -428,40 +484,21 @@ async def test_workflow_approval_and_cancel_are_guarded(tmp_path):
         )
         no_pending_id = no_pending.json()["id"]
         await _record_discovery(client, no_pending_id)
-        for stage in ("inspection", "approval"):
-            await client.patch(
-                f"/api/v1/workflows/{no_pending_id}/stages/{stage}",
-                json={"status": "succeeded"},
-            )
-        task, _ = await TaskService(database.session_factory).create(
-            "res_workflow_api", workflow_id=no_pending_id
+        inspection = await client.patch(
+            f"/api/v1/workflows/{no_pending_id}/stages/inspection",
+            json={"status": "succeeded"},
         )
-        async with database.session_factory() as session:
-            stored_task = await session.get(Task, task.id)
-            assert stored_task is not None
-            stored_task.remote_ref = "remote-available"
-            await session.commit()
-
-        class AvailableAdapter:
-            async def get_status_for_task(
-                self, remote_ref: str, *, target_directory_id: str | None
-            ):
-                assert remote_ref == "remote-available"
-                return RemoteObservation(
-                    status=RemoteStatus.AVAILABLE,
-                    file_id="101",
-                    parent_id="7",
-                    is_directory=False,
-                )
-
-        await TaskService(database.session_factory).reconcile(
-            task.id, AvailableAdapter()
+        assert inspection.status_code == 200
+        approval_waiting = await client.patch(
+            f"/api/v1/workflows/{no_pending_id}/stages/approval",
+            json={"status": "waiting_confirmation"},
         )
-        for stage in ("organization", "strm"):
-            await client.patch(
-                f"/api/v1/workflows/{no_pending_id}/stages/{stage}",
-                json={"status": "succeeded"},
-            )
+        assert approval_waiting.status_code == 200
+        approval_rejected = await client.post(
+            f"/api/v1/workflows/{no_pending_id}/approval",
+            json={"decision": "reject"},
+        )
+        assert approval_rejected.status_code == 200
         blocked = await client.post(f"/api/v1/workflows/{no_pending_id}/cancel", json={})
         assert blocked.status_code == 409
         assert blocked.json()["error"]["code"] == "workflow_not_cancellable"

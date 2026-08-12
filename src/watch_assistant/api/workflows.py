@@ -30,6 +30,19 @@ from watch_assistant.services.workflows import (
 router = APIRouter(prefix="/api/v1", dependencies=[Depends(require_api_auth)])
 
 
+async def require_web_auth(request: Request) -> AuthContext:
+    context = await require_api_auth(request)
+    if context.via_bearer and context.identity != "internal":
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "web_approval_required",
+                "message": "高风险批准必须由 Web 会话完成",
+            },
+        )
+    return context
+
+
 def get_workflow_service(request: Request) -> WorkflowService:
     service = getattr(request.app.state, "workflow_service", None)
     if service is None:
@@ -38,6 +51,7 @@ def get_workflow_service(request: Request) -> WorkflowService:
 
 
 WorkflowServiceDependency = Annotated[WorkflowService, Depends(get_workflow_service)]
+WebAuthDependency = Annotated[AuthContext, Depends(require_web_auth)]
 
 
 @router.post(
@@ -131,7 +145,23 @@ async def patch_workflow_stage(
     stage_name: WorkflowStageName,
     payload: WorkflowStagePatch,
     service: WorkflowServiceDependency,
+    auth: Annotated[AuthContext, Depends(require_api_auth)],
 ) -> WorkflowResponse:
+    # Approval must go through the dedicated endpoint so Agent tokens cannot
+    # turn a waiting approval into a terminal decision.
+    if (
+        stage_name is WorkflowStageName.APPROVAL
+        and auth.via_bearer
+        and payload.status
+        in {WorkflowStageStatus.SUCCEEDED, WorkflowStageStatus.CANCELLED}
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "web_approval_required",
+                "message": "高风险批准必须由 Web 会话完成",
+            },
+        )
     try:
         return await service.patch_stage(workflow_id, stage_name, payload)
     except WorkflowNotFound as exc:
@@ -155,7 +185,7 @@ async def decide_workflow_approval(
     workflow_id: str,
     payload: WorkflowApprovalRequest,
     service: WorkflowServiceDependency,
-    auth: Annotated[AuthContext, Depends(require_api_auth)],
+    auth: WebAuthDependency,
 ) -> WorkflowResponse:
     try:
         return await service.decide_approval(

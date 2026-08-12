@@ -31,6 +31,19 @@ const notifications = [
     created_at: "2026-07-29T01:02:00Z",
     updated_at: "2026-07-29T01:02:00Z",
   },
+  {
+    id: "notification-3",
+    event_code: "organize.needs_review",
+    severity: "warning" as const,
+    title_zh: "整理预览需要人工确认",
+    message_zh: "整理预览涉及 1 个文件，需要人工确认后继续",
+    action_type: "organization_plan",
+    action_id: "plan-1",
+    aggregate_count: 1,
+    read_at: null,
+    created_at: "2026-07-29T01:03:00Z",
+    updated_at: "2026-07-29T01:03:00Z",
+  },
 ];
 
 function makeApi() {
@@ -55,7 +68,7 @@ describe("NotificationCenterView", () => {
     expect(wrapper.find(".notification-count").text()).toBe("1");
 
     await wrapper.get(".segmented button:nth-child(3)").trigger("click");
-    expect(wrapper.findAll(".notification-item")).toHaveLength(2);
+    expect(wrapper.findAll(".notification-item")).toHaveLength(3);
 
     await wrapper.get(".notification-action .text-button").trigger("click");
     expect(wrapper.emitted("navigate")).toEqual([["workflows"]]);
@@ -86,6 +99,19 @@ describe("NotificationCenterView", () => {
     expect(wrapper.findAll(".notification-item")).toHaveLength(1);
     expect(wrapper.text()).toContain("连接需要重新授权");
     expect(wrapper.text()).not.toContain("任务已完成");
+  });
+
+  it("navigates review notifications to the organization workbench", async () => {
+    const api = makeApi();
+    const wrapper = mount(NotificationCenterView, { props: { api } });
+    await flushPromises();
+
+    await wrapper.get(".segmented button:nth-child(3)").trigger("click");
+    const reviewItem = wrapper.findAll(".notification-item")[2];
+    await reviewItem.get(".notification-action .text-button").trigger("click");
+
+    expect(wrapper.emitted("navigate")).toContainEqual(["organization-plans"]);
+    expect(api.markNotificationRead).toHaveBeenCalledWith("notification-3");
   });
 
   it("persists quiet-hour controls", async () => {
@@ -121,6 +147,6 @@ describe("NotificationCenterView", () => {
 
     expect(wrapper.get(".settings-state-error").text()).toContain("通知中心暂时无法加载");
     expect(wrapper.text()).toContain("任务已完成");
-    expect(wrapper.findAll(".notification-item")).toHaveLength(2);
+    expect(wrapper.findAll(".notification-item")).toHaveLength(3);
   });
 });

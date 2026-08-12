@@ -1130,6 +1130,11 @@ class OrganizationAutomationService:
                 fields={"status": status},
                 counts={"count": count},
             )
+            if status == "needs_review":
+                await method(
+                    "organize.needs_review",
+                    fields={"status": status, "count": count},
+                )
             if (
                 not auto_queued
                 and status

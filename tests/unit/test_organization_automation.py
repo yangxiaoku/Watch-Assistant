@@ -367,6 +367,7 @@ async def test_automation_scans_source_and_freezes_target_catalog(tmp_path: Path
         assert library.scope_verified is True
         assert library.enabled is True
     assert events.events[0][0] == "organize.preview.created"
+    assert events.events[1][0] == "organize.plan.awaiting_confirmation"
     await database.engine.dispose()
 
 

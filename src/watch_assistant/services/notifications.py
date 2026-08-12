@@ -37,6 +37,7 @@ _NOTIFIABLE_EVENTS = frozenset(
         "p115.credentials_expired",
         "subscription.resources_observed",
         "organize.automation.blocked",
+        "subscription.check_failed",
         "organize.needs_review",
         "organize.operation.failed",
         "organize.operation.uncertain",
@@ -44,6 +45,7 @@ _NOTIFIABLE_EVENTS = frozenset(
         "strm.cleanup_blocked",
         "strm.dirty_consumed",
         "strm.verify.completed",
+        "strm.dirty_failed",
         "backup.failed",
         "backup.restore_preview",
         "workflow.stage_changed",
@@ -122,6 +124,9 @@ class NotificationService:
             return
         if event_code == "workflow.stage_changed" and status not in _WORKFLOW_VISIBLE_STATUSES:
             return
+        if event_code == "inspection.batch_failed" and correlation_id is not None:
+            # Linked batches already produce an actionable workflow notification.
+            return
         definition = get_event_definition(event_code)
         if definition is None:
             return
@@ -136,9 +141,19 @@ class NotificationService:
         action_type = (
             "workflow"
             if event_code.startswith("workflow.")
+            else "settings"
+            if event_code
+            in {"inspection.batch_failed", "strm.dirty_failed", "subscription.check_failed"}
+            else "organization_plan"
+            if event_code in {"organize.operation.failed", "organize.operation.uncertain"}
             else "task"
             if task_id
             else resource_type
+        )
+        action_id = (
+            "inspection"
+            if event_code == "inspection.batch_failed"
+            else task_id or resource_id
         )
         await self.notify(
             event_code=event_code,
@@ -147,7 +162,7 @@ class NotificationService:
             message_zh=definition.render(safe_fields),
             dedupe_key=dedupe_key[:255],
             action_type=action_type,
-            action_id=task_id or resource_id,
+            action_id=action_id,
         )
 
     async def notify(
@@ -331,6 +346,7 @@ def _severity(event_code: str, status: object) -> NotificationSeverity:
         "organize.operation.uncertain",
         "strm.cleanup_blocked",
         "strm.verify.completed",
+        "strm.dirty_failed",
         "backup.failed",
         "p115.readiness",
     }:

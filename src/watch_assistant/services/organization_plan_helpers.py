@@ -1646,7 +1646,10 @@ async def _source_snapshot_changed(
     return False
 
 def _view(
-    plan: OrganizationPlan, *, source_snapshot_changed: bool = False
+    plan: OrganizationPlan,
+    *,
+    source_snapshot_changed: bool = False,
+    high_risk_action_threshold: int = 10,
 ) -> OrganizationPlanView:
     source_snapshot_payload = _load_source_snapshot(plan.source_snapshot_json)
     source_snapshot = source_snapshot_payload or []
@@ -1751,6 +1754,8 @@ def _view(
         executable_action_count=executable_action_count,
         review_action_count=review_action_count,
         can_execute=not blockers,
+        requires_web_approval=len(actions) > high_risk_action_threshold,
+        high_risk_action_threshold=high_risk_action_threshold,
         execution_blockers=blockers,
         source_names=tuple(source_names),
         alias=plan.alias,

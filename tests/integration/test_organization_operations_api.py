@@ -54,15 +54,20 @@ WEB_PASSWORD = "organization-operation-password"
 REMOTE_SECRET = "remote-id-private"
 
 
-def _source_version() -> str:
+def _source_version(
+    *,
+    object_id: str = "source-operation",
+    name: str = "movie.mkv",
+    path: str = "/private/movie.mkv",
+) -> str:
     return _entry_remote_version(
         LibraryScanEntry(
             scan_run_id="scan-operation",
             object_type="file",
-            object_id="source-operation",
+            object_id=object_id,
             parent_id="root-operation",
-            name="movie.mkv",
-            path="/private/movie.mkv",
+            name=name,
+            path=path,
             is_directory=False,
         )
     )
@@ -101,6 +106,7 @@ def _plan(
     status: str = "planned",
     revision: int = 1,
     expires_at: datetime,
+    action_count: int = 0,
 ) -> OrganizationPlan:
     return OrganizationPlan(
         id=plan_id,
@@ -111,7 +117,12 @@ def _plan(
             [{"object_id": REMOTE_SECRET, "object_type": "file"}]
         ),
         target_root="Movies",
-        actions_json="[]",
+        actions_json=json.dumps(
+            [
+                {"object_id": f"remote-{index}", "target": "Movies/title"}
+                for index in range(action_count)
+            ]
+        ),
         basis_json=json.dumps([{"reason": "pickcode-private"}]),
         preconditions_json=json.dumps(
             {
@@ -167,9 +178,9 @@ async def _client(
                 state="completed",
                 complete=True,
                 snapshot_revision=1,
-                expected_total=2,
+                expected_total=3,
                 pages_read=2,
-                items_seen=2,
+                items_seen=3,
             )
         )
         await session.flush()
@@ -217,18 +228,27 @@ async def _client(
                     path="/private/movie.mkv",
                     is_directory=False,
                 ),
+                LibraryScanEntry(
+                    scan_run_id="scan-operation",
+                    object_type="file",
+                    object_id="source-operation-2",
+                    parent_id="root-operation",
+                    name="movie-2.mkv",
+                    path="/private/movie-2.mkv",
+                    is_directory=False,
+                ),
                 LibraryScanCheckpoint(
                     scan_run_id="scan-operation",
                     page=2,
-                    items_seen=2,
+                    items_seen=3,
                     cursor_json=json.dumps(
                         {
                             "version": 2,
                             "directory_totals": {
-                                "root-operation": 2,
+                                "root-operation": 3,
                                 "target-operation": 0,
                             },
-                            "expected_total": 2,
+                            "expected_total": 3,
                             "pending": [],
                             "visited": ["root-operation", "target-operation"],
                         }
@@ -282,6 +302,58 @@ async def _client(
             assert stored is not None
             stored.id = plan_id
             await session.commit()
+    high_risk_items = []
+    for index in (1, 2):
+        source_id = "source-operation" if index == 1 else "source-operation-2"
+        file_name = "movie.mkv" if index == 1 else "movie-2.mkv"
+        high_risk_items.append(
+            OrganizationPlanItem(
+                source=PlanSource(
+                    object_type="file",
+                    object_id=source_id,
+                    parent_id="root-operation",
+                    path=f"/private/{file_name}",
+                    remote_version=_source_version(
+                        object_id=source_id,
+                        name=file_name,
+                        path=f"/private/{file_name}",
+                    ),
+                ),
+                naming_plan=NamingPlan(
+                    status=ClassificationStatus.PLANNED,
+                    target_path=f"Movies/{file_name}",
+                    display_name=f"Movie {index}",
+                    reasons=("accepted",),
+                    rule_version="rule-v1",
+                ),
+                decision=MatchDecision(
+                    status=MatchStatus.ACCEPTED,
+                    selected=TmdbCandidate(
+                        tmdb_id=index,
+                        media_type=MediaType.MOVIE,
+                        title=f"Movie {index}",
+                        kind=MediaKind.MOVIE,
+                        release_year=2024,
+                        origin_countries=("US",),
+                    ),
+                    confidence=MatchConfidence.HIGH,
+                ),
+                target_parent_id="target-operation",
+                target_name=file_name,
+            )
+        )
+    high_risk_plan = await plan_service.create_plan(
+        library_id="library-operation",
+        scan_run_id="scan-operation",
+        items=tuple(high_risk_items),
+        target_directory_id="target-operation",
+        parser_version="parser-plan-high-risk",
+    )
+    async with database.session_factory() as session:
+        stored = await session.get(OrganizationPlan, high_risk_plan.plan_id)
+        assert stored is not None
+        stored.id = "plan-high-risk"
+        await session.commit()
     password_hash = PasswordHash.recommended()
     security = SecurityManager(
         web_password_hash=password_hash.hash(WEB_PASSWORD),
@@ -296,6 +368,7 @@ async def _client(
         frontend_dir=tmp_path / "missing",
         organization_plan_enabled=plan_enabled,
         organization_execution_enabled=execution_enabled,
+        organization_high_risk_action_threshold=1,
     )
     if worker_available is None:
         worker_available = execution_enabled
@@ -467,6 +540,7 @@ async def test_queue_is_idempotent_and_rejects_unconfirmed_stale_or_expired_plan
         "attempts",
         "error_code",
         "cancel_requested",
+        "workflow_id",
     }
     operation_detail = await client.get(
         "/api/v1/organization-plans/plan-ready/operation",
@@ -867,12 +941,101 @@ async def test_agent_library_scope_blocks_plan_and_operation_access(tmp_path: Pa
             "attempts": None,
             "error_code": "plan_not_found",
             "message": "计划不存在",
+            "workflow_id": None,
         }
     ]
     async with database.session_factory() as session:
         operations = list((await session.scalars(select(OrganizationOperation))).all())
     assert len(operations) == 1
     await _close(client, database)
+
+
+@pytest.mark.integration
+async def test_high_risk_operation_requires_web_approval(tmp_path: Path):
+    client, database = await _client(tmp_path, execution_enabled=True)
+    web_headers = await _auth_headers(client)
+    try:
+        blocked = await client.post(
+            "/api/v1/organization-plans/plan-high-risk/operation",
+            json={
+                "expected_revision": 1,
+                "idempotency_key": "high-risk-blocked",
+                "confirm": True,
+            },
+            headers=web_headers,
+        )
+        assert blocked.status_code == 409
+        assert blocked.json()["error"]["code"] == "high_risk_approval_required"
+
+        approval = await client.post(
+            "/api/v1/organization-plans/plan-high-risk/approval-workflow",
+            json={"expected_revision": 1},
+            headers=web_headers,
+        )
+        assert approval.status_code == 200
+        workflow_id = approval.json()["id"]
+        approval_stage = next(
+            stage for stage in approval.json()["stages"] if stage["stage"] == "approval"
+        )
+        assert approval_stage["status"] == "waiting_confirmation"
+        assert approval_stage["child_type"] == "organization_plan"
+        assert approval_stage["child_id"] == "plan-high-risk"
+
+        raw_token = "wa_at_high_risk_agent"
+        async with database.session_factory() as session:
+            session.add(
+                AgentToken(
+                    id="agent-high-risk",
+                    name="high-risk-agent",
+                    token_digest=hashlib.sha256(raw_token.encode()).hexdigest(),
+                    token_prefix=raw_token[:16],
+                    scopes_json=json.dumps(["organize:execute", "task:write"]),
+                    library_ids_json="[]",
+                    expires_at=datetime.now(UTC) + timedelta(hours=1),
+                    created_at=datetime.now(UTC),
+                )
+            )
+            await session.commit()
+        agent_approval = await client.post(
+            f"/api/v1/workflows/{workflow_id}/approval",
+            json={"decision": "approve"},
+            headers={"Authorization": f"Bearer {raw_token}"},
+        )
+        assert agent_approval.status_code == 403
+        assert agent_approval.json()["error"]["code"] == "web_approval_required"
+        agent_stage_patch = await client.patch(
+            f"/api/v1/workflows/{workflow_id}/stages/approval",
+            json={"status": "succeeded"},
+            headers={"Authorization": f"Bearer {raw_token}"},
+        )
+        assert agent_stage_patch.status_code == 403
+        assert agent_stage_patch.json()["error"]["code"] == "web_approval_required"
+
+        approved = await client.post(
+            f"/api/v1/workflows/{workflow_id}/approval",
+            json={"decision": "approve", "reason": "Web 人工确认"},
+            headers=web_headers,
+        )
+        assert approved.status_code == 200
+        assert next(
+            stage for stage in approved.json()["stages"] if stage["stage"] == "approval"
+        )["status"] == "succeeded"
+
+        queued = await client.post(
+            "/api/v1/organization-plans/plan-high-risk/operation",
+            json={
+                "expected_revision": 1,
+                "idempotency_key": "high-risk-approved",
+                "workflow_id": workflow_id,
+                "confirm": True,
+            },
+            headers=web_headers,
+        )
+        assert queued.status_code == 200
+        assert queued.json()["workflow_id"] == workflow_id
+        assert queued.json()["status"] == "planned"
+    finally:
+        await _close(client, database)
 
 
 @pytest.mark.integration

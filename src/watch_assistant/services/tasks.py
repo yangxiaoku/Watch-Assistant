@@ -13,6 +13,7 @@ from watch_assistant.models import (
     Resource,
     Task,
     TaskState,
+    Workflow,
     WorkflowEvidence,
     WorkflowStage,
 )
@@ -31,6 +32,7 @@ from watch_assistant.services.workflows import (
     WorkflowConflict,
     _skip_pending_prerequisites_before_push,
     advance_availability_from_evidence,
+    emit_workflow_stage_changed,
     link_child,
     record_evidence,
     sync_child_stage,
@@ -520,6 +522,7 @@ class TaskService:
         target_directory_id: str | None = None,
     ):
         async with self._create_lock, self._session_factory() as session:
+            stage_workflow = None
             resource = await session.get(Resource, resource_id)
             if resource is None:
                 raise ResourceNotFound(resource_id)
@@ -570,7 +573,7 @@ class TaskService:
                             workflow_id,
                             exclude_task_id=existing.id,
                         )
-                        await link_child(
+                        stage_workflow = await link_child(
                             session,
                             workflow_id,
                             WorkflowStageName.PUSH,
@@ -588,6 +591,13 @@ class TaskService:
                                 availability_evidence,
                             )
                         await session.commit()
+                        await emit_workflow_stage_changed(
+                            self._event_logger,
+                            workflow_id=stage_workflow.id,
+                            correlation_id=stage_workflow.correlation_id,
+                            stage_name=WorkflowStageName.PUSH,
+                            status=WorkflowStageStatus.RUNNING,
+                        )
                     return existing, True
 
             task = Task(
@@ -611,7 +621,7 @@ class TaskService:
                     workflow_id,
                     exclude_task_id=task.id,
                 )
-                await link_child(
+                stage_workflow = await link_child(
                     session,
                     workflow_id,
                     WorkflowStageName.PUSH,
@@ -619,6 +629,14 @@ class TaskService:
                     task.id,
                 )
             await session.commit()
+            if stage_workflow is not None:
+                await emit_workflow_stage_changed(
+                    self._event_logger,
+                    workflow_id=stage_workflow.id,
+                    correlation_id=stage_workflow.correlation_id,
+                    stage_name=WorkflowStageName.PUSH,
+                    status=WorkflowStageStatus.RUNNING,
+                )
             await emit_event(
                 self._event_logger,
                 "task.submitted",
@@ -981,7 +999,26 @@ class TaskService:
                 source=EvidenceSource.READONLY_RECONCILIATION,
             )
             await session.commit()
-            return task, evidence
+            workflow_id = task.workflow_id
+            task_state = task.state
+            task_error_code = task.error_code
+        if workflow_id is not None:
+            async with self._session_factory() as session:
+                workflow = await session.get(Workflow, workflow_id)
+            if workflow is not None:
+                await emit_workflow_stage_changed(
+                    self._event_logger,
+                    workflow_id=workflow.id,
+                    correlation_id=workflow.correlation_id,
+                    stage_name=WorkflowStageName.PUSH,
+                    status=(
+                        WorkflowStageStatus.SUCCEEDED
+                        if task_state is TaskState.AVAILABLE
+                        else workflow_stage_status_for_task_state(task_state)
+                    ),
+                    error_code=task_error_code,
+                )
+        return task, evidence
 
     async def evidence(self, task_id: str) -> list[WorkflowEvidence]:
         async with self._session_factory() as session:
@@ -1051,6 +1088,7 @@ class TaskService:
         allowed_actions: frozenset[TaskAction] | None = None,
     ) -> Task:
         async with self._session_factory() as session:
+            stage_workflow = None
             task = await session.get(Task, task_id)
             if task is None:
                 raise ResourceNotFound(task_id)
@@ -1058,7 +1096,7 @@ class TaskService:
                 raise PushKindUnsupported("push kind is not supported")
             prepare_manual_retry(task)
             if task.workflow_id is not None:
-                await sync_child_stage(
+                stage_workflow = await sync_child_stage(
                     session,
                     task.workflow_id,
                     WorkflowStageName.PUSH,
@@ -1068,7 +1106,15 @@ class TaskService:
                     reason="task_retry",
                 )
             await session.commit()
-            return task
+        if stage_workflow is not None:
+            await emit_workflow_stage_changed(
+                self._event_logger,
+                workflow_id=stage_workflow.id,
+                correlation_id=stage_workflow.correlation_id,
+                stage_name=WorkflowStageName.PUSH,
+                status=WorkflowStageStatus.RUNNING,
+            )
+        return task
 
     async def cancel(
         self,
@@ -1077,6 +1123,7 @@ class TaskService:
         allowed_actions: frozenset[TaskAction] | None = None,
     ) -> Task:
         now = datetime.now(UTC)
+        stage_workflow = None
         async with self._session_factory() as session:
             task = await session.get(Task, task_id)
             if task is None:
@@ -1124,7 +1171,7 @@ class TaskService:
             task.lease_token = None
             task.updated_at = now
             if task.workflow_id is not None:
-                await sync_child_stage(
+                stage_workflow = await sync_child_stage(
                     session,
                     task.workflow_id,
                     WorkflowStageName.PUSH,
@@ -1134,6 +1181,15 @@ class TaskService:
                     reason="task_cancelled",
                 )
             await session.commit()
+        if stage_workflow is not None:
+            await emit_workflow_stage_changed(
+                self._event_logger,
+                workflow_id=stage_workflow.id,
+                correlation_id=stage_workflow.correlation_id,
+                stage_name=WorkflowStageName.PUSH,
+                status=WorkflowStageStatus.CANCELLED,
+                error_code="cancelled",
+            )
         await emit_event(
             self._event_logger,
             "task.cancelled",

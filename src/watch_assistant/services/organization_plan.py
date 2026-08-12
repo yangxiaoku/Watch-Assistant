@@ -101,10 +101,18 @@ class OrganizationPlanService:
         tmdb_client: TmdbMatchClient | None = None,
         *,
         event_logger: object | None = None,
+        high_risk_action_threshold: int = 10,
     ) -> None:
+        if (
+            isinstance(high_risk_action_threshold, bool)
+            or not isinstance(high_risk_action_threshold, int)
+            or not 1 <= high_risk_action_threshold <= 100_000
+        ):
+            raise ValueError("invalid_high_risk_action_threshold")
         self._session_factory = session_factory
         self._tmdb_client = tmdb_client
         self._event_logger = event_logger
+        self._high_risk_action_threshold = high_risk_action_threshold
 
     def bind_candidate_search_client(self, tmdb_client: TmdbMatchClient) -> None:
         """Attach the read-only TMDB client after runtime credentials are loaded."""
@@ -118,7 +126,11 @@ class OrganizationPlanService:
         source_snapshot_changed = await _source_snapshot_changed(
             session, plan, source_snapshot
         )
-        return _view(plan, source_snapshot_changed=source_snapshot_changed)
+        return _view(
+            plan,
+            source_snapshot_changed=source_snapshot_changed,
+            high_risk_action_threshold=self._high_risk_action_threshold,
+        )
 
     async def create_plan(
         self,

@@ -196,6 +196,17 @@ class SubscriptionService:
                 item.next_check_at = datetime.now(UTC) + timedelta(hours=6)
                 item.revision += 1
                 await session.commit()
+            await emit_event(
+                self._event_logger,
+                "subscription.check_failed",
+                fields={
+                    "status": "failed",
+                    "error_code": "search_unavailable",
+                    "media_type": media_type.value,
+                },
+                resource_type="subscription",
+                resource_id=subscription_id,
+            )
             raise SubscriptionConflict("subscription_check_failed") from None
 
         resource_ids = list(

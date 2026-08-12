@@ -20,10 +20,12 @@ from watch_assistant.schemas import (
 from watch_assistant.security import require_api_auth
 from watch_assistant.services.search import (
     InvalidSeasonRequest,
+    ResourceSearchWorkflowConflict,
     ResourceSnapshotNotFound,
     SearchService,
     SearchUnavailable,
 )
+from watch_assistant.services.workflows import WorkflowNotFound
 
 router = APIRouter(prefix="/api/v1", dependencies=[Depends(require_api_auth)])
 
@@ -153,12 +155,18 @@ async def start_resource_search(
 ) -> ResourceSearchResponse:
     if request.season_number is not None and media_type != MediaType.TV:
         raise HTTPException(status_code=422, detail="season_requires_tv")
-    return await service.start_resource_search(
-        tmdb_id,
-        media_type=media_type,
-        season_number=request.season_number,
-        refresh=request.refresh,
-    )
+    try:
+        return await service.start_resource_search(
+            tmdb_id,
+            media_type=media_type,
+            season_number=request.season_number,
+            refresh=request.refresh,
+            workflow_id=request.workflow_id,
+        )
+    except WorkflowNotFound as exc:
+        raise HTTPException(status_code=404, detail="workflow_not_found") from exc
+    except ResourceSearchWorkflowConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
 
 
 @router.get(

@@ -22,17 +22,20 @@ from watch_assistant.models import (
     OrganizationOperation,
     OrganizationOperationStatus,
     Workflow,
+    WorkflowStage,
 )
 from watch_assistant.schemas import WorkflowStageName, WorkflowStageStatus
 from watch_assistant.services.library_index import ScanRunState
-from watch_assistant.services.observability import audit_event
 from watch_assistant.services.organization_outbox import (
     DirectoryDirtyOutboxService,
     OrganizationOutboxError,
 )
 from watch_assistant.services.organization_plan import OrganizationPlanStatus
 from watch_assistant.services.strm_scope import source_snapshot_is_current
-from watch_assistant.services.workflows import sync_child_stage
+from watch_assistant.services.workflows import (
+    emit_workflow_stage_changed,
+    sync_child_stage,
+)
 
 VALID_OPERATION_ERROR_CODES = frozenset(
     {
@@ -154,10 +157,18 @@ class OrganizationOperationService:
         *,
         event_logger: object | None = None,
         outbox_service: DirectoryDirtyOutboxService | None = None,
+        high_risk_action_threshold: int = 10,
     ) -> None:
+        if (
+            isinstance(high_risk_action_threshold, bool)
+            or not isinstance(high_risk_action_threshold, int)
+            or not 1 <= high_risk_action_threshold <= 100_000
+        ):
+            raise ValueError("invalid_high_risk_action_threshold")
         self._session_factory = session_factory
         self._event_logger = event_logger
         self._outbox_service = outbox_service or DirectoryDirtyOutboxService()
+        self._high_risk_action_threshold = high_risk_action_threshold
 
     async def create(
         self,
@@ -196,6 +207,9 @@ class OrganizationOperationService:
             ):
                 raise OrganizationOperationConflict("plan_revision_changed")
 
+            await self._ensure_high_risk_approval(
+                session, plan, workflow_id=workflow_id
+            )
             if not await self._has_executable_steps(
                 plan_id, expected_plan_revision=plan.revision
             ):
@@ -243,7 +257,15 @@ class OrganizationOperationService:
                     "operation_creation_conflict"
                 ) from None
             summary = _summary(operation)
-        await self._audit("organize.operation.queued", "整理操作已排队")
+        await self._audit_operation(
+            "organize.operation.queued",
+            "整理操作已排队",
+            operation_id=summary.operation_id,
+            workflow_id=summary.workflow_id,
+            stage_status=(
+                WorkflowStageStatus.PENDING if summary.workflow_id is not None else None
+            ),
+        )
         return summary
 
     async def get_by_idempotency_key(
@@ -271,6 +293,36 @@ class OrganizationOperationService:
                 existing,
                 plan_id=plan_id,
                 workflow_id=workflow_id,
+            )
+
+    async def _ensure_high_risk_approval(
+        self,
+        session: AsyncSession,
+        plan: OrganizationPlan,
+        *,
+        workflow_id: str | None,
+    ) -> None:
+        action_count = _plan_action_count(plan)
+        if action_count <= self._high_risk_action_threshold:
+            return
+        if workflow_id is None:
+            raise OrganizationOperationPrerequisiteError(
+                "high_risk_approval_required"
+            )
+        approval = await session.scalar(
+            select(WorkflowStage).where(
+                WorkflowStage.workflow_id == workflow_id,
+                WorkflowStage.stage == WorkflowStageName.APPROVAL,
+            )
+        )
+        if (
+            approval is None
+            or approval.status is not WorkflowStageStatus.SUCCEEDED
+            or approval.child_type != "organization_plan"
+            or approval.child_id != plan.id
+        ):
+            raise OrganizationOperationPrerequisiteError(
+                "high_risk_approval_required"
             )
 
     async def get(self, operation_id: str) -> OrganizationOperationSummary:
@@ -654,12 +706,23 @@ class OrganizationOperationService:
                 reason="organization_started",
             )
             await session.commit()
-            return OrganizationOperationLease(
+            lease = OrganizationOperationLease(
                 operation_id=operation_id,
                 revision=expected_revision + 1,
                 lease_token=token,
                 lease_expires_at=expires_at,
             )
+            workflow_id = operation.workflow_id
+        await self._audit_operation(
+            "organize.operation.updated",
+            "整理操作已开始",
+            operation_id=operation_id,
+            workflow_id=workflow_id,
+            stage_status=(
+                WorkflowStageStatus.RUNNING if workflow_id is not None else None
+            ),
+        )
+        return lease
 
     async def renew_lease(
         self,
@@ -837,7 +900,28 @@ class OrganizationOperationService:
             )
             await session.commit()
             summary = _summary(operation)
-        await self._audit("organize.operation.updated", "整理操作状态已更新")
+        await self._audit_operation(
+            (
+                "organize.operation.failed"
+                if status is OrganizationOperationStatus.FAILED
+                and summary.workflow_id is None
+                else "organize.operation.updated"
+            ),
+            (
+                "整理操作失败"
+                if status is OrganizationOperationStatus.FAILED
+                and summary.workflow_id is None
+                else "整理操作状态已更新"
+            ),
+            operation_id=summary.operation_id,
+            workflow_id=summary.workflow_id,
+            stage_status=(
+                _workflow_stage_status(status)
+                if summary.workflow_id is not None
+                else None
+            ),
+            error_code=error_code,
+        )
         return summary
 
     async def finish_after_lease_loss(
@@ -889,7 +973,18 @@ class OrganizationOperationService:
             )
             await session.commit()
             summary = _summary(operation)
-        await self._audit("organize.operation.uncertain", "整理操作已标记为结果不确定")
+        await self._audit_operation(
+            "organize.operation.uncertain",
+            "整理操作已标记为结果不确定",
+            operation_id=summary.operation_id,
+            workflow_id=summary.workflow_id,
+            stage_status=(
+                WorkflowStageStatus.UNCERTAIN
+                if summary.workflow_id is not None
+                else None
+            ),
+            error_code="lease_lost",
+        )
         return summary
 
     async def reconcile_organized(
@@ -1181,7 +1276,17 @@ class OrganizationOperationService:
             if operation is None:
                 raise OrganizationOperationNotFound
             summary = _summary(operation)
-        await self._audit("organize.operation.completed", "整理操作已完成")
+        await self._audit_operation(
+            "organize.operation.completed",
+            "整理操作已完成",
+            operation_id=summary.operation_id,
+            workflow_id=summary.workflow_id,
+            stage_status=(
+                WorkflowStageStatus.SUCCEEDED
+                if summary.workflow_id is not None
+                else None
+            ),
+        )
         return summary
 
     async def _raise_revision_conflict(
@@ -1412,8 +1517,11 @@ class OrganizationOperationService:
                 await session.commit()
                 await session.refresh(operation)
                 summary = _summary(operation)
-                await self._audit(
-                    "organize.operation.cancel_requested", "整理操作已请求本地中止"
+                await self._audit_operation(
+                    "organize.operation.cancel_requested",
+                    "整理操作已请求本地中止",
+                    operation_id=summary.operation_id,
+                    workflow_id=summary.workflow_id,
                 )
                 return summary
             if operation.status is not OrganizationOperationStatus.PLANNED:
@@ -1431,7 +1539,17 @@ class OrganizationOperationService:
             )
             await session.commit()
             summary = _summary(operation)
-        await self._audit("organize.operation.cancelled", "整理操作已取消")
+        await self._audit_operation(
+            "organize.operation.cancelled",
+            "整理操作已取消",
+            operation_id=summary.operation_id,
+            workflow_id=summary.workflow_id,
+            stage_status=(
+                WorkflowStageStatus.CANCELLED
+                if summary.workflow_id is not None
+                else None
+            ),
+        )
         return summary
 
     async def retry(
@@ -1481,7 +1599,15 @@ class OrganizationOperationService:
             await session.commit()
             await session.refresh(operation)
             summary = _summary(operation)
-        await self._audit("organize.operation.retried", "整理操作已重试")
+        await self._audit_operation(
+            "organize.operation.retried",
+            "整理操作已重试",
+            operation_id=summary.operation_id,
+            workflow_id=summary.workflow_id,
+            stage_status=(
+                WorkflowStageStatus.PENDING if summary.workflow_id is not None else None
+            ),
+        )
         return summary
 
     async def fail_stale_uncertain(
@@ -1591,8 +1717,70 @@ class OrganizationOperationService:
             await session.commit()
         raise OrganizationOperationPrerequisiteError("plan_prerequisites_changed")
 
-    async def _audit(self, event: str, status: str) -> None:
-        await audit_event(self._event_logger, event, status)
+    async def _audit_operation(
+        self,
+        event: str,
+        status: str,
+        *,
+        operation_id: str,
+        workflow_id: str | None,
+        stage_status: WorkflowStageStatus | None = None,
+        error_code: str | None = None,
+    ) -> None:
+        correlation_id = None
+        if workflow_id is not None:
+            async with self._session_factory() as session:
+                workflow = await session.get(Workflow, workflow_id)
+            if workflow is not None:
+                correlation_id = workflow.correlation_id
+                if stage_status is not None:
+                    await emit_workflow_stage_changed(
+                        self._event_logger,
+                        workflow_id=workflow.id,
+                        correlation_id=workflow.correlation_id,
+                        stage_name=WorkflowStageName.ORGANIZATION,
+                        status=stage_status,
+                        error_code=error_code,
+                    )
+        await self._audit(
+            event,
+            status,
+            correlation_id=correlation_id,
+            task_id=operation_id,
+            resource_type="organization_operation",
+            resource_id=operation_id,
+            error_code=error_code,
+        )
+
+    async def _audit(
+        self,
+        event: str,
+        status: str,
+        *,
+        correlation_id: str | None = None,
+        task_id: str | None = None,
+        resource_type: str | None = None,
+        resource_id: str | None = None,
+        error_code: str | None = None,
+    ) -> None:
+        logger = self._event_logger
+        log_event = getattr(logger, "log_event", None)
+        if not callable(log_event):
+            return
+        try:
+            await log_event(
+                event,
+                fields={
+                    "status": status,
+                    **({"error_code": error_code} if error_code is not None else {}),
+                },
+                correlation_id=correlation_id,
+                task_id=task_id,
+                resource_type=resource_type,
+                resource_id=resource_id,
+            )
+        except Exception:  # noqa: BLE001 - audit failure cannot alter local state
+            return
 
 
 def _summary(operation: OrganizationOperation) -> OrganizationOperationSummary:
@@ -1696,6 +1884,18 @@ def _plan_library_snapshot_matches(
         "scope_verified": library.scope_verified,
         "root_directory_id": library.root_directory_id,
     }
+
+
+def _plan_action_count(plan: OrganizationPlan) -> int:
+    try:
+        actions = json.loads(plan.actions_json)
+    except (TypeError, ValueError):
+        raise OrganizationOperationPrerequisiteError(
+            "plan_prerequisites_changed"
+        ) from None
+    if not isinstance(actions, list):
+        raise OrganizationOperationPrerequisiteError("plan_prerequisites_changed")
+    return len(actions)
 
 
 def _validate_identifier(value: str, error: str, *, maximum: int) -> None:

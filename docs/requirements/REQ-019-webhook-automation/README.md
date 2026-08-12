@@ -108,4 +108,5 @@
 - `watchctl webhook test <endpoint-id>` 已接入同一测试投递 API，复用 Agent 认证、Scope、错误码和统一 JSON/JSONL envelope。
 - `watchctl webhook list`、`webhook deliveries` 和 `webhook retry` 已接入端点、投递查询和服务端死信重试 API；重试资格仍由服务端状态机判断。
 - Webhook 端点列表现在提供派生的 `health_status`（`unknown`、`healthy`、`degraded`、`failed`、`disabled`），只读反映持久成功/失败记录，不替代真实接收端验收。
+- Webhook 端点列表现在同时提供投递总数、成功数、待重试数、死信数、终态失败率和下一次重试时间；统计只读派生自持久投递记录，失败率定义为“已结束投递中死信占比”，不改变投递状态机。
 - 真实接收端篡改/重放/重启恢复和完整业务事件矩阵仍未验收，不能宣称 REQ-019 已完成。

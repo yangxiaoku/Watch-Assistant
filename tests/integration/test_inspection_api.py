@@ -26,10 +26,14 @@ from watch_assistant.models import (
 from watch_assistant.schemas import (
     InspectionBatchStatus,
     InspectionItemStatus,
+    MediaType,
     ResourceKind,
+    WorkflowCreateRequest,
+    WorkflowDiscoveryRequest,
 )
 from watch_assistant.security import SecurityManager
 from watch_assistant.services.inspection import InspectionService, InspectionWorker
+from watch_assistant.services.workflows import WorkflowService
 
 WEB_PASSWORD = "inspection-web-password"
 SCRIPT_TOKEN = "inspection-script-token"
@@ -289,6 +293,7 @@ async def test_inspection_response_is_queued_then_cumulative_and_ordered(tmp_pat
     assert accepted.status_code == 202
     assert accepted.json() == {
         "batch_id": accepted.json()["batch_id"],
+        "workflow_id": None,
         "status": "queued",
         "submitted_count": 3,
         "completed_count": 0,
@@ -368,6 +373,20 @@ async def test_verified_infohash_cache_is_reused_after_service_rebuild(tmp_path)
         column_names = {row[1] for row in columns}
     assert cache is not None
     assert {"magnet", "tracker", "path"}.isdisjoint(column_names)
+    workflow = await WorkflowService(database.session_factory).create(
+        WorkflowCreateRequest(media_type=MediaType.MOVIE, tmdb_id=12345)
+    )
+    await WorkflowService(database.session_factory).record_discovery(
+        workflow.id, WorkflowDiscoveryRequest(resource_id="res_a")
+    )
+    cached_with_workflow = await rebuilt_service.create(
+        ["res_a"], workflow_id=workflow.id
+    )
+    assert cached_with_workflow.status == InspectionBatchStatus.COMPLETED
+    assert cached_with_workflow.workflow_id == workflow.id
+    detail = await WorkflowService(database.session_factory).get(workflow.id)
+    stage = next(item for item in detail.stages if item.stage.value == "inspection")
+    assert stage.status.value == "succeeded"
     await _close(client, database, tmdb, pansou)
 
 
@@ -797,6 +816,7 @@ async def test_dependency_failure_is_a_batch_failure_without_results(tmp_path):
 
     assert response.json() == {
         "batch_id": accepted.json()["batch_id"],
+        "workflow_id": None,
         "status": "failed",
         "submitted_count": 1,
         "completed_count": 0,
@@ -884,6 +904,118 @@ async def test_dependency_failed_event_carries_fallback_error_code(tmp_path):
 
 
 @pytest.mark.integration
+async def test_inspection_batch_syncs_workflow_stage_and_response(tmp_path):
+    fake = FakeInspectionClient(
+        {_magnet("a"): _result("a" * 40, InspectionStatus.VERIFIED, total_size=11)}
+    )
+    app, client, database, tmdb, pansou, _crypto, _magnets = await _make_app(
+        tmp_path, client=fake
+    )
+    workflow = await WorkflowService(database.session_factory).create(
+        WorkflowCreateRequest(media_type=MediaType.MOVIE, tmdb_id=12345)
+    )
+    await WorkflowService(database.session_factory).record_discovery(
+        workflow.id, WorkflowDiscoveryRequest(resource_id="res_a")
+    )
+
+    accepted = await client.post(
+        "/api/v1/resources/inspect",
+        json={"resource_ids": ["res_a"], "workflow_id": workflow.id},
+    )
+    assert accepted.status_code == 202
+    assert accepted.json()["workflow_id"] == workflow.id
+    assert accepted.json()["status"] == "queued"
+
+    assert await app.state.inspection_worker.run_once()
+    completed = await client.get(
+        f"/api/v1/resources/inspect/{accepted.json()['batch_id']}"
+    )
+    assert completed.json()["status"] == "completed"
+    assert completed.json()["workflow_id"] == workflow.id
+
+    detail = await WorkflowService(database.session_factory).get(workflow.id)
+    stage = next(item for item in detail.stages if item.stage.value == "inspection")
+    assert stage.child_type == "inspection_batch"
+    assert stage.child_id == accepted.json()["batch_id"]
+    assert stage.status.value == "succeeded"
+    notices = await client.get("/api/v1/notifications")
+    assert any(
+        item["event_code"] == "workflow.stage_changed"
+        and item["action_id"] == workflow.id
+        for item in notices.json()["items"]
+    )
+    await _close(client, database, tmdb, pansou)
+
+
+@pytest.mark.integration
+async def test_inspection_partial_result_marks_workflow_stage_failed(tmp_path):
+    fake = FakeInspectionClient(
+        {
+            _magnet("a"): _result(
+                "a" * 40, InspectionStatus.VERIFIED, total_size=11
+            ),
+            _magnet("b"): _result(
+                "b" * 40,
+                InspectionStatus.UNSUPPORTED,
+                error_code="existing_torrent",
+            ),
+        }
+    )
+    app, client, database, tmdb, pansou, _crypto, _magnets = await _make_app(
+        tmp_path, client=fake
+    )
+    workflow = await WorkflowService(database.session_factory).create(
+        WorkflowCreateRequest(media_type=MediaType.MOVIE, tmdb_id=12345)
+    )
+    await WorkflowService(database.session_factory).record_discovery(
+        workflow.id, WorkflowDiscoveryRequest(resource_id="res_a")
+    )
+    accepted = await client.post(
+        "/api/v1/resources/inspect",
+        json={
+            "resource_ids": ["res_a", "res_b"],
+            "workflow_id": workflow.id,
+        },
+    )
+    assert accepted.status_code == 202
+    assert await app.state.inspection_worker.run_once()
+
+    detail = await WorkflowService(database.session_factory).get(workflow.id)
+    stage = next(item for item in detail.stages if item.stage.value == "inspection")
+    assert stage.status.value == "failed"
+    assert stage.reason == "inspection_partial"
+    assert stage.error_code == "inspection_partial"
+    await _close(client, database, tmdb, pansou)
+
+
+@pytest.mark.integration
+async def test_inspection_dependency_failure_marks_workflow_stage_failed(tmp_path):
+    fake = FakeInspectionClient({}, dependency_error=True)
+    app, client, database, tmdb, pansou, _crypto, _magnets = await _make_app(
+        tmp_path, client=fake
+    )
+    workflow = await WorkflowService(database.session_factory).create(
+        WorkflowCreateRequest(media_type=MediaType.MOVIE, tmdb_id=12345)
+    )
+    await WorkflowService(database.session_factory).record_discovery(
+        workflow.id, WorkflowDiscoveryRequest(resource_id="res_a")
+    )
+    accepted = await client.post(
+        "/api/v1/resources/inspect",
+        json={"resource_ids": ["res_a"], "workflow_id": workflow.id},
+    )
+    assert accepted.status_code == 202
+    assert await app.state.inspection_worker.run_once()
+
+    detail = await WorkflowService(database.session_factory).get(workflow.id)
+    stage = next(item for item in detail.stages if item.stage.value == "inspection")
+    assert stage.status.value == "failed"
+    assert stage.reason == "inspection_dependency_failed"
+    assert stage.error_code == "inspection_dependency_failed"
+    await _close(client, database, tmdb, pansou)
+
+
+@pytest.mark.integration
 async def test_lifespan_runs_the_single_worker_and_closes_the_qb_client(tmp_path):
     fake = FakeInspectionClient({})
     app, client, database, tmdb, pansou, _crypto, _magnets = await _make_app(
@@ -902,6 +1034,7 @@ async def test_lifespan_runs_the_single_worker_and_closes_the_qb_client(tmp_path
             "library_scan_supported": True,
             "organization_plan_enabled": False,
             "organization_execution_enabled": False,
+            "organization_high_risk_action_threshold": 10,
             "organization_write_enabled": False,
             "organization_write_contract_verified": False,
             "permanent_delete_enabled": False,
