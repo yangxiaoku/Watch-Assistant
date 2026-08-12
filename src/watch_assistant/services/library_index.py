@@ -895,12 +895,38 @@ class LibraryIndexService:
                         .order_by(LibraryScanRun.snapshot_revision.desc())
                     )
                     previous_id = None if previous is None else previous.id
-                    latest_revision = await session.scalar(
-                        select(func.max(LibraryScanRun.snapshot_revision)).where(
-                            LibraryScanRun.library_id == self._library_id
+                    # M17: revision 分配改原子 UPDATE 子查询。SQLite 写锁串行化
+                    # 并发事务,第二个事务的 MAX+1 看到第一个已提交值,跨进程不再
+                    # 撞 uq_library_scan_run_revision -> IntegrityError 误标 FAILED。
+                    await session.execute(
+                        update(LibraryScanRun)
+                        .where(
+                            LibraryScanRun.id == run_id,
+                            LibraryScanRun.snapshot_revision.is_(None),
                         )
+                        .values(
+                            snapshot_revision=(
+                                select(
+                                    func.coalesce(
+                                        func.max(
+                                            LibraryScanRun.snapshot_revision
+                                        ),
+                                        0,
+                                    )
+                                    + 1
+                                )
+                                .where(
+                                    # revision 保持 library 全局(与唯一索引
+                                    # uq_library_scan_run_revision 列一致);
+                                    # M18 的 root 隔离在 strm_scope 新鲜度检查做。
+                                    LibraryScanRun.library_id == self._library_id
+                                )
+                                .scalar_subquery()
+                            )
+                        )
+                        .execution_options(synchronize_session=False)
                     )
-                    run.snapshot_revision = (latest_revision or 0) + 1
+                    await session.refresh(run)
                     await session.execute(
                         delete(LibraryScanDiff).where(
                             LibraryScanDiff.scan_run_id == run_id

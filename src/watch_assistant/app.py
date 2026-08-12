@@ -130,6 +130,7 @@ from watch_assistant.services.organization_directory_provisioner import (
 from watch_assistant.services.organization_history import OrganizationHistoryService
 from watch_assistant.services.organization_operations import (
     OrganizationOperationService,
+    OrganizationOperationStatus,
 )
 from watch_assistant.services.organization_plan import OrganizationPlanService
 from watch_assistant.services.organization_preview import OrganizationPreviewService
@@ -735,7 +736,13 @@ def create_app(
                                 and application.state.organization_target_root_id
                                 in plan_scope
                             ),
-                            lease_active=True,
+                            # M15: lease_active 由操作实际状态派生(仅 ORGANIZING
+                            # 才持有租约),不再硬编码 True——过期/取消/失败的操作
+                            # 不得创建目标目录,由 provisioner 门禁 fail-closed。
+                            lease_active=(
+                                summary.status
+                                is OrganizationOperationStatus.ORGANIZING
+                            ),
                         )
                     finally:
                         await _close_client(client)

@@ -173,13 +173,16 @@
 - ✅ 已修复（`codex/m-series-fixes`）：refresh_plan 两处失效化改走 `_transition_plan` 原子 CAS；回归 `test_refresh_invalidation_is_atomic_cas_on_revision`（并发 gather 断言 revision 无覆盖丢失）
 ### M15. 手动"立即整理"硬编码 lease_active=True
 - 位置：`app.py:726` + `organization_directory_provisioner.py:70-73`；修复方向：由操作表 lease 状态派生
+- ✅ 已修复（`codex/m-series-fixes-2`）：`lease_active` 由 `summary.status is ORGANIZING` 派生，非 ORGANIZING 时 provisioner fail-closed（organization_lease_required）；回归 `test_directory_provisioner_lease_gate_fails_closed_when_not_organizing`
 ### M16. directory_dirty_worker run_forever 无异常隔离/退避 → 消费循环死亡
 - 位置：`directory_dirty_worker.py:405-414`；修复方向：try/except + 指数退避
 - ✅ 已修复（`codex/m-series-fixes`）：run_once 异常隔离 + 指数退避（上限 30s，与 organization_worker 一致）；回归 `test_run_forever_survives_run_once_exception`
 ### M17. library_index 并发完成写同 revision → IntegrityError 误标 FAILED
 - 位置：`library_index.py:161/805-809`；修复方向：CAS 分配 revision + 库级锁
+- ✅ 已修复（`codex/m-series-fixes-2`）：revision 分配改原子 UPDATE 子查询（MAX+1），SQLite 写锁串行化并发事务，跨进程不再撞唯一索引；回归 `test_concurrent_completions_allocate_distinct_revisions`（gather 两个独立 service 实例）
 ### M18. 库 root 变更后旧 root 迟到 run 抢更高 revision → 快照判非最新，库操作停摆
 - 位置：`library_index.py:886-903` + `strm_scope.py:76-84`；修复方向：latest_revision 加 root_directory_id 过滤
+- ✅ 已修复（`codex/m-series-fixes-2`）：`source_snapshot_is_current` 的 latest_revision 按 source run 的 root 过滤。revision 分配保持 library 全局（与唯一索引 `uq_library_scan_run_revision (library_id, snapshot_revision)` 一致，未改 root 作用域）；`current_snapshot_is_unique` 保持 library 全局（避免削弱跨 root 歧义检测）。回归 `test_source_snapshot_is_current_ignores_old_root_late_run`
 ### M19. empty_directory_cleanup create_plan 并发双击裸 500
 - 位置：`empty_directory_cleanup_plan.py:194-215`；修复方向：捕获 IntegrityError 回滚重查
 - ✅ 已修复（`codex/m-series-fixes`）：create_plan commit 捕获 IntegrityError → 回滚重查返回已存在计划；回归 `test_create_plan_handles_concurrent_plan_hash_conflict`

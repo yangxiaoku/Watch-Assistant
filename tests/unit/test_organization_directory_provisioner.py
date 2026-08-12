@@ -103,6 +103,36 @@ async def test_directory_provisioner_defaults_write_gate_closed():
 
 
 @pytest.mark.asyncio
+async def test_directory_provisioner_lease_gate_fails_closed_when_not_organizing():
+    """M15:手动"立即整理"不再硬编码 lease_active=True;操作非 ORGANIZING
+    时派生为 False,provisioner 必须 fail-closed 拒绝创建目录。"""
+    provisioner = _provisioner()
+    remote_calls = []
+
+    async def execute(request, *, timeout_seconds):
+        remote_calls.append((request.operation, timeout_seconds))
+        return C03WriteReceipt(WriteStatus.SUCCESS, "8000")
+
+    provisioner._transport.execute = execute
+
+    with pytest.raises(
+        OrganizationDirectoryProvisionError, match="organization_lease_required"
+    ):
+        await provisioner.ensure(
+            target_root_id="9000",
+            library_id="library-1",
+            operation_id="op-directory-test",
+            existing_directories={"": "9000"},
+            paths=("Movies",),
+            plan_confirmed=True,
+            scope_confirmed=True,
+            lease_active=False,
+        )
+
+    assert remote_calls == []
+
+
+@pytest.mark.asyncio
 async def test_directory_provisioner_forwards_confirmed_write_gate():
     provisioner = _provisioner()
     remote_calls = []

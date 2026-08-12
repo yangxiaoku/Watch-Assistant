@@ -76,6 +76,9 @@ async def source_snapshot_is_current(
     latest_revision = await session.scalar(
         select(func.max(LibraryScanRun.snapshot_revision)).where(
             LibraryScanRun.library_id == library_id,
+            # M18: 最新 revision 按 root 过滤。库 root 变更后,旧 root 迟到
+            # run 若抢更高 revision,会令新 root 快照恒判非最新导致库操作停摆。
+            LibraryScanRun.root_directory_id == source_run.root_directory_id,
             LibraryScanRun.complete.is_(True),
             LibraryScanRun.state == "completed",
         )
@@ -97,7 +100,11 @@ async def current_snapshot_is_unique(
     library_id: str,
     snapshot_revision: int,
 ) -> bool:
-    """Return false when concurrent completion produced an ambiguous revision."""
+    """Return false when concurrent completion produced an ambiguous revision.
+
+    Revision numbers are globally unique per library (unique index
+    uq_library_scan_run_revision), so the ambiguity check stays library-scoped.
+    """
 
     count = await session.scalar(
         select(func.count(LibraryScanRun.id)).where(

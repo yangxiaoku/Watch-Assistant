@@ -939,3 +939,26 @@ async def test_gateway_failure_keeps_checkpoint_and_redacts_result(tmp_path):
     for secret in (SECRET_NAME, SECRET_PATH, SECRET_PICKCODE, ROOT_ID, LIBRARY_ID):
         assert secret not in rendered
     await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_completions_allocate_distinct_revisions(tmp_path):
+    """M17:并发完成(两个独立 service 实例等价跨进程)通过原子 UPDATE
+    子查询分配不重复 revision,不再撞唯一索引 -> IntegrityError 误标 FAILED。"""
+    import asyncio
+
+    database = await _database(tmp_path)
+    gateway_a = _ReadOnlyGateway(2, page_size=1)
+    gateway_b = _ReadOnlyGateway(2, page_size=1)
+    service_a = _service(database, gateway_a, page_size=1)
+    service_b = _service(database, gateway_b, page_size=1)
+    results = await asyncio.gather(
+        service_a.scan("m17-concurrent-a"),
+        service_b.scan("m17-concurrent-b"),
+        return_exceptions=True,
+    )
+    assert not any(isinstance(r, BaseException) for r in results), results
+    revisions = [r.snapshot_revision for r in results]
+    assert all(r is not None for r in revisions)
+    assert len(set(revisions)) == 2, f"revision 必须互不相同: {revisions}"
+    await database.engine.dispose()

@@ -11,6 +11,7 @@ from watch_assistant.library_models import (
 )
 from watch_assistant.services.strm_scope import (
     normalize_playback_url_prefix,
+    source_snapshot_is_current,
 )
 
 
@@ -160,5 +161,57 @@ async def test_duplicate_complete_snapshot_revision_fails_closed(tmp_path: Path)
             with pytest.raises(IntegrityError):
                 await session.flush()
             await session.rollback()
+    finally:
+        await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_source_snapshot_is_current_ignores_old_root_late_run(tmp_path: Path):
+    """M18:库 root 变更后,旧 root 迟到的更高 revision run 不得令新 root
+    快照被判非最新导致库操作停摆。新鲜度检查必须按 source run 的 root 过滤。"""
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'root-scope.db'}")
+    await initialize_database(database.engine)
+    try:
+        async with database.session_factory() as session:
+            session.add(
+                MediaLibrary(
+                    id="library-root",
+                    name="媒体库",
+                    root_directory_id="root-b",
+                    scope_verified=True,
+                    enabled=True,
+                )
+            )
+            await session.commit()
+            session.add_all(
+                [
+                    LibraryScanRun(
+                        id="scan-new",
+                        library_id="library-root",
+                        root_directory_id="root-b",
+                        idempotency_key="scan-new-key",
+                        state="completed",
+                        complete=True,
+                        snapshot_revision=4,
+                    ),
+                    # 旧 root 迟到的 run 拿了全局更高 revision(5)。
+                    LibraryScanRun(
+                        id="scan-old",
+                        library_id="library-root",
+                        root_directory_id="root-a",
+                        idempotency_key="scan-old-key",
+                        state="completed",
+                        complete=True,
+                        snapshot_revision=5,
+                    ),
+                ]
+            )
+            await session.commit()
+            assert await source_snapshot_is_current(
+                session,
+                library_id="library-root",
+                source_scan_run_id="scan-new",
+                source_snapshot_revision=4,
+            )
     finally:
         await database.engine.dispose()
