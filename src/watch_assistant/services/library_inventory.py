@@ -434,6 +434,54 @@ def check_inventory(
     return InventoryDecision.NOT_FOUND
 
 
+@dataclass(frozen=True, slots=True)
+class InventorySearchResult:
+    items: tuple[InventoryIdentity, ...]
+    total: int
+
+
+def search_inventory(
+    snapshot: InventorySnapshot,
+    *,
+    query: str | None = None,
+    media_type: Literal["movie", "tv", "unknown"] | None = None,
+    duplicate_only: bool = False,
+    limit: int = 50,
+    offset: int = 0,
+) -> InventorySearchResult:
+    """INV-008: 按名称/媒体类型/重复状态过滤库存,带分页。
+
+    纯函数,不读文件系统或远端;只过滤一次完整快照里的身份。
+    """
+    if limit < 1 or offset < 0:
+        raise InventoryError("invalid_inventory_search")
+    duplicate_ids = {
+        object_id
+        for group in snapshot.duplicate_groups
+        for object_id in group.object_ids
+    }
+    normalized_query = query.strip().casefold() if query else None
+    matched: list[InventoryIdentity] = []
+    for item in snapshot.files:
+        file_name = item.file.name
+        if normalized_query and normalized_query not in file_name.casefold():
+            continue
+        item_type: Literal["movie", "tv", "unknown"] = (
+            item.identity.media_type or "unknown"
+        )
+        if media_type is not None and item_type != media_type:
+            continue
+        if duplicate_only and item.file.object_id not in duplicate_ids:
+            continue
+        matched.append(item)
+    matched.sort(key=lambda item: item.file.name.casefold())
+    total = len(matched)
+    return InventorySearchResult(
+        items=tuple(matched[offset : offset + limit]),
+        total=total,
+    )
+
+
 def _episode_scope_matches(
     item: InventoryIdentity,
     *,

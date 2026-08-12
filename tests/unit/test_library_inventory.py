@@ -14,6 +14,7 @@ from watch_assistant.services.library_inventory import (
     build_snapshot,
     calculate_freshness,
     check_inventory,
+    search_inventory,
 )
 
 NOW = datetime(2026, 7, 29, 4, 0, tzinfo=UTC)
@@ -258,3 +259,50 @@ def test_duplicate_object_ids_are_rejected():
             captured_at=NOW,
             now=NOW,
         )
+
+
+def test_search_inventory_filters_by_query_kind_duplicate_and_paginates():
+    """INV-008: 名称/媒体类型/重复状态过滤 + 分页。"""
+    snapshot = build_snapshot(
+        (
+            InventoryFile("one", "Movie.A.2024.1080p.mkv", media_type="movie"),
+            InventoryFile("two", "Movie.B.2024.2160p.mkv", media_type="movie", content_digest="sha-dup"),
+            InventoryFile("three", "Show.S01E01.720p.mkv", media_type="tv"),
+            InventoryFile("four", "Show.S01E02.1080p.mkv", media_type="tv", content_digest="sha-dup"),
+            InventoryFile("five", "Unknown.file.bin"),
+        ),
+        complete=True,
+        captured_at=NOW,
+        now=NOW,
+    )
+
+    all_movies = search_inventory(snapshot, media_type="movie")
+    assert all_movies.total == 2
+    assert {item.file.object_id for item in all_movies.items} == {"one", "two"}
+
+    # 名称子串(不区分大小写)
+    name_hit = search_inventory(snapshot, query="s01e")
+    assert name_hit.total == 2
+
+    # 分页
+    page_one = search_inventory(snapshot, limit=2, offset=0)
+    page_two = search_inventory(snapshot, limit=2, offset=2)
+    assert page_one.total == 5
+    assert len(page_one.items) == 2
+    assert len(page_two.items) == 2
+    assert {item.file.object_id for item in page_one.items} != {
+        item.file.object_id for item in page_two.items
+    }
+
+    # 重复过滤:两个 movie 共享 MediaIdentity(同名 Movie 2024)构成重复组
+    duplicate_only = search_inventory(snapshot, duplicate_only=True)
+    assert duplicate_only.total >= 2
+    assert {item.file.object_id for item in duplicate_only.items} == {"two", "four"}
+
+
+def test_search_inventory_rejects_invalid_pagination():
+    snapshot = build_snapshot((), complete=True, captured_at=NOW, now=NOW)
+    with pytest.raises(InventoryError, match="invalid_inventory_search"):
+        search_inventory(snapshot, limit=0)
+    with pytest.raises(InventoryError, match="invalid_inventory_search"):
+        search_inventory(snapshot, offset=-1)

@@ -226,6 +226,47 @@ async def test_inventory_reports_freshness_and_only_exact_identity_blocks(tmp_pa
 
 
 @pytest.mark.integration
+async def test_inventory_search_filters_and_paginates(tmp_path):
+    """INV-008: 库存搜索端点按名称/类型过滤并返回分页,不泄露敏感字段。"""
+    client, database = await _client(tmp_path)
+    login = await client.post("/api/v1/auth/login", json={"password": WEB_PASSWORD})
+    assert login.status_code == 200
+
+    all_files = await client.get("/api/v1/libraries/library-one/inventory/search")
+    assert all_files.status_code == 200
+    body = all_files.json()
+    assert body["total"] >= 1
+    assert body["freshness"]["status"] == "fresh"
+    assert body["items"]
+    assert "path" not in all_files.text
+    assert "digest" not in all_files.text
+
+    empty = await client.get(
+        "/api/v1/libraries/library-one/inventory/search",
+        params={"query": "definitely-not-present"},
+    )
+    assert empty.status_code == 200
+    assert empty.json()["total"] == 0
+
+    by_type = await client.get(
+        "/api/v1/libraries/library-one/inventory/search",
+        params={"media_type": "unknown"},
+    )
+    assert by_type.status_code == 200
+    assert isinstance(by_type.json()["total"], int)
+
+    paged = await client.get(
+        "/api/v1/libraries/library-one/inventory/search",
+        params={"page": 1, "page_size": 1},
+    )
+    assert paged.status_code == 200
+    assert len(paged.json()["items"]) <= 1
+
+    await client.aclose()
+    await database.engine.dispose()
+
+
+@pytest.mark.integration
 async def test_inventory_rejects_requeued_scan_even_when_created_earlier(tmp_path):
     client, database = await _client(tmp_path)
     login = await client.post("/api/v1/auth/login", json={"password": WEB_PASSWORD})

@@ -588,6 +588,34 @@ class LibraryInventoryResponse(BaseModel):
     duplicate_groups: list[InventoryDuplicateGroupResponse] = Field(default_factory=list)
 
 
+class InventorySearchItemResponse(BaseModel):
+    """INV-008: 一条库存文件搜索结果,不含敏感路径/摘要细节。"""
+
+    model_config = {"extra": "forbid"}
+
+    object_id: str
+    name: str
+    size_bytes: int | None = Field(default=None, ge=0)
+    media_type: Literal["movie", "tv", "unknown"] = "unknown"
+    tmdb_id: int | None = Field(default=None, ge=1)
+    season: int | None = Field(default=None, ge=0)
+    episode_start: int | None = Field(default=None, ge=0)
+    episode_end: int | None = Field(default=None, ge=0)
+    in_duplicate_group: bool = False
+
+
+class InventorySearchResponse(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    library_id: str
+    scan_run_id: str | None = None
+    snapshot_revision: int | None = Field(default=None, ge=0)
+    freshness: InventoryFreshnessResponse
+    total: int = Field(ge=0)
+    offset: int = Field(ge=0)
+    items: list[InventorySearchItemResponse] = Field(default_factory=list)
+
+
 class InventoryCheckResponse(BaseModel):
     model_config = {"extra": "forbid"}
 

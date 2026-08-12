@@ -39,6 +39,8 @@ from watch_assistant.schemas import (
     InventoryFreshnessResponse,
     InventoryIdentityPatch,
     InventoryIdentityResponse,
+    InventorySearchItemResponse,
+    InventorySearchResponse,
     LibraryDeleteRequest,
     LibraryDeleteResponse,
     LibraryInventoryResponse,
@@ -67,6 +69,7 @@ from watch_assistant.services.library_inventory import (
     build_snapshot,
     calculate_freshness,
     check_inventory,
+    search_inventory,
 )
 from watch_assistant.services.library_scan_operations import (
     LibraryScanOperationError,
@@ -1247,6 +1250,69 @@ async def get_library_inventory(
         run,
         snapshot,
         duplicate_limit=duplicate_limit,
+    )
+
+
+@router.get(
+    "/libraries/{library_id}/inventory/search",
+    response_model=InventorySearchResponse,
+)
+async def search_library_inventory(
+    library_id: str,
+    request: Request,
+    context: AuthDependency,
+    query: Annotated[str | None, Query(max_length=200)] = None,
+    media_type: Literal["movie", "tv", "unknown"] | None = Query(default=None),
+    duplicate_only: bool = False,
+    page: Annotated[int, Query(ge=1, le=10_000)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=100)] = 50,
+) -> InventorySearchResponse:
+    """INV-008: 按名称/媒体类型/重复状态搜索库存文件,带分页。
+
+    只读纯函数过滤,不访问文件系统或远端;敏感路径/摘要/直链不返回。
+    """
+    if not _allowed(context, library_id):
+        raise HTTPException(status_code=404, detail="library_not_found")
+    async with request.app.state.database.session_factory() as session:
+        library = await session.get(MediaLibrary, library_id)
+        if library is None:
+            raise HTTPException(status_code=404, detail="library_not_found")
+        run = await _latest_scan_any(session, library_id)
+        snapshot = await _inventory_snapshot(session, run, library=library)
+    result = search_inventory(
+        snapshot,
+        query=query,
+        media_type=media_type,
+        duplicate_only=duplicate_only,
+        limit=page_size,
+        offset=(page - 1) * page_size,
+    )
+    duplicate_ids = {
+        object_id
+        for group in snapshot.duplicate_groups
+        for object_id in group.object_ids
+    }
+    return InventorySearchResponse(
+        library_id=library_id,
+        scan_run_id=None if run is None else run.id,
+        snapshot_revision=None if run is None else run.snapshot_revision,
+        freshness=_freshness_response(snapshot),
+        total=result.total,
+        offset=(page - 1) * page_size,
+        items=[
+            InventorySearchItemResponse(
+                object_id=item.file.object_id,
+                name=item.file.name,
+                size_bytes=item.file.size_bytes,
+                media_type=item.identity.media_type or "unknown",
+                tmdb_id=item.identity.tmdb_id,
+                season=item.identity.season,
+                episode_start=item.identity.episode_start,
+                episode_end=item.identity.episode_end,
+                in_duplicate_group=item.file.object_id in duplicate_ids,
+            )
+            for item in result.items
+        ],
     )
 
 
