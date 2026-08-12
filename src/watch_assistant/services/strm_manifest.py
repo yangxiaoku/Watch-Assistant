@@ -546,6 +546,13 @@ class StrmManifestService:
                         await _rollback_entry(session, mutations)
                         if _is_lease_error(error):
                             raise
+                        if str(error) == "uncertain":
+                            # 提交结果不确定(补偿失败):不得折叠成普通 failed,
+                            # 否则运维无法区分"可安全重试"与"必须先核对远端"。
+                            # 以明确错误码向上传播,让调用方标为 UNCERTAIN。
+                            raise StrmManifestError(
+                                "strm_operation_uncertain"
+                            ) from None
                         failed += 1
                         break
                     except OSError:
@@ -814,6 +821,13 @@ class StrmManifestService:
                         await _rollback_entry(session, mutations)
                         if _is_lease_error(error):
                             raise
+                        if str(error) == "uncertain":
+                            # 提交结果不确定(补偿失败):不得折叠成普通 failed,
+                            # 否则运维无法区分"可安全重试"与"必须先核对远端"。
+                            # 以明确错误码向上传播,让调用方标为 UNCERTAIN。
+                            raise StrmManifestError(
+                                "strm_operation_uncertain"
+                            ) from None
                         failed += 1
                         break
                     except OSError:

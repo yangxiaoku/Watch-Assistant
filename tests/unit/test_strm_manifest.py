@@ -2181,3 +2181,36 @@ async def test_incremental_same_name_replacement_retires_before_generating(tmp_p
             assert new_entry is not None
     finally:
         await database.engine.dispose()
+
+
+async def test_generation_propagates_uncertain_commit_as_uncertain(
+    tmp_path: Path, monkeypatch
+):
+    """提交结果不确定(补偿也失败)必须传播为 strm_operation_uncertain,
+    不得折叠成普通 failed 计数——否则运维无法区分"可安全重试"与
+    "必须先核对远端"。"""
+    database = await _database(tmp_path)
+    try:
+        service = StrmManifestService(database.session_factory)
+
+        async def uncertain_commit(*_args, **_kwargs):
+            raise strm_manifest_module.StrmManifestError("uncertain")
+
+        monkeypatch.setattr(
+            strm_manifest_module.StrmManifestService,
+            "_commit_entry",
+            uncertain_commit,
+        )
+
+        with pytest.raises(
+            strm_manifest_module.StrmManifestError,
+            match="strm_operation_uncertain",
+        ):
+            await service.generate(
+                "library-strm",
+                source_scan_run_id="scan-strm",
+                output_root=tmp_path / "output",
+                playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+            )
+    finally:
+        await database.engine.dispose()
