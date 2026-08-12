@@ -636,6 +636,14 @@ def _required_scope(request: Request) -> str:
         return "settings:read" if method in {"GET", "HEAD"} else "settings:write"
     if path.startswith(("/api/v1/search", "/api/v1/movie")):
         return "library:read"
+    if (
+        path.startswith("/api/v1/libraries/")
+        and path.endswith("/configuration")
+        and method not in {"GET", "HEAD"}
+    ):
+        # 库配置(声明生产根)是设置管理,路由声明 require_scope("settings:write"),
+        # 全局映射必须与之对齐,否则 bearer token 需同时满足两个 scope。
+        return "settings:write"
     if path.startswith(("/api/v1/libraries", "/api/v1/media")):
         # 写方法(扫描/取消/计划/配置/身份绑定)必须要求 library:write,
         # 不得与只读共用 library:read,否则只读 agent token 可触发全库扫描。

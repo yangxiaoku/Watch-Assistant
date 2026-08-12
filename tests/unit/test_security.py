@@ -433,3 +433,39 @@ async def test_all_registered_api_routes_have_an_explicit_scope(tmp_path):
 
     await database.engine.dispose()
     assert not unmapped, "以下路由未映射 scope:\n" + "\n".join(sorted(unmapped))
+
+
+def test_require_scope_routes_are_consistent_with_global_mapping():
+    """路由级 require_scope 声明必须与 security._required_scope 全局映射一致:
+    若不一致,bearer token 需同时满足两个 scope(过严),或声明形同虚设(过宽)。"""
+    # (method, path, 路由声明 scope) —— 从 api/library.py / strm.py / backups.py 的
+    # require_scope 用法提取
+    cases = [
+        # library.py
+        ("PUT", "/api/v1/libraries/library-1/configuration", "settings:write"),
+        ("POST", "/api/v1/libraries/library-1/scan", "library:write"),
+        ("POST", "/api/v1/libraries/library-1/scans/scan-1/cancel", "library:write"),
+        ("POST", "/api/v1/libraries/library-1/objects/100/delete", "organize:execute"),
+        ("POST", "/api/v1/resources/inspect", "review:write"),
+        # backups.py
+        ("POST", "/api/v1/backups", "backup:write"),
+        ("GET", "/api/v1/backups", "backup:read"),
+        ("GET", "/api/v1/backups/backup-1/restore-preview", "backup:read"),
+        # strm.py (require_scope 声明)
+        ("GET", "/api/v1/libraries/library-1/strm-manifest", "strm:read"),
+        ("POST", "/api/v1/strm-operations/op-1/cancel", "strm:write"),
+        ("POST", "/api/v1/strm-operations/op-1/resume", "strm:write"),
+        ("GET", "/api/v1/libraries/library-1/strm-operations", "strm:read"),
+        ("POST", "/api/v1/libraries/library-1/strm-generation", "strm:write"),
+        ("POST", "/api/v1/libraries/library-1/strm-incremental", "strm:write"),
+        ("POST", "/api/v1/strm-cleanup-plans/plan-1/apply", "strm:write"),
+        ("GET", "/api/v1/strm-cleanup-plans/plan-1", "strm:read"),
+        ("POST", "/api/v1/libraries/library-1/strm-cleanup", "strm:write"),
+        ("GET", "/api/v1/strm/play/manifest-1", "strm:read"),
+    ]
+    for method, path, declared in cases:
+        actual = _required_scope(_scope_request(method, path))
+        assert actual == declared, (
+            f"{method} {path}: require_scope({declared!r}) 与 "
+            f"_required_scope({actual!r}) 不一致"
+        )
