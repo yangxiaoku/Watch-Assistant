@@ -138,8 +138,16 @@ async def test_cache_warmer_stops_without_waiting_until_midnight(tmp_path):
         retry_delays=(),
     )
 
-    await asyncio.wait_for(warmer.run_forever(stop_event), timeout=1)
+    # 修复前无断言:即使 run_forever 在 stop_event 设置后仍等待到午夜,
+    # 该测试也会在 timeout=1 时被 asyncio.wait_for 打断而"通过"。
+    import time as time_module
 
+    started = time_module.monotonic()
+    await asyncio.wait_for(warmer.run_forever(stop_event), timeout=1)
+    elapsed = time_module.monotonic() - started
+
+    assert stop_event.is_set(), "首次 warm 后 stop_event 应已设置"
+    assert elapsed < 1.0, "stop_event 设置后 run_forever 应立即退出,不得等午夜"
     await database.engine.dispose()
 
 

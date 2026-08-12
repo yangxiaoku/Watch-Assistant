@@ -249,7 +249,9 @@ async def test_login_accepts_qbittorrent_5_empty_204_response():
     )
     client = QbittorrentClient(BASE_URL, "user", "password")
 
+    # 修复前无断言:ensure_available() 返回 False 或 app/version 未调用也通过。
     await client.ensure_available()
+    assert client._logged_in is True, "204 登录后应标记为已登录"
     await client.aclose()
 
 

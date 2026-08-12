@@ -420,3 +420,69 @@ async def test_delete_route_requires_verified_write_and_delete_contracts(tmp_pat
     assert response.status_code == 503
     assert response.json()["detail"] == "organization_write_unverified"
     await database.engine.dispose()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("state_overrides", "expected_detail"),
+    [
+        (
+            {
+                "organization_write_enabled": False,
+                "organization_write_contract_verified": True,
+                "permanent_delete_enabled": True,
+                "permanent_delete_contract_verified": True,
+            },
+            "organization_write_disabled",
+        ),
+        (
+            {
+                "organization_write_enabled": True,
+                "organization_write_contract_verified": False,
+                "permanent_delete_enabled": True,
+                "permanent_delete_contract_verified": True,
+            },
+            "organization_write_unverified",
+        ),
+        (
+            {
+                "organization_write_enabled": True,
+                "organization_write_contract_verified": True,
+                "permanent_delete_enabled": False,
+                "permanent_delete_contract_verified": True,
+            },
+            "permanent_delete_disabled",
+        ),
+        (
+            {
+                "organization_write_enabled": True,
+                "organization_write_contract_verified": True,
+                "permanent_delete_enabled": True,
+                "permanent_delete_contract_verified": False,
+            },
+            "permanent_delete_unverified",
+        ),
+    ],
+)
+async def test_delete_route_fails_closed_on_each_gate(
+    tmp_path, state_overrides, expected_detail
+):
+    """永久删除端点 4 道开关任一未满足都必须 503 + 对应 detail。"""
+    app, database = await _client(tmp_path)
+    for key, value in state_overrides.items():
+        setattr(app.state, key, value)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://app.test"
+    ) as client:
+        login = await client.post(
+            "/api/v1/auth/login", json={"password": WEB_PASSWORD}
+        )
+        headers = {"X-CSRF-Token": login.json()["csrf_token"]}
+        response = await client.post(
+            "/api/v1/libraries/production/objects/100/delete",
+            headers=headers,
+            json={"expected_name": "fixture.wav", "confirm": True},
+        )
+    assert response.status_code == 503, response.text
+    assert response.json()["detail"] == expected_detail
+    await database.engine.dispose()

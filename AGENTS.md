@@ -118,7 +118,13 @@ pwsh ./scripts/backup_db.ps1
 ```
 
 备份前确认实际运行模式：Compose 使用 `scripts/backup_db.ps1`（容器 `/data/backups`，
-保留 7 份）；systemd SQLite 的备份路径和运行命令待确认，不能套用 Compose 脚本。
+保留 7 份）；systemd SQLite 使用 `scripts/systemd_backup.py`（详见 `README.md` 的
+systemd 部署章节）：
+`/opt/watch-assistant/venv/bin/python /opt/watch-assistant/current/scripts/systemd_backup.py create \
+  --database /var/lib/watch-assistant/watch-assistant.db \
+  --output-dir /var/lib/watch-assistant/backups \
+  --version-file /opt/watch-assistant/current/VERSION`
+恢复默认只预览（`restore-preview`），不会被发布脚本隐式执行。
 
 ## 强制安全规则
 

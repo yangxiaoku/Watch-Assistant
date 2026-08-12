@@ -328,3 +328,70 @@ async def test_unconfirmed_filename_identity_remains_advisory(tmp_path):
     assert result.allowed is True
     assert result.code == "inventory_review_required"
     await database.engine.dispose()
+
+
+async def test_missing_resource_fails_closed(tmp_path):
+    """不存在的 resource id 必须 fail-closed(resource_not_found)。"""
+    database = await _database(tmp_path)
+
+    result = await InventoryPushGuard(database.session_factory).check(
+        "resource-missing"
+    )
+
+    assert result.allowed is False
+    assert result.code == "resource_not_found"
+    await database.engine.dispose()
+
+
+async def test_non_magnet_resource_is_not_applicable(tmp_path):
+    """非 magnet 资源(如 share)不适用库存推送,应放行而非 fail。"""
+    database = await _database(tmp_path)
+    crypto = SecretCrypto(Fernet.generate_key().decode("ascii"))
+    async with database.session_factory() as session:
+        session.add(
+            Resource(
+                id="resource-share",
+                kind="115_share",
+                canonical_key="share:abc",
+                encrypted_url=crypto.encrypt("https://115.com/s/abc"),
+                name="share-item",
+                source="test",
+                captured_at=datetime.now(UTC),
+                expires_at=datetime.now(UTC) + timedelta(days=1),
+            )
+        )
+        await session.commit()
+
+    result = await InventoryPushGuard(database.session_factory).check(
+        "resource-share"
+    )
+
+    assert result.allowed is True
+    assert result.code == "not_applicable"
+    await database.engine.dispose()
+
+
+async def test_unverified_scope_blocks_push(tmp_path):
+    """库 scope_verified=False 时必须 fail-closed,不得推送。"""
+    database = await _database(tmp_path)
+    crypto = SecretCrypto(Fernet.generate_key().decode("ascii"))
+    await _resource(database, crypto)
+    async with database.session_factory() as session:
+        session.add(
+            MediaLibrary(
+                id="library-unverified",
+                name="未验证库",
+                root_directory_id="root-unverified",
+                enabled=True,
+                scope_verified=False,
+            )
+        )
+        await session.commit()
+
+    result = await InventoryPushGuard(database.session_factory).check(
+        "resource-guard"
+    )
+
+    assert result.allowed is False
+    assert result.code == "inventory_scope_unconfigured"
+    await database.engine.dispose()

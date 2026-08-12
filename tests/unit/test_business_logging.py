@@ -72,13 +72,14 @@ async def test_business_log_write_failure_is_swallowed(tmp_path: Path, monkeypat
         raise OSError("storage unavailable")
 
     monkeypatch.setattr(service.log_store, "append", fail_append)
-    await service.log_event("search.completed", fields={"count": 1})
+    # 修复前无断言:append 抛 OSError 必须被吞掉,不得让 log_event 上抛。
+    await service.log_event("search.completed", fields={"count": 1})  # 不应抛异常
 
     class FailingLogger:
         async def log_event(self, *_args, **_kwargs):
             raise RuntimeError("must not escape")
 
-    await emit_event(FailingLogger(), "search.failed")
+    await emit_event(FailingLogger(), "search.failed")  # 不应抛异常
     await database.engine.dispose()
 
 

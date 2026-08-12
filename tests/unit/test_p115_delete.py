@@ -431,3 +431,156 @@ async def test_find_new_entries_skips_entry_without_size_fails_closed():
         timeout_seconds=5.0,
     )
     assert found is None
+
+
+async def _delete_fixture(tmp_path: Path, *, library_enabled=True, scope_verified=True, name="gone.mkv"):
+    """构造一个可删除的库/扫描/条目,返回 (database, service)。"""
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'delete-fc.db'}")
+    await initialize_database(database.engine)
+    async with database.session_factory() as session:
+        session.add(
+            MediaLibrary(
+                id="library-fc",
+                name="FC",
+                root_directory_id="7000",
+                scope_verified=scope_verified,
+                enabled=library_enabled,
+                revision=1,
+            )
+        )
+        await session.flush()
+        session.add(
+            LibraryScanRun(
+                id="scan-fc",
+                library_id="library-fc",
+                root_directory_id="7000",
+                idempotency_key="fc-key",
+                state="completed",
+                complete=True,
+                snapshot_revision=1,
+            )
+        )
+        await session.flush()
+        session.add(
+            LibraryScanEntry(
+                scan_run_id="scan-fc",
+                object_type="file",
+                object_id="100",
+                parent_id="7000",
+                name=name,
+                path=name,
+                is_directory=False,
+                size_bytes=100,
+            )
+        )
+        await session.commit()
+
+    async def call_executor(method, payload, *, timeout_seconds):
+        return method(payload, async_=False)
+
+    return database, P115DeleteService(
+        database.session_factory,
+        _CookieProvider(),
+        client_factory=lambda _cookie: _Client(),
+        call_executor=call_executor,
+    )
+
+
+class _EmptyCookieProvider:
+    def load(self):
+        return None
+
+
+async def test_delete_confirmation_required_fails_closed(tmp_path: Path):
+    """未确认的永久删除必须 fail-closed,不得执行任何写操作。"""
+    database, service = await _delete_fixture(tmp_path)
+    try:
+        result = await service.delete(
+            "library-fc", "100", expected_name="gone.mkv", confirmed=False
+        )
+        assert result.status is DeleteStatus.FAILED
+        assert result.error_code == "confirmation_required"
+    finally:
+        await database.engine.dispose()
+
+
+async def test_delete_precondition_changed_fails_closed_when_name_mismatch(tmp_path: Path):
+    """条目名称与预期不符(远端已变化)必须 fail-closed。"""
+    database, service = await _delete_fixture(tmp_path, name="renamed.mkv")
+    try:
+        result = await service.delete(
+            "library-fc", "100", expected_name="gone.mkv", confirmed=True
+        )
+        assert result.status is DeleteStatus.FAILED
+        assert result.error_code == "delete_precondition_changed"
+    finally:
+        await database.engine.dispose()
+
+
+async def test_delete_scope_unverified_fails_closed(tmp_path: Path):
+    """库未 scope_verified 时必须 fail-closed,不得执行删除。"""
+    database, service = await _delete_fixture(tmp_path, scope_verified=False)
+    try:
+        result = await service.delete(
+            "library-fc", "100", expected_name="gone.mkv", confirmed=True
+        )
+        assert result.status is DeleteStatus.FAILED
+        assert result.error_code == "delete_precondition_changed"
+    finally:
+        await database.engine.dispose()
+
+
+async def test_delete_credential_unavailable_fails_closed(tmp_path: Path):
+    """115 cookie 缺失时必须 fail-closed,不得执行删除。"""
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'delete-cred.db'}")
+    await initialize_database(database.engine)
+    try:
+        async with database.session_factory() as session:
+            session.add(
+                MediaLibrary(
+                    id="library-cred",
+                    name="CRED",
+                    root_directory_id="7000",
+                    scope_verified=True,
+                    enabled=True,
+                    revision=1,
+                )
+            )
+            await session.flush()
+            session.add(
+                LibraryScanRun(
+                    id="scan-cred",
+                    library_id="library-cred",
+                    root_directory_id="7000",
+                    idempotency_key="cred-key",
+                    state="completed",
+                    complete=True,
+                    snapshot_revision=1,
+                )
+            )
+            await session.flush()
+            session.add(
+                LibraryScanEntry(
+                    scan_run_id="scan-cred",
+                    object_type="file",
+                    object_id="100",
+                    parent_id="7000",
+                    name="gone.mkv",
+                    path="gone.mkv",
+                    is_directory=False,
+                    size_bytes=100,
+                )
+            )
+            await session.commit()
+        service = P115DeleteService(
+            database.session_factory,
+            _EmptyCookieProvider(),
+            client_factory=lambda _cookie: _Client(),
+        )
+        result = await service.delete(
+            "library-cred", "100", expected_name="gone.mkv", confirmed=True
+        )
+        assert result.status is DeleteStatus.FAILED
+        assert result.error_code == "credential_unavailable"
+    finally:
+        await database.engine.dispose()
