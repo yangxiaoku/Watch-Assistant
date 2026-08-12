@@ -86,6 +86,14 @@
 
 - **claim_next 过期 ORGANIZING 转换改原子 CAS**（`organization_operations.py`）：修复并发双 worker 重复发 workflow 事件
 - **_record_history 批量查出已存在条目**（`organization_operations.py`）：消除完成事务内 N+1
+- **阶段 C scope 治理**（`security.py` + 测试）：
+  - 全量枚举 app 所有 `/api/v1` 路由，断言 `_required_scope` 映射完整且 scope 合法（不落入 fail-closed 兜底）——把手工前缀表变成测试锁定契约，未来新增路由漏配立即失败
+  - `/libraries/{id}/configuration` 写方法全局映射对齐路由声明 `settings:write`（修复 bearer 需同时满足两 scope 的不一致）
+  - require_scope 声明一致性测试覆盖 library/strm/backups
+
+## 观察：verify.sh 分 shard 偶发 flaky
+
+`scripts/verify.sh` 把集成测试按文件分 shard 并行（`max_parallel=4`）运行时，偶发出现单个 shard 失败，但直接全量跑 `tests/integration`（442 通过）和串行重跑均通过。疑为多个 pytest 进程并发时的资源竞争（共享 `__pycache__`/临时文件）。**非本次改动引入**（scope 改动不涉及测试并发），建议后续排查是否为既有 flaky 或 verify.sh 分 shard 机制问题。
 
 ## 待评估（依赖 transport 能力）
 
