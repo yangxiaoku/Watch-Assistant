@@ -7,7 +7,10 @@ from cryptography.fernet import Fernet
 from pwdlib import PasswordHash
 from sqlalchemy import select, text
 
-from tests.unit.factories import make_security_manager
+from tests.unit.factories import (
+    disable_notification_quiet_hours,
+    make_security_manager,
+)
 from watch_assistant.adapters.pansou import PanSouClient
 from watch_assistant.adapters.qbittorrent import (
     InspectionStatus,
@@ -911,6 +914,7 @@ async def test_inspection_batch_syncs_workflow_stage_and_response(tmp_path):
     app, client, database, tmdb, pansou, _crypto, _magnets = await _make_app(
         tmp_path, client=fake
     )
+    await disable_notification_quiet_hours(database)
     workflow = await WorkflowService(database.session_factory).create(
         WorkflowCreateRequest(media_type=MediaType.MOVIE, tmdb_id=12345)
     )

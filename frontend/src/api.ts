@@ -61,6 +61,10 @@ import type {
   P115LoginDeviceListResponse,
   P115QrcodeCreateResponse,
   P115QrcodeStatusResponse,
+  SubscriptionCheckResponse,
+  SubscriptionCreateRequest,
+  SubscriptionResourceObservationResponse,
+  SubscriptionResponse,
 } from "./types";
 import { describeUiError, type UiErrorAction } from "./errorCatalog";
 import { safeLocalizedCopy } from "./uiSafety";
@@ -597,6 +601,54 @@ export class ApiClient {
       method: "POST",
       body: JSON.stringify(reason ? { reason } : {}),
     });
+  }
+
+  async subscriptions(): Promise<SubscriptionResponse[]> {
+    return this.request<SubscriptionResponse[]>("/api/v1/subscriptions");
+  }
+
+  async createSubscription(
+    payload: SubscriptionCreateRequest,
+  ): Promise<SubscriptionResponse> {
+    return this.request<SubscriptionResponse>("/api/v1/subscriptions", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async subscriptionCheck(id: string): Promise<SubscriptionCheckResponse> {
+    return this.request<SubscriptionCheckResponse>(
+      `/api/v1/subscriptions/${encodeURIComponent(id)}/check`,
+      { method: "POST" },
+    );
+  }
+
+  async subscriptionPause(
+    id: string,
+    revision: number,
+  ): Promise<SubscriptionResponse> {
+    return this.request<SubscriptionResponse>(
+      `/api/v1/subscriptions/${encodeURIComponent(id)}/pause`,
+      { method: "POST", body: JSON.stringify({ revision }) },
+    );
+  }
+
+  async subscriptionResume(
+    id: string,
+    revision: number,
+  ): Promise<SubscriptionResponse> {
+    return this.request<SubscriptionResponse>(
+      `/api/v1/subscriptions/${encodeURIComponent(id)}/resume`,
+      { method: "POST", body: JSON.stringify({ revision }) },
+    );
+  }
+
+  async subscriptionObservations(
+    id: string,
+  ): Promise<SubscriptionResourceObservationResponse[]> {
+    return this.request<SubscriptionResourceObservationResponse[]>(
+      `/api/v1/subscriptions/${encodeURIComponent(id)}/observations`,
+    );
   }
 
   async notifications(unreadOnly = false, limit = 50): Promise<NotificationListResponse> {

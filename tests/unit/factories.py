@@ -74,3 +74,23 @@ def make_security_manager(
             cookie_secure=False,
         )
     return _PermissiveTestManager()
+
+
+async def disable_notification_quiet_hours(database) -> None:
+    """测试助手:关闭默认 23:00-08:00 通知静默时段,使断言通知的测试
+    不依赖运行时刻。直接在测试库 seed 偏好,避免走认证。"""
+    from watch_assistant.models import NotificationPreference
+
+    async with database.session_factory() as session:
+        preference = await session.get(NotificationPreference, "default")
+        if preference is None:
+            preference = NotificationPreference(
+                id="default",
+                enabled=True,
+                revision=1,
+                quiet_hours_enabled=False,
+            )
+            session.add(preference)
+        else:
+            preference.quiet_hours_enabled = False
+        await session.commit()

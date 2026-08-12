@@ -6,6 +6,7 @@ import pytest
 from cryptography.fernet import Fernet
 from pwdlib import PasswordHash
 
+from tests.unit.factories import disable_notification_quiet_hours
 from watch_assistant.app import create_app
 from watch_assistant.crypto import SecretCrypto
 from watch_assistant.db import create_database, initialize_database
@@ -43,6 +44,7 @@ class _FakeClient:
 async def test_organization_preview_api_is_local_idempotent_and_redacted(tmp_path: Path):
     database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'preview-api.db'}")
     await initialize_database(database.engine)
+    await disable_notification_quiet_hours(database)
     async with database.session_factory() as session:
         session.add(
             MediaLibrary(

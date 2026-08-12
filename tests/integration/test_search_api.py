@@ -9,7 +9,10 @@ import respx
 from cryptography.fernet import Fernet
 from sqlalchemy import select
 
-from tests.unit.factories import make_security_manager
+from tests.unit.factories import (
+    disable_notification_quiet_hours,
+    make_security_manager,
+)
 from watch_assistant.adapters.pansou import PanSouClient
 from watch_assistant.adapters.tmdb import TmdbClient
 from watch_assistant.app import create_app
@@ -240,6 +243,7 @@ async def test_resource_search_persists_workflow_discovery_link(tmp_path):
         return_value=httpx.Response(200, json=_pansou_response())
     )
     client, database, tmdb, pansou = await _make_client(tmp_path)
+    await disable_notification_quiet_hours(database)
     workflow = await WorkflowService(database.session_factory).create(
         WorkflowCreateRequest(media_type=MediaType.MOVIE, tmdb_id=12345)
     )

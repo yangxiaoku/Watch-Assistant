@@ -79,7 +79,7 @@ export function navigateToMedia(mediaType: "movie" | "tv", tmdbId: number, seaso
   }, "", path);
 }
 
-export type BrowseView = "home" | "movies" | "tv" | "popular" | "favorites" | "history" | "search" | "settings" | "organization" | "library" | "workflows" | "notifications" | "logs";
+export type BrowseView = "home" | "movies" | "tv" | "popular" | "favorites" | "history" | "search" | "settings" | "organization" | "library" | "workflows" | "notifications" | "subscriptions" | "logs";
 export type CatalogView = "movies" | "tv" | "popular" | "search";
 export type CatalogSort = "popular" | "rating" | "release";
 export interface CatalogRoute {
@@ -109,6 +109,7 @@ const VIEW_PATHS: Record<Exclude<BrowseView, "search">, string> = {
   library: "/library",
   workflows: "/workflows",
   notifications: "/notifications",
+  subscriptions: "/subscriptions",
   logs: "/logs",
 };
 
@@ -171,6 +172,7 @@ export function extractBrowseView(path: string): BrowseView {
   if (pathname === "/library") return "library";
   if (pathname === "/workflows") return "workflows";
   if (pathname === "/notifications") return "notifications";
+  if (pathname === "/subscriptions") return "subscriptions";
   if (pathname === "/logs") return "logs";
   return "home";
 }

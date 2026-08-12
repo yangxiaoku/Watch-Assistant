@@ -959,3 +959,58 @@ export interface PwaDevice {
   revoked_at: string | null;
   status: "active" | "revoked";
 }
+export type SubscriptionMode = "remind" | "confirm" | "auto";
+export type SubscriptionStatus =
+  | "active"
+  | "matched"
+  | "paused"
+  | "cancelled"
+  | "completed"
+  | "no_match";
+
+export interface SubscriptionResponse {
+  id: string;
+  tmdb_id: number;
+  media_type: "movie" | "tv";
+  season_number: number | null;
+  episode_start: number | null;
+  episode_end: number | null;
+  mode: SubscriptionMode;
+  status: SubscriptionStatus;
+  quality_profile_id: string | null;
+  next_check_at: string | null;
+  last_checked_at: string | null;
+  last_match_count: number;
+  last_error_code: string | null;
+  revision: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SubscriptionCreateRequest {
+  tmdb_id: number;
+  media_type: "movie" | "tv";
+  season_number?: number | null;
+  episode_start?: number | null;
+  episode_end?: number | null;
+  mode?: SubscriptionMode;
+}
+
+export interface SubscriptionMutationRequest {
+  revision: number;
+}
+
+export interface SubscriptionCheckResponse {
+  subscription_id: string;
+  status: SubscriptionStatus;
+  next_check_at: string | null;
+  new_matches: number;
+}
+
+export interface SubscriptionResourceObservationResponse {
+  resource_id: string;
+  captured_at: string;
+  source: string;
+  name: string;
+  size_bytes: number | null;
+}

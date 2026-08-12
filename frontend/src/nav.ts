@@ -1,4 +1,4 @@
-import { Bell, ClipboardCheck, Clock3, Database, FileText, Film, Flame, Heart, Home, ListTodo, Search, Settings, Tv } from "@lucide/vue";
+import { Bell, ClipboardCheck, Clock3, Database, FileText, Film, Flame, Heart, Home, ListTodo, Radio, Search, Settings, Tv } from "@lucide/vue";
 import type { Component } from "vue";
 import type { BrowseView } from "./router";
 
@@ -38,6 +38,7 @@ export const NAV_GROUPS: NavGroup[] = [
       { view: "library", label: "媒体库", icon: Database },
       { view: "organization", label: "整理", icon: ClipboardCheck },
       { view: "workflows", label: "任务中心", icon: ListTodo },
+      { view: "subscriptions", label: "订阅", icon: Radio },
       { view: "notifications", label: "通知", icon: Bell },
       { view: "logs", label: "日志", icon: FileText },
       { view: "settings", label: "设置", icon: Settings },
