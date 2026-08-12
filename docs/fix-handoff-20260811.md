@@ -151,6 +151,7 @@
 - 位置：`db.py:126-142` + `models.py:339-343`；修复方向：终态批次的 resource 纳入保护
 ### M6. `stop_organization` 未捕获 SettingsConflict → 500
 - 位置：`api/settings.py:536-541`；修复方向：捕获 → 409 settings_conflict
+- ✅ 已修复（`codex/m-series-fixes`）：包 try/except SettingsConflict → 409 settings_conflict；回归 `test_stop_organization_catches_settings_conflict_not_500`
 ### M7. `export_logs` 无界循环拉全量日志
 - 位置：`api/settings.py:596-657`；修复方向：加总记录数上限或流式
 ### M8. `webhook_dns_failed`（retryable）映射 422 应 5xx
@@ -163,20 +164,25 @@
 - 位置：`subscriptions.py:138-142/165-170`；修复方向：补产生路径或从终态集合移除
 ### M12. organization retry 不检查 active operation → IntegrityError 裸 500
 - 位置：`organization_operations.py:1326-1368`；修复方向：retry 前检查；捕获映射 operation_plan_conflict
+- ✅ 已修复（`codex/m-series-fixes`）：retry 前 `_plan_has_active_operation` 检查 → operation_plan_conflict；回归 `test_retry_rejects_when_plan_has_active_operation`
 ### M13. ORGANIZING 取消不校验 lease token
 - 位置：`organization_operations.py:1296-1307`；修复方向：CAS 置位或校验 token
+- ✅ 已修复（`codex/m-series-fixes`）：ORGANIZING 取消改原子条件 UPDATE（status+revision CAS），冲突返回 operation_revision_changed/not_cancellable；回归 `test_organizing_cancel_is_atomic_cas_on_revision`
 ### M14. refresh_plan 失效化非 CAS → revision 累加丢失
 - 位置：`organization_plan.py:518-521`；修复方向：统一走 _transition_plan CAS
+- ✅ 已修复（`codex/m-series-fixes`）：refresh_plan 两处失效化改走 `_transition_plan` 原子 CAS；回归 `test_refresh_invalidation_is_atomic_cas_on_revision`（并发 gather 断言 revision 无覆盖丢失）
 ### M15. 手动"立即整理"硬编码 lease_active=True
 - 位置：`app.py:726` + `organization_directory_provisioner.py:70-73`；修复方向：由操作表 lease 状态派生
 ### M16. directory_dirty_worker run_forever 无异常隔离/退避 → 消费循环死亡
 - 位置：`directory_dirty_worker.py:405-414`；修复方向：try/except + 指数退避
+- ✅ 已修复（`codex/m-series-fixes`）：run_once 异常隔离 + 指数退避（上限 30s，与 organization_worker 一致）；回归 `test_run_forever_survives_run_once_exception`
 ### M17. library_index 并发完成写同 revision → IntegrityError 误标 FAILED
 - 位置：`library_index.py:161/805-809`；修复方向：CAS 分配 revision + 库级锁
 ### M18. 库 root 变更后旧 root 迟到 run 抢更高 revision → 快照判非最新，库操作停摆
 - 位置：`library_index.py:886-903` + `strm_scope.py:76-84`；修复方向：latest_revision 加 root_directory_id 过滤
 ### M19. empty_directory_cleanup create_plan 并发双击裸 500
 - 位置：`empty_directory_cleanup_plan.py:194-215`；修复方向：捕获 IntegrityError 回滚重查
+- ✅ 已修复（`codex/m-series-fixes`）：create_plan commit 捕获 IntegrityError → 回滚重查返回已存在计划；回归 `test_create_plan_handles_concurrent_plan_hash_conflict`
 ### M20. p115_login_devices add_device 非原子 → 双活跃设备
 - 位置：`p115_login_devices.py:68-75`；修复方向：复用 mark_active 单条 UPDATE 模式
 ### M21. 回收站 10,000 条静默截断无完整性标记 → 永久删除恒 UNCERTAIN / SUCCESS 失真
@@ -185,6 +191,7 @@
 - 位置：`directory_dirty_worker.py:300-301/351-353`；修复方向：dirty_lease_lost 分支先 _fail_operation
 ### M23. recycle 动作不入 history
 - 位置：`organization_operations.py:1239-1240`；修复方向：recycle action 也写 history
+- ⏭ 暂缓（2026-08-12）：计划 `actions_json` 的 move action **不携带** `replacement_object_id`（`_execution_payload` 只校验不入 payload），回收是 executor 运行时按 `step.replacement_object_id` 的决定；`_record_history` 只读 `actions_json`，无法感知回收。需把 executor 运行时回收决策穿过完成事务（改动大，危及 N+1 优化过的历史完成事务）。保持现状，历史记录主 move，回收以 `plan_prerequisites_changed`/执行证据间接可见。
 ### M24. 前端：sw.js 离线 API 回退返回 index.html 被当成功空响应
 - 位置：`frontend/public/sw.js:47-51` + `api.ts:735-736`；修复方向：API 路径无缓存返回 503/JSON 错误；ApiClient 校验 Content-Type
 ### M25. 前端：SettingsView P115 二维码轮询卸载竞态

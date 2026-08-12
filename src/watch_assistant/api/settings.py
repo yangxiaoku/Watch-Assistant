@@ -577,12 +577,16 @@ async def stop_organization(
     auth: Annotated[AuthContext, Depends(require_api_auth)],
 ) -> OrganizationScheduleActionResponse:
     current = await settings.get_organization()
-    await settings.update_organization(
-        OrganizationSettingsPatch(revision=current.revision, schedule_enabled=False),
-        actor_type="agent" if auth.via_bearer else "web",
-        actor_id=auth.identity,
-        request_id=request.headers.get("X-Request-ID"),
-    )
+    try:
+        await settings.update_organization(
+            OrganizationSettingsPatch(revision=current.revision, schedule_enabled=False),
+            actor_type="agent" if auth.via_bearer else "web",
+            actor_id=auth.identity,
+            request_id=request.headers.get("X-Request-ID"),
+        )
+    except SettingsConflict as exc:
+        # M6: 并行更新导致 revision 过期时返回 409,而非未捕获 500。
+        raise HTTPException(status_code=409, detail="settings_conflict") from exc
     controller = getattr(request.app.state, "organization_scheduler", None)
     if controller is not None:
         controller.stop_pending()

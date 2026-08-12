@@ -663,3 +663,41 @@ async def test_dirty_worker_consumes_without_scan_when_linkage_is_disabled(tmp_p
         assert event.status == "consumed"
         assert event.error_code == "strm_linkage_disabled"
     await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_run_forever_survives_run_once_exception(tmp_path):
+    """M16:run_once 抛异常时 run_forever 不得让消费循环死亡;
+    异常被隔离,循环继续等待直至 stop_event。"""
+    import asyncio
+
+    database = await _database(tmp_path)
+    index = _FakeIndex()
+    strm = _FakeStrm()
+    worker = DirectoryDirtyWorker(
+        database.session_factory,
+        strm,
+        lambda library_id, root_id: index,
+        output_root=tmp_path / "strm",
+        playback_url_prefix="http://127.0.0.1:8115/api/v1/strm/play",
+        cleanup_enabled=False,
+        poll_interval_seconds=0.01,
+    )
+    calls = {"count": 0}
+
+    async def _explode():
+        calls["count"] += 1
+        raise RuntimeError("transient-failure")
+
+    worker.run_once = _explode  # type: ignore[method-assign]
+    stop = asyncio.Event()
+
+    async def _stop_later():
+        await asyncio.sleep(0.05)
+        stop.set()
+
+    task = asyncio.create_task(worker.run_forever(stop))
+    await asyncio.gather(_stop_later(), task)
+    assert task.exception() is None, "异常不得逃逸出 run_forever"
+    assert calls["count"] >= 1
+    await database.engine.dispose()

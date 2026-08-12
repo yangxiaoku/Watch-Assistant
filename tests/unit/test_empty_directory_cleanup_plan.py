@@ -499,6 +499,60 @@ async def test_empty_directory_plan_blocks_missing_system_created_evidence(tmp_p
 
 
 @pytest.mark.asyncio
+async def test_create_plan_handles_concurrent_plan_hash_conflict(tmp_path):
+    """M19:并发双击时,SELECT 看不到另一事务刚插入的计划,INSERT 撞
+    plan_hash 唯一约束 -> IntegrityError。必须回滚重查返回已存在计划,而非 500。"""
+    database = await _database(tmp_path)
+    try:
+        await _seed(database)
+        service = EmptyDirectoryCleanupPlanService(database.session_factory)
+        first = await service.create_plan(
+            library_id="library-1",
+            source_scan_run_id="run-1",
+            protected_directory_ids=("200",),
+        )
+
+        class _RaceSession:
+            def __init__(self, real):
+                self._real = real
+                self._first_scalar = True
+
+            async def scalar(self, statement):
+                # 只对 existing 计划检查(TOCTOU)假装没看到,其他查询真实执行。
+                if (
+                    self._first_scalar
+                    and "empty_directory_cleanup_plans" in str(statement)
+                    and "plan_hash" in str(statement)
+                ):
+                    self._first_scalar = False
+                    return None
+                return await self._real.scalar(statement)
+
+            def __getattr__(self, name):
+                return getattr(self._real, name)
+
+            async def __aenter__(self):
+                await self._real.__aenter__()
+                return self
+
+            async def __aexit__(self, *args):
+                return await self._real.__aexit__(*args)
+
+        def _race_factory():
+            return _RaceSession(database.session_factory())
+
+        service._session_factory = _race_factory  # type: ignore[method-assign]
+        second = await service.create_plan(
+            library_id="library-1",
+            source_scan_run_id="run-1",
+            protected_directory_ids=("200",),
+        )
+        assert second.plan_id == first.plan_id
+    finally:
+        await database.engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_empty_directory_plan_rejects_newer_unsettled_scan(tmp_path):
     database = await _database(tmp_path)
     try:

@@ -1382,9 +1382,35 @@ class OrganizationOperationService:
             if operation.status is OrganizationOperationStatus.ORGANIZING:
                 if operation.cancel_requested:
                     return _summary(operation)
-                operation.cancel_requested = True
-                operation.updated_at = current_time
+                # M13: 原子 CAS 置位,避免读-改-写与 worker 状态转换竞争
+                # (例如并行完成/重认领后仍把 cancel_requested 写进新状态)。
+                result = await session.execute(
+                    update(OrganizationOperation)
+                    .where(
+                        OrganizationOperation.id == operation_id,
+                        OrganizationOperation.revision == expected_revision,
+                        OrganizationOperation.status
+                        == OrganizationOperationStatus.ORGANIZING,
+                    )
+                    .values(cancel_requested=True, updated_at=current_time)
+                    .execution_options(synchronize_session=False)
+                )
+                if result.rowcount != 1:
+                    await session.rollback()
+                    refreshed = await session.get(
+                        OrganizationOperation, operation_id
+                    )
+                    if refreshed is None:
+                        raise OrganizationOperationNotFound
+                    if refreshed.status is OrganizationOperationStatus.ORGANIZING:
+                        raise OrganizationOperationConflict(
+                            "operation_revision_changed"
+                        )
+                    raise OrganizationOperationStateError(
+                        "operation_is_not_cancellable"
+                    )
                 await session.commit()
+                await session.refresh(operation)
                 summary = _summary(operation)
                 await self._audit(
                     "organize.operation.cancel_requested", "整理操作已请求本地中止"
@@ -1422,6 +1448,10 @@ class OrganizationOperationService:
                 raise OrganizationOperationStateError("uncertain_requires_verification")
             if operation.status is not OrganizationOperationStatus.FAILED:
                 raise OrganizationOperationStateError("operation_is_not_retryable")
+            if await _plan_has_active_operation(session, operation.plan_id):
+                # M12: 同计划已有活跃(planned/organizing/uncertain)操作时重试
+                # 会制造双活跃 -> IntegrityError 裸 500,先拒绝并返回稳定冲突码。
+                raise OrganizationOperationConflict("operation_plan_conflict")
             result = await session.execute(
                 update(OrganizationOperation)
                 .where(

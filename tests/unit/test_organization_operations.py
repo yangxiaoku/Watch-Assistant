@@ -946,6 +946,60 @@ async def test_uncertain_rejects_retry_and_error_codes_are_allowlisted(tmp_path)
 
 
 @pytest.mark.asyncio
+async def test_retry_rejects_when_plan_has_active_operation(tmp_path):
+    """M12:重试 FAILED 操作前,若同计划已有活跃操作,必须返回
+    operation_plan_conflict,而非让两个操作同时活跃导致 IntegrityError 500。"""
+    database = await _database(tmp_path)
+    service = OrganizationOperationService(database.session_factory)
+    plan = await _plan(database)
+    failed = await service.create(plan.plan_id, idempotency_key="m12-failed")
+    lease = await service.claim(failed.operation_id, expected_revision=1)
+    failed_summary = await service.finish(
+        failed.operation_id,
+        expected_revision=lease.revision,
+        lease_token=lease.lease_token,
+        status=OrganizationOperationStatus.FAILED,
+        error_code="capability_unverified",
+        source_directory_id="source-dir",
+        target_directory_id="target-dir",
+    )
+    # FAILED 已释放计划,再创建一个活跃(PLANNED)操作。
+    await service.create(plan.plan_id, idempotency_key="m12-active")
+    with pytest.raises(OrganizationOperationConflict, match="operation_plan_conflict"):
+        await service.retry(
+            failed.operation_id, expected_revision=failed_summary.revision
+        )
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_organizing_cancel_is_atomic_cas_on_revision(tmp_path):
+    """M13:ORGANIZING 取消必须原子 CAS。并发下 revision 已变化时,
+    取消不得把 cancel_requested 写进新状态,应返回 operation_revision_changed。"""
+    from sqlalchemy import update
+
+    database = await _database(tmp_path)
+    service = OrganizationOperationService(database.session_factory)
+    operation = await _operation(database, key="m13-cancel")
+    await service.claim(operation.operation_id, expected_revision=1)
+
+    # 模拟 worker 在取消请求间并发推进了 revision(例如并行完成重认领)。
+    async with database.session_factory() as session:
+        await session.execute(
+            update(OrganizationOperation)
+            .where(OrganizationOperation.id == operation.operation_id)
+            .values(revision=2, status="organizing")
+        )
+        await session.commit()
+
+    with pytest.raises(OrganizationOperationConflict, match="operation_revision_changed"):
+        await service.cancel(
+            operation.operation_id, expected_revision=1
+        )
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_reconciliation_does_not_commit_after_plan_revision_change(tmp_path):
     database = await _database(tmp_path)
     service = OrganizationOperationService(database.session_factory)

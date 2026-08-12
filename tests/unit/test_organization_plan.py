@@ -1490,6 +1490,50 @@ async def test_refresh_invalidates_corrupt_source_snapshot_without_leaking_json(
 
 
 @pytest.mark.asyncio
+async def test_refresh_invalidation_is_atomic_cas_on_revision(tmp_path):
+    """M14:refresh_plan 失效化走原子 CAS。并发刷新时 revision 不允许
+    覆盖丢失——每次成功失效化恰好 +1,竞争失败的返回 stale_revision。"""
+    import asyncio
+
+    from sqlalchemy import select
+
+    from watch_assistant.library_models import OrganizationPlan as _PlanRow
+
+    database = await _database(tmp_path)
+    service = OrganizationPlanService(database.session_factory)
+    plan = await service.create_plan(
+        library_id=LIBRARY_ID, scan_run_id=SCAN_ID, items=(_item(),)
+    )
+    async with database.session_factory() as session:
+        stored = await session.get(_PlanRow, plan.plan_id)
+        assert stored is not None
+        stored.source_snapshot_json = "{broken-json"
+        await session.commit()
+        initial_revision = stored.revision
+
+    results = await asyncio.gather(
+        *(service.refresh_plan(plan.plan_id) for _ in range(4)),
+        return_exceptions=True,
+    )
+    successes = [r for r in results if not isinstance(r, BaseException)]
+    conflicts = [
+        r
+        for r in results
+        if isinstance(r, OrganizationPlanError) and str(r) == "stale_revision"
+    ]
+    assert successes, "至少一次刷新应成功失效化"
+    assert len(successes) + len(conflicts) == 4
+
+    async with database.session_factory() as session:
+        row = await session.scalar(
+            select(_PlanRow).where(_PlanRow.id == plan.plan_id)
+        )
+        assert row is not None
+        assert row.revision == initial_revision + len(successes)
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_public_and_error_outputs_are_redacted_and_migration_is_idempotent(
     tmp_path,
 ):

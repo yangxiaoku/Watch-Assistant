@@ -292,10 +292,18 @@ class OrganizationPlanService:
                 raise OrganizationPlanError("plan_not_found")
             stored_source_snapshot = _load_source_snapshot(plan.source_snapshot_json)
             if stored_source_snapshot is None:
-                plan.status = OrganizationPlanStatus.INVALIDATED.value
-                plan.revision += 1
-                await session.commit()
-                return await self._view_for_session(session, plan)
+                # M14: 失效化走 _transition_plan 原子 CAS,避免读-改-写
+                # 并发下 revision 累加丢失。
+                return await self._transition_plan(
+                    plan_id,
+                    expected_revision=plan.revision,
+                    target=OrganizationPlanStatus.INVALIDATED,
+                    allowed=(
+                        OrganizationPlanStatus.NEEDS_REVIEW,
+                        OrganizationPlanStatus.PLANNED,
+                        OrganizationPlanStatus.IGNORED,
+                    ),
+                )
             if plan.status == OrganizationPlanStatus.IGNORED.value:
                 return await self._view_for_session(session, plan)
             stale = current_time >= _utc(plan.expires_at)
@@ -396,9 +404,16 @@ class OrganizationPlanService:
             ):
                 stale = True
             if stale:
-                plan.status = OrganizationPlanStatus.INVALIDATED.value
-                plan.revision += 1
-                await session.commit()
+                # M14: 失效化走原子 CAS,避免并发刷新时 revision 累加丢失。
+                return await self._transition_plan(
+                    plan_id,
+                    expected_revision=plan.revision,
+                    target=OrganizationPlanStatus.INVALIDATED,
+                    allowed=(
+                        OrganizationPlanStatus.NEEDS_REVIEW,
+                        OrganizationPlanStatus.PLANNED,
+                    ),
+                )
             return await self._view_for_session(session, plan)
 
     async def ignore_plan(

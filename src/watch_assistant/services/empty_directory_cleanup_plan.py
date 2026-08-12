@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select, update
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from watch_assistant.library_models import (
@@ -213,7 +213,20 @@ class EmptyDirectoryCleanupPlanService:
                 plan_hash=plan_hash,
             )
             session.add(plan)
-            await session.commit()
+            try:
+                await session.commit()
+            except IntegrityError:
+                # M19: 并发双击同时 SELECT 到不存在再 INSERT,plan_hash 唯一
+                # 约束会抛 IntegrityError -> 500;回滚后重查返回已存在计划。
+                await session.rollback()
+                concurrent = await session.scalar(
+                    select(EmptyDirectoryCleanupPlan).where(
+                        EmptyDirectoryCleanupPlan.plan_hash == plan_hash
+                    )
+                )
+                if concurrent is None:
+                    raise
+                return _view(concurrent)
             await session.refresh(plan)
             return _view(plan)
 

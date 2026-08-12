@@ -420,8 +420,27 @@ class DirectoryDirtyWorker:
 
     async def run_forever(self, stop_event: asyncio.Event | None = None) -> None:
         stop = stop_event or self._stop
+        # M16: 连续异常时指数退避(上限 30s,成功复位),避免 DB 锁定等故障
+        # 下 run_once 抛异常导致消费循环永久死亡或满速热循环刷爆日志。
+        backoff = 0.0
         while not stop.is_set():
-            claimed = await self.run_once()
+            if backoff > 0:
+                try:
+                    await asyncio.wait_for(stop.wait(), timeout=backoff)
+                except TimeoutError:
+                    pass
+                if stop.is_set():
+                    break
+                backoff = 0.0
+            try:
+                claimed = await self.run_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - worker loop must stay alive
+                del exc
+                backoff = min(30.0, (backoff or 1.0) * 2)
+                continue
+            backoff = 0.0
             if claimed:
                 continue
             try:

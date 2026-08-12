@@ -1,11 +1,14 @@
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pytest
 from cryptography.fernet import Fernet
+from fastapi import HTTPException
 from pwdlib import PasswordHash
 
+from watch_assistant.api.settings import stop_organization
 from watch_assistant.app import create_app
 from watch_assistant.crypto import SecretCrypto
 from watch_assistant.db import create_database, initialize_database
@@ -17,6 +20,7 @@ from watch_assistant.schemas import (
     RemoteStatus,
 )
 from watch_assistant.security import SecurityManager
+from watch_assistant.services.settings import SettingsConflict
 from watch_assistant.services.tasks import TaskService
 
 WEB_PASSWORD = "settings-web-password"
@@ -683,6 +687,35 @@ async def test_organization_manual_run_is_independent_from_schedule_and_stop_cle
         await tmdb.aclose()
         await pansou.aclose()
         await database.engine.dispose()
+
+
+async def test_stop_organization_catches_settings_conflict_not_500():
+    """M6:stop_organization 的 update_organization 遇到 SettingsConflict
+    必须返回 409 settings_conflict,而非未捕获异常 500。"""
+    class _Controller:
+        def stop_pending(self):
+            self.stopped = True
+
+    controller = _Controller()
+    request = SimpleNamespace(
+        app=SimpleNamespace(state=SimpleNamespace(organization_scheduler=controller)),
+        headers={"X-Request-ID": "m6-test"},
+    )
+    async def _get_organization():
+        return SimpleNamespace(revision=3, schedule_enabled=True)
+
+    def _update_organization(*a, **k):
+        raise SettingsConflict("settings_conflict")
+
+    settings = SimpleNamespace(
+        get_organization=_get_organization,
+        update_organization=_update_organization,
+    )
+    auth = SimpleNamespace(via_bearer=False, identity="web")
+    with pytest.raises(HTTPException) as error:
+        await stop_organization(request, settings, auth)
+    assert error.value.status_code == 409
+    assert error.value.detail == "settings_conflict"
 
 
 @pytest.mark.integration
