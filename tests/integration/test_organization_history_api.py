@@ -124,7 +124,8 @@ async def _client(tmp_path: Path):
                 name="history-scope",
                 token_digest=hashlib.sha256(agent_token.encode()).hexdigest(),
                 token_prefix=agent_token[:16],
-                scopes_json=json.dumps(["system:read"]),
+                # 组织历史含目标路径等敏感详情,读权限已收敛到 organize:plan。
+                scopes_json=json.dumps(["organize:plan"]),
                 library_ids_json=json.dumps(["library-allowed"]),
                 expires_at=now + timedelta(hours=1),
                 created_at=now,

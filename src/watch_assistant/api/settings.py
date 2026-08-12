@@ -455,20 +455,12 @@ async def patch_organization(
         elif isinstance(value, str):
             requested_directory_ids.add(value)
     if requested_directory_ids:
+        # 已配置 root:所有目录必须落在 root/已浏览集合内,防止越权目录注入。
+        # root 未配置时(首次配置/独立清理配置)没有核对基准,目录的合法性与
+        # 归属由运行期的写契约/扫描证据门禁兜底,此处不阻断合法配置。
         if isinstance(configured_root_id, str) and configured_root_id:
-            # 已配置 root:所有目录必须落在 root/已浏览集合内,防止越权目录。
             allowed = {configured_root_id, *browsed_directory_ids}
             if not requested_directory_ids.issubset(allowed):
-                raise HTTPException(status_code=403, detail="p115_directory_out_of_scope")
-        else:
-            # 目标根未配置:target_directory_id 是根配置的来源,允许首次设置;
-            # 但 source/push 没有 root 可核对,必须 fail-closed 拒绝,不得
-            # 静默放行(唯一兜底只剩运行期写契约)。
-            requested_target = patch_values.get("target_directory_id")
-            non_target = requested_directory_ids - (
-                {requested_target} if isinstance(requested_target, str) else set()
-            )
-            if non_target:
                 raise HTTPException(status_code=403, detail="p115_directory_out_of_scope")
         patch_values = patch.model_dump(exclude_unset=True)
         sources = patch_values.get("source_directory_ids")

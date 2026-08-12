@@ -736,41 +736,53 @@ async def test_log_export_respects_limit(tmp_path):
 
 
 @pytest.mark.integration
-async def test_organization_directory_ids_fail_closed_without_configured_root(tmp_path):
-    """M 加固:目标根未配置时,source/push 目录 ID 必须 fail-closed 拒绝;
-    target_directory_id 是根配置的来源,允许首次设置(否则永远无法配置)。"""
+async def test_organization_directory_ids_fail_closed_when_root_configured(tmp_path):
+    """M 加固:目标根已配置时,目录 ID 必须落在 root/已浏览集合内,防越权注入;
+    root 未配置时(首次/独立清理配置)不阻断合法配置。"""
     app, client, database, tmdb, pansou = await _app(tmp_path)
     try:
-        # 未配置 organization_target_root_id
-        app.state.organization_target_root_id = None
+        # 已配置 root + 已浏览集合:source/push 越权目录被拒绝
+        app.state.organization_target_root_id = "100"
+        app.state.p115_browsed_directory_ids = {"100", "200"}
         login = await client.post("/api/v1/auth/login", json={"password": WEB_PASSWORD})
         headers = {"X-CSRF-Token": login.json()["csrf_token"]}
         current = await client.get("/api/v1/settings/organization")
 
-        # source/push 无 root 可核对 → 拒绝
-        for field, value in (
-            ("source_directory_ids", ["200"]),
-            ("push_directory_id", "300"),
-        ):
-            rejected = await client.patch(
-                "/api/v1/settings/organization",
-                json={"revision": current.json()["revision"], field: value},
-                headers=headers,
-            )
-            assert rejected.status_code == 403, (field, rejected.text)
-            assert rejected.json()["detail"] == "p115_directory_out_of_scope", field
+        rejected = await client.patch(
+            "/api/v1/settings/organization",
+            json={
+                "revision": current.json()["revision"],
+                "push_directory_id": "300",
+            },
+            headers=headers,
+        )
+        assert rejected.status_code == 403, rejected.text
+        assert rejected.json()["detail"] == "p115_directory_out_of_scope"
 
-        # target_directory_id 是根配置来源,root 未配置时允许首次设置
         accepted = await client.patch(
             "/api/v1/settings/organization",
             json={
                 "revision": current.json()["revision"],
-                "target_directory_id": "100",
+                "push_directory_id": "200",
             },
             headers=headers,
         )
         assert accepted.status_code == 200
-        assert accepted.json()["target_directory_id"] == "100"
+        assert accepted.json()["push_directory_id"] == "200"
+
+        # root 未配置时(独立清理/首次配置):不阻断合法目录配置
+        app.state.organization_target_root_id = None
+        app.state.p115_browsed_directory_ids = set()
+        current = await client.get("/api/v1/settings/organization")
+        allowed = await client.patch(
+            "/api/v1/settings/organization",
+            json={
+                "revision": current.json()["revision"],
+                "source_directory_ids": ["500"],
+            },
+            headers=headers,
+        )
+        assert allowed.status_code == 200
     finally:
         await client.aclose()
         await tmdb.aclose()

@@ -585,6 +585,10 @@ def _required_scope(request: Request) -> str:
         # 登录/登出/会话查询走 web session(via_bearer=False 时 scope 不校验);
         # agent token 调用 auth 路由要求最小系统读权限即可。
         return "system:read"
+    if path.startswith("/api/v1/deployment/"):
+        # 部署诊断走专用 diagnostics token(require_diagnostics_auth),此处仅
+        # 确保不走 fail-closed 兜底;agent token 无专用 scope 时仍需最小读权限。
+        return "system:read"
     if path.startswith("/api/v1/tasks"):
         return "task:read" if method in {"GET", "HEAD"} else "task:write"
     if path.startswith("/api/v1/workflows"):

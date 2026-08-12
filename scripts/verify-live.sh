@@ -6,7 +6,9 @@ cd "$ROOT_DIR"
 
 # Live verification is intentionally separate from the offline gate. It needs
 # the persistent iPad cookie and the LAN host 192.168.6.236, so run it daily.
-COOKIE_PATH="${P115_COOKIE_PATH:-/c/Users/98275/.115ts-secrets/.p115-cookie}"
+# 默认指向服务器持久 iPad Cookie(与 AGENTS.md/README 一致);本机覆盖用
+# P115_COOKIE_PATH 环境变量。
+COOKIE_PATH="${P115_COOKIE_PATH:-/etc/watch-assistant/p115-cookie}"
 DIRECTORY_ID="${P115_DIRECTORY_ID:-3482085898508567892}"
 if [[ ! -f "$COOKIE_PATH" ]]; then
     echo "live verification refused: cookie file is missing" >&2
