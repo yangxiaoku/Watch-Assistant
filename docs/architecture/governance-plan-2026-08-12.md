@@ -81,3 +81,12 @@
 - 每阶段独立分支，合入 `codex/publish-main` 前跑 `scripts/verify.sh`
 - 不扩大范围：一个分支只做本阶段一件事
 - 每次提交记录在 `docs/reviews/2026-08-11-superpowers-code-review.md` 的修复进展章节
+
+## 已执行（2026-08-12）
+
+- **claim_next 过期 ORGANIZING 转换改原子 CAS**（`organization_operations.py`）：修复并发双 worker 重复发 workflow 事件
+- **_record_history 批量查出已存在条目**（`organization_operations.py`）：消除完成事务内 N+1
+
+## 待评估（依赖 transport 能力）
+
+- **`_delete_small_files` 删除前复核 size**（`organization_automation.py`）：live listing 的 `C03RemoteEntry` 不含 size 字段，transport 层未解析 115 响应的文件大小。有效实现需要 (a) 验证 115 响应 size 字段名、(b) 扩展 `C03RemoteEntry` + `_normalize_list_entry`。在当前 transport 能力下无法低成本落地，依赖后续 transport 扩展，暂记录不做。
