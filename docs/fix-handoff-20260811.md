@@ -221,7 +221,7 @@
 - **L12** `notifications.py:172-204`：通知去重 TOCTOU；`webhooks.py:261-284` publish_due 无原子认领；`workflows.py:855-866` workflow_id NULL 去重失效
   - webhook 部分 **已解决**：`_deliver` 已有原子认领（条件 UPDATE status==pending→in_flight + rowcount 检查），并发 publish_due 不会重复 POST。
   - notifications/workflow 部分 **暂缓**：需唯一约束（dedupe_key / 非 NULL workflow_id）+ 迁移，影响仅为重复通知/证据行（L 级低危），风险/收益不划算。
-- **L13** 前端：`App.vue:1061-1068` 超时后来源/缓存摘要不更新；`App.vue:1628-1629` 推送能力告警不对称；`polling.ts:30` pollUntil 默认 isDone 陷阱；B2-B5（loading 死分支、深链分页夹紧、returnToBrowse 残留、strm skipped 标签）
+- **L13** 前端：`App.vue:1061-1068` 超时后来源/缓存摘要不更新；`App.vue:1628-1629` 推送能力告警不对称；`polling.ts:30` pollUntil 默认 isDone 陷阱；B2-B5（loading 死分支、深链分页夹紧、returnToBrowse 残留、strm skipped 标签） — ✅ 已修复（`codex/l13-frontend`）：资源搜索超时后清空来源/缓存摘要（不再保留陈旧值）、补 `share&&!magnet` 对称推送告警、pollUntil 默认 isDone 改 `() => false`（遗漏者完整轮询而非静默单次）；回归 `tests/polling.spec.ts`（2 断言）。B2-B5 此前已修
 - **L14** `app.py`：后台 worker 启动失败无告警（与 M4 同源）；`organization_scheduler.py` `_manual_runs` 无界、run_forever 无异常隔离 — ✅ 部分修复（`codex/l-series-fixes`）：`_manual_runs` 设上限（32）+ run_forever 异常隔离/指数退避；回归 `test_manual_run_queue_is_capped`、`test_run_forever_survives_run_once_exception`。app.py worker 启动告警与 M4 同源，归 audit-sec 会话
 - **L15** `managed_directory_ownership.py:252-280`：_transition 无 CAS — ✅ 已修复（`codex/l-series-fixes-2`）：原子 CAS 迁移 + 并发幂等返回，回归 `test_concurrent_transitions_do_not_lose_revision`。`organization_history.py:76-87` OFFSET 分页无留存清理、`organization_executor.py:810-818` 历史 source/target 取首个成员 — **暂缓**：留存策略（按时间/条数）与多目录移动的历史归属是产品设计决策，L 级低危
 

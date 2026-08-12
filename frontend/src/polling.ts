@@ -27,7 +27,10 @@ export async function pollUntil<T>(
   const intervalMs = options.intervalMs ?? 1000;
   const maxAttempts = options.maxAttempts ?? 60;
   const isCurrent = options.isCurrent ?? (() => true);
-  const isDone = options.isDone ?? (() => true);
+  // L13: 默认 isDone 必须保守(永不立即完成)。旧默认 (() => true) 会让
+  // 遗漏 isDone 的调用方静默单次抓取即返回,把"轮询直到终态"变成"取一次
+  // 初始状态"。改为 () => false 后,遗漏者完整轮询到 maxAttempts 再超时返回。
+  const isDone = options.isDone ?? (() => false);
   let current: T;
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     if (!isCurrent()) return null;

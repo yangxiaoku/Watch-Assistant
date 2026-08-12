@@ -1031,6 +1031,10 @@ async function loadResources(
       // 服务端任务仍在后台执行:保留已加载快照,明示停止自动等待,
       // 用户可手动刷新继续查看(与整理轮询的明示模式一致)。
       resourceLoading.value = false;
+      // L13: 超时后来源/缓存摘要必须清空,不得保留上一次搜索的陈旧值。
+      searchSourceNames.value = [];
+      result.value = { ...result.value, cached: false, cache_age_seconds: null };
+      resourceSearchCached = false;
       resourceError.value = "资源搜索仍在后台执行，已停止自动等待；点击刷新可查看最新结果。";
       reportDetailMetric(requestId, "resource_timeout", "timeout", { errorCode: "resource_search_timeout", once: true });
       return;
@@ -1560,6 +1564,7 @@ onBeforeUnmount(() => {
       </template>
        <p v-if="result && !pushCapabilities.magnet && !pushCapabilities.share" class="warning-strip">115 推送当前不可用，推送按钮已禁用。</p>
        <p v-else-if="result && pushCapabilities.magnet && !pushCapabilities.share" class="warning-strip">磁力云下载可用，115 分享转存尚未验证</p>
+       <p v-else-if="result && !pushCapabilities.magnet && pushCapabilities.share" class="warning-strip">115 分享转存可用，磁力云下载尚未验证</p>
        <section v-if="result" class="detail-workspace">
          <MovieView
            :result="result"
