@@ -90,6 +90,13 @@
   - 全量枚举 app 所有 `/api/v1` 路由，断言 `_required_scope` 映射完整且 scope 合法（不落入 fail-closed 兜底）——把手工前缀表变成测试锁定契约，未来新增路由漏配立即失败
   - `/libraries/{id}/configuration` 写方法全局映射对齐路由声明 `settings:write`（修复 bearer 需同时满足两 scope 的不一致）
   - require_scope 声明一致性测试覆盖 library/strm/backups
+- **`safe_identity` 统一**（`services/identity.py`）：`_safe_identity` 在 4 个模块复制且语义漂移（organization_plan 宽松版 vs companion/isolation 严格版）。统一到严格共享版（isascii+禁空白+禁路径/URL 分隔符），消除安全边界不一致。全量单测通过。
+
+## 评估：`_as_utc` 统一已回退（重复代码 ≠ 语义一致）
+
+扫描发现 `_as_utc` 在 14 个模块重复，尝试统一到共享 `as_utc`，但回退：**不同模块对 None/时区的处理语义不同**（如 `managed_directory_ownership._as_utc(None)` 返回当前时间，而其他模块返回 None），统一成单一实现破坏 6 个测试。
+
+**教训**：重复代码统一前必须先核对语义漂移，不能只看函数名相同。`safe_identity` 之所以成功统一，是因为 4 份定义中 3 份语义一致（严格版），统一收益明确；`_as_utc` 语义差异大，保持各自实现更安全。
 
 ## 观察：verify.sh 分 shard 偶发 flaky
 
