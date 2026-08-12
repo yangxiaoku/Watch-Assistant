@@ -546,3 +546,35 @@ async def test_workflow_rejects_late_stage_and_recovers_stale_child(tmp_path):
         await tmdb.aclose()
         await pansou.aclose()
         await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_workflow_stats_aggregates_status_and_completion(tmp_path):
+    """FLOW-008: /workflows/stats 返回状态/媒体类型/时间窗口聚合与完成率。"""
+    client, database, tmdb, pansou = await _make_client(tmp_path)
+    try:
+        first = await client.post("/api/v1/workflows", json={"media_type": "movie"})
+        assert first.status_code == 201
+        second = await client.post("/api/v1/workflows", json={"media_type": "tv"})
+        assert second.status_code == 201
+
+        stats = await client.get("/api/v1/workflows/stats")
+        assert stats.status_code == 200
+        body = stats.json()
+        assert body["total"] >= 2
+        assert body["by_status"]["in_progress"] >= 2
+        assert body["by_media_type"]["movie"] >= 1
+        assert body["by_media_type"]["tv"] >= 1
+        assert body["recent_created_24h"] >= 2
+        assert body["recent_created_7d"] >= 2
+        assert body["active"] >= 2
+        assert body["completed"] >= 0
+        assert 0 <= body["completion_rate"] <= 100
+        # 不泄露敏感字段
+        assert "correlation_id" not in stats.text
+        assert "magnet:?" not in stats.text
+    finally:
+        await client.aclose()
+        await tmdb.aclose()
+        await pansou.aclose()
+        await database.engine.dispose()

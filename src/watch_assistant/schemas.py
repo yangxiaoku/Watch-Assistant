@@ -1889,6 +1889,23 @@ class WorkflowListResponse(BaseModel):
     total: int
 
 
+class WorkflowStatsResponse(BaseModel):
+    """FLOW-008: 顶层 workflow 聚合统计,不含任何敏感链接。"""
+
+    model_config = {"extra": "forbid"}
+
+    total: int = Field(ge=0)
+    by_status: dict[str, int] = Field(default_factory=dict)
+    by_media_type: dict[str, int] = Field(default_factory=dict)
+    recent_created_24h: int = Field(ge=0)
+    recent_created_7d: int = Field(ge=0)
+    active: int = Field(ge=0)
+    completed: int = Field(ge=0)
+    failed: int = Field(ge=0)
+    cancelled: int = Field(ge=0)
+    completion_rate: float = Field(ge=0, le=100)
+
+
 class WorkflowEvidenceResponse(BaseModel):
     model_config = {"from_attributes": True}
 

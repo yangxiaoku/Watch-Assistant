@@ -40,6 +40,7 @@ from watch_assistant.schemas import (
     WorkflowStagePatch,
     WorkflowStageResponse,
     WorkflowStageStatus,
+    WorkflowStatsResponse,
     WorkflowStatus,
 )
 from watch_assistant.services.observability import EventLogger, emit_event
@@ -392,6 +393,82 @@ class WorkflowService:
             page=page,
             page_size=page_size,
             total=int(total or 0),
+        )
+
+    async def stats(self) -> WorkflowStatsResponse:
+        """FLOW-008: 顶层 workflow 聚合统计(状态/媒体类型/时间窗口/完成率)。"""
+        now = datetime.now(UTC)
+        day_ago = now - timedelta(hours=24)
+        week_ago = now - timedelta(days=7)
+        async with self._session_factory() as session:
+            total = int(
+                await session.scalar(
+                    select(func.count()).select_from(Workflow)
+                )
+                or 0
+            )
+            by_status: dict[str, int] = {}
+            for status in WorkflowStatus:
+                count = int(
+                    await session.scalar(
+                        select(func.count())
+                        .select_from(Workflow)
+                        .where(Workflow.status == status)
+                    )
+                    or 0
+                )
+                if count:
+                    by_status[status.value] = count
+            by_media_type: dict[str, int] = {}
+            media_rows = (
+                await session.execute(
+                    select(Workflow.media_type, func.count()).group_by(
+                        Workflow.media_type
+                    )
+                )
+            ).all()
+            for media_type, count in media_rows:
+                key = media_type.value if media_type is not None else "unknown"
+                by_media_type[key] = int(count)
+            recent_24h = int(
+                await session.scalar(
+                    select(func.count())
+                    .select_from(Workflow)
+                    .where(Workflow.created_at >= day_ago)
+                )
+                or 0
+            )
+            recent_7d = int(
+                await session.scalar(
+                    select(func.count())
+                    .select_from(Workflow)
+                    .where(Workflow.created_at >= week_ago)
+                )
+                or 0
+            )
+        completed = by_status.get(WorkflowStatus.COMPLETED.value, 0)
+        return WorkflowStatsResponse(
+            total=total,
+            by_status=by_status,
+            by_media_type=by_media_type,
+            recent_created_24h=recent_24h,
+            recent_created_7d=recent_7d,
+            active=sum(
+                by_status.get(status.value, 0)
+                for status in (
+                    WorkflowStatus.IN_PROGRESS,
+                    WorkflowStatus.WAITING_USER_CONFIRMATION,
+                    WorkflowStatus.WAITING_EXTERNAL,
+                    WorkflowStatus.PARTIAL,
+                    WorkflowStatus.RESULT_PENDING_CONFIRMATION,
+                )
+            ),
+            completed=completed,
+            failed=by_status.get(WorkflowStatus.FAILED.value, 0),
+            cancelled=by_status.get(WorkflowStatus.CANCELLED.value, 0),
+            completion_rate=(
+                round(completed * 100 / total, 1) if total else 0.0
+            ),
         )
 
     async def patch_stage(

@@ -18,6 +18,7 @@ from watch_assistant.schemas import (
     WorkflowStageName,
     WorkflowStagePatch,
     WorkflowStageStatus,
+    WorkflowStatsResponse,
     WorkflowStatus,
 )
 from watch_assistant.security import AuthContext, require_api_auth
@@ -92,6 +93,12 @@ async def list_workflows(
         page=page,
         page_size=page_size,
     )
+
+
+@router.get("/workflows/stats", response_model=WorkflowStatsResponse)
+async def workflow_stats(service: WorkflowServiceDependency) -> WorkflowStatsResponse:
+    """FLOW-008: 顶层 workflow 聚合统计(状态/媒体类型/时间窗口/完成率)。"""
+    return await service.stats()
 
 
 @router.get("/workflows/{workflow_id}", response_model=WorkflowResponse)
