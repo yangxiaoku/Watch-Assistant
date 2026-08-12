@@ -39,6 +39,8 @@ from watch_assistant.services.strm_manifest import (
     _remove_with_undo,
     _restore_file_mutations,
 )
+from watch_assistant.services.strm_path import absolute_path as _absolute_path
+from watch_assistant.services.strm_path import same_path as _same_path
 from watch_assistant.services.strm_scope import (
     active_strm_operation_id,
     normalize_playback_url_prefix,
@@ -744,14 +746,8 @@ def _readable_root(
     return resolved
 
 
-def _absolute_path(value: Path) -> Path:
-    """Make a lexical absolute path before checking symlink components."""
-
-    return Path(os.path.abspath(os.fspath(value)))
 
 
-def _same_path(left: Path, right: Path) -> bool:
-    return os.path.normcase(os.fspath(left)) == os.path.normcase(os.fspath(right))
 
 
 def _safe_prefix(value: object) -> str:

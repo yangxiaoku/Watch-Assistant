@@ -30,6 +30,8 @@ from watch_assistant.services.library_index import (
     LibraryIndexError,
     validate_complete_scan_evidence,
 )
+from watch_assistant.services.strm_path import absolute_path as _absolute_path
+from watch_assistant.services.strm_path import same_path as _same_path
 from watch_assistant.services.strm_scope import (
     active_strm_operation_id,
     normalize_playback_url_prefix,
@@ -1331,14 +1333,8 @@ def _valid_relative_path(value: object) -> bool:
     )
 
 
-def _absolute_path(value: Path) -> Path:
-    """Make a lexical absolute path without following symlinks."""
-
-    return Path(os.path.abspath(os.fspath(value)))
 
 
-def _same_path(left: Path, right: Path) -> bool:
-    return os.path.normcase(os.fspath(left)) == os.path.normcase(os.fspath(right))
 
 
 def _assert_no_symlink_components(path: Path) -> None:

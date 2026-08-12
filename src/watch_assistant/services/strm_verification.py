@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from collections.abc import Collection
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -22,6 +21,8 @@ from watch_assistant.services.library_index import (
     validate_complete_scan_evidence,
 )
 from watch_assistant.services.strm_manifest import _paths
+from watch_assistant.services.strm_path import absolute_path as _absolute_path
+from watch_assistant.services.strm_path import same_path as _same_path
 from watch_assistant.services.strm_scope import (
     active_strm_operation_id,
     normalize_playback_url_prefix,
@@ -309,14 +310,8 @@ def _readable_root(
     return root
 
 
-def _absolute_path(value: Path) -> Path:
-    """Make a lexical absolute path before checking symlink components."""
-
-    return Path(os.path.abspath(os.fspath(value)))
 
 
-def _same_path(left: Path, right: Path) -> bool:
-    return os.path.normcase(os.fspath(left)) == os.path.normcase(os.fspath(right))
 
 
 def _safe_prefix(value: object) -> str:
