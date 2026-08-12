@@ -181,6 +181,18 @@ src/composables/
 - 不做行为增强（不加新功能、不改轮询/推送逻辑）。
 - 不改动 TMDB 用户脚本（`userscript.*`）。
 
+## 11. 实施偏差记录（2026-08-12 实施时）
+
+1. **组合式函数范围调整**：提取了 `useAuth`、`useConnectivity`、`useFavoritesHistory`、
+   `useCapabilities` 四个可独立单元。`useCatalog`/`useSearch`/`useMediaDetail` 因与
+   路由恢复、滚动位置、详情返回、共享 `requestCatalog` 管道深度耦合，在"行为零变更"
+   约束下保留为 App.vue 的控制器职责，未强行拆分。
+2. **ResourceList 未重写**：`ResourceTable` 结构复杂（检查/推送/筛选/分页），改为
+   CSS 抛光（等宽数据列、降噪徽章、语义色），未做组件级重写以避免回归。
+3. **PosterCard 已替换 MovieCard**：海报为主角、琥珀评分小字、hover 琥珀边光。
+4. **侧栏过道灯**：作为激活态内联实现于 `AppSidebar.vue`（`.sidebar-item-light`），
+   未单独抽 `MarqueeNavItem` 组件。
+
 ## 10. 验收标准
 
 1. 12 个视图全部呈现 Cinematic Noir 风格：暖炭黑 + 琥珀金 + 衬线标题，无渐变/辉光残留。
