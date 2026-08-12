@@ -1028,3 +1028,60 @@ def test_operation_repr_redacts_identifiers():
         idempotency_key="idempotency-secret",
     )
     assert "secret" not in repr(operation)
+
+
+@pytest.mark.asyncio
+async def test_concurrent_expired_claim_next_does_not_double_increment_revision(
+    tmp_path: Path,
+):
+    """并发 claim_next 同时转换同一过期 ORGANIZING 操作时,revision 必须
+    只递增一次(原子 CAS),不得因 SELECT 后逐行 ORM 修改而重复 +2。"""
+    database = await _database(tmp_path)
+    service = OrganizationOperationService(database.session_factory)
+    operation = await _operation(database, key="expired-concurrent")
+    first = await service.claim(
+        operation.operation_id,
+        expected_revision=1,
+        lease_duration=timedelta(seconds=1),
+        now=datetime(2026, 7, 28, tzinfo=UTC),
+    )
+
+    # 原子转换:两个并发 claim_next 同时转换同一过期操作,最终只执行一次
+    # _sync_workflow_stage(单条 UPDATE CAS),而非重复发 workflow 事件。
+    import asyncio as _asyncio
+
+    from watch_assistant.services.organization_operations import (
+        _sync_workflow_stage as _real_sync,
+    )
+
+    sync_calls = 0
+    import watch_assistant.services.organization_operations as org_ops_module
+    original_sync = org_ops_module._sync_workflow_stage
+
+    async def counting_sync(*args, **kwargs):
+        nonlocal sync_calls
+        sync_calls += 1
+        return await _real_sync(*args, **kwargs)
+
+    org_ops_module._sync_workflow_stage = counting_sync
+
+    async def convert_once():
+        try:
+            return await service.claim_next(
+                now=datetime(2026, 7, 28, 0, 0, 2, tzinfo=UTC)
+            )
+        finally:
+            pass
+
+    results = await _asyncio.gather(convert_once(), convert_once())
+    org_ops_module._sync_workflow_stage = original_sync
+
+    assert all(r is None for r in results)
+    current = await service.get(operation.operation_id)
+    assert current.status is OrganizationOperationStatus.UNCERTAIN
+    assert current.revision == first.revision + 1, f"revision={current.revision}"
+    assert current.error_code == "outcome_unknown"
+    # 原子转换:同一过期操作只应被转换一次(单条 UPDATE CAS),
+    # 而非两个协程各执行一次 _sync_workflow_stage(重复发 workflow 事件)。
+    assert sync_calls == 1, f"_sync_workflow_stage 被调 {sync_calls} 次"
+    await database.engine.dispose()

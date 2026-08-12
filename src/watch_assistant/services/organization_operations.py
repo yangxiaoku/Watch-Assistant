@@ -335,7 +335,11 @@ class OrganizationOperationService:
 
         current_time = _as_utc(now or datetime.now(UTC))
         async with self._session_factory() as session:
-            expired = list(
+            # 原子转换过期 ORGANIZING -> UNCERTAIN:单条 UPDATE CAS,只有
+            # rowcount==1 的协程才执行 workflow 事件同步。此前是 SELECT 后
+            # 逐行 ORM 修改,并发双 worker 同时转换同一行会重复发 workflow
+            # 事件、revision 语义不确定。
+            expired_rows = list(
                 await session.scalars(
                     select(OrganizationOperation).where(
                         OrganizationOperation.status
@@ -344,23 +348,40 @@ class OrganizationOperationService:
                     )
                 )
             )
-            for operation in expired:
-                operation.status = OrganizationOperationStatus.UNCERTAIN
-                operation.revision += 1
-                operation.lease_token = None
-                operation.lease_expires_at = None
-                operation.error_code = "outcome_unknown"
-                operation.finished_at = current_time
-                operation.updated_at = current_time
+            converted: list[tuple[str, str]] = []
+            for operation in expired_rows:
+                result = await session.execute(
+                    update(OrganizationOperation)
+                    .where(
+                        OrganizationOperation.id == operation.id,
+                        OrganizationOperation.status
+                        == OrganizationOperationStatus.ORGANIZING,
+                        OrganizationOperation.lease_expires_at <= current_time,
+                        OrganizationOperation.revision == operation.revision,
+                    )
+                    .values(
+                        status=OrganizationOperationStatus.UNCERTAIN,
+                        revision=operation.revision + 1,
+                        lease_token=None,
+                        lease_expires_at=None,
+                        error_code="outcome_unknown",
+                        finished_at=current_time,
+                        updated_at=current_time,
+                    )
+                    .execution_options(synchronize_session=False)
+                )
+                if result.rowcount == 1:
+                    converted.append((operation.id, operation.workflow_id))
+            for operation_id, workflow_id in converted:
                 await _sync_workflow_stage(
                     session,
-                    operation.workflow_id,
+                    workflow_id,
                     status=WorkflowStageStatus.UNCERTAIN,
-                    child_id=operation.id,
+                    child_id=operation_id,
                     reason="organization_uncertain",
                     error_code="outcome_unknown",
                 )
-            if expired:
+            if converted:
                 await session.commit()
             operation = await session.scalar(
                 select(OrganizationOperation)
