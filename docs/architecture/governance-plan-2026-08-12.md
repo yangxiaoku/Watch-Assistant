@@ -107,6 +107,14 @@
 
 **未统一**（语义差异大）：`_safe_prefix`（抛不同模块异常）、`_candidates`（字段集/错误码不同）、`_readable_root`（异常类型 + 赋值差异）。这些"相似但不相同"，保持各自实现。
 
+### 补充：`_decode_codes` 统一到 `services/code_utils.py`
+
+`notifications.py` 与 `webhooks.py` 各有一份 `_decode_codes`（解码存储的 JSON 字符串集合），且语义略有漂移：webhooks 版容错空串（`value or "[]"`），notifications 版不容错。统一到共享 `code_utils.decode_string_set`（保留 robust 容错版），两个模块用 `as _decode_codes` 别名引用，调用点不变。测试：`test_notifications` / `test_webhooks` / `test_webhooks_mcp_pwa` 共 14 例全绿。
+
+### 观察：`_canonical_countries`（media_matcher/media_classification）
+
+两份定义存在微小漂移（matcher 版缺 isinstance 检查），未统一。统一收益低且属展示归一逻辑，风险/收益比不合适，保持各自实现。
+
 ## 观察：verify.sh 分 shard 偶发 flaky（已定位）
 
 `scripts/verify.sh` 分 shard 并行偶发失败，已定位根因：`test_client_factory_timeout_closes_late_client`（固定 0.4s 轮询窗口在 4 进程负载下不足）。已改为 `wait_for(5s)` + 以结果为准的轮询，连续多次通过。

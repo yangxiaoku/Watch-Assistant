@@ -18,6 +18,7 @@ from watch_assistant.schemas import (
     NotificationResponse,
     NotificationSeverity,
 )
+from watch_assistant.services.code_utils import decode_string_set as _decode_codes
 from watch_assistant.services.event_catalog import get_event_definition
 from watch_assistant.services.observability import EventLogger, emit_event
 
@@ -317,12 +318,6 @@ class NotificationService:
         return item
 
 
-def _decode_codes(value: str) -> set[str]:
-    try:
-        decoded = json.loads(value)
-    except json.JSONDecodeError:
-        return set()
-    return {item for item in decoded if isinstance(item, str)} if isinstance(decoded, list) else set()
 
 
 def _severity(event_code: str, status: object) -> NotificationSeverity:

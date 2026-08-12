@@ -32,6 +32,7 @@ from watch_assistant.schemas import (
     WebhookEndpointPatch,
     WebhookEndpointResponse,
 )
+from watch_assistant.services.code_utils import decode_string_set as _decode_codes
 from watch_assistant.services.event_catalog import get_event_definition
 from watch_assistant.services.observability import EventLogger
 
@@ -526,12 +527,6 @@ def _validate_event_codes(values: list[str]) -> list[str]:
     return normalized
 
 
-def _decode_codes(value: str) -> set[str]:
-    try:
-        decoded = json.loads(value or "[]")
-    except json.JSONDecodeError:
-        return set()
-    return {item for item in decoded if isinstance(item, str)} if isinstance(decoded, list) else set()
 
 
 def _safe_value(value: object) -> object:
