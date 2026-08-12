@@ -494,3 +494,15 @@ async def test_mcp_organization_apply_rejects_non_ascii_digest():
     )
     assert "error" in response
     assert response["error"]["data"]["error_code"] == "invalid_request"
+
+
+def test_pwa_http_error_maps_device_conflict_to_409():
+    """L2:pwa_device_conflict 是设备绑定冲突,应映射 409 而非 422。"""
+    from watch_assistant.api.pwa import _http_error
+
+    conflict = _http_error(PwaDeviceError("pwa_device_conflict"))
+    assert conflict.status_code == 409
+    assert conflict.detail == {"code": "pwa_device_conflict"}
+
+    not_found = _http_error(PwaDeviceError("pwa_device_not_found"))
+    assert not_found.status_code == 404

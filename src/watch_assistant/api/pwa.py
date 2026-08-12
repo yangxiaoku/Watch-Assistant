@@ -49,10 +49,14 @@ async def revoke_device(
 
 
 def _http_error(error: PwaDeviceError) -> HTTPException:
-    return HTTPException(
-        status_code=404 if error.code == "pwa_device_not_found" else 422,
-        detail={"code": error.code},
-    )
+    # L2: pwa_device_conflict 是设备绑定冲突,应 409;not_found 才 404。
+    if error.code == "pwa_device_not_found":
+        status_code = 404
+    elif error.code == "pwa_device_conflict":
+        status_code = 409
+    else:
+        status_code = 422
+    return HTTPException(status_code=status_code, detail={"code": error.code})
 
 
 def _owner_identity(context: AuthContext) -> str:

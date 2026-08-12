@@ -158,3 +158,38 @@ class BlockingSettingsStub(SettingsStub):
 async def _wait_for(predicate):
     while not predicate():
         await asyncio.sleep(0.01)
+
+
+@pytest.mark.asyncio
+async def test_manual_run_queue_is_capped():
+    """L14:手动整理请求队列必须有界,防止长跑实例无界堆积。"""
+    settings = SettingsStub(False)
+    scheduler = OrganizationScheduler(settings, run_once=None, manual_run=None)
+    for _ in range(60):
+        await scheduler.request_run_now()
+    assert len(scheduler._manual_runs) <= scheduler._MANUAL_RUNS_MAX
+    assert scheduler._manual_runs.maxlen is None  # 手动设上限,deque 本身无 maxlen
+
+
+@pytest.mark.asyncio
+async def test_run_forever_survives_run_once_exception():
+    """L14:run_once 抛异常时调度循环不得死亡(异常隔离 + 退避)。"""
+    calls = {"count": 0}
+
+    async def explode_once():
+        calls["count"] += 1
+        raise RuntimeError("transient")
+
+    scheduler = OrganizationScheduler(SettingsStub(False), explode_once)
+    stop = asyncio.Event()
+    # schedule 禁用时 idle 等 _wake,必须先 request_run_now 触发 run_once。
+    await scheduler.request_run_now()
+
+    async def _stop_later():
+        await asyncio.sleep(0.05)
+        stop.set()
+
+    task = asyncio.create_task(scheduler.run_forever(stop))
+    await asyncio.gather(_stop_later(), task)
+    assert task.exception() is None, "异常不得逃逸出 run_forever"
+    assert calls["count"] >= 1

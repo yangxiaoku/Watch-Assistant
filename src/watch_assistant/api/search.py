@@ -190,11 +190,13 @@ async def list_resources(
     sort: Literal[
         "comprehensive", "relevance", "completeness", "size", "seeders"
     ] = "comprehensive",
-    page: int = Query(default=1, ge=1),
+    page: int = Query(default=1, ge=1, le=10_000),
     page_size: int = Query(default=25, enum=[25, 50, 100]),
 ) -> ResourcePageResponse:
     if season_number is not None and media_type != MediaType.TV:
         raise HTTPException(status_code=422, detail="season_requires_tv")
+    # page_size 由 Query enum 声明,但运行验证仍保留显式检查兜底
+    # (enum 在部分构造路径不拦截,回归测试锁定 422)。
     if page_size not in {25, 50, 100}:
         raise HTTPException(status_code=422, detail="invalid_page_size")
     try:

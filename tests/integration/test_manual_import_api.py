@@ -1,18 +1,23 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pytest
 import respx
 from cryptography.fernet import Fernet
+from fastapi import HTTPException
 from sqlalchemy import select
 
 from tests.unit.factories import make_security_manager
 from watch_assistant.adapters.pansou import PanSouClient
 from watch_assistant.adapters.tmdb import TmdbClient
+from watch_assistant.api.manual_import import confirm_import
 from watch_assistant.app import create_app
 from watch_assistant.crypto import SecretCrypto
 from watch_assistant.db import create_database, initialize_database
 from watch_assistant.models import Resource
+from watch_assistant.schemas import ManualImportRequest
+from watch_assistant.services.manual_import import ManualImportError
 
 TMDB_RESPONSE = {
     "id": 12345,
@@ -94,7 +99,22 @@ async def test_manual_import_is_preview_first_encrypted_and_deduplicated(tmp_pat
         await client.aclose()
         await tmdb.aclose()
         await pansou.aclose()
-        await database.engine.dispose()
+
+
+async def test_confirm_import_resource_conflict_maps_to_409():
+    """L1:resource_conflict 是资源已存在冲突,confirm 端点应返回 409 而非 422。"""
+    service = SimpleNamespace(
+        confirm=lambda payload: (_ for _ in ()).throw(
+            ManualImportError("resource_conflict")
+        )
+    )
+    payload = ManualImportRequest(
+        url=MAGNET, tmdb_id=12345, name="Inception 2010 1080p"
+    )
+    with pytest.raises(HTTPException) as error:
+        await confirm_import(payload, service)
+    assert error.value.status_code == 409
+    assert error.value.detail == "resource_conflict"
 
 
 @pytest.mark.integration

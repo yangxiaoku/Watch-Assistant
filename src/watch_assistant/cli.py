@@ -781,7 +781,10 @@ def _build_parser() -> argparse.ArgumentParser:
     strm_status.add_argument("--library")
     generate = strm_sub.add_parser("generate", help="请求受保护的 STRM 全量生成")
     generate.add_argument("--library", dest="library_id", required=True)
-    generate.add_argument("--full", action="store_true", required=True)
+    # L7: --full 为 store_true 却 required=True,强制用户传一个不生效的
+    # 死参数;handler 按 strm_command 分派,不读此 flag。去掉强制要求,
+    # 保留参数以兼容已文档的 CLI 用法。
+    generate.add_argument("--full", action="store_true")
     generate.add_argument("--workflow-id")
     sync = strm_sub.add_parser("sync", help="请求受保护的 STRM 增量同步")
     sync.add_argument("--library", dest="library_id", required=True)

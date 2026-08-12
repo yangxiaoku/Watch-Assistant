@@ -48,5 +48,11 @@ async def confirm_import(
     try:
         return await service.confirm(payload)
     except ManualImportError as exc:
-        status_code = 409 if exc.code in {"confirmation_required", "media_mismatch"} else 422
+        # L1: resource_conflict 是资源已存在的冲突,应 409 而非 422。
+        status_code = (
+            409
+            if exc.code
+            in {"confirmation_required", "media_mismatch", "resource_conflict"}
+            else 422
+        )
         raise HTTPException(status_code=status_code, detail=exc.code) from exc
