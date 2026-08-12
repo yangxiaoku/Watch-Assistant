@@ -88,7 +88,7 @@ Verify 与 Systemd Release Package 必须按同一 `head_sha` 重新核对；历
 |---|---|---|---|
 | REQ-001 | 115 影视库自动整理 | 待验收 | [查看](./REQ-001-115-library-organization/README.md) |
 | REQ-002 | 115 STRM 全量与增量同步 | 待验收 | [查看](./REQ-002-115-strm-sync/README.md) |
-| REQ-003 | Agent CLI 管理入口 | 开发中 | [查看](./REQ-003-agent-cli/README.md) |
+| REQ-003 | Agent CLI 管理入口 | 待验收 | [查看](./REQ-003-agent-cli/README.md) |
 | REQ-004 | 中文结构化日志与审计完善 | 待验收 | [查看](./REQ-004-chinese-structured-logging/README.md) |
 | REQ-005 | 资源搜索召回与 PanSou 一致性提升 | 待验收 | [查看](./REQ-005-resource-search-recall/README.md) |
 | REQ-006 | 磁力内容检测可靠性提升 | 待验收 | [查看](./REQ-006-magnet-inspection-reliability/README.md) |
