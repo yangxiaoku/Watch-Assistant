@@ -189,7 +189,7 @@ const ADDITIONAL_CODES = [
   "resource_search_failed", "invalid_season_request", "library_inventory_incomplete",
   "library_identity_conflict", "library_scan_unavailable", "library_scan_not_found",
   "invalid_library_id", "invalid_scan_run_id", "invalid_directory_limit",
-  "scan_mode_unsupported", "checkpoint_invalid", "plan_hash_mismatch",
+  "scan_mode_unsupported", "checkpoint_invalid", "plan_hash_mismatch", "plan_hash_required",
   "p115_device_unavailable", "p115_directory_out_of_scope", "p115_directory_read_failed",
   "p115_directory_scope_unavailable", "p115_directory_unavailable", "p115_qrcode_save_failed",
   "p115_qrcode_unavailable", "qrcode_provider_unavailable", "qrcode_result_invalid",
