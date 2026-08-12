@@ -41,6 +41,7 @@ from watch_assistant.services.strm_manifest import (
 )
 from watch_assistant.services.strm_path import absolute_path as _absolute_path
 from watch_assistant.services.strm_path import same_path as _same_path
+from watch_assistant.services.strm_path import valid_id as _valid_id
 from watch_assistant.services.strm_scope import (
     active_strm_operation_id,
     normalize_playback_url_prefix,
@@ -757,14 +758,6 @@ def _safe_prefix(value: object) -> str:
         raise StrmCleanupPlanError("invalid_playback_url_prefix") from None
 
 
-def _valid_id(value: object) -> bool:
-    return (
-        isinstance(value, str)
-        and 1 <= len(value) <= 128
-        and value.isascii()
-        and "/" not in value
-        and "\\" not in value
-    )
 
 
 def _valid_relative_path(value: object) -> bool:

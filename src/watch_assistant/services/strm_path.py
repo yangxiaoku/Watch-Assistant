@@ -21,4 +21,15 @@ def same_path(left: Path, right: Path) -> bool:
     return os.path.normcase(os.fspath(left)) == os.path.normcase(os.fspath(right))
 
 
-__all__ = ["absolute_path", "same_path"]
+def valid_id(value: object) -> bool:
+    """Strict STRM/cleanup identifier check: ASCII, 1..128, no path separators."""
+    return (
+        isinstance(value, str)
+        and 1 <= len(value) <= 128
+        and value.isascii()
+        and "/" not in value
+        and "\\" not in value
+    )
+
+
+__all__ = ["absolute_path", "same_path", "valid_id"]

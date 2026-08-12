@@ -42,6 +42,7 @@ from watch_assistant.services.strm_manifest import (
     _commit_fenced,
     _LeaseFence,
 )
+from watch_assistant.services.strm_path import valid_id as _valid_id
 from watch_assistant.services.strm_scope import (
     active_strm_operation_id,
     source_snapshot_is_current,
@@ -836,14 +837,6 @@ def _safe_relative_path(value: object) -> bool:
     return all(part not in {"", ".", ".."} for part in normalized.split("/"))
 
 
-def _valid_id(value: object) -> bool:
-    return (
-        isinstance(value, str)
-        and 1 <= len(value) <= 128
-        and value.isascii()
-        and "/" not in value
-        and "\\" not in value
-    )
 
 
 def _utc(value: datetime | None) -> datetime:
