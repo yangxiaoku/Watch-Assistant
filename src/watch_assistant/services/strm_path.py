@@ -32,4 +32,15 @@ def valid_id(value: object) -> bool:
     )
 
 
-__all__ = ["absolute_path", "same_path", "valid_id"]
+def has_symlink_component(path: Path) -> bool:
+    """True if any lexical path component is a symlink."""
+    current = Path(path.anchor) if path.anchor else Path.cwd()
+    parts = path.parts[1:] if path.anchor else path.parts
+    for part in parts:
+        current /= part
+        if current.is_symlink():
+            return True
+    return False
+
+
+__all__ = ["absolute_path", "has_symlink_component", "same_path", "valid_id"]

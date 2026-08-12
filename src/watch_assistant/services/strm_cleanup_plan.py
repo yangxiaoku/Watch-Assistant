@@ -40,8 +40,13 @@ from watch_assistant.services.strm_manifest import (
     _restore_file_mutations,
 )
 from watch_assistant.services.strm_path import absolute_path as _absolute_path
+from watch_assistant.services.strm_path import (
+    has_symlink_component as _has_symlink_component,
+)
 from watch_assistant.services.strm_path import same_path as _same_path
-from watch_assistant.services.strm_path import valid_id as _valid_id
+from watch_assistant.services.strm_path import (
+    valid_id as _valid_id,
+)
 from watch_assistant.services.strm_scope import (
     active_strm_operation_id,
     normalize_playback_url_prefix,
@@ -769,14 +774,6 @@ def _valid_relative_path(value: object) -> bool:
     )
 
 
-def _has_symlink_component(path: Path) -> bool:
-    current = Path(path.anchor) if path.anchor else Path.cwd()
-    parts = path.parts[1:] if path.anchor else path.parts
-    for part in parts:
-        current /= part
-        if current.is_symlink():
-            return True
-    return False
 
 
 def _utc(value: datetime | None) -> datetime:
