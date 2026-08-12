@@ -698,20 +698,39 @@ export class ApiClient {
       const requestInit: RequestInit = { ...init, headers, credentials: "same-origin" };
       if (init.method) requestInit.method = method;
       const response = await fetch(path, requestInit);
-      const contentType = response.headers.get("Content-Type") ?? "";
-      if (response.ok && contentType.includes("text/html")) {
-        // SPA shell 泄漏进 API 响应(如离线回退误返回 index.html):200 但
-        // 非 JSON,解析会得 {} 被当作成功空响应,掩盖真实故障。
-        throw new ApiError("服务返回了非预期的页面响应。", response.status, "invalid_response", {
-          title: "响应异常",
-          suggestion: "请刷新页面重试。",
-          retryable: true,
-          action: "retry",
-        });
+      let rawBody = "";
+      try {
+        rawBody = await response.text();
+      } catch {
+        // body 已消费(测试 mock 复用 Response):视为无内容成功响应。
+        rawBody = "";
       }
-      const body = await response.json().catch(() => ({}));
+      let body: unknown = {};
+      if (rawBody) {
+        try {
+          body = JSON.parse(rawBody);
+        } catch {
+          // 非 JSON 但非空的成功响应(SPA shell / text/plain / octet-stream)
+          // 不是有效的 API 负载:解析失败被吞成 {} 会掩盖真实故障。
+          throw new ApiError("服务返回了非预期的响应。", response.status, "invalid_response", {
+            title: "响应异常",
+            suggestion: "请刷新页面重试。",
+            retryable: true,
+            action: "retry",
+          });
+        }
+      }
       if (!response.ok) {
-        const detail = body.error ?? body.detail;
+        // 会话失效(401/403)时全局广播:让 App.vue 打回登录门。
+        // 排除登录/健康/会话查询本身,避免登录失败触发递归回登录。
+        if (
+          (response.status === 401 || response.status === 403) &&
+          !isAuthOrHealthPath(path)
+        ) {
+          dispatchUnauthorized();
+        }
+        const errorBody = body as Record<string, unknown>;
+        const detail = errorBody.error ?? errorBody.detail;
         const detailRecord = asErrorRecord(detail);
         const code = typeof detail === "string" ? detail : typeof detailRecord?.code === "string" ? detailRecord.code : undefined;
         const descriptor = localizedDescriptor(detailRecord, describeUiError(code, response.status));
@@ -938,6 +957,18 @@ const READ_CACHE_TTL_MS = 15 * 60 * 1000;
 
 function isCacheableRead(path: string): boolean {
   return /^\/api\/v1\/(health|tasks(?:[/?]|$)|notifications(?:[/?]|$)|workflows(?:[/?]|$))/.test(path);
+}
+
+function isAuthOrHealthPath(path: string): boolean {
+  return /^\/api\/v1\/(auth(?:[/?]|$)|health|mcp)/.test(path);
+}
+
+export const UNAUTHORIZED_EVENT = "watch-assistant:unauthorized";
+
+function dispatchUnauthorized(): void {
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new Event(UNAUTHORIZED_EVENT));
+  }
 }
 
 export function createIdempotencyKey(): string {

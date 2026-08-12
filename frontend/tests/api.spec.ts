@@ -665,3 +665,67 @@ describe("ApiClient season and inspection requests", () => {
     expect(JSON.parse(fetchMock.mock.calls[4][1].body as string)).toEqual({ revision: 6 });
   });
 });
+import { UNAUTHORIZED_EVENT } from "../src/api";
+
+describe("ApiClient unauthorized broadcast", () => {
+  it("dispatches a global event on 401 for non-auth paths", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ detail: "session expired" }),
+      { status: 401, headers: { "Content-Type": "application/json" } },
+    )));
+    const dispatched: string[] = [];
+    const listener = () => dispatched.push(UNAUTHORIZED_EVENT);
+    window.addEventListener(UNAUTHORIZED_EVENT, listener);
+    const api = new ApiClient();
+
+    await expect(api.listTasks()).rejects.toThrow();
+
+    window.removeEventListener(UNAUTHORIZED_EVENT, listener);
+    expect(dispatched).toEqual([UNAUTHORIZED_EVENT]);
+  });
+
+  it("does not broadcast on 401 for the auth login path", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ detail: "bad credentials" }),
+      { status: 401, headers: { "Content-Type": "application/json" } },
+    )));
+    const dispatched: string[] = [];
+    const listener = () => dispatched.push(UNAUTHORIZED_EVENT);
+    window.addEventListener(UNAUTHORIZED_EVENT, listener);
+    const api = new ApiClient();
+
+    await expect(api.login("admin", "wrong")).rejects.toThrow();
+
+    window.removeEventListener(UNAUTHORIZED_EVENT, listener);
+    expect(dispatched).toEqual([]);
+  });
+});
+
+describe("ApiClient non-JSON response handling", () => {
+  it("throws invalid_response on a successful non-JSON body", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(
+      "not json at all",
+      { status: 200, headers: { "Content-Type": "text/plain" } },
+    )));
+    const api = new ApiClient();
+
+    const error = await api.listTasks().then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(error).toBeInstanceOf(ApiError);
+    expect((error as ApiError).code).toBe("invalid_response");
+  });
+
+  it("accepts a successful JSON body as before", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(
+      JSON.stringify([{ id: "task-one" }]),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    )));
+    const api = new ApiClient();
+
+    const tasks = await api.listTasks();
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0].id).toBe("task-one");
+  });
+});

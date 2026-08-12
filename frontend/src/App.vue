@@ -129,6 +129,16 @@ let metadataRequestId = 0;
 let inspectionRunId = 0;
 let pollTimer: number | undefined;
 let catalogRequestId = 0;
+
+function handleUnauthorized(): void {
+  // 会话失效(后端重启/过期/CSRF 轮换)后任何 401/403 都会广播此事件:
+  // 打回登录门,停止轮询,避免界面停留在"已登录"假象且写操作静默失败。
+  if (pollTimer !== undefined) {
+    window.clearInterval(pollTimer);
+    pollTimer = undefined;
+  }
+  authenticated.value = false;
+}
 let failedCatalogRoute: CatalogRoute | null = null;
 let resourceRequestId = 0;
 let resourceAbortController: AbortController | null = null;
@@ -1422,9 +1432,10 @@ function retryFailed() {
 
 function ensurePolling() {
   if (pollTimer !== undefined) return;
-  pollTimer = window.setInterval(async () => {
+  // 链式 setTimeout 而非 setInterval:上一轮(含慢 getTask)完成后才排下一轮,
+  // 避免请求在慢网络下堆积(每 2s 并发发起多个相同任务请求)。
+  const pollOnce = async (): Promise<void> => {
     if (!hasActiveTasks.value) {
-      window.clearInterval(pollTimer);
       pollTimer = undefined;
       return;
     }
@@ -1442,7 +1453,13 @@ function ensurePolling() {
       updates.filter((task): task is TaskResponse => task !== null).map((task) => [task.id, task]),
     );
     tasks.value = tasks.value.map((task) => byId.get(task.id) ?? task);
-  }, 2000);
+    if (!hasActiveTasks.value) {
+      pollTimer = undefined;
+      return;
+    }
+    pollTimer = window.setTimeout(() => void pollOnce(), 2000);
+  };
+  pollTimer = window.setTimeout(() => void pollOnce(), 0);
 }
 
 async function syncRoute() {
@@ -1473,6 +1490,7 @@ onMounted(async () => {
   window.addEventListener("online", updateOnline);
   window.addEventListener("offline", updateOnline);
   window.addEventListener("watch-assistant:offline-data", recordOfflineData);
+  window.addEventListener("watch-assistant:unauthorized", handleUnauthorized);
   let sessionOk = false;
   try {
     const health = await api.health();
@@ -1497,6 +1515,7 @@ onBeforeUnmount(() => {
   window.removeEventListener("online", updateOnline);
   window.removeEventListener("offline", updateOnline);
   window.removeEventListener("watch-assistant:offline-data", recordOfflineData);
+  window.removeEventListener("watch-assistant:unauthorized", handleUnauthorized);
 });
 </script>
 
