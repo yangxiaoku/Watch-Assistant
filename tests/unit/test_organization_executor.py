@@ -1301,3 +1301,39 @@ async def test_task_cancellation_marks_uncertain_and_propagates(tmp_path: Path):
     assert current.status is OrganizationOperationStatus.UNCERTAIN
     assert current.error_code == "cancelled"
     await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_unexpected_transport_failure_is_finished_with_latest_lease(
+    tmp_path: Path,
+):
+    """未预期异常(非已知 timeout/conflict)逃逸 _run_steps 时,executor 必须用
+    当前持有的最新 lease 把操作终态化为 UNCERTAIN,而不是让 worker 用陈旧
+    初始 lease 调 finish_after_lease_loss(CAS 失配被吞,操作卡 ORGANIZING)。"""
+    database = await _database(tmp_path)
+    transport = FakeOrganizationTransport()
+    executor, operation, lease = await _claimed_executor(database, transport)
+    service = OrganizationOperationService(database.session_factory)
+
+    # 模拟 _run_steps 内非 _call 路径的意外逃逸:renew_lease 本身抛未预期异常。
+    # 在类上 monkeypatch,让 executor 持有的 service 实例也命中。
+    original_renew = OrganizationOperationService.renew_lease
+
+    async def exploding_renew(_self, *_args, **_kwargs):
+        raise RuntimeError("unexpected local failure")
+
+    OrganizationOperationService.renew_lease = exploding_renew
+    try:
+        with pytest.raises(RuntimeError, match="unexpected local failure"):
+            await executor.execute(
+                operation.operation_id,
+                expected_revision=lease.revision,
+                lease_token=lease.lease_token,
+            )
+    finally:
+        OrganizationOperationService.renew_lease = original_renew
+
+    summary = await service.get(operation.operation_id)
+    assert summary.status is OrganizationOperationStatus.UNCERTAIN
+    assert summary.error_code == "outcome_unknown"
+    await database.engine.dispose()

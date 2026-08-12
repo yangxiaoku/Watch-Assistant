@@ -241,6 +241,19 @@ class OrganizationExecutor:
                 now=now,
             )
             raise
+        except Exception:  # any unexpected executor failure is uncertainty
+            # 未预期异常(OSError/TypeError 等)逃逸 _run_steps 时,worker 只会用
+            # 陈旧的初始 lease 调 finish_after_lease_loss,其 CAS 因 revision 已
+            # 被 _renew 递增而失败并被吞掉,操作卡在 ORGANIZING 最长 5 分钟。
+            # 这里用 executor 当前持有的最新 lease 直接终态化,避免写已发生但
+            # 状态长期悬置、错误码退化为 outcome_unknown。
+            await self._finish(
+                context,
+                OrganizationExecutionStatus.UNCERTAIN,
+                "outcome_unknown",
+                now=now,
+            )
+            raise
 
     async def reconcile_uncertain(
         self,
