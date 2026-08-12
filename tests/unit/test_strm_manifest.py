@@ -1016,8 +1016,14 @@ async def test_cleanup_plan_terminal_commit_uses_revision_cas(tmp_path: Path):
         async with database.session_factory() as first_session:
             first_plan = await first_session.get(StrmCleanupPlan, plan.plan_id)
             assert first_plan is not None
-            first_plan.status = "applied"
-            first_plan.revision += 1
+            # 占用机制:CAS 以 applying 为前提,且 _commit_plan 前 plan.revision
+            # 已递增(模拟 apply_plan 的占用+提交流程)。DB 在 no_autoflush 下
+            # 保持 applying/N,CAS WHERE applying AND revision==N 匹配。
+            first_plan.status = "applying"
+            await first_session.commit()
+            # 重新加载:commit 后 ORM 过期,revision 回到 DB 的 N
+            await first_session.refresh(first_plan)
+            first_plan.revision += 1  # 模拟 apply_plan 提交前递增
             first_plan.applied_idempotency_key = "cleanup-cas-first"
             first_plan.applied_retired = 1
             await plan_service._commit_plan(
@@ -1032,7 +1038,7 @@ async def test_cleanup_plan_terminal_commit_uses_revision_cas(tmp_path: Path):
         async with database.session_factory() as stale_session:
             stale_plan = await stale_session.get(StrmCleanupPlan, plan.plan_id)
             assert stale_plan is not None
-            stale_plan.status = "applied"
+            stale_plan.status = "applying"
             stale_plan.revision += 1
             stale_plan.applied_idempotency_key = "cleanup-cas-second"
             stale_plan.applied_retired = 1

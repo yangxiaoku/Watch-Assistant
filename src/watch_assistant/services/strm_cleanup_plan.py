@@ -329,6 +329,25 @@ class StrmCleanupPlanService:
                 if state != planned_state:
                     raise StrmCleanupPlanError("cleanup_plan_blocked")
                 preflight.append((manifest, state))
+            # 原子占用:把计划从 needs_review 置为 applying,带 revision CAS。
+            # 两个并发 apply_plan(绕过 ledger)同时通过入口检查时,只有第一个
+            # 能成功占用;失败者在占用时立即抛 cleanup_plan_changed,不会执行
+            # 文件删除,因此不会出现"先提交者已 retire manifest,后提交者把
+            # .strm 回滚写回"的孤儿文件竞态。applying 是短时中间态,提交
+            # 完成后立即置为 applied。
+            occupied = await session.execute(
+                update(StrmCleanupPlan)
+                .where(
+                    StrmCleanupPlan.id == plan.id,
+                    StrmCleanupPlan.status == "needs_review",
+                    StrmCleanupPlan.revision == plan.revision,
+                )
+                .values(status="applying")
+                .execution_options(synchronize_session=False)
+            )
+            if occupied.rowcount != 1:
+                raise StrmCleanupPlanError("cleanup_plan_changed")
+            await session.flush()
             retired = 0
             mutations: list[_FileMutation] = []
             try:
@@ -400,12 +419,13 @@ class StrmCleanupPlanService:
             # A direct service caller may not have an operation ledger claim.
             # Keep the plan revision as the final idempotency fence so two
             # confirmations cannot both publish different terminal results.
+            # 占用后计划处于 applying,提交 CAS 以 applying 为前提。
             with session.no_autoflush:
                 result = await session.execute(
                     update(StrmCleanupPlan)
                     .where(
                         StrmCleanupPlan.id == plan_id,
-                        StrmCleanupPlan.status == "needs_review",
+                        StrmCleanupPlan.status == "applying",
                         StrmCleanupPlan.revision == plan_revision - 1,
                     )
                     .values(
