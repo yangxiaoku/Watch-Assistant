@@ -157,3 +157,54 @@
 5. **P3（前端体验）**：全局 401 处理、非 JSON 响应容错、轮询链式化。
 
 **验证备注**：本次为只读审查，未修改任何文件、未执行任何 115 写操作或部署。当前工作树未提交改动仅含 `search.py` 注释更新与前端测试依赖（@testing-library/vue、msw），与上述回归无关。
+
+---
+
+## 修复进展（2026-08-12，分支 `codex/fix-review-audit`）
+
+审查报告发布后，按优先级在独立功能分支上完成了 **26 项修复**，全部 TDD，验证通过（全量单测 1174、集成测试全绿）。
+
+### 已修复
+
+**P0（安全/数据安全）**
+- 自动清理绕过全部 115 写门禁（`organization_automation.py`）：清理受 `cleanup_empty_directories` 配置与人工确认门禁控制
+- 永久删除身份碰撞防护可被 size 缺失绕过（`p115_permanent_delete_transport.py`）：size 缺失时 fail-closed
+
+**P1（状态机/一致性）**
+- STRM `recover_incomplete` 误杀 QUEUED：只终态化 RUNNING 过期租约孤儿
+- 订阅 `check()` 复活已暂停/取消订阅：条件 UPDATE（乐观锁 + 终态守卫）
+- Webhook 投递重复 POST：原子认领（in_flight + 租约）+ 过期回收
+- `uncertain` 操作计划失配永久卡死：新增 `fail_stale_uncertain` 终态化 + invalidate 计划
+- worker 陈旧租约导致操作卡 ORGANIZING：executor 未预期异常用最新 lease 终态化
+- `reconcile` 复活终态 FAILED 任务：`apply_remote_status` 加 FAILED 终态守卫
+- STRM 提交结果不确定折叠为 failed：以 `strm_operation_uncertain` 传播
+- 集成测试回归（fb87c57 引入）：mock 补 `fs_files_app`/`fs_info_app`
+
+**P1（门禁/构建/凭据）**
+- Dockerfile 引用不存在的 `config/` 目录：删除 COPY 行
+- tmdb/pansou 未禁环境代理：显式 `trust_env=False`
+- p115 播放异常链起原始异常：改 `from None` 防凭据泄漏
+- p115 核对路径漏传 `allow_virtual_root`：根目录目标可 AVAILABLE
+- p115 工厂超时线程泄漏 client：done-callback 关闭迟到 client
+- gateway 结构化 405 不回退：补充回退
+- `share_receive` busy 盲目重发：仅幂等提交重试
+- p115_login_devices 返回 stale active：commit 后 refresh
+
+**P2（架构）**
+- `security.py` scope 对未知路径 fail-open：改 deny-by-default，补全遗漏路由映射
+- QR 轮询 GET 写凭据：分离为只读轮询 + POST save（走 CSRF）
+- 日志导出无上限：加 limit 保护
+- MCP `task.get`/`tasks.list` ORM 序列化裸 500：`TaskResponse` 公开视图
+- bearer agent confirm 未强制 plan_hash：与 operation 排队一致
+- 目录范围校验条件性跳过：已配置 root 时强制
+
+**测试/部署**
+- p115_delete / inventory_push_guard / 删除端点 fail-closed 分支补测试
+- 空断言测试补断言（qbit/cache_warm/business_logging）
+- AGENTS.md 备份路径、docker-compose 死配置、verify-live.sh Windows 残留
+
+### 剩余待处理（已评估）
+
+- **服务层**：strm cleanup 并发竞态（无 `applying` 中间态，需引入状态位，改动大）、prowlarr 阻塞 DNS（需 async 化，牵动多处同步调用）
+- **测试层**：flaky 时序断言（刻意构造的竞速场景，重写风险高）、backup_db.ps1 40 位 SHA（刻意 fail-closed）
+- **前端 P3**：全局 401 处理、非 JSON 响应容错、轮询链式化（尚未开始）
