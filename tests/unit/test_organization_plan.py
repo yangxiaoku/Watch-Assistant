@@ -41,10 +41,10 @@ from watch_assistant.services.organization_plan import (
     PlanSource,
     _canonical_hash,
     _entry_remote_version,
-    _execution_blockers,
     _view,
     load_executable_steps,
 )
+from watch_assistant.services.organization_plan_helpers import _execution_blockers
 
 LIBRARY_ID = "library-1"
 ROOT_ID = "7000"

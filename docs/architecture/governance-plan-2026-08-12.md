@@ -176,6 +176,34 @@
 - ruff F401/F821 迭代校正 import；113 个 search 测试 + `scripts/verify.sh` 全绿
 - `_search_error_code_for_log`/`make_cache_key`/`_bounded_set*` 留在 search.py（服务实例直接依赖）
 
+## 阶段 D 第三项：拆分 `organization_plan.py`（3078 → 1204 行）
+
+最大的文件。`OrganizationPlanService` 类（220-1314）与 ~1760 行模块级助手混在一起。拆为 3 个文件：
+
+| 文件 | 内容 | 行数 |
+|------|------|------|
+| `organization_plan.py` | `OrganizationPlanService` + `__all__` + 两个子模块 re-export | 1204 |
+| `organization_plan_models.py` | 9 个模型类（Status/Error/PlanSource/View/Item/ExecutionStep 等），供 service 与 helpers 共用（避免成环） | 173 |
+| `organization_plan_helpers.py` | 51 个模块级助手：payload 构建（`_build_payload`/`_execution_payload`）、校验（`_validate_*`）、可执行步骤（`load_executable_steps`/`_parse_executable_steps`）、快照（`_load_source_snapshot`/`_source_snapshot_changed`） | 1758 |
+
+**要点**：
+- 助手块经 AST 验证**不引用 service 内部状态**，可独立提取
+- 模型移入共享模块后三处异常类同一性断言通过
+- 唯一外部 import 的私有助手 `_execution_blockers`（仅测试用）迁移测试至 `organization_plan_helpers` 直连导入
+- `__all__` 11 个公开名字原样保留；153 个 organization 测试 + `scripts/verify.sh` 全绿
+
+**阶段 D 完成**：strm_manifest（1432→934）、search（2461→1948）、organization_plan（3078→1204）三个巨型文件全部拆分。
+
+## 阶段 C 决策：scope 声明式化不落地（安全契约已被测试锁定）
+
+`_required_scope` 手工前缀表仍有 173 路由中 153 个依赖（仅 20 个用 `require_scope` 装饰器）。评估后**不做全量声明式转换**：
+
+1. **fail-closed 已生效**：未映射路径抛 403（`test_unknown_api_path_is_fail_closed_not_default_scope`）
+2. **全量枚举已锁定**：`test_all_registered_api_routes_have_an_explicit_scope` 枚举 app 全部 `/api/v1` 路由，断言每个都有显式 scope——新增路由漏配立即失败
+3. **一致性已锁定**：`test_require_scope_routes_are_consistent_with_global_mapping` 校验装饰器声明与全局表一致
+
+**决策**：转换为全量 `@require_scope` 装饰器（需改动 security.py + 全部 api 文件）不增加任何安全收益，且安全相关 churn 风险高。与阶段 A/B 同理，**保留手工表 + 测试契约**，从待办移除。**治理计划四阶段（A/B/C/D）全部收敛。**
+
 ## 待评估（依赖 transport 能力）
 
 - **`_delete_small_files` 删除前复核 size**（`organization_automation.py`）：live listing 的 `C03RemoteEntry` 不含 size 字段，transport 层未解析 115 响应的文件大小。有效实现需要 (a) 验证 115 响应 size 字段名、(b) 扩展 `C03RemoteEntry` + `_normalize_list_entry`。在当前 transport 能力下无法低成本落地，依赖后续 transport 扩展，暂记录不做。
