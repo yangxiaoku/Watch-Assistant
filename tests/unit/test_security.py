@@ -2,7 +2,9 @@ import pytest
 from pwdlib import PasswordHash
 from starlette.requests import Request
 
+from tests.unit.factories import make_security_manager
 from watch_assistant.security import (
+    AGENT_SCOPES,
     AuthError,
     SecurityManager,
     _client_host,
@@ -322,6 +324,13 @@ async def test_require_api_auth_fails_closed_without_manager(tmp_path):
     assert response.json()["detail"] == "auth_unavailable"
 
 
+def _noop_aclose():
+    return None
+
+
+_ALL_SCOPE_VALUES = frozenset(AGENT_SCOPES)
+
+
 def _scope_request(method: str, path: str) -> Request:
     return Request(
         {
@@ -375,3 +384,52 @@ def test_imports_and_webhook_writes_require_explicit_write_scope():
     assert _required_scope(_scope_request("POST", "/api/v1/imports")) == "organize:execute"
     assert _required_scope(_scope_request("POST", "/api/v1/webhooks/webhook-1/test")) == "settings:write"
     assert _required_scope(_scope_request("DELETE", "/api/v1/webhooks/webhook-1")) == "settings:write"
+
+
+@pytest.mark.asyncio
+async def test_all_registered_api_routes_have_an_explicit_scope(tmp_path):
+    """所有注册的 API 路由都必须被 _required_scope 显式映射,不得落入
+    fail-closed 兜底(否则新增端点漏配会被静默拒绝)。这是对
+    security._required_scope 前缀表的全量不变量校验。"""
+
+    from cryptography.fernet import Fernet
+
+    from watch_assistant.app import create_app
+    from watch_assistant.crypto import SecretCrypto
+    from watch_assistant.db import create_database, initialize_database
+
+    database = create_database(
+        f"sqlite+aiosqlite:///{tmp_path / 'scope-all-routes.db'}"
+    )
+    await initialize_database(database.engine)
+    app = create_app(
+        database=database,
+        crypto=SecretCrypto(Fernet.generate_key().decode("ascii")),
+        tmdb_client=type("T", (), {"aclose": lambda self: _noop_aclose()})(),
+        pansou_client=type("P", (), {"aclose": lambda self: _noop_aclose()})(),
+        security_manager=make_security_manager(),
+        frontend_dir=tmp_path / "missing",
+    )
+
+    unmapped: list[str] = []
+    for route in app.routes:
+        path = getattr(route, "path", None)
+        methods = getattr(route, "methods", None)
+        if not isinstance(path, str) or not path.startswith("/api/v1"):
+            continue
+        if not methods:
+            continue
+        for method in methods:
+            if method in {"HEAD", "OPTIONS"}:
+                continue
+            request = _scope_request(method, path)
+            try:
+                scope = _required_scope(request)
+                assert scope in _ALL_SCOPE_VALUES, f"非法 scope {scope!r}"
+            except AuthError:
+                unmapped.append(f"{method} {path}")
+            except Exception as error:  # noqa: BLE001
+                unmapped.append(f"{method} {path} ({type(error).__name__})")
+
+    await database.engine.dispose()
+    assert not unmapped, "以下路由未映射 scope:\n" + "\n".join(sorted(unmapped))
