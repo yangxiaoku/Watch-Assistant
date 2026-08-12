@@ -98,9 +98,18 @@
 
 **教训**：重复代码统一前必须先核对语义漂移，不能只看函数名相同。`safe_identity` 之所以成功统一，是因为 4 份定义中 3 份语义一致（严格版），统一收益明确；`_as_utc` 语义差异大，保持各自实现更安全。
 
-## 观察：verify.sh 分 shard 偶发 flaky
+## 已执行：STRM 模块重复函数统一
 
-`scripts/verify.sh` 把集成测试按文件分 shard 并行（`max_parallel=4`）运行时，偶发出现单个 shard 失败，但直接全量跑 `tests/integration`（442 通过）和串行重跑均通过。疑为多个 pytest 进程并发时的资源竞争（共享 `__pycache__`/临时文件）。**非本次改动引入**（scope 改动不涉及测试并发），建议后续排查是否为既有 flaky 或 verify.sh 分 shard 机制问题。
+在 `_as_utc` 回退后，遵循"定义完全一致才统一"原则，统一了 STRM 模块中**语义无漂移**的 4 组重复函数到 `services/strm_path.py`：
+- `_absolute_path`/`_same_path`（strm_manifest/strm_cleanup_plan/strm_verification，定义一致）
+- `_valid_id`（上述 3 模块 + empty_directory_cleanup_plan，定义一致）
+- `_has_symlink_component`（strm_cleanup_plan/strm_verification，定义一致）
+
+**未统一**（语义差异大）：`_safe_prefix`（抛不同模块异常）、`_candidates`（字段集/错误码不同）、`_readable_root`（异常类型 + 赋值差异）。这些"相似但不相同"，保持各自实现。
+
+## 观察：verify.sh 分 shard 偶发 flaky（已定位）
+
+`scripts/verify.sh` 分 shard 并行偶发失败，已定位根因：`test_client_factory_timeout_closes_late_client`（固定 0.4s 轮询窗口在 4 进程负载下不足）。已改为 `wait_for(5s)` + 以结果为准的轮询，连续多次通过。
 
 ## 待评估（依赖 transport 能力）
 
