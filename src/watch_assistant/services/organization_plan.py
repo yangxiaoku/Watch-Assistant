@@ -25,6 +25,7 @@ from watch_assistant.library_models import (
     OrganizationPlan,
 )
 from watch_assistant.models import OrganizationOperation
+from watch_assistant.services.identity import safe_identity as _safe_identity
 from watch_assistant.services.library_index import (
     LibraryIndexError,
     ScanRunState,
@@ -2532,18 +2533,6 @@ def _load_source_snapshot(
                 return None
             seen_companions.add(companion_key)
     return parsed
-
-
-def _safe_identity(value: object) -> bool:
-    return (
-        isinstance(value, str)
-        and bool(value)
-        and len(value) <= 128
-        and "\x00" not in value
-        and "/" not in value
-        and "\\" not in value
-        and "://" not in value
-    )
 
 
 def _load_json_list(value: object) -> list[object]:

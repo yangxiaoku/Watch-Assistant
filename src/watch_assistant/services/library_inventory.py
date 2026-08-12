@@ -17,6 +17,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Literal
 
+from watch_assistant.services.identity import safe_identity as _safe_identity
 from watch_assistant.services.media_parser import (
     MediaParseResult,
     parse_media_filename,
@@ -522,18 +523,6 @@ def _normalize_title(value: str | None) -> str | None:
 
 def _normalize_exact_identity(value: str) -> str:
     return value.casefold()
-
-
-def _safe_identity(value: object, *, max_length: int) -> bool:
-    return (
-        isinstance(value, str)
-        and bool(value)
-        and len(value) <= max_length
-        and "\x00" not in value
-        and "/" not in value
-        and "\\" not in value
-        and "://" not in value
-    )
 
 
 def _utc(value: datetime) -> datetime:

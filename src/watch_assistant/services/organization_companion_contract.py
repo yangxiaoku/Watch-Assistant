@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
+from watch_assistant.services.identity import safe_identity as _safe_identity
 from watch_assistant.services.organization_execution_contract import (
     OrganizationStepCheck,
     OrganizationStepCheckResult,
@@ -249,17 +250,6 @@ def _valid_state(value: object) -> bool:
         and _safe_identity(value.object_id)
         and _safe_identity(value.parent_id)
         and _safe_name(value.name)
-    )
-
-
-def _safe_identity(value: object) -> bool:
-    return (
-        isinstance(value, str)
-        and bool(value)
-        and len(value) <= 128
-        and value.isascii()
-        and not any(character.isspace() for character in value)
-        and not any(marker in value for marker in ("/", "\\", "\x00", "://"))
     )
 
 
