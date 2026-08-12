@@ -3,7 +3,7 @@
 import asyncio
 import json
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
@@ -71,6 +71,11 @@ PARTIAL_CACHE_AGE = timedelta(minutes=10)
 STALE_CACHE_AGE = timedelta(days=7)
 MAX_SNAPSHOT_MAGNETS = 500
 LEGACY_MAGNET_LIMIT = 30
+# 进程内搜索锁/任务缓存的上限:长跑实例浏览大量影视时,这些 dict 只增不减
+# 会导致内存无界增长。超限时淘汰最旧条目;正在运行/排队中的资源搜索任务
+# 单独保护,不淘汰(否则丢失对在途任务的状态跟踪)。
+_SEARCH_LOCK_CACHE_MAX = 512
+_RESOURCE_SEARCH_TASK_CACHE_MAX = 256
 
 
 class SearchUnavailable(RuntimeError):
@@ -151,6 +156,50 @@ def make_cache_key(
 ) -> str:
     season = "" if season_number is None else f":season:{season_number}"
     return f"tmdb:{media_type.value}:{tmdb_id}{season}:queries:v5"
+
+
+def _bounded_setdefault[K, V](
+    cache: dict[K, V],
+    key: K,
+    factory: Callable[[], V],
+    max_entries: int,
+) -> V:
+    """setdefault + 容量上限:超限时淘汰最旧条目,防止长跑实例内存无界增长。
+
+    ``max_entries`` 为 0 表示不设上限(测试常用空 dict 直连)。
+    """
+    if key in cache:
+        return cache[key]
+    if max_entries > 0 and len(cache) >= max_entries:
+        oldest = next(iter(cache))
+        cache.pop(oldest, None)
+    value = factory()
+    cache[key] = value
+    return value
+
+
+def _bounded_set[K, V](
+    cache: dict[K, V],
+    key: K,
+    value: V,
+    max_entries: int,
+    *,
+    protect: Callable[[V], bool] | None = None,
+) -> None:
+    """受保护容量写入:超限时优先淘汰最旧且未被 protect 保护的值。
+
+    用于 ``_resource_search_tasks``:running/queued 的在途任务不能被淘汰。
+    """
+    cache[key] = value
+    if max_entries <= 0 or len(cache) <= max_entries:
+        return
+    for candidate in list(cache):
+        if candidate == key:
+            continue
+        if protect is not None and protect(cache[candidate]):
+            continue
+        cache.pop(candidate, None)
+        return
 
 
 class SearchService:
@@ -343,7 +392,9 @@ class SearchService:
         refresh: bool = False,
     ) -> ResourceSearchResponse:
         key = (media_type, tmdb_id, season_number)
-        lock = self._resource_search_start_locks.setdefault(key, asyncio.Lock())
+        lock = _bounded_setdefault(
+            self._resource_search_start_locks, key, asyncio.Lock, _SEARCH_LOCK_CACHE_MAX
+        )
         async with lock:
             return await self._start_resource_search_locked(
                 tmdb_id,
@@ -368,7 +419,13 @@ class SearchService:
             existing = await self._load_latest_resource_search_task(key)
             restored = existing is not None
         if existing is not None and existing.status in {"queued", "running"}:
-            self._resource_search_tasks[key] = existing
+            _bounded_set(
+                self._resource_search_tasks,
+                key,
+                existing,
+                _RESOURCE_SEARCH_TASK_CACHE_MAX,
+                protect=lambda task: task.status in {"queued", "running"},
+            )
             if restored:
                 asyncio.create_task(
                     self._run_resource_search(existing), name=existing.task_id
@@ -404,7 +461,13 @@ class SearchService:
             cache_age_seconds=cache_age_seconds,
             selected_season=season_number,
         )
-        self._resource_search_tasks[key] = task
+        _bounded_set(
+            self._resource_search_tasks,
+            key,
+            task,
+            _RESOURCE_SEARCH_TASK_CACHE_MAX,
+            protect=lambda task: task.status in {"queued", "running"},
+        )
         await self._save_resource_search_task(task)
         if snapshot_revision is None:
             asyncio.create_task(self._run_resource_search(task), name=task.task_id)
@@ -422,7 +485,13 @@ class SearchService:
             if task is None:
                 return None
             key = (task.media_type, task.tmdb_id, task.season_number)
-            self._resource_search_tasks[key] = task
+            _bounded_set(
+            self._resource_search_tasks,
+            key,
+            task,
+            _RESOURCE_SEARCH_TASK_CACHE_MAX,
+            protect=lambda task: task.status in {"queued", "running"},
+        )
             if task.status in {"queued", "running"}:
                 asyncio.create_task(self._run_resource_search(task), name=task.task_id)
         if task.status in {"ready", "failed"}:
@@ -440,8 +509,9 @@ class SearchService:
         await self._save_resource_search_task(task)
         try:
             # 搜索总预算:多源(panSou 插件/prowlarr/备用标题回退)串行轮次
-            # 可能叠加到数分钟;超过 90s 即放弃本轮,返回已缓存结果或失败,
-            # 避免用户长时间等待。
+            # 可能叠加到数分钟;超过 90s 即放弃本轮并标记失败,避免用户
+            # 长时间等待。此时 SearchCache 表未被本轮覆盖,前端资源列表
+            # 仍可读到上一轮成功的缓存,不会出现空数据。
             response = await asyncio.wait_for(
                 self.search(
                     task.tmdb_id,
@@ -487,8 +557,12 @@ class SearchService:
     def _resource_search_lock(self, task_id: str) -> asyncio.Lock:
         lock = self._resource_search_finalize_locks.get(task_id)
         if lock is None:
-            lock = asyncio.Lock()
-            self._resource_search_finalize_locks[task_id] = lock
+            lock = _bounded_setdefault(
+                self._resource_search_finalize_locks,
+                task_id,
+                asyncio.Lock,
+                _SEARCH_LOCK_CACHE_MAX,
+            )
         return lock
 
     async def _load_latest_resource_search_task(
@@ -578,7 +652,9 @@ class SearchService:
         if not policy.media_visible(media.adult):
             return SearchResponse(movie=media, results=[], hidden_total=0)
         lock_key = (media.media_type, media.tmdb_id)
-        lock = self._search_locks.setdefault(lock_key, asyncio.Lock())
+        lock = _bounded_setdefault(
+            self._search_locks, lock_key, asyncio.Lock, _SEARCH_LOCK_CACHE_MAX
+        )
         async with lock:
             return await self._search_locked(
                 media,
@@ -590,7 +666,9 @@ class SearchService:
 
     async def warm_media(self, media: MovieMetadata) -> bool:
         lock_key = (media.media_type, media.tmdb_id)
-        lock = self._search_locks.setdefault(lock_key, asyncio.Lock())
+        lock = _bounded_setdefault(
+            self._search_locks, lock_key, asyncio.Lock, _SEARCH_LOCK_CACHE_MAX
+        )
         async with lock:
             try:
                 response = await self._search_locked(
@@ -1343,8 +1421,11 @@ class SearchService:
                 )
                 return
             normalized = self._normalize_prowlarr_results(successful, now)
-            lock = self._search_locks.setdefault(
-                (media.media_type, media.tmdb_id), asyncio.Lock()
+            lock = _bounded_setdefault(
+                self._search_locks,
+                (media.media_type, media.tmdb_id),
+                asyncio.Lock,
+                _SEARCH_LOCK_CACHE_MAX,
             )
             async with lock, self._session_factory() as session:
                 cache = await session.get(SearchCache, cache_key)

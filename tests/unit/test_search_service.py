@@ -544,3 +544,63 @@ async def test_negative_cache_snapshot_does_not_block_re_search():
         assert age is None
     finally:
         await database.engine.dispose()
+
+
+def test_search_lock_cache_is_bounded():
+    """长跑实例浏览大量影视时,进程内搜索锁 dict 只增不减会导致内存无界
+    增长;容量上限必须生效,淘汰最旧条目。"""
+    from watch_assistant.services.search import (
+        _SEARCH_LOCK_CACHE_MAX,
+        _bounded_setdefault,
+    )
+
+    cache: dict[tuple[str, int], object] = {}
+    for index in range(_SEARCH_LOCK_CACHE_MAX + 10):
+        _bounded_setdefault(
+            cache, ("media", index), asyncio.Lock, _SEARCH_LOCK_CACHE_MAX
+        )
+    assert len(cache) == _SEARCH_LOCK_CACHE_MAX
+
+
+def test_resource_search_task_cache_protects_in_flight_tasks():
+    """资源搜索任务缓存的容量淘汰不得丢正在运行/排队中的在途任务。"""
+    from watch_assistant.services.search import (
+        _RESOURCE_SEARCH_TASK_CACHE_MAX,
+        _bounded_set,
+    )
+
+    class _FakeTask:
+        def __init__(self, task_id: str, status: str):
+            self.task_id = task_id
+            self.status = status
+
+    cache: dict[str, _FakeTask] = {}
+    for index in range(_RESOURCE_SEARCH_TASK_CACHE_MAX):
+        _bounded_set(
+            cache,
+            f"key-{index}",
+            _FakeTask(f"task-{index}", "ready"),
+            _RESOURCE_SEARCH_TASK_CACHE_MAX,
+            protect=lambda task: task.status in {"queued", "running"},
+        )
+    # 全部是 ready,新插入一个 running 必须保留,淘汰一个 ready
+    _bounded_set(
+        cache,
+        "key-inflight",
+        _FakeTask("task-inflight", "running"),
+        _RESOURCE_SEARCH_TASK_CACHE_MAX,
+        protect=lambda task: task.status in {"queued", "running"},
+    )
+    assert len(cache) == _RESOURCE_SEARCH_TASK_CACHE_MAX
+    assert "key-inflight" in cache  # running 任务不被淘汰
+
+    # 再插入一个 ready,仍然保留 running
+    _bounded_set(
+        cache,
+        "key-extra",
+        _FakeTask("task-extra", "ready"),
+        _RESOURCE_SEARCH_TASK_CACHE_MAX,
+        protect=lambda task: task.status in {"queued", "running"},
+    )
+    assert "key-inflight" in cache
+    assert "key-extra" in cache
