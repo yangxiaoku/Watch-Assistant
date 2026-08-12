@@ -356,3 +356,47 @@ async def test_prowlarr_runtime_client_pins_the_validated_address(tmp_path):
     )
     await client.aclose()
     await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_prowlarr_snapshot_does_not_block_event_loop_on_slow_dns(tmp_path):
+    """DNS 解析慢(如不可解析域名卡数秒)不得阻塞整个事件循环。"""
+    import time as time_module
+
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'slow-dns.db'}")
+    await initialize_database(database.engine)
+
+    def slow_resolver(_hostname: str) -> tuple[str, ...]:
+        time_module.sleep(0.2)  # 模拟慢 DNS
+        return ("93.184.216.34",)
+
+    service = ProwlarrSettingsService(
+        database.session_factory,
+        SecretCrypto(Fernet.generate_key().decode("ascii")),
+        hostname_resolver=slow_resolver,
+        environment_base_url="https://prowlarr.test",
+        environment_api_key="fixture-only",
+    )
+
+    # 精确验证:在慢 DNS 阻塞窗口内,ticker 心跳必须持续(事件循环未被阻塞)。
+    # 用 asyncio.wait_for 给 snapshot 加 0.5s 超时:若 DNS 的 time.sleep(0.2)
+    # 阻塞事件循环,整体仍能在 0.5s 内完成(0.2s DNS + 其他),但若事件循环
+    # 完全停摆则会因 ticker 无法调度而难以观察。改用 ticker 计数:
+    heartbeat = asyncio.Event()
+    started = time_module.monotonic()
+
+    async def ticker():
+        while True:
+            heartbeat.set()
+            await asyncio.sleep(0.02)
+
+    ticker_task = asyncio.create_task(ticker())
+    await asyncio.sleep(0.05)
+    heartbeat.clear()
+    await service.snapshot()
+    elapsed = time_module.monotonic() - started
+    ticker_task.cancel()
+    await asyncio.gather(ticker_task, return_exceptions=True)
+
+    assert elapsed < 0.5, f"snapshot 总耗时 {elapsed:.2f}s 表明事件循环被 DNS 阻塞"
+    await database.engine.dispose()

@@ -117,7 +117,7 @@ class ProwlarrSettingsService:
     async def snapshot(self) -> dict[str, object]:
         async with self._mutation_lock, self._session_factory() as session:
             settings = await self._get_or_create(session)
-            values = self._effective_values(settings)
+            values = await self._effective_values_async(settings)
         response = {
             "source": values["source"],
             "enabled": values["enabled"],
@@ -134,7 +134,7 @@ class ProwlarrSettingsService:
     async def runtime_client(self) -> ProwlarrClient | None:
         async with self._mutation_lock, self._session_factory() as session:
             settings = await self._get_or_create(session)
-            values = self._effective_values(settings)
+            values = await self._effective_values_async(settings)
         return await self._new_client(values)
 
     async def update(
@@ -154,7 +154,8 @@ class ProwlarrSettingsService:
                     raise ProwlarrSettingsConflict
                 next_revision = settings.revision
                 if "base_url" in fields_set:
-                    settings.managed_prowlarr_base_url = _normalize_base_url(
+                    settings.managed_prowlarr_base_url = await asyncio.to_thread(
+                        _normalize_base_url,
                         base_url,
                         hostname_resolver=self._hostname_resolver,
                         allowed_private_addresses=self._allowed_private_addresses,
@@ -168,7 +169,9 @@ class ProwlarrSettingsService:
                 if "enabled" in fields_set:
                     settings.managed_prowlarr_enabled = enabled
                 if fields_set:
-                    await self._validate_candidate(self._effective_values(settings))
+                    await self._validate_candidate(
+                        await self._effective_values_async(settings)
+                    )
                     settings.managed_prowlarr_updated_at = datetime.now(UTC)
                     settings.revision += 1
                     try:
@@ -179,7 +182,9 @@ class ProwlarrSettingsService:
             runtime_cancelled = await self._apply_runtime_consistently()
             if fields_set:
                 self._health.reset(
-                    configured=bool(self._effective_values(settings)["configured"])
+                    configured=bool(
+                        (await self._effective_values_async(settings))["configured"]
+                    )
                 )
         if commit_cancelled or runtime_cancelled:
             raise asyncio.CancelledError
@@ -298,6 +303,15 @@ class ProwlarrSettingsService:
                 cancelled = True
         await runtime_task
         return cancelled or bool(asyncio.current_task().cancelling())
+
+    async def _effective_values_async(
+        self, settings: ApplicationSettings
+    ) -> dict[str, object]:
+        """``_effective_values`` 的异步版本:DNS 解析(默认 ``_resolve_hostname``
+        的 ``socket.getaddrinfo``)可能阻塞数秒,必须在线程池执行,否则配置了
+        不可解析域名时整个事件循环被卡住(snapshot/runtime_client/update 都会)。
+        """
+        return await asyncio.to_thread(self._effective_values, settings)
 
     def _effective_values(self, settings: ApplicationSettings) -> dict[str, object]:
         managed_key = self._decrypt(settings.managed_prowlarr_api_key_encrypted)
