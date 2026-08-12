@@ -209,8 +209,8 @@
 - **L1** `manual_import.py:38-39`：resource_conflict 422 应 409 — ✅ 已修复（`codex/l-series-fixes`），回归 `test_confirm_import_resource_conflict_maps_to_409`
 - **L2** `pwa.py:51-55`：pwa_device_conflict 422 应 409 — ✅ 已修复，回归 `test_pwa_http_error_maps_device_conflict_to_409`
 - **L3** `search.py:193`：page 无上限，建议 le=10000；`search.py:198-199` 重复校验死代码 — ✅ 已修复 page 加 `le=10000`；**保留** page_size 显式校验（实测 Query enum 不拦截 page_size=30，非死代码，回归测试锁定 422）
-- **L4** `tmdb.py:466-478`：Retry-After 无上限、page 无正整数校验；`tmdb.py:437-498` 无响应体上限
-- **L5** `prowlarr.py:418-440`：downloadUrl 未校验路径前缀；`prowlarr.py:457-465` 兜底 GET 无响应体上限
+- **L4** `tmdb.py:466-478`：Retry-After 无上限、page 无正整数校验；`tmdb.py:437-498` 无响应体上限 — ✅ 已修复（`codex/l-series-fixes-2`）：Retry-After 上限 30s、page 正整数校验、响应体上限 10MB
+- **L5** `prowlarr.py:418-440`：downloadUrl 未校验路径前缀；`prowlarr.py:457-465` 兜底 GET 无响应体上限 — ✅ 已修复：downloadUrl 必须落在 `/dl/` 或 `/download` 下载路径（防同 host SSRF + API Key 泄漏）、兜底 GET 响应体上限 1MB
 - **L6** `p115.py:282-293`：get_status 超时不丢弃 client；串行 101 页
 - **L7** `cli.py:784`：strm generate `--full` 死参数 — ✅ 已修复（去掉 `required=True`，参数兼容已文档用法；handler 本就按 strm_command 分派）
 - **L8** `config.py:63-65`：script_token_hash 全局全权限；`config.py:75` cookie_secure 默认 False；`security.py:457-485` 限流覆盖不全
@@ -218,9 +218,11 @@
 - **L10** 死代码：`media_classification.plan_batch`、`media_matcher.MatchStatus.AUTO_ACCEPTED`、`strm_operations._commit`、`p115_library_gateway.MAX_SCOPE_VERIFICATION_PAGES`（前端 `PwaDevice` 类型）
 - **L11** 无界内存：`_CLAIM_LOCKS`（strm_operations.py:48）、`_search_locks`/`_resource_search_tasks`（search.py:191-198）、`_locks`（season_metadata.py:39）
 - **L12** `notifications.py:172-204`：通知去重 TOCTOU；`webhooks.py:261-284` publish_due 无原子认领；`workflows.py:855-866` workflow_id NULL 去重失效
+  - webhook 部分 **已解决**：`_deliver` 已有原子认领（条件 UPDATE status==pending→in_flight + rowcount 检查），并发 publish_due 不会重复 POST。
+  - notifications/workflow 部分 **暂缓**：需唯一约束（dedupe_key / 非 NULL workflow_id）+ 迁移，影响仅为重复通知/证据行（L 级低危），风险/收益不划算。
 - **L13** 前端：`App.vue:1061-1068` 超时后来源/缓存摘要不更新；`App.vue:1628-1629` 推送能力告警不对称；`polling.ts:30` pollUntil 默认 isDone 陷阱；B2-B5（loading 死分支、深链分页夹紧、returnToBrowse 残留、strm skipped 标签）
 - **L14** `app.py`：后台 worker 启动失败无告警（与 M4 同源）；`organization_scheduler.py` `_manual_runs` 无界、run_forever 无异常隔离 — ✅ 部分修复（`codex/l-series-fixes`）：`_manual_runs` 设上限（32）+ run_forever 异常隔离/指数退避；回归 `test_manual_run_queue_is_capped`、`test_run_forever_survives_run_once_exception`。app.py worker 启动告警与 M4 同源，归 audit-sec 会话
-- **L15** `managed_directory_ownership.py:252-280`：_transition 无 CAS；`organization_history.py:76-87` OFFSET 分页无留存清理；`organization_executor.py:810-818` 历史 source/target 取首个成员
+- **L15** `managed_directory_ownership.py:252-280`：_transition 无 CAS — ✅ 已修复（`codex/l-series-fixes-2`）：原子 CAS 迁移 + 并发幂等返回，回归 `test_concurrent_transitions_do_not_lose_revision`。`organization_history.py:76-87` OFFSET 分页无留存清理、`organization_executor.py:810-818` 历史 source/target 取首个成员 — **暂缓**：留存策略（按时间/条数）与多目录移动的历史归属是产品设计决策，L 级低危
 
 ---
 

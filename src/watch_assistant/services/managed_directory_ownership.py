@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -267,14 +267,35 @@ class ManagedDirectoryOwnershipService:
                 ManagedDirectoryOwnershipStatus.RECYCLED.value,
             }:
                 raise ManagedDirectoryOwnershipError("directory_ownership_unavailable")
-            record.status = target
-            record.revision += 1
-            record.updated_at = current_time
-            record.recycled_at = (
-                current_time
-                if target == ManagedDirectoryOwnershipStatus.RECYCLED.value
-                else None
+            # L15: 原子 CAS 迁移,避免读-改-写并发下 status/revision 覆盖丢失。
+            result = await session.execute(
+                update(ManagedDirectoryOwnership)
+                .where(
+                    ManagedDirectoryOwnership.directory_id == directory_id,
+                    ManagedDirectoryOwnership.revision == record.revision,
+                )
+                .values(
+                    status=target,
+                    revision=record.revision + 1,
+                    updated_at=current_time,
+                    recycled_at=(
+                        current_time
+                        if target == ManagedDirectoryOwnershipStatus.RECYCLED.value
+                        else None
+                    ),
+                )
+                .execution_options(synchronize_session=False)
             )
+            if result.rowcount != 1:
+                await session.rollback()
+                concurrent = await session.get(
+                    ManagedDirectoryOwnership, directory_id
+                )
+                if concurrent is not None and concurrent.status == target:
+                    return _view(concurrent)
+                raise ManagedDirectoryOwnershipError(
+                    "directory_ownership_unavailable"
+                )
             await session.commit()
             await session.refresh(record)
             return _view(record)

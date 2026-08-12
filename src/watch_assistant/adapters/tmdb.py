@@ -65,6 +65,10 @@ class TmdbRateLimitedError(TmdbError):
 # 429/5xx 的有界重试次数与指数退避基数(1s → 2s)。
 _TMDB_RETRY_ATTEMPTS = 3
 _TMDB_BACKOFF_BASE = 1.0
+# L4: Retry-After 上限,避免恶意/异常大值把重试 sleep 拖到无界。
+_TMDB_RETRY_AFTER_MAX_SECONDS = 30.0
+# L4: 响应体上限,防无界内存(富化批量请求逐条解析,异常大响应不应全量进内存)。
+_TMDB_RESPONSE_BYTES_MAX = 10 * 1024 * 1024
 # 候选详情富化的并发上限:每个候选 2 个详情请求(zh + en),
 # 并发 4 个候选 ≈ 8 个在途请求,配合 _get 内的 429 退避重试
 # 既能显著缩短串行富化的耗时,又不至于打满免费配额(约 40 req/10s)。
@@ -472,7 +476,10 @@ class TmdbClient:
                     seconds: float | None = None
                     if retry_after is not None:
                         try:
-                            seconds = max(0.0, float(retry_after))
+                            seconds = min(
+                                _TMDB_RETRY_AFTER_MAX_SECONDS,
+                                max(0.0, float(retry_after)),
+                            )
                         except ValueError:
                             seconds = None
                     if attempt + 1 < _TMDB_RETRY_ATTEMPTS:
@@ -492,6 +499,16 @@ class TmdbClient:
                     continue
                 raise TmdbError("TMDB request failed") from exc
 
+            # L4: page 参数必须为正整数;响应体上限防无界内存。
+            page_value = (params or {}).get("page")
+            if page_value is not None and (
+                not isinstance(page_value, int)
+                or isinstance(page_value, bool)
+                or page_value < 1
+            ):
+                raise TmdbError("Invalid TMDB page parameter")
+            if len(response.content) > _TMDB_RESPONSE_BYTES_MAX:
+                raise TmdbError("TMDB response too large")
             try:
                 payload = response.json()
             except ValueError as exc:

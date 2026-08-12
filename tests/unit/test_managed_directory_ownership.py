@@ -6,6 +6,7 @@ from sqlalchemy import inspect
 
 from watch_assistant.db import create_database, initialize_database
 from watch_assistant.library_models import (
+    ManagedDirectoryOwnership,
     ManagedDirectoryOwnershipStatus,
     MediaLibrary,
 )
@@ -150,5 +151,42 @@ async def test_migration_creates_ownership_table(tmp_path: Path):
                 )
             )
         assert exists
+    finally:
+        await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_transitions_do_not_lose_revision(tmp_path: Path):
+    """L15:_transition 必须原子 CAS。并发同目标 transition 只允许一次
+    revision 递增,不因读-改-写覆盖丢失累加。"""
+    import asyncio
+
+    database, service = await _service(tmp_path)
+    try:
+        created = await service.register_created(
+            directory_id="300",
+            library_id="library-1",
+            parent_directory_id="200",
+            name="空目录",
+            relative_path="受管来源/空目录",
+            operation_id="op-directory-cas",
+        )
+        results = await asyncio.gather(
+            *(service.mark_recycled(
+                directory_id="300",
+                library_id="library-1",
+                parent_directory_id="200",
+                name="空目录",
+                relative_path="受管来源/空目录",
+            ) for _ in range(4)),
+            return_exceptions=True,
+        )
+        assert not any(isinstance(r, BaseException) for r in results), results
+        async with database.session_factory() as session:
+            row = await session.get(ManagedDirectoryOwnership, "300")
+            assert row is not None
+            assert row.status == ManagedDirectoryOwnershipStatus.RECYCLED.value
+            # 并发同目标 transition 只成功一次递增,revision 不叠加。
+            assert row.revision == created.revision + 1
     finally:
         await database.engine.dispose()

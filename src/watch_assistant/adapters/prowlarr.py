@@ -122,6 +122,8 @@ _DEFAULT_PAGE_SIZE = 25
 # to keep a large result set from stalling the search.
 _MAX_RESOLVED_DOWNLOADS = 20
 _MAX_TEXT_LENGTH = 500
+# L5: 下载解析兜底 GET 的响应体上限,防无界内存。
+_DOWNLOAD_BODY_MAX = 1 * 1024 * 1024
 _MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 _MAX_JSON_DEPTH = 12
 _MAX_JSON_ITEMS = 2048
@@ -214,6 +216,7 @@ class ProwlarrClient:
             self._base_port = base_parsed.port
         except ValueError:
             self._base_port = None
+        self._base_path = base_parsed.path.rstrip("/")
         if client is None:
             transport = (
                 _PinnedAsyncHTTPTransport(resolved_address)
@@ -432,6 +435,16 @@ class ProwlarrClient:
             return False
         if (parsed.scheme or "http").casefold() != self._base_scheme:
             return False
+        # L5: downloadUrl 必须落在 Prowlarr 下载路径上(Prowlarr 下载代理
+        # 有 /dl/<hash> 与 /<id>/download 两种真实格式),防止索引器返回同
+        # host 的其他路径(如 /api/...)触发受限 SSRF + API Key 泄漏。
+        base = self._base_path or ""
+        download_path = (
+            parsed.path.startswith(f"{base}/dl/")
+            or parsed.path.endswith("/download")
+        )
+        if not download_path:
+            return False
         default_port = 443 if self._base_scheme == "https" else 80
         url_port = port if port is not None else default_port
         base_port = self._base_port
@@ -460,6 +473,8 @@ class ProwlarrClient:
                 timeout=self._timeout,
                 follow_redirects=False,
             )
+            if len(response.content) > _DOWNLOAD_BODY_MAX:
+                return None
             return _infohash_from_magnet(response.text) or None
         except Exception:  # noqa: BLE001 - download resolution stays optional
             return None
