@@ -831,6 +831,32 @@ class OrganizationSettingsPatch(BaseModel):
     revision: int = Field(ge=0)
 
 
+class P115CheckInSettingsResponse(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    enabled: bool
+    check_in_time: str
+
+
+class P115CheckInSettingsPatch(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    enabled: bool
+    check_in_time: str = Field(
+        default="00:05", pattern=r"^([01]\d|2[0-3]):[0-5]\d$"
+    )
+
+
+class P115CheckInStatusResponse(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    enabled: bool
+    is_sign_today: bool
+    continuous_day: int = 0
+    points_num: str = ""
+    error_code: str | None = None
+
+
 class OrganizationScheduleActionResponse(BaseModel):
     model_config = {"extra": "forbid"}
 

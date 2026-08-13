@@ -325,6 +325,62 @@ async def test_inspection_setting_persists_and_is_authenticated(tmp_path):
     await database.engine.dispose()
 
 
+async def test_p115_checkin_settings_persist_and_status_fails_closed(tmp_path):
+    app, client, database, tmdb, pansou = await _app(tmp_path)
+    assert (await client.get("/api/v1/settings/p115-checkin")).status_code == 401
+    login = await client.post("/api/v1/auth/login", json={"password": WEB_PASSWORD})
+    assert login.status_code == 200
+    headers = {"X-CSRF-Token": login.json()["csrf_token"]}
+
+    current = await client.get("/api/v1/settings/p115-checkin")
+    assert current.status_code == 200
+    assert current.json() == {"enabled": False, "check_in_time": "00:05"}
+
+    patched = await client.patch(
+        "/api/v1/settings/p115-checkin",
+        json={"enabled": True, "check_in_time": "00:10"},
+        headers=headers,
+    )
+    assert patched.status_code == 200
+    assert patched.json() == {"enabled": True, "check_in_time": "00:10"}
+
+    persisted = await client.get("/api/v1/settings/p115-checkin")
+    assert persisted.json() == {"enabled": True, "check_in_time": "00:10"}
+
+    missing_csrf = await client.patch(
+        "/api/v1/settings/p115-checkin",
+        json={"enabled": False, "check_in_time": "00:05"},
+    )
+    assert missing_csrf.status_code == 403
+
+    invalid = await client.patch(
+        "/api/v1/settings/p115-checkin",
+        json={"enabled": True, "check_in_time": "25:99"},
+        headers=headers,
+    )
+    assert invalid.status_code == 422
+
+    status = await client.get("/api/v1/p115-checkin/status")
+    assert status.status_code == 200
+    body = status.json()
+    assert body["enabled"] is True
+    assert "is_sign_today" in body
+    assert "continuous_day" in body
+    assert "points_num" in body
+    if body["error_code"] is not None:
+        assert body["is_sign_today"] is False
+        assert body["error_code"] in {
+            "checkin_service_unavailable",
+            "credential_unavailable",
+            "checkin_unavailable",
+        }
+
+    await client.aclose()
+    await tmdb.aclose()
+    await pansou.aclose()
+    await database.engine.dispose()
+
+
 @pytest.mark.integration
 async def test_strm_routes_enforce_independent_flags_and_reach_service(tmp_path):
     output_root = tmp_path / "strm"

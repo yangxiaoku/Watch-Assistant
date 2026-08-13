@@ -55,6 +55,7 @@ from watch_assistant.api.organization_operation import (
     router as organization_operation_router,
 )
 from watch_assistant.api.organization_plan import router as organization_plan_router
+from watch_assistant.api.p115_checkin import router as p115_checkin_router
 from watch_assistant.api.pwa import router as pwa_router
 from watch_assistant.api.quality_profiles import router as quality_profiles_router
 from watch_assistant.api.search import router as search_router
@@ -141,6 +142,7 @@ from watch_assistant.services.organization_worker import (
     _close_client,
     _default_client_factory,
 )
+from watch_assistant.services.p115_checkin import P115CheckInService
 from watch_assistant.services.p115_credentials import (
     CompositeCookieProvider,
     CookieProvider,
@@ -1197,6 +1199,10 @@ def create_app(
                 else InventoryPushGuard(runtime_database.session_factory)
             )
             application.state.organization_cookie_provider = composite_cookie_provider
+            application.state.p115_checkin_service = P115CheckInService(
+                composite_cookie_provider,
+                event_logger=application.state.settings_service,
+            )
             application.state.p115_directory_picker_root_id = "0"
             organization_settings = await application.state.settings_service.get_organization()
             # 用户配置的 target_directory_id 是权威:115 整理的目标目录以设置为准,
@@ -1853,6 +1859,10 @@ def create_app(
         )
         composite_cookie_provider = CompositeCookieProvider(fallback_cookie_provider)
         application.state.organization_cookie_provider = composite_cookie_provider
+        application.state.p115_checkin_service = P115CheckInService(
+            composite_cookie_provider,
+            event_logger=application.state.settings_service,
+        )
         if (
             application.state.strm_playback_gateway is None
             and task_adapter is not None
@@ -2060,6 +2070,7 @@ def create_app(
     application.include_router(credentials_router)
     application.include_router(deployment_router)
     application.include_router(p115_settings_router)
+    application.include_router(p115_checkin_router)
     application.include_router(seasons_router)
     application.include_router(subtitles_router)
     application.include_router(subscriptions_router)

@@ -672,6 +672,10 @@ def _required_scope(request: Request) -> str:
         return "settings:read" if method in {"GET", "HEAD"} else "settings:write"
     if path.startswith("/api/v1/pwa"):
         return "task:read" if method in {"GET", "HEAD"} else "task:write"
+    if path.startswith("/api/v1/p115-checkin"):
+        # 签到状态是只读的;写端点走 /api/v1/settings/p115-checkin 的
+        # settings:read/settings:write 映射,此处兜底要求 settings:write。
+        return "system:read" if method in {"GET", "HEAD"} else "settings:write"
     if path.startswith("/api/v1/cache"):
         return "system:read" if method in {"GET", "HEAD"} else "settings:write"
     if path.startswith("/api/v1/logs"):

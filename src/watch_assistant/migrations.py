@@ -83,6 +83,19 @@ def _create_p115_login_devices_table(connection: Connection) -> None:
     P115LoginDevice.__table__.create(connection, checkfirst=True)
 
 
+def _add_p115_checkin_settings_column(connection: Connection) -> None:
+    columns = {
+        item["name"] for item in inspect(connection).get_columns("application_settings")
+    }
+    if "p115_checkin_settings_json" not in columns:
+        connection.execute(
+            text(
+                "ALTER TABLE application_settings "
+                "ADD COLUMN p115_checkin_settings_json TEXT NOT NULL DEFAULT '{}'"
+            )
+        )
+
+
 def _create_library_index_tables(connection: Connection) -> None:
     """Create the forward-only read/index tables for legacy SQLite databases."""
 
@@ -1488,6 +1501,7 @@ MIGRATIONS: tuple[Migration, ...] = (
         "075_retire_legacy_subscription_columns",
         _retire_legacy_subscription_columns,
     ),
+    Migration("076_p115_checkin_settings", _add_p115_checkin_settings_column),
 )
 
 

@@ -421,6 +421,34 @@ async def test_organization_settings_default_small_file_threshold_is_100mb(tmp_p
 
 
 @pytest.mark.asyncio
+async def test_p115_checkin_settings_persist_and_default(tmp_path: Path):
+    from watch_assistant.db import create_database, initialize_database
+    from watch_assistant.services.settings import SettingsService
+
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'checkin.db'}")
+    await initialize_database(database.engine)
+    service = SettingsService(
+        database.session_factory,
+        state_directory=tmp_path / "state",
+    )
+
+    default = await service.get_p115_checkin()
+    assert default.enabled is False
+    assert default.check_in_time == "00:05"
+
+    await service.set_p115_checkin(enabled=True, check_in_time="00:10")
+    stored = await service.get_p115_checkin()
+    assert stored.enabled is True
+    assert stored.check_in_time == "00:10"
+
+    async with database.session_factory() as session:
+        settings = await session.get(ApplicationSettings, "default")
+        assert settings.revision == 1
+        assert "00:10" in settings.p115_checkin_settings_json
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_concurrent_initial_logging_settings_create_one_row(tmp_path: Path):
     from watch_assistant.db import create_database, initialize_database
     from watch_assistant.services.settings import SettingsService

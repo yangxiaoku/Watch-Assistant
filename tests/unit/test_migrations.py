@@ -40,6 +40,7 @@ APPLICATION_SETTINGS_COLUMNS = {
     "revision",
     "content_policy_json",
     "organization_settings_json",
+    "p115_checkin_settings_json",
     "managed_tmdb_key_encrypted",
     "managed_tmdb_updated_at",
     "managed_p115_cookie_encrypted",
@@ -484,6 +485,65 @@ async def test_running_operation_cancel_column_migrates_legacy_table(tmp_path):
             }
         )
     assert "cancel_requested" in columns
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_p115_checkin_settings_column_migrates_legacy_table_and_preserves_data(
+    tmp_path,
+):
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'checkin-legacy.db'}")
+    migration = next(
+        migration
+        for migration in MIGRATIONS
+        if migration.id == "076_p115_checkin_settings"
+    )
+    async with database.engine.begin() as connection:
+        await connection.exec_driver_sql(
+            """
+            CREATE TABLE application_settings (
+                id VARCHAR(16) PRIMARY KEY,
+                logging_level VARCHAR(16) NOT NULL,
+                retention_days INTEGER NOT NULL,
+                max_file_mb INTEGER NOT NULL,
+                inspection_auto_start_enabled BOOLEAN NOT NULL DEFAULT 1,
+                revision INTEGER NOT NULL,
+                content_policy_json TEXT NOT NULL DEFAULT '{}',
+                organization_settings_json TEXT NOT NULL DEFAULT '{}',
+                updated_at DATETIME NOT NULL
+            )
+            """
+        )
+        await connection.exec_driver_sql(
+            """
+            INSERT INTO application_settings
+                (id, logging_level, retention_days, max_file_mb, revision, updated_at)
+            VALUES
+                ('default', 'WARNING', 30, 20, 5, CURRENT_TIMESTAMP)
+            """
+        )
+        await connection.run_sync(lambda sync: run_migrations(sync, (migration,)))
+        await connection.run_sync(lambda sync: run_migrations(sync, (migration,)))
+        columns = await connection.run_sync(
+            lambda sync: {
+                item["name"]
+                for item in inspect(sync).get_columns("application_settings")
+            }
+        )
+        row = (
+            await connection.execute(
+                text(
+                    "SELECT logging_level, retention_days, revision, "
+                    "p115_checkin_settings_json FROM application_settings "
+                    "WHERE id = 'default'"
+                )
+            )
+        ).one()
+    assert "p115_checkin_settings_json" in columns
+    assert row.logging_level == "WARNING"
+    assert row.retention_days == 30
+    assert row.revision == 5
+    assert row.p115_checkin_settings_json == "{}"
     await database.engine.dispose()
 
 

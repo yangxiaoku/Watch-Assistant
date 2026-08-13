@@ -29,6 +29,7 @@ from watch_assistant.schemas import (
     LoggingSettingsResponse,
     OrganizationSettingsPatch,
     OrganizationSettingsResponse,
+    P115CheckInSettingsResponse,
 )
 from watch_assistant.services.content_policy import (
     ContentPolicy,
@@ -1019,6 +1020,27 @@ class SettingsService:
         )
         return response
 
+    async def get_p115_checkin(self) -> P115CheckInSettingsResponse:
+        async with self._settings_lock, self._session_factory() as session:
+            settings = await self._get_or_create(session)
+            value = _p115_checkin_dict(settings)
+        return P115CheckInSettingsResponse(
+            enabled=bool(value.get("enabled", False)),
+            check_in_time=str(value.get("check_in_time") or "00:05"),
+        )
+
+    async def set_p115_checkin(self, enabled: bool, check_in_time: str) -> None:
+        async with self._settings_lock, self._session_factory() as session:
+            settings = await self._get_or_create(session)
+            value = _p115_checkin_dict(settings)
+            value["enabled"] = enabled
+            value["check_in_time"] = check_in_time
+            settings.p115_checkin_settings_json = json.dumps(
+                value, ensure_ascii=False, separators=(",", ":")
+            )
+            settings.revision += 1
+            await session.commit()
+
     @staticmethod
     def _add_audit_record(
         session: AsyncSession,
@@ -1127,6 +1149,15 @@ def _inspection_response(settings: ApplicationSettings) -> InspectionSettingsRes
         auto_start_enabled=bool(settings.inspection_auto_start_enabled),
         revision=settings.revision,
     )
+
+
+def _p115_checkin_dict(settings: ApplicationSettings) -> dict:
+    raw = settings.p115_checkin_settings_json or "{}"
+    try:
+        value = json.loads(raw)
+    except (TypeError, ValueError):
+        value = {}
+    return value if isinstance(value, dict) else {}
 
 
 def _organization_values(settings: ApplicationSettings) -> dict[str, object]:
