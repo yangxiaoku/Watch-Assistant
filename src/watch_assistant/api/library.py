@@ -1050,12 +1050,15 @@ async def apply_small_file_cleanup(
     service = getattr(request.app.state, "small_file_cleanup_service", None)
     settings = await _empty_cleanup_settings(request)
     try:
+        # 用户主动批量清理:逐文件节流用更短间隔(0.3s),避免大批量(几十个文件)
+        # 的同步请求超过客户端超时;1.5s 的 operation_delay_seconds 是给后台整理
+        # 写路径的保守节流,不适用于用户显式触发的回收。
         deleted, failed = await service.apply(
             library,
             scan_run_id=payload.source_scan_run_id,
             file_ids=payload.file_ids,
             confirm=True,
-            operation_delay_seconds=settings.operation_delay_seconds,
+            operation_delay_seconds=0.3,
         )
     except SmallFileCleanupError as error:
         status = 409 if error.code in {"snapshot_stale", "confirmation_required"} else 503
