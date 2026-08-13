@@ -18,6 +18,7 @@ from watch_assistant.models import (
     Resource,
     ResourceSearchJob,
     StrmOperation,
+    Subscription,
     Task,
     TaskState,
     Workflow,
@@ -1555,6 +1556,9 @@ async def _validate_child_ownership(
         valid = stage_name is WorkflowStageName.DISCOVERY and (
             await session.get(Resource, child_id)
         ) is not None
+    elif child_type == "subscription":
+        subscription = await session.get(Subscription, child_id)
+        valid = stage_name is WorkflowStageName.DISCOVERY and subscription is not None
     elif child_type == "resource_search":
         job = await session.get(ResourceSearchJob, child_id)
         valid = stage_name is WorkflowStageName.DISCOVERY and (

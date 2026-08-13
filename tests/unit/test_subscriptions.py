@@ -324,3 +324,36 @@ async def test_subscription_check_failure_persists_backoff_and_emits_redacted_ev
         for event, fields in events.events
     )
     await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_subscription_check_creates_linked_workflow(tmp_path):
+    """其他跨任务关联:订阅发现新资源时创建带 subscription_id 的 workflow,
+    其 DISCOVERY 阶段同步为 succeeded,在任务中心可见。"""
+    from watch_assistant.services.workflows import WorkflowService
+
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'sub-wf.db'}")
+    await initialize_database(database.engine)
+    workflow_service = WorkflowService(database.session_factory)
+    service = SubscriptionService(
+        database.session_factory,
+        FakeSearch(),
+        workflow_service=workflow_service,
+    )
+    created = await service.create(
+        SubscriptionCreateRequest(tmdb_id=123, media_type=MediaType.MOVIE)
+    )
+    checked = await service.check(created.id)
+    assert checked.new_resource_ids == ["res_match"]
+
+    workflows = await workflow_service.list()
+    linked = [wf for wf in workflows.items if wf.subscription_id == created.id]
+    assert len(linked) == 1
+    assert linked[0].tmdb_id == 123
+    discovery = next(
+        stage for stage in linked[0].stages if stage.stage.value == "discovery"
+    )
+    assert discovery.status.value == "succeeded"
+    assert discovery.child_type == "subscription"
+    assert discovery.child_id == created.id
+    await database.engine.dispose()

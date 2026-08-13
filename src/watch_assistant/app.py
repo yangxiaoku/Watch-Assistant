@@ -1077,10 +1077,16 @@ def create_app(
                 runtime_crypto,
                 share_domains=share_domains,
             )
+            application.state.workflow_service = WorkflowService(
+                runtime_database.session_factory,
+                event_logger=application.state.settings_service,
+            )
+            await application.state.workflow_service.recover_stale()
             application.state.subscription_service = SubscriptionService(
                 runtime_database.session_factory,
                 application.state.search_service,
                 event_logger=application.state.settings_service,
+                workflow_service=application.state.workflow_service,
             )
             application.state.library_scan_scheduler = LibraryScanScheduler(
                 runtime_database.session_factory,
@@ -1096,11 +1102,6 @@ def create_app(
                 runtime_database.session_factory,
                 event_logger=application.state.settings_service,
             )
-            application.state.workflow_service = WorkflowService(
-                runtime_database.session_factory,
-                event_logger=application.state.settings_service,
-            )
-            await application.state.workflow_service.recover_stale()
             application.state.notification_service = NotificationService(
                 runtime_database.session_factory,
                 event_logger=application.state.settings_service,
@@ -1737,16 +1738,17 @@ def create_app(
             crypto,
             share_domains=share_domains,
         )
+        application.state.workflow_service = WorkflowService(
+            database.session_factory,
+            event_logger=application.state.settings_service,
+        )
         application.state.subscription_service = SubscriptionService(
             database.session_factory,
             application.state.search_service,
             event_logger=application.state.settings_service,
+            workflow_service=application.state.workflow_service,
         )
         application.state.quality_profile_service = QualityProfileService(
-            database.session_factory,
-            event_logger=application.state.settings_service,
-        )
-        application.state.workflow_service = WorkflowService(
             database.session_factory,
             event_logger=application.state.settings_service,
         )

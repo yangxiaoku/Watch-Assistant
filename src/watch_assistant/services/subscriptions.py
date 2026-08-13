@@ -23,8 +23,16 @@ from watch_assistant.schemas import (
     SubscriptionResourceObservationResponse,
     SubscriptionResponse,
     SubscriptionStatus,
+    WorkflowCreateRequest,
+    WorkflowStageName,
+    WorkflowStageStatus,
 )
 from watch_assistant.services.observability import EventLogger, emit_event
+from watch_assistant.services.workflows import (
+    WorkflowService,
+    emit_workflow_stage_changed,
+    sync_child_stage,
+)
 
 
 class SubscriptionNotFound(LookupError):
@@ -52,10 +60,12 @@ class SubscriptionService:
         search_service,
         *,
         event_logger: EventLogger | None = None,
+        workflow_service: WorkflowService | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._search = search_service
         self._event_logger = event_logger
+        self._workflow_service = workflow_service
         # 并发创建同一订阅时,先查后插的窗口需要进程内互斥:SQLite 的
         # 部分唯一索引(迁移 070)是跨进程兜底,但同一事件循环里两个任务
         # 同时通过 _find_scope 再各自 commit 时,写串行化下的交错可能
@@ -213,6 +223,37 @@ class SubscriptionService:
             dict.fromkeys(resource.resource_id for resource in result.results)
         )
         new_resource_ids = await self._record_observations(subscription_id, resource_ids)
+        if new_resource_ids and self._workflow_service is not None:
+            # 其他跨任务关联:订阅发现新资源时创建带 subscription_id 的
+            # workflow,并在任务中心 DISCOVERY 阶段同步为 succeeded。
+            try:
+                workflow = await self._workflow_service.create(
+                    WorkflowCreateRequest(
+                        media_type=media_type,
+                        tmdb_id=tmdb_id,
+                        subscription_id=subscription_id,
+                    )
+                )
+                async with self._session_factory() as session:
+                    await sync_child_stage(
+                        session,
+                        workflow.id,
+                        WorkflowStageName.DISCOVERY,
+                        child_type="subscription",
+                        child_id=subscription_id,
+                        status=WorkflowStageStatus.SUCCEEDED,
+                        reason="subscription_found",
+                    )
+                    await session.commit()
+                await emit_workflow_stage_changed(
+                    self._event_logger,
+                    workflow_id=workflow.id,
+                    correlation_id=workflow.correlation_id,
+                    stage_name=WorkflowStageName.DISCOVERY,
+                    status=WorkflowStageStatus.SUCCEEDED,
+                )
+            except Exception:  # noqa: BLE001 - workflow linkage must not break the check
+                del workflow
         async with self._session_factory() as session:
             item = await session.get(Subscription, subscription_id)
             if item is None:
