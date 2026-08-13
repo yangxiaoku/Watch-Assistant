@@ -40,6 +40,8 @@ import type {
   P115ValidationResponse,
   P115DirectoryItem,
   P115LoginDevice,
+  P115CheckInSettingsResponse,
+  P115CheckInStatusResponse,
   SettingsOverviewResponse,
   PatchProwlarrSettingsRequest,
   ProwlarrSettingsResponse,
@@ -51,7 +53,7 @@ const props = withDefaults(defineProps<{ api: ApiClient; initialSection?: Settin
 });
 const emit = defineEmits<{ "auto-start-enabled": [enabled: boolean]; navigate: [view: "logs" | "organization"] }>();
 
-type SettingsSection = "overview" | "credentials" | "prowlarr" | "logs" | "content" | "inspection" | "organization";
+type SettingsSection = "overview" | "credentials" | "prowlarr" | "logs" | "content" | "inspection" | "organization" | "checkin";
 type ValidationState = "idle" | "running" | "error" | P115ValidationResponse["status"];
 
 const sectionGroups = [
@@ -75,6 +77,12 @@ const sectionGroups = [
     label: "入库与输出",
     items: [
       { id: "organization" as const, label: "115 整理", icon: Zap },
+    ],
+  },
+  {
+    label: "自动化",
+    items: [
+      { id: "checkin" as const, label: "115 自动签到", icon: CheckCircle2 },
     ],
   },
 ];
@@ -133,6 +141,16 @@ const inspectionSaveError = ref("");
 const inspectionConflict = ref(false);
 const validationState = ref<ValidationState>("idle");
 const validationMessage = ref("");
+const checkinSettings = ref<P115CheckInSettingsResponse | null>(null);
+const checkinLoading = ref(true);
+const checkinError = ref("");
+const checkinSaving = ref(false);
+const checkinSaveError = ref("");
+const checkinDraft = ref(false);
+const checkinDraftTime = ref("00:05");
+const checkinStatus = ref<P115CheckInStatusResponse | null>(null);
+const checkinStatusLoading = ref(true);
+const checkinStatusError = ref("");
 const organizationSettings = ref<OrganizationSettingsResponse | null>(null);
 const organizationLoading = ref(true);
 const organizationError = ref("");
@@ -213,11 +231,12 @@ function selectSection(section: SettingsSection) {
   if (section === "prowlarr" && !prowlarr.value && !prowlarrLoading.value) void loadProwlarr();
   if (section === "content" && !contentPolicy.value) void loadContentPolicy();
   if (section === "organization" && !organizationSettings.value && !organizationLoading.value) void loadOrganization();
+  if (section === "checkin" && !checkinSettings.value && !checkinLoading.value) void loadCheckin();
 }
 
 function selectMobileSection(event: Event) {
   const value = (event.target as HTMLSelectElement).value;
-  if (value === "overview" || value === "credentials" || value === "prowlarr" || value === "logs" || value === "content" || value === "inspection" || value === "organization") selectSection(value);
+  if (value === "overview" || value === "credentials" || value === "prowlarr" || value === "logs" || value === "content" || value === "inspection" || value === "organization" || value === "checkin") selectSection(value);
 }
 
 async function loadOverview() {
@@ -1201,6 +1220,76 @@ function prowlarrValidationClass(value: typeof prowlarrValidationState.value) {
   return value === "available" ? "status-ok" : value === "disabled" || value === "idle" || value === "running" ? "status-unknown" : "status-down";
 }
 
+function applyCheckinSettings(value: P115CheckInSettingsResponse) {
+  checkinSettings.value = value;
+  checkinDraft.value = value.enabled;
+  checkinDraftTime.value = value.check_in_time;
+}
+
+async function loadCheckin() {
+  checkinLoading.value = true;
+  checkinError.value = "";
+  checkinSaveError.value = "";
+  try {
+    const response = await props.api.p115CheckinSettings();
+    if (!settingsMounted) return;
+    applyCheckinSettings(response);
+  } catch (exception) {
+    if (settingsMounted) checkinError.value = exception instanceof ApiError ? exception.message : "签到设置加载失败，请稍后重试";
+  } finally {
+    if (settingsMounted) checkinLoading.value = false;
+  }
+}
+
+async function loadCheckinStatus() {
+  checkinStatusLoading.value = true;
+  checkinStatusError.value = "";
+  try {
+    const response = await props.api.p115CheckinStatus();
+    if (!settingsMounted) return;
+    checkinStatus.value = response;
+  } catch (exception) {
+    if (settingsMounted) checkinStatusError.value = exception instanceof ApiError ? exception.message : "签到状态加载失败，请稍后重试";
+  } finally {
+    if (settingsMounted) checkinStatusLoading.value = false;
+  }
+}
+
+async function saveCheckin() {
+  if (!checkinSettings.value || checkinSaving.value) return;
+  checkinSaving.value = true;
+  checkinSaveError.value = "";
+  const previous = checkinSettings.value;
+  try {
+    const response = await props.api.updateP115CheckinSettings({
+      enabled: checkinDraft.value,
+      check_in_time: checkinDraftTime.value,
+    });
+    if (!settingsMounted) return;
+    applyCheckinSettings(response);
+    await loadCheckinStatus();
+  } catch (exception) {
+    if (!settingsMounted) return;
+    // 保存失败时回退开关与时间草稿，避免界面与后端不一致。
+    checkinDraft.value = previous.enabled;
+    checkinDraftTime.value = previous.check_in_time;
+    checkinSaveError.value = exception instanceof ApiError ? exception.message : "签到设置保存失败，请稍后重试";
+  } finally {
+    if (settingsMounted) checkinSaving.value = false;
+  }
+}
+
+function checkinStatusErrorText(): string {
+  const code = checkinStatus.value?.error_code;
+  const labels: Record<string, string> = {
+    credential_unavailable: "115 登录凭据不可用，请检查连接配置",
+    checkin_unavailable: "115 签到服务暂时不可用，请稍后重试",
+    checkin_rejected: "115 签到被拒绝，请检查登录状态",
+    checkin_service_unavailable: "签到服务暂不可用，请稍后重试",
+  };
+  return (code && labels[code]) || "签到状态获取失败，请稍后重试";
+}
+
 onMounted(() => {
   settingsMounted = true;
   void loadOverview();
@@ -1210,6 +1299,8 @@ onMounted(() => {
   void loadProwlarr();
   void loadP115Devices();
   void loadOrganization();
+  void loadCheckin();
+  void loadCheckinStatus();
 });
 
 onBeforeUnmount(() => {
@@ -1351,6 +1442,35 @@ onBeforeUnmount(() => {
             <div class="settings-subsection"><h3>打开详情时自动检测</h3><label class="settings-toggle"><input v-model="inspectionDraft" type="checkbox" aria-label="打开详情时自动检测" /><span>自动提交首批资源检测</span></label><p class="settings-note">关闭后仍可在资源详情中手动开始检测。</p></div>
             <div v-if="inspectionDirty" class="settings-save-bar"><span>有未保存的资源检测设置</span><div><button class="secondary-button" type="button" :disabled="savingInspection" @click="loadInspection">取消</button><button class="primary-button" type="button" :disabled="savingInspection" @click="saveInspection"><LoaderCircle v-if="savingInspection" class="spin" :size="15" /><Save v-else :size="15" />保存</button></div></div>
             <div v-if="inspectionSaveError" class="settings-state settings-state-error settings-save-error" role="alert"><AlertTriangle :size="17" /><span>{{ inspectionSaveError }}</span><button v-if="inspectionConflict" class="text-button" type="button" @click="loadInspection">重新加载</button></div>
+          </template>
+        </section>
+
+        <section v-else-if="activeSection === 'checkin'" class="settings-section" aria-labelledby="checkin-title">
+          <header class="settings-section-heading"><div><p class="eyebrow">115 网盘</p><h2 id="checkin-title">115 自动签到</h2><p>每天自动执行一次 115 签到，领取积分奖励。</p></div><button class="icon-button" type="button" title="刷新签到设置" aria-label="刷新签到设置" :disabled="checkinLoading || checkinSaving" @click="loadCheckin"><RefreshCw :size="16" :class="{ spin: checkinLoading }" /></button></header>
+          <div v-if="checkinLoading" class="settings-loading"><LoaderCircle class="spin" :size="20" />正在加载签到设置</div>
+          <div v-else-if="checkinError" class="settings-state settings-state-error" role="alert"><AlertTriangle :size="18" /><span>{{ checkinError }}</span><button class="text-button" type="button" @click="loadCheckin">重试</button></div>
+          <template v-else-if="checkinSettings">
+            <div class="settings-subsection">
+              <h3>自动签到</h3>
+              <label class="settings-toggle checkin-toggle"><input v-model="checkinDraft" type="checkbox" aria-label="启用 115 自动签到" :disabled="checkinSaving" @change="saveCheckin" /><span>启用 115 自动签到</span></label>
+              <div class="settings-form-grid"><label>签到时间<input v-model="checkinDraftTime" type="time" :disabled="checkinSaving" @change="saveCheckin" /></label></div>
+              <p class="settings-note">每天 {{ checkinDraftTime }} 自动签到；关闭后不再自动执行。切换开关会立即保存。</p>
+              <p v-if="checkinSaveError" class="settings-state settings-state-error settings-save-error" role="alert"><AlertTriangle :size="17" /><span>{{ checkinSaveError }}</span></p>
+            </div>
+            <div class="settings-subsection">
+              <h3>最近签到状态</h3>
+              <div v-if="checkinStatusLoading" class="settings-loading"><LoaderCircle class="spin" :size="18" />正在加载签到状态</div>
+              <div v-else-if="checkinStatusError" class="settings-state settings-state-error" role="alert"><AlertTriangle :size="18" /><span>{{ checkinStatusError }}</span><button class="text-button" type="button" @click="loadCheckinStatus">重试</button></div>
+              <template v-else-if="checkinStatus">
+                <p v-if="!checkinStatus.enabled" class="settings-note">未启用</p>
+                <div v-else-if="checkinStatus.error_code" class="settings-state settings-state-error" role="alert"><AlertTriangle :size="18" /><span>{{ checkinStatusErrorText() }}</span></div>
+                <div v-else class="settings-metrics">
+                  <div class="settings-metric"><span>今日状态</span><strong :class="checkinStatus.is_sign_today ? 'status-ok' : 'status-degraded'">{{ checkinStatus.is_sign_today ? '今日已签到' : '今日未签到' }}</strong></div>
+                  <div class="settings-metric"><span>连续签到</span><strong>{{ checkinStatus.continuous_day }} 天</strong></div>
+                  <div class="settings-metric"><span>积分</span><strong>{{ checkinStatus.points_num || '—' }}</strong></div>
+                </div>
+              </template>
+            </div>
           </template>
         </section>
 

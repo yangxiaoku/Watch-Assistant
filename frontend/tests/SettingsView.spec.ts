@@ -90,6 +90,14 @@ const prowlarrSettings = {
   last_updated_at: null,
   revision: 0,
 };
+const p115CheckinSettings = { enabled: true, check_in_time: "00:05" };
+const p115CheckinStatus = {
+  enabled: true,
+  is_sign_today: true,
+  continuous_day: 3,
+  points_num: "150",
+  error_code: null,
+};
 
 function makeApi(overrides: Partial<Record<keyof ApiClient, unknown>> = {}) {
   return {
@@ -109,6 +117,9 @@ function makeApi(overrides: Partial<Record<keyof ApiClient, unknown>> = {}) {
     updateP115Cookie: vi.fn().mockResolvedValue({ ...credentials, revision: 1, p115_cookie: { ...credentials.p115_cookie, source: "managed" } }),
     resetP115Cookie: vi.fn().mockResolvedValue(credentials),
     validateP115Cookie: vi.fn().mockResolvedValue({ status: "ready", checked_at: "2026-07-25T02:00:00Z" }),
+    p115CheckinSettings: vi.fn().mockResolvedValue(p115CheckinSettings),
+    updateP115CheckinSettings: vi.fn().mockResolvedValue(p115CheckinSettings),
+    p115CheckinStatus: vi.fn().mockResolvedValue(p115CheckinStatus),
     logs: vi.fn().mockResolvedValue(firstLogs),
     contentPolicy: vi.fn().mockResolvedValue(contentPolicy),
     updateContentPolicy: vi.fn().mockResolvedValue({ ...contentPolicy, revision: 4 }),
@@ -769,5 +780,104 @@ describe("SettingsView", () => {
     await wrapper.get(".settings-save-error .text-button").trigger("click");
     await flushPromises();
     expect(prowlarrSettingsMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("saves the 115 check-in toggle through PATCH when switched", async () => {
+    const api = makeApi({
+      updateP115CheckinSettings: vi.fn().mockResolvedValue({ ...p115CheckinSettings, enabled: false }),
+    });
+    const wrapper = mount(SettingsView, { props: { api } });
+    await flushPromises();
+    await wrapper.findAll("button").find((button) => button.text().includes("115 自动签到"))?.trigger("click");
+    await flushPromises();
+
+    const toggle = wrapper.get(".checkin-toggle input");
+    await toggle.setValue(false);
+    await flushPromises();
+    expect(api.updateP115CheckinSettings).toHaveBeenCalledWith({ enabled: false, check_in_time: "00:05" });
+  });
+
+  it("shows the check-in status as signed in with continuous days and points", async () => {
+    const api = makeApi();
+    const wrapper = mount(SettingsView, { props: { api } });
+    await flushPromises();
+    await wrapper.findAll("button").find((button) => button.text().includes("115 自动签到"))?.trigger("click");
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("今日已签到");
+    expect(wrapper.text()).toContain("连续签到");
+    expect(wrapper.text()).toContain("3");
+    expect(wrapper.text()).toContain("150");
+  });
+
+  it("shows the check-in status as not signed in", async () => {
+    const api = makeApi({
+      p115CheckinStatus: vi.fn().mockResolvedValue({
+        enabled: true,
+        is_sign_today: false,
+        continuous_day: 0,
+        points_num: "",
+        error_code: null,
+      }),
+    });
+    const wrapper = mount(SettingsView, { props: { api } });
+    await flushPromises();
+    await wrapper.findAll("button").find((button) => button.text().includes("115 自动签到"))?.trigger("click");
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("今日未签到");
+  });
+
+  it("shows 未启用 when the check-in feature is disabled", async () => {
+    const api = makeApi({
+      p115CheckinStatus: vi.fn().mockResolvedValue({
+        enabled: false,
+        is_sign_today: false,
+        continuous_day: 0,
+        points_num: "",
+        error_code: null,
+      }),
+    });
+    const wrapper = mount(SettingsView, { props: { api } });
+    await flushPromises();
+    await wrapper.findAll("button").find((button) => button.text().includes("115 自动签到"))?.trigger("click");
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("未启用");
+  });
+
+  it("maps a check-in status error code to a readable message", async () => {
+    const api = makeApi({
+      p115CheckinStatus: vi.fn().mockResolvedValue({
+        enabled: true,
+        is_sign_today: false,
+        continuous_day: 0,
+        points_num: "",
+        error_code: "credential_unavailable",
+      }),
+    });
+    const wrapper = mount(SettingsView, { props: { api } });
+    await flushPromises();
+    await wrapper.findAll("button").find((button) => button.text().includes("115 自动签到"))?.trigger("click");
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("登录凭据不可用");
+  });
+
+  it("reverts the check-in toggle and shows an error when the PATCH fails", async () => {
+    const api = makeApi({
+      updateP115CheckinSettings: vi.fn().mockRejectedValue(new ApiError("签到设置保存失败", 500, "checkin_save_failed")),
+    });
+    const wrapper = mount(SettingsView, { props: { api } });
+    await flushPromises();
+    await wrapper.findAll("button").find((button) => button.text().includes("115 自动签到"))?.trigger("click");
+    await flushPromises();
+
+    const toggle = wrapper.get(".checkin-toggle input");
+    await toggle.setValue(false);
+    await flushPromises();
+    expect(api.updateP115CheckinSettings).toHaveBeenCalledWith({ enabled: false, check_in_time: "00:05" });
+    expect((toggle.element as HTMLInputElement).checked).toBe(true);
+    expect(wrapper.text()).toContain("签到设置保存失败");
   });
 });

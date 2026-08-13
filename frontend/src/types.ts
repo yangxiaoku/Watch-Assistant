@@ -748,6 +748,19 @@ export interface P115QrcodeStatusResponse {
   device: P115LoginDevice | null;
 }
 
+export interface P115CheckInSettingsResponse {
+  enabled: boolean;
+  check_in_time: string;
+}
+
+export interface P115CheckInStatusResponse {
+  enabled: boolean;
+  is_sign_today: boolean;
+  continuous_day: number;
+  points_num: string;
+  error_code: string | null;
+}
+
 export interface LogEntry {
   id: number;
   timestamp: string;

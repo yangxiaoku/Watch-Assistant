@@ -59,6 +59,8 @@ import type {
   LogLevel,
   OrganizationAutomationResultResponse,
   OrganizationOperationBatchResponse,
+  P115CheckInSettingsResponse,
+  P115CheckInStatusResponse,
   P115DirectoryListResponse,
   P115LoginDeviceListResponse,
   P115QrcodeCreateResponse,
@@ -192,6 +194,21 @@ export class ApiClient {
 
   async p115Settings(): Promise<P115SettingsResponse> {
     return this.request<P115SettingsResponse>("/api/v1/settings/p115");
+  }
+
+  async p115CheckinSettings(): Promise<P115CheckInSettingsResponse> {
+    return this.request<P115CheckInSettingsResponse>("/api/v1/settings/p115-checkin");
+  }
+
+  async updateP115CheckinSettings(patch: { enabled: boolean; check_in_time: string }): Promise<P115CheckInSettingsResponse> {
+    return this.request<P115CheckInSettingsResponse>("/api/v1/settings/p115-checkin", {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    });
+  }
+
+  async p115CheckinStatus(): Promise<P115CheckInStatusResponse> {
+    return this.request<P115CheckInStatusResponse>("/api/v1/p115-checkin/status");
   }
 
   async prowlarrSettings(): Promise<ProwlarrSettingsResponse> {
