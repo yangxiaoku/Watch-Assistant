@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 from watch_assistant.schemas import LoggingLevel
 from watch_assistant.services.observability import EventLogger, emit_event
 from watch_assistant.services.p115_checkin import CheckInUnavailable, P115CheckInService
+from watch_assistant.services.settings import SettingsService
 
 _WARNING = LoggingLevel.WARNING
 
@@ -22,14 +23,18 @@ class P115CheckInScheduler:
         event_logger: EventLogger | None = None,
         timezone: str = "Asia/Hong_Kong",
         check_in_time: str = "00:05",
+        settings_service: SettingsService | None = None,
         _clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._service = service
         self._event_logger = event_logger
         self._timezone = timezone
         self._check_in_time = check_in_time
+        self._settings_service = settings_service
         self._clock = _clock
         self._run_lock = asyncio.Lock()
+        # 进程内兜底:即使 settings 持久化失败,同日门控在本进程内仍生效。
+        self._last_attempt_date: str | None = None
 
     def _now(self) -> datetime:
         if self._clock is not None:
@@ -40,20 +45,41 @@ class P115CheckInScheduler:
         hour, minute = (int(p) for p in self._check_in_time.split(":"))
         return (now.hour, now.minute) >= (hour, minute)
 
+    async def _load_last_attempt_date(self) -> str | None:
+        if self._settings_service is not None:
+            try:
+                return await self._settings_service.get_p115_checkin_last_attempt_date()
+            except Exception:  # noqa: BLE001 - gate read failure falls back in-memory
+                return self._last_attempt_date
+        return self._last_attempt_date
+
+    async def _save_last_attempt_date(self, date: str) -> None:
+        self._last_attempt_date = date
+        if self._settings_service is not None:
+            try:
+                await self._settings_service.set_p115_checkin_last_attempt_date(date)
+            except Exception:  # noqa: BLE001, S110 - persistence is best-effort
+                pass
+
     async def run_due_once(self) -> bool:
         async with self._run_lock:
             now = self._now()
             if not self._due(now):
                 return False
+            today = now.date().isoformat()
+            if await self._load_last_attempt_date() == today:
+                return False  # 当日已尝试(成功或失败),本日不再重试
             try:
                 status = await self._service.status()
                 if status["is_sign_today"]:
+                    await self._save_last_attempt_date(today)
                     return False
             except CheckInUnavailable:
                 pass  # 状态读失败仍尝试签到;115 幂等保证不重复奖励
             try:
                 result = await self._service.check_in()
             except CheckInUnavailable as exc:
+                await self._save_last_attempt_date(today)
                 await emit_event(
                     self._event_logger,
                     "p115.checkin.failed",
@@ -61,6 +87,7 @@ class P115CheckInScheduler:
                     fields={"error_code": exc.code},
                 )
                 return False
+            await self._save_last_attempt_date(today)
             await emit_event(
                 self._event_logger,
                 "p115.checkin.succeeded",

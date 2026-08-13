@@ -1041,6 +1041,25 @@ class SettingsService:
             settings.revision += 1
             await session.commit()
 
+    async def get_p115_checkin_last_attempt_date(self) -> str | None:
+        """Return the ISO date of the last daily 115 check-in attempt, or None."""
+        async with self._settings_lock, self._session_factory() as session:
+            settings = await self._get_or_create(session)
+            value = _p115_checkin_dict(settings).get("last_attempt_date")
+            return value if isinstance(value, str) and value else None
+
+    async def set_p115_checkin_last_attempt_date(self, date: str) -> None:
+        """Persist the ISO date of the daily 115 check-in attempt (success or fail)."""
+        async with self._settings_lock, self._session_factory() as session:
+            settings = await self._get_or_create(session)
+            value = _p115_checkin_dict(settings)
+            value["last_attempt_date"] = date
+            settings.p115_checkin_settings_json = json.dumps(
+                value, ensure_ascii=False, separators=(",", ":")
+            )
+            settings.revision += 1
+            await session.commit()
+
     @staticmethod
     def _add_audit_record(
         session: AsyncSession,

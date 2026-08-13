@@ -326,7 +326,7 @@ async def test_inspection_setting_persists_and_is_authenticated(tmp_path):
 
 
 async def test_p115_checkin_settings_persist_and_status_fails_closed(tmp_path):
-    app, client, database, tmdb, pansou = await _app(tmp_path)
+    _app_instance, client, database, tmdb, pansou = await _app(tmp_path)
     assert (await client.get("/api/v1/settings/p115-checkin")).status_code == 401
     login = await client.post("/api/v1/auth/login", json={"password": WEB_PASSWORD})
     assert login.status_code == 200
@@ -466,6 +466,8 @@ async def test_p115_checkin_status_calls_service_when_env_default_enabled(tmp_pa
     status = await client.get("/api/v1/p115-checkin/status")
     assert status.status_code == 200
     body = status.json()
+    # 用户存储关闭但部署 env 默认开启 → status 必须报告有效 enabled=True。
+    assert body["enabled"] is True
     assert body["is_sign_today"] is True
     assert body["continuous_day"] == 3
     assert body["points_num"] == "20"

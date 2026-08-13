@@ -77,7 +77,7 @@ async def get_p115_checkin_status(
     service = get_checkin_service(request)
     if service is None:
         return P115CheckInStatusResponse(
-            enabled=stored.enabled,
+            enabled=effective_enabled,
             is_sign_today=False,
             error_code="checkin_service_unavailable",
         )
@@ -85,12 +85,12 @@ async def get_p115_checkin_status(
         status = await service.status()
     except CheckInUnavailable as exc:
         return P115CheckInStatusResponse(
-            enabled=stored.enabled,
+            enabled=effective_enabled,
             is_sign_today=False,
             error_code=exc.code,
         )
     return P115CheckInStatusResponse(
-        enabled=stored.enabled,
+        enabled=effective_enabled,
         is_sign_today=bool(status.get("is_sign_today", False)),
         continuous_day=int(status.get("continuous_day") or 0),
         points_num=str(status.get("points_num") or ""),

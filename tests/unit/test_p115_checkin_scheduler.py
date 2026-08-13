@@ -30,6 +30,15 @@ class _Clock:
         return self.now
 
 
+class _FakeSettings:
+    def __init__(self):
+        self.last_attempt_date = None
+    async def get_p115_checkin_last_attempt_date(self):
+        return self.last_attempt_date
+    async def set_p115_checkin_last_attempt_date(self, date):
+        self.last_attempt_date = date
+
+
 async def _run_due(scheduler):
     return await scheduler.run_due_once()
 
@@ -72,3 +81,58 @@ async def test_scheduler_records_failure_event_without_raising():
     )
     assert await _run_due(scheduler) is False
     assert service.check_in_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_scheduler_does_not_retry_same_day_after_failure():
+    service = _FakeService(fail=True)
+    scheduler = P115CheckInScheduler(
+        service, timezone="Asia/Hong_Kong", check_in_time="00:05", _clock=_Clock(datetime(2026, 8, 13, 0, 6, tzinfo=UTC))
+    )
+    assert await _run_due(scheduler) is False
+    assert service.check_in_calls == 1
+    # 同日后续轮询:当日已尝试门控生效,不再发起第二次签到。
+    assert await _run_due(scheduler) is False
+    assert service.check_in_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_scheduler_retries_after_midnight():
+    service = _FakeService(fail=True)
+    clock = _Clock(datetime(2026, 8, 13, 0, 6, tzinfo=UTC))
+    scheduler = P115CheckInScheduler(
+        service, timezone="Asia/Hong_Kong", check_in_time="00:05", _clock=clock
+    )
+    assert await _run_due(scheduler) is False
+    assert service.check_in_calls == 1
+    # 跨天后时钟进入次日,允许再次尝试。
+    clock.now = datetime(2026, 8, 14, 0, 6, tzinfo=UTC)
+    assert await _run_due(scheduler) is False
+    assert service.check_in_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_scheduler_persists_attempt_date_across_restart():
+    settings = _FakeSettings()
+    service = _FakeService(fail=True)
+    clock = _Clock(datetime(2026, 8, 13, 0, 6, tzinfo=UTC))
+    scheduler = P115CheckInScheduler(
+        service,
+        timezone="Asia/Hong_Kong",
+        check_in_time="00:05",
+        settings_service=settings,
+        _clock=clock,
+    )
+    assert await _run_due(scheduler) is False
+    assert settings.last_attempt_date == "2026-08-13"
+    # 模拟调度器重启:新实例读取同一持久化状态,同日不再尝试。
+    service2 = _FakeService(fail=True)
+    scheduler2 = P115CheckInScheduler(
+        service2,
+        timezone="Asia/Hong_Kong",
+        check_in_time="00:05",
+        settings_service=settings,
+        _clock=clock,
+    )
+    assert await _run_due(scheduler2) is False
+    assert service2.check_in_calls == 0

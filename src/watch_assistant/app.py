@@ -1371,6 +1371,7 @@ def create_app(
                     event_logger=application.state.settings_service,
                     timezone=settings.cache_warm_timezone,
                     check_in_time=p115_checkin_settings.check_in_time,
+                    settings_service=application.state.settings_service,
                 )
                 p115_checkin_stop = asyncio.Event()
                 p115_checkin_task = asyncio.create_task(
