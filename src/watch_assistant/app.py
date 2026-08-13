@@ -536,6 +536,40 @@ def create_app(
                 name="watch-assistant-directory-dirty-worker",
             )
 
+        async def apply_p115_checkin_runtime(ready: bool) -> None:
+            # 调度器自门控:只要 p115 就绪即运行,是否执行签到由每次 tick 读取
+            # 存储设置(PATCH 开启/关闭无需重启)。env 默认值在启动时写入 state,
+            # 供 p115 后续就绪(apply_p115_runtime 回调)重建调度器时使用。
+            nonlocal p115_checkin_stop, p115_checkin_task
+            if not ready:
+                await _stop_worker(p115_checkin_stop, p115_checkin_task)
+                p115_checkin_stop = None
+                p115_checkin_task = None
+                if hasattr(application.state, "p115_checkin_scheduler"):
+                    delattr(application.state, "p115_checkin_scheduler")
+                return
+            if p115_checkin_task is not None:
+                return
+            application.state.p115_checkin_scheduler = P115CheckInScheduler(
+                application.state.p115_checkin_service,
+                event_logger=application.state.settings_service,
+                timezone=str(
+                    getattr(application.state, "p115_checkin_timezone", "Asia/Hong_Kong")
+                ),
+                env_enabled=bool(
+                    getattr(application.state, "p115_check_in_enabled", False)
+                ),
+                env_check_in_time=str(
+                    getattr(application.state, "p115_check_in_time", "00:05")
+                ),
+                settings_service=application.state.settings_service,
+            )
+            p115_checkin_stop = asyncio.Event()
+            p115_checkin_task = asyncio.create_task(
+                application.state.p115_checkin_scheduler.run_forever(p115_checkin_stop),
+                name="watch-assistant-p115-checkin-scheduler",
+            )
+
         async def stop_organization_runtime() -> None:
             nonlocal organization_stop, organization_task
             nonlocal organization_worker_stop, organization_worker_task
@@ -874,6 +908,7 @@ def create_app(
                 "share": ready and _adapter_supports_share(adapter),
             }
             if adapter is None:
+                await apply_p115_checkin_runtime(False)
                 await apply_organization_runtime(False)
                 await apply_dirty_runtime(False)
                 return
@@ -883,6 +918,7 @@ def create_app(
                 task_task = None
                 if hasattr(application.state, "task_worker"):
                     delattr(application.state, "task_worker")
+                await apply_p115_checkin_runtime(False)
                 await apply_organization_runtime(False)
                 await apply_dirty_runtime(False)
                 return
@@ -908,6 +944,7 @@ def create_app(
                 )
             await apply_organization_runtime(True)
             await apply_dirty_runtime(True)
+            await apply_p115_checkin_runtime(True)
 
         existing_credentials = getattr(application.state, "credential_service", None)
         if existing_credentials is not None and not getattr(
@@ -1361,25 +1398,13 @@ def create_app(
                     ),
                     name="watch-assistant-library-scan-scheduler",
                 )
-            p115_checkin_settings = await application.state.settings_service.get_p115_checkin()
-            # 有效开关 = 用户存储设置 OR 部署 env 默认(P115_CHECK_IN_ENABLED);
-            # 两者都关时不启动调度器,status 端点同样按此门控避免任何 115 网络调用。
-            effective_enabled = p115_checkin_settings.enabled or settings.p115_check_in_enabled
-            if effective_enabled and getattr(application.state, "p115_ready", False):
-                application.state.p115_checkin_scheduler = P115CheckInScheduler(
-                    application.state.p115_checkin_service,
-                    event_logger=application.state.settings_service,
-                    timezone=settings.cache_warm_timezone,
-                    check_in_time=p115_checkin_settings.check_in_time,
-                    settings_service=application.state.settings_service,
-                )
-                p115_checkin_stop = asyncio.Event()
-                p115_checkin_task = asyncio.create_task(
-                    application.state.p115_checkin_scheduler.run_forever(
-                        p115_checkin_stop
-                    ),
-                    name="watch-assistant-p115-checkin-scheduler",
-                )
+            # 调度器自门控:只要 p115 就绪即启动,是否执行由每次 tick 读取
+            # 存储设置 OR env 默认动态决定(PATCH 开启后 ≤300s 生效,无需重启)。
+            application.state.p115_check_in_time = settings.p115_check_in_time
+            application.state.p115_checkin_timezone = settings.cache_warm_timezone
+            await apply_p115_checkin_runtime(
+                bool(getattr(application.state, "p115_ready", False))
+            )
         operation_database = getattr(application.state, "database", None)
         if operation_database is not None:
             operation_service = getattr(

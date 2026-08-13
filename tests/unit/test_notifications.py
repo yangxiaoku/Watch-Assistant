@@ -42,3 +42,20 @@ def test_error_and_security_notifications_can_bypass_quiet_hours():
     assert _quiet_hours_suppress(
         _preference(error_bypass_quiet_hours=False), NotificationSeverity.ERROR, now
     )
+
+
+def test_checkin_events_bypass_quiet_hours():
+    # UTC 15:30 = 上海 23:30,落在默认静默时段(23:00-08:00)内。
+    now = datetime(2026, 7, 31, 15, 30, tzinfo=UTC)
+    preference = _preference()
+
+    assert not _quiet_hours_suppress(
+        preference, NotificationSeverity.INFO, now, event_code="p115.checkin.succeeded"
+    )
+    assert not _quiet_hours_suppress(
+        preference, NotificationSeverity.WARNING, now, event_code="p115.checkin.failed"
+    )
+    # 其他普通 INFO 事件在静默时段仍被抑制。
+    assert _quiet_hours_suppress(
+        preference, NotificationSeverity.INFO, now, event_code="task.submitted"
+    )

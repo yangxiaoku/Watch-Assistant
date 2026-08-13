@@ -23,6 +23,11 @@ from watch_assistant.services.event_catalog import get_event_definition
 from watch_assistant.services.observability import EventLogger, emit_event
 
 DEDUPLICATION_WINDOW = timedelta(minutes=30)
+# 0:05 左右的 115 每日签到通知在静默时段(默认 23:00-08:00)发生,按事件码
+# 绕过静默抑制,否则用户收不到签到结果。
+_QUIET_HOURS_BYPASS_EVENTS = frozenset(
+    {"p115.checkin.succeeded", "p115.checkin.failed"}
+)
 _NOTIFIABLE_EVENTS = frozenset(
     {
         "inspection.batch_failed",
@@ -185,7 +190,7 @@ class NotificationService:
                 preference.muted_event_codes_json
             ):
                 return None
-            if _quiet_hours_suppress(preference, severity, now):
+            if _quiet_hours_suppress(preference, severity, now, event_code=event_code):
                 return None
             existing = await session.scalar(
                 select(Notification)
@@ -397,8 +402,12 @@ def _quiet_hours_suppress(
     preference: NotificationPreference,
     severity: NotificationSeverity,
     now: datetime,
+    *,
+    event_code: str | None = None,
 ) -> bool:
     if not preference.quiet_hours_enabled:
+        return False
+    if event_code in _QUIET_HOURS_BYPASS_EVENTS:
         return False
     if preference.error_bypass_quiet_hours and severity in {
         NotificationSeverity.ERROR,

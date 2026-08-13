@@ -24,6 +24,8 @@ class P115CheckInScheduler:
         timezone: str = "Asia/Hong_Kong",
         check_in_time: str = "00:05",
         settings_service: SettingsService | None = None,
+        env_enabled: bool = False,
+        env_check_in_time: str = "00:05",
         _clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._service = service
@@ -31,6 +33,8 @@ class P115CheckInScheduler:
         self._timezone = timezone
         self._check_in_time = check_in_time
         self._settings_service = settings_service
+        self._env_enabled = env_enabled
+        self._env_check_in_time = env_check_in_time
         self._clock = _clock
         self._run_lock = asyncio.Lock()
         # 进程内兜底:即使 settings 持久化失败,同日门控在本进程内仍生效。
@@ -41,8 +45,8 @@ class P115CheckInScheduler:
             return self._clock()
         return datetime.now(ZoneInfo(self._timezone))
 
-    def _due(self, now: datetime) -> bool:
-        hour, minute = (int(p) for p in self._check_in_time.split(":"))
+    def _due(self, now: datetime, check_in_time: str) -> bool:
+        hour, minute = (int(p) for p in check_in_time.split(":"))
         return (now.hour, now.minute) >= (hour, minute)
 
     async def _load_last_attempt_date(self) -> str | None:
@@ -63,8 +67,25 @@ class P115CheckInScheduler:
 
     async def run_due_once(self) -> bool:
         async with self._run_lock:
+            # 动态门控:调度器只要 p115 就绪即运行,是否执行由"用户存储设置 OR
+            # 部署 env 默认"在每次 tick 决定,因此 PATCH 开启/关闭无需重启。
+            # 读取存储是 DB 读(非 115 网络调用);失败时回退到 env 默认。
+            stored = None
+            if self._settings_service is not None:
+                try:
+                    stored = await self._settings_service.get_p115_checkin()
+                except Exception:  # noqa: BLE001 - env fallback on settings read failure
+                    stored = None
+            if stored is not None:
+                effective_enabled = stored.enabled or self._env_enabled
+                effective_time = stored.check_in_time or self._env_check_in_time
+            else:
+                effective_enabled = self._env_enabled
+                effective_time = self._env_check_in_time or self._check_in_time
+            if not effective_enabled:
+                return False
             now = self._now()
-            if not self._due(now):
+            if not self._due(now, effective_time):
                 return False
             today = now.date().isoformat()
             if await self._load_last_attempt_date() == today:

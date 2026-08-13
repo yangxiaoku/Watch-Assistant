@@ -247,7 +247,7 @@ def _set_checkin_app_env(
 
 
 @pytest.mark.integration
-async def test_p115_checkin_scheduler_wired_when_effective_enabled_and_ready(
+async def test_p115_checkin_scheduler_wired_when_p115_ready(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     _set_checkin_app_env(monkeypatch, tmp_path, check_in_enabled="true")
@@ -263,7 +263,7 @@ async def test_p115_checkin_scheduler_wired_when_effective_enabled_and_ready(
 
 
 @pytest.mark.integration
-async def test_p115_checkin_scheduler_not_wired_when_env_disabled(
+async def test_p115_checkin_scheduler_wired_when_ready_regardless_of_env_disabled(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     _set_checkin_app_env(monkeypatch, tmp_path, check_in_enabled="false")
@@ -273,7 +273,9 @@ async def test_p115_checkin_scheduler_not_wired_when_env_disabled(
     )
     async with app.router.lifespan_context(app):
         assert app.state.p115_ready is True
-        assert not hasattr(app.state, "p115_checkin_scheduler")
+        scheduler = getattr(app.state, "p115_checkin_scheduler", None)
+        assert scheduler is not None
+        assert isinstance(scheduler, P115CheckInScheduler)
 
 
 @pytest.mark.integration
