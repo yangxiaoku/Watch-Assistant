@@ -381,6 +381,103 @@ async def test_p115_checkin_settings_persist_and_status_fails_closed(tmp_path):
     await database.engine.dispose()
 
 
+class _FakeCheckInService:
+    def __init__(self) -> None:
+        self.status_calls = 0
+
+    async def status(self) -> dict:
+        self.status_calls += 1
+        return {"is_sign_today": True, "continuous_day": 3, "points_num": "20"}
+
+    async def check_in(self):
+        raise AssertionError("check_in must not run")
+
+
+@pytest.mark.integration
+async def test_p115_checkin_status_skips_network_when_not_effective_enabled(tmp_path):
+    app, client, database, tmdb, pansou = await _app(tmp_path)
+    fake = _FakeCheckInService()
+    app.state.p115_checkin_service = fake
+
+    login = await client.post("/api/v1/auth/login", json={"password": WEB_PASSWORD})
+    assert login.status_code == 200
+
+    status = await client.get("/api/v1/p115-checkin/status")
+    assert status.status_code == 200
+    assert status.json() == {
+        "enabled": False,
+        "is_sign_today": False,
+        "continuous_day": 0,
+        "points_num": "",
+        "error_code": None,
+    }
+    assert fake.status_calls == 0
+
+    await client.aclose()
+    await tmdb.aclose()
+    await pansou.aclose()
+    await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_p115_checkin_status_calls_service_when_effective_enabled(tmp_path):
+    app, client, database, tmdb, pansou = await _app(tmp_path)
+    fake = _FakeCheckInService()
+    app.state.p115_checkin_service = fake
+
+    login = await client.post("/api/v1/auth/login", json={"password": WEB_PASSWORD})
+    assert login.status_code == 200
+    headers = {"X-CSRF-Token": login.json()["csrf_token"]}
+
+    patched = await client.patch(
+        "/api/v1/settings/p115-checkin",
+        json={"enabled": True, "check_in_time": "00:10"},
+        headers=headers,
+    )
+    assert patched.status_code == 200
+
+    status = await client.get("/api/v1/p115-checkin/status")
+    assert status.status_code == 200
+    body = status.json()
+    assert body["enabled"] is True
+    assert body["is_sign_today"] is True
+    assert body["continuous_day"] == 3
+    assert body["points_num"] == "20"
+    assert body["error_code"] is None
+    assert fake.status_calls == 1
+
+    await client.aclose()
+    await tmdb.aclose()
+    await pansou.aclose()
+    await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_p115_checkin_status_calls_service_when_env_default_enabled(tmp_path):
+    app, client, database, tmdb, pansou = await _app(tmp_path)
+    fake = _FakeCheckInService()
+    app.state.p115_checkin_service = fake
+    # 用户存储关闭,但部署 env 默认(P115_CHECK_IN_ENABLED)开启 → 有效 enabled=True。
+    app.state.p115_check_in_enabled = True
+
+    login = await client.post("/api/v1/auth/login", json={"password": WEB_PASSWORD})
+    assert login.status_code == 200
+
+    status = await client.get("/api/v1/p115-checkin/status")
+    assert status.status_code == 200
+    body = status.json()
+    assert body["is_sign_today"] is True
+    assert body["continuous_day"] == 3
+    assert body["points_num"] == "20"
+    assert body["error_code"] is None
+    assert fake.status_calls == 1
+
+    await client.aclose()
+    await tmdb.aclose()
+    await pansou.aclose()
+    await database.engine.dispose()
+
+
 @pytest.mark.integration
 async def test_strm_routes_enforce_independent_flags_and_reach_service(tmp_path):
     output_root = tmp_path / "strm"

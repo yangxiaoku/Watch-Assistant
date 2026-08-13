@@ -9,6 +9,7 @@ from tests.unit.factories import make_security_manager
 from watch_assistant.app import create_app
 from watch_assistant.db import create_database
 from watch_assistant.migrations import MIGRATIONS
+from watch_assistant.services.p115_checkin_scheduler import P115CheckInScheduler
 
 
 @pytest.mark.integration
@@ -68,6 +69,7 @@ async def test_app_startup_upgrades_legacy_prowlarr_settings_schema(
                 revision INTEGER NOT NULL,
                 content_policy_json TEXT NOT NULL DEFAULT '{}',
                 organization_settings_json TEXT NOT NULL DEFAULT '{}',
+                p115_checkin_settings_json TEXT NOT NULL DEFAULT '{}',
                 managed_tmdb_key_encrypted TEXT,
                 managed_tmdb_updated_at DATETIME,
                 managed_p115_cookie_encrypted TEXT,
@@ -169,3 +171,126 @@ async def test_app_passes_inspection_settings_to_qbittorrent_client(
             "poll_interval": 0.5,
             "request_timeout": 12.0,
         }
+
+
+class _ReadyAdapter:
+    """P115Adapter stand-in that reports ready immediately at startup."""
+
+    def __init__(self, cookie_provider, target_cid, *, max_concurrency):
+        self.cookie_provider = cookie_provider
+        self.target_cid = target_cid
+        self.max_concurrency = max_concurrency
+
+    async def ensure_available(self) -> bool:
+        return True
+
+    async def validate_cookie(self, _cookie: str) -> None:
+        return None
+
+    async def submit_magnet(self, _url: str):
+        raise AssertionError("magnet submission must not run")
+
+    async def save_share(self, _url: str, _password: str | None):
+        raise AssertionError("share submission must not run")
+
+    async def get_status_for_task(self, _remote_ref, *, target_directory_id):
+        return None
+
+    async def aclose(self) -> None:
+        return None
+
+
+class _NoopWorker:
+    def __init__(self, *_args, **_kwargs):
+        pass
+
+    async def recover_expired(self) -> int:
+        return 0
+
+    async def run_forever(self, stop_event) -> None:
+        await stop_event.wait()
+
+
+def _set_checkin_app_env(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    check_in_enabled: str = "true",
+) -> None:
+    cookie_path = tmp_path / "p115-cookie"
+    cookie_path.write_text("UID=u; CID=c; KID=k; SEID=s", encoding="ascii", newline="")
+    values = {
+        "DATABASE_URL": f"sqlite+aiosqlite:///{tmp_path / 'app.db'}",
+        "ENCRYPTION_KEY": Fernet.generate_key().decode("ascii"),
+        "TMDB_API_KEY": "env-key",
+        "WEB_PASSWORD_HASH": "unused",
+        "SCRIPT_TOKEN_HASH": "unused",
+        "PANSOU_BASE_URL": "http://pansou.test",
+        "CACHE_WARM_ENABLED": "false",
+        "SUBSCRIPTION_SCHEDULER_ENABLED": "false",
+        "LIBRARY_SCAN_SCHEDULER_ENABLED": "false",
+        "ORGANIZATION_PLAN_ENABLED": "false",
+        "ORGANIZATION_EXECUTION_ENABLED": "false",
+        "ORGANIZATION_WRITE_ENABLED": "false",
+        "STRM_FULL_ENABLED": "false",
+        "STRM_INCREMENTAL_ENABLED": "false",
+        "P115_ENABLED": "true",
+        "P115_COOKIE_PATH": str(cookie_path),
+        "P115_TARGET_CID": "1",
+        "P115_MAX_CONCURRENCY": "1",
+        "P115_CHECK_IN_ENABLED": check_in_enabled,
+    }
+    for key, value in values.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr("watch_assistant.app.P115Adapter", _ReadyAdapter)
+    monkeypatch.setattr("watch_assistant.app.TaskWorker", _NoopWorker)
+
+
+@pytest.mark.integration
+async def test_p115_checkin_scheduler_wired_when_effective_enabled_and_ready(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    _set_checkin_app_env(monkeypatch, tmp_path, check_in_enabled="true")
+
+    app = create_app(
+        frontend_dir=tmp_path / "missing", security_manager=make_security_manager()
+    )
+    async with app.router.lifespan_context(app):
+        assert app.state.p115_ready is True
+        scheduler = getattr(app.state, "p115_checkin_scheduler", None)
+        assert scheduler is not None
+        assert isinstance(scheduler, P115CheckInScheduler)
+
+
+@pytest.mark.integration
+async def test_p115_checkin_scheduler_not_wired_when_env_disabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    _set_checkin_app_env(monkeypatch, tmp_path, check_in_enabled="false")
+
+    app = create_app(
+        frontend_dir=tmp_path / "missing", security_manager=make_security_manager()
+    )
+    async with app.router.lifespan_context(app):
+        assert app.state.p115_ready is True
+        assert not hasattr(app.state, "p115_checkin_scheduler")
+
+
+@pytest.mark.integration
+async def test_p115_checkin_scheduler_not_wired_when_p115_not_ready(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    _set_checkin_app_env(monkeypatch, tmp_path, check_in_enabled="true")
+
+    class NotReadyAdapter(_ReadyAdapter):
+        async def ensure_available(self) -> bool:
+            return False
+
+    monkeypatch.setattr("watch_assistant.app.P115Adapter", NotReadyAdapter)
+
+    app = create_app(
+        frontend_dir=tmp_path / "missing", security_manager=make_security_manager()
+    )
+    async with app.router.lifespan_context(app):
+        assert app.state.p115_ready is False
+        assert not hasattr(app.state, "p115_checkin_scheduler")

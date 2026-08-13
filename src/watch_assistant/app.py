@@ -143,6 +143,7 @@ from watch_assistant.services.organization_worker import (
     _default_client_factory,
 )
 from watch_assistant.services.p115_checkin import P115CheckInService
+from watch_assistant.services.p115_checkin_scheduler import P115CheckInScheduler
 from watch_assistant.services.p115_credentials import (
     CompositeCookieProvider,
     CookieProvider,
@@ -475,6 +476,8 @@ def create_app(
         library_scan_task: asyncio.Task[None] | None = None
         library_scan_scheduler_stop: asyncio.Event | None = None
         library_scan_scheduler_task: asyncio.Task[None] | None = None
+        p115_checkin_stop: asyncio.Event | None = None
+        p115_checkin_task: asyncio.Task[None] | None = None
 
         async def apply_dirty_runtime(ready: bool) -> None:
             nonlocal dirty_stop, dirty_task
@@ -1203,6 +1206,9 @@ def create_app(
                 composite_cookie_provider,
                 event_logger=application.state.settings_service,
             )
+            # 部署 env 默认(P115_CHECK_IN_ENABLED)与用户存储设置一起决定有效开关,
+            # 暴露到 state 供只读 status 端点计算有效 enabled(关闭时零网络调用)。
+            application.state.p115_check_in_enabled = settings.p115_check_in_enabled
             application.state.p115_directory_picker_root_id = "0"
             organization_settings = await application.state.settings_service.get_organization()
             # 用户配置的 target_directory_id 是权威:115 整理的目标目录以设置为准,
@@ -1354,6 +1360,24 @@ def create_app(
                         interval_seconds=settings.library_scan_interval_minutes * 60,
                     ),
                     name="watch-assistant-library-scan-scheduler",
+                )
+            p115_checkin_settings = await application.state.settings_service.get_p115_checkin()
+            # 有效开关 = 用户存储设置 OR 部署 env 默认(P115_CHECK_IN_ENABLED);
+            # 两者都关时不启动调度器,status 端点同样按此门控避免任何 115 网络调用。
+            effective_enabled = p115_checkin_settings.enabled or settings.p115_check_in_enabled
+            if effective_enabled and getattr(application.state, "p115_ready", False):
+                application.state.p115_checkin_scheduler = P115CheckInScheduler(
+                    application.state.p115_checkin_service,
+                    event_logger=application.state.settings_service,
+                    timezone=settings.cache_warm_timezone,
+                    check_in_time=p115_checkin_settings.check_in_time,
+                )
+                p115_checkin_stop = asyncio.Event()
+                p115_checkin_task = asyncio.create_task(
+                    application.state.p115_checkin_scheduler.run_forever(
+                        p115_checkin_stop
+                    ),
+                    name="watch-assistant-p115-checkin-scheduler",
                 )
         operation_database = getattr(application.state, "database", None)
         if operation_database is not None:
@@ -1518,6 +1542,7 @@ def create_app(
             await _stop_worker(
                 library_scan_scheduler_stop, library_scan_scheduler_task
             )
+            await _stop_worker(p115_checkin_stop, p115_checkin_task)
             await _stop_worker(webhook_stop, webhook_task)
             inspection_client = getattr(application.state, "inspection_client", None)
             if (

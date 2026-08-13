@@ -55,8 +55,25 @@ async def get_p115_checkin_status(
     request: Request,
     settings: SettingsDependency,
 ) -> P115CheckInStatusResponse:
-    """Return the daily sign-in status read-only; remote errors stay 200."""
+    """Return the daily sign-in status read-only; remote errors stay 200.
+
+    The effective toggle is the user-stored value OR the deployment env
+    default (P115_CHECK_IN_ENABLED, mirrored onto app.state at startup).
+    When the effective toggle is off we must not make any 115 network call,
+    so the endpoint fails closed to the disabled shape without touching the
+    service.
+    """
     stored = await settings.get_p115_checkin()
+    env_enabled = bool(getattr(request.app.state, "p115_check_in_enabled", False))
+    effective_enabled = stored.enabled or env_enabled
+    if not effective_enabled:
+        return P115CheckInStatusResponse(
+            enabled=False,
+            is_sign_today=False,
+            continuous_day=0,
+            points_num="",
+            error_code=None,
+        )
     service = get_checkin_service(request)
     if service is None:
         return P115CheckInStatusResponse(
