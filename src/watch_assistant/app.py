@@ -556,6 +556,14 @@ def create_app(
         async def apply_organization_runtime(ready: bool) -> None:
             nonlocal organization_stop, organization_task
             nonlocal organization_worker_stop, organization_worker_task
+            # 小文件清理预览是只读的,不依赖写契约,始终可建服务;apply 的
+            # transport(写路径)在 write_enabled 块内以带 transport 的服务重建。
+            if not hasattr(application.state, "small_file_cleanup_service"):
+                application.state.small_file_cleanup_service = (
+                    SmallFileCleanupService(
+                        application.state.database.session_factory
+                    )
+                )
             planning_enabled = (
                 getattr(application.state, "organization_plan_enabled", False)
                 and getattr(application.state, "organization_cookie_provider", None)
@@ -804,6 +812,7 @@ def create_app(
             )
             application.state.organization_automation_service = automation
             application.state._organization_runtime_write_enabled = write_enabled
+            # 写路径就绪:小文件清理以真实 transport 重建,apply 可执行回收。
             application.state.small_file_cleanup_service = SmallFileCleanupService(
                 application.state.database.session_factory,
                 transport_factory=build_cleanup_transport,
