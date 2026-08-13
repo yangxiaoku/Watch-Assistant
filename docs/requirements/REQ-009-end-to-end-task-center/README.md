@@ -155,4 +155,5 @@ API 返回顶层 workflow 和分页子任务，不返回敏感链接。REQ-003 �
   approval 阶段批准前不能进入整理 operation，批准后仍使用原有 digest、Scope、幂等和
   `organization` 阶段状态机；Bearer Agent 不能替代 Web 批准。生产写入仍保持门控。
 - 本轮补充 FLOW-008：`/workflows/stats` 只读聚合统计端点，返回按状态/媒体类型计数、近 24h/7d 创建量、active/completed/failed/cancelled 与完成率，不含任何敏感链接。
+- 本轮补充 FLOW-002：任务中心阶段时间线显示关联子任务（资源搜索/检测批次/推送任务/整理操作/STRM 操作），独立子任务在其 workflow 阶段下可见。
 - 剩余阻断：真实 115 写入、STRM 真实播放契约及 PanSou/qB 外部网络基线仍按 `docs/requirements/BLOCKERS.md` 保持门禁关闭。

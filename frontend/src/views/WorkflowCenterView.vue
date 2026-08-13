@@ -83,6 +83,19 @@ const cancellableStageStatuses: WorkflowStageResponse["status"][] = ["pending", 
 
 function statusLabel(status: WorkflowStatus): string { return workflowStatusPresentation(status).label; }
 function stageLabel(stage: WorkflowStageResponse["stage"]): string { return stageLabels[stage] ?? "未命名阶段"; }
+function childTypeLabel(childType: string): string {
+  return (
+    {
+      resource: "资源",
+      resource_search: "资源搜索",
+      task: "推送任务",
+      inspection_batch: "检测批次",
+      organization_operation: "整理操作",
+      strm_operation: "STRM 操作",
+      strm_dirty_generation: "STRM 目录更新",
+    }[childType] ?? childType
+  );
+}
 function statusIcon(status: WorkflowStageResponse["status"]) {
   if (status === "succeeded") return CheckCircle2;
   if (status === "failed" || status === "uncertain") return XCircle;
@@ -286,7 +299,7 @@ onMounted(() => { void loadWorkflows(); });
         </div>
         <dl class="workflow-identifiers"><div><dt>媒体类型</dt><dd>{{ selected.media_type === 'tv' ? '电视剧' : '电影' }}</dd></div><div><dt>创建时间</dt><dd>{{ formatTimestamp(selected.created_at) }}</dd></div><div><dt>更新时间</dt><dd>{{ formatTimestamp(selected.updated_at) }}</dd></div></dl>
         <details class="workflow-diagnostics"><summary>查看关联标识</summary><small>工作流标识：{{ diagnosticReference(selected.id) }}</small><small>关联标识：{{ diagnosticReference(selected.correlation_id) }}</small></details>
-        <ol class="workflow-timeline"><li v-for="stage in selected.stages" :key="stage.id" class="workflow-stage" :class="stageClass(stage.status)"><component :is="statusIcon(stage.status)" :size="17" :class="{ spin: stage.status === 'running' }" /><div><strong>{{ stageLabel(stage.stage) }}</strong><span>{{ stage.status_zh || workflowStageStatusLabel(stage.status) }}</span><small v-if="stage.reason_zh">{{ stage.reason_zh }}</small><details v-if="stage.reason || stage.error_code" class="diagnostic-details"><summary>诊断信息</summary><small v-if="stage.reason">状态标识：{{ diagnosticCode(stage.reason) }}</small><small v-if="stage.error_code">错误码：{{ diagnosticCode(stage.error_code) }}</small></details><small v-if="stage.updated_at">更新于 {{ formatTimestamp(stage.updated_at) }}</small></div></li></ol>
+        <ol class="workflow-timeline"><li v-for="stage in selected.stages" :key="stage.id" class="workflow-stage" :class="stageClass(stage.status)"><component :is="statusIcon(stage.status)" :size="17" :class="{ spin: stage.status === 'running' }" /><div><strong>{{ stageLabel(stage.stage) }}</strong><span>{{ stage.status_zh || workflowStageStatusLabel(stage.status) }}</span><small v-if="stage.reason_zh">{{ stage.reason_zh }}</small><details v-if="stage.reason || stage.error_code" class="diagnostic-details"><summary>诊断信息</summary><small v-if="stage.reason">状态标识：{{ diagnosticCode(stage.reason) }}</small><small v-if="stage.error_code">错误码：{{ diagnosticCode(stage.error_code) }}</small></details><small v-if="stage.child_type" class="child-subtask" title="关联子任务">关联子任务：{{ childTypeLabel(stage.child_type) }}{{ stage.child_id ? `（${stage.child_id}）` : "" }}</small><small v-if="stage.updated_at">更新于 {{ formatTimestamp(stage.updated_at) }}</small></div></li></ol>
       </article>
     </div>
     <nav v-if="!loading && totalPages > 1" class="workflow-pagination" aria-label="任务中心分页"><span>第 {{ page }} / {{ totalPages }} 页，共 {{ total }} 个工作流</span><div><button class="icon-button" type="button" aria-label="上一页" :disabled="page <= 1" @click="goToPage(page - 1)">上一页</button><button class="icon-button" type="button" aria-label="下一页" :disabled="page >= totalPages" @click="goToPage(page + 1)">下一页</button></div></nav>

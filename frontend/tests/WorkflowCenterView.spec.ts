@@ -155,4 +155,39 @@ describe("WorkflowCenterView batch actions", () => {
     expect(api.cancelWorkflowsBatch).toHaveBeenCalledTimes(1);
     expect(wrapper.text()).toContain("已取消 2 个工作流");
   });
+  it("shows the associated subtask for each stage", async () => {
+    const api = {
+      workflows: vi.fn().mockResolvedValue({
+        items: [
+          workflow({
+            stages: [
+              {
+                id: "stage-strm",
+                stage: "strm",
+                status: "succeeded",
+                status_zh: "已完成",
+                reason: null,
+                reason_zh: null,
+                error_code: null,
+                child_type: "strm_operation",
+                child_id: "strm_op_abc",
+                started_at: "2026-08-01T00:00:00Z",
+                completed_at: null,
+                updated_at: "2026-08-01T00:01:00Z",
+              },
+            ],
+          }),
+        ],
+        page: 1,
+        page_size: 20,
+        total: 1,
+      }),
+    } as unknown as never;
+    const wrapper = mount(WorkflowCenterView, { props: { api: api as never } });
+    await flushPromises();
+    await wrapper.get(".workflow-row").trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("STRM 操作");
+    expect(wrapper.text()).toContain("strm_op_abc");
+  });
 });
