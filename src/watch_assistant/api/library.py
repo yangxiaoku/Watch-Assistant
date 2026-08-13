@@ -945,7 +945,7 @@ async def apply_empty_directory_cleanup_plan(
 async def _require_small_file_threshold(request: Request) -> None:
     """小文件清理共享门禁:服务存在 + 组织阈值已配置。"""
     service = getattr(request.app.state, "small_file_cleanup_service", None)
-    if not callable(service):
+    if service is None:
         raise HTTPException(status_code=503, detail="small_file_cleanup_unavailable")
     settings_service = getattr(request.app.state, "settings_service", None)
     if settings_service is None:
