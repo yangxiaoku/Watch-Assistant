@@ -685,6 +685,113 @@ async def _stop_empty_cleanup_operation_heartbeat(
     await asyncio.gather(task, return_exceptions=True)
 
 
+def _start_small_file_cleanup_operation_heartbeat(
+    operations: StrmOperationService, operation_id: str, lease_owner: str
+) -> tuple[asyncio.Event, asyncio.Task[None]]:
+    stop = asyncio.Event()
+    task = asyncio.create_task(
+        _run_empty_cleanup_operation_heartbeat(
+            operations, operation_id, lease_owner, stop
+        ),
+        name=f"watch-assistant-small-file-cleanup-heartbeat-{operation_id}",
+    )
+    return stop, task
+
+
+async def _run_small_file_cleanup_operation(
+    *,
+    operations: StrmOperationService,
+    service,
+    library,
+    operation_id: str,
+    lease_owner: str,
+    scan_run_id: str,
+    file_ids: list[str],
+    settings_service,
+    library_id: str,
+    actor_type: str,
+    actor_id: str,
+) -> None:
+    """后台执行小文件清理,保持租约存活并在完成/失败时收口。
+
+    apply 端点立即返回 operation_id,真正的逐文件重验证+删除在这个
+    asyncio task 里跑,心跳避免 1-3 分钟的批量删除被租约超时回收。
+    """
+    heartbeat_stop, heartbeat_task = _start_small_file_cleanup_operation_heartbeat(
+        operations, operation_id, lease_owner
+    )
+    try:
+        try:
+            # 用户主动批量清理:逐文件节流用更短间隔(0.3s),避免大批量(几十个文件)
+            # 的同步请求超过客户端超时;1.5s 的 operation_delay_seconds 是给后台整理
+            # 写路径的保守节流,不适用于用户显式触发的回收。
+            deleted, failed = await service.apply(
+                library,
+                scan_run_id=scan_run_id,
+                file_ids=file_ids,
+                confirm=True,
+                operation_delay_seconds=0.3,
+            )
+        except asyncio.CancelledError:
+            try:
+                await asyncio.shield(
+                    operations.fail(
+                        operation_id,
+                        error_code="small_file_cleanup_cancelled",
+                        lease_owner=lease_owner,
+                    )
+                )
+            except StrmOperationError:
+                pass
+            raise
+        except SmallFileCleanupError as error:
+            try:
+                await operations.fail(
+                    operation_id,
+                    error_code=error.code,
+                    lease_owner=lease_owner,
+                )
+            except StrmOperationError:
+                pass
+            return
+        except Exception:  # noqa: BLE001 - operation status must not remain running
+            try:
+                await operations.fail(
+                    operation_id,
+                    error_code="small_file_cleanup_failed",
+                    lease_owner=lease_owner,
+                )
+            except StrmOperationError:
+                pass
+            return
+
+        try:
+            completed = await operations.complete(
+                operation_id,
+                generated=0,
+                unchanged=0,
+                skipped=0,
+                failed=failed,
+                retired=deleted,
+                lease_owner=lease_owner,
+            )
+        except StrmOperationError:
+            # 租约丢失/状态冲突:交给超时回收,不留在 running。
+            return
+        if settings_service is not None and completed.status == "succeeded":
+            await settings_service.log_event(
+                "library.small_file_cleanup.applied",
+                fields={"status": "ok" if failed == 0 else "partial"},
+                counts={"count": deleted},
+                actor_type=actor_type,
+                actor_id=actor_id,
+                resource_type="library",
+                resource_id=library_id,
+            )
+    finally:
+        await _stop_empty_cleanup_operation_heartbeat(heartbeat_stop, heartbeat_task)
+
+
 @router.post(
     "/libraries/{library_id}/empty-directory-cleanup-plan",
     response_model=EmptyDirectoryCleanupPlanResponse,
@@ -1048,33 +1155,69 @@ async def apply_small_file_cleanup(
         raise HTTPException(status_code=409, detail="confirmation_required")
     library = await _small_cleanup_library(request, library_id, context)
     service = getattr(request.app.state, "small_file_cleanup_service", None)
+    operations = StrmOperationService(request.app.state.database.session_factory)
     try:
-        # 用户主动批量清理:逐文件节流用更短间隔(0.3s),避免大批量(几十个文件)
-        # 的同步请求超过客户端超时;1.5s 的 operation_delay_seconds 是给后台整理
-        # 写路径的保守节流,不适用于用户显式触发的回收。
-        deleted, failed = await service.apply(
-            library,
+        queued = await operations.create(
+            library_id=library_id,
+            source_scan_run_id=payload.source_scan_run_id,
+            kind=StrmOperationKind.SMALL_FILE_CLEANUP,
+        )
+        running, acquired = await operations.claim_start(queued.operation_id)
+    except StrmOperationError as error:
+        status = (
+            409
+            if error.code
+            in {
+                "idempotency_key_conflict",
+                "strm_library_operation_conflict",
+                "strm_operation_claim_conflict",
+            }
+            else 422
+        )
+        raise HTTPException(status_code=status, detail=error.code) from None
+    if not acquired:
+        if running.status == "running":
+            raise HTTPException(
+                status_code=409, detail="small_file_cleanup_in_progress"
+            )
+        if running.status == "queued":
+            raise HTTPException(
+                status_code=409, detail="strm_library_operation_conflict"
+            )
+        raise HTTPException(
+            status_code=409,
+            detail=running.error_code or "small_file_cleanup_failed",
+        )
+    lease_owner = await operations.get_lease_token(running.operation_id)
+    if lease_owner is None:
+        raise HTTPException(status_code=409, detail="strm_operation_lease_lost")
+    settings_service = getattr(request.app.state, "settings_service", None)
+    # 真异步:创建/领取操作后立即返回,后台 task 执行逐文件删除并用心跳保活。
+    # 持有 task 强引用,避免 event loop 在 task 仍 pending 时把它回收掉
+    # (asyncio 不会自动持有 fire-and-forget task 的引用)。
+    background_tasks = getattr(request.app.state, "background_tasks", set())
+    cleanup_task = asyncio.create_task(
+        _run_small_file_cleanup_operation(
+            operations=operations,
+            service=service,
+            library=library,
+            operation_id=running.operation_id,
+            lease_owner=lease_owner,
             scan_run_id=payload.source_scan_run_id,
             file_ids=payload.file_ids,
-            confirm=True,
-            operation_delay_seconds=0.3,
-        )
-    except SmallFileCleanupError as error:
-        status = 409 if error.code in {"snapshot_stale", "confirmation_required"} else 503
-        raise HTTPException(status_code=status, detail=error.code) from None
-    settings_service = getattr(request.app.state, "settings_service", None)
-    if settings_service is not None:
-        await settings_service.log_event(
-            "library.small_file_cleanup.applied",
-            fields={"status": "ok" if failed == 0 else "partial"},
-            counts={"count": deleted},
+            settings_service=settings_service,
+            library_id=library_id,
             actor_type="agent" if context.via_bearer else "web",
             actor_id=context.identity,
-            resource_type="library",
-            resource_id=library_id,
-        )
+        ),
+        name=f"watch-assistant-small-file-cleanup-{running.operation_id}",
+    )
+    background_tasks.add(cleanup_task)
+    cleanup_task.add_done_callback(background_tasks.discard)
+    request.app.state.background_tasks = background_tasks
     return SmallFileCleanupApplyResponse(
-        deleted=deleted, failed=failed, total=deleted + failed
+        operation_id=running.operation_id,
+        status="running",
     )
 
 

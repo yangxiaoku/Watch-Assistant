@@ -559,6 +559,67 @@ describe("LibraryWorkbenchView", () => {
     expect(wrapper.text()).toContain("可恢复回收 1 个受管目录");
   });
 
+  it("applies small-file cleanup asynchronously and polls the operation to completion", async () => {
+    vi.useFakeTimers();
+    try {
+      const library = {
+        library_id: "main",
+        name: "115 媒体库",
+        root_directory_id: "123",
+        enabled: true,
+        scope_verified: true,
+        revision: 2,
+        latest_scan: { run_id: "scan-1", state: "completed" as const, complete: true, snapshot_revision: 1, pages_read: 1, items_seen: 1, added_count: 1, changed_count: 0, removed_count: 0, error_code: null },
+      };
+      const preview = {
+        library_id: "main",
+        source_scan_run_id: "scan-1",
+        snapshot_revision: 1,
+        threshold_bytes: 5 * 1024 * 1024,
+        candidate_count: 1,
+        candidates: [{ file_id: "file-1", parent_id: "100", name: "sample.srt", size_bytes: 1024 }],
+      };
+      const running = { operation_id: "strm_op_small", library_id: "main", source_scan_run_id: "scan-1", workflow_id: null, kind: "small_file_cleanup" as const, status: "running" as const, generated: 0, unchanged: 0, skipped: 0, failed: 0, retired: 0, error_code: null, created_at: "2026-08-01T00:00:00Z", started_at: "2026-08-01T00:00:00Z", finished_at: null };
+      const succeeded = { ...running, status: "succeeded" as const, retired: 1, failed: 0, finished_at: "2026-08-01T00:00:01Z" };
+      const api = {
+        libraries: vi.fn().mockResolvedValue({ items: [library], next_cursor: null }),
+        libraryMedia: vi.fn().mockResolvedValue({ items: [], next_cursor: null }),
+        strmManifest: vi.fn().mockResolvedValue({ items: [], page: 1, page_size: 50, total: 0, total_pages: 0 }),
+        strmOperations: vi.fn().mockResolvedValue({ items: [], next_cursor: null }),
+        smallFileCleanupPreview: vi.fn().mockResolvedValue(preview),
+        smallFileCleanupApply: vi.fn().mockResolvedValue({ operation_id: "strm_op_small", status: "running" }),
+        strmOperation: vi.fn()
+          .mockResolvedValueOnce(running)
+          .mockResolvedValueOnce(succeeded),
+      };
+      const wrapper = mountWorkbench(api);
+      await vi.runOnlyPendingTimersAsync();
+      await vi.advanceTimersByTimeAsync(0);
+      await switchTab(wrapper, "清理");
+
+      await wrapper.findAll("button").find((button) => button.text().includes("预览小文件清理"))!.trigger("click");
+      await flushPromises();
+      expect(wrapper.text()).toContain("sample.srt");
+      expect(wrapper.text()).toContain("小文件清理预览已生成");
+
+      await wrapper.findAll("button").find((button) => button.text().includes("查看摘要并确认清理"))!.trigger("click");
+      expect(wrapper.get(".confirm-dialog").text()).toContain("确认清理小文件");
+      await confirmRiskyAction(wrapper);
+
+      expect(api.smallFileCleanupApply).toHaveBeenCalledWith("main", expect.objectContaining({ sourceScanRunId: "scan-1", fileIds: ["file-1"], confirm: true }));
+      expect(wrapper.text()).toContain("小文件清理执行中");
+      expect(wrapper.text()).not.toContain("小文件清理完成");
+
+      await vi.advanceTimersByTimeAsync(500);
+      await flushPromises();
+      expect(wrapper.text()).toContain("小文件清理完成：删除 1 项");
+      expect(api.strmOperation).toHaveBeenCalledTimes(2);
+      wrapper.unmount();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("polls queued and running STRM operations before showing completion", async () => {
     vi.useFakeTimers();
     const library = {

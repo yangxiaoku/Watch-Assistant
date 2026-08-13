@@ -12,6 +12,7 @@ _MUTATING_KINDS = (
     StrmOperationKind.FULL,
     StrmOperationKind.INCREMENTAL,
     StrmOperationKind.CLEANUP,
+    StrmOperationKind.SMALL_FILE_CLEANUP,
 )
 
 

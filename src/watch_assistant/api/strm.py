@@ -808,7 +808,10 @@ async def resume_strm_operation(
         raise HTTPException(status_code=422, detail=error.code) from None
     if not _library_allowed(context, current.library_id):
         raise HTTPException(status_code=404, detail="strm_operation_not_found") from None
-    if current.kind == StrmOperationKind.CLEANUP.value:
+    if current.kind in {
+        StrmOperationKind.CLEANUP.value,
+        StrmOperationKind.SMALL_FILE_CLEANUP.value,
+    }:
         raise HTTPException(status_code=409, detail="strm_operation_not_resumable")
     if (
         current.kind == StrmOperationKind.INCREMENTAL.value

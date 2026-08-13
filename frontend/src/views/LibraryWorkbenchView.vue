@@ -578,7 +578,7 @@ function waitForOperationPoll() {
 async function pollStrmOperation(
   operationId: string,
   pollGeneration: number,
-  action: "full" | "incremental",
+  action: "full" | "incremental" | "small_file_cleanup",
 ): Promise<StrmOperationResponse | null> {
   for (let attempt = 0; attempt < 120; attempt += 1) {
     if (pollGeneration !== operationPollGeneration) return null;
@@ -599,10 +599,32 @@ async function pollStrmOperation(
   return current;
 }
 
+function smallFileCleanupOperationMessage(operation: StrmOperationResponse): string {
+  switch (operation.status) {
+    case "queued":
+      return "小文件清理已排队，正在等待执行";
+    case "running":
+      return "小文件清理执行中，正在逐个核对并送入可恢复回收站，请稍候";
+    case "succeeded":
+      if (operation.failed > 0) return `小文件清理部分完成：删除 ${operation.retired} 项，失败 ${operation.failed} 项（已进入可恢复回收站）`;
+      return `小文件清理完成：删除 ${operation.retired} 项（已进入可恢复回收站）`;
+    case "failed":
+      return "小文件清理失败，请查看详情后重试";
+    case "timeout":
+      return "小文件清理结果待确认，请先刷新并核对结果";
+    case "cancelled":
+      return "小文件清理已取消";
+  }
+}
+
 function operationPollingTimeoutMessage(
-  operation: Pick<StrmOperationResponse, "status">,
-  action: "full" | "incremental",
+  operation: Pick<StrmOperationResponse, "status" | "kind">,
+  action: "full" | "incremental" | "small_file_cleanup",
 ): string {
+  if (action === "small_file_cleanup" || operation.kind === "small_file_cleanup") {
+    const state = operation.status === "queued" ? "排队中" : "执行中";
+    return `小文件清理仍在${state}，页面已停止自动等待，请刷新操作状态核对结果；确认前不要重复提交`;
+  }
   const label = action === "full" ? "全量" : "增量";
   const state = operation.status === "queued" ? "排队中" : "执行中";
   return `STRM ${label}同步仍在${state}，页面已停止自动等待，请刷新状态核对结果；确认前不要恢复执行`;
@@ -610,8 +632,11 @@ function operationPollingTimeoutMessage(
 
 function operationStatusMessage(
   operation: StrmOperationResponse,
-  action: "full" | "incremental" = operation.kind === "incremental" ? "incremental" : "full",
+  action: "full" | "incremental" | "small_file_cleanup" = operation.kind === "incremental" ? "incremental" : operation.kind === "small_file_cleanup" ? "small_file_cleanup" : "full",
 ): string {
+  if (action === "small_file_cleanup" || operation.kind === "small_file_cleanup") {
+    return smallFileCleanupOperationMessage(operation);
+  }
   const label = action === "full" ? "全量" : "增量";
   switch (operation.status) {
     case "queued":
@@ -676,6 +701,7 @@ async function retryLatestOperation() {
   if (
     !operation
     || operation.kind === "cleanup"
+    || operation.kind === "small_file_cleanup"
     || (operation.status !== "failed" && operation.status !== "cancelled")
     || busy.value
   ) return;
@@ -811,7 +837,7 @@ async function confirmSmallFileCleanup() {
 
 async function applySmallFileCleanup(): Promise<void> {
   const preview = smallFilePreview.value;
-  if (!preview || smallFileSelected.value.size === 0 || !smallFileBusy.value) return;
+  if (!preview || smallFileSelected.value.size === 0 || smallFileBusy.value) return;
   pendingCleanup.value = null;
   smallFileBusy.value = true;
   smallFileError.value = "";
@@ -826,7 +852,22 @@ async function applySmallFileCleanup(): Promise<void> {
     );
     smallFilePreview.value = null;
     smallFileSelected.value = new Set();
-    notice.value = `小文件清理完成：删除 ${result.deleted} 项，失败 ${result.failed} 项（已进入可恢复回收站）`;
+    notice.value = "小文件清理执行中，正在逐个核对并送入可恢复回收站，请稍候";
+    const pollGeneration = ++operationPollGeneration;
+    const operation = await pollStrmOperation(
+      result.operation_id,
+      pollGeneration,
+      "small_file_cleanup",
+    );
+    if (!operation || pollGeneration !== operationPollGeneration) return;
+    if (operation.status === "succeeded") {
+      notice.value = smallFileCleanupOperationMessage(operation);
+    } else if (operation.status === "queued" || operation.status === "running") {
+      notice.value = operationPollingTimeoutMessage(operation, "small_file_cleanup");
+    } else {
+      smallFileError.value = smallFileCleanupOperationMessage(operation);
+    }
+    await loadOutputs(selected.value!.library_id);
   } catch (exception) {
     smallFileError.value = exception instanceof ApiError ? exception.message : "小文件清理执行失败，请重试";
   } finally {
@@ -911,6 +952,7 @@ const operationLabels: Record<StrmOperationResponse["kind"], string> = {
   full: "全量生成",
   incremental: "增量同步",
   cleanup: "失效清理",
+  small_file_cleanup: "小文件清理",
 };
 
 function operationError(operation: StrmOperationResponse): string | null {
@@ -1021,7 +1063,7 @@ onBeforeUnmount(() => {
           <div class="library-operation-stats"><span>生成 {{ latestOperation.generated }}</span><span>未变化 {{ latestOperation.unchanged }}</span><span>跳过 {{ latestOperation.skipped }}</span><span>失败 {{ latestOperation.failed }}</span><span>退休 {{ latestOperation.retired }}</span></div>
           <p class="library-operation-next-step">下一步：{{ strmOperationNextStep(latestOperation) }}</p>
           <p v-if="operationError(latestOperation)" class="library-operation-error">{{ operationError(latestOperation) }}</p>
-          <div class="library-operation-actions"><button class="text-button" type="button" @click="operationDetailOpen = !operationDetailOpen">{{ operationDetailOpen ? "收起详情" : "查看详情" }}</button><button v-if="['queued', 'running'].includes(latestOperation.status)" class="text-button" type="button" @click="requestCancelLatestOperation"><Ban :size="14" />取消操作</button><button v-if="['failed', 'cancelled'].includes(latestOperation.status) && latestOperation.kind !== 'cleanup'" class="text-button" type="button" :disabled="busy || (latestOperation.kind === 'incremental' ? !strmIncrementalAvailable : !strmFullAvailable)" :title="actionReason(latestOperation.kind === 'incremental' ? 'incremental' : 'full')" @click="retryLatestOperation"><RefreshCw :size="14" />恢复执行</button><button class="text-button" type="button" @click="refreshLatestOperation"><RefreshCw :size="14" />刷新状态</button></div>
+          <div class="library-operation-actions"><button class="text-button" type="button" @click="operationDetailOpen = !operationDetailOpen">{{ operationDetailOpen ? "收起详情" : "查看详情" }}</button><button v-if="['queued', 'running'].includes(latestOperation.status)" class="text-button" type="button" @click="requestCancelLatestOperation"><Ban :size="14" />取消操作</button><button v-if="['failed', 'cancelled'].includes(latestOperation.status) && !['cleanup', 'small_file_cleanup'].includes(latestOperation.kind)" class="text-button" type="button" :disabled="busy || (latestOperation.kind === 'incremental' ? !strmIncrementalAvailable : !strmFullAvailable)" :title="actionReason(latestOperation.kind === 'incremental' ? 'incremental' : 'full')" @click="retryLatestOperation"><RefreshCw :size="14" />恢复执行</button><button class="text-button" type="button" @click="refreshLatestOperation"><RefreshCw :size="14" />刷新状态</button></div>
           <div v-if="operationDetailOpen" class="library-operation-detail"><small>操作标识：{{ diagnosticReference(latestOperation.operation_id) }}</small><small>创建 {{ new Date(latestOperation.created_at).toLocaleString() }}</small><small v-if="latestOperation.finished_at">结束 {{ new Date(latestOperation.finished_at).toLocaleString() }}</small></div>
         </section>
         </template>

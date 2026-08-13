@@ -410,7 +410,7 @@ export interface StrmOperationResponse {
   library_id: string;
   source_scan_run_id: string;
   workflow_id: string | null;
-  kind: "full" | "incremental" | "cleanup";
+  kind: "full" | "incremental" | "cleanup" | "small_file_cleanup";
   status: "queued" | "running" | "succeeded" | "failed" | "timeout" | "cancelled";
   generated: number;
   unchanged: number;
@@ -492,9 +492,8 @@ export interface SmallFileCleanupPreviewResponse {
 }
 
 export interface SmallFileCleanupApplyResponse {
-  deleted: number;
-  failed: number;
-  total: number;
+  operation_id: string;
+  status: "running";
 }
 
 export type OrganizationOperationStatus = "planned" | "organizing" | "organized" | "failed" | "uncertain" | "cancelled";

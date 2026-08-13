@@ -150,6 +150,7 @@ _CATALOG: dict[str, ApiErrorDescriptor] = {
     "empty_cleanup_uncertain": ApiErrorDescriptor("empty_cleanup_uncertain", "空目录回收结果待确认", "系统不会自动重复提交本次回收。", "请先核对 115 回收站和目录状态。", False, "view_task"),
     "empty_cleanup_failed": ApiErrorDescriptor("empty_cleanup_failed", "空目录清理失败", "本次空目录清理未完成，计划已失效。", "请核对远端状态后重新生成计划。", False, "refresh_snapshot"),
     "empty_cleanup_in_progress": ApiErrorDescriptor("empty_cleanup_in_progress", "空目录清理正在执行", "本次请求未重复执行目录回收。", "请稍后刷新清理计划状态。", True, "retry"),
+    "small_file_cleanup_in_progress": ApiErrorDescriptor("small_file_cleanup_in_progress", "小文件清理正在执行", "本次请求未重复执行小文件回收。", "请等待当前清理完成后刷新操作状态。", True, "retry"),
     "empty_cleanup_already_applied": ApiErrorDescriptor("empty_cleanup_already_applied", "空目录清理计划已执行", "本次请求未重复回收目录。", "请刷新清理计划查看结果。", False, "refresh_snapshot"),
     "empty_cleanup_not_reviewable": ApiErrorDescriptor("empty_cleanup_not_reviewable", "空目录清理计划不可执行", "本次空目录清理未执行。", "请重新生成并确认最新清理计划。", False, "refresh_snapshot"),
     "empty_cleanup_plan_invalid": ApiErrorDescriptor("empty_cleanup_plan_invalid", "空目录清理计划无效", "本次空目录清理未执行。", "请重新生成清理计划。", False, "refresh_snapshot"),

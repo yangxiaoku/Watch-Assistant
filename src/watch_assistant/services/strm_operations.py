@@ -44,6 +44,7 @@ _MUTATING_KINDS = (
     StrmOperationKind.FULL,
     StrmOperationKind.INCREMENTAL,
     StrmOperationKind.CLEANUP,
+    StrmOperationKind.SMALL_FILE_CLEANUP,
 )
 _CLAIM_LOCKS: dict[tuple[int, str], asyncio.Lock] = {}
 
@@ -545,7 +546,10 @@ class StrmOperationService:
                 raise StrmOperationNotFound(operation_id)
             if current.status is StrmOperationStatus.SUCCEEDED:
                 return _summary(current)
-            if current.kind is not StrmOperationKind.CLEANUP or current.status not in {
+            if current.kind not in {
+                StrmOperationKind.CLEANUP,
+                StrmOperationKind.SMALL_FILE_CLEANUP,
+            } or current.status not in {
                 StrmOperationStatus.FAILED,
                 StrmOperationStatus.TIMEOUT,
                 StrmOperationStatus.CANCELLED,
@@ -555,7 +559,12 @@ class StrmOperationService:
                 update(StrmOperation)
                 .where(
                     StrmOperation.id == operation_id,
-                    StrmOperation.kind == StrmOperationKind.CLEANUP,
+                    StrmOperation.kind.in_(
+                        (
+                            StrmOperationKind.CLEANUP,
+                            StrmOperationKind.SMALL_FILE_CLEANUP,
+                        )
+                    ),
                     StrmOperation.status.in_(
                         (
                             StrmOperationStatus.FAILED,

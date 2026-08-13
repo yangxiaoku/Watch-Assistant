@@ -396,7 +396,7 @@ class StrmOperationResponse(BaseModel):
     library_id: str
     source_scan_run_id: str
     workflow_id: str | None = None
-    kind: Literal["full", "incremental", "cleanup"]
+    kind: Literal["full", "incremental", "cleanup", "small_file_cleanup"]
     status: Literal[
         "queued", "running", "succeeded", "failed", "timeout", "cancelled"
     ]
@@ -536,9 +536,8 @@ class SmallFileCleanupApplyRequest(BaseModel):
 class SmallFileCleanupApplyResponse(BaseModel):
     model_config = {"extra": "forbid"}
 
-    deleted: int = Field(ge=0)
-    failed: int = Field(ge=0)
-    total: int = Field(ge=0)
+    operation_id: str
+    status: Literal["running"]
 
 
 class StrmVerifyRequest(BaseModel):

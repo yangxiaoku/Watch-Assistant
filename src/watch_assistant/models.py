@@ -775,6 +775,7 @@ class StrmOperationKind(StrEnum):
     FULL = "full"
     INCREMENTAL = "incremental"
     CLEANUP = "cleanup"
+    SMALL_FILE_CLEANUP = "small_file_cleanup"
 
 
 class StrmOperationStatus(StrEnum):
