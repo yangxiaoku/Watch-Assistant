@@ -204,6 +204,7 @@ class LogCategory(StrEnum):
     SUBSCRIPTION = "subscription"
     QUALITY = "quality"
     NOTIFICATION = "notification"
+    BUSINESS = "business"
 
 
 class NotificationSeverity(StrEnum):

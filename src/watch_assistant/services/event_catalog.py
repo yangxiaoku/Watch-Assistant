@@ -141,6 +141,19 @@ EVENT_CATALOG: dict[str, EventDefinition] = {
     "p115.credentials_expired": _event(
         "p115.credentials_expired", LogCategory.P115, "115 登录状态已失效", "当前 115 Cookie 无法继续使用", suggestion="请前往设置重新验证 115 Cookie"
     ),
+    "p115.checkin.succeeded": _event(
+        "p115.checkin.succeeded",
+        LogCategory.BUSINESS,
+        "115 签到成功",
+        "115 每日签到成功,获得 {points} 积分,连续 {continuous_day} 天",
+        fields=frozenset({"points", "continuous_day"}),
+    ),
+    "p115.checkin.failed": _event(
+        "p115.checkin.failed",
+        LogCategory.BUSINESS,
+        "115 签到失败",
+        "115 每日签到失败,错误码:{error_code}",
+    ),
     "task.submitted": _event(
         "task.submitted", LogCategory.TASK, "推送任务已提交", "推送任务已提交，等待 115 受理"
     ),

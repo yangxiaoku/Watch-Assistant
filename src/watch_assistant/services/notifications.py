@@ -35,6 +35,8 @@ _NOTIFIABLE_EVENTS = frozenset(
         "task.uncertain",
         "p115.readiness",
         "p115.credentials_expired",
+        "p115.checkin.succeeded",
+        "p115.checkin.failed",
         "subscription.resources_observed",
         "organize.automation.blocked",
         "subscription.check_failed",
@@ -351,7 +353,7 @@ def _severity(event_code: str, status: object) -> NotificationSeverity:
         "p115.readiness",
     }:
         return NotificationSeverity.ERROR
-    if event_code in {"organize.needs_review", "workflow.approval_decided"}:
+    if event_code in {"organize.needs_review", "workflow.approval_decided", "p115.checkin.failed"}:
         return NotificationSeverity.WARNING
     if event_code == "backup.restore_preview":
         return NotificationSeverity.WARNING
