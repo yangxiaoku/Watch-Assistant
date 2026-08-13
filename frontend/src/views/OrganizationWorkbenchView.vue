@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { AlertTriangle, Ban, Check, ChevronRight, Eye, ListChecks, LoaderCircle, Play, RefreshCw, Search, ShieldCheck, Tag } from "@lucide/vue";
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { ApiClient, ApiError, focusFirstFieldError, isConflict } from "../api";
+import InlineAlert from "../components/InlineAlert.vue";
+import { useFeedback } from "../composables/useFeedback";
 import ConfirmDialog from "../components/ConfirmDialog.vue";
 import { describeUiError } from "../errorCatalog";
 import { pollUntil } from "../polling";
@@ -14,6 +16,7 @@ const props = withDefaults(defineProps<{ api: ApiClient; enabled?: boolean; exec
   executionSupported: false,
   embedded: false,
 });
+const feedback = useFeedback();
 // 打开设置页对应分区:organization 为「设置 → 115整理」,credentials 为「设置 → 连接配置(TMDB API Key)」
 const emit = defineEmits<{ "open-settings": [section?: "organization" | "credentials"] }>();
 
@@ -31,6 +34,11 @@ const loading = ref(false);
 const busy = ref(false);
 const error = ref("");
 const notice = ref("");
+watch(notice, (value) => {
+  if (!value) return;
+  if (value.includes("超时")) feedback.warning(value);
+  else feedback.success(value);
+});
 const candidateSearchGuidance = ref(false);
 const lastPlanCursor = ref<number | undefined>(undefined);
 const pendingExecution = ref<
@@ -614,8 +622,7 @@ onBeforeUnmount(() => {
       <button class="icon-button" type="button" title="刷新" aria-label="刷新" :disabled="loading || busy" @click="loadPlans()"><RefreshCw :size="17" :class="{ spin: loading }" /></button>
     </div>
 
-    <p v-if="error" class="error-strip" role="alert"><Ban :size="16" /><span>{{ error }}</span><button class="text-button" type="button" @click="loadPlans(lastPlanCursor)">重试</button></p>
-    <p v-if="notice" class="success-strip"><Check :size="16" />{{ notice }}</p>
+    <InlineAlert v-if="error" variant="error" :message="error" action-label="重试" @action="loadPlans(lastPlanCursor)" />
 
     <div class="organization-tabs" role="tablist" aria-label="计划列表">
       <button type="button" :class="{ active: activeStatus === null }" @click="changeStatus(null)">待处理</button>

@@ -112,7 +112,7 @@ describe("MovieView seasons", () => {
       },
     });
 
-    const warning = wrapper.get(".warning-strip").text();
+    const warning = wrapper.get(".inline-alert").text();
     expect(warning).toContain("结果较多");
     expect(warning).not.toContain("部分搜索来源暂不可用");
     expect(warning).not.toContain("partial_upstream");
@@ -134,7 +134,7 @@ describe("MovieView seasons", () => {
       },
     });
 
-    expect(wrapper.find(".warning-strip").exists()).toBe(false);
+    expect(wrapper.find(".inline-alert").exists()).toBe(false);
     expect(wrapper.get(".source-diagnostics").text()).toContain("连续满页");
     expect(wrapper.findAll(".source-diagnostics")).toHaveLength(1);
   });

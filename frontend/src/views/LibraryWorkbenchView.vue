@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { Ban, Check, Database, FileWarning, LoaderCircle, RefreshCw, SlidersHorizontal, Trash2 } from "@lucide/vue";
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { ApiClient, ApiError, createIdempotencyKey, focusFirstFieldError } from "../api";
+import InlineAlert from "../components/InlineAlert.vue";
+import { useFeedback } from "../composables/useFeedback";
 import ConfirmDialog from "../components/ConfirmDialog.vue";
 import PaginationBar from "../components/PaginationBar.vue";
 import { describeUiError } from "../errorCatalog";
@@ -29,6 +31,7 @@ const props = defineProps<{
   strmCleanupCapability?: CapabilityAvailability;
   emptyDirectoryCleanupCapability?: CapabilityAvailability;
 }>();
+const feedback = useFeedback();
 const emit = defineEmits<{
   "open-settings": [section: "overview" | "organization"];
 }>();
@@ -55,6 +58,11 @@ const loading = ref(false);
 const busy = ref(false);
 const error = ref("");
 const notice = ref("");
+watch(notice, (value) => {
+  if (!value) return;
+  if (value.includes("超时")) feedback.warning(value);
+  else feedback.success(value);
+});
 const form = ref({ libraryId: "main", name: "115 媒体库", rootDirectoryId: "" });
 const latestResult = ref<StrmGenerationResponse | null>(null);
 const latestOperation = ref<StrmOperationResponse | null>(null);
@@ -1007,8 +1015,7 @@ onBeforeUnmount(() => {
       <button class="icon-button" type="button" title="刷新媒体库" aria-label="刷新媒体库" :disabled="loading || busy" @click="loadLibraries()"><RefreshCw :size="17" :class="{ spin: loading }" /></button>
     </header>
 
-    <p v-if="error" class="error-strip" role="alert"><Ban :size="16" />{{ error }}</p>
-    <p v-if="notice" class="success-strip" role="status"><Check :size="16" />{{ notice }}</p>
+    <InlineAlert v-if="error" variant="error" :message="error" />
 
     <div class="library-workbench-layout">
       <aside class="library-scope-panel">

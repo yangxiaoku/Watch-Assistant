@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { LoaderCircle, LogIn, Menu, PanelRight, X } from "@lucide/vue";
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
+import { LoaderCircle, LogIn, Menu, PanelRight } from "@lucide/vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { ApiClient, ApiError } from "./api";
 import { useAuth } from "./composables/useAuth";
 import { useCapabilities } from "./composables/useCapabilities";
@@ -9,7 +9,10 @@ import { useFavoritesHistory } from "./composables/useFavoritesHistory";
 import AppShell from "./layout/AppShell.vue";
 import AppSidebar from "./layout/AppSidebar.vue";
 import AppTopbar from "./layout/AppTopbar.vue";
+import InlineAlert from "./components/InlineAlert.vue";
 import TaskDrawer from "./components/TaskDrawer.vue";
+import ToastStack from "./components/ToastStack.vue";
+import { useFeedback } from "./composables/useFeedback";
 import {
   extractBrowseView,
   extractMediaRoute,
@@ -44,10 +47,19 @@ import LogsView from "./views/LogsView.vue";
 import OrganizationView from "./views/OrganizationView.vue";
 
 const api = new ApiClient();
+const feedback = useFeedback();
 const auth = useAuth(api, initializeWorkspace);
 const { username, password, authenticated, loggingIn, error, login } = auth;
 const connectivity = useConnectivity();
 const { isOnline, offlineDataAt, updateOnline, recordOfflineData } = connectivity;
+watch(isOnline, (online, wasOnline) => {
+  if (wasOnline === undefined) return;
+  if (!online) {
+    feedback.error("已离线，仅显示最近一次只读摘要");
+  } else if (offlineDataAt.value) {
+    feedback.success("网络已恢复");
+  }
+});
 const favoritesStore = useFavoritesHistory();
 const { favorites, history, favoriteIds, toggleFavorite, recordHistory } = favoritesStore;
 const capabilities = useCapabilities();
@@ -1227,36 +1239,35 @@ async function initializeWorkspace() {
 
 async function startPush(resource: ResourceSummary) {
   if (!canPushResource(resource, pushCapabilities.value)) {
-    error.value = resource.kind === "115_share" ? "115 分享转存尚未验证" : "磁力云下载不可用";
+    feedback.error(resource.kind === "115_share" ? "115 分享转存尚未验证" : "磁力云下载不可用");
     return;
   }
   try {
     const settings = await api.organizationSettings();
     if (!settings.push_directory_id) {
-      error.value = "请先在设置的“资源推送目录”中选择目录并保存。";
+      feedback.error("请先在设置中选择资源推送目录", { actionLabel: "前往设置", onAction: () => void selectView("settings") });
       return;
     }
     void submitPush(resource, settings.push_directory_id);
   } catch (exception) {
-    error.value = exception instanceof ApiError ? exception.message : "推送目录读取失败，请前往设置检查目录配置。";
+    feedback.error(exception instanceof ApiError ? exception.message : "推送目录读取失败，请前往设置检查目录配置");
   }
 }
 
 async function submitPush(resource: ResourceSummary, targetDirectoryId: string) {
   pushingId.value = resource.resource_id;
-  error.value = "";
   try {
     const workflowId = await ensureActiveWorkflow(resource.resource_id);
     const task = await submitPushResource(resource, pushCapabilities.value, (resourceId) => api.createTask(resourceId, false, workflowId, targetDirectoryId));
     if (!task) {
-      error.value = resource.kind === "115_share" ? "115 分享转存尚未验证" : "磁力云下载不可用";
+      feedback.error(resource.kind === "115_share" ? "115 分享转存尚未验证" : "磁力云下载不可用");
       return;
     }
     tasks.value = [task, ...tasks.value.filter((item) => item.id !== task.id)].slice(0, 50);
-    drawerOpen.value = true;
+    feedback.success("已推送，正在后台处理", { actionLabel: "查看推送记录", onAction: () => { drawerOpen.value = true; } });
     ensurePolling();
   } catch (exception) {
-    error.value = exception instanceof ApiError ? exception.message : "推送失败";
+    feedback.error(exception instanceof ApiError ? exception.message : "推送失败");
   } finally {
     pushingId.value = null;
   }
@@ -1543,13 +1554,10 @@ onBeforeUnmount(() => {
           <span v-else class="status-dot offline" title="离线" />
         </AppTopbar>
       </template>
-      <p v-if="!isOnline" class="offline-strip" role="status">当前处于离线状态，仅显示最近一次只读摘要；写操作已暂停。</p>
-      <p v-else-if="offlineDataAt" class="offline-data-strip" role="status">网络已恢复，之前显示过离线缓存（{{ new Date(offlineDataAt).toLocaleString('zh-CN') }}）。</p>
 
-      <section v-if="!authenticated" class="auth-gate"><div class="auth-mark"><LogIn :size="20" /></div><p class="eyebrow">私有工作区</p><h1>进入观影工作台</h1><p>你的 PanSou 聚合和 115 推送只在本地网络可见。</p><form @submit.prevent="login"><label for="username">账号</label><input id="username" name="username" v-model="username" type="text" autocomplete="username" placeholder="输入账号" /><label for="password">Web 密码</label><input id="password" name="password" v-model="password" type="password" autocomplete="current-password" placeholder="输入访问密码" /><button class="primary-button" type="submit" :disabled="loggingIn"><LoaderCircle v-if="loggingIn" class="spin" :size="17" /><LogIn v-else :size="17" />{{ loggingIn ? '登录中…' : '登录' }}</button></form><p v-if="error" class="error-text" role="alert">{{ error }}</p></section>
+      <section v-if="!authenticated" class="auth-gate"><div class="auth-mark"><LogIn :size="20" /></div><p class="eyebrow">私有工作区</p><h1>进入观影工作台</h1><p>你的 PanSou 聚合和 115 推送只在本地网络可见。</p><form @submit.prevent="login"><label for="username">账号</label><input id="username" name="username" v-model="username" type="text" autocomplete="username" placeholder="输入账号" /><label for="password">Web 密码</label><input id="password" name="password" v-model="password" type="password" autocomplete="current-password" placeholder="输入访问密码" /><button class="primary-button" type="submit" :disabled="loggingIn"><LoaderCircle v-if="loggingIn" class="spin" :size="17" /><LogIn v-else :size="17" />{{ loggingIn ? '登录中…' : '登录' }}</button></form><InlineAlert v-if="error" variant="error" :message="error" /></section>
 
     <template v-else>
-      <p v-if="error" class="error-strip" role="alert"><X :size="16" />{{ error }}</p>
       <template v-if="!result">
         <HomeView v-if="activeView === 'home'" :catalog="homeCatalog" :loading="catalogLoading" :error="homeError" :favorite-ids="favoriteIds" @open="openMovie" @favorite="toggleFavorite" @navigate="selectView" @retry="retryHome" />
         <LibraryView v-else-if="activeView === 'movies' || activeView === 'tv'" :movies="catalogMovies" :loading="catalogLoading" :error="catalogError" :favorite-ids="favoriteIds" :genre-id="genreId" :year="year" :sort="sort" :media-type="activeView" :page="currentPage" :total-pages="totalPages" :total-results="totalResults" @open="openMovie" @favorite="toggleFavorite" @filters="loadDiscover" @page="loadPage" @retry="retryCatalog" />
@@ -1564,9 +1572,6 @@ onBeforeUnmount(() => {
         <LogsView v-else-if="activeView === 'logs'" :api="api" />
         <SearchView v-else-if="activeView === 'search' || activeView === 'popular'" v-model="searchInput" :loading="catalogLoading" :error="catalogError" :movies="catalogMovies" :heading="catalogHeading" :favorite-ids="favoriteIds" :page="currentPage" :total-pages="totalPages" :total-results="totalResults" @search="searchMovies" @reset="selectView('home')" @open="openMovie" @favorite="toggleFavorite" @page="loadPage" @retry="retryCatalog" />
       </template>
-       <p v-if="result && !pushCapabilities.magnet && !pushCapabilities.share" class="warning-strip">115 推送当前不可用，推送按钮已禁用。</p>
-       <p v-else-if="result && pushCapabilities.magnet && !pushCapabilities.share" class="warning-strip">磁力云下载可用，115 分享转存尚未验证</p>
-       <p v-else-if="result && !pushCapabilities.magnet && pushCapabilities.share" class="warning-strip">115 分享转存可用，磁力云下载尚未验证</p>
        <section v-if="result" class="detail-workspace">
          <MovieView
            :result="result"

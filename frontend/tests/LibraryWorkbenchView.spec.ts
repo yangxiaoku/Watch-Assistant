@@ -1,5 +1,6 @@
 import { flushPromises, mount } from "@vue/test-utils";
-import { describe, expect, it, vi } from "vitest";
+import { useFeedback } from "../src/composables/useFeedback";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ApiError } from "../src/api";
 import LibraryWorkbenchView from "../src/views/LibraryWorkbenchView.vue";
@@ -46,6 +47,14 @@ async function switchTab(wrapper: ReturnType<typeof mount>, label: string) {
 }
 
 describe("LibraryWorkbenchView", () => {
+  beforeEach(() => {
+    useFeedback().clear();
+  });
+
+  function toastMessages(): string[] {
+    return useFeedback().toasts.value.map((item) => item.message);
+  }
+
   it("keeps guarded workbench handlers closed when called outside disabled buttons", async () => {
     const library = {
       library_id: "main",
@@ -223,7 +232,7 @@ describe("LibraryWorkbenchView", () => {
     expect(api.configureLibrary).toHaveBeenCalledWith("main", { name: "115 媒体库", root_directory_id: "123", revision: 0 });
     expect(api.verifyLibraryScope).toHaveBeenCalledWith("main");
     expect(api.scanLibrary).toHaveBeenCalledWith("main");
-    expect(wrapper.text()).toContain("现在可以重新推送");
+    expect(toastMessages().some((msg) => msg.includes("现在可以重新推送"))).toBe(true);
   });
 
   it("continues polling the first scan during initialization", async () => {
@@ -254,7 +263,7 @@ describe("LibraryWorkbenchView", () => {
       await flushPromises();
 
       expect(api.getLibraryScan).toHaveBeenCalledTimes(2);
-      expect(wrapper.text()).toContain("媒体库已启用并完成首次扫描，共发现 2 项");
+      expect(toastMessages().some((msg) => msg.includes("媒体库已启用并完成首次扫描，共发现 2 项"))).toBe(true);
     } finally {
       vi.useRealTimers();
     }
@@ -292,7 +301,7 @@ describe("LibraryWorkbenchView", () => {
       await flushPromises();
 
       expect(api.getLibraryScan).toHaveBeenCalledTimes(2);
-      expect(wrapper.text()).toContain("扫描完成，共发现 2 项");
+      expect(toastMessages().some((msg) => msg.includes("扫描完成，共发现 2 项"))).toBe(true);
       expect(wrapper.text()).toContain("已完成");
     } finally {
       vi.useRealTimers();
@@ -353,20 +362,20 @@ describe("LibraryWorkbenchView", () => {
     await wrapper.findAll("button").find((button) => button.text().includes("全量 STRM"))!.trigger("click");
     await flushPromises();
     expect(api.generateStrm).toHaveBeenCalledWith("main", "scan-1");
-    expect(wrapper.text()).toContain("STRM 全量同步完成");
+    expect(toastMessages().some((msg) => msg.includes("STRM 全量同步完成"))).toBe(true);
 
 
     await switchTab(wrapper, "清理");
 
     await wrapper.findAll("button").find((button) => button.text().includes("预览失效清理"))!.trigger("click");
     await flushPromises();
-    expect(wrapper.text()).toContain("失效清理预览已生成");
+    expect(toastMessages().some((msg) => msg.includes("失效清理预览已生成"))).toBe(true);
 
     await wrapper.findAll("button").find((button) => button.text().includes("查看摘要并确认清理"))!.trigger("click");
     expect(wrapper.get(".confirm-dialog").text()).toContain("可退休");
     await confirmRiskyAction(wrapper);
     expect(api.applyStrmCleanupPlan).toHaveBeenCalledWith("plan-1", expect.objectContaining({ expectedRevision: 1, digest: "a".repeat(64), idempotencyKey: expect.any(String) }));
-    expect(wrapper.text()).toContain("失效清理已完成，退休 1 个受管 STRM");
+    expect(toastMessages().some((msg) => msg.includes("失效清理已完成，退休 1 个受管 STRM"))).toBe(true);
   });
 
   it("loads later STRM manifest pages and presents item states in Chinese", async () => {
@@ -556,7 +565,7 @@ describe("LibraryWorkbenchView", () => {
     expect(wrapper.get(".confirm-dialog").text()).toContain("可恢复回收");
     await confirmRiskyAction(wrapper);
     expect(api.applyEmptyDirectoryCleanupPlan).toHaveBeenCalledWith("empty-plan-1", expect.objectContaining({ expectedRevision: 1, digest: "b".repeat(64), idempotencyKey: expect.any(String) }));
-    expect(wrapper.text()).toContain("可恢复回收 1 个受管目录");
+    expect(toastMessages().some((msg) => msg.includes("可恢复回收 1 个受管目录"))).toBe(true);
   });
 
   it("applies small-file cleanup asynchronously and polls the operation to completion", async () => {
@@ -600,19 +609,19 @@ describe("LibraryWorkbenchView", () => {
       await wrapper.findAll("button").find((button) => button.text().includes("预览小文件清理"))!.trigger("click");
       await flushPromises();
       expect(wrapper.text()).toContain("sample.srt");
-      expect(wrapper.text()).toContain("小文件清理预览已生成");
+      expect(toastMessages().some((msg) => msg.includes("小文件清理预览已生成"))).toBe(true);
 
       await wrapper.findAll("button").find((button) => button.text().includes("查看摘要并确认清理"))!.trigger("click");
       expect(wrapper.get(".confirm-dialog").text()).toContain("确认清理小文件");
       await confirmRiskyAction(wrapper);
 
       expect(api.smallFileCleanupApply).toHaveBeenCalledWith("main", expect.objectContaining({ sourceScanRunId: "scan-1", fileIds: ["file-1"], confirm: true }));
-      expect(wrapper.text()).toContain("小文件清理执行中");
-      expect(wrapper.text()).not.toContain("小文件清理完成");
+      expect(toastMessages().some((msg) => msg.includes("小文件清理执行中"))).toBe(true);
+      expect(toastMessages().some((msg) => msg.includes("小文件清理完成"))).toBe(false);
 
       await vi.advanceTimersByTimeAsync(500);
       await flushPromises();
-      expect(wrapper.text()).toContain("小文件清理完成：删除 1 项");
+      expect(toastMessages().some((msg) => msg.includes("小文件清理完成：删除 1 项"))).toBe(true);
       expect(api.strmOperation).toHaveBeenCalledTimes(2);
       wrapper.unmount();
     } finally {
@@ -653,13 +662,13 @@ describe("LibraryWorkbenchView", () => {
     await wrapper.findAll("button").find((button) => button.text().includes("全量 STRM"))!.trigger("click");
     await vi.advanceTimersByTimeAsync(0);
 
-    expect(wrapper.text()).toContain("已排队");
-    expect(wrapper.text()).not.toContain("STRM 全量同步完成");
+    expect(toastMessages().some((msg) => msg.includes("已排队"))).toBe(true);
+    expect(toastMessages().some((msg) => msg.includes("STRM 全量同步完成"))).toBe(false);
     await vi.advanceTimersByTimeAsync(500);
-    expect(wrapper.text()).toContain("执行中");
-    expect(wrapper.text()).not.toContain("STRM 全量同步完成");
+    expect(toastMessages().some((msg) => msg.includes("执行中"))).toBe(true);
+    expect(toastMessages().some((msg) => msg.includes("STRM 全量同步完成"))).toBe(false);
     await vi.advanceTimersByTimeAsync(500);
-    expect(wrapper.text()).toContain("STRM 全量同步完成");
+    expect(toastMessages().some((msg) => msg.includes("STRM 全量同步完成"))).toBe(true);
     expect(strmOperation).toHaveBeenCalledTimes(3);
     wrapper.unmount();
     vi.useRealTimers();
@@ -693,9 +702,9 @@ describe("LibraryWorkbenchView", () => {
       await vi.advanceTimersByTimeAsync(60_000);
       await flushPromises();
 
-      expect(wrapper.get(".success-strip").text()).toContain("页面已停止自动等待");
-      expect(wrapper.find(".error-strip").exists()).toBe(false);
-      expect(wrapper.text()).toContain("确认前不要恢复执行");
+      expect(toastMessages().some((msg) => msg.includes("页面已停止自动等待"))).toBe(true);
+      expect(wrapper.find(".inline-alert").exists()).toBe(false);
+      expect(toastMessages().some((msg) => msg.includes("确认前不要恢复执行"))).toBe(true);
       expect(api.strmOperation).toHaveBeenCalledTimes(120);
       wrapper.unmount();
     } finally {
@@ -764,7 +773,7 @@ describe("LibraryWorkbenchView", () => {
     await flushPromises();
 
     expect(api.resumeStrmOperation).toHaveBeenCalledWith("strm_op_failed");
-    expect(wrapper.text()).toContain("STRM 全量同步完成");
+    expect(toastMessages().some((msg) => msg.includes("STRM 全量同步完成"))).toBe(true);
   });
 
   it("cancels a running STRM operation from the workbench", async () => {
@@ -800,7 +809,7 @@ describe("LibraryWorkbenchView", () => {
     await flushPromises();
 
     expect(api.cancelStrmOperation).toHaveBeenCalledWith("strm_op_running");
-    expect(wrapper.text()).toContain("STRM 增量同步已取消");
+    expect(toastMessages().some((msg) => msg.includes("STRM 增量同步已取消"))).toBe(true);
   });
 
   it("keeps STRM operation history errors visible with retry", async () => {

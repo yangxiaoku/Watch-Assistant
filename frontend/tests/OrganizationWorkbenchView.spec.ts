@@ -1,5 +1,6 @@
 import { flushPromises, mount } from "@vue/test-utils";
-import { describe, expect, it, vi } from "vitest";
+import { useFeedback } from "../src/composables/useFeedback";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ApiClient, ApiError } from "../src/api";
 import type { OrganizationPlanListResponse, OrganizationPlanSummary } from "../src/types";
@@ -50,6 +51,14 @@ async function confirmRiskyAction(wrapper: ReturnType<typeof mount>) {
 }
 
 describe("OrganizationWorkbenchView", () => {
+  beforeEach(() => {
+    useFeedback().clear();
+  });
+
+  function toastMessages(): string[] {
+    return useFeedback().toasts.value.map((item) => item.message);
+  }
+
   it("does not request or render the workbench when disabled", async () => {
     const api = makeApi();
     const wrapper = mount(OrganizationWorkbenchView, { props: { api, enabled: false } });
@@ -98,7 +107,7 @@ describe("OrganizationWorkbenchView", () => {
     expect(wrapper.get(".confirm-dialog").text()).toContain("预计移动");
     await confirmRiskyAction(wrapper);
     expect(api.confirmAndQueueOrganizationOperation).toHaveBeenCalledWith("plan-local-1", 4);
-    expect(wrapper.text()).toContain("整理已提交，后台正在执行");
+    expect(toastMessages()).toContain("整理已提交，后台正在执行");
   });
 
   it("appends cursor pages and loads operation details for the selected plan", async () => {
@@ -161,7 +170,7 @@ describe("OrganizationWorkbenchView", () => {
 
       expect(organizationOperation).toHaveBeenCalledWith("op-running");
       expect(wrapper.text()).toContain("整理操作：已完成");
-      expect(wrapper.text()).toContain("整理已完成");
+      expect(toastMessages()).toContain("整理已完成");
     } finally {
       vi.useRealTimers();
     }
@@ -203,11 +212,11 @@ describe("OrganizationWorkbenchView", () => {
     const wrapper = mount(OrganizationWorkbenchView, { props: { api } });
     await flushPromises();
 
-    expect(wrapper.get(".error-strip").text()).toContain("整理操作状态服务暂不可用，请稍后重试");
-    await wrapper.get(".error-strip .text-button").trigger("click");
+    expect(wrapper.get(".inline-alert").text()).toContain("整理操作状态服务暂不可用，请稍后重试");
+    await wrapper.get(".inline-alert .inline-alert-action").trigger("click");
     await flushPromises();
     expect(operationFor).toHaveBeenCalledTimes(2);
-    expect(wrapper.find(".error-strip").exists()).toBe(false);
+    expect(wrapper.find(".inline-alert").exists()).toBe(false);
   });
 
   it("keeps an operation polling error visible with a retry action", async () => {
@@ -231,8 +240,8 @@ describe("OrganizationWorkbenchView", () => {
       await vi.advanceTimersByTimeAsync(1_000);
       await flushPromises();
 
-      expect(wrapper.get(".error-strip").text()).toContain("整理状态暂时无法更新，请稍后重试");
-      expect(wrapper.get(".error-strip .text-button").text()).toBe("重试");
+      expect(wrapper.get(".inline-alert").text()).toContain("整理状态暂时无法更新，请稍后重试");
+      expect(wrapper.get(".inline-alert .inline-alert-action").text()).toBe("重试");
     } finally {
       vi.useRealTimers();
     }
@@ -268,7 +277,7 @@ describe("OrganizationWorkbenchView", () => {
     await confirmRiskyAction(wrapper);
 
     expect(api.organizationPlans).toHaveBeenCalledTimes(2);
-    expect(wrapper.text()).toContain("计划版本已变化，已刷新当前列表");
+    expect(toastMessages()).toContain("计划版本已变化，已刷新当前列表");
     expect(wrapper.text()).not.toContain("确认计划");
   });
 
@@ -300,8 +309,8 @@ describe("OrganizationWorkbenchView", () => {
     expect(api.confirmAndQueueOrganizationOperations).toHaveBeenCalledWith([
       { planId: plan.plan_id, expectedRevision: plan.revision },
     ]);
-    expect(wrapper.text()).toContain("已确认并提交 1 个整理计划");
-    expect(wrapper.text()).toContain("跳过 1 个未参与批量提交的计划");
+    expect(toastMessages().some((msg) => msg.includes("已确认并提交 1 个整理计划"))).toBe(true);
+    expect(toastMessages().some((msg) => msg.includes("跳过 1 个未参与批量提交的计划"))).toBe(true);
   });
 
   
@@ -320,7 +329,7 @@ describe("OrganizationWorkbenchView", () => {
     await operationButton!.trigger("click");
     await confirmRiskyAction(wrapper);
     expect(api.queueOrganizationOperation).toHaveBeenCalledWith("plan-local-1", 4);
-    expect(wrapper.text()).toContain("整理已提交，后台正在执行");
+    expect(toastMessages()).toContain("整理已提交，后台正在执行");
   });
 
   it("labels a legacy planned operation as not executed when capability is unavailable", async () => {
@@ -386,12 +395,12 @@ describe("OrganizationWorkbenchView", () => {
 
     expect(api.selectOrganizationCandidate).toHaveBeenCalledWith("plan-local-1", 4, "source-1", 42);
     expect(api.queueOrganizationOperation).not.toHaveBeenCalled();
-    expect(wrapper.text()).toContain("已生成可执行计划，请确认后开始整理");
+    expect(toastMessages()).toContain("已生成可执行计划，请确认后开始整理");
 
     await wrapper.findAll("button").find((button) => button.text().includes("开始整理"))!.trigger("click");
     await confirmRiskyAction(wrapper);
     expect(api.queueOrganizationOperation).toHaveBeenCalledWith("plan-local-1", 5);
-    expect(wrapper.text()).toContain("整理已完成");
+    expect(toastMessages()).toContain("整理已完成");
   });
 
   it("keeps a no-candidate plan review-only until manual search and selection create a move", async () => {
@@ -492,7 +501,7 @@ describe("OrganizationWorkbenchView", () => {
       await vi.advanceTimersByTimeAsync(60_000);
       await flushPromises();
 
-      expect(wrapper.text()).toContain("等待超时，后台可能仍在执行，请手动刷新查看");
+      expect(toastMessages()).toContain("等待超时，后台可能仍在执行，请手动刷新查看");
     } finally {
       vi.useRealTimers();
     }
@@ -520,13 +529,13 @@ describe("OrganizationWorkbenchView", () => {
 
       await wrapper.get(".organization-batch-action").trigger("click");
       await confirmRiskyAction(wrapper);
-      expect(wrapper.text()).toContain("已确认并提交 1 个整理计划");
+      expect(toastMessages().some((msg) => msg.includes("已确认并提交 1 个整理计划"))).toBe(true);
 
       await vi.advanceTimersByTimeAsync(1_000);
       await flushPromises();
 
       expect(api.organizationOperation).toHaveBeenCalledWith("op-1");
-      expect(wrapper.text()).toContain("批量整理已完成，共 1 个计划全部完成");
+      expect(toastMessages().some((msg) => msg.includes("批量整理已完成，共 1 个计划全部完成"))).toBe(true);
     } finally {
       vi.useRealTimers();
     }

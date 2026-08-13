@@ -246,14 +246,14 @@ describe("SettingsView", () => {
     await wrapper.findAll("button").find((button) => button.text().includes("连接配置"))?.trigger("click");
     await flushPromises();
 
-    expect(wrapper.get(".p115-device-list .settings-state-error").text()).toContain("扫码设备服务暂不可用，请稍后重试");
+    expect(wrapper.get(".p115-device-list .inline-alert").text()).toContain("扫码设备服务暂不可用，请稍后重试");
     expect(wrapper.get(".p115-device-list").text()).not.toContain("暂无扫码设备");
-    await wrapper.get(".p115-device-list .settings-state-error .text-button").trigger("click");
+    await wrapper.get(".p115-device-list .inline-alert .text-button").trigger("click");
     await flushPromises();
 
     expect(p115Devices).toHaveBeenCalledTimes(2);
     expect(wrapper.get(".p115-device-list").text()).toContain("暂无扫码设备");
-    expect(wrapper.find(".p115-device-list .settings-state-error").exists()).toBe(false);
+    expect(wrapper.find(".p115-device-list .inline-alert").exists()).toBe(false);
   });
 
   it("keeps organization settings independent from the schedule switch and deduplicated from the workbench", async () => {
@@ -300,7 +300,7 @@ describe("SettingsView", () => {
     await flushPromises();
 
     expect(api.organizationSettings).toHaveBeenCalledTimes(2);
-    expect(wrapper.get(".settings-save-error").text()).toContain("已加载最新版本");
+    expect(wrapper.get(".inline-alert-error").text()).toContain("已加载最新版本");
     expect((scheduleToggle.element as HTMLInputElement).checked).toBe(false);
   });
 
@@ -482,9 +482,9 @@ describe("SettingsView", () => {
     await flushPromises();
     expect(wrapper.text()).toContain("设置已被其他请求修改");
 
-    await wrapper.get(".settings-save-error .text-button").trigger("click");
+    await wrapper.get(".inline-alert-action").trigger("click");
     await flushPromises();
-    expect(wrapper.find(".settings-save-error").exists()).toBe(false);
+    expect(wrapper.find(".inline-alert-error").exists()).toBe(false);
     expect(wrapper.text()).not.toContain("设置已被其他请求修改");
   });
 
@@ -777,7 +777,7 @@ describe("SettingsView", () => {
     await wrapper.get("button.primary-button").trigger("click");
     await flushPromises();
     expect(wrapper.text()).toContain("设置已被其他请求修改");
-    await wrapper.get(".settings-save-error .text-button").trigger("click");
+    await wrapper.get(".inline-alert-action").trigger("click");
     await flushPromises();
     expect(prowlarrSettingsMock).toHaveBeenCalledTimes(2);
   });

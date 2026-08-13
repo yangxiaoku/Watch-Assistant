@@ -2,6 +2,7 @@
 import { CheckCircle2, Clock3, LoaderCircle, RefreshCw } from "@lucide/vue";
 import { onBeforeUnmount, onMounted, ref } from "vue";
 import { ApiClient, ApiError } from "../api";
+import InlineAlert from "../components/InlineAlert.vue";
 import { formatTimestamp } from "../format";
 import type { OrganizationHistoryItem } from "../types";
 
@@ -52,7 +53,7 @@ onBeforeUnmount(() => {
       <button class="icon-button" type="button" title="刷新整理历史" aria-label="刷新整理历史" :disabled="loading" @click="load()"><RefreshCw :size="17" :class="{ spin: loading }" /></button>
     </header>
 
-    <p v-if="error" class="error-strip">{{ error }}</p>
+    <InlineAlert v-if="error" variant="error" :message="error" />
     <div v-if="loading && !items.length" class="organization-empty"><LoaderCircle class="spin" :size="22" /><span>正在加载整理历史</span></div>
     <div v-else-if="!items.length" class="organization-empty"><Clock3 :size="22" /><strong>暂无整理完成记录</strong><span>点击“开始整理”并完成影片归档后，记录会出现在这里。</span></div>
     <section v-else class="organization-history-list" aria-label="整理历史列表">

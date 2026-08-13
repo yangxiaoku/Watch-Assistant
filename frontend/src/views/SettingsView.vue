@@ -22,6 +22,8 @@ import {
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { ApiClient, ApiError, focusFirstFieldError, isConflict, CONFLICT_MESSAGE_ZH } from "../api";
 import ConfirmDialog from "../components/ConfirmDialog.vue";
+import InlineAlert from "../components/InlineAlert.vue";
+import { useFeedback } from "../composables/useFeedback";
 import { p115DeviceOptions } from "../p115DeviceTypes";
 import { logLevelOptions } from "../statusCatalog";
 import { formatBytes, formatTimestamp } from "../format";
@@ -52,6 +54,7 @@ const props = withDefaults(defineProps<{ api: ApiClient; initialSection?: Settin
   initialSection: "overview" as SettingsSection,
 });
 const emit = defineEmits<{ "auto-start-enabled": [enabled: boolean]; navigate: [view: "logs" | "organization"] }>();
+const feedback = useFeedback();
 
 type SettingsSection = "overview" | "credentials" | "prowlarr" | "logs" | "content" | "inspection" | "organization" | "checkin";
 type ValidationState = "idle" | "running" | "error" | P115ValidationResponse["status"];
@@ -314,7 +317,8 @@ async function saveProwlarr() {
     if (!settingsMounted) return;
     applyProwlarr(response);
     syncSharedRevision(response.revision);
-    prowlarrSaveMessage.value = "Prowlarr 配置已保存";
+    prowlarrSaveMessage.value = "";
+    feedback.success("Prowlarr 配置已保存");
   } catch (exception) {
     if (!settingsMounted) return;
     prowlarrConflict.value = isConflict(exception);
@@ -505,6 +509,7 @@ async function saveTmdbCredential() {
     applyCredentials(response);
     syncSharedRevision(response.revision);
     tmdbDraft.value = "";
+    feedback.success("TMDB API Key 已保存并验证");
   } catch (exception) {
     focusFirstFieldError(exception);
     if (settingsMounted) tmdbCredentialError.value = credentialErrorMessage(exception, "TMDB 凭据保存失败，请稍后重试");
@@ -546,6 +551,7 @@ async function saveP115Credential() {
     syncSharedRevision(response.revision);
     p115CookieDraft.value = "";
     await loadP115();
+    feedback.success("P115 Cookie 已保存并验证");
   } catch (exception) {
     focusFirstFieldError(exception);
     if (settingsMounted) p115CredentialError.value = credentialErrorMessage(exception, "P115 Cookie 保存失败，请稍后重试");
@@ -608,6 +614,7 @@ async function saveInspection() {
     applyInspection(response);
     syncSharedRevision(response.revision);
     emit("auto-start-enabled", response.auto_start_enabled);
+    feedback.success("资源检测设置已保存");
   } catch (exception) {
     focusFirstFieldError(exception);
     if (isConflict(exception)) {
@@ -809,6 +816,7 @@ async function saveOrganization() {
     if (!settingsMounted) return;
     applyOrganization(response);
     syncSharedRevision(response.revision);
+    feedback.success("整理设置已保存");
   } catch (exception) {
     focusFirstFieldError(exception);
     if (isConflict(exception)) {
@@ -895,6 +903,7 @@ async function saveLogging() {
     if (!settingsMounted) return;
     applyLogging(response);
     syncSharedRevision(response.revision);
+    feedback.success("日志设置已保存");
   } catch (exception) {
     focusFirstFieldError(exception);
     if (isConflict(exception)) {
@@ -961,6 +970,7 @@ async function saveContentPolicy() {
     if (!settingsMounted) return;
     applyContentPolicy(response);
     syncSharedRevision(response.revision);
+    feedback.success("内容安全设置已保存");
   } catch (exception) {
     focusFirstFieldError(exception);
     if (isConflict(exception)) {
@@ -1153,6 +1163,27 @@ function validationLabel(value: P115ValidationResponse["status"]) {
   return { ready: "Cookie 已就绪", needs_auth: "Cookie 需要重新授权", unavailable: "115 当前不可用" }[value];
 }
 
+const validationVariant = computed<"info" | "success" | "warning" | "error">(() => {
+  if (validationState.value === "ready") return "success";
+  if (validationState.value === "error") return "error";
+  if (validationState.value === "needs_auth" || validationState.value === "unavailable") return "warning";
+  return "info";
+});
+
+const prowlarrValidationVariant = computed<"info" | "success" | "warning" | "error">(() => {
+  if (prowlarrValidationState.value === "available") return "success";
+  if (prowlarrValidationState.value === "disabled") return "warning";
+  if (prowlarrValidationState.value === "error") return "error";
+  return "info";
+});
+
+const p115QrVariant = computed<"info" | "success" | "warning" | "error">(() => {
+  if (p115QrStatus.value === "ready") return "success";
+  if (p115QrStatus.value === "error") return "error";
+  if (p115QrStatus.value === "expired") return "warning";
+  return "info";
+});
+
 function validationClass(value: ValidationState) {
   return value === "ready" ? "status-ok" : value === "needs_auth" ? "status-degraded" : "status-down";
 }
@@ -1268,6 +1299,7 @@ async function saveCheckin() {
     if (!settingsMounted) return;
     applyCheckinSettings(response);
     await loadCheckinStatus();
+    feedback.success("签到设置已保存");
   } catch (exception) {
     if (!settingsMounted) return;
     // 保存失败时回退开关与时间草稿，避免界面与后端不一致。
@@ -1321,7 +1353,7 @@ onBeforeUnmount(() => {
         <section v-if="activeSection === 'overview'" class="settings-section" aria-labelledby="overview-title">
           <header class="settings-section-heading"><div><p class="eyebrow">系统概览</p><h2 id="overview-title">概览</h2></div><button class="icon-button" type="button" title="刷新概览" aria-label="刷新概览" :disabled="overviewLoading" @click="loadOverview"><RefreshCw :size="16" :class="{ spin: overviewLoading }" /></button></header>
           <div v-if="overviewLoading" class="settings-loading"><LoaderCircle class="spin" :size="20" />正在加载概览</div>
-          <div v-else-if="overviewError" class="settings-state settings-state-error" role="alert"><AlertTriangle :size="18" /><span>{{ overviewError }}</span><button class="text-button" type="button" @click="loadOverview">重试</button></div>
+          <InlineAlert v-else-if="overviewError" variant="error" :message="overviewError" action-label="重试" @action="loadOverview" />
           <template v-else-if="overview">
             <div class="settings-metrics"><div class="settings-metric"><span>版本</span><strong>{{ shortRelease(overview.release) }}</strong></div><div class="settings-metric"><span>运行时间</span><strong>{{ formatUptime(overview.uptime_seconds) }}</strong></div><div class="settings-metric"><span>数据库大小</span><strong>{{ formatBytes(overview.database_size_bytes) }}</strong></div></div>
             <div class="settings-subsection"><h3>能力</h3><div class="settings-capability-list">
@@ -1339,13 +1371,13 @@ onBeforeUnmount(() => {
         <section v-else-if="activeSection === 'credentials'" class="settings-section" aria-labelledby="credentials-title">
           <header class="settings-section-heading"><div><p class="eyebrow">托管连接</p><h2 id="credentials-title">连接配置</h2></div><button class="icon-button" type="button" title="刷新连接配置" aria-label="刷新连接配置" :disabled="credentialsLoading" @click="loadCredentials"><RefreshCw :size="16" :class="{ spin: credentialsLoading }" /></button></header>
           <div v-if="credentialsLoading" class="settings-loading"><LoaderCircle class="spin" :size="20" />正在加载连接配置</div>
-          <div v-else-if="credentialsError" class="settings-state settings-state-error" role="alert"><AlertTriangle :size="18" /><span>{{ credentialsError }}</span><button class="text-button" type="button" @click="loadCredentials">重新加载</button></div>
+          <InlineAlert v-else-if="credentialsError" variant="error" :message="credentialsError" action-label="重新加载" @action="loadCredentials" />
           <div v-else-if="credentials" class="credential-panels">
             <section class="credential-panel" aria-labelledby="tmdb-credential-title">
               <header class="credential-panel-heading"><div><p class="eyebrow">TMDB</p><h3 id="tmdb-credential-title">TMDB API Key</h3></div><KeyRound :size="20" /></header>
               <dl class="credential-status-grid"><div><dt>是否配置</dt><dd :class="credentials.tmdb.configured ? 'status-ok' : 'status-degraded'">{{ credentials.tmdb.configured ? '已配置' : '未配置' }}</dd></div><div><dt>来源</dt><dd>{{ credentialSourceLabel(credentials.tmdb.source) }}</dd></div><div><dt>最后更新时间</dt><dd>{{ credentials.tmdb.last_updated_at ? formatTimestamp(credentials.tmdb.last_updated_at) : '未知' }}</dd></div></dl>
               <div class="credential-form"><label>API Key<input v-model="tmdbDraft" type="password" autocomplete="new-password" spellcheck="false" aria-label="TMDB API Key" placeholder="输入新的 API Key" :disabled="credentialMutationBusy" /></label><div class="credential-actions"><button class="primary-button" type="button" :disabled="credentialMutationBusy" @click="saveTmdbCredential"><LoaderCircle v-if="tmdbSaving" class="spin" :size="15" /><Save v-else :size="15" />保存并验证</button><button class="secondary-button" type="button" :disabled="credentialMutationBusy || credentials.tmdb.source !== 'managed'" @click="resetTmdbCredential"><LoaderCircle v-if="tmdbResetting" class="spin" :size="15" /><RefreshCw v-else :size="15" />恢复环境配置</button></div></div>
-              <p v-if="tmdbCredentialError" class="settings-state settings-state-error credential-error" role="alert"><AlertTriangle :size="16" />{{ tmdbCredentialError }}<button v-if="tmdbCredentialError.includes('其他请求')" class="text-button" type="button" @click="loadCredentials">重新加载</button></p>
+              <InlineAlert v-if="tmdbCredentialError" variant="error" :message="tmdbCredentialError" :action-label="tmdbCredentialError.includes('其他请求') ? '重新加载' : undefined" @action="loadCredentials" />
             </section>
 
             <section class="credential-panel" aria-labelledby="p115-credential-title">
@@ -1353,14 +1385,14 @@ onBeforeUnmount(() => {
               <dl class="credential-status-grid"><div><dt>是否配置</dt><dd :class="credentials.p115_cookie.configured ? 'status-ok' : 'status-degraded'">{{ credentials.p115_cookie.configured ? '已配置' : '未配置' }}</dd></div><div><dt>来源</dt><dd>{{ credentialSourceLabel(credentials.p115_cookie.source) }}</dd></div><div><dt>结构状态</dt><dd :class="credentials.p115_cookie.structure_valid ? 'status-ok' : 'status-degraded'">{{ credentials.p115_cookie.structure_valid ? '结构正常' : '结构异常' }}</dd></div><div><dt>就绪状态</dt><dd :class="credentials.p115_cookie.ready ? 'status-ok' : 'status-degraded'">{{ credentials.p115_cookie.ready ? '已就绪' : '未就绪' }}</dd></div><div><dt>最后更新时间</dt><dd>{{ credentials.p115_cookie.last_updated_at ? formatTimestamp(credentials.p115_cookie.last_updated_at) : '未知' }}</dd></div></dl>
               <div class="credential-capabilities"><span>磁力云下载 <strong :class="p115?.capabilities.magnet ? 'status-ok' : 'status-degraded'">{{ p115 ? capabilityLabel(p115.capabilities.magnet) : '未知' }}</strong></span><span>115 分享转存 <strong :class="p115?.capabilities.share ? 'status-ok' : 'status-degraded'">{{ p115 ? (p115.capabilities.share ? '可用' : '未启用') : '未知' }}</strong></span></div>
               <div class="credential-form"><label>高级：手动 Cookie<input v-model="p115CookieDraft" type="password" autocomplete="new-password" spellcheck="false" aria-label="P115 Cookie" placeholder="扫码不可用时再输入" :disabled="credentialMutationBusy" /></label><div class="credential-actions"><button class="primary-button" type="button" :disabled="credentialMutationBusy || validationState === 'running'" @click="saveP115Credential"><LoaderCircle v-if="p115CredentialSaving" class="spin" :size="15" /><Save v-else :size="15" />保存并验证</button><button class="secondary-button" type="button" :disabled="credentialMutationBusy || validationState === 'running' || credentials.p115_cookie.source !== 'managed'" @click="resetP115Credential"><LoaderCircle v-if="p115CredentialResetting" class="spin" :size="15" /><RefreshCw v-else :size="15" />恢复文件 Cookie</button><button class="secondary-button" type="button" :disabled="p115MutationBusy || validationState === 'running'" @click="validateP115"><LoaderCircle v-if="validationState === 'running'" class="spin" :size="15" /><Cookie v-else :size="15" />验证当前 Cookie</button></div></div>
-              <p v-if="p115CredentialError" class="settings-state settings-state-error credential-error" role="alert"><AlertTriangle :size="16" />{{ p115CredentialError }}<button v-if="p115CredentialError.includes('其他请求')" class="text-button" type="button" @click="loadCredentials">重新加载</button></p>
-              <p v-if="validationMessage" :class="['settings-action-message', validationClass(validationState)]" role="status">{{ validationMessage }}</p>
+              <InlineAlert v-if="p115CredentialError" variant="error" :message="p115CredentialError" :action-label="p115CredentialError.includes('其他请求') ? '重新加载' : undefined" @action="loadCredentials" />
+              <InlineAlert v-if="validationMessage" :variant="validationVariant" :message="validationMessage" />
               <div class="p115-qr-box">
                 <div class="p115-qr-heading"><div><h4>扫码登录新设备</h4><p>每次扫码都会保存为独立设备，不会覆盖已保存的其他设备。</p></div><div class="p115-qr-options"><label class="settings-form-label">设备名称<input v-model="p115QrDeviceName" maxlength="64" :disabled="p115QrBusy" /></label><label class="settings-form-label">115 设备类型<select v-model="p115QrDeviceCode" aria-label="115 设备类型" :disabled="p115QrBusy"><option v-for="option in p115DeviceOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select></label><button class="secondary-button" type="button" :disabled="p115QrBusy" @click="startP115QrLogin">{{ p115QrBusy ? '等待扫码' : '生成二维码' }}</button></div></div>
                 <div v-if="p115QrImage" class="p115-qr-content"><img :src="p115QrImage" alt="115 登录二维码" /><div><p class="settings-note">请使用上方选择的设备类型扫码确认。</p><strong v-if="p115QrStatus === 'scanned'" class="status-ok">已扫码，等待确认</strong><strong v-else-if="p115QrStatus === 'waiting'" class="status-unknown">等待扫码</strong></div></div>
-                <p v-if="p115QrError" class="settings-action-message" role="status">{{ p115QrError }}</p>
+                <InlineAlert v-if="p115QrError" :variant="p115QrVariant" :message="p115QrError" />
               </div>
-              <div class="p115-device-list"><div class="p115-device-list-heading"><h4>已保存的登录设备</h4><button class="text-button" type="button" :disabled="p115DevicesLoading" @click="loadP115Devices"><LoaderCircle v-if="p115DevicesLoading" class="spin" :size="14" /><RefreshCw v-else :size="14" />{{ p115DevicesLoading ? '刷新中' : '刷新' }}</button></div><div v-if="p115DevicesLoading" class="settings-loading" role="status"><LoaderCircle class="spin" :size="18" />正在加载扫码设备</div><div v-else-if="p115DevicesError" class="settings-state settings-state-error" role="alert"><AlertTriangle :size="18" /><span>{{ p115DevicesError }}</span><button class="text-button" type="button" @click="loadP115Devices">重试</button></div><p v-else-if="!p115Devices.length" class="settings-note">暂无扫码设备。手动 Cookie 不会显示在这里。</p><div v-else><div v-for="device in p115Devices" :key="device.id" class="p115-device-row"><div><strong>{{ device.name }}</strong><small>{{ device.device_code }} · {{ device.last_used_at ? formatTimestamp(device.last_used_at) : '未使用' }}</small></div><div><strong v-if="device.active" class="status-ok">当前使用</strong><button v-else class="text-button" type="button" @click="activateP115Device(device)">切换</button><button v-if="!device.active" class="text-button danger-text" type="button" @click="requestRevokeP115Device(device)">移除</button></div></div></div></div>
+              <div class="p115-device-list"><div class="p115-device-list-heading"><h4>已保存的登录设备</h4><button class="text-button" type="button" :disabled="p115DevicesLoading" @click="loadP115Devices"><LoaderCircle v-if="p115DevicesLoading" class="spin" :size="14" /><RefreshCw v-else :size="14" />{{ p115DevicesLoading ? '刷新中' : '刷新' }}</button></div><div v-if="p115DevicesLoading" class="settings-loading" role="status"><LoaderCircle class="spin" :size="18" />正在加载扫码设备</div><InlineAlert v-else-if="p115DevicesError" variant="error" :message="p115DevicesError" action-label="重试" @action="loadP115Devices" /><p v-else-if="!p115Devices.length" class="settings-note">暂无扫码设备。手动 Cookie 不会显示在这里。</p><div v-else><div v-for="device in p115Devices" :key="device.id" class="p115-device-row"><div><strong>{{ device.name }}</strong><small>{{ device.device_code }} · {{ device.last_used_at ? formatTimestamp(device.last_used_at) : '未使用' }}</small></div><div><strong v-if="device.active" class="status-ok">当前使用</strong><button v-else class="text-button" type="button" @click="activateP115Device(device)">切换</button><button v-if="!device.active" class="text-button danger-text" type="button" @click="requestRevokeP115Device(device)">移除</button></div></div></div></div>
               <p class="settings-note"><Cookie :size="15" />Cookie 仅使用服务端已配置的来源，页面不会回显已保存的 Cookie 原文。</p>
             </section>
           </div>
@@ -1369,21 +1401,21 @@ onBeforeUnmount(() => {
         <section v-else-if="activeSection === 'prowlarr'" class="settings-section" aria-labelledby="prowlarr-title">
           <header class="settings-section-heading"><div><p class="eyebrow">多来源搜索</p><h2 id="prowlarr-title">Prowlarr</h2><p>配置由服务端保存，API Key 只提交到服务端，不会回显。</p></div><button class="icon-button" type="button" title="刷新 Prowlarr 状态" aria-label="刷新 Prowlarr 状态" :disabled="prowlarrLoading || prowlarrMutationBusy" @click="loadProwlarr"><RefreshCw :size="16" :class="{ spin: prowlarrLoading }" /></button></header>
           <div v-if="prowlarrLoading" class="settings-loading"><LoaderCircle class="spin" :size="20" />正在加载 Prowlarr 状态</div>
-          <div v-else-if="prowlarrError" class="settings-state settings-state-error" role="alert"><AlertTriangle :size="18" /><span>{{ prowlarrError }}</span><button class="text-button" type="button" @click="loadProwlarr">重试</button></div>
+          <InlineAlert v-else-if="prowlarrError" variant="error" :message="prowlarrError" action-label="重试" @action="loadProwlarr" />
           <template v-else-if="prowlarr">
             <div class="p15-status-line prowlarr-status-line"><span class="settings-status-name"><Radio :size="17" />服务端配置</span><span :class="prowlarrStatusClass(prowlarr)">{{ prowlarrStatusLabel(prowlarr) }}</span></div>
             <p v-if="prowlarrHealthNote(prowlarr)" class="settings-note prowlarr-health-note" role="status">{{ prowlarrHealthNote(prowlarr) }}</p>
             <div class="settings-metrics prowlarr-metrics"><div class="settings-metric"><span>配置来源</span><strong>{{ prowlarrSourceLabel(prowlarr.source) }}</strong></div><div class="settings-metric"><span>API Key</span><strong :class="prowlarr.api_key_configured ? 'status-ok' : 'status-degraded'">{{ prowlarr.api_key_configured ? `已配置（${prowlarrApiKeySourceLabel(prowlarr.api_key_source)}）` : '未配置' }}</strong></div><div class="settings-metric"><span>配置版本</span><strong>{{ prowlarr.revision }}</strong></div><div class="settings-metric"><span>最后更新</span><strong>{{ prowlarr.last_updated_at ? formatTimestamp(prowlarr.last_updated_at) : '未知' }}</strong></div></div>
             <div class="settings-subsection"><h3>服务端配置</h3><div class="settings-form-grid"><label for="prowlarr-base-url">服务地址<input id="prowlarr-base-url" v-model="prowlarrBaseUrlDraft" type="url" inputmode="url" autocomplete="url" spellcheck="false" placeholder="例如 http://prowlarr:9696" :disabled="prowlarrMutationBusy" /></label><label for="prowlarr-api-key">API Key<input id="prowlarr-api-key" v-model="prowlarrApiKeyDraft" name="prowlarr_api_key" type="password" autocomplete="new-password" spellcheck="false" placeholder="输入新的 API Key（可留空以保留现有配置）" :disabled="prowlarrMutationBusy" /></label></div><label class="settings-toggle"><input v-model="prowlarrEnabledDraft" type="checkbox" :disabled="prowlarrMutationBusy" />启用 Prowlarr 搜索来源</label><div class="settings-action-row"><button class="primary-button" type="button" :disabled="prowlarrMutationBusy || prowlarrValidationState === 'running'" @click="saveProwlarr"><LoaderCircle v-if="prowlarrSaving" class="spin" :size="15" /><Save v-else :size="15" />保存 Prowlarr 配置</button><button class="secondary-button" type="button" :disabled="prowlarrMutationBusy || prowlarrValidationState === 'running' || prowlarr.source !== 'managed'" @click="resetProwlarr"><LoaderCircle v-if="prowlarrResetting" class="spin" :size="15" /><RefreshCw v-else :size="15" />恢复环境配置</button></div><p class="settings-note"><ShieldCheck :size="15" />API Key 仅在填写后随保存请求提交；服务端响应、状态和日志不会包含 Key 原文。</p></div>
-            <p v-if="prowlarrSaveMessage" class="settings-action-message status-ok" role="status">{{ prowlarrSaveMessage }}</p><p v-if="prowlarrSaveError" class="settings-state settings-state-error settings-save-error" role="alert"><AlertTriangle :size="17" />{{ prowlarrSaveError }}<button v-if="prowlarrConflict" class="text-button" type="button" @click="loadProwlarr">重新加载</button></p>
-            <div class="settings-subsection"><h3>只读连接验证</h3><div class="settings-action-row"><button class="secondary-button" type="button" :disabled="prowlarrValidationState === 'running' || prowlarrMutationBusy" @click="validateProwlarr"><LoaderCircle v-if="prowlarrValidationState === 'running'" class="spin" :size="16" /><Radio v-else :size="16" />验证 Prowlarr 连接</button><span v-if="prowlarrValidationMessage" :class="['settings-action-message', prowlarrValidationClass(prowlarrValidationState)]" role="status">{{ prowlarrValidationMessage }}</span></div><p class="settings-note">验证只读使用服务端已保存的配置，不会修改 URL、启用状态或 API Key。</p></div>
+            <InlineAlert v-if="prowlarrSaveMessage" variant="success" :message="prowlarrSaveMessage" /><InlineAlert v-if="prowlarrSaveError" variant="error" :message="prowlarrSaveError" :action-label="prowlarrConflict ? '重新加载' : undefined" @action="loadProwlarr" />
+            <div class="settings-subsection"><h3>只读连接验证</h3><div class="settings-action-row"><button class="secondary-button" type="button" :disabled="prowlarrValidationState === 'running' || prowlarrMutationBusy" @click="validateProwlarr"><LoaderCircle v-if="prowlarrValidationState === 'running'" class="spin" :size="16" /><Radio v-else :size="16" />验证 Prowlarr 连接</button><InlineAlert v-if="prowlarrValidationMessage" :variant="prowlarrValidationVariant" :message="prowlarrValidationMessage" /></div><p class="settings-note">验证只读使用服务端已保存的配置，不会修改 URL、启用状态或 API Key。</p></div>
           </template>
         </section>
 
         <section v-else-if="activeSection === 'organization'" class="settings-section" aria-labelledby="organization-title">
           <header class="settings-section-heading"><div><p class="eyebrow">115 网盘</p><h2 id="organization-title">自动整理</h2><p>定时开关只控制自动触发；手动运行请在整理页发起。</p></div><div class="settings-section-actions"><button class="secondary-button" type="button" @click="openOrganizationPage"><Settings2 :size="15" />前往整理页</button></div></header>
           <div v-if="organizationLoading" class="settings-loading"><LoaderCircle class="spin" :size="20" />正在加载整理设置</div>
-          <div v-else-if="organizationError" class="settings-state settings-state-error" role="alert"><AlertTriangle :size="18" /><span>{{ organizationError }}</span><button class="text-button" type="button" @click="loadOrganization">重试</button></div>
+          <InlineAlert v-else-if="organizationError" variant="error" :message="organizationError" action-label="重试" @action="loadOrganization" />
           <template v-else-if="organizationSettings">
             <details class="settings-subsection" open>
               <summary><h3>整理执行</h3><span class="settings-section-disclosure" aria-hidden="true">⌄</span></summary>
@@ -1400,7 +1432,7 @@ onBeforeUnmount(() => {
             <div class="settings-subsection"><h3>覆盖策略</h3><div class="settings-capability-list"><label class="settings-toggle"><input v-model="organizationDraft.prefer_remux" type="checkbox" />Remux/蓝光优先</label><label class="settings-toggle"><input v-model="organizationDraft.prefer_resolution" type="checkbox" />大分辨率优先</label><label class="settings-toggle"><input v-model="organizationDraft.prefer_dolby" type="checkbox" />杜比优先</label><label>冲突处理方式<select v-model.number="organizationDraft.conflict_mode"><option :value="2">不主动覆盖（仅检查同名）</option><option :value="1">进行覆盖：大文件优先</option><option :value="0">进行覆盖：小文件优先</option></select></label><label class="settings-toggle"><input v-model="organizationDraft.multi_version_enabled" type="checkbox" />保留杜比 + 非杜比多版本</label></div><p class="settings-note">真实移动、重命名和覆盖仍需经过已确认计划、远端前置条件核对、幂等和审计门禁。</p></div>
             </details>
             <div v-if="organizationDirty" class="settings-save-bar"><span>有未保存的整理设置</span><div><button class="secondary-button" type="button" :disabled="organizationSaving" @click="loadOrganization">取消</button><button class="primary-button" type="button" :disabled="organizationSaving" @click="saveOrganization"><LoaderCircle v-if="organizationSaving" class="spin" :size="15" /><Save v-else :size="15" />保存</button></div></div>
-            <div v-if="organizationSaveError" class="settings-state settings-state-error settings-save-error" role="alert"><AlertTriangle :size="17" /><span>{{ organizationSaveError }}</span><button class="text-button" type="button" @click="loadOrganization">重新加载</button></div>
+            <InlineAlert v-if="organizationSaveError" variant="error" :message="organizationSaveError" action-label="重新加载" @action="loadOrganization" />
           </template>
         </section>
 
@@ -1408,20 +1440,20 @@ onBeforeUnmount(() => {
           <section class="directory-picker" role="dialog" aria-modal="true" aria-labelledby="directory-picker-title">
              <header class="directory-picker-heading"><div><p class="eyebrow">115 网盘</p><h2 id="directory-picker-title">选择{{ directoryPickerMode === 'source' ? '扫描来源' : directoryPickerMode === 'target' ? '归档目标' : '资源推送' }}目录</h2><p>相对路径：{{ directoryPickerCurrentPath || '根目录' }}</p><details class="directory-diagnostic"><summary>诊断信息</summary><small>CID（脱敏）：{{ redactDirectoryId(directoryPickerCurrentId) }}</small></details></div><button class="icon-button" type="button" aria-label="关闭目录选择器" title="关闭" @click="directoryPickerOpen = false">×</button></header>
             <div v-if="directoryPickerLoading" class="settings-loading"><LoaderCircle class="spin" :size="20" />正在读取目录</div>
-            <div v-else-if="directoryPickerError" class="settings-state settings-state-error" role="alert"><AlertTriangle :size="18" /><span>{{ directoryPickerError }}</span><button class="text-button" type="button" @click="loadDirectoryPicker">重试</button></div>
+            <InlineAlert v-else-if="directoryPickerError" variant="error" :message="directoryPickerError" action-label="重试" @action="loadDirectoryPicker" />
            <template v-else><div class="directory-picker-toolbar"><button class="secondary-button" type="button" :disabled="!directoryPickerTrail.length" @click="leaveDirectory">返回上级</button><button class="primary-button" type="button" :disabled="!directoryPickerCurrentId || directoryPickerCurrentId === '0'" @click="chooseDirectory">{{ directoryPickerCurrentId === '0' ? '根目录不可直接选择' : '选择当前目录' }}</button></div><div v-if="!directoryPickerItems.length" class="settings-empty-block">当前目录没有可浏览的子目录。</div><div class="directory-picker-list"><button v-for="item in directoryPickerItems" :key="item.id" type="button" class="directory-picker-item" @click="enterDirectory(item)"><Folder :size="16" /><span>{{ item.name }}</span><span>进入</span></button></div></template>
           </section>
         </div>
 
         <section v-else-if="activeSection === 'logs'" class="settings-section" aria-labelledby="logs-title">
           <header class="settings-section-heading"><div><p class="eyebrow">事件流</p><h2 id="logs-title">日志</h2><p>日志事件流已独立展示，这里只配置保留策略。</p></div><button class="secondary-button" type="button" @click="openLogsPage"><FileText :size="15" />打开日志查看器</button></header>
-          <div class="settings-subsection logging-settings"><h3>日志保留</h3><div v-if="loggingLoading" class="settings-loading"><LoaderCircle class="spin" :size="18" />正在加载日志设置</div><div v-else-if="loggingError" class="settings-state settings-state-error" role="alert"><AlertTriangle :size="18" /><span>{{ loggingError }}</span><button class="text-button" type="button" @click="loadLogging">重试</button></div><template v-else-if="logging"><div class="settings-form-grid"><label>最低级别<select v-model="draftLevel"><option v-for="option in logLevelOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select></label><label>保留天数（1-90）<input v-model.number="draftRetentionDays" type="number" min="1" max="90" /></label><label>文件上限（MB，1-50）<input v-model.number="draftMaxFileMb" type="number" min="1" max="50" /></label></div><div v-if="loggingDirty" class="settings-save-bar"><span>有未保存的日志设置</span><div><button class="secondary-button" type="button" :disabled="savingLogging" @click="loadLogging">取消</button><button class="primary-button" type="button" :disabled="savingLogging" @click="saveLogging"><LoaderCircle v-if="savingLogging" class="spin" :size="15" /><Save v-else :size="15" />保存</button></div></div><div v-if="saveError" class="settings-state settings-state-error settings-save-error" role="alert"><AlertTriangle :size="17" /><span>{{ saveError }}</span><button v-if="conflict" class="text-button" type="button" @click="loadLogging">重新加载</button></div></template></div>
+          <div class="settings-subsection logging-settings"><h3>日志保留</h3><div v-if="loggingLoading" class="settings-loading"><LoaderCircle class="spin" :size="18" />正在加载日志设置</div><InlineAlert v-else-if="loggingError" variant="error" :message="loggingError" action-label="重试" @action="loadLogging" /><template v-else-if="logging"><div class="settings-form-grid"><label>最低级别<select v-model="draftLevel"><option v-for="option in logLevelOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select></label><label>保留天数（1-90）<input v-model.number="draftRetentionDays" type="number" min="1" max="90" /></label><label>文件上限（MB，1-50）<input v-model.number="draftMaxFileMb" type="number" min="1" max="50" /></label></div><div v-if="loggingDirty" class="settings-save-bar"><span>有未保存的日志设置</span><div><button class="secondary-button" type="button" :disabled="savingLogging" @click="loadLogging">取消</button><button class="primary-button" type="button" :disabled="savingLogging" @click="saveLogging"><LoaderCircle v-if="savingLogging" class="spin" :size="15" /><Save v-else :size="15" />保存</button></div></div><InlineAlert v-if="saveError" variant="error" :message="saveError" :action-label="conflict ? '重新加载' : undefined" @action="loadLogging" /></template></div>
         </section>
 
         <section v-else-if="activeSection === 'content'" class="settings-section" aria-labelledby="content-policy-title">
           <header class="settings-section-heading"><div><p class="eyebrow">内容安全</p><h2 id="content-policy-title">内容安全</h2></div><button class="icon-button" type="button" title="刷新内容安全设置" aria-label="刷新内容安全设置" :disabled="contentLoading" @click="loadContentPolicy"><RefreshCw :size="16" :class="{ spin: contentLoading }" /></button></header>
           <div v-if="contentLoading && !contentPolicy" class="settings-loading"><LoaderCircle class="spin" :size="20" />正在加载内容安全设置</div>
-          <div v-else-if="contentError" class="settings-state settings-state-error" role="alert"><AlertTriangle :size="18" /><span>{{ contentError }}</span><button class="text-button" type="button" @click="loadContentPolicy">重试</button></div>
+          <InlineAlert v-else-if="contentError" variant="error" :message="contentError" action-label="重试" @action="loadContentPolicy" />
           <template v-else-if="contentPolicy">
             <div class="settings-policy-list">
               <label class="settings-policy-row"><span><strong>过滤成人媒体</strong><small>不在首页、目录和搜索结果中显示 TMDB 标记内容</small></span><input v-model="contentDraftHideAdultMedia" type="checkbox" /></label>
@@ -1430,40 +1462,40 @@ onBeforeUnmount(() => {
             </div>
             <label class="content-keywords"><span>自定义屏蔽词</span><textarea v-model="blockedKeywordsDraft" rows="5" maxlength="2048" placeholder="每行一个关键词" /></label>
             <div class="settings-save-bar"><span>当前版本 {{ contentPolicy.revision }}</span><button class="primary-button" type="button" :disabled="contentSaving" @click="saveContentPolicy"><LoaderCircle v-if="contentSaving" class="spin" :size="15" /><Save v-else :size="15" />保存</button></div>
-            <div v-if="contentSaveError" class="settings-state settings-state-error settings-save-error" role="alert"><AlertTriangle :size="17" /><span>{{ contentSaveError }}</span><button v-if="contentConflict" class="text-button" type="button" @click="loadContentPolicy">重新加载</button></div>
+            <InlineAlert v-if="contentSaveError" variant="error" :message="contentSaveError" :action-label="contentConflict ? '重新加载' : undefined" @action="loadContentPolicy" />
           </template>
         </section>
 
         <section v-else-if="activeSection === 'inspection'" class="settings-section" aria-labelledby="inspection-title">
           <header class="settings-section-heading"><div><p class="eyebrow">资源检测</p><h2 id="inspection-title">资源检测</h2></div><button class="icon-button" type="button" title="刷新资源检测设置" aria-label="刷新资源检测设置" :disabled="inspectionLoading" @click="loadInspection"><RefreshCw :size="16" :class="{ spin: inspectionLoading }" /></button></header>
           <div v-if="inspectionLoading" class="settings-loading"><LoaderCircle class="spin" :size="20" />正在加载资源检测设置</div>
-          <div v-else-if="inspectionError" class="settings-state settings-state-error" role="alert"><AlertTriangle :size="18" /><span>{{ inspectionError }}</span><button class="text-button" type="button" @click="loadInspection">重试</button></div>
+          <InlineAlert v-else-if="inspectionError" variant="error" :message="inspectionError" action-label="重试" @action="loadInspection" />
           <template v-else-if="inspectionSettings">
             <div class="settings-subsection"><h3>打开详情时自动检测</h3><label class="settings-toggle"><input v-model="inspectionDraft" type="checkbox" aria-label="打开详情时自动检测" /><span>自动提交首批资源检测</span></label><p class="settings-note">关闭后仍可在资源详情中手动开始检测。</p></div>
             <div v-if="inspectionDirty" class="settings-save-bar"><span>有未保存的资源检测设置</span><div><button class="secondary-button" type="button" :disabled="savingInspection" @click="loadInspection">取消</button><button class="primary-button" type="button" :disabled="savingInspection" @click="saveInspection"><LoaderCircle v-if="savingInspection" class="spin" :size="15" /><Save v-else :size="15" />保存</button></div></div>
-            <div v-if="inspectionSaveError" class="settings-state settings-state-error settings-save-error" role="alert"><AlertTriangle :size="17" /><span>{{ inspectionSaveError }}</span><button v-if="inspectionConflict" class="text-button" type="button" @click="loadInspection">重新加载</button></div>
+            <InlineAlert v-if="inspectionSaveError" variant="error" :message="inspectionSaveError" :action-label="inspectionConflict ? '重新加载' : undefined" @action="loadInspection" />
           </template>
         </section>
 
         <section v-else-if="activeSection === 'checkin'" class="settings-section" aria-labelledby="checkin-title">
           <header class="settings-section-heading"><div><p class="eyebrow">115 网盘</p><h2 id="checkin-title">115 自动签到</h2><p>每天自动执行一次 115 签到，领取积分奖励。</p></div><button class="icon-button" type="button" title="刷新签到设置" aria-label="刷新签到设置" :disabled="checkinLoading || checkinSaving" @click="loadCheckin"><RefreshCw :size="16" :class="{ spin: checkinLoading }" /></button></header>
           <div v-if="checkinLoading" class="settings-loading"><LoaderCircle class="spin" :size="20" />正在加载签到设置</div>
-          <div v-else-if="checkinError" class="settings-state settings-state-error" role="alert"><AlertTriangle :size="18" /><span>{{ checkinError }}</span><button class="text-button" type="button" @click="loadCheckin">重试</button></div>
+          <InlineAlert v-else-if="checkinError" variant="error" :message="checkinError" action-label="重试" @action="loadCheckin" />
           <template v-else-if="checkinSettings">
             <div class="settings-subsection">
               <h3>自动签到</h3>
               <label class="settings-toggle checkin-toggle"><input v-model="checkinDraft" type="checkbox" aria-label="启用 115 自动签到" :disabled="checkinSaving" @change="saveCheckin" /><span>启用 115 自动签到</span></label>
               <div class="settings-form-grid"><label>签到时间<input v-model="checkinDraftTime" type="time" :disabled="checkinSaving" @change="saveCheckin" /></label></div>
               <p class="settings-note">每天 {{ checkinDraftTime }} 自动签到；关闭后不再自动执行。切换开关会立即保存。</p>
-              <p v-if="checkinSaveError" class="settings-state settings-state-error settings-save-error" role="alert"><AlertTriangle :size="17" /><span>{{ checkinSaveError }}</span></p>
+              <InlineAlert v-if="checkinSaveError" variant="error" :message="checkinSaveError" />
             </div>
             <div class="settings-subsection">
               <h3>最近签到状态</h3>
               <div v-if="checkinStatusLoading" class="settings-loading"><LoaderCircle class="spin" :size="18" />正在加载签到状态</div>
-              <div v-else-if="checkinStatusError" class="settings-state settings-state-error" role="alert"><AlertTriangle :size="18" /><span>{{ checkinStatusError }}</span><button class="text-button" type="button" @click="loadCheckinStatus">重试</button></div>
+              <InlineAlert v-else-if="checkinStatusError" variant="error" :message="checkinStatusError" action-label="重试" @action="loadCheckinStatus" />
               <template v-else-if="checkinStatus">
                 <p v-if="!checkinStatus.enabled" class="settings-note">未启用</p>
-                <div v-else-if="checkinStatus.error_code" class="settings-state settings-state-error" role="alert"><AlertTriangle :size="18" /><span>{{ checkinStatusErrorText() }}</span></div>
+                <InlineAlert v-else-if="checkinStatus.error_code" variant="error" :message="checkinStatusErrorText()" />
                 <div v-else class="settings-metrics">
                   <div class="settings-metric"><span>今日状态</span><strong :class="checkinStatus.is_sign_today ? 'status-ok' : 'status-degraded'">{{ checkinStatus.is_sign_today ? '今日已签到' : '今日未签到' }}</strong></div>
                   <div class="settings-metric"><span>连续签到</span><strong>{{ checkinStatus.continuous_day }} 天</strong></div>

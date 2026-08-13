@@ -11,6 +11,7 @@ import {
 } from "@lucide/vue";
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { ApiClient, ApiError } from "../api";
+import InlineAlert from "../components/InlineAlert.vue";
 import { describeUiError } from "../errorCatalog";
 import { formatTimestamp } from "../format";
 import type {
@@ -173,7 +174,7 @@ onBeforeUnmount(() => {
       </button>
     </header>
 
-    <p v-if="error" class="error-strip" role="alert">{{ error }}</p>
+    <InlineAlert v-if="error" variant="error" :message="error" />
 
     <form v-if="createOpen" class="create-form" @submit.prevent="create">
       <label>
@@ -201,7 +202,7 @@ onBeforeUnmount(() => {
         </button>
         <button class="btn" type="button" @click="createOpen = false">取消</button>
       </div>
-      <p v-if="createError" class="error-strip" role="alert">{{ createError }}</p>
+      <InlineAlert v-if="createError" variant="error" :message="createError" />
     </form>
 
     <div v-if="loading" class="empty-state">

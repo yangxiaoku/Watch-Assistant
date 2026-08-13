@@ -452,7 +452,7 @@ describe("App login error copy", () => {
     await wrapper.get("form").trigger("submit");
     await flushPromises();
 
-    expect(wrapper.get(".error-text").text()).toContain("尝试次数过多");
+    expect(wrapper.get(".inline-alert").text()).toContain("尝试次数过多");
     wrapper.unmount();
   });
 
@@ -466,7 +466,7 @@ describe("App login error copy", () => {
     await wrapper.get("form").trigger("submit");
     await flushPromises();
 
-    expect(wrapper.get(".error-text").text()).toContain("账号或密码不正确");
+    expect(wrapper.get(".inline-alert").text()).toContain("账号或密码不正确");
     wrapper.unmount();
   });
 });
