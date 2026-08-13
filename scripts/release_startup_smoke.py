@@ -46,6 +46,7 @@ CREATE TABLE application_settings (
     revision INTEGER NOT NULL,
     content_policy_json TEXT NOT NULL DEFAULT '{}',
     organization_settings_json TEXT NOT NULL DEFAULT '{}',
+    p115_checkin_settings_json TEXT NOT NULL DEFAULT '{}',
     managed_tmdb_key_encrypted TEXT,
     managed_tmdb_updated_at DATETIME,
     managed_p115_cookie_encrypted TEXT,
