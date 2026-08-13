@@ -252,6 +252,17 @@ class Settings(BaseSettings):
     p115_max_concurrency: int = Field(
         default=1, ge=1, le=4, validation_alias="P115_MAX_CONCURRENCY"
     )
+    p115_check_in_enabled: bool = Field(
+        default=False, validation_alias="P115_CHECK_IN_ENABLED"
+    )
+    # 每日签到时刻 HH:MM(本地时区),默认 00:05 跨天最早签到。
+    p115_check_in_time: str = Field(
+        default="00:05",
+        min_length=5,
+        max_length=5,
+        pattern=r"^([01]\d|2[0-3]):[0-5]\d$",
+        validation_alias="P115_CHECK_IN_TIME",
+    )
     qbittorrent_base_url: str = Field(
         default="", validation_alias="QBITTORRENT_BASE_URL"
     )

@@ -287,3 +287,35 @@ def test_prowlarr_indexer_ids_reject_bad_tokens(value: str):
             PROWLARR_FAST_INDEXER_IDS=value,
             PROWLARR_SLOW_INDEXER_IDS="10,18",
         )
+
+
+def test_p115_checkin_config_defaults_and_validation():
+    from watch_assistant.config import Settings
+    from pydantic import ValidationError
+    import pytest as _pytest
+
+    settings = Settings(
+        DATABASE_URL="sqlite:///x.db",
+        ENCRYPTION_KEY="0" * 44,
+        TMDB_API_KEY="k",
+        SCRIPT_TOKEN_HASH="h",
+        PANSOU_BASE_URL="http://p",
+        WEB_PASSWORD_HASH="h",
+    )
+    assert settings.p115_check_in_enabled is False
+    assert settings.p115_check_in_time == "00:05"
+
+    settings = Settings(
+        DATABASE_URL="sqlite:///x.db", ENCRYPTION_KEY="0" * 44,
+        TMDB_API_KEY="k", SCRIPT_TOKEN_HASH="h", PANSOU_BASE_URL="http://p",
+        WEB_PASSWORD_HASH="h",
+        P115_CHECK_IN_ENABLED="true", P115_CHECK_IN_TIME="09:30",
+    )
+    assert settings.p115_check_in_enabled is True
+    assert settings.p115_check_in_time == "09:30"
+
+    with _pytest.raises(ValidationError):
+        Settings(DATABASE_URL="sqlite:///x.db", ENCRYPTION_KEY="0" * 44,
+                 TMDB_API_KEY="k", SCRIPT_TOKEN_HASH="h", PANSOU_BASE_URL="http://p",
+                 WEB_PASSWORD_HASH="h",
+                 P115_CHECK_IN_TIME="25:00")
