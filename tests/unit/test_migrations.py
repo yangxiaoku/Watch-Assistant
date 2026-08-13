@@ -494,7 +494,12 @@ async def test_resource_search_workflow_column_migrates_legacy_table(tmp_path):
         await connection.exec_driver_sql(
             "CREATE TABLE resource_search_jobs (task_id VARCHAR(64) PRIMARY KEY)"
         )
-        await connection.run_sync(run_migrations, MIGRATIONS[-1:])
+        migrations = tuple(
+            migration
+            for migration in MIGRATIONS
+            if migration.id == "074_resource_search_workflow"
+        )
+        await connection.run_sync(run_migrations, migrations)
         columns = await connection.run_sync(
             lambda sync: {
                 item["name"]
@@ -741,6 +746,164 @@ async def test_legacy_audit_rebuild_keeps_backup_and_allows_current_insert(tmp_p
         current_count = await connection.scalar(text("SELECT count(*) FROM audit_records"))
     assert backup_count == 1
     assert current_count == 2
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_migration_075_retires_legacy_subscription_columns_keeps_children(
+    tmp_path,
+):
+    """旧生产库残留的 identity_key/title NOT NULL 列退役后,新订阅可创建。
+
+    旧库(早于当前谱系)的 ``subscriptions`` 带 ``identity_key``/``title``
+    (NOT NULL、无默认值),当前模型已不定义;重建后这些列消失,子表
+    (observations)数据与外键链接保留,新 INSERT 不再被 NOT NULL 违反拦截。
+    """
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'legacy-subs.db'}")
+    async with database.engine.begin() as connection:
+        await connection.execute(
+            text(
+                "CREATE TABLE subscriptions ("
+                "id VARCHAR(48) PRIMARY KEY, "
+                "identity_key VARCHAR(160) NOT NULL, "
+                "media_type VARCHAR(5) NOT NULL, "
+                "tmdb_id INTEGER NOT NULL, "
+                "season_number INTEGER, episode_number INTEGER, "
+                "title TEXT NOT NULL, original_title TEXT, release_year INTEGER, "
+                "mode VARCHAR(9) NOT NULL DEFAULT 'notify', "
+                "status VARCHAR(21) NOT NULL DEFAULT 'active', "
+                "quality_profile_id VARCHAR(64), quality_profile_revision INTEGER, "
+                "quality_policy_json TEXT NOT NULL DEFAULT '{}', "
+                "revision INTEGER DEFAULT 1 NOT NULL, "
+                "next_check_at DATETIME, last_checked_at DATETIME, "
+                "last_match_resource_id VARCHAR(40), last_check_id VARCHAR(48), "
+                "last_error_code VARCHAR(100), last_result_summary TEXT, "
+                "created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL, "
+                "paused_until DATETIME, expires_at DATETIME, "
+                "episode_start INTEGER, episode_end INTEGER, last_match_count INTEGER, "
+                "CONSTRAINT uq_subscriptions_identity_key UNIQUE (identity_key))"
+            )
+        )
+        await connection.execute(text("CREATE INDEX ix_subscriptions_status ON subscriptions (status)"))
+        await connection.execute(
+            text(
+                "INSERT INTO subscriptions ("
+                "id, identity_key, media_type, tmdb_id, season_number, episode_number, "
+                "title, original_title, release_year, mode, status, revision, "
+                "last_match_count, created_at, updated_at, episode_start, episode_end"
+                ") VALUES ("
+                "'sub_legacy', 'identity:66732:tv:5', 'tv', 66732, 5, NULL, "
+                "'Legacy Show', 'Legacy Show', 2001, 'notify', 'matched', 2, "
+                "3, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, NULL, NULL)"
+            )
+        )
+        await connection.execute(
+            text(
+                "CREATE TABLE subscription_resource_observations ("
+                "id VARCHAR(64) PRIMARY KEY, "
+                "subscription_id VARCHAR(48) NOT NULL, "
+                "resource_id VARCHAR(40) NOT NULL, "
+                "canonical_key VARCHAR(255) NOT NULL, "
+                "first_seen_at DATETIME NOT NULL, last_seen_at DATETIME NOT NULL, "
+                "seen_count INTEGER NOT NULL DEFAULT 1, "
+                "FOREIGN KEY (subscription_id) REFERENCES subscriptions (id) "
+                "ON DELETE CASCADE)"
+            )
+        )
+        await connection.execute(
+            text(
+                "INSERT INTO subscription_resource_observations ("
+                "id, subscription_id, resource_id, canonical_key, "
+                "first_seen_at, last_seen_at, seen_count) VALUES ("
+                "'obs_legacy', 'sub_legacy', 'resource:1', 'res1', "
+                "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1)"
+            )
+        )
+        await connection.execute(
+            text(
+                "CREATE TABLE schema_migrations (migration_id TEXT PRIMARY KEY, "
+                "applied_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)"
+            )
+        )
+        migrations = tuple(
+            migration
+            for migration in MIGRATIONS
+            if migration.id == "075_retire_legacy_subscription_columns"
+        )
+        await connection.run_sync(lambda sync: run_migrations(sync, migrations))
+
+        columns = {
+            item["name"]
+            for item in await connection.run_sync(
+                lambda sync: inspect(sync).get_columns("subscriptions")
+            )
+        }
+        assert "identity_key" not in columns
+        assert "title" not in columns
+        assert "episode_start" in columns
+        assert "last_match_count" in columns
+        assert "media_type" in columns
+
+        assert await connection.scalar(text("SELECT count(*) FROM subscriptions")) == 1
+        assert (
+            await connection.scalar(
+                text("SELECT tmdb_id FROM subscriptions WHERE id='sub_legacy'")
+            )
+            == 66732
+        )
+        assert (
+            await connection.scalar(
+                text("SELECT last_match_count FROM subscriptions WHERE id='sub_legacy'")
+            )
+            == 3
+        )
+
+        # 子表数据保留且外键仍指向重建后的 subscriptions。
+        assert (
+            await connection.scalar(
+                text("SELECT count(*) FROM subscription_resource_observations")
+            )
+            == 1
+        )
+        child_fks = await connection.run_sync(
+            lambda sync: inspect(sync).get_foreign_keys(
+                "subscription_resource_observations"
+            )
+        )
+        assert any(fk["referred_table"] == "subscriptions" for fk in child_fks)
+
+        # 新订阅 INSERT 不再被遗留列的 NOT NULL 违反拦截(应用代码经 ORM
+        # 提供 last_match_count 等模型默认值,此处按应用实际字段提供)。
+        await connection.execute(
+            text(
+                "INSERT INTO subscriptions (id, tmdb_id, media_type, mode, status, "
+                "revision, last_match_count, created_at, updated_at) VALUES ("
+                "'sub_new', 9220, 'movie', 'remind', 'active', 1, 0, "
+                "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+            )
+        )
+        # 模型索引(重建时可能同名冲突)已正确创建。
+        indexes = {
+            item["name"]
+            for item in await connection.run_sync(
+                lambda sync: inspect(sync).get_indexes("subscriptions")
+            )
+        }
+        assert "uq_subscription_scope_movie" in indexes
+        assert "ix_subscriptions_status" in indexes
+
+        # 幂等:再次运行迁移被跳过。
+        await connection.run_sync(lambda sync: run_migrations(sync, migrations))
+        assert (
+            await connection.scalar(text("SELECT count(*) FROM subscriptions")) == 2
+        )
+        # 遗留备份表保留旧数据供核对。
+        assert (
+            await connection.scalar(
+                text("SELECT count(*) FROM subscriptions_legacy_075")
+            )
+            == 1
+        )
     await database.engine.dispose()
 
 

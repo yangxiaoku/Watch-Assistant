@@ -1006,6 +1006,88 @@ def _add_resource_search_workflow(connection: Connection) -> None:
     )
 
 
+def _retire_legacy_subscription_columns(connection: Connection) -> None:
+    """Rebuild ``subscriptions`` without legacy NOT NULL columns.
+
+    生产库早于当前仓库谱系,``subscriptions`` 上残留 ``identity_key`` /
+    ``title``(NOT NULL、无服务端默认值)等当前模型已不再定义的列。新代码
+    INSERT 不提供这些列,每次插入都会因 NOT NULL 违反抛 IntegrityError,
+    被 ``_create_locked`` 误报为 ``subscription_exists``(订阅列表正常、
+    但任何新订阅都 409)。
+
+    SQLite 无法在事务内修改已有列的 NOT NULL,也不能改列默认值,因此按
+    当前模型整表重建;重建前把订阅及其子表(引用 ``subscriptions`` 外键的
+    表,如 observations / checks)各自 CTAS 快照到 ``*_legacy_075`` 备用。
+    ``DROP TABLE subscriptions`` 在 ``PRAGMA foreign_keys=ON`` 下会先隐式
+    DELETE 从而级联清空子表行——这正是我们要绕开的路径,但子表结构与其
+    FK 定义会保留下来;重建同名 ``subscriptions`` 后子表外键自动重新指向新
+    表,再把快照数据原样插回即完成链接迁移。
+    """
+
+    if not inspect(connection).has_table("subscriptions"):
+        return
+    columns = {
+        item["name"]: item for item in inspect(connection).get_columns("subscriptions")
+    }
+    legacy_not_null = (
+        "identity_key" in columns
+        and columns["identity_key"].get("nullable") is False
+    ) or (
+        "title" in columns and columns["title"].get("nullable") is False
+    )
+    if not legacy_not_null:
+        return
+
+    from watch_assistant.models import Subscription
+
+    # 引用 subscriptions 的子表(按 sqlite_master 内建表名遍历,不信任外部输入)。
+    table_rows = connection.execute(
+        text(
+            "SELECT name FROM sqlite_master "
+            "WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+        )
+    ).scalars()
+    child_tables: list[str] = []
+    for table in table_rows:
+        fks = connection.execute(
+            text(f"PRAGMA foreign_key_list('{table}')")
+        ).fetchall()
+        if any(row[2] == "subscriptions" for row in fks):
+            child_tables.append(table)
+
+    # 快照:订阅表 + 所有子表,供恢复与核对。
+    if not inspect(connection).has_table("subscriptions_legacy_075"):
+        connection.execute(
+            text(
+                "CREATE TABLE subscriptions_legacy_075 AS SELECT * FROM subscriptions"
+            )
+        )
+    for child in child_tables:
+        backup = f"{child}_legacy_075"
+        if not inspect(connection).has_table(backup):
+            connection.execute(text(f"CREATE TABLE {backup} AS SELECT * FROM {child}"))
+
+    # 级联清空子表行,DROP 旧表;随后按当前模型重建同名表。
+    connection.execute(text("DROP TABLE subscriptions"))
+    Subscription.__table__.create(connection, checkfirst=True)
+    model_columns = ", ".join(
+        column.name for column in Subscription.__table__.columns
+    )
+    connection.execute(
+        text(
+            f"INSERT INTO subscriptions ({model_columns}) "
+            f"SELECT {model_columns} FROM subscriptions_legacy_075"
+        )
+    )
+    # 子表结构与其 FK 定义在新表上仍然有效,原样恢复快照数据。
+    for child in child_tables:
+        backup = f"{child}_legacy_075"
+        connection.execute(text(f"DELETE FROM {child}"))
+        connection.execute(
+            text(f"INSERT INTO {child} SELECT * FROM {backup}")
+        )
+
+
 def _create_season_metadata_cache_table(connection: Connection) -> None:
     from watch_assistant.models import SeasonMetadataCache
 
@@ -1402,6 +1484,10 @@ MIGRATIONS: tuple[Migration, ...] = (
     ),
     Migration("073_unique_scan_run_revision", _unique_scan_run_revision),
     Migration("074_resource_search_workflow", _add_resource_search_workflow),
+    Migration(
+        "075_retire_legacy_subscription_columns",
+        _retire_legacy_subscription_columns,
+    ),
 )
 
 
