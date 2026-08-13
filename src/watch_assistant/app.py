@@ -1434,6 +1434,14 @@ def create_app(
         await apply_organization_runtime(
             bool(getattr(application.state, "p115_ready", False))
         )
+        # dirty worker(STRM 自动增量/失效清理的消费方)此前只在 p115 cookie
+        # 变更回调里启动,全新重启后从不启动,导致 directory_dirty_generations
+        # 队列积压数天无人消费。这里 strm 开关(create_app 主体已赋值)与
+        # organization_cookie_provider 均就位,与 organization worker 同步拉起;
+        # gate 不满足则安全跳过。
+        await apply_dirty_runtime(
+            bool(getattr(application.state, "p115_ready", False))
+        )
         worker = getattr(application.state, "inspection_worker", None)
         if worker is not None:
             inspection_stop = asyncio.Event()
