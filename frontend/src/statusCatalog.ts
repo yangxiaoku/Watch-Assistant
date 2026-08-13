@@ -43,8 +43,8 @@ export function capabilityStatusPresentation(
 const TASK_STATUS: Record<TaskState, StatusPresentation> = {
   queued: { label: "排队中", tone: "info", nextStep: "等待任务开始处理。" },
   submitting: { label: "处理中", tone: "info", nextStep: "正在向受控服务提交，请稍候。" },
-  submitted: { label: "处理中", tone: "info", nextStep: "服务已受理，等待文件可用证据。" },
-  downloading: { label: "处理中", tone: "info", nextStep: "正在等待文件可用证据。" },
+  submitted: { label: "已提交", tone: "info", nextStep: "服务已受理，等待文件可用证据，可点击只读核对查看最新状态。" },
+  downloading: { label: "下载中", tone: "info", nextStep: "正在等待文件可用证据，可点击只读核对查看最新状态。" },
   available: { label: "成功", tone: "success", nextStep: "已取得文件可用证据，可以继续后续阶段。" },
   needs_auth: { label: "需要处理", tone: "warning", nextStep: "请前往设置重新授权 115，再查看任务状态。" },
   failed: { label: "失败", tone: "danger", nextStep: "查看失败原因，确认状态后再按规则重试。" },

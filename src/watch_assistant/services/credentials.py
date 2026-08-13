@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from collections import deque
 from collections.abc import Awaitable, Callable
@@ -41,6 +42,9 @@ class CredentialRejected(Exception):
 
 class CredentialValidationUnavailable(Exception):
     pass
+
+
+logger = logging.getLogger(__name__)
 
 
 class CredentialService:
@@ -336,7 +340,13 @@ class CredentialService:
                         "share": False,
                     }
                 raise
-            except Exception:  # noqa: BLE001 - fail closed after persistence
+            except Exception:
+                # 回调(如 apply_dirty_runtime 启动 dirty worker)失败被吞掉会让
+                # 后台组件静默缺席且无任何日志。记录堆栈以便诊断:例如 STRM 自动
+                # 增量队列积压数天而 worker 从未启动的情况。
+                logger.exception(
+                    "p115 runtime callback failed; p115 marked not ready"
+                )
                 if self._runtime_state is not None:
                     self._runtime_state.p115_ready = False
                     self._runtime_state.push_capabilities = {

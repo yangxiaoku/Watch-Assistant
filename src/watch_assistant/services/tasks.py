@@ -58,6 +58,16 @@ _PUSH_ACTIVE_TASK_STATES = frozenset(
     }
 )
 
+# 租约门闩允许的任务状态:常规提交 claim 用 SUBMITTING;只读 reconciliation
+# 轮询(claim_submitted)会在 SUBMITTED/DOWNLOADING 上短暂持有租约以支持心跳
+# 续期与终态守卫。这三处谓词必须一致,否则 reconciliation claim 的租约会在
+# _fenced_task / is_lease_active / renew 处被误判为失租。
+_LEASED_TASK_STATES = (
+    TaskState.SUBMITTING,
+    TaskState.SUBMITTED,
+    TaskState.DOWNLOADING,
+)
+
 
 async def _assert_push_stage_available(
     session: AsyncSession,
@@ -416,7 +426,7 @@ async def _fenced_task(
 
     predicates = [
         Task.id == lease.task_id,
-        Task.state == TaskState.SUBMITTING,
+        Task.state.in_(_LEASED_TASK_STATES),
         Task.lease_owner == lease.lease_owner,
         Task.lease_token == lease.lease_token,
         Task.lease_expires_at.is_not(None),
@@ -764,6 +774,79 @@ class TaskService:
                 await session.commit()
                 return _task_lease(task, owner, token, expires_at)
 
+    async def claim_submitted(
+        self,
+        *,
+        owner: str,
+        lease_duration: timedelta,
+        now: datetime | None = None,
+        min_poll_interval: timedelta = timedelta(minutes=5),
+    ) -> TaskLease | None:
+        """Claim one submitted/downloading task for read-only reconciliation.
+
+        ``finish_submission`` releases the lease when it records SUBMITTED, so
+        these tasks have no claim path: ``claim_next`` serves only QUEUED and
+        ``claim_expired`` recovers only SUBMITTING. Without a periodic poll a
+        submitted task sits in SUBMITTED forever. Claim one (keeping its state,
+        which is why the lease predicates in ``_fenced_task`` / ``is_lease_active``
+        / ``renew`` accept SUBMITTED and DOWNLOADING) so the worker can read the
+        remote status and advance it via ``finish_recovery``.
+
+        ``min_poll_interval`` throttles re-polling: the previous poll (successful
+        or not) refreshed ``updated_at``, so a task is not reclaimed until the
+        interval has passed — otherwise a long download would hammer 115.
+        """
+
+        _validate_lease_parameters(owner, lease_duration)
+        current_time = _as_utc(now or datetime.now(UTC))
+        async with self._session_factory() as session:
+            while True:
+                task = await session.scalar(
+                    select(Task)
+                    .where(
+                        Task.state.in_(
+                            [TaskState.SUBMITTED, TaskState.DOWNLOADING]
+                        ),
+                        Task.remote_ref.is_not(None),
+                        Task.lease_owner.is_(None),
+                        Task.lease_token.is_(None),
+                        Task.updated_at
+                        <= current_time - min_poll_interval,
+                    )
+                    .order_by(Task.updated_at.asc(), Task.id.asc())
+                    .limit(1)
+                )
+                if task is None:
+                    return None
+                token = uuid4().hex
+                expires_at = current_time + lease_duration
+                result = await session.execute(
+                    update(Task)
+                    .where(
+                        Task.id == task.id,
+                        Task.state.in_(
+                            [TaskState.SUBMITTED, TaskState.DOWNLOADING]
+                        ),
+                        Task.remote_ref.is_not(None),
+                        Task.lease_owner.is_(None),
+                        Task.lease_token.is_(None),
+                        Task.updated_at
+                        <= current_time - min_poll_interval,
+                    )
+                    .values(
+                        lease_owner=owner,
+                        lease_token=token,
+                        lease_expires_at=expires_at,
+                        updated_at=current_time,
+                    )
+                    .execution_options(synchronize_session=False)
+                )
+                if result.rowcount != 1:
+                    await session.rollback()
+                    continue
+                await session.commit()
+                return _task_lease(task, owner, token, expires_at)
+
     async def is_lease_active(
         self, lease: TaskLease, *, now: datetime | None = None
     ) -> bool:
@@ -772,7 +855,7 @@ class TaskService:
             lease_expires_at = await session.scalar(
                 select(Task.lease_expires_at).where(
                     Task.id == lease.task_id,
-                    Task.state == TaskState.SUBMITTING,
+                    Task.state.in_(_LEASED_TASK_STATES),
                     Task.lease_owner == lease.lease_owner,
                     Task.lease_token == lease.lease_token,
                     Task.lease_expires_at.is_not(None),
@@ -802,7 +885,7 @@ class TaskService:
             observed_expires_at = await session.scalar(
                 select(Task.lease_expires_at).where(
                     Task.id == lease.task_id,
-                    Task.state == TaskState.SUBMITTING,
+                    Task.state.in_(_LEASED_TASK_STATES),
                     Task.lease_owner == lease.lease_owner,
                     Task.lease_token == lease.lease_token,
                     Task.lease_expires_at.is_not(None),
@@ -820,7 +903,7 @@ class TaskService:
                 update(Task)
                 .where(
                     Task.id == lease.task_id,
-                    Task.state == TaskState.SUBMITTING,
+                    Task.state.in_(_LEASED_TASK_STATES),
                     Task.lease_owner == lease.lease_owner,
                     Task.lease_token == lease.lease_token,
                     Task.lease_expires_at.is_not(None),

@@ -245,6 +245,74 @@ class TaskWorker:
                 except Exception:  # noqa: BLE001,S110 - recovery notifications never break recovery
                     pass
 
+    async def reconcile_submitted(self) -> int:
+        """Poll one submitted/downloading task and advance it read-only.
+
+        提交成功后任务进入 SUBMITTED 且租约被释放,后台此前没有路径再碰它
+        (claim_next 只认 QUEUED,claim_expired 只认 SUBMITTING),于是 22 个
+        submitted 任务卡了 19 天。此方法在队列空闲时被调用:claim 一个
+        submitted/downloading 任务,复用与 recover_expired 相同的只读路径
+        (read_task_status + finish_recovery/apply_remote_status),按 115 当前
+        状态推进到 AVAILABLE/FAILED/UNCERTAIN。返回处理的租约数。
+        """
+
+        lease = await self._tasks.claim_submitted(
+            owner=self._owner,
+            lease_duration=timedelta(seconds=self._lease_seconds),
+        )
+        if lease is None:
+            return 0
+        remote_status = None
+        if lease.remote_ref:
+            remote_ref = lease.remote_ref
+            target_directory_id = lease.target_directory_id
+            try:
+                read_status = partial(
+                    read_task_status,
+                    self._adapter,
+                    remote_ref,
+                    target_directory_id=target_directory_id,
+                )
+                remote_status = await self._run_external_call(lease, read_status)
+            except _LeaseClaimLost:
+                await self._mark_lease_lost(lease)
+                return 1
+            except asyncio.CancelledError:
+                await self._mark_lease_lost(lease)
+                raise
+            except Exception:  # noqa: BLE001 - status failure is uncertain
+                remote_status = RemoteObservation(
+                    status=RemoteStatus.UNCERTAIN,
+                    error_code=RECONCILIATION_UNAVAILABLE,
+                )
+        try:
+            task = await self._tasks.finish_recovery(lease, remote_status)
+        except _LeaseClaimLost:
+            await self._mark_lease_lost(lease)
+            return 1
+        except asyncio.CancelledError:
+            await self._mark_lease_lost(lease)
+            raise
+        except Exception:  # noqa: BLE001 - recovery retries after expiry
+            await self._mark_lease_lost(lease)
+            return 1
+        if task is not None and task.workflow_id is not None:
+            try:
+                async with self._session_factory() as session:
+                    workflow = await session.get(Workflow, task.workflow_id)
+                if workflow is not None:
+                    await emit_workflow_stage_changed(
+                        self._event_logger,
+                        workflow_id=workflow.id,
+                        correlation_id=workflow.correlation_id,
+                        stage_name=WorkflowStageName.PUSH,
+                        status=workflow_stage_status_for_task_state(task.state),
+                        error_code=task.error_code,
+                    )
+            except Exception:  # noqa: BLE001,S110 - notifications never break recovery
+                pass
+        return 1
+
     async def run_forever(self, stop_event: asyncio.Event, *, interval: float = 1.0):
         recovery_interval = max(15.0, interval * 30)
         next_recovery = time.monotonic() + recovery_interval
@@ -261,13 +329,24 @@ class TaskWorker:
                     break
                 backoff = 0.0
             try:
-                await self.run_once()
+                did_work = await self.run_once()
                 backoff = 0.0
             except asyncio.CancelledError:
                 raise
             except Exception:  # noqa: BLE001
                 # A transient claim/database error must not kill the worker loop.
                 backoff = min(30.0, (backoff or 1.0) * 2)
+                did_work = True
+            if not did_work:
+                # No queued work this tick: opportunistically advance one
+                # submitted/downloading task via read-only reconciliation, so
+                # tasks no longer sit in SUBMITTED forever (see reconcile_submitted).
+                try:
+                    await self.reconcile_submitted()
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001 - reconciliation must not kill the loop
+                    await self._mark_recovery_failed()
             # Reclaim leases whose owner died mid-write (e.g. a submission that
             # crossed its lease expiry under SQLite lock contention). Without a
             # periodic sweep these tasks stay SUBMITTING until a restart.

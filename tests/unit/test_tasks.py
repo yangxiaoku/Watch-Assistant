@@ -350,3 +350,214 @@ async def test_reconcile_does_not_revive_failed_task(tmp_path):
             assert stored.state == TaskState.FAILED  # 不得复活
     finally:
         await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_claim_submitted_claims_only_stale_submitted_with_remote_ref(tmp_path):
+    """claim_submitted 只认带 remote_ref 的 SUBMITTED/DOWNLOADING 任务。
+
+    不碰 QUEUED(那是 claim_next 的领地)与带租约的 SUBMITTING(claim_expired)。
+    首次 claim 后任务带租约且 updated_at 被刷新,第二次 claim 返回 None。
+    """
+    from watch_assistant.db import create_database, initialize_database
+    from watch_assistant.services.tasks import TaskService
+
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'claim-submitted.db'}")
+    await initialize_database(database.engine)
+    try:
+        async with database.session_factory() as session:
+            for rid in ("res_s1", "res_s2", "res_q", "res_sub"):
+                session.add(
+                    Resource(
+                        id=rid,
+                        kind="magnet",
+                        canonical_key=f"magnet:{rid}",
+                        encrypted_url="encrypted",
+                        name=rid,
+                        source="test",
+                        captured_at=datetime.now(UTC),
+                        expires_at=datetime.now(UTC) + timedelta(days=1),
+                    )
+                )
+            await session.flush()
+            stale = make_task(resource_id="res_s1", state=TaskState.SUBMITTED, age_hours=5)
+            stale.remote_ref = "infohash:" + "b" * 40
+            queued = make_task(resource_id="res_q", state=TaskState.QUEUED, age_hours=1)
+            session.add_all([stale, queued])
+            await session.commit()
+
+        service = TaskService(database.session_factory)
+        lease = await service.claim_submitted(
+            owner="t", lease_duration=timedelta(seconds=60), min_poll_interval=timedelta(0)
+        )
+        # 只认最旧的 stale submitted 任务。
+        assert lease is not None
+        assert lease.task_id == stale.id
+        # 该任务已被独占:带租约,第二次 claim 拿不到。
+        assert (
+            await service.claim_submitted(
+                owner="t", lease_duration=timedelta(seconds=60), min_poll_interval=timedelta(0)
+            )
+        ) is None
+        # QUEUED 任务不受影响,仍可被 claim_next 认领。
+        next_lease = await service.claim_next(owner="t", lease_duration=timedelta(seconds=60))
+        assert next_lease is not None and next_lease.task_id == queued.id
+    finally:
+        await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_claim_submitted_respects_poll_cooldown(tmp_path):
+    """min_poll_interval 限制重轮询:updated_at 距今过近时不可再 claim。"""
+    from watch_assistant.db import create_database, initialize_database
+    from watch_assistant.services.tasks import TaskService
+
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'cooldown.db'}")
+    await initialize_database(database.engine)
+    try:
+        async with database.session_factory() as session:
+            session.add(
+                Resource(
+                    id="res_c",
+                    kind="magnet",
+                    canonical_key="magnet:res_c",
+                    encrypted_url="encrypted",
+                    name="C",
+                    source="test",
+                    captured_at=datetime.now(UTC),
+                    expires_at=datetime.now(UTC) + timedelta(days=1),
+                )
+            )
+            await session.flush()
+            task = make_task(resource_id="res_c", state=TaskState.SUBMITTED, age_hours=0)
+            task.remote_ref = "infohash:" + "d" * 40
+            # updated_at 设为 1 分钟前:落在 5 分钟冷却窗口内、但在 30 秒窗口外。
+            task.updated_at = datetime.now(UTC) - timedelta(minutes=1)
+            session.add(task)
+            await session.commit()
+
+        service = TaskService(database.session_factory)
+        # updated_at 距今 1 分钟 → 5 分钟冷却未过,claim 不到。
+        assert (
+            await service.claim_submitted(
+                owner="t", lease_duration=timedelta(seconds=60), min_poll_interval=timedelta(minutes=5)
+            )
+        ) is None
+        # 冷却 30 秒(updated_at 距今 1 分钟 > 30 秒)→ 可 claim。
+        assert (
+            await service.claim_submitted(
+                owner="t", lease_duration=timedelta(seconds=60), min_poll_interval=timedelta(seconds=30)
+            )
+        ) is not None
+    finally:
+        await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_worker_reconcile_submitted_advances_available(tmp_path, crypto):
+    """自动 watcher:适配器返回已验证可用 → submitted 任务推进到 AVAILABLE。"""
+    from sqlalchemy import select
+
+    from watch_assistant.db import create_database, initialize_database
+    from watch_assistant.models import Task
+    from watch_assistant.worker import TaskWorker
+
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'recon-avail.db'}")
+    await initialize_database(database.engine)
+
+    class _AvailableAdapter:
+        async def get_status_for_task(self, remote_ref, *, target_directory_id=None):
+            return RemoteObservation(
+                status=RemoteStatus.AVAILABLE,
+                file_id="101",
+                parent_id="7",
+                is_directory=False,
+            )
+
+    try:
+        async with database.session_factory() as session:
+            session.add(
+                Resource(
+                    id="res_ra",
+                    kind="magnet",
+                    canonical_key="magnet:res_ra",
+                    encrypted_url="encrypted",
+                    name="RA",
+                    source="test",
+                    captured_at=datetime.now(UTC),
+                    expires_at=datetime.now(UTC) + timedelta(days=1),
+                )
+            )
+            await session.flush()
+            task = make_task(resource_id="res_ra", state=TaskState.SUBMITTED, age_hours=3)
+            task.remote_ref = "infohash:" + "e" * 40
+            session.add(task)
+            await session.commit()
+
+        worker = TaskWorker(
+            database.session_factory,
+            crypto,
+            _AvailableAdapter(),
+            owner="test-worker",
+            lease_seconds=60,
+        )
+        assert await worker.reconcile_submitted() == 1
+
+        async with database.session_factory() as session:
+            task = await session.scalar(select(Task).where(Task.id == task.id))
+        assert task.state == TaskState.AVAILABLE
+    finally:
+        await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_worker_reconcile_submitted_unconfirmable_becomes_uncertain(tmp_path, crypto):
+    """自动 watcher 只读路径失败(fail-closed)→ submitted 任务转 UNCERTAIN,不再卡死。"""
+    from sqlalchemy import select
+
+    from watch_assistant.db import create_database, initialize_database
+    from watch_assistant.models import Task
+    from watch_assistant.worker import TaskWorker
+
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'recon-unc.db'}")
+    await initialize_database(database.engine)
+
+    class _FailingAdapter:
+        async def get_status_for_task(self, remote_ref, *, target_directory_id=None):
+            raise RuntimeError("115 unreachable")
+
+    try:
+        async with database.session_factory() as session:
+            session.add(
+                Resource(
+                    id="res_ru",
+                    kind="magnet",
+                    canonical_key="magnet:res_ru",
+                    encrypted_url="encrypted",
+                    name="RU",
+                    source="test",
+                    captured_at=datetime.now(UTC),
+                    expires_at=datetime.now(UTC) + timedelta(days=1),
+                )
+            )
+            await session.flush()
+            task = make_task(resource_id="res_ru", state=TaskState.SUBMITTED, age_hours=3)
+            task.remote_ref = "infohash:" + "f" * 40
+            session.add(task)
+            await session.commit()
+
+        worker = TaskWorker(
+            database.session_factory,
+            crypto,
+            _FailingAdapter(),
+            owner="test-worker",
+            lease_seconds=60,
+        )
+        assert await worker.reconcile_submitted() == 1
+
+        async with database.session_factory() as session:
+            task = await session.scalar(select(Task).where(Task.id == task.id))
+        assert task.state == TaskState.UNCERTAIN
+        assert task.error_code == "reconciliation_unavailable"
+    finally:
+        await database.engine.dispose()

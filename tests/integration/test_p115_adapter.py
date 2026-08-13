@@ -670,15 +670,70 @@ async def test_status_searches_later_pages_without_scanning_names(tmp_path):
             },
             {
                 "state": True,
-                "data": [{"info_hash": infohash, "status": 2}],
+                "data": [{"info_hash": infohash, "status": 3}],
             },
         ]
     )
     adapter = P115Adapter(provider, 1, client_factory=lambda _cookie: fake)
 
-    assert await adapter.get_status("infohash:" + infohash) == RemoteStatus.UNCERTAIN
+    assert await adapter.get_status("infohash:" + infohash) == RemoteStatus.FAILED
     assert fake.list_payloads == [{"page": 1}, {"page": 2}]
     await adapter.aclose()
+
+
+@pytest.mark.asyncio
+async def test_numeric_status_two_maps_available_only_with_readonly_evidence(
+    tmp_path,
+):
+    """状态码 2(已完成)不再一律 UNCERTAIN,但仍须经只读文件详情验证。
+
+    无 fid 时验证失败→ UNCERTAIN 观察(带 error_code);有 fid 且文件在
+    目标目录时才返回 AVAILABLE。
+    """
+    provider, _path = _provider(tmp_path)
+    infohash = "f1" + "0" * 38
+
+    async def scenario(task_record, gateway=None):
+        fake = FakeP115Client(task_response={"state": True, "data": [task_record]})
+        adapter = P115Adapter(
+            provider, 7, client_factory=lambda _cookie: fake, readonly_gateway=gateway
+        )
+        result = await adapter.get_status("infohash:" + infohash)
+        await adapter.aclose()
+        return result
+
+    # 无 fid → 无法验证,UNCERTAIN 观察。
+    result = await scenario({"info_hash": infohash, "status": 2, "move": 1})
+    assert result.status is RemoteStatus.UNCERTAIN
+    assert result.error_code == "availability_file_id_unavailable"
+
+    # 有 fid + 目标目录可验证 → AVAILABLE。
+    gateway = FakeReadOnlyGateway(
+        LibraryEntry(
+            directory_id=None,
+            file_id="101",
+            parent_id="7",
+            name="done.mkv",
+            is_directory=False,
+            size_bytes=None,
+            modified_at=None,
+            pickcode=None,
+        ),
+        directory_detail=LibraryEntry(
+            directory_id="7",
+            file_id=None,
+            parent_id=None,
+            name="target",
+            is_directory=True,
+            size_bytes=None,
+            modified_at=None,
+            pickcode=None,
+        ),
+    )
+    result = await scenario(
+        {"info_hash": infohash, "status": 2, "fid": "101", "move": 1}, gateway
+    )
+    assert result.status is RemoteStatus.AVAILABLE
 
 
 @pytest.mark.asyncio
@@ -702,8 +757,9 @@ async def test_status_move_minus_one_is_failed_but_status_two_is_not(tmp_path):
     [
         (-1, 0, RemoteStatus.FAILED),
         ("-1", "0", RemoteStatus.FAILED),
-        (0, 0, RemoteStatus.UNCERTAIN),
-        (2, 1, RemoteStatus.UNCERTAIN),
+        (0, 0, RemoteStatus.SUBMITTED),
+        (1, 0, RemoteStatus.DOWNLOADING),
+        (3, 0, RemoteStatus.FAILED),
         ("queued", 0, RemoteStatus.UNCERTAIN),
     ],
 )

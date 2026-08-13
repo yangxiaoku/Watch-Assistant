@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { CircleAlert, CircleCheck, Database, ListTodo, LoaderCircle, LogIn, RefreshCw, X } from "@lucide/vue";
+import { CircleAlert, CircleCheck, Database, ListTodo, LoaderCircle, LogIn, RefreshCw, Timer, X } from "@lucide/vue";
 import { ref, watch } from "vue";
 import { ApiError, type ApiClient } from "../api";
 import ConfirmDialog from "../components/ConfirmDialog.vue";
@@ -159,8 +159,9 @@ async function reconcile(task: TaskResponse): Promise<void> {
     <div v-else-if="!visibleTasks.length" class="empty-state">还没有推送任务</div>
     <article v-for="task in visibleTasks" :key="task.id" class="task-row">
       <div class="task-icon" :class="task.state">
-        <LoaderCircle v-if="['queued', 'submitting', 'submitted', 'downloading'].includes(task.state)" class="spin" :size="17" />
+        <LoaderCircle v-if="['queued', 'submitting'].includes(task.state)" class="spin" :size="17" />
         <CircleCheck v-else-if="task.state === 'available'" :size="17" />
+        <Timer v-else-if="['submitted', 'downloading'].includes(task.state)" :size="17" />
         <CircleAlert v-else :size="17" />
       </div>
       <div class="task-copy">

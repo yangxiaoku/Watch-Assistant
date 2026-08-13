@@ -113,6 +113,16 @@ _CANONICAL_TASK_STATUS = {
     RemoteStatus.DOWNLOADING.value: RemoteStatus.DOWNLOADING,
     RemoteStatus.AVAILABLE.value: RemoteStatus.AVAILABLE,
 }
+# 115 clouddownload_task_list 的数字状态码:0=等待,1=下载中,2=已完成,3=失败。
+# 此前数字状态一律落入 UNCERTAIN,已提交任务永远无法推进(仅能手动只读核对)。
+# 状态 2 仍经 _observe_available_task 验证文件确实在目标目录后才返回 AVAILABLE,
+# 验证不过返回带错误码的 UNCERTAIN 观察——fail-closed 不变。
+_NUMERIC_TASK_STATUS = {
+    0: RemoteStatus.SUBMITTED,
+    1: RemoteStatus.DOWNLOADING,
+    2: RemoteStatus.AVAILABLE,
+    3: RemoteStatus.FAILED,
+}
 _AVAILABILITY_FILE_ID_UNAVAILABLE = "availability_file_id_unavailable"
 _AVAILABILITY_PARENT_MISMATCH = "availability_parent_mismatch"
 _AVAILABILITY_OBSERVER_UNAVAILABLE = "availability_observer_unavailable"
@@ -1189,6 +1199,10 @@ def _task_status(task: Mapping[str, Any]) -> RemoteStatus:
         if isinstance(value, str):
             normalized = value.strip().casefold()
             status = _CANONICAL_TASK_STATUS.get(normalized)
+            if status is not None:
+                return status
+        elif isinstance(value, int) and not isinstance(value, bool):
+            status = _NUMERIC_TASK_STATUS.get(value)
             if status is not None:
                 return status
     return RemoteStatus.UNCERTAIN
