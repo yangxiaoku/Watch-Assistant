@@ -382,6 +382,18 @@ EVENT_CATALOG: dict[str, EventDefinition] = {
         "空目录清理计划已执行",
         "空目录清理计划已执行，处理 {count} 个受管目录",
     ),
+    "library.small_file_cleanup.previewed": _event(
+        "library.small_file_cleanup.previewed",
+        LogCategory.LIBRARY,
+        "小文件清理预览已生成",
+        "小文件清理预览已生成，共 {count} 个低于阈值的小文件",
+    ),
+    "library.small_file_cleanup.applied": _event(
+        "library.small_file_cleanup.applied",
+        LogCategory.LIBRARY,
+        "小文件清理已执行",
+        "小文件清理已执行，回收 {count} 个小文件（可恢复）",
+    ),
     "library.object.permanently_deleted": _event(
         "library.object.permanently_deleted",
         LogCategory.LIBRARY,

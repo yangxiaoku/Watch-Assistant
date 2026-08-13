@@ -48,6 +48,8 @@ import type {
   MediaEntryListResponse,
   EmptyDirectoryCleanupPlanApplyResponse,
   EmptyDirectoryCleanupPlanResponse,
+  SmallFileCleanupApplyResponse,
+  SmallFileCleanupPreviewResponse,
   StrmManifestListResponse,
   StrmGenerationResponse,
   StrmCleanupPlanApplyResponse,
@@ -993,6 +995,36 @@ export class ApiClient {
       {
         method: "POST",
         body: JSON.stringify({ source_scan_run_id: scanRunId }),
+      },
+    );
+  }
+
+  async smallFileCleanupPreview(
+    libraryId: string,
+  ): Promise<SmallFileCleanupPreviewResponse> {
+    return this.request<SmallFileCleanupPreviewResponse>(
+      `/api/v1/libraries/${encodeURIComponent(libraryId)}/small-file-cleanup-preview`,
+      { method: "POST", body: JSON.stringify({}) },
+    );
+  }
+
+  async smallFileCleanupApply(
+    libraryId: string,
+    payload: {
+      sourceScanRunId: string;
+      fileIds: string[];
+      confirm?: boolean;
+    },
+  ): Promise<SmallFileCleanupApplyResponse> {
+    return this.request<SmallFileCleanupApplyResponse>(
+      `/api/v1/libraries/${encodeURIComponent(libraryId)}/small-file-cleanup-apply`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          source_scan_run_id: payload.sourceScanRunId,
+          file_ids: payload.fileIds,
+          confirm: payload.confirm ?? false,
+        }),
       },
     );
   }

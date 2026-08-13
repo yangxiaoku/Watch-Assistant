@@ -38,6 +38,13 @@ async function confirmRiskyAction(wrapper: ReturnType<typeof mount>) {
   await flushPromises();
 }
 
+async function switchTab(wrapper: ReturnType<typeof mount>, label: string) {
+  const button = wrapper.findAll(".library-tabs button").find((b) => b.text().includes(label));
+  expect(button).toBeDefined();
+  await button!.trigger("click");
+  await flushPromises();
+}
+
 describe("LibraryWorkbenchView", () => {
   it("keeps guarded workbench handlers closed when called outside disabled buttons", async () => {
     const library = {
@@ -134,11 +141,16 @@ describe("LibraryWorkbenchView", () => {
     const wrapper = mount(LibraryWorkbenchView, { props: { api: api as never } });
     await flushPromises();
 
-    for (const label of ["生成整理预览", "全量 STRM", "增量同步", "预览失效清理", "预览空目录清理"]) {
+    for (const label of ["生成整理预览", "全量 STRM", "增量同步"]) {
       const button = wrapper.findAll("button").find((item) => item.text().includes(label));
       expect(button?.attributes("disabled")).toBeDefined();
     }
     expect(wrapper.text()).toContain("自动整理计划当前不可用。");
+    await switchTab(wrapper, "清理");
+    for (const label of ["预览失效清理", "预览空目录清理"]) {
+      const button = wrapper.findAll("button").find((item) => item.text().includes(label));
+      expect(button?.attributes("disabled")).toBeDefined();
+    }
   });
 
   it("keeps the library entry reachable while explaining the disabled STRM gate", async () => {
@@ -343,6 +355,9 @@ describe("LibraryWorkbenchView", () => {
     expect(api.generateStrm).toHaveBeenCalledWith("main", "scan-1");
     expect(wrapper.text()).toContain("STRM 全量同步完成");
 
+
+    await switchTab(wrapper, "清理");
+
     await wrapper.findAll("button").find((button) => button.text().includes("预览失效清理"))!.trigger("click");
     await flushPromises();
     expect(wrapper.text()).toContain("失效清理预览已生成");
@@ -382,6 +397,7 @@ describe("LibraryWorkbenchView", () => {
     };
     const wrapper = mountWorkbench(api);
     await flushPromises();
+    await switchTab(wrapper, "文件");
 
     expect(wrapper.text()).toContain("第一项");
     expect(wrapper.text()).toContain("有效");
@@ -420,6 +436,7 @@ describe("LibraryWorkbenchView", () => {
     };
     const wrapper = mountWorkbench(api);
     await flushPromises();
+    await switchTab(wrapper, "文件");
 
     await wrapper.findAll("button").find((button) => button.text() === "加载更多索引文件")!.trigger("click");
     await wrapper.findAll("button").find((button) => button.text() === "加载更多操作")!.trigger("click");
@@ -481,6 +498,7 @@ describe("LibraryWorkbenchView", () => {
     };
     const wrapper = mountWorkbench(api);
     await flushPromises();
+    await switchTab(wrapper, "文件");
 
     await wrapper.findAll(".library-scope-row")[1].trigger("click");
     secondMedia.resolve({ items: [{ media_id: "second-media", library_id: "second", scan_run_id: "scan-2", object_type: "file", object_id: "object-2", parent_id: null, name: "第二媒体文件.mkv", size_bytes: null, modified_at: null, state: "indexed" }], next_cursor: null });
@@ -526,6 +544,9 @@ describe("LibraryWorkbenchView", () => {
     };
     const wrapper = mountWorkbench(api);
     await flushPromises();
+
+
+    await switchTab(wrapper, "清理");
 
     await wrapper.findAll("button").find((button) => button.text().includes("预览空目录清理"))!.trigger("click");
     await flushPromises();
@@ -733,6 +754,7 @@ describe("LibraryWorkbenchView", () => {
     };
     const wrapper = mountWorkbench(api);
     await flushPromises();
+    await switchTab(wrapper, "文件");
     expect(wrapper.text()).toContain("STRM 操作历史服务暂不可用，请稍后重试");
     expect(wrapper.text()).toContain("重试");
     await wrapper.findAll("button").find((button) => button.text() === "重试")!.trigger("click");
@@ -764,10 +786,11 @@ describe("LibraryWorkbenchView", () => {
     const wrapper = mountWorkbench(api, section === "overview" ? { strmCleanupCapability: capability } : { emptyDirectoryCleanupCapability: capability });
     await flushPromises();
 
-    const cleanupButton = wrapper.findAll("button").find((button) => button.text().includes(label));
-    expect(cleanupButton?.attributes("disabled")).toBeDefined();
     expect(wrapper.text()).toContain(reason);
     await wrapper.findAll("button").find((button) => button.text().includes("前往"))!.trigger("click");
     expect(wrapper.emitted("open-settings")?.at(-1)).toEqual([section]);
+    await switchTab(wrapper, "清理");
+    const cleanupButton = wrapper.findAll("button").find((button) => button.text().includes(label));
+    expect(cleanupButton?.attributes("disabled")).toBeDefined();
   });
 });

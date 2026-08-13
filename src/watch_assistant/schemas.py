@@ -504,6 +504,42 @@ class EmptyDirectoryCleanupPlanApplyResponse(BaseModel):
     deleted: int = Field(ge=0)
 
 
+class SmallFileCleanupCandidateResponse(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    file_id: str
+    parent_id: str
+    name: str
+    size_bytes: int
+
+
+class SmallFileCleanupPreviewResponse(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    library_id: str
+    source_scan_run_id: str
+    snapshot_revision: int = Field(ge=0)
+    threshold_bytes: int = Field(gt=0)
+    candidate_count: int = Field(ge=0)
+    candidates: list[SmallFileCleanupCandidateResponse]
+
+
+class SmallFileCleanupApplyRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    source_scan_run_id: str = Field(min_length=1, max_length=128)
+    file_ids: list[str] = Field(default_factory=list, max_length=200)
+    confirm: bool = False
+
+
+class SmallFileCleanupApplyResponse(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    deleted: int = Field(ge=0)
+    failed: int = Field(ge=0)
+    total: int = Field(ge=0)
+
+
 class StrmVerifyRequest(BaseModel):
     model_config = {"extra": "forbid"}
 

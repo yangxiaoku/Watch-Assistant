@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Ban, Check, Database, LoaderCircle, RefreshCw, SlidersHorizontal, Trash2 } from "@lucide/vue";
+import { Ban, Check, Database, FileWarning, LoaderCircle, RefreshCw, SlidersHorizontal, Trash2 } from "@lucide/vue";
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { ApiClient, ApiError, createIdempotencyKey, focusFirstFieldError } from "../api";
 import ConfirmDialog from "../components/ConfirmDialog.vue";
@@ -12,6 +12,7 @@ import type {
   MediaEntryResponse,
   MediaLibraryResponse,
   EmptyDirectoryCleanupPlanResponse,
+  SmallFileCleanupPreviewResponse,
   CapabilityAvailability,
   LibraryScanSummary,
   StrmCleanupPlanResponse,
@@ -61,8 +62,13 @@ const cleanupPlan = ref<StrmCleanupPlanResponse | null>(null);
 const cleanupIdempotencyKey = ref<string | null>(null);
 const emptyCleanupPlan = ref<EmptyDirectoryCleanupPlanResponse | null>(null);
 const emptyCleanupIdempotencyKey = ref<string | null>(null);
-const pendingCleanup = ref<"strm" | "empty" | "operation" | null>(null);
+const pendingCleanup = ref<"strm" | "empty" | "small" | "operation" | null>(null);
 const operationDetailOpen = ref(false);
+const activeTab = ref<"overview" | "cleanup" | "files">("overview");
+const smallFilePreview = ref<SmallFileCleanupPreviewResponse | null>(null);
+const smallFileError = ref("");
+const smallFileBusy = ref(false);
+const smallFileSelected = ref<Set<string>>(new Set());
 let operationPollGeneration = 0;
 let operationPollTimer: number | null = null;
 let scanPollGeneration = 0;
@@ -83,14 +89,17 @@ const emptyDirectoryCleanupAvailable = computed(() => props.emptyDirectoryCleanu
 const cleanupDialogOpen = computed(() => pendingCleanup.value !== null);
 const cleanupDialogTitle = computed(() => {
   if (pendingCleanup.value === "empty") return "确认回收空目录";
+  if (pendingCleanup.value === "small") return "确认清理小文件";
   if (pendingCleanup.value === "operation") return "确认取消 STRM 操作";
   return "确认退休失效 STRM";
 });
 const cleanupDialogSummary = computed(() => pendingCleanup.value === "empty"
   ? "系统只会把计划中的受管空目录送入可恢复回收站，永久删除保持关闭。"
-  : pendingCleanup.value === "operation"
-    ? "只会请求取消尚未完成的 STRM 操作；已经写入或结果待确认的内容不会被伪造撤回。"
-    : "系统只会退休计划中受管且未被用户修改的失效 STRM 文件，扫描或清单变化会阻断执行。"
+  : pendingCleanup.value === "small"
+    ? "只会把勾选的小文件送入 115 回收站（可恢复），永久删除保持关闭；每个文件执行前会再次核对实时状态。"
+    : pendingCleanup.value === "operation"
+      ? "只会请求取消尚未完成的 STRM 操作；已经写入或结果待确认的内容不会被伪造撤回。"
+      : "系统只会退休计划中受管且未被用户修改的失效 STRM 文件，扫描或清单变化会阻断执行。"
 );
 const cleanupDialogDetails = computed(() => {
   if (pendingCleanup.value === "operation" && latestOperation.value) {
@@ -764,6 +773,67 @@ async function applyCleanup(): Promise<void> {
   }
 }
 
+async function previewSmallFileCleanup() {
+  if (!selected.value || !readyForSync.value || busy.value || smallFileBusy.value) return;
+  smallFileBusy.value = true;
+  smallFileError.value = "";
+  notice.value = "";
+  try {
+    smallFilePreview.value = await props.api.smallFileCleanupPreview(
+      selected.value.library_id,
+    );
+    smallFileSelected.value = new Set(
+      smallFilePreview.value.candidates.map((c) => c.file_id),
+    );
+    const preview = smallFilePreview.value;
+    notice.value = preview.candidate_count
+      ? `小文件清理预览已生成，共 ${preview.candidate_count} 项（小于 ${(preview.threshold_bytes / 1024 / 1024).toFixed(0)}MB）`
+      : `没有低于 ${(preview.threshold_bytes / 1024 / 1024).toFixed(0)}MB 的小文件`;
+  } catch (exception) {
+    setError(exception, "小文件清理预览失败，请先完成一次完整扫描");
+  } finally {
+    smallFileBusy.value = false;
+  }
+}
+
+function toggleSmallFile(fileId: string): void {
+  const next = new Set(smallFileSelected.value);
+  if (next.has(fileId)) next.delete(fileId);
+  else next.add(fileId);
+  smallFileSelected.value = next;
+}
+
+async function confirmSmallFileCleanup() {
+  const preview = smallFilePreview.value;
+  if (!preview || smallFileSelected.value.size === 0 || smallFileBusy.value) return;
+  pendingCleanup.value = "small";
+}
+
+async function applySmallFileCleanup(): Promise<void> {
+  const preview = smallFilePreview.value;
+  if (!preview || smallFileSelected.value.size === 0 || !smallFileBusy.value) return;
+  pendingCleanup.value = null;
+  smallFileBusy.value = true;
+  smallFileError.value = "";
+  try {
+    const result = await props.api.smallFileCleanupApply(
+      selected.value!.library_id,
+      {
+        sourceScanRunId: preview.source_scan_run_id,
+        fileIds: [...smallFileSelected.value],
+        confirm: true,
+      },
+    );
+    smallFilePreview.value = null;
+    smallFileSelected.value = new Set();
+    notice.value = `小文件清理完成：删除 ${result.deleted} 项，失败 ${result.failed} 项（已进入可恢复回收站）`;
+  } catch (exception) {
+    smallFileError.value = exception instanceof ApiError ? exception.message : "小文件清理执行失败，请重试";
+  } finally {
+    smallFileBusy.value = false;
+  }
+}
+
 async function previewEmptyDirectoryCleanup() {
   if (!selected.value || !scan.value || !readyForSync.value || !emptyDirectoryCleanupAvailable.value || busy.value) return;
   busy.value = true;
@@ -824,6 +894,7 @@ async function confirmPendingCleanup(): Promise<void> {
   pendingCleanup.value = null;
   if (pending === "strm") await applyCleanup();
   if (pending === "empty") await applyEmptyDirectoryCleanup();
+  if (pending === "small") await applySmallFileCleanup();
   if (pending === "operation") await cancelLatestOperation();
 }
 
@@ -916,6 +987,12 @@ onBeforeUnmount(() => {
       </aside>
 
       <main v-if="selected" class="library-detail-panel">
+        <nav class="library-tabs" aria-label="媒体库视图">
+          <button type="button" :class="{ active: activeTab === 'overview' }" @click="activeTab = 'overview'">概览</button>
+          <button type="button" :class="{ active: activeTab === 'cleanup' }" @click="activeTab = 'cleanup'">清理</button>
+          <button type="button" :class="{ active: activeTab === 'files' }" @click="activeTab = 'files'">文件</button>
+        </nav>
+        <template v-if="activeTab === 'overview'">
         <div class="library-detail-heading"><div><p class="eyebrow">当前范围</p><h2>{{ selected.name }}</h2><small>根目录 {{ redactDirectoryId(selected.root_directory_id) }}</small></div><button class="secondary-button" type="button" :disabled="busy || selected.scope_verified" @click="verifyScope"><Check :size="16" />验证范围</button></div>
         <div class="library-stat-grid">
           <div><span>范围状态</span><strong>{{ selected.scope_verified ? "已验证" : "待验证" }}</strong></div>
@@ -928,8 +1005,6 @@ onBeforeUnmount(() => {
           <button class="secondary-button" type="button" :title="actionReason('organization')" :disabled="busy || !readyForSync || !organizationPlanAvailable" @click="createOrganizationPreview"><SlidersHorizontal :size="16" />生成整理预览</button>
           <button class="secondary-button" type="button" :title="actionReason('full')" :disabled="busy || !readyForSync || !strmFullAvailable" @click="syncStrm('full')"><Database :size="16" />全量 STRM</button>
            <button class="secondary-button" type="button" :title="actionReason('incremental')" :disabled="busy || !readyForSync || !strmIncrementalAvailable" @click="syncStrm('incremental')"><RefreshCw :size="16" />增量同步</button>
-           <button class="secondary-button" type="button" :title="actionReason('strm-cleanup')" :disabled="busy || !readyForSync || !strmCleanupAvailable" @click="previewCleanup"><Ban :size="16" />预览失效清理</button>
-           <button class="secondary-button" type="button" :title="actionReason('empty-cleanup')" :disabled="busy || !readyForSync || !emptyDirectoryCleanupAvailable" @click="previewEmptyDirectoryCleanup"><Trash2 :size="16" />预览空目录清理</button>
         </div>
         <div class="library-capability-notices">
           <p v-if="workflowGuidance" class="library-workflow-note"><RefreshCw :size="15" />{{ workflowGuidance }}</p>
@@ -948,6 +1023,26 @@ onBeforeUnmount(() => {
           <p v-if="operationError(latestOperation)" class="library-operation-error">{{ operationError(latestOperation) }}</p>
           <div class="library-operation-actions"><button class="text-button" type="button" @click="operationDetailOpen = !operationDetailOpen">{{ operationDetailOpen ? "收起详情" : "查看详情" }}</button><button v-if="['queued', 'running'].includes(latestOperation.status)" class="text-button" type="button" @click="requestCancelLatestOperation"><Ban :size="14" />取消操作</button><button v-if="['failed', 'cancelled'].includes(latestOperation.status) && latestOperation.kind !== 'cleanup'" class="text-button" type="button" :disabled="busy || (latestOperation.kind === 'incremental' ? !strmIncrementalAvailable : !strmFullAvailable)" :title="actionReason(latestOperation.kind === 'incremental' ? 'incremental' : 'full')" @click="retryLatestOperation"><RefreshCw :size="14" />恢复执行</button><button class="text-button" type="button" @click="refreshLatestOperation"><RefreshCw :size="14" />刷新状态</button></div>
           <div v-if="operationDetailOpen" class="library-operation-detail"><small>操作标识：{{ diagnosticReference(latestOperation.operation_id) }}</small><small>创建 {{ new Date(latestOperation.created_at).toLocaleString() }}</small><small v-if="latestOperation.finished_at">结束 {{ new Date(latestOperation.finished_at).toLocaleString() }}</small></div>
+        </section>
+        </template>
+        <template v-if="activeTab === 'cleanup'">
+        <div class="library-action-row">
+          <button class="secondary-button" type="button" :title="actionReason('strm-cleanup')" :disabled="busy || !readyForSync || !strmCleanupAvailable" @click="previewCleanup"><Ban :size="16" />预览失效清理</button>
+          <button class="secondary-button" type="button" :title="actionReason('empty-cleanup')" :disabled="busy || !readyForSync || !emptyDirectoryCleanupAvailable" @click="previewEmptyDirectoryCleanup"><Trash2 :size="16" />预览空目录清理</button>
+          <button class="secondary-button" type="button" :disabled="busy || !readyForSync || smallFileBusy" @click="previewSmallFileCleanup"><FileWarning :size="16" />预览小文件清理</button>
+        </div>
+        <section v-if="smallFileError" class="library-operation-error" role="alert">{{ smallFileError }}</section>
+        <section v-if="smallFilePreview" class="library-cleanup-plan is-needs_review">
+          <div class="library-section-heading"><div><p class="eyebrow">小文件清理预览</p><h3>低于阈值的小文件（回收站）</h3></div><strong>{{ smallFileSelected.size }} / {{ smallFilePreview.candidates.length }} 已选</strong></div>
+          <p class="library-cleanup-note">只回收勾选的小文件，进入 115 可恢复回收站；执行前逐个核对实时状态，文件已移动或消失则跳过。阈值来自「自动整理设置」里的小文件大小。</p>
+          <div v-if="smallFilePreview.candidates.length" class="library-small-file-list">
+            <label v-for="candidate in smallFilePreview.candidates" :key="candidate.file_id" class="library-small-file-row">
+              <input type="checkbox" :checked="smallFileSelected.has(candidate.file_id)" @change="toggleSmallFile(candidate.file_id)" />
+              <span><strong>{{ candidate.name }}</strong><small>{{ formatBytes(candidate.size_bytes) }}</small></span>
+            </label>
+          </div>
+          <p v-else class="library-muted">没有低于阈值的小文件。</p>
+          <button v-if="smallFilePreview.candidates.length && smallFileSelected.size" class="danger-button" type="button" :disabled="smallFileBusy" @click="confirmSmallFileCleanup"><Trash2 :size="16" />查看摘要并确认清理（{{ smallFileSelected.size }} 项）</button>
         </section>
          <section v-if="cleanupPlan" class="library-cleanup-plan" :class="`is-${cleanupPlan.status}`">
           <div class="library-section-heading"><div><p class="eyebrow">失效清理预览</p><h3>受管 STRM 退休计划</h3></div><strong>{{ cleanupPlan.status === "needs_review" ? "待确认" : cleanupPlan.status === "applied" ? "已完成" : "已失效" }}</strong></div>
@@ -968,9 +1063,12 @@ onBeforeUnmount(() => {
            <button v-if="emptyCleanupPlan.status === 'needs_review' && emptyCleanupPlan.executable_count" class="danger-button" type="button" :disabled="busy" @click="confirmEmptyDirectoryCleanup"><Check :size="16" />查看摘要并确认回收</button>
            <p v-else-if="emptyCleanupPlan.status === 'needs_review'" class="library-muted">当前没有可执行的受管空目录。</p>
          </section>
+        </template>
+        <template v-if="activeTab === 'files'">
         <section v-if="operationsError || operations.length || operationsNextCursor !== null || operationsLoading" class="library-output-section"><div class="library-section-heading"><div><p class="eyebrow">操作历史</p><h3>STRM 操作</h3></div><span v-if="operations.length">{{ operations.length }} 条</span></div><p v-if="operationsError" class="library-operation-history-error" role="alert">{{ operationsError }} <button class="text-button" type="button" @click="retryOutputs">重试</button></p><div v-if="operationsLoading && !operations.length" class="library-output-loading" role="status"><LoaderCircle class="spin" :size="18" />正在加载操作历史</div><div v-if="operations.length" class="library-operation-list" :class="{ 'library-list-loading': operationsLoading }"><div v-for="operation in operations" :key="operation.operation_id" class="library-operation-row"><span><strong>{{ operationLabels[operation.kind] }}</strong><small>{{ strmOperationStatusLabel(operation) }} · {{ new Date(operation.created_at).toLocaleString() }}</small></span><span>生成 {{ operation.generated }} · 失败 {{ operation.failed }}</span></div></div><p v-else-if="!operationsError && !operationsLoading" class="library-muted">暂无 STRM 操作记录。</p><button v-if="operationsNextCursor !== null" class="secondary-button" type="button" :disabled="operationsLoading" @click="selectedId && loadOperations(selectedId, operationsNextCursor!)">加载更多操作</button></section>
         <section class="library-output-section"><div class="library-section-heading"><div><p class="eyebrow">受管清单</p><h3>STRM 文件</h3></div><span>{{ manifestTotal }} 条</span></div><p v-if="manifestError" class="library-operation-history-error" role="alert">{{ manifestError }} <button class="text-button" type="button" @click="loadManifestPage()">重试</button></p><div v-if="manifestLoading && !manifest.length" class="library-output-loading" role="status"><LoaderCircle class="spin" :size="18" />正在加载 STRM 清单</div><div v-if="manifest.length" class="library-table-wrap" :class="{ 'library-list-loading': manifestLoading }"><table><thead><tr><th>云端路径</th><th>本地路径</th><th>状态</th></tr></thead><tbody><tr v-for="item in manifest" :key="item.manifest_id"><td>{{ item.cloud_relative_path }}</td><td>{{ item.local_relative_path }}</td><td>{{ manifestStatusLabel(item.status) }}</td></tr></tbody></table></div><p v-else-if="!manifestError && !manifestLoading" class="library-muted">暂无受管 STRM。完成扫描后可以执行全量生成。</p><PaginationBar :page="manifestPage" :total-pages="manifestTotalPages" :total-results="manifestTotal" :loading="manifestLoading" @page="(page) => loadManifestPage(selectedId, page)" /></section>
         <section class="library-output-section"><div class="library-section-heading"><div><p class="eyebrow">最近扫描</p><h3>索引文件</h3></div><span>{{ media.length }} 项</span></div><p v-if="mediaError" class="library-operation-history-error" role="alert">{{ mediaError }} <button class="text-button" type="button" @click="selectedId && loadMedia(selectedId, mediaNextCursor ?? undefined)">重试</button></p><div v-if="mediaLoading && !media.length" class="library-output-loading" role="status"><LoaderCircle class="spin" :size="18" />正在加载索引文件</div><div v-if="media.length" class="library-table-wrap" :class="{ 'library-list-loading': mediaLoading }"><table><thead><tr><th>文件名</th><th>大小</th></tr></thead><tbody><tr v-for="item in media" :key="item.media_id"><td>{{ item.name }}</td><td>{{ formatBytes(item.size_bytes) }}</td></tr></tbody></table></div><p v-else-if="!mediaError && !mediaLoading" class="library-muted">完成一次完整扫描后，这里会显示索引文件。</p><button v-if="mediaNextCursor !== null" class="secondary-button" type="button" :disabled="mediaLoading" @click="selectedId && loadMedia(selectedId, mediaNextCursor!)">加载更多索引文件</button></section>
+        </template>
       </main>
       <div v-else class="library-empty"><Database :size="24" /><strong>尚未配置库存媒体库</strong><span>下一步：读取服务器配置的 115 根目录，保存配置、验证范围，再完成首次扫描。</span><button class="primary-button" type="button" :disabled="busy" @click="initializeLibrary"><Database :size="16" />初始化并扫描媒体库</button><button class="text-button" type="button" @click="openCapabilitySettings(undefined, 'organization')"><SlidersHorizontal :size="14" />先检查 115 整理设置</button></div>
     </div>

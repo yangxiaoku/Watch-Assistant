@@ -267,6 +267,16 @@ input { outline: none; }
 .library-workbench-heading p:last-child { margin-bottom: 0; color: var(--text-2); font-size: 13px; }
 .library-workbench-howto { margin-top: 10px; padding: 9px 12px; color: var(--text-2); background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; line-height: 1.6; }
 .library-workbench-howto strong { color: var(--text); }
+.library-tabs { display: flex; gap: 4px; margin-bottom: 18px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
+.library-tabs button { padding: 7px 14px; font-size: 13px; color: var(--text-2); background: transparent; border: 1px solid transparent; border-radius: 8px; cursor: pointer; transition: color .15s ease, background .15s ease; }
+.library-tabs button:hover { color: var(--text); background: var(--surface-2); }
+.library-tabs button.active { color: var(--accent); background: var(--surface-3); border-color: var(--border); font-weight: 600; }
+.library-small-file-list { display: grid; gap: 4px; margin: 10px 0 14px; max-height: 260px; overflow: auto; }
+.library-small-file-row { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 8px; cursor: pointer; }
+.library-small-file-row:hover { background: var(--surface-2); }
+.library-small-file-row input { accent-color: var(--accent); }
+.library-small-file-row span { display: grid; gap: 2px; }
+.library-small-file-row small { color: var(--text-2); }
 .library-workbench-layout { display: grid; grid-template-columns: minmax(240px, 310px) minmax(0, 1fr); gap: 16px; align-items: start; }
 .library-scope-panel, .library-detail-panel { min-width: 0; padding: 20px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
 .library-panel-heading, .library-detail-heading, .library-section-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }

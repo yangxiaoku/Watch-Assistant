@@ -55,6 +55,9 @@ from watch_assistant.schemas import (
     MediaLibraryVerificationResponse,
     OrganizationPlanResponse,
     OrganizationPreviewRequest,
+    SmallFileCleanupApplyRequest,
+    SmallFileCleanupApplyResponse,
+    SmallFileCleanupPreviewResponse,
 )
 from watch_assistant.security import AuthContext, require_api_auth, require_scope
 from watch_assistant.services.api_errors import error_status
@@ -93,6 +96,7 @@ from watch_assistant.services.organization_target import (
     read_target_catalog,
 )
 from watch_assistant.services.p115_delete import DeleteStatus, P115DeleteService
+from watch_assistant.services.small_file_cleanup import SmallFileCleanupError
 from watch_assistant.services.strm_operations import (
     StrmOperationError,
     StrmOperationKind,
@@ -936,6 +940,140 @@ async def apply_empty_directory_cleanup_plan(
         )
     finally:
         await _stop_empty_cleanup_operation_heartbeat(heartbeat_stop, heartbeat_task)
+
+
+async def _require_small_file_threshold(request: Request) -> None:
+    """小文件清理共享门禁:服务存在 + 组织阈值已配置。"""
+    service = getattr(request.app.state, "small_file_cleanup_service", None)
+    if not callable(service):
+        raise HTTPException(status_code=503, detail="small_file_cleanup_unavailable")
+    settings_service = getattr(request.app.state, "settings_service", None)
+    if settings_service is None:
+        raise HTTPException(status_code=503, detail="small_file_cleanup_unavailable")
+    try:
+        settings = await settings_service.get_organization()
+    except Exception:  # noqa: BLE001 - settings detail stays private
+        raise HTTPException(
+            status_code=503, detail="small_file_cleanup_unavailable"
+        ) from None
+    if settings.small_file_threshold_mb <= 0:
+        raise HTTPException(status_code=503, detail="small_file_threshold_unconfigured")
+
+
+async def require_small_file_cleanup_apply(request: Request) -> None:
+    """应用门禁:预览门禁 + 生产写路径契约(执行/写/契约验证)。"""
+    await _require_small_file_threshold(request)
+    if not getattr(request.app.state, "organization_execution_enabled", False):
+        raise HTTPException(status_code=503, detail="organization_execution_disabled")
+    if not getattr(request.app.state, "organization_write_enabled", False):
+        raise HTTPException(status_code=503, detail="organization_write_disabled")
+    if not getattr(
+        request.app.state, "organization_write_contract_verified", False
+    ):
+        raise HTTPException(status_code=503, detail="organization_write_unverified")
+
+
+async def _small_cleanup_library(request: Request, library_id: str, context):
+    if not _stable_library_id(library_id) or not _allowed(context, library_id):
+        raise HTTPException(status_code=404, detail="library_not_found")
+    async with request.app.state.database.session_factory() as session:
+        library = await session.get(MediaLibrary, library_id)
+    if library is None:
+        raise HTTPException(status_code=404, detail="library_not_found")
+    return library
+
+
+@router.post(
+    "/libraries/{library_id}/small-file-cleanup-preview",
+    response_model=SmallFileCleanupPreviewResponse,
+    dependencies=[Depends(_require_small_file_threshold)],
+)
+async def create_small_file_cleanup_preview(
+    library_id: str,
+    request: Request,
+    context: AuthDependency,
+) -> SmallFileCleanupPreviewResponse:
+    library = await _small_cleanup_library(request, library_id, context)
+    service = getattr(request.app.state, "small_file_cleanup_service", None)
+    settings = await _empty_cleanup_settings(request)
+    threshold_bytes = int(settings.small_file_threshold_mb * 1024 * 1024)
+    try:
+        scan, candidates = await service.preview(
+            library, threshold_bytes=threshold_bytes
+        )
+    except SmallFileCleanupError as error:
+        status = 409 if error.code in {"cleanup_snapshot_unavailable"} else 422
+        raise HTTPException(status_code=status, detail=error.code) from None
+    settings_service = getattr(request.app.state, "settings_service", None)
+    if settings_service is not None:
+        await settings_service.log_event(
+            "library.small_file_cleanup.previewed",
+            fields={"status": "previewed"},
+            counts={"count": len(candidates)},
+            actor_type="agent" if context.via_bearer else "web",
+            actor_id=context.identity,
+            resource_type="library",
+            resource_id=library_id,
+        )
+    return SmallFileCleanupPreviewResponse(
+        library_id=library_id,
+        source_scan_run_id=scan.id,
+        snapshot_revision=scan.snapshot_revision or 0,
+        threshold_bytes=threshold_bytes,
+        candidate_count=len(candidates),
+        candidates=[
+            {
+                "file_id": c.file_id,
+                "parent_id": c.parent_id,
+                "name": c.name,
+                "size_bytes": c.size_bytes or 0,
+            }
+            for c in candidates
+        ],
+    )
+
+
+@router.post(
+    "/libraries/{library_id}/small-file-cleanup-apply",
+    response_model=SmallFileCleanupApplyResponse,
+    dependencies=[Depends(require_small_file_cleanup_apply)],
+)
+async def apply_small_file_cleanup(
+    library_id: str,
+    payload: SmallFileCleanupApplyRequest,
+    request: Request,
+    context: OrganizeWriteDependency,
+) -> SmallFileCleanupApplyResponse:
+    if not payload.confirm:
+        raise HTTPException(status_code=409, detail="confirmation_required")
+    library = await _small_cleanup_library(request, library_id, context)
+    service = getattr(request.app.state, "small_file_cleanup_service", None)
+    settings = await _empty_cleanup_settings(request)
+    try:
+        deleted, failed = await service.apply(
+            library,
+            scan_run_id=payload.source_scan_run_id,
+            file_ids=payload.file_ids,
+            confirm=True,
+            operation_delay_seconds=settings.operation_delay_seconds,
+        )
+    except SmallFileCleanupError as error:
+        status = 409 if error.code in {"snapshot_stale", "confirmation_required"} else 503
+        raise HTTPException(status_code=status, detail=error.code) from None
+    settings_service = getattr(request.app.state, "settings_service", None)
+    if settings_service is not None:
+        await settings_service.log_event(
+            "library.small_file_cleanup.applied",
+            fields={"status": "ok" if failed == 0 else "partial"},
+            counts={"count": deleted},
+            actor_type="agent" if context.via_bearer else "web",
+            actor_id=context.identity,
+            resource_type="library",
+            resource_id=library_id,
+        )
+    return SmallFileCleanupApplyResponse(
+        deleted=deleted, failed=failed, total=deleted + failed
+    )
 
 
 @router.post(

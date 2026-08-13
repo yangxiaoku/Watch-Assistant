@@ -475,6 +475,28 @@ export interface EmptyDirectoryCleanupPlanApplyResponse {
   deleted: number;
 }
 
+export interface SmallFileCleanupCandidateResponse {
+  file_id: string;
+  parent_id: string;
+  name: string;
+  size_bytes: number;
+}
+
+export interface SmallFileCleanupPreviewResponse {
+  library_id: string;
+  source_scan_run_id: string;
+  snapshot_revision: number;
+  threshold_bytes: number;
+  candidate_count: number;
+  candidates: SmallFileCleanupCandidateResponse[];
+}
+
+export interface SmallFileCleanupApplyResponse {
+  deleted: number;
+  failed: number;
+  total: number;
+}
+
 export type OrganizationOperationStatus = "planned" | "organizing" | "organized" | "failed" | "uncertain" | "cancelled";
 
 export interface OrganizationOperationResponse {

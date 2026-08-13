@@ -155,6 +155,7 @@ from watch_assistant.services.quality_profiles import QualityProfileService
 from watch_assistant.services.search import SearchService
 from watch_assistant.services.season_metadata import SeasonMetadataService
 from watch_assistant.services.settings import SettingsService
+from watch_assistant.services.small_file_cleanup import SmallFileCleanupService
 from watch_assistant.services.strm_manifest import StrmManifestService
 from watch_assistant.services.strm_operations import StrmOperationService
 from watch_assistant.services.subscription_scheduler import SubscriptionScheduler
@@ -803,6 +804,10 @@ def create_app(
             )
             application.state.organization_automation_service = automation
             application.state._organization_runtime_write_enabled = write_enabled
+            application.state.small_file_cleanup_service = SmallFileCleanupService(
+                application.state.database.session_factory,
+                transport_factory=build_cleanup_transport,
+            )
 
             async def run_organization_once() -> bool:
                 return await automation.run_once()
