@@ -1048,7 +1048,6 @@ async def apply_small_file_cleanup(
         raise HTTPException(status_code=409, detail="confirmation_required")
     library = await _small_cleanup_library(request, library_id, context)
     service = getattr(request.app.state, "small_file_cleanup_service", None)
-    settings = await _empty_cleanup_settings(request)
     try:
         # 用户主动批量清理:逐文件节流用更短间隔(0.3s),避免大批量(几十个文件)
         # 的同步请求超过客户端超时;1.5s 的 operation_delay_seconds 是给后台整理
