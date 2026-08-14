@@ -222,6 +222,37 @@ async def test_listed_file_and_directory_are_classified_via_fs_info_count():
 
 
 @pytest.mark.asyncio
+async def test_file_style_record_classifies_by_fid_not_parent_cid():
+    """file-style 记录带 fid 且 cid=直接父级 id;判型必须用 fid,否则文件会被
+    误判为目录(父目录 count>0),树扫描产生目录环。"""
+    client = _FsFilesClient(
+        (
+            _page(
+                [
+                    {
+                        "fc": 1,
+                        "fid": "101",
+                        "cid": "8",
+                        "n": "episode.mkv",
+                        "s": "1",
+                        "play_long": 0,
+                    }
+                ],
+                count=1,
+            ),
+        ),
+    )
+    gateway, _, _ = _gateway(client, authorized_directory_ids=("8",))
+
+    result = await gateway.list_directory("8")
+
+    assert client.detail_calls == [{"fid": "101"}]
+    assert result.items[0].is_directory is False
+    assert result.items[0].file_id == "101"
+    assert result.items[0].parent_id == "8"
+
+
+@pytest.mark.asyncio
 async def test_batch_page_size_reads_full_page_in_one_call():
     records = [_file(fid=str(101 + i), name=f"file-{i}.mkv") for i in range(3)]
     client = _FsFilesClient(

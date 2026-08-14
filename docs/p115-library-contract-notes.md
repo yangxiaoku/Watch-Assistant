@@ -181,26 +181,31 @@ transport 仅在实际调用前校验固定版 `p115client` 并创建客户端�
   详情没有任何冲突身份字段时，gateway 才复用观察到的身份；无法解释的可选时间字段不写入
   DTO。任何显式身份冲突仍返回 `detail_unverified`。
 - 2026-08-14 真实 115 复验结论（推送可用性观察失败的根因修复）：
-  - `fs_files`/`fs_files_app` 都存在两个独立索引：文件夹索引（`show_dir=1`，只含目录
-    + 新推送尚未进入文件索引的文件）与文件索引（`show_dir=0`，全部已索引文件）。
-    文件夹索引对文件与目录完全同形（`fc` 恒为 0 或 "0"、无 `is_dir`、无 `fid`），
-    **`fc`/`file_category` 语义随接口漂移（legacy 文件索引文件 fc=1、app 列表文件
-    fc="0"），不能作为判据**；文件/目录只能以 `fs_info` 详情的 `folder_count>0`（目录）
-    或 `play_long>0`（文件）判定。
-  - 列表页 = 文件夹索引页 + 文件索引页合并：文件夹条目经 `fs_info` 判型，与文件索引按
-    webapi id（legacy 记录 `cid`、app 记录 `pid`/`fid`）去重；文件索引条目直接作为文件，
-    父级即被列出的目录（其 `pid` 是文件自身 webapi id，不是父级）。两索引独立计数，
-    `offset` 越界时 115 会把 offset 重置为 0 并返回整页，因此合并页只在 `offset` 未越界
-    时才请求对应索引（计数按 (目录, 页大小) 缓存于 gateway 实例），两索引都在 offset 之后
-    耗尽才合成终止信号。
-  - 详情（`fs_info`=proapi `open/folder/get_info`，legacy/proapi 相同形态）**不回显对象
-    自身 ID**，但文件详情带 `paths` 父链（末端即直接父目录）。文件详情在无观察条目时，
-    以 `paths` 父链落在授权目录内为锚验证身份（请求 ID 是 fid 回显，父链是真实校验），
-    并把父目录（id+名）登记为已观察目录；随后的目录详情经该登记验证身份，并与
-    `file_name` 交叉核对。目录详情携带 `folder_count>0` 与 `expect_directory` 冲突时
-    失败关闭；列表条目无法判型时同样失败关闭。
-  - 该修复使推送任务的 `availability_observer_unavailable` 可消除：`clouddownload` 的
-    `file_id`（webapi id）直接可用 `fs_info({"fid": ...})` 验证，`paths` 父链即目标目录。
+  - 云下载推送的磁力会在目标目录创建**同名目录**（内含文件）。`fs_files`/
+    `fs_files_app` 的 show_dir=1 列表即被列目录的**完整直接子项**（目录 + 文件，
+    含新推送尚未完成索引的文件）；记录对文件与目录完全同形（`fc` 恒为 0 或
+    "0"、无 `is_dir`），**`fc`/`file_category` 语义随接口漂移（legacy 文件索引
+    文件 fc=1、app 列表文件 fc="0"），不能作为判据**。
+  - 文件/目录只能以 `fs_info` 判型：响应的 **`count`（目录的子树文件数，
+    字符串）>0 或 `folder_count`>0 即目录**，否则为文件。纯文件目录的
+    `folder_count`=0、目录也可能有非零 `play_long`（如磁力目录聚合时长），
+    `folder_count`/`play_long` 单独都不可靠；`count` 是实测最稳定的目录信号
+    （对目录稳定返回正整数，对文件为 0；未完成同步的磁力目录 count 为 0，会
+    被暂判为文件，下次扫描随索引更新修正）。
+  - show_dir=0 列表是**递归全树文件**（含嵌套子目录中的文件），与目录列表语义
+    不同，不能与目录索引合并（会造成重复与错误归属）；列表以 show_dir=1 为主。
+  - 目录列表的 file-style 记录无 pid（`cid` 为直接父级 id），父级即被列出的
+    目录，由 gateway 注入；folder-style 记录 `cid` 为自身 webapi id、`pid` 为
+    父级。文件 id 取 `fid`，缺失时取 webapi id（`cid`/`fid`）。
+  - 详情（`fs_info`=proapi `open/folder/get_info`，legacy/proapi 相同形态）**不回显
+    对象自身 ID**，但文件详情带 `paths` 父链（末端即直接父目录）。文件详情在无
+    观察条目时，以 `paths` 父链落在授权目录内为锚验证身份（请求 ID 是 fid 回显，
+    父链是真实校验），并把父目录（id+名）登记为已观察目录；随后的目录详情经该
+    登记验证身份，并与 `file_name` 交叉核对。目录详情携带 `count`/`folder_count`
+    与 `expect_directory` 冲突时失败关闭；列表条目无法判型时同样失败关闭。
+  - 该修复使推送任务的 `availability_observer_unavailable` 可消除：`clouddownload`
+    的 `file_id`（webapi id）直接可用 `fs_info({"fid": ...})` 验证，`paths` 父链即
+    目标目录；树扫描可正常完成（page_size=1 亦稳定），媒体库库存完整后可放行推送。
 
 2026-07-28 使用受管非根小目录完成一次 C02 真实只读验收：`fs_files=1`、
 `fs_info(file)=1`，公开结果为 `success/complete=true`、一页、一条目；没有自动重试。

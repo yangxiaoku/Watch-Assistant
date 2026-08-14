@@ -205,15 +205,18 @@ class P115ReadOnlyDirectoryGateway:
     async def _classify_via_detail(
         self, record: Mapping[str, Any], deadline: float
     ) -> bool:
-        """用 fs_info 判型:count>0 或 folder_count>0 即目录,否则为文件。"""
-        cid = _single_id(record, ("directory_id", "category_id", "cid"))
-        if cid is not None:
-            payload: Mapping[str, str] = {"cid": cid}
+        """用 fs_info 判型:count>0 或 folder_count>0 即目录,否则为文件。
+
+        注意 file-style 记录(带 fid)的 cid 是直接父级 id,必须优先用 fid 判型,
+        否则目录内的文件会被误判为目录(父级目录 count>0),树扫描产生目录环。"""
+        fid = _single_id(record, ("file_id", "fid"))
+        if fid is not None:
+            payload: Mapping[str, str] = {"fid": fid}
         else:
-            fid = _single_id(record, ("file_id", "fid"))
-            if fid is None:
+            cid = _single_id(record, ("directory_id", "category_id", "cid"))
+            if cid is None:
                 raise P115ReadOnlyGatewayError("entry_unverified")
-            payload = {"fid": fid}
+            payload = {"cid": cid}
         response = await self._call("fs_info", payload, deadline=deadline)
         count = _nonnegative_int(response.get("count"))
         if count is not None and count > 0:
