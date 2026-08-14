@@ -13,6 +13,24 @@ EXPECTED_P115CLIENT_VERSION = "0.0.9.6.5.1"
 P115_BUSY_OPERATION_ERRNO = 990009
 P115_BUSY_OPERATION_RETRY_DELAY_SECONDS = 3.0
 
+# 进程级 115 请求节流:实测(2026-08-14)持续密集请求会触发账号级风控
+# (/files、/info 接口 405/429,持续数分钟到数十分钟);正常扫描/观察/核对
+# 请求按最小间隔节流,避免触发风控。只作用于真实 HTTP 请求
+# (request hook 内),测试 fake 客户端不受影响。
+READ_THROTTLE_SECONDS = 0.5
+_last_read_at = 0.0
+
+
+def throttle_read() -> None:
+    """在所有真实 115 HTTP 请求前按最小间隔节流(进程共享)。"""
+
+    global _last_read_at
+    now = time.monotonic()
+    wait = READ_THROTTLE_SECONDS - (now - _last_read_at)
+    if wait > 0:
+        time.sleep(wait)
+    _last_read_at = time.monotonic()
+
 
 class P115ReadOnlyClient(Protocol):
     def fs_files(self, payload: Mapping[str, int | str], **kwargs: Any) -> Any: ...
@@ -171,6 +189,7 @@ def p115_readonly_timeout_executor(
     def request_with_timeout(*, async_: bool = False, **request_kwargs: Any) -> Any:
         if async_:
             raise P115ReadOnlyTransportUnavailable("blocked_environment")
+        throttle_read()
         request_kwargs["timeout"] = timeout
         request_kwargs["retries"] = False
         return urllib3_request(async_=False, **request_kwargs)

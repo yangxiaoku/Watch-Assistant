@@ -164,3 +164,28 @@ async def test_gateway_does_not_notify_on_success():
     )
     assert response["errno"] == 0
     assert provider.failures == 0
+
+
+def test_throttle_read_spaces_real_requests(monkeypatch):
+    """进程级节流:间隔不足最小间隔时 sleep 补齐,足够时直接放行。"""
+    import sys
+
+    module = sys.modules[
+        "watch_assistant.adapters.p115_library_transport"
+    ]
+    clock = {"now": 1000.0}
+    sleeps: list[float] = []
+    monkeypatch.setattr(module.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(module.time, "sleep", lambda seconds: sleeps.append(seconds))
+    module._last_read_at = 0.0
+
+    module.throttle_read()  # 距上次调用很远 → 不 sleep
+    assert sleeps == []
+
+    clock["now"] += 0.1
+    module.throttle_read()  # 间隔 0.1s < 0.5s → sleep 补齐
+    assert len(sleeps) == 1 and sleeps[0] > 0
+
+    clock["now"] += 1.0
+    module.throttle_read()  # 间隔 1.0s > 0.5s → 不 sleep
+    assert len(sleeps) == 1

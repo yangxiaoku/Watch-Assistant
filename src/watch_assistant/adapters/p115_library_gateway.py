@@ -12,6 +12,7 @@ import math
 import time
 from collections.abc import Callable, Collection, Mapping
 from typing import Any, Protocol
+from urllib.error import HTTPError
 
 from watch_assistant.adapters.p115_library import (
     DirectoryDetail,
@@ -40,6 +41,11 @@ VIRTUAL_ROOT_PAGE_SIZE = 50
 VIRTUAL_ROOT_RESPONSE_LIMIT_DELTA = 2
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 30.0
 MAX_SCOPE_VERIFICATION_PAGES = 10_000
+# 115 风控/瞬时错误(429/5xx)的有限重试:退避后重试,预算耗尽仍失败关闭。
+# 配合进程级节流(throttle_read)降低触发账号级风控的概率。
+_GATEWAY_CALL_MAX_ATTEMPTS = 3
+_GATEWAY_CALL_RETRY_DELAY_SECONDS = 2.0
+_GATEWAY_RETRYABLE_HTTP_STATUSES = frozenset({429, 500, 502, 503, 504})
 
 
 class P115CredentialSource(Protocol):
@@ -281,69 +287,97 @@ class P115ReadOnlyDirectoryGateway:
         deadline: float,
     ) -> Mapping[str, Any]:
         transport = await self._get_transport(deadline)
+        last_error: BaseException | None = None
+        for attempt in range(_GATEWAY_CALL_MAX_ATTEMPTS):
+            try:
+                response = await self._transport_read(
+                    transport, method_name, payload, deadline
+                )
+            except asyncio.CancelledError:
+                raise
+            except P115ReadOnlyGatewayError:
+                raise
+            except P115ReadOnlyTransportUnavailable:
+                raise P115ReadOnlyGatewayError("blocked_environment") from None
+            except TimeoutError:
+                raise P115ReadOnlyGatewayError(f"{method_name}_timeout") from None
+            except HTTPError as error:
+                last_error = error
+                if (
+                    error.code not in _GATEWAY_RETRYABLE_HTTP_STATUSES
+                    or attempt + 1 >= _GATEWAY_CALL_MAX_ATTEMPTS
+                ):
+                    # 非可重试状态(如风控 405)或重试预算耗尽:失败关闭。
+                    raise P115ReadOnlyGatewayError(f"{method_name}_failed") from None
+                await asyncio.sleep(
+                    _GATEWAY_CALL_RETRY_DELAY_SECONDS * (attempt + 1)
+                )
+                continue
+            except Exception:  # noqa: BLE001 - do not expose provider error details
+                raise P115ReadOnlyGatewayError(f"{method_name}_failed") from None
+            if not isinstance(response, Mapping):
+                raise P115ReadOnlyGatewayError("malformed_response")
+            if not _response_success(response):
+                if _response_auth_failure(response):
+                    # 登录失效:通知 credential provider 降级回退,
+                    # 避免失效的 managed cookie 持续阻塞读接口。
+                    notify = getattr(self._credential_source, "notify_failure", None)
+                    if callable(notify):
+                        notify()
+                raise P115ReadOnlyGatewayError("remote_failed")
+            return response
+        raise P115ReadOnlyGatewayError(f"{method_name}_failed") from last_error
+
+    async def _transport_read(
+        self,
+        transport: P115ReadOnlyTransportProtocol,
+        method_name: str,
+        payload: Mapping[str, int | str],
+        deadline: float,
+    ) -> Mapping[str, Any]:
+        """一次 115 读尝试:app 端点优先,仅对 provider HTTP 405 或非 Mapping
+        响应回退旧接口;其余异常(网络/502/超时)由上层重试或失败关闭,避免
+        静默使用过期索引数据。"""
         remaining = self._remaining(deadline)
-        try:
-            if method_name == "fs_files":
-                # proapi 接口优先:115 迁移后旧接口索引过期(如移入的文件
-                # 在 fs_files 中不可见)。app 接口仅对 provider HTTP 405 回退
-                # 旧接口;其余异常(网络/502/超时)fail-closed,避免静默使用
-                # 过期索引数据。
-                try:
-                    response = await transport.fs_files_app(
-                        payload, timeout_seconds=remaining
-                    )
-                    if not isinstance(response, Mapping) or _is_structured_method_not_allowed(response):
-                        # app 端点返回非 Mapping(如空列表)或结构化 405 时回退旧接口;
-                        # 否则非 Mapping 会被 malformed_response 拒绝,结构化 405 会被
-                        # _response_success 误判为成功,再退化为含义不明的 pagination_unverified。
-                        response = await transport.fs_files(
-                            payload, timeout_seconds=remaining
-                        )
-                except Exception as error:
-                    if not _is_method_not_allowed(error):
-                        raise
+        if method_name == "fs_files":
+            try:
+                response = await transport.fs_files_app(
+                    payload, timeout_seconds=remaining
+                )
+                if not isinstance(response, Mapping) or _is_structured_method_not_allowed(response):
+                    # app 端点返回非 Mapping(如空列表)或结构化 405 时回退旧接口;
+                    # 否则非 Mapping 会被 malformed_response 拒绝,结构化 405 会被
+                    # _response_success 误判为成功,再退化为含义不明的 pagination_unverified。
                     response = await transport.fs_files(
                         payload, timeout_seconds=remaining
                     )
-            elif method_name == "fs_info":
-                try:
-                    response = await transport.fs_info_app(
-                        payload, timeout_seconds=remaining
-                    )
-                    if not isinstance(response, Mapping) or _is_structured_method_not_allowed(response):
-                        # fs_info_app 对文件(fid)请求返回空列表(实测),必须回退旧接口;
-                        # 否则文件详情永远 malformed_response,推送任务的可用性观察
-                        # 全部失败为 availability_observer_unavailable。
-                        response = await transport.fs_info(
-                            payload, timeout_seconds=remaining
-                        )
-                except Exception as error:
-                    if not _is_method_not_allowed(error):
-                        raise
+            except Exception as error:
+                if not _is_method_not_allowed(error):
+                    raise
+                response = await transport.fs_files(
+                    payload, timeout_seconds=remaining
+                )
+            return response
+        if method_name == "fs_info":
+            try:
+                response = await transport.fs_info_app(
+                    payload, timeout_seconds=remaining
+                )
+                if not isinstance(response, Mapping) or _is_structured_method_not_allowed(response):
+                    # fs_info_app 对文件(fid)请求返回空列表(实测),必须回退旧接口;
+                    # 否则文件详情永远 malformed_response,推送任务的可用性观察
+                    # 全部失败为 availability_observer_unavailable。
                     response = await transport.fs_info(
                         payload, timeout_seconds=remaining
                     )
-            else:
-                raise P115ReadOnlyTransportUnavailable("blocked_environment")
-        except asyncio.CancelledError:
-            raise
-        except P115ReadOnlyTransportUnavailable:
-            raise P115ReadOnlyGatewayError("blocked_environment") from None
-        except TimeoutError:
-            raise P115ReadOnlyGatewayError(f"{method_name}_timeout") from None
-        except Exception:  # noqa: BLE001 - do not expose provider error details
-            raise P115ReadOnlyGatewayError(f"{method_name}_failed") from None
-        if not isinstance(response, Mapping):
-            raise P115ReadOnlyGatewayError("malformed_response")
-        if not _response_success(response):
-            if _response_auth_failure(response):
-                # 登录失效:通知 credential provider 降级回退,
-                # 避免失效的 managed cookie 持续阻塞读接口。
-                notify = getattr(self._credential_source, "notify_failure", None)
-                if callable(notify):
-                    notify()
-            raise P115ReadOnlyGatewayError("remote_failed")
-        return response
+            except Exception as error:
+                if not _is_method_not_allowed(error):
+                    raise
+                response = await transport.fs_info(
+                    payload, timeout_seconds=remaining
+                )
+            return response
+        raise P115ReadOnlyTransportUnavailable("blocked_environment")
 
     async def _get_transport(self, deadline: float) -> P115ReadOnlyTransportProtocol:
         if self._transport is not None:

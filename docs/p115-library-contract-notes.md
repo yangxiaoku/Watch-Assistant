@@ -173,6 +173,10 @@ transport 仅在实际调用前校验固定版 `p115client` 并创建客户端�
   DTO 的 `repr` 和边界错误只包含稳定机器码。
 - 每次调用把单调时钟的剩余时间传至固定版 documented request hook，并固定
   `retries=False`。无法建立该边界时返回 `blocked_environment`，而不降级为无超时调用。
+- 进程级请求节流（`READ_THROTTLE_SECONDS=0.5`，作用于真实 HTTP 请求的 request hook
+  内）：实测持续密集请求会触发 115 账号级风控（/files、/info 接口 405/429，持续
+  数分钟到数十分钟）。429/5xx 由 gateway/adapter 按 2s/4s 递增最多重试 3 次，
+  预算耗尽失败关闭；405 仍只用于 app→legacy 回退，两侧都 405 时失败关闭。
 - `fs_info` 仅用于将已授权的文件或目录详情归一化为本地 DTO；没有下载、移动、重命名、
   mkdir、删除、播放或 STRM 方法。
 - 固定版客户端的详情请求按真实只读验收使用文件 `fid` 与目录 `cid`；不使用展示层的

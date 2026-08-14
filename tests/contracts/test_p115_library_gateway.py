@@ -899,6 +899,95 @@ async def test_gateway_falls_back_to_legacy_read_method_only_on_405():
     ]
 
 
+class _Flaky429Transport:
+    """前 N 次调用抛 HTTPError 429(风控/限流),之后正常。"""
+
+    def __init__(self, page, *, failures=1):
+        self._page = page
+        self._failures = failures
+        self.calls = []
+
+    async def fs_files_app(self, payload, *, timeout_seconds):
+        del payload, timeout_seconds
+        self.calls.append("fs_files_app")
+        if self._failures > 0:
+            self._failures -= 1
+            from urllib.error import HTTPError
+
+            raise HTTPError(
+                "https://proapi.115.com/android/ufile/files",
+                429,
+                "Too Many Requests",
+                None,
+                None,
+            )
+        return self._page
+
+    async def fs_files(self, payload, *, timeout_seconds):
+        del payload, timeout_seconds
+        self.calls.append("fs_files")
+        return self._page
+
+    async def fs_info_app(self, payload, *, timeout_seconds):
+        del payload, timeout_seconds
+        self.calls.append("fs_info_app")
+        return {
+            "state": True,
+            "count": 0,
+            "folder_count": 0,
+            "play_long": 0,
+            "size": "0B",
+            "file_name": "classified",
+            "paths": [],
+        }
+
+    async def fs_info(self, payload, *, timeout_seconds):
+        del payload, timeout_seconds
+        self.calls.append("fs_info")
+        return {
+            "state": True,
+            "count": 0,
+            "folder_count": 0,
+            "play_long": 0,
+            "size": "0B",
+            "file_name": "classified",
+            "paths": [],
+        }
+
+
+@pytest.mark.asyncio
+async def test_gateway_retries_transient_429_without_changing_result():
+    """429(风控/限流)退避重试;恢复后正常返回,不因瞬时限流失败。"""
+    transport = _Flaky429Transport(_page([_file()]), failures=1)
+    gateway = P115ReadOnlyDirectoryGateway(
+        _CredentialSource(),
+        lambda _credential: transport,
+        authorized_directory_ids=("7",),
+    )
+
+    result = await gateway.list_directory("7")
+
+    assert result.items[0].file_id == "101"
+    # 列表(429 重试一次) + 判型。
+    assert transport.calls == ["fs_files_app", "fs_files_app", "fs_info_app"]
+
+
+@pytest.mark.asyncio
+async def test_gateway_gives_up_after_retry_budget_on_persistent_429():
+    """持续 429 超过重试预算后失败关闭,不无限重试。"""
+    transport = _Flaky429Transport(_page([_file()]), failures=10)
+    gateway = P115ReadOnlyDirectoryGateway(
+        _CredentialSource(),
+        lambda _credential: transport,
+        authorized_directory_ids=("7",),
+    )
+
+    with pytest.raises(P115ReadOnlyGatewayError, match="fs_files_failed"):
+        await gateway.list_directory("7")
+
+    assert len(transport.calls) == 3
+
+
 @pytest.mark.asyncio
 async def test_fs_info_app_empty_list_falls_back_to_legacy_detail():
     """fs_info_app 对文件(fid)请求实测返回空列表,必须回退 legacy 详情。"""

@@ -11,6 +11,7 @@ from importlib.metadata import version
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
+from watch_assistant.adapters.p115_library_transport import throttle_read
 from watch_assistant.adapters.p115_library_gateway import (
     P115ReadOnlyDirectoryGateway,
     P115ReadOnlyGatewayError,
@@ -32,6 +33,11 @@ MAX_SHARE_ITEMS = 1000
 # 见 AGENTS.md「_p115client_timeout_executor 对 errno=990009 使用 3 秒重试」)。
 _P115_BUSY_OPERATION_ERRNO = 990009
 _P115_BUSY_RETRY_DELAY_SECONDS = 3.0
+# 风控/瞬时错误(429/5xx)的有限重试:与只读 gateway 一致,避免密集调用触发
+# 账号级风控后直接失败;重试预算耗尽仍失败关闭。
+_P115_CALL_MAX_ATTEMPTS = 3
+_P115_CALL_RETRY_DELAY_SECONDS = 2.0
+_P115_RETRYABLE_HTTP_STATUSES = frozenset({429, 500, 502, 503, 504})
 # 990009 busy 重试仅适用于幂等提交:磁力按 infohash 去重,重试不会重复
 # 落库。share_receive/share_snap 等非幂等或只读调用不得盲目重发。
 _IDEMPOTENT_BUSY_RETRY_METHODS = frozenset({"clouddownload_task_add_url"})
@@ -73,6 +79,12 @@ _AUTH_PHRASES = (
     "授权已过期",
     "已解除授权",
 )
+
+
+def _is_retryable_http_error(error: BaseException) -> bool:
+    """urllib HTTPError 的 429/5xx(风控或瞬时故障)可退避重试。"""
+    code = getattr(error, "code", None)
+    return code in _P115_RETRYABLE_HTTP_STATUSES
 
 
 def _has_busy_errno(error: BaseException) -> bool:
@@ -607,11 +619,12 @@ class P115Adapter:
         def request_with_timeout(*, async_: bool = False, **request_kwargs: Any) -> Any:
             if async_ or urllib3_request is None:
                 raise P115UnavailableError
+            throttle_read()
             request_kwargs["timeout"] = timeout
             request_kwargs["retries"] = False
             return urllib3_request(async_=False, **request_kwargs)
 
-        for attempt in range(2):
+        for attempt in range(_P115_CALL_MAX_ATTEMPTS):
             try:
                 return await asyncio.wait_for(
                     asyncio.to_thread(
@@ -624,6 +637,12 @@ class P115Adapter:
                 # 副作用;由调用方标记不确定,交给只读核对兜底。
                 raise
             except Exception as error:
+                if _is_retryable_http_error(error) and attempt + 1 < _P115_CALL_MAX_ATTEMPTS:
+                    # 429/5xx(风控或瞬时故障):退避后重试。
+                    await asyncio.sleep(
+                        _P115_CALL_RETRY_DELAY_SECONDS * (attempt + 1)
+                    )
+                    continue
                 if attempt or not idempotent or not _has_busy_errno(error):
                     raise
                 await asyncio.sleep(_P115_BUSY_RETRY_DELAY_SECONDS)
