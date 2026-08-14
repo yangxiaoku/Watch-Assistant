@@ -205,6 +205,22 @@ class WebhookEndpoint(Base):
     failure_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
 
+class NotifyChannel(Base):
+    """External push channel config (e.g. Feishu bot); webhook URL is encrypted."""
+
+    __tablename__ = "notify_channels"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    name: Mapped[str] = mapped_column(String(64))
+    kind: Mapped[str] = mapped_column(String(32))  # "feishu"
+    webhook_url_encrypted: Mapped[str] = mapped_column(Text)
+    webhook_url_prefix: Mapped[str] = mapped_column(String(64))
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1")
+    revision: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+
 class WebhookDelivery(Base):
     """Durable per-endpoint delivery state with a stable idempotency key."""
 

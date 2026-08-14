@@ -1416,6 +1416,14 @@ def _unique_scan_run_revision(connection: Connection) -> None:
     )
 
 
+def _create_notify_channels_table(connection: Connection) -> None:
+    """Persist external push channel configs (e.g. Feishu bot)."""
+
+    from watch_assistant.models import NotifyChannel
+
+    NotifyChannel.__table__.create(connection, checkfirst=True)
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration("001_application_settings_columns", _add_application_settings_columns),
     Migration("002_library_index_tables", _create_library_index_tables),
@@ -1509,6 +1517,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     ),
     Migration("076_p115_checkin_settings", _add_p115_checkin_settings_column),
     Migration("077_named_locks", _create_named_locks_table),
+    Migration("078_notify_channels", _create_notify_channels_table),
 )
 
 

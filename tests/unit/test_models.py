@@ -32,6 +32,12 @@ from watch_assistant.schemas import (
 )
 
 
+def test_notify_channel_table_exists():
+    from watch_assistant.models import NotifyChannel
+
+    assert NotifyChannel.__tablename__ == "notify_channels"
+
+
 def test_task_states_are_explicit():
     assert {state.value for state in TaskState} == {
         "queued",
