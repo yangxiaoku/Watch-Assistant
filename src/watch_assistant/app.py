@@ -2168,6 +2168,7 @@ def create_app(
         @application.get("/library", include_in_schema=False)
         @application.get("/workflows", include_in_schema=False)
         @application.get("/notifications", include_in_schema=False)
+        @application.get("/subscriptions", include_in_schema=False)
         @application.get("/logs", include_in_schema=False)
         async def frontend_browse_route() -> FileResponse:
             return FileResponse(index_path)

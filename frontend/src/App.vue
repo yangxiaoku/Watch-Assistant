@@ -56,7 +56,7 @@ watch(isOnline, (online, wasOnline) => {
   if (wasOnline === undefined) return;
   if (!online) {
     feedback.error("已离线，仅显示最近一次只读摘要");
-  } else if (offlineDataAt.value) {
+  } else {
     feedback.success("网络已恢复");
   }
 });
@@ -1630,6 +1630,7 @@ onBeforeUnmount(() => {
        </section>
     </template>
       <TaskDrawer :api="api" :tasks="tasks" :open="drawerOpen" @close="drawerOpen = false" @navigate="navigateFromTaskDrawer" @updated="updateTask" @loaded="replaceTasks" />
+      <ToastStack />
     </AppShell>
   </main>
 </template>
