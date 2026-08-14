@@ -26,28 +26,21 @@ class _CredentialSource:
 
 
 class _FsFilesClient:
-    """双索引 mock:show_dir=1 弹文件夹索引,show_dir=0 弹文件索引,fs_info 判型。
+    """单索引 mock:show_dir=1 列表 + fs_info 判型。
 
-    真实 115(2026-08-14 实测):legacy 文件夹索引记录没有 fid 且 fc 恒 0,必须用
-    fs_info 的 folder_count>0 判型;文件索引记录带 fid,直接按文件解析。
+    真实 115(2026-08-14 实测):目录列表记录对文件与目录完全同形(fc 恒 0 或
+    "0"、无 fid/is_dir),只能以 fs_info 判型:count>0 或 folder_count>0 即目录
+    (纯文件目录的 folder_count=0,count 是最稳定的目录信号)。
     """
 
-    def __init__(
-        self, responses, *, file_indexes=(), directories=(), content_files=()
-    ) -> None:
+    def __init__(self, responses, *, directories=()) -> None:
         self._responses = list(responses)
-        self._file_indexes = list(file_indexes)
         self._directories = set(directories)
-        self._content_files = set(content_files)
         self.calls = []
         self.detail_calls = []
 
     def fs_files(self, payload):
         self.calls.append(dict(payload))
-        if payload.get("show_dir") == 0:
-            if not self._file_indexes:
-                raise AssertionError("unexpected file-index request")
-            return self._file_indexes.pop(0)
         response = self._responses.pop(0)
         if isinstance(response, BaseException):
             raise response
@@ -57,12 +50,12 @@ class _FsFilesClient:
         self.detail_calls.append(dict(payload))
         value = str(payload.get("cid") or payload.get("fid") or "")
         is_directory = value in self._directories
-        has_content = value in self._content_files
         return {
             "state": True,
+            "count": "2" if is_directory else 0,
             "folder_count": 1 if is_directory else 0,
-            "play_long": 9947 if has_content else 0,
-            "size": "1.32GB" if has_content else "0B",
+            "play_long": 0,
+            "size": "0B",
             "file_name": "classified-entry",
             "paths": [],
         }
@@ -72,7 +65,7 @@ class _FsFilesClient:
 
 
 def _file(fid="101", parent="7", name="secret-file-name.mkv"):
-    """app 文件夹索引形态:文件与目录同形(fid+fc=\"0\"),需 fs_info 判型。"""
+    """app 目录列表形态:文件与目录同形(fid+fc=\"0\"),需 fs_info 判型。"""
     return {
         "fc": "0",
         "fid": fid,
@@ -83,22 +76,8 @@ def _file(fid="101", parent="7", name="secret-file-name.mkv"):
     }
 
 
-def _file_index_record(fid="101", cid="101", name="secret-file-name.mkv"):
-    """文件索引形态:带 fid/play_long;webapi id 在 legacy 记录的 cid、app 记录的
-    pid(父级即被列出的目录,由 gateway 注入)。"""
-    return {
-        "fc": 1,
-        "fid": fid,
-        "cid": cid,
-        "n": name,
-        "s": "123",
-        "play_long": 9947,
-        "pick_code": "SYNTHETIC_PICKCODE_SECRET",
-    }
-
-
 def _folder_entry(cid="8", parent="7", name="secret-directory"):
-    """legacy 文件夹索引形态:文件与目录同形(fc=0、无 fid),需 fs_info 判型。"""
+    """legacy 目录列表形态:文件与目录同形(fc=0、无 fid),需 fs_info 判型。"""
     return {
         "fc": 0,
         "cid": cid,
@@ -125,16 +104,6 @@ def _folder_payload(cid, *, limit=VERIFIED_PAGE_SIZE, offset=0):
         "offset": offset,
         "record_open_time": 0,
         "show_dir": 1,
-    }
-
-
-def _file_index_payload(cid, *, limit=VERIFIED_PAGE_SIZE, offset=0):
-    return {
-        "cid": cid,
-        "limit": limit,
-        "offset": offset,
-        "record_open_time": 0,
-        "show_dir": 0,
     }
 
 
@@ -200,9 +169,7 @@ def _gateway(
 
 @pytest.mark.asyncio
 async def test_verified_fs_files_page_maps_pickcode_without_path_or_repr_leaks():
-    client = _FsFilesClient(
-        (_page([_file()]),), file_indexes=(_page([], count=0),)
-    )
+    client = _FsFilesClient((_page([_file()]),))
     gateway, source, factory_calls = _gateway(client)
 
     result = await gateway.list_directory("7")
@@ -212,10 +179,7 @@ async def test_verified_fs_files_page_maps_pickcode_without_path_or_repr_leaks()
     assert result.has_more is False
     assert result.items[0].pickcode == "SYNTHETIC_PICKCODE_SECRET"
     assert result.items[0].path is None
-    assert client.calls == [
-        _folder_payload("7"),
-        _file_index_payload("7"),
-    ]
+    assert client.calls == [_folder_payload("7")]
     assert client.detail_calls == [{"fid": "101"}]
     assert source.calls == 1
     assert len(factory_calls) == 1
@@ -227,46 +191,60 @@ async def test_verified_fs_files_page_maps_pickcode_without_path_or_repr_leaks()
 
 
 @pytest.mark.asyncio
-async def test_batch_page_size_reads_full_page_in_one_call():
-    records = [_file(fid=str(101 + i), name=f"file-{i}.mkv") for i in range(3)]
+async def test_listed_file_and_directory_are_classified_via_fs_info_count():
     client = _FsFilesClient(
-        (_page(records, offset=0, count=3, limit=VERIFIED_BATCH_PAGE_SIZE),),
-        file_indexes=(_page([], count=0, limit=VERIFIED_BATCH_PAGE_SIZE),),
+        (
+            _page(
+                [
+                    _file(fid="101", name="pushed.mkv"),
+                    _folder_entry(cid="8", name="subdir"),
+                ],
+                count=2,
+                limit=VERIFIED_BATCH_PAGE_SIZE,
+            ),
+        ),
+        directories=("8",),
     )
     gateway, _, _ = _gateway(client)
 
     result = await gateway.list_directory("7", page_size=VERIFIED_BATCH_PAGE_SIZE)
 
-    assert client.calls == [
-        _folder_payload("7", limit=VERIFIED_BATCH_PAGE_SIZE),
-        _file_index_payload("7", limit=VERIFIED_BATCH_PAGE_SIZE),
-    ]
+    assert client.calls == [_folder_payload("7", limit=VERIFIED_BATCH_PAGE_SIZE)]
+    assert client.detail_calls == [{"fid": "101"}, {"cid": "8"}]
+    assert result.items[0].is_directory is False
+    assert result.items[0].file_id == "101"
+    assert result.items[0].parent_id == "7"
+    assert result.items[1].is_directory is True
+    assert result.items[1].directory_id == "8"
+    assert result.items[1].parent_id == "7"
+    assert result.terminal is True
+    assert result.total == 2
+
+
+@pytest.mark.asyncio
+async def test_batch_page_size_reads_full_page_in_one_call():
+    records = [_file(fid=str(101 + i), name=f"file-{i}.mkv") for i in range(3)]
+    client = _FsFilesClient(
+        (_page(records, offset=0, count=3, limit=VERIFIED_BATCH_PAGE_SIZE),)
+    )
+    gateway, _, _ = _gateway(client)
+
+    result = await gateway.list_directory("7", page_size=VERIFIED_BATCH_PAGE_SIZE)
+
+    assert client.calls == [_folder_payload("7", limit=VERIFIED_BATCH_PAGE_SIZE)]
     assert len(result.items) == 3
     assert result.terminal is True
     assert result.has_more is False
     assert result.next_page is None
-    assert result.total == 3
 
 
 @pytest.mark.asyncio
 async def test_batch_page_size_paginates_with_batch_offsets():
     client = _FsFilesClient(
-        (_page([_folder_entry(cid="8")], count=1, limit=VERIFIED_BATCH_PAGE_SIZE),),
-        file_indexes=(
-            _page(
-                [_file_index_record(fid="201", cid="201")],
-                offset=0,
-                count=51,
-                limit=VERIFIED_BATCH_PAGE_SIZE,
-            ),
-            _page(
-                [_file_index_record(fid="202", cid="202")],
-                offset=50,
-                count=51,
-                limit=VERIFIED_BATCH_PAGE_SIZE,
-            ),
-        ),
-        directories=("8",),
+        (
+            _page([_file(fid="201")], offset=0, count=51, limit=VERIFIED_BATCH_PAGE_SIZE),
+            _page([_file(fid="202")], offset=50, count=51, limit=VERIFIED_BATCH_PAGE_SIZE),
+        )
     )
     gateway, _, _ = _gateway(client)
 
@@ -277,10 +255,7 @@ async def test_batch_page_size_paginates_with_batch_offsets():
     assert page1.next_page == 2
     assert page2.terminal is True
     assert page2.has_more is False
-    # 页 1 的文件夹索引(1 条) + 文件索引 + 页 2 的文件索引(文件夹索引已耗尽跳过)。
-    assert [call["offset"] for call in client.calls] == [0, 0, 50]
-    assert page1.total == 52
-    assert page2.total == 52
+    assert [call["offset"] for call in client.calls] == [0, 50]
 
 
 @pytest.mark.asyncio
@@ -288,9 +263,7 @@ async def test_verified_app_listing_compact_pc_maps_to_pickcode():
     record = _file()
     record.pop("pick_code")
     record["pc"] = "SYNTHETIC_PICKCODE_SECRET"
-    client = _FsFilesClient(
-        (_page([record]),), file_indexes=(_page([], count=0),)
-    )
+    client = _FsFilesClient((_page([record]),))
     gateway, _, _ = _gateway(client)
 
     result = await gateway.list_directory("7")
@@ -302,16 +275,10 @@ async def test_verified_app_listing_compact_pc_maps_to_pickcode():
 @pytest.mark.asyncio
 async def test_consecutive_offset_count_pages_complete_only_at_verified_terminal_page():
     client = _FsFilesClient(
-        (_page([_folder_entry(cid="8")], count=1),),
-        file_indexes=(
-            _page([_file_index_record(fid="101", cid="101", name="one.mkv")], count=2),
-            _page(
-                [_file_index_record(fid="102", cid="102", name="two.mkv")],
-                offset=1,
-                count=2,
-            ),
-        ),
-        directories=("8",),
+        (
+            _page([_file("101", name="one.mkv")], offset=0, count=2),
+            _page([_file("102", name="two.mkv")], offset=1, count=2),
+        )
     )
     gateway, _, _ = _gateway(client)
 
@@ -320,12 +287,7 @@ async def test_consecutive_offset_count_pages_complete_only_at_verified_terminal
     assert scan.state is ScanState.COMPLETE
     assert scan.scan_complete is True
     assert scan.pages_read == 2
-    assert [call["offset"] for call in client.calls] == [0, 0, 1]
-    assert {entry.file_id or entry.directory_id for entry in scan.items} == {
-        "8",
-        "101",
-        "102",
-    }
+    assert [call["offset"] for call in client.calls] == [0, 1]
 
 
 @pytest.mark.asyncio
@@ -335,7 +297,6 @@ async def test_observed_child_directory_can_be_scanned_without_expanding_scope()
             _page([_folder_entry()], count=1),
             _page([_file("102", parent="8")], count=1),
         ),
-        file_indexes=(_page([], count=0), _page([], count=0)),
         directories=("8",),
     )
     gateway, _, _ = _gateway(client)
@@ -344,17 +305,14 @@ async def test_observed_child_directory_can_be_scanned_without_expanding_scope()
     child = await gateway.list_directory("8")
 
     assert child.items[0].file_id == "102"
-    # 目录 7:文件夹索引 + 文件索引 + fs_info 判型;目录 8:文件夹索引 + 文件索引。
-    assert [call["cid"] for call in client.calls] == ["7", "7", "8", "8"]
+    assert [call["cid"] for call in client.calls] == ["7", "8"]
     assert client.detail_calls == [{"cid": "8"}, {"fid": "102"}]
 
 
 @pytest.mark.asyncio
 async def test_mismatched_parent_does_not_expand_observed_directory_scope():
     client = _FsFilesClient(
-        (_page([_folder_entry(cid="8", parent="99")]),),
-        file_indexes=(_page([], count=0),),
-        directories=("8",),
+        (_page([_folder_entry(cid="8", parent="99")]),), directories=("8",)
     )
     gateway, source, factory_calls = _gateway(client)
 
@@ -363,20 +321,14 @@ async def test_mismatched_parent_does_not_expand_observed_directory_scope():
     with pytest.raises(P115ReadOnlyGatewayError, match="scope_unverified"):
         await gateway.list_directory("8")
 
-    assert client.calls == [
-        _folder_payload("7"),
-        _file_index_payload("7"),
-    ]
+    assert client.calls == [_folder_payload("7")]
     assert source.calls == 1
     assert len(factory_calls) == 1
 
 
 @pytest.mark.asyncio
 async def test_restored_child_allowlist_is_usable_by_a_new_gateway_instance():
-    client = _FsFilesClient(
-        (_page([_file("102", parent="8")]),),
-        file_indexes=(_page([], count=0),),
-    )
+    client = _FsFilesClient((_page([_file("102", parent="8")]),))
     gateway, source, factory_calls = _gateway(
         client, authorized_directory_ids=("7", "8")
     )
@@ -439,6 +391,7 @@ class _DetailClient(_FsFilesClient):
             return self._detail_response
         return {
             "state": True,
+            "count": 1 if value in self._directories else 0,
             "folder_count": 1 if value in self._directories else 0,
             "file_name": "classified",
             "paths": [],
@@ -459,7 +412,6 @@ async def test_fs_info_maps_verified_file_detail_without_path_or_repr_leaks():
             "pick_code": "SYNTHETIC_PICKCODE_SECRET",
         },
         pages=(_page([_file("101")]),),
-        file_indexes=(_page([], count=0),),
     )
     gateway, _, _ = _gateway(client)
 
@@ -489,7 +441,6 @@ async def test_fs_info_uses_previously_observed_identity_when_response_omits_it(
             "ptime": "provider-local-time",
         },
         pages=(_page([_file("101")]),),
-        file_indexes=(_page([], count=0),),
     )
     gateway, _, _ = _gateway(client)
 
@@ -513,7 +464,6 @@ async def test_fs_info_rejects_conflicting_identity_after_listing():
             "file_name": "secret-file-name.mkv",
         },
         pages=(_page([_file("101")]),),
-        file_indexes=(_page([], count=0),),
     )
     gateway, _, _ = _gateway(client)
 
@@ -528,6 +478,7 @@ async def test_fs_info_rejects_type_or_identity_mismatch():
         {
             "state": True,
             "file_category": "0",
+            "count": "3",
             "folder_count": 1,
             "cid": "101",
             "file_name": "directory-name",
@@ -546,6 +497,7 @@ async def test_fs_info_uses_cid_for_an_observed_directory_detail():
         {
             "state": True,
             "file_category": "0",
+            "count": "3",
             "folder_count": 3,
             "cid": "8",
             "pid": "7",
@@ -553,7 +505,6 @@ async def test_fs_info_uses_cid_for_an_observed_directory_detail():
             "size": "0",
         },
         pages=(_page([_folder_entry("8")]),),
-        file_indexes=(_page([], count=0),),
         directories=("8",),
     )
     gateway, _, _ = _gateway(client)
@@ -565,92 +516,6 @@ async def test_fs_info_uses_cid_for_an_observed_directory_detail():
     assert client.detail_calls == [{"cid": "8"}, {"cid": "8"}]
     assert result.directory_id == "8"
     assert result.parent_id == "7"
-
-
-@pytest.mark.asyncio
-async def test_legacy_index_merge_dedupes_files_and_classifies_directories():
-    """legacy 模式:文件夹索引(目录 + 未入文件索引的推送文件)与文件索引合并。
-
-    推送文件同时出现在两个索引时按 cid 去重,避免同一文件双条目。
-    """
-    client = _FsFilesClient(
-        (
-            _page(
-                [
-                    _folder_entry(cid="8", parent="7", name="subdir"),
-                    _folder_entry(cid="101", parent="7", name="pushed.mkv"),
-                ],
-                count=2,
-                limit=VERIFIED_BATCH_PAGE_SIZE,
-            ),
-        ),
-        file_indexes=(
-            _page(
-                [
-                    _file_index_record(fid="101", cid="101", name="pushed.mkv"),
-                    _file_index_record(fid="102", cid="102", name="other.mkv"),
-                ],
-                count=2,
-                limit=VERIFIED_BATCH_PAGE_SIZE,
-            ),
-        ),
-        directories=("8",),
-        content_files=("101",),
-    )
-    gateway, _, _ = _gateway(client)
-
-    result = await gateway.list_directory(
-        "7", page_size=VERIFIED_BATCH_PAGE_SIZE
-    )
-
-    assert client.calls == [
-        _folder_payload("7", limit=VERIFIED_BATCH_PAGE_SIZE),
-        _file_index_payload("7", limit=VERIFIED_BATCH_PAGE_SIZE),
-    ]
-    assert client.detail_calls == [{"cid": "8"}, {"cid": "101"}]
-    entries = {entry.file_id or entry.directory_id: entry for entry in result.items}
-    assert set(entries) == {"8", "101", "102"}
-    assert entries["8"].is_directory is True
-    assert entries["8"].parent_id == "7"
-    assert entries["101"].is_directory is False
-    assert entries["101"].parent_id == "7"
-    assert entries["102"].is_directory is False
-    assert entries["102"].parent_id == "7"
-    # 文件夹索引在首页全部返回并去重(101 已进入文件索引):
-    # total = 文件夹 2 + 文件 2 - 去重 1 = 3,本页即终止。
-    assert result.total == 3
-    assert result.terminal is True
-    assert result.has_more is False
-    assert result.next_page is None
-
-
-@pytest.mark.asyncio
-async def test_legacy_listing_skips_exhausted_indexes_and_terminates():
-    """索引越界请求会被 115 重置 offset 并返回整页,合并页必须跳过已耗尽索引。"""
-    client = _FsFilesClient(
-        (_page([_folder_entry(cid="8")], count=1),),
-        file_indexes=(
-            _page([_file_index_record(fid="201", cid="201")], offset=0, count=2),
-            _page([_file_index_record(fid="202", cid="202")], offset=1, count=2),
-        ),
-        directories=("8",),
-    )
-    gateway, _, _ = _gateway(client)
-
-    page1 = await gateway.list_directory("7", page=1)
-    page2 = await gateway.list_directory("7", page=2)
-    page3 = await gateway.list_directory("7", page=3)
-
-    assert {entry.file_id or entry.directory_id for entry in page1.items} == {"8", "201"}
-    assert [entry.file_id for entry in page2.items] == ["202"]
-    assert page3.items == ()
-    assert page1.terminal is False
-    assert page2.terminal is True
-    assert page2.has_more is False
-    assert page3.terminal is True
-    assert page3.has_more is False
-    # 页 3 不再请求任何索引(文件夹索引 count=1、文件索引 count=2 都已耗尽)。
-    assert [call["offset"] for call in client.calls] == [0, 0, 1]
 
 
 @pytest.mark.asyncio
@@ -724,11 +589,9 @@ async def test_file_detail_paths_parent_outside_authorized_scope_fails_closed():
 
 @pytest.mark.asyncio
 async def test_gateway_passes_only_the_shared_deadline_remainder_to_transport():
-    client = _FsFilesClient(
-        (_page([]),), file_indexes=(_page([], count=0),)
-    )
+    client = _FsFilesClient((_page([]),))
     source = _CredentialSource()
-    clock_values = iter((100.0, 101.0, 102.0, 103.0, 104.0))
+    clock_values = iter((100.0, 101.0, 102.0, 103.0))
 
     class Transport:
         def __init__(self):
@@ -759,8 +622,7 @@ async def test_gateway_passes_only_the_shared_deadline_remainder_to_transport():
 
     await gateway.list_directory("7")
 
-    # 文件夹索引与文件索引各一次调用,共享同一 deadline 的剩余时间递减。
-    assert transport.timeouts == [2.0, 1.0]
+    assert transport.timeouts == [2.0]
 
 
 def test_authorized_directory_set_must_be_nonempty_stable_nonroot_ids():
@@ -786,7 +648,6 @@ async def test_virtual_root_can_list_children_only_when_explicitly_enabled():
                 limit=VIRTUAL_ROOT_PAGE_SIZE - 2,
             ),
         ),
-        file_indexes=(_page([], count=0, limit=VIRTUAL_ROOT_PAGE_SIZE),),
         directories=("8", "9"),
     )
     gateway, _, _ = _gateway(
@@ -800,9 +661,6 @@ async def test_virtual_root_can_list_children_only_when_explicitly_enabled():
     assert client.calls[0]["cid"] == "0"
     assert client.calls[0]["limit"] == VIRTUAL_ROOT_PAGE_SIZE
     assert client.calls[0]["offset"] == 0
-    assert client.calls[1] == _file_index_payload(
-        "0", limit=VIRTUAL_ROOT_PAGE_SIZE
-    )
     assert len(result.items) == 2
     assert result.items[0].directory_id == "8"
     assert result.items[0].parent_id == "0"
@@ -843,9 +701,7 @@ async def test_explicit_error_codes_fail_closed(field, value):
 async def test_explicit_success_codes_follow_their_own_whitelists(field, value):
     response = _page([])
     response[field] = value
-    gateway, _, _ = _gateway(
-        _FsFilesClient((response,), file_indexes=(_page([], count=0),))
-    )
+    gateway, _, _ = _gateway(_FsFilesClient((response,)))
 
     result = await gateway.list_directory("7")
 
@@ -885,7 +741,6 @@ class _AppFirstTransport:
         self._app_info_error = app_info_error
         self._app_info_response = app_info_response
         self._files_page = _page([_file()])
-        self._file_index_page = _page([], count=0)
         self._detail = {
             "state": True,
             "file_category": "1",
@@ -895,18 +750,15 @@ class _AppFirstTransport:
             "file_name": "secret-file-name.mkv",
         }
 
-    def _respond(self, payload):
-        return self._file_index_page if payload.get("show_dir") == 0 else self._files_page
-
     async def fs_files_app(self, payload, *, timeout_seconds):
         self.calls.append("fs_files_app")
         if self._app_files_error is not None:
             raise self._app_files_error
-        return self._respond(payload)
+        return self._files_page
 
     async def fs_files(self, payload, *, timeout_seconds):
         self.calls.append("fs_files")
-        return self._respond(payload)
+        return self._files_page
 
     async def fs_info_app(self, payload, *, timeout_seconds):
         self.calls.append("fs_info_app")
@@ -936,13 +788,8 @@ async def test_gateway_prefers_app_read_methods_when_available():
 
     assert result.items[0].file_id == "101"
     assert detail.file_id == "101"
-    # 文件夹索引 → 判型 → 文件索引 → 详情。
-    assert transport.calls == [
-        "fs_files_app",
-        "fs_info_app",
-        "fs_files_app",
-        "fs_info_app",
-    ]
+    # 列表 → 判型 → 详情。
+    assert transport.calls == ["fs_files_app", "fs_info_app", "fs_info_app"]
 
 
 @pytest.mark.asyncio
@@ -963,14 +810,12 @@ async def test_gateway_falls_back_to_legacy_read_method_only_on_405():
 
     assert result.items[0].file_id == "101"
     assert detail.file_id == "101"
-    # 文件夹索引(405 回退)→ 判型(405 回退)→ 文件索引(405 回退)→ 详情(405 回退)。
+    # 列表(405 回退)→ 判型(405 回退)→ 详情(405 回退)。
     assert transport.calls == [
         "fs_files_app",
         "fs_files",
         "fs_info_app",
         "fs_info",
-        "fs_files_app",
-        "fs_files",
         "fs_info_app",
         "fs_info",
     ]

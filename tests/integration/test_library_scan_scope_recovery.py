@@ -90,9 +90,9 @@ def _directory(directory_id, parent_id):
 
 def _file(file_id, parent_id):
     return {
-        "fc": 1,
+        "fc": "0",
         "fid": file_id,
-        "cid": parent_id,
+        "pid": parent_id,
         "fn": "episode.mkv",
         "s": "1",
     }
@@ -133,11 +133,7 @@ async def test_new_worker_restores_durable_child_scope_without_remote_scope_expa
     service = LibraryScanOperationService(database.session_factory)
     queued = await service.enqueue(LIBRARY_ID, idempotency_key="cross-worker")
     first_transport = _Transport(
-        [
-            _page([_directory(CHILD_ID, ROOT_ID)]),
-            _page([], count=0),
-            asyncio.CancelledError(),
-        ],
+        [_page([_directory(CHILD_ID, ROOT_ID)]), asyncio.CancelledError()],
         directories=(CHILD_ID,),
     )
     first_scopes = []
@@ -163,9 +159,7 @@ async def test_new_worker_restores_durable_child_scope_without_remote_scope_expa
         assert cursor["visited"] == [ROOT_ID, CHILD_ID]
         assert cursor["pending"][0]["directory_id"] == CHILD_ID
 
-    second_transport = _Transport(
-        [_page([], count=0), _page([_file("8100", CHILD_ID)])]
-    )
+    second_transport = _Transport([_page([_file("8100", CHILD_ID)])])
     second_scopes = []
 
     def second_factory(root_directory_id, authorized_directory_ids):
@@ -185,7 +179,7 @@ async def test_new_worker_restores_durable_child_scope_without_remote_scope_expa
     assert summary.complete is True
     assert first_scopes == [(ROOT_ID, frozenset({ROOT_ID}))]
     assert second_scopes == [(ROOT_ID, frozenset({ROOT_ID, CHILD_ID}))]
-    assert [call["cid"] for call in second_transport.calls] == [CHILD_ID, CHILD_ID]
+    assert [call["cid"] for call in second_transport.calls] == [CHILD_ID]
     await database.engine.dispose()
 
 
@@ -242,14 +236,14 @@ async def test_v2_durable_cursor_restores_child_scope_without_remote_scope_expan
         )
         await session.commit()
 
-    transport = _Transport([_page([], count=0), _page([_file("8100", CHILD_ID)])])
+    transport = _Transport([_page([_file("8100", CHILD_ID)])])
     scope = await service.readonly_directory_scope(lease)
     gateway = _gateway(transport, scope)
     page = await gateway.list_directory(CHILD_ID, page=1, page_size=1)
 
     assert scope == frozenset({ROOT_ID, CHILD_ID})
     assert page.items[0].parent_id == CHILD_ID
-    assert [call["cid"] for call in transport.calls] == [CHILD_ID, CHILD_ID]
+    assert [call["cid"] for call in transport.calls] == [CHILD_ID]
     await service.release(lease, requeue=True)
     await database.engine.dispose()
 
