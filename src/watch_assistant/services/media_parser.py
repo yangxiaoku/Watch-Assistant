@@ -253,6 +253,15 @@ _PRESENTATION_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
         "theatrical",
         re.compile(r"(?<![A-Za-z0-9])(?:剧场版|電影版|电影版)(?![A-Za-z0-9])"),
     ),
+    # 版本标记 (PROPER/REPACK/EXTENDED 等):只掩码不进标题。
+    (
+        "version",
+        re.compile(
+            r"(?<![A-Za-z0-9])(?:PROPER|REPACK|RERIP|EXTENDED|UNRATED|"
+            r"UNCUT|Theatrical|Director'?s?[ ._-]?Cut)(?![A-Za-z0-9])",
+            re.IGNORECASE,
+        ),
+    ),
 )
 _EXPLICIT_SPECIAL_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     # 允许 SP 后跟 1-2 位编号 ("SP01"/"SP1"/"SP.01" 等动漫特辑命名);
@@ -971,6 +980,9 @@ def _companion_spans(stem: str, extension: str | None) -> tuple[tuple[int, int],
 
 
 _RELEASE_GROUP_HYPHEN = re.compile(r"-([A-Za-z0-9]{2,40})\s*$")
+# 点分隔的尾部发布组 (如 "...Dual.YG" 的 YG):仅在文件含技术标记时
+# 生效,且候选不得是技术/媒体标记,避免 "Movie.Name" 被误吞。
+_RELEASE_GROUP_DOT = re.compile(r"\.([A-Za-z][A-Za-z0-9]{1,9})\s*$")
 
 
 def _release_group(stem: str) -> tuple[str | None, tuple[tuple[int, int], ...]]:
@@ -997,6 +1009,13 @@ def _release_group(stem: str) -> tuple[str | None, tuple[tuple[int, int], ...]]:
                 and not _hyphen_inside_technical_token(stem, hyphen.start())
             ):
                 return candidate, ((hyphen.start(), hyphen.end()),)
+        dot = _RELEASE_GROUP_DOT.search(stem)
+        if dot is not None:
+            candidate = dot.group(1)
+            if not _looks_like_technical(candidate) and not _looks_like_media_marker(
+                candidate
+            ):
+                return candidate, ((dot.start() + 1, dot.end()),)
     return None, ()
 
 

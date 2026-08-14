@@ -693,6 +693,29 @@ def test_multi_language_audio_markers_are_stripped(name, title):
     assert parsed.media_type_hint == "movie"
 
 
+@pytest.mark.parametrize(
+    ("name", "title", "release_group"),
+    (
+        # 版本标记 + 点分隔发布组:PROPER/YG 都不得残留标题
+        (
+            "Interstellar.2014.PROPER.IMAX.1080p.UHD.BluRay.x265.HDR.DV.DD+5.1.Dual.YG.mkv",
+            "Interstellar",
+            "YG",
+        ),
+        ("Movie.2024.REPACK.1080p.x264.mkv", "Movie", None),
+        ("Movie.2024.EXTENDED.2160p.mkv", "Movie", None),
+        ("Movie.Name.2024.1080p.YG.mkv", "Movie Name", "YG"),
+        ("Movie.2024.1080p.WEB-DL.DDP5.1.H.265-HDB.mkv", "Movie", "HDB"),
+    ),
+)
+def test_version_markers_and_dot_release_groups(name, title, release_group):
+    parsed = parse_media_filename(name)
+
+    assert parsed.title == title
+    assert parsed.release_group == release_group
+    assert parsed.media_type_hint == "movie"
+
+
 def test_four_digit_bracket_is_a_year_not_an_episode():
     # "[2016]" 是年份方括号,不得误判为集号
     parsed = parse_media_filename("Movie.Name.[2016].mkv")
