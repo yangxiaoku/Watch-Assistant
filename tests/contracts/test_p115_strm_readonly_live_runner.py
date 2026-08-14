@@ -33,12 +33,34 @@ class _Transport:
         self.calls.append(("fs_files", dict(payload), timeout_seconds))
         return self.responses.pop(0)
 
+    async def fs_info_app(self, payload, *, timeout_seconds):
+        return await self._respond_info(payload, "fs_info_app", timeout_seconds)
+
     async def fs_info(self, payload, *, timeout_seconds):
-        self.calls.append(("fs_info", dict(payload), timeout_seconds))
+        return await self._respond_info(payload, "fs_info", timeout_seconds)
+
+    async def _respond_info(self, payload, label, timeout_seconds):
+        del timeout_seconds
+        self.calls.append((label, dict(payload), None))
+        if "cid" in payload:
+            return {
+                "state": True,
+                "data": {
+                    "file_category": "0",
+                    "count": "1",
+                    "folder_count": 0,
+                    "cid": payload["cid"],
+                    "pid": "7000",
+                    "file_name": "Sensitive Show",
+                    "size": "0",
+                },
+            }
         return {
             "state": True,
             "data": {
                 "file_category": "1",
+                "count": 0,
+                "folder_count": 0,
                 "fid": payload["fid"],
                 "cid": "7001",
                 "file_name": "Sensitive Episode.mkv",
@@ -151,11 +173,16 @@ def test_success_path_outputs_complete_scans_and_zero_remote_writes(monkeypatch)
     assert report["remote_cleanup"] is False
     assert report["remote_playback"] is False
     assert _stage_success("strm_readonly", report)
+    # 两次扫描(初始 + 增量),每次两页:每页一次列表 + 一次 fs_info 判型。
     assert [call[0] for call in transport.calls] == [
         "fs_files_app",
+        "fs_info_app",
         "fs_files_app",
+        "fs_info_app",
         "fs_files_app",
+        "fs_info_app",
         "fs_files_app",
+        "fs_info_app",
     ]
     assert source.calls == 1
 

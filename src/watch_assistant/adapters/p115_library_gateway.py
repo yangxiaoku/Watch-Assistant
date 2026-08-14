@@ -218,10 +218,13 @@ class P115ReadOnlyDirectoryGateway:
                 raise P115ReadOnlyGatewayError("entry_unverified")
             payload = {"cid": cid}
         response = await self._call("fs_info", payload, deadline=deadline)
-        count = _nonnegative_int(response.get("count"))
+        detail = response.get("data")
+        if not isinstance(detail, Mapping):
+            detail = response
+        count = _nonnegative_int(detail.get("count"))
         if count is not None and count > 0:
             return True
-        folder_count = _nonnegative_int(response.get("folder_count"))
+        folder_count = _nonnegative_int(detail.get("folder_count"))
         if folder_count is None:
             raise P115ReadOnlyGatewayError("entry_unverified")
         return folder_count > 0

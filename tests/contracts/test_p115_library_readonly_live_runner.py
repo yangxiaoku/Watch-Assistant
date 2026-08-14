@@ -65,6 +65,8 @@ def _file_detail(file_id="101", parent_id="7"):
     return {
         "state": True,
         "file_category": "1",
+        "count": 0,
+        "folder_count": 0,
         "fid": file_id,
         "cid": parent_id,
         "file_name": "sensitive-file-name.wav",
@@ -121,7 +123,12 @@ def test_success_path_has_one_list_one_detail_and_redacted_public_report():
     assert report.entries_seen == 1
     assert report.file_details == 1
     assert report.directory_details == 0
-    assert [call[0] for call in transport.calls] == ["fs_files_app", "fs_info_app"]
+    # 列表 → 判型 → 详情。
+    assert [call[0] for call in transport.calls] == [
+        "fs_files_app",
+        "fs_info_app",
+        "fs_info_app",
+    ]
     assert transport.calls[0][1]["cid"] == "7"
     assert transport.calls[1][1] == {"fid": "101"}
     assert source.calls == 1
@@ -139,7 +146,7 @@ def test_incomplete_directory_stops_at_page_budget_without_detail_calls():
             _page([_file("101")], offset=0, count=3),
             _page([_file("102")], offset=1, count=3),
         ),
-        {},
+        {"101": _file_detail(), "102": _file_detail()},
     )
 
     report = run_live_acceptance(
@@ -154,7 +161,13 @@ def test_incomplete_directory_stops_at_page_budget_without_detail_calls():
     assert report.error_code == "page_budget_exhausted"
     assert report.pages_read == 2
     assert report.entries_seen == 2
-    assert [call[0] for call in transport.calls] == ["fs_files_app", "fs_files_app"]
+    # 每页:列表 + 判型。
+    assert [call[0] for call in transport.calls] == [
+        "fs_files_app",
+        "fs_info_app",
+        "fs_files_app",
+        "fs_info_app",
+    ]
 
 
 def test_cli_without_live_flag_has_no_external_calls(capsys):
