@@ -596,6 +596,53 @@ async def test_file_detail_anchors_identity_via_paths_parent_and_registers_direc
 
 
 @pytest.mark.asyncio
+async def test_directory_detail_anchors_identity_via_paths_parent():
+    """磁力推送创建的是同名目录:目录详情与文件详情一样以 paths 父链锚定身份,
+    并把父目录登记为已观察目录。"""
+    client = _DetailClient(
+        details={
+            "101": {
+                "state": True,
+                "file_name": "pushed-torrent-dir",
+                "count": "3",
+                "folder_count": 0,
+                "play_long": 10731,
+                "size": "112GB",
+                "pick_code": "SYNTHETIC_PICKCODE_SECRET",
+                "paths": [
+                    {"file_id": 0, "file_name": "根目录"},
+                    {"file_id": "7", "file_name": "secret-directory"},
+                ],
+            },
+            "7": {
+                "state": True,
+                "file_name": "secret-directory",
+                "folder_count": 5,
+                "play_long": 0,
+                "size": "730KB",
+                "pick_code": "SYNTHETIC_PICKCODE_SECRET",
+                "paths": [{"file_id": 0, "file_name": "根目录"}],
+            },
+        }
+    )
+    gateway, _, _ = _gateway(
+        client,
+        authorized_directory_ids=("7", "101"),
+        authorized_file_ids=("101",),
+    )
+
+    detail = await gateway.get_directory_detail("101")
+    parent = await gateway.get_directory_detail("7")
+
+    assert detail.directory_id == "101"
+    assert detail.parent_id == "7"
+    assert detail.is_directory is True
+    assert parent.directory_id == "7"
+    assert parent.is_directory is True
+    assert client.detail_calls == [{"cid": "101"}, {"cid": "7"}]
+
+
+@pytest.mark.asyncio
 async def test_file_detail_paths_parent_outside_authorized_scope_fails_closed():
     client = _DetailClient(
         details={

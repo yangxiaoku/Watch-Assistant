@@ -351,7 +351,16 @@ class P115Adapter:
         if gateway is None:
             return _uncertain_observation(_AVAILABILITY_OBSERVER_UNAVAILABLE)
         try:
-            detail = await gateway.get_file_detail(file_id)
+            # 推送目标可能是单个文件,也可能是磁力创建的同名目录(clouddownload
+            # 的 file_id 即该目录 id);文件详情类型冲突时回退目录详情。
+            try:
+                detail = await gateway.get_file_detail(file_id)
+            except P115ReadOnlyGatewayError as error:
+                if error.code != "detail_unverified":
+                    return _uncertain_observation(
+                        _availability_observer_error_code(error.code)
+                    )
+                detail = await gateway.get_directory_detail(file_id)
             parent_detail = await gateway.get_directory_detail(parent_id)
         except asyncio.CancelledError:
             raise
@@ -363,17 +372,19 @@ class P115Adapter:
             return _uncertain_observation(_AVAILABILITY_OBSERVER_TIMEOUT)
         except Exception:  # noqa: BLE001 - remote detail stays redacted
             return _uncertain_observation(_AVAILABILITY_OBSERVER_UNAVAILABLE)
+        observed_id = getattr(detail, "file_id", None) or getattr(
+            detail, "directory_id", None
+        )
         if (
-            getattr(detail, "file_id", None) != file_id
+            observed_id != file_id
             or getattr(detail, "parent_id", None) != parent_id
-            or getattr(detail, "is_directory", None) is not False
             or getattr(parent_detail, "directory_id", None) != parent_id
             or getattr(parent_detail, "is_directory", None) is not True
         ):
             return _uncertain_observation(_AVAILABILITY_PARENT_MISMATCH)
         return RemoteObservation(
             status=RemoteStatus.AVAILABLE,
-            file_id=detail.file_id,
+            file_id=observed_id,
             parent_id=detail.parent_id,
             is_directory=detail.is_directory,
         )
@@ -387,7 +398,9 @@ class P115Adapter:
             return self._readonly_gateway_factory(parent_id)
         return P115ReadOnlyDirectoryGateway(
             self._cookie_provider,
-            authorized_directory_ids=(parent_id,),
+            # 推送对象可能是单文件也可能是磁力目录:file_id 同时按目录授权,
+            # 以便类型冲突时回退 get_directory_detail(file_id)。
+            authorized_directory_ids=(parent_id, file_id),
             authorized_file_ids=(file_id,),
             # 115 根目录 cid=0 是合法目标(_stable_directory_id 已放行);
             # 不传 allow_virtual_root 时 gateway 会拒绝 cid=0 授权,导致根目录

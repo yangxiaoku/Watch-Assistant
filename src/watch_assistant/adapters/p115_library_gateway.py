@@ -511,11 +511,10 @@ def _parse_detail(
     observed_id = (
         observed_entry.directory_id if expect_directory and observed_entry else None
     ) or (observed_entry.file_id if observed_entry else None)
-    paths_parent = None if expect_directory else _paths_parent(detail)
+    paths_parent = _paths_parent(detail)
     identity = response_identity or observed_id
     if (
         identity is None
-        and not expect_directory
         and paths_parent is not None
         and (
             paths_parent[0] in authorized_directory_ids
@@ -525,8 +524,9 @@ def _parse_detail(
             )
         )
     ):
-        # legacy/proapi 详情都不回显对象自身 ID;文件以 paths 父链落在授权目录内
-        # 为锚,把请求 ID 作为该文件身份(请求本身是 fid 回显,父链是真实校验)。
+        # legacy/proapi 详情都不回显对象自身 ID;以 paths 父链(文件/目录的
+        # paths 末端都是其直接父级)落在授权目录内为锚,把请求 ID 作为对象身份
+        # (请求本身是 fid/cid 回显,父链是真实校验)。
         identity = requested_id
     if identity != requested_id:
         raise P115ReadOnlyGatewayError("detail_unverified")
@@ -560,7 +560,7 @@ def _parse_detail(
             observed_directories is not None
             and paths_parent_id in authorized_directory_ids
         ):
-            # 把文件父链末端目录登记为已观察目录:legacy 详情不回显目录身份,
+            # 把父链末端目录登记为已观察目录:legacy 详情不回显目录身份,
             # 随后的 get_directory_detail(parent) 才能验证身份。
             try:
                 observed_directories[paths_parent_id] = parse_library_entry(
@@ -575,7 +575,7 @@ def _parse_detail(
                 )
             except LibraryContractError:
                 raise P115ReadOnlyGatewayError("detail_unverified") from None
-    elif expect_directory and observed_entry is not None:
+    if expect_directory and observed_entry is not None:
         if observed_entry.name != name:
             raise P115ReadOnlyGatewayError("detail_unverified")
     pickcode = _optional_pickcode(detail, error_code="detail_unverified")
