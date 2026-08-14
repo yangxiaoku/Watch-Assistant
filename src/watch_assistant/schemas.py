@@ -2192,6 +2192,35 @@ class WebhookDeliveryListResponse(BaseModel):
     items: list[WebhookDeliveryResponse]
 
 
+class NotifyChannelCreateRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    name: str = Field(min_length=1, max_length=64)
+    webhook_url: str = Field(min_length=8, max_length=2048)
+    kind: Literal["feishu"] = "feishu"
+
+
+class NotifyChannelResponse(BaseModel):
+    id: str
+    name: str
+    kind: str
+    webhook_url_prefix: str
+    enabled: bool
+    revision: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class NotifyChannelListResponse(BaseModel):
+    items: list[NotifyChannelResponse]
+
+
+class NotifyChannelPatch(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    enabled: bool
+
+
 class PwaDeviceRegisterRequest(BaseModel):
     model_config = {"extra": "forbid"}
 

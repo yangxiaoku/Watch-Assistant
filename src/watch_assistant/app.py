@@ -49,6 +49,7 @@ from watch_assistant.api.maintenance import router as maintenance_router
 from watch_assistant.api.manual_import import router as manual_import_router
 from watch_assistant.api.mcp import router as mcp_router
 from watch_assistant.api.notifications import router as notifications_router
+from watch_assistant.api.notify_channels import router as notify_channels_router
 from watch_assistant.api.organization_history import (
     router as organization_history_router,
 )
@@ -124,6 +125,8 @@ from watch_assistant.services.managed_directory_ownership import (
 from watch_assistant.services.manual_import import ManualImportService
 from watch_assistant.services.mcp import McpService
 from watch_assistant.services.notifications import NotificationService
+from watch_assistant.services.notify_channels_service import NotifyChannelService
+from watch_assistant.services.notify_dispatcher import NotifyDispatcher
 from watch_assistant.services.observability import emit_event
 from watch_assistant.services.organization_automation import (
     OrganizationAutomationService,
@@ -960,6 +963,9 @@ def create_app(
                     inventory_refresh=lambda: _refresh_inventory_before_push(
                         application
                     ),
+                    notify_dispatcher=getattr(
+                        application.state, "notify_dispatcher", None
+                    ),
                 )
                 await worker.recover_expired()
                 application.state.task_worker = worker
@@ -1051,6 +1057,15 @@ def create_app(
             )
             application.state.settings_service.bind_event_sink(
                 application.state.webhook_service.enqueue_event
+            )
+            application.state.notify_channel_service = NotifyChannelService(
+                runtime_database.session_factory,
+                runtime_domain_crypto("notify"),
+            )
+            application.state.notify_dispatcher = NotifyDispatcher(
+                runtime_database.session_factory,
+                runtime_domain_crypto("notify"),
+                event_logger=application.state.settings_service,
             )
             application.state.pwa_device_service = PwaDeviceService(
                 runtime_database.session_factory, runtime_domain_crypto("pwa")
@@ -1178,6 +1193,7 @@ def create_app(
                 application.state.search_service,
                 event_logger=application.state.settings_service,
                 workflow_service=application.state.workflow_service,
+                notify_dispatcher=application.state.notify_dispatcher,
             )
             application.state.library_scan_scheduler = LibraryScanScheduler(
                 runtime_database.session_factory,
@@ -1348,6 +1364,9 @@ def create_app(
                         inventory_guard=application.state.inventory_push_guard,
                         inventory_refresh=lambda: _refresh_inventory_before_push(
                             application
+                        ),
+                        notify_dispatcher=getattr(
+                            application.state, "notify_dispatcher", None
                         ),
                     )
                     application.state.push_capabilities = {
@@ -1822,6 +1841,14 @@ def create_app(
         application.state.settings_service.bind_event_sink(
             application.state.webhook_service.enqueue_event
         )
+        application.state.notify_channel_service = NotifyChannelService(
+            database.session_factory, crypto
+        )
+        application.state.notify_dispatcher = NotifyDispatcher(
+            database.session_factory,
+            crypto,
+            event_logger=application.state.settings_service,
+        )
         application.state.pwa_device_service = PwaDeviceService(
             database.session_factory, crypto
         )
@@ -1869,6 +1896,7 @@ def create_app(
             application.state.search_service,
             event_logger=application.state.settings_service,
             workflow_service=application.state.workflow_service,
+            notify_dispatcher=application.state.notify_dispatcher,
         )
         application.state.quality_profile_service = QualityProfileService(
             database.session_factory,
@@ -2014,6 +2042,9 @@ def create_app(
                     application.state, "inventory_push_guard", inventory_guard
                 ),
                 inventory_refresh=lambda: _refresh_inventory_before_push(application),
+                notify_dispatcher=getattr(
+                    application.state, "notify_dispatcher", None
+                ),
             )
 
     @application.get("/api/v1/health")
@@ -2171,6 +2202,7 @@ def create_app(
     application.include_router(quality_profiles_router)
     application.include_router(workflows_router)
     application.include_router(notifications_router)
+    application.include_router(notify_channels_router)
     application.include_router(backups_router)
     application.include_router(tasks_router)
     application.include_router(telemetry_router)

@@ -805,6 +805,10 @@ def _required_scope(request: Request) -> str:
     if path.startswith("/api/v1/webhooks"):
         # webhook 端点管理含密钥轮换/重试,写操作要求 settings:write。
         return "settings:read" if method in {"GET", "HEAD"} else "settings:write"
+    if path.startswith("/api/v1/notify-channels"):
+        # 通知渠道(飞书 webhook)管理:web 会话专用(require_web_auth 拦截
+        # bearer),此处仅保证 agent token 不落回 fail-closed。
+        return "settings:read" if method in {"GET", "HEAD"} else "settings:write"
     if path.startswith("/api/v1/pwa"):
         return "task:read" if method in {"GET", "HEAD"} else "task:write"
     if path.startswith("/api/v1/p115-checkin"):
