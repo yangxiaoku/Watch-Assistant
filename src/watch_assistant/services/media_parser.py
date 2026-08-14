@@ -49,12 +49,57 @@ _CHINESE_EPISODE_RE = re.compile(
     r"第(?P<season>[0-9]{1,3})季[ ._-]*第(?P<start>[0-9]{1,4})(?!\s*季)"
     r"(?:[ ._-]*(?:-|至|到)[ ._-]*(?P<end>[0-9]{1,4}))?集?",
 )
+# 本应用整理输出命名里的 TMDB 锁定标记 (片名 (年) {tmdb-157336} [规格]):
+# 已整理文件重新进入源目录时,该标记必须从标题剥离,否则 TMDB 搜索词
+# 带上 "tmdb-157336" 必然空结果;同时提取 tmdb_id 供下游作为最高置信
+# 证据 (manual lock 接线留待后续)。
+_TMDB_TAG_RE = re.compile(r"\{tmdb-([0-9]{1,10})\}", re.IGNORECASE)
 # 番组标准命名 [字幕组][作品名][集数][画质] 中的纯数字集号:
 # "[29]" / "[29-38]"。4 位 19xx/20xx 是年份不在此列(由 _YEAR_RE 处理),
 # 1-3 位数字是合理的集数主张。
 _BRACKET_EPISODE_RE = re.compile(
     r"\[(?P<start>[0-9]{1,3})(?:[ ._-]*(?:-|~|至|到)[ ._-]*(?P<end>[0-9]{1,3}))?\]"
 )
+# 中文数字季/集 (第三季 / 第01话):动漫与中文剧集常用,需转阿拉伯数字。
+_CN_DIGITS = {
+    "一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
+    "五": 5, "六": 6, "七": 7, "八": 8, "九": 9,
+}
+_CN_NUMBER_RE = re.compile(r"[一二三四五六七八九十百两0-9]+")
+_CN_SEASON_EPISODE_RE = re.compile(
+    r"第(?P<season>[一二三四五六七八九十百两]+)季[ ._-]*"
+    r"第(?P<start>[一二三四五六七八九十百两0-9]+)"
+    r"(?:[ ._-]*(?:-|至|到)[ ._-]*(?P<end>[一二三四五六七八九十百两0-9]+))?"
+    r"(?:集|话)?"
+)
+_CN_EPISODE_ONLY_RE = re.compile(
+    r"(?<![0-9])第(?P<start>[一二三四五六七八九十百两0-9]+)"
+    r"(?:[ ._-]*(?:-|~|至|到)[ ._-]*(?P<end>[一二三四五六七八九十百两0-9]+))?"
+    r"(?:集|话)"
+)
+_CN_SEASON_ONLY_RE = re.compile(r"第(?P<season>[一二三四五六七八九十百两]+)季")
+
+
+def _cn_number(value: str) -> int | None:
+    """把中文数字 (三/十二/二十一/一百零五) 转成整数;阿拉伯数字原样返回。"""
+    if value.isdigit():
+        return int(value)
+    total = 0
+    section = 0
+    for char in value:
+        if char in _CN_DIGITS:
+            section = _CN_DIGITS[char]
+        elif char == "十":
+            total += section * 10 if section else 10
+            section = 0
+        elif char == "百":
+            total += section * 100 if section else 100
+            section = 0
+        else:
+            return None
+    return total + section
+
+
 # 无季标记的纯中文集数:"第2集" / "第2-4集" / "第2至5集"。
 _CHINESE_EPISODE_ONLY_RE = re.compile(
     r"(?<![0-9])第(?P<start>[0-9]{1,4})(?:[ ._-]*(?:-|~|至|到)[ ._-]*"
@@ -85,6 +130,11 @@ _RESOLUTION_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("UHD", re.compile(r"(?<![A-Za-z0-9])UHD(?![A-Za-z0-9])", re.IGNORECASE)),
     ("1080p", re.compile(r"(?<![A-Za-z0-9])1080[Pp](?![A-Za-z0-9])")),
     ("720p", re.compile(r"(?<![A-Za-z0-9])720[Pp](?![A-Za-z0-9])")),
+    # 中文发布常写作 HD1080P/HD720P(HD 与分辨率粘连,前置字母导致
+    # 上面的 1080p 分支因 lookbehind 失配):复合形态单独识别。
+    ("1080p", re.compile(r"(?<![A-Za-z0-9])HD[ ._-]*1080[Pp](?![A-Za-z0-9])")),
+    ("720p", re.compile(r"(?<![A-Za-z0-9])HD[ ._-]*720[Pp](?![A-Za-z0-9])")),
+    ("2160p", re.compile(r"(?<![A-Za-z0-9])HD[ ._-]*2160[Pp](?![A-Za-z0-9])")),
 )
 _SOURCE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
@@ -133,10 +183,10 @@ _HDR_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 _AUDIO_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         "track-count",
-        # 音轨数标记(4Audio/2Audio/DualAudio 等)不是标题的一部分,
-        # 混入标题会导致 TMDB 搜索空结果。
+        # 音轨数标记(4Audio/2Audio/DualAudio/track-count 等)不是标题的
+        # 一部分,混入标题会导致 TMDB 搜索空结果。
         re.compile(
-            r"(?<![A-Za-z0-9])(?:[0-9]+|Dual)[ ._-]*Audio(?![A-Za-z0-9])",
+            r"(?<![A-Za-z0-9])(?:[0-9]+|Dual|track[ ._-]?count)[ ._-]*Audio(?![A-Za-z0-9])",
             re.IGNORECASE,
         ),
     ),
@@ -161,6 +211,14 @@ _AUDIO_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("AAC", re.compile(r"(?<![A-Za-z0-9])AAC(?![A-Za-z])", re.IGNORECASE)),
     ("FLAC", re.compile(r"(?<![A-Za-z0-9])FLAC(?![A-Za-z])", re.IGNORECASE)),
     ("Opus", re.compile(r"(?<![A-Za-z0-9])Opus(?![A-Za-z])", re.IGNORECASE)),
+    # 独立的双音轨标记 (DUAL / 双音轨):不跟随 Audio 后缀时同样剥离。
+    (
+        "Dual Audio",
+        re.compile(
+            r"(?<![A-Za-z0-9])(?:DUAL|DualAudio|双音轨)(?![A-Za-z0-9])",
+            re.IGNORECASE,
+        ),
+    ),
 )
 # Explicit multi-channel markers such as "5.1", "7.1", or "2.0" (optionally with
 # a "ch" suffix).  The leading lookahead allows the marker to sit directly after
@@ -185,6 +243,15 @@ _CHANNEL_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
             r"(?<![0-9])[2-7](?:\.[01](?:ch)?|ch)(?![A-Za-z0-9])",
             re.IGNORECASE,
         ),
+    ),
+)
+_PRESENTATION_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    # 放映/形态标记:IMAX、剧场版/电影版。只掩码不进标题,也不产生
+    # special hint(否则会把电影误判成 TV)。
+    ("IMAX", re.compile(r"(?<![A-Za-z0-9])IMAX(?![A-Za-z0-9])", re.IGNORECASE)),
+    (
+        "theatrical",
+        re.compile(r"(?<![A-Za-z0-9])(?:剧场版|電影版|电影版)(?![A-Za-z0-9])"),
     ),
 )
 _EXPLICIT_SPECIAL_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
@@ -245,7 +312,23 @@ _SUBTITLE_HINT_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
             r"(?<![A-Za-z0-9])(?:SUB|SUBS|字幕|中字)(?![A-Za-z0-9])", re.IGNORECASE
         ),
     ),
-    ("dual", re.compile(r"(?<![A-Za-z0-9])(?:双语|中英|中日|英中)(?![A-Za-z0-9])")),
+    # 组合形态整体匹配 (简繁英三语字幕 / 中英双语 / 国粤双语 等),
+    # 避免只掩掉前缀留下 "英三语" 碎片。
+    (
+        "dual",
+        re.compile(
+            r"(?<![A-Za-z0-9])(?:简繁英三语|中英日三语|中英双语|国粤双语|"
+            r"双语|三语|多语|简繁|中英|中日|英中)(?![A-Za-z0-9])"
+        ),
+    ),
+    # "X语字幕" 长组合 (如 简繁英三语字幕 / 中英双语字幕):
+    # 语言字符连续段 + 字幕 整体掩码。
+    (
+        "dual",
+        re.compile(
+            r"(?<![A-Za-z0-9])[中英日韩法德西国粤简繁三多]{2,8}字幕(?![A-Za-z0-9])"
+        ),
+    ),
     ("forced", re.compile(r"(?<![A-Za-z0-9])forced(?![A-Za-z0-9])", re.IGNORECASE)),
     ("SDH", re.compile(r"(?<![A-Za-z0-9])SDH(?![A-Za-z0-9])", re.IGNORECASE)),
     # 视频文件里的字幕轨格式标记 (如番组 "[1080p HEVC-10bit AAC ASS]"):
@@ -273,6 +356,9 @@ class MediaParseResult:
 
     original_filename: str | None = None
     title: str | None = None
+    # 整理输出命名 (片名 (年) {tmdb-157336}) 携带的已验证 TMDB 标识;
+    # 供下游作为最高置信匹配证据,不参与标题。
+    tmdb_id: int | None = None
     year: int | None = None
     year_candidates: tuple[int, ...] = ()
     season: int | None = None
@@ -333,6 +419,11 @@ def parse_media_filename(filename: str) -> MediaParseResult:
         return MediaParseResult(original_filename=basename or None, container=extension)
 
     companion_type = _companion_type(stem, extension)
+    tmdb_tag_match = _TMDB_TAG_RE.search(stem)
+    tmdb_id = int(tmdb_tag_match.group(1)) if tmdb_tag_match else None
+    tmdb_spans = tuple(
+        (match.start(), match.end()) for match in _TMDB_TAG_RE.finditer(stem)
+    )
     year_matches = tuple(_YEAR_RE.finditer(stem))
     year_match = _select_year_match(stem, year_matches)
     year = int(year_match.group()) if year_match else None
@@ -379,8 +470,11 @@ def parse_media_filename(filename: str) -> MediaParseResult:
     _, all_audio_spans = _matches(_AUDIO_PATTERNS, stem)
     _, all_channel_spans = _matches(_CHANNEL_PATTERNS, stem)
     _, all_bit_depth_spans = _matches(_BIT_DEPTH_PATTERNS, stem)
+    _, all_presentation_spans = _matches(_PRESENTATION_PATTERNS, stem)
     language_hints, language_spans = _matches(_LANGUAGE_PATTERNS, stem)
     subtitle_hints, subtitle_spans = _matches(_SUBTITLE_HINT_PATTERNS, stem)
+    # 多个 pattern 可能命中同一含义的标记 (如 "dual"),去重保序。
+    subtitle_hints = tuple(dict.fromkeys(subtitle_hints))
     atmos = _has_token(stem, r"Atmos")
     dolby_audio = _DOLBY_AUDIO_RE.search(stem) is not None
     dolby_vision = hdr == "Dolby Vision"
@@ -391,6 +485,7 @@ def parse_media_filename(filename: str) -> MediaParseResult:
         (match.start(), match.end()) for match in _DOLBY_AUDIO_RE.finditer(stem)
     )
     release_group, group_spans = _release_group(stem)
+    technical_bracket_spans = _technical_bracket_spans(stem)
     companion_spans = _companion_spans(stem, extension)
     title_stem = stem
     if episode_spans:
@@ -409,11 +504,14 @@ def parse_media_filename(filename: str) -> MediaParseResult:
         all_audio_spans,
         all_channel_spans,
         all_bit_depth_spans,
+        all_presentation_spans,
         language_spans,
         subtitle_spans,
         atmos_spans,
         dolby_audio_spans,
+        tmdb_spans,
         group_spans,
+        technical_bracket_spans,
         companion_spans,
     )
     media_type_hint: MediaTypeHint
@@ -425,6 +523,8 @@ def parse_media_filename(filename: str) -> MediaParseResult:
         media_type_hint = "unknown"
 
     evidence: list[str] = []
+    if tmdb_id is not None:
+        evidence.append("tmdb_lock")
     if title:
         evidence.append("title_candidate")
     if year is not None:
@@ -467,6 +567,7 @@ def parse_media_filename(filename: str) -> MediaParseResult:
     return MediaParseResult(
         original_filename=basename or None,
         title=title,
+        tmdb_id=tmdb_id,
         year=year,
         year_candidates=year_candidates,
         season=season,
@@ -530,6 +631,7 @@ _MEDIA_FEATURE_PATTERNS: tuple[re.Pattern[str], ...] = (
     _SEASON_ONLY_RE,
     _EPISODE_LABEL_RE,
     _BRACKET_EPISODE_RE,
+    _TMDB_TAG_RE,
     _GENERIC_SPECIAL_PATTERN,
     *(pattern for _, pattern in _EXPLICIT_SPECIAL_PATTERNS),
     *(pattern for _, pattern in _RESOLUTION_PATTERNS),
@@ -604,6 +706,7 @@ def _select_year_match(
         *(pattern for _, pattern in _BIT_DEPTH_PATTERNS),
         *(pattern for _, pattern in _LANGUAGE_PATTERNS),
         *(pattern for _, pattern in _SUBTITLE_HINT_PATTERNS),
+        _TMDB_TAG_RE,
     )
     metadata_starts = [
         match.start()
@@ -682,13 +785,18 @@ def _episode_fields(
     返回值末尾的布尔值表示是否命中 E00 (第 0 集) 特辑占位符——
     此时集号不是有效主张,由调用方转为特辑提示。
     """
-    patterns = (_SEASON_EPISODE_RE, _MULTI_SEASON_EPISODE_RE, _CHINESE_EPISODE_RE)
+    patterns = (
+        _SEASON_EPISODE_RE,
+        _MULTI_SEASON_EPISODE_RE,
+        _CHINESE_EPISODE_RE,
+        _CN_SEASON_EPISODE_RE,
+    )
     for pattern in patterns:
         match = pattern.search(stem)
         if match:
-            season = _group_int(match, "season")
-            start = _group_int(match, "start")
-            end = _group_int(match, "end")
+            season = _group_number(match, "season")
+            start = _group_number(match, "start")
+            end = _group_number(match, "end")
             span_end = match.end()
             if start == 0:
                 # E00 是特辑占位符:下游契约 (库存/完整性矩阵) 要求集数
@@ -710,12 +818,13 @@ def _episode_fields(
     match = (
         _EPISODE_LABEL_RE.search(stem)
         or _CHINESE_EPISODE_ONLY_RE.search(stem)
+        or _CN_EPISODE_ONLY_RE.search(stem)
         or _BRACKET_EPISODE_RE.search(stem)
     )
     if match:
-        season_match = _SEASON_ONLY_RE.search(stem)
-        start = _group_int(match, "start")
-        end = _group_int(match, "end")
+        season_match = _SEASON_ONLY_RE.search(stem) or _CN_SEASON_ONLY_RE.search(stem)
+        start = _group_number(match, "start")
+        end = _group_number(match, "end")
         span_end = match.end()
         if start == 0:
             # 无季形态的 E00 (如 "Show.E00.mkv") 同样视为特辑占位符。
@@ -733,9 +842,9 @@ def _episode_fields(
         season = None
         if season_match:
             season = (
-                _group_int(season_match, "season")
-                or _group_int(season_match, "s_season")
-                or _group_int(season_match, "season_cn")
+                _group_number(season_match, "season")
+                or _group_number(season_match, "s_season")
+                or _group_number(season_match, "season_cn")
             )
             spans.append((season_match.start(), season_match.end()))
         return (
@@ -745,12 +854,12 @@ def _episode_fields(
             tuple(spans),
             False,
         )
-    season_match = _SEASON_ONLY_RE.search(stem)
+    season_match = _SEASON_ONLY_RE.search(stem) or _CN_SEASON_ONLY_RE.search(stem)
     if season_match:
         season = (
-            _group_int(season_match, "season")
-            or _group_int(season_match, "s_season")
-            or _group_int(season_match, "season_cn")
+            _group_number(season_match, "season")
+            or _group_number(season_match, "s_season")
+            or _group_number(season_match, "season_cn")
         )
         return season, None, None, ((season_match.start(), season_match.end()),), False
     return None, None, None, (), False
@@ -759,6 +868,17 @@ def _episode_fields(
 def _group_int(match: re.Match[str], name: str) -> int | None:
     value = match.groupdict().get(name)
     return int(value) if value else None
+
+
+def _group_number(match: re.Match[str], name: str) -> int | None:
+    """提取季/集组:阿拉伯数字原样,中文数字 (三/十二) 转阿拉伯。"""
+    value = match.groupdict().get(name)
+    if not value:
+        return None
+    parsed = _cn_number(value)
+    if parsed is None or parsed < 0:
+        return None
+    return parsed
 
 
 def _matches(
@@ -792,6 +912,40 @@ def _has_token(text: str, pattern: str) -> bool:
         re.search(rf"(?<![A-Za-z0-9])(?:{pattern})(?![A-Za-z0-9])", text, re.IGNORECASE)
         is not None
     )
+
+
+_TECHNICAL_BRACKET_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
+    pattern
+    for patterns in (
+        _RESOLUTION_PATTERNS,
+        _SOURCE_PATTERNS,
+        _VIDEO_CODEC_PATTERNS,
+        _HDR_PATTERNS,
+        _AUDIO_PATTERNS,
+        _BIT_DEPTH_PATTERNS,
+        _CHANNEL_PATTERNS,
+        _PRESENTATION_PATTERNS,
+        _LANGUAGE_PATTERNS,
+        _SUBTITLE_HINT_PATTERNS,
+    )
+    for _, pattern in patterns
+)
+
+
+def _technical_bracket_spans(stem: str) -> tuple[tuple[int, int], ...]:
+    """把含技术标记的方括号块整体掩码。
+
+    例如 "[2160p BluRay H.265 AAC YTS.BZ]" 里 2160p/BluRay/H.265/AAC 会
+    被各自的标记规则掩码,但组名/站点名 (YTS.BZ/RARBG/EDGE2020) 会残留
+    进标题导致 TMDB 搜索空结果;整块掩码一次性清除。不含技术标记的
+    方括号 ([Airota]、[29]、[2016]) 不受影响。
+    """
+    spans: list[tuple[int, int]] = []
+    for match in re.finditer(r"\[[^\[\]]{0,120}\]", stem):
+        content = match.group(0)
+        if any(pattern.search(content) for pattern in _TECHNICAL_BRACKET_PATTERNS):
+            spans.append((match.start(), match.end()))
+    return tuple(spans)
 
 
 def _companion_spans(stem: str, extension: str | None) -> tuple[tuple[int, int], ...]:
@@ -878,6 +1032,7 @@ def _has_technical_marker(stem: str) -> bool:
             _HDR_PATTERNS,
             _AUDIO_PATTERNS,
             _CHANNEL_PATTERNS,
+            _PRESENTATION_PATTERNS,
         )
         for _, pattern in patterns
     )

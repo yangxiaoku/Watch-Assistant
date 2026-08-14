@@ -584,6 +584,115 @@ def test_anime_bracket_episode_numbers_are_recognized(
     assert "ASS" not in parsed.title.upper()
 
 
+@pytest.mark.parametrize(
+    ("name", "title", "year", "tmdb_id", "media_type"),
+    (
+        # 应用整理输出命名 (片名 (年) {tmdb-xxx} [规格]) 重新进入源目录:
+        # tmdb 锁定标记必须剥离,否则搜索词带 "tmdb-157336" 必空结果
+        (
+            "Kraken (2026) {tmdb-1571766} [1080p BluRay H.264 AAC WORLD].mp4",
+            "Kraken",
+            2026,
+            1571766,
+            "movie",
+        ),
+        (
+            "星际穿越 (2014) {tmdb-157336} [1080p BluRay H.265 track-count Dolby Audio RARBG].mkv",
+            "星际穿越",
+            2014,
+            157336,
+            "movie",
+        ),
+        (
+            "超级马力欧银河大电影 (2026) {tmdb-1226863}.mkv",
+            "超级马力欧银河大电影",
+            2026,
+            1226863,
+            "movie",
+        ),
+    ),
+)
+def test_organized_output_names_with_tmdb_tag_parse_cleanly(
+    name, title, year, tmdb_id, media_type
+):
+    parsed = parse_media_filename(name)
+
+    assert parsed.title == title
+    assert parsed.year == year
+    assert parsed.tmdb_id == tmdb_id
+    assert parsed.media_type_hint == media_type
+    assert "tmdb" not in parsed.title.casefold()
+    assert "tmdb_lock" in parsed.evidence
+
+
+def test_technical_bracket_block_is_masked_wholesale():
+    # 方括号技术块内的组名/站点名 (YTS.BZ/RARBG/EDGE2020) 不得残留进标题
+    parsed = parse_media_filename(
+        "捕风追影 (2025) {tmdb-1419406} [2160p BluRay H.265 AAC YTS.BZ].mkv"
+    )
+
+    assert parsed.title == "捕风追影"
+    assert parsed.year == 2025
+    assert "YTS" not in parsed.title
+
+
+@pytest.mark.parametrize(
+    ("name", "title"),
+    (
+        ("独行月球.2022.HD1080P.国语.mkv", "独行月球"),
+        ("Movie.2024.HD720P.x264.mkv", "Movie"),
+    ),
+)
+def test_hd_prefixed_resolution_compound(name, title):
+    parsed = parse_media_filename(name)
+
+    assert parsed.title == title
+    assert parsed.media_type_hint == "movie"
+
+
+def test_chinese_numeral_season_and_episode():
+    parsed = parse_media_filename("[字幕组]进击的巨人.第三季.第01话.1080p.mp4")
+
+    assert parsed.title == "进击的巨人"
+    assert parsed.season == 3
+    assert parsed.episode_start == 1
+    assert parsed.media_type_hint == "tv"
+
+    parsed = parse_media_filename("进击的巨人.第二季.第12集.1080p.mkv")
+    assert parsed.season == 2
+    assert parsed.episode_start == 12
+
+    parsed = parse_media_filename("动画.第十话.720p.mkv")
+    assert parsed.episode_start == 10
+
+
+def test_presentation_markers_are_stripped_without_tv_hint():
+    theatrical = parse_media_filename("名侦探柯南.剧场版.2023.1080p.mkv")
+    imax = parse_media_filename("The.Flash.2023.IMAX.1080p.BluRay.x264.mkv")
+
+    assert theatrical.title == "名侦探柯南"
+    assert theatrical.media_type_hint == "movie"
+    assert theatrical.special_hints == ()
+    assert imax.title == "The Flash"
+    assert imax.media_type_hint == "movie"
+
+
+@pytest.mark.parametrize(
+    ("name", "title"),
+    (
+        ("Movie.2024.1080p.BluRay.简繁英三语字幕.mkv", "Movie"),
+        ("Movie.2024.1080p.中英双语字幕.mkv", "Movie"),
+        ("Movie.2024.1080p.国粤双语.mkv", "Movie"),
+        ("Movie.2024.1080p.DUAL.WEB-DL.mkv", "Movie"),
+    ),
+)
+def test_multi_language_audio_markers_are_stripped(name, title):
+    parsed = parse_media_filename(name)
+
+    assert parsed.title == title
+    assert parsed.media_type_hint == "movie"
+
+
 def test_four_digit_bracket_is_a_year_not_an_episode():
     # "[2016]" 是年份方括号,不得误判为集号
     parsed = parse_media_filename("Movie.Name.[2016].mkv")
