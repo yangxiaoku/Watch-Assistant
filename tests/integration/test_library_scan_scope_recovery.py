@@ -31,8 +31,9 @@ class _CredentialSource:
 
 
 class _Transport:
-    def __init__(self, responses):
+    def __init__(self, responses, *, directories=()):
         self._responses = list(responses)
+        self._directories = set(directories)
         self.calls = []
 
     async def _run_fs_files(self, payload):
@@ -52,21 +53,28 @@ class _Transport:
         return await self._run_fs_files(payload)
 
     async def fs_info(self, payload, *, timeout_seconds):
-        del payload, timeout_seconds
-        raise AssertionError("unexpected fs_info call")
+        del timeout_seconds
+        value = str(payload.get("cid") or payload.get("fid") or "")
+        return {
+            "state": True,
+            "folder_count": 1 if value in self._directories else 0,
+            "file_name": "classified",
+            "paths": [],
+        }
 
     async def fs_info_app(self, payload, *, timeout_seconds):
-        del payload, timeout_seconds
-        raise AssertionError("unexpected fs_info_app call")
+        # 与 legacy fs_info 行为一致:gateway 优先调用 app 端点。
+        del timeout_seconds
+        return await self.fs_info(payload, timeout_seconds=0)
 
 
-def _page(records):
+def _page(records, *, count=None, limit=1):
     return {
         "state": True,
         "data": records,
         "offset": 0,
-        "limit": 1,
-        "count": 1,
+        "limit": limit,
+        "count": len(records) if count is None else count,
     }
 
 
@@ -125,7 +133,12 @@ async def test_new_worker_restores_durable_child_scope_without_remote_scope_expa
     service = LibraryScanOperationService(database.session_factory)
     queued = await service.enqueue(LIBRARY_ID, idempotency_key="cross-worker")
     first_transport = _Transport(
-        [_page([_directory(CHILD_ID, ROOT_ID)]), asyncio.CancelledError()]
+        [
+            _page([_directory(CHILD_ID, ROOT_ID)]),
+            _page([], count=0),
+            asyncio.CancelledError(),
+        ],
+        directories=(CHILD_ID,),
     )
     first_scopes = []
 
@@ -150,7 +163,9 @@ async def test_new_worker_restores_durable_child_scope_without_remote_scope_expa
         assert cursor["visited"] == [ROOT_ID, CHILD_ID]
         assert cursor["pending"][0]["directory_id"] == CHILD_ID
 
-    second_transport = _Transport([_page([_file("8100", CHILD_ID)])])
+    second_transport = _Transport(
+        [_page([], count=0), _page([_file("8100", CHILD_ID)])]
+    )
     second_scopes = []
 
     def second_factory(root_directory_id, authorized_directory_ids):
@@ -170,7 +185,7 @@ async def test_new_worker_restores_durable_child_scope_without_remote_scope_expa
     assert summary.complete is True
     assert first_scopes == [(ROOT_ID, frozenset({ROOT_ID}))]
     assert second_scopes == [(ROOT_ID, frozenset({ROOT_ID, CHILD_ID}))]
-    assert [call["cid"] for call in second_transport.calls] == [CHILD_ID]
+    assert [call["cid"] for call in second_transport.calls] == [CHILD_ID, CHILD_ID]
     await database.engine.dispose()
 
 
@@ -227,14 +242,14 @@ async def test_v2_durable_cursor_restores_child_scope_without_remote_scope_expan
         )
         await session.commit()
 
-    transport = _Transport([_page([_file("8100", CHILD_ID)])])
+    transport = _Transport([_page([], count=0), _page([_file("8100", CHILD_ID)])])
     scope = await service.readonly_directory_scope(lease)
     gateway = _gateway(transport, scope)
     page = await gateway.list_directory(CHILD_ID, page=1, page_size=1)
 
     assert scope == frozenset({ROOT_ID, CHILD_ID})
     assert page.items[0].parent_id == CHILD_ID
-    assert [call["cid"] for call in transport.calls] == [CHILD_ID]
+    assert [call["cid"] for call in transport.calls] == [CHILD_ID, CHILD_ID]
     await service.release(lease, requeue=True)
     await database.engine.dispose()
 

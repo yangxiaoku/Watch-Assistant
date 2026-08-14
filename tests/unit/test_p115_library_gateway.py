@@ -141,8 +141,9 @@ async def test_gateway_falls_back_to_legacy_on_structured_405():
 
     assert page is not None
     assert page.items == ()
-    assert transport.fs_files_app_calls == 1
-    assert transport.fs_files_calls == 1
+    # 结构化 405 回退后为空页 → legacy 模式,还需一次文件索引请求(同样回退)。
+    assert transport.fs_files_app_calls == 2
+    assert transport.fs_files_calls == 2
 
 
 @pytest.mark.asyncio

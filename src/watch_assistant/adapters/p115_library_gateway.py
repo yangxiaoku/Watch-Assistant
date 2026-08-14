@@ -93,6 +93,11 @@ class P115ReadOnlyDirectoryGateway:
         self._authorized_file_ids = authorized_files
         self._observed_directories: dict[str, LibraryEntry] = {}
         self._observed_files: dict[str, LibraryEntry] = {}
+        # legacy 双索引模式下按 (目录, 页大小) 缓存的 (文件夹索引 count, 文件索引 count)。
+        # 两个索引在真实 115 上独立计数(文件夹索引=目录+尚未进入文件索引的新推送文件,
+        # 文件索引=全部文件);合并页只在 offset 未越界时才请求对应索引。越界请求会被
+        # 115 把 offset 重置为 0 并返回整页,必须跳过而不是请求。
+        self._index_counts: dict[tuple[str, int], tuple[int, int]] = {}
         self._request_timeout_seconds = float(request_timeout_seconds)
         self._clock = clock
         self._allow_virtual_root = allow_virtual_root
@@ -108,7 +113,17 @@ class P115ReadOnlyDirectoryGateway:
         page: int = 1,
         page_size: int = VERIFIED_PAGE_SIZE,
     ) -> DirectoryPage:
-        """Read one proven-safe page or fail closed before exposing entries."""
+        """Read one proven-safe page or fail closed before exposing entries.
+
+        真实 115 实测(2026-08-14):proapi 与 legacy 两个列表接口都存在双索引:
+        - 文件夹索引(show_dir=1):目录 + 新推送尚未进入文件索引的文件;记录对
+          文件与目录完全同形(fc 恒 0 或 "0",无 is_dir),必须用 ``fs_info`` 判型;
+        - 文件索引(show_dir=0):全部已索引文件,带 ``fid``(proapi id)与
+          ``play_long``;webapi id 在 legacy 记录的 ``cid``、app 记录的 ``pid``。
+        因此统一合并两个索引:文件夹索引条目经 fs_info 判型(folder_count>0 即
+        目录),与文件索引按 webapi id 去重;文件索引条目直接按文件解析,父级即
+        本次列出的目录(其 pid 字段是文件自身 webapi id,不是父级)。
+        """
 
         normalized_directory_id = _directory_id(
             directory_id, allow_zero=self._allow_virtual_root
@@ -136,35 +151,134 @@ class P115ReadOnlyDirectoryGateway:
         # page_size=50 时 offset = (page-1)*50（每页 50 条）。
         offset = (page - 1) * request_page_size
         deadline = self._deadline()
-        response = await self._call(
-            "fs_files",
-            {
-                "cid": normalized_directory_id,
-                "limit": request_page_size,
-                "offset": offset,
-                "record_open_time": 0,
-                "show_dir": 1,
-            },
-            deadline=deadline,
-        )
-        result = _parse_page(
-            response,
-            page=page,
-            offset=offset,
-            allow_zero_parent=(
-                is_virtual_root
-            ),
-            expected_limit=request_page_size,
-            virtual_root=is_virtual_root,
-        )
-        if any(entry.parent_id != normalized_directory_id for entry in result.items):
+
+        index_key = (normalized_directory_id, request_page_size)
+        stored = self._index_counts.get(index_key)
+        folder_count: int | None = None
+        file_count: int | None = None
+        if stored is not None:
+            folder_count, file_count = stored
+
+        folder_records: tuple[Mapping[str, Any], ...] = ()
+        if folder_count is None or offset < folder_count:
+            folder_response = await self._call(
+                "fs_files",
+                {
+                    "cid": normalized_directory_id,
+                    "limit": request_page_size,
+                    "offset": offset,
+                    "record_open_time": 0,
+                    "show_dir": 1,
+                },
+                deadline=deadline,
+            )
+            # 虚拟根目录的文件夹索引实测会把 limit=50 回显为 48(既有契约)。
+            folder_records, _, folder_count = _verify_page(
+                folder_response,
+                offset=offset,
+                expected_limit=request_page_size,
+                expected_response_limit=request_page_size
+                - (VIRTUAL_ROOT_RESPONSE_LIMIT_DELTA if is_virtual_root else 0),
+            )
+        file_records: tuple[Mapping[str, Any], ...] = ()
+        if file_count is None or offset < file_count:
+            file_response = await self._call(
+                "fs_files",
+                {
+                    "cid": normalized_directory_id,
+                    "limit": request_page_size,
+                    "offset": offset,
+                    "record_open_time": 0,
+                    "show_dir": 0,
+                },
+                deadline=deadline,
+            )
+            # 文件索引实测正常回显 limit(含虚拟根目录),不应用 48 的 delta。
+            file_records, _, file_count = _verify_page(
+                file_response,
+                offset=offset,
+                expected_limit=request_page_size,
+            )
+        self._index_counts[index_key] = (folder_count, file_count)
+
+        # 文件索引条目的 webapi id:legacy 在 cid,app 在 pid。
+        file_webapi_ids = {
+            webapi_id
+            for record in file_records
+            if (webapi_id := _single_id(record, ("cid", "pid"))) is not None
+        }
+        entries: list[LibraryEntry] = []
+        for record in folder_records:
+            is_directory = await self._resolve_record_type(record, deadline)
+            if not is_directory:
+                webapi_id = _single_id(record, ("fid", "cid"))
+                if webapi_id is not None and webapi_id in file_webapi_ids:
+                    # 该文件已由文件索引返回(fid 条目),避免同一文件双条目。
+                    continue
+            entries.append(
+                _parse_entry(
+                    record,
+                    is_directory=is_directory,
+                    allow_zero_parent=is_virtual_root,
+                )
+            )
+        for record in file_records:
+            entries.append(
+                _parse_entry(
+                    record,
+                    is_directory=False,
+                    fallback_parent_id=normalized_directory_id,
+                    parent_from_pid=False,
+                    allow_zero_parent=is_virtual_root,
+                )
+            )
+        if any(entry.parent_id != normalized_directory_id for entry in entries):
             raise P115ReadOnlyGatewayError("entry_scope_unverified")
-        for entry in result.items:
+        for entry in entries:
             if entry.is_directory and entry.directory_id is not None:
                 self._observed_directories[entry.directory_id] = entry
             elif entry.file_id is not None:
                 self._observed_files[entry.file_id] = entry
-        return result
+        # 合并页:两个索引都在 offset 之后耗尽才算终止。
+        terminal = (offset + 1 >= folder_count) and (offset + 1 >= file_count)
+        return DirectoryPage(
+            items=tuple(entries),
+            page=page,
+            page_count=None,
+            total=folder_count + file_count,
+            scan_complete=True if terminal else None,
+            state=ScanState.COMPLETE,
+            has_more=not terminal,
+            next_page=None if terminal else page + 1,
+            terminal=terminal,
+        )
+
+    async def _resolve_record_type(
+        self, record: Mapping[str, Any], deadline: float
+    ) -> bool:
+        """返回记录是否为目录;列表记录无法凭字段判型,统一用 fs_info 判型。"""
+        marker = _directory_marker(record)
+        if marker is not None:
+            return marker
+        return await self._classify_via_detail(record, deadline)
+
+    async def _classify_via_detail(
+        self, record: Mapping[str, Any], deadline: float
+    ) -> bool:
+        """用 fs_info 的 folder_count>0 判型;响应无法判定时失败关闭。"""
+        cid = _single_id(record, ("directory_id", "category_id", "cid"))
+        if cid is not None:
+            payload: Mapping[str, str] = {"cid": cid}
+        else:
+            fid = _single_id(record, ("file_id", "fid"))
+            if fid is None:
+                raise P115ReadOnlyGatewayError("entry_unverified")
+            payload = {"fid": fid}
+        response = await self._call("fs_info", payload, deadline=deadline)
+        folder_count = _nonnegative_int(response.get("folder_count"))
+        if folder_count is None:
+            raise P115ReadOnlyGatewayError("entry_unverified")
+        return folder_count > 0
 
     async def get_file_detail(self, file_id: str) -> FileDetail:
         normalized_file_id = _stable_id(file_id)
@@ -183,6 +297,8 @@ class P115ReadOnlyDirectoryGateway:
             normalized_file_id,
             expect_directory=False,
             observed_entry=self._observed_files.get(normalized_file_id),
+            authorized_directory_ids=self._authorized_directory_ids,
+            observed_directories=self._observed_directories,
         )
 
     async def get_directory_detail(self, directory_id: str) -> DirectoryDetail:
@@ -204,6 +320,8 @@ class P115ReadOnlyDirectoryGateway:
             normalized_directory_id,
             expect_directory=True,
             observed_entry=self._observed_directories.get(normalized_directory_id),
+            authorized_directory_ids=self._authorized_directory_ids,
+            observed_directories=self._observed_directories,
         )
 
     async def _call(
@@ -225,10 +343,10 @@ class P115ReadOnlyDirectoryGateway:
                     response = await transport.fs_files_app(
                         payload, timeout_seconds=remaining
                     )
-                    if _is_structured_method_not_allowed(response):
-                        # app 端点返回结构化 405(不抛异常)时同样回退旧接口;
-                        # 否则该 405 会被 _response_success 误判为成功,再在
-                        # _parse_page 退化为含义不明的 pagination_unverified。
+                    if not isinstance(response, Mapping) or _is_structured_method_not_allowed(response):
+                        # app 端点返回非 Mapping(如空列表)或结构化 405 时回退旧接口;
+                        # 否则非 Mapping 会被 malformed_response 拒绝,结构化 405 会被
+                        # _response_success 误判为成功,再退化为含义不明的 pagination_unverified。
                         response = await transport.fs_files(
                             payload, timeout_seconds=remaining
                         )
@@ -243,7 +361,10 @@ class P115ReadOnlyDirectoryGateway:
                     response = await transport.fs_info_app(
                         payload, timeout_seconds=remaining
                     )
-                    if _is_structured_method_not_allowed(response):
+                    if not isinstance(response, Mapping) or _is_structured_method_not_allowed(response):
+                        # fs_info_app 对文件(fid)请求返回空列表(实测),必须回退旧接口;
+                        # 否则文件详情永远 malformed_response,推送任务的可用性观察
+                        # 全部失败为 availability_observer_unavailable。
                         response = await transport.fs_info(
                             payload, timeout_seconds=remaining
                         )
@@ -315,24 +436,20 @@ class P115ReadOnlyDirectoryGateway:
         return remaining
 
 
-def _parse_page(
+def _verify_page(
     response: Mapping[str, Any],
     *,
-    page: int,
     offset: int,
-    allow_zero_parent: bool = False,
     expected_limit: int = VERIFIED_PAGE_SIZE,
-    virtual_root: bool = False,
-) -> DirectoryPage:
+    expected_response_limit: int | None = None,
+) -> tuple[tuple[Mapping[str, Any], ...], bool, int]:
+    """只做分页验证,返回 (records, terminal, total);条目解析由调用方完成。"""
     records = _records(response)
     response_offset = _integer(response.get("offset"))
     response_limit = _integer(response.get("limit"))
     total = _integer(response.get("count"))
-    expected_response_limit = (
-        expected_limit - VIRTUAL_ROOT_RESPONSE_LIMIT_DELTA
-        if virtual_root
-        else expected_limit
-    )
+    if expected_response_limit is None:
+        expected_response_limit = expected_limit
     if (
         records is None
         or response_offset != offset
@@ -344,29 +461,8 @@ def _parse_page(
         raise P115ReadOnlyGatewayError("pagination_unverified")
     if not records and total > offset:
         raise P115ReadOnlyGatewayError("pagination_unverified")
-
-    try:
-        entries = tuple(
-            _parse_entry(record, allow_zero_parent=allow_zero_parent)
-            for record in records
-        )
-    except P115ReadOnlyGatewayError:
-        raise
-    except LibraryContractError:
-        raise P115ReadOnlyGatewayError("entry_unverified") from None
-
-    terminal = offset + len(entries) == total
-    return DirectoryPage(
-        items=entries,
-        page=page,
-        page_count=None,
-        total=total,
-        scan_complete=True if terminal else None,
-        state=ScanState.COMPLETE,
-        has_more=not terminal,
-        next_page=None if terminal else page + 1,
-        terminal=terminal,
-    )
+    terminal = offset + len(records) == total
+    return records, terminal, total
 
 
 def _records(response: Mapping[str, Any]) -> tuple[Mapping[str, Any], ...] | None:
@@ -385,9 +481,15 @@ def _records(response: Mapping[str, Any]) -> tuple[Mapping[str, Any], ...] | Non
 
 
 def _parse_entry(
-    record: Mapping[str, Any], *, allow_zero_parent: bool = False
+    record: Mapping[str, Any],
+    *,
+    allow_zero_parent: bool = False,
+    is_directory: bool | None = None,
+    fallback_parent_id: str | None = None,
+    parent_from_pid: bool = True,
 ) -> LibraryEntry:
-    is_directory = _directory_marker(record)
+    if is_directory is None:
+        is_directory = _directory_marker(record)
     if is_directory is None:
         raise P115ReadOnlyGatewayError("entry_unverified")
     name = _single_text(record, ("name", "n", "fn", "file_name", "category_name"))
@@ -399,10 +501,21 @@ def _parse_entry(
         directory_id = directory_id or file_id
         if directory_id is None:
             raise P115ReadOnlyGatewayError("entry_unverified")
-    elif file_id is None:
-        raise P115ReadOnlyGatewayError("entry_unverified")
-    parent_names = ("parent_id", "pid") if is_directory else ("parent_id", "pid", "cid")
-    parent_id = _single_id(record, parent_names, allow_zero=allow_zero_parent)
+    else:
+        if file_id is None:
+            # 文件夹索引中的文件条目没有 fid,只有 webapi id(cid)。
+            file_id = directory_id
+        if file_id is None:
+            raise P115ReadOnlyGatewayError("entry_unverified")
+    # 父级只认 pid(列表记录的 cid 是条目自身 id,不是父级);文件索引记录无可靠
+    # pid(app 文件索引的 pid 是文件自身 webapi id),父级由调用方注入本次列出的目录。
+    parent_id = (
+        _single_id(record, ("parent_id", "pid"), allow_zero=allow_zero_parent)
+        if parent_from_pid
+        else None
+    )
+    if parent_id is None and fallback_parent_id is not None:
+        parent_id = fallback_parent_id
     size = _single_nonnegative_int(
         record, ("size_bytes", "size", "s", "fs", "file_size")
     )
@@ -425,13 +538,19 @@ def _parse_detail(
     *,
     expect_directory: bool,
     observed_entry: LibraryEntry | None,
+    authorized_directory_ids: Collection[str] = (),
+    observed_directories: dict[str, LibraryEntry] | None = None,
 ) -> LibraryEntry:
     detail = response.get("data")
     if not isinstance(detail, Mapping):
         detail = response
-    is_directory = _directory_marker(detail)
-    if is_directory is not expect_directory:
+    # 详情响应携带类型信号(folder_count>0 目录 / play_long>0 文件)时,与调用期望
+    # 冲突即失败关闭(真实 115 的 fs_info 对文件与目录都返回 file_category="0",
+    # 该字段不能作为判据;marker 无法判定时放行,由身份/父链校验兜底)。
+    marker = _directory_marker(detail)
+    if marker is not None and marker != expect_directory:
         raise P115ReadOnlyGatewayError("detail_unverified")
+    is_directory = expect_directory
     name = _single_text(detail, ("name", "n", "fn", "file_name", "category_name"))
     if name is None:
         raise P115ReadOnlyGatewayError("detail_unverified")
@@ -446,7 +565,23 @@ def _parse_detail(
     observed_id = (
         observed_entry.directory_id if expect_directory and observed_entry else None
     ) or (observed_entry.file_id if observed_entry else None)
+    paths_parent = None if expect_directory else _paths_parent(detail)
     identity = response_identity or observed_id
+    if (
+        identity is None
+        and not expect_directory
+        and paths_parent is not None
+        and (
+            paths_parent[0] in authorized_directory_ids
+            or (
+                observed_directories is not None
+                and paths_parent[0] in observed_directories
+            )
+        )
+    ):
+        # legacy/proapi 详情都不回显对象自身 ID;文件以 paths 父链落在授权目录内
+        # 为锚,把请求 ID 作为该文件身份(请求本身是 fid 回显,父链是真实校验)。
+        identity = requested_id
     if identity != requested_id:
         raise P115ReadOnlyGatewayError("detail_unverified")
     directory_id = identity if expect_directory else None
@@ -470,6 +605,33 @@ def _parse_detail(
         and response_parent_id != observed_parent_id
     ):
         raise P115ReadOnlyGatewayError("detail_unverified")
+    paths_parent_id: str | None = None
+    if paths_parent is not None:
+        paths_parent_id, paths_parent_name = paths_parent
+        if observed_parent_id is not None and paths_parent_id != observed_parent_id:
+            raise P115ReadOnlyGatewayError("detail_unverified")
+        if (
+            observed_directories is not None
+            and paths_parent_id in authorized_directory_ids
+        ):
+            # 把文件父链末端目录登记为已观察目录:legacy 详情不回显目录身份,
+            # 随后的 get_directory_detail(parent) 才能验证身份。
+            try:
+                observed_directories[paths_parent_id] = parse_library_entry(
+                    {
+                        "is_directory": True,
+                        "name": paths_parent_name,
+                        "directory_id": paths_parent_id,
+                        "parent_id": None,
+                        "pickcode": None,
+                        "path": None,
+                    }
+                )
+            except LibraryContractError:
+                raise P115ReadOnlyGatewayError("detail_unverified") from None
+    elif expect_directory and observed_entry is not None:
+        if observed_entry.name != name:
+            raise P115ReadOnlyGatewayError("detail_unverified")
     pickcode = _optional_pickcode(detail, error_code="detail_unverified")
     if pickcode is None and observed_entry is not None:
         pickcode = observed_entry.pickcode
@@ -478,7 +640,7 @@ def _parse_detail(
         "name": name,
         "directory_id": directory_id,
         "file_id": file_id,
-        "parent_id": response_parent_id or observed_parent_id,
+        "parent_id": response_parent_id or paths_parent_id or observed_parent_id,
         "size": _single_nonnegative_int(
             detail, ("size_bytes", "size", "s", "fs", "file_size")
         ),
@@ -501,19 +663,39 @@ def _directory_marker(record: Mapping[str, Any]) -> bool | None:
             if not isinstance(record[name], bool):
                 return None
             values.append(record[name])
-    if "fc" in record:
-        value = record["fc"]
-        if isinstance(value, bool) or value not in (0, 1, "0", "1"):
+    # 真实 115 实测 fc 语义随接口漂移(legacy 文件夹索引文件/目录都 fc=0,
+    # legacy 文件索引文件 fc=1,proapi 列表文件 fc="0"),不能作为判据。
+    # fs_info 详情中 folder_count>0 表示目录,play_long>0 表示文件。
+    if "folder_count" in record:
+        value = _nonnegative_int(record["folder_count"])
+        if value is None:
             return None
-        values.append(value in (0, "0"))
-    if "file_category" in record:
-        value = record["file_category"]
-        if isinstance(value, bool) or value not in (0, 1, "0", "1"):
+        if value > 0:
+            values.append(True)
+    if "play_long" in record:
+        value = _nonnegative_int(record["play_long"])
+        if value is None:
             return None
-        values.append(value in (0, "0"))
+        if value > 0:
+            values.append(False)
     if not values or len(set(values)) != 1:
         return None
     return values[0]
+
+
+def _paths_parent(detail: Mapping[str, Any]) -> tuple[str, str] | None:
+    """fs_info 详情的 paths 父链末端 (id, name),即该对象的直接父目录。"""
+    paths = detail.get("paths")
+    if not isinstance(paths, list) or not paths:
+        return None
+    last = paths[-1]
+    if not isinstance(last, Mapping):
+        return None
+    file_id = _directory_id(last.get("file_id"), allow_zero=True)
+    name = last.get("file_name")
+    if file_id is None or not isinstance(name, str) or not name.strip():
+        return None
+    return file_id, name.strip()
 
 
 def _single_text(record: Mapping[str, Any], names: tuple[str, ...]) -> str | None:
