@@ -2,11 +2,13 @@
 import { AlertTriangle, Bell, Check, CheckCheck, CircleAlert, LoaderCircle, RefreshCw, ShieldAlert } from "@lucide/vue";
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { ApiClient, ApiError } from "../api";
+import { useFeedback } from "../composables/useFeedback";
 import { formatTimestamp } from "../format";
 import type { NotificationResponse, NotificationSeverity } from "../types";
 
 const props = defineProps<{ api: ApiClient }>();
 const emit = defineEmits<{ navigate: [view: "settings" | "workflows" | "organization-plans"] }>();
+const feedback = useFeedback();
 
 const filter = ref<"all" | "unread" | "actionable" | "error">("all");
 const items = ref<NotificationResponse[]>([]);
@@ -99,6 +101,7 @@ async function saveQuietHours() {
     quietHoursEnd.value = response.quiet_hours_end ?? quietHoursEnd.value;
     quietHoursTimezone.value = response.quiet_hours_timezone ?? quietHoursTimezone.value;
     errorBypassQuietHours.value = response.error_bypass_quiet_hours ?? errorBypassQuietHours.value;
+    feedback.success("静默时段已保存");
   } catch (exception) {
     if (mounted) error.value = exception instanceof ApiError ? exception.message : "静默时段暂时无法保存";
   } finally {
@@ -147,6 +150,7 @@ async function togglePreferences() {
     if (!mounted) return;
     preferencesEnabled.value = response.enabled;
     preferenceRevision.value = response.revision;
+    feedback.success("已更新通知接收设置");
   } catch (exception) {
     if (mounted) {
       preferencesEnabled.value = previous;

@@ -11,6 +11,7 @@ import {
 } from "@lucide/vue";
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { ApiClient, ApiError } from "../api";
+import { useFeedback } from "../composables/useFeedback";
 import InlineAlert from "../components/InlineAlert.vue";
 import { describeUiError } from "../errorCatalog";
 import { formatTimestamp } from "../format";
@@ -21,6 +22,7 @@ import type {
 } from "../types";
 
 const props = defineProps<{ api: ApiClient }>();
+const feedback = useFeedback();
 
 const items = ref<SubscriptionResponse[]>([]);
 const loading = ref(false);
@@ -94,6 +96,7 @@ async function create() {
     createOpen.value = false;
     tmdbId.value = "";
     await load();
+    feedback.success("订阅已创建");
   } catch (exception) {
     createError.value = describeUiError(
       exception instanceof ApiError ? exception.code : "request_failed",
@@ -126,8 +129,10 @@ async function togglePause(item: SubscriptionResponse) {
   try {
     if (item.status === "paused") {
       await props.api.subscriptionResume(item.id, item.revision);
+      feedback.success("已恢复订阅");
     } else {
       await props.api.subscriptionPause(item.id, item.revision);
+      feedback.success("已暂停订阅");
     }
     await load();
   } catch (exception) {

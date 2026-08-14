@@ -339,7 +339,7 @@ test.describe("D. 收藏/记录/任务抽屉", () => {
       await page.goto(`${BASE}/movies`);
       const card = page.locator(".movie-card").first();
       await expect(card).toBeVisible({ timeout: 40_000 });
-      const favBtn = card.locator(".favorite-button").first();
+      const favBtn = card.locator("xpath=..").locator(".favorite-button").first();
       if (await favBtn.count()) {
         await favBtn.click();
         await page.waitForTimeout(500);
@@ -591,7 +591,7 @@ test.describe("I. 设置各分区", () => {
       // 连接配置
       await page.locator(".settings-nav").getByRole("button", { name: "连接配置" }).click();
       await expect(page.getByRole("heading", { name: "连接配置" })).toBeVisible({ timeout: 40_000 });
-      const tmdbInput = page.getByLabel("TMDB API Key").first();
+      const tmdbInput = page.locator('input[aria-label="TMDB API Key"]').first();
       await expect(tmdbInput).toBeVisible({ timeout: 40_000 });
       // 输入无效 Key → 保存并验证 → 应出现结构化错误且不落库
       await tmdbInput.fill("invalid-test-key-12345");
@@ -664,13 +664,14 @@ test.describe("I. 设置各分区", () => {
       const original = await toggle.isChecked();
       await toggle.setChecked(!original);
       await page.locator(".settings-save-bar .primary-button").click();
-      await page.waitForTimeout(2000);
+      // 等待保存完成（保存条消失）
+      await expect(page.locator(".settings-save-bar")).toHaveCount(0, { timeout: 20_000 });
       const toasts1 = await toastTexts(page);
       console.log("[info] 资源检测保存 toast:", JSON.stringify(toasts1));
       // 还原
       await toggle.setChecked(original);
       await page.locator(".settings-save-bar .primary-button").click();
-      await page.waitForTimeout(2000);
+      await expect(page.locator(".settings-save-bar")).toHaveCount(0, { timeout: 20_000 });
       assertNoUnexpectedErrors(errors);
     } finally {
       await page.context().close();
@@ -706,7 +707,7 @@ test.describe("I. 设置各分区", () => {
     const errors = watch(page);
     try {
       await page.goto(`${BASE}/settings`);
-      const prowlarrTab = page.locator(".settings-nav").getByRole("button", { name: /Prowlarr|搜索源/ });
+      const prowlarrTab = page.locator(".settings-nav button", { hasText: "搜索来源" });
       if (await prowlarrTab.count()) {
         await prowlarrTab.click();
         await page.waitForTimeout(2000);
@@ -731,7 +732,7 @@ test.describe("I. 设置各分区", () => {
     const errors = watch(page);
     try {
       await page.goto(`${BASE}/settings`);
-      const checkinTab = page.locator(".settings-nav").getByRole("button", { name: /签到/ });
+      const checkinTab = page.locator(".settings-nav button", { hasText: "签到" });
       if (await checkinTab.count()) {
         await checkinTab.click();
         await page.waitForTimeout(1500);
@@ -740,7 +741,7 @@ test.describe("I. 设置各分区", () => {
           const original = await toggle.isChecked();
           await toggle.setChecked(!original);
           await page.locator(".settings-save-bar .primary-button, button:has-text('保存')").first().click();
-          await page.waitForTimeout(2000);
+          await expect(page.locator(".settings-save-bar")).toHaveCount(0, { timeout: 20_000 }).catch(() => {});
           await toggle.setChecked(original);
           await page.locator(".settings-save-bar .primary-button, button:has-text('保存')").first().click();
           await page.waitForTimeout(2000);
