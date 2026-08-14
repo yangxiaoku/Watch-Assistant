@@ -1048,3 +1048,28 @@ export interface SubscriptionResourceObservationResponse {
   name: string;
   size_bytes: number | null;
 }
+
+export interface NotifyChannelResponse {
+  id: string;
+  name: string;
+  kind: string;
+  webhook_url_prefix: string;
+  enabled: boolean;
+  revision: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface NotifyChannelListResponse {
+  items: NotifyChannelResponse[];
+}
+
+export interface NotifyChannelCreateRequest {
+  name: string;
+  webhook_url: string;
+  kind: "feishu";
+}
+
+export interface NotifyChannelPatch {
+  enabled: boolean;
+}

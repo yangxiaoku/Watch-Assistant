@@ -39,6 +39,10 @@ import type {
   NotificationListResponse,
   NotificationResponse,
   NotificationPreferenceResponse,
+  NotifyChannelCreateRequest,
+  NotifyChannelListResponse,
+  NotifyChannelPatch,
+  NotifyChannelResponse,
   OrganizationPlanListResponse,
   OrganizationPlanSummary,
   OrganizationHistoryListResponse,
@@ -689,6 +693,22 @@ export class ApiClient {
 
   async updateNotificationPreferences(patch: { enabled?: boolean; muted_event_codes?: string[]; quiet_hours_enabled?: boolean; quiet_hours_start?: string; quiet_hours_end?: string; quiet_hours_timezone?: string; error_bypass_quiet_hours?: boolean; revision: number }): Promise<NotificationPreferenceResponse> {
     return this.request<NotificationPreferenceResponse>("/api/v1/notification-preferences", { method: "PATCH", body: JSON.stringify(patch) });
+  }
+
+  async notifyChannels(): Promise<NotifyChannelListResponse> {
+    return this.request<NotifyChannelListResponse>("/api/v1/notify-channels");
+  }
+
+  async createNotifyChannel(payload: NotifyChannelCreateRequest): Promise<NotifyChannelResponse> {
+    return this.request<NotifyChannelResponse>("/api/v1/notify-channels", { method: "POST", body: JSON.stringify(payload) });
+  }
+
+  async setNotifyChannelEnabled(channelId: string, enabled: boolean): Promise<NotifyChannelResponse> {
+    return this.request<NotifyChannelResponse>(`/api/v1/notify-channels/${encodeURIComponent(channelId)}`, { method: "PATCH", body: JSON.stringify({ enabled } satisfies NotifyChannelPatch) });
+  }
+
+  async deleteNotifyChannel(channelId: string): Promise<void> {
+    return this.request<void>(`/api/v1/notify-channels/${encodeURIComponent(channelId)}`, { method: "DELETE" });
   }
 
   async organizationPlans(filters: {

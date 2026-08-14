@@ -2,6 +2,7 @@
 import {
   Activity,
   AlertTriangle,
+  Bell,
   CheckCircle2,
   Cookie,
   ShieldAlert,
@@ -45,6 +46,8 @@ import type {
   P115CheckInSettingsResponse,
   P115CheckInStatusResponse,
   SettingsOverviewResponse,
+  NotifyChannelResponse,
+  NotifyChannelListResponse,
   PatchProwlarrSettingsRequest,
   ProwlarrSettingsResponse,
   ProwlarrVerifyResponse,
@@ -56,7 +59,7 @@ const props = withDefaults(defineProps<{ api: ApiClient; initialSection?: Settin
 const emit = defineEmits<{ "auto-start-enabled": [enabled: boolean]; navigate: [view: "logs" | "organization"] }>();
 const feedback = useFeedback();
 
-type SettingsSection = "overview" | "credentials" | "prowlarr" | "logs" | "content" | "inspection" | "organization" | "checkin";
+type SettingsSection = "overview" | "credentials" | "prowlarr" | "logs" | "content" | "inspection" | "organization" | "checkin" | "notify";
 type ValidationState = "idle" | "running" | "error" | P115ValidationResponse["status"];
 
 const sectionGroups = [
@@ -86,6 +89,7 @@ const sectionGroups = [
     label: "自动化",
     items: [
       { id: "checkin" as const, label: "115 自动签到", icon: CheckCircle2 },
+      { id: "notify" as const, label: "追更通知", icon: Bell },
     ],
   },
 ];
@@ -154,6 +158,13 @@ const checkinDraftTime = ref("00:05");
 const checkinStatus = ref<P115CheckInStatusResponse | null>(null);
 const checkinStatusLoading = ref(true);
 const checkinStatusError = ref("");
+const notifyChannels = ref<NotifyChannelResponse[]>([]);
+const notifyLoading = ref(false);
+const notifyError = ref("");
+const notifySaving = ref(false);
+const notifySaveError = ref("");
+const notifyDraftName = ref("");
+const notifyDraftUrl = ref("");
 const organizationSettings = ref<OrganizationSettingsResponse | null>(null);
 const organizationLoading = ref(true);
 const organizationError = ref("");
@@ -235,11 +246,12 @@ function selectSection(section: SettingsSection) {
   if (section === "content" && !contentPolicy.value) void loadContentPolicy();
   if (section === "organization" && !organizationSettings.value && !organizationLoading.value) void loadOrganization();
   if (section === "checkin" && !checkinSettings.value && !checkinLoading.value) void loadCheckin();
+  if (section === "notify" && !notifyLoading.value) void loadNotifyChannels();
 }
 
 function selectMobileSection(event: Event) {
   const value = (event.target as HTMLSelectElement).value;
-  if (value === "overview" || value === "credentials" || value === "prowlarr" || value === "logs" || value === "content" || value === "inspection" || value === "organization" || value === "checkin") selectSection(value);
+  if (value === "overview" || value === "credentials" || value === "prowlarr" || value === "logs" || value === "content" || value === "inspection" || value === "organization" || value === "checkin" || value === "notify") selectSection(value);
 }
 
 async function loadOverview() {
@@ -1311,6 +1323,67 @@ async function saveCheckin() {
   }
 }
 
+async function loadNotifyChannels() {
+  notifyLoading.value = true;
+  notifyError.value = "";
+  try {
+    const response = await props.api.notifyChannels();
+    if (!settingsMounted) return;
+    notifyChannels.value = response.items;
+  } catch (exception) {
+    if (!settingsMounted) return;
+    notifyError.value = exception instanceof ApiError ? exception.message : "通知渠道加载失败，请稍后重试";
+  } finally {
+    if (settingsMounted) notifyLoading.value = false;
+  }
+}
+
+async function addNotifyChannel() {
+  const name = notifyDraftName.value.trim();
+  const url = notifyDraftUrl.value.trim();
+  if (!name || !url || notifySaving.value) return;
+  notifySaving.value = true;
+  notifySaveError.value = "";
+  try {
+    await props.api.createNotifyChannel({ name, webhook_url: url, kind: "feishu" });
+    if (!settingsMounted) return;
+    notifyDraftName.value = "";
+    notifyDraftUrl.value = "";
+    await loadNotifyChannels();
+    feedback.success("通知渠道已添加");
+  } catch (exception) {
+    if (!settingsMounted) return;
+    notifySaveError.value = exception instanceof ApiError ? exception.message : "添加失败，请稍后重试";
+  } finally {
+    if (settingsMounted) notifySaving.value = false;
+  }
+}
+
+async function toggleNotifyChannel(channel: NotifyChannelResponse) {
+  try {
+    const updated = await props.api.setNotifyChannelEnabled(channel.id, !channel.enabled);
+    if (!settingsMounted) return;
+    const index = notifyChannels.value.findIndex((item) => item.id === channel.id);
+    if (index >= 0) notifyChannels.value[index] = updated;
+    feedback.success(updated.enabled ? "渠道已启用" : "渠道已停用");
+  } catch (exception) {
+    if (!settingsMounted) return;
+    feedback.error(exception instanceof ApiError ? exception.message : "操作失败，请稍后重试");
+  }
+}
+
+async function removeNotifyChannel(channel: NotifyChannelResponse) {
+  try {
+    await props.api.deleteNotifyChannel(channel.id);
+    if (!settingsMounted) return;
+    notifyChannels.value = notifyChannels.value.filter((item) => item.id !== channel.id);
+    feedback.success("渠道已删除");
+  } catch (exception) {
+    if (!settingsMounted) return;
+    feedback.error(exception instanceof ApiError ? exception.message : "删除失败，请稍后重试");
+  }
+}
+
 function checkinStatusErrorText(): string {
   const code = checkinStatus.value?.error_code;
   const labels: Record<string, string> = {
@@ -1504,6 +1577,34 @@ onBeforeUnmount(() => {
               </template>
             </div>
           </template>
+        </section>
+        <section v-else-if="activeSection === 'notify'" class="settings-section" aria-labelledby="notify-title">
+          <header class="settings-section-heading"><div><p class="eyebrow">自动化</p><h2 id="notify-title">追更通知</h2><p>订阅命中新集或资源入库成功后，主动推送到飞书群机器人。</p></div><button class="icon-button" type="button" title="刷新通知渠道" aria-label="刷新通知渠道" :disabled="notifyLoading" @click="loadNotifyChannels"><RefreshCw :size="16" :class="{ spin: notifyLoading }" /></button></header>
+          <InlineAlert v-if="notifyError" variant="error" :message="notifyError" action-label="重试" @action="loadNotifyChannels" />
+          <div class="settings-subsection">
+            <h3>添加飞书机器人</h3>
+            <div class="settings-form-grid">
+              <label>渠道名称<input v-model="notifyDraftName" type="text" placeholder="例如：追剧通知群" /></label>
+              <label>飞书 Webhook 地址<input v-model="notifyDraftUrl" type="text" placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/…" /></label>
+            </div>
+            <button class="button button-primary" type="button" :disabled="notifySaving || !notifyDraftName.trim() || !notifyDraftUrl.trim()" @click="addNotifyChannel">{{ notifySaving ? '添加中…' : '添加渠道' }}</button>
+            <InlineAlert v-if="notifySaveError" variant="error" :message="notifySaveError" />
+            <p class="settings-note">Webhook 地址加密存储，仅显示前缀与末位，不会回显完整地址。</p>
+          </div>
+          <div class="settings-subsection">
+            <h3>已配置渠道</h3>
+            <div v-if="notifyLoading" class="settings-loading"><LoaderCircle class="spin" :size="18" />正在加载</div>
+            <p v-else-if="notifyChannels.length === 0" class="settings-note">尚未配置任何通知渠道。</p>
+            <ul v-else class="settings-list">
+              <li v-for="channel in notifyChannels" :key="channel.id" class="settings-list-item">
+                <div class="settings-list-meta"><strong>{{ channel.name }}</strong><span class="settings-note">{{ channel.webhook_url_prefix }}</span></div>
+                <div class="settings-list-actions">
+                  <label class="settings-toggle"><input type="checkbox" :checked="channel.enabled" aria-label="启用渠道" @change="toggleNotifyChannel(channel)" /><span>{{ channel.enabled ? '启用' : '停用' }}</span></label>
+                  <button class="icon-button" type="button" title="删除渠道" aria-label="删除渠道" @click="removeNotifyChannel(channel)"><XCircle :size="16" /></button>
+                </div>
+              </li>
+            </ul>
+          </div>
         </section>
 
       </div>
