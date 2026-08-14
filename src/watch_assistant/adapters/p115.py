@@ -11,11 +11,11 @@ from importlib.metadata import version
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
-from watch_assistant.adapters.p115_library_transport import throttle_read
 from watch_assistant.adapters.p115_library_gateway import (
     P115ReadOnlyDirectoryGateway,
     P115ReadOnlyGatewayError,
 )
+from watch_assistant.adapters.p115_library_transport import throttle_read
 from watch_assistant.schemas import RemoteObservation, RemoteStatus, SubmissionResult
 from watch_assistant.services.p115_credentials import (
     CookieProvider,

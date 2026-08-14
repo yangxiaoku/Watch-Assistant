@@ -612,9 +612,12 @@ def _parse_detail(
                 )
             except LibraryContractError:
                 raise P115ReadOnlyGatewayError("detail_unverified") from None
-    if expect_directory and observed_entry is not None:
-        if observed_entry.name != name:
-            raise P115ReadOnlyGatewayError("detail_unverified")
+    if (
+        expect_directory
+        and observed_entry is not None
+        and observed_entry.name != name
+    ):
+        raise P115ReadOnlyGatewayError("detail_unverified")
     pickcode = _optional_pickcode(detail, error_code="detail_unverified")
     if pickcode is None and observed_entry is not None:
         pickcode = observed_entry.pickcode
