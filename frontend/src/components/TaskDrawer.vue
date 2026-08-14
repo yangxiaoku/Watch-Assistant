@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { CircleAlert, CircleCheck, Database, ListTodo, LoaderCircle, LogIn, RefreshCw, Timer, X } from "@lucide/vue";
+import { AlertTriangle, Ban, CircleAlert, CircleCheck, Database, ListTodo, LoaderCircle, LogIn, RefreshCw, Timer, X } from "@lucide/vue";
 import { ref, watch } from "vue";
 import { ApiError, type ApiClient } from "../api";
 import ConfirmDialog from "../components/ConfirmDialog.vue";
@@ -59,6 +59,21 @@ function canCancel(task: TaskResponse): boolean {
 
 function canReconcile(task: TaskResponse): boolean {
   return ["uncertain", "submitted", "downloading"].includes(task.state) && Boolean(task.remote_ref);
+}
+
+/** 各状态对应图标：queued/submitting 旋转、available 成功、submitted/downloading 计时、
+ *  uncertain/needs_auth 警告、cancelled 中性、failed 错误。 */
+function stateIcon(task: TaskResponse) {
+  if (task.state === "queued" || task.state === "submitting") return LoaderCircle;
+  if (task.state === "available") return CircleCheck;
+  if (task.state === "submitted" || task.state === "downloading") return Timer;
+  if (task.state === "uncertain" || task.state === "needs_auth") return AlertTriangle;
+  if (task.state === "cancelled") return Ban;
+  return CircleAlert;
+}
+
+function stateIconSpin(task: TaskResponse): boolean {
+  return task.state === "queued" || task.state === "submitting";
 }
 
 function replaceTask(task: TaskResponse): void {
@@ -159,10 +174,7 @@ async function reconcile(task: TaskResponse): Promise<void> {
     <div v-else-if="!visibleTasks.length" class="empty-state">还没有推送任务</div>
     <article v-for="task in visibleTasks" :key="task.id" class="task-row">
       <div class="task-icon" :class="task.state">
-        <LoaderCircle v-if="['queued', 'submitting'].includes(task.state)" class="spin" :size="17" />
-        <CircleCheck v-else-if="task.state === 'available'" :size="17" />
-        <Timer v-else-if="['submitted', 'downloading'].includes(task.state)" :size="17" />
-        <CircleAlert v-else :size="17" />
+        <component :is="stateIcon(task)" :class="{ spin: stateIconSpin(task) }" :size="17" />
       </div>
       <div class="task-copy">
         <div class="task-status-line"><strong>{{ task.state_zh || taskStatusPresentation(task.state).label }}</strong><span :class="['status-chip', `status-chip-${taskStatusPresentation(task.state).tone}`]">{{ taskStatusPresentation(task.state).label }}</span></div>

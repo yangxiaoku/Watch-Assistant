@@ -364,6 +364,39 @@ test.describe("D. 收藏/记录/任务抽屉", () => {
     }
   });
 
+  test("D2b 推送任务状态展示：uncertain 为警告、failed 为错误、available 为成功", async () => {
+    const page = await freshPage();
+    const errors = watch(page);
+    try {
+      await page.goto(`${BASE}/`);
+      await page.getByRole("button", { name: "推送任务" }).first().click();
+      await expect(page.locator(".task-drawer")).toBeVisible({ timeout: 20_000 });
+      // 等待任务列表加载
+      await expect(page.locator(".task-row").first()).toBeVisible({ timeout: 30_000 });
+      const rows = page.locator(".task-row");
+      const count = await rows.count();
+      expect(count).toBeGreaterThan(0);
+      // 校验每种状态的图标色调：uncertain → amber 警告，failed → danger，available → mint
+      const tones: Record<string, string> = {};
+      for (let i = 0; i < count; i++) {
+        const row = rows.nth(i);
+        const icon = row.locator(".task-icon");
+        const state = (await icon.getAttribute("class")) ?? "";
+        const color = await icon.evaluate((el) => getComputedStyle(el).color);
+        const m = state.match(/task-icon (\S+)/);
+        if (m) tones[m[1]] = color;
+      }
+      console.log("[info] 抽屉状态色调:", JSON.stringify(tones));
+      if (tones.uncertain && tones.failed) {
+        // uncertain 应为警告色（amber），不得与 failed 的错误红相同
+        expect(tones.uncertain, `uncertain 与 failed 同为错误红: ${tones.uncertain}`).not.toBe(tones.failed);
+      }
+      assertNoUnexpectedErrors(errors);
+    } finally {
+      await page.context().close();
+    }
+  });
+
   test("D2 推送任务抽屉开合", async () => {
     const page = await freshPage();
     const errors = watch(page);

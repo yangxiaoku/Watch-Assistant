@@ -487,8 +487,10 @@ input { outline: none; }
 .task-drawer-header-actions { display: flex; min-width: 0; align-items: center; gap: 8px; }
 .task-row { display: flex; gap: 11px; padding: 15px 0; border-bottom: 1px solid var(--border); }
 .task-icon { display: grid; place-items: center; width: 32px; height: 32px; flex: 0 0 auto; color: var(--text-2); background: var(--surface-3); border-radius: 50%; }
-.task-icon.accepted { color: var(--mint); background: var(--mint-soft); }
-.task-icon.failed, .task-icon.uncertain, .task-icon.needs_auth { color: var(--danger); background: var(--danger-soft); }
+.task-icon.accepted, .task-icon.available { color: var(--mint); background: var(--mint-soft); }
+.task-icon.uncertain, .task-icon.needs_auth { color: var(--amber); background: var(--amber-soft); }
+.task-icon.cancelled { color: var(--text-2); background: var(--surface-3); }
+.task-icon.failed { color: var(--danger); background: var(--danger-soft); }
 .task-copy { min-width: 0; }
 .task-copy strong, .task-copy small { display: block; }
 .task-copy strong { color: var(--text); font-size: 13px; }
