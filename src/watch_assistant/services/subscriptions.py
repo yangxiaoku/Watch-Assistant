@@ -61,11 +61,14 @@ class SubscriptionService:
         *,
         event_logger: EventLogger | None = None,
         workflow_service: WorkflowService | None = None,
+        notify_dispatcher=None,
     ) -> None:
         self._session_factory = session_factory
         self._search = search_service
         self._event_logger = event_logger
         self._workflow_service = workflow_service
+        # 通知分发器可选注入:未注入则静默跳过(不通知)。
+        self._notify_dispatcher = notify_dispatcher
         # 并发创建同一订阅时,先查后插的窗口需要进程内互斥:SQLite 的
         # 部分唯一索引(迁移 070)是跨进程兜底,但同一事件循环里两个任务
         # 同时通过 _find_scope 再各自 commit 时,写串行化下的交错可能
@@ -322,6 +325,12 @@ class SubscriptionService:
             resource_type="subscription",
             resource_id=subscription_id,
         )
+        # 找到新资源时,若注入通知分发器则推送「追更命中」(fail-open)。
+        if new_resource_ids and self._notify_dispatcher is not None:
+            try:
+                await self._notify_dispatcher.notify_resource_found(subscription_id)
+            except Exception:  # noqa: BLE001, S110 - notify must never break the check
+                pass
         return SubscriptionCheckResponse(
             subscription=response,
             matched_count=len(resource_ids),

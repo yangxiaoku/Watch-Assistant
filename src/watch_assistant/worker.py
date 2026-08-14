@@ -95,6 +95,7 @@ class TaskWorker:
         inventory_refresh: (
             Callable[[], Awaitable[bool | InventoryRefreshEvidence]] | None
         ) = None,
+        notify_dispatcher=None,
     ) -> None:
         self._session_factory = session_factory
         self._crypto = crypto
@@ -106,6 +107,8 @@ class TaskWorker:
         self._event_logger = event_logger
         self._inventory_guard = inventory_guard
         self._inventory_refresh = inventory_refresh
+        # 通知分发器可选注入:未注入则静默跳过(不通知)。
+        self._notify_dispatcher = notify_dispatcher
         self._tasks = TaskService(session_factory)
 
     async def run_once(self) -> bool:
@@ -164,6 +167,12 @@ class TaskWorker:
             resource_type="task",
             resource_id=task.resource_id,
         )
+        # 真正入库(AVAILABLE)时,若注入通知分发器则推送「资源已入库」(fail-open)。
+        if state == TaskState.AVAILABLE and self._notify_dispatcher is not None:
+            try:
+                await self._notify_dispatcher.notify_task_available(task.id)
+            except Exception:  # noqa: BLE001, S110 - notify must never break the lease flow
+                pass
         return True
 
     async def recover_expired(self) -> int:

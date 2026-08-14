@@ -554,6 +554,21 @@ EVENT_CATALOG: dict[str, EventDefinition] = {
     "notification.preferences_changed": _event(
         "notification.preferences_changed", LogCategory.TASK, "通知偏好已更新", "站内通知当前状态：{status}"
     ),
+    "notify.delivered": _event(
+        "notify.delivered",
+        LogCategory.NOTIFICATION,
+        "外部通知已送达",
+        "外部通知已投递 {count} 个启用渠道",
+        fields=frozenset({"count"}),
+    ),
+    "notify.delivery_failed": _event(
+        "notify.delivery_failed",
+        LogCategory.NOTIFICATION,
+        "外部通知投递失败",
+        "外部通知投递失败，错误码：{error_code}",
+        suggestion="请检查飞书机器人 Webhook 配置后重试",
+        fields=frozenset({"error_code"}),
+    ),
     "webhook.test": _event(
         "webhook.test", LogCategory.NOTIFICATION, "Webhook 测试通知", "Webhook 测试通知已排队发送"
     ),
