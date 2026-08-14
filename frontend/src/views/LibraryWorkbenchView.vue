@@ -11,6 +11,7 @@ import { formatBytes } from "../format";
 import { libraryScanStatusLabel, manifestStatusLabel, strmOperationNextStep, strmOperationStatusLabel } from "../statusCatalog";
 import { diagnosticReference } from "../uiSafety";
 import type {
+  InventoryAuditReportResponse,
   MediaEntryResponse,
   MediaLibraryResponse,
   EmptyDirectoryCleanupPlanResponse,
@@ -70,6 +71,9 @@ const cleanupPlan = ref<StrmCleanupPlanResponse | null>(null);
 const cleanupIdempotencyKey = ref<string | null>(null);
 const emptyCleanupPlan = ref<EmptyDirectoryCleanupPlanResponse | null>(null);
 const emptyCleanupIdempotencyKey = ref<string | null>(null);
+const auditReport = ref<InventoryAuditReportResponse | null>(null);
+const auditLoading = ref(false);
+const auditError = ref("");
 const pendingCleanup = ref<"strm" | "empty" | "small" | "operation" | null>(null);
 const operationDetailOpen = ref(false);
 const activeTab = ref<"overview" | "cleanup" | "files">("overview");
@@ -518,6 +522,20 @@ async function scanLibrary() {
     setError(exception, "媒体库扫描失败");
   } finally {
     busy.value = false;
+  }
+}
+
+async function runInventoryAudit() {
+  if (auditLoading.value) return;
+  auditLoading.value = true;
+  auditError.value = "";
+  auditReport.value = null;
+  try {
+    auditReport.value = await props.api.inventoryAudit();
+  } catch (exception) {
+    auditError.value = exception instanceof ApiError ? exception.message : "库存体检失败，请稍后重试";
+  } finally {
+    auditLoading.value = false;
   }
 }
 
@@ -1072,6 +1090,29 @@ onBeforeUnmount(() => {
           <p v-if="operationError(latestOperation)" class="library-operation-error">{{ operationError(latestOperation) }}</p>
           <div class="library-operation-actions"><button class="text-button" type="button" @click="operationDetailOpen = !operationDetailOpen">{{ operationDetailOpen ? "收起详情" : "查看详情" }}</button><button v-if="['queued', 'running'].includes(latestOperation.status)" class="text-button" type="button" @click="requestCancelLatestOperation"><Ban :size="14" />取消操作</button><button v-if="['failed', 'cancelled'].includes(latestOperation.status) && !['cleanup', 'small_file_cleanup'].includes(latestOperation.kind)" class="text-button" type="button" :disabled="busy || (latestOperation.kind === 'incremental' ? !strmIncrementalAvailable : !strmFullAvailable)" :title="actionReason(latestOperation.kind === 'incremental' ? 'incremental' : 'full')" @click="retryLatestOperation"><RefreshCw :size="14" />恢复执行</button><button class="text-button" type="button" @click="refreshLatestOperation"><RefreshCw :size="14" />刷新状态</button></div>
           <div v-if="operationDetailOpen" class="library-operation-detail"><small>操作标识：{{ diagnosticReference(latestOperation.operation_id) }}</small><small>创建 {{ new Date(latestOperation.created_at).toLocaleString() }}</small><small v-if="latestOperation.finished_at">结束 {{ new Date(latestOperation.finished_at).toLocaleString() }}</small></div>
+        </section>
+        <section class="library-output-section">
+          <div class="library-section-heading"><div><p class="eyebrow">只读体检</p><h3>库存重复检测</h3></div><button class="secondary-button" type="button" :disabled="auditLoading" @click="runInventoryAudit"><RefreshCw :size="14" :class="{ spin: auditLoading }" />检测重复</button></div>
+          <p class="library-capability-note">盘点整理归档目录中的「完全重复」与「同片多版本」，仅报告不删除。</p>
+          <InlineAlert v-if="auditError" variant="error" :message="auditError" action-label="重试" @action="runInventoryAudit" />
+          <template v-if="auditReport">
+            <div class="library-stat-grid">
+              <div><span>完全重复组</span><strong>{{ auditReport.duplicate_count }}</strong></div>
+              <div><span>多版本组</span><strong>{{ auditReport.multi_version_count }}</strong></div>
+              <div><span>可回收约</span><strong>{{ formatBytes(auditReport.reclaimable_bytes) }}</strong></div>
+            </div>
+            <p v-if="auditReport.groups.length === 0" class="library-capability-note">未发现重复项，库存干净。</p>
+            <div v-for="group in auditReport.groups" :key="group.group_id" class="library-cleanup-plan">
+              <div class="library-section-heading"><div><p class="eyebrow">{{ group.kind === 'exact_duplicate' ? '完全重复' : '同片多版本' }}</p><h4>{{ group.items.length }} 个文件{{ group.reclaimable_bytes ? ' · 可回收 ' + formatBytes(group.reclaimable_bytes) : '' }}</h4></div></div>
+              <ul class="library-audit-list">
+                <li v-for="item in group.items" :key="item.object_id" :class="{ 'is-keep': item.object_id === group.keep_object_id }">
+                  <span>{{ item.name }}</span>
+                  <small>{{ item.resolution || '—' }} · {{ item.size_bytes != null ? formatBytes(item.size_bytes) : '未知大小' }}{{ item.object_id === group.keep_object_id ? ' · 建议保留' : '' }}</small>
+                  <button class="text-button" type="button" disabled title="即将上线">删除/洗版</button>
+                </li>
+              </ul>
+            </div>
+          </template>
         </section>
         </template>
         <template v-if="activeTab === 'cleanup'">

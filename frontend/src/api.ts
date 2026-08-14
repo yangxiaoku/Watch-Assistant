@@ -39,6 +39,7 @@ import type {
   NotificationListResponse,
   NotificationResponse,
   NotificationPreferenceResponse,
+  InventoryAuditReportResponse,
   NotifyChannelCreateRequest,
   NotifyChannelListResponse,
   NotifyChannelPatch,
@@ -697,6 +698,10 @@ export class ApiClient {
 
   async notifyChannels(): Promise<NotifyChannelListResponse> {
     return this.request<NotifyChannelListResponse>("/api/v1/notify-channels");
+  }
+
+  async inventoryAudit(): Promise<InventoryAuditReportResponse> {
+    return this.request<InventoryAuditReportResponse>("/api/v1/inventory/audit");
   }
 
   async createNotifyChannel(payload: NotifyChannelCreateRequest): Promise<NotifyChannelResponse> {

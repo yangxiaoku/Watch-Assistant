@@ -1073,3 +1073,26 @@ export interface NotifyChannelCreateRequest {
 export interface NotifyChannelPatch {
   enabled: boolean;
 }
+
+export interface InventoryAuditItemResponse {
+  object_id: string;
+  name: string;
+  path: string | null;
+  size_bytes: number | null;
+  resolution: string | null;
+}
+
+export interface InventoryAuditGroupResponse {
+  group_id: string;
+  kind: "exact_duplicate" | "multi_version";
+  items: InventoryAuditItemResponse[];
+  reclaimable_bytes: number;
+  keep_object_id: string | null;
+}
+
+export interface InventoryAuditReportResponse {
+  groups: InventoryAuditGroupResponse[];
+  duplicate_count: number;
+  multi_version_count: number;
+  reclaimable_bytes: number;
+}
