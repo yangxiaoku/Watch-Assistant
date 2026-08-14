@@ -809,6 +809,9 @@ def _required_scope(request: Request) -> str:
         # 通知渠道(飞书 webhook)管理:web 会话专用(require_web_auth 拦截
         # bearer),此处仅保证 agent token 不落回 fail-closed。
         return "settings:read" if method in {"GET", "HEAD"} else "settings:write"
+    if path.startswith("/api/v1/inventory"):
+        # 库存重复检测只读报告。
+        return "library:read"
     if path.startswith("/api/v1/pwa"):
         return "task:read" if method in {"GET", "HEAD"} else "task:write"
     if path.startswith("/api/v1/p115-checkin"):

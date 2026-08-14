@@ -275,6 +275,7 @@ const CATALOG: Record<string, Omit<UiErrorDescriptor, "code">> = {
   notify_channels_unavailable: { title: "通知渠道服务暂时不可用", message: "本次通知渠道操作未完成。", suggestion: "请稍后重试。", retryable: true, action: "retry" },
   notify_channel_not_found: { title: "通知渠道不存在", message: "本次通知渠道操作未完成。", suggestion: "请刷新渠道列表后再试。", retryable: false, action: "retry" },
   unsupported_notify_kind: { title: "不支持的通知渠道类型", message: "本次通知渠道未保存。", suggestion: "当前仅支持飞书机器人。", retryable: false, action: "reload_settings" },
+  inventory_audit_unavailable: { title: "库存体检服务暂时不可用", message: "本次库存体检未完成。", suggestion: "请稍后重试。", retryable: true, action: "retry" },
   tmdb_unavailable: { title: "影视信息暂时无法加载", message: "本次影视资料没有更新，资源区和已有页面仍可查看。", suggestion: "请重新加载影视资料。", retryable: true, action: "retry" },
   rate_limited: { title: "请求过于频繁", message: "本次请求未执行，当前页面内容没有改变。", suggestion: "请稍后再试。", retryable: true, action: "retry" },
   plan_prerequisites_changed: { title: "整理计划已失效", message: "扫描快照已更新，本次整理未执行。", suggestion: "请重新扫描并生成新的整理计划后再确认。", retryable: false, action: "reload_settings" },

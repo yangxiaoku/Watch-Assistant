@@ -102,6 +102,7 @@ _CATALOG: dict[str, ApiErrorDescriptor] = {
     "notify_channels_unavailable": ApiErrorDescriptor("notify_channels_unavailable", "通知渠道服务暂时不可用", "本次通知渠道操作未完成。", "请稍后重试。", True, "retry"),
     "notify_channel_not_found": ApiErrorDescriptor("notify_channel_not_found", "通知渠道不存在", "本次通知渠道操作未完成。", "请刷新渠道列表后再试。", False, "retry"),
     "unsupported_notify_kind": ApiErrorDescriptor("unsupported_notify_kind", "不支持的通知渠道类型", "本次通知渠道未保存。", "当前仅支持飞书机器人。", False),
+    "inventory_audit_unavailable": ApiErrorDescriptor("inventory_audit_unavailable", "库存体检服务暂时不可用", "本次库存体检未完成。", "请稍后重试。", True, "retry"),
     "webhooks_unavailable": ApiErrorDescriptor("webhooks_unavailable", "Webhook 服务暂时不可用", "本次 Webhook 操作未完成。", "请稍后重试。", True, "retry"),
     "webhook_not_found": ApiErrorDescriptor("webhook_not_found", "Webhook 端点不存在", "本次 Webhook 操作未完成。", "请刷新端点列表后再试。", False, "retry"),
     "webhook_conflict": ApiErrorDescriptor("webhook_conflict", "Webhook 端点已变化", "本次 Webhook 修改未保存。", "请刷新端点后重新提交。", False, "reload_settings"),

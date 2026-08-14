@@ -44,6 +44,7 @@ from watch_assistant.api.backups import router as backups_router
 from watch_assistant.api.credentials import router as credentials_router
 from watch_assistant.api.deployment import router as deployment_router
 from watch_assistant.api.inspection import router as inspection_router
+from watch_assistant.api.inventory import router as inventory_router
 from watch_assistant.api.library import router as library_router
 from watch_assistant.api.maintenance import router as maintenance_router
 from watch_assistant.api.manual_import import router as manual_import_router
@@ -108,6 +109,7 @@ from watch_assistant.services.empty_directory_cleanup_plan import (
     EmptyDirectoryCleanupPlanService,
 )
 from watch_assistant.services.inspection import InspectionService, InspectionWorker
+from watch_assistant.services.inventory_audit_service import InventoryAuditService
 from watch_assistant.services.inventory_push_guard import (
     InventoryPushGuard,
     InventoryRefreshEvidence,
@@ -1067,6 +1069,9 @@ def create_app(
                 runtime_domain_crypto("notify"),
                 event_logger=application.state.settings_service,
             )
+            application.state.inventory_audit_service = InventoryAuditService(
+                runtime_database.session_factory
+            )
             application.state.pwa_device_service = PwaDeviceService(
                 runtime_database.session_factory, runtime_domain_crypto("pwa")
             )
@@ -1849,6 +1854,9 @@ def create_app(
             crypto,
             event_logger=application.state.settings_service,
         )
+        application.state.inventory_audit_service = InventoryAuditService(
+            database.session_factory
+        )
         application.state.pwa_device_service = PwaDeviceService(
             database.session_factory, crypto
         )
@@ -2215,6 +2223,7 @@ def create_app(
     application.include_router(maintenance_router)
     application.include_router(inspection_router)
     application.include_router(library_router)
+    application.include_router(inventory_router)
     application.include_router(manual_import_router)
     application.include_router(organization_plan_router)
     application.include_router(organization_history_router)

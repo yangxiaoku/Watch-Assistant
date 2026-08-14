@@ -2239,3 +2239,26 @@ class PwaDeviceResponse(BaseModel):
 
 class PwaDeviceListResponse(BaseModel):
     items: list[PwaDeviceResponse]
+
+
+class InventoryAuditItemResponse(BaseModel):
+    object_id: str
+    name: str
+    path: str | None
+    size_bytes: int | None
+    resolution: str | None
+
+
+class InventoryAuditGroupResponse(BaseModel):
+    group_id: str
+    kind: Literal["exact_duplicate", "multi_version"]
+    items: list[InventoryAuditItemResponse]
+    reclaimable_bytes: int
+    keep_object_id: str | None
+
+
+class InventoryAuditReportResponse(BaseModel):
+    groups: list[InventoryAuditGroupResponse]
+    duplicate_count: int
+    multi_version_count: int
+    reclaimable_bytes: int
