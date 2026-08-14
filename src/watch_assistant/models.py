@@ -106,6 +106,22 @@ class P115LoginDevice(Base):
     )
 
 
+class NamedLock(Base):
+    """Cross-process advisory lock rows for mutex-style critical sections.
+
+    进程内 asyncio.Lock 无法约束多 worker 部署;named_locks 用原子条件
+    UPDATE(owner + 过期时间)实现跨进程互斥,持有者崩溃后由到期自动让出。
+    """
+
+    __tablename__ = "named_locks"
+
+    lock_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    owner: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
 class AuditRecord(Base):
     """Durable record for security-sensitive mutations."""
 

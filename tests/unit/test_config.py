@@ -2,13 +2,14 @@ import secrets
 from pathlib import Path
 
 import pytest
+from cryptography.fernet import Fernet
 from pydantic import ValidationError
 
 from watch_assistant.config import Settings
 
 BASE_SETTINGS = {
     "DATABASE_URL": "sqlite+aiosqlite:///test.db",
-    "ENCRYPTION_KEY": "encryption-key",
+    "ENCRYPTION_KEY": Fernet.generate_key().decode("ascii"),
     "TMDB_API_KEY": "tmdb-key",
     "WEB_PASSWORD_HASH": "web-hash",
     "SCRIPT_TOKEN_HASH": "script-hash",
@@ -19,6 +20,25 @@ BASE_SETTINGS = {
 def make_settings(**overrides: object) -> Settings:
     values = {**BASE_SETTINGS, **overrides}
     return Settings(**values)
+
+
+def test_encryption_key_must_be_a_valid_fernet_key_at_config_time():
+    """L4:弱/错 ENCRYPTION_KEY 必须启动期即失败,而不是拖到首次加密。"""
+    values = dict(BASE_SETTINGS)
+    values["ENCRYPTION_KEY"] = "not-a-fernet-key"
+    with pytest.raises(ValidationError, match="ENCRYPTION_KEY"):
+        Settings(**values)
+
+
+def test_domain_encryption_key_override_is_validated_at_config_time():
+    """F6:分域轮换密钥同样在配置期校验 Fernet 格式。"""
+    values = dict(BASE_SETTINGS)
+    values["ENCRYPTION_KEY_WEBHOOK"] = "broken"
+    with pytest.raises(ValidationError, match="ENCRYPTION_KEY"):
+        Settings(**values)
+    values["ENCRYPTION_KEY_WEBHOOK"] = Fernet.generate_key().decode("ascii")
+    settings = Settings(**values)
+    assert settings.encryption_key_webhook.get_secret_value()
 
 
 def test_inspection_settings_have_production_defaults():
@@ -290,9 +310,10 @@ def test_prowlarr_indexer_ids_reject_bad_tokens(value: str):
 
 
 def test_p115_checkin_config_defaults_and_validation():
+    valid_key = Fernet.generate_key().decode("ascii")
     settings = Settings(
         DATABASE_URL="sqlite:///x.db",
-        ENCRYPTION_KEY="0" * 44,
+        ENCRYPTION_KEY=valid_key,
         TMDB_API_KEY="k",
         SCRIPT_TOKEN_HASH="h",
         PANSOU_BASE_URL="http://p",
@@ -302,7 +323,7 @@ def test_p115_checkin_config_defaults_and_validation():
     assert settings.p115_check_in_time == "00:05"
 
     settings = Settings(
-        DATABASE_URL="sqlite:///x.db", ENCRYPTION_KEY="0" * 44,
+        DATABASE_URL="sqlite:///x.db", ENCRYPTION_KEY=valid_key,
         TMDB_API_KEY="k", SCRIPT_TOKEN_HASH="h", PANSOU_BASE_URL="http://p",
         WEB_PASSWORD_HASH="h",
         P115_CHECK_IN_ENABLED="true", P115_CHECK_IN_TIME="09:30",
@@ -311,7 +332,7 @@ def test_p115_checkin_config_defaults_and_validation():
     assert settings.p115_check_in_time == "09:30"
 
     with pytest.raises(ValidationError):
-        Settings(DATABASE_URL="sqlite:///x.db", ENCRYPTION_KEY="0" * 44,
+        Settings(DATABASE_URL="sqlite:///x.db", ENCRYPTION_KEY=valid_key,
                  TMDB_API_KEY="k", SCRIPT_TOKEN_HASH="h", PANSOU_BASE_URL="http://p",
                  WEB_PASSWORD_HASH="h",
                  P115_CHECK_IN_TIME="25:00")

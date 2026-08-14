@@ -16,6 +16,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
+from pydantic import SecretStr
 from sqlalchemy import select
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.staticfiles import StaticFiles
@@ -62,7 +63,12 @@ from watch_assistant.api.search import router as search_router
 from watch_assistant.api.search_sources import router as search_sources_router
 from watch_assistant.api.seasons import router as seasons_router
 from watch_assistant.api.settings import router as settings_router
-from watch_assistant.api.settings_p115 import router as p115_settings_router
+from watch_assistant.api.settings_p115 import (
+    BrowsedDirectoryRegistry,
+)
+from watch_assistant.api.settings_p115 import (
+    router as p115_settings_router,
+)
 from watch_assistant.api.strm import router as strm_router
 from watch_assistant.api.subscriptions import router as subscriptions_router
 from watch_assistant.api.subtitles import router as subtitles_router
@@ -181,6 +187,25 @@ _DEFAULT_PLAYBACK_NETWORKS = (
 )
 _STRM_OPERATION_RECOVERY_INTERVAL_SECONDS = 60.0
 _STRM_OPERATION_STALE_AFTER = timedelta(minutes=30)
+
+
+def _domain_crypto(settings: "Settings", domain: str) -> SecretCrypto:
+    """Build a domain-scoped SecretCrypto honoring ENCRYPTION_KEY_<DOMAIN>.
+
+    域分隔:每个业务域(webhook/pwa/resource/...)派生独立 Fernet 密钥,
+    任一服务实例只持有本域密钥;设置 ENCRYPTION_KEY_<DOMAIN> 时该域改用
+    独立密钥加密(按主体轮换),旧密文仍可经派生链解密。
+    """
+    master = settings.encryption_key.get_secret_value()
+    override = getattr(settings, f"encryption_key_{domain}", None)
+    override_value = (
+        override.get_secret_value()
+        if isinstance(override, SecretStr) and override.get_secret_value()
+        else ""
+    )
+    if override_value:
+        return SecretCrypto(override_value, domain=domain, master_key=master)
+    return SecretCrypto(master, domain=domain)
 
 
 async def _refresh_inventory_before_push(
@@ -925,7 +950,7 @@ def create_app(
             if getattr(application.state, "task_worker", None) is None:
                 worker = TaskWorker(
                     runtime_database.session_factory,
-                    runtime_crypto,
+                    runtime_domain_crypto("resource"),
                     adapter,
                     owner=_worker_owner(),
                     event_logger=application.state.settings_service,
@@ -987,6 +1012,15 @@ def create_app(
             runtime_crypto = crypto or SecretCrypto(
                 settings.encryption_key.get_secret_value()
             )
+            if crypto is not None:
+
+                def runtime_domain_crypto(_domain: str) -> SecretCrypto:
+                    return runtime_crypto
+
+            else:
+
+                def runtime_domain_crypto(domain: str) -> SecretCrypto:
+                    return _domain_crypto(settings, domain)
             runtime_pansou = pansou_client or PanSouClient(settings.pansou_base_url)
             application.state.settings_service = SettingsService(
                 runtime_database.session_factory,
@@ -994,7 +1028,7 @@ def create_app(
             )
             prowlarr_settings_service = ProwlarrSettingsService(
                 runtime_database.session_factory,
-                runtime_crypto,
+                runtime_domain_crypto("prowlarr"),
                 environment_enabled=settings.prowlarr_enabled,
                 environment_base_url=settings.prowlarr_base_url,
                 environment_api_key=settings.prowlarr_api_key.get_secret_value(),
@@ -1012,17 +1046,17 @@ def create_app(
             )
             application.state.webhook_service = WebhookService(
                 runtime_database.session_factory,
-                runtime_crypto,
+                runtime_domain_crypto("webhook"),
                 event_logger=application.state.settings_service,
             )
             application.state.settings_service.bind_event_sink(
                 application.state.webhook_service.enqueue_event
             )
             application.state.pwa_device_service = PwaDeviceService(
-                runtime_database.session_factory, runtime_crypto
+                runtime_database.session_factory, runtime_domain_crypto("pwa")
             )
             application.state.p115_login_device_service = P115LoginDeviceService(
-                runtime_database.session_factory, runtime_crypto
+                runtime_database.session_factory, runtime_domain_crypto("p115_login")
             )
             application.state.p115_qrcode_service = P115QrcodeService()
             application.state.agent_token_service = AgentTokenService(
@@ -1076,7 +1110,8 @@ def create_app(
                 )
             credential_service = CredentialService(
                 runtime_database.session_factory,
-                runtime_crypto,
+                runtime_domain_crypto("tmdb"),
+                p115_crypto=runtime_domain_crypto("p115_cookie"),
                 environment_tmdb_key=settings.tmdb_api_key.get_secret_value(),
                 fallback_cookie_provider=fallback_cookie_provider,
                 cookie_provider=composite_cookie_provider,
@@ -1112,7 +1147,7 @@ def create_app(
                 tmdb_client=runtime_tmdb,
                 pansou_client=runtime_pansou,
                 prowlarr_client=runtime_prowlarr,
-                crypto=runtime_crypto,
+                crypto=runtime_domain_crypto("resource"),
                 share_domains=share_domains,
                 pansou_max_concurrency=settings.pansou_max_concurrency,
                 prowlarr_max_concurrency=settings.prowlarr_max_concurrency,
@@ -1130,7 +1165,7 @@ def create_app(
             application.state.manual_import_service = ManualImportService(
                 runtime_database.session_factory,
                 application.state.search_service,
-                runtime_crypto,
+                runtime_domain_crypto("resource"),
                 share_domains=share_domains,
             )
             application.state.workflow_service = WorkflowService(
@@ -1273,6 +1308,9 @@ def create_app(
             if application.state.organization_target_root_id:
                 configured_directory_ids.add(application.state.organization_target_root_id)
             application.state.p115_browsed_directory_ids = configured_directory_ids
+            application.state.p115_browsed_directory_registry = (
+                BrowsedDirectoryRegistry()
+            )
             application.state.p115_delete_service = P115DeleteService(
                 runtime_database.session_factory,
                 composite_cookie_provider,
@@ -1303,7 +1341,7 @@ def create_app(
                 if p115_ready:
                     application.state.task_worker = TaskWorker(
                         runtime_database.session_factory,
-                        runtime_crypto,
+                        runtime_domain_crypto("resource"),
                         runtime_task_adapter,
                         owner=_worker_owner(),
                         event_logger=application.state.settings_service,
@@ -1362,7 +1400,7 @@ def create_app(
                 )
                 application.state.inspection_worker = InspectionWorker(
                     runtime_database.session_factory,
-                    runtime_crypto,
+                    runtime_domain_crypto("resource"),
                     inspection_client,
                     event_logger=application.state.settings_service,
                 )
@@ -1614,6 +1652,11 @@ def create_app(
         response = await call_next(request)
         response.headers["X-Request-ID"] = request_id
         response.headers["X-Correlation-ID"] = correlation_id
+        # 自托管 SPA 的安全响应头:X-Frame-Options 防点击劫持,
+        # X-Content-Type-Options 防 MIME 嗅探,Referrer-Policy 限制外泄。
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("Referrer-Policy", "no-referrer")
         return response
 
     @application.exception_handler(HTTPException)

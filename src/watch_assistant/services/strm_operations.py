@@ -47,6 +47,8 @@ _MUTATING_KINDS = (
     StrmOperationKind.SMALL_FILE_CLEANUP,
 )
 _CLAIM_LOCKS: dict[tuple[int, str], asyncio.Lock] = {}
+# 容量上限:超过时淘汰未被持有的锁,避免测试/重建会话累积无界增长。
+_CLAIM_LOCKS_MAX = 512
 
 
 @dataclass(frozen=True, slots=True)
@@ -1086,9 +1088,19 @@ def _claim_lock(
     key = (id(session_factory), scope_id)
     lock = _CLAIM_LOCKS.get(key)
     if lock is None:
+        if len(_CLAIM_LOCKS) >= _CLAIM_LOCKS_MAX:
+            _prune_claim_locks()
         lock = asyncio.Lock()
         _CLAIM_LOCKS[key] = lock
     return lock
+
+
+def _prune_claim_locks() -> None:
+    """淘汰未被持有的锁条目:空闲锁没有等待者,删除是安全的;
+    持有中的锁仍被任务引用,互斥不受影响。"""
+    idle = [key for key, lock in _CLAIM_LOCKS.items() if not lock.locked()]
+    for key in idle:
+        del _CLAIM_LOCKS[key]
 
 
 def _validate_lease_duration(value: object) -> timedelta:

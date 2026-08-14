@@ -44,6 +44,29 @@ class Settings(BaseSettings):
 
     database_url: str = Field(min_length=1, validation_alias="DATABASE_URL")
     encryption_key: SecretStr = Field(min_length=1, validation_alias="ENCRYPTION_KEY")
+    # 可选的分域轮换密钥:设置后该业务域的新密文用独立密钥加密,
+    # 旧密文仍可经派生链解密(见 crypto.SecretCrypto)。
+    encryption_key_tmdb: SecretStr = Field(
+        default=SecretStr(""), validation_alias="ENCRYPTION_KEY_TMDB"
+    )
+    encryption_key_p115_cookie: SecretStr = Field(
+        default=SecretStr(""), validation_alias="ENCRYPTION_KEY_P115_COOKIE"
+    )
+    encryption_key_prowlarr: SecretStr = Field(
+        default=SecretStr(""), validation_alias="ENCRYPTION_KEY_PROWLARR"
+    )
+    encryption_key_resource: SecretStr = Field(
+        default=SecretStr(""), validation_alias="ENCRYPTION_KEY_RESOURCE"
+    )
+    encryption_key_webhook: SecretStr = Field(
+        default=SecretStr(""), validation_alias="ENCRYPTION_KEY_WEBHOOK"
+    )
+    encryption_key_pwa: SecretStr = Field(
+        default=SecretStr(""), validation_alias="ENCRYPTION_KEY_PWA"
+    )
+    encryption_key_p115_login: SecretStr = Field(
+        default=SecretStr(""), validation_alias="ENCRYPTION_KEY_P115_LOGIN"
+    )
     tmdb_api_key: SecretStr = Field(min_length=1, validation_alias="TMDB_API_KEY")
     web_username: str = Field(
         default="admin",
@@ -299,6 +322,32 @@ class Settings(BaseSettings):
     @property
     def prowlarr_slow_ids(self) -> tuple[int, ...]:
         return _parse_indexer_ids(self.prowlarr_slow_indexer_ids)
+
+    @model_validator(mode="after")
+    def validate_encryption_keys(self) -> "Settings":
+        """启动期即校验 Fernet 密钥格式,避免弱/错 key 拖到首次加密才失败。"""
+        from cryptography.fernet import Fernet
+
+        candidates = [
+            self.encryption_key.get_secret_value(),
+            self.encryption_key_tmdb.get_secret_value(),
+            self.encryption_key_p115_cookie.get_secret_value(),
+            self.encryption_key_prowlarr.get_secret_value(),
+            self.encryption_key_resource.get_secret_value(),
+            self.encryption_key_webhook.get_secret_value(),
+            self.encryption_key_pwa.get_secret_value(),
+            self.encryption_key_p115_login.get_secret_value(),
+        ]
+        for candidate in candidates:
+            if not candidate:
+                continue
+            try:
+                Fernet(candidate.encode("ascii"))
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    "ENCRYPTION_KEY or ENCRYPTION_KEY_<DOMAIN> is not a valid Fernet key"
+                ) from exc
+        return self
 
     @model_validator(mode="after")
     def validate_web_auth_configuration(self) -> "Settings":

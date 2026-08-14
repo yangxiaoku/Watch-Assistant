@@ -13,10 +13,12 @@ from typing import Any
 import qrcode
 
 from watch_assistant.adapters.p115_c03_ipad_login import parse_qrcode_token_response
+from watch_assistant.log_redaction import install_redacting_filter
 from watch_assistant.services.p115_credentials import normalize_cookie_text
 from watch_assistant.services.p115_device_types import P115_DEVICE_CODE_SET
 
 logger = logging.getLogger(__name__)
+install_redacting_filter(logger)
 
 
 class P115QrcodeError(ValueError):
@@ -82,10 +84,13 @@ class P115QrcodeService:
 
     async def poll(self, session_id: str) -> tuple[str, str | None]:
         async with self._lock:
+            now = datetime.now(UTC)
+            # 孤儿会话(创建后从未轮询/消费)也按 TTL 清理,避免只依赖
+            # 下次 create 的 purge 兜底而滞留更久。
+            self._purge(now)
             session = self._sessions.get(session_id)
             if session is None:
                 raise P115QrcodeError("qrcode_session_not_found")
-            now = datetime.now(UTC)
             if now >= session.expires_at:
                 session.status = "expired"
                 session.cookie = None

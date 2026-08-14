@@ -20,6 +20,7 @@ from watch_assistant.services.tasks import (
     PushKindUnsupported,
     ReconciliationUnavailable,
     ResourceNotFound,
+    TaskLockUnavailable,
     TaskNotReconcilable,
     TaskService,
 )
@@ -88,6 +89,8 @@ async def create_task(
         }:
             code = "workflow_conflict"
         raise HTTPException(status_code=409, detail=code) from None
+    except TaskLockUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     return task
 
 
@@ -159,6 +162,8 @@ async def reconcile_task(
         if code not in {"reconciliation_unavailable", "reconciliation_conflict"}:
             code = "reconciliation_unavailable"
         raise HTTPException(status_code=503, detail=code) from exc
+    except TaskLockUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except WorkflowConflict as exc:
         code = str(exc)
         if code not in {"workflow_evidence_required", "workflow_stage_terminal"}:

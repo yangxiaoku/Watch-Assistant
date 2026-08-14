@@ -31,6 +31,7 @@ from watch_assistant.schemas import (
     OrganizationSettingsResponse,
     P115CheckInSettingsResponse,
 )
+from watch_assistant.security import redact_mapping
 from watch_assistant.services.content_policy import (
     ContentPolicy,
     content_policy_from_json,
@@ -615,6 +616,10 @@ def _safe_counts(value: object) -> dict[str, int]:
 def _safe_context(value: object) -> dict[str, Any]:
     if not isinstance(value, dict):
         return {}
+    # 键名级脱敏(uid/cid/kid/seid/pickcode/share_code 等)先于值级处理:
+    # 敏感键的值整体替换为 [REDACTED],避免 115 数字标识/分享口令以键值
+    # 对形式落盘。
+    value = redact_mapping(value)
     return {
         str(key)[:64]: _safe_context_item(item)
         for key, item in value.items()

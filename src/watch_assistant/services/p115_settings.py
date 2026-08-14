@@ -15,6 +15,8 @@ from watch_assistant.services.p115_credentials import (
 )
 
 P115_COOKIE_SOURCE = "file"
+# 限流字典容量上限,超限时清理过期/空桶。
+_VALIDATION_WINDOWS_MAX = 4096
 
 
 class P115ValidationError(Exception):
@@ -126,13 +128,30 @@ class P115SettingsService:
         self, identity: str, *, now: datetime | None = None
     ) -> None:
         checked_at = now or datetime.now(UTC)
-        window = self._validation_windows.setdefault(identity, deque())
+        window = self._validation_windows.get(identity)
+        if window is None:
+            window = deque()
+            self._validation_windows[identity] = window
+            self._prune_validation_windows(checked_at)
         cutoff = checked_at - self._validation_window
         while window and window[0] <= cutoff:
             window.popleft()
         if len(window) >= self._validation_limit:
             raise P115ValidationRateLimited
         window.append(checked_at)
+
+    def _prune_validation_windows(self, now: datetime) -> None:
+        """容量上限内清理已过期/空桶,防止按身份记账无界增长。"""
+        if len(self._validation_windows) < _VALIDATION_WINDOWS_MAX:
+            return
+        cutoff = now - self._validation_window
+        stale = [
+            key
+            for key, bucket in self._validation_windows.items()
+            if not bucket or bucket[-1] <= cutoff
+        ]
+        for key in stale:
+            del self._validation_windows[key]
 
     async def validate(self) -> P115ValidationResult:
         if not self._enabled or not self._target_configured:

@@ -1467,7 +1467,9 @@ async def _proxy_playback(
     headers = {name: value for name, value in upstream_headers}
     if playback_request.method.value == "GET" and playback_request.byte_range is not None:
         headers["Range"] = _range_header(playback_request.byte_range)
-    client = httpx.AsyncClient(follow_redirects=False, timeout=30.0)
+    # trust_env=False:STRM 播放代理转发含时效 token 的 115 直链,
+    # 不得经 HTTP(S)_PROXY 环境代理可见。
+    client = httpx.AsyncClient(follow_redirects=False, timeout=30.0, trust_env=False)
     try:
         upstream = await client.send(
             client.build_request(playback_request.method.value, upstream_url, headers=headers),

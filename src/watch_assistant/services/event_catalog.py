@@ -474,6 +474,12 @@ EVENT_CATALOG: dict[str, EventDefinition] = {
     "agent.token.revoked": _event(
         "agent.token.revoked", LogCategory.SECURITY, "Agent Token 已撤销", "Agent Token 已撤销，不能继续使用"
     ),
+    "agent.token.auth_failed": _event(
+        "agent.token.auth_failed",
+        LogCategory.SECURITY,
+        "Agent Token 认证失败",
+        "Agent Token 认证失败，可能正在被暴力尝试",
+    ),
     "subscription.created": _event(
         "subscription.created", LogCategory.SUBSCRIPTION, "订阅已创建", "已创建{media_type}订阅，当前状态：{status}"
     ),

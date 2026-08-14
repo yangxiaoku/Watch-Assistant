@@ -21,6 +21,27 @@ SESSION_COOKIE = "watch_session"
 SESSION_TTL = timedelta(hours=12)
 DEFAULT_ADMIN_USERNAME = "admin"
 AGENT_TOKEN_PREFIX = "wa_at_"
+# 静态 SCRIPT_TOKEN_HASH bearer 的默认只读 scope;需要全权限的既有部署
+# 必须显式设置 SCRIPT_TOKEN_FULL_SCOPE=1(防止静态 token 泄露即全权)。
+LEGACY_BEARER_SCOPES = frozenset(
+    {
+        "system:read",
+        "library:read",
+        "task:read",
+        "settings:read",
+        "audit:read",
+        "strm:read",
+        "backup:read",
+    }
+)
+# 全局聚合限流桶:限制多源 IP 摊薄暴力破解(单 IP 桶仍按客户端隔离)。
+_LOGIN_GLOBAL_LIMIT = 30
+_SEARCH_GLOBAL_LIMIT = 300
+# agent token 失败窗口:同一客户端 1 分钟内超过阈值按 429 拒绝并审计。
+_AGENT_TOKEN_FAIL_LIMIT = 10
+_AGENT_TOKEN_FAIL_WINDOW = timedelta(minutes=1)
+# 限流字典容量上限,超限时清理已过期/空桶,避免按 IP 记账无界增长。
+_RATE_WINDOWS_MAX = 4096
 AGENT_SCOPES = frozenset(
     {
         "system:read",
@@ -256,7 +277,12 @@ class SecurityManager:
         return context
 
     async def authenticate_diagnostics_async(self, request: Request) -> AuthContext:
-        """Authenticate the read-only deployment diagnostics endpoint."""
+        """Authenticate the read-only deployment diagnostics endpoint.
+
+        fail-closed:专用 diagnostics token 失配时,仅允许 web session 访问;
+        任何 bearer(脚本/agent token)一律拒绝,防止静态或低权限 token 顺带
+        获得部署诊断入口。
+        """
         scheme, _, token = request.headers.get("Authorization", "").partition(" ")
         if (
             scheme.casefold() == "bearer"
@@ -273,7 +299,22 @@ class SecurityManager:
             )
             self._check_rate_limit(request, context.identity)
             return context
-        return await self.authenticate_async(request)
+        if request.headers.get("Authorization"):
+            raise AuthError(401, "unauthorized")
+        if self._session_factory is None:
+            # 内存会话路径自带 CSRF + 限流。
+            return self._authenticate_memory(request)
+        session_id = request.cookies.get(SESSION_COOKIE)
+        if not session_id:
+            raise AuthError(401, "unauthorized")
+        context = await self._database_context(session_id)
+        if (
+            request.method not in {"GET", "HEAD", "OPTIONS"}
+            and request.headers.get("X-CSRF-Token") != context.csrf_token
+        ):
+            raise AuthError(403, "csrf_required")
+        self._check_rate_limit(request, context.identity)
+        return context
 
     def _authenticate_memory(self, request: Request) -> AuthContext:
         authorization = request.headers.get("Authorization", "")
@@ -315,7 +356,7 @@ class SecurityManager:
             identity="bearer:" + hashlib.sha256(token.encode()).hexdigest(),
             via_bearer=True,
             token_kind="legacy",
-            scopes=frozenset(AGENT_SCOPES),
+            scopes=_legacy_bearer_scopes(),
         )
 
     async def _bearer_context_async(
@@ -333,7 +374,7 @@ class SecurityManager:
                 identity="bearer:" + hashlib.sha256(token.encode()).hexdigest(),
                 via_bearer=True,
                 token_kind="legacy",
-                scopes=frozenset(AGENT_SCOPES),
+                scopes=_legacy_bearer_scopes(),
             )
         return await self._agent_token_context(token, request)
 
@@ -375,6 +416,7 @@ class SecurityManager:
                     library_ids=frozenset(_decode_json_strings(record.library_ids_json)),
                 )
         except AuthError:
+            await self._record_agent_token_failure(request)
             raise
         except Exception:  # noqa: BLE001 - storage failures fail closed
             raise AuthError(503, "auth_unavailable") from None
@@ -385,6 +427,23 @@ class SecurityManager:
             actor_id=context.agent_token_id,
         )
         return context
+
+    async def _record_agent_token_failure(self, request: Request) -> None:
+        """失败审计 + 失败窗口限流:同一客户端短时大量 token 失配按 429 拒绝。"""
+        await _emit_security_event(
+            self._event_logger,
+            "agent.token.auth_failed",
+            request=request,
+            actor_id=None,
+        )
+        host = _client_host(request) or "unknown"
+        identity = f"agent_token_fail:{host}"
+        self._consume_rate_window(
+            identity,
+            "agent_token_fail",
+            _AGENT_TOKEN_FAIL_LIMIT,
+            window=_AGENT_TOKEN_FAIL_WINDOW,
+        )
 
     async def _database_context(self, session_id: str) -> AuthContext:
         digest = self._session_digest(session_id)
@@ -444,45 +503,102 @@ class SecurityManager:
     def _session_digest(session_id: str) -> str:
         return hashlib.sha256(session_id.encode("utf-8")).hexdigest()
 
-    def check_login_rate_limit(self, request: Request) -> None:
-        """Rate-limit web login attempts by client address.
+    def check_login_rate_limit(
+        self, request: Request, *, username: str | None = None
+    ) -> None:
+        """Rate-limit web login attempts.
 
         Login runs before any authenticated dependency, so the shared
         post-auth rate limiter never sees it without this explicit entry.
+        桶按 (客户端地址, 用户名) 细分:NAT 用户共用出口 IP 时,一人的失败
+        尝试不会锁住同出口的其他用户名;全局聚合桶限制多源 IP 摊薄暴力。
         """
         host = _client_host(request)
         identity = f"login:{host}" if host is not None else "login:unknown"
+        if username is not None:
+            identity = f"{identity}:{username[:64]}"
         self._check_rate_limit(request, identity)
 
     def _check_rate_limit(self, request: Request, identity: str) -> None:
         path = request.url.path
         if request.method != "POST":
             if request.method == "PATCH" and path == "/api/v1/settings/inspection":
-                bucket, limit = "inspection_settings", 10
+                bucket, limit, global_bucket, global_limit = (
+                    "inspection_settings",
+                    10,
+                    None,
+                    None,
+                )
             else:
                 return
         elif path == "/api/v1/auth/login":
-            bucket, limit = "login", 5
+            bucket, limit, global_bucket, global_limit = (
+                "login",
+                5,
+                "login_global",
+                _LOGIN_GLOBAL_LIMIT,
+            )
         elif path == "/api/v1/search":
-            bucket, limit = "search", 30
+            bucket, limit, global_bucket, global_limit = (
+                "search",
+                30,
+                "search_global",
+                _SEARCH_GLOBAL_LIMIT,
+            )
         elif path == "/api/v1/cache/retry":
-            bucket, limit = "maintenance", 2
+            bucket, limit, global_bucket, global_limit = "maintenance", 2, None, None
         elif path == "/api/v1/resources/inspect":
-            bucket, limit = "inspection", 10
+            bucket, limit, global_bucket, global_limit = "inspection", 10, None, None
         elif path == "/api/v1/mcp":
-            bucket, limit = "mcp", 60
+            bucket, limit, global_bucket, global_limit = "mcp", 60, None, None
         elif path.startswith("/api/v1/tasks"):
-            bucket, limit = "push", self.push_limit
+            bucket, limit, global_bucket, global_limit = (
+                "push",
+                self.push_limit,
+                None,
+                None,
+            )
         else:
             return
+        self._consume_rate_window(identity, bucket, limit)
+        if global_bucket is not None:
+            self._consume_rate_window("__global__", global_bucket, global_limit)
+
+    def _consume_rate_window(
+        self,
+        identity: str,
+        bucket: str,
+        limit: int,
+        *,
+        window: timedelta = timedelta(minutes=1),
+    ) -> None:
         now = datetime.now(UTC)
-        window = self._rate_windows.setdefault((identity, bucket), deque())
-        cutoff = now - timedelta(minutes=1)
-        while window and window[0] <= cutoff:
-            window.popleft()
-        if len(window) >= limit:
+        key = (identity, bucket)
+        window_deque = self._rate_windows.get(key)
+        if window_deque is None:
+            window_deque = deque()
+            self._rate_windows[key] = window_deque
+            self._prune_rate_windows()
+        cutoff = now - window
+        while window_deque and window_deque[0] <= cutoff:
+            window_deque.popleft()
+        if len(window_deque) >= limit:
             raise AuthError(429, "rate_limited")
-        window.append(now)
+        window_deque.append(now)
+
+    def _prune_rate_windows(self) -> None:
+        """容量上限内清理已过期/空桶,防止按 IP 记账无界增长。"""
+        if len(self._rate_windows) < _RATE_WINDOWS_MAX:
+            return
+        now = datetime.now(UTC)
+        cutoff = now - timedelta(minutes=1)
+        stale = [
+            key
+            for key, window in self._rate_windows.items()
+            if not window or window[-1] <= cutoff
+        ]
+        for key in stale:
+            del self._rate_windows[key]
 
 
 async def require_api_auth(request: Request) -> AuthContext:
@@ -558,7 +674,26 @@ def _as_utc(value: datetime) -> datetime:
 
 
 def redact_mapping(value: Any, *, secrets: tuple[str, ...] = ()) -> Any:
-    sensitive_keys = ("url", "password", "token", "authorization", "cookie", "api_key")
+    # 键名级脱敏清单:覆盖 115 凭据字段(uid/cid/kid/seid/pickcode)、分享
+    # 口令与磁力标识;值级脱敏由调用方传入的 secrets 与业务层
+    # redact_log_message 完成。
+    sensitive_keys = (
+        "url",
+        "password",
+        "token",
+        "authorization",
+        "cookie",
+        "api_key",
+        "secret",
+        "uid",
+        "cid",
+        "kid",
+        "seid",
+        "magnet",
+        "infohash",
+        "share_code",
+        "pickcode",
+    )
     if isinstance(value, dict):
         return {
             key: "[REDACTED]"
@@ -697,6 +832,17 @@ def _decode_json_strings(value: str) -> list[str]:
     if not isinstance(decoded, list):
         return []
     return [item for item in decoded if isinstance(item, str)]
+
+
+def _legacy_bearer_scopes() -> frozenset[str]:
+    """静态 SCRIPT_TOKEN_HASH bearer 的授权范围。
+
+    默认只读(LEGACY_BEARER_SCOPES);显式设置 SCRIPT_TOKEN_FULL_SCOPE=1
+    才授予 AGENT_SCOPES 全权限,防止静态 token 泄露即全权管理员。
+    """
+    if os.environ.get("SCRIPT_TOKEN_FULL_SCOPE", "") == "1":
+        return frozenset(AGENT_SCOPES)
+    return LEGACY_BEARER_SCOPES
 
 
 def _xff_trusted() -> bool:

@@ -33,15 +33,18 @@ async def login(
     response: Response,
     manager: SecurityManagerDependency,
 ) -> AuthLoginResponse:
-    manager.check_login_rate_limit(request)
+    manager.check_login_rate_limit(request, username=payload.username)
     session_id, csrf_token = await manager.login_async(
         payload.password, username=payload.username
     )
+    # HTTPS 反代后(uvicorn --proxy-headers 或等价配置)自动启用 Secure,
+    # 避免公网 HTTP 暴露时会话被中间人截获;显式 COOKIE_SECURE 始终优先。
+    secure = manager.cookie_secure or request.url.scheme == "https"
     response.set_cookie(
         SESSION_COOKIE,
         session_id,
         httponly=True,
-        secure=manager.cookie_secure,
+        secure=secure,
         samesite="lax",
         max_age=manager.session_ttl_seconds,
         path="/",

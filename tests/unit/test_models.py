@@ -1,6 +1,9 @@
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from cryptography.fernet import Fernet
+
+_FERNET_KEY = Fernet.generate_key().decode("ascii")
 from pydantic import ValidationError
 from sqlalchemy import select, text
 
@@ -46,7 +49,7 @@ def test_task_states_are_explicit():
 def test_missing_setting_names_the_required_environment_variable(monkeypatch):
     required = {
         "DATABASE_URL": "sqlite+aiosqlite:///test.db",
-        "ENCRYPTION_KEY": "test-key",
+        "ENCRYPTION_KEY": _FERNET_KEY,
         "TMDB_API_KEY": "tmdb-key",
         "WEB_PASSWORD_HASH": "web-hash",
         "SCRIPT_TOKEN_HASH": "script-hash",
@@ -63,7 +66,7 @@ def test_missing_setting_names_the_required_environment_variable(monkeypatch):
 def test_tmdb_base_url_can_use_network_reachable_alias(monkeypatch):
     required = {
         "DATABASE_URL": "sqlite+aiosqlite:///test.db",
-        "ENCRYPTION_KEY": "test-key",
+        "ENCRYPTION_KEY": _FERNET_KEY,
         "TMDB_API_KEY": "tmdb-key",
         "WEB_PASSWORD_HASH": "web-hash",
         "SCRIPT_TOKEN_HASH": "script-hash",
@@ -83,7 +86,7 @@ def test_inspection_settings_load_qb_credentials_from_a_secret_directory(
 ):
     required = {
         "DATABASE_URL": "sqlite+aiosqlite:///test.db",
-        "ENCRYPTION_KEY": "test-key",
+        "ENCRYPTION_KEY": _FERNET_KEY,
         "TMDB_API_KEY": "tmdb-key",
         "WEB_PASSWORD_HASH": "web-hash",
         "SCRIPT_TOKEN_HASH": "script-hash",

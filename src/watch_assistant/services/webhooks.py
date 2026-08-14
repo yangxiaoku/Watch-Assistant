@@ -56,6 +56,47 @@ class _DeliveryStats:
     next_retry_at: datetime | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class _PinnedDestination:
+    """One already-validated connection address for a webhook hostname.
+
+    校验与连接共用同一解析结果:DNS-rebinding 域名(如 *.nip.io)在
+    ``_resolve_public_destination`` 只解析一次,连接阶段由
+    ``_PinnedWebhookTransport`` 直接连到已校验地址,不再二次解析。
+    """
+
+    hostname: str
+    port: int
+    address: str
+
+
+class _PinnedWebhookTransport(httpx.AsyncBaseTransport):
+    """Connect only to the pre-validated address of the request's pin.
+
+    请求携带 ``watch_assistant_pin`` extension 时,把 URL 主机改写为固定
+    地址并保持 Host 头与 TLS SNI 为原始主机名;未携带 pin 的请求(测试注入
+    的普通 client)原样转发。内层 transport 关闭 trust_env,环境代理不得
+    看到投递目标与载荷。
+    """
+
+    def __init__(self) -> None:
+        self._inner = httpx.AsyncHTTPTransport(trust_env=False)
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        pin = request.extensions.get("watch_assistant_pin")
+        if isinstance(pin, _PinnedDestination):
+            host_header = request.headers.get("host") or request.url.netloc.decode("ascii")
+            port = request.url.port
+            netloc = f"[{pin.address}]" if ":" in pin.address else pin.address
+            if port is not None:
+                netloc = f"{netloc}:{port}"
+            request.url = request.url.copy_with(netloc=netloc.encode("ascii"))
+            request.headers["Host"] = host_header
+            if request.url.scheme == "https":
+                request.extensions["sni_hostname"] = pin.hostname
+        return await self._inner.handle_async_request(request)
+
+
 class WebhookError(ValueError):
     def __init__(self, code: str) -> None:
         super().__init__(code)
@@ -74,7 +115,9 @@ class WebhookService:
         self._session_factory = session_factory
         self._crypto = crypto
         self._event_logger = event_logger
-        self._http = http_client or httpx.AsyncClient(follow_redirects=False)
+        self._http = http_client or httpx.AsyncClient(
+            transport=_PinnedWebhookTransport(), follow_redirects=False
+        )
         self._owns_http = http_client is None
 
     async def aclose(self) -> None:
@@ -84,7 +127,7 @@ class WebhookService:
     async def create(
         self, request: WebhookEndpointCreateRequest
     ) -> WebhookEndpointCreateResponse:
-        url = _validate_url(request.url)
+        url = await _validate_url_async(request.url)
         event_codes = _validate_event_codes(request.event_codes)
         secret = "whsec_" + secrets.token_urlsafe(32)
         now = datetime.now(UTC)
@@ -124,7 +167,7 @@ class WebhookService:
             values = patch.model_dump(exclude_none=True)
             values.pop("revision", None)
             if "url" in values:
-                values["url"] = _validate_url(values["url"])
+                values["url"] = await _validate_url_async(values["url"])
             if "event_codes" in values:
                 values["event_codes"] = _validate_event_codes(values["event_codes"])
                 item.event_codes_json = json.dumps(values.pop("event_codes"), separators=(",", ":"))
@@ -386,7 +429,7 @@ class WebhookService:
             )
             return False
         try:
-            await _assert_public_destination(url)
+            pin = await _resolve_public_destination(url)
         except WebhookError as exc:
             await self._record_delivery_failure(delivery_id, attempt, None, exc.code, exc.code)
             return False
@@ -396,19 +439,23 @@ class WebhookService:
             f"{timestamp}.{event_id}.{payload}".encode(),
             hashlib.sha256,
         ).hexdigest()
+        request = self._http.build_request(
+            "POST",
+            url,
+            content=payload.encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": "watch-assistant-webhook/1",
+                "X-Watch-Assistant-Event-Id": event_id,
+                "X-Watch-Assistant-Timestamp": timestamp,
+                "X-Watch-Assistant-Signature": f"v1={signature}",
+            },
+            timeout=DELIVERY_TIMEOUT,
+        )
+        # 连接固定到校验阶段解析出的地址(防 DNS rebinding TOCTOU)。
+        request.extensions["watch_assistant_pin"] = pin
         try:
-            response = await self._http.post(
-                url,
-                content=payload.encode("utf-8"),
-                headers={
-                    "Content-Type": "application/json",
-                    "User-Agent": "watch-assistant-webhook/1",
-                    "X-Watch-Assistant-Event-Id": event_id,
-                    "X-Watch-Assistant-Timestamp": timestamp,
-                    "X-Watch-Assistant-Signature": f"v1={signature}",
-                },
-                timeout=DELIVERY_TIMEOUT,
-            )
+            response = await self._http.send(request)
             status_code = response.status_code
             error_code = None if 200 <= status_code < 300 else "http_error"
             response_summary = f"http_{status_code}"
@@ -475,7 +522,13 @@ class WebhookService:
             await session.commit()
 
 
-def _validate_url(value: str) -> str:
+async def _validate_url_async(value: str) -> str:
+    """Validate a webhook URL without blocking the event loop.
+
+    ``socket.getaddrinfo`` 可能阻塞数秒(解析超时),必须放进 executor;
+    与投递侧 ``_resolve_public_destination`` 保持一致,避免在单 worker
+    事件循环上做同步 DNS 造成整个服务冻结。
+    """
     candidate = value.strip()
     parsed = urlsplit(candidate)
     try:
@@ -489,36 +542,69 @@ def _validate_url(value: str) -> str:
     if hostname in {"localhost", "localhost.localdomain"}:
         raise WebhookError("webhook_url_not_allowed")
     try:
-        addresses = {
-            ipaddress.ip_address(info[4][0])
-            for info in socket.getaddrinfo(hostname, port or 443, type=socket.SOCK_STREAM)
-            if info[4] and info[4][0]
-        }
-    except (OSError, ValueError):
+        addresses = await asyncio.get_running_loop().run_in_executor(
+            None,
+            socket.getaddrinfo,
+            hostname,
+            port or 443,
+            0,
+            socket.SOCK_STREAM,
+        )
+    except OSError:
         raise WebhookError("webhook_url_unresolvable") from None
-    if not addresses or any(_blocked_address(address) for address in addresses):
-        raise WebhookError("webhook_url_not_allowed")
+    seen: set[str] = set()
+    for info in addresses:
+        if not info[4] or not info[4][0]:
+            continue
+        try:
+            address = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            raise WebhookError("webhook_url_unresolvable") from None
+        if str(address) in seen:
+            continue
+        seen.add(str(address))
+        if _blocked_address(address):
+            raise WebhookError("webhook_url_not_allowed")
+    if not seen:
+        raise WebhookError("webhook_url_unresolvable") from None
     return candidate
 
 
-async def _assert_public_destination(value: str) -> None:
+async def _resolve_public_destination(value: str) -> _PinnedDestination:
+    """Resolve and validate every address, returning one connection pin.
+
+    投递时只解析一次并固定结果:连接阶段由 ``_PinnedWebhookTransport``
+    直连 ``address``,彻底消除校验与连接之间的 DNS-rebinding TOCTOU。
+    """
     parsed = urlsplit(value)
     hostname = parsed.hostname
     if not hostname:
         raise WebhookError("webhook_url_not_allowed")
     try:
+        port = parsed.port or 443
+    except ValueError:
+        raise WebhookError("webhook_url_not_allowed") from None
+    try:
         addresses = await asyncio.get_running_loop().run_in_executor(
-            None, socket.getaddrinfo, hostname, parsed.port or 443, 0, socket.SOCK_STREAM
+            None, socket.getaddrinfo, hostname, port, 0, socket.SOCK_STREAM
         )
     except OSError:
         raise WebhookError("webhook_dns_failed") from None
+    pinned: str | None = None
     for address in addresses:
         try:
             ip = ipaddress.ip_address(address[4][0])
         except (IndexError, ValueError):
             raise WebhookError("webhook_dns_failed") from None
-        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_unspecified or ip.is_multicast:
+        if _blocked_address(ip):
             raise WebhookError("webhook_url_not_allowed")
+        if pinned is None:
+            pinned = str(ip)
+    if pinned is None:
+        raise WebhookError("webhook_dns_failed") from None
+    return _PinnedDestination(
+        hostname=hostname.casefold().rstrip("."), port=port, address=pinned
+    )
 
 
 def _blocked_address(address: ipaddress._BaseAddress) -> bool:

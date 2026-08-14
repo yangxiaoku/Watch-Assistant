@@ -3,10 +3,12 @@
 import asyncio
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Protocol
+from time import monotonic
+from typing import Protocol, Self
 from uuid import uuid4
 
-from sqlalchemy import and_, or_, select, update
+from sqlalchemy import and_, or_, select, text, update
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from watch_assistant.models import (
@@ -37,6 +39,90 @@ from watch_assistant.services.workflows import (
     record_evidence,
     sync_child_stage,
 )
+
+
+class TaskLockUnavailable(Exception):
+    """进程间互斥锁在超时窗口内未能获得(存在长时间持锁的并发操作)。"""
+
+
+class _DatabaseNamedLock:
+    """Cross-process mutex backed by the ``named_locks`` table.
+
+    进程内 asyncio.Lock 只约束单 worker;多 worker 部署下 create/reconcile
+    的"读-复用判断"与 PUSH 阶段写入需要跨进程互斥。acquire 用原子条件
+    UPDATE(owner 为空或租约已过期)抢占,持有者崩溃后由到期自动让出;
+    释放时仅清空自己的 owner,不影响后续持有者。
+    """
+
+    _ACQUIRE_RETRY_SECONDS = 0.05
+
+    def __init__(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        lock_id: str,
+        *,
+        timeout_seconds: float = 60.0,
+        lease_seconds: float = 120.0,
+    ) -> None:
+        if timeout_seconds <= 0 or lease_seconds <= 0:
+            raise ValueError("lock timing must be positive")
+        self._session_factory = session_factory
+        self._lock_id = lock_id
+        self._timeout_seconds = timeout_seconds
+        self._lease_seconds = lease_seconds
+        self._owner = uuid4().hex
+
+    async def __aenter__(self) -> Self:
+        deadline = monotonic() + self._timeout_seconds
+        while True:
+            now = datetime.now(UTC)
+            try:
+                async with self._session_factory() as session:
+                    await session.execute(
+                        text(
+                            "INSERT OR IGNORE INTO named_locks "
+                            "(lock_id, owner, expires_at) VALUES (:lock_id, NULL, NULL)"
+                        ),
+                        {"lock_id": self._lock_id},
+                    )
+                    result = await session.execute(
+                        text(
+                            "UPDATE named_locks SET owner = :owner, expires_at = :expires_at "
+                            "WHERE lock_id = :lock_id "
+                            "AND (owner IS NULL OR expires_at IS NULL OR expires_at < :now)"
+                        ),
+                        {
+                            "owner": self._owner,
+                            "expires_at": now + timedelta(seconds=self._lease_seconds),
+                            "lock_id": self._lock_id,
+                            "now": now,
+                        },
+                    )
+                    await session.commit()
+                    if result.rowcount == 1:
+                        return self
+            except SQLAlchemyError:
+                # SQLite 写锁竞争/繁忙:短暂退避后重试。
+                pass
+            if monotonic() >= deadline:
+                raise TaskLockUnavailable("task_lock_unavailable")
+            await asyncio.sleep(self._ACQUIRE_RETRY_SECONDS)
+
+    async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
+        try:
+            async with self._session_factory() as session:
+                await session.execute(
+                    text(
+                        "UPDATE named_locks SET owner = NULL, expires_at = NULL "
+                        "WHERE lock_id = :lock_id AND owner = :owner"
+                    ),
+                    {"lock_id": self._lock_id, "owner": self._owner},
+                )
+                await session.commit()
+        except SQLAlchemyError:
+            # 释放失败留给租约过期兜底,不得掩盖业务异常。
+            pass
+
 
 REUSABLE_STATES = (
     TaskState.QUEUED,
@@ -520,6 +606,12 @@ class TaskService:
         self._session_factory = session_factory
         self._create_lock = asyncio.Lock()
         self._reconcile_lock = asyncio.Lock()
+        # 进程间互斥:与进程内锁并用,多 worker 下仍保证
+        # choose_existing_task 复用判断与 PUSH 阶段写入互斥。
+        self._create_db_lock = _DatabaseNamedLock(session_factory, "task_create")
+        self._reconcile_db_lock = _DatabaseNamedLock(
+            session_factory, "task_reconcile"
+        )
         self._event_logger = event_logger
 
     async def create(
@@ -531,7 +623,7 @@ class TaskService:
         workflow_id: str | None = None,
         target_directory_id: str | None = None,
     ):
-        async with self._create_lock, self._session_factory() as session:
+        async with self._create_lock, self._create_db_lock, self._session_factory() as session:
             stage_workflow = None
             resource = await session.get(Resource, resource_id)
             if resource is None:
@@ -1065,7 +1157,11 @@ class TaskService:
         if normalized_observation is None:
             raise ReconciliationUnavailable("reconciliation_unavailable")
 
-        async with self._reconcile_lock, self._session_factory() as session:
+        async with (
+            self._reconcile_lock,
+            self._reconcile_db_lock,
+            self._session_factory() as session,
+        ):
             task = await session.get(Task, task_id)
             if task is None:
                 raise ResourceNotFound(task_id)

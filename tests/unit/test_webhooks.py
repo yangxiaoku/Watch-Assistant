@@ -13,25 +13,28 @@ def _addr(host: str):
     return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (host, 443))]
 
 
-def test_webhook_url_rejects_dns_that_resolves_to_private_address(monkeypatch):
+@pytest.mark.asyncio
+async def test_webhook_url_rejects_dns_that_resolves_to_private_address(monkeypatch):
     monkeypatch.setattr(webhooks.socket, "getaddrinfo", lambda *args, **kwargs: _addr("10.0.0.8"))
     with pytest.raises(webhooks.WebhookError) as error:
-        webhooks._validate_url("https://hooks.example.test/events")
+        await webhooks._validate_url_async("https://hooks.example.test/events")
     assert error.value.code == "webhook_url_not_allowed"
 
 
-def test_webhook_url_accepts_public_dns_result(monkeypatch):
+@pytest.mark.asyncio
+async def test_webhook_url_accepts_public_dns_result(monkeypatch):
     monkeypatch.setattr(webhooks.socket, "getaddrinfo", lambda *args, **kwargs: _addr("8.8.8.8"))
-    assert webhooks._validate_url("https://hooks.example.test/events").startswith("https://")
+    assert (await webhooks._validate_url_async("https://hooks.example.test/events")).startswith("https://")
 
 
-def test_webhook_url_rejects_unresolvable_host(monkeypatch):
+@pytest.mark.asyncio
+async def test_webhook_url_rejects_unresolvable_host(monkeypatch):
     def fail(*args, **kwargs):
         raise OSError("dns failure")
 
     monkeypatch.setattr(webhooks.socket, "getaddrinfo", fail)
     with pytest.raises(webhooks.WebhookError) as error:
-        webhooks._validate_url("https://hooks.example.test/events")
+        await webhooks._validate_url_async("https://hooks.example.test/events")
     assert error.value.code == "webhook_url_unresolvable"
 
 
@@ -53,6 +56,96 @@ async def test_webhook_delivery_query_passes_filter_and_limit_to_service():
 
     assert response == {"items": []}
     assert seen == {"endpoint_id": "endpoint-one", "limit": 10}
+
+
+@pytest.mark.asyncio
+async def test_pinned_transport_connects_to_validated_address_and_keeps_host_and_sni():
+    """F1:连接阶段必须连到校验时固定的地址,Host 头与 TLS SNI 保持原始域名。"""
+    import httpx
+
+    from watch_assistant.services.webhooks import (
+        _PinnedDestination,
+        _PinnedWebhookTransport,
+    )
+
+    seen: dict[str, object] = {}
+
+    class _Inner:
+        async def handle_async_request(self, request):
+            seen["url"] = str(request.url)
+            seen["host"] = request.headers.get("host")
+            seen["sni"] = request.extensions.get("sni_hostname")
+            return SimpleNamespace(status_code=200)
+
+    transport = _PinnedWebhookTransport()
+    transport._inner = _Inner()  # type: ignore[assignment]
+    request = httpx.Request("POST", "https://hooks.example.test:8443/events")
+    request.extensions["watch_assistant_pin"] = _PinnedDestination(
+        "hooks.example.test", 8443, "93.184.216.34"
+    )
+    await transport.handle_async_request(request)
+
+    assert seen["url"] == "https://93.184.216.34:8443/events"
+    assert seen["host"] == "hooks.example.test:8443"
+    assert seen["sni"] == "hooks.example.test"
+
+
+@pytest.mark.asyncio
+async def test_resolve_public_destination_pins_first_public_address(monkeypatch):
+    """F1:投递解析只发生一次并固定地址,后续连接不得再次解析域名。"""
+    import httpx
+
+    from watch_assistant.services import webhooks
+
+    calls = 0
+
+    def _rebinding_dns(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return _addr("8.8.8.8")
+        # 第二次解析(攻击者视角的 rebinding)落到内网地址,但连接不再解析。
+        return _addr("127.0.0.1")
+
+    monkeypatch.setattr(webhooks.socket, "getaddrinfo", _rebinding_dns)
+    pin = await webhooks._resolve_public_destination("https://hooks.example.test/events")
+    assert pin.address == "8.8.8.8"
+    assert pin.hostname == "hooks.example.test"
+    assert pin.port == 443
+
+    seen: dict[str, object] = {}
+
+    class _Inner:
+        async def handle_async_request(self, request):
+            seen["url"] = str(request.url)
+            seen["host"] = request.headers.get("host")
+            return SimpleNamespace(status_code=200)
+
+    transport = webhooks._PinnedWebhookTransport()
+    transport._inner = _Inner()  # type: ignore[assignment]
+    request = httpx.Request("POST", "https://hooks.example.test/events")
+    request.extensions["watch_assistant_pin"] = pin
+    await transport.handle_async_request(request)
+
+    assert seen["url"] == "https://8.8.8.8/events"
+    assert seen["host"] == "hooks.example.test"
+    # 连接阶段没有第二次 getaddrinfo(域名只在校验时解析一次)。
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_resolve_public_destination_rejects_rebinding_to_private(monkeypatch):
+    """F1:解析结果只要含内网/保留地址即拒绝,不放过 rebinding 域名。"""
+    from watch_assistant.services import webhooks
+
+    monkeypatch.setattr(
+        webhooks.socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: _addr("169.254.169.254"),
+    )
+    with pytest.raises(webhooks.WebhookError) as error:
+        await webhooks._resolve_public_destination("https://hooks.example.test/events")
+    assert error.value.code == "webhook_url_not_allowed"
 
 
 def test_webhook_endpoint_health_status_is_derived_from_delivery_history():
@@ -178,8 +271,13 @@ async def test_concurrent_publish_does_not_duplicate_http_post(tmp_path, monkeyp
             self.posts: list[str] = []
             self._block = asyncio.Event()
 
-        async def post(self, url, *, content, headers, timeout):
-            self.posts.append(url)
+        def build_request(self, method, url, *, content, headers, timeout):
+            return SimpleNamespace(
+                method=method, url=url, content=content, headers=headers, extensions={}
+            )
+
+        async def send(self, request):
+            self.posts.append(request.url)
             await self._block.wait()
             return SimpleNamespace(status_code=200)
 

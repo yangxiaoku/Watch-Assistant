@@ -5,6 +5,7 @@ from starlette.requests import Request
 from tests.unit.factories import make_security_manager
 from watch_assistant.security import (
     AGENT_SCOPES,
+    SESSION_COOKIE,
     AuthError,
     SecurityManager,
     _client_host,
@@ -344,6 +345,161 @@ def _scope_request(method: str, path: str) -> Request:
             "root_path": "",
         }
     )
+
+
+def _bearer_request(token: str, *, client_host: str = "127.0.0.1") -> Request:
+    return Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/api/v1/health",
+            "headers": [(b"authorization", f"Bearer {token}".encode("ascii"))],
+            "scheme": "http",
+            "server": ("app.test", 80),
+            "client": (client_host, 1234),
+            "root_path": "",
+        }
+    )
+
+
+def test_legacy_bearer_is_read_only_unless_full_scope_opted_in(monkeypatch):
+    """F8:静态 script_token 默认只读,全权限需显式 SCRIPT_TOKEN_FULL_SCOPE=1。"""
+    from watch_assistant.security import LEGACY_BEARER_SCOPES
+
+    monkeypatch.delenv("SCRIPT_TOKEN_FULL_SCOPE", raising=False)
+    manager = _rate_limit_manager()
+    context = manager.authenticate(_bearer_request("fixture-token"))
+    assert context.token_kind == "legacy"
+    assert context.scopes == LEGACY_BEARER_SCOPES
+    assert context.has_scope("system:read")
+    assert not context.has_scope("settings:write")
+    assert not context.has_scope("backup:write")
+
+    monkeypatch.setenv("SCRIPT_TOKEN_FULL_SCOPE", "1")
+    context = manager.authenticate(_bearer_request("fixture-token"))
+    assert context.scopes == frozenset(AGENT_SCOPES)
+    assert context.has_scope("settings:write")
+
+
+@pytest.mark.asyncio
+async def test_agent_token_failures_are_audited_and_rate_limited(tmp_path):
+    """F7:agent token 失配计入失败窗口(10 次/分钟),超限 429 并产生审计事件。"""
+    from watch_assistant.db import create_database, initialize_database
+
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'agent-fail.db'}")
+    await initialize_database(database.engine)
+    password_hash = PasswordHash.recommended()
+    events: list[str] = []
+
+    class _Logger:
+        async def log_event(self, event: str, **_kwargs):
+            events.append(event)
+
+    manager = SecurityManager(
+        web_password_hash=password_hash.hash("fixture-password"),
+        script_token_hash=password_hash.hash("fixture-token"),
+        session_factory=database.session_factory,
+        event_logger=_Logger(),
+    )
+    request = _bearer_request("wa_at_definitely-wrong-token")
+    try:
+        for _ in range(10):
+            with pytest.raises(AuthError) as error:
+                await manager.authenticate_async(request)
+            assert error.value.status_code == 401
+        with pytest.raises(AuthError) as error:
+            await manager.authenticate_async(request)
+        assert error.value.status_code == 429
+        assert events.count("agent.token.auth_failed") == 11
+    finally:
+        await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_diagnostics_bearer_is_exclusive_and_session_still_allowed(tmp_path):
+    """F10:diagnostics 端点专用 token 独家;普通 bearer 不得回落,web session 仍可访问。"""
+    from watch_assistant.db import create_database, initialize_database
+
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'diag.db'}")
+    await initialize_database(database.engine)
+    password_hash = PasswordHash.recommended()
+    manager = SecurityManager(
+        web_password_hash=password_hash.hash("fixture-password"),
+        script_token_hash=password_hash.hash("fixture-token"),
+        diagnostics_token="deployment-diagnostics-token",
+        session_factory=database.session_factory,
+    )
+    try:
+        dedicated = await manager.authenticate_diagnostics_async(
+            _bearer_request("deployment-diagnostics-token")
+        )
+        assert dedicated.token_kind == "diagnostics"
+        # 普通 script/agent bearer 不得回落为普通认证
+        with pytest.raises(AuthError):
+            await manager.authenticate_diagnostics_async(
+                _bearer_request("fixture-token")
+            )
+        # web session 仍可访问
+        session_id, _csrf = await manager.login_async("fixture-password")
+        request = Request(
+            {
+                "type": "http",
+                "method": "GET",
+                "path": "/api/v1/deployment/diagnostics",
+                "headers": [
+                    (b"cookie", f"{SESSION_COOKIE}={session_id}".encode("ascii"))
+                ],
+                "scheme": "http",
+                "server": ("app.test", 80),
+                "client": ("127.0.0.1", 1234),
+                "root_path": "",
+            }
+        )
+        context = await manager.authenticate_diagnostics_async(request)
+        assert context.via_bearer is False
+        # 未认证一律 401
+        with pytest.raises(AuthError):
+            await manager.authenticate_diagnostics_async(
+                Request(
+                    {
+                        "type": "http",
+                        "method": "GET",
+                        "path": "/api/v1/deployment/diagnostics",
+                        "headers": [],
+                        "scheme": "http",
+                        "server": ("app.test", 80),
+                        "client": ("127.0.0.1", 1234),
+                        "root_path": "",
+                    }
+                )
+            )
+    finally:
+        await database.engine.dispose()
+
+
+def test_login_rate_limit_bucket_is_split_by_username():
+    """F12:NAT 同出口 IP 下,不同用户名的失败尝试互不牵连。"""
+    manager = _rate_limit_manager()
+    for _ in range(5):
+        manager.check_login_rate_limit(_login_request(), username="alice")
+    manager.check_login_rate_limit(_login_request(), username="bob")
+    with pytest.raises(AuthError) as error:
+        manager.check_login_rate_limit(_login_request(), username="alice")
+    assert error.value.status_code == 429
+
+
+def test_login_global_bucket_limits_multi_source_bruteforce():
+    """F12:全局登录聚合桶限制多源 IP 摊薄暴力破解。"""
+    manager = _rate_limit_manager()
+    for index in range(30):
+        manager.check_login_rate_limit(
+            _login_request(client_host=f"10.0.0.{index % 10}"), username="admin"
+        )
+    with pytest.raises(AuthError) as error:
+        manager.check_login_rate_limit(
+            _login_request(client_host="10.0.0.99"), username="admin"
+        )
+    assert error.value.status_code == 429
 
 
 def test_unknown_api_path_is_fail_closed_not_default_scope():

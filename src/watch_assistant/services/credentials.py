@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from watch_assistant.adapters.p115 import P115Adapter
 from watch_assistant.adapters.tmdb import TmdbAuthError, TmdbClient
 from watch_assistant.crypto import SecretCrypto
+from watch_assistant.log_redaction import install_redacting_filter
 from watch_assistant.models import ApplicationSettings
 from watch_assistant.services.observability import EventLogger, emit_event
 from watch_assistant.services.p115_credentials import (
@@ -26,6 +27,8 @@ from watch_assistant.services.settings import shared_settings_mutation_lock
 
 SETTINGS_ID = "default"
 _TMDB_KEY = re.compile(r"^[^\x00-\x1f\x7f\r\n]{1,256}$")
+# 限流字典容量上限,超限时清理过期/空桶。
+_RATE_WINDOWS_MAX = 4096
 
 
 class CredentialConflict(Exception):
@@ -45,6 +48,7 @@ class CredentialValidationUnavailable(Exception):
 
 
 logger = logging.getLogger(__name__)
+install_redacting_filter(logger)
 
 
 class CredentialService:
@@ -53,6 +57,7 @@ class CredentialService:
         session_factory: async_sessionmaker[AsyncSession],
         crypto: SecretCrypto,
         *,
+        p115_crypto: SecretCrypto | None = None,
         environment_tmdb_key: str,
         fallback_cookie_provider: CookieProvider,
         timeout_seconds: float = 10.0,
@@ -68,6 +73,8 @@ class CredentialService:
             raise ValueError("timeout_seconds must be positive")
         self._session_factory = session_factory
         self._crypto = crypto
+        # 115 cookie 与 TMDB key 分属不同密钥域(见 app 装配与 crypto 域分隔)。
+        self._p115_crypto = p115_crypto or crypto
         self._environment_tmdb_key = environment_tmdb_key
         self._fallback_cookie_provider = fallback_cookie_provider
         self._cookie_provider = cookie_provider or CompositeCookieProvider(
@@ -106,7 +113,11 @@ class CredentialService:
         window: timedelta = timedelta(minutes=1),
     ) -> None:
         current = now or datetime.now(UTC)
-        bucket = self._rate_windows.setdefault(identity, deque())
+        bucket = self._rate_windows.get(identity)
+        if bucket is None:
+            bucket = deque()
+            self._rate_windows[identity] = bucket
+            self._prune_rate_windows(current, window)
         cutoff = current - window
         while bucket and bucket[0] <= cutoff:
             bucket.popleft()
@@ -114,11 +125,24 @@ class CredentialService:
             raise CredentialRateLimited
         bucket.append(current)
 
+    def _prune_rate_windows(self, now: datetime, window: timedelta) -> None:
+        """容量上限内清理已过期/空桶,防止按身份记账无界增长。"""
+        if len(self._rate_windows) < _RATE_WINDOWS_MAX:
+            return
+        cutoff = now - window
+        stale = [
+            key
+            for key, bucket in self._rate_windows.items()
+            if not bucket or bucket[-1] <= cutoff
+        ]
+        for key in stale:
+            del self._rate_windows[key]
+
     async def load_managed(self) -> tuple[str | None, str | None]:
         async with self._mutation_lock, self._session_factory() as session:
             settings = await self._get_or_create(session)
             tmdb = self._decrypt(settings.managed_tmdb_key_encrypted)
-            cookie = self._decrypt(settings.managed_p115_cookie_encrypted)
+            cookie = self._decrypt_p115(settings.managed_p115_cookie_encrypted)
         if cookie is not None:
             normalized = normalize_cookie_text(cookie)
             cookie = normalized
@@ -131,7 +155,7 @@ class CredentialService:
             tmdb_configured = (
                 self._decrypt(settings.managed_tmdb_key_encrypted) is not None
             )
-            cookie = self._decrypt(settings.managed_p115_cookie_encrypted)
+            cookie = self._decrypt_p115(settings.managed_p115_cookie_encrypted)
             cookie_configured = cookie is not None
             revision = settings.revision
             tmdb_updated = settings.managed_tmdb_updated_at
@@ -207,7 +231,7 @@ class CredentialService:
                 settings = await self._get_or_create(session)
                 if settings.revision != revision:
                     raise CredentialConflict
-                settings.managed_p115_cookie_encrypted = self._crypto.encrypt(
+                settings.managed_p115_cookie_encrypted = self._p115_crypto.encrypt(
                     normalized
                 )
                 settings.managed_p115_updated_at = now
@@ -427,5 +451,13 @@ class CredentialService:
             return None
         try:
             return self._crypto.decrypt(encrypted)
+        except Exception:  # noqa: BLE001 - managed secret failure falls back
+            return None
+
+    def _decrypt_p115(self, encrypted: str | None) -> str | None:
+        if not encrypted:
+            return None
+        try:
+            return self._p115_crypto.decrypt(encrypted)
         except Exception:  # noqa: BLE001 - managed secret failure falls back
             return None

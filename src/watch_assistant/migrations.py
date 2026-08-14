@@ -1119,6 +1119,12 @@ def _create_agent_tokens_table(connection: Connection) -> None:
     AgentToken.__table__.create(connection, checkfirst=True)
 
 
+def _create_named_locks_table(connection: Connection) -> None:
+    from watch_assistant.models import NamedLock
+
+    NamedLock.__table__.create(connection, checkfirst=True)
+
+
 def _create_webhook_tables(connection: Connection) -> None:
     from watch_assistant.models import WebhookDelivery, WebhookEndpoint
 
@@ -1502,6 +1508,7 @@ MIGRATIONS: tuple[Migration, ...] = (
         _retire_legacy_subscription_columns,
     ),
     Migration("076_p115_checkin_settings", _add_p115_checkin_settings_column),
+    Migration("077_named_locks", _create_named_locks_table),
 )
 
 

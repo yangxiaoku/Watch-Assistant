@@ -23,6 +23,9 @@ from watch_assistant.services.event_catalog import get_event_definition
 from watch_assistant.services.observability import EventLogger, emit_event
 
 DEFAULT_AGENT_TOKEN_TTL = timedelta(days=30)
+# 暴露给管理界面的 token 前缀长度(不含 wa_at_ 前缀本身):只用于
+# 人工识别,缩短可降低匿名性损失,不足以逆推 256-bit token。
+TOKEN_PREFIX_LENGTH = 4
 
 
 class AgentTokenError(ValueError):
@@ -60,7 +63,7 @@ class AgentTokenService:
             id="agent_" + uuid4().hex,
             name=request.name.strip(),
             token_digest=_digest(raw_token),
-            token_prefix=raw_token[: len(AGENT_TOKEN_PREFIX) + 8],
+            token_prefix=raw_token[: len(AGENT_TOKEN_PREFIX) + TOKEN_PREFIX_LENGTH],
             scopes_json=json.dumps(scopes, ensure_ascii=False, separators=(",", ":")),
             library_ids_json=json.dumps(
                 library_ids, ensure_ascii=False, separators=(",", ":")
@@ -170,7 +173,7 @@ class AgentTokenService:
                 id="agent_" + uuid4().hex,
                 name=previous.name,
                 token_digest=_digest(raw_token),
-                token_prefix=raw_token[: len(AGENT_TOKEN_PREFIX) + 8],
+                token_prefix=raw_token[: len(AGENT_TOKEN_PREFIX) + TOKEN_PREFIX_LENGTH],
                 scopes_json=previous.scopes_json,
                 library_ids_json=previous.library_ids_json,
                 expires_at=previous.expires_at,

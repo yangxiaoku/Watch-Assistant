@@ -1,6 +1,7 @@
 """Authenticated P115 settings and read-only validation routes."""
 
-from collections.abc import Mapping
+from collections import OrderedDict
+from collections.abc import Iterable, Mapping
 from datetime import datetime
 from typing import Annotated, Literal
 
@@ -25,6 +26,58 @@ router = APIRouter(
 )
 
 P115_DIRECTORY_ROOT_ID = "0"
+
+
+class BrowsedDirectoryRegistry:
+    """有界、按认证身份隔离的目录浏览记录。
+
+    目录选择器需要记住"父目录已浏览"才能授权列举其子目录;此前用全局
+    set 挂在 app.state,跨会话/token 共享且无界增长。本实现:按认证身份
+    (auth.identity)分桶互不共享;目录数与身份数均有上限(FIFO 淘汰),
+    内存有界;配置目录(seeded)始终允许、不占桶位。
+    注意:多 worker 部署下各进程持有独立副本,与旧实现同级(单 worker
+    实测模式无影响);跨进程一致性需要数据库存储,留待后续。
+    """
+
+    def __init__(
+        self,
+        *,
+        max_identities: int = 128,
+        max_directories_per_identity: int = 2048,
+    ) -> None:
+        if max_identities < 1 or max_directories_per_identity < 1:
+            raise ValueError("registry bounds must be positive")
+        self._max_identities = max_identities
+        self._max_directories_per_identity = max_directories_per_identity
+        self._identities: OrderedDict[str, OrderedDict[str, None]] = OrderedDict()
+
+    def allowed(self, identity: str) -> frozenset[str]:
+        bucket = self._identities.get(identity)
+        if bucket is None:
+            return frozenset()
+        self._identities.move_to_end(identity)
+        return frozenset(bucket)
+
+    def record(self, identity: str, directory_ids: Iterable[str]) -> None:
+        if not identity:
+            return
+        bucket = self._identities.get(identity)
+        if bucket is None:
+            bucket = OrderedDict()
+            self._identities[identity] = bucket
+            self._evict_identities()
+        for directory_id in directory_ids:
+            if not directory_id:
+                continue
+            bucket.pop(directory_id, None)
+            bucket[directory_id] = None
+        while len(bucket) > self._max_directories_per_identity:
+            bucket.popitem(last=False)
+        self._identities.move_to_end(identity)
+
+    def _evict_identities(self) -> None:
+        while len(self._identities) > self._max_identities:
+            self._identities.popitem(last=False)
 
 
 class P115CookieResponse(BaseModel):
@@ -184,6 +237,7 @@ async def validate_p115(
 @router.get("/settings/p115/directories", response_model=P115DirectoryListResponse)
 async def list_p115_directories(
     request: Request,
+    auth: Annotated[AuthContext, Depends(require_api_auth)],
     directory_id: str | None = None,
     page: int = 1,
 ) -> P115DirectoryListResponse:
@@ -196,7 +250,11 @@ async def list_p115_directories(
     parent_id = directory_id or root_id
     if not isinstance(parent_id, str) or not parent_id.isdigit():
         raise HTTPException(status_code=503, detail="p115_directory_scope_unavailable")
-    allowed_ids = getattr(request.app.state, "p115_browsed_directory_ids", set())
+    configured_ids = getattr(request.app.state, "p115_browsed_directory_ids", frozenset())
+    registry = getattr(request.app.state, "p115_browsed_directory_registry", None)
+    allowed_ids = set(configured_ids)
+    if registry is not None:
+        allowed_ids.update(registry.allowed(auth.identity))
     if parent_id != root_id and parent_id not in allowed_ids:
         raise HTTPException(status_code=403, detail="p115_directory_out_of_scope")
     if page < 1 or page > 100:
@@ -223,10 +281,13 @@ async def list_p115_directories(
             parent_id, page=page, page_size=VERIFIED_BATCH_PAGE_SIZE
         )
         directories = []
+        discovered: list[str] = []
         for item in result.items:
             if item.is_directory and item.directory_id is not None:
                 directories.append(P115DirectoryResponse(id=item.directory_id, name=item.name))
-                allowed_ids.add(item.directory_id)
+                discovered.append(item.directory_id)
+        if registry is not None:
+            registry.record(auth.identity, discovered)
         return P115DirectoryListResponse(
             root_id=root_id,
             parent_id=parent_id,

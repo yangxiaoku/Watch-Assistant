@@ -204,6 +204,90 @@ async def test_directory_picker_starts_at_the_115_account_root(monkeypatch, tmp_
 
 
 @pytest.mark.integration
+async def test_directory_browse_scope_is_per_identity_and_bounded(tmp_path, monkeypatch):
+    """F9:目录浏览授权按认证身份隔离,配置目录始终允许,内存有界。"""
+    from watch_assistant.api.settings_p115 import BrowsedDirectoryRegistry
+
+    path = tmp_path / "p115-cookie"
+    _write_cookie(path)
+    service = P115SettingsService(
+        enabled=True,
+        cookie_provider=CookieProvider(path),
+        cookie_path=path,
+        target_configured=True,
+        max_concurrency=1,
+    )
+    security = _security()
+    app = _settings_app(service, security)
+    app.state.p115_browsed_directory_ids = frozenset({"777"})
+    registry = BrowsedDirectoryRegistry(
+        max_identities=2, max_directories_per_identity=3
+    )
+    app.state.p115_browsed_directory_registry = registry
+    app.state.organization_cookie_provider = object()
+    captured: list[str] = []
+
+    class FakeGateway:
+        def __init__(self, _provider, **kwargs):
+            pass
+
+        async def list_directory(self, directory_id, *, page, page_size):
+            captured.append(directory_id)
+            return DirectoryPage(
+                items=(
+                    LibraryEntry(
+                        directory_id=f"{directory_id}8",
+                        file_id=None,
+                        parent_id=directory_id,
+                        name="child",
+                        is_directory=True,
+                        size_bytes=0,
+                        modified_at=None,
+                        pickcode=None,
+                    ),
+                ),
+                page=1,
+                page_count=1,
+                total=1,
+                scan_complete=True,
+                state=ScanState.COMPLETE,
+                has_more=False,
+                next_page=None,
+                terminal=True,
+            )
+
+    monkeypatch.setattr(
+        p115_library_gateway, "P115ReadOnlyDirectoryGateway", FakeGateway
+    )
+
+    async def browse(session_id: str, directory_id: str | None = None):
+        async with await _client(app) as client:
+            client.cookies.set(SESSION_COOKIE, session_id)
+            url = "/api/v1/settings/p115/directories"
+            if directory_id is not None:
+                url += f"?directory_id={directory_id}"
+            return await client.get(url)
+
+    session_a, _ = await security.login_async("web-secret")
+    session_b, _ = await security.login_async("web-secret")
+
+    # 根目录浏览,记录子目录 08
+    response = await browse(session_a)
+    assert response.status_code == 200
+    assert response.json()["items"] == [{"id": "08", "name": "child"}]
+    # 配置目录(777)任意身份都允许
+    assert (await browse(session_b, "777")).status_code == 200
+    # 会话 A 可进入刚浏览过的子目录,会话 B 不能(跨会话不共享)
+    assert (await browse(session_a, "08")).status_code == 200
+    assert (await browse(session_b, "08")).status_code == 403
+    # 未浏览的目录同样拒绝
+    assert (await browse(session_b, "42")).status_code == 403
+    # 每身份目录数有上限
+    registry.record("extra", ("1", "2", "3", "4"))
+    assert len(registry.allowed("extra")) == 3
+
+
+@pytest.mark.integration
 @pytest.mark.parametrize(
     ("p115_ready", "push_capabilities", "expected_ready", "expected_magnet"),
     [

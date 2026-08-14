@@ -12,6 +12,7 @@ from collections.abc import Awaitable, Callable, Collection
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
+from urllib.parse import quote
 
 from sqlalchemy import select, update
 from sqlalchemy.exc import SQLAlchemyError
@@ -172,7 +173,7 @@ class StrmCleanupPlanService:
                 state = _managed_state(
                     root,
                     manifest.local_relative_path,
-                    f"{prefix}{manifest.manifest_id}\n",
+                    f"{prefix}{quote(manifest.manifest_id, safe='')}\n",
                 )
                 candidates.append(
                     {
@@ -332,7 +333,7 @@ class StrmCleanupPlanService:
                 state = _managed_state(
                     root,
                     manifest.local_relative_path,
-                    f"{prefix}{manifest.manifest_id}\n",
+                    f"{prefix}{quote(manifest.manifest_id, safe='')}\n",
                 )
                 if state != planned_state:
                     raise StrmCleanupPlanError("cleanup_plan_blocked")
@@ -366,7 +367,7 @@ class StrmCleanupPlanService:
                             mutation = _remove_with_undo(
                                 root,
                                 manifest.local_relative_path,
-                                f"{prefix}{manifest.manifest_id}\n".encode(),
+                                f"{prefix}{quote(manifest.manifest_id, safe='')}\n".encode(),
                             )
                         except StrmManifestError:
                             raise StrmCleanupPlanError("cleanup_plan_blocked") from None

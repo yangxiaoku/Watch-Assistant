@@ -49,20 +49,24 @@ def _write_with_undo(
     _assert_no_symlink_components(parent)
     resolved_parent = parent.resolve(strict=True)
     _within(root, resolved_parent)
-    if target.is_symlink():
+    # 校验与 I/O 之间中间目录可能被换成指向根外的 symlink:此后所有操作
+    # 一律基于 resolved_parent,只追加最后一段(relative_path 已验证不含
+    # 分隔符/".."),杜绝 TOCTOU 穿出根。
+    resolved_target = resolved_parent.joinpath(target.name)
+    if resolved_target.is_symlink():
         raise StrmManifestError("symlink_target")
     before: bytes | None = None
-    if target.is_file():
+    if resolved_target.is_file():
         try:
-            before = target.read_bytes()
+            before = resolved_target.read_bytes()
         except OSError as error:
             raise StrmManifestError("managed_file_not_readable") from error
         if before == content:
             return False, None
-    if target.exists() and not target.is_file():
+    if resolved_target.exists() and not resolved_target.is_file():
         raise StrmManifestError("target_not_file")
     descriptor, temporary_name = tempfile.mkstemp(
-        prefix=".watch-assistant-", dir=parent
+        prefix=".watch-assistant-", dir=resolved_parent
     )
     temporary = Path(temporary_name)
     try:
@@ -70,7 +74,7 @@ def _write_with_undo(
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, target)
+        os.replace(temporary, resolved_target)
     finally:
         temporary.unlink(missing_ok=True)
     return True, _FileMutation(root, relative_path, before, content)
@@ -93,19 +97,20 @@ def _remove_with_undo(
             return None
         raise StrmManifestError("managed_parent_not_safe") from error
     _within(root, resolved_parent)
-    if target.is_symlink():
+    resolved_target = resolved_parent.joinpath(target.name)
+    if resolved_target.is_symlink():
         raise StrmManifestError("managed_file_not_safe")
-    if not target.exists():
+    if not resolved_target.exists():
         return None
-    if not target.is_file():
+    if not resolved_target.is_file():
         raise StrmManifestError("managed_file_not_safe")
     try:
-        actual = target.read_bytes()
+        actual = resolved_target.read_bytes()
     except OSError as error:
         raise StrmManifestError("managed_file_not_readable") from error
     if actual != expected:
         raise StrmManifestError("managed_file_changed")
-    target.unlink()
+    resolved_target.unlink()
     return _FileMutation(root, relative_path, actual, None)
 
 def _remove_managed(
@@ -169,14 +174,15 @@ def _read_target(root: Path, relative_path: str) -> bytes | None:
             return None
         raise StrmManifestError("managed_parent_not_safe") from None
     _within(root, resolved_parent)
-    if target.is_symlink():
+    resolved_target = resolved_parent.joinpath(target.name)
+    if resolved_target.is_symlink():
         raise StrmManifestError("managed_file_not_safe")
-    if not target.exists():
+    if not resolved_target.exists():
         return None
-    if not target.is_file():
+    if not resolved_target.is_file():
         raise StrmManifestError("managed_file_not_safe")
     try:
-        return target.read_bytes()
+        return resolved_target.read_bytes()
     except OSError as error:
         raise StrmManifestError("managed_file_not_readable") from error
 
