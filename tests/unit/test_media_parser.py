@@ -512,3 +512,92 @@ def test_real_media_filenames_are_never_junk(name):
     # 正常影视文件名绝不能因广告判定被误杀;带广告域名但含年份/分辨率等
     # 媒体特征的真实资源同样按正常文件处理。
     assert _is_junk_filename(name) is False
+
+
+@pytest.mark.parametrize(
+    ("name", "title", "year", "media_type"),
+    (
+        # 真实线上源目录命名的回归:10bit 残留进标题会让 TMDB 搜索空结果
+        (
+            "Interstellar.2014.1080p.BluRay.DDP5.1.x265.10bit-GalaxyRG265.mkv",
+            "Interstellar",
+            2014,
+            "movie",
+        ),
+        (
+            "The.Matrix.1999.1080p.8bit.x264.mkv",
+            "The Matrix",
+            1999,
+            "movie",
+        ),
+        (
+            "Movie.2024.2160p.12bit.x265.mkv",
+            "Movie",
+            2024,
+            "movie",
+        ),
+    ),
+)
+def test_bit_depth_markers_never_leak_into_title(name, title, year, media_type):
+    parsed = parse_media_filename(name)
+
+    assert parsed.title == title
+    assert parsed.year == year
+    assert parsed.media_type_hint == media_type
+    assert "bit" not in parsed.title.casefold()
+
+
+@pytest.mark.parametrize(
+    ("name", "title", "episode_start", "episode_end"),
+    (
+        # 番组标准命名 [字幕组][作品名][集数][画质]:集号在方括号里
+        (
+            "[Airota][Sousou no Frieren][29][1080p HEVC-10bit AAC ASS].mkv",
+            "Sousou no Frieren",
+            29,
+            None,
+        ),
+        (
+            "[Airota][Sousou no Frieren][29-38][1080p HEVC-10bit AAC ASS].mkv",
+            "Sousou no Frieren",
+            29,
+            38,
+        ),
+        (
+            "[Kamigami]Sousou no Frieren S01E29 [1080p][HEVC 10bit][ASS].mkv",
+            "Sousou no Frieren",
+            29,
+            None,
+        ),
+    ),
+)
+def test_anime_bracket_episode_numbers_are_recognized(
+    name, title, episode_start, episode_end
+):
+    parsed = parse_media_filename(name)
+
+    assert parsed.title == title
+    assert parsed.episode_start == episode_start
+    assert parsed.episode_end == episode_end
+    assert parsed.media_type_hint == "tv"
+    assert "10bit" not in parsed.title.casefold()
+    assert "ASS" not in parsed.title.upper()
+
+
+def test_four_digit_bracket_is_a_year_not_an_episode():
+    # "[2016]" 是年份方括号,不得误判为集号
+    parsed = parse_media_filename("Movie.Name.[2016].mkv")
+
+    assert parsed.title == "Movie Name"
+    assert parsed.year == 2016
+    assert parsed.episode_start is None
+    assert parsed.media_type_hint == "movie"
+
+
+def test_anime_bracket_episode_marks_file_as_tv_for_matching():
+    parsed = parse_media_filename(
+        "[Airota][Sousou no Frieren][29][1080p HEVC-10bit AAC ASS].mkv"
+    )
+
+    assert parsed.media_type_hint == "tv"
+    assert "episode" in parsed.evidence

@@ -49,6 +49,12 @@ _CHINESE_EPISODE_RE = re.compile(
     r"第(?P<season>[0-9]{1,3})季[ ._-]*第(?P<start>[0-9]{1,4})(?!\s*季)"
     r"(?:[ ._-]*(?:-|至|到)[ ._-]*(?P<end>[0-9]{1,4}))?集?",
 )
+# 番组标准命名 [字幕组][作品名][集数][画质] 中的纯数字集号:
+# "[29]" / "[29-38]"。4 位 19xx/20xx 是年份不在此列(由 _YEAR_RE 处理),
+# 1-3 位数字是合理的集数主张。
+_BRACKET_EPISODE_RE = re.compile(
+    r"\[(?P<start>[0-9]{1,3})(?:[ ._-]*(?:-|~|至|到)[ ._-]*(?P<end>[0-9]{1,3}))?\]"
+)
 # 无季标记的纯中文集数:"第2集" / "第2-4集" / "第2至5集"。
 _CHINESE_EPISODE_ONLY_RE = re.compile(
     r"(?<![0-9])第(?P<start>[0-9]{1,4})(?:[ ._-]*(?:-|~|至|到)[ ._-]*"
@@ -160,6 +166,18 @@ _AUDIO_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 # a "ch" suffix).  The leading lookahead allows the marker to sit directly after
 # an audio codec (e.g. "AAC5.1"), while the dotted/ch shape avoids stealing
 # arbitrary digits that belong to a year or part of the title.
+_BIT_DEPTH_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    # 位深标记 (8bit/10bit/12bit):残留进标题会让 TMDB 搜索词过死,
+    # 例如 "Interstellar.2014...x265.10bit-GalaxyRG265.mkv" 若保留
+    # "10bit" 则 /search/multi 返回空,计划永远 no_candidates。
+    (
+        "bit-depth",
+        re.compile(
+            r"(?<![A-Za-z0-9])(?:8|10|12)[ ._-]*bit(?![A-Za-z0-9])",
+            re.IGNORECASE,
+        ),
+    ),
+)
 _CHANNEL_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         "channel",
@@ -230,6 +248,14 @@ _SUBTITLE_HINT_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("dual", re.compile(r"(?<![A-Za-z0-9])(?:双语|中英|中日|英中)(?![A-Za-z0-9])")),
     ("forced", re.compile(r"(?<![A-Za-z0-9])forced(?![A-Za-z0-9])", re.IGNORECASE)),
     ("SDH", re.compile(r"(?<![A-Za-z0-9])SDH(?![A-Za-z0-9])", re.IGNORECASE)),
+    # 视频文件里的字幕轨格式标记 (如番组 "[1080p HEVC-10bit AAC ASS]"):
+    # 残留进标题同样会让 TMDB 搜索空结果。
+    (
+        "format",
+        re.compile(
+            r"(?<![A-Za-z0-9])(?:ASS|SSA|SUP|PGS)(?![A-Za-z0-9])", re.IGNORECASE
+        ),
+    ),
 )
 _ATMOS_RE = re.compile(r"(?<![A-Za-z0-9])Atmos(?![A-Za-z0-9])", re.IGNORECASE)
 _DOLBY_AUDIO_RE = re.compile(
@@ -352,6 +378,7 @@ def parse_media_filename(filename: str) -> MediaParseResult:
     audio_codec, _ = _first_match(_AUDIO_PATTERNS, stem)
     _, all_audio_spans = _matches(_AUDIO_PATTERNS, stem)
     _, all_channel_spans = _matches(_CHANNEL_PATTERNS, stem)
+    _, all_bit_depth_spans = _matches(_BIT_DEPTH_PATTERNS, stem)
     language_hints, language_spans = _matches(_LANGUAGE_PATTERNS, stem)
     subtitle_hints, subtitle_spans = _matches(_SUBTITLE_HINT_PATTERNS, stem)
     atmos = _has_token(stem, r"Atmos")
@@ -381,6 +408,7 @@ def parse_media_filename(filename: str) -> MediaParseResult:
         all_hdr_spans,
         all_audio_spans,
         all_channel_spans,
+        all_bit_depth_spans,
         language_spans,
         subtitle_spans,
         atmos_spans,
@@ -501,6 +529,7 @@ _MEDIA_FEATURE_PATTERNS: tuple[re.Pattern[str], ...] = (
     _CHINESE_EPISODE_ONLY_RE,
     _SEASON_ONLY_RE,
     _EPISODE_LABEL_RE,
+    _BRACKET_EPISODE_RE,
     _GENERIC_SPECIAL_PATTERN,
     *(pattern for _, pattern in _EXPLICIT_SPECIAL_PATTERNS),
     *(pattern for _, pattern in _RESOLUTION_PATTERNS),
@@ -508,6 +537,7 @@ _MEDIA_FEATURE_PATTERNS: tuple[re.Pattern[str], ...] = (
     *(pattern for _, pattern in _VIDEO_CODEC_PATTERNS),
     *(pattern for _, pattern in _HDR_PATTERNS),
     *(pattern for _, pattern in _AUDIO_PATTERNS),
+    *(pattern for _, pattern in _BIT_DEPTH_PATTERNS),
     *(pattern for _, pattern in _LANGUAGE_PATTERNS),
     *(pattern for _, pattern in _SUBTITLE_HINT_PATTERNS),
     _ATMOS_RE,
@@ -571,6 +601,7 @@ def _select_year_match(
         *(pattern for _, pattern in _VIDEO_CODEC_PATTERNS),
         *(pattern for _, pattern in _HDR_PATTERNS),
         *(pattern for _, pattern in _AUDIO_PATTERNS),
+        *(pattern for _, pattern in _BIT_DEPTH_PATTERNS),
         *(pattern for _, pattern in _LANGUAGE_PATTERNS),
         *(pattern for _, pattern in _SUBTITLE_HINT_PATTERNS),
     )
@@ -676,7 +707,11 @@ def _episode_fields(
                 else:
                     end, span_end = recovered
             return season, start, end, ((match.start(), span_end),), False
-    match = _EPISODE_LABEL_RE.search(stem) or _CHINESE_EPISODE_ONLY_RE.search(stem)
+    match = (
+        _EPISODE_LABEL_RE.search(stem)
+        or _CHINESE_EPISODE_ONLY_RE.search(stem)
+        or _BRACKET_EPISODE_RE.search(stem)
+    )
     if match:
         season_match = _SEASON_ONLY_RE.search(stem)
         start = _group_int(match, "start")
