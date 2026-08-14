@@ -93,11 +93,11 @@ class P115ReadOnlyDirectoryGateway:
         self._authorized_file_ids = authorized_files
         self._observed_directories: dict[str, LibraryEntry] = {}
         self._observed_files: dict[str, LibraryEntry] = {}
-        # legacy 双索引模式下按 (目录, 页大小) 缓存的 (文件夹索引 count, 文件索引 count)。
-        # 两个索引在真实 115 上独立计数(文件夹索引=目录+尚未进入文件索引的新推送文件,
-        # 文件索引=全部文件);合并页只在 offset 未越界时才请求对应索引。越界请求会被
-        # 115 把 offset 重置为 0 并返回整页,必须跳过而不是请求。
-        self._index_counts: dict[tuple[str, int], tuple[int, int]] = {}
+        # 双索引模式按 (目录, 页大小) 缓存的状态:首页完整读取文件夹索引并判型后,
+        # 后续页只翻文件索引;total = folder_count + file_count - dup_count 保持跨页稳定。
+        self._index_state: dict[
+            tuple[str, int], dict[str, object]
+        ] = {}
         self._request_timeout_seconds = float(request_timeout_seconds)
         self._clock = clock
         self._allow_virtual_root = allow_virtual_root
@@ -118,11 +118,12 @@ class P115ReadOnlyDirectoryGateway:
         真实 115 实测(2026-08-14):proapi 与 legacy 两个列表接口都存在双索引:
         - 文件夹索引(show_dir=1):目录 + 新推送尚未进入文件索引的文件;记录对
           文件与目录完全同形(fc 恒 0 或 "0",无 is_dir),必须用 ``fs_info`` 判型;
-        - 文件索引(show_dir=0):全部已索引文件,带 ``fid``(proapi id)与
-          ``play_long``;webapi id 在 legacy 记录的 ``cid``、app 记录的 ``pid``。
-        因此统一合并两个索引:文件夹索引条目经 fs_info 判型(folder_count>0 即
-        目录),与文件索引按 webapi id 去重;文件索引条目直接按文件解析,父级即
-        本次列出的目录(其 pid 字段是文件自身 webapi id,不是父级)。
+        - 文件索引(show_dir=0):全部已索引文件,带 ``fid`` 与 ``play_long``。
+        首页完整读取文件夹索引(按页大小内部翻页)并判型:目录保留;文件若已具备
+        内容(fs_info 的 play_long>0 或 size 非空/非 0B,即已进入文件索引)则去重,
+        否则(新推送尚未索引的 0B 文件)保留。文件索引按页翻动,条目父级即本次列出
+        的目录(文件索引记录的 pid/cid 是文件自身 webapi id,不是父级)。
+        total = folder_count + file_count - dup_count 在首页确定,跨页稳定。
         """
 
         normalized_directory_id = _directory_id(
@@ -153,33 +154,17 @@ class P115ReadOnlyDirectoryGateway:
         deadline = self._deadline()
 
         index_key = (normalized_directory_id, request_page_size)
-        stored = self._index_counts.get(index_key)
-        folder_count: int | None = None
-        file_count: int | None = None
-        if stored is not None:
-            folder_count, file_count = stored
-
-        folder_records: tuple[Mapping[str, Any], ...] = ()
-        if folder_count is None or offset < folder_count:
-            folder_response = await self._call(
-                "fs_files",
-                {
-                    "cid": normalized_directory_id,
-                    "limit": request_page_size,
-                    "offset": offset,
-                    "record_open_time": 0,
-                    "show_dir": 1,
-                },
+        state = self._index_state.get(index_key)
+        if state is None:
+            state = await self._build_directory_state(
+                normalized_directory_id,
+                request_page_size,
+                is_virtual_root=is_virtual_root,
                 deadline=deadline,
             )
-            # 虚拟根目录的文件夹索引实测会把 limit=50 回显为 48(既有契约)。
-            folder_records, _, folder_count = _verify_page(
-                folder_response,
-                offset=offset,
-                expected_limit=request_page_size,
-                expected_response_limit=request_page_size
-                - (VIRTUAL_ROOT_RESPONSE_LIMIT_DELTA if is_virtual_root else 0),
-            )
+            self._index_state[index_key] = state
+
+        file_count = state["file_count"]
         file_records: tuple[Mapping[str, Any], ...] = ()
         if file_count is None or offset < file_count:
             file_response = await self._call(
@@ -199,39 +184,22 @@ class P115ReadOnlyDirectoryGateway:
                 offset=offset,
                 expected_limit=request_page_size,
             )
-        self._index_counts[index_key] = (folder_count, file_count)
+            state["file_count"] = file_count
 
-        # 文件索引条目的 webapi id:legacy 在 cid,app 在 pid。
-        file_webapi_ids = {
-            webapi_id
+        if page == 1:
+            entries = list(state["folder_entries"])
+        else:
+            entries = []
+        entries.extend(
+            _parse_entry(
+                record,
+                is_directory=False,
+                fallback_parent_id=normalized_directory_id,
+                parent_from_pid=False,
+                allow_zero_parent=is_virtual_root,
+            )
             for record in file_records
-            if (webapi_id := _single_id(record, ("cid", "pid"))) is not None
-        }
-        entries: list[LibraryEntry] = []
-        for record in folder_records:
-            is_directory = await self._resolve_record_type(record, deadline)
-            if not is_directory:
-                webapi_id = _single_id(record, ("fid", "cid"))
-                if webapi_id is not None and webapi_id in file_webapi_ids:
-                    # 该文件已由文件索引返回(fid 条目),避免同一文件双条目。
-                    continue
-            entries.append(
-                _parse_entry(
-                    record,
-                    is_directory=is_directory,
-                    allow_zero_parent=is_virtual_root,
-                )
-            )
-        for record in file_records:
-            entries.append(
-                _parse_entry(
-                    record,
-                    is_directory=False,
-                    fallback_parent_id=normalized_directory_id,
-                    parent_from_pid=False,
-                    allow_zero_parent=is_virtual_root,
-                )
-            )
+        )
         if any(entry.parent_id != normalized_directory_id for entry in entries):
             raise P115ReadOnlyGatewayError("entry_scope_unverified")
         for entry in entries:
@@ -239,13 +207,13 @@ class P115ReadOnlyDirectoryGateway:
                 self._observed_directories[entry.directory_id] = entry
             elif entry.file_id is not None:
                 self._observed_files[entry.file_id] = entry
-        # 合并页:两个索引都在 offset 之后耗尽才算终止。
-        terminal = (offset + 1 >= folder_count) and (offset + 1 >= file_count)
+        # 文件夹索引已在首页全部返回;文件索引耗尽即终止。
+        terminal = offset + len(file_records) >= file_count
         return DirectoryPage(
             items=tuple(entries),
             page=page,
             page_count=None,
-            total=folder_count + file_count,
+            total=state["folder_count"] + file_count - state["dup_count"],
             scan_complete=True if terminal else None,
             state=ScanState.COMPLETE,
             has_more=not terminal,
@@ -253,19 +221,81 @@ class P115ReadOnlyDirectoryGateway:
             terminal=terminal,
         )
 
+    async def _build_directory_state(
+        self,
+        normalized_directory_id: str,
+        request_page_size: int,
+        *,
+        is_virtual_root: bool,
+        deadline: float,
+    ) -> dict[str, object]:
+        """首页:完整读取文件夹索引,判型并去重,返回跨页稳定的状态。"""
+        folder_records: list[Mapping[str, Any]] = []
+        folder_offset = 0
+        while True:
+            folder_response = await self._call(
+                "fs_files",
+                {
+                    "cid": normalized_directory_id,
+                    "limit": request_page_size,
+                    "offset": folder_offset,
+                    "record_open_time": 0,
+                    "show_dir": 1,
+                },
+                deadline=deadline,
+            )
+            # 虚拟根目录的文件夹索引实测会把 limit=50 回显为 48(既有契约)。
+            records, _, folder_count = _verify_page(
+                folder_response,
+                offset=folder_offset,
+                expected_limit=request_page_size,
+                expected_response_limit=request_page_size
+                - (VIRTUAL_ROOT_RESPONSE_LIMIT_DELTA if is_virtual_root else 0),
+            )
+            folder_records.extend(records)
+            if folder_offset + len(records) >= folder_count:
+                break
+            folder_offset += request_page_size
+            if folder_offset > MAX_SCOPE_VERIFICATION_PAGES * request_page_size:
+                raise P115ReadOnlyGatewayError("pagination_unverified")
+        folder_entries: list[LibraryEntry] = []
+        dup_count = 0
+        for record in folder_records:
+            is_directory, has_content = await self._resolve_record_type(
+                record, deadline
+            )
+            if not is_directory and has_content:
+                # 已进入文件索引的新推送文件:跳过,避免同一文件双条目。
+                dup_count += 1
+                continue
+            folder_entries.append(
+                _parse_entry(
+                    record,
+                    is_directory=is_directory,
+                    allow_zero_parent=is_virtual_root,
+                )
+            )
+        return {
+            "folder_count": folder_count,
+            "file_count": None,
+            "folder_entries": tuple(folder_entries),
+            "dup_count": dup_count,
+        }
+
     async def _resolve_record_type(
         self, record: Mapping[str, Any], deadline: float
-    ) -> bool:
-        """返回记录是否为目录;列表记录无法凭字段判型,统一用 fs_info 判型。"""
+    ) -> tuple[bool, bool]:
+        """返回 (是否目录, 是否已具备内容);列表记录无法凭字段判型,统一用
+        fs_info 判型,顺带读取 play_long/size 用于推送文件去重。"""
         marker = _directory_marker(record)
         if marker is not None:
-            return marker
+            return marker, False
         return await self._classify_via_detail(record, deadline)
 
     async def _classify_via_detail(
         self, record: Mapping[str, Any], deadline: float
-    ) -> bool:
-        """用 fs_info 的 folder_count>0 判型;响应无法判定时失败关闭。"""
+    ) -> tuple[bool, bool]:
+        """用 fs_info 判型:folder_count>0 目录;否则文件,并给出内容信号。"""
         cid = _single_id(record, ("directory_id", "category_id", "cid"))
         if cid is not None:
             payload: Mapping[str, str] = {"cid": cid}
@@ -278,7 +308,18 @@ class P115ReadOnlyDirectoryGateway:
         folder_count = _nonnegative_int(response.get("folder_count"))
         if folder_count is None:
             raise P115ReadOnlyGatewayError("entry_unverified")
-        return folder_count > 0
+        if folder_count > 0:
+            return True, False
+        play_long = _nonnegative_int(response.get("play_long")) or 0
+        size = response.get("size")
+        has_content = play_long > 0 or (
+            isinstance(size, str) and size.strip() not in ("", "0", "0B")
+        ) or (
+            isinstance(size, (int, float))
+            and not isinstance(size, bool)
+            and size > 0
+        )
+        return False, has_content
 
     async def get_file_detail(self, file_id: str) -> FileDetail:
         normalized_file_id = _stable_id(file_id)

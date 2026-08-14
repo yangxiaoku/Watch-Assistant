@@ -32,10 +32,13 @@ class _FsFilesClient:
     fs_info 的 folder_count>0 判型;文件索引记录带 fid,直接按文件解析。
     """
 
-    def __init__(self, responses, *, file_indexes=(), directories=()) -> None:
+    def __init__(
+        self, responses, *, file_indexes=(), directories=(), content_files=()
+    ) -> None:
         self._responses = list(responses)
         self._file_indexes = list(file_indexes)
         self._directories = set(directories)
+        self._content_files = set(content_files)
         self.calls = []
         self.detail_calls = []
 
@@ -53,9 +56,13 @@ class _FsFilesClient:
     def fs_info(self, payload):
         self.detail_calls.append(dict(payload))
         value = str(payload.get("cid") or payload.get("fid") or "")
+        is_directory = value in self._directories
+        has_content = value in self._content_files
         return {
             "state": True,
-            "folder_count": 1 if value in self._directories else 0,
+            "folder_count": 1 if is_directory else 0,
+            "play_long": 9947 if has_content else 0,
+            "size": "1.32GB" if has_content else "0B",
             "file_name": "classified-entry",
             "paths": [],
         }
@@ -235,20 +242,31 @@ async def test_batch_page_size_reads_full_page_in_one_call():
         _file_index_payload("7", limit=VERIFIED_BATCH_PAGE_SIZE),
     ]
     assert len(result.items) == 3
-    assert result.terminal is False
-    assert result.has_more is True
-    assert result.next_page == 2
+    assert result.terminal is True
+    assert result.has_more is False
+    assert result.next_page is None
     assert result.total == 3
 
 
 @pytest.mark.asyncio
 async def test_batch_page_size_paginates_with_batch_offsets():
     client = _FsFilesClient(
-        (
-            _page([_file(fid="201")], offset=0, count=51, limit=VERIFIED_BATCH_PAGE_SIZE),
-            _page([_file(fid="202")], offset=50, count=51, limit=VERIFIED_BATCH_PAGE_SIZE),
+        (_page([_folder_entry(cid="8")], count=1, limit=VERIFIED_BATCH_PAGE_SIZE),),
+        file_indexes=(
+            _page(
+                [_file_index_record(fid="201", cid="201")],
+                offset=0,
+                count=51,
+                limit=VERIFIED_BATCH_PAGE_SIZE,
+            ),
+            _page(
+                [_file_index_record(fid="202", cid="202")],
+                offset=50,
+                count=51,
+                limit=VERIFIED_BATCH_PAGE_SIZE,
+            ),
         ),
-        file_indexes=(_page([], count=0, limit=VERIFIED_BATCH_PAGE_SIZE),),
+        directories=("8",),
     )
     gateway, _, _ = _gateway(client)
 
@@ -259,8 +277,10 @@ async def test_batch_page_size_paginates_with_batch_offsets():
     assert page1.next_page == 2
     assert page2.terminal is True
     assert page2.has_more is False
-    # 页 1 的文件夹索引 + 文件索引 + 页 2 的文件夹索引(文件索引已耗尽跳过)。
+    # 页 1 的文件夹索引(1 条) + 文件索引 + 页 2 的文件索引(文件夹索引已耗尽跳过)。
     assert [call["offset"] for call in client.calls] == [0, 0, 50]
+    assert page1.total == 52
+    assert page2.total == 52
 
 
 @pytest.mark.asyncio
@@ -282,11 +302,16 @@ async def test_verified_app_listing_compact_pc_maps_to_pickcode():
 @pytest.mark.asyncio
 async def test_consecutive_offset_count_pages_complete_only_at_verified_terminal_page():
     client = _FsFilesClient(
-        (
-            _page([_file("101", name="one.mkv")], offset=0, count=2),
-            _page([_file("102", name="two.mkv")], offset=1, count=2),
+        (_page([_folder_entry(cid="8")], count=1),),
+        file_indexes=(
+            _page([_file_index_record(fid="101", cid="101", name="one.mkv")], count=2),
+            _page(
+                [_file_index_record(fid="102", cid="102", name="two.mkv")],
+                offset=1,
+                count=2,
+            ),
         ),
-        file_indexes=(_page([], count=0),),
+        directories=("8",),
     )
     gateway, _, _ = _gateway(client)
 
@@ -296,6 +321,11 @@ async def test_consecutive_offset_count_pages_complete_only_at_verified_terminal
     assert scan.scan_complete is True
     assert scan.pages_read == 2
     assert [call["offset"] for call in client.calls] == [0, 0, 1]
+    assert {entry.file_id or entry.directory_id for entry in scan.items} == {
+        "8",
+        "101",
+        "102",
+    }
 
 
 @pytest.mark.asyncio
@@ -425,7 +455,6 @@ async def test_fs_info_maps_verified_file_detail_without_path_or_repr_leaks():
             "fid": "101",
             "cid": "7",
             "file_name": "secret-file-name.mkv",
-            "size": "123",
             "ptime": "1710000000",
             "pick_code": "SYNTHETIC_PICKCODE_SECRET",
         },
@@ -457,7 +486,6 @@ async def test_fs_info_uses_previously_observed_identity_when_response_omits_it(
             "file_category": "1",
             "folder_count": 0,
             "file_name": "secret-file-name.mkv",
-            "size": "123",
             "ptime": "provider-local-time",
         },
         pages=(_page([_file("101")]),),
@@ -483,7 +511,6 @@ async def test_fs_info_rejects_conflicting_identity_after_listing():
             "folder_count": 0,
             "fid": "102",
             "file_name": "secret-file-name.mkv",
-            "size": "123",
         },
         pages=(_page([_file("101")]),),
         file_indexes=(_page([], count=0),),
@@ -568,6 +595,7 @@ async def test_legacy_index_merge_dedupes_files_and_classifies_directories():
             ),
         ),
         directories=("8",),
+        content_files=("101",),
     )
     gateway, _, _ = _gateway(client)
 
@@ -588,10 +616,12 @@ async def test_legacy_index_merge_dedupes_files_and_classifies_directories():
     assert entries["101"].parent_id == "7"
     assert entries["102"].is_directory is False
     assert entries["102"].parent_id == "7"
-    # 合并总数 = 文件夹索引 2 + 文件索引 2;本页未耗尽。
-    assert result.total == 4
-    assert result.terminal is False
-    assert result.has_more is True
+    # 文件夹索引在首页全部返回并去重(101 已进入文件索引):
+    # total = 文件夹 2 + 文件 2 - 去重 1 = 3,本页即终止。
+    assert result.total == 3
+    assert result.terminal is True
+    assert result.has_more is False
+    assert result.next_page is None
 
 
 @pytest.mark.asyncio
@@ -863,7 +893,6 @@ class _AppFirstTransport:
             "fid": "101",
             "cid": "7",
             "file_name": "secret-file-name.mkv",
-            "size": "123",
         }
 
     def _respond(self, payload):
@@ -907,10 +936,11 @@ async def test_gateway_prefers_app_read_methods_when_available():
 
     assert result.items[0].file_id == "101"
     assert detail.file_id == "101"
+    # 文件夹索引 → 判型 → 文件索引 → 详情。
     assert transport.calls == [
         "fs_files_app",
-        "fs_files_app",
         "fs_info_app",
+        "fs_files_app",
         "fs_info_app",
     ]
 
@@ -933,13 +963,14 @@ async def test_gateway_falls_back_to_legacy_read_method_only_on_405():
 
     assert result.items[0].file_id == "101"
     assert detail.file_id == "101"
+    # 文件夹索引(405 回退)→ 判型(405 回退)→ 文件索引(405 回退)→ 详情(405 回退)。
     assert transport.calls == [
-        "fs_files_app",
-        "fs_files",
         "fs_files_app",
         "fs_files",
         "fs_info_app",
         "fs_info",
+        "fs_files_app",
+        "fs_files",
         "fs_info_app",
         "fs_info",
     ]
