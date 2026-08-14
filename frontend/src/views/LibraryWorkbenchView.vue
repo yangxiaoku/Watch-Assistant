@@ -74,6 +74,12 @@ const emptyCleanupIdempotencyKey = ref<string | null>(null);
 const auditReport = ref<InventoryAuditReportResponse | null>(null);
 const auditLoading = ref(false);
 const auditError = ref("");
+const dedupeSelected = ref<Set<string>>(new Set());
+const dedupeBusy = ref(false);
+const dedupeError = ref("");
+const dedupeConfirmOpen = ref(false);
+const showAdvanced = ref(false);
+const showCreateForm = ref(false);
 const pendingCleanup = ref<"strm" | "empty" | "small" | "operation" | null>(null);
 const operationDetailOpen = ref(false);
 const activeTab = ref<"overview" | "cleanup" | "files">("overview");
@@ -536,6 +542,30 @@ async function runInventoryAudit() {
     auditError.value = exception instanceof ApiError ? exception.message : "库存体检失败，请稍后重试";
   } finally {
     auditLoading.value = false;
+  }
+}
+
+function toggleDedupe(objectId: string) {
+  const next = new Set(dedupeSelected.value);
+  if (next.has(objectId)) next.delete(objectId);
+  else next.add(objectId);
+  dedupeSelected.value = next;
+}
+
+async function applyDedupe() {
+  if (dedupeSelected.value.size === 0 || dedupeBusy.value) return;
+  dedupeBusy.value = true;
+  dedupeError.value = "";
+  try {
+    const result = await props.api.applyDedupe({ object_ids: [...dedupeSelected.value], confirm: true });
+    feedback.success(result.failed ? `已删除 ${result.deleted} 个副本，${result.failed} 个失败` : `已删除 ${result.deleted} 个副本到回收站`);
+    dedupeSelected.value = new Set();
+    dedupeConfirmOpen.value = false;
+    await runInventoryAudit();
+  } catch (exception) {
+    dedupeError.value = exception instanceof ApiError ? exception.message : "去重执行失败，请稍后重试";
+  } finally {
+    dedupeBusy.value = false;
   }
 }
 
@@ -1026,9 +1056,8 @@ onBeforeUnmount(() => {
     <header class="library-workbench-heading">
       <div>
         <p class="eyebrow">115 媒体库</p>
-        <h1>媒体库与 STRM</h1>
-        <p>从受控目录扫描到 STRM 对账，所有写操作都基于已完成快照。</p>
-        <p class="library-workbench-howto">工作流程：<strong>扫描 115 受控目录</strong> → <strong>生成 .strm 播放指针</strong> → 由 Jellyfin/Emby 等媒体服务器浏览点播。.strm 只是指向云端文件的指针，不占本地空间；播放时经内置网关回源 115。这里执行扫描、全量/增量 STRM、失效清理与空目录回收。</p>
+        <h1>媒体库</h1>
+        <p>整理归档目录自动同步成播放指针，供爆米花 / 飞牛直接播放。</p>
       </div>
       <button class="icon-button" type="button" title="刷新媒体库" aria-label="刷新媒体库" :disabled="loading || busy" @click="loadLibraries()"><RefreshCw :size="17" :class="{ spin: loading }" /></button>
     </header>
@@ -1045,7 +1074,8 @@ onBeforeUnmount(() => {
         </div>
         <button v-if="libraryNextCursor !== null" class="secondary-button library-load-more" type="button" :disabled="loading" @click="loadMoreLibraries"><LoaderCircle v-if="loading" class="spin" :size="15" />{{ loading ? "正在加载媒体库" : "加载更多媒体库" }}</button>
         <p v-if="!libraries.length" class="library-muted">还没有媒体库配置。</p>
-        <form class="library-config-form" @submit.prevent="saveConfiguration">
+        <button type="button" class="secondary-button library-create-toggle" @click="showCreateForm = !showCreateForm"><SlidersHorizontal :size="15" />{{ showCreateForm ? "收起新建" : "新建媒体库" }}</button>
+        <form v-if="showCreateForm" class="library-config-form" @submit.prevent="saveConfiguration">
           <label for="library-id">标识</label><input id="library-id" v-model="form.libraryId" name="libraryId" maxlength="128" :disabled="Boolean(selected)" required />
           <label for="library-name">名称</label><input id="library-name" v-model="form.name" name="name" maxlength="200" required />
           <label for="library-root">115 受控根目录</label><input id="library-root" v-model="form.rootDirectoryId" name="rootDirectoryId" inputmode="numeric" pattern="[1-9][0-9]*" placeholder="点击读取受控根目录" required /><button class="text-button" type="button" :disabled="busy" @click="useConfiguredRoot"><RefreshCw :size="14" />读取服务器配置的根目录</button>
@@ -1091,9 +1121,10 @@ onBeforeUnmount(() => {
           <div class="library-operation-actions"><button class="text-button" type="button" @click="operationDetailOpen = !operationDetailOpen">{{ operationDetailOpen ? "收起详情" : "查看详情" }}</button><button v-if="['queued', 'running'].includes(latestOperation.status)" class="text-button" type="button" @click="requestCancelLatestOperation"><Ban :size="14" />取消操作</button><button v-if="['failed', 'cancelled'].includes(latestOperation.status) && !['cleanup', 'small_file_cleanup'].includes(latestOperation.kind)" class="text-button" type="button" :disabled="busy || (latestOperation.kind === 'incremental' ? !strmIncrementalAvailable : !strmFullAvailable)" :title="actionReason(latestOperation.kind === 'incremental' ? 'incremental' : 'full')" @click="retryLatestOperation"><RefreshCw :size="14" />恢复执行</button><button class="text-button" type="button" @click="refreshLatestOperation"><RefreshCw :size="14" />刷新状态</button></div>
           <div v-if="operationDetailOpen" class="library-operation-detail"><small>操作标识：{{ diagnosticReference(latestOperation.operation_id) }}</small><small>创建 {{ new Date(latestOperation.created_at).toLocaleString() }}</small><small v-if="latestOperation.finished_at">结束 {{ new Date(latestOperation.finished_at).toLocaleString() }}</small></div>
         </section>
-        <section class="library-output-section">
-          <div class="library-section-heading"><div><p class="eyebrow">只读体检</p><h3>库存重复检测</h3></div><button class="secondary-button" type="button" :disabled="auditLoading" @click="runInventoryAudit"><RefreshCw :size="14" :class="{ spin: auditLoading }" />检测重复</button></div>
-          <p class="library-capability-note">盘点整理归档目录中的「完全重复」与「同片多版本」，仅报告不删除。</p>
+        <button type="button" class="library-advanced-toggle" :aria-expanded="showAdvanced" @click="showAdvanced = !showAdvanced"><SlidersHorizontal :size="15" />{{ showAdvanced ? "收起库存体检" : "库存体检" }}</button>
+        <section v-if="showAdvanced" class="library-output-section">
+          <div class="library-section-heading"><div><p class="eyebrow">库存体检</p><h3>库存重复检测</h3></div><button class="secondary-button" type="button" :disabled="auditLoading" @click="runInventoryAudit"><RefreshCw :size="14" :class="{ spin: auditLoading }" />检测重复</button></div>
+          <p class="library-capability-note">「完全重复」可勾选副本删除到 115 回收站（可恢复）；「同片多版本」洗版即将上线。</p>
           <InlineAlert v-if="auditError" variant="error" :message="auditError" action-label="重试" @action="runInventoryAudit" />
           <template v-if="auditReport">
             <div class="library-stat-grid">
@@ -1106,12 +1137,20 @@ onBeforeUnmount(() => {
               <div class="library-section-heading"><div><p class="eyebrow">{{ group.kind === 'exact_duplicate' ? '完全重复' : '同片多版本' }}</p><h4>{{ group.items.length }} 个文件{{ group.reclaimable_bytes ? ' · 可回收 ' + formatBytes(group.reclaimable_bytes) : '' }}</h4></div></div>
               <ul class="library-audit-list">
                 <li v-for="item in group.items" :key="item.object_id" :class="{ 'is-keep': item.object_id === group.keep_object_id }">
-                  <span>{{ item.name }}</span>
+                  <label v-if="group.kind === 'exact_duplicate' && item.object_id !== group.keep_object_id" class="library-audit-check">
+                    <input type="checkbox" :checked="dedupeSelected.has(item.object_id)" @change="toggleDedupe(item.object_id)" />
+                    <span>{{ item.name }}</span>
+                  </label>
+                  <span v-else>{{ item.name }}</span>
                   <small>{{ item.resolution || '—' }} · {{ item.size_bytes != null ? formatBytes(item.size_bytes) : '未知大小' }}{{ item.object_id === group.keep_object_id ? ' · 建议保留' : '' }}</small>
-                  <button class="text-button" type="button" disabled title="即将上线">删除/洗版</button>
+                  <button v-if="group.kind === 'multi_version'" class="text-button" type="button" disabled title="即将上线">洗版</button>
                 </li>
               </ul>
             </div>
+            <div v-if="dedupeSelected.size" class="library-action-row">
+              <button class="danger-button" type="button" :disabled="dedupeBusy" @click="dedupeConfirmOpen = true"><Trash2 :size="15" />删除选中副本（{{ dedupeSelected.size }} 个，进回收站）</button>
+            </div>
+            <InlineAlert v-if="dedupeError" variant="error" :message="dedupeError" />
           </template>
         </section>
         </template>
@@ -1163,5 +1202,6 @@ onBeforeUnmount(() => {
       <div v-else class="library-empty"><Database :size="24" /><strong>尚未配置库存媒体库</strong><span>下一步：读取服务器配置的 115 根目录，保存配置、验证范围，再完成首次扫描。</span><button class="primary-button" type="button" :disabled="busy" @click="initializeLibrary"><Database :size="16" />初始化并扫描媒体库</button><button class="text-button" type="button" @click="openCapabilitySettings(undefined, 'organization')"><SlidersHorizontal :size="14" />先检查 115 整理设置</button></div>
     </div>
     <ConfirmDialog :open="cleanupDialogOpen" :title="cleanupDialogTitle" :summary="cleanupDialogSummary" :details="cleanupDialogDetails" :confirm-label="pendingCleanup === 'operation' ? '确认取消' : '确认并提交'" tone="danger" :require-acknowledgment="pendingCleanup !== 'operation'" :busy="busy" @cancel="closeCleanupDialog" @confirm="confirmPendingCleanup" />
+    <ConfirmDialog :open="dedupeConfirmOpen" title="删除重复副本" :summary="`将把 ${dedupeSelected.size} 个重复副本移入 115 回收站（可恢复），每组保留建议项。`" confirm-label="确认删除到回收站" tone="danger" :busy="dedupeBusy" @cancel="dedupeConfirmOpen = false" @confirm="applyDedupe" />
   </section>
 </template>

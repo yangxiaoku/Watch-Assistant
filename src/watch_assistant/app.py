@@ -886,6 +886,10 @@ def create_app(
                 application.state.database.session_factory,
                 transport_factory=build_cleanup_transport,
             )
+            if getattr(application.state, "inventory_audit_service", None) is not None:
+                application.state.inventory_audit_service.set_transport_factory(
+                    build_cleanup_transport
+                )
 
             async def run_organization_once() -> bool:
                 return await automation.run_once()

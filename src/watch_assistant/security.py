@@ -810,8 +810,9 @@ def _required_scope(request: Request) -> str:
         # bearer),此处仅保证 agent token 不落回 fail-closed。
         return "settings:read" if method in {"GET", "HEAD"} else "settings:write"
     if path.startswith("/api/v1/inventory"):
-        # 库存重复检测只读报告。
-        return "library:read"
+        # 库存重复检测:只读报告走 library:read;去重执行(删除到回收站)
+        # 是组织写操作,走 organize:execute。
+        return "library:read" if method in {"GET", "HEAD"} else "organize:execute"
     if path.startswith("/api/v1/pwa"):
         return "task:read" if method in {"GET", "HEAD"} else "task:write"
     if path.startswith("/api/v1/p115-checkin"):

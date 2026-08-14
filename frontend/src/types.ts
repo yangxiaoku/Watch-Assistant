@@ -1096,3 +1096,13 @@ export interface InventoryAuditReportResponse {
   multi_version_count: number;
   reclaimable_bytes: number;
 }
+
+export interface InventoryDedupeRequest {
+  object_ids: string[];
+  confirm: boolean;
+}
+
+export interface InventoryDedupeResponse {
+  deleted: number;
+  failed: number;
+}

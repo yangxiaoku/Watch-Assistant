@@ -40,6 +40,8 @@ import type {
   NotificationResponse,
   NotificationPreferenceResponse,
   InventoryAuditReportResponse,
+  InventoryDedupeRequest,
+  InventoryDedupeResponse,
   NotifyChannelCreateRequest,
   NotifyChannelListResponse,
   NotifyChannelPatch,
@@ -702,6 +704,10 @@ export class ApiClient {
 
   async inventoryAudit(): Promise<InventoryAuditReportResponse> {
     return this.request<InventoryAuditReportResponse>("/api/v1/inventory/audit");
+  }
+
+  async applyDedupe(payload: InventoryDedupeRequest): Promise<InventoryDedupeResponse> {
+    return this.request<InventoryDedupeResponse>("/api/v1/inventory/audit/dedupe", { method: "POST", body: JSON.stringify(payload) });
   }
 
   async createNotifyChannel(payload: NotifyChannelCreateRequest): Promise<NotifyChannelResponse> {

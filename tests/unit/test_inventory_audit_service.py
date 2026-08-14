@@ -64,7 +64,8 @@ async def _seed_scan(database, *, with_entries=True):
                     LibraryScanEntry(
                         scan_run_id="run_1",
                         object_type="file",
-                        object_id="f1",
+                        object_id="101",
+                        parent_id="201",
                         name="某剧.S01E01.1080p.mkv",
                         is_directory=False,
                         size_bytes=1000,
@@ -72,7 +73,8 @@ async def _seed_scan(database, *, with_entries=True):
                     LibraryScanEntry(
                         scan_run_id="run_1",
                         object_type="file",
-                        object_id="f2",
+                        object_id="102",
+                        parent_id="201",
                         name="某剧.S01E01.1080p.mkv",
                         is_directory=False,
                         size_bytes=1000,
@@ -113,3 +115,66 @@ async def test_run_audit_no_completed_scan_returns_empty(database):
     report = await service.run_audit("root_1")
     assert report.duplicate_count == 0
     assert report.groups == ()
+
+
+# ---------- apply_dedupe ----------
+
+from types import SimpleNamespace
+
+from watch_assistant.adapters.p115_library_write_contract import WriteStatus
+
+
+async def test_apply_dedupe_requires_confirmation(database):
+    await _seed_library(database)
+    service = InventoryAuditService(database.session_factory)
+    with pytest.raises(InventoryAuditError, match="confirmation_required"):
+        await service.apply_dedupe("root_1", ["101"], confirm=False)
+
+
+async def test_apply_dedupe_unavailable_without_transport(database):
+    await _seed_library(database)
+    service = InventoryAuditService(database.session_factory)
+    with pytest.raises(InventoryAuditError, match="dedupe_unavailable"):
+        await service.apply_dedupe("root_1", ["101"], confirm=True)
+
+
+async def test_apply_dedupe_recycles(database, monkeypatch):
+    await _seed_library(database)
+    scan = await _seed_scan(database)
+
+    async def _verified(session, library):
+        return scan
+
+    monkeypatch.setattr(
+        "watch_assistant.services.inventory_audit_service.verified_latest_scan",
+        _verified,
+    )
+
+    class FakeTransport:
+        def __init__(self):
+            self.executed = []
+
+        async def list_children(self, parent_id, *, timeout_seconds):
+            return SimpleNamespace(
+                complete=True,
+                entries=[
+                    SimpleNamespace(
+                        file_id="101", is_directory=False, name="某剧.S01E01.1080p.mkv"
+                    )
+                ],
+            )
+
+        async def execute(self, operation, *, timeout_seconds):
+            self.executed.append(operation)
+            return SimpleNamespace(status=WriteStatus.SUCCESS)
+
+    transport = FakeTransport()
+    service = InventoryAuditService(
+        database.session_factory, transport_factory=lambda: transport
+    )
+    deleted, failed = await service.apply_dedupe(
+        "root_1", ["101"], confirm=True, operation_delay_seconds=0
+    )
+    assert deleted == 1
+    assert failed == 0
+    assert len(transport.executed) == 1

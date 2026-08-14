@@ -8,6 +8,8 @@ from watch_assistant.schemas import (
     InventoryAuditGroupResponse,
     InventoryAuditItemResponse,
     InventoryAuditReportResponse,
+    InventoryDedupeRequest,
+    InventoryDedupeResponse,
 )
 from watch_assistant.security import AuthContext, require_api_auth
 from watch_assistant.services.inventory_audit import InventoryAuditReport
@@ -75,6 +77,35 @@ async def inventory_audit(
         status_code = 503 if exc.code == "library_scope_unverified" else 409
         raise HTTPException(status_code=status_code, detail={"code": exc.code}) from None
     return _to_response(report)
+
+
+@router.post(
+    "/inventory/audit/dedupe",
+    response_model=InventoryDedupeResponse,
+)
+async def apply_dedupe(
+    payload: InventoryDedupeRequest,
+    request: Request,
+    _: AuthDependency,
+) -> InventoryDedupeResponse:
+    target_root_id = getattr(request.app.state, "organization_target_root_id", None)
+    if not target_root_id:
+        raise HTTPException(
+            status_code=503, detail={"code": "inventory_scope_unconfigured"}
+        )
+    try:
+        deleted, failed = await _service(request).apply_dedupe(
+            str(target_root_id), payload.object_ids, payload.confirm
+        )
+    except InventoryAuditError as exc:
+        status_code = {
+            "confirmation_required": 409,
+            "dedupe_unavailable": 503,
+            "snapshot_stale": 409,
+            "library_scope_unverified": 503,
+        }.get(exc.code, 409)
+        raise HTTPException(status_code=status_code, detail={"code": exc.code}) from None
+    return InventoryDedupeResponse(deleted=deleted, failed=failed)
 
 
 __all__ = ["router"]

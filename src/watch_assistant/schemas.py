@@ -2262,3 +2262,15 @@ class InventoryAuditReportResponse(BaseModel):
     duplicate_count: int
     multi_version_count: int
     reclaimable_bytes: int
+
+
+class InventoryDedupeRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    object_ids: list[str] = Field(min_length=1, max_length=500)
+    confirm: bool
+
+
+class InventoryDedupeResponse(BaseModel):
+    deleted: int = Field(ge=0)
+    failed: int = Field(ge=0)
