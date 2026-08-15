@@ -46,6 +46,7 @@ import type {
   NotifyChannelListResponse,
   NotifyChannelPatch,
   NotifyChannelResponse,
+  NotifyChannelTestResponse,
   OrganizationPlanListResponse,
   OrganizationPlanSummary,
   OrganizationHistoryListResponse,
@@ -720,6 +721,10 @@ export class ApiClient {
 
   async deleteNotifyChannel(channelId: string): Promise<void> {
     return this.request<void>(`/api/v1/notify-channels/${encodeURIComponent(channelId)}`, { method: "DELETE" });
+  }
+
+  async testNotifyChannel(channelId: string): Promise<NotifyChannelTestResponse> {
+    return this.request<NotifyChannelTestResponse>(`/api/v1/notify-channels/${encodeURIComponent(channelId)}/test`, { method: "POST" });
   }
 
   async organizationPlans(filters: {

@@ -171,6 +171,7 @@ const notifyDraftUrl = ref("");
 const notifyDraftTarget = ref("");
 const notifyDraftCliChannel = ref("feishu");
 const notifyDraftCliAccount = ref("");
+const notifyTestingId = ref<string | null>(null);
 const organizationSettings = ref<OrganizationSettingsResponse | null>(null);
 const organizationLoading = ref(true);
 const organizationError = ref("");
@@ -1418,6 +1419,24 @@ async function removeNotifyChannel(channel: NotifyChannelResponse) {
   }
 }
 
+async function testNotifyChannel(channel: NotifyChannelResponse) {
+  notifyTestingId.value = channel.id;
+  try {
+    const result = await props.api.testNotifyChannel(channel.id);
+    if (!settingsMounted) return;
+    if (result.ok) {
+      feedback.success(`“${channel.name}”测试通知已发送`);
+    } else {
+      feedback.error(`“${channel.name}”测试发送失败，请检查渠道配置`);
+    }
+  } catch (exception) {
+    if (!settingsMounted) return;
+    feedback.error(exception instanceof ApiError ? exception.message : "测试发送失败，请稍后重试");
+  } finally {
+    if (settingsMounted) notifyTestingId.value = null;
+  }
+}
+
 function checkinStatusErrorText(): string {
   const code = checkinStatus.value?.error_code;
   const labels: Record<string, string> = {
@@ -1648,6 +1667,7 @@ onBeforeUnmount(() => {
                 <div class="settings-list-meta"><strong>{{ channel.name }} · {{ notifyKindLabel(channel.kind) }}</strong><span class="settings-note">{{ channel.webhook_url_prefix }}</span></div>
                 <div class="settings-list-actions">
                   <label class="settings-toggle"><input type="checkbox" :checked="channel.enabled" aria-label="启用渠道" @change="toggleNotifyChannel(channel)" /><span>{{ channel.enabled ? '启用' : '停用' }}</span></label>
+                  <button class="text-button" type="button" :disabled="notifyTestingId === channel.id" @click="testNotifyChannel(channel)">{{ notifyTestingId === channel.id ? '发送中…' : '测试' }}</button>
                   <button class="icon-button" type="button" title="删除渠道" aria-label="删除渠道" @click="removeNotifyChannel(channel)"><XCircle :size="16" /></button>
                 </div>
               </li>

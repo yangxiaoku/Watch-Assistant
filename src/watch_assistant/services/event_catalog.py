@@ -569,6 +569,13 @@ EVENT_CATALOG: dict[str, EventDefinition] = {
         suggestion="请检查飞书机器人 Webhook 配置后重试",
         fields=frozenset({"error_code"}),
     ),
+    "notify.test_delivered": _event(
+        "notify.test_delivered",
+        LogCategory.NOTIFICATION,
+        "外部通知测试已发送",
+        "测试通知已发送到 {kind} 渠道",
+        fields=frozenset({"channel_id", "kind"}),
+    ),
     "webhook.test": _event(
         "webhook.test", LogCategory.NOTIFICATION, "Webhook 测试通知", "Webhook 测试通知已排队发送"
     ),

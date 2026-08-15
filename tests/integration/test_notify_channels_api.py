@@ -12,9 +12,10 @@ from watch_assistant.adapters.tmdb import TmdbClient
 from watch_assistant.app import create_app
 from watch_assistant.crypto import SecretCrypto
 from watch_assistant.db import create_database, initialize_database
+from watch_assistant.security import AuthContext
 
 
-async def _make_client(tmp_path: Path):
+async def _make_client(tmp_path: Path, security_manager=None):
     database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'notify_channels.db'}")
     await initialize_database(database.engine)
     crypto = SecretCrypto(Fernet.generate_key().decode("ascii"))
@@ -25,7 +26,7 @@ async def _make_client(tmp_path: Path):
         crypto=crypto,
         tmdb_client=tmdb,
         pansou_client=pansou,
-        security_manager=make_security_manager(),
+        security_manager=security_manager or make_security_manager(),
     )
     client = httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://app.test"
@@ -70,3 +71,55 @@ async def test_notify_channel_service_encrypts_and_masks_via_state(tmp_path):
             assert "abcdef1234567890" not in row.webhook_url_encrypted
     finally:
         await client.aclose()
+
+
+class _WebOnlyTestManager:
+    """测试用安全管理器:通过 Web 会话认证,不经过 Bearer。"""
+
+    async def authenticate_async(self, request):
+        return AuthContext(identity="internal", via_bearer=False, csrf_token="test-csrf")
+
+    def configure_session_store(self, *args, **kwargs):
+        pass
+
+    def configure_event_logger(self, *args, **kwargs):
+        pass
+
+
+class _FakeNotifyDispatcher:
+    def __init__(self, result=True):
+        self.result = result
+        self.calls = []
+
+    async def test_channel(self, channel_id):
+        self.calls.append(channel_id)
+        return self.result
+
+
+@pytest.mark.integration
+async def test_notify_channel_test_route_returns_ok(tmp_path):
+    client, database, app = await _make_client(tmp_path, _WebOnlyTestManager())
+    fake = _FakeNotifyDispatcher(result=True)
+    app.state.notify_dispatcher = fake
+    try:
+        resp = await client.post("/api/v1/notify-channels/chan_x/test")
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True}
+        assert fake.calls == ["chan_x"]
+    finally:
+        await client.aclose()
+        await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_notify_channel_test_route_returns_false_without_raising(tmp_path):
+    client, database, app = await _make_client(tmp_path, _WebOnlyTestManager())
+    fake = _FakeNotifyDispatcher(result=False)
+    app.state.notify_dispatcher = fake
+    try:
+        resp = await client.post("/api/v1/notify-channels/chan_x/test")
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": False}
+    finally:
+        await client.aclose()
+        await database.engine.dispose()

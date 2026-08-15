@@ -2254,6 +2254,10 @@ class NotifyChannelPatch(BaseModel):
     enabled: bool
 
 
+class NotifyChannelTestResponse(BaseModel):
+    ok: bool
+
+
 class PwaDeviceRegisterRequest(BaseModel):
     model_config = {"extra": "forbid"}
 

@@ -27,6 +27,7 @@ from watch_assistant.models import (
     Workflow,
     WorkflowStatus,
 )
+from watch_assistant.services.notify_channels_service import NotifyChannelError
 from watch_assistant.services.notify_dispatcher import NotifyDispatcher
 
 
@@ -430,6 +431,58 @@ async def test_notify_task_available_missing_task_silent(database):
         await dispatcher.notify_task_available("task_missing")
     finally:
         await dispatcher.aclose()
+
+
+# ---------- test_channel ----------
+
+@pytest.mark.asyncio
+async def test_test_channel_sends_test_notification(database):
+    await _add_channel(database, url="https://open.feishu.cn/hook/chan-a")
+    channels = []
+
+    def factory(url):
+        channel = FakeFeishuChannel()
+        channels.append(channel)
+        return channel
+
+    dispatcher = _dispatcher(database, FakeCrypto(), factory)
+    try:
+        ok = await dispatcher.test_channel("chan_chan-a")
+    finally:
+        await dispatcher.aclose()
+    assert ok is True
+    assert len(channels) == 1
+    assert channels[0].sent == [
+        {
+            "title": "测试通知",
+            "text": "这是一条来自 Watch Assistant 的测试通知。",
+            "link_url": "http://192.168.6.236:8115/settings?section=notify",
+        }
+    ]
+    assert channels[0].closed is True
+
+
+@pytest.mark.asyncio
+async def test_test_channel_failure_returns_false_and_logs(database):
+    await _add_channel(database, url="https://open.feishu.cn/hook/chan-bad", fail=True)
+    events = EventRecorder()
+    dispatcher = _dispatcher(
+        database, FakeCrypto(), lambda url: FakeFeishuChannel(fail=True), events=events
+    )
+    try:
+        ok = await dispatcher.test_channel("chan_chan-bad")
+    finally:
+        await dispatcher.aclose()
+    assert ok is False
+    assert any(code == "notify.delivery_failed" for code, _ in events.events)
+
+
+@pytest.mark.asyncio
+async def test_test_channel_missing_channel_raises(database):
+    dispatcher = _dispatcher(database, FakeCrypto(), lambda url: FakeFeishuChannel())
+    with pytest.raises(NotifyChannelError) as exc_info:
+        await dispatcher.test_channel("chan_missing")
+    assert exc_info.value.code == "notify_channel_not_found"
 
 
 @pytest.mark.asyncio

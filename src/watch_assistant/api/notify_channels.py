@@ -11,12 +11,14 @@ from watch_assistant.schemas import (
     NotifyChannelListResponse,
     NotifyChannelPatch,
     NotifyChannelResponse,
+    NotifyChannelTestResponse,
 )
 from watch_assistant.security import AuthContext
 from watch_assistant.services.notify_channels_service import (
     NotifyChannelError,
     NotifyChannelService,
 )
+from watch_assistant.services.notify_dispatcher import NotifyDispatcher
 
 router = APIRouter(prefix="/api/v1/notify-channels")
 
@@ -28,7 +30,15 @@ def get_service(request: Request) -> NotifyChannelService:
     return service
 
 
+def get_dispatcher(request: Request) -> NotifyDispatcher:
+    dispatcher = getattr(request.app.state, "notify_dispatcher", None)
+    if dispatcher is None:
+        raise HTTPException(status_code=503, detail="notify_dispatcher_unavailable")
+    return dispatcher
+
+
 ServiceDependency = Annotated[NotifyChannelService, Depends(get_service)]
+DispatcherDependency = Annotated[NotifyDispatcher, Depends(get_dispatcher)]
 WebAuthDependency = Annotated[AuthContext, Depends(require_web_auth)]
 
 
@@ -87,6 +97,19 @@ async def delete_channel(
         raise _http_error(exc) from None
 
 
+@router.post("/{channel_id}/test", response_model=NotifyChannelTestResponse)
+async def test_channel(
+    channel_id: str,
+    _: WebAuthDependency,
+    dispatcher: DispatcherDependency,
+) -> NotifyChannelTestResponse:
+    try:
+        ok = await dispatcher.test_channel(channel_id)
+    except NotifyChannelError as exc:
+        raise _http_error(exc) from None
+    return NotifyChannelTestResponse(ok=ok)
+
+
 def _http_error(error: NotifyChannelError) -> HTTPException:
     status_code = {
         "unsupported_notify_kind": 422,
@@ -96,6 +119,8 @@ def _http_error(error: NotifyChannelError) -> HTTPException:
         "unsupported_feishu_target": 422,
         "invalid_notify_cli_channel": 422,
         "invalid_notify_channel_name": 422,
+        "notify_channel_decrypt_failed": 422,
+        "invalid_notify_cli_config": 422,
     }.get(error.code, 422)
     return HTTPException(status_code=status_code, detail={"code": error.code})
 

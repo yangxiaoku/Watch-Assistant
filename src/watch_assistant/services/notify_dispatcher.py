@@ -37,6 +37,7 @@ from watch_assistant.services.notify_channels.feishu_bot import (
     DEFAULT_FEISHU_API_BASE_URL,
     FeishuBotChannel,
 )
+from watch_assistant.services.notify_channels_service import NotifyChannelError
 from watch_assistant.services.observability import EventLogger, emit_event
 
 logger = logging.getLogger(__name__)
@@ -137,6 +138,50 @@ class NotifyDispatcher:
                 fields={"count": delivered},
             )
         return delivered
+
+    async def test_channel(self, channel_id: str) -> bool:
+        """发送一条测试通知到指定渠道,用于设置页“测试”按钮。
+
+        只读校验渠道存在性和解密;发送失败返回 False 并记录
+        ``notify.delivery_failed``,不会抛错到调用方。
+        """
+        async with self._session_factory() as session:
+            row = await session.get(NotifyChannel, channel_id)
+        if row is None:
+            raise NotifyChannelError("notify_channel_not_found")
+        try:
+            secret = self._crypto.decrypt(row.webhook_url_encrypted)
+        except Exception as exc:
+            await self._log_failure(row.id, exc)
+            raise NotifyChannelError("notify_channel_decrypt_failed") from exc
+        channel = self._build_channel(row, secret)
+        if channel is None:
+            await self._log_failure(row.id, RuntimeError("invalid_notify_cli_config"))
+            raise NotifyChannelError("invalid_notify_cli_config")
+        try:
+            try:
+                ok = await channel.send(
+                    title="测试通知",
+                    text="这是一条来自 Watch Assistant 的测试通知。",
+                    link_url=f"{self._base_url}/settings?section=notify",
+                )
+            except Exception as exc:  # noqa: BLE001 - fail-open per channel
+                await self._log_failure(row.id, exc)
+                return False
+            if not ok:
+                await self._log_failure(row.id, RuntimeError("channel_send_failed"))
+                return False
+            await emit_event(
+                self._event_logger,
+                "notify.test_delivered",
+                level=LoggingLevel.INFO,
+                fields={"channel_id": row.id, "kind": row.kind},
+                resource_type="notify_channel",
+                resource_id=row.id,
+            )
+            return True
+        finally:
+            await self._close_channel(channel)
 
     async def notify_resource_found(self, subscription_id: str) -> None:
         """订阅发现新资源:推送「追更命中」通知(fail-open)。"""

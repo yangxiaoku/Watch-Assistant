@@ -273,7 +273,10 @@ function additionalDescriptor(code: string): Omit<UiErrorDescriptor, "code"> {
 const CATALOG: Record<string, Omit<UiErrorDescriptor, "code">> = {
   ...Object.fromEntries(ADDITIONAL_CODES.map((code) => [code, additionalDescriptor(code)])),
   notify_channels_unavailable: { title: "通知渠道服务暂时不可用", message: "本次通知渠道操作未完成。", suggestion: "请稍后重试。", retryable: true, action: "retry" },
+  notify_dispatcher_unavailable: { title: "通知分发服务暂时不可用", message: "本次测试通知未发送。", suggestion: "请稍后重试。", retryable: true, action: "retry" },
   notify_channel_not_found: { title: "通知渠道不存在", message: "本次通知渠道操作未完成。", suggestion: "请刷新渠道列表后再试。", retryable: false, action: "retry" },
+  notify_channel_decrypt_failed: { title: "通知渠道凭据无法读取", message: "本次测试通知未发送。", suggestion: "请删除后重新添加该渠道。", retryable: false, action: "reload_settings" },
+  invalid_notify_cli_config: { title: "通知渠道配置无效", message: "本次测试通知未发送。", suggestion: "请检查 CLI 渠道的目标和通道配置。", retryable: false, action: "reload_settings" },
   unsupported_notify_kind: { title: "不支持的通知渠道类型", message: "本次通知渠道未保存。", suggestion: "当前仅支持飞书机器人。", retryable: false, action: "reload_settings" },
   inventory_audit_unavailable: { title: "库存体检服务暂时不可用", message: "本次库存体检未完成。", suggestion: "请稍后重试。", retryable: true, action: "retry" },
   dedupe_unavailable: { title: "去重执行暂不可用", message: "本次去重未执行，未对 115 做任何删除。", suggestion: "请确认 115 写入契约与凭据后再试。", retryable: false, action: "inspect_configuration" },

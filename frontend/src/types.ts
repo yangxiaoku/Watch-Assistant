@@ -1079,6 +1079,10 @@ export interface NotifyChannelPatch {
   enabled: boolean;
 }
 
+export interface NotifyChannelTestResponse {
+  ok: boolean;
+}
+
 export interface InventoryAuditItemResponse {
   object_id: string;
   name: string;
