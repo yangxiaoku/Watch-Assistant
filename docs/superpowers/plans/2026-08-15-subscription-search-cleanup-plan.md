@@ -31,7 +31,7 @@
 - Consumes: `props.seasonNumber`, `props.resourceTotal`, `props.resourceLoading`
 - Produces: 无新接口，仅在模板中增加空态块。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 在 `frontend/tests/MovieView.spec.ts` 增加：
 
@@ -51,12 +51,12 @@ it("shows season empty hint when a season is selected and total is 0", () => {
 });
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `npm --prefix frontend test -- --run tests/MovieView.spec.ts`
 Expected: FAIL，因为模板没有该文案。
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 在 `MovieView.vue` 的 `ResourceTable` 前增加：
 
@@ -66,12 +66,12 @@ Expected: FAIL，因为模板没有该文案。
 </div>
 ```
 
-- [ ] **Step 4: 运行测试确认通过**
+- [x] **Step 4: 运行测试确认通过**
 
 Run: `npm --prefix frontend test -- --run tests/MovieView.spec.ts`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add frontend/src/views/MovieView.vue frontend/tests/MovieView.spec.ts
@@ -91,7 +91,7 @@ git commit -m "feat(media): 季度无独立资源时显示明确空态"
 **Interfaces:**
 - Produces: `props.subscribed: boolean`、`emit('subscribe')`、`emit('manageSubscriptions')`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```ts
 it("renders subscribe button and emits subscribe", async () => {
@@ -102,12 +102,12 @@ it("renders subscribe button and emits subscribe", async () => {
 });
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `npm --prefix frontend test -- --run tests/MovieView.spec.ts`
 Expected: FAIL
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 在 `MovieView.vue` script 增加 `subscribed: boolean` prop 和 `subscribe`、`manageSubscriptions` emit；在收藏按钮旁增加：
 
@@ -117,12 +117,12 @@ Expected: FAIL
 </button>
 ```
 
-- [ ] **Step 4: 运行测试确认通过**
+- [x] **Step 4: 运行测试确认通过**
 
 Run: `npm --prefix frontend test -- --run tests/MovieView.spec.ts`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add frontend/src/views/MovieView.vue frontend/tests/MovieView.spec.ts
@@ -139,15 +139,15 @@ git commit -m "feat(media): 详情页增加订阅按钮"
 - Consumes: `api.subscriptions()`、`api.createSubscription(payload)`
 - Produces: `detailSubscription: SubscriptionResponse | null`、`loadDetailSubscription()`、`handleSubscribe()`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 在 `frontend/tests/App.spec.ts` 模拟 `api.subscriptions` 返回一条匹配订阅，断言 `MovieView` 收到 `subscribed=true`。
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Expected: FAIL
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 在 `App.vue`：
 - 增加 `const detailSubscription = ref<SubscriptionResponse | null>(null);`
@@ -156,12 +156,12 @@ Expected: FAIL
 - `handleSubscribe()` 调用 `api.createSubscription({ tmdb_id, media_type, season_number })`，成功后刷新状态并 toast。
 - `handleManageSubscriptions()` 导航到 `subscriptions` 视图。
 
-- [ ] **Step 4: 运行测试确认通过**
+- [x] **Step 4: 运行测试确认通过**
 
 Run: `npm --prefix frontend test -- --run tests/App.spec.ts`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add frontend/src/App.vue frontend/tests/App.spec.ts
@@ -184,7 +184,7 @@ git commit -m "feat(media): 详情页订阅状态与创建接入"
   - `def resources_cover_all_episodes(resource_names: list[str], season_detail) -> bool`
   - `def inventory_covers_all_episodes(inventory_files: list[InventoryIdentity], season_detail) -> bool`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```python
 def test_resources_cover_all_episodes_when_full_season_pack_present():
@@ -193,20 +193,20 @@ def test_resources_cover_all_episodes_when_full_season_pack_present():
     assert resources_cover_all_episodes(names, season) is True
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `.venv/bin/python -m pytest tests/unit/test_subscription_completeness.py -q`
 Expected: FAIL
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 使用 `parse_media_filename` 解析资源名，使用 `build_episode_matrix` 判断 `missing_episodes` 为空且 `conclusion_available` 为真；本地库存同理。
 
-- [ ] **Step 4: 运行测试确认通过**
+- [x] **Step 4: 运行测试确认通过**
 
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/watch_assistant/services/subscription_completeness.py tests/unit/test_subscription_completeness.py
@@ -223,15 +223,15 @@ git commit -m "feat(subscription): 新增整季完整性评估服务"
 - Consumes: `subscription_completeness.evaluate_subscription_completeness`
 - Produces: `subscription.auto_paused` 事件
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 模拟 `search()` 返回覆盖整季的资源，断言 `check()` 后订阅状态为 `paused`。
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Expected: FAIL
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 在 `SubscriptionService.check()` 中，当 `media_type == tv and season_number is not None` 时：
 1. 调用 `season_metadata_service.get(...)` 获取集数；失败则跳过自动暂停。
@@ -239,12 +239,12 @@ Expected: FAIL
 3. 用 `verified_latest_scan` 读取库存快照，筛选 `tmdb_id + season` 的 `InventoryIdentity`，判断本地库完整性。
 4. 任一完整 → 用条件 UPDATE 将状态置为 `PAUSED`，写 `subscription.auto_paused` 事件和站内通知。
 
-- [ ] **Step 4: 运行测试确认通过**
+- [x] **Step 4: 运行测试确认通过**
 
 Run: `.venv/bin/python -m pytest tests/unit/test_subscriptions.py tests/integration/test_subscriptions_api.py -q`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/watch_assistant/services/subscriptions.py tests/unit/test_subscriptions.py tests/integration/test_subscriptions_api.py
@@ -267,24 +267,24 @@ git commit -m "feat(subscription): 整季齐全自动暂停订阅"
 **Interfaces:**
 - Produces: 新增设置字段 `auto_cleanup_junk_files: bool`，默认 `False`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 在 settings 测试中断言默认值包含 `auto_cleanup_junk_files=False`，保存 true 后回读为 true。
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Expected: FAIL
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 在 `settings.py` 默认值和 `_validate_organization` 布尔列表增加 `auto_cleanup_junk_files`；在 `schemas.py` 的 `OrganizationSettingsResponse/Patch` 增加字段；前端设置“115 整理”区块增加开关。
 
-- [ ] **Step 4: 运行测试确认通过**
+- [x] **Step 4: 运行测试确认通过**
 
 Run: `.venv/bin/python -m pytest tests/unit/test_settings_service.py -q` 和 `npm --prefix frontend test -- --run tests/SettingsView.spec.ts`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/watch_assistant/services/settings.py src/watch_assistant/schemas.py frontend/src/views/SettingsView.vue frontend/src/types.ts
@@ -301,15 +301,15 @@ git commit -m "feat(cleanup): 增加自动清理广告垃圾文件开关"
 - Consumes: `settings.auto_cleanup_junk_files`, `media_parser` 垃圾识别, `small_file_cleanup`, `empty_directory_cleanup_plan`
 - Produces: `library.auto_cleanup.applied` 事件
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 构造完整扫描快照 + 一个广告垃圾文件 + 一个空目录，开启 `auto_cleanup_junk_files` 后调用自动清理方法，断言删除走回收站 transport，且不抛错。
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Expected: FAIL
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 在自动整理/自动清理流程中，若 `auto_cleanup_junk_files` 开启且扫描完整，则：
 1. 使用 `media_parser` 识别广告/宣传垃圾文件。
@@ -317,12 +317,12 @@ Expected: FAIL
 3. 全部走 `fs_delete` 回收站，不永久删除。
 4. 写审计事件。
 
-- [ ] **Step 4: 运行测试确认通过**
+- [x] **Step 4: 运行测试确认通过**
 
 Run: `.venv/bin/python -m pytest tests/unit/test_organization_automation.py -q`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/watch_assistant/services/organization_automation.py tests/unit/test_organization_automation.py
@@ -331,17 +331,17 @@ git commit -m "feat(cleanup): 自动清理广告垃圾文件与空目录到回�
 
 ### Task D3: 真机验证与部署
 
-- [ ] **Step 1: 运行完整验证**
+- [x] **Step 1: 运行完整验证**
 
 Run: `bash scripts/verify.sh`
 Expected: PASS
 
-- [ ] **Step 2: 真机 E2E**
+- [x] **Step 2: 真机 E2E**
 
 Run: `WA_E2E_USER=admin WA_E2E_PASSWORD=admin npx playwright test -c playwright.deploy.config.ts`
 Expected: PASS
 
-- [ ] **Step 3: 构建发布并部署**
+- [x] **Step 3: 构建发布并部署**
 
 ```bash
 bash scripts/build_release.sh "$(git rev-parse HEAD)"
@@ -351,7 +351,7 @@ ssh root@192.168.6.236 'tar --warning=no-unknown-keyword -xzf ... -C /opt/watch-
 
 Expected: `POSTDEPLOY_RELEASE_CHECK=ok`
 
-- [ ] **Step 4: Commit 文档**
+- [x] **Step 4: Commit 文档**
 
 ```bash
 git add PROGRESS.md docs/superpowers/plans/2026-08-15-subscription-search-cleanup-plan.md

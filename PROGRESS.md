@@ -189,6 +189,27 @@ Systemd Release Package 均显示完成且成功。CI 成功仅证明当前 ref 
 - `REQ-005`：完成字幕与技术信息管理，验收为未知值保留且不泄露原始路径。
 - `REQ-006`：完成 Task 12 的 e2e、部署和 README 验收证据。
 
+## 2026-08-15 订阅、季度搜索与自动清理（开发分支，未合入发布基线）
+
+设计：`docs/superpowers/specs/2026-08-15-subscription-search-cleanup-design.md`；
+实施：`docs/superpowers/plans/2026-08-15-subscription-search-cleanup-plan.md`；
+分支：`codex/subscription-search-cleanup`（自 `codex/publish-main` 的 `8608f8e` 分出）。
+
+- 季度搜索：选中季度且资源数为 0 时显示「当前季度暂无独立资源」空态（保留刷新入口，不自动回退其他季）。
+- 详情页订阅：`MovieView` 新增「订阅/已订阅/已暂停」按钮与 `subscribe`/`manageSubscriptions` 事件，
+  `App.vue` 接入订阅状态加载（复用 `GET /api/v1/subscriptions`，按 tmdb_id+media_type+season_number
+  匹配）、创建（复用 `POST /api/v1/subscriptions`，`subscription_exists` 幂等提示）与跳转订阅管理；
+  含竞态防护（上下文复核）。
+- 智能订阅暂停：新增 `subscription_completeness` 服务（搜索资源名/本地库存任一覆盖全部已播出集即判完整，
+  整季包语义、特辑排除、TMDB 季集信息不可用 fail-safe）；`SubscriptionService.check()` 对 TV+季度订阅
+  评估后自动置 `PAUSED`（可恢复），写 `subscription.auto_paused` 审计事件并生成可跳转订阅管理的站内通知。
+- 自动清理：新增设置 `auto_cleanup_junk_files`（默认关闭）；开启后在完整扫描通过后把受管源目录内的
+  广告/宣传垃圾文件移入 115 回收站（复用逐候选复核删除，不永久删除），写 `library.auto_cleanup.applied`
+  审计事件（小文件/空目录/垃圾文件三计数）并生成站内通知汇总；与现有小文件/空目录清理共用同一安全门禁。
+- 验证：`scripts/verify.sh` 通过（unit 1369 / integration / contracts / ruff / 前端 299 / build），
+  证据 `evidence/aeff8f4-20260815-161958`。尚未真机 E2E、未构建发布包、未部署
+  （`192.168.6.236` 生产未变更），未合入 `codex/publish-main`。
+
 ## 开发中
 
 - `REQ-003`：CLI 只读和部分受保护命令已完成；高风险 Web 批准、完整任务关联、生产播放入口和
