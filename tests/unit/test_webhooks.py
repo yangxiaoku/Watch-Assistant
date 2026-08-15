@@ -251,6 +251,94 @@ async def test_publish_due_survives_secret_decrypt_failure_and_does_not_block_ba
 
 
 @pytest.mark.asyncio
+@respx.mock
+async def test_eighth_retry_uses_last_backoff_delay_then_dead_letter(tmp_path, monkeypatch):
+    """REQ-019 默认 8 次重试:第 8 次失败后进入死信,7200s 退避必须被使用。"""
+    from datetime import timedelta
+
+    import httpx
+
+    from watch_assistant.db import create_database, initialize_database
+    from watch_assistant.models import WebhookDelivery, WebhookEndpoint
+    from watch_assistant.services.webhooks import WebhookService
+
+    class _IdentityCrypto:
+        def encrypt(self, value: str) -> str:
+            return value
+
+        def decrypt(self, value: str) -> str:
+            return value
+
+    monkeypatch.setattr(
+        webhooks.socket,
+        "getaddrinfo",
+        lambda *args, **kwargs: _addr("8.8.8.8"),
+    )
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'webhook-retries.db'}")
+    await initialize_database(database.engine)
+    now = datetime.now(UTC)
+    async with database.session_factory() as session:
+        session.add(
+            WebhookEndpoint(
+                id="ep-retry",
+                name="retry",
+                url="https://hooks.example.test/retry",
+                secret_encrypted="retry-secret",
+                secret_prefix="whsec_",
+                enabled=True,
+            )
+        )
+        await session.flush()
+        session.add(
+            WebhookDelivery(
+                id="delivery-retry",
+                endpoint_id="ep-retry",
+                event_id="evt-retry",
+                event_code="task.failed",
+                payload_json='{"a":1}',
+                status="pending",
+                attempts=7,
+                next_attempt_at=now,
+                created_at=now,
+            )
+        )
+        await session.commit()
+
+    route = respx.post("https://hooks.example.test/retry").mock(
+        return_value=httpx.Response(500, text="boom")
+    )
+    service = WebhookService(
+        database.session_factory,
+        _IdentityCrypto(),
+        http_client=httpx.AsyncClient(follow_redirects=False),
+    )
+    try:
+        assert await service.publish_due(limit=20) == 0
+        async with database.session_factory() as session:
+            delivery = await session.get(WebhookDelivery, "delivery-retry")
+        assert delivery.attempts == 8
+        assert delivery.status == "pending"
+        delay = delivery.next_attempt_at.replace(tzinfo=UTC) - now
+        assert timedelta(seconds=7190) <= delay <= timedelta(seconds=7210)
+
+        # 第 9 次投递(8 次重试后的最后一次尝试)失败进入死信。
+        async with database.session_factory() as session:
+            delivery = await session.get(WebhookDelivery, "delivery-retry")
+            delivery.next_attempt_at = now
+            await session.commit()
+        assert await service.publish_due(limit=20) == 0
+        async with database.session_factory() as session:
+            delivery = await session.get(WebhookDelivery, "delivery-retry")
+        assert delivery.attempts == 9
+        assert delivery.status == "dead"
+    finally:
+        await service.aclose()
+        await database.engine.dispose()
+
+    assert route.call_count == 2
+
+
+@pytest.mark.asyncio
 async def test_concurrent_publish_does_not_duplicate_http_post(tmp_path, monkeypatch):
     """并发 publish_due 不得对同一行重复 POST:投递必须先原子认领。"""
     import asyncio

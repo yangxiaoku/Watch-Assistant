@@ -96,6 +96,14 @@ class Settings(BaseSettings):
         validation_alias="TMDB_BASE_URL",
     )
     cookie_secure: bool = Field(default=False, validation_alias="COOKIE_SECURE")
+    # 站外通知(飞书卡片)跳转使用的外部访问地址。默认值兼容 2026-08 生产
+    # 实测服务器;其他部署应显式设置,否则通知里的"前往查看"会指向错误主机。
+    notify_base_url: str = Field(
+        default="http://192.168.6.236:8115",
+        min_length=8,
+        max_length=2048,
+        validation_alias="NOTIFY_BASE_URL",
+    )
     web_session_ttl_hours: int = Field(
         default=12, ge=1, le=720, validation_alias="WEB_SESSION_TTL_HOURS"
     )

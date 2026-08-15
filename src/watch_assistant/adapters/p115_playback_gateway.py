@@ -135,9 +135,14 @@ class P115LivePlaybackGateway(P115PlaybackGateway):
         async with self._transport_lock:
             if self._transport is not None:
                 return self._transport
+            timeout = self._remaining_timeout()
             try:
-                credential = await asyncio.to_thread(self._credential_source.load)
+                credential = await asyncio.wait_for(
+                    asyncio.to_thread(self._credential_source.load), timeout=timeout
+                )
             except asyncio.CancelledError:
+                raise
+            except TimeoutError:
                 raise
             except Exception:  # noqa: BLE001 - credentials never cross the boundary
                 # 不链起底层异常:第三方错误文本可能包含凭据/pickcode/带参链接,
@@ -146,8 +151,9 @@ class P115LivePlaybackGateway(P115PlaybackGateway):
             if not credential:
                 raise P115PlaybackTransportUnavailable("credentials_missing")
             try:
-                transport = await asyncio.to_thread(
-                    self._transport_factory, credential
+                transport = await asyncio.wait_for(
+                    asyncio.to_thread(self._transport_factory, credential),
+                    timeout=timeout,
                 )
             except asyncio.CancelledError:
                 raise

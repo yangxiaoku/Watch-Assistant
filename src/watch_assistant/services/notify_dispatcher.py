@@ -55,7 +55,6 @@ class NotifyDispatcher:
         self._event_logger = event_logger
         self._base_url = base_url.rstrip("/")
         self._channel_factory = channel_factory or DefaultChannel
-        self._channels: list[Any] = []
 
     async def dispatch_notify(
         self,
@@ -84,16 +83,20 @@ class NotifyDispatcher:
                 await self._log_failure(row.id, exc)
                 continue
             channel = self._channel_factory(webhook_url)
-            self._channels.append(channel)
             try:
-                ok = await channel.send(title=title, text=text, link_url=link_url)
-            except Exception as exc:  # noqa: BLE001 - fail-open per channel
-                await self._log_failure(row.id, exc)
-                continue
-            if ok:
-                delivered += 1
-            else:
-                await self._log_failure(row.id, RuntimeError("channel_send_failed"))
+                try:
+                    ok = await channel.send(title=title, text=text, link_url=link_url)
+                except Exception as exc:  # noqa: BLE001 - fail-open per channel
+                    await self._log_failure(row.id, exc)
+                    continue
+                if ok:
+                    delivered += 1
+                else:
+                    await self._log_failure(
+                        row.id, RuntimeError("channel_send_failed")
+                    )
+            finally:
+                await self._close_channel(channel)
         if delivered:
             await emit_event(
                 self._event_logger,
@@ -160,14 +163,18 @@ class NotifyDispatcher:
                 pass
 
     async def aclose(self) -> None:
-        channels, self._channels = self._channels, []
-        for channel in channels:
-            closer = getattr(channel, "aclose", None)
-            if callable(closer):
-                try:
-                    await closer()
-                except Exception:  # noqa: BLE001, S110 - best effort close
-                    pass
+        # 每次 send 后已立即关闭渠道;保留 aclose 以兼容调用方与测试注入。
+        return
+
+    async def _close_channel(self, channel: Any) -> None:
+        """Best-effort close after every send to avoid fd/client accumulation."""
+        closer = getattr(channel, "aclose", None)
+        if not callable(closer):
+            return
+        try:
+            await closer()
+        except Exception:  # noqa: BLE001, S110 - close must never mask delivery result
+            pass
 
     async def _log_failure(self, channel_id: str, exc: Exception) -> None:
         await emit_event(

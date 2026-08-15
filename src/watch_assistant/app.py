@@ -1072,6 +1072,7 @@ def create_app(
                 runtime_database.session_factory,
                 runtime_domain_crypto("notify"),
                 event_logger=application.state.settings_service,
+                base_url=settings.notify_base_url,
             )
             application.state.inventory_audit_service = InventoryAuditService(
                 runtime_database.session_factory

@@ -444,7 +444,9 @@ class StrmCleanupPlanApplyRequest(BaseModel):
     model_config = {"extra": "forbid"}
 
     expected_revision: int = Field(ge=1)
-    digest: str = Field(min_length=64, max_length=64)
+    digest: str = Field(
+        min_length=64, max_length=64, pattern=r"^[0-9a-fA-F]{64}$"
+    )
     confirm: bool = False
     idempotency_key: str = Field(min_length=1, max_length=128)
 
@@ -493,7 +495,9 @@ class EmptyDirectoryCleanupPlanApplyRequest(BaseModel):
     model_config = {"extra": "forbid"}
 
     expected_revision: int = Field(ge=1)
-    digest: str = Field(min_length=64, max_length=64)
+    digest: str = Field(
+        min_length=64, max_length=64, pattern=r"^[0-9a-fA-F]{64}$"
+    )
     confirm: bool = False
     idempotency_key: str = Field(min_length=1, max_length=128)
 
@@ -998,7 +1002,12 @@ class OrganizationPlanMutationRequest(BaseModel):
     model_config = {"extra": "forbid"}
 
     expected_revision: int = Field(ge=1)
-    plan_hash: str | None = Field(default=None, min_length=64, max_length=64)
+    plan_hash: str | None = Field(
+        default=None,
+        min_length=64,
+        max_length=64,
+        pattern=r"^[0-9a-fA-F]{64}$",
+    )
 
 
 class OrganizationPlanCandidateRequest(OrganizationPlanMutationRequest):
@@ -1018,7 +1027,12 @@ class OrganizationOperationQueueRequest(BaseModel):
 
     expected_revision: int = Field(ge=1)
     idempotency_key: str = Field(min_length=1, max_length=255)
-    digest: str | None = Field(default=None, min_length=64, max_length=64)
+    digest: str | None = Field(
+        default=None,
+        min_length=64,
+        max_length=64,
+        pattern=r"^[0-9a-fA-F]{64}$",
+    )
     confirm: bool = False
     workflow_id: str | None = Field(default=None, min_length=1, max_length=40)
 
@@ -1029,7 +1043,12 @@ class OrganizationOperationBatchItem(BaseModel):
     plan_id: str = Field(min_length=1, max_length=64)
     expected_revision: int = Field(ge=1)
     idempotency_key: str = Field(min_length=1, max_length=255)
-    digest: str | None = Field(default=None, min_length=64, max_length=64)
+    digest: str | None = Field(
+        default=None,
+        min_length=64,
+        max_length=64,
+        pattern=r"^[0-9a-fA-F]{64}$",
+    )
     confirm: bool = False
     workflow_id: str | None = Field(default=None, min_length=1, max_length=40)
 

@@ -50,6 +50,7 @@ class FakeFeishuChannel:
 
     def __init__(self, *, fail: bool = False) -> None:
         self.sent: list[dict[str, object]] = []
+        self.closed = False
         self._fail = fail
 
     async def send(self, *, title: str, text: str, link_url=None) -> bool:
@@ -57,7 +58,7 @@ class FakeFeishuChannel:
         return not self._fail
 
     async def aclose(self) -> None:
-        pass
+        self.closed = True
 
 
 class EventRecorder:
@@ -213,6 +214,25 @@ async def test_dispatch_notify_fails_one_channel_others_succeed_and_emits_event(
     assert count == 1
     assert factories["https://open.feishu.cn/hook/chan-ok"].sent
     assert any(code == "notify.delivery_failed" for code, _ in events.events)
+
+
+@pytest.mark.asyncio
+async def test_dispatch_notify_closes_each_channel_after_send(database):
+    """每次投递后必须立即 close 渠道,避免 httpx client/fd 随通知量累积。"""
+    await _add_channel(database, url="https://open.feishu.cn/hook/chan-a")
+    await _add_channel(database, url="https://open.feishu.cn/hook/chan-b")
+    channels: list[FakeFeishuChannel] = []
+
+    def factory(url):
+        channel = FakeFeishuChannel()
+        channels.append(channel)
+        return channel
+
+    dispatcher = _dispatcher(database, FakeCrypto(), factory)
+    count = await dispatcher.dispatch_notify(title="t", text="x", link_path="/tv/1")
+    assert count == 2
+    assert len(channels) == 2
+    assert all(channel.closed for channel in channels)
 
 
 @pytest.mark.asyncio

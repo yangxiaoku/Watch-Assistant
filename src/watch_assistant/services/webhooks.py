@@ -37,7 +37,9 @@ from watch_assistant.services.code_utils import decode_string_set as _decode_cod
 from watch_assistant.services.event_catalog import get_event_definition
 from watch_assistant.services.observability import EventLogger
 
-MAX_ATTEMPTS = 8
+# 需求默认值:失败后重试 8 次(即最多投递 9 次),8 个退避间隔全部使用。
+MAX_RETRIES = 8
+MAX_ATTEMPTS = MAX_RETRIES + 1
 DELIVERY_TIMEOUT = 10.0
 # 投递认领租约:进入 in_flight 后保留该时长,期间其他投递者不得重复 POST。
 # 若投递进程崩溃/超时,行停留在 in_flight,由 publish_due 在租约过期后
@@ -710,7 +712,7 @@ def _endpoint_health_status(item: WebhookEndpoint) -> str:
         return "disabled"
     if item.last_success_at is None and item.last_failure_at is None:
         return "unknown"
-    if item.failure_count >= MAX_ATTEMPTS:
+    if item.failure_count >= MAX_RETRIES:
         return "failed"
     if item.last_failure_at is None or item.last_success_at is not None and item.last_success_at >= item.last_failure_at:
         return "healthy"
