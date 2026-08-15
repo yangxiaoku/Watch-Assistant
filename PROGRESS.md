@@ -109,13 +109,18 @@ Systemd Release Package 均显示完成且成功。CI 成功仅证明当前 ref 
   横幅与区块错误全部收敛（详见 `docs/更新日志-2026-08-14-前端反馈收敛.md`）。
 - 已部署 192.168.6.236:8115（release aae965f），Vitest 291 / e2e 152 / 发布冒烟通过。
 
-## 2026-08-15 E2E 调试与通知渠道优化（已部署 efb4611）
+## 2026-08-15 E2E 调试与通知渠道优化（已部署 efb4611 / 789bb83）
 
 - 使用用户提供的个人部署账号对 `192.168.6.236:8115` 做了真实浏览器 E2E：
   `playwright.deploy.config.ts` 18 项全部通过，`playwright.live-all.config.ts` 27 项全部通过。
+- 修复后已重新部署 `789bb83`，`POSTDEPLOY_RELEASE_CHECK=ok`。
 - 修复资源分页竞态：详情页在资源搜索尚未完成时提前请求 `resources`，导致
   `resource_snapshot_not_found` 404，质量/类型/排序/搜索等筛选无法激活。现在搜索未完成时
   只记录目标路由，等 `loadResources` 完成后再按最新路由加载；服务器日志中相关 404 已消失。
+- 修复搜索缓存过期后的“假 ready”：`ResourceSearchJob` 仍保留旧的 `snapshot_revision`，
+  但 `SearchCache` 已过期/清理时，`start_resource_search` 仍返回 `ready`，前端随后请求
+  `resources` 得到 404，表现为“搜索有时候失败/排序不生效”。现在检测到缓存缺失会重新排队
+  触发搜索，并在 `get_resource_search_task` 轮询路径同样校验快照有效性。
 - 修正媒体库工作台 E2E 断言：页面实际标题为“媒体库”，原用例中的“媒体库与 STRM”为过期断言。
 - 通知渠道新增“测试”发送：后端 `POST /api/v1/notify-channels/{id}/test` + 设置页“测试”按钮，
   支持飞书 Webhook/Bot/CLI 和 ClawBot 真实渠道测试，发送失败记录 `notify.delivery_failed`，
