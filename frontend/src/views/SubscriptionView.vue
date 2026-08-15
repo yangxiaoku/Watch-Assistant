@@ -145,6 +145,23 @@ async function togglePause(item: SubscriptionResponse) {
   }
 }
 
+async function cancel(item: SubscriptionResponse) {
+  busy.value = true;
+  error.value = "";
+  try {
+    await props.api.subscriptionCancel(item.id, item.revision);
+    feedback.success("已取消订阅");
+    await load();
+  } catch (exception) {
+    error.value = describeUiError(
+      exception instanceof ApiError ? exception.code : "request_failed",
+      422,
+    ).message;
+  } finally {
+    busy.value = false;
+  }
+}
+
 async function showObservations(item: SubscriptionResponse) {
   selected.value = item;
   observationsLoading.value = true;
@@ -278,7 +295,7 @@ onBeforeUnmount(() => {
             <Play v-else :size="14" />
             {{ item.status === "paused" ? "恢复" : "暂停" }}
           </button>
-          <button class="btn small ghost" type="button" :disabled="busy" title="取消订阅">
+          <button class="btn small ghost" type="button" :disabled="busy" title="取消订阅" @click="cancel(item)">
             <Trash2 :size="14" />取消
           </button>
         </div>

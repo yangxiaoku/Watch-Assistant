@@ -670,6 +670,16 @@ export class ApiClient {
     );
   }
 
+  async subscriptionCancel(
+    id: string,
+    revision: number,
+  ): Promise<SubscriptionResponse> {
+    return this.request<SubscriptionResponse>(
+      `/api/v1/subscriptions/${encodeURIComponent(id)}/cancel`,
+      { method: "POST", body: JSON.stringify({ revision }) },
+    );
+  }
+
   async subscriptionObservations(
     id: string,
   ): Promise<SubscriptionResourceObservationResponse[]> {

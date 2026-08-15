@@ -42,6 +42,13 @@ export default defineConfig({
       dependencies: ["setup"],
       use: { storageState: STORAGE_STATE, viewport: { width: 1440, height: 900 } },
     },
+    // 订阅/季度搜索/自动清理上线功能(桌面端)
+    {
+      name: "subscription-cleanup",
+      testMatch: /subscription-cleanup\.spec\.ts/,
+      dependencies: ["setup"],
+      use: { storageState: STORAGE_STATE, viewport: { width: 1440, height: 900 } },
+    },
     // 已登录的移动端冒烟
     {
       name: "mobile",

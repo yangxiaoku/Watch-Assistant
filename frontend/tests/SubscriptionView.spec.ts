@@ -35,6 +35,7 @@ function makeApi(overrides: Partial<ApiClient> = {}): ApiClient {
     subscriptionPause: vi.fn().mockResolvedValue(subscription({ status: "paused" })),
     subscriptionResume: vi.fn().mockResolvedValue(subscription({ status: "active" })),
     subscriptionObservations: vi.fn().mockResolvedValue([]),
+    subscriptionCancel: vi.fn().mockResolvedValue(subscription({ status: "cancelled" })),
     ...overrides,
   } as unknown as ApiClient;
 }
@@ -87,6 +88,17 @@ describe("SubscriptionView", () => {
     await pauseButton!.trigger("click");
     await flushPromises();
     expect(api.subscriptionPause).toHaveBeenCalledWith("sub-1", 1);
+  });
+
+  it("cancels a subscription", async () => {
+    const api = makeApi();
+    const wrapper = mount(SubscriptionView, { props: { api } });
+    await flushPromises();
+    const cancelButton = wrapper.findAll("button").find((b) => b.text().includes("取消"));
+    await cancelButton!.trigger("click");
+    await flushPromises();
+    expect(api.subscriptionCancel).toHaveBeenCalledWith("sub-1", 1);
+    expect(api.subscriptions).toHaveBeenCalledTimes(2); // 取消后重载列表
   });
 
   it("shows observations for a subscription", async () => {
