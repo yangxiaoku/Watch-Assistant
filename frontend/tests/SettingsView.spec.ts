@@ -282,6 +282,34 @@ describe("SettingsView", () => {
     }));
   });
 
+  it("persists the junk-file auto cleanup toggle through the organization save", async () => {
+    const api = makeApi();
+    const wrapper = mount(SettingsView, { props: { api } });
+    await flushPromises();
+    await wrapper.findAll("button").find((button) => button.text().includes("115 整理"))?.trigger("click");
+    await flushPromises();
+
+    // 展开「高级设置」折叠区(自动清理开关位于其中)
+    const advancedSummary = wrapper.findAll("details.settings-subsection summary").find((summary) => summary.text().includes("高级设置"));
+    await advancedSummary?.trigger("click");
+    await flushPromises();
+
+    const junkToggle = wrapper
+      .findAll("label.settings-toggle")
+      .find((label) => label.text().includes("自动清理广告垃圾文件"))
+      ?.find("input[type=checkbox]");
+    expect(junkToggle).toBeDefined();
+    expect((junkToggle!.element as HTMLInputElement).checked).toBe(false); // 默认关闭
+    await junkToggle!.setValue(true);
+    await wrapper.get(".settings-save-bar .primary-button").trigger("click");
+    await flushPromises();
+
+    expect(api.updateOrganizationSettings).toHaveBeenCalledWith(expect.objectContaining({
+      auto_cleanup_junk_files: true,
+      revision: 4,
+    }));
+  });
+
   it("preserves the organization draft and reloads latest settings on a version conflict", async () => {
     const latest = { ...organization, revision: 9 };
     const api = makeApi({

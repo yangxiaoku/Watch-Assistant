@@ -620,6 +620,8 @@ input { outline: none; }
 .detail-stat.score-stat strong { color: var(--gold); }
 .overview-section { padding: 18px 0 4px; border-bottom: 1px solid var(--border); }
 .overview-section .empty-copy { color: var(--text-3); font-size: 13px; }
+.season-empty { padding: 14px 0 4px; }
+.season-empty .empty-copy { color: var(--text-3); font-size: 13px; }
 .overview-section h2 { margin-bottom: 8px; color: var(--text); font-size: 16px; }
 .overview-section p { max-width: 1080px; margin-bottom: 0; color: var(--text-2); font-size: 13px; line-height: 1.7; }
 .season-bar { margin-top: 16px; padding: 11px 0 0; border-bottom: 0; }
