@@ -1143,6 +1143,13 @@ async function loadDetailSubscription(): Promise<void> {
   const seasonNumber = mediaType === "tv" ? selectedSeason.value : null;
   try {
     const subscriptions = await api.subscriptions();
+    // 竞态防护:await 期间详情可能已切换(另一季/另一部电影),若上下文不再一致则丢弃本次结果。
+    if (!result.value
+      || result.value.movie.tmdb_id !== tmdbId
+      || detailMediaType.value !== mediaType
+      || (detailMediaType.value === "tv" ? selectedSeason.value : null) !== seasonNumber) {
+      return;
+    }
     const match = subscriptions.find(
       (sub) => sub.tmdb_id === tmdbId
         && sub.media_type === mediaType

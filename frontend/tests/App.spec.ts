@@ -554,6 +554,43 @@ describe("App subscription wiring", () => {
     expect(buttonAfter!.text()).toContain("已订阅");
     wrapper.unmount();
   });
+
+  it("navigates to the subscription management view when clicking the subscribed button", async () => {
+    window.history.replaceState({}, "", "/movie/1399");
+    const subscription = {
+      id: "sub-1",
+      tmdb_id: 1399,
+      media_type: "movie",
+      season_number: null,
+      episode_start: null,
+      episode_end: null,
+      mode: "auto",
+      status: "active",
+      quality_profile_id: null,
+      next_check_at: null,
+      last_checked_at: null,
+      last_match_count: 0,
+      last_error_code: null,
+      revision: 1,
+      created_at: "2026-08-01T00:00:00Z",
+      updated_at: "2026-08-01T00:00:00Z",
+    };
+    mockMovieDetail1399({ subscriptions: [subscription] });
+
+    const wrapper = mount(App);
+    await flushPromises();
+
+    const subscribedButton = wrapper.findAll("button").find((button) => button.classes().includes("subscribe-inline"));
+    expect(subscribedButton).toBeDefined();
+    expect(subscribedButton!.text()).toContain("已订阅");
+    await subscribedButton!.trigger("click");
+    await flushPromises();
+
+    const subscriptionView = wrapper.find(".subscription-view");
+    expect(subscriptionView.exists()).toBe(true);
+    expect(subscriptionView.text()).toContain("订阅关注的影视，自动检查新资源并推送通知");
+    wrapper.unmount();
+  });
 });
 
 describe("App login error copy", () => {
