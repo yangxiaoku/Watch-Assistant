@@ -569,7 +569,9 @@ class SearchService:
                     refresh=task.refresh,
                     season_number=task.season_number,
                 ),
-                timeout=90.0,
+                # 前端轮询 120s 后会给用户“后台继续”的提示；这里让后端继续跑到 180s，
+                # 避免 Prowlarr 多查询超时叠加时 90s 就硬失败。
+                timeout=180.0,
             )
             task.selected_season = response.selected_season or task.season_number
             task.warnings = list(response.warnings)

@@ -121,6 +121,8 @@ Systemd Release Package 均显示完成且成功。CI 成功仅证明当前 ref 
   但 `SearchCache` 已过期/清理时，`start_resource_search` 仍返回 `ready`，前端随后请求
   `resources` 得到 404，表现为“搜索有时候失败/排序不生效”。现在检测到缓存缺失会重新排队
   触发搜索，并在 `get_resource_search_task` 轮询路径同样校验快照有效性。
+- 搜索超时预算从 90s 提升到 180s：前端轮询 120s 后会给“后台继续”的提示，后端继续执行，
+  避免 Prowlarr 多查询超时叠加时在 90s 就硬失败。
 - 修正媒体库工作台 E2E 断言：页面实际标题为“媒体库”，原用例中的“媒体库与 STRM”为过期断言。
 - 通知渠道新增“测试”发送：后端 `POST /api/v1/notify-channels/{id}/test` + 设置页“测试”按钮，
   支持飞书 Webhook/Bot/CLI 和 ClawBot 真实渠道测试，发送失败记录 `notify.delivery_failed`，
