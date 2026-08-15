@@ -72,10 +72,12 @@ test.describe("订阅/季度搜索/自动清理 上线功能(部署实例 192.16
 
     for (const value of seasonValues) {
       await seasonSelect.selectOption(value);
-      // 等待资源区稳定:空态 / 资源行 / 错误提示 三选一出现
+      // 等待该季度搜索完成(真实上游搜索,预算 180s,放宽到 240s)
+      await expect(page.locator(".resource-loading-local")).toHaveCount(0, { timeout: 240_000 });
+      // 资源区稳定后:空态 / 资源行(或卡片) / 错误提示 三选一出现
       await expect(
-        page.locator(".season-empty, .resource-table .resource-row, .resource-table .resource-page-error").first(),
-      ).toBeVisible({ timeout: 60_000 });
+        page.locator(".season-empty, .resource-table tbody tr, .resource-card, .resource-table .resource-page-error").first(),
+      ).toBeVisible({ timeout: 30_000 });
       // 切换季度不得出现误导性分页错误
       await expect(page.getByText("资源分页暂不可用")).toHaveCount(0);
       // 空态与错误不得并存
