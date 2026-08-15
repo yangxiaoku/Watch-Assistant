@@ -2292,10 +2292,7 @@ def create_app(
             if frontend_path.startswith("api/"):
                 raise HTTPException(status_code=404, detail="not_found")
             candidate = (static_path / frontend_path).resolve()
-            if (
-                not frontend_path
-                or (static_path.resolve() not in candidate.parents and candidate != static_path.resolve())
-            ):
+            if not candidate.is_relative_to(static_path.resolve()):
                 # 路径穿越防护:候选必须落在静态目录内
                 raise HTTPException(status_code=404, detail="not_found")
             if candidate.is_file():
