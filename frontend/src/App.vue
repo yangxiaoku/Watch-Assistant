@@ -32,7 +32,7 @@ import { describeUiError } from "./errorCatalog";
 import { waitForResourceSearch as pollResourceSearch } from "./resourceSearchPolling";
 import { sourceNameList } from "./resourceSources";
 import { createTaskRefreshGuard, isActiveTask } from "./taskPolling";
-import type { HomeCatalogResponse, MovieMetadata, ResourceFacets, ResourcePageResponse, ResourceQuality, ResourceSearchResponse, ResourceSort, ResourceSummary, SearchResponse, SeasonDetailResponse, TaskResponse } from "./types";
+import type { HomeCatalogResponse, MovieMetadata, ResourceFacets, ResourcePageResponse, ResourceQuality, ResourceSearchResponse, ResourceSort, ResourceSummary, SearchResponse, SeasonDetailResponse, SubscriptionResponse, TaskResponse } from "./types";
 import CollectionView from "./views/CollectionView.vue";
 import HomeView from "./views/HomeView.vue";
 import LibraryView from "./views/LibraryView.vue";
@@ -108,6 +108,7 @@ const seasonDetail = ref<SeasonDetailResponse | null>(null);
 const seasonDetailLoading = ref(false);
 const seasonDetailError = ref("");
 const detailMediaType = ref<"movie" | "tv">("movie");
+const detailSubscription = ref<SubscriptionResponse | null>(null);
 const inspectionState = ref<"idle" | "running" | "completed" | "partial" | "failed" | "timeout">("idle");
 const inspectionCompleted = ref(0);
 const inspectionTotal = ref(0);
@@ -1134,6 +1135,50 @@ async function loadResources(
   }
 }
 
+async function loadDetailSubscription(): Promise<void> {
+  detailSubscription.value = null;
+  if (!result.value) return;
+  const tmdbId = result.value.movie.tmdb_id;
+  const mediaType = detailMediaType.value;
+  const seasonNumber = mediaType === "tv" ? selectedSeason.value : null;
+  try {
+    const subscriptions = await api.subscriptions();
+    const match = subscriptions.find(
+      (sub) => sub.tmdb_id === tmdbId
+        && sub.media_type === mediaType
+        && sub.season_number === (seasonNumber ?? null),
+    );
+    detailSubscription.value = match ?? null;
+  } catch (exception) {
+    // 订阅状态加载失败不打断详情页:置空并静默降级为「订阅」按钮。
+    detailSubscription.value = null;
+    console.warn("加载订阅状态失败", exception);
+  }
+}
+
+async function handleSubscribe(): Promise<void> {
+  if (!result.value) return;
+  const tmdbId = result.value.movie.tmdb_id;
+  const mediaType = detailMediaType.value;
+  const seasonNumber = mediaType === "tv" ? selectedSeason.value : null;
+  try {
+    await api.createSubscription({ tmdb_id: tmdbId, media_type: mediaType, season_number: seasonNumber });
+    await loadDetailSubscription();
+    feedback.success("已创建订阅");
+  } catch (exception) {
+    if (exception instanceof ApiError && exception.code === "subscription_exists") {
+      await loadDetailSubscription();
+      feedback.info("该范围已存在订阅");
+      return;
+    }
+    feedback.error(exception instanceof ApiError ? exception.message : "订阅创建失败，请稍后重试");
+  }
+}
+
+function handleManageSubscriptions(): void {
+  void selectView("subscriptions");
+}
+
 async function openMovie(movie: MovieMetadata) {
   previousView.value = activeView.value;
   if (committedCatalogRoute.value) {
@@ -1153,6 +1198,7 @@ async function openMovie(movie: MovieMetadata) {
   seasonDetail.value = null;
   detailMediaType.value = mediaTypeOf(movie);
   const mediaType = mediaTypeOf(movie);
+  void loadDetailSubscription();
   beginResourceSnapshot([]);
   reportDetailMetric(searchRequestId, "detail_framework", "success", { once: true });
   reportDetailMetric(searchRequestId, "metadata_summary", "success", { cached: true, once: true });
@@ -1174,6 +1220,7 @@ async function selectSeason(seasonNumber: number | null) {
   if (!result.value || detailMediaType.value !== "tv") return;
   const movie = result.value.movie;
   selectedSeason.value = seasonNumber;
+  void loadDetailSubscription();
   const timing = detailTimings.get(searchRequestId);
   if (timing) timing.seasonNumber = seasonNumber;
   seasonDetail.value = null;
@@ -1227,6 +1274,7 @@ async function initializeWorkspace() {
     if (timing) timing.seasonNumber = selectedSeason.value;
     result.value = detailResult(detailPlaceholder(mediaRoute.tmdbId, mediaRoute.mediaType));
     beginResourceSnapshot([]);
+    void loadDetailSubscription();
     reportDetailMetric(searchRequestId, "detail_framework", "success", { once: true });
     const resourceRoute = resourceRouteFromMediaRoute(mediaRoute);
     void loadMetadata(mediaRoute.tmdbId, mediaRoute.mediaType);
@@ -1502,6 +1550,7 @@ async function syncRoute() {
     const route = resourceRouteFromMediaRoute(mediaRoute);
     applyResourceRoute(route);
     pendingResourceRoute = null;
+    void loadDetailSubscription();
     await loadResourcePage(route, "none");
     return;
   }
@@ -1609,6 +1658,8 @@ onBeforeUnmount(() => {
            :pagination-unavailable="resourcePaginationUnavailable"
            :media-type="detailMediaType"
            :season-number="selectedSeason"
+           :subscribed="detailSubscription !== null"
+           :subscription-status="detailSubscription?.status ?? null"
            :season-detail="seasonDetail"
            :season-detail-loading="seasonDetailLoading"
            :season-detail-error="seasonDetailError"
@@ -1625,6 +1676,8 @@ onBeforeUnmount(() => {
            :inspection-retry-available="inspectionRetryAvailable"
            :inspection-started="inspectionSeenIds.size > 0"
            @push="startPush"
+           @subscribe="handleSubscribe"
+           @manage-subscriptions="handleManageSubscriptions"
            @favorite="toggleFavorite(result.movie)"
            @refresh="refreshResources"
            @retry-metadata="loadMetadata(result.movie.tmdb_id, detailMediaType, result.movie.title === '正在加载影视资料' ? undefined : result.movie)"

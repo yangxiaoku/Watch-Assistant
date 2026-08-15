@@ -423,6 +423,139 @@ describe("App capability wiring", () => {
   });
 });
 
+const movieMetadata1399 = {
+  tmdb_id: 1399,
+  media_type: "movie" as const,
+  title: "哈利·波特与魔法石",
+  original_title: "Harry Potter and the Sorcerer's Stone",
+  release_year: 2001,
+  overview: "少年巫师入学魔法学院。",
+  poster_path: null,
+  backdrop_path: null,
+  genre_ids: [],
+  vote_average: 7.6,
+  seasons: [],
+};
+
+function mockMovieDetail1399(overrides: Partial<Record<"subscriptions", unknown>> = {}) {
+  vi.spyOn(ApiClient.prototype, "health").mockResolvedValue({ status: "ok", release: "test", push_supported: false });
+  vi.spyOn(ApiClient.prototype, "me").mockResolvedValue(undefined);
+  vi.spyOn(ApiClient.prototype, "recordMediaDetailMetric").mockResolvedValue(undefined);
+  vi.spyOn(ApiClient.prototype, "mediaMetadata").mockResolvedValue(movieMetadata1399);
+  vi.spyOn(ApiClient.prototype, "startResourceSearch").mockResolvedValue({
+    task_id: "resource-search-1399",
+    tmdb_id: 1399,
+    media_type: "movie",
+    season_number: null,
+    status: "ready",
+    snapshot_revision: "snapshot-1",
+    query_plan_version: "v1",
+    selected_season: null,
+    sources: [],
+    warnings: [],
+    cache_age_seconds: null,
+    error_code: null,
+    created_at: "2026-08-01T00:00:00Z",
+    updated_at: "2026-08-01T00:00:00Z",
+  });
+  vi.spyOn(ApiClient.prototype, "resources").mockResolvedValue({
+    items: [],
+    page: 1,
+    page_size: 25,
+    total: 0,
+    total_pages: 1,
+    facets: { magnet: 0, share: 0, "4k": 0, "1080p": 0, "720p": 0, subtitle: 0 },
+    snapshot_revision: "snapshot-1",
+  });
+  vi.spyOn(ApiClient.prototype, "subscriptions").mockResolvedValue(
+    (overrides.subscriptions ?? []) as never,
+  );
+}
+
+describe("App subscription wiring", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    window.history.replaceState({}, "", "/");
+  });
+
+  it("shows the subscribed label when the detail movie has an existing subscription", async () => {
+    window.history.replaceState({}, "", "/movie/1399");
+    mockMovieDetail1399({
+      subscriptions: [
+        {
+          id: "sub-1",
+          tmdb_id: 1399,
+          media_type: "movie",
+          season_number: null,
+          episode_start: null,
+          episode_end: null,
+          mode: "auto",
+          status: "active",
+          quality_profile_id: null,
+          next_check_at: null,
+          last_checked_at: null,
+          last_match_count: 0,
+          last_error_code: null,
+          revision: 1,
+          created_at: "2026-08-01T00:00:00Z",
+          updated_at: "2026-08-01T00:00:00Z",
+        },
+      ],
+    });
+
+    const wrapper = mount(App);
+    await flushPromises();
+
+    const subscribeButton = wrapper.findAll("button").find((button) => button.classes().includes("subscribe-inline"));
+    expect(subscribeButton).toBeDefined();
+    expect(subscribeButton!.text()).toContain("已订阅");
+    wrapper.unmount();
+  });
+
+  it("creates a subscription when clicking subscribe on an unsubscribed movie", async () => {
+    window.history.replaceState({}, "", "/movie/1399");
+    mockMovieDetail1399({ subscriptions: [] });
+    const created = {
+      id: "sub-new",
+      tmdb_id: 1399,
+      media_type: "movie",
+      season_number: null,
+      episode_start: null,
+      episode_end: null,
+      mode: "auto",
+      status: "active",
+      quality_profile_id: null,
+      next_check_at: null,
+      last_checked_at: null,
+      last_match_count: 0,
+      last_error_code: null,
+      revision: 1,
+      created_at: "2026-08-01T00:00:00Z",
+      updated_at: "2026-08-01T00:00:00Z",
+    };
+    const createSubscription = vi.spyOn(ApiClient.prototype, "createSubscription")
+      // 创建后 loadDetailSubscription 会重新拉取订阅列表，返回已含新订阅
+      .mockImplementation(async () => {
+        vi.spyOn(ApiClient.prototype, "subscriptions").mockResolvedValue([created] as never);
+        return created as never;
+      });
+
+    const wrapper = mount(App);
+    await flushPromises();
+
+    const subscribeButton = wrapper.findAll("button").find((button) => button.classes().includes("subscribe-inline"));
+    expect(subscribeButton).toBeDefined();
+    expect(subscribeButton!.text()).toContain("订阅");
+    await subscribeButton!.trigger("click");
+    await flushPromises();
+
+    expect(createSubscription).toHaveBeenCalledWith({ tmdb_id: 1399, media_type: "movie", season_number: null });
+    const buttonAfter = wrapper.findAll("button").find((button) => button.classes().includes("subscribe-inline"));
+    expect(buttonAfter!.text()).toContain("已订阅");
+    wrapper.unmount();
+  });
+});
+
 describe("App login error copy", () => {
   afterEach(() => {
     vi.restoreAllMocks();
