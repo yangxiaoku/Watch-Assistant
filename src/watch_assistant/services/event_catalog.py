@@ -502,6 +502,12 @@ EVENT_CATALOG: dict[str, EventDefinition] = {
         "订阅检查失败，错误码：{error_code}",
         suggestion="请检查搜索服务状态，系统将在下一次检查时间自动重试",
     ),
+    "subscription.auto_paused": _event(
+        "subscription.auto_paused",
+        LogCategory.SUBSCRIPTION,
+        "订阅已自动暂停",
+        "{media_type}订阅整季资源已齐全，已自动暂停",
+    ),
     "subscription.scheduler_started": _event(
         "subscription.scheduler_started", LogCategory.SUBSCRIPTION, "订阅调度开始", "订阅调度已开始，本次到期检查 {total} 项"
     ),

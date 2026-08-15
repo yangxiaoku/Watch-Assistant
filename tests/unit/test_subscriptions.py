@@ -51,6 +51,60 @@ class FailingSearch(FakeSearch):
         raise RuntimeError("upstream unavailable")
 
 
+class NamedSearch(FakeSearch):
+    """Search 返回带 name 的资源,供整季完整性评估使用。"""
+
+    def __init__(self, names: list[str]) -> None:
+        super().__init__()
+        self.names = names
+        self.resource_ids = [f"res_{index}" for index in range(len(names))]
+
+    async def search(self, tmdb_id, *, media_type, refresh, season_number):
+        self.calls.append(
+            {
+                "tmdb_id": tmdb_id,
+                "media_type": media_type,
+                "refresh": refresh,
+                "season_number": season_number,
+            }
+        )
+        return SimpleNamespace(
+            results=[
+                SimpleNamespace(resource_id=resource_id, name=name)
+                for resource_id, name in zip(self.resource_ids, self.names, strict=True)
+            ],
+        )
+
+
+class FakedSeasonMetadata:
+    """模拟 SeasonMetadataService.get;可配置返回内容或抛异常。"""
+
+    def __init__(self, *, raise_error: bool = False) -> None:
+        self.raise_error = raise_error
+        self.calls: list[tuple[int, int]] = []
+
+    async def get(
+        self,
+        series_tmdb_id: int,
+        season_number: int,
+        *,
+        language: str = "zh-CN",
+        fallback_language: str = "en-US",
+        refresh: bool = False,
+    ) -> object:
+        self.calls.append((series_tmdb_id, season_number))
+        if self.raise_error:
+            from watch_assistant.services.season_metadata import SeasonMetadataError
+
+            raise SeasonMetadataError("season_metadata_unavailable")
+        return SimpleNamespace(
+            series_tmdb_id=series_tmdb_id,
+            season_number=season_number,
+            episode_count=10,
+            name=f"Season {season_number}",
+        )
+
+
 class EventRecorder:
     def __init__(self):
         self.events = []
@@ -356,4 +410,113 @@ async def test_subscription_check_creates_linked_workflow(tmp_path):
     assert discovery.status.value == "succeeded"
     assert discovery.child_type == "subscription"
     assert discovery.child_id == created.id
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_check_auto_pauses_when_season_complete_and_emits_event(tmp_path):
+    """用例 A:TV+season 订阅,搜索资源覆盖整季、库存为空 →
+    check 后状态 PAUSED,并发出 subscription.auto_paused 事件。"""
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'subs-pause.db'}")
+    await initialize_database(database.engine)
+    search = NamedSearch(["Show S01 1080p COMPLETE"])
+    events = EventRecorder()
+    service = SubscriptionService(
+        database.session_factory,
+        search,
+        season_metadata_service=FakedSeasonMetadata(),
+        event_logger=events,
+    )
+    created = await service.create(
+        SubscriptionCreateRequest(
+            tmdb_id=123, media_type=MediaType.TV, season_number=1
+        )
+    )
+    checked = await service.check(created.id)
+    assert checked.matched_count == 1
+    assert checked.subscription.status == SubscriptionStatus.PAUSED
+    assert any(
+        event == "subscription.auto_paused"
+        and fields["resource_id"] == created.id
+        and fields["resource_type"] == "subscription"
+        and fields["fields"].get("media_type") == "tv"
+        and fields["fields"].get("status") == "paused"
+        for event, fields in events.events
+    )
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_check_does_not_pause_when_search_not_complete(tmp_path):
+    """用例 B:同名资源但只覆盖单集(不齐)→ 状态 MATCHED,不暂停。"""
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'subs-nopause.db'}")
+    await initialize_database(database.engine)
+    search = NamedSearch(["Show S01E01"])
+    events = EventRecorder()
+    service = SubscriptionService(
+        database.session_factory,
+        search,
+        season_metadata_service=FakedSeasonMetadata(),
+        event_logger=events,
+    )
+    created = await service.create(
+        SubscriptionCreateRequest(
+            tmdb_id=123, media_type=MediaType.TV, season_number=1
+        )
+    )
+    checked = await service.check(created.id)
+    assert checked.subscription.status == SubscriptionStatus.MATCHED
+    assert not any(
+        event == "subscription.auto_paused" for event, _ in events.events
+    )
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_check_skips_auto_pause_when_season_metadata_unavailable(tmp_path):
+    """用例 C:season_metadata 抛异常 → 不评估、不暂停(原 MACHED 逻辑)。"""
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'subs-metadata.db'}")
+    await initialize_database(database.engine)
+    search = NamedSearch(["Show S01 1080p COMPLETE"])
+    events = EventRecorder()
+    service = SubscriptionService(
+        database.session_factory,
+        search,
+        season_metadata_service=FakedSeasonMetadata(raise_error=True),
+        event_logger=events,
+    )
+    created = await service.create(
+        SubscriptionCreateRequest(
+            tmdb_id=123, media_type=MediaType.TV, season_number=1
+        )
+    )
+    checked = await service.check(created.id)
+    assert checked.subscription.status == SubscriptionStatus.MATCHED
+    assert not any(
+        event == "subscription.auto_paused" for event, _ in events.events
+    )
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_check_never_auto_pauses_movie_subscription(tmp_path):
+    """用例 D:movie 订阅 → 不评估、不暂停(回归现有行为)。"""
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'subs-movie.db'}")
+    await initialize_database(database.engine)
+    search = NamedSearch(["Movie 2024 1080p"])
+    events = EventRecorder()
+    service = SubscriptionService(
+        database.session_factory,
+        search,
+        season_metadata_service=FakedSeasonMetadata(),
+        event_logger=events,
+    )
+    created = await service.create(
+        SubscriptionCreateRequest(tmdb_id=123, media_type=MediaType.MOVIE)
+    )
+    checked = await service.check(created.id)
+    assert checked.subscription.status == SubscriptionStatus.MATCHED
+    assert not any(
+        event == "subscription.auto_paused" for event, _ in events.events
+    )
     await database.engine.dispose()

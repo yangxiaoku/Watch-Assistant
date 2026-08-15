@@ -44,6 +44,19 @@ const notifications = [
     created_at: "2026-07-29T01:03:00Z",
     updated_at: "2026-07-29T01:03:00Z",
   },
+  {
+    id: "notification-4",
+    event_code: "subscription.auto_paused",
+    severity: "info" as const,
+    title_zh: "订阅已自动暂停",
+    message_zh: "tv订阅整季资源已齐全，已自动暂停",
+    action_type: "subscription",
+    action_id: "sub_auto_paused",
+    aggregate_count: 1,
+    read_at: null,
+    created_at: "2026-07-29T01:04:00Z",
+    updated_at: "2026-07-29T01:04:00Z",
+  },
 ];
 
 function makeApi() {
@@ -68,7 +81,7 @@ describe("NotificationCenterView", () => {
     expect(wrapper.find(".notification-count").text()).toBe("1");
 
     await wrapper.get(".segmented button:nth-child(3)").trigger("click");
-    expect(wrapper.findAll(".notification-item")).toHaveLength(3);
+    expect(wrapper.findAll(".notification-item")).toHaveLength(4);
 
     await wrapper.get(".notification-action .text-button").trigger("click");
     expect(wrapper.emitted("navigate")).toEqual([["workflows"]]);
@@ -114,6 +127,20 @@ describe("NotificationCenterView", () => {
     expect(api.markNotificationRead).toHaveBeenCalledWith("notification-3");
   });
 
+  it("shows label and navigates auto-paused subscription notifications to subscription management", async () => {
+    const api = makeApi();
+    const wrapper = mount(NotificationCenterView, { props: { api } });
+    await flushPromises();
+
+    await wrapper.get(".segmented button:nth-child(3)").trigger("click");
+    const subItem = wrapper.findAll(".notification-item")[3];
+    expect(subItem.text()).toContain("查看订阅");
+    await subItem.get(".notification-action .text-button").trigger("click");
+
+    expect(wrapper.emitted("navigate")).toContainEqual(["subscriptions"]);
+    expect(api.markNotificationRead).toHaveBeenCalledWith("notification-4");
+  });
+
   it("persists quiet-hour controls", async () => {
     const api = makeApi();
     const wrapper = mount(NotificationCenterView, { props: { api } });
@@ -147,6 +174,6 @@ describe("NotificationCenterView", () => {
 
     expect(wrapper.get(".settings-state-error").text()).toContain("通知中心暂时无法加载");
     expect(wrapper.text()).toContain("任务已完成");
-    expect(wrapper.findAll(".notification-item")).toHaveLength(3);
+    expect(wrapper.findAll(".notification-item")).toHaveLength(4);
   });
 });

@@ -1219,12 +1219,16 @@ def create_app(
                 event_logger=application.state.settings_service,
             )
             await application.state.workflow_service.recover_stale()
+            application.state.season_metadata_service = SeasonMetadataService(
+                runtime_database.session_factory, runtime_tmdb
+            )
             application.state.subscription_service = SubscriptionService(
                 runtime_database.session_factory,
                 application.state.search_service,
                 event_logger=application.state.settings_service,
                 workflow_service=application.state.workflow_service,
                 notify_dispatcher=application.state.notify_dispatcher,
+                season_metadata_service=application.state.season_metadata_service,
             )
             application.state.library_scan_scheduler = LibraryScanScheduler(
                 runtime_database.session_factory,
@@ -1255,9 +1259,6 @@ def create_app(
             )
             application.state.deployment_diagnostics_service = (
                 DeploymentDiagnosticsService(runtime_database.engine, application.state)
-            )
-            application.state.season_metadata_service = SeasonMetadataService(
-                runtime_database.session_factory, runtime_tmdb
             )
             application.state.task_service = TaskService(
                 runtime_database.session_factory,
@@ -1925,12 +1926,16 @@ def create_app(
             database.session_factory,
             event_logger=application.state.settings_service,
         )
+        application.state.season_metadata_service = SeasonMetadataService(
+            database.session_factory, tmdb_client
+        )
         application.state.subscription_service = SubscriptionService(
             database.session_factory,
             application.state.search_service,
             event_logger=application.state.settings_service,
             workflow_service=application.state.workflow_service,
             notify_dispatcher=application.state.notify_dispatcher,
+            season_metadata_service=application.state.season_metadata_service,
         )
         application.state.quality_profile_service = QualityProfileService(
             database.session_factory,
@@ -1951,9 +1956,6 @@ def create_app(
         )
         application.state.deployment_diagnostics_service = DeploymentDiagnosticsService(
             database.engine, application.state
-        )
-        application.state.season_metadata_service = SeasonMetadataService(
-            database.session_factory, tmdb_client
         )
         application.state.task_service = TaskService(
             database.session_factory,

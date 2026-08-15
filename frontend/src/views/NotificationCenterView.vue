@@ -47,6 +47,7 @@ function actionLabel(item: NotificationResponse): string {
   if (item.action_type === "workflow" || item.action_type === "task") return "查看任务";
   if (item.action_type === "settings") return "查看设置";
   if (item.action_type === "organization_plan") return "查看整理";
+  if (item.action_type === "subscription") return "查看订阅";
   return "查看详情";
 }
 
@@ -166,6 +167,7 @@ function openAction(item: NotificationResponse) {
   if (item.action_type === "workflow" || item.action_type === "task") emit("navigate", "workflows");
   else if (item.action_type === "settings") emit("navigate", "settings");
   else if (item.action_type === "organization_plan") emit("navigate", "organization-plans");
+  else if (item.action_type === "subscription") emit("navigate", "subscriptions");
 }
 
 onMounted(() => {

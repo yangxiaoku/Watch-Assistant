@@ -11,12 +11,18 @@ from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from watch_assistant.library_models import (
+    LibraryMediaIdentity,
+    LibraryScanEntry,
+    MediaLibrary,
+)
 from watch_assistant.models import (
     Resource,
     Subscription,
     SubscriptionResourceObservation,
 )
 from watch_assistant.schemas import (
+    MediaType,
     SubscriptionCheckResponse,
     SubscriptionCreateRequest,
     SubscriptionMutationRequest,
@@ -27,7 +33,15 @@ from watch_assistant.schemas import (
     WorkflowStageName,
     WorkflowStageStatus,
 )
+from watch_assistant.services.library_inventory import (
+    InventoryFile,
+    build_identity,
+)
+from watch_assistant.services.library_snapshot import verified_latest_scan
 from watch_assistant.services.observability import EventLogger, emit_event
+from watch_assistant.services.subscription_completeness import (
+    evaluate_subscription_completeness,
+)
 from watch_assistant.services.workflows import (
     WorkflowService,
     emit_workflow_stage_changed,
@@ -62,6 +76,7 @@ class SubscriptionService:
         event_logger: EventLogger | None = None,
         workflow_service: WorkflowService | None = None,
         notify_dispatcher=None,
+        season_metadata_service=None,
     ) -> None:
         self._session_factory = session_factory
         self._search = search_service
@@ -69,6 +84,8 @@ class SubscriptionService:
         self._workflow_service = workflow_service
         # 通知分发器可选注入:未注入则静默跳过(不通知)。
         self._notify_dispatcher = notify_dispatcher
+        # 季集资料服务可选注入:未注入/缺失时跳过自动暂停(fail-safe)。
+        self._season_metadata_service = season_metadata_service
         # 并发创建同一订阅时,先查后插的窗口需要进程内互斥:SQLite 的
         # 部分唯一索引(迁移 070)是跨进程兜底,但同一事件循环里两个任务
         # 同时通过 _find_scope 再各自 commit 时,写串行化下的交错可能
@@ -264,6 +281,13 @@ class SubscriptionService:
             if item.status in _TERMINAL_SUBSCRIPTION_STATES:
                 # 搜索期间被取消/暂停/完成:不允许旧任务把订阅改回 MATCHED 复活
                 raise SubscriptionConflict("subscription_not_active") from None
+            # 自动暂停评估:仅对已识别为 TV + 明确季号的订阅,且季集资料服务
+            # 已注入时进行;其余情况完全跳过,保持原逻辑。season_detail/
+            # search_result 不可用或库存快照缺失时 evaluate 返回 False
+            # (fail-safe,不因缺数据误杀)。
+            auto_paused = await self._should_auto_pause(
+                tmdb_id, media_type, season_number, result
+            )
             # 用条件 UPDATE 覆盖写回:在“重读终态 → commit”的窗口内若被
             # pause/resume/cancel 并发修改,本事务的过期快照不得覆盖用户意图。
             # WHERE 同时要求 status 仍活跃且 revision 未变(乐观锁);rowcount
@@ -271,10 +295,15 @@ class SubscriptionService:
             # subscription_not_active 保持终态。
             now = datetime.now(UTC)
             status = (
-                SubscriptionStatus.MATCHED
-                if resource_ids
-                else SubscriptionStatus.NO_MATCH
+                SubscriptionStatus.PAUSED
+                if auto_paused
+                else (
+                    SubscriptionStatus.MATCHED
+                    if resource_ids
+                    else SubscriptionStatus.NO_MATCH
+                )
             )
+            auto_pause_revision = item.revision + 1
             result = await session.execute(
                 update(Subscription)
                 .where(
@@ -290,7 +319,7 @@ class SubscriptionService:
                     last_error_code=None,
                     status=status,
                     next_check_at=now + timedelta(hours=6),
-                    revision=item.revision + 1,
+                    revision=auto_pause_revision,
                     updated_at=now,
                 )
             )
@@ -325,6 +354,20 @@ class SubscriptionService:
             resource_type="subscription",
             resource_id=subscription_id,
         )
+        # 自动暂停审计事件与「可行动通知」来源:资源整季齐全后订阅被置为
+        # PAUSED,resource_type 为 subscription,通知中心据此跳转订阅管理。
+        if auto_paused:
+            await emit_event(
+                self._event_logger,
+                "subscription.auto_paused",
+                fields={
+                    "status": "paused",
+                    "media_type": response.media_type.value,
+                    "season_number": season_number,
+                },
+                resource_type="subscription",
+                resource_id=subscription_id,
+            )
         # 找到新资源时,若注入通知分发器则推送「追更命中」(fail-open)。
         if new_resource_ids and self._notify_dispatcher is not None:
             try:
@@ -434,6 +477,119 @@ class SubscriptionService:
                     row.seen_count += 1
             await session.commit()
         return new_resource_ids
+
+    async def _should_auto_pause(
+        self,
+        tmdb_id: int,
+        media_type: MediaType,
+        season_number: int | None,
+        search_result,
+    ) -> bool:
+        """决定本次 check 是否应将订阅自动暂停(fail-safe)。
+
+        仅当带明确季号的 TV 订阅且季集资料服务已注入时评估;其余情况一律
+        返回 False(保持原逻辑)。季集资料获取失败视为不可用,也不自动暂停。
+        """
+        if (
+            media_type != MediaType.TV
+            or season_number is None
+            or self._season_metadata_service is None
+        ):
+            return False
+        try:
+            season_detail = await self._season_metadata_service.get(
+                tmdb_id, int(season_number)
+            )
+        except Exception:  # noqa: BLE001 - 季集资料不可用不做自动暂停,不阻塞 check
+            return False
+        if season_detail is None:
+            return False
+        inventory_files = await self._inventory_identities_for_season(
+            tmdb_id, int(season_number)
+        )
+        return await evaluate_subscription_completeness(
+            session_factory=self._session_factory,
+            search_result=search_result,
+            season_detail=season_detail,
+            inventory_files=inventory_files,
+        )
+
+    async def _inventory_identities_for_season(
+        self, tmdb_id: int, season_number: int
+    ) -> list:
+        """装载指定季下、有当前已验证快照支撑的本地库库存身份。
+
+        遍历所有 MediaLibrary;对每个 enabled 且 scope_verified 的库取当前
+        完整树快照(verified_latest_scan),快照不可用(不存在/不完整/过期)
+        即跳过该库。随后读取该库中匹配 tmdb_id+season 的 LibraryMediaIdentity,
+        并用同一快照的 LibraryScanEntry 补齐名字——entry 缺失的身份跳过
+        (保守:身份须有当前快照支撑)。全部库聚合返回;无任何有效快照时
+        返回空列表,只依赖搜索资源判断,不阻塞检查。
+        """
+        identities: list = []
+        async with self._session_factory() as session:
+            libraries = list(
+                (
+                    await session.scalars(
+                        select(MediaLibrary).where(
+                            MediaLibrary.enabled.is_(True),
+                            MediaLibrary.scope_verified.is_(True),
+                        )
+                    )
+                ).all()
+            )
+            for library in libraries:
+                run = await verified_latest_scan(session, library)
+                if run is None:
+                    # 快照不可用:该库今天不做完整性支撑,但不阻塞其他库/搜索。
+                    continue
+                rows = list(
+                    (
+                        await session.scalars(
+                            select(LibraryMediaIdentity).where(
+                                LibraryMediaIdentity.library_id == library.id,
+                                LibraryMediaIdentity.tmdb_id == tmdb_id,
+                                LibraryMediaIdentity.season == season_number,
+                            )
+                        )
+                    ).all()
+                )
+                if not rows:
+                    continue
+                object_ids = [row.object_id for row in rows]
+                entries = {
+                    entry.object_id: entry
+                    for entry in (
+                        await session.scalars(
+                            select(LibraryScanEntry).where(
+                                LibraryScanEntry.scan_run_id == run.id,
+                                LibraryScanEntry.object_id.in_(object_ids),
+                            )
+                        )
+                    ).all()
+                }
+                for row in rows:
+                    entry = entries.get(row.object_id)
+                    if entry is None:
+                        # 身份在本次快照中缺失:保守跳过。
+                        continue
+                    try:
+                        identities.append(
+                            build_identity(
+                                InventoryFile(
+                                    object_id=row.object_id,
+                                    name=entry.name,
+                                    tmdb_id=row.tmdb_id,
+                                    media_type=row.media_type,
+                                    season=row.season,
+                                    episode_start=row.episode_start,
+                                    episode_end=row.episode_end,
+                                )
+                            )
+                        )
+                    except Exception:  # noqa: BLE001, S112 - 坏身份不阻塞整个评估
+                        continue
+        return identities
 
     async def _find_scope(
         self, session: AsyncSession, request: SubscriptionCreateRequest

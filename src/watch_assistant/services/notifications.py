@@ -43,6 +43,7 @@ _NOTIFIABLE_EVENTS = frozenset(
         "p115.checkin.succeeded",
         "p115.checkin.failed",
         "subscription.resources_observed",
+        "subscription.auto_paused",
         "organize.automation.blocked",
         "subscription.check_failed",
         "organize.needs_review",
