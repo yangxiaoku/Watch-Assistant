@@ -70,6 +70,13 @@ export default defineConfig({
       dependencies: ["setup"],
       use: { storageState: STORAGE_STATE, viewport: { width: 1440, height: 900 } },
     },
+    // 第五轮:渠道管理/分页/通知筛选/工作流/导航/高级筛选(桌面端)
+    {
+      name: "module-flows4",
+      testMatch: /module-flows4\.spec\.ts/,
+      dependencies: ["setup"],
+      use: { storageState: STORAGE_STATE, viewport: { width: 1440, height: 900 } },
+    },
     // 已登录的移动端冒烟
     {
       name: "mobile",
