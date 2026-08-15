@@ -239,6 +239,20 @@ describe("MovieView seasons", () => {
     expect(allSeasons.get(".resource-heading-copy h2").text()).toContain("全部季度资源");
   });
 
+  it("shows season empty hint when a season is selected and total is 0", () => {
+    const wrapper = mount(MovieView, {
+      props: {
+        result: response("tv"),
+        seasonNumber: 1,
+        resourceTotal: 0,
+        resourceLoading: false,
+        pushingId: null,
+        favorite: false,
+      },
+    });
+    expect(wrapper.text()).toContain("当前季度暂无独立资源");
+  });
+
   it("shows independent season overview instead of the series overview", () => {
     const result = response("tv");
     result.movie.overview = "剧集总简介，不应冒充季度简介";
