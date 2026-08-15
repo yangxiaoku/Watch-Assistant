@@ -449,10 +449,21 @@ class SearchService:
             if snapshot_revision is not None:
                 existing.snapshot_revision = snapshot_revision
                 existing.cache_age_seconds = cache_age_seconds
-            if self._attach_workflow(existing, workflow_id):
-                await self._save_resource_search_task(existing)
-            async with self._resource_search_lock(existing.task_id):
-                return existing.response()
+                if self._attach_workflow(existing, workflow_id):
+                    await self._save_resource_search_task(existing)
+                async with self._resource_search_lock(existing.task_id):
+                    return existing.response()
+            # SearchCache 已过期/缺失:不能把旧的 ready 任务当成可用快照返回,
+            # 否则前端拿到 ready 后请求 resources 仍会 404。重新排队触发搜索。
+            existing.status = "queued"
+            existing.snapshot_revision = None
+            existing.cache_age_seconds = None
+            existing.error_code = None
+            existing.updated_at = datetime.now(UTC)
+            self._attach_workflow(existing, workflow_id)
+            await self._save_resource_search_task(existing)
+            asyncio.create_task(self._run_resource_search(existing), name=existing.task_id)
+            return existing.response()
 
         now = datetime.now(UTC)
         snapshot_revision = None
@@ -508,7 +519,32 @@ class SearchService:
         )
             if task.status in {"queued", "running"}:
                 asyncio.create_task(self._run_resource_search(task), name=task.task_id)
-        if task.status in {"ready", "failed"}:
+        if task.status == "ready":
+            # A worker updates the in-memory object before its final SQLite
+            # commit. Serialize terminal reads with that commit so callers
+            # never receive a receipt that the durable ledger cannot yet
+            # reproduce after a restart.
+            snapshot_revision, cache_age_seconds = await self._snapshot_metadata(
+                task.tmdb_id, task.media_type, task.season_number
+            )
+            if snapshot_revision is None:
+                # 持久化的 ready 任务可能因缓存过期/清理而失效:不能继续返回
+                # ready,否则客户端会拿着旧 revision 请求 resources 并得到 404。
+                task.status = "queued"
+                task.snapshot_revision = None
+                task.cache_age_seconds = None
+                task.error_code = None
+                task.updated_at = datetime.now(UTC)
+                await self._save_resource_search_task(task)
+                asyncio.create_task(
+                    self._run_resource_search(task), name=task.task_id
+                )
+                return task.response()
+            task.snapshot_revision = snapshot_revision
+            task.cache_age_seconds = cache_age_seconds
+            async with self._resource_search_lock(task.task_id):
+                return task.response()
+        if task.status == "failed":
             # A worker updates the in-memory object before its final SQLite
             # commit. Serialize terminal reads with that commit so callers
             # never receive a receipt that the durable ledger cannot yet

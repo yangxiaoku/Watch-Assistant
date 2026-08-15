@@ -4,7 +4,12 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from watch_assistant.models import Resource, SearchCache, SourceReliability
+from watch_assistant.models import (
+    Resource,
+    ResourceSearchJob,
+    SearchCache,
+    SourceReliability,
+)
 from watch_assistant.schemas import (
     MediaType,
     MovieMetadata,
@@ -662,6 +667,67 @@ async def test_negative_cache_snapshot_does_not_block_re_search():
         revision, age = await service._snapshot_metadata(123, MediaType.MOVIE, None)
         assert revision is None
         assert age is None
+    finally:
+        await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_stale_ready_task_without_cache_is_requeued():
+    """Regression: ready 任务在 SearchCache 过期/缺失后不能继续返回 ready。
+
+    之前 start_resource_search 会把旧的 ready 任务直接返回，前端随后请求
+    resources 得到 404；现在必须重新排队触发搜索。
+    """
+    now = datetime.now(UTC)
+    from watch_assistant.db import create_database, initialize_database
+
+    database = create_database("sqlite+aiosqlite:///:memory:")
+    await initialize_database(database.engine)
+    try:
+        async with database.session_factory() as session:
+            session.add(
+                ResourceSearchJob(
+                    task_id="resource_search_stale",
+                    workflow_id=None,
+                    tmdb_id=123,
+                    media_type=MediaType.MOVIE,
+                    season_number=None,
+                    refresh=False,
+                    status="ready",
+                    snapshot_revision="2026-08-09T00:00:00+00:00",
+                    query_plan_version="v5",
+                    cache_age_seconds=0,
+                    sources_json="[]",
+                    selected_season=None,
+                    warnings_json="[]",
+                    error_code=None,
+                    created_at=now - timedelta(days=6),
+                    updated_at=now - timedelta(days=6),
+                )
+            )
+            await session.commit()
+
+        from watch_assistant.services.search import SearchService
+
+        service = SearchService(
+            database.session_factory,
+            tmdb_client=AsyncMock(),
+            pansou_client=AsyncMock(),
+            crypto=AsyncMock(),
+        )
+        service._run_resource_search = AsyncMock()
+        response = await service.start_resource_search(
+            123, media_type=MediaType.MOVIE, season_number=None, refresh=False
+        )
+        assert response.status == "queued"
+        assert response.snapshot_revision is None
+        await asyncio.sleep(0)
+        service._run_resource_search.assert_awaited_once()
+        async with database.session_factory() as session:
+            row = await session.get(ResourceSearchJob, "resource_search_stale")
+            assert row is not None
+            assert row.status == "queued"
+            assert row.snapshot_revision is None
     finally:
         await database.engine.dispose()
 
