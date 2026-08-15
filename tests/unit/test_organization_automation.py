@@ -1023,6 +1023,48 @@ async def test_automation_auto_cleans_unrecognized_small_files_and_empty_dirs(
 
 
 @pytest.mark.asyncio
+async def test_log_cleaned_conditions_events_on_dims(tmp_path: Path):
+    # _log_cleaned:仅清理垃圾(files=0,dirs=0,junk=1)时只发
+    # library.auto_cleanup.applied,不发零计数的 organize.automation.cleaned;
+    # 三维度都有(1/2/3)时两个事件都在,counts 与 fields 分别保真。
+    database = create_database(
+        f"sqlite+aiosqlite:///{tmp_path / 'automation-clean-log.db'}"
+    )
+    await initialize_database(database.engine)
+    events = _Events()
+    service = OrganizationAutomationService(
+        database.session_factory,
+        _CleanupSettings(),
+        object(),
+        OrganizationPlanService(database.session_factory),
+        lambda _authorized: object(),
+        event_logger=events,
+    )
+
+    await service._log_cleaned(0, 0, junk_files=1)
+    assert events.events == [
+        (
+            "library.auto_cleanup.applied",
+            {"small_files": 0, "empty_dirs": 0, "junk_files": 1},
+        )
+    ]
+
+    events.events.clear()
+    await service._log_cleaned(1, 2, junk_files=3)
+    assert events.events == [
+        (
+            "organize.automation.cleaned",
+            {"small_files": 1, "empty_dirs": 2},
+        ),
+        (
+            "library.auto_cleanup.applied",
+            {"small_files": 1, "empty_dirs": 2, "junk_files": 3},
+        ),
+    ]
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_automation_auto_cleans_junk_files_to_recycle_bin(tmp_path: Path):
     # 开启 auto_cleanup_junk_files 后,广告垃圾文件被识别并走 fs_delete
     # 回收站(与空目录/小文件同一 transport),既不影响小文件/空目录清理,

@@ -1204,26 +1204,30 @@ class OrganizationAutomationService:
     ) -> None:
         """记录自动清理审计事件。
 
-        小文件/空目录沿用 ``organize.automation.cleaned``(counts 原样);
-        广告垃圾文件单独用 ``library.auto_cleanup.applied``,三个值都走
-        ``fields``——通知 sink 只转发 fields(见 settings.log_event),counts
-        不进 handle_event,故垃圾清理结果需在 fields 里才能生成站内通知。
+        小文件/空目录沿用 ``organize.automation.cleaned``(counts 原样),
+        仅当确有这两个维度被清理时才发,避免仅清理垃圾时发出零计数旧事件;
+        广告垃圾文件单独用 ``library.auto_cleanup.applied``,任一清理发生
+        即发,三个值都走 ``fields``——通知 sink 只转发 fields(见
+        settings.log_event),counts 不进 handle_event,故垃圾清理结果需在
+        fields 里才能生成站内通知。
         """
         logger = self._event_logger
         method = getattr(logger, "log_event", None)
-        if callable(method):
+        if not callable(method):
+            return
+        if cleaned_files or cleaned_dirs:
             await method(
                 "organize.automation.cleaned",
                 counts={"small_files": cleaned_files, "empty_dirs": cleaned_dirs},
             )
-            await method(
-                "library.auto_cleanup.applied",
-                fields={
-                    "small_files": cleaned_files,
-                    "empty_dirs": cleaned_dirs,
-                    "junk_files": junk_files,
-                },
-            )
+        await method(
+            "library.auto_cleanup.applied",
+            fields={
+                "small_files": cleaned_files,
+                "empty_dirs": cleaned_dirs,
+                "junk_files": junk_files,
+            },
+        )
 
     async def _log_preview(
         self, status: str, count: int, *, auto_queued: bool = False
