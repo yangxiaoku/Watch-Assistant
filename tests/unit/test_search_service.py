@@ -672,6 +672,47 @@ async def test_negative_cache_snapshot_does_not_block_re_search():
 
 
 @pytest.mark.asyncio
+async def test_partial_cache_snapshot_stabilizes_search_task():
+    """A partial cache still carries resources, so it must yield a non-None
+    snapshot revision and let the search task reach ready instead of polling
+    forever (regression: partial was treated like negative and rejected).
+    """
+    now = datetime.now(UTC)
+    from watch_assistant.db import create_database, initialize_database
+    from watch_assistant.models import SearchCache
+
+    database = create_database("sqlite+aiosqlite:///:memory:")
+    await initialize_database(database.engine)
+    try:
+        async with database.session_factory() as session:
+            session.add(
+                SearchCache(
+                    cache_key="tmdb:movie:123:queries:v5",
+                    resource_ids_json="{}",
+                    warnings_json='["partial_upstream"]',
+                    cache_kind="partial",
+                    fetched_at=now - timedelta(minutes=5),
+                    expires_at=now + timedelta(minutes=5),
+                )
+            )
+            await session.commit()
+
+        from watch_assistant.services.search import SearchService
+
+        service = SearchService(
+            database.session_factory,
+            tmdb_client=AsyncMock(),
+            pansou_client=AsyncMock(),
+            crypto=AsyncMock(),
+        )
+        revision, age = await service._snapshot_metadata(123, MediaType.MOVIE, None)
+        assert revision is not None
+        assert age == 300
+    finally:
+        await database.engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_stale_ready_task_without_cache_is_requeued():
     """Regression: ready 任务在 SearchCache 过期/缺失后不能继续返回 ready。
 
