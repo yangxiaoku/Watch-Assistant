@@ -717,11 +717,17 @@ class SearchService:
         age = max(0, int((datetime.now(UTC) - _as_utc(cache.fetched_at)).total_seconds()))
         if not self._cache_is_fresh(cache, timedelta(seconds=age)):
             return None, None
-        # A negative snapshot carries no resource list and must never
-        # short-circuit a fresh search. A partial snapshot does carry results
-        # (some sources failed), so it must stabilize the search task and let
-        # the frontend show partial results instead of polling forever.
-        if getattr(cache, "cache_kind", "positive") == "negative":
+        # Whether this snapshot can stabilize a search task is decided purely by
+        # whether it actually carries resources, not by its cache_kind. A partial
+        # snapshot may be empty (some sources failed and zero resources matched),
+        # in which case it must NOT short-circuit the search -- it would otherwise
+        # masquerade a still-incomplete search as "confirmed empty". Concretely:
+        #   * negative `(no resource list)` -> requeue / keep re-searching
+        #   * partial + no resources       -> requeue / keep re-searching
+        #   * partial + resources          -> stabilize ready, show partial results
+        #   * positive                     -> always carries resources, stabilize
+        resource_ids, _ = _decode_resource_snapshot(cache.resource_ids_json)
+        if not resource_ids:
             return None, None
         return _as_utc(cache.fetched_at).isoformat(), age
 
