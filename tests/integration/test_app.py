@@ -47,6 +47,37 @@ async def test_movie_deep_link_serves_spa_without_masking_missing_assets(
 
 
 @pytest.mark.integration
+async def test_unknown_frontend_path_falls_back_to_spa_while_api_and_assets_stay_404(
+    tmp_path: Path,
+):
+    frontend_dir = tmp_path / "dist"
+    frontend_dir.mkdir()
+    (frontend_dir / "index.html").write_text(
+        "<h1>Watch Assistant</h1>", encoding="utf-8"
+    )
+    app = create_app(frontend_dir=frontend_dir, security_manager=make_security_manager())
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://app.test"
+    ) as client:
+        unknown_frontend = await client.get("/nonexistent-page-xyz")
+        nested_frontend = await client.get("/some/deep/client/route")
+        missing_asset = await client.get("/assets/missing.js")
+        api_unknown = await client.get("/api/v1/definitely-not-an-endpoint")
+
+    # 未知前端路径回退 SPA 首页(客户端路由接管),不得返回 JSON 404
+    assert unknown_frontend.status_code == 200
+    assert "Watch Assistant" in unknown_frontend.text
+    assert nested_frontend.status_code == 200
+    assert "Watch Assistant" in nested_frontend.text
+    # 缺失静态资源仍必须 404,不得被 SPA 回退掩盖
+    assert missing_asset.status_code == 404
+    # 未知 API 路径保持 JSON 404 语义
+    assert api_unknown.status_code == 404
+    assert api_unknown.headers["content-type"].startswith("application/json")
+
+
+@pytest.mark.integration
 async def test_app_startup_upgrades_legacy_prowlarr_settings_schema(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

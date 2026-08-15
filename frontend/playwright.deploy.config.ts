@@ -63,6 +63,13 @@ export default defineConfig({
       dependencies: ["setup"],
       use: { storageState: STORAGE_STATE, viewport: { width: 1440, height: 900 } },
     },
+    // 第四轮:路由/空态/筛选持久化/配置分区只读/直达页(桌面端)
+    {
+      name: "module-flows3",
+      testMatch: /module-flows3\.spec\.ts/,
+      dependencies: ["setup"],
+      use: { storageState: STORAGE_STATE, viewport: { width: 1440, height: 900 } },
+    },
     // 已登录的移动端冒烟
     {
       name: "mobile",

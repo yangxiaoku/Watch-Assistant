@@ -2285,6 +2285,26 @@ def create_app(
         async def frontend_browse_route() -> FileResponse:
             return FileResponse(index_path)
 
+        # SPA 回退:未知前端路径交给客户端路由(index.html),但未知 API 路径
+        # 保持 JSON 404,缺失的静态资源(assets/*.js 等)也不得被回退掩盖。
+        @application.get("/{frontend_path:path}", include_in_schema=False)
+        async def frontend_catch_all(frontend_path: str) -> FileResponse:
+            if frontend_path.startswith("api/"):
+                raise HTTPException(status_code=404, detail="not_found")
+            candidate = (static_path / frontend_path).resolve()
+            if (
+                not frontend_path
+                or (static_path.resolve() not in candidate.parents and candidate != static_path.resolve())
+            ):
+                # 路径穿越防护:候选必须落在静态目录内
+                raise HTTPException(status_code=404, detail="not_found")
+            if candidate.is_file():
+                return FileResponse(candidate)
+            if Path(frontend_path).suffix:
+                # 带扩展名的资源缺失:保持 404,不返回 HTML 掩盖
+                raise HTTPException(status_code=404, detail="not_found")
+            return FileResponse(index_path)
+
         application.mount(
             "/", StaticFiles(directory=static_path, html=True), name="frontend"
         )
