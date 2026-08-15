@@ -56,6 +56,13 @@ export default defineConfig({
       dependencies: ["setup"],
       use: { storageState: STORAGE_STATE, viewport: { width: 1440, height: 900 } },
     },
+    // 第三轮:深链接/导航/设置分区/整理工作台(桌面端)
+    {
+      name: "module-flows2",
+      testMatch: /module-flows2\.spec\.ts/,
+      dependencies: ["setup"],
+      use: { storageState: STORAGE_STATE, viewport: { width: 1440, height: 900 } },
+    },
     // 已登录的移动端冒烟
     {
       name: "mobile",
