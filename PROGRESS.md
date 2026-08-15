@@ -207,8 +207,14 @@ Systemd Release Package 均显示完成且成功。CI 成功仅证明当前 ref 
   广告/宣传垃圾文件移入 115 回收站（复用逐候选复核删除，不永久删除），写 `library.auto_cleanup.applied`
   审计事件（小文件/空目录/垃圾文件三计数）并生成站内通知汇总；与现有小文件/空目录清理共用同一安全门禁。
 - 验证：`scripts/verify.sh` 通过（unit 1369 / integration / contracts / ruff / 前端 299 / build），
-  证据 `evidence/aeff8f4-20260815-161958`。尚未真机 E2E、未构建发布包、未部署
-  （`192.168.6.236` 生产未变更），未合入 `codex/publish-main`。
+  证据 `evidence/aeff8f4-20260815-161958`；最终 HEAD 复跑通过（`evidence/637b3e6-20260815-165523`）。
+  已于 2026-08-16 合入 `codex/publish-main`（HEAD `637b3e6`，已推送 `origin`）并完成生产部署：
+  发布包 `watch-assistant-637b3e6-20260815-1723.tar.gz`，部署前备份
+  `backup_1d1dd5aa48fb45fbb185b64a1d40484f`，`POSTDEPLOY_RELEASE_CHECK=ok`，
+  生产健康检查 release=`637b3e62d6cb9165075489080fefaa31fbd3a604`；
+  真机 E2E（Playwright 直连 `192.168.6.236:8115`）18/18 通过（登录门/桌面核心流程/移动端冒烟）。
+  另含外部修复：`f3f6247`（partial 缓存稳定 ready）经复核发现空 partial 伪装 ready 的
+  Critical，已修复为按快照资源非空判定（`637b3e6` 内含），一并部署上线。
 
 ## 开发中
 

@@ -336,12 +336,12 @@ git commit -m "feat(cleanup): 自动清理广告垃圾文件与空目录到回�
 Run: `bash scripts/verify.sh`
 Expected: PASS
 
-- [ ] **Step 2: 真机 E2E**
+- [x] **Step 2: 真机 E2E**
 
 Run: `WA_E2E_USER=admin WA_E2E_PASSWORD=admin npx playwright test -c playwright.deploy.config.ts`
 Expected: PASS
 
-- [ ] **Step 3: 构建发布并部署**
+- [x] **Step 3: 构建发布并部署**
 
 ```bash
 bash scripts/build_release.sh "$(git rev-parse HEAD)"
