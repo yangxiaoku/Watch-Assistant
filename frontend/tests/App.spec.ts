@@ -513,6 +513,75 @@ describe("App subscription wiring", () => {
     wrapper.unmount();
   });
 
+  it("treats a cancelled subscription as unsubscribed on the detail page", async () => {
+    window.history.replaceState({}, "", "/movie/1399");
+    mockMovieDetail1399({
+      subscriptions: [
+        {
+          id: "sub-cancelled",
+          tmdb_id: 1399,
+          media_type: "movie",
+          season_number: null,
+          episode_start: null,
+          episode_end: null,
+          mode: "remind",
+          status: "cancelled",
+          quality_profile_id: null,
+          next_check_at: null,
+          last_checked_at: null,
+          last_match_count: 0,
+          last_error_code: null,
+          revision: 1,
+          created_at: "2026-08-01T00:00:00Z",
+          updated_at: "2026-08-01T00:00:00Z",
+        },
+      ],
+    });
+
+    const wrapper = mount(App);
+    await flushPromises();
+
+    const subscribeButton = wrapper.findAll("button").find((button) => button.classes().includes("subscribe-inline"));
+    expect(subscribeButton).toBeDefined();
+    expect(subscribeButton!.text()).toContain("订阅");
+    expect(subscribeButton!.text()).not.toContain("已订阅");
+    wrapper.unmount();
+  });
+
+  it("shows the paused label when the detail subscription is paused", async () => {
+    window.history.replaceState({}, "", "/movie/1399");
+    mockMovieDetail1399({
+      subscriptions: [
+        {
+          id: "sub-paused",
+          tmdb_id: 1399,
+          media_type: "movie",
+          season_number: null,
+          episode_start: null,
+          episode_end: null,
+          mode: "remind",
+          status: "paused",
+          quality_profile_id: null,
+          next_check_at: null,
+          last_checked_at: null,
+          last_match_count: 0,
+          last_error_code: null,
+          revision: 1,
+          created_at: "2026-08-01T00:00:00Z",
+          updated_at: "2026-08-01T00:00:00Z",
+        },
+      ],
+    });
+
+    const wrapper = mount(App);
+    await flushPromises();
+
+    const subscribeButton = wrapper.findAll("button").find((button) => button.classes().includes("subscribe-inline"));
+    expect(subscribeButton).toBeDefined();
+    expect(subscribeButton!.text()).toContain("已暂停");
+    wrapper.unmount();
+  });
+
   it("creates a subscription when clicking subscribe on an unsubscribed movie", async () => {
     window.history.replaceState({}, "", "/movie/1399");
     mockMovieDetail1399({ subscriptions: [] });

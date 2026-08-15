@@ -1150,10 +1150,14 @@ async function loadDetailSubscription(): Promise<void> {
       || (detailMediaType.value === "tv" ? selectedSeason.value : null) !== seasonNumber) {
       return;
     }
+    // 已取消/已完成的订阅不再视为「已订阅」:详情页应允许重新订阅
+    // (后端 create 对 CANCELLED 状态允许重建)。
     const match = subscriptions.find(
       (sub) => sub.tmdb_id === tmdbId
         && sub.media_type === mediaType
-        && sub.season_number === (seasonNumber ?? null),
+        && sub.season_number === (seasonNumber ?? null)
+        && sub.status !== "cancelled"
+        && sub.status !== "completed",
     );
     detailSubscription.value = match ?? null;
   } catch (exception) {

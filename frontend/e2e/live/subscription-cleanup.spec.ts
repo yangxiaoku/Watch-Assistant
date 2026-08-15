@@ -10,8 +10,11 @@ test.describe("订阅/季度搜索/自动清理 上线功能(部署实例 192.16
   test("详情页订阅按钮:创建→已订阅→跳转订阅管理→取消清理", async ({ page }) => {
     // 预读当前订阅列表,挑一部未订阅的电影
     const existing = await page.request.get("/api/v1/subscriptions");
-    const subs = (await existing.json()) as Array<{ tmdb_id: number; media_type: string; season_number: number | null }>;
-    const subscribedKeys = new Set(subs.map((s) => `${s.media_type}:${s.tmdb_id}:${s.season_number ?? ""}`));
+    const subs = (await existing.json()) as Array<{ tmdb_id: number; media_type: string; season_number: number | null; status: string }>;
+    // 只把「非取消/非完成」的订阅视为已订阅(已取消的仍可重新订阅)
+    const subscribedKeys = new Set(
+      subs.filter((s) => s.status !== "cancelled" && s.status !== "completed").map((s) => `${s.media_type}:${s.tmdb_id}:${s.season_number ?? ""}`),
+    );
 
     await page.goto("/movies");
     await expect(page.getByRole("heading", { name: "电影库" })).toBeVisible({ timeout: 45_000 });
@@ -21,7 +24,7 @@ test.describe("订阅/季度搜索/自动清理 上线功能(部署实例 192.16
     await expect(cards.first()).toBeVisible({ timeout: 45_000 });
     // 等目录加载遮罩消失,避免点击落到遮罩上
     await expect(page.locator(".catalog-loading")).toHaveCount(0, { timeout: 60_000 });
-    for (let i = 0; i < Math.min(await cards.count(), 5); i++) {
+    for (let i = 0; i < Math.min(await cards.count(), 8); i++) {
       await cards.nth(i).click();
       await page.waitForURL(/\/movie\/\d+/, { timeout: 60_000 });
       detailUrl = page.url();
