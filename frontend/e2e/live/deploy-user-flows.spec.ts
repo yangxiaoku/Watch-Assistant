@@ -96,7 +96,7 @@ test.describe("真实用户核心流程(部署实例 192.168.6.236)", () => {
 
   test("媒体库工作台:可浏览", async ({ page }) => {
     await page.goto("/library");
-    await expect(page.getByRole("heading", { name: "媒体库与 STRM" })).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByRole("heading", { name: "媒体库", exact: true }).first()).toBeVisible({ timeout: 30_000 });
     // 库列表/空状态/配置表单/错误条四态其一
     const any = page.locator(".library-scope-row, .library-muted, .library-config-form, .error-strip").first();
     await expect(any).toBeVisible({ timeout: 30_000 });

@@ -876,6 +876,12 @@ async function loadResourcePage(route: ResourceRouteState, historyMode: "push" |
     page: Math.max(1, Math.min(500, Math.trunc(route.page) || 1)),
     query: route.query.trim(),
   };
+  // 资源搜索尚未完成且还没有可用的分页快照时，不直接请求资源分页；
+  // 先记录目标路由，等待 loadResources 完成搜索后再按最新路由加载。
+  if (resourceSearchLoading.value && !resourceResponse.value) {
+    pendingResourceRoute = safeRoute;
+    return;
+  }
   const isCurrent = () => requestId === resourceRequestId && searchId === searchRequestId && !controller.signal.aborted && !!result.value;
   // 读取键与写入键(:932)保持一致:均以"请求路由 + 快照版本"定位。当前无快照时缓存必然已被
   // 清空(见 beginResourceSnapshot/clearResourcePagination),直接跳过查询,避免生成写入键
@@ -1075,9 +1081,12 @@ async function loadResources(
     const timing = detailTimings.get(requestId);
     if (timing) timing.seasonNumber = selectedSeason.value;
     void loadSeasonDetail(id, selectedSeason.value, refresh, requestId);
-    applyResourceRoute(initialResourceRoute);
+    const targetRoute = pendingResourceRoute ?? initialResourceRoute;
+    applyResourceRoute(targetRoute);
     beginResourceSnapshot([], 0, preserveResourceSnapshot);
-    void loadResourcePage(initialResourceRoute, "none");
+    // 搜索已完成，关闭“搜索中”状态；资源分页自身的 loading 由 loadResourcePage 管理。
+    resourceSearchLoading.value = false;
+    void loadResourcePage(targetRoute, "none");
   } catch (exception) {
     if (controller.signal.aborted || resourceSearchAbortController !== controller) return;
     if (exception instanceof ApiError && [404, 405, 501, 503].includes(exception.status)) {
@@ -1100,8 +1109,10 @@ async function loadResources(
         applyResourceRoute(initialResourceRoute);
         // legacy 回退已拿到新结果:必须清空旧 resourceResponse 快照,否则 resourceItems 计算属性
         // 仍优先读取旧快照,掩盖回退结果(与搜索失败路径 :1049-1056 的清空语义一致)
+        const legacyRoute = pendingResourceRoute ?? initialResourceRoute;
         beginResourceSnapshot(legacy.results, legacy.hidden_total ?? 0, false);
-        await loadResourcePage(initialResourceRoute, "none");
+        resourceSearchLoading.value = false;
+        await loadResourcePage(legacyRoute, "none");
         return;
       } catch (legacyException) {
         if (legacyException instanceof DOMException && legacyException.name === "AbortError") return;
