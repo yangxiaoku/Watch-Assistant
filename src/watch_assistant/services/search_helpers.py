@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -419,19 +420,74 @@ def _filter_media_collection(
         }
     )
 
+_EPISODE_RANGE_RE = re.compile(
+    r"(?<![a-z0-9])(?:s\d{1,2}e\d{1,3}|e\d{1,3})"
+    r"[ ._~-]*(?:-|~|至|到)[ ._~-]*(?:e?\d{1,3})(?!\d)|"
+    r"ep\d{1,3}\s*(?:-|~|至|到)\s*(?:ep)?\d{1,3}(?!\d)|"
+    r"第\s*\d{1,4}\s*集?\s*(?:-|~|至|到)\s*第?\s*\d{1,4}\s*集",
+    re.IGNORECASE,
+)
+_EPISODE_SINGLE_RE = re.compile(
+    r"(?<![a-z0-9])s\d{1,2}e\d{1,3}(?!\d)|"
+    r"(?<![a-z0-9])e\d{1,3}(?!\d)|"
+    r"第\s*\d{1,4}\s*(?:集|话)",
+    re.IGNORECASE,
+)
+_VOLUME_MARKER_RE = re.compile(
+    r"(?<![a-z0-9])(?:part|pt|vol|volume|disc|disk)\s*[ .-]*\d{1,3}|"
+    r"(?<![a-z0-9])(?:part|vol|volume|disc|disk)\s+[ivx]+(?!\w)",
+    re.IGNORECASE,
+)
+
+
+def _coverage_tier(name: str, *, media_type: MediaType | None = None) -> int:
+    """资源覆盖层级:0=整季/全剧包,1=分卷/多集包,2=单集。
+
+    剧集详情页的单集资源(如 S05E01 / E01 / 第5集)即使做种数极高,也不应
+    在综合/相关度/完整度排序里挤占整季包之前的位置。电影名中的
+    "Part II"/"Vol. 2" 不应被当成剧集分卷,因此电影固定返回 0。
+    """
+    if media_type is MediaType.MOVIE:
+        return 0
+    nfkc = unicodedata.normalize("NFKC", name).casefold()
+    if _EPISODE_RANGE_RE.search(nfkc) is not None:
+        return 1
+    if _EPISODE_SINGLE_RE.search(nfkc) is not None:
+        return 2
+    if _VOLUME_MARKER_RE.search(nfkc) is not None:
+        return 1
+    return 0
+
+
 def _resource_sort_key(
     resource: Resource,
     scores: Mapping[str, Mapping[str, int]],
     sort: str,
+    *,
+    media_type: MediaType | None = None,
 ) -> tuple[object, ...]:
     resource_scores = scores.get(resource.id, {})
     comprehensive = _comprehensive_sort_key(resource, resource_scores)
     if sort == "comprehensive":
-        return comprehensive
+        # 综合/相关度/完整度排序:整季/全剧包优先于分卷包、单集垫底,
+        # 避免高做种数/高完整度的单集(S05E01 等)挤占列表前列;
+        # 做种/大小排序保持原始数值排序不干预。
+        return (
+            _coverage_tier(resource.name, media_type=media_type),
+            *comprehensive,
+        )
     if sort == "relevance":
-        return (-resource_scores.get("relevance_score", 0), *comprehensive)
+        return (
+            _coverage_tier(resource.name, media_type=media_type),
+            -resource_scores.get("relevance_score", 0),
+            *comprehensive,
+        )
     if sort == "completeness":
-        return (-resource_scores.get("completeness_score", 0), *comprehensive)
+        return (
+            _coverage_tier(resource.name, media_type=media_type),
+            -resource_scores.get("completeness_score", 0),
+            *comprehensive,
+        )
     if sort == "size":
         return (*_optional_descending(resource.size_bytes), *comprehensive)
     if sort == "seeders":

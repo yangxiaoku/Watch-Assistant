@@ -132,12 +132,19 @@ def test_validation_filters_other_tv_seasons_when_one_is_selected():
         "Game of Thrones S02 Collection 2012 1080p",
         "Game of Thrones S02 Seasons 1-3 2012 1080p",
         "Game of Thrones S02 Seasons 2-3 2012 1080p",
+        # 无季号标记的全剧包/纯标题资源按软评分保留(REQ-005 10.2),
+        # 只对显式标注了其他季的资源硬拒。
+        "Game of Thrones complete collection 1080p",
+        "Game of Thrones 2012 1080p",
     }
-    assert rejected == 4
+    assert rejected == 2
 
     exact = next(item for item in resources if item.name.endswith("S02E01 2012 1080p"))
     ranged = next(item for item in resources if item.name.endswith("S01-S03 2012 1080p"))
+    assumed = next(item for item in resources if item.name == "Game of Thrones 2012 1080p")
     assert ranged.metadata["relevance_score"] < exact.metadata["relevance_score"]
+    # 软保留的假设匹配相关度最低,排在显式本季/范围匹配之后
+    assert assumed.metadata["relevance_score"] < ranged.metadata["relevance_score"]
 
 
 def test_season_numbers_do_not_treat_years_as_seasons():

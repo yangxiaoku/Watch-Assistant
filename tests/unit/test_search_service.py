@@ -487,6 +487,126 @@ def test_comprehensive_sort_uses_seeders_size_and_capture_time_before_id():
         )
 
 
+def test_comprehensive_sort_prioritizes_full_season_packs_over_single_episodes():
+    """剧集详情页:综合排序必须把整季/全剧包排在分卷包之前、单集最后,
+    避免高做种数的单集(S05E01 等)挤占列表前列。"""
+    now = datetime.now(UTC)
+    packs = [
+        Resource(
+            id="res_full",
+            kind=ResourceKind.MAGNET,
+            canonical_key="magnet:full",
+            encrypted_url="encrypted",
+            name="Show S01 COMPLETE 2160p WEB-DL",
+            seeders=5,
+            size_bytes=100,
+            source="test",
+            captured_at=now,
+            expires_at=now,
+        ),
+        Resource(
+            id="res_part",
+            kind=ResourceKind.MAGNET,
+            canonical_key="magnet:part",
+            encrypted_url="encrypted",
+            name="Show S01 Vol.1 E01-E04 1080p WEB-DL",
+            seeders=8000,
+            size_bytes=80,
+            source="test",
+            captured_at=now,
+            expires_at=now,
+        ),
+        Resource(
+            id="res_episode",
+            kind=ResourceKind.MAGNET,
+            canonical_key="magnet:episode",
+            encrypted_url="encrypted",
+            name="Show S01E01 1080p WEB-DL",
+            seeders=10000,
+            size_bytes=10,
+            source="test",
+            captured_at=now,
+            expires_at=now,
+        ),
+    ]
+    # 单集做种最高、完整度也最高:若不按覆盖层级排序,它会排到最前。
+    scores = {
+        "res_full": {"rank_score": 70, "relevance_score": 90, "completeness_score": 70},
+        "res_part": {"rank_score": 75, "relevance_score": 85, "completeness_score": 75},
+        "res_episode": {
+            "rank_score": 80,
+            "relevance_score": 80,
+            "completeness_score": 80,
+        },
+    }
+
+    for sort in ("comprehensive", "relevance", "completeness"):
+        ordered = sorted(
+            packs,
+            key=lambda item: _resource_sort_key(
+                item, scores, sort, media_type=MediaType.TV
+            ),
+        )
+        assert [item.id for item in ordered] == [
+            "res_full",
+            "res_part",
+            "res_episode",
+        ], f"sort={sort}"
+
+    # 做种/大小排序保持原始数值排序,不做覆盖层级干预。
+    assert [
+        item.id
+        for item in sorted(
+            packs,
+            key=lambda item: _resource_sort_key(
+                item, scores, "seeders", media_type=MediaType.TV
+            ),
+        )
+    ] == ["res_episode", "res_part", "res_full"]
+
+
+def test_movie_sort_does_not_demote_part_or_volume_titles():
+    """电影名中的 Part II / Vol. 2 不是剧集分卷,不得被覆盖层级降权。"""
+    now = datetime.now(UTC)
+    movies = [
+        Resource(
+            id="res_volume",
+            kind=ResourceKind.MAGNET,
+            canonical_key="magnet:volume",
+            encrypted_url="encrypted",
+            name="The Godfather Part II 1974 2160p",
+            seeders=9000,
+            size_bytes=100,
+            source="test",
+            captured_at=now,
+            expires_at=now,
+        ),
+        Resource(
+            id="res_plain",
+            kind=ResourceKind.MAGNET,
+            canonical_key="magnet:plain",
+            encrypted_url="encrypted",
+            name="The Godfather 2 1974 1080p",
+            seeders=5,
+            size_bytes=10,
+            source="test",
+            captured_at=now,
+            expires_at=now,
+        ),
+    ]
+    scores = {
+        "res_volume": {"rank_score": 80, "relevance_score": 80, "completeness_score": 80},
+        "res_plain": {"rank_score": 70, "relevance_score": 70, "completeness_score": 70},
+    }
+    ordered = sorted(
+        movies,
+        key=lambda item: _resource_sort_key(
+            item, scores, "comprehensive", media_type=MediaType.MOVIE
+        ),
+    )
+    assert [item.id for item in ordered] == ["res_volume", "res_plain"]
+
+
 async def test_warm_media_reports_partial_upstream_as_failure():
     media = MovieMetadata(tmdb_id=1, title="Movie")
     service = SearchService.__new__(SearchService)

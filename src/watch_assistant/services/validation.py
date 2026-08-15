@@ -156,14 +156,18 @@ def _match_score(
     if media.media_type == MediaType.MOVIE and has_episode_marker:
         return None
 
-    if (
-        media.media_type == MediaType.TV
-        and season_number is not None
-        and not _season_matches_requested(
+    # 选季搜索的季过滤:显式标注了其他季/季范围且不覆盖目标季的资源仍硬拒
+    # (跨季资源不应出现在本季结果里);但没有任何季号标记的资源(全剧包、
+    # 只标集号的单集/集范围)按 REQ-005 软评分原则保留,而不是直接丢弃——
+    # 否则选季时大量无季号命名的资源凭空消失,表现为"改季就搜不到"。
+    # 这类资源的相关度分不含季分(_relevance_score 的 season_score 为 0),
+    # 自然排在精确/范围匹配的本季资源之后。
+    if media.media_type == MediaType.TV and season_number is not None:
+        season_numbers = _season_numbers(resource_name, nfkc_value=nfkc_name)
+        if season_numbers and not _season_matches_requested(
             resource_name, season_number, nfkc_value=nfkc_name
-        )
-    ):
-        return None
+        ):
+            return None
 
     title_match = _alias_matches(media.title, normalized_name, compact_name)
     original_match = bool(media.original_title) and _alias_matches(

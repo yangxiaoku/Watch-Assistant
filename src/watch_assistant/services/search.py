@@ -790,7 +790,11 @@ class SearchService:
                 normalized_query is None or normalized_query in resource.name.casefold()
             )
         ]
-        filtered.sort(key=lambda resource: _resource_sort_key(resource, scores, sort))
+        filtered.sort(
+            key=lambda resource: _resource_sort_key(
+                resource, scores, sort, media_type=media_type
+            )
+        )
         total = len(filtered)
         start = (page - 1) * page_size
         end = start + page_size
@@ -1973,7 +1977,10 @@ class SearchService:
         ordered_resources = sorted(
             visible,
             key=lambda resource: _resource_sort_key(
-                resource, response_scores, "comprehensive"
+                resource,
+                response_scores,
+                "comprehensive",
+                media_type=movie.media_type,
             ),
         )
         response_warnings = list(warnings or [])
