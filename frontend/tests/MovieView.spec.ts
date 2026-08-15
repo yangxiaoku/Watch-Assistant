@@ -253,6 +253,21 @@ describe("MovieView seasons", () => {
     expect(wrapper.text()).toContain("当前季度暂无独立资源");
   });
 
+  it("does not show the season empty hint while an error is present", () => {
+    const wrapper = mount(MovieView, {
+      props: {
+        result: response("tv"),
+        seasonNumber: 1,
+        resourceTotal: 0,
+        resourceLoading: false,
+        resourceError: "上游暂不可用",
+        pushingId: null,
+        favorite: false,
+      },
+    });
+    expect(wrapper.text()).not.toContain("当前季度暂无独立资源");
+  });
+
   it("shows independent season overview instead of the series overview", () => {
     const result = response("tv");
     result.movie.overview = "剧集总简介，不应冒充季度简介";
