@@ -293,6 +293,20 @@ Systemd Release Package 均显示完成且成功。CI 成功仅证明当前 ref 
   约束未自动执行：真实 115 签到、推送/云下载、整理执行/扫描、STRM 生成、webhook
   测试发送、播放链路。
 
+## 2026-08-16 项目优化审查与治理(已上线)
+
+- 分支卫生：删除 52 个已合入基线的陈旧分支（65→13，含 worktree prune）；保留
+  4 个未合并工作分支（strm-operation-ledger/strm-workflow-fanout/
+  workflow-approval-hardening/requirements-progress，属其他会话进行中的工作）。
+- 服务器发布目录轮换：`/opt/watch-assistant/releases` 保留最近 6 个
+  `watch-assistant-*` 版本（887MB→736MB）；归属不明的 hex 目录与 `incoming/`
+  历史包未动。
+- 代码优化（此前 deferred 项）：季度空态 `.season-empty` 补齐与全局 `.empty-copy`
+  一致的弱化样式；`SettingsView.spec` 新增自动清理开关 toggle→保存交互断言
+  （含默认关闭验证）。发布 `702614f`（verify.sh 通过）已部署，
+  `POSTDEPLOY_RELEASE_CHECK=ok`；全量 E2E 63/63 通过。
+- 测试数据清理：测试产生的 81 条未读通知经 UI「全部已读」清理。
+
 ## 开发中
 
 - `REQ-003`：CLI 只读和部分受保护命令已完成；高风险 Web 批准、完整任务关联、生产播放入口和
