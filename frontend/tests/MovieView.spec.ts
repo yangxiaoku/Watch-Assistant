@@ -350,5 +350,6 @@ describe("MovieView subscription button", () => {
     expect(btn).toBeTruthy();
     await btn!.trigger("click");
     expect(wrapper.emitted("manageSubscriptions")).toHaveLength(1);
+    expect(wrapper.emitted("subscribe")).toBeUndefined();
   });
 });
