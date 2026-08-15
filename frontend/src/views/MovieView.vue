@@ -37,6 +37,8 @@ const props = defineProps<{
   pushingId: string | null;
   pushCapabilities?: PushCapabilities;
   favorite: boolean;
+  subscribed?: boolean;
+  subscriptionStatus?: string | null;
   inspectionSupported?: boolean;
   inspectionState?: "idle" | "running" | "completed" | "partial" | "failed" | "timeout";
   inspectionCompleted?: number;
@@ -47,7 +49,7 @@ const props = defineProps<{
   inspectionRetryAvailable?: boolean;
   inspectionStarted?: boolean;
 }>();
-const emit = defineEmits<{ push: [resource: ResourceSummary]; refresh: []; retryMetadata: []; back: []; favorite: []; season: [seasonNumber: number | null]; inspectMore: []; retryFailed: []; retryPage: []; page: [page: number]; kind: [kind: "all" | "magnet" | "115_share"]; quality: [quality: ResourceQuality]; query: [query: string]; sort: [sort: ResourceSort]; pageSize: [pageSize: 25 | 50 | 100] }>();
+const emit = defineEmits<{ push: [resource: ResourceSummary]; refresh: []; retryMetadata: []; back: []; favorite: []; season: [seasonNumber: number | null]; inspectMore: []; retryFailed: []; retryPage: []; page: [page: number]; kind: [kind: "all" | "magnet" | "115_share"]; quality: [quality: ResourceQuality]; query: [query: string]; sort: [sort: ResourceSort]; pageSize: [pageSize: 25 | 50 | 100]; subscribe: []; manageSubscriptions: [] }>();
 
 const isTv = computed(() => props.mediaType === "tv" || props.result.movie.media_type === "tv");
 // 豆瓣风格星级:vote_average 0-10 → 5 星,支持半星(向上取整显示填满数)。
@@ -75,6 +77,10 @@ function displaySeasonName(seasonNumber: number, name?: string | null): string {
 const selectedSeasonName = computed(() => selectedSeasonNumber.value === null
   ? ""
   : displaySeasonName(selectedSeasonNumber.value, props.seasonDetail?.name || selectedSeasonSummary.value?.name));
+const subscriptionLabel = computed(() => {
+  if (props.subscribed) return props.subscriptionStatus === "paused" ? "已暂停" : "已订阅";
+  return "订阅";
+});
 const selectedSeasonAirDate = computed(() => props.seasonDetail?.air_date || selectedSeasonSummary.value?.air_date || null);
 const selectedSeasonEpisodeCount = computed(() => props.seasonDetail?.episode_count ?? selectedSeasonSummary.value?.episode_count ?? null);
 const displayedPosterPath = computed(() => selectedSeasonNumber.value !== null
@@ -149,7 +155,7 @@ function warningLabel(value: string): string {
         <img v-if="posterUrl(displayedPosterPath)" :src="posterUrl(displayedPosterPath)!" :alt="selectedSeasonNumber !== null && seasonDetail && !seasonDetail.poster_path && !selectedSeasonSummary?.poster_path ? `${result.movie.title} 海报（本季暂无独立海报）` : `${result.movie.title} 海报`" />
         <span v-else class="poster-fallback"><Film :size="34" /></span>
       </div>
-      <div class="movie-copy"><p class="eyebrow">{{ isTv ? '电视剧' : '电影' }}<span v-if="result.movie.release_year !== null"> · {{ result.movie.release_year }}</span> · TMDB {{ result.movie.tmdb_id }}</p><h1>{{ result.movie.title }}</h1><p v-if="result.movie.original_title" class="original-title">{{ result.movie.original_title }}</p><p v-if="result.movie.vote_average !== null" class="detail-rating"><span class="star-rating" :title="`${result.movie.vote_average.toFixed(1)} / 10`" role="img" :aria-label="`评分 ${result.movie.vote_average.toFixed(1)} / 10`"><Star v-for="n in 5" :key="n" :size="15" :class="{ filled: n <= ratingStars }" :fill="n <= ratingStars ? 'currentColor' : 'none'" /></span><strong>{{ result.movie.vote_average.toFixed(1) }}</strong> / 10</p><div v-if="isTv && seasons.length" class="season-bar"><label for="season-select">季度</label><select id="season-select" :value="selectedSeasonNumber ?? ''" @change="onSeasonChange"><option value="">全部季度</option><option v-for="season in seasons" :key="season.season_number" :value="season.season_number">{{ displaySeasonName(season.season_number, season.name) }} · {{ season.episode_count }} 集</option></select></div><button class="secondary-button favorite-inline" :class="{ active: favorite }" type="button" @click="$emit('favorite')"><Heart :size="16" :fill="favorite ? 'currentColor' : 'none'" />{{ favorite ? '已收藏' : '收藏' }}</button></div>
+      <div class="movie-copy"><p class="eyebrow">{{ isTv ? '电视剧' : '电影' }}<span v-if="result.movie.release_year !== null"> · {{ result.movie.release_year }}</span> · TMDB {{ result.movie.tmdb_id }}</p><h1>{{ result.movie.title }}</h1><p v-if="result.movie.original_title" class="original-title">{{ result.movie.original_title }}</p><p v-if="result.movie.vote_average !== null" class="detail-rating"><span class="star-rating" :title="`${result.movie.vote_average.toFixed(1)} / 10`" role="img" :aria-label="`评分 ${result.movie.vote_average.toFixed(1)} / 10`"><Star v-for="n in 5" :key="n" :size="15" :class="{ filled: n <= ratingStars }" :fill="n <= ratingStars ? 'currentColor' : 'none'" /></span><strong>{{ result.movie.vote_average.toFixed(1) }}</strong> / 10</p><div v-if="isTv && seasons.length" class="season-bar"><label for="season-select">季度</label><select id="season-select" :value="selectedSeasonNumber ?? ''" @change="onSeasonChange"><option value="">全部季度</option><option v-for="season in seasons" :key="season.season_number" :value="season.season_number">{{ displaySeasonName(season.season_number, season.name) }} · {{ season.episode_count }} 集</option></select></div><button class="secondary-button favorite-inline" :class="{ active: favorite }" type="button" @click="$emit('favorite')"><Heart :size="16" :fill="favorite ? 'currentColor' : 'none'" />{{ favorite ? '已收藏' : '收藏' }}</button><button class="secondary-button subscribe-inline" type="button" @click="subscribed ? $emit('manageSubscriptions') : $emit('subscribe')">{{ subscriptionLabel }}</button></div>
       <aside class="detail-stats" aria-label="影片数据">
         <div class="detail-stat score-stat" v-if="result.movie.vote_average !== null"><span>TMDB 评分</span><strong>{{ result.movie.vote_average.toFixed(1) }} / 10</strong></div>
         <div class="detail-stat"><span>磁力</span><strong>{{ resourceCounts.magnets }}</strong></div>

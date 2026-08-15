@@ -290,3 +290,65 @@ describe("MovieView seasons", () => {
     expect(wrapper.find(".season-detail-section").text()).not.toContain("剧集总简介");
   });
 });
+
+describe("MovieView subscription button", () => {
+  it("renders a subscribe button and emits subscribe when not subscribed", async () => {
+    const wrapper = mount(MovieView, {
+      props: {
+        result: response("tv"),
+        mediaType: "tv",
+        seasonNumber: null,
+        pushingId: null,
+        pushCapabilities: { magnet: true, share: true },
+        favorite: false,
+        subscribed: false,
+      },
+    });
+
+    const btn = wrapper.findAll("button").find((button) => button.text() === "订阅");
+    expect(btn).toBeTruthy();
+    await btn!.trigger("click");
+    expect(wrapper.emitted("subscribe")).toHaveLength(1);
+    expect(wrapper.emitted("manageSubscriptions")).toBeFalsy();
+  });
+
+  it("renders 已订阅 and emits manageSubscriptions when subscribed", async () => {
+    const wrapper = mount(MovieView, {
+      props: {
+        result: response("tv"),
+        mediaType: "tv",
+        seasonNumber: null,
+        pushingId: null,
+        pushCapabilities: { magnet: true, share: true },
+        favorite: false,
+        subscribed: true,
+      },
+    });
+
+    const btn = wrapper.findAll("button").find((button) => button.text() === "已订阅");
+    expect(btn).toBeTruthy();
+    await btn!.trigger("click");
+    expect(wrapper.emitted("manageSubscriptions")).toHaveLength(1);
+    expect(wrapper.emitted("subscribe")).toBeFalsy();
+  });
+
+  it("renders 已暂停 when subscription is paused", async () => {
+    const wrapper = mount(MovieView, {
+      props: {
+        result: response("tv"),
+        mediaType: "tv",
+        seasonNumber: null,
+        pushingId: null,
+        pushCapabilities: { magnet: true, share: true },
+        favorite: false,
+        subscribed: true,
+        subscriptionStatus: "paused",
+      },
+    });
+
+    const btn = wrapper.findAll("button").find((button) => button.text() === "已暂停");
+    expect(btn).toBeTruthy();
+    await btn!.trigger("click");
+    expect(wrapper.emitted("manageSubscriptions")).toHaveLength(1);
+  });
+});
