@@ -216,6 +216,18 @@ Systemd Release Package 均显示完成且成功。CI 成功仅证明当前 ref 
   另含外部修复：`f3f6247`（partial 缓存稳定 ready）经复核发现空 partial 伪装 ready 的
   Critical，已修复为按快照资源非空判定（`637b3e6` 内含），一并部署上线。
 
+## 2026-08-16 端到端测试与缺陷修复（已上线）
+
+- 新增上线功能 E2E（`frontend/e2e/live/subscription-cleanup.spec.ts`，随 deploy 配置运行）：
+  详情页订阅按钮全链路（创建→已订阅→跳转订阅管理→取消清理）、剧集季度切换（无误导错误、
+  空态/资源/错误三选一）、自动清理开关持久化并还原；连同既有 18 项共 21/21 通过。
+- 发现并修复缺陷：订阅管理页「取消订阅」按钮为死按钮（后端 `/cancel` 端点存在但前端
+  `api.ts` 无 `subscriptionCancel`、模板无 `@click`）——补齐方法、`cancel()`、`@click` 与
+  单测；修复发布 `2db235e`（verify.sh 通过）已部署，`POSTDEPLOY_RELEASE_CHECK=ok`。
+- 测试数据已清理：测试创建的订阅均经 UI 取消（生产仅保留既有用户订阅）。
+- 说明：CSRF 防护生效（裸 POST 取消 403，前端带 `X-CSRF-Token` 正常）；115 风控遵守，
+  未触发任何真实 115 写入（自动清理开关保持默认关闭）。
+
 ## 开发中
 
 - `REQ-003`：CLI 只读和部分受保护命令已完成；高风险 Web 批准、完整任务关联、生产播放入口和
