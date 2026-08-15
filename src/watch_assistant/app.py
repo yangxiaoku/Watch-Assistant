@@ -2,12 +2,13 @@
 
 import asyncio
 import ipaddress
+import logging
 import os
 import re
 import socket
 import time
 from collections.abc import AsyncIterator, Callable, Collection, Iterable
-from contextlib import asynccontextmanager, suppress
+from contextlib import asynccontextmanager
 from datetime import timedelta
 from pathlib import Path
 from uuid import uuid4
@@ -430,17 +431,31 @@ async def _current_managed_directory_ids(
     return frozenset()
 
 
+logger = logging.getLogger(__name__)
+
+
 async def _stop_worker(
     stop: asyncio.Event | None,
     task: asyncio.Task[None] | None,
 ) -> None:
-    """Signal a worker task to stop, cancel, and await its completion."""
+    """Signal a worker task to stop, cancel, and await its completion.
+
+    关闭阶段 worker 可能正好处于业务收尾(如 inspection 批次 finalize);
+    该路径抛出的 WorkflowConflict 等业务异常不得让 FastAPI lifespan 失败,
+    否则会出现 "Application shutdown failed" 并让 systemd 多一次异常重启。
+    取消按正常传播,其它异常记录后吞掉,由下次启动的 recover 逻辑兜底。
+    """
     if stop is not None:
         stop.set()
-    if task is not None:
-        task.cancel()
-        with suppress(asyncio.CancelledError):
-            await task
+    if task is None:
+        return
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    except Exception:
+        logger.exception("worker task failed while stopping")
 
 
 def create_app(
