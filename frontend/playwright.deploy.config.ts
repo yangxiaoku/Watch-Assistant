@@ -84,6 +84,13 @@ export default defineConfig({
       dependencies: ["setup"],
       use: { storageState: STORAGE_STATE, viewport: { width: 1440, height: 900 } },
     },
+    // 第七轮:安全边界与禁用态用户操作验证(桌面端)
+    {
+      name: "module-flows6",
+      testMatch: /module-flows6\.spec\.ts/,
+      dependencies: ["setup"],
+      use: { storageState: STORAGE_STATE, viewport: { width: 1440, height: 900 } },
+    },
     // 已登录的移动端冒烟
     {
       name: "mobile",
