@@ -307,6 +307,18 @@ Systemd Release Package 均显示完成且成功。CI 成功仅证明当前 ref 
   `POSTDEPLOY_RELEASE_CHECK=ok`；全量 E2E 63/63 通过。
 - 测试数据清理：测试产生的 81 条未读通知经 UI「全部已读」清理。
 
+## 2026-08-16 持续优化跟进(依赖/存储/分支治理)
+
+- 依赖漏洞：`npm audit fix` 清除 vite/vitest 构建链传递依赖漏洞 3 个（nanoid/postcss/
+  undici，2 high 1 moderate，均不进生产运行时 bundle）→ 0 vulnerabilities；
+  前端 304 单测与构建通过，全量 E2E 64/64 通过。发布 `8954745`（依赖锁定变更）。
+- 服务器存储：`/opt/watch-assistant/releases` 清除 101 个旧源码副本 hex 目录与 16 个
+  旧版（887MB→314MB），磁盘 61% 缓解；保留最近 6 个 `watch-assistant-*` 版本。
+- 分支治理：4 个"未合并"分支（strm-operation-ledger/strm-workflow-fanout/
+  workflow-approval-hardening/requirements-progress）经核实为已被整合提交
+  `4a3ab1f`（REQ-009/REQ-012）吸收的历史快照（含高风险整理计划 Web 批准门禁
+  `high_risk_approval_required` 已在基线），删除；本地分支 65→9。本轮无功能变更。
+
 ## 开发中
 
 - `REQ-003`：CLI 只读和部分受保护命令已完成；高风险 Web 批准、完整任务关联、生产播放入口和
