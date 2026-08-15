@@ -68,6 +68,7 @@ class NotifyChannelService:
         kind: str = "feishu",
         target: str | None = None,
         cli_channel: str | None = None,
+        cli_account: str | None = None,
     ) -> NotifyChannelResponse:
         if kind not in SUPPORTED_KINDS:
             raise NotifyChannelError("unsupported_notify_kind")
@@ -79,6 +80,7 @@ class NotifyChannelService:
             webhook_url=webhook_url,
             target=target,
             cli_channel=cli_channel,
+            cli_account=cli_account,
         )
         now = datetime.now(UTC)
         item = NotifyChannel(
@@ -135,6 +137,7 @@ def _storage_values(
     webhook_url: str | None,
     target: str | None,
     cli_channel: str | None,
+    cli_account: str | None,
 ) -> tuple[str, str]:
     """Return (encrypted plaintext, display value) for one channel kind."""
     if kind == "feishu":
@@ -156,6 +159,8 @@ def _storage_values(
         except ValueError as exc:
             raise NotifyChannelError("invalid_notify_cli_channel") from exc
         payload = {"target": cleaned_target, "channel": cleaned_channel}
+        if cli_account and cli_account.strip():
+            payload["account"] = cli_account.strip()
     storage = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     return storage, f"{kind}:{cleaned_target}"
 

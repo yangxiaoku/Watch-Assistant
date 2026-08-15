@@ -2219,6 +2219,7 @@ class NotifyChannelCreateRequest(BaseModel):
     webhook_url: str | None = Field(default=None, min_length=8, max_length=2048)
     target: str | None = Field(default=None, min_length=1, max_length=128)
     cli_channel: str | None = Field(default=None, min_length=1, max_length=64)
+    cli_account: str | None = Field(default=None, min_length=1, max_length=64)
 
     @model_validator(mode="after")
     def validate_notify_channel_request(self) -> "NotifyChannelCreateRequest":

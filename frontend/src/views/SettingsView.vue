@@ -170,6 +170,7 @@ const notifyDraftKind = ref<NotifyChannelKind>("feishu");
 const notifyDraftUrl = ref("");
 const notifyDraftTarget = ref("");
 const notifyDraftCliChannel = ref("feishu");
+const notifyDraftCliAccount = ref("");
 const organizationSettings = ref<OrganizationSettingsResponse | null>(null);
 const organizationLoading = ref(true);
 const organizationError = ref("");
@@ -1370,6 +1371,7 @@ async function addNotifyChannel() {
     payload.target = notifyDraftTarget.value.trim();
     if (notifyDraftKind.value === "clawbot") {
       payload.cli_channel = notifyDraftCliChannel.value.trim();
+      payload.cli_account = notifyDraftCliAccount.value.trim() || undefined;
     }
   }
   try {
@@ -1380,6 +1382,7 @@ async function addNotifyChannel() {
     notifyDraftTarget.value = "";
     notifyDraftKind.value = "feishu";
     notifyDraftCliChannel.value = "feishu";
+    notifyDraftCliAccount.value = "";
     await loadNotifyChannels();
     feedback.success("通知渠道已添加");
   } catch (exception) {
@@ -1624,11 +1627,12 @@ onBeforeUnmount(() => {
               </select></label>
               <label v-if="notifyDraftKind === 'feishu'">飞书 Webhook 地址<input v-model="notifyDraftUrl" type="text" placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/…" /></label>
               <template v-else>
-                <label>目标 ID<input v-model="notifyDraftTarget" type="text" :placeholder="notifyDraftKind === 'feishu_cli' || notifyDraftKind === 'feishu_bot' ? 'ou_xxx / oc_xxx / user@example.com' : 'ou_xxx / oc_xxx / 微信会话 ID'" /></label>
+                <label>目标 ID<input v-model="notifyDraftTarget" type="text" :placeholder="notifyDraftKind === 'feishu_cli' || notifyDraftKind === 'feishu_bot' ? 'ou_xxx / oc_xxx / user@example.com' : '微信用户 ID，例如 xxx@im.wechat'" /></label>
                 <label v-if="notifyDraftKind === 'clawbot'">ClawBot 通道<select v-model="notifyDraftCliChannel">
                   <option value="feishu">飞书 feishu</option>
                   <option value="openclaw-weixin">微信 openclaw-weixin</option>
                 </select></label>
+                <label v-if="notifyDraftKind === 'clawbot'">账号 ID（可选，多账号时填写）<input v-model="notifyDraftCliAccount" type="text" placeholder="例如：default / 微信账号 ID" /></label>
               </template>
             </div>
             <button class="button button-primary" type="button" :disabled="notifySaving || !notifyDraftReady()" @click="addNotifyChannel">{{ notifySaving ? '添加中…' : '添加渠道' }}</button>

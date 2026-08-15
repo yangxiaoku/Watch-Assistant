@@ -50,6 +50,7 @@ async def create_channel(
                 kind=payload.kind,
                 target=payload.target,
                 cli_channel=payload.cli_channel,
+                cli_account=payload.cli_account,
             )
         )
     except NotifyChannelError as exc:

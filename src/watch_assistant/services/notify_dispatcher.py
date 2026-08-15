@@ -228,6 +228,7 @@ class NotifyDispatcher:
                 cli_channel=cli_channel,
                 command=self._clawbot_command,
                 timeout_seconds=self._cli_timeout_seconds,
+                account=config.get("account"),
             )
         return None
 
@@ -255,6 +256,7 @@ class NotifyDispatcher:
         cli_channel: str | None,
         command: str,
         timeout_seconds: float,
+        account: str | None = None,
     ) -> Any:
         return CliNotifyChannel(
             kind=kind,
@@ -262,6 +264,7 @@ class NotifyDispatcher:
             command=command,
             channel=cli_channel or "openclaw-weixin",
             timeout_seconds=timeout_seconds,
+            account=account,
         )
 
     async def aclose(self) -> None:

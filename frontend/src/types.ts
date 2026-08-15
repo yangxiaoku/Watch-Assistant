@@ -1072,6 +1072,7 @@ export interface NotifyChannelCreateRequest {
   webhook_url?: string;
   target?: string;
   cli_channel?: string;
+  cli_account?: string;
 }
 
 export interface NotifyChannelPatch {

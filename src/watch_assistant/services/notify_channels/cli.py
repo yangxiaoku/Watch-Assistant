@@ -94,24 +94,52 @@ def feishu_cli_argv(
     )
 
 
+def normalize_clawbot_target(channel: str, target: str) -> str:
+    """Normalize OpenClaw/ClawBot targets per channel docs.
+
+    Feishu accepts ``chat:<chatId>`` / ``user:<openId>`` (bare ``oc_``/
+    ``ou_`` are also understood by the runtime, but the CLI dry-run path
+    asks for an explicit prefix). WeChat/Weixin peers are direct
+    ``<userId>@im.wechat`` ids and are passed through unchanged.
+    """
+    if channel != "feishu":
+        return target
+    lowered = target.casefold()
+    if lowered.startswith(
+        ("chat:", "group:", "channel:", "user:", "dm:", "open_id:", "feishu:", "lark:")
+    ):
+        return target
+    if lowered.startswith("oc_"):
+        return f"chat:{target}"
+    if lowered.startswith("ou_"):
+        return f"user:{target}"
+    return target
+
+
 def clawbot_argv(
     command: str,
     channel: str,
     target: str,
     body: str,
+    *,
+    account: str | None = None,
 ) -> tuple[str, ...]:
-    return (
+    normalized_target = normalize_clawbot_target(channel, target)
+    argv = [
         command,
         "message",
         "send",
         "--channel",
         channel,
         "--target",
-        target,
+        normalized_target,
         "--message",
         body,
         "--json",
-    )
+    ]
+    if account:
+        argv[1:1] = ["--account", account]
+    return tuple(argv)
 
 
 async def default_cli_runner(
@@ -152,6 +180,7 @@ class CliNotifyChannel:
         channel: str = DEFAULT_CLAWBOT_CHANNEL,
         runner: CliRunner = default_cli_runner,
         timeout_seconds: float = DEFAULT_CLI_TIMEOUT_SECONDS,
+        account: str | None = None,
     ) -> None:
         if kind not in {"feishu_cli", "clawbot"}:
             raise ValueError(f"unsupported_notify_kind: {kind}")
@@ -161,6 +190,7 @@ class CliNotifyChannel:
         self._channel = channel
         self._runner = runner
         self._timeout_seconds = timeout_seconds
+        self._account = account
 
     async def send(
         self,
@@ -175,7 +205,11 @@ class CliNotifyChannel:
                 argv = feishu_cli_argv(self._command, self._target, body)
             else:
                 argv = clawbot_argv(
-                    self._command, self._channel, self._target, body
+                    self._command,
+                    self._channel,
+                    self._target,
+                    body,
+                    account=self._account,
                 )
         except ValueError:
             return False
@@ -194,6 +228,7 @@ __all__ = [
     "default_cli_runner",
     "feishu_cli_argv",
     "feishu_receive_id_type",
+    "normalize_clawbot_target",
     "validate_cli_channel",
     "validate_cli_target",
 ]

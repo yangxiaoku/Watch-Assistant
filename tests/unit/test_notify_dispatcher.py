@@ -258,7 +258,9 @@ async def test_dispatch_clawbot_builds_cli_channel(database):
 
     calls = []
 
-    def cli_factory(kind, *, target, cli_channel, command, timeout_seconds):
+    def cli_factory(
+        kind, *, target, cli_channel, command, timeout_seconds, account=None
+    ):
         calls.append(
             {
                 "kind": kind,
@@ -266,6 +268,7 @@ async def test_dispatch_clawbot_builds_cli_channel(database):
                 "cli_channel": cli_channel,
                 "command": command,
                 "timeout_seconds": timeout_seconds,
+                "account": account,
             }
         )
         return FakeFeishuChannel()
@@ -287,6 +290,7 @@ async def test_dispatch_clawbot_builds_cli_channel(database):
             "cli_channel": "feishu",
             "command": "/usr/local/bin/openclaw",
             "timeout_seconds": 17,
+            "account": None,
         }
     ]
 

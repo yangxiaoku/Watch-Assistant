@@ -191,14 +191,16 @@ async def test_create_clawbot_normalizes_wechat_channel(service, crypto):
         "微信 ClawBot",
         None,
         kind="clawbot",
-        target="peer-1",
+        target="wxid@im.wechat",
         cli_channel="wechat",
+        cli_account="wx-account-1",
     )
     assert created.kind == "clawbot"
     async with database.session_factory() as session:
         row = await session.get(NotifyChannel, created.id)
     assert crypto.decrypt(row.webhook_url_encrypted) == (
-        '{"target":"peer-1","channel":"openclaw-weixin"}'
+        '{"target":"wxid@im.wechat","channel":"openclaw-weixin",'
+        '"account":"wx-account-1"}'
     )
 
 

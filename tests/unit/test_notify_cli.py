@@ -10,6 +10,7 @@ from watch_assistant.services.notify_channels.cli import (
     decode_channel_config,
     feishu_cli_argv,
     feishu_receive_id_type,
+    normalize_clawbot_target,
     validate_cli_channel,
     validate_cli_target,
 )
@@ -47,6 +48,32 @@ def test_argv_builders_never_use_shell_concat():
         "--message",
         "hello",
         "--json",
+    )
+    assert clawbot_argv(
+        "openclaw",
+        "feishu",
+        "ou_user",
+        "hello",
+        account="default",
+    ) == (
+        "openclaw",
+        "--account",
+        "default",
+        "message",
+        "send",
+        "--channel",
+        "feishu",
+        "--target",
+        "user:ou_user",
+        "--message",
+        "hello",
+        "--json",
+    )
+    assert normalize_clawbot_target("feishu", "oc_chat") == "chat:oc_chat"
+    assert normalize_clawbot_target("feishu", "user:ou_x") == "user:ou_x"
+    assert (
+        normalize_clawbot_target("openclaw-weixin", "wxid@im.wechat")
+        == "wxid@im.wechat"
     )
 
 
