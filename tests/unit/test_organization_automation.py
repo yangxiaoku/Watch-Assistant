@@ -178,13 +178,18 @@ class _CleanupSettings(_Settings):
     """Cleanup-enabled settings with a zero cadence so tests stay fast."""
 
     def __init__(
-        self, *, threshold_mb: float = 100.0, cleanup_empty_directories: bool = True
+        self,
+        *,
+        threshold_mb: float = 100.0,
+        cleanup_empty_directories: bool = True,
+        auto_cleanup_junk_files: bool = False,
     ):
         super().__init__(configured=True)
         self.value = self.value.model_copy(
             update={
                 "small_file_threshold_mb": threshold_mb,
                 "cleanup_empty_directories": cleanup_empty_directories,
+                "auto_cleanup_junk_files": auto_cleanup_junk_files,
                 "operation_delay_seconds": 0,
             }
         )
@@ -262,6 +267,12 @@ class _CleanupGateway(_Gateway):
                     path="The.Office.2005.1080p.mkv",
                     size_bytes=5 * 1024 * 1024,
                 ),
+                _entry(
+                    name="【更多电视剧集下载请访问 www.BPHDTV.com】.mkv",
+                    file_id="7104",
+                    parent_id="1000",
+                    path="【更多电视剧集下载请访问 www.BPHDTV.com】.mkv",
+                ),
                 _entry(name="empty-a", directory_id="7001", parent_id="1000"),
                 _entry(name="nest", directory_id="7002", parent_id="1000"),
             ),
@@ -279,6 +290,12 @@ def _cleanup_pages() -> dict[str, list[C03RemoteEntry]]:
             C03RemoteEntry("7101", "1000", "tiny.unknown.mkv", False),
             C03RemoteEntry("7102", "1000", "big.unknown.mkv", False),
             C03RemoteEntry("7103", "1000", "The.Office.2005.1080p.mkv", False),
+            C03RemoteEntry(
+                "7104",
+                "1000",
+                "【更多电视剧集下载请访问 www.BPHDTV.com】.mkv",
+                False,
+            ),
             C03RemoteEntry("7001", "1000", "empty-a", True),
             C03RemoteEntry("7002", "1000", "nest", True),
         ],
@@ -1002,6 +1019,130 @@ async def test_automation_auto_cleans_unrecognized_small_files_and_empty_dirs(
         assert {
             action["object_id"] for action in json.loads(move_plan.actions_json)
         } == {"7103"}
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_automation_auto_cleans_junk_files_to_recycle_bin(tmp_path: Path):
+    # 开启 auto_cleanup_junk_files 后,广告垃圾文件被识别并走 fs_delete
+    # 回收站(与空目录/小文件同一 transport),既不影响小文件/空目录清理,
+    # 也不改变 plan 数量(垃圾文件在预览阶段被过滤,不会进入任何计划)。
+    database = create_database(
+        f"sqlite+aiosqlite:///{tmp_path / 'automation-clean-junk.db'}"
+    )
+    await initialize_database(database.engine)
+    gateway = _CleanupGateway()
+    events = _Events()
+    plan_service = OrganizationPlanService(database.session_factory)
+    preview = OrganizationPreviewService(
+        database.session_factory,
+        _SelectiveTmdbClient(accepted={"The Office"}),
+        plan_service,
+    )
+    transport = _FakeCleanupTransport(_cleanup_pages())
+    service = OrganizationAutomationService(
+        database.session_factory,
+        _CleanupSettings(threshold_mb=100, auto_cleanup_junk_files=True),
+        preview,
+        plan_service,
+        lambda _authorized: gateway,
+        event_logger=events,
+        cleanup_transport_factory=lambda: transport,
+    )
+
+    assert await service.run_once() is True
+    result = service.last_result
+    assert result is not None
+    assert result.scanned_count == 1
+    assert result.plan_count == 2
+    assert result.blocked_count == 0
+    assert result.cleaned_small_files == 1
+    assert result.cleaned_empty_dirs == 3
+    assert transport.closed is True
+    assert [(operation, file_id) for operation, file_id in transport.executed].count(
+        (WriteOperation.DELETE, "7104")
+    ) == 1
+    assert (WriteOperation.DELETE, "7104") in transport.executed
+    applied = [
+        fields
+        for event, fields in events.events
+        if event == "library.auto_cleanup.applied"
+    ]
+    assert len(applied) == 1
+    assert applied[0]["junk_files"] == 1
+    assert applied[0]["small_files"] == 1
+    assert applied[0]["empty_dirs"] == 3
+    async with database.session_factory() as session:
+        plans = list((await session.scalars(select(OrganizationPlan))).all())
+        assert len(plans) == 2
+        assert sorted(plan.status for plan in plans) == ["invalidated", "planned"]
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_automation_junk_cleanup_disabled_by_default_keeps_junk(tmp_path: Path):
+    # 默认(auto_cleanup_junk_files=False)时,广告垃圾文件不删除,
+    # 这正是现有自动清理用例的回归行为。
+    database = create_database(
+        f"sqlite+aiosqlite:///{tmp_path / 'automation-clean-junk-off.db'}"
+    )
+    await initialize_database(database.engine)
+    plan_service = OrganizationPlanService(database.session_factory)
+    preview = OrganizationPreviewService(
+        database.session_factory,
+        _SelectiveTmdbClient(accepted={"The Office"}),
+        plan_service,
+    )
+    transport = _FakeCleanupTransport(_cleanup_pages())
+    service = OrganizationAutomationService(
+        database.session_factory,
+        _CleanupSettings(threshold_mb=100, auto_cleanup_junk_files=False),
+        preview,
+        plan_service,
+        lambda _authorized: _CleanupGateway(),
+        cleanup_transport_factory=lambda: transport,
+    )
+
+    assert await service.run_once() is True
+    result = service.last_result
+    assert result is not None
+    assert result.cleaned_small_files == 1
+    assert result.cleaned_empty_dirs == 3
+    assert (WriteOperation.DELETE, "7104") not in [
+        (operation, file_id) for operation, file_id in transport.executed
+    ]
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_automation_manual_confirmation_skips_junk_cleanup(tmp_path: Path):
+    # 人工确认模式下,垃圾文件回收与移动/重命名、小文件/空目录清理一样挂起。
+    database = create_database(
+        f"sqlite+aiosqlite:///{tmp_path / 'automation-clean-junk-manual.db'}"
+    )
+    await initialize_database(database.engine)
+    plan_service = OrganizationPlanService(database.session_factory)
+    preview = OrganizationPreviewService(
+        database.session_factory,
+        _SelectiveTmdbClient(accepted={"The Office"}),
+        plan_service,
+    )
+    transport = _FakeCleanupTransport(_cleanup_pages())
+    service = OrganizationAutomationService(
+        database.session_factory,
+        _CleanupSettings(threshold_mb=100, auto_cleanup_junk_files=True),
+        preview,
+        plan_service,
+        lambda _authorized: _CleanupGateway(),
+        cleanup_transport_factory=lambda: transport,
+    )
+
+    assert await service.run_once(manual_confirmation=True) is True
+    result = service.last_result
+    assert result is not None
+    assert result.cleaned_small_files == 0
+    assert result.cleaned_empty_dirs == 0
+    assert transport.executed == []
     await database.engine.dispose()
 
 

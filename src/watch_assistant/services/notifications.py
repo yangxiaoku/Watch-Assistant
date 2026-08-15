@@ -50,6 +50,7 @@ _NOTIFIABLE_EVENTS = frozenset(
         "organize.operation.failed",
         "organize.operation.uncertain",
         "organize.operation.completed",
+        "library.auto_cleanup.applied",
         "strm.cleanup_blocked",
         "strm.dirty_consumed",
         "strm.verify.completed",

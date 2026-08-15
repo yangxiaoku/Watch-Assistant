@@ -298,6 +298,14 @@ EVENT_CATALOG: dict[str, EventDefinition] = {
         suggestion="删除文件已进入 115 回收站，可在回收站中恢复",
         fields=frozenset({"small_files", "empty_dirs"}),
     ),
+    "library.auto_cleanup.applied": _event(
+        "library.auto_cleanup.applied",
+        LogCategory.LIBRARY,
+        "自动清理完成",
+        "自动清理完成：小文件 {small_files} 个、空目录 {empty_dirs} 个、广告垃圾文件 {junk_files} 个，均已移入 115 回收站",
+        suggestion="删除文件已进入 115 回收站，可在回收站中恢复",
+        fields=frozenset({"small_files", "empty_dirs", "junk_files"}),
+    ),
     "organize.operation.queued": _event(
         "organize.operation.queued", LogCategory.ORGANIZE, "整理操作已排队", "整理操作已排队"
     ),

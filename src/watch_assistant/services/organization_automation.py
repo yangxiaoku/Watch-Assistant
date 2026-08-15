@@ -46,6 +46,7 @@ from watch_assistant.services.library_index import (
     LibraryIndexService,
 )
 from watch_assistant.services.media_matcher import TmdbMatchError
+from watch_assistant.services.media_parser import _is_junk_filename
 from watch_assistant.services.organization_directory_provisioner import (
     OrganizationDirectoryProvisionError,
 )
@@ -63,6 +64,7 @@ from watch_assistant.services.organization_plan import (
 from watch_assistant.services.organization_preview import (
     OrganizationPreviewError,
     OrganizationPreviewService,
+    _scope_entries,
 )
 from watch_assistant.services.organization_target import (
     OrganizationTargetCatalog,
@@ -444,6 +446,7 @@ class OrganizationAutomationService:
                     cleanup_empty_directories=settings.cleanup_empty_directories,
                     operation_delay_seconds=settings.operation_delay_seconds,
                     manual_confirmation=manual_confirmation,
+                    auto_cleanup_junk_files=settings.auto_cleanup_junk_files,
                 )
                 cleaned_small += cleaned_files
                 cleaned_empty += cleaned_dirs
@@ -789,8 +792,9 @@ class OrganizationAutomationService:
         cleanup_empty_directories: bool,
         operation_delay_seconds: float,
         manual_confirmation: bool,
+        auto_cleanup_junk_files: bool,
     ) -> tuple[int, int]:
-        """Delete unrecognized small files and prune empty source directories.
+        """Delete unrecognized small files/junk and prune empty source dirs.
 
         Runs after preview generation, per source, strictly best-effort: any
         failure leaves the pass result intact (the blocked-detail bookkeeping
@@ -799,6 +803,15 @@ class OrganizationAutomationService:
         删除必须与移动/重命名共享同一人工确认门禁:人工确认模式下所有
         远端删除一并挂起;空目录清理还额外受 ``cleanup_empty_directories``
         配置开关控制(默认关闭),不得仅凭写开关注入就执行。
+
+        广告垃圾文件清理 (``auto_cleanup_junk_files``) 同样受此门禁约束,且
+        仅在这些前提下执行,任一不满足则整体跳过(fail-closed):
+        1. 仅在完整扫描通过后执行 —— ``_auto_clean_source`` 只在预览成功后
+           调用,预览要求已验证的完整快照 (validate_complete_scan_evidence)。
+        2. 仅限受管源目录范围 —— 垃圾候选经 ``_scope_entries`` 限定到当前
+           source 子树,绝不越出配置范围。
+        3. 仅走 115 回收站(fs_delete/prepare_delete),不永久删除。
+        4. manual_confirmation 为真时跳过全部远端删除。
         """
         if manual_confirmation:
             return 0, 0
@@ -811,7 +824,7 @@ class OrganizationAutomationService:
                 "auto-clean transport unavailable; skipping cleanup for source"
             )
             return 0, 0
-        cleaned_files = cleaned_dirs = 0
+        cleaned_files = cleaned_dirs = cleaned_junk = 0
         deleted_ids: set[str] = set()
         try:
             if small_file_threshold_mb > 0:
@@ -831,6 +844,24 @@ class OrganizationAutomationService:
                         await self._invalidate_plans_for_deleted(
                             library_id, deleted_ids
                         )
+            if auto_cleanup_junk_files:
+                junk_candidates = await self._junk_file_candidates(
+                    scan_run_id,
+                    source_id,
+                    library_id=library_id,
+                    target_directory_id=None,
+                )
+                if junk_candidates:
+                    junk_deleted = await self._delete_small_files(
+                        transport,
+                        junk_candidates,
+                        operation_delay_seconds=operation_delay_seconds,
+                    )
+                    cleaned_junk = len(junk_deleted)
+                    if junk_deleted:
+                        await self._invalidate_plans_for_deleted(
+                            library_id, junk_deleted
+                        )
             if cleanup_empty_directories:
                 cleaned_dirs = await self._cleanup_empty_directories(
                     transport,
@@ -846,8 +877,10 @@ class OrganizationAutomationService:
                 await _close_transport(transport)
             except Exception:  # client teardown never fails the pass
                 logger.warning("auto-clean transport close failed", exc_info=True)
-        if cleaned_files or cleaned_dirs:
-            await self._log_cleaned(cleaned_files, cleaned_dirs)
+        if cleaned_files or cleaned_dirs or cleaned_junk:
+            await self._log_cleaned(
+                cleaned_files, cleaned_dirs, junk_files=cleaned_junk
+            )
         return cleaned_files, cleaned_dirs
 
     async def _small_review_file_candidates(
@@ -928,6 +961,62 @@ class OrganizationAutomationService:
             candidates.append(
                 _SmallFileCandidate(row.object_id, row.parent_id, row.name)
             )
+        return tuple(candidates)
+
+    async def _junk_file_candidates(
+        self,
+        scan_run_id: str,
+        source_id: str,
+        *,
+        library_id: str,
+        target_directory_id: str | None,
+    ) -> tuple[_SmallFileCandidate, ...]:
+        """Collect advertisement junk files directly from the scan snapshot.
+
+        广告垃圾文件在预览阶段被 ``_is_junk_filename`` 过滤,永远不会进入
+        plan actions,因此不能像小文件那样从计划快照收集,必须直接从
+        LibraryScanEntry 快照收集。候选仅限非目录且文件名含广告特征且
+        无任何媒体特征(``media_parser._is_junk_filename``)的文件。
+
+        范围门禁与预览一致:用 ``_scope_entries`` 限定到 source 子树 (source
+        作为受管源目录时即整个已验证快照;快照里额外录入了 target 目录树,
+        但那些都是目录,不构成文件候选)。source 不在扫描快照内时
+        ``_scope_entries`` 抛 OrganizationPreviewError (fail-closed),由
+        ``_auto_clean_source`` 外层容错,不破坏 pass。
+
+        MediaLibrary 不存在或 root_directory_id 为空时整体跳过(返回空)。
+        """
+        async with self._session_factory() as session:
+            library = await session.get(MediaLibrary, library_id)
+            if library is None or not library.root_directory_id:
+                return ()
+            entries = list(
+                (
+                    await session.scalars(
+                        select(LibraryScanEntry).where(
+                            LibraryScanEntry.scan_run_id == scan_run_id
+                        )
+                    )
+                ).all()
+            )
+        scoped = _scope_entries(
+            entries,
+            source_directory_ids=(source_id,),
+            root_directory_id=library.root_directory_id,
+            target_directory_id=target_directory_id,
+        )
+        candidates = [
+            _SmallFileCandidate(
+                entry.object_id, entry.parent_id, entry.name
+            )
+            for entry in scoped
+            if (
+                not entry.is_directory
+                and isinstance(entry.parent_id, str)
+                and entry.parent_id
+                and _is_junk_filename(entry.name)
+            )
+        ]
         return tuple(candidates)
 
     async def _delete_small_files(
@@ -1110,13 +1199,30 @@ class OrganizationAutomationService:
                     tree.files[directory_id].add(entry.file_id)
         return tree
 
-    async def _log_cleaned(self, cleaned_files: int, cleaned_dirs: int) -> None:
+    async def _log_cleaned(
+        self, cleaned_files: int, cleaned_dirs: int, *, junk_files: int = 0
+    ) -> None:
+        """记录自动清理审计事件。
+
+        小文件/空目录沿用 ``organize.automation.cleaned``(counts 原样);
+        广告垃圾文件单独用 ``library.auto_cleanup.applied``,三个值都走
+        ``fields``——通知 sink 只转发 fields(见 settings.log_event),counts
+        不进 handle_event,故垃圾清理结果需在 fields 里才能生成站内通知。
+        """
         logger = self._event_logger
         method = getattr(logger, "log_event", None)
         if callable(method):
             await method(
                 "organize.automation.cleaned",
                 counts={"small_files": cleaned_files, "empty_dirs": cleaned_dirs},
+            )
+            await method(
+                "library.auto_cleanup.applied",
+                fields={
+                    "small_files": cleaned_files,
+                    "empty_dirs": cleaned_dirs,
+                    "junk_files": junk_files,
+                },
             )
 
     async def _log_preview(
