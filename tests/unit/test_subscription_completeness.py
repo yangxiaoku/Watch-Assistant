@@ -74,6 +74,25 @@ def test_resources_cover_all_episodes_different_season_pack_not_included():
     assert resources_cover_all_episodes(names, season) is False
 
 
+def test_resources_special_not_cover_full_season():
+    # 特辑 (special) 不应被判为整季包覆盖全季。
+    names = ["Show S01 SP01"]
+    season = make_season(episode_count=10)
+    assert resources_cover_all_episodes(names, season) is False
+
+
+def test_resources_range_end_below_start_clamps_to_single_episode():
+    # end<start 的范围：_range_numbers 用 max 夹取，退化为单集主张 start。
+    from watch_assistant.services.subscription_completeness import _range_numbers
+
+    # "Show S01E10-E05" 解析为 ep_start=10、ep_end=None (parser 已丢弃
+    # 不合法范围)，_range_numbers(10, None) → (10,)。
+    assert _range_numbers(10, 5) == (10,)
+    # 单集主张无法覆盖全部已播出集。
+    season = make_season(episode_count=10)
+    assert resources_cover_all_episodes(["Show S01E10-E05"], season) is False
+
+
 # ---------------------------------------------------------------------------
 # inventory_covers_all_episodes
 # ---------------------------------------------------------------------------
@@ -102,6 +121,13 @@ def test_inventory_episode_range_covers_all():
 def test_inventory_wrong_season_skipped():
     season = make_season(episode_count=10, season_number=1)
     identities = [make_identity(name="Other S02 series 1080p COMPLETE")]
+    assert inventory_covers_all_episodes(identities, season) is False
+
+
+def test_inventory_special_not_cover_full_season():
+    # 特辑 identity 不应被判为整季包覆盖全季。
+    season = make_season(episode_count=10)
+    identities = [make_identity(name="Show S01 SP01", object_id="sp1")]
     assert inventory_covers_all_episodes(identities, season) is False
 
 

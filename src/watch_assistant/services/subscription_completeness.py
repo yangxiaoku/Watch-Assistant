@@ -115,6 +115,10 @@ def _resource_reference(
     """把单个资源名转成 EpisodeFileReference。
 
     file_id 用稳定字符串 f"resource:{index}"，保证非空且不重复。
+    special=bool(parsed.special_hints)：特辑 (如 "Show S01 SP01" /
+    "Show S01 SPECIAL") 解析为 season=1, episode_start=None，若不标记
+    special 会被误判为整季包覆盖全季；由 build_episode_matrix 将其排除
+    出覆盖范围，符合保守原则。
     """
     parsed = parse_media_filename(name)
     if parsed.season != getattr(season_detail, "season_number", None):
@@ -122,6 +126,7 @@ def _resource_reference(
     return EpisodeFileReference(
         f"resource:{index}",
         _episode_numbers(parsed, season_detail),
+        special=bool(parsed.special_hints),
     )
 
 
@@ -129,7 +134,9 @@ def _inventory_reference(identity, season_detail) -> EpisodeFileReference:
     """把单个 InventoryIdentity 转成 EpisodeFileReference。
 
     episode_start / episode_end 优先取 file 字段，其次取 parsed 字段；
-    file_id 用 file.object_id。
+    file_id 用 file.object_id。special=bool(parsed.special_hints)：
+    库存特辑与搜索资源同理 (file 字段无 special 字段，取 parsed 的
+    special_hints)，避免被误判为整季包。
     """
     file = identity.file
     parsed = identity.parsed
@@ -138,7 +145,9 @@ def _inventory_reference(identity, season_detail) -> EpisodeFileReference:
     season_number = getattr(season_detail, "season_number", None)
     if episode_start is None and parsed.season != season_number:
         # 无集号信息且季不符：跳过。
-        return EpisodeFileReference(file.object_id, (), recognized=False)
+        return EpisodeFileReference(
+            file.object_id, (), special=bool(parsed.special_hints), recognized=False
+        )
     numbers = _range_numbers(episode_start, episode_end)
     if numbers is None and parsed.season == season_number:
         # 整季包 (两者皆空且季相符)：1..episode_count。
@@ -148,6 +157,7 @@ def _inventory_reference(identity, season_detail) -> EpisodeFileReference:
     return EpisodeFileReference(
         file.object_id,
         numbers or (),
+        special=bool(parsed.special_hints),
         recognized=bool(numbers),
     )
 
@@ -155,10 +165,8 @@ def _inventory_reference(identity, season_detail) -> EpisodeFileReference:
 def _episode_numbers(parsed, season_detail) -> tuple[int, ...]:
     """资源名的集号范围；episode_start 为空 (纯整季名) 视为整季包。"""
     if parsed.episode_start is not None:
-        numbers = _range_numbers(parsed.episode_start, parsed.episode_end)
-        if numbers:
-            return numbers
-        return (parsed.episode_start,)
+        # episode_start 非空时 _range_numbers 恒返回非空 tuple。
+        return _range_numbers(parsed.episode_start, parsed.episode_end)
     episode_count = getattr(season_detail, "episode_count", None)
     if isinstance(episode_count, int) and episode_count >= 1:
         return tuple(range(1, episode_count + 1))
