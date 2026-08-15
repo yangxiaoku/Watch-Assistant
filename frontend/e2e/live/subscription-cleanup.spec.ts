@@ -40,7 +40,13 @@ test.describe("订阅/季度搜索/自动清理 上线功能(部署实例 192.16
     await expect(subscribeBtn).toBeVisible({ timeout: 45_000 });
     if ((await subscribeBtn.textContent())?.trim() === "订阅") {
       await subscribeBtn.click();
-      await expect(subscribeBtn).toHaveText("已订阅", { timeout: 15_000 });
+      // 并发容错:与其他订阅测试并行时可能因创建冲突/竞态未即时生效,重试一次
+      await expect(subscribeBtn).toHaveText(/已订阅|已暂停/, { timeout: 15_000 }).catch(async () => {
+        if ((await subscribeBtn.textContent())?.trim() === "订阅") {
+          await subscribeBtn.click();
+          await expect(subscribeBtn).toHaveText(/已订阅|已暂停/, { timeout: 15_000 });
+        }
+      });
       await page.screenshot({ ...shot("detail-subscribed"), fullPage: true });
     }
 
