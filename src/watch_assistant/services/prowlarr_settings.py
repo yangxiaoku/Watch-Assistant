@@ -39,6 +39,9 @@ from watch_assistant.services.source_health import (
 SETTINGS_ID = "default"
 _API_KEY = re.compile(r"^[^\x00-\x1f\x7f\r\n]{1,512}$")
 _VERIFY_QUERY = "Watch Assistant connection check"
+# 连接验证使用短超时:只确认 Prowlarr 可用,不等完整搜索预算(45s)。
+# 验证失败仍计入健康状态机(熔断/退避),由半开探测自动恢复。
+_VERIFY_TIMEOUT_SECONDS = 15
 
 
 class ProwlarrSettingsConflict(Exception):
@@ -252,7 +255,10 @@ class ProwlarrSettingsService:
         if client is None:
             raise ProwlarrSettingsUnavailable
         try:
-            await asyncio.wait_for(client.search(_VERIFY_QUERY), self._timeout_seconds)
+            await asyncio.wait_for(
+                client.search(_VERIFY_QUERY),
+                min(self._timeout_seconds, _VERIFY_TIMEOUT_SECONDS),
+            )
         except asyncio.CancelledError:
             raise
         except ProwlarrAuthError:
