@@ -972,6 +972,8 @@ function changeResourceFilter(next: Partial<ResourceRouteState>) {
   const route = { ...(pendingResourceRoute ?? currentResourceRoute()), ...next, page: 1 };
   if (route.kind === resourceKind.value && route.quality === resourceQuality.value && route.sort === resourceSort.value && route.pageSize === resourcePageSize.value && route.query === resourceQuery.value) return;
   pendingResourceRoute = route;
+  // 先同步 UI 选中态（筛选/排序按钮 active），即使资源搜索尚未完成也不必等接口返回。
+  applyResourceRoute(route);
   void loadResourcePage(route);
 }
 

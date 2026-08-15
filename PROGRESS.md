@@ -123,6 +123,8 @@ Systemd Release Package 均显示完成且成功。CI 成功仅证明当前 ref 
   触发搜索，并在 `get_resource_search_task` 轮询路径同样校验快照有效性。
 - 搜索超时预算从 90s 提升到 180s：前端轮询 120s 后会给“后台继续”的提示，后端继续执行，
   避免 Prowlarr 多查询超时叠加时在 90s 就硬失败。
+- 资源筛选/排序改为乐观更新：点击质量、类型、排序等筛选时立即同步按钮 active 状态，
+  不等待资源搜索完成，避免搜索较慢时看起来“点了没反应”。
 - 修正媒体库工作台 E2E 断言：页面实际标题为“媒体库”，原用例中的“媒体库与 STRM”为过期断言。
 - 通知渠道新增“测试”发送：后端 `POST /api/v1/notify-channels/{id}/test` + 设置页“测试”按钮，
   支持飞书 Webhook/Bot/CLI 和 ClawBot 真实渠道测试，发送失败记录 `notify.delivery_failed`，
