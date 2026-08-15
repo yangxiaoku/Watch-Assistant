@@ -124,6 +124,19 @@ class Settings(BaseSettings):
         le=120,
         validation_alias="NOTIFY_CLI_TIMEOUT_SECONDS",
     )
+    # 飞书开放平台 Bot 直连 API(与 feishu-cli 使用同一对应用凭据)。
+    feishu_app_id: SecretStr = Field(
+        default=SecretStr(""), validation_alias="FEISHU_APP_ID"
+    )
+    feishu_app_secret: SecretStr = Field(
+        default=SecretStr(""), validation_alias="FEISHU_APP_SECRET"
+    )
+    feishu_api_base_url: str = Field(
+        default="https://open.feishu.cn",
+        min_length=8,
+        max_length=2048,
+        validation_alias="FEISHU_API_BASE_URL",
+    )
     web_session_ttl_hours: int = Field(
         default=12, ge=1, le=720, validation_alias="WEB_SESSION_TTL_HOURS"
     )

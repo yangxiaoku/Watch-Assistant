@@ -1353,6 +1353,7 @@ function notifyDraftReady(): boolean {
 
 function notifyKindLabel(kind: string): string {
   if (kind === "feishu") return "飞书 Webhook";
+  if (kind === "feishu_bot") return "飞书 Bot API";
   if (kind === "feishu_cli") return "飞书 CLI";
   return "ClawBot";
 }
@@ -1617,12 +1618,13 @@ onBeforeUnmount(() => {
               <label>渠道名称<input v-model="notifyDraftName" type="text" placeholder="例如：追剧通知群" /></label>
               <label>渠道类型<select v-model="notifyDraftKind">
                 <option value="feishu">飞书 Webhook</option>
+                <option value="feishu_bot">飞书 Bot API（推荐）</option>
                 <option value="feishu_cli">飞书 CLI（feishu-cli）</option>
                 <option value="clawbot">ClawBot / OpenClaw</option>
               </select></label>
               <label v-if="notifyDraftKind === 'feishu'">飞书 Webhook 地址<input v-model="notifyDraftUrl" type="text" placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/…" /></label>
               <template v-else>
-                <label>目标 ID<input v-model="notifyDraftTarget" type="text" :placeholder="notifyDraftKind === 'feishu_cli' ? 'ou_xxx / oc_xxx / user@example.com' : 'ou_xxx / oc_xxx / 微信会话 ID'" /></label>
+                <label>目标 ID<input v-model="notifyDraftTarget" type="text" :placeholder="notifyDraftKind === 'feishu_cli' || notifyDraftKind === 'feishu_bot' ? 'ou_xxx / oc_xxx / user@example.com' : 'ou_xxx / oc_xxx / 微信会话 ID'" /></label>
                 <label v-if="notifyDraftKind === 'clawbot'">ClawBot 通道<select v-model="notifyDraftCliChannel">
                   <option value="feishu">飞书 feishu</option>
                   <option value="openclaw-weixin">微信 openclaw-weixin</option>

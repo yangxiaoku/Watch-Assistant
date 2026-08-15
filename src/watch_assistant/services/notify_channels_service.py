@@ -23,8 +23,7 @@ from watch_assistant.services.notify_channels.cli import (
     validate_cli_target,
 )
 
-SUPPORTED_KINDS = frozenset({"feishu", "feishu_cli", "clawbot"})
-_CLI_KINDS = frozenset({"feishu_cli", "clawbot"})
+SUPPORTED_KINDS = frozenset({"feishu", "feishu_bot", "feishu_cli", "clawbot"})
 # 只读回显的掩码规则:URL 前部保留长度。
 _MASK_HEAD_CHARS = 48
 _MASK_TAIL_CHARS = 4
@@ -147,7 +146,7 @@ def _storage_values(
         cleaned_target = validate_cli_target(target)
     except ValueError as exc:
         raise NotifyChannelError("invalid_notify_cli_target") from exc
-    if kind == "feishu_cli":
+    if kind in {"feishu_bot", "feishu_cli"}:
         if feishu_receive_id_type(cleaned_target) is None:
             raise NotifyChannelError("unsupported_feishu_target")
         payload = {"target": cleaned_target}
@@ -173,8 +172,9 @@ def _normalize_clawbot_channel(value: str | None) -> str:
 
 def _mask_display_value(kind: str, value: str) -> str:
     """掩码回显:feishu_cli 只显示 kind + 目标末 4 位,其余显示前缀/尾位。"""
-    if kind == "feishu_cli":
-        return f"feishu-cli:…{value[-_MASK_TAIL_CHARS:]}" if len(value) > _MASK_TAIL_CHARS else value
+    if kind in {"feishu_bot", "feishu_cli"}:
+        prefix = "feishu-bot" if kind == "feishu_bot" else "feishu-cli"
+        return f"{prefix}:…{value[-_MASK_TAIL_CHARS:]}" if len(value) > _MASK_TAIL_CHARS else value
     return _mask_webhook_url(value)
 
 

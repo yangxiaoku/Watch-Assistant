@@ -1064,7 +1064,7 @@ export interface NotifyChannelListResponse {
   items: NotifyChannelResponse[];
 }
 
-export type NotifyChannelKind = "feishu" | "feishu_cli" | "clawbot";
+export type NotifyChannelKind = "feishu" | "feishu_bot" | "feishu_cli" | "clawbot";
 
 export interface NotifyChannelCreateRequest {
   name: string;

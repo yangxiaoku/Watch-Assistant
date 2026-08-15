@@ -173,6 +173,18 @@ async def test_create_feishu_cli_stores_json_config(service, crypto):
 
 
 @pytest.mark.asyncio
+async def test_create_feishu_bot_stores_target_only(service, crypto):
+    svc, database = service
+    created = await svc.create(
+        "飞书 Bot", None, kind="feishu_bot", target="oc_group"
+    )
+    assert created.kind == "feishu_bot"
+    async with database.session_factory() as session:
+        row = await session.get(NotifyChannel, created.id)
+    assert crypto.decrypt(row.webhook_url_encrypted) == '{"target":"oc_group"}'
+
+
+@pytest.mark.asyncio
 async def test_create_clawbot_normalizes_wechat_channel(service, crypto):
     svc, database = service
     created = await svc.create(

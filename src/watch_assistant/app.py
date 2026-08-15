@@ -1091,6 +1091,9 @@ def create_app(
                 feishu_cli_command=settings.notify_feishu_cli_command,
                 clawbot_command=settings.notify_clawbot_command,
                 cli_timeout_seconds=settings.notify_cli_timeout_seconds,
+                feishu_app_id=settings.feishu_app_id.get_secret_value(),
+                feishu_app_secret=settings.feishu_app_secret.get_secret_value(),
+                feishu_api_base_url=settings.feishu_api_base_url,
             )
             application.state.inventory_audit_service = InventoryAuditService(
                 runtime_database.session_factory

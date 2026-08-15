@@ -33,6 +33,10 @@ from watch_assistant.services.notify_channels.cli import (
     decode_channel_config,
 )
 from watch_assistant.services.notify_channels.feishu import FeishuChannel
+from watch_assistant.services.notify_channels.feishu_bot import (
+    DEFAULT_FEISHU_API_BASE_URL,
+    FeishuBotChannel,
+)
 from watch_assistant.services.observability import EventLogger, emit_event
 
 logger = logging.getLogger(__name__)
@@ -55,9 +59,13 @@ class NotifyDispatcher:
         *,
         channel_factory: ChannelFactory | None = None,
         cli_channel_factory: Any | None = None,
+        feishu_bot_channel_factory: Any | None = None,
         feishu_cli_command: str = "feishu-cli",
         clawbot_command: str = "openclaw",
         cli_timeout_seconds: float = DEFAULT_CLI_TIMEOUT_SECONDS,
+        feishu_app_id: str = "",
+        feishu_app_secret: str = "",
+        feishu_api_base_url: str = DEFAULT_FEISHU_API_BASE_URL,
     ) -> None:
         self._session_factory = session_factory
         self._crypto = crypto
@@ -65,6 +73,12 @@ class NotifyDispatcher:
         self._base_url = base_url.rstrip("/")
         self._channel_factory = channel_factory or DefaultChannel
         self._cli_channel_factory = cli_channel_factory or self._build_cli_channel
+        self._feishu_bot_channel_factory = (
+            feishu_bot_channel_factory or self._build_feishu_bot_channel
+        )
+        self._feishu_app_id = feishu_app_id
+        self._feishu_app_secret = feishu_app_secret
+        self._feishu_api_base_url = feishu_api_base_url
         self._feishu_cli_command = feishu_cli_command
         self._clawbot_command = clawbot_command
         self._cli_timeout_seconds = cli_timeout_seconds
@@ -188,6 +202,14 @@ class NotifyDispatcher:
         target = config.get("target")
         if not target:
             return None
+        if row.kind == "feishu_bot":
+            return self._feishu_bot_channel_factory(
+                row.kind,
+                target=target,
+                app_id=self._feishu_app_id,
+                app_secret=self._feishu_app_secret,
+                api_base_url=self._feishu_api_base_url,
+            )
         if row.kind == "feishu_cli":
             return self._cli_channel_factory(
                 row.kind,
@@ -208,6 +230,22 @@ class NotifyDispatcher:
                 timeout_seconds=self._cli_timeout_seconds,
             )
         return None
+
+    @staticmethod
+    def _build_feishu_bot_channel(
+        kind: str,
+        *,
+        target: str,
+        app_id: str,
+        app_secret: str,
+        api_base_url: str,
+    ) -> Any:
+        return FeishuBotChannel(
+            target=target,
+            app_id=app_id,
+            app_secret=app_secret,
+            api_base_url=api_base_url,
+        )
 
     @staticmethod
     def _build_cli_channel(
