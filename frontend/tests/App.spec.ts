@@ -53,6 +53,7 @@ describe("App capability wiring", () => {
       ai_identification_enabled: false,
       small_file_threshold_mb: 0,
       cleanup_empty_directories: false,
+      auto_cleanup_junk_files: false,
       strm_linkage_enabled: false,
       operation_delay_seconds: 1.5,
       include_children_category: false,

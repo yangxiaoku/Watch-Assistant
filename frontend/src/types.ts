@@ -568,6 +568,7 @@ export interface OrganizationSettingsResponse {
   ai_identification_enabled: boolean;
   small_file_threshold_mb: number;
   cleanup_empty_directories: boolean;
+  auto_cleanup_junk_files: boolean;
   strm_linkage_enabled: boolean;
   operation_delay_seconds: number;
   include_children_category: boolean;
@@ -599,6 +600,7 @@ export interface PatchOrganizationSettingsRequest {
   ai_identification_enabled?: boolean;
   small_file_threshold_mb?: number;
   cleanup_empty_directories?: boolean;
+  auto_cleanup_junk_files?: boolean;
   strm_linkage_enabled?: boolean;
   operation_delay_seconds?: number;
   include_children_category?: boolean;

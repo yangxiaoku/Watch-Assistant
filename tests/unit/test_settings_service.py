@@ -421,6 +421,51 @@ async def test_organization_settings_default_small_file_threshold_is_100mb(tmp_p
 
 
 @pytest.mark.asyncio
+async def test_organization_settings_default_auto_cleanup_junk_files_is_false(tmp_path: Path):
+    from watch_assistant.db import create_database, initialize_database
+    from watch_assistant.services.settings import SettingsService
+
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'org-defaults.db'}")
+    await initialize_database(database.engine)
+    service = SettingsService(
+        database.session_factory,
+        state_directory=tmp_path / "state",
+    )
+
+    organization = await service.get_organization()
+
+    assert organization.auto_cleanup_junk_files is False
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_organization_settings_patch_auto_cleanup_junk_files_persists(tmp_path: Path):
+    from watch_assistant.db import create_database, initialize_database
+    from watch_assistant.schemas import OrganizationSettingsPatch
+    from watch_assistant.services.settings import SettingsService
+
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'org-patch.db'}")
+    await initialize_database(database.engine)
+    service = SettingsService(
+        database.session_factory,
+        state_directory=tmp_path / "state",
+    )
+
+    initial = await service.get_organization()
+    assert initial.auto_cleanup_junk_files is False
+
+    updated = await service.update_organization(
+        OrganizationSettingsPatch(revision=initial.revision, auto_cleanup_junk_files=True)
+    )
+    assert updated.auto_cleanup_junk_files is True
+    assert updated.revision == initial.revision + 1
+
+    stored = await service.get_organization()
+    assert stored.auto_cleanup_junk_files is True
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_p115_checkin_settings_persist_and_default(tmp_path: Path):
     from watch_assistant.db import create_database, initialize_database
     from watch_assistant.services.settings import SettingsService

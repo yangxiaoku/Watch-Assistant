@@ -24,6 +24,7 @@ class SettingsStub:
             ai_identification_enabled=False,
             small_file_threshold_mb=0,
             cleanup_empty_directories=False,
+            auto_cleanup_junk_files=False,
             strm_linkage_enabled=False,
             operation_delay_seconds=1.5,
             include_children_category=False,

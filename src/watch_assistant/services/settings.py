@@ -146,6 +146,8 @@ _ORGANIZATION_DEFAULTS: dict[str, object] = {
     # 低于该阈值的未识别(需要人工确认)小文件在整理后自动删除到 115 回收站。
     "small_file_threshold_mb": 100.0,
     "cleanup_empty_directories": False,
+    # 完整扫描通过后把广告/宣传垃圾文件自动移入 115 回收站(不永久删除)。
+    "auto_cleanup_junk_files": False,
     "strm_linkage_enabled": False,
     "operation_delay_seconds": 1.5,
     "include_children_category": False,
@@ -1304,6 +1306,7 @@ def _validate_organization_values(values: dict[str, object]) -> dict[str, object
         "media_probe_enabled",
         "ai_identification_enabled",
         "cleanup_empty_directories",
+        "auto_cleanup_junk_files",
         "strm_linkage_enabled",
         "include_children_category",
         "include_concert_category",

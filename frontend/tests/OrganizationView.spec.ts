@@ -21,6 +21,7 @@ const organization = {
   ai_identification_enabled: false,
   small_file_threshold_mb: 10,
   cleanup_empty_directories: false,
+  auto_cleanup_junk_files: false,
   strm_linkage_enabled: true,
   operation_delay_seconds: 1.5,
   include_children_category: false,

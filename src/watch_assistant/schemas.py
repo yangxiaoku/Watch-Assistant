@@ -787,6 +787,7 @@ class OrganizationSettingsResponse(BaseModel):
     ai_identification_enabled: bool
     small_file_threshold_mb: float = Field(ge=0, le=10_240)
     cleanup_empty_directories: bool
+    auto_cleanup_junk_files: bool
     strm_linkage_enabled: bool
     operation_delay_seconds: float = Field(ge=0, le=60)
     include_children_category: bool
@@ -820,6 +821,7 @@ class OrganizationSettingsPatch(BaseModel):
     ai_identification_enabled: bool | None = None
     small_file_threshold_mb: float | None = Field(default=None, ge=0, le=10_240)
     cleanup_empty_directories: bool | None = None
+    auto_cleanup_junk_files: bool | None = None
     strm_linkage_enabled: bool | None = None
     operation_delay_seconds: float | None = Field(default=None, ge=0, le=60)
     include_children_category: bool | None = None
