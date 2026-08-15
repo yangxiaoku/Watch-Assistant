@@ -441,6 +441,7 @@ async def test_check_auto_pauses_when_season_complete_and_emits_event(tmp_path):
         and fields["resource_type"] == "subscription"
         and fields["fields"].get("media_type") == "tv"
         and fields["fields"].get("status") == "paused"
+        and fields["fields"].get("season_number") == 1
         for event, fields in events.events
     )
     await database.engine.dispose()
@@ -518,5 +519,138 @@ async def test_check_never_auto_pauses_movie_subscription(tmp_path):
     assert checked.subscription.status == SubscriptionStatus.MATCHED
     assert not any(
         event == "subscription.auto_paused" for event, _ in events.events
+    )
+    await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_check_auto_pauses_from_local_inventory_complete(tmp_path, monkeypatch):
+    """设计 C.4:搜索资源不齐但本地库存已覆盖全部已播出集 → 自动暂停。
+    覆盖 _inventory_identities_for_season 的非空分支;并验证 un-matched 的
+    图书馆被过滤掉。"""
+    from types import SimpleNamespace as _NS
+
+    from watch_assistant.library_models import (
+        LibraryMediaIdentity,
+        LibraryScanEntry,
+        LibraryScanRun,
+        MediaLibrary,
+    )
+
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'subs-inv.db'}")
+    await initialize_database(database.engine)
+    # 伪造一个已验证的快照 run id(verified_latest_scan 被替换,不查真表,
+    # 但仍插入 run 行以满足 LibraryScanEntry 的外键)。
+    fake_run_id = "run_fake"
+    # 匹配库:tmdb 123 / season 1 覆盖 1..10。
+    db_match = "lib_match"
+    entry_match = "obj_show_s01"
+    db_other = "lib_other"
+    entry_other = "obj_other_show"
+    now = datetime.now(UTC)
+    # 第一批:两个库(先于 run/identity/entry,满足外键依赖)。
+    async with database.session_factory() as session:
+        session.add_all(
+            [
+                MediaLibrary(
+                    id=db_match,
+                    name="匹配库",
+                    root_directory_id="root_match",
+                    scope_verified=True,
+                    enabled=True,
+                ),
+                MediaLibrary(
+                    id=db_other,
+                    name="其他库",
+                    root_directory_id="root_other",
+                    scope_verified=True,
+                    enabled=True,
+                ),
+            ]
+        )
+        await session.commit()
+    # 第二批:匹配库的 run 行(满足 LibraryScanEntry 外键)。
+    async with database.session_factory() as session:
+        session.add(
+            LibraryScanRun(
+                id=fake_run_id,
+                library_id=db_match,
+                root_directory_id="root_match",
+                idempotency_key="fake_complete_run",
+                scan_mode="tree",
+                state="completed",
+                complete=True,
+                snapshot_revision=1,
+            )
+        )
+        await session.commit()
+    # 第三批:identity + 快照 entry。
+    async with database.session_factory() as session:
+        session.add_all(
+            [
+                LibraryMediaIdentity(
+                    id="ident_match",
+                    library_id=db_match,
+                    object_id=entry_match,
+                    tmdb_id=123,
+                    media_type="tv",
+                    season=1,
+                    episode_start=1,
+                    episode_end=10,
+                ),
+                LibraryMediaIdentity(
+                    id="ident_other",
+                    library_id=db_other,
+                    object_id=entry_other,
+                    tmdb_id=999,
+                    media_type="tv",
+                    season=1,
+                    episode_start=1,
+                    episode_end=1,
+                ),
+                LibraryScanEntry(
+                    scan_run_id=fake_run_id,
+                    object_type="file",
+                    object_id=entry_match,
+                    name="Show S01E01-E10.mkv",
+                    is_directory=False,
+                    size_bytes=1024,
+                    modified_at=now,
+                ),
+            ]
+        )
+        await session.commit()
+
+    # 伪造 verified_latest_scan:对每个库都返回同一 run(fail-closed 的
+    # 快照有效性由 monkeypatch 替身承担,测试只覆盖装载聚合与过滤逻辑)。
+    async def _fake_verified_latest_scan(session, library):
+        return _NS(id=fake_run_id)
+
+    monkeypatch.setattr(
+        "watch_assistant.services.subscriptions.verified_latest_scan",
+        _fake_verified_latest_scan,
+    )
+
+    # 搜索资源不齐,不能靠名字判定完整;进度由库存覆盖。
+    search = NamedSearch(["Show S01E01"])
+    events = EventRecorder()
+    service = SubscriptionService(
+        database.session_factory,
+        search,
+        season_metadata_service=FakedSeasonMetadata(),
+        event_logger=events,
+    )
+    created = await service.create(
+        SubscriptionCreateRequest(
+            tmdb_id=123, media_type=MediaType.TV, season_number=1
+        )
+    )
+    checked = await service.check(created.id)
+    assert checked.matched_count == 1
+    assert checked.subscription.status == SubscriptionStatus.PAUSED
+    assert any(
+        event == "subscription.auto_paused"
+        and fields["fields"].get("season_number") == 1
+        for event, fields in events.events
     )
     await database.engine.dispose()

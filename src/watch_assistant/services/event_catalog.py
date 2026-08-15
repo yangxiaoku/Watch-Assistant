@@ -507,6 +507,7 @@ EVENT_CATALOG: dict[str, EventDefinition] = {
         LogCategory.SUBSCRIPTION,
         "订阅已自动暂停",
         "{media_type}订阅整季资源已齐全，已自动暂停",
+        fields=frozenset({"season_number"}),
     ),
     "subscription.scheduler_started": _event(
         "subscription.scheduler_started", LogCategory.SUBSCRIPTION, "订阅调度开始", "订阅调度已开始，本次到期检查 {total} 项"
