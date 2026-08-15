@@ -2215,8 +2215,21 @@ class NotifyChannelCreateRequest(BaseModel):
     model_config = {"extra": "forbid"}
 
     name: str = Field(min_length=1, max_length=64)
-    webhook_url: str = Field(min_length=8, max_length=2048)
-    kind: Literal["feishu"] = "feishu"
+    kind: Literal["feishu", "feishu_cli", "clawbot"] = "feishu"
+    webhook_url: str | None = Field(default=None, min_length=8, max_length=2048)
+    target: str | None = Field(default=None, min_length=1, max_length=128)
+    cli_channel: str | None = Field(default=None, min_length=1, max_length=64)
+
+    @model_validator(mode="after")
+    def validate_notify_channel_request(self) -> "NotifyChannelCreateRequest":
+        if self.kind == "feishu" and not self.webhook_url:
+            raise ValueError("webhook_url_required")
+        if self.kind in {"feishu_cli", "clawbot"}:
+            if not self.target:
+                raise ValueError("notify_target_required")
+            if self.kind == "clawbot" and not self.cli_channel:
+                raise ValueError("notify_cli_channel_required")
+        return self
 
 
 class NotifyChannelResponse(BaseModel):

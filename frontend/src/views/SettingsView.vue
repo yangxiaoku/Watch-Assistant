@@ -46,6 +46,8 @@ import type {
   P115CheckInSettingsResponse,
   P115CheckInStatusResponse,
   SettingsOverviewResponse,
+  NotifyChannelCreateRequest,
+  NotifyChannelKind,
   NotifyChannelResponse,
   NotifyChannelListResponse,
   PatchProwlarrSettingsRequest,
@@ -164,7 +166,10 @@ const notifyError = ref("");
 const notifySaving = ref(false);
 const notifySaveError = ref("");
 const notifyDraftName = ref("");
+const notifyDraftKind = ref<NotifyChannelKind>("feishu");
 const notifyDraftUrl = ref("");
+const notifyDraftTarget = ref("");
+const notifyDraftCliChannel = ref("feishu");
 const organizationSettings = ref<OrganizationSettingsResponse | null>(null);
 const organizationLoading = ref(true);
 const organizationError = ref("");
@@ -1338,17 +1343,42 @@ async function loadNotifyChannels() {
   }
 }
 
+function notifyDraftReady(): boolean {
+  const name = notifyDraftName.value.trim();
+  if (!name) return false;
+  if (notifyDraftKind.value === "feishu") return Boolean(notifyDraftUrl.value.trim());
+  if (!notifyDraftTarget.value.trim()) return false;
+  return notifyDraftKind.value !== "clawbot" || Boolean(notifyDraftCliChannel.value.trim());
+}
+
+function notifyKindLabel(kind: string): string {
+  if (kind === "feishu") return "飞书 Webhook";
+  if (kind === "feishu_cli") return "飞书 CLI";
+  return "ClawBot";
+}
+
 async function addNotifyChannel() {
   const name = notifyDraftName.value.trim();
-  const url = notifyDraftUrl.value.trim();
-  if (!name || !url || notifySaving.value) return;
+  if (!notifyDraftReady() || notifySaving.value) return;
   notifySaving.value = true;
   notifySaveError.value = "";
+  const payload: NotifyChannelCreateRequest = { name, kind: notifyDraftKind.value };
+  if (notifyDraftKind.value === "feishu") {
+    payload.webhook_url = notifyDraftUrl.value.trim();
+  } else {
+    payload.target = notifyDraftTarget.value.trim();
+    if (notifyDraftKind.value === "clawbot") {
+      payload.cli_channel = notifyDraftCliChannel.value.trim();
+    }
+  }
   try {
-    await props.api.createNotifyChannel({ name, webhook_url: url, kind: "feishu" });
+    await props.api.createNotifyChannel(payload);
     if (!settingsMounted) return;
     notifyDraftName.value = "";
     notifyDraftUrl.value = "";
+    notifyDraftTarget.value = "";
+    notifyDraftKind.value = "feishu";
+    notifyDraftCliChannel.value = "feishu";
     await loadNotifyChannels();
     feedback.success("通知渠道已添加");
   } catch (exception) {
@@ -1579,17 +1609,29 @@ onBeforeUnmount(() => {
           </template>
         </section>
         <section v-else-if="activeSection === 'notify'" class="settings-section" aria-labelledby="notify-title">
-          <header class="settings-section-heading"><div><p class="eyebrow">自动化</p><h2 id="notify-title">追更通知</h2><p>订阅命中新集或资源入库成功后，主动推送到飞书群机器人。</p></div><button class="icon-button" type="button" title="刷新通知渠道" aria-label="刷新通知渠道" :disabled="notifyLoading" @click="loadNotifyChannels"><RefreshCw :size="16" :class="{ spin: notifyLoading }" /></button></header>
+          <header class="settings-section-heading"><div><p class="eyebrow">自动化</p><h2 id="notify-title">追更通知</h2><p>订阅命中新集或资源入库成功后，主动推送到飞书或微信机器人。</p></div><button class="icon-button" type="button" title="刷新通知渠道" aria-label="刷新通知渠道" :disabled="notifyLoading" @click="loadNotifyChannels"><RefreshCw :size="16" :class="{ spin: notifyLoading }" /></button></header>
           <InlineAlert v-if="notifyError" variant="error" :message="notifyError" action-label="重试" @action="loadNotifyChannels" />
           <div class="settings-subsection">
-            <h3>添加飞书机器人</h3>
+            <h3>添加通知渠道</h3>
             <div class="settings-form-grid">
               <label>渠道名称<input v-model="notifyDraftName" type="text" placeholder="例如：追剧通知群" /></label>
-              <label>飞书 Webhook 地址<input v-model="notifyDraftUrl" type="text" placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/…" /></label>
+              <label>渠道类型<select v-model="notifyDraftKind">
+                <option value="feishu">飞书 Webhook</option>
+                <option value="feishu_cli">飞书 CLI（feishu-cli）</option>
+                <option value="clawbot">ClawBot / OpenClaw</option>
+              </select></label>
+              <label v-if="notifyDraftKind === 'feishu'">飞书 Webhook 地址<input v-model="notifyDraftUrl" type="text" placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/…" /></label>
+              <template v-else>
+                <label>目标 ID<input v-model="notifyDraftTarget" type="text" :placeholder="notifyDraftKind === 'feishu_cli' ? 'ou_xxx / oc_xxx / user@example.com' : 'ou_xxx / oc_xxx / 微信会话 ID'" /></label>
+                <label v-if="notifyDraftKind === 'clawbot'">ClawBot 通道<select v-model="notifyDraftCliChannel">
+                  <option value="feishu">飞书 feishu</option>
+                  <option value="openclaw-weixin">微信 openclaw-weixin</option>
+                </select></label>
+              </template>
             </div>
-            <button class="button button-primary" type="button" :disabled="notifySaving || !notifyDraftName.trim() || !notifyDraftUrl.trim()" @click="addNotifyChannel">{{ notifySaving ? '添加中…' : '添加渠道' }}</button>
+            <button class="button button-primary" type="button" :disabled="notifySaving || !notifyDraftReady()" @click="addNotifyChannel">{{ notifySaving ? '添加中…' : '添加渠道' }}</button>
             <InlineAlert v-if="notifySaveError" variant="error" :message="notifySaveError" />
-            <p class="settings-note">Webhook 地址加密存储，仅显示前缀与末位，不会回显完整地址。</p>
+            <p class="settings-note">凭据与目标 ID 加密存储，仅显示脱敏摘要；CLI 可执行文件通过 NOTIFY_FEISHU_CLI_COMMAND / NOTIFY_CLAWBOT_COMMAND 配置。</p>
           </div>
           <div class="settings-subsection">
             <h3>已配置渠道</h3>
@@ -1597,7 +1639,7 @@ onBeforeUnmount(() => {
             <p v-else-if="notifyChannels.length === 0" class="settings-note">尚未配置任何通知渠道。</p>
             <ul v-else class="settings-list">
               <li v-for="channel in notifyChannels" :key="channel.id" class="settings-list-item">
-                <div class="settings-list-meta"><strong>{{ channel.name }}</strong><span class="settings-note">{{ channel.webhook_url_prefix }}</span></div>
+                <div class="settings-list-meta"><strong>{{ channel.name }} · {{ notifyKindLabel(channel.kind) }}</strong><span class="settings-note">{{ channel.webhook_url_prefix }}</span></div>
                 <div class="settings-list-actions">
                   <label class="settings-toggle"><input type="checkbox" :checked="channel.enabled" aria-label="启用渠道" @change="toggleNotifyChannel(channel)" /><span>{{ channel.enabled ? '启用' : '停用' }}</span></label>
                   <button class="icon-button" type="button" title="删除渠道" aria-label="删除渠道" @click="removeNotifyChannel(channel)"><XCircle :size="16" /></button>

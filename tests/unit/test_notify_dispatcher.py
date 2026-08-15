@@ -236,6 +236,62 @@ async def test_dispatch_notify_closes_each_channel_after_send(database):
 
 
 @pytest.mark.asyncio
+async def test_dispatch_clawbot_builds_cli_channel(database):
+    now = datetime.now(UTC)
+    async with database.session_factory() as session:
+        session.add(
+            NotifyChannel(
+                id="chan_cli",
+                name="ClawBot",
+                kind="clawbot",
+                webhook_url_encrypted=FakeCrypto().encrypt(
+                    '{"target":"ou_abc","channel":"feishu"}'
+                ),
+                webhook_url_prefix="clawbot:…abc",
+                enabled=True,
+                revision=1,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        await session.commit()
+
+    calls = []
+
+    def cli_factory(kind, *, target, cli_channel, command, timeout_seconds):
+        calls.append(
+            {
+                "kind": kind,
+                "target": target,
+                "cli_channel": cli_channel,
+                "command": command,
+                "timeout_seconds": timeout_seconds,
+            }
+        )
+        return FakeFeishuChannel()
+
+    dispatcher = NotifyDispatcher(
+        database.session_factory,
+        FakeCrypto(),
+        channel_factory=lambda url: FakeFeishuChannel(),
+        cli_channel_factory=cli_factory,
+        clawbot_command="/usr/local/bin/openclaw",
+        cli_timeout_seconds=17,
+    )
+    count = await dispatcher.dispatch_notify(title="t", text="x", link_path="/tv/1")
+    assert count == 1
+    assert calls == [
+        {
+            "kind": "clawbot",
+            "target": "ou_abc",
+            "cli_channel": "feishu",
+            "command": "/usr/local/bin/openclaw",
+            "timeout_seconds": 17,
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_dispatch_notify_with_no_channels_returns_zero(database):
     dispatcher = _dispatcher(database, FakeCrypto(), lambda url: FakeFeishuChannel())
     try:

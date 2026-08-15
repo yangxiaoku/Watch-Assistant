@@ -1064,10 +1064,14 @@ export interface NotifyChannelListResponse {
   items: NotifyChannelResponse[];
 }
 
+export type NotifyChannelKind = "feishu" | "feishu_cli" | "clawbot";
+
 export interface NotifyChannelCreateRequest {
   name: string;
-  webhook_url: string;
-  kind: "feishu";
+  kind: NotifyChannelKind;
+  webhook_url?: string;
+  target?: string;
+  cli_channel?: string;
 }
 
 export interface NotifyChannelPatch {

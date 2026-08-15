@@ -104,6 +104,26 @@ class Settings(BaseSettings):
         max_length=2048,
         validation_alias="NOTIFY_BASE_URL",
     )
+    # CLI 通知渠道的可执行文件。生产环境建议配置绝对路径,并确保
+    # watch-assistant 服务用户可执行且能读取对应 CLI 的凭据目录。
+    notify_feishu_cli_command: str = Field(
+        default="feishu-cli",
+        min_length=1,
+        max_length=1024,
+        validation_alias="NOTIFY_FEISHU_CLI_COMMAND",
+    )
+    notify_clawbot_command: str = Field(
+        default="openclaw",
+        min_length=1,
+        max_length=1024,
+        validation_alias="NOTIFY_CLAWBOT_COMMAND",
+    )
+    notify_cli_timeout_seconds: float = Field(
+        default=30.0,
+        ge=5,
+        le=120,
+        validation_alias="NOTIFY_CLI_TIMEOUT_SECONDS",
+    )
     web_session_ttl_hours: int = Field(
         default=12, ge=1, le=720, validation_alias="WEB_SESSION_TTL_HOURS"
     )

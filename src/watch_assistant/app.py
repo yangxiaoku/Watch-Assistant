@@ -1088,6 +1088,9 @@ def create_app(
                 runtime_domain_crypto("notify"),
                 event_logger=application.state.settings_service,
                 base_url=settings.notify_base_url,
+                feishu_cli_command=settings.notify_feishu_cli_command,
+                clawbot_command=settings.notify_clawbot_command,
+                cli_timeout_seconds=settings.notify_cli_timeout_seconds,
             )
             application.state.inventory_audit_service = InventoryAuditService(
                 runtime_database.session_factory

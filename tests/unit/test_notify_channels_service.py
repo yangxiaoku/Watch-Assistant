@@ -110,7 +110,7 @@ async def test_create_rejects_empty_or_blank_webhook_url(service):
     for bad in ("", "   "):
         with pytest.raises(ValueError) as error:
             await svc.create("x", bad)
-        assert str(error.value) == "unsupported_notify_kind"
+        assert str(error.value) == "webhook_url_required"
 
 
 @pytest.mark.asyncio
@@ -158,6 +158,36 @@ async def test_delete_removes_channel_and_is_idempotent(service):
     assert row is None
     # delete 找不到时静默成功(幂等删除,不抛错)。
     await svc.delete(created.id)
+
+
+@pytest.mark.asyncio
+async def test_create_feishu_cli_stores_json_config(service, crypto):
+    svc, database = service
+    created = await svc.create(
+        "飞书 CLI", None, kind="feishu_cli", target="ou_abc"
+    )
+    assert created.kind == "feishu_cli"
+    async with database.session_factory() as session:
+        row = await session.get(NotifyChannel, created.id)
+    assert crypto.decrypt(row.webhook_url_encrypted) == '{"target":"ou_abc"}'
+
+
+@pytest.mark.asyncio
+async def test_create_clawbot_normalizes_wechat_channel(service, crypto):
+    svc, database = service
+    created = await svc.create(
+        "微信 ClawBot",
+        None,
+        kind="clawbot",
+        target="peer-1",
+        cli_channel="wechat",
+    )
+    assert created.kind == "clawbot"
+    async with database.session_factory() as session:
+        row = await session.get(NotifyChannel, created.id)
+    assert crypto.decrypt(row.webhook_url_encrypted) == (
+        '{"target":"peer-1","channel":"openclaw-weixin"}'
+    )
 
 
 def test_response_contract_fields():

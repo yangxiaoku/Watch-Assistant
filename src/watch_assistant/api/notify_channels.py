@@ -44,7 +44,13 @@ async def create_channel(
 ) -> NotifyChannelResponse:
     try:
         return _response(
-            await service.create(payload.name, payload.webhook_url, kind=payload.kind)
+            await service.create(
+                payload.name,
+                payload.webhook_url,
+                kind=payload.kind,
+                target=payload.target,
+                cli_channel=payload.cli_channel,
+            )
         )
     except NotifyChannelError as exc:
         raise _http_error(exc) from None
@@ -84,6 +90,11 @@ def _http_error(error: NotifyChannelError) -> HTTPException:
     status_code = {
         "unsupported_notify_kind": 422,
         "notify_channel_not_found": 404,
+        "webhook_url_required": 422,
+        "invalid_notify_cli_target": 422,
+        "unsupported_feishu_target": 422,
+        "invalid_notify_cli_channel": 422,
+        "invalid_notify_channel_name": 422,
     }.get(error.code, 422)
     return HTTPException(status_code=status_code, detail={"code": error.code})
 

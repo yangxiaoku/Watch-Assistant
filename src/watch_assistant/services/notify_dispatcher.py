@@ -27,6 +27,11 @@ from watch_assistant.models import (
     Workflow,
 )
 from watch_assistant.schemas import LoggingLevel
+from watch_assistant.services.notify_channels.cli import (
+    DEFAULT_CLI_TIMEOUT_SECONDS,
+    CliNotifyChannel,
+    decode_channel_config,
+)
 from watch_assistant.services.notify_channels.feishu import FeishuChannel
 from watch_assistant.services.observability import EventLogger, emit_event
 
@@ -49,12 +54,20 @@ class NotifyDispatcher:
         base_url: str = "http://192.168.6.236:8115",
         *,
         channel_factory: ChannelFactory | None = None,
+        cli_channel_factory: Any | None = None,
+        feishu_cli_command: str = "feishu-cli",
+        clawbot_command: str = "openclaw",
+        cli_timeout_seconds: float = DEFAULT_CLI_TIMEOUT_SECONDS,
     ) -> None:
         self._session_factory = session_factory
         self._crypto = crypto
         self._event_logger = event_logger
         self._base_url = base_url.rstrip("/")
         self._channel_factory = channel_factory or DefaultChannel
+        self._cli_channel_factory = cli_channel_factory or self._build_cli_channel
+        self._feishu_cli_command = feishu_cli_command
+        self._clawbot_command = clawbot_command
+        self._cli_timeout_seconds = cli_timeout_seconds
 
     async def dispatch_notify(
         self,
@@ -82,7 +95,12 @@ class NotifyDispatcher:
             except Exception as exc:  # noqa: BLE001 - a bad row must not block others
                 await self._log_failure(row.id, exc)
                 continue
-            channel = self._channel_factory(webhook_url)
+            channel = self._build_channel(row, webhook_url)
+            if channel is None:
+                await self._log_failure(
+                    row.id, RuntimeError("invalid_notify_cli_config")
+                )
+                continue
             try:
                 try:
                     ok = await channel.send(title=title, text=text, link_url=link_url)
@@ -161,6 +179,52 @@ class NotifyDispatcher:
                 await self._log_failure("task:" + task_id, exc)
             except Exception:  # noqa: BLE001, S110
                 pass
+
+    def _build_channel(self, row: NotifyChannel, secret: str) -> Any:
+        """Build a webhook or CLI channel from a decrypted channel secret."""
+        if row.kind == "feishu":
+            return self._channel_factory(secret)
+        config = decode_channel_config(row.kind, secret)
+        target = config.get("target")
+        if not target:
+            return None
+        if row.kind == "feishu_cli":
+            return self._cli_channel_factory(
+                row.kind,
+                target=target,
+                cli_channel=None,
+                command=self._feishu_cli_command,
+                timeout_seconds=self._cli_timeout_seconds,
+            )
+        if row.kind == "clawbot":
+            cli_channel = config.get("channel")
+            if not cli_channel:
+                return None
+            return self._cli_channel_factory(
+                row.kind,
+                target=target,
+                cli_channel=cli_channel,
+                command=self._clawbot_command,
+                timeout_seconds=self._cli_timeout_seconds,
+            )
+        return None
+
+    @staticmethod
+    def _build_cli_channel(
+        kind: str,
+        *,
+        target: str,
+        cli_channel: str | None,
+        command: str,
+        timeout_seconds: float,
+    ) -> Any:
+        return CliNotifyChannel(
+            kind=kind,
+            target=target,
+            command=command,
+            channel=cli_channel or "openclaw-weixin",
+            timeout_seconds=timeout_seconds,
+        )
 
     async def aclose(self) -> None:
         # 每次 send 后已立即关闭渠道;保留 aclose 以兼容调用方与测试注入。

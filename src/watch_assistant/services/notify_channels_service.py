@@ -7,6 +7,7 @@ webhook_url 属敏感凭据,用 SecretCrypto 加密后落库(webhook_url_encrypt
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import uuid4
@@ -16,8 +17,14 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from watch_assistant.crypto import SecretCrypto
 from watch_assistant.models import NotifyChannel
+from watch_assistant.services.notify_channels.cli import (
+    feishu_receive_id_type,
+    validate_cli_channel,
+    validate_cli_target,
+)
 
-SUPPORTED_KINDS = frozenset({"feishu"})
+SUPPORTED_KINDS = frozenset({"feishu", "feishu_cli", "clawbot"})
+_CLI_KINDS = frozenset({"feishu_cli", "clawbot"})
 # 只读回显的掩码规则:URL 前部保留长度。
 _MASK_HEAD_CHARS = 48
 _MASK_TAIL_CHARS = 4
@@ -57,23 +64,30 @@ class NotifyChannelService:
     async def create(
         self,
         name: str,
-        webhook_url: str,
+        webhook_url: str | None,
         *,
         kind: str = "feishu",
+        target: str | None = None,
+        cli_channel: str | None = None,
     ) -> NotifyChannelResponse:
         if kind not in SUPPORTED_KINDS:
             raise NotifyChannelError("unsupported_notify_kind")
         clean_name = name.strip()
-        url = webhook_url.strip()
-        if not url:
-            raise NotifyChannelError("unsupported_notify_kind")
+        if not clean_name:
+            raise NotifyChannelError("invalid_notify_channel_name")
+        storage_value, display_value = _storage_values(
+            kind,
+            webhook_url=webhook_url,
+            target=target,
+            cli_channel=cli_channel,
+        )
         now = datetime.now(UTC)
         item = NotifyChannel(
             id="notify_" + uuid4().hex,
             name=clean_name,
             kind=kind,
-            webhook_url_encrypted=self._crypto.encrypt(url),
-            webhook_url_prefix=_mask_webhook_url(url),
+            webhook_url_encrypted=self._crypto.encrypt(storage_value),
+            webhook_url_prefix=_mask_display_value(kind, display_value),
             enabled=True,
             revision=1,
             created_at=now,
@@ -114,6 +128,54 @@ class NotifyChannelService:
                 return
             await session.delete(item)
             await session.commit()
+
+
+def _storage_values(
+    kind: str,
+    *,
+    webhook_url: str | None,
+    target: str | None,
+    cli_channel: str | None,
+) -> tuple[str, str]:
+    """Return (encrypted plaintext, display value) for one channel kind."""
+    if kind == "feishu":
+        url = webhook_url.strip() if webhook_url else ""
+        if not url:
+            raise NotifyChannelError("webhook_url_required")
+        return url, url
+    try:
+        cleaned_target = validate_cli_target(target)
+    except ValueError as exc:
+        raise NotifyChannelError("invalid_notify_cli_target") from exc
+    if kind == "feishu_cli":
+        if feishu_receive_id_type(cleaned_target) is None:
+            raise NotifyChannelError("unsupported_feishu_target")
+        payload = {"target": cleaned_target}
+    else:
+        try:
+            cleaned_channel = _normalize_clawbot_channel(cli_channel)
+        except ValueError as exc:
+            raise NotifyChannelError("invalid_notify_cli_channel") from exc
+        payload = {"target": cleaned_target, "channel": cleaned_channel}
+    storage = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    return storage, f"{kind}:{cleaned_target}"
+
+
+def _normalize_clawbot_channel(value: str | None) -> str:
+    try:
+        cleaned = validate_cli_channel(value)
+    except ValueError as exc:
+        raise ValueError from exc
+    if cleaned in {"wechat", "weixin"}:
+        return "openclaw-weixin"
+    return cleaned
+
+
+def _mask_display_value(kind: str, value: str) -> str:
+    """掩码回显:feishu_cli 只显示 kind + 目标末 4 位,其余显示前缀/尾位。"""
+    if kind == "feishu_cli":
+        return f"feishu-cli:…{value[-_MASK_TAIL_CHARS:]}" if len(value) > _MASK_TAIL_CHARS else value
+    return _mask_webhook_url(value)
 
 
 def _mask_webhook_url(url: str) -> str:
