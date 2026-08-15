@@ -1,6 +1,7 @@
 """Persistent, single-process magnet metadata inspection batches."""
 
 import asyncio
+import logging
 import re
 from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
@@ -31,10 +32,14 @@ from watch_assistant.schemas import (
 )
 from watch_assistant.services.observability import EventLogger, emit_event
 from watch_assistant.services.workflows import (
+    WorkflowConflict,
+    WorkflowNotFound,
     emit_workflow_stage_changed,
     link_child,
     sync_child_stage,
 )
+
+logger = logging.getLogger(__name__)
 
 INSPECTION_RETENTION = timedelta(days=7)
 # 超过该时长的 RUNNING 批次视为残留(进程内异常/崩溃路径未复位),回收重排。
@@ -603,16 +608,31 @@ class InspectionWorker:
                     if batch.status == InspectionBatchStatus.FAILED
                     else None
                 )
-                stage_workflow = await sync_child_stage(
-                    session,
-                    batch.workflow_id,
-                    WorkflowStageName.INSPECTION,
-                    child_type="inspection_batch",
-                    child_id=batch.id,
-                    status=stage_status,
-                    reason=f"inspection_{batch.status.value}",
-                    error_code=stage_error_code,
-                )
+                try:
+                    stage_workflow = await sync_child_stage(
+                        session,
+                        batch.workflow_id,
+                        WorkflowStageName.INSPECTION,
+                        child_type="inspection_batch",
+                        child_id=batch.id,
+                        status=stage_status,
+                        reason=f"inspection_{batch.status.value}",
+                        error_code=stage_error_code,
+                    )
+                except (WorkflowConflict, WorkflowNotFound):
+                    # 批次条目已全部终态,批次本身必须落库;workflow 阶段可能已被
+                    # stage_timeout/人工核对改写,此时再回写会触发
+                    # workflow_stage_regression。不得因此让批次永久卡 RUNNING。
+                    logger.warning(
+                        "inspection batch finalize skipped workflow stage sync "
+                        "batch=%s workflow=%s stage_status=%s",
+                        batch.id,
+                        batch.workflow_id,
+                        stage_status.value,
+                    )
+                    stage_workflow = None
+                    stage_status = None
+                    stage_error_code = None
             await session.commit()
             failed = batch.status == InspectionBatchStatus.FAILED
             fields: dict[str, object] = {
