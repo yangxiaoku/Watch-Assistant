@@ -108,9 +108,16 @@ class InventoryPushGuard:
             for library in libraries:
                 if not library.scope_verified:
                     return InventoryPushCheck(False, "inventory_scope_unconfigured")
+                # 本地缓存 P1:使用「最新已完成」的快照,而非最新 run——
+                # 中断/失败的 run(取消、风控失败)不否定已完成快照的有效性
+                # (内容是否变化由目录指纹判定)。
                 run = await session.scalar(
                     select(LibraryScanRun)
-                    .where(LibraryScanRun.library_id == library.id)
+                    .where(
+                        LibraryScanRun.library_id == library.id,
+                        LibraryScanRun.complete.is_(True),
+                        LibraryScanRun.state == "completed",
+                    )
                     .order_by(
                         LibraryScanRun.created_at.desc(), LibraryScanRun.id.desc()
                     )
@@ -194,7 +201,11 @@ async def library_scope_fresh(
     """
     run = await session.scalar(
         select(LibraryScanRun)
-        .where(LibraryScanRun.library_id == library.id)
+        .where(
+            LibraryScanRun.library_id == library.id,
+            LibraryScanRun.complete.is_(True),
+            LibraryScanRun.state == "completed",
+        )
         .order_by(LibraryScanRun.created_at.desc(), LibraryScanRun.id.desc())
         .limit(1)
     )
