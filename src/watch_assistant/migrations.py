@@ -1424,6 +1424,14 @@ def _create_notify_channels_table(connection: Connection) -> None:
     NotifyChannel.__table__.create(connection, checkfirst=True)
 
 
+def _create_directory_fingerprints_table(connection: Connection) -> None:
+    """Persist local 115 directory fingerprints (local cache, lazy access P1)."""
+
+    from watch_assistant.library_models import DirectoryFingerprint
+
+    DirectoryFingerprint.__table__.create(connection, checkfirst=True)
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration("001_application_settings_columns", _add_application_settings_columns),
     Migration("002_library_index_tables", _create_library_index_tables),
@@ -1518,6 +1526,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration("076_p115_checkin_settings", _add_p115_checkin_settings_column),
     Migration("077_named_locks", _create_named_locks_table),
     Migration("078_notify_channels", _create_notify_channels_table),
+    Migration("079_directory_fingerprints", _create_directory_fingerprints_table),
 )
 
 

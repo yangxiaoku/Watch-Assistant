@@ -125,6 +125,32 @@ class LibraryScanCheckpoint(Base):
     )
 
 
+class DirectoryFingerprint(Base):
+    """本地目录指纹缓存:115 目录的 (count, utime) 快照与核对时间。
+
+    2026-08-16 设计(本地缓存与惰性访问 P1):115 fs_info 的 count(直接
+    子项数)+utime(修改时间) 构成目录指纹,指纹未变 = 本地快照可信。
+    守卫在 TTL 内纯本地判定(0 次 115 调用);过期后由刷新路径做 1 次
+    指纹核对,变化才升级全树扫描。P1 只写根目录指纹,子目录指纹(P2
+    局部刷新)沿用同一张表。
+    """
+
+    __tablename__ = "directory_fingerprints"
+
+    library_id: Mapped[str] = mapped_column(
+        String(128),
+        ForeignKey("media_libraries.id"),
+        primary_key=True,
+    )
+    directory_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    child_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    utime: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    folder_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    verified_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utc_now
+    )
+
+
 class LibraryScanEntry(Base):
     """One snapshot observation keyed by stable cloud identity."""
 

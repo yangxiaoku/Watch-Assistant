@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import UTC
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from watch_assistant.library_models import (
+    DirectoryFingerprint,
     LibraryMediaIdentity,
     LibraryScanCheckpoint,
     LibraryScanEntry,
@@ -22,7 +23,6 @@ from watch_assistant.services.library_index import (
     validate_complete_scan_evidence,
 )
 from watch_assistant.services.library_inventory import (
-    FreshnessStatus,
     InventoryDecision,
     InventoryFile,
     InventorySnapshot,
@@ -30,6 +30,11 @@ from watch_assistant.services.library_inventory import (
     check_inventory,
 )
 from watch_assistant.services.strm_scope import source_snapshot_is_current
+
+# 本地缓存 P1(2026-08-16 设计):根目录指纹的本地有效窗口。TTL 内守卫
+# 纯本地判定(0 次 115 调用);过期后由刷新路径做 1 次 fs_info 指纹核对,
+# 指纹未变仅更新核对时间,变化才升级全树重扫。
+FINGERPRINT_TTL_SECONDS = 3600
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,7 +77,7 @@ class InventoryPushGuard:
         self,
         session_factory: async_sessionmaker[AsyncSession],
         *,
-        freshness_threshold_seconds: int = 900,
+        freshness_threshold_seconds: int = FINGERPRINT_TTL_SECONDS,
     ) -> None:
         if not 60 <= freshness_threshold_seconds <= 86_400:
             raise ValueError("invalid freshness threshold")
@@ -128,14 +133,24 @@ class InventoryPushGuard:
                     source_snapshot_revision=run.snapshot_revision,
                 ):
                     return InventoryPushCheck(False, "inventory_index_incomplete")
-                snapshot = await _snapshot(session, run, library.id, self._freshness_threshold_seconds)
-                status = snapshot.freshness.status
-                if status is FreshnessStatus.INCOMPLETE:
+                # 本地缓存 P1:新鲜判定改为目录指纹(纯本地)。指纹缺失 =
+                # 本地缓存不可信(需刷新);指纹超过 TTL = 需要核对(刷新路径
+                # 先做 1 次 fs_info 指纹核对,未变仅更新时间戳)。
+                fingerprint = await session.get(
+                    DirectoryFingerprint, (library.id, library.root_directory_id)
+                )
+                if fingerprint is None or fingerprint.verified_at is None:
                     return InventoryPushCheck(False, "inventory_index_incomplete")
-                if status is FreshnessStatus.STALE:
+                fingerprint_verified_at = fingerprint.verified_at
+                if fingerprint_verified_at.tzinfo is None:
+                    fingerprint_verified_at = fingerprint_verified_at.replace(
+                        tzinfo=UTC
+                    )
+                if (
+                    datetime.now(UTC) - fingerprint_verified_at
+                ).total_seconds() > self._freshness_threshold_seconds:
                     return InventoryPushCheck(False, "inventory_index_stale")
-                if status is FreshnessStatus.UNKNOWN:
-                    return InventoryPushCheck(False, "inventory_index_unknown")
+                snapshot = await _snapshot(session, run, library.id, self._freshness_threshold_seconds)
                 decision = check_inventory(snapshot, **probe)
                 if decision is InventoryDecision.EXACT_DUPLICATE:
                     return InventoryPushCheck(False, "inventory_exact_duplicate", decision)
@@ -168,13 +183,14 @@ async def library_scope_fresh(
     session: AsyncSession,
     library: MediaLibrary,
     *,
-    freshness_threshold_seconds: int = 900,
+    fingerprint_ttl_seconds: int = FINGERPRINT_TTL_SECONDS,
 ) -> bool:
-    """只读判断一个库的最新快照是否完整且新鲜(不打 115)。
+    """只读判断本地快照是否可信(0 次 115 调用)。
 
-    与 ``InventoryPushGuard.check`` 的库级前置条件一致(完整树快照 +
-    覆盖根目录 + 源快照当前 + 新鲜度),供推送前刷新等调用方跳过
-    无需重扫的库,避免失败风暴逐任务重复全库扫描。
+    本地缓存 P1(2026-08-16 设计):完整树快照 + 根目录指纹在 TTL 内 =
+    本地判定可信。指纹 TTL 内即使快照超过 900s 也有效(指纹未变 =
+    内容未变);指纹缺失/过期返回 False,由刷新路径做 1 次指纹核对
+    或全树重扫。
     """
     run = await session.scalar(
         select(LibraryScanRun)
@@ -199,10 +215,17 @@ async def library_scope_fresh(
         source_snapshot_revision=run.snapshot_revision,
     ):
         return False
-    snapshot = await _snapshot(
-        session, run, library.id, freshness_threshold_seconds
+    fingerprint = await session.get(
+        DirectoryFingerprint, (library.id, library.root_directory_id)
     )
-    return snapshot.freshness.status is FreshnessStatus.FRESH
+    if fingerprint is None or fingerprint.verified_at is None:
+        return False
+    verified_at = fingerprint.verified_at
+    if verified_at.tzinfo is None:
+        verified_at = verified_at.replace(tzinfo=UTC)
+    return (
+        datetime.now(UTC) - verified_at
+    ).total_seconds() <= fingerprint_ttl_seconds
 
 
 async def _run_covers_scope(

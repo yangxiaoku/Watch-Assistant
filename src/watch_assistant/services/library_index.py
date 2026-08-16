@@ -22,6 +22,7 @@ from watch_assistant.adapters.p115_library import (
     ScanState,
 )
 from watch_assistant.library_models import (
+    DirectoryFingerprint,
     LibraryInventoryEvent,
     LibraryObjectLedger,
     LibraryScanCheckpoint,
@@ -374,7 +375,13 @@ class LibraryIndexService:
                     )
                     return await self._result_for_run(run.id)
                 pages_read += 1
-            return await self._complete_run(run.id)
+            result = await self._complete_run(run.id)
+            if result.complete and result.state.value == "completed":
+                # 本地缓存 P1:树扫描完成后落盘根目录指纹(1 次 fs_info),
+                # 供守卫在 TTL 内纯本地判定(0 次 115 调用)。指纹缺失不
+                # 阻断扫描结果——守卫退化为「TTL 过期→刷新路径核对」。
+                await self._record_root_fingerprint()
+            return result
         except asyncio.CancelledError:
             if self._propagate_cancelled and (
                 self._cancel_event is None or self._cancel_event.is_set()
@@ -382,6 +389,46 @@ class LibraryIndexService:
                 raise
             await self._finish_incomplete(run.id, ScanRunState.CANCELLED, "cancelled")
             return await self._result_for_run(run.id)
+
+    async def _record_root_fingerprint(self) -> None:
+        """扫描完成后写根目录指纹 (child_count, utime, folder_count)。
+
+        幂等(INSERT OR REPLACE 语义);gateway 不支持或调用失败时静默跳过
+        (fail-safe:不因指纹缺失而否定刚完成的快照)。
+        """
+        method = getattr(self._gateway, "get_directory_fingerprint", None)
+        if not callable(method):
+            return
+        try:
+            fingerprint = await method(self._root_directory_id)
+        except Exception:  # noqa: BLE001 - remote details stay private
+            return
+        if fingerprint is None:
+            return
+        count, utime, folder_count = fingerprint
+        try:
+            async with self._session_factory() as session, session.begin():
+                row = await session.get(
+                    DirectoryFingerprint,
+                    (self._library_id, self._root_directory_id),
+                )
+                if row is None:
+                    session.add(
+                        DirectoryFingerprint(
+                            library_id=self._library_id,
+                            directory_id=self._root_directory_id,
+                            child_count=count,
+                            utime=utime,
+                            folder_count=folder_count,
+                        )
+                    )
+                else:
+                    row.child_count = count
+                    row.utime = utime
+                    row.folder_count = folder_count
+                    row.verified_at = datetime.now(UTC)
+        except Exception:  # noqa: BLE001 - storage details stay private
+            return
 
     async def _reset_tree_run(self, run_id: str) -> None:
         async with self._session_factory() as session:

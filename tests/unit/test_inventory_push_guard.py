@@ -7,6 +7,7 @@ from cryptography.fernet import Fernet
 from watch_assistant.crypto import SecretCrypto
 from watch_assistant.db import create_database, initialize_database
 from watch_assistant.library_models import (
+    DirectoryFingerprint,
     LibraryMediaIdentity,
     LibraryScanCheckpoint,
     LibraryScanEntry,
@@ -118,6 +119,17 @@ async def _library(
                         "visited": ["root-guard"],
                     }
                 ),
+            )
+        )
+        # 本地缓存 P1:根目录指纹(守卫的新鲜判定依据,TTL 默认 3600s)。
+        session.add(
+            DirectoryFingerprint(
+                library_id="library-guard",
+                directory_id="root-guard",
+                child_count=1 if object_id else 0,
+                utime="1700000000",
+                folder_count=0,
+                verified_at=now,
             )
         )
         await session.commit()
@@ -274,8 +286,10 @@ async def test_exact_identity_and_stale_scope_are_blocked(tmp_path):
     assert duplicate.code == "inventory_exact_duplicate"
 
     async with database.session_factory() as session:
-        run = await session.get(LibraryScanRun, "scan-guard")
-        run.updated_at = datetime.now(UTC) - timedelta(minutes=16)
+        fingerprint = await session.get(
+            DirectoryFingerprint, ("library-guard", "root-guard")
+        )
+        fingerprint.verified_at = datetime.now(UTC) - timedelta(minutes=61)
         await session.commit()
     stale = await guard.check("resource-guard")
     assert stale.code == "inventory_index_stale"

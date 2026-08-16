@@ -301,6 +301,36 @@ class P115ReadOnlyDirectoryGateway:
             observed_directories=self._observed_directories,
         )
 
+    async def get_directory_fingerprint(
+        self, directory_id: str
+    ) -> tuple[int, str | None, int | None] | None:
+        """读取目录指纹 (child_count, utime, folder_count),用于本地缓存核对。
+
+        1 次 fs_info(无判型),是「需要的时候」访问 115 的最小单位;响应缺
+        count 时返回 None(调用方按「无法核对」处理,不猜)。
+        """
+        normalized_directory_id = _stable_id(directory_id)
+        if normalized_directory_id is None:
+            raise P115ReadOnlyGatewayError("directory_id_unverified")
+        if normalized_directory_id not in self._authorized_directory_ids:
+            raise P115ReadOnlyGatewayError("scope_unverified")
+        response = await self._call(
+            "fs_info",
+            {"cid": normalized_directory_id},
+            deadline=self._deadline(),
+        )
+        detail = response.get("data")
+        if not isinstance(detail, Mapping):
+            detail = response
+        count = _nonnegative_int(detail.get("count"))
+        if count is None:
+            return None
+        utime = detail.get("utime")
+        if not isinstance(utime, str):
+            utime = None
+        folder_count = _nonnegative_int(detail.get("folder_count"))
+        return count, utime, folder_count
+
     async def _call(
         self,
         method_name: str,

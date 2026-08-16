@@ -9,7 +9,7 @@ import socket
 import time
 from collections.abc import AsyncIterator, Callable, Collection, Iterable
 from contextlib import asynccontextmanager
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
@@ -83,6 +83,7 @@ from watch_assistant.config import Settings
 from watch_assistant.crypto import SecretCrypto
 from watch_assistant.db import Database, create_database, initialize_database
 from watch_assistant.library_models import (
+    DirectoryFingerprint,
     LibraryScanEntry,
     LibraryScanRun,
     MediaLibrary,
@@ -222,14 +223,53 @@ _INVENTORY_REFRESH_COOLDOWN_SECONDS = 120.0
 _inventory_refresh_failures: dict[str, tuple[float, InventoryRefreshEvidence]] = {}
 
 
+async def _refresh_root_fingerprint(
+    database: Database,
+    gateway: P115ReadOnlyDirectoryGateway,
+    library: MediaLibrary,
+) -> bool:
+    """L1 指纹核对:1 次 fs_info 对比本地指纹,未变仅更新核对时间。
+
+    本地缓存 P1(2026-08-16 设计):指纹(子项数+utime)未变 = 目录内容未
+    变,本地快照仍然可信——推送前核对只需 1 次调用,不触发全树重扫。
+    """
+    async with database.session_factory() as session:
+        fingerprint = await session.get(
+            DirectoryFingerprint, (library.id, library.root_directory_id)
+        )
+    if fingerprint is None:
+        return False
+    try:
+        remote = await gateway.get_directory_fingerprint(library.root_directory_id)
+    except Exception:  # noqa: BLE001 - remote details stay private
+        return False
+    if remote is None:
+        return False
+    remote_count, remote_utime, remote_folder_count = remote
+    if (
+        remote_count != fingerprint.child_count
+        or remote_utime != fingerprint.utime
+    ):
+        return False
+    async with database.session_factory() as session, session.begin():
+        row = await session.get(
+            DirectoryFingerprint, (library.id, library.root_directory_id)
+        )
+        if row is not None:
+            row.verified_at = datetime.now(UTC)
+            row.folder_count = remote_folder_count
+    return True
+
+
 async def _refresh_inventory_before_push(
     application: FastAPI,
 ) -> InventoryRefreshEvidence:
     """Refresh every enabled inventory scope using read-only 115 access.
 
-    风控护栏:只扫描「快照不新鲜」的库(``library_scope_fresh`` 只读判断,
-    不打 115);刷新失败的库进入冷却缓存,冷却期内后续任务直接复用失败
-    结果,不再打 115。
+    风控护栏(本地缓存 P1):守卫的 ``library_scope_fresh`` 是纯本地判定
+    (指纹 TTL 内 0 次 115 调用);TTL 过期时本路径先做 L1 指纹核对
+    (每库 1 次 fs_info),指纹未变仅更新核对时间;指纹变化才升级全树
+    扫描;失败的库进入冷却缓存,冷却期内不再打 115。
     """
     database = getattr(application.state, "database", None)
     provider = getattr(application.state, "organization_cookie_provider", None)
@@ -325,13 +365,16 @@ async def _refresh_inventory_before_push(
             scope_fresh = await library_scope_fresh(session, library)
         if scope_fresh:
             continue
+        # L1 指纹核对:1 次 fs_info,指纹未变仅更新核对时间(不触发全树)。
+        gateway = P115ReadOnlyDirectoryGateway(
+            provider,
+            authorized_directory_ids=(library.root_directory_id,),
+            request_timeout_seconds=240,
+        )
+        if await _refresh_root_fingerprint(database, gateway, library):
+            continue
         refreshed_count += 1
         try:
-            gateway = P115ReadOnlyDirectoryGateway(
-                provider,
-                authorized_directory_ids=(library.root_directory_id,),
-                request_timeout_seconds=240,
-            )
             result = await LibraryIndexService(
                 database.session_factory,
                 gateway,

@@ -173,15 +173,18 @@ def test_success_path_outputs_complete_scans_and_zero_remote_writes(monkeypatch)
     assert report["remote_cleanup"] is False
     assert report["remote_playback"] is False
     assert _stage_success("strm_readonly", report)
-    # 两次扫描(初始 + 增量),每次两页:每页一次列表 + 一次 fs_info 判型。
+    # 两次扫描(初始 + 增量),每次两页:每页一次列表 + 一次 fs_info 判型;
+    # 每次扫描完成后各追加一次根目录指纹核对(本地缓存 P1)。
     assert [call[0] for call in transport.calls] == [
         "fs_files_app",
         "fs_info_app",
         "fs_files_app",
         "fs_info_app",
+        "fs_info_app",
         "fs_files_app",
         "fs_info_app",
         "fs_files_app",
+        "fs_info_app",
         "fs_info_app",
     ]
     assert source.calls == 1

@@ -3,7 +3,6 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi import FastAPI
-from sqlalchemy import select
 
 from watch_assistant.adapters.p115_library import (
     DirectoryPage,
@@ -13,8 +12,7 @@ from watch_assistant.adapters.p115_library import (
 from watch_assistant.app import _refresh_inventory_before_push
 from watch_assistant.db import create_database, initialize_database
 from watch_assistant.library_models import (
-    LibraryScanEntry,
-    LibraryScanRun,
+    DirectoryFingerprint,
     MediaLibrary,
 )
 from watch_assistant.models import Resource
@@ -30,9 +28,10 @@ NESTED_FILE_ID = "1001"
 class _RecursiveGateway:
     def __init__(self, *_args, **_kwargs):
         self.calls: list[tuple[str, int]] = []
+        self.fingerprint = (2, "1700000000", 1)
 
     async def list_directory(self, directory_id: str, *, page: int, page_size: int):
-        assert page_size == 1
+        assert page_size == 50
         self.calls.append((directory_id, page))
         if directory_id == ROOT_ID and page == 1:
             return _page(
@@ -114,6 +113,12 @@ class _RecursiveGateway:
             path=None,
         )
 
+    async def get_directory_fingerprint(
+        self, directory_id: str
+    ) -> tuple[int, str | None, int | None] | None:
+        # 本地缓存 P1:指纹核对入口,1 次 fs_info 语义。
+        return self.fingerprint
+
 
 def _page(page, items, *, page_count, total, terminal, has_more):
     return DirectoryPage(
@@ -168,43 +173,92 @@ async def test_push_refresh_preserves_nested_inventory_and_blocks_exact_duplicat
         _RecursiveGateway(),
         library_id=LIBRARY_ID,
         root_directory_id=ROOT_ID,
-        page_size=1,
+        page_size=50,
     ).scan_tree("initial-tree")
 
     application = FastAPI()
     application.state.database = database
     application.state.organization_cookie_provider = object()
     application.state.settings_service = None
+    gateway = _RecursiveGateway()
     monkeypatch.setattr(
-        "watch_assistant.app.P115ReadOnlyDirectoryGateway", _RecursiveGateway
+        "watch_assistant.app.P115ReadOnlyDirectoryGateway",
+        lambda *_a, **_k: gateway,
     )
+
+    # 指纹过期(超过 TTL)→ L1 核对:指纹未变,仅更新核对时间,不触发全树。
+    async with database.session_factory() as session:
+        fingerprint = await session.get(
+            DirectoryFingerprint, (LIBRARY_ID, ROOT_ID)
+        )
+        assert fingerprint is not None
+        fingerprint.verified_at = datetime.now(UTC) - timedelta(minutes=61)
+        await session.commit()
 
     refreshed = await _refresh_inventory_before_push(application)
 
     assert refreshed.complete is True
     assert refreshed.scope_verified is True
+    assert refreshed.refreshed_count == 0  # L1 核对通过,未升级全树扫描
+    assert gateway.calls == []  # 未访问任何目录列表页
+
     async with database.session_factory() as session:
-        latest = await session.scalar(
-            select(LibraryScanRun)
-            .where(LibraryScanRun.library_id == LIBRARY_ID)
-            .order_by(LibraryScanRun.snapshot_revision.desc())
-            .limit(1)
+        fingerprint = await session.get(
+            DirectoryFingerprint, (LIBRARY_ID, ROOT_ID)
         )
-        assert latest is not None
-        entries = list(
-            (
-                await session.scalars(
-                    select(LibraryScanEntry).where(
-                        LibraryScanEntry.scan_run_id == latest.id
-                    )
-                )
-            ).all()
-        )
-    assert {entry.object_id for entry in entries} >= {NESTED_ID, NESTED_FILE_ID}
+        assert fingerprint is not None
+        verified_at = fingerprint.verified_at
+        if verified_at.tzinfo is None:
+            verified_at = verified_at.replace(tzinfo=UTC)
+        assert (datetime.now(UTC) - verified_at).total_seconds() < 60  # 已刷新
 
     duplicate = await InventoryPushGuard(database.session_factory).check(
         "resource-refresh"
     )
     assert duplicate.allowed is False
     assert duplicate.code == "inventory_exact_duplicate"
+    await database.engine.dispose()
+
+
+@pytest.mark.integration
+async def test_push_refresh_upgrades_to_full_scan_when_fingerprint_changes(
+    tmp_path, monkeypatch
+):
+    """指纹变化(远端 count 不同)→ L1 核对失败 → 升级全树扫描并重写指纹。"""
+    database = await _database(tmp_path)
+    await LibraryIndexService(
+        database.session_factory,
+        _RecursiveGateway(),
+        library_id=LIBRARY_ID,
+        root_directory_id=ROOT_ID,
+        page_size=50,
+    ).scan_tree("initial-tree")
+
+    application = FastAPI()
+    application.state.database = database
+    application.state.organization_cookie_provider = object()
+    application.state.settings_service = None
+    gateway = _RecursiveGateway()
+    gateway.fingerprint = (3, "1700000000", 1)  # 远端 count 变化
+    monkeypatch.setattr(
+        "watch_assistant.app.P115ReadOnlyDirectoryGateway",
+        lambda *_a, **_k: gateway,
+    )
+    async with database.session_factory() as session:
+        fingerprint = await session.get(
+            DirectoryFingerprint, (LIBRARY_ID, ROOT_ID)
+        )
+        fingerprint.verified_at = datetime.now(UTC) - timedelta(minutes=61)
+        await session.commit()
+
+    refreshed = await _refresh_inventory_before_push(application)
+
+    assert refreshed.complete is True
+    assert refreshed.refreshed_count == 1
+    assert gateway.calls  # 升级了全树扫描
+    async with database.session_factory() as session:
+        fingerprint = await session.get(
+            DirectoryFingerprint, (LIBRARY_ID, ROOT_ID)
+        )
+        assert fingerprint.child_count == 3  # 指纹已重写
     await database.engine.dispose()
