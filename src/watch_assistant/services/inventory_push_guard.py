@@ -138,6 +138,9 @@ class InventoryPushGuard:
                     library_id=library.id,
                     source_scan_run_id=run.id,
                     source_snapshot_revision=run.snapshot_revision,
+                    # 非破坏性判定:指纹 TTL 内内容未变即可信,中断/取消的
+                    # run(如部署重启取消的扫描)不否定已完成快照。
+                    include_unsettled=False,
                 ):
                     return InventoryPushCheck(False, "inventory_index_incomplete")
                 # 本地缓存 P1:新鲜判定改为目录指纹(纯本地)。指纹缺失 =
@@ -224,6 +227,7 @@ async def library_scope_fresh(
         library_id=library.id,
         source_scan_run_id=run.id,
         source_snapshot_revision=run.snapshot_revision,
+        include_unsettled=False,
     ):
         return False
     fingerprint = await session.get(

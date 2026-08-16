@@ -223,7 +223,12 @@ async def test_ambiguous_complete_snapshot_revision_blocks_inventory_push(tmp_pa
     finally:
         await database.engine.dispose()
 
-async def test_newer_requeued_scan_blocks_inventory_push(tmp_path):
+async def test_newer_requeued_scan_does_not_block_when_fingerprint_fresh(tmp_path):
+    """本地缓存 P1:更新的未结算 run(queued/failed/cancelled)不再阻止推送。
+
+    内容是否变化由目录指纹判定:指纹 TTL 内(且最新已完成快照完整)推送
+    判定放行;指纹过期才需要刷新核对。破坏性写操作(STRM)保持严格语义。
+    """
     database = await _database(tmp_path)
     crypto = SecretCrypto(Fernet.generate_key().decode("ascii"))
     await _resource(database, crypto)
@@ -247,11 +252,23 @@ async def test_newer_requeued_scan_blocks_inventory_push(tmp_path):
         await session.commit()
 
     try:
+        # 指纹新鲜:推送判定放行(本地缓存可信)。
         result = await InventoryPushGuard(database.session_factory).check(
             "resource-guard"
         )
-        assert result.allowed is False
-        assert result.code == "inventory_index_incomplete"
+        assert result.allowed is True
+        # 指纹过期:需要刷新核对,推送被阻止。
+        async with database.session_factory() as session:
+            fingerprint = await session.get(
+                DirectoryFingerprint, ("library-guard", "root-guard")
+            )
+            fingerprint.verified_at = datetime.now(UTC) - timedelta(minutes=61)
+            await session.commit()
+        stale = await InventoryPushGuard(database.session_factory).check(
+            "resource-guard"
+        )
+        assert stale.allowed is False
+        assert stale.code == "inventory_index_stale"
     finally:
         await database.engine.dispose()
 

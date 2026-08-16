@@ -53,12 +53,18 @@ async def source_snapshot_is_current(
     library_id: str,
     source_scan_run_id: str,
     source_snapshot_revision: int,
+    include_unsettled: bool = True,
 ) -> bool:
     """Return whether a source run is still the latest complete snapshot.
 
     This check is used immediately before a mutating transaction commits.  It
     deliberately re-reads the run instead of relying on an ORM identity-map
     value captured at operation start.
+
+    ``include_unsettled=False``(本地缓存 P1,非破坏性判定专用):cancelled/
+    failed 等未结算 run 不阻塞——指纹机制下内容是否变化由目录指纹判定,
+    中断/失败的扫描(如部署重启取消的 run)不否定已完成快照的有效性。
+    破坏性写操作(STRM 清理等)必须保持默认严格语义。
     """
 
     source_run = await session.scalar(
@@ -92,7 +98,9 @@ async def source_snapshot_is_current(
         snapshot_revision=source_snapshot_revision,
     ):
         return False
-    return not await has_newer_unsettled_scan(session, source_run)
+    return not (
+        include_unsettled and await has_newer_unsettled_scan(session, source_run)
+    )
 
 
 async def current_snapshot_is_unique(
