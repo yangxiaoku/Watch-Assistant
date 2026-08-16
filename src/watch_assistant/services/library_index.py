@@ -123,9 +123,10 @@ class LibraryIndexService:
         lease_owner: str | None = None,
         lease_token: str | None = None,
         # 相邻远程页的最小间隔(秒):115 对高频批量 fs_files 有 405 风控
-        # (2026-08 实测),扫描器以接近零间隔逐页读取会触发;加固定间隔
-        # 把调用频率压到风控阈值以下,对分钟级扫描耗时影响可忽略。
-        page_delay_seconds: float = 0.15,
+        # (2026-08 实测,约 30 次调用即触发),扫描器以接近零间隔逐页读取
+        # 会触发;1s/页把调用频率压到风控阈值以下,对分钟级扫描耗时影响
+        # 可忽略(38 目录 ≈ 38s)。
+        page_delay_seconds: float = 1.0,
     ) -> None:
         _validate_identity(library_id)
         _validate_identity(root_directory_id)

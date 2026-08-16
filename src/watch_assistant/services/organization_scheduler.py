@@ -47,8 +47,10 @@ class OrganizationScheduler:
 
     async def run_forever(self, stop_event: asyncio.Event) -> None:
         next_scheduled_at: float | None = None
-        # L14: 连续异常指数退避(上限 30s,成功复位),避免 run_once/manual_run
-        # 抛异常使调度循环死亡,或故障下满速热循环刷爆日志。
+        # L14: 连续异常指数退避(上限 15 分钟,成功复位),避免 run_once/manual_run
+        # 抛异常使调度循环死亡,或故障下满速热循环刷爆日志。上限 900s:
+        # 115 风控(405)窗口约 30-60 分钟,快速重试会持续"续费"风控窗口,
+        # 15 分钟退避让出冷却时间(2026-08 实测)。
         backoff = 0.0
         while not stop_event.is_set():
             if backoff > 0:
@@ -99,7 +101,7 @@ class OrganizationScheduler:
                 raise
             except Exception as exc:  # noqa: BLE001 - scheduler loop must stay alive
                 del exc
-                backoff = min(30.0, (backoff or 1.0) * 2)
+                backoff = min(900.0, (backoff or 1.0) * 2)
 
 
 __all__ = ["OrganizationScheduler"]
