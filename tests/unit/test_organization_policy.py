@@ -54,3 +54,43 @@ def test_mode_two_only_allows_same_name_check():
     )
     assert result.outcome == "existing"
     assert result.reason == "same_name_only"
+
+
+def test_mode_zero_prefers_smaller_file():
+    """conflict_mode=0(小文件优先):候选比现有小才胜出。"""
+    policy = OrganizationConflictPolicy(conflict_mode=0)
+    result = compare_versions(
+        _evidence("movie.1080p.mkv", 1_000),
+        _evidence("movie.1080p.mkv", 4_000),
+        policy,
+    )
+    assert result.outcome == "candidate"
+    assert result.reason == "size_priority"
+    # 候选比现有大:保留现有(不覆盖)。
+    result = compare_versions(
+        _evidence("movie.1080p.mkv", 4_000),
+        _evidence("movie.1080p.mkv", 1_000),
+        policy,
+    )
+    assert result.outcome == "existing"
+    assert result.reason == "size_priority"
+
+
+def test_mode_one_prefers_larger_file():
+    """conflict_mode=1(大文件优先):候选比现有大才胜出。"""
+    policy = OrganizationConflictPolicy(conflict_mode=1)
+    result = compare_versions(
+        _evidence("movie.1080p.mkv", 4_000),
+        _evidence("movie.1080p.mkv", 1_000),
+        policy,
+    )
+    assert result.outcome == "candidate"
+    assert result.reason == "size_priority"
+    # 候选比现有小:保留现有(不覆盖)。
+    result = compare_versions(
+        _evidence("movie.1080p.mkv", 1_000),
+        _evidence("movie.1080p.mkv", 4_000),
+        policy,
+    )
+    assert result.outcome == "existing"
+    assert result.reason == "size_priority"

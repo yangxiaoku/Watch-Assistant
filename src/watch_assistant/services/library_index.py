@@ -1968,7 +1968,12 @@ def _advance_tree_cursor(
         child_id = entry.directory_id
         _validate_identity(child_id)
         if child_id in next_visited:
-            raise LibraryIndexError("directory_cycle")
+            # 115 下载容器/异常条目偶发返回已访问过的目录 id(2026-08
+            # 实测):跳过该子树继续扫描,不让单个脏条目否定整树快照
+            # (重复 id 的内容在首次出现处已收录;正常 115 目录 id 唯一)。
+            # 网关侧已过滤「id 等于当前目录」的自引用,这里兜底任意祖先
+            # 重复(旧行为 raise directory_cycle 使整树扫描失败)。
+            continue
         if len(next_visited) >= max_directories:
             raise LibraryIndexError("directory_limit_exceeded")
         child_path = entry.path

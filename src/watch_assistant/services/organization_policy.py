@@ -183,10 +183,13 @@ def compare_versions(
         and existing.size_bytes is not None
         and candidate.size_bytes != existing.size_bytes
     ):
+        # 设置页语义:conflict_mode=0 小文件优先、1 大文件优先。
+        # 2026-08-16 修复:此前 0/1 的 size 比较写反(0 保留大文件、1 保留
+        # 小文件),大文件优先配置下会把大版本当旧版本回收。
         candidate_wins = (
-            candidate.size_bytes > existing.size_bytes
+            candidate.size_bytes < existing.size_bytes
             if policy.conflict_mode == 0
-            else candidate.size_bytes < existing.size_bytes
+            else candidate.size_bytes > existing.size_bytes
         )
         return VersionDecision(
             "candidate" if candidate_wins else "existing",
