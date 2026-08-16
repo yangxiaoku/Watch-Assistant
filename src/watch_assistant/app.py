@@ -298,7 +298,8 @@ async def _refresh_inventory_before_push(
                 gateway,
                 library_id=library.id,
                 root_directory_id=library.root_directory_id,
-                page_size=1,
+                # 与组织/库扫描一致:批量页 50 降低调用量,规避 115 405 风控。
+                page_size=50,
                 hydrate_file_details=True,
             ).scan_tree(f"push-inventory-{uuid4().hex}")
         except Exception:  # noqa: BLE001 - remote details stay private
