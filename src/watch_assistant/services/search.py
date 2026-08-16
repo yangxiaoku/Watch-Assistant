@@ -717,18 +717,17 @@ class SearchService:
         age = max(0, int((datetime.now(UTC) - _as_utc(cache.fetched_at)).total_seconds()))
         if not self._cache_is_fresh(cache, timedelta(seconds=age)):
             return None, None
-        # Whether this snapshot can stabilize a search task is decided purely by
-        # whether it actually carries resources, not by its cache_kind. A partial
-        # snapshot may be empty (some sources failed and zero resources matched),
-        # in which case it must NOT short-circuit the search -- it would otherwise
-        # masquerade a still-incomplete search as "confirmed empty". Concretely:
-        #   * negative `(no resource list)` -> requeue / keep re-searching
-        #   * partial + no resources       -> requeue / keep re-searching
-        #   * partial + resources          -> stabilize ready, show partial results
-        #   * positive                     -> always carries resources, stabilize
-        resource_ids, _ = _decode_resource_snapshot(cache.resource_ids_json)
-        if not resource_ids:
-            return None, None
+        # Any fresh snapshot (by cache-kind TTL) stabilizes the search task,
+        # whether or not it carries resources. Empty snapshots -- negative
+        # (all sources complete, zero matches) and partial+empty (some sources
+        # failed, zero matches) -- must still reach ready so the frontend shows
+        # the "no resources" empty state instead of polling forever. The short
+        # TTLs (negative 30m, partial 10m) already bound how long an empty
+        # snapshot masquerades as "confirmed empty": once the cache goes stale,
+        # _snapshot_metadata returns None and the task re-searches (see
+        # get_resource_search_task / start_resource_search). This preserves the
+        # REQ-005 contract of empty-result short caches with automatic re-check
+        # while avoiding the infinite poll loop a never-ready task causes.
         return _as_utc(cache.fetched_at).isoformat(), age
 
     async def _search_impl(

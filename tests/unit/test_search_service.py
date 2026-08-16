@@ -630,12 +630,14 @@ async def test_warm_media_reports_partial_upstream_as_failure():
 
 
 @pytest.mark.asyncio
-async def test_negative_cache_snapshot_does_not_block_re_search():
-    """A negative (empty) cache must not make start_resource_search short-circuit.
+async def test_fresh_negative_cache_snapshot_stabilizes_search_task():
+    """A fresh negative (empty) cache stabilizes the search task as ready.
 
-    Regression: an empty negative cache was treated as a fresh snapshot, so the
-    frontend immediately received status="ready" with zero resources and never
-    triggered a real search until the 30-minute negative TTL elapsed.
+    REQ-005: empty results use a short negative cache (30m TTL); within that
+    window the frontend must show the "no resources" empty state instead of
+    polling forever. Regression: an empty negative cache returned no snapshot
+    revision, so every poll degraded the ready task back to queued and
+    re-triggered the search -- an infinite poll loop.
     """
     now = datetime.now(UTC)
     from watch_assistant.db import create_database, initialize_database
@@ -652,6 +654,45 @@ async def test_negative_cache_snapshot_does_not_block_re_search():
                     warnings_json="[]",
                     cache_kind="negative",
                     fetched_at=now - timedelta(minutes=5),
+                    expires_at=now + timedelta(minutes=25),
+                )
+            )
+            await session.commit()
+
+        from watch_assistant.services.search import SearchService
+
+        service = SearchService(
+            database.session_factory,
+            tmdb_client=AsyncMock(),
+            pansou_client=AsyncMock(),
+            crypto=AsyncMock(),
+        )
+        revision, age = await service._snapshot_metadata(123, MediaType.MOVIE, None)
+        assert revision is not None
+        assert age == 300
+    finally:
+        await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_stale_negative_cache_snapshot_does_not_block_re_search():
+    """A stale negative cache must not stabilize: the empty TTL elapsed, so a
+    real re-search is required (REQ-005 empty-result auto re-check)."""
+    now = datetime.now(UTC)
+    from watch_assistant.db import create_database, initialize_database
+    from watch_assistant.models import SearchCache
+
+    database = create_database("sqlite+aiosqlite:///:memory:")
+    await initialize_database(database.engine)
+    try:
+        async with database.session_factory() as session:
+            session.add(
+                SearchCache(
+                    cache_key="tmdb:movie:123:queries:v5",
+                    resource_ids_json="{}",
+                    warnings_json="[]",
+                    cache_kind="negative",
+                    fetched_at=now - timedelta(minutes=31),
                     expires_at=now + timedelta(minutes=25),
                 )
             )
@@ -716,14 +757,16 @@ async def test_partial_cache_snapshot_stabilizes_search_task():
 
 
 @pytest.mark.asyncio
-async def test_empty_partial_cache_snapshot_does_not_block_re_search():
-    """A partial snapshot that carries NO resources must not stabilize ready.
+async def test_fresh_empty_partial_cache_snapshot_stabilizes_search_task():
+    """A fresh empty partial snapshot must still stabilize the task as ready.
 
     When every candidate source fails and zero resources match, the persisted
-    partial snapshot holds an empty resource list. Treating it as a ready
-    snapshot would show the "no independent resources this quarter" empty state
-    while partial TTL is still active and never trigger a real re-search --
-    confusing "search still unfinished" with "this season confirmed empty".
+    partial snapshot holds an empty resource list. Rejecting it forces every
+    poll to degrade the ready task back to queued and re-run the search --
+    an infinite poll loop (regression observed in production: 893 completed
+    events in one morning, frontend spinning forever). The 10-minute partial
+    TTL bounds the "search still unfinished" window; after expiry the task
+    re-searches (see test_stale_empty_partial_cache_snapshot_does_not_stabilize).
     """
     now = datetime.now(UTC)
     from watch_assistant.db import create_database, initialize_database
@@ -740,6 +783,45 @@ async def test_empty_partial_cache_snapshot_does_not_block_re_search():
                     warnings_json='["partial_upstream"]',
                     cache_kind="partial",
                     fetched_at=now - timedelta(minutes=5),
+                    expires_at=now + timedelta(minutes=5),
+                )
+            )
+            await session.commit()
+
+        from watch_assistant.services.search import SearchService
+
+        service = SearchService(
+            database.session_factory,
+            tmdb_client=AsyncMock(),
+            pansou_client=AsyncMock(),
+            crypto=AsyncMock(),
+        )
+        revision, age = await service._snapshot_metadata(123, MediaType.MOVIE, None)
+        assert revision is not None
+        assert age == 300
+    finally:
+        await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_stale_empty_partial_cache_snapshot_does_not_stabilize():
+    """A stale empty partial snapshot must not stabilize: its 10-minute window
+    elapsed, so the task must re-search instead of keeping the empty state."""
+    now = datetime.now(UTC)
+    from watch_assistant.db import create_database, initialize_database
+    from watch_assistant.models import SearchCache
+
+    database = create_database("sqlite+aiosqlite:///:memory:")
+    await initialize_database(database.engine)
+    try:
+        async with database.session_factory() as session:
+            session.add(
+                SearchCache(
+                    cache_key="tmdb:movie:123:queries:v5",
+                    resource_ids_json=json.dumps({"resources": []}),
+                    warnings_json='["partial_upstream"]',
+                    cache_kind="partial",
+                    fetched_at=now - timedelta(minutes=11),
                     expires_at=now + timedelta(minutes=5),
                 )
             )
