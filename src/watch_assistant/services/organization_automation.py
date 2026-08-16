@@ -327,7 +327,10 @@ class OrganizationAutomationService:
                     gateway,
                     library_id=library_id,
                     root_directory_id=source_id,
-                    page_size=1,
+                    # 现场扫描用与库扫描调度器一致的默认页大小(100):
+                    # page_size=1 时每条目一次 fs_files 调用,条目一多(如
+                    # 目录含整季 10+ 文件)就触发 115 限流 gateway_error,
+                    # 导致自动整理扫描反复失败(2026-08 实测两次)。
                     hydrate_file_details=self._hydrate_file_details,
                 )
                 scan = await scanner.scan_tree(_scan_idempotency_key(source_id))
