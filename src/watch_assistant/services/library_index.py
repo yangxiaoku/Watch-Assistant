@@ -122,6 +122,10 @@ class LibraryIndexService:
         cancel_event: asyncio.Event | None = None,
         lease_owner: str | None = None,
         lease_token: str | None = None,
+        # 相邻远程页的最小间隔(秒):115 对高频批量 fs_files 有 405 风控
+        # (2026-08 实测),扫描器以接近零间隔逐页读取会触发;加固定间隔
+        # 把调用频率压到风控阈值以下,对分钟级扫描耗时影响可忽略。
+        page_delay_seconds: float = 0.15,
     ) -> None:
         _validate_identity(library_id)
         _validate_identity(root_directory_id)
@@ -154,6 +158,7 @@ class LibraryIndexService:
         self._cancel_event = cancel_event
         self._lease_owner = lease_owner
         self._lease_token = lease_token
+        self._page_delay_seconds = page_delay_seconds
         self._external_lease = lease_token is not None
         # snapshot revision 分配串行化:两个 run 并发完成时读改写 max+1
         # 会拿到相同 revision(WAL 读快照),全部快照消费者 fail-closed;
@@ -188,6 +193,8 @@ class LibraryIndexService:
 
             while True:
                 try:
+                    if self._page_delay_seconds > 0:
+                        await asyncio.sleep(self._page_delay_seconds)
                     await self._fence_before_remote_page(run.id)
                     page = await self._gateway.list_directory(
                         self._root_directory_id,
@@ -310,6 +317,8 @@ class LibraryIndexService:
                     )
                     return await self._result_for_run(run.id)
                 try:
+                    if self._page_delay_seconds > 0:
+                        await asyncio.sleep(self._page_delay_seconds)
                     await self._fence_before_remote_page(run.id)
                     page = await self._gateway.list_directory(
                         directory_id,

@@ -768,6 +768,11 @@ def _default_client_factory(cookie: str) -> Any:
         raise RuntimeError("unsupported p115client version")
     from p115client import P115Client
 
+    from watch_assistant.adapters.p115_request_profile import (
+        ensure_browser_request_profile,
+    )
+
+    ensure_browser_request_profile()
     return P115Client(cookie, console_qrcode=False)
 
 

@@ -685,8 +685,11 @@ class LibraryScanWorker:
             gateway,
             library_id=lease.library_id,
             root_directory_id=lease.root_directory_id,
-            # The verified P115 contract intentionally remains one item per page.
-            page_size=1,
+            # 批量页 50(VERIFIED_BATCH_PAGE_SIZE)是网关另一条已验证路径:
+            # page_size=1 时每条目一次 fs_files 调用,大目录批量扫描触发 115
+            # 405 风控(2026-08 实测 165 次调用后中断);50 页调用量降一个
+            # 数量级,组织自动整理扫描已同配置。
+            page_size=50,
             hydrate_file_details=self._hydrate_file_details,
             propagate_cancelled=True,
             cancel_event=lease_lost,

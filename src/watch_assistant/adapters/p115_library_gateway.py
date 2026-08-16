@@ -45,6 +45,8 @@ MAX_SCOPE_VERIFICATION_PAGES = 10_000
 # 配合进程级节流(throttle_read)降低触发账号级风控的概率。
 _GATEWAY_CALL_MAX_ATTEMPTS = 3
 _GATEWAY_CALL_RETRY_DELAY_SECONDS = 2.0
+# 115 风控(405)专用退避:窗口通常数十秒,等待后重试一次。
+_GATEWAY_CALL_405_RETRY_DELAY_SECONDS = 45.0
 _GATEWAY_RETRYABLE_HTTP_STATUSES = frozenset({429, 500, 502, 503, 504})
 
 
@@ -319,11 +321,16 @@ class P115ReadOnlyDirectoryGateway:
                 raise P115ReadOnlyGatewayError(f"{method_name}_timeout") from None
             except HTTPError as error:
                 last_error = error
+                if error.code == 405 and attempt + 1 < _GATEWAY_CALL_MAX_ATTEMPTS:
+                    # 115 风控:405 表示高频/批量请求被临时拦截(2026-08 实测)。
+                    # 风控窗口通常数十秒,等待后重试一次;预算耗尽仍失败关闭。
+                    await asyncio.sleep(_GATEWAY_CALL_405_RETRY_DELAY_SECONDS)
+                    continue
                 if (
                     error.code not in _GATEWAY_RETRYABLE_HTTP_STATUSES
                     or attempt + 1 >= _GATEWAY_CALL_MAX_ATTEMPTS
                 ):
-                    # 非可重试状态(如风控 405)或重试预算耗尽:失败关闭。
+                    # 非可重试状态或重试预算耗尽:失败关闭。
                     raise P115ReadOnlyGatewayError(f"{method_name}_failed") from None
                 await asyncio.sleep(
                     _GATEWAY_CALL_RETRY_DELAY_SECONDS * (attempt + 1)

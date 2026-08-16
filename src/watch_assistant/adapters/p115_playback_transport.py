@@ -123,6 +123,11 @@ def create_p115_playback_transport(
     try:
         from p115client import P115Client
 
+        from watch_assistant.adapters.p115_request_profile import (
+            ensure_browser_request_profile,
+        )
+
+        ensure_browser_request_profile()
         client = P115Client(credential, console_qrcode=False)
     except Exception:  # noqa: BLE001 - credential/client details stay private
         raise P115PlaybackTransportUnavailable("blocked_environment") from None

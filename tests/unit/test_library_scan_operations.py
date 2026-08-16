@@ -51,7 +51,7 @@ class _Gateway:
 
     async def list_directory(self, directory_id: str, *, page: int = 1, page_size=100):
         assert directory_id == ROOT_ID
-        assert page_size == 1
+        assert page_size == 50
         self.calls.append(page)
         if self.fail_once:
             self.fail_once = False
@@ -203,7 +203,8 @@ async def test_direct_scan_cannot_steal_failed_worker_lease_before_release(tmp_p
         gateway,
         library_id=LIBRARY_ID,
         root_directory_id=ROOT_ID,
-        page_size=1,
+        page_size=50,
+        page_delay_seconds=0,
         lease_owner=old_lease.lease_owner,
         lease_token=old_lease.lease_token,
     )
@@ -216,7 +217,8 @@ async def test_direct_scan_cannot_steal_failed_worker_lease_before_release(tmp_p
         gateway,
         library_id=LIBRARY_ID,
         root_directory_id=ROOT_ID,
-        page_size=1,
+        page_size=50,
+        page_delay_seconds=0,
     )
     blocked = await direct.scan_tree("failed-lease")
 
@@ -328,7 +330,8 @@ async def test_tree_reset_preserves_the_active_lease(tmp_path):
         _Gateway(),
         library_id=LIBRARY_ID,
         root_directory_id=ROOT_ID,
-        page_size=1,
+        page_size=50,
+        page_delay_seconds=0,
     )
     await index._reset_tree_run(queued.run_id)
 
@@ -405,7 +408,7 @@ async def test_cancelled_scan_cannot_overwrite_a_reclaimed_lease(tmp_path):
         ):
             assert directory_id == ROOT_ID
             assert page == 1
-            assert page_size == 1
+            assert page_size == 50
             gateway_started.set()
             await asyncio.sleep(10)
             return DirectoryPage(
@@ -425,7 +428,8 @@ async def test_cancelled_scan_cannot_overwrite_a_reclaimed_lease(tmp_path):
         _BlockingGateway(),
         library_id=LIBRARY_ID,
         root_directory_id=ROOT_ID,
-        page_size=1,
+        page_size=50,
+        page_delay_seconds=0,
         propagate_cancelled=True,
         cancel_event=lease_lost_event,
         lease_owner=old_lease.lease_owner,
@@ -477,7 +481,7 @@ async def test_reclaimed_lease_cannot_persist_a_page_returned_late(tmp_path):
         ):
             assert directory_id == ROOT_ID
             assert page == 1
-            assert page_size == 1
+            assert page_size == 50
             page_started.set()
             await return_page.wait()
             return DirectoryPage(
@@ -496,7 +500,8 @@ async def test_reclaimed_lease_cannot_persist_a_page_returned_late(tmp_path):
         _LatePageGateway(),
         library_id=LIBRARY_ID,
         root_directory_id=ROOT_ID,
-        page_size=1,
+        page_size=50,
+        page_delay_seconds=0,
         lease_owner=old_lease.lease_owner,
         lease_token=old_lease.lease_token,
     )
@@ -548,7 +553,8 @@ async def test_final_lease_fence_rolls_back_inventory_and_completion(tmp_path, m
         _Gateway(),
         library_id=LIBRARY_ID,
         root_directory_id=ROOT_ID,
-        page_size=1,
+        page_size=50,
+        page_delay_seconds=0,
     )
     original_fence = scan._fence_write
 
@@ -601,7 +607,7 @@ async def test_concurrent_direct_scans_share_one_execution_lease(tmp_path):
         ):
             assert directory_id == ROOT_ID
             assert page == 1
-            assert page_size == 1
+            assert page_size == 50
             self.calls += 1
             started.set()
             await release.wait()
@@ -634,14 +640,16 @@ async def test_concurrent_direct_scans_share_one_execution_lease(tmp_path):
         first_gateway,
         library_id=LIBRARY_ID,
         root_directory_id=ROOT_ID,
-        page_size=1,
+        page_size=50,
+        page_delay_seconds=0,
     )
     second = LibraryIndexService(
         database.session_factory,
         first_gateway,
         library_id=LIBRARY_ID,
         root_directory_id=ROOT_ID,
-        page_size=1,
+        page_size=50,
+        page_delay_seconds=0,
     )
     first_task = asyncio.create_task(first.scan_tree("same-direct-key"))
     await started.wait()
