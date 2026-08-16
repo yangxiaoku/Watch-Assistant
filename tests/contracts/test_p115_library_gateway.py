@@ -1007,10 +1007,8 @@ async def test_fs_info_app_empty_list_falls_back_to_legacy_detail():
 
 @pytest.mark.asyncio
 async def test_gateway_fails_closed_when_app_read_method_fails_without_405():
-    transport = _AppFirstTransport(
-        app_files_error=OSError("network broken"),
-        app_info_error=TimeoutError("slow provider"),
-    )
+    """非 405 且非超时的 app 端点异常仍失败关闭(不静默回退旧接口)。"""
+    transport = _AppFirstTransport(app_files_error=OSError("network broken"))
     gateway = P115ReadOnlyDirectoryGateway(
         _CredentialSource(),
         lambda _credential: transport,
@@ -1020,7 +1018,26 @@ async def test_gateway_fails_closed_when_app_read_method_fails_without_405():
 
     with pytest.raises(P115ReadOnlyGatewayError, match="fs_files_failed"):
         await gateway.list_directory("7")
-    with pytest.raises(P115ReadOnlyGatewayError, match="fs_info_timeout"):
-        await gateway.get_file_detail("101")
 
-    assert transport.calls == ["fs_files_app", "fs_info_app"]
+    assert transport.calls == ["fs_files_app"]
+
+
+@pytest.mark.asyncio
+async def test_gateway_falls_back_to_legacy_on_app_timeout():
+    """proapi「黑洞」(连接建立但无 HTTP 响应)表现为超时:回退 legacy 完成读取。
+
+    2026-08-16 实测批量调用后 proapi 进入黑洞期,等满超时会整页失败;
+    超时回退 webapi 是风控窗口内不拖垮扫描的关键路径。
+    """
+    transport = _AppFirstTransport(app_info_error=TimeoutError("slow provider"))
+    gateway = P115ReadOnlyDirectoryGateway(
+        _CredentialSource(),
+        lambda _credential: transport,
+        authorized_directory_ids=("7",),
+        authorized_file_ids=("101",),
+    )
+
+    detail = await gateway.get_file_detail("101")
+
+    assert detail.file_id == "101"
+    assert transport.calls == ["fs_info_app", "fs_info"]

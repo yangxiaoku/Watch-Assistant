@@ -131,6 +131,28 @@ async def _add_resource(database, resource_id: str, canonical_key: str) -> None:
         await session.commit()
 
 
+async def _add_resource_with_metadata(
+    database, resource_id: str, canonical_key: str, metadata_json: str
+) -> None:
+    """与生产资源一致:带 tmdb/季集元数据(自动推送内容级去重依赖)。"""
+    now = datetime.now(UTC)
+    async with database.session_factory() as session:
+        session.add(
+            Resource(
+                id=resource_id,
+                kind=ResourceKind.MAGNET,
+                canonical_key=canonical_key,
+                encrypted_url="encrypted",
+                name=resource_id,
+                source="test",
+                captured_at=now,
+                expires_at=now + timedelta(days=7),
+                metadata_json=metadata_json,
+            )
+        )
+        await session.commit()
+
+
 @pytest.mark.asyncio
 async def test_subscription_lifecycle_and_manual_check(tmp_path):
     database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'subscriptions.db'}")
@@ -658,7 +680,8 @@ async def test_check_auto_pauses_from_local_inventory_complete(tmp_path, monkeyp
 
 class FakeTaskService:
     def __init__(self) -> None:
-        self.created: list[tuple[str, frozenset, str | None]] = []
+        self.created: list[tuple[str, frozenset, str | None, bool]] = []
+        self._seen: set[str] = set()
 
     async def create(
         self,
@@ -669,10 +692,17 @@ class FakeTaskService:
         workflow_id: str | None = None,
         target_directory_id: str | None = None,
     ):
+        reused = resource_id in self._seen
+        self._seen.add(resource_id)
         self.created.append(
-            (resource_id, frozenset(allowed_actions or ()), target_directory_id)
+            (
+                resource_id,
+                frozenset(allowed_actions or ()),
+                target_directory_id,
+                reused,
+            )
         )
-        return SimpleNamespace(id=f"task_{resource_id}")
+        return SimpleNamespace(id=f"task_{resource_id}"), reused
 
 
 class FlakyTaskService(FakeTaskService):
@@ -832,6 +862,96 @@ async def test_auto_push_isolates_per_resource_failure(tmp_path):
         assert any(
             event == "subscription.auto_push_completed" for event, _ in recorder.events
         )
+    finally:
+        await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_auto_push_limits_new_tasks_per_check(tmp_path):
+    """风控护栏:单轮 AUTO 推送最多创建 N 个新任务,超出记录 limited 事件。
+
+    2026-08 实测整剧订阅一次命中 30+ 资源、31 连发离线下载提交触发 115
+    405 风控;每轮限量推送,剩余留给后续轮次。"""
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'sub-limit.db'}")
+    await initialize_database(database.engine)
+    search = FakeSearch()
+    search.resource_ids = [f"res_{index}" for index in range(8)]
+    task_service = FakeTaskService()
+    providers = _push_providers(task_service)
+    recorder = EventRecorder()
+    service = SubscriptionService(
+        database.session_factory,
+        search,
+        event_logger=recorder,
+        task_service_provider=providers[0],
+        push_capabilities_provider=providers[1],
+        push_directory_provider=providers[2],
+    )
+    try:
+        created = await service.create(
+            SubscriptionCreateRequest(
+                tmdb_id=123,
+                media_type=MediaType.TV,
+                mode="auto",
+            )
+        )
+        await service.check(created.id)
+        # 8 个资源,单轮上限 5:只创建 5 个新任务
+        assert len(task_service.created) == 5
+        assert [item[0] for item in task_service.created] == [
+            f"res_{index}" for index in range(5)
+        ]
+        assert any(
+            event == "subscription.auto_push_limited" for event, _ in recorder.events
+        )
+        # 第二轮检查:剩余 3 个资源被补推(前 5 个幂等复用,不占新任务配额)
+        task_service.created.clear()
+        await service.check(created.id)
+        assert [item[0] for item in task_service.created] == [
+            f"res_{index}" for index in range(8)
+        ]
+        assert [item[3] for item in task_service.created] == [True] * 5 + [
+            False
+        ] * 3
+    finally:
+        await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_auto_push_dedupes_by_content_key(tmp_path):
+    """风控护栏:同一 tmdb+季/集 的多版本资源只推第一个版本。"""
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'sub-dedupe.db'}")
+    await initialize_database(database.engine)
+    metadata = (
+        '{"media_type": "tv", "tmdb_id": 60625, "season_number": 1,'
+        ' "episode_start": null, "episode_end": null}'
+    )
+    for resource_id in ("res_s01_x265", "res_s01_x264", "res_s01_web"):
+        await _add_resource_with_metadata(
+            database, resource_id, f"magnet:{resource_id}", metadata
+        )
+    search = FakeSearch()
+    search.resource_ids = ["res_s01_x265", "res_s01_x264", "res_s01_web"]
+    task_service = FakeTaskService()
+    providers = _push_providers(task_service)
+    service = SubscriptionService(
+        database.session_factory,
+        search,
+        task_service_provider=providers[0],
+        push_capabilities_provider=providers[1],
+        push_directory_provider=providers[2],
+    )
+    try:
+        created = await service.create(
+            SubscriptionCreateRequest(
+                tmdb_id=60625,
+                media_type=MediaType.TV,
+                season_number=1,
+                mode="auto",
+            )
+        )
+        await service.check(created.id)
+        assert [item[0] for item in task_service.created] == ["res_s01_x265"]
     finally:
         await database.engine.dispose()
 

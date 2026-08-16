@@ -203,6 +203,14 @@ EVENT_CATALOG: dict[str, EventDefinition] = {
         "媒体库库存自动刷新失败，失败范围：{hidden_count}，错误码：{error_code}",
         suggestion="请检查 115 登录状态和媒体库范围配置后重试",
     ),
+    "inventory.refresh.skipped": _event(
+        "inventory.refresh.skipped",
+        LogCategory.LIBRARY,
+        "媒体库库存刷新已跳过（冷却期）",
+        "该库最近一次刷新失败，冷却期内跳过重试，错误码：{error_code}",
+        suggestion="冷却期结束后会自动重试，避免批量任务反复触发 115 调用",
+        fields=frozenset({"hidden_count", "error_code", "cooldown_seconds"}),
+    ),
     "library.scan_schedule.completed": _event(
         "library.scan_schedule.completed",
         LogCategory.LIBRARY,
@@ -545,6 +553,14 @@ EVENT_CATALOG: dict[str, EventDefinition] = {
         "订阅自动推送完成",
         "自动推送完成：成功 {pushed} 条，共 {total} 条",
         fields=frozenset({"pushed", "total"}),
+    ),
+    "subscription.auto_push_limited": _event(
+        "subscription.auto_push_limited",
+        LogCategory.SUBSCRIPTION,
+        "订阅自动推送已达单轮上限",
+        "本轮自动推送已达单轮上限 {limit} 条，其余 {remaining} 条将推迟到后续轮次",
+        suggestion="单轮推送上限用于避免批量写入触发 115 风控，剩余资源会在后续检查中继续推送",
+        fields=frozenset({"limit", "remaining"}),
     ),
     "quality_profile.created": _event(
         "quality_profile.created", LogCategory.QUALITY, "质量策略已创建", "已创建质量策略，当前状态：{status}"
