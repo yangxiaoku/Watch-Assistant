@@ -654,3 +654,220 @@ async def test_check_auto_pauses_from_local_inventory_complete(tmp_path, monkeyp
         for event, fields in events.events
     )
     await database.engine.dispose()
+
+
+class FakeTaskService:
+    def __init__(self) -> None:
+        self.created: list[tuple[str, frozenset, str | None]] = []
+
+    async def create(
+        self,
+        resource_id: str,
+        *,
+        force: bool = False,
+        allowed_actions=None,
+        workflow_id: str | None = None,
+        target_directory_id: str | None = None,
+    ):
+        self.created.append(
+            (resource_id, frozenset(allowed_actions or ()), target_directory_id)
+        )
+        return SimpleNamespace(id=f"task_{resource_id}")
+
+
+class FlakyTaskService(FakeTaskService):
+    def __init__(self, failing: set[str]) -> None:
+        super().__init__()
+        self.failing = failing
+
+    async def create(self, resource_id, **kwargs):
+        if resource_id in self.failing:
+            raise RuntimeError("push failed")
+        return await super().create(resource_id, **kwargs)
+
+
+def _push_providers(task_service, capabilities=None):
+    async def directory():
+        return "dir_push"
+
+    return (
+        lambda: task_service,
+        lambda: capabilities if capabilities is not None else {"magnet": True},
+        directory,
+    )
+
+
+@pytest.mark.asyncio
+async def test_auto_mode_creates_push_tasks_for_all_matched_resources(tmp_path):
+    """AUTO 模式:本轮匹配的全部资源都创建 115 推送任务(幂等),remind 不创建。
+
+    存量补推语义:第二次检查去重后 new 为空,仍对全部匹配资源尝试创建,
+    由 TaskService.create 的幂等保证不重复(REQ-007 SUB-005)。"""
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'sub-auto.db'}")
+    await initialize_database(database.engine)
+    search = FakeSearch()
+    task_service = FakeTaskService()
+    providers = _push_providers(task_service)
+    service = SubscriptionService(
+        database.session_factory,
+        search,
+        task_service_provider=providers[0],
+        push_capabilities_provider=providers[1],
+        push_directory_provider=providers[2],
+    )
+    try:
+        created = await service.create(
+            SubscriptionCreateRequest(
+                tmdb_id=123,
+                media_type=MediaType.TV,
+                season_number=2,
+                mode="auto",
+            )
+        )
+        assert created.mode.value == "auto"
+        await service.check(created.id)
+        assert [item[0] for item in task_service.created] == ["res_match"]
+        assert ("dir_push",) == (task_service.created[0][2],)
+        # 第二次检查:资源已去重(new 空),但 AUTO 仍对全部匹配尝试创建
+        # (幂等,由 TaskService.create 复用已有任务)。
+        task_service.created.clear()
+        await service.check(created.id)
+        assert [item[0] for item in task_service.created] == ["res_match"]
+    finally:
+        await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_remind_mode_never_creates_push_tasks(tmp_path):
+    """仅提醒模式绝不创建 115 任务(REQ-007 验收)。"""
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'sub-remind.db'}")
+    await initialize_database(database.engine)
+    task_service = FakeTaskService()
+    providers = _push_providers(task_service)
+    service = SubscriptionService(
+        database.session_factory,
+        FakeSearch(),
+        task_service_provider=providers[0],
+        push_capabilities_provider=providers[1],
+        push_directory_provider=providers[2],
+    )
+    try:
+        created = await service.create(
+            SubscriptionCreateRequest(
+                tmdb_id=123,
+                media_type=MediaType.TV,
+                season_number=2,
+                mode="remind",
+            )
+        )
+        await service.check(created.id)
+        assert task_service.created == []
+    finally:
+        await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_auto_push_skipped_when_capability_unavailable(tmp_path):
+    """推送能力不可用(如 115 needs_auth)时整体跳过并记录事件,不创建任务。"""
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'sub-cap.db'}")
+    await initialize_database(database.engine)
+    task_service = FakeTaskService()
+    providers = _push_providers(task_service, capabilities={})
+    recorder = EventRecorder()
+    service = SubscriptionService(
+        database.session_factory,
+        FakeSearch(),
+        event_logger=recorder,
+        task_service_provider=providers[0],
+        push_capabilities_provider=providers[1],
+        push_directory_provider=providers[2],
+    )
+    try:
+        created = await service.create(
+            SubscriptionCreateRequest(
+                tmdb_id=123,
+                media_type=MediaType.TV,
+                mode="auto",
+            )
+        )
+        await service.check(created.id)
+        assert task_service.created == []
+        assert any(event == "subscription.auto_push_skipped" for event, _ in recorder.events)
+    finally:
+        await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_auto_push_isolates_per_resource_failure(tmp_path):
+    """单个资源推送失败不中断其他资源,并记录失败事件。"""
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'sub-flaky.db'}")
+    await initialize_database(database.engine)
+    search = FakeSearch()
+    search.resource_ids = ["res_a", "res_b", "res_c"]
+    task_service = FlakyTaskService(failing={"res_b"})
+    providers = _push_providers(task_service)
+    recorder = EventRecorder()
+    service = SubscriptionService(
+        database.session_factory,
+        search,
+        event_logger=recorder,
+        task_service_provider=providers[0],
+        push_capabilities_provider=providers[1],
+        push_directory_provider=providers[2],
+    )
+    try:
+        created = await service.create(
+            SubscriptionCreateRequest(
+                tmdb_id=123,
+                media_type=MediaType.TV,
+                mode="auto",
+            )
+        )
+        checked = await service.check(created.id)
+        assert checked.subscription.status == SubscriptionStatus.MATCHED
+        assert [item[0] for item in task_service.created] == ["res_a", "res_c"]
+        assert any(
+            event == "subscription.auto_push_failed" for event, _ in recorder.events
+        )
+        assert any(
+            event == "subscription.auto_push_completed" for event, _ in recorder.events
+        )
+    finally:
+        await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_mutate_mode_updates_subscription_mode(tmp_path):
+    """mode 动作切换订阅模式;终态订阅不可改。"""
+    database = create_database(f"sqlite+aiosqlite:///{tmp_path / 'sub-mode.db'}")
+    await initialize_database(database.engine)
+    service = SubscriptionService(database.session_factory, FakeSearch())
+    try:
+        created = await service.create(
+            SubscriptionCreateRequest(
+                tmdb_id=123,
+                media_type=MediaType.TV,
+                mode="remind",
+            )
+        )
+        updated = await service.mutate(
+            created.id,
+            SubscriptionMutationRequest(
+                revision=created.revision, mode="auto"
+            ),
+            "mode",
+        )
+        assert updated.mode.value == "auto"
+        cancelled = await service.mutate(
+            updated.id,
+            SubscriptionMutationRequest(revision=updated.revision),
+            "cancel",
+        )
+        with pytest.raises(SubscriptionConflict, match="subscription_not_active"):
+            await service.mutate(
+                cancelled.id,
+                SubscriptionMutationRequest(revision=cancelled.revision, mode="auto"),
+                "mode",
+            )
+    finally:
+        await database.engine.dispose()

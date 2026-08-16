@@ -523,6 +523,29 @@ EVENT_CATALOG: dict[str, EventDefinition] = {
     "subscription.scheduler_completed": _event(
         "subscription.scheduler_completed", LogCategory.SUBSCRIPTION, "订阅调度完成", "订阅调度已完成，成功 {count} 项，失败 {hidden_count} 项"
     ),
+    "subscription.auto_push_skipped": _event(
+        "subscription.auto_push_skipped",
+        LogCategory.SUBSCRIPTION,
+        "订阅自动推送已跳过",
+        "自动推送本次跳过 {count} 条资源，原因：{reason}",
+        suggestion="请检查 115 登录状态与推送能力配置后重试",
+        fields=frozenset({"reason", "count"}),
+    ),
+    "subscription.auto_push_failed": _event(
+        "subscription.auto_push_failed",
+        LogCategory.SUBSCRIPTION,
+        "订阅自动推送失败",
+        "有资源自动推送失败，已跳过该资源，可在任务中心查看并重试",
+        suggestion="请在任务中心查看失败任务并手动重试",
+        fields=frozenset({"resource_id"}),
+    ),
+    "subscription.auto_push_completed": _event(
+        "subscription.auto_push_completed",
+        LogCategory.SUBSCRIPTION,
+        "订阅自动推送完成",
+        "自动推送完成：成功 {pushed} 条，共 {total} 条",
+        fields=frozenset({"pushed", "total"}),
+    ),
     "quality_profile.created": _event(
         "quality_profile.created", LogCategory.QUALITY, "质量策略已创建", "已创建质量策略，当前状态：{status}"
     ),

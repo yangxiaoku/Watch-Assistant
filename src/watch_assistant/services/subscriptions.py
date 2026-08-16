@@ -22,13 +22,16 @@ from watch_assistant.models import (
     SubscriptionResourceObservation,
 )
 from watch_assistant.schemas import (
+    LoggingLevel,
     MediaType,
     SubscriptionCheckResponse,
     SubscriptionCreateRequest,
+    SubscriptionMode,
     SubscriptionMutationRequest,
     SubscriptionResourceObservationResponse,
     SubscriptionResponse,
     SubscriptionStatus,
+    TaskAction,
     WorkflowCreateRequest,
     WorkflowStageName,
     WorkflowStageStatus,
@@ -77,6 +80,9 @@ class SubscriptionService:
         workflow_service: WorkflowService | None = None,
         notify_dispatcher=None,
         season_metadata_service=None,
+        task_service_provider=None,
+        push_capabilities_provider=None,
+        push_directory_provider=None,
     ) -> None:
         self._session_factory = session_factory
         self._search = search_service
@@ -86,6 +92,13 @@ class SubscriptionService:
         self._notify_dispatcher = notify_dispatcher
         # 季集资料服务可选注入:未注入/缺失时跳过自动暂停(fail-safe)。
         self._season_metadata_service = season_metadata_service
+        # 自动推送后端(REQ-007 SUB-005):延迟注入,运行时可空。用 provider
+        # 而非实例,规避 app.py 装配顺序(task_service 在 subscription_service
+        # 之后创建)并便于测试注入。任一缺失时自动推送整体跳过(fail-open,
+        # 不阻塞订阅检查)。
+        self._task_service_provider = task_service_provider
+        self._push_capabilities_provider = push_capabilities_provider
+        self._push_directory_provider = push_directory_provider
         # 并发创建同一订阅时,先查后插的窗口需要进程内互斥:SQLite 的
         # 部分唯一索引(迁移 070)是跨进程兜底,但同一事件循环里两个任务
         # 同时通过 _find_scope 再各自 commit 时,写串行化下的交错可能
@@ -178,6 +191,17 @@ class SubscriptionService:
             elif action == "cancel":
                 item.status = SubscriptionStatus.CANCELLED
                 item.next_check_at = None
+            elif action == "mode":
+                # REQ-007 SUB-005 模式切换:仅提醒/确认推送/自动推送。
+                # 终态订阅(取消/完成/暂停)不可改模式。
+                if item.status in {
+                    SubscriptionStatus.CANCELLED,
+                    SubscriptionStatus.COMPLETED,
+                }:
+                    raise SubscriptionConflict("subscription_not_active")
+                if request.mode is None:
+                    raise SubscriptionConflict("subscription_mode_required")
+                item.mode = request.mode
             else:
                 raise ValueError("unknown_subscription_action")
             item.revision += 1
@@ -374,11 +398,92 @@ class SubscriptionService:
                 await self._notify_dispatcher.notify_resource_found(subscription_id)
             except Exception:  # noqa: BLE001, S110 - notify must never break the check
                 pass
+        # 自动模式(REQ-007 SUB-005):对本轮匹配到的全部资源尝试创建 115
+        # 推送任务。TaskService.create 按 resource_id 幂等,已存在的任务
+        # (含失败待重试)不会重复创建,因此存量资源也会在切到自动模式后的
+        # 下一次检查被补推,不会重复推送。remind/confirm 模式绝不创建任务。
+        if response.mode is SubscriptionMode.AUTO:
+            await self._auto_push_resources(subscription_id, resource_ids)
         return SubscriptionCheckResponse(
             subscription=response,
             matched_count=len(resource_ids),
             resource_ids=resource_ids,
             new_resource_ids=new_resource_ids,
+        )
+
+    async def _auto_push_resources(
+        self, subscription_id: str, resource_ids: list[str]
+    ) -> None:
+        """AUTO 模式下为匹配资源创建 115 推送任务(fail-open,逐项隔离)。
+
+        门禁:任务服务/推送能力缺失 → 整体跳过;单资源创建失败 → 记录事件
+        后继续,绝不中断订阅检查。needs_auth 时推送能力为空,magnet/share
+        不可用 → 整体跳过,满足 REQ-007 "needs_auth 暂停自动推送"。
+        """
+        if not resource_ids:
+            return
+        task_service = None
+        if self._task_service_provider is not None:
+            try:
+                task_service = self._task_service_provider()
+            except Exception:  # noqa: BLE001 - provider failure skips push
+                task_service = None
+        if task_service is None:
+            return
+        capabilities = {}
+        if self._push_capabilities_provider is not None:
+            try:
+                capabilities = self._push_capabilities_provider() or {}
+            except Exception:  # noqa: BLE001 - capability failure skips push
+                capabilities = {}
+        allowed: set[TaskAction] = set()
+        if capabilities.get("magnet") is True:
+            allowed.add(TaskAction.OFFLINE_DOWNLOAD)
+        if capabilities.get("share") is True:
+            allowed.add(TaskAction.SAVE_SHARE)
+        if not allowed:
+            await emit_event(
+                self._event_logger,
+                "subscription.auto_push_skipped",
+                level=LoggingLevel.WARNING,
+                fields={
+                    "reason": "push_capability_unavailable",
+                    "count": len(resource_ids),
+                },
+                resource_type="subscription",
+                resource_id=subscription_id,
+            )
+            return
+        target_directory_id = None
+        if self._push_directory_provider is not None:
+            try:
+                target_directory_id = await self._push_directory_provider()
+            except Exception:  # noqa: BLE001 - target failure falls back to default
+                target_directory_id = None
+        pushed = 0
+        for resource_id in resource_ids:
+            try:
+                await task_service.create(
+                    resource_id,
+                    allowed_actions=frozenset(allowed),
+                    target_directory_id=target_directory_id,
+                )
+                pushed += 1
+            except Exception:  # noqa: BLE001 - one failure must not stop the batch
+                await emit_event(
+                    self._event_logger,
+                    "subscription.auto_push_failed",
+                    level=LoggingLevel.WARNING,
+                    fields={"resource_id": resource_id},
+                    resource_type="subscription",
+                    resource_id=subscription_id,
+                )
+        await emit_event(
+            self._event_logger,
+            "subscription.auto_push_completed",
+            fields={"pushed": pushed, "total": len(resource_ids)},
+            resource_type="subscription",
+            resource_id=subscription_id,
         )
 
     async def list_observations(

@@ -1786,6 +1786,8 @@ class SubscriptionMutationRequest(BaseModel):
     model_config = {"extra": "forbid"}
 
     revision: int = Field(ge=1)
+    # 仅 mode 动作需要:目标模式(remind/confirm/auto)。
+    mode: SubscriptionMode | None = None
 
 
 class SubscriptionResponse(BaseModel):

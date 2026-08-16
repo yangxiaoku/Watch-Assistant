@@ -153,3 +153,19 @@ async def cancel_subscription(
     service: SubscriptionServiceDependency,
 ) -> SubscriptionResponse:
     return await _mutate(subscription_id, payload, service, "cancel")
+
+
+@router.post(
+    "/subscriptions/{subscription_id}/mode", response_model=SubscriptionResponse
+)
+async def change_subscription_mode(
+    subscription_id: str,
+    payload: SubscriptionMutationRequest,
+    service: SubscriptionServiceDependency,
+) -> SubscriptionResponse:
+    """切换订阅模式(仅提醒/确认推送/自动推送, REQ-007 SUB-005)。
+
+    自动模式在订阅检查命中资源时自动创建 115 推送任务;确认模式仍只
+    通知,由用户在资源页手动确认推送。
+    """
+    return await _mutate(subscription_id, payload, service, "mode")

@@ -372,6 +372,15 @@ async def _refresh_inventory_before_push(
     )
 
 
+async def _resolve_subscription_push_directory(settings_service) -> str | None:
+    """订阅自动推送的目标目录:组织设置里的资源推送目录;不可用时回退 None。"""
+    try:
+        settings = await settings_service.get_organization()
+    except Exception:  # noqa: BLE001 - push falls back to the default target
+        return None
+    return settings.push_directory_id
+
+
 async def _current_managed_directory_ids(
     session_factory,
     directory_id: str,
@@ -1229,6 +1238,13 @@ def create_app(
                 workflow_service=application.state.workflow_service,
                 notify_dispatcher=application.state.notify_dispatcher,
                 season_metadata_service=application.state.season_metadata_service,
+                task_service_provider=lambda: application.state.task_service,
+                push_capabilities_provider=lambda: getattr(
+                    application.state, "push_capabilities", None
+                ),
+                push_directory_provider=lambda: _resolve_subscription_push_directory(
+                    application.state.settings_service
+                ),
             )
             application.state.library_scan_scheduler = LibraryScanScheduler(
                 runtime_database.session_factory,
@@ -1936,6 +1952,13 @@ def create_app(
             workflow_service=application.state.workflow_service,
             notify_dispatcher=application.state.notify_dispatcher,
             season_metadata_service=application.state.season_metadata_service,
+            task_service_provider=lambda: application.state.task_service,
+            push_capabilities_provider=lambda: getattr(
+                application.state, "push_capabilities", None
+            ),
+            push_directory_provider=lambda: _resolve_subscription_push_directory(
+                application.state.settings_service
+            ),
         )
         application.state.quality_profile_service = QualityProfileService(
             database.session_factory,
