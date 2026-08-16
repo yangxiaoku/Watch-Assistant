@@ -180,6 +180,22 @@ class P115ReadOnlyDirectoryGateway:
             )
             for record in records
         ]
+        # 115 离线下载容器(2026-08 实测)会在列表里返回 id 等于父目录自身的
+        # 自引用条目(下载中的文件无 fid/pid,fs_info 判型为目录,id 回退为
+        # 容器目录自身):丢弃,避免树扫描检测到自环(directory_cycle)使整个
+        # 自动整理扫描失败。正常 115 目录/文件 id 全局唯一,不会等于父目录
+        # id,过滤不影响真实内容;下载完成后容器消失或恢复正常结构。
+        entries = [
+            entry
+            for entry in entries
+            if not (
+                (entry.is_directory and entry.directory_id == normalized_directory_id)
+                or (
+                    not entry.is_directory
+                    and entry.file_id == normalized_directory_id
+                )
+            )
+        ]
         if any(entry.parent_id != normalized_directory_id for entry in entries):
             raise P115ReadOnlyGatewayError("entry_scope_unverified")
         for entry in entries:

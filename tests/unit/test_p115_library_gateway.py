@@ -189,3 +189,65 @@ def test_throttle_read_spaces_real_requests(monkeypatch):
     clock["now"] += 1.0
     module.throttle_read()  # 间隔 1.0s > 0.5s → 不 sleep
     assert len(sleeps) == 1
+
+
+@pytest.mark.asyncio
+async def test_list_directory_drops_self_referencing_container_entries():
+    """115 离线下载容器返回的自引用条目(id 等于父目录)被丢弃,真实条目保留。
+
+    下载中的文件无 fid/pid,fs_info 判型为目录且 id 回退为容器目录自身,
+    树扫描会因此检测到自环(directory_cycle)导致整个整理扫描失败。"""
+    transport = _FakeTransport(
+        {
+            "state": True,
+            "offset": 0,
+            "limit": 50,
+            "count": 3,
+            "data": [
+                {"is_dir": True, "cid": "7000", "n": "container-self-ref"},
+                {"is_dir": False, "fid": "8001", "pid": "7000", "n": "real.mkv"},
+                {"is_dir": True, "cid": "9000", "pid": "7000", "n": "real-dir"},
+            ],
+        }
+    )
+    gateway = P115ReadOnlyDirectoryGateway(
+        _PlainProvider(),
+        transport_factory=lambda credential: transport,
+        authorized_directory_ids=("7000",),
+    )
+
+    page = await gateway.list_directory("7000", page=1, page_size=50)
+
+    names = [entry.name for entry in page.items]
+    assert names == ["real.mkv", "real-dir"]
+    assert "9000" in gateway._observed_directories
+    assert "7000" not in gateway._observed_directories
+
+
+@pytest.mark.asyncio
+async def test_list_directory_drops_self_referencing_file_entries():
+    """文件条目 id 等于父目录时同样丢弃,防止污染 observed_files。"""
+    transport = _FakeTransport(
+        {
+            "state": True,
+            "offset": 0,
+            "limit": 50,
+            "count": 2,
+            "data": [
+                {"is_dir": False, "fid": "7000", "n": "self-ref-file"},
+                {"is_dir": False, "fid": "8002", "pid": "7000", "n": "ok.bin"},
+            ],
+        }
+    )
+    gateway = P115ReadOnlyDirectoryGateway(
+        _PlainProvider(),
+        transport_factory=lambda credential: transport,
+        authorized_directory_ids=("7000",),
+    )
+
+    page = await gateway.list_directory("7000", page=1, page_size=50)
+
+    names = [entry.name for entry in page.items]
+    assert names == ["ok.bin"]
+    assert "7000" not in gateway._observed_files
+    assert "8002" in gateway._observed_files
