@@ -330,7 +330,7 @@ async def _refresh_inventory_before_push(
             gateway = P115ReadOnlyDirectoryGateway(
                 provider,
                 authorized_directory_ids=(library.root_directory_id,),
-                request_timeout_seconds=90,
+                request_timeout_seconds=240,
             )
             result = await LibraryIndexService(
                 database.session_factory,
@@ -606,7 +606,7 @@ def create_app(
                 gateway = P115ReadOnlyDirectoryGateway(
                     application.state.organization_cookie_provider,
                     authorized_directory_ids=(root_directory_id,),
-                    request_timeout_seconds=90,
+                    request_timeout_seconds=240,
                 )
                 return LibraryIndexService(
                     application.state.database.session_factory,
@@ -841,7 +841,7 @@ def create_app(
                         authorized_directory_ids=(
                             application.state.organization_target_root_id,
                         ),
-                        request_timeout_seconds=90,
+                        request_timeout_seconds=240,
                     )
                     catalog = await read_target_catalog(
                         gateway, application.state.organization_target_root_id
@@ -924,7 +924,7 @@ def create_app(
                 return P115ReadOnlyDirectoryGateway(
                     application.state.organization_cookie_provider,
                     authorized_directory_ids=tuple(directory_ids),
-                    request_timeout_seconds=90,
+                    request_timeout_seconds=240,
                 )
 
             async def build_cleanup_transport():
@@ -1617,7 +1617,7 @@ def create_app(
                 return P115ReadOnlyDirectoryGateway(
                     scan_provider,
                     authorized_directory_ids=tuple(authorized_directory_ids),
-                    request_timeout_seconds=90,
+                    request_timeout_seconds=240,
                 )
 
             scan_worker = LibraryScanWorker(

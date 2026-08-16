@@ -17,10 +17,10 @@ P115_BUSY_OPERATION_RETRY_DELAY_SECONDS = 3.0
 # (/files、/info 接口 405/429,持续数分钟到数十分钟);正常扫描/观察/核对
 # 请求按最小间隔节流,避免触发风控。只作用于真实 HTTP 请求
 # (request hook 内),测试 fake 客户端不受影响。
-# 0.15s 与批量页 50 的已验证节奏一致(e6eb6dd:相邻请求 0.15s 间隔实测
-# 安全);0.5s 是逐页 1 条时代的保守值,批量页下会让 38 条判型花 19s 纯
-# 节流时间,逼近网关 30s deadline 导致扫描确定性失败(2026-08-16 实测)。
-READ_THROTTLE_SECONDS = 0.15
+# 2026-08-16 用户要求:调用间隔固定 3s,宁慢勿风控——批量页 50 下每页
+# 判型(逐条 fs_info)约 50 次调用,3s/次 = 150s/页,网关超时预算需同步
+# 放大(gateway request_timeout_seconds=240)。
+READ_THROTTLE_SECONDS = 3.0
 _last_read_at = 0.0
 
 

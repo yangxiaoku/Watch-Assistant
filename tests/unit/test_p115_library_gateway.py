@@ -183,11 +183,11 @@ def test_throttle_read_spaces_real_requests(monkeypatch):
     assert sleeps == []
 
     clock["now"] += 0.1
-    module.throttle_read()  # 间隔 0.1s < 0.5s → sleep 补齐
+    module.throttle_read()  # 间隔 0.1s < 3.0s → sleep 补齐
     assert len(sleeps) == 1 and sleeps[0] > 0
 
-    clock["now"] += 1.0
-    module.throttle_read()  # 间隔 1.0s > 0.5s → 不 sleep
+    clock["now"] += 4.0
+    module.throttle_read()  # 间隔 4.0s > 3.0s → 不 sleep
     assert len(sleeps) == 1
 
 
