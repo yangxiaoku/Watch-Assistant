@@ -33,7 +33,11 @@ export async function waitForResourceSearch(
   task: ResourceSearchResponse,
   options: ResourceSearchPollOptions,
 ): Promise<ResourceSearchResponse | null> {
-  const intervalMs = options.intervalMs ?? 250;
+  // 首 3 秒密集轮询(任务通常 5-10s 内 ready),之后放宽到 1s,
+  // 减少长时间等待期间的无效请求。
+  const fastIntervalMs = options.intervalMs ?? 250;
+  const slowIntervalMs = fastIntervalMs * 4;
+  const fastAttempts = 12;
   // 服务端多来源搜索可达分钟级:上限放宽到 120s,超时返回 timeout 状态
   // 而非伪造 failed——failed 会让前端清空已加载快照。
   const maxAttempts = options.maxAttempts ?? 480;
@@ -41,7 +45,10 @@ export async function waitForResourceSearch(
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     if (options.currentRequestId() !== options.requestId || options.signal.aborted) return null;
     if (current.status === "ready" || current.status === "failed") return current;
-    await waitForNextPoll(options.signal, intervalMs);
+    await waitForNextPoll(
+      options.signal,
+      attempt < fastAttempts ? fastIntervalMs : slowIntervalMs,
+    );
     if (options.currentRequestId() !== options.requestId || options.signal.aborted) return null;
     current = await client.resourceSearch(current.task_id, options.signal);
   }
