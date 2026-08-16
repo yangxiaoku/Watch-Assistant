@@ -48,6 +48,10 @@ _GATEWAY_CALL_RETRY_DELAY_SECONDS = 2.0
 # 115 风控(405)专用退避:窗口通常数十秒,等待后重试一次。
 _GATEWAY_CALL_405_RETRY_DELAY_SECONDS = 45.0
 _GATEWAY_RETRYABLE_HTTP_STATUSES = frozenset({429, 500, 502, 503, 504})
+# proapi app 端点的快速失败预算:2026-08-16 实测 proapi 批量调用后进入
+# 「黑洞」风控(连接建立但无 HTTP 响应),等满 30s 会让整页扫描确定性失败;
+# app 端点短超时尝试后立即回退 webapi,黑洞期也能完成读取。
+_PROAPI_FAST_FAIL_SECONDS = 8.0
 
 
 class P115CredentialSource(Protocol):
@@ -358,14 +362,19 @@ class P115ReadOnlyDirectoryGateway:
         payload: Mapping[str, int | str],
         deadline: float,
     ) -> Mapping[str, Any]:
-        """一次 115 读尝试:app 端点优先,仅对 provider HTTP 405 或非 Mapping
-        响应回退旧接口;其余异常(网络/502/超时)由上层重试或失败关闭,避免
-        静默使用过期索引数据。"""
+        """一次 115 读尝试:app 端点优先,失败(405/非 Mapping/超时)回退旧接口。
+
+        2026-08-16 实测:proapi(``/android/`` 路径)在批量调用后会进入
+        「黑洞」风控(连接建立但无 HTTP 响应);黑洞期每次调用都等满超时
+        会让整页扫描确定性失败。因此 app 端点用短超时(``_PROAPI_FAST_FAIL_SECONDS``)
+        尝试,超时/异常立即回退 webapi 旧接口,避免黑洞拖垮整个读取。
+        """
         remaining = self._remaining(deadline)
+        app_timeout = min(remaining, _PROAPI_FAST_FAIL_SECONDS)
         if method_name == "fs_files":
             try:
                 response = await transport.fs_files_app(
-                    payload, timeout_seconds=remaining
+                    payload, timeout_seconds=app_timeout
                 )
                 if not isinstance(response, Mapping) or _is_structured_method_not_allowed(response):
                     # app 端点返回非 Mapping(如空列表)或结构化 405 时回退旧接口;
@@ -375,7 +384,7 @@ class P115ReadOnlyDirectoryGateway:
                         payload, timeout_seconds=remaining
                     )
             except Exception as error:
-                if not _is_method_not_allowed(error):
+                if not _is_method_not_allowed(error) and not _is_timeout_error(error):
                     raise
                 response = await transport.fs_files(
                     payload, timeout_seconds=remaining
@@ -384,7 +393,7 @@ class P115ReadOnlyDirectoryGateway:
         if method_name == "fs_info":
             try:
                 response = await transport.fs_info_app(
-                    payload, timeout_seconds=remaining
+                    payload, timeout_seconds=app_timeout
                 )
                 if not isinstance(response, Mapping) or _is_structured_method_not_allowed(response):
                     # fs_info_app 对文件(fid)请求返回空列表(实测),必须回退旧接口;
@@ -394,7 +403,7 @@ class P115ReadOnlyDirectoryGateway:
                         payload, timeout_seconds=remaining
                     )
             except Exception as error:
-                if not _is_method_not_allowed(error):
+                if not _is_method_not_allowed(error) and not _is_timeout_error(error):
                     raise
                 response = await transport.fs_info(
                     payload, timeout_seconds=remaining
@@ -903,6 +912,15 @@ def _is_method_not_allowed(error: BaseException) -> bool:
             return True
     response = getattr(error, "response", None)
     return getattr(response, "status_code", None) in {405, "405"}
+
+
+def _is_timeout_error(error: BaseException) -> bool:
+    """proapi 黑洞(连接建立但无响应)表现为超时:回退 webapi 完成读取。"""
+    if isinstance(error, TimeoutError):
+        return True
+    return any(
+        isinstance(argument, TimeoutError) for argument in getattr(error, "args", ())
+    )
 
 
 def _is_structured_method_not_allowed(response: object) -> bool:

@@ -6,6 +6,7 @@ import asyncio
 import base64
 import inspect
 import re
+import time
 from collections.abc import Callable, Mapping
 from importlib.metadata import version
 from typing import Any
@@ -33,6 +34,10 @@ MAX_SHARE_ITEMS = 1000
 # 见 AGENTS.md「_p115client_timeout_executor 对 errno=990009 使用 3 秒重试」)。
 _P115_BUSY_OPERATION_ERRNO = 990009
 _P115_BUSY_RETRY_DELAY_SECONDS = 3.0
+# 写操作(离线下载提交/分享转存)最小间隔:2026-08 实测订阅 AUTO 推送
+# 31 连发离线下载提交(~3s/个)触发 115 405 风控;写操作比读更敏感,
+# 提交间隔拉大到 10s 级别,把批量任务的频率压在风控阈值以下。
+_P115_WRITE_MIN_INTERVAL_SECONDS = 10.0
 # 风控/瞬时错误(429/5xx)的有限重试:与只读 gateway 一致,避免密集调用触发
 # 账号级风控后直接失败;重试预算耗尽仍失败关闭。
 _P115_CALL_MAX_ATTEMPTS = 3
@@ -194,6 +199,16 @@ class P115Adapter:
         self._cookie: str | None = None
         self._client_lock = asyncio.Lock()
         self._semaphore = asyncio.Semaphore(max_concurrency)
+        self._last_write_at = 0.0
+
+    async def _pace_write(self) -> None:
+        """写操作(提交/转存)之间的最小间隔,防批量推送触发 115 风控。"""
+        wait = _P115_WRITE_MIN_INTERVAL_SECONDS - (
+            time.monotonic() - self._last_write_at
+        )
+        if wait > 0:
+            await asyncio.sleep(wait)
+        self._last_write_at = time.monotonic()
 
     async def submit_magnet(
         self, url: str, *, target_cid: str | None = None
@@ -202,6 +217,7 @@ class P115Adapter:
         if infohash is None:
             return _failed("invalid_magnet", "magnet URL is invalid")
         async with self._semaphore:
+            await self._pace_write()
             client, missing = await self._client_for_operation()
             if missing:
                 return _needs_auth()
@@ -238,6 +254,7 @@ class P115Adapter:
         if share is None:
             return _failed("invalid_share", "115 share URL is invalid")
         async with self._semaphore:
+            await self._pace_write()
             client, missing = await self._client_for_operation()
             if missing:
                 return _needs_auth()

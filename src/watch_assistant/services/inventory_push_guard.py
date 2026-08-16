@@ -164,6 +164,47 @@ class InventoryPushGuard:
             return InventoryPushCheck(True, "inventory_not_found", InventoryDecision.NOT_FOUND)
 
 
+async def library_scope_fresh(
+    session: AsyncSession,
+    library: MediaLibrary,
+    *,
+    freshness_threshold_seconds: int = 900,
+) -> bool:
+    """只读判断一个库的最新快照是否完整且新鲜(不打 115)。
+
+    与 ``InventoryPushGuard.check`` 的库级前置条件一致(完整树快照 +
+    覆盖根目录 + 源快照当前 + 新鲜度),供推送前刷新等调用方跳过
+    无需重扫的库,避免失败风暴逐任务重复全库扫描。
+    """
+    run = await session.scalar(
+        select(LibraryScanRun)
+        .where(LibraryScanRun.library_id == library.id)
+        .order_by(LibraryScanRun.created_at.desc(), LibraryScanRun.id.desc())
+        .limit(1)
+    )
+    if (
+        run is None
+        or run.root_directory_id != library.root_directory_id
+        or run.scan_mode != "tree"
+        or not run.complete
+        or run.state != "completed"
+        or run.snapshot_revision is None
+        or not await _run_covers_scope(session, run, library)
+    ):
+        return False
+    if not await source_snapshot_is_current(
+        session,
+        library_id=library.id,
+        source_scan_run_id=run.id,
+        source_snapshot_revision=run.snapshot_revision,
+    ):
+        return False
+    snapshot = await _snapshot(
+        session, run, library.id, freshness_threshold_seconds
+    )
+    return snapshot.freshness.status is FreshnessStatus.FRESH
+
+
 async def _run_covers_scope(
     session: AsyncSession, run: LibraryScanRun, library: MediaLibrary
 ) -> bool:
@@ -264,4 +305,9 @@ def _resource_probe(resource: Resource) -> dict[str, object]:
     return probe
 
 
-__all__ = ["InventoryPushCheck", "InventoryPushGuard", "InventoryRefreshEvidence"]
+__all__ = [
+    "InventoryPushCheck",
+    "InventoryPushGuard",
+    "InventoryRefreshEvidence",
+    "library_scope_fresh",
+]

@@ -114,6 +114,7 @@ from watch_assistant.services.inventory_audit_service import InventoryAuditServi
 from watch_assistant.services.inventory_push_guard import (
     InventoryPushGuard,
     InventoryRefreshEvidence,
+    library_scope_fresh,
 )
 from watch_assistant.services.library_index import LibraryIndexService
 from watch_assistant.services.library_scan_operations import (
@@ -214,10 +215,22 @@ def _domain_crypto(settings: "Settings", domain: str) -> SecretCrypto:
     return SecretCrypto(master, domain=domain)
 
 
+# 推送前库存刷新失败冷却:失败结果缓存一段时间,避免批量任务(如订阅
+# AUTO 推送一次创建 30+ 任务)逐任务重试全库扫描,形成 115 调用风暴
+# (2026-08 实测 10:40 单分钟 23 次扫描)并持续喂养风控窗口。
+_INVENTORY_REFRESH_COOLDOWN_SECONDS = 120.0
+_inventory_refresh_failures: dict[str, tuple[float, InventoryRefreshEvidence]] = {}
+
+
 async def _refresh_inventory_before_push(
     application: FastAPI,
 ) -> InventoryRefreshEvidence:
-    """Refresh every enabled inventory scope using read-only 115 access."""
+    """Refresh every enabled inventory scope using read-only 115 access.
+
+    风控护栏:只扫描「快照不新鲜」的库(``library_scope_fresh`` 只读判断,
+    不打 115);刷新失败的库进入冷却缓存,冷却期内后续任务直接复用失败
+    结果,不再打 115。
+    """
     database = getattr(application.state, "database", None)
     provider = getattr(application.state, "organization_cookie_provider", None)
     event_logger = getattr(application.state, "settings_service", None)
@@ -268,6 +281,7 @@ async def _refresh_inventory_before_push(
         "inventory.refresh.started",
         fields={"total": len(libraries)},
     )
+    refreshed_count = 0
     for library in libraries:
         if not library.scope_verified:
             await emit_event(
@@ -287,11 +301,36 @@ async def _refresh_inventory_before_push(
                 error_code="inventory_scope_unconfigured",
                 library_count=len(libraries),
             )
+        # 冷却缓存:最近一次刷新失败的库在冷却期内直接复用失败结果,
+        # 避免批量任务逐任务重试全库扫描(115 调用风暴 → 风控持续)。
+        cached = _inventory_refresh_failures.get(library.id)
+        if cached is not None:
+            cached_at, cached_evidence = cached
+            if time.monotonic() - cached_at < _INVENTORY_REFRESH_COOLDOWN_SECONDS:
+                await emit_event(
+                    event_logger,
+                    "inventory.refresh.skipped",
+                    level=LoggingLevel.WARNING,
+                    fields={
+                        "hidden_count": 1,
+                        "error_code": cached_evidence.error_code
+                        or "inventory_index_incomplete",
+                        "cooldown_seconds": _INVENTORY_REFRESH_COOLDOWN_SECONDS,
+                    },
+                )
+                return cached_evidence
+            _inventory_refresh_failures.pop(library.id, None)
+        # 快照已新鲜(只读 DB 判断,不打 115):跳过扫描,守卫可直接放行。
+        async with database.session_factory() as session:
+            scope_fresh = await library_scope_fresh(session, library)
+        if scope_fresh:
+            continue
+        refreshed_count += 1
         try:
             gateway = P115ReadOnlyDirectoryGateway(
                 provider,
                 authorized_directory_ids=(library.root_directory_id,),
-                request_timeout_seconds=30,
+                request_timeout_seconds=90,
             )
             result = await LibraryIndexService(
                 database.session_factory,
@@ -303,6 +342,16 @@ async def _refresh_inventory_before_push(
                 hydrate_file_details=True,
             ).scan_tree(f"push-inventory-{uuid4().hex}")
         except Exception:  # noqa: BLE001 - remote details stay private
+            evidence = InventoryRefreshEvidence(
+                complete=False,
+                scope_verified=False,
+                error_code="inventory_check_failed",
+                library_count=len(libraries),
+            )
+            _inventory_refresh_failures[library.id] = (
+                time.monotonic(),
+                evidence,
+            )
             await emit_event(
                 event_logger,
                 "inventory.refresh.failed",
@@ -312,13 +361,18 @@ async def _refresh_inventory_before_push(
                     "error_code": "inventory_refresh_failed",
                 },
             )
-            return InventoryRefreshEvidence(
+            return evidence
+        if not result.complete or result.state.value != "completed":
+            evidence = InventoryRefreshEvidence(
                 complete=False,
-                scope_verified=False,
-                error_code="inventory_check_failed",
+                scope_verified=True,
+                error_code="inventory_index_incomplete",
                 library_count=len(libraries),
             )
-        if not result.complete or result.state.value != "completed":
+            _inventory_refresh_failures[library.id] = (
+                time.monotonic(),
+                evidence,
+            )
             await emit_event(
                 event_logger,
                 "inventory.refresh.failed",
@@ -328,12 +382,7 @@ async def _refresh_inventory_before_push(
                     "error_code": result.error_code or "inventory_index_incomplete",
                 },
             )
-            return InventoryRefreshEvidence(
-                complete=False,
-                scope_verified=True,
-                error_code="inventory_index_incomplete",
-                library_count=len(libraries),
-            )
+            return evidence
         async with database.session_factory() as session:
             current = await session.get(MediaLibrary, library.id)
         if (
@@ -363,13 +412,13 @@ async def _refresh_inventory_before_push(
     await emit_event(
         event_logger,
         "inventory.refresh.completed",
-        fields={"count": len(libraries)},
+        fields={"count": refreshed_count},
     )
     return InventoryRefreshEvidence(
         complete=True,
         scope_verified=True,
         library_count=len(libraries),
-        refreshed_count=len(libraries),
+        refreshed_count=refreshed_count,
     )
 
 
@@ -557,7 +606,7 @@ def create_app(
                 gateway = P115ReadOnlyDirectoryGateway(
                     application.state.organization_cookie_provider,
                     authorized_directory_ids=(root_directory_id,),
-                    request_timeout_seconds=30,
+                    request_timeout_seconds=90,
                 )
                 return LibraryIndexService(
                     application.state.database.session_factory,
@@ -792,7 +841,7 @@ def create_app(
                         authorized_directory_ids=(
                             application.state.organization_target_root_id,
                         ),
-                        request_timeout_seconds=30,
+                        request_timeout_seconds=90,
                     )
                     catalog = await read_target_catalog(
                         gateway, application.state.organization_target_root_id
@@ -875,7 +924,7 @@ def create_app(
                 return P115ReadOnlyDirectoryGateway(
                     application.state.organization_cookie_provider,
                     authorized_directory_ids=tuple(directory_ids),
-                    request_timeout_seconds=30,
+                    request_timeout_seconds=90,
                 )
 
             async def build_cleanup_transport():
@@ -1568,7 +1617,7 @@ def create_app(
                 return P115ReadOnlyDirectoryGateway(
                     scan_provider,
                     authorized_directory_ids=tuple(authorized_directory_ids),
-                    request_timeout_seconds=30,
+                    request_timeout_seconds=90,
                 )
 
             scan_worker = LibraryScanWorker(

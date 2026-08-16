@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
@@ -68,6 +69,11 @@ _TERMINAL_SUBSCRIPTION_STATES = frozenset(
         SubscriptionStatus.COMPLETED,
     }
 )
+
+# AUTO 模式单轮「新创建」推送任务上限:2026-08 实测整剧订阅一次命中 30+
+# 资源、31 连发离线下载提交触发 115 405 风控;每轮只推少量新任务,其余
+# 留给后续轮次(TaskService.create 按 resource_id 幂等,不会重复创建)。
+_AUTO_PUSH_MAX_NEW_PER_CHECK = 5
 
 
 class SubscriptionService:
@@ -419,6 +425,13 @@ class SubscriptionService:
         门禁:任务服务/推送能力缺失 → 整体跳过;单资源创建失败 → 记录事件
         后继续,绝不中断订阅检查。needs_auth 时推送能力为空,magnet/share
         不可用 → 整体跳过,满足 REQ-007 "needs_auth 暂停自动推送"。
+
+        风控护栏(2026-08 实测:整剧订阅一次命中 30+ 资源、31 连发离线下载
+        提交触发 115 405 风控):
+        - 单轮新创建任务上限 ``_AUTO_PUSH_MAX_NEW_PER_CHECK``,超出部分
+          留给后续轮次(``TaskService.create`` 幂等,已建任务不重复创建);
+        - 内容级去重:同 tmdb+季/集 的资源只推第一个版本,避免同一内容
+          多个版本(如同一季 x265/x264/WEB 三版本)全部推送。
         """
         if not resource_ids:
             return
@@ -461,14 +474,25 @@ class SubscriptionService:
             except Exception:  # noqa: BLE001 - target failure falls back to default
                 target_directory_id = None
         pushed = 0
+        limited = False
+        seen_content_keys: set[tuple[object, ...]] = set()
         for resource_id in resource_ids:
+            if pushed >= _AUTO_PUSH_MAX_NEW_PER_CHECK:
+                limited = True
+                break
+            content_key = await self._auto_push_content_key(resource_id)
+            if content_key is not None:
+                if content_key in seen_content_keys:
+                    continue
+                seen_content_keys.add(content_key)
             try:
-                await task_service.create(
+                _task, reused = await task_service.create(
                     resource_id,
                     allowed_actions=frozenset(allowed),
                     target_directory_id=target_directory_id,
                 )
-                pushed += 1
+                if not reused:
+                    pushed += 1
             except Exception:  # noqa: BLE001 - one failure must not stop the batch
                 await emit_event(
                     self._event_logger,
@@ -484,6 +508,47 @@ class SubscriptionService:
             fields={"pushed": pushed, "total": len(resource_ids)},
             resource_type="subscription",
             resource_id=subscription_id,
+        )
+        if limited:
+            await emit_event(
+                self._event_logger,
+                "subscription.auto_push_limited",
+                fields={
+                    "limit": _AUTO_PUSH_MAX_NEW_PER_CHECK,
+                    "remaining": len(resource_ids) - pushed,
+                },
+                resource_type="subscription",
+                resource_id=subscription_id,
+            )
+
+    async def _auto_push_content_key(
+        self, resource_id: str
+    ) -> tuple[object, ...] | None:
+        """返回资源的内容级去重键 (media_type, tmdb_id, 季, 起集, 止集)。
+
+        同一内容的多版本资源(如某季 x265/x264/WEB 各一版)共享同一键,
+        自动推送只取首个;资源缺失或无法定位 tmdb 内容时返回 None(不去重)。
+        """
+        async with self._session_factory() as session:
+            resource = await session.get(Resource, resource_id)
+        if resource is None:
+            return None
+        try:
+            metadata = json.loads(resource.metadata_json or "{}")
+        except (TypeError, ValueError):
+            metadata = {}
+        if not isinstance(metadata, dict):
+            return None
+        media_type = metadata.get("media_type")
+        tmdb_id = metadata.get("tmdb_id")
+        if media_type is None or tmdb_id is None:
+            return None
+        return (
+            str(media_type),
+            str(tmdb_id),
+            metadata.get("season_number"),
+            metadata.get("episode_start"),
+            metadata.get("episode_end"),
         )
 
     async def list_observations(
