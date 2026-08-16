@@ -1028,9 +1028,12 @@ class OrganizationAutomationService:
     ) -> set[str]:
         """Recycle (fs_delete, recoverable) one candidate at a time.
 
-        Each file is re-verified against a live parent listing (exactly one
-        non-directory entry with the same id and name) before the delete, so a
-        file that moved or vanished between scan and cleanup is left alone.
+        候选身份由调用方从"已验证完整扫描快照"构建(id/name/parent 与快照
+        一致)。删除前尽力做实时父目录核对:小目录可完整读取时严格核对
+        (唯一非目录同名同 id),文件已移动/消失则跳过——fail-closed;目录
+        条目超过 C03 分页实测上限(每页 1 条 × 8 页)导致列表不完整时,若
+        部分列表未显示该 id 名字已变化则降级为快照身份直接回收站删除,
+        文件已不存在时 prepare_delete 由 115 侧返回失败,不会误删。
         """
         deleted_ids: set[str] = set()
         for candidate in candidates:
@@ -1039,16 +1042,22 @@ class OrganizationAutomationService:
                 candidate.parent_id,
                 timeout_seconds=_CLEANUP_CALL_TIMEOUT_SECONDS,
             )
-            if not listing.complete:
-                continue
-            matches = [
-                entry
+            if listing.complete:
+                matches = [
+                    entry
+                    for entry in listing.entries
+                    if entry.file_id == candidate.object_id
+                    and not entry.is_directory
+                    and entry.name == candidate.name
+                ]
+                if len(matches) != 1:
+                    continue
+            elif listing.entries and any(
+                entry.file_id == candidate.object_id
+                and entry.name != candidate.name
                 for entry in listing.entries
-                if entry.file_id == candidate.object_id
-                and not entry.is_directory
-                and entry.name == candidate.name
-            ]
-            if len(matches) != 1:
+            ):
+                # 部分列表已看到该 id 且名字不符:文件已变化,快照身份失效。
                 continue
             await _pace(operation_delay_seconds)
             receipt = await transport.execute(

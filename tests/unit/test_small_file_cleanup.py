@@ -202,3 +202,78 @@ async def test_apply_requires_confirmation(tmp_path):
             )
     finally:
         await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_apply_falls_back_to_snapshot_identity_when_listing_incomplete(tmp_path):
+    """大目录降级:实时目录列表不完整(115 C03 分页上限)时按已验证快照身份
+    直接回收站删除,文件已不存在时由 115 侧 prepare_delete 返回失败。"""
+    database, library, _scan = await _setup(tmp_path)
+
+    class _FakeTransport:
+        def __init__(self):
+            self.executed: list[object] = []
+
+        async def list_children(self, parent_id, *, timeout_seconds):
+            # 目录条目超过分页上限:列表不完整且未覆盖到候选 id。
+            return SimpleNamespace(complete=False, entries=[])
+
+        async def execute(self, operation, *, timeout_seconds):
+            self.executed.append(operation)
+            return SimpleNamespace(status=WriteStatus.SUCCESS)
+
+    transport = _FakeTransport()
+    service = SmallFileCleanupService(
+        database.session_factory, transport_factory=lambda: transport
+    )
+    try:
+        deleted, failed = await service.apply(
+            library,
+            scan_run_id="scan-1",
+            file_ids=["101", "102"],
+            confirm=True,
+            operation_delay_seconds=0,
+        )
+        assert deleted == 2
+        assert failed == 0
+        assert len(transport.executed) == 2
+    finally:
+        await database.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_apply_skips_renamed_file_seen_in_partial_listing(tmp_path):
+    """部分列表里已看到候选 id 且名字不符 → 快照身份失效,禁止删除(fail-closed)。"""
+    database, library, _scan = await _setup(tmp_path)
+
+    class _FakeTransport:
+        async def list_children(self, parent_id, *, timeout_seconds):
+            return SimpleNamespace(
+                complete=False,
+                entries=[
+                    SimpleNamespace(
+                        file_id="101",
+                        is_directory=False,
+                        name="renamed.nfo",
+                    )
+                ],
+            )
+
+        async def execute(self, operation, *, timeout_seconds):
+            raise AssertionError("execute must not be called")
+
+    service = SmallFileCleanupService(
+        database.session_factory, transport_factory=lambda: _FakeTransport()
+    )
+    try:
+        deleted, failed = await service.apply(
+            library,
+            scan_run_id="scan-1",
+            file_ids=["101"],
+            confirm=True,
+            operation_delay_seconds=0,
+        )
+        assert deleted == 0
+        assert failed == 1
+    finally:
+        await database.engine.dispose()

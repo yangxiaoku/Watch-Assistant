@@ -25,6 +25,7 @@ from watch_assistant.adapters.p115_library_write_contract import (
     prepare_delete,
 )
 from watch_assistant.library_models import LibraryScanEntry, LibraryScanRun
+from watch_assistant.services.library_index import ScanRunState
 from watch_assistant.services.library_snapshot import verified_latest_scan
 
 logger = logging.getLogger(__name__)
@@ -154,8 +155,27 @@ class SmallFileCleanupService:
         if not deduped:
             return 0, 0
         async with self._session_factory() as session:
+            # 快照必须是该库"最近一次完整扫描":降级核对依赖快照身份,陈旧
+            # 或不完整的快照一律 fail-closed(防止快照过期后误删)。
             scan = await session.get(LibraryScanRun, scan_run_id)
             if scan is None or scan.library_id != library.id:
+                raise SmallFileCleanupError("snapshot_stale")
+            latest = await session.scalar(
+                select(LibraryScanRun)
+                .where(
+                    LibraryScanRun.library_id == library.id,
+                    LibraryScanRun.state == ScanRunState.COMPLETED.value,
+                    LibraryScanRun.complete.is_(True),
+                    LibraryScanRun.snapshot_revision.is_not(None),
+                )
+                .order_by(
+                    LibraryScanRun.snapshot_revision.desc(),
+                    LibraryScanRun.updated_at.desc(),
+                    LibraryScanRun.id.desc(),
+                )
+                .limit(1)
+            )
+            if latest is None or latest.id != scan_run_id:
                 raise SmallFileCleanupError("snapshot_stale")
             rows = list(
                 (
@@ -196,19 +216,37 @@ class SmallFileCleanupService:
                         candidate.parent_id,
                         timeout_seconds=_CLEANUP_CALL_TIMEOUT_SECONDS,
                     )
-                    if not listing.complete:
-                        failed += 1
-                        continue
-                    matches = [
-                        entry
-                        for entry in listing.entries
-                        if entry.file_id == candidate.file_id
-                        and not entry.is_directory
-                        and entry.name == candidate.name
-                    ]
-                    if len(matches) != 1:
-                        failed += 1
-                        continue
+                    if listing.complete:
+                        # 实时核对(小目录):目录可完整读取时必须严格核对——
+                        # 唯一非目录同名同 id 才允许删除,否则 fail-closed 跳过。
+                        matches = [
+                            entry
+                            for entry in listing.entries
+                            if entry.file_id == candidate.file_id
+                            and not entry.is_directory
+                            and entry.name == candidate.name
+                        ]
+                        if len(matches) != 1:
+                            failed += 1
+                            continue
+                    else:
+                        # 大目录降级:115 C03 分页受实测约束(每页 1 条 × 8 页),
+                        # 条目更多时列表必然不完整。候选已由"已验证完整扫描快照"
+                        # 构建身份(id/name/parent/size 与快照一致),直接走回收站
+                        # 删除;文件已不存在/已被替换时 prepare_delete 由 115 侧
+                        # 返回失败,不产生误删。
+                        if listing.entries:
+                            stale = [
+                                entry
+                                for entry in listing.entries
+                                if entry.file_id == candidate.file_id
+                                and entry.name != candidate.name
+                            ]
+                            if stale:
+                                # 部分列表里已看到该 id 且名字不符:文件已变化,
+                                # 快照身份失效,禁止删除。
+                                failed += 1
+                                continue
                     await _pace(operation_delay_seconds)
                     receipt = await transport.execute(
                         prepare_delete(candidate.file_id),

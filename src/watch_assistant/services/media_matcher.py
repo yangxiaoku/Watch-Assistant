@@ -468,6 +468,28 @@ class TmdbMatcher:
                 MatchStatus.NO_CANDIDATES, MatchReason.EMPTY_CANDIDATES
             )
         ranked = tuple(_rank_candidates(match_input, candidates))
+        if (
+            ranked
+            and all(not item.eligible for item in ranked)
+            and any(
+                _search_alias_acceptable(match_input.title, item)
+                for item in candidates
+            )
+        ):
+            # 搜索词即证据兜底:TMDB 搜索正是用文件名标题命中这些候选,说明其
+            # 索引认可该标题与候选的关联——但罗马音/异体拼写只存在于搜索索引、
+            # 不在候选的标题或别名数据里(实测 alternative_titles 为空)。仅当
+            # 搜索词与候选标题互不为子串/token 子集(如 "Sousou no Frieren" vs
+            # "Frieren: Beyond Journey's End")时才注入为弱别名重评,避免
+            # "办公室"→"办公室风云" 这类部分匹配被救活;多个候选因注入都得分
+            # 时由 margin 门禁保守拦为待确认。
+            ranked = tuple(
+                _rank_candidates(
+                    match_input,
+                    candidates,
+                    search_aliases=(match_input.title,),
+                )
+            )
         return _decision_from_ranked(
             ranked, self._auto_accept_score, self._minimum_margin
         )
@@ -535,11 +557,16 @@ def _coerce_candidates(
 
 
 def _rank_candidates(
-    query: MediaMatchInput, candidates: Sequence[TmdbCandidate]
+    query: MediaMatchInput,
+    candidates: Sequence[TmdbCandidate],
+    *,
+    search_aliases: tuple[str, ...] = (),
 ) -> list[RankedCandidate]:
     ranked: list[RankedCandidate] = []
     for candidate in candidates:
-        score, evidence, eligible = _score_candidate(query, candidate)
+        score, evidence, eligible = _score_candidate(
+            query, candidate, search_aliases=search_aliases
+        )
         ranked.append(RankedCandidate(candidate, score, evidence, eligible))
     ranked.sort(key=_rank_key)
     return ranked
@@ -603,16 +630,64 @@ def _decision_from_ranked(
     )
 
 
+def _search_alias_acceptable(title: str, candidate: TmdbCandidate) -> bool:
+    """搜索词能否作为该候选的弱别名注入。
+
+    搜索词与候选的任何标题字段必须满足:不是字符级子串、互不为 token
+    子集。如 "Boys" ⊆ "The Boys"、 "办公室" ⊂ "办公室风云" 都是部分匹配,
+    TMDB 搜索命中只是模糊关联,不能作为证据;"Sousou no Frieren" 与
+    "Frieren: Beyond Journey's End" 共享 frieren token 但各自包含对方没有
+    的完整 token(sousou/no vs beyond/journey's/end),是独立的完整片名,
+    允许注入为弱别名。
+    """
+    normalized = _normalize(title)
+    if not normalized:
+        return False
+    tokens = tuple(normalized.split())
+    for value in (
+        candidate.title,
+        candidate.original_title,
+        candidate.english_title,
+        *candidate.aliases,
+    ):
+        if not value:
+            continue
+        field = _normalize(value)
+        if not field or field == normalized:
+            continue
+        if normalized in field or field in normalized:
+            return False
+        field_tokens = tuple(field.split())
+        if tokens and (
+            set(tokens) <= set(field_tokens) or set(field_tokens) <= set(tokens)
+        ):
+            return False
+    return True
+
+
 def _score_candidate(
-    query: MediaMatchInput, candidate: TmdbCandidate
+    query: MediaMatchInput,
+    candidate: TmdbCandidate,
+    *,
+    search_aliases: tuple[str, ...] = (),
 ) -> tuple[int, MatchEvidence, bool]:
     reasons: list[MatchReason] = []
     score = 0
-    title_match = _title_match(query.title or "", candidate)
+    title_match = _title_match(
+        query.title or "", candidate, search_aliases=search_aliases
+    )
     if title_match is None:
         reasons.append(MatchReason.TITLE_MISMATCH)
     else:
-        score += {"title": 55, "original_title": 50, "english_title": 50, "alias": 50}[title_match]
+        score += {
+            "title": 55,
+            "original_title": 50,
+            "english_title": 50,
+            "alias": 50,
+            # 搜索词兜底别名:TMDB 搜索索引认可的关联,但弱于数据里的正式
+            # 别名——恰好压线(70 分豁免)需要季集等其他证据全部吻合。
+            "search_alias": 45,
+        }[title_match]
 
     year_match: str | None = None
     expected_years = (
@@ -712,18 +787,55 @@ _BLOCKING_REASONS = {
 }
 
 
+def _infer_single_season(
+    seasons: Sequence[TmdbSeason],
+    episode_start: int,
+    episode_end: int,
+) -> int | None:
+    """无季标记时推断唯一能容纳该集号范围的季;多季可容纳则返回 None(保守)。
+
+    如 ``[Airota][Sousou no Frieren][29]`` 无 Sxx 标记:季 0(特典 26 集)
+    无法容纳 29 集,季 1(38 集)可以 —— 推断为季 1。多个季都能容纳时
+    无法区分,保持 ``season_unknown`` 由人工确认,绝不猜测。
+    """
+    if episode_start <= 0 or episode_end < episode_start:
+        return None
+    requested = set(range(episode_start, episode_end + 1))
+    capable: list[int] = []
+    for season in seasons:
+        if season.episode_count is not None and episode_end <= season.episode_count:
+            capable.append(season.season_number)
+            continue
+        if season.episode_numbers and requested.issubset(season.episode_numbers):
+            capable.append(season.season_number)
+    return capable[0] if len(capable) == 1 else None
+
+
 def _score_season_episode(
     query: MediaMatchInput, candidate: TmdbCandidate, reasons: list[MatchReason]
 ) -> tuple[bool | None, bool | None]:
     if query.season is None:
         if query.episode_start is not None:
-            reasons.append(MatchReason.SEASON_UNKNOWN)
-        return None, None
+            # 无季标记但带集号:推断唯一可容纳的季(多季可容纳则保持保守)。
+            inferred = _infer_single_season(
+                candidate.seasons,
+                query.episode_start,
+                query.episode_end or query.episode_start,
+            )
+            if inferred is None:
+                reasons.append(MatchReason.SEASON_UNKNOWN)
+                return None, None
+            season_number = inferred
+        else:
+            return None, None
+    else:
+        season_number = query.season
     if not candidate.seasons:
         reasons.append(MatchReason.SEASON_UNKNOWN)
         return False, None
     season = next(
-        (item for item in candidate.seasons if item.season_number == query.season), None
+        (item for item in candidate.seasons if item.season_number == season_number),
+        None,
     )
     if season is None:
         reasons.append(MatchReason.SEASON_OUT_OF_RANGE)
@@ -764,7 +876,9 @@ def _score_special(
     return False
 
 
-def _title_match(title: str, candidate: TmdbCandidate) -> str | None:
+def _title_match(
+    title: str, candidate: TmdbCandidate, *, search_aliases: tuple[str, ...] = ()
+) -> str | None:
     normalized = _normalize(title)
     options = (
         (candidate.title, "title"),
@@ -772,6 +886,8 @@ def _title_match(title: str, candidate: TmdbCandidate) -> str | None:
         (candidate.english_title, "english_title"),
     )
     options += tuple((alias, "alias") for alias in candidate.aliases)
+    # 搜索词兜底别名放在最后:只在常规标题/别名全部未命中时参与比较。
+    options += tuple((alias, "search_alias") for alias in search_aliases)
     # A multi-token query (e.g. "末日地堡 Silo" from a localized+original
     # title pair) that fails whole-query equality also matches when any
     # single token is a full, exact equal of a title field. Tokens are

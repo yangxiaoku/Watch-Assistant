@@ -651,3 +651,110 @@ def test_no_year_tv_without_episode_match_stays_review():
     )
     decision = _decision_from_ranked((RankedCandidate(candidate, 75, evidence, True),), 85, 8)
     assert decision.status is MatchStatus.NEEDS_REVIEW
+
+
+@pytest.mark.asyncio
+async def test_search_alias_fallback_accepts_romanized_title_with_inferred_season():
+    """罗马音标题 + 无季标记 → 搜索词兜底 + 单季推断后自动接受。
+
+    线上回归场景: ``[Airota][Sousou no Frieren][29]...`` —— TMDB 里该剧
+    标题是「葬送的芙莉莲」/「Frieren: Beyond Journey's End」,罗马音只存在
+    于搜索索引(alternative_titles 实测为空)。候选由搜索命中后标题全不
+    匹配,把搜索词注入候选别名重评;季 0(特典 26 集)无法容纳 29-38 集,
+    唯一推断季 1 → 满足无年份豁免条件 → 自动接受。
+    """
+    seasons = (
+        TmdbSeason(season_number=0, episode_count=26),
+        TmdbSeason(season_number=1, episode_count=38),
+    )
+    cand = candidate(
+        tmdb_id=209867,
+        title="葬送的芙莉莲",
+        year=2023,
+        media_type=MediaType.TV,
+        aliases=("Frieren: Beyond Journey's End",),
+        seasons=seasons,
+    )
+    matcher = TmdbMatcher(FakeClient([cand]))
+    decision = await matcher.match(
+        query(
+            title="Sousou no Frieren",
+            year=None,
+            season=None,
+            episode_start=29,
+            episode_end=38,
+        )
+    )
+    assert decision.status is MatchStatus.ACCEPTED
+    assert decision.selected is not None
+    assert decision.selected.tmdb_id == cand.tmdb_id
+    assert decision.confidence is MatchConfidence.HIGH
+
+
+@pytest.mark.asyncio
+async def test_search_alias_fallback_with_conflicting_candidates_stays_review():
+    """多个候选因搜索词注入都得分且 margin 不足 → 保持待确认,绝不误接受。"""
+    seasons = (TmdbSeason(season_number=1, episode_count=38),)
+    a = candidate(
+        tmdb_id=1,
+        title="Show A",
+        year=2023,
+        media_type=MediaType.TV,
+        seasons=seasons,
+    )
+    b = candidate(
+        tmdb_id=2,
+        title="Show B",
+        year=2024,
+        media_type=MediaType.TV,
+        seasons=seasons,
+    )
+    matcher = TmdbMatcher(FakeClient([a, b]))
+    decision = await matcher.match(
+        query(
+            title="Sousou no Frieren",
+            year=None,
+            season=None,
+            episode_start=29,
+            episode_end=38,
+        )
+    )
+    assert decision.status is MatchStatus.NEEDS_REVIEW
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_season_inference_stays_review():
+    """集号在多个季都可容纳时不推断,保持 season_unknown 待确认(保守)。"""
+    seasons = (
+        TmdbSeason(season_number=1, episode_count=12),
+        TmdbSeason(season_number=2, episode_count=12),
+    )
+    cand = candidate(
+        tmdb_id=7,
+        title="Some Show",
+        year=2024,
+        media_type=MediaType.TV,
+        seasons=seasons,
+    )
+    matcher = TmdbMatcher(FakeClient([cand]))
+    decision = await matcher.match(
+        query(
+            title="Some Show",
+            year=None,
+            season=None,
+            episode_start=3,
+        )
+    )
+    assert decision.status is MatchStatus.NEEDS_REVIEW
+
+
+def test_infer_single_season_prefers_unique_capable_season():
+    """单季推断:唯一可容纳该集号范围的季胜出;多季可容纳/空季表返回 None。"""
+    from watch_assistant.services.media_matcher import _infer_single_season
+
+    seasons = (TmdbSeason(season_number=0, episode_count=26), TmdbSeason(season_number=1, episode_count=38))
+    assert _infer_single_season(seasons, 29, 38) == 1
+    assert _infer_single_season(seasons, 29, 29) == 1
+    assert _infer_single_season(seasons, 2, 2) is None
+    assert _infer_single_season((), 29, 38) is None
+    assert _infer_single_season(seasons, 0, 0) is None
