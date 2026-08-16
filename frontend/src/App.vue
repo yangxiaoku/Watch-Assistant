@@ -29,7 +29,7 @@ import { mediaKey, mediaTypeOf } from "./media";
 import { canPushResource, submitPushResource } from "./push";
 import { finalizeInspectionResources, inspectionProgress as getInspectionProgress, inspectionResultEnded, inspectionState as getInspectionBatchState, MAX_INSPECTABLE_MAGNETS, mergeInspectionResult, nextInspectionResourceIds, pollInspectionBatch } from "./inspection";
 import { describeUiError } from "./errorCatalog";
-import { waitForResourceSearch as pollResourceSearch } from "./resourceSearchPolling";
+import { waitForResourceSearch as pollResourceSearch, waitForSnapshotUpdate as pollSnapshotUpdate } from "./resourceSearchPolling";
 import { sourceNameList } from "./resourceSources";
 import { createTaskRefreshGuard, isActiveTask } from "./taskPolling";
 import type { HomeCatalogResponse, MovieMetadata, ResourceFacets, ResourcePageResponse, ResourceQuality, ResourceSearchResponse, ResourceSort, ResourceSummary, SearchResponse, SeasonDetailResponse, SubscriptionResponse, TaskResponse } from "./types";
@@ -157,6 +157,7 @@ let failedCatalogRoute: CatalogRoute | null = null;
 let resourceRequestId = 0;
 let resourceAbortController: AbortController | null = null;
 let resourceSearchAbortController: AbortController | null = null;
+let snapshotObserverAbortController: AbortController | null = null;
 let metadataAbortController: AbortController | null = null;
 let resourceQueryTimer: number | undefined;
 let workflowCreationPromise: Promise<string | null> | null = null;
@@ -1017,6 +1018,8 @@ async function loadResources(
     reportDetailMetric(requestId, "request_cancelled", "cancelled", { once: true });
   }
   resourceSearchAbortController?.abort();
+  snapshotObserverAbortController?.abort();
+  snapshotObserverAbortController = null;
   const controller = new AbortController();
   resourceSearchAbortController = controller;
   const isCurrentSearch = () => requestId === searchRequestId
@@ -1090,6 +1093,9 @@ async function loadResources(
     // 搜索已完成，关闭“搜索中”状态；资源分页自身的 loading 由 loadResourcePage 管理。
     resourceSearchLoading.value = false;
     void loadResourcePage(targetRoute, "none");
+    // 慢速索引器(Prowlarr-Slow)结果在后台合并:观察快照修订变化,新结果
+    // 到达时自动刷新资源列表,无需用户手动点刷新。
+    observeSnapshotUpdates(requestId, response, targetRoute);
   } catch (exception) {
     if (controller.signal.aborted || resourceSearchAbortController !== controller) return;
     if (exception instanceof ApiError && [404, 405, 501, 503].includes(exception.status)) {
@@ -1133,6 +1139,38 @@ async function loadResources(
       resourceSearchLoading.value = false;
     }
   }
+}
+
+/**
+ * 观察慢速索引器后台合并:主搜索 ready 后快照修订可能再次变化
+ * (Prowlarr-Slow 补搜完成写入新 revision),变化时自动重新加载资源列表。
+ * 无新结果时在有限轮次后静默退出;新搜索开始会 abort 本观察。
+ */
+async function observeSnapshotUpdates(
+  requestId: number,
+  task: ResourceSearchResponse,
+  route: ResourceRouteState,
+): Promise<void> {
+  const initialRevision = task.snapshot_revision;
+  const controller = new AbortController();
+  snapshotObserverAbortController?.abort();
+  snapshotObserverAbortController = controller;
+  const isCurrent = () => requestId === searchRequestId
+    && snapshotObserverAbortController === controller
+    && !controller.signal.aborted
+    && !!result.value
+    && result.value.movie.tmdb_id === task.tmdb_id;
+  const updated = await pollSnapshotUpdate(api, task, {
+    requestId,
+    currentRequestId: () => searchRequestId,
+    signal: controller.signal,
+  });
+  if (snapshotObserverAbortController === controller) {
+    snapshotObserverAbortController = null;
+  }
+  if (!updated || !isCurrent() || updated.snapshot_revision === initialRevision) return;
+  feedback.success("慢速索引器结果已补充，列表已自动刷新");
+  await loadResourcePage(route, "none");
 }
 
 async function loadDetailSubscription(): Promise<void> {
