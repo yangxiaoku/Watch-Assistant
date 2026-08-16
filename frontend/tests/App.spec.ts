@@ -397,7 +397,7 @@ describe("App capability wiring", () => {
 
     const wrapper = mount(App);
     await flushPromises();
-    expect(wrapper.text()).toContain("正在搜索资源");
+    expect(wrapper.text()).toContain("正在搜索网盘与磁力资源");
     expect(wrapper.text()).not.toContain("正在加载资源分页");
 
     resolveSearch({

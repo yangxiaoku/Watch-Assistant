@@ -64,7 +64,7 @@ describe("ResourceTable", () => {
     });
 
     expect(wrapper.get(".resource-surface").attributes("aria-busy")).toBe("true");
-    expect(wrapper.get('[role="status"]').text()).toContain("正在搜索资源");
+    expect(wrapper.get('[role="status"]').text()).toContain("正在搜索网盘与磁力资源");
     expect(wrapper.text()).not.toContain("正在加载资源分页");
   });
 

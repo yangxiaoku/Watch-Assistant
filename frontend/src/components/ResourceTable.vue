@@ -196,7 +196,7 @@ function pageRequest(target: number) {
         <PushButton :busy="pushingId === resource.resource_id" :disabled="!canPush(resource)" :title="pushTitle(resource)" @push="emit('push', resource)" />
       </article>
     </div>
-    <div v-else-if="resourceSearchLoading" class="resource-loading-local" role="status"><LoaderCircle class="spin" :size="18" />正在搜索资源</div>
+    <div v-else-if="resourceSearchLoading" class="resource-loading-local" role="status"><LoaderCircle class="spin" :size="18" />正在搜索网盘与磁力资源，新结果会陆续自动补充</div>
     <div v-else-if="resourceLoading" class="resource-loading-local" role="status"><LoaderCircle class="spin" :size="18" />正在加载资源分页</div>
     <div v-else-if="!resourceError || paginationUnavailable" class="empty-state">当前没有资源</div>
     <nav v-if="!paginationUnavailable && totalPages > 1" class="resource-pagination" aria-label="资源分页">
